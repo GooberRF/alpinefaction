@@ -524,6 +524,7 @@ Version 1.9.0 (released 2025-04-06)
 - Disable red background in log window if geometry limits are crossed in editor
 - Update geometry limits in editor so they show static pools size (crossing it can have tiny performance impact)
 - Add level property which enables full lightmaps depth (enabled by default in new maps)
+- Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
 
 [@GooberRF](https://github.com/GooberRF)
 - Fix crash when `verify_level` command is run without a level being loaded
