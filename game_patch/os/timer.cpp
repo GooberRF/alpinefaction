@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <mmsystem.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include "../rf/os/timer.h"
@@ -28,6 +29,11 @@ FunHook<int(int)> timer_get_hook{
 
 void timer_apply_patch()
 {
+    // Call timeBeginPeriod(1) for 1ms timer resolution
+    // https://learn.microsoft.com/en-us/windows/win32/api/timeapi/nf-timeapi-timebeginperiod
+    // This fixes frametime inconsistency for dedicated servers on modern versions of Windows (XP and later). 
+    timeBeginPeriod(1);
+    
     // Remove Sleep calls in timer_init
     AsmWriter(0x00504A67, 0x00504A82).nop();
 
