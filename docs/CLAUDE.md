@@ -10,7 +10,7 @@ Alpine Faction is a comprehensive patch/modification for Red Faction (2001) that
 
 ### Building on macOS/Linux
 ```bash
-cd /Users/jackmc/Documents/personal-projects/alpinefaction
+cd ../alpinefaction
 mkdir -p build
 cd build
 cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/mingw-ubuntu.cmake -DCMAKE_BUILD_TYPE=Release
