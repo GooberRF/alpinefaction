@@ -78,7 +78,7 @@ void hud_personas_render(rf::Player* player)
 
     int content_w = box_w - 2 * box_border;
     int content_h = box_h - 2 * box_border;
-    int hud_persona_font = hud_get_default_font();
+    int hud_persona_font = hud_get_messages_font();
 
     // border
     rf::gr::set_color(255, 255, 255, static_cast<int>(rf::hud_persona_alpha * 77.0f));

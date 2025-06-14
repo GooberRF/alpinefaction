@@ -56,7 +56,7 @@ void multi_hud_render_chat()
         fade_out = rf::chat_fade_out_timer.time_until() / 750.0f;
     }
 
-    int chatbox_font = hud_get_default_font();
+    int chatbox_font = hud_get_chat_font();
     int clip_w = rf::gr::clip_width();
     int font_h = rf::gr::get_font_height(chatbox_font);
     int border = g_big_chatbox ? 3 : 2;
@@ -130,7 +130,7 @@ void multi_hud_render_chat_inputbox(rf::String::Pod label_pod, rf::String::Pod m
         return;
     }
 
-    int chatbox_font = hud_get_default_font();
+    int chatbox_font = hud_get_chat_font();
     int clip_w = rf::gr::clip_width();
     int font_h = rf::gr::get_font_height(chatbox_font); // 12
     int border = g_big_chatbox ? 3 : 2;

@@ -68,7 +68,7 @@ static void frametime_render_fps_counter()
             }
         }
 
-        int font_id = hud_get_default_font();
+        int font_id = hud_get_fps_font();
         rf::gr::string(x, y, text.c_str(), font_id);
     }
 
@@ -96,7 +96,7 @@ static void frametime_render_fps_counter()
             }
         }
 
-        int font_id = hud_get_default_font();
+        int font_id = hud_get_ping_font();
         rf::gr::string(x, y, text.c_str(), font_id);
     }
 }

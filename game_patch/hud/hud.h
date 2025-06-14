@@ -14,6 +14,15 @@ enum class ChatMenuType : int
 void hud_apply_patches();
 int hud_get_small_font();
 int hud_get_default_font();
+int hud_get_chat_font();
+int hud_get_console_font();
+int hud_get_health_font();
+int hud_get_ammo_font();
+int hud_get_timer_font();
+int hud_get_fps_font();
+int hud_get_ping_font();
+int hud_get_messages_font();
+int hud_get_scoreboard_font();
 int hud_get_large_font();
 bool hud_weapons_is_double_ammo();
 void draw_hud_vote_notification(std::string vote_type);

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <unordered_set>
 #include "hud_internal.h"
+#include "hud.h"
 #include "hud_world.h"
 #include "multi_spectate.h"
 #include "../object/event_alpine.h"
@@ -23,6 +24,9 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/localize.h"
 #include "../os/console.h"
+#include <patch_common/CallHook.h>
+#include "../rf/weapon.h"
+#include "../misc/alpine_options.h"
 
 WorldHUDAssets g_world_hud_assets;
 bool draw_mp_spawn_world_hud = false;
@@ -271,7 +275,7 @@ void build_ephemeral_world_hud_sprite_icons() {
     });
 
     for (const auto& es : ephemeral_world_hud_sprites) {
-        int font = !g_alpine_game_config.world_hud_big_text;
+        int font = hud_get_messages_font();
 
         if (es.bitmap != -1) {
             do_render_world_hud_sprite(es.pos, 1.0f, es.bitmap, es.render_mode, true, true, true);
@@ -295,7 +299,7 @@ void build_ephemeral_world_hud_strings() {
 
     for (const auto& es : ephemeral_world_hud_strings) {
         int label_y_offset = 0;
-        int font = !g_alpine_game_config.world_hud_big_text;
+        int font = hud_get_messages_font();
         rf::Vector3 string_pos = es.pos;
         string_pos.y += 0.85f;
 

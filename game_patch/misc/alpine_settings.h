@@ -199,7 +199,20 @@ struct AlpineGameSettings
     HudOffset ammo_hud_offset;
     HudOffset timer_hud_offset;
     HudOffset fps_hud_offset;
-    HudOffset ping_hud_offset;};
+    HudOffset ping_hud_offset;
+
+    // Font sizes for different HUD elements (in points)
+    // Default values will be set to match current TTF font sizes
+    int chat_font_size = 17;
+    int console_font_size = 10;
+    int scoreboard_font_size = 10;
+    int health_font_size = 17;
+    int ammo_font_size = 17;
+    int timer_font_size = 17;
+    int fps_font_size = 17;
+    int ping_font_size = 17;
+    int hud_messages_font_size = 17;
+};
 
 extern AlpineGameSettings g_alpine_game_config;
 void initialize_alpine_core_config();

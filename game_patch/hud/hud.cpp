@@ -197,7 +197,7 @@ void hud_apply_offsets()
         }
     }
 
-    // Timer offset is handled in multi_hud.cpp for multiplayer timer
+    // Timer offset is handled in multi_hud.cpp for multiplayer
     // The hud_countdown_timer coordinate is for singleplayer, not multiplayer
 }
 
@@ -222,7 +222,7 @@ void set_big_hud(bool is_big)
     weapon_select_set_big(is_big);
     multi_scoreboard_set_big(is_big);
     multi_hud_set_big(is_big);
-    rf::hud_text_font_num = hud_get_default_font();
+    rf::hud_text_font_num = hud_get_messages_font();
     g_target_player_name_font = hud_get_default_font();
 
     hud_setup_positions(rf::gr::screen_width());
@@ -342,6 +342,100 @@ ConsoleCommand2 ui_hudoffset_cmd{
     },
     "Set HUD element positions. Valid elements: health, ammo, timer, fps, ping",
     "ui_hudoffset <element> <X> <Y>",
+};
+
+ConsoleCommand2 ui_fontsize_cmd{
+    "ui_fontsize",
+    [](std::string element, std::optional<int> size_opt) {
+        if (element == "chat") {
+            if (size_opt) {
+                g_alpine_game_config.chat_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Chat font size: {}", g_alpine_game_config.chat_font_size);
+        }
+        else if (element == "console") {
+            if (size_opt) {
+                g_alpine_game_config.console_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Console font size: {}", g_alpine_game_config.console_font_size);
+        }
+        else if (element == "scoreboard") {
+            if (size_opt) {
+                g_alpine_game_config.scoreboard_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Scoreboard font size: {}", g_alpine_game_config.scoreboard_font_size);
+        }
+        else if (element == "health") {
+            if (size_opt) {
+                g_alpine_game_config.health_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Health font size: {}", g_alpine_game_config.health_font_size);
+        }
+        else if (element == "ammo") {
+            if (size_opt) {
+                g_alpine_game_config.ammo_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Ammo font size: {}", g_alpine_game_config.ammo_font_size);
+        }
+        else if (element == "timer") {
+            if (size_opt) {
+                g_alpine_game_config.timer_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Timer font size: {}", g_alpine_game_config.timer_font_size);
+        }
+        else if (element == "fps") {
+            if (size_opt) {
+                g_alpine_game_config.fps_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("FPS font size: {}", g_alpine_game_config.fps_font_size);
+        }
+        else if (element == "ping") {
+            if (size_opt) {
+                g_alpine_game_config.ping_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Ping font size: {}", g_alpine_game_config.ping_font_size);
+        }
+        else if (element == "messages") {
+            if (size_opt) {
+                g_alpine_game_config.hud_messages_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("HUD messages font size: {}", g_alpine_game_config.hud_messages_font_size);
+        }
+        else {
+            rf::console::print("Invalid element '{}'. Valid elements: chat, console, scoreboard, health, ammo, timer, fps, ping, messages", element);
+            rf::console::print("Usage: ui_fontsize <element> <size>");
+            rf::console::print("Font size range: 8-72 points");
+        }
+    },
+    "Set font sizes for HUD elements. Valid elements: chat, console, scoreboard, health, ammo, timer, fps, ping, messages",
+    "ui_fontsize <element> <size>",
 };
 
 #ifndef NDEBUG
@@ -471,10 +565,19 @@ const char* hud_get_small_font_name(bool big)
 
 const char* hud_get_default_font_name(bool big)
 {
+    // Always use TTF fonts by default, but check for custom .vf files for mod compatibility
+    static std::string font_name;
+    
     if (big) {
-        return "regularfont.ttf:17";
+        // For big HUD, use larger console font size
+        int font_size = static_cast<int>(g_alpine_game_config.console_font_size * 1.2f);
+        font_name = std::format("regularfont.ttf:{}", font_size);
+    } else {
+        // For normal HUD, use regular console font size
+        font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.console_font_size);
     }
-    return "rfpc-medium.vf";
+    
+    return font_name.c_str();
 }
 
 const char* hud_get_bold_font_name(bool big)
@@ -513,6 +616,91 @@ int hud_get_default_font()
     static int font = -2;
     if (font == -2) {
         font = rf::gr::load_font(hud_get_default_font_name(false));
+    }
+    return font;
+}
+
+// Specific font functions for different HUD elements
+int hud_get_chat_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.chat_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.chat_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.chat_font_size;
+    }
+    return font;
+}
+
+int hud_get_health_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.health_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.health_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.health_font_size;
+    }
+    return font;
+}
+
+int hud_get_ammo_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.ammo_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.ammo_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.ammo_font_size;
+    }
+    return font;
+}
+
+int hud_get_timer_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.timer_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.timer_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.timer_font_size;
+    }
+    return font;
+}
+
+int hud_get_fps_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.fps_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.fps_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.fps_font_size;
+    }
+    return font;
+}
+
+int hud_get_ping_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.ping_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.ping_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.ping_font_size;
+    }
+    return font;
+}
+
+int hud_get_messages_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.hud_messages_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.hud_messages_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.hud_messages_font_size;
     }
     return font;
 }
@@ -592,6 +780,7 @@ void hud_apply_patches()
     ui_realarmor_cmd.register_cmd();
     ui_hudscale_cmd.register_cmd();
     ui_hudoffset_cmd.register_cmd();
+    ui_fontsize_cmd.register_cmd();
 #ifndef NDEBUG
     hud_coords_cmd.register_cmd();
 #endif
@@ -615,4 +804,28 @@ void hud_apply_patches()
     multi_hud_apply_patches();
     message_log_apply_patch();
     hud_world_apply_patch();
+}
+
+int hud_get_scoreboard_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.scoreboard_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.scoreboard_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.scoreboard_font_size;
+    }
+    return font;
+}
+
+int hud_get_console_font()
+{
+    static int font = -2;
+    static int last_size = -1;
+    if (font == -2 || last_size != g_alpine_game_config.console_font_size) {
+        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.console_font_size);
+        font = rf::gr::load_font(font_name.c_str());
+        last_size = g_alpine_game_config.console_font_size;
+    }
+    return font;
 }

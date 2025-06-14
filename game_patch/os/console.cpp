@@ -1,22 +1,28 @@
+#include <patch_common/FunHook.h>
+#include <patch_common/CallHook.h>
+#include <patch_common/CodeInjection.h>
+#include <patch_common/AsmWriter.h>
+#include <patch_common/ShortTypes.h>
+#include <algorithm>
+#include <cstring>
+#include <cassert>
+#include <xlog/xlog.h>
 #include "console.h"
+#include "../rf/gr/gr.h"
+#include "../rf/gr/gr_font.h"
+#include "../rf/gameseq.h"
+#include "../rf/input.h"
+#include "../rf/player/player.h"
+#include "../rf/os/os.h"
+#include "../os/win32_console.h"
 #include "../main/main.h"
 #include "../misc/player.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
-#include "../rf/player/player.h"
-#include "../rf/gameseq.h"
-#include "../rf/input.h"
-#include "win32_console.h"
+#include "../hud/hud.h"
 #include <common/config/BuildConfig.h>
 #include <common/version/version.h>
-#include <patch_common/CodeInjection.h>
-#include <patch_common/FunHook.h>
-#include <patch_common/CallHook.h>
-#include <patch_common/AsmWriter.h>
-#include <patch_common/ShortTypes.h>
-#include <algorithm>
-#include <cassert>
-#include <xlog/xlog.h>
+#include "../graphics/gr.h"
 
 // ConsoleDrawClientConsole uses 200 bytes long buffer for: "] ", user input and '\0'
 constexpr int max_cmd_line_len = 200 - 2 - 1;
@@ -114,7 +120,14 @@ static FunHook<void()> console_draw_server_hook{
             win32_console_update();
         }
         else {
+            // Set console font before drawing
+            int old_font = gr_font_get_default();
+            gr_font_set_default(hud_get_console_font());
+            
             console_draw_server_hook.call_target();
+            
+            // Restore original font
+            gr_font_set_default(old_font);
         }
     },
 };
@@ -126,7 +139,14 @@ static FunHook<void()> console_draw_client_hook{
         // Fixes console rendering in endgame state
         rf::gr::reset_clip();
 
+        // Set console font before drawing
+        int old_font = gr_font_get_default();
+        gr_font_set_default(hud_get_console_font());
+        
         console_draw_client_hook.call_target();
+        
+        // Restore original font
+        gr_font_set_default(old_font);
     },
 };
 

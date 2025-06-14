@@ -392,6 +392,44 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("PingHUDOffsetY");
     }
     
+    // Load font sizes
+    if (settings.count("ChatFontSize")) {
+        g_alpine_game_config.chat_font_size = std::clamp(std::stoi(settings["ChatFontSize"]), 8, 72);
+        processed_keys.insert("ChatFontSize");
+    }
+    if (settings.count("ConsoleFontSize")) {
+        g_alpine_game_config.console_font_size = std::clamp(std::stoi(settings["ConsoleFontSize"]), 8, 72);
+        processed_keys.insert("ConsoleFontSize");
+    }
+    if (settings.count("ScoreboardFontSize")) {
+        g_alpine_game_config.scoreboard_font_size = std::clamp(std::stoi(settings["ScoreboardFontSize"]), 8, 72);
+        processed_keys.insert("ScoreboardFontSize");
+    }
+    if (settings.count("HealthFontSize")) {
+        g_alpine_game_config.health_font_size = std::clamp(std::stoi(settings["HealthFontSize"]), 8, 72);
+        processed_keys.insert("HealthFontSize");
+    }
+    if (settings.count("AmmoFontSize")) {
+        g_alpine_game_config.ammo_font_size = std::clamp(std::stoi(settings["AmmoFontSize"]), 8, 72);
+        processed_keys.insert("AmmoFontSize");
+    }
+    if (settings.count("TimerFontSize")) {
+        g_alpine_game_config.timer_font_size = std::clamp(std::stoi(settings["TimerFontSize"]), 8, 72);
+        processed_keys.insert("TimerFontSize");
+    }
+    if (settings.count("FPSFontSize")) {
+        g_alpine_game_config.fps_font_size = std::clamp(std::stoi(settings["FPSFontSize"]), 8, 72);
+        processed_keys.insert("FPSFontSize");
+    }
+    if (settings.count("PingFontSize")) {
+        g_alpine_game_config.ping_font_size = std::clamp(std::stoi(settings["PingFontSize"]), 8, 72);
+        processed_keys.insert("PingFontSize");
+    }
+    if (settings.count("HUDMessagesFontSize")) {
+        g_alpine_game_config.hud_messages_font_size = std::clamp(std::stoi(settings["HUDMessagesFontSize"]), 8, 72);
+        processed_keys.insert("HUDMessagesFontSize");
+    }
+    
     // Apply HUD offsets after loading them
     extern void hud_apply_offsets();
     hud_apply_offsets();
@@ -851,6 +889,17 @@ void alpine_player_settings_save(rf::Player* player)
     if (g_alpine_game_config.ping_hud_offset.y != -1) {
         file << "PingHUDOffsetY=" << g_alpine_game_config.ping_hud_offset.y << "\n";
     }
+    
+    // Save font sizes
+    file << "ChatFontSize=" << g_alpine_game_config.chat_font_size << "\n";
+    file << "ConsoleFontSize=" << g_alpine_game_config.console_font_size << "\n";
+    file << "ScoreboardFontSize=" << g_alpine_game_config.scoreboard_font_size << "\n";
+    file << "HealthFontSize=" << g_alpine_game_config.health_font_size << "\n";
+    file << "AmmoFontSize=" << g_alpine_game_config.ammo_font_size << "\n";
+    file << "TimerFontSize=" << g_alpine_game_config.timer_font_size << "\n";
+    file << "FPSFontSize=" << g_alpine_game_config.fps_font_size << "\n";
+    file << "PingFontSize=" << g_alpine_game_config.ping_font_size << "\n";
+    file << "HUDMessagesFontSize=" << g_alpine_game_config.hud_messages_font_size << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
     file << "NearestTextureFiltering=" << g_alpine_game_config.nearest_texture_filtering << "\n";

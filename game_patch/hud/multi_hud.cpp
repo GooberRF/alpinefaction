@@ -956,7 +956,7 @@ FunHook<void()> multi_hud_render_time_left_hook{
         y_pos = rf::gr::clip_height() - time_left_string_y_pos_offset;
     }
 
-    rf::gr::string_aligned(rf::gr::ALIGN_LEFT, x_pos, y_pos, time_left_string.c_str(), 0, rf::gr::text_2d_mode);
+    rf::gr::string_aligned(rf::gr::ALIGN_LEFT, x_pos, y_pos, time_left_string.c_str(), hud_get_timer_font(), rf::gr::text_2d_mode);
     },
 };
 
@@ -978,7 +978,7 @@ void build_time_left_string_format() {
 
     rf::gr::gr_get_string_size(&format_text_width, &format_text_height, 
                                time_left_string_format.c_str(),
-                               time_left_string_format.size(), 0);
+                               time_left_string_format.size(), hud_get_timer_font());
 
     time_left_string_x_pos_offset = 135 + format_text_width;
     time_left_string_y_pos_offset = 21;

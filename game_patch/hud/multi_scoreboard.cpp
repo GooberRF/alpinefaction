@@ -20,6 +20,8 @@
 #include "../rf/os/timer.h"
 #include "../main/main.h"
 #include "hud_internal.h"
+#include "hud_world.h"
+#include "../graphics/gr.h"
 
 #define DEBUG_SCOREBOARD 0
 
@@ -309,13 +311,14 @@ void draw_scoreboard_internal_new(bool draw)
 
     int w;
     float scale;
-    // Note: fit_scoreboard_string does not support providing font by argument so default font must be changed
+    // Set the scoreboard font for rendering
     if (g_big_scoreboard) {
-        rf::gr::set_default_font(hud_get_default_font_name(true));
+        gr_font_set_default(hud_get_scoreboard_font());
         w = std::min(!group_by_team ? 900 : 1400, rf::gr::clip_width());
         scale = 2.0f;
     }
     else {
+        gr_font_set_default(hud_get_scoreboard_font());
         w = std::min(!group_by_team ? 450 : 700, rf::gr::clip_width());
         scale = 1.0f;
     }
@@ -340,10 +343,7 @@ void draw_scoreboard_internal_new(bool draw)
     y += top_padding;
 
     if (progress_h < 1.0f || progress_w < 1.0f) {
-        // Restore rfpc-medium as default font
-        if (g_big_scoreboard) {
-            rf::gr::set_default_font("rfpc-medium.vf");
-        }
+        // Early return during animation
         return;
     }
 
@@ -356,11 +356,6 @@ void draw_scoreboard_internal_new(bool draw)
     else {
         int table_w = w - left_padding - right_padding;
         draw_scoreboard_players(left_players, x + left_padding, y, table_w, scale, game_type);
-    }
-
-    // Restore rfpc-medium as default font
-    if (g_big_scoreboard) {
-        rf::gr::set_default_font("rfpc-medium.vf");
     }
 }
 

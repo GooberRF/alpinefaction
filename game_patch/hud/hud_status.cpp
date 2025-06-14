@@ -1,4 +1,5 @@
 #include "hud_internal.h"
+#include "hud.h"
 #include "../rf/hud.h"
 #include "../rf/player/player.h"
 #include "../rf/entity.h"
@@ -12,6 +13,22 @@
 #include <patch_common/MemUtils.h>
 #include <patch_common/CallHook.h>
 #include <algorithm>
+
+// Hook to ensure health/status font uses our dynamic font system
+CallHook<void(int, int, const char*, int)> hud_status_font_hook{
+    {
+        // Hook gr::string calls in health/status rendering
+        0x00439F3A, // Health text rendering
+        0x00439F7A, // Armor text rendering
+    },
+    [](int x, int y, const char* text, int font_id) {
+        // Replace font ID with our dynamic font
+        if (font_id == rf::hud_status_font) {
+            font_id = hud_get_health_font();
+        }
+        rf::gr::string(x, y, text, font_id);
+    },
+};
 
 bool g_big_health_armor_hud = false;
 float g_hud_health_scale = 1.0f;
@@ -49,7 +66,7 @@ FunHook<void(rf::Player*)> hud_status_render_hook{
             return;
         }
 
-        int font_id = rf::hud_status_font;
+        int font_id = hud_get_health_font();
         // Note: 2x scale does not look good because bigfont is not exactly 2x version of smallfont
         float base_scale = g_big_health_armor_hud ? 1.875f : 1.0f;
         float scale = base_scale * g_hud_health_scale;
@@ -156,13 +173,15 @@ void hud_status_apply_patches()
     
     // Support health scaling regardless of big HUD mode
     hud_render_health_gr_bitmap_hook.install();
+    
+    // Hook font usage to use dynamic font system
+    hud_status_font_hook.install();
 }
 
 void hud_status_set_big(bool is_big)
 {
     g_big_health_armor_hud = is_big;
     g_hud_health_scale = g_alpine_game_config.health_hud_scale;
-    rf::hud_status_font = rf::gr::load_font(is_big ? "bigfont.vf" : "smallfont.vf");
     static bool big_bitmaps_preloaded = false;
     if (is_big && !big_bitmaps_preloaded) {
         for (int i = 0; i <= 10; ++i) {
