@@ -49,6 +49,21 @@ struct AlpineGameSettings
         reticle_scale = std::clamp(scale, 0.0f, 100.0f);
     }
 
+    // hud element scaling
+    static constexpr float min_hud_scale = 0.1f;
+    static constexpr float max_hud_scale = 5.0f;
+    float health_hud_scale = 1.0f;
+    void set_health_hud_scale(float scale)
+    {
+        health_hud_scale = std::clamp(scale, min_hud_scale, max_hud_scale);
+    }
+    
+    float ammo_hud_scale = 1.0f;
+    void set_ammo_hud_scale(float scale)
+    {
+        ammo_hud_scale = std::clamp(scale, min_hud_scale, max_hud_scale);
+    }
+
     float level_sound_volume = 1.0f;
     void set_level_sound_volume(float scale)
     {

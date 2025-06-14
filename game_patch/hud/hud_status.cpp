@@ -10,14 +10,32 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/MemUtils.h>
+#include <patch_common/CallHook.h>
 #include <algorithm>
 
 bool g_big_health_armor_hud = false;
+float g_hud_health_scale = 1.0f;
+
+// Hook health bitmap rendering to apply scaling
+CallHook<void(int, int, int, rf::gr::Mode)> hud_render_health_gr_bitmap_hook{
+    {
+        // Health icon rendering
+        0x00439EE7,  // health bitmap render
+        0x00439F58,  // envirosuit bitmap render
+    },
+    [](int bm_handle, int x, int y, rf::gr::Mode mode) {
+        float scale = g_hud_health_scale;
+        if (g_big_health_armor_hud) {
+            scale *= 1.875f;
+        }
+        hud_scaled_bitmap(bm_handle, x, y, scale, mode);
+    },
+};
 
 FunHook<void(rf::Player*)> hud_status_render_hook{
     0x00439D80,
     [](rf::Player *player) {
-        if (!g_big_health_armor_hud) {
+        if (!g_big_health_armor_hud && g_hud_health_scale == 1.0f) {
             hud_status_render_hook.call_target(player);
             return;
         }
@@ -33,7 +51,8 @@ FunHook<void(rf::Player*)> hud_status_render_hook{
 
         int font_id = rf::hud_status_font;
         // Note: 2x scale does not look good because bigfont is not exactly 2x version of smallfont
-        float scale = 1.875f;
+        float base_scale = g_big_health_armor_hud ? 1.875f : 1.0f;
+        float scale = base_scale * g_hud_health_scale;
 
         if (rf::entity_in_vehicle(entity)) {
             rf::hud_draw_damage_indicators(player);
@@ -134,11 +153,15 @@ void hud_status_apply_patches()
 
     // Support BigHUD
     hud_status_render_hook.install();
+    
+    // Support health scaling regardless of big HUD mode
+    hud_render_health_gr_bitmap_hook.install();
 }
 
 void hud_status_set_big(bool is_big)
 {
     g_big_health_armor_hud = is_big;
+    g_hud_health_scale = g_alpine_game_config.health_hud_scale;
     rf::hud_status_font = rf::gr::load_font(is_big ? "bigfont.vf" : "smallfont.vf");
     static bool big_bitmaps_preloaded = false;
     if (is_big && !big_bitmaps_preloaded) {
@@ -150,4 +173,9 @@ void hud_status_set_big(bool is_big)
         }
         big_bitmaps_preloaded = true;
     }
+}
+
+void hud_status_update_scale()
+{
+    g_hud_health_scale = g_alpine_game_config.health_hud_scale;
 }

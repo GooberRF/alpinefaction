@@ -335,6 +335,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_reticle_scale(std::stof(settings["ReticleScale"]));
         processed_keys.insert("ReticleScale");
     }
+    if (settings.count("HealthHUDScale")) {
+        g_alpine_game_config.set_health_hud_scale(std::stof(settings["HealthHUDScale"]));
+        processed_keys.insert("HealthHUDScale");
+    }
+    if (settings.count("AmmoHUDScale")) {
+        g_alpine_game_config.set_ammo_hud_scale(std::stof(settings["AmmoHUDScale"]));
+        processed_keys.insert("AmmoHUDScale");
+    }
     if (settings.count("ShowGlares")) {
         g_alpine_game_config.show_glares = std::stoi(settings["ShowGlares"]);
         processed_keys.insert("ShowGlares");
@@ -744,6 +752,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableTextures=" << g_alpine_game_config.try_disable_textures << "\n";
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
     file << "ReticleScale=" << g_alpine_game_config.reticle_scale << "\n";
+    file << "HealthHUDScale=" << g_alpine_game_config.health_hud_scale << "\n";
+    file << "AmmoHUDScale=" << g_alpine_game_config.ammo_hud_scale << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
     file << "NearestTextureFiltering=" << g_alpine_game_config.nearest_texture_filtering << "\n";

@@ -178,6 +178,32 @@ ConsoleCommand2 ui_realarmor_cmd{
     "ui_realarmor",
 };
 
+ConsoleCommand2 ui_hudscale_cmd{
+    "ui_hudscale",
+    [](std::string element, std::optional<float> scale_opt) {
+        if (element == "health") {
+            if (scale_opt) {
+                g_alpine_game_config.set_health_hud_scale(scale_opt.value());
+                hud_status_update_scale();
+            }
+            rf::console::print("Health HUD scale: {:.2f}", g_alpine_game_config.health_hud_scale);
+        }
+        else if (element == "ammo") {
+            if (scale_opt) {
+                g_alpine_game_config.set_ammo_hud_scale(scale_opt.value());
+                hud_weapons_update_scale();
+            }
+            rf::console::print("Ammo HUD scale: {:.2f}", g_alpine_game_config.ammo_hud_scale);
+        }
+        else {
+            rf::console::print("Invalid element '{}'. Valid elements: health, ammo", element);
+            rf::console::print("Usage: ui_hudscale <element> <multiplier>");
+        }
+    },
+    "Scale HUD elements. Valid elements: health (health & armor icons), ammo (ammo bar and icons)",
+    "ui_hudscale <element> <multiplier>",
+};
+
 #ifndef NDEBUG
 ConsoleCommand2 hud_coords_cmd{
     "d_hud_coords",
@@ -424,6 +450,7 @@ void hud_apply_patches()
     // Other commands
     bighud_cmd.register_cmd();
     ui_realarmor_cmd.register_cmd();
+    ui_hudscale_cmd.register_cmd();
 #ifndef NDEBUG
     hud_coords_cmd.register_cmd();
 #endif

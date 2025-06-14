@@ -63,10 +63,12 @@ extern bool g_pre_match_active;
 
 void hud_status_apply_patches();
 void hud_status_set_big(bool is_big);
+void hud_status_update_scale();
 void hud_personas_apply_patches();
 void hud_personas_set_big(bool is_big);
 void hud_weapons_apply_patches();
 void hud_weapons_set_big(bool is_big);
+void hud_weapons_update_scale();
 void weapon_select_apply_patches();
 void weapon_select_set_big(bool is_big);
 void multi_hud_chat_apply_patches();
