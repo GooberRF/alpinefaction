@@ -338,10 +338,16 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("HealthHUDScale")) {
         g_alpine_game_config.set_health_hud_scale(std::stof(settings["HealthHUDScale"]));
         processed_keys.insert("HealthHUDScale");
+        // Apply the loaded scale immediately
+        extern void hud_status_update_scale();
+        hud_status_update_scale();
     }
     if (settings.count("AmmoHUDScale")) {
         g_alpine_game_config.set_ammo_hud_scale(std::stof(settings["AmmoHUDScale"]));
         processed_keys.insert("AmmoHUDScale");
+        // Apply the loaded scale immediately
+        extern void hud_weapons_update_scale();
+        hud_weapons_update_scale();
     }
     if (settings.count("ShowGlares")) {
         g_alpine_game_config.show_glares = std::stoi(settings["ShowGlares"]);

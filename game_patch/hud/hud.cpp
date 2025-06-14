@@ -185,6 +185,9 @@ ConsoleCommand2 ui_hudscale_cmd{
             if (scale_opt) {
                 g_alpine_game_config.set_health_hud_scale(scale_opt.value());
                 hud_status_update_scale();
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Health HUD scale: {:.2f}", g_alpine_game_config.health_hud_scale);
         }
@@ -192,6 +195,9 @@ ConsoleCommand2 ui_hudscale_cmd{
             if (scale_opt) {
                 g_alpine_game_config.set_ammo_hud_scale(scale_opt.value());
                 hud_weapons_update_scale();
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Ammo HUD scale: {:.2f}", g_alpine_game_config.ammo_hud_scale);
         }

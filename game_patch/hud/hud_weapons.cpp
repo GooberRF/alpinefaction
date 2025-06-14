@@ -91,6 +91,9 @@ ConsoleCommand2 reticle_scale_cmd{
     [](std::optional<float> scale_opt) {
         if (scale_opt) {
             g_alpine_game_config.set_reticle_scale(scale_opt.value());
+            // Save settings to make them persistent
+            extern void alpine_player_settings_save(rf::Player* player);
+            alpine_player_settings_save(rf::local_player);
         }
         rf::console::print("Reticle scale {:.4f}", g_alpine_game_config.reticle_scale);
     },
