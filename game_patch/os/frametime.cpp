@@ -47,12 +47,24 @@ static void frametime_render_fps_counter()
     if (g_alpine_game_config.fps_counter && !rf::hud_disabled) {
         auto text = std::format("FPS: {:.1f}", rf::current_fps);
         rf::gr::set_color(0, 255, 0, 255);
-        int x = rf::gr::screen_width() - (g_alpine_game_config.big_hud ? 165 : 90);
-        int y = 10;
-        if (rf::gameseq_in_gameplay()) {
-            y = g_alpine_game_config.big_hud ? 110 : 60;
-            if (hud_weapons_is_double_ammo()) {
-                y += g_alpine_game_config.big_hud ? 80 : 40;
+        
+        // Use offset if specified, otherwise use default positioning
+        int x, y;
+        if (g_alpine_game_config.fps_hud_offset.x != -1) {
+            x = g_alpine_game_config.fps_hud_offset.x;
+        } else {
+            x = rf::gr::screen_width() - (g_alpine_game_config.big_hud ? 165 : 90);
+        }
+        
+        if (g_alpine_game_config.fps_hud_offset.y != -1) {
+            y = g_alpine_game_config.fps_hud_offset.y;
+        } else {
+            y = 10;
+            if (rf::gameseq_in_gameplay()) {
+                y = g_alpine_game_config.big_hud ? 110 : 60;
+                if (hud_weapons_is_double_ammo()) {
+                    y += g_alpine_game_config.big_hud ? 80 : 40;
+                }
             }
         }
 
@@ -63,12 +75,24 @@ static void frametime_render_fps_counter()
     if (g_alpine_game_config.ping_display && !rf::hud_disabled && rf::is_multi && !rf::is_server) {
         auto text = std::format("Ping: {}", rf::local_player->net_data->ping);
         rf::gr::set_color(0, 255, 0, 255);
-        int x = rf::gr::screen_width() - (g_alpine_game_config.big_hud ? 165 : 90);
-        int y = g_alpine_game_config.big_hud ? 35 : 25;
-        if (rf::gameseq_in_gameplay()) {
-            y = g_alpine_game_config.big_hud ? 135 : 75;
-            if (hud_weapons_is_double_ammo()) {
-                y += g_alpine_game_config.big_hud ? 105 : 55;
+        
+        // Use offset if specified, otherwise use default positioning
+        int x, y;
+        if (g_alpine_game_config.ping_hud_offset.x != -1) {
+            x = g_alpine_game_config.ping_hud_offset.x;
+        } else {
+            x = rf::gr::screen_width() - (g_alpine_game_config.big_hud ? 165 : 90);
+        }
+        
+        if (g_alpine_game_config.ping_hud_offset.y != -1) {
+            y = g_alpine_game_config.ping_hud_offset.y;
+        } else {
+            y = g_alpine_game_config.big_hud ? 35 : 25;
+            if (rf::gameseq_in_gameplay()) {
+                y = g_alpine_game_config.big_hud ? 135 : 75;
+                if (hud_weapons_is_double_ammo()) {
+                    y += g_alpine_game_config.big_hud ? 105 : 55;
+                }
             }
         }
 

@@ -942,8 +942,19 @@ FunHook<void()> multi_hud_render_time_left_hook{
         std::get<2>(time_left_string_color),
         static_cast<int>(std::get<3>(time_left_string_color) * (rf::time_left_alpha / 255.0f)));
 
-    int x_pos = rf::gr::clip_width() - time_left_string_x_pos_offset;
-    int y_pos = rf::gr::clip_height() - time_left_string_y_pos_offset;
+    // Use custom offset if specified, otherwise use default positioning
+    int x_pos, y_pos;
+    if (g_alpine_game_config.timer_hud_offset.x != -1) {
+        x_pos = g_alpine_game_config.timer_hud_offset.x;
+    } else {
+        x_pos = rf::gr::clip_width() - time_left_string_x_pos_offset;
+    }
+    
+    if (g_alpine_game_config.timer_hud_offset.y != -1) {
+        y_pos = g_alpine_game_config.timer_hud_offset.y;
+    } else {
+        y_pos = rf::gr::clip_height() - time_left_string_y_pos_offset;
+    }
 
     rf::gr::string_aligned(rf::gr::ALIGN_LEFT, x_pos, y_pos, time_left_string.c_str(), 0, rf::gr::text_2d_mode);
     },

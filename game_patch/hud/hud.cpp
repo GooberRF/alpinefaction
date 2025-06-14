@@ -120,7 +120,87 @@ void hud_setup_positions(int width)
                 dst_pt.y = src_pt.y + height - 768;
         }
     }
+
+    // Apply HUD offsets after setting up base positions
+    hud_apply_offsets();
 }
+
+void hud_apply_offsets()
+{
+    // Apply health HUD offset - move as a group maintaining relative positions
+    if (g_alpine_game_config.health_hud_offset.x != -1 || g_alpine_game_config.health_hud_offset.y != -1) {
+        // Health elements: health icon, health text, armor icon, armor text
+        rf::HudItem health_elements[] = {
+            rf::hud_health,
+            rf::hud_health_value_ul_corner,
+            rf::hud_envirosuit,
+            rf::hud_envirosuit_value_ul_corner
+        };
+        
+        // Use health icon as the reference point for the group
+        rf::HudPoint reference_original = rf::hud_coords[rf::hud_health];
+        rf::HudPoint reference_new = {
+            g_alpine_game_config.health_hud_offset.x != -1 ? g_alpine_game_config.health_hud_offset.x : reference_original.x,
+            g_alpine_game_config.health_hud_offset.y != -1 ? g_alpine_game_config.health_hud_offset.y : reference_original.y
+        };
+        
+        // Calculate offset from original position
+        int offset_x = reference_new.x - reference_original.x;
+        int offset_y = reference_new.y - reference_original.y;
+        
+        // Apply offset to all health elements
+        for (auto element : health_elements) {
+            if (g_alpine_game_config.health_hud_offset.x != -1) {
+                rf::hud_coords[element].x += offset_x;
+            }
+            if (g_alpine_game_config.health_hud_offset.y != -1) {
+                rf::hud_coords[element].y += offset_y;
+            }
+        }
+    }
+
+    // Apply ammo HUD offset - move as a group maintaining relative positions
+    if (g_alpine_game_config.ammo_hud_offset.x != -1 || g_alpine_game_config.ammo_hud_offset.y != -1) {
+        // Ammo elements: bar, signal, icon, text positions
+        rf::HudItem ammo_elements[] = {
+            rf::hud_ammo_bar,
+            rf::hud_ammo_signal,
+            rf::hud_ammo_icon,
+            rf::hud_ammo_in_clip_text_ul_region_coord,
+            rf::hud_ammo_in_inv_text_ul_region_coord,
+            rf::hud_ammo_bar_position_no_clip,
+            rf::hud_ammo_signal_position_no_clip,
+            rf::hud_ammo_icon_position_no_clip,
+            rf::hud_ammo_in_inv_ul_region_coord_no_clip,
+            rf::hud_ammo_in_clip_ul_coord
+        };
+        
+        // Use ammo bar as the reference point for the group
+        rf::HudPoint reference_original = rf::hud_coords[rf::hud_ammo_bar];
+        rf::HudPoint reference_new = {
+            g_alpine_game_config.ammo_hud_offset.x != -1 ? g_alpine_game_config.ammo_hud_offset.x : reference_original.x,
+            g_alpine_game_config.ammo_hud_offset.y != -1 ? g_alpine_game_config.ammo_hud_offset.y : reference_original.y
+        };
+        
+        // Calculate offset from original position
+        int offset_x = reference_new.x - reference_original.x;
+        int offset_y = reference_new.y - reference_original.y;
+        
+        // Apply offset to all ammo elements
+        for (auto element : ammo_elements) {
+            if (g_alpine_game_config.ammo_hud_offset.x != -1) {
+                rf::hud_coords[element].x += offset_x;
+            }
+            if (g_alpine_game_config.ammo_hud_offset.y != -1) {
+                rf::hud_coords[element].y += offset_y;
+            }
+        }
+    }
+
+    // Timer offset is handled in multi_hud.cpp for multiplayer timer
+    // The hud_countdown_timer coordinate is for singleplayer, not multiplayer
+}
+
 FunHook hud_setup_positions_hook{0x004377C0, hud_setup_positions};
 
 void set_big_countdown_counter(bool is_big)
@@ -208,6 +288,60 @@ ConsoleCommand2 ui_hudscale_cmd{
     },
     "Scale HUD elements. Valid elements: health (health & armor icons), ammo (ammo bar and icons)",
     "ui_hudscale <element> <multiplier>",
+};
+
+ConsoleCommand2 ui_hudoffset_cmd{
+    "ui_hudoffset",
+    [](std::string element, std::optional<int> x_opt, std::optional<int> y_opt) {
+        auto apply_offset = [&](AlpineGameSettings::HudOffset& offset, const std::string& name) {
+            if (x_opt && y_opt) {
+                offset.x = x_opt.value();
+                offset.y = y_opt.value();
+                // Reapply HUD positions
+                hud_setup_positions(rf::gr::screen_width());
+                // Also update scaling which triggers coordinate recalculation
+                if (element == "health") {
+                    hud_status_update_scale();
+                } else if (element == "ammo") {
+                    hud_weapons_update_scale();
+                }
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            
+            if (offset.x == -1 && offset.y == -1) {
+                rf::console::print("{} HUD offset: default position", name);
+            } else {
+                rf::console::print("{} HUD offset: X={}, Y={}", name, 
+                    offset.x == -1 ? "default" : std::to_string(offset.x),
+                    offset.y == -1 ? "default" : std::to_string(offset.y));
+            }
+        };
+        
+        if (element == "health") {
+            apply_offset(g_alpine_game_config.health_hud_offset, "Health");
+        }
+        else if (element == "ammo") {
+            apply_offset(g_alpine_game_config.ammo_hud_offset, "Ammo");
+        }
+        else if (element == "timer") {
+            apply_offset(g_alpine_game_config.timer_hud_offset, "Timer");
+        }
+        else if (element == "fps") {
+            apply_offset(g_alpine_game_config.fps_hud_offset, "FPS");
+        }
+        else if (element == "ping") {
+            apply_offset(g_alpine_game_config.ping_hud_offset, "Ping");
+        }
+        else {
+            rf::console::print("Invalid element '{}'. Valid elements: health, ammo, timer, fps, ping", element);
+            rf::console::print("Usage: ui_hudoffset <element> <X> <Y>");
+            rf::console::print("Use -1 for X or Y to keep default positioning for that axis");
+        }
+    },
+    "Set HUD element positions. Valid elements: health, ammo, timer, fps, ping",
+    "ui_hudoffset <element> <X> <Y>",
 };
 
 #ifndef NDEBUG
@@ -457,6 +591,7 @@ void hud_apply_patches()
     bighud_cmd.register_cmd();
     ui_realarmor_cmd.register_cmd();
     ui_hudscale_cmd.register_cmd();
+    ui_hudoffset_cmd.register_cmd();
 #ifndef NDEBUG
     hud_coords_cmd.register_cmd();
 #endif

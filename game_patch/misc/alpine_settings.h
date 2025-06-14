@@ -188,7 +188,18 @@ struct AlpineGameSettings
     {
         desired_handicap = std::clamp(value, 0, 99);
     }
-};
+
+    // HUD element offset positions
+    struct HudOffset {
+        int x = -1;  // -1 means no offset (use default position)
+        int y = -1;
+    };
+    
+    HudOffset health_hud_offset;
+    HudOffset ammo_hud_offset;
+    HudOffset timer_hud_offset;
+    HudOffset fps_hud_offset;
+    HudOffset ping_hud_offset;};
 
 extern AlpineGameSettings g_alpine_game_config;
 void initialize_alpine_core_config();
