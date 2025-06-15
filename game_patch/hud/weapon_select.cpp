@@ -8,6 +8,7 @@
 #include "../rf/weapon.h"
 #include "../rf/localize.h"
 #include "../rf/sound/sound.h"
+#include "../misc/alpine_settings.h"
 #include <patch_common/FunHook.h>
 
 bool weapon_select_big_mode = false;
@@ -46,8 +47,22 @@ void weapon_select_render()
     default:
         break;
     }
+    
+    // Apply custom weapon select scaling
+    float base_scale = weapon_select_big_mode ? 1.5f : 1.0f;
+    float final_scale = base_scale * g_alpine_game_config.weaponselect_hud_scale;
+    
     int weapon_type_y = weapon_select_big_mode ? 210 : 113;
     int center_x = clip_w - (weapon_select_big_mode ? 148 : 74);
+    
+    // Apply custom weapon select offset if specified
+    if (g_alpine_game_config.weaponselect_hud_offset.x != -1) {
+        center_x = g_alpine_game_config.weaponselect_hud_offset.x;
+    }
+    if (g_alpine_game_config.weaponselect_hud_offset.y != -1) {
+        weapon_type_y = g_alpine_game_config.weaponselect_hud_offset.y;
+    }
+
     if (weapon_type_name) {
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, weapon_type_y, weapon_type_name, font_num);
     }
@@ -83,7 +98,7 @@ void weapon_select_render()
 
     int num_ind_start_y = type_sq_y + sq_bg_size + 2 * border + sq_spacing + 1; // 150
     int weapon_icons_start_y = num_ind_start_y + 26; // 176
-    float weapon_icon_scale = weapon_select_big_mode ? 1.5f : 1.0f;
+    float weapon_icon_scale = final_scale;
     int weapon_icon_w = static_cast<int>(128 * weapon_icon_scale);
     int weapon_icon_h = static_cast<int>(34 * weapon_icon_scale);
     int weapon_icons_x = center_x - weapon_icon_w / 2; // clip_w - 139

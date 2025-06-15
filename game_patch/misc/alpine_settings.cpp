@@ -350,6 +350,16 @@ bool alpine_player_settings_load(rf::Player* player)
         hud_weapons_update_scale();
     }
     
+    if (settings.count("PowerupHUDScale")) {
+        g_alpine_game_config.set_powerup_hud_scale(std::stof(settings["PowerupHUDScale"]));
+        processed_keys.insert("PowerupHUDScale");
+    }
+    
+    if (settings.count("WeaponSelectHUDScale")) {
+        g_alpine_game_config.set_weaponselect_hud_scale(std::stof(settings["WeaponSelectHUDScale"]));
+        processed_keys.insert("WeaponSelectHUDScale");
+    }
+    
     // Load HUD offsets
     if (settings.count("HealthHUDOffsetX")) {
         g_alpine_game_config.health_hud_offset.x = std::stoi(settings["HealthHUDOffsetX"]);
@@ -390,6 +400,22 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("PingHUDOffsetY")) {
         g_alpine_game_config.ping_hud_offset.y = std::stoi(settings["PingHUDOffsetY"]);
         processed_keys.insert("PingHUDOffsetY");
+    }
+    if (settings.count("PowerupHUDOffsetX")) {
+        g_alpine_game_config.powerup_hud_offset.x = std::stoi(settings["PowerupHUDOffsetX"]);
+        processed_keys.insert("PowerupHUDOffsetX");
+    }
+    if (settings.count("PowerupHUDOffsetY")) {
+        g_alpine_game_config.powerup_hud_offset.y = std::stoi(settings["PowerupHUDOffsetY"]);
+        processed_keys.insert("PowerupHUDOffsetY");
+    }
+    if (settings.count("WeaponSelectHUDOffsetX")) {
+        g_alpine_game_config.weaponselect_hud_offset.x = std::stoi(settings["WeaponSelectHUDOffsetX"]);
+        processed_keys.insert("WeaponSelectHUDOffsetX");
+    }
+    if (settings.count("WeaponSelectHUDOffsetY")) {
+        g_alpine_game_config.weaponselect_hud_offset.y = std::stoi(settings["WeaponSelectHUDOffsetY"]);
+        processed_keys.insert("WeaponSelectHUDOffsetY");
     }
     
     // Load font sizes
@@ -880,6 +906,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ReticleScale=" << g_alpine_game_config.reticle_scale << "\n";
     file << "HealthHUDScale=" << g_alpine_game_config.health_hud_scale << "\n";
     file << "AmmoHUDScale=" << g_alpine_game_config.ammo_hud_scale << "\n";
+    file << "PowerupHUDScale=" << g_alpine_game_config.powerup_hud_scale << "\n";
+    file << "WeaponSelectHUDScale=" << g_alpine_game_config.weaponselect_hud_scale << "\n";
     
     // Save HUD offsets (only if they're set to non-default values)
     if (g_alpine_game_config.health_hud_offset.x != -1) {
@@ -911,6 +939,18 @@ void alpine_player_settings_save(rf::Player* player)
     }
     if (g_alpine_game_config.ping_hud_offset.y != -1) {
         file << "PingHUDOffsetY=" << g_alpine_game_config.ping_hud_offset.y << "\n";
+    }
+    if (g_alpine_game_config.powerup_hud_offset.x != -1) {
+        file << "PowerupHUDOffsetX=" << g_alpine_game_config.powerup_hud_offset.x << "\n";
+    }
+    if (g_alpine_game_config.powerup_hud_offset.y != -1) {
+        file << "PowerupHUDOffsetY=" << g_alpine_game_config.powerup_hud_offset.y << "\n";
+    }
+    if (g_alpine_game_config.weaponselect_hud_offset.x != -1) {
+        file << "WeaponSelectHUDOffsetX=" << g_alpine_game_config.weaponselect_hud_offset.x << "\n";
+    }
+    if (g_alpine_game_config.weaponselect_hud_offset.y != -1) {
+        file << "WeaponSelectHUDOffsetY=" << g_alpine_game_config.weaponselect_hud_offset.y << "\n";
     }
     
     // Save font sizes

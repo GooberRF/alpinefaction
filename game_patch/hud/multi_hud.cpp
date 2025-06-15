@@ -520,10 +520,21 @@ CallHook<void(int, int, int, rf::gr::Mode)> hud_render_power_ups_gr_bitmap_hook{
         0x0047FFFD,
     },
     [](int bm_handle, int x, int y, rf::gr::Mode mode) {
-        float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
+        float base_scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
+        float scale = base_scale * g_alpine_game_config.powerup_hud_scale;
+        
         x = hud_transform_value(x, 640, rf::gr::clip_width());
         x = hud_scale_value(x, rf::gr::clip_width(), scale);
         y = hud_scale_value(y, rf::gr::clip_height(), scale);
+        
+        // Apply custom powerup offset if specified
+        if (g_alpine_game_config.powerup_hud_offset.x != -1) {
+            x = g_alpine_game_config.powerup_hud_offset.x;
+        }
+        if (g_alpine_game_config.powerup_hud_offset.y != -1) {
+            y = g_alpine_game_config.powerup_hud_offset.y;
+        }
+        
         hud_scaled_bitmap(bm_handle, x, y, scale, mode);
     },
 };

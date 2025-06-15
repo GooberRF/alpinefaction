@@ -64,6 +64,18 @@ struct AlpineGameSettings
         ammo_hud_scale = std::clamp(scale, min_hud_scale, max_hud_scale);
     }
 
+    float powerup_hud_scale = 1.0f;
+    void set_powerup_hud_scale(float scale)
+    {
+        powerup_hud_scale = std::clamp(scale, min_hud_scale, max_hud_scale);
+    }
+
+    float weaponselect_hud_scale = 1.0f;
+    void set_weaponselect_hud_scale(float scale)
+    {
+        weaponselect_hud_scale = std::clamp(scale, min_hud_scale, max_hud_scale);
+    }
+
     float level_sound_volume = 1.0f;
     void set_level_sound_volume(float scale)
     {
@@ -201,6 +213,8 @@ struct AlpineGameSettings
     HudOffset fps_hud_offset;
     HudOffset ping_hud_offset;
     HudOffset weapon_bar_hud_offset;
+    HudOffset powerup_hud_offset;
+    HudOffset weaponselect_hud_offset;
 
     // Font sizes for different HUD elements (in points)
     // Default values will be set to match current TTF font sizes

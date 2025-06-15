@@ -283,12 +283,30 @@ ConsoleCommand2 ui_hudscale_cmd{
             }
             rf::console::print("Ammo HUD scale: {:.2f}", g_alpine_game_config.ammo_hud_scale);
         }
+        else if (element == "powerup") {
+            if (scale_opt) {
+                g_alpine_game_config.set_powerup_hud_scale(scale_opt.value());
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Powerup HUD scale: {:.2f}", g_alpine_game_config.powerup_hud_scale);
+        }
+        else if (element == "weaponselect") {
+            if (scale_opt) {
+                g_alpine_game_config.set_weaponselect_hud_scale(scale_opt.value());
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Weapon selection HUD scale: {:.2f}", g_alpine_game_config.weaponselect_hud_scale);
+        }
         else {
-            rf::console::print("Invalid element '{}'. Valid elements: health, ammo", element);
+            rf::console::print("Invalid element '{}'. Valid elements: health, ammo, powerup, weaponselect", element);
             rf::console::print("Usage: ui_hudscale <element> <multiplier>");
         }
     },
-    "Scale HUD elements. Valid elements: health (health & armor icons), ammo (ammo bar and icons)",
+    "Scale HUD elements. Valid elements: health (health & armor icons), ammo (ammo bar and icons), powerup (powerup bar), weaponselect (weapon selection bar)",
     "ui_hudscale <element> <multiplier>",
 };
 
@@ -337,13 +355,19 @@ ConsoleCommand2 ui_hudoffset_cmd{
         else if (element == "weaponbar") {
             apply_offset(g_alpine_game_config.weapon_bar_hud_offset, "Weapon bar");
         }
+        else if (element == "powerup") {
+            apply_offset(g_alpine_game_config.powerup_hud_offset, "Powerup");
+        }
+        else if (element == "weaponselect") {
+            apply_offset(g_alpine_game_config.weaponselect_hud_offset, "Weapon selection");
+        }
         else {
-            rf::console::print("Invalid element '{}'. Valid elements: health, ammo, timer, fps, ping, weaponbar", element);
+            rf::console::print("Invalid element '{}'. Valid elements: health, ammo, timer, fps, ping, weaponbar, powerup, weaponselect", element);
             rf::console::print("Usage: ui_hudoffset <element> <X> <Y>");
             rf::console::print("Use -1 for X or Y to keep default positioning for that axis");
         }
     },
-    "Set HUD element positions. Valid elements: health, ammo, timer, fps, ping, weaponbar",
+    "Set HUD element positions. Valid elements: health, ammo, timer, fps, ping, weaponbar, powerup, weaponselect",
     "ui_hudoffset <element> <X> <Y>",
 };
 
