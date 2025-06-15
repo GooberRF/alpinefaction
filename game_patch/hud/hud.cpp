@@ -354,15 +354,7 @@ ConsoleCommand2 ui_fontsize_cmd{
             }
             rf::console::print("Chat font size: {}", g_alpine_game_config.chat_font_size);
         }
-        else if (element == "console") {
-            if (size_opt) {
-                g_alpine_game_config.console_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
-            }
-            rf::console::print("Console font size: {}", g_alpine_game_config.console_font_size);
-        }
+
         else if (element == "scoreboard") {
             if (size_opt) {
                 g_alpine_game_config.scoreboard_font_size = std::clamp(size_opt.value(), 8, 72);
@@ -430,12 +422,12 @@ ConsoleCommand2 ui_fontsize_cmd{
             rf::console::print("HUD messages font size: {}", g_alpine_game_config.hud_messages_font_size);
         }
         else {
-            rf::console::print("Invalid element '{}'. Valid elements: chat, console, scoreboard, health, ammo, timer, fps, ping, messages", element);
+            rf::console::print("Invalid element '{}'. Valid elements: chat, scoreboard, health, ammo, timer, fps, ping, messages", element);
             rf::console::print("Usage: ui_fontsize <element> <size>");
             rf::console::print("Font size range: 8-72 points");
         }
     },
-    "Set font sizes for HUD elements. Valid elements: chat, console, scoreboard, health, ammo, timer, fps, ping, messages",
+    "Set font sizes for HUD elements. Valid elements: chat, scoreboard, health, ammo, timer, fps, ping, messages",
     "ui_fontsize <element> <size>",
 };
 
@@ -825,11 +817,9 @@ int hud_get_scoreboard_font()
 int hud_get_console_font()
 {
     static int font = -2;
-    static int last_size = -1;
-    if (font == -2 || last_size != g_alpine_game_config.console_font_size) {
-        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.console_font_size);
-        font = rf::gr::load_font(font_name.c_str());
-        last_size = g_alpine_game_config.console_font_size;
+    if (font == -2) {
+        // Use legacy .vf font for console to maintain original console appearance
+        font = rf::gr::load_font("rfpc-medium.vf");
     }
     return font;
 }
