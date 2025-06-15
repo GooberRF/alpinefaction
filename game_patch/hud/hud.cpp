@@ -18,6 +18,7 @@
 #include "../rf/weapon.h"
 #include "../rf/gameseq.h"
 #include "multi_spectate.h"
+#include "hud_weapon_bar.h"
 
 int g_target_player_name_font = -1;
 
@@ -227,6 +228,7 @@ void set_big_hud(bool is_big)
 
     hud_setup_positions(rf::gr::screen_width());
     hud_weapons_set_big(is_big);
+    hud_weapon_bar_set_big(is_big);
     set_big_countdown_counter(is_big);
 
     // TODO: Message Log - Note: it remembers text height in save files so method of recalculation is needed
@@ -332,13 +334,16 @@ ConsoleCommand2 ui_hudoffset_cmd{
         else if (element == "ping") {
             apply_offset(g_alpine_game_config.ping_hud_offset, "Ping");
         }
+        else if (element == "weaponbar") {
+            apply_offset(g_alpine_game_config.weapon_bar_hud_offset, "Weapon bar");
+        }
         else {
-            rf::console::print("Invalid element '{}'. Valid elements: health, ammo, timer, fps, ping", element);
+            rf::console::print("Invalid element '{}'. Valid elements: health, ammo, timer, fps, ping, weaponbar", element);
             rf::console::print("Usage: ui_hudoffset <element> <X> <Y>");
             rf::console::print("Use -1 for X or Y to keep default positioning for that axis");
         }
     },
-    "Set HUD element positions. Valid elements: health, ammo, timer, fps, ping",
+    "Set HUD element positions. Valid elements: health, ammo, timer, fps, ping, weaponbar",
     "ui_hudoffset <element> <X> <Y>",
 };
 
@@ -421,13 +426,22 @@ ConsoleCommand2 ui_fontsize_cmd{
             }
             rf::console::print("HUD messages font size: {}", g_alpine_game_config.hud_messages_font_size);
         }
+        else if (element == "weaponbar") {
+            if (size_opt) {
+                g_alpine_game_config.weapon_bar_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Save settings to make them persistent
+                extern void alpine_player_settings_save(rf::Player* player);
+                alpine_player_settings_save(rf::local_player);
+            }
+            rf::console::print("Weapon bar font size: {}", g_alpine_game_config.weapon_bar_font_size);
+        }
         else {
-            rf::console::print("Invalid element '{}'. Valid elements: chat, scoreboard, health, ammo, timer, fps, ping, messages", element);
+            rf::console::print("Invalid element '{}'. Valid elements: chat, scoreboard, health, ammo, timer, fps, ping, messages, weaponbar", element);
             rf::console::print("Usage: ui_fontsize <element> <size>");
             rf::console::print("Font size range: 8-72 points");
         }
     },
-    "Set font sizes for HUD elements. Valid elements: chat, scoreboard, health, ammo, timer, fps, ping, messages",
+    "Set font sizes for HUD elements. Valid elements: chat, scoreboard, health, ammo, timer, fps, ping, messages, weaponbar",
     "ui_fontsize <element> <size>",
 };
 
@@ -750,6 +764,9 @@ void hud_render_00437BC0()
     // Render spectate mode UI under scoreboard
     multi_spectate_render();
 
+    // Render weapon bar
+    render_weapon_bar();
+
     auto& cc = rf::local_player->settings.controls;
     bool scoreboard_control_pressed = rf::control_config_check_pressed(&cc, rf::CC_ACTION_MP_STATS, nullptr);
     bool is_player_dead = rf::player_is_dead(rf::local_player) || rf::player_is_dying(rf::local_player);
@@ -800,6 +817,7 @@ void hud_apply_patches()
     multi_hud_apply_patches();
     message_log_apply_patch();
     hud_world_apply_patch();
+    hud_weapon_bar_apply_patches();
 }
 
 int hud_get_scoreboard_font()

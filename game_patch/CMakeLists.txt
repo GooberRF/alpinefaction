@@ -99,6 +99,8 @@ set(SRCS
     hud/hud_personas.cpp
     hud/hud_status.cpp
     hud/hud_weapons.cpp
+    hud/hud_weapon_bar.cpp
+    hud/hud_weapon_bar.h
     hud/hud_internal.h
     hud/hud.cpp
     hud/hud.h

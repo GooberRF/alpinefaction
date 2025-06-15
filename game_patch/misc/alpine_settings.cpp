@@ -430,6 +430,25 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("HUDMessagesFontSize");
     }
     
+    // Load weapon bar settings
+    if (settings.count("WeaponBarEnabled")) {
+        g_alpine_game_config.weapon_bar_enabled = std::stoi(settings["WeaponBarEnabled"]);
+        processed_keys.insert("WeaponBarEnabled");
+    }
+    if (settings.count("WeaponBarHUDOffsetX")) {
+        g_alpine_game_config.weapon_bar_hud_offset.x = std::stoi(settings["WeaponBarHUDOffsetX"]);
+        processed_keys.insert("WeaponBarHUDOffsetX");
+    }
+    if (settings.count("WeaponBarHUDOffsetY")) {
+        g_alpine_game_config.weapon_bar_hud_offset.y = std::stoi(settings["WeaponBarHUDOffsetY"]);
+        processed_keys.insert("WeaponBarHUDOffsetY");
+    }
+    if (settings.count("WeaponBarFontSize")) {
+        g_alpine_game_config.weapon_bar_font_size = std::clamp(std::stoi(settings["WeaponBarFontSize"]), 8, 72);
+        processed_keys.insert("WeaponBarFontSize");
+    }
+
+    
     // Apply HUD offsets after loading them
     extern void hud_apply_offsets();
     hud_apply_offsets();
@@ -904,6 +923,13 @@ void alpine_player_settings_save(rf::Player* player)
     file << "FPSFontSize=" << g_alpine_game_config.fps_font_size << "\n";
     file << "PingFontSize=" << g_alpine_game_config.ping_font_size << "\n";
     file << "HUDMessagesFontSize=" << g_alpine_game_config.hud_messages_font_size << "\n";
+    
+    // Save weapon bar settings
+    file << "WeaponBarEnabled=" << g_alpine_game_config.weapon_bar_enabled << "\n";
+    file << "WeaponBarHUDOffsetX=" << g_alpine_game_config.weapon_bar_hud_offset.x << "\n";
+    file << "WeaponBarHUDOffsetY=" << g_alpine_game_config.weapon_bar_hud_offset.y << "\n";
+    file << "WeaponBarFontSize=" << g_alpine_game_config.weapon_bar_font_size << "\n";
+
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
     file << "NearestTextureFiltering=" << g_alpine_game_config.nearest_texture_filtering << "\n";
