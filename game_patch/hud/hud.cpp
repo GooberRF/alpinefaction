@@ -299,12 +299,10 @@ ConsoleCommand2 ui_hudoffset_cmd{
                 offset.y = y_opt.value();
                 // Reapply HUD positions
                 hud_setup_positions(rf::gr::screen_width());
-                // Also update scaling which triggers coordinate recalculation
-                if (element == "health") {
-                    hud_status_update_scale();
-                } else if (element == "ammo") {
-                    hud_weapons_update_scale();
-                }
+                // Update scaling for ALL elements to prevent misalignment
+                // This fixes the bug where modifying one element would break ammo alignment
+                hud_status_update_scale();  // Always update health scaling
+                hud_weapons_update_scale(); // Always update ammo scaling
                 // Save settings to make them persistent
                 extern void alpine_player_settings_save(rf::Player* player);
                 alpine_player_settings_save(rf::local_player);
@@ -386,6 +384,9 @@ ConsoleCommand2 ui_fontsize_cmd{
         else if (element == "ammo") {
             if (size_opt) {
                 g_alpine_game_config.ammo_font_size = std::clamp(size_opt.value(), 8, 72);
+                // Update the ammo font with new size
+                extern void hud_weapons_update_ammo_font();
+                hud_weapons_update_ammo_font();
                 // Save settings to make them persistent
                 extern void alpine_player_settings_save(rf::Player* player);
                 alpine_player_settings_save(rf::local_player);
@@ -650,7 +651,7 @@ int hud_get_ammo_font()
     static int font = -2;
     static int last_size = -1;
     if (font == -2 || last_size != g_alpine_game_config.ammo_font_size) {
-        std::string font_name = std::format("regularfont.ttf:{}", g_alpine_game_config.ammo_font_size);
+        std::string font_name = std::format("boldfont.ttf:{}", g_alpine_game_config.ammo_font_size);
         font = rf::gr::load_font(font_name.c_str());
         last_size = g_alpine_game_config.ammo_font_size;
     }
@@ -733,6 +734,9 @@ FunHook<void()> hud_init_hook{
             if (!g_alpine_game_config.big_hud || !is_screen_resolution_too_low_for_big_hud()) {
                 set_big_hud(g_alpine_game_config.big_hud);
             }
+            // Initialize custom ammo font
+            extern void hud_weapons_update_ammo_font();
+            hud_weapons_update_ammo_font();
         }
     },
 };

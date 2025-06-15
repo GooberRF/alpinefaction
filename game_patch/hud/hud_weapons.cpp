@@ -61,23 +61,16 @@ FunHook<void(rf::Entity*, int, int, bool)> hud_render_ammo_hook{
     },
 };
 
-// Hook to ensure ammo font uses our dynamic font system
-CallHook<void(int, int, const char*, int)> hud_ammo_font_hook{
-    {
-        // Hook all gr::string calls in ammo rendering functions
-        0x0043A5F8, // hud_render_ammo_clip - first string call
-        0x0043A646, // hud_render_ammo_clip - second string call
-        0x0043A9F7, // hud_render_ammo_power - string call
-        0x0043AE8F, // hud_render_ammo_no_clip - string call
-    },
-    [](int x, int y, const char* text, int font_id) {
-        // Replace font ID with our dynamic font
-        if (font_id == rf::hud_ammo_font) {
-            font_id = hud_get_ammo_font();
+// Function to update ammo font
+void hud_weapons_update_ammo_font()
+{
+    if (!rf::is_dedicated_server) {
+        int custom_ammo_font = hud_get_ammo_font();
+        if (custom_ammo_font >= 0) {
+            rf::hud_ammo_font = custom_ammo_font;
         }
-        rf::gr::string(x, y, text, font_id);
-    },
-};
+    }
+}
 
 void hud_weapons_set_big(bool is_big)
 {
@@ -152,7 +145,6 @@ void hud_weapons_apply_patches()
     hud_render_ammo_gr_bitmap_hook.install();
     hud_render_ammo_hook.install();
     render_reticle_gr_bitmap_hook.install();
-    hud_ammo_font_hook.install();
 
     // Commands
     reticle_scale_cmd.register_cmd();

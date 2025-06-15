@@ -69,6 +69,7 @@ void hud_personas_set_big(bool is_big);
 void hud_weapons_apply_patches();
 void hud_weapons_set_big(bool is_big);
 void hud_weapons_update_scale();
+void hud_weapons_update_ammo_font();
 
 // HUD offsets
 void hud_apply_offsets();
