@@ -943,8 +943,17 @@ FunHook<void()> multi_hud_render_time_left_hook{
         }
     }
 
-    std::string time_left_string = std::format("{}{:02}:{:02}:{:02}", time_left_string_format,
-        rf::time_left_hours, rf::time_left_minutes, rf::time_left_seconds);
+    // Choose format based on minimal timer setting
+    std::string time_left_string;
+    if (g_alpine_game_config.verbose_time_left_display) {
+        // Verbose mode: show hours, minutes, seconds
+        time_left_string = std::format("{}{:02}:{:02}:{:02}", time_left_string_format,
+            rf::time_left_hours, rf::time_left_minutes, rf::time_left_seconds);
+    } else {
+        // Minimal timer mode: hide hours, show only minutes and seconds
+        time_left_string = std::format("{}{:02}:{:02}", time_left_string_format,
+            rf::time_left_minutes, rf::time_left_seconds);
+    }
 
     // set timer color, including alpha adjustment for fade in
     rf::gr::set_color(
