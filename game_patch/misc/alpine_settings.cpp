@@ -434,6 +434,10 @@ bool alpine_player_settings_load(rf::Player* player)
     extern void hud_apply_offsets();
     hud_apply_offsets();
     
+    // Update font settings after loading them
+    extern void hud_weapons_update_ammo_font();
+    hud_weapons_update_ammo_font();
+    
     // Also update scaling which will trigger coordinate recalculation if needed
     bool has_health_offset = (g_alpine_game_config.health_hud_offset.x != -1 || g_alpine_game_config.health_hud_offset.y != -1);
     bool has_ammo_offset = (g_alpine_game_config.ammo_hud_offset.x != -1 || g_alpine_game_config.ammo_hud_offset.y != -1);
