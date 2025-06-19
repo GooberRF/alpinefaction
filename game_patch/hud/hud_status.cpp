@@ -14,40 +14,8 @@
 #include <patch_common/CallHook.h>
 #include <algorithm>
 
-// Hook to ensure health/status font uses our dynamic font system
-CallHook<void(int, int, const char*, int)> hud_status_font_hook{
-    {
-        // Hook gr::string calls in health/status rendering
-        0x00439F3A, // Health text rendering
-        0x00439F7A, // Armor text rendering
-    },
-    [](int x, int y, const char* text, int font_id) {
-        // Replace font ID with our dynamic font
-        if (font_id == rf::hud_status_font) {
-            font_id = hud_get_health_font();
-        }
-        rf::gr::string(x, y, text, font_id);
-    },
-};
-
 bool g_big_health_armor_hud = false;
 float g_hud_health_scale = 1.0f;
-
-// Hook health bitmap rendering to apply scaling
-CallHook<void(int, int, int, rf::gr::Mode)> hud_render_health_gr_bitmap_hook{
-    {
-        // Health icon rendering
-        0x00439EE7,  // health bitmap render
-        0x00439F58,  // envirosuit bitmap render
-    },
-    [](int bm_handle, int x, int y, rf::gr::Mode mode) {
-        float scale = g_hud_health_scale;
-        if (g_big_health_armor_hud) {
-            scale *= 1.875f;
-        }
-        hud_scaled_bitmap(bm_handle, x, y, scale, mode);
-    },
-};
 
 FunHook<void(rf::Player*)> hud_status_render_hook{
     0x00439D80,
@@ -170,12 +138,6 @@ void hud_status_apply_patches()
 
     // Support BigHUD
     hud_status_render_hook.install();
-    
-    // Support health scaling regardless of big HUD mode
-    hud_render_health_gr_bitmap_hook.install();
-    
-    // Hook font usage to use dynamic font system
-    hud_status_font_hook.install();
 }
 
 void hud_status_set_big(bool is_big)

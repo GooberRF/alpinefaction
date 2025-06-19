@@ -204,28 +204,17 @@ ConsoleCommand2 weaponbar_cmd{
     "Toggle weapon bar display",
 };
 
-void hud_weapon_bar_update_config()
+void render_weapon_bar_external()
 {
-    // Configuration update handled automatically by settings system
+    render_weapon_bar();
 }
 
-void hud_weapon_bar_set_big(bool is_big)
+bool is_weapon_bar_enabled()
 {
-    // Big HUD scaling is handled automatically in render_weapon_bar()
+    return g_alpine_game_config.weapon_bar_enabled;
 }
 
 void hud_weapon_bar_apply_patches()
 {
     weaponbar_cmd.register_cmd();
 }
-
-// Export functions for use in other files
-extern "C" {
-    void render_weapon_bar_external() {
-        render_weapon_bar();
-    }
-    
-    bool is_weapon_bar_enabled() {
-        return g_alpine_game_config.weapon_bar_enabled;
-    }
-} 

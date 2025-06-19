@@ -228,7 +228,6 @@ void set_big_hud(bool is_big)
 
     hud_setup_positions(rf::gr::screen_width());
     hud_weapons_set_big(is_big);
-    hud_weapon_bar_set_big(is_big);
     set_big_countdown_counter(is_big);
 
     // TODO: Message Log - Note: it remembers text height in save files so method of recalculation is needed
