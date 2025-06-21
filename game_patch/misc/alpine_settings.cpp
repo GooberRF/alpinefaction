@@ -898,18 +898,31 @@ void alpine_player_settings_save(rf::Player* player)
     file << "TextureDetailLevel=" << player->settings.textures_resolution_level << "\n";
     file << "HorizontalFOV=" << g_alpine_game_config.horz_fov << "\n";
     file << "FPGunFOVScale=" << g_alpine_game_config.fpgun_fov_scale << "\n";
-    file << "BigHUD=" << g_alpine_game_config.big_hud << "\n";
     file << "DisableWeaponShake=" << g_alpine_game_config.try_disable_weapon_shake << "\n";
     file << "FullbrightCharacters=" << g_alpine_game_config.try_fullbright_characters << "\n";
     file << "DisableTextures=" << g_alpine_game_config.try_disable_textures << "\n";
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
+    file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
+    file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
+    file << "NearestTextureFiltering=" << g_alpine_game_config.nearest_texture_filtering << "\n";
+    file << "FastAnimations=" << rf::g_fast_animations << "\n";
+    file << "MonitorResolutionScale=" << g_alpine_game_config.monitor_resolution_scale << "\n";
+    file << "MaxFPS=" << g_alpine_game_config.max_fps << "\n";
+    file << "LODDistanceScale=" << g_alpine_game_config.lod_dist_scale << "\n";
+    file << "SimulationDistance=" << g_alpine_game_config.entity_sim_distance << "\n";
+    file << "FullRangeLighting=" << g_alpine_game_config.full_range_lighting << "\n";
+    file << "AlwaysClampOfficialLightmaps=" << g_alpine_game_config.always_clamp_official_lightmaps << "\n";
+
+    // HUD
+    file << "\n[HUDSettings]\n";
+    file << "BigHUD=" << g_alpine_game_config.big_hud << "\n";
     file << "ReticleScale=" << g_alpine_game_config.reticle_scale << "\n";
     file << "HealthHUDScale=" << g_alpine_game_config.health_hud_scale << "\n";
     file << "AmmoHUDScale=" << g_alpine_game_config.ammo_hud_scale << "\n";
     file << "PowerupHUDScale=" << g_alpine_game_config.powerup_hud_scale << "\n";
     file << "WeaponSelectHUDScale=" << g_alpine_game_config.weaponselect_hud_scale << "\n";
-    
-    // Save HUD offsets (only if they're set to non-default values)
+
+    // HUD offsets (only non-default values)
     if (g_alpine_game_config.health_hud_offset.x != -1) {
         file << "HealthHUDOffsetX=" << g_alpine_game_config.health_hud_offset.x << "\n";
     }
@@ -952,8 +965,8 @@ void alpine_player_settings_save(rf::Player* player)
     if (g_alpine_game_config.weaponselect_hud_offset.y != -1) {
         file << "WeaponSelectHUDOffsetY=" << g_alpine_game_config.weaponselect_hud_offset.y << "\n";
     }
-    
-    // Save font sizes
+
+    // font sizes
     file << "ChatFontSize=" << g_alpine_game_config.chat_font_size << "\n";
     file << "ConsoleFontSize=" << g_alpine_game_config.console_font_size << "\n";
     file << "ScoreboardFontSize=" << g_alpine_game_config.scoreboard_font_size << "\n";
@@ -963,23 +976,12 @@ void alpine_player_settings_save(rf::Player* player)
     file << "FPSFontSize=" << g_alpine_game_config.fps_font_size << "\n";
     file << "PingFontSize=" << g_alpine_game_config.ping_font_size << "\n";
     file << "HUDMessagesFontSize=" << g_alpine_game_config.hud_messages_font_size << "\n";
-    
-    // Save weapon bar settings
+
+    // weapon bar
     file << "WeaponBarEnabled=" << g_alpine_game_config.weapon_bar_enabled << "\n";
     file << "WeaponBarHUDOffsetX=" << g_alpine_game_config.weapon_bar_hud_offset.x << "\n";
     file << "WeaponBarHUDOffsetY=" << g_alpine_game_config.weapon_bar_hud_offset.y << "\n";
     file << "WeaponBarFontSize=" << g_alpine_game_config.weapon_bar_font_size << "\n";
-
-    file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
-    file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
-    file << "NearestTextureFiltering=" << g_alpine_game_config.nearest_texture_filtering << "\n";
-    file << "FastAnimations=" << rf::g_fast_animations << "\n";
-    file << "MonitorResolutionScale=" << g_alpine_game_config.monitor_resolution_scale << "\n";
-    file << "MaxFPS=" << g_alpine_game_config.max_fps << "\n";
-    file << "LODDistanceScale=" << g_alpine_game_config.lod_dist_scale << "\n";
-    file << "SimulationDistance=" << g_alpine_game_config.entity_sim_distance << "\n";
-    file << "FullRangeLighting=" << g_alpine_game_config.full_range_lighting << "\n";
-    file << "AlwaysClampOfficialLightmaps=" << g_alpine_game_config.always_clamp_official_lightmaps << "\n";
 
     // Singleplayer
     file << "\n[SingleplayerSettings]\n";
