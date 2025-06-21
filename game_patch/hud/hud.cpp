@@ -266,9 +266,6 @@ ConsoleCommand2 ui_hudscale_cmd{
             if (scale_opt) {
                 g_alpine_game_config.set_health_hud_scale(scale_opt.value());
                 hud_status_update_scale();
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Health HUD scale: {:.2f}", g_alpine_game_config.health_hud_scale);
         }
@@ -276,27 +273,18 @@ ConsoleCommand2 ui_hudscale_cmd{
             if (scale_opt) {
                 g_alpine_game_config.set_ammo_hud_scale(scale_opt.value());
                 hud_weapons_update_scale();
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Ammo HUD scale: {:.2f}", g_alpine_game_config.ammo_hud_scale);
         }
         else if (element == "powerup") {
             if (scale_opt) {
                 g_alpine_game_config.set_powerup_hud_scale(scale_opt.value());
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Powerup HUD scale: {:.2f}", g_alpine_game_config.powerup_hud_scale);
         }
         else if (element == "weaponselect") {
             if (scale_opt) {
                 g_alpine_game_config.set_weaponselect_hud_scale(scale_opt.value());
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Weapon selection HUD scale: {:.2f}", g_alpine_game_config.weaponselect_hud_scale);
         }
@@ -322,9 +310,6 @@ ConsoleCommand2 ui_hudoffset_cmd{
                 // This fixes the bug where modifying one element would break ammo alignment
                 hud_status_update_scale();  // Always update health scaling
                 hud_weapons_update_scale(); // Always update ammo scaling
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             
             if (offset.x == -1 && offset.y == -1) {
@@ -376,9 +361,6 @@ ConsoleCommand2 ui_fontsize_cmd{
         if (element == "chat") {
             if (size_opt) {
                 g_alpine_game_config.chat_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Chat font size: {}", g_alpine_game_config.chat_font_size);
         }
@@ -386,18 +368,12 @@ ConsoleCommand2 ui_fontsize_cmd{
         else if (element == "scoreboard") {
             if (size_opt) {
                 g_alpine_game_config.scoreboard_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Scoreboard font size: {}", g_alpine_game_config.scoreboard_font_size);
         }
         else if (element == "health") {
             if (size_opt) {
                 g_alpine_game_config.health_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Health font size: {}", g_alpine_game_config.health_font_size);
         }
@@ -407,54 +383,36 @@ ConsoleCommand2 ui_fontsize_cmd{
                 // Update the ammo font with new size
                 extern void hud_weapons_update_ammo_font();
                 hud_weapons_update_ammo_font();
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Ammo font size: {}", g_alpine_game_config.ammo_font_size);
         }
         else if (element == "timer") {
             if (size_opt) {
                 g_alpine_game_config.timer_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Timer font size: {}", g_alpine_game_config.timer_font_size);
         }
         else if (element == "fps") {
             if (size_opt) {
                 g_alpine_game_config.fps_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("FPS font size: {}", g_alpine_game_config.fps_font_size);
         }
         else if (element == "ping") {
             if (size_opt) {
                 g_alpine_game_config.ping_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Ping font size: {}", g_alpine_game_config.ping_font_size);
         }
         else if (element == "messages") {
             if (size_opt) {
                 g_alpine_game_config.hud_messages_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("HUD messages font size: {}", g_alpine_game_config.hud_messages_font_size);
         }
         else if (element == "weaponbar") {
             if (size_opt) {
                 g_alpine_game_config.weapon_bar_font_size = std::clamp(size_opt.value(), 8, 72);
-                // Save settings to make them persistent
-                extern void alpine_player_settings_save(rf::Player* player);
-                alpine_player_settings_save(rf::local_player);
             }
             rf::console::print("Weapon bar font size: {}", g_alpine_game_config.weapon_bar_font_size);
         }

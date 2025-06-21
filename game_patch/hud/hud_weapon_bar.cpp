@@ -196,9 +196,6 @@ ConsoleCommand2 weaponbar_cmd{
     "ui_weaponbar",
     []() {
         g_alpine_game_config.weapon_bar_enabled = !g_alpine_game_config.weapon_bar_enabled;
-        // Save settings to make them persistent
-        extern void alpine_player_settings_save(rf::Player* player);
-        alpine_player_settings_save(rf::local_player);
         rf::console::print("Weapon bar: {}", g_alpine_game_config.weapon_bar_enabled ? "enabled" : "disabled");
     },
     "Toggle weapon bar display",
