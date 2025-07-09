@@ -11,7 +11,6 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/MemUtils.h>
-#include <patch_common/CallHook.h>
 #include <algorithm>
 
 bool g_big_health_armor_hud = false;

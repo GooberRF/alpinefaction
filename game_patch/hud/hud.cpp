@@ -210,10 +210,10 @@ void set_big_countdown_counter(bool is_big)
     rf::hud_coords[rf::hud_countdown_timer] = hud_scale_coords(rf::hud_coords[rf::hud_countdown_timer], scale);
 }
 
-static bool is_screen_resolution_too_low_for_big_hud()
+/*static bool is_screen_resolution_too_low_for_big_hud()
 {
     return rf::gr::screen_width() < 1024 || rf::gr::screen_height() < 768;
-}
+}*/
 
 void set_big_hud(bool is_big)
 {
@@ -235,18 +235,18 @@ void set_big_hud(bool is_big)
 }
 
 ConsoleCommand2 bighud_cmd{
-    "bighud",
+    "alpinehud",
     []() {
-        if (!g_alpine_game_config.big_hud && is_screen_resolution_too_low_for_big_hud()) {
+        /* if (!g_alpine_game_config.big_hud && is_screen_resolution_too_low_for_big_hud()) {
             rf::console::print("Screen resolution is too low for big HUD!");
             return;
-        }
+        }*/
         g_alpine_game_config.big_hud = !g_alpine_game_config.big_hud;
         set_big_hud(g_alpine_game_config.big_hud);
-        rf::console::print("Big HUD is {}", g_alpine_game_config.big_hud ? "enabled" : "disabled");
+        rf::console::print("Alpine HUD is {}", g_alpine_game_config.big_hud ? "enabled" : "disabled");
     },
-    "Toggle big HUD",
-    "bighud",
+    "Toggle Alpine HUD",
+    "alpinehud",
 };
 
 ConsoleCommand2 ui_realarmor_cmd{
@@ -718,9 +718,9 @@ FunHook<void()> hud_init_hook{
         hud_init_hook.call_target();
         // Init big HUD
         if (!rf::is_dedicated_server) {
-            if (!g_alpine_game_config.big_hud || !is_screen_resolution_too_low_for_big_hud()) {
+            //if (!g_alpine_game_config.big_hud || !is_screen_resolution_too_low_for_big_hud()) {
                 set_big_hud(g_alpine_game_config.big_hud);
-            }
+            //}
             // Initialize custom ammo font
             extern void hud_weapons_update_ammo_font();
             hud_weapons_update_ammo_font();
