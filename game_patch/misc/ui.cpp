@@ -1133,7 +1133,7 @@ void alpine_options_panel_init() {
 
     // panel 1
     alpine_options_panel_checkbox_init(
-        &ao_bighud_cbox, &ao_bighud_label, &alpine_options_panel1, ao_bighud_cbox_on_click, g_alpine_game_config.big_hud, 112, 54, "Big HUD");
+        &ao_bighud_cbox, &ao_bighud_label, &alpine_options_panel1, ao_bighud_cbox_on_click, g_alpine_game_config.big_hud, 112, 54, "Alpine HUD");
     alpine_options_panel_checkbox_init(
         &ao_damagenum_cbox, &ao_damagenum_label, &alpine_options_panel1, ao_damagenum_cbox_on_click, g_alpine_game_config.world_hud_damage_numbers, 112, 84, "Hit numbers");
     alpine_options_panel_checkbox_init(
