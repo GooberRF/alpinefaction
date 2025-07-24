@@ -22,9 +22,10 @@
 #define VERSION_TYPE_REVISION  0
 #define VERSION_CODE           "Willow"
 
-// Version used for Alpine settings files
+// Version used for Alpine files
 #define AFS_VERSION            "6"      // alpine_settings.ini
-#define AFCC_VERSION           "1"     // alpine_system.ini
+#define AFCC_VERSION           "1"      // alpine_system.ini
+#define ASG_VERSION            "1"      // .asg savegame files
 
 // Increment only when absolutely necessary! Will break level compatibility for older clients.
 // Stock RF1 uses versions 156 - 200. RF2 uses version 295

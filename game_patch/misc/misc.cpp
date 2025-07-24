@@ -46,6 +46,7 @@ void game_apply_patch();
 void character_apply_patch();
 void level_apply_patch();
 void alpine_settings_apply_patch();
+void alpine_savegame_apply_patch();
 
 struct JoinMpGameData
 {
@@ -597,6 +598,7 @@ void misc_init()
     // Apply patches from other files
     achievements_apply_patch();
     alpine_settings_apply_patch();
+    alpine_savegame_apply_patch();
     apply_main_menu_patches();
     apply_save_restore_patches();
     apply_sound_patches();

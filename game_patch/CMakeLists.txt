@@ -183,6 +183,8 @@ set(SRCS
     misc/alpine_options.cpp
     misc/alpine_settings.h
     misc/alpine_settings.cpp
+    misc/alpine_savegame.h
+    misc/alpine_savegame.cpp
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp
@@ -215,6 +217,7 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
     ${CMAKE_SOURCE_DIR}/vendor/dds
+    ${CMAKE_SOURCE_DIR}/vendor/toml++
 )
 
 if(NOT MSVC)
