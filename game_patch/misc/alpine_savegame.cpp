@@ -292,11 +292,11 @@ namespace asg
         // pull in all the common fields correctly
         m.ev = make_event_base_block(e);
 
-        auto* make_invuln_event = static_cast<rf::MakeInvulnerableEvent*>(e);
+        auto* event = static_cast<rf::MakeInvulnerableEvent*>(e);
 
-        if (make_invuln_event) {            
-            m.time_left = make_invuln_event->make_invuln_timestamp.is_set() ? make_invuln_event->make_invuln_timestamp.time_until() : -1;
-            xlog::warn("event {} is a valid Make_Invulnerable event with time_left {}", make_invuln_event->uid, m.time_left);
+        if (event) {            
+            m.time_left = event->make_invuln_timestamp.is_set() ? event->make_invuln_timestamp.time_until() : -1;
+            xlog::warn("event {} is a valid Make_Invulnerable event with time_left {}", event->uid, m.time_left);
         }
         else {
             xlog::warn("event {} is NOT valid Make_Invulnerable event", e->uid);
@@ -312,15 +312,70 @@ namespace asg
         // pull in all the common fields correctly
         m.ev = make_event_base_block(e);
 
-        auto* make_invuln_event = static_cast<rf::WhenDeadEvent*>(e);
+        auto* event = static_cast<rf::WhenDeadEvent*>(e);
 
-        if (make_invuln_event) {
-            m.message_sent = make_invuln_event->message_sent ? true : false;
-            m.when_any_dead = make_invuln_event->when_any_dead ? true : false;
+        if (event) {
+            m.message_sent = event->message_sent ? true : false;
+            m.when_any_dead = event->when_any_dead ? true : false;
         }
         else {
             m.message_sent = false;
             m.when_any_dead = false;
+        }
+
+        return m;
+    }
+
+    inline SavegameEventGoalCreateDataBlock make_goal_create_event_block(rf::Event* e)
+    {
+        SavegameEventGoalCreateDataBlock m;
+        m.ev = make_event_base_block(e);
+
+        auto* event = static_cast<rf::GoalCreateEvent*>(e);
+
+        if (event) {
+            m.count = event->count ? true : false;
+        }
+        else {
+            m.count = 0;
+        }
+
+        return m;
+    }
+
+    inline SavegameEventAlarmSirenDataBlock make_alarm_siren_event_block(rf::Event* e)
+    {
+        SavegameEventAlarmSirenDataBlock m;
+        m.ev = make_event_base_block(e);
+
+        auto* event = static_cast<rf::AlarmSirenEvent*>(e);
+
+        if (event) {
+            m.alarm_siren_playing = event->alarm_siren_playing ? true : false;
+        }
+        else {
+            m.alarm_siren_playing = false;
+        }
+
+        return m;
+    }
+
+    inline SavegameEventCyclicTimerDataBlock make_cyclic_timer_event_block(rf::Event* e)
+    {
+        SavegameEventCyclicTimerDataBlock m;
+        m.ev = make_event_base_block(e);
+
+        auto* event = static_cast<rf::CyclicTimerEvent*>(e);
+
+        if (event) {
+            m.next_fire_timer = event->next_fire_timestamp.is_set() ? event->next_fire_timestamp.time_until() : -1;
+            m.send_forever = event->send_forever;
+            m.send_count = event->send_count;
+        }
+        else {
+            m.next_fire_timer = -1;
+            m.send_forever = false;
+            m.send_count = 0;
         }
 
         return m;
@@ -401,6 +456,15 @@ namespace asg
             case rf::EventType::Make_Invulnerable:
                 lvl->make_invulnerable_events.push_back(make_invulnerable_event_block(e));
                 break;
+            case rf::EventType::Goal_Create:
+                lvl->goal_create_events.push_back(make_goal_create_event_block(e));
+                break;
+            case rf::EventType::Alarm_Siren:
+                lvl->alarm_siren_events.push_back(make_alarm_siren_event_block(e));
+                break;
+            case rf::EventType::Cyclic_Timer:
+                lvl->cyclic_timer_events.push_back(make_cyclic_timer_event_block(e));
+                break;
             default: // other events saved when they have a queued message
                 if (e->delay_timestamp.is_set()) {
                     lvl->other_events.push_back(make_event_base_block(e));
@@ -410,6 +474,9 @@ namespace asg
         }
         xlog::warn("[ASG]       got {} When_Dead events for level '{}'", int(lvl->when_dead_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Make_Invulnerable events for level '{}'", int(lvl->make_invulnerable_events.size()), lvl->header.filename);
+        xlog::warn("[ASG]       got {} Goal_Create events for level '{}'", int(lvl->goal_create_events.size()), lvl->header.filename);
+        xlog::warn("[ASG]       got {} Alarm_Siren events for level '{}'", int(lvl->alarm_siren_events.size()), lvl->header.filename);
+        xlog::warn("[ASG]       got {} Cyclic_Timer events for level '{}'", int(lvl->cyclic_timer_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Generic events for level '{}'", int(lvl->other_events.size()), lvl->header.filename);
     }
 
@@ -469,16 +536,14 @@ namespace asg
         serialize_deleted_events(data->deleted_event_uids);
 
         // persistent goals
-        xlog::warn("[ASG]     populating persistent goals for level '{}'", data->header.filename);
         data->persistent_goals.clear();
-        serialize_all_persistent_goals(data->persistent_goals);
-        xlog::warn("[ASG]       got {} persistent goals for level '{}'", int(data->persistent_goals.size()), data->header.filename);
-
-        if (rf::sr::g_disable_saving_persistent_goals) {
-            data->persistent_goals.clear();
+        if (!rf::sr::g_disable_saving_persistent_goals) {
+            xlog::warn("[ASG]     populating persistent goals for level '{}'", data->header.filename);
+            serialize_all_persistent_goals(data->persistent_goals);
+            xlog::warn("[ASG]       got {} persistent goals for level '{}'", int(data->persistent_goals.size()), data->header.filename);
         }
         else {
-
+            xlog::warn("[ASG]     skipping population of persistent goals for level '{}'", data->header.filename);
         }
 
         // geo craters
@@ -814,6 +879,32 @@ static toml::table make_when_dead_event_table(const asg::SavegameEventWhenDeadDa
     return t;
 }
 
+static toml::table make_goal_create_table(asg::SavegameEventGoalCreateDataBlock const& ev)
+{
+    toml::table t = make_event_table(ev.ev);
+
+    t.insert("count", ev.count);
+    return t;
+}
+
+static toml::table make_alarm_siren_table(asg::SavegameEventAlarmSirenDataBlock const& ev)
+{
+    toml::table t = make_event_table(ev.ev);
+
+    t.insert("alarm_siren_playing", ev.alarm_siren_playing);
+    return t;
+}
+
+static toml::table make_cyclic_timer_table(asg::SavegameEventCyclicTimerDataBlock const& ev)
+{
+    toml::table t = make_event_table(ev.ev);
+
+    t.insert("next_fire_timer", ev.next_fire_timer);
+    t.insert("send_count", ev.send_count);
+    t.insert("send_forever", ev.send_forever);
+    return t;
+}
+
 static toml::table make_geomod_crater_table(const rf::GeomodCraterData& c)
 {
     toml::table ct;
@@ -889,6 +980,24 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
             wd_arr.push_back(make_when_dead_event_table(wdev));
         }
         lt.insert("events_when_dead", std::move(wd_arr));
+
+        toml::array gc_arr;
+        for (auto const& gcev : lvl.goal_create_events) {
+            gc_arr.push_back(make_goal_create_table(gcev));
+        }
+        lt.insert("events_goal_create", std::move(gc_arr));
+
+        toml::array as_arr;
+        for (auto const& asev : lvl.alarm_siren_events) {
+            as_arr.push_back(make_alarm_siren_table(asev));
+        }
+        lt.insert("events_alarm_siren", std::move(as_arr));
+
+        toml::array ct_arr;
+        for (auto const& ctev : lvl.cyclic_timer_events) {
+            ct_arr.push_back(make_cyclic_timer_table(ctev));
+        }
+        lt.insert("events_cyclic_timer", std::move(ct_arr));
 
         toml::array del_arr;
         for (int uid : lvl.deleted_event_uids) {

@@ -178,7 +178,33 @@ namespace rf
     {
         char message_sent;
         char when_any_dead;
-        char padding_byte;
+        char padding1;
+    };
+
+    struct GoalCreateEvent : Event
+    {
+        int initial_count;
+        int complete_count; // unused
+        int count;
+        char is_persistent;
+    };
+
+    struct AlarmSirenEvent : Event
+    {
+        char alarm_siren_playing;
+        char padding1;
+        char padding2;
+        bool sound_instance;
+    };
+
+    struct CyclicTimerEvent : Event // not confident
+    {
+        bool send_forever;
+        int max_sends;
+        int unk1;
+        int unk2;
+        Timestamp next_fire_timestamp;
+        int send_count;
     };
 
     struct PersistentGoalEvent

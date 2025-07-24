@@ -209,6 +209,26 @@ namespace asg
         bool when_any_dead;
     };
 
+    struct SavegameEventGoalCreateDataBlock
+    {
+        SavegameEventDataBlock ev;
+        int count;
+    };
+
+    struct SavegameEventAlarmSirenDataBlock
+    {
+        SavegameEventDataBlock ev;
+        bool alarm_siren_playing;
+    };
+
+    struct SavegameEventCyclicTimerDataBlock // not confident
+    {
+        SavegameEventDataBlock ev;
+        bool send_forever;
+        int next_fire_timer;
+        int send_count;
+    };
+
     struct SavegameLevelDataHeader
     {
         std::string filename;
@@ -238,6 +258,9 @@ namespace asg
         std::vector<SavegameEventDataBlock> other_events;
         std::vector<SavegameEventMakeInvulnerableDataBlock> make_invulnerable_events;
         std::vector<SavegameEventWhenDeadDataBlock> when_dead_events;
+        std::vector<SavegameEventGoalCreateDataBlock> goal_create_events;
+        std::vector<SavegameEventAlarmSirenDataBlock> alarm_siren_events;
+        std::vector<SavegameEventCyclicTimerDataBlock> cyclic_timer_events;
     };
 
     struct SavegameData
