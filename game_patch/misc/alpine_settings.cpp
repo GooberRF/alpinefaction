@@ -405,6 +405,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.static_bomb_code = std::stoi(settings["StaticBombCode"]);
         processed_keys.insert("StaticBombCode");
     }
+    if (settings.count("UseAlpineSavegameFormat")) {
+        g_alpine_game_config.use_new_savegame_format = std::stoi(settings["UseAlpineSavegameFormat"]);
+        processed_keys.insert("UseAlpineSavegameFormat");
+    }
 
     // Load multiplayer settings
     if (settings.count("MultiplayerCharacter")) {
@@ -763,6 +767,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableAllCameraShake=" << g_alpine_game_config.screen_shake_force_off << "\n";
     file << "Autosave=" << g_alpine_game_config.autosave << "\n";
     file << "StaticBombCode=" << g_alpine_game_config.static_bomb_code << "\n";
+    file << "UseAlpineSavegameFormat=" << g_alpine_game_config.use_new_savegame_format << "\n";
 
     // Multiplayer
     file << "\n[MultiplayerSettings]\n";

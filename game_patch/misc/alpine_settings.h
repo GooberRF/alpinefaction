@@ -117,6 +117,7 @@ struct AlpineGameSettings
     bool direct_input = true;
     bool scoreboard_anim = true;
     bool autosave = true;
+    bool use_new_savegame_format = true;
     bool af_branding = true;
     bool player_join_beep = false;
     bool full_range_lighting = true;

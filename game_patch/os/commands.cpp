@@ -352,6 +352,16 @@ ConsoleCommand2 autosave_cmd{
     "Toggle autosave",
 };
 
+ConsoleCommand2 new_savegame_format_cmd{
+    "sp_saveformatwrite",
+    []() {
+        g_alpine_game_config.use_new_savegame_format = !g_alpine_game_config.use_new_savegame_format;
+        rf::console::print("Savegame files will be written using the {} format",
+            g_alpine_game_config.use_new_savegame_format ? "modern (.asg)" : "legacy (.svl)");
+    },
+    "Toggle between writing savegame files using the modern (.asg) or legacy (.svl) format",
+};
+
 ConsoleCommand2 pcollide_cmd{
     "pcollide",
     []() {
@@ -571,6 +581,7 @@ void console_commands_init()
     server_rcon_password_cmd.register_cmd();
     verify_level_cmd_hook.install();
     autosave_cmd.register_cmd();
+    new_savegame_format_cmd.register_cmd();
 
     // Hooks for builtin commands
     camera1_cmd_hook.install();
