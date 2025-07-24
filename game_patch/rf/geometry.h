@@ -3,6 +3,7 @@
 #include "math/vector.h"
 #include "math/matrix.h"
 #include "math/plane.h"
+#include "math/quaternion.h"
 #include "os/array.h"
 #include "os/string.h"
 #include "os/linklist.h"
@@ -137,6 +138,18 @@ namespace rf
         }
     };
     static_assert(sizeof(GSolid) == 0x378);
+
+    struct GeomodCraterData
+    {
+        int16_t shape_index;
+        int16_t flags;
+        int32_t room_index;
+        ShortVector pos;
+        ShortVector hit_normal;
+        ShortQuat orient;
+        float scale;
+    };
+    static_assert(sizeof(GeomodCraterData) == 0x20);
 
     struct GRoom
     {
@@ -480,6 +493,10 @@ namespace rf
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);
 
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
+
+    static auto& world_solid = addr_as_ref<GSolid*>(0x006460E8);
+    static auto& num_geomods_this_level = *reinterpret_cast<int*>(0x00647C9C);
+    static auto* geomods_this_level = reinterpret_cast<rf::GeomodCraterData*>(0x00648600);
 
     static auto& bbox_intersect = addr_as_ref<bool(const Vector3& bbox1_min, const Vector3& bbox1_max, const Vector3& bbox2_min, const Vector3& bbox2_max)>(0x0046C340);
 }

@@ -69,8 +69,6 @@ namespace rf
         static std::unordered_map<const Event*, std::unordered_map<rf::SetVarOpts, std::function<void(Event*, const std::string&)>>>
             variable_handler_storage;
 
-
-
         // register variable handlers (AF new) plus default event initialization (does nothing)
         // safe to override, but include call to base struct initialize for var handler registration
         virtual void initialize()
@@ -161,8 +159,6 @@ namespace rf
                 xlog::warn("apply_var: No handlers registered for Event");
             }
         }
-
-
     };
     static_assert(sizeof(Event) == 0x2B8); // 0x2B5 in original code
 
@@ -171,6 +167,19 @@ namespace rf
         char event_specific_data[24];
     };
     static_assert(sizeof(GenericEvent) == 0x2D0);
+
+    struct MakeInvulnerableEvent : Event
+    {
+        float duration;
+        Timestamp make_invuln_timestamp;
+    };
+
+    struct WhenDeadEvent : Event
+    {
+        char message_sent;
+        char when_any_dead;
+        char padding_byte;
+    };
 
     struct PersistentGoalEvent
     {

@@ -57,8 +57,19 @@ namespace rf::sr {
     };
     static_assert(sizeof(LevelData) == 0x18720);
 
+    struct LoggedHudMessage
+    {
+        char message[256];
+        int time_string;
+        int16_t persona_index;
+        int16_t display_height;
+    };
+    static_assert(sizeof(LoggedHudMessage) == 0x108);
+
     static auto& save_game = addr_as_ref<bool(const char *filename, Player *pp)>(0x004B3B30);
     static auto& can_save_now = addr_as_ref<bool()>(0x004B61A0);
+    static bool& g_should_save_deleted_events = *reinterpret_cast<bool*>(0x00856501);
+    static bool& g_disable_saving_persistent_goals = *reinterpret_cast<bool*>(0x008548E0);
 
     static auto& savegame_path = addr_as_ref<char[260]>(0x007DB3EC);
 }
