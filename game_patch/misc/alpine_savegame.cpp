@@ -40,6 +40,9 @@ static std::vector<int> g_deleted_event_uids;
 // global buffer for persistent goals, replacement for g_persistent_goal_events and g_num_persistent_goal_events
 static std::vector<rf::PersistentGoalEvent> g_persistent_goals;
 
+// global buffer for deleted detail rooms, replacement for glass_deleted_rooms and num_killed_glass_room_uids
+static std::vector<rf::GRoom*> g_deleted_rooms;
+
 namespace asg
 {
     // Look up an object by handle and return its uid, or –1 if not found
@@ -299,7 +302,6 @@ namespace asg
             xlog::warn("event {} is a valid Make_Invulnerable event with time_left {}", event->uid, m.time_left);
         }
         else {
-            xlog::warn("event {} is NOT valid Make_Invulnerable event", e->uid);
             m.time_left = -1;
         }
 
@@ -416,7 +418,8 @@ namespace asg
             e != &rf::entity_list;
             e = e->next)
         {
-            // todo: skip dead or hidden?
+            // todo: skip dead? need to investigate stock game behaviour to match
+            // stock game omits bats and fish, would be good to have that mapper-configurable for optimization
             if (e) {
                 xlog::warn("[ASG]   serializing entity {}", e->uid);
                 out.push_back(make_entity_block(e));
@@ -1299,6 +1302,50 @@ CodeInjection event_clear_persistent_goal_events_injection{
     },
 };
 
+CodeInjection glass_face_can_be_destroyed_injection{
+    0x00490BE4,
+    [](auto& regs) {
+
+        rf::GFace* f = regs.esi;
+        auto room = f->which_room;
+
+        auto it = std::find(g_deleted_rooms.begin(), g_deleted_rooms.end(), room);
+        if (it == g_deleted_rooms.end()) {
+            g_deleted_rooms.push_back(room);
+            //xlog::warn("deleting room {}", room->uid);
+        }
+        else {
+            xlog::warn("already dead {}", room->uid);
+            regs.eip = 0x00490BE0; // if room is already deleted, don't delete it again
+        }
+    },
+};
+
+CodeInjection glass_shard_level_init_injection{
+    0x00491064,
+    []() {
+        g_deleted_rooms.clear();
+    },
+};
+
+FunHook<void()> glass_delete_rooms_hook{
+    0x004921A0,
+    []() {
+        if (g_alpine_game_config.use_new_savegame_format) {
+            if (!rf::g_boolean_is_in_progress()) {
+                for (auto room : g_deleted_rooms) {
+                    //xlog::warn("killing room {}", room->uid);
+                    rf::glass_delete_room(room);
+                }
+                g_deleted_rooms.clear();
+            }
+        }
+        else {
+            glass_delete_rooms_hook.call_target();
+        }
+    }
+};
+
 void alpine_savegame_apply_patch()
 {
     sr_save_game_hook.install();
@@ -1316,4 +1363,9 @@ void alpine_savegame_apply_patch()
     event_lookup_persistent_goal_event_hook.install();
     event_add_persistent_goal_event_hook.install();
     event_clear_persistent_goal_events_injection.install();
+
+    // handle new array for deleted rooms
+    glass_face_can_be_destroyed_injection.install();
+    glass_shard_level_init_injection.install();
+    glass_delete_rooms_hook.install();
 }

@@ -500,6 +500,8 @@ namespace rf
     static auto& world_solid = addr_as_ref<GSolid*>(0x006460E8);
     static auto& num_geomods_this_level = *reinterpret_cast<int*>(0x00647C9C);
     static auto* geomods_this_level = reinterpret_cast<rf::GeomodCraterData*>(0x00648600);
+    static auto& g_boolean_is_in_progress = addr_as_ref<bool()>(0x004DBC40);
+    static auto& glass_delete_room = addr_as_ref<void(rf::GRoom* room)>(0x004921F0);
 
     static auto& bbox_intersect = addr_as_ref<bool(const Vector3& bbox1_min, const Vector3& bbox1_max, const Vector3& bbox2_min, const Vector3& bbox2_max)>(0x0046C340);
 }
