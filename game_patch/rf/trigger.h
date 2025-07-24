@@ -36,6 +36,8 @@ namespace rf
     };
     static_assert(sizeof(Trigger) == 0x30C);
 
+    static auto& trigger_list = addr_as_ref<Trigger>(0x00856520);
+
     static auto& trigger_inside_bounding_box = addr_as_ref<bool(Trigger*, Object*)>(0x004C0A80);
     static auto& trigger_inside_bounding_sphere = addr_as_ref<bool(Trigger*, Object*)>(0x004BF620);
     static auto& trigger_enable = addr_as_ref<void(Trigger*)>(0x004C0200);
