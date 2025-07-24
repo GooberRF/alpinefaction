@@ -362,6 +362,7 @@ namespace rf
         GRoom *room2;
         GSolid *solid;
         ubyte alpha;
+        char padding[3];
         int flags;
         int object_handle;
         float tiling_scale;
@@ -491,6 +492,8 @@ namespace rf
 
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);
+
+    static auto& g_decal_get_list = addr_as_ref<void(GDecal** decal_list, int *out_num)>(0x004D7640);
 
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
 

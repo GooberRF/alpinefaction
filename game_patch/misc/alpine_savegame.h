@@ -242,6 +242,17 @@ namespace asg
         int count;
     };
 
+    struct SavegameLevelDecalDataBlock
+    {
+        rf::Vector3 pos;
+        rf::Matrix3 orient;
+        rf::Vector3 width;
+        uint32_t flags;
+        uint8_t alpha;
+        float tiling_scale;
+        std::string bitmap_filename;
+    };
+
     struct SavegameLevelData
     {
         SavegameLevelDataHeader header;
@@ -260,6 +271,7 @@ namespace asg
         std::vector<SavegameEventGoalCreateDataBlock> goal_create_events;
         std::vector<SavegameEventAlarmSirenDataBlock> alarm_siren_events;
         std::vector<SavegameEventCyclicTimerDataBlock> cyclic_timer_events;
+        std::vector<SavegameLevelDecalDataBlock> decals;
     };
 
     struct SavegameData

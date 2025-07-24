@@ -393,6 +393,21 @@ namespace asg
         return m;
     }
 
+    static SavegameLevelDecalDataBlock make_decal_block(rf::GDecal* d)
+    {
+        SavegameLevelDecalDataBlock b;
+        b.pos = d->pos;
+        b.orient = d->orient;
+        b.width = d->width;
+        b.flags = d->flags;
+        b.alpha = d->alpha;
+        //b.tiling_scale = d->tiling_scale;
+        b.tiling_scale = 1.0f; //todo: come back to this, may be wrong
+        b.bitmap_filename = rf::bm::get_filename(d->bitmap_id);
+
+        return b;
+    }
+
     // serialize all entities into the given vector
     inline void serialize_all_entities(std::vector<SavegameEntityDataBlock>& out)
     {
@@ -511,6 +526,24 @@ namespace asg
         }
     }
 
+    static void serialize_all_decals(std::vector<SavegameLevelDecalDataBlock>& out)
+    {
+        out.clear();
+        rf::GDecal* list;
+        int num;
+        rf::g_decal_get_list(&list, &num);
+        if (!list)
+            return;
+
+        rf::GDecal* cur = list;
+        do {
+            if ((cur->flags & 1) == 0 && cur->bitmap_id > 0 && (cur->flags & 0x400) == 0) {
+                out.push_back(make_decal_block(cur));
+            }
+            cur = cur->next;
+        } while (cur && cur != list);
+    }
+
     void serialize_all_objects(SavegameLevelData* data)
     {
         // entities
@@ -557,6 +590,12 @@ namespace asg
         else {
             xlog::warn("[ASG]     skipping population of persistent goals for level '{}'", data->header.filename);
         }
+
+        // decals
+        xlog::warn("[ASG]     populating decals for level '{}'", data->header.filename);
+        data->decals.clear();
+        serialize_all_decals(data->decals);
+        xlog::warn("[ASG]       got {} decals for level '{}'", int(data->decals.size()), data->header.filename);
 
         // geo craters
         int n = rf::num_geomods_this_level;
@@ -944,6 +983,22 @@ static toml::table make_persistent_goal_table(const asg::SavegameLevelPersistent
     return t;
 }
 
+static toml::table make_decal_table(const asg::SavegameLevelDecalDataBlock& d)
+{
+    toml::table t;
+    t.insert("pos", toml::array{d.pos.x, d.pos.y, d.pos.z});
+    toml::array orient;
+    for (auto const& row : {d.orient.rvec, d.orient.uvec, d.orient.fvec})
+        orient.push_back(toml::array{row.x, row.y, row.z});
+    t.insert("orient", std::move(orient));
+    t.insert("width", toml::array{d.width.x, d.width.y, d.width.z});
+    t.insert("bitmap_filename", d.bitmap_filename);
+    t.insert("flags", d.flags);
+    t.insert("alpha", d.alpha);
+    t.insert("tiling_scale", d.tiling_scale);
+    return t;
+}
+
 bool serialize_savegame_to_asg_file(const std::string& filename, const asg::SavegameData& d)
 {
     toml::table root;
@@ -1009,6 +1064,12 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
             ct_arr.push_back(make_cyclic_timer_table(ctev));
         }
         lt.insert("events_cyclic_timer", std::move(ct_arr));
+
+        toml::array decal_arr;
+        for (auto const& dec : lvl.decals) {
+            decal_arr.push_back(make_decal_table(dec));
+        }
+        lt.insert("decals", std::move(decal_arr));
 
         toml::array del_arr;
         for (int uid : lvl.deleted_event_uids) {
