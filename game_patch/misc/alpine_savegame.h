@@ -221,10 +221,9 @@ namespace asg
         bool alarm_siren_playing;
     };
 
-    struct SavegameEventCyclicTimerDataBlock // not confident
+    struct SavegameEventCyclicTimerDataBlock // not too concerned with what stock game saved (formatted very weird), saving what we know we need
     {
         SavegameEventDataBlock ev;
-        bool send_forever;
         int next_fire_timer;
         int send_count;
     };

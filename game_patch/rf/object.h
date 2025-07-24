@@ -65,7 +65,7 @@ namespace rf
         OBJ_FRIENDLY = 0x2,
         OBJ_OUTCAST = 0x3,
     };
-
+#pragma pack(push, 1)
     struct Object
     {
         GRoom *room;
@@ -76,6 +76,7 @@ namespace rf
         int uid;
         ObjectType type;
         ubyte team;
+        char padding[3];
         int handle;
         int parent_handle;
         float life;
@@ -99,6 +100,7 @@ namespace rf
         int *emitter_list_head;
         int root_bone_index;
         char killer_netid;
+        char padding2[3];
         int server_handle;
         ObjInterp* obj_interp;
         void* mesh_lighting_data;
@@ -109,6 +111,7 @@ namespace rf
             AddrCaller{0x0048A230}.this_call(this, new_pos);
         }
     };
+#pragma pack(pop)
     static_assert(sizeof(Object) == 0x28C);
 
     struct ObjectCreateInfo

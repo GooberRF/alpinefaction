@@ -369,12 +369,24 @@ namespace asg
 
         if (event) {
             m.next_fire_timer = event->next_fire_timestamp.is_set() ? event->next_fire_timestamp.time_until() : -1;
-            m.send_forever = event->send_forever;
             m.send_count = event->send_count;
+
+            // keeping the below around for later debugging - prints next 48 bytes after base event props
+            /*
+            auto* start = reinterpret_cast<uint8_t*>(event) + 693;
+            // print the pointer itself in hex
+            xlog::warn("[ASG] ---- CyclicTimerEvent @ {0:#x} ----", reinterpret_cast<uintptr_t>(event));
+
+            for (int i = 0; i < 48; ++i) {
+                // index in 2-digit decimal, byte in 0xHH hex
+                xlog::warn("[ASG] +{0:02d} = {1:#04x}", i, start[i]);
+            }
+            */
+            xlog::warn("event {} is a valid Cyclic_Timer event with next_fire_timer {}, send_count {}, send_seconds {}",
+                       event->uid, m.next_fire_timer, m.send_count, event->send_interval_seconds);
         }
         else {
             m.next_fire_timer = -1;
-            m.send_forever = false;
             m.send_count = 0;
         }
 
@@ -901,7 +913,6 @@ static toml::table make_cyclic_timer_table(asg::SavegameEventCyclicTimerDataBloc
 
     t.insert("next_fire_timer", ev.next_fire_timer);
     t.insert("send_count", ev.send_count);
-    t.insert("send_forever", ev.send_forever);
     return t;
 }
 

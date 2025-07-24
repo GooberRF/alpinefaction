@@ -53,7 +53,7 @@ namespace rf
         EVENT_FLAG_QUEUED = 0x2
 #endif
     };
-
+#pragma pack(push, 1)
     struct Event : Object
     {
         int event_type;
@@ -160,12 +160,15 @@ namespace rf
             }
         }
     };
-    static_assert(sizeof(Event) == 0x2B8); // 0x2B5 in original code
-
+#pragma pack(pop)
+    static_assert(sizeof(Event) == 0x2B5);
+#pragma pack(push, 1)
     struct GenericEvent : Event
     {
         char event_specific_data[24];
+        char padding[3];
     };
+#pragma pack(pop)
     static_assert(sizeof(GenericEvent) == 0x2D0);
 
     struct MakeInvulnerableEvent : Event
@@ -196,17 +199,24 @@ namespace rf
         char padding2;
         bool sound_instance;
     };
-
-    struct CyclicTimerEvent : Event // not confident
+#pragma pack(push, 1)
+    struct CyclicTimerEvent : Event // wip
     {
-        bool send_forever;
-        int max_sends;
-        int unk1;
-        int unk2;
-        Timestamp next_fire_timestamp;
-        int send_count;
+        char padding[2]; // no idea but always 0 so assuming padding
+        uint8_t unk0; // no idea, usually 0 but sometimes 0x80 or 0xFF (l17s1)
+        uint8_t unk1; // no idea, usually 0 but sometimes 0xFF
+        uint8_t unk2; // no idea, usually 0 but sometimes 0xFF
+        uint8_t unk3; // no idea, usually 0 but sometimes 0xFF
+        uint8_t unk4; // no idea
+        float send_interval_seconds; // correct
+        bool send_forever; // correct
+        char padding1[2]; // no idea, but always 0 so assuming padding
+        uint8_t unk5; // no idea, usually 0 but sometimes 0x80 or 0xFF (l17s1)
+        int max_sends; // correct
+        Timestamp next_fire_timestamp; // looks correct, but continues to count down even when timer isn't active? strange...
+        int send_count; // correct
     };
-
+#pragma pack(pop)
     struct PersistentGoalEvent
     {
         rf::String name;
