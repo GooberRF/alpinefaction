@@ -33,6 +33,11 @@ namespace rf
             return AddrCaller{0x004FA460}.this_call<int>(this);
         }
 
+        [[nodiscard]] bool is_set() const
+        {
+            return AddrCaller{0x0040A0D0}.this_call<bool>(this);
+        }
+
         void invalidate()
         {
             AddrCaller{0x004FA3E0}.this_call(this);
