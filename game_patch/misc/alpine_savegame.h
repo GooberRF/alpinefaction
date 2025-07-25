@@ -281,6 +281,12 @@ namespace asg
         int stop_completely_at_keyframe;
     };
 
+    struct SavegameLevelPushRegionDataBlock
+    {
+        int uid;
+        bool active;
+    };
+
     struct SavegameLevelData
     {
         SavegameLevelDataHeader header;
@@ -303,7 +309,9 @@ namespace asg
         std::vector<SavegameLevelBoltEmitterDataBlock> bolt_emitters;
         std::vector<SavegameLevelParticleEmitterDataBlock> particle_emitters;
         std::vector<SavegameLevelKeyframeDataBlock> movers;
+        std::vector<SavegameLevelPushRegionDataBlock> push_regions;
     };
+    // maybe: lights (on/off state), 
 
     struct SavegameData
     {

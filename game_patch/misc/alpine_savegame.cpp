@@ -431,6 +431,15 @@ namespace asg
         return b;
     }
 
+    inline SavegameLevelPushRegionDataBlock make_push_region_block(rf::PushRegion* p)
+    {
+        SavegameLevelPushRegionDataBlock b{};
+        b.uid = p->uid;
+        b.active = p->is_enabled;
+
+        return b;
+    }
+
     inline SavegameLevelKeyframeDataBlock make_keyframe_block(rf::Mover* m)
     {
         SavegameLevelKeyframeDataBlock b{};
@@ -622,6 +631,18 @@ namespace asg
         }
     }
 
+    static void serialize_all_push_regions(std::vector<SavegameLevelPushRegionDataBlock>& out)
+    {
+        out.clear();
+        auto& list = rf::push_region_list;
+        size_t n = list.size();
+        for (size_t i = 0; i < n; ++i) {
+            if (auto* be = list.get(i)) {
+                out.push_back(make_push_region_block(be));
+            }
+        }
+    }
+
     inline void serialize_all_keyframes(std::vector<SavegameLevelKeyframeDataBlock>& out)
     {
         out.clear();
@@ -703,6 +724,13 @@ namespace asg
         serialize_all_particle_emitters(data->particle_emitters);
         xlog::warn("[ASG]       got {} particle emitters for level '{}'", int(data->particle_emitters.size()), data->header.filename);
 
+        // push regions
+        xlog::warn("[ASG]     populating push_regions for level '{}'", data->header.filename);
+        data->push_regions.clear();
+        serialize_all_push_regions(data->push_regions);
+        xlog::warn("[ASG]       got {} push_regions for level '{}'", int(data->push_regions.size()), data->header.filename);
+
+        // movers
         xlog::warn("[ASG]     populating movers for level '{}'", data->header.filename);
         data->movers.clear();
         serialize_all_keyframes(data->movers);
@@ -1020,6 +1048,14 @@ static toml::table make_particle_emitters_table(const asg::SavegameLevelParticle
     return t;
 }
 
+static toml::table make_push_region_table(const asg::SavegameLevelPushRegionDataBlock& b)
+{
+    toml::table t;
+    t.insert("uid", b.uid);
+    t.insert("active", b.active);
+    return t;
+}
+
 static toml::table make_event_table(const asg::SavegameEventDataBlock& ev)
 {
     toml::table t;
@@ -1229,6 +1265,10 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         toml::array pe_arr;
         for (auto const& pe : lvl.particle_emitters) pe_arr.push_back(make_particle_emitters_table(pe));
         lt.insert("particle_emitters", std::move(pe_arr));
+
+        toml::array pr_arr;
+        for (auto const& pr : lvl.push_regions) pr_arr.push_back(make_push_region_table(pr));
+        lt.insert("push_regions", std::move(pr_arr));
 
         toml::array mov_arr;
         for (auto const& mov : lvl.movers) {
