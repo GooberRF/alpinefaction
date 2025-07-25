@@ -523,6 +523,15 @@ namespace asg
         return b;
     }
 
+    static SavegameLevelBloodPoolDataBlock make_blood_pool_block(rf::EntityBloodPool* p)
+    {
+        SavegameLevelBloodPoolDataBlock b;
+        b.pos = p->pool_pos;
+        b.orient = p->pool_orient;
+        b.pool_color = p->pool_color;
+        return b;
+    }
+
     // serialize all entities into the given vector
     inline void serialize_all_entities(std::vector<SavegameEntityDataBlock>& out)
     {
@@ -742,6 +751,20 @@ namespace asg
         }
     }
 
+    static void serialize_all_blood_pools(std::vector<SavegameLevelBloodPoolDataBlock>& out)
+    {
+        out.clear();
+        rf::EntityBloodPool* head = rf::g_blood_used_list;
+        if (!head)
+            return;
+
+        rf::EntityBloodPool* cur = head;
+        do {
+            out.push_back(make_blood_pool_block(cur));
+            cur = cur->next;
+        } while (cur && cur != head);
+    }
+
     void serialize_all_objects(SavegameLevelData* data)
     {
         // entities
@@ -836,6 +859,12 @@ namespace asg
         data->corpses.clear();
         serialize_all_corpses(data->corpses);
         xlog::warn("[ASG]       got {} corpses for level '{}'", int(data->corpses.size()), data->header.filename);
+
+        // blood pools
+        xlog::warn("[ASG]     populating blood pools for level '{}'", data->header.filename);
+        data->blood_pools.clear();
+        serialize_all_blood_pools(data->blood_pools);
+        xlog::warn("[ASG]       got {} blood pools for level '{}'", int(data->blood_pools.size()), data->header.filename);
 
         // geo craters
         int n = rf::num_geomods_this_level;
@@ -1353,6 +1382,22 @@ static toml::table make_corpse_table(const asg::SavegameLevelCorpseDataBlock& c)
     return t;
 }
 
+static toml::table make_blood_pool_table(const asg::SavegameLevelBloodPoolDataBlock& b)
+{
+    toml::table t;
+    t.insert("pos", toml::array{b.pos.x, b.pos.y, b.pos.z});
+    toml::array ori;
+    for (auto const& row : {b.orient.rvec, b.orient.uvec, b.orient.fvec})
+        ori.push_back(toml::array{row.x, row.y, row.z});
+    t.insert("orient", std::move(ori));
+
+    // RGBA as array
+    toml::array col{b.pool_color.red, b.pool_color.green, b.pool_color.blue, b.pool_color.alpha};
+    t.insert("pool_color", std::move(col));
+
+    return t;
+}
+
 bool serialize_savegame_to_asg_file(const std::string& filename, const asg::SavegameData& d)
 {
     toml::table root;
@@ -1456,6 +1501,10 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         toml::array corpse_arr;
         for (auto const& c : lvl.corpses) corpse_arr.push_back(make_corpse_table(c));
         lt.insert("corpses", std::move(corpse_arr));
+
+        toml::array bp_arr;
+        for (auto const& bp : lvl.blood_pools) bp_arr.push_back(make_blood_pool_table(bp));
+        lt.insert("blood_pools", std::move(bp_arr));
 
         toml::array del_arr;
         for (int uid : lvl.deleted_event_uids) {

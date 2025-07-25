@@ -329,10 +329,16 @@ namespace asg
         std::string helmet_name;
         int item_uid;
         int body_drop_sound_handle;
-
         float mass;
         float radius;
         std::vector<rf::PCollisionSphere> cspheres;
+    };
+
+    struct SavegameLevelBloodPoolDataBlock
+    {
+        rf::Vector3 pos;
+        rf::Matrix3 orient;
+        rf::Color pool_color;
     };
 
     struct SavegameLevelData
@@ -360,6 +366,7 @@ namespace asg
         std::vector<SavegameLevelPushRegionDataBlock> push_regions;
         std::vector<SavegameLevelWeaponDataBlock> weapons;
         std::vector<SavegameLevelCorpseDataBlock> corpses;
+        std::vector<SavegameLevelBloodPoolDataBlock> blood_pools;
     };
     // maybe: lights (on/off state), 
 
