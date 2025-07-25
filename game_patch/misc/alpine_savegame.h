@@ -287,6 +287,54 @@ namespace asg
         bool active;
     };
 
+    struct SavegameLevelWeaponDataBlock
+    {
+        SavegameObjectDataBlock obj;
+        int next_weapon_uid;
+        int prev_weapon_uid;
+        int info_index;
+        float life_left_seconds;
+        int fly_sound_handle;
+        int light_handle;
+        int weapon_flags;
+        float flicker_index;
+        int sticky_host_uid;
+        rf::Vector3 sticky_host_pos_offset;
+        rf::Matrix3 sticky_host_orient;
+        int friendliness;
+        int target_uid;
+        int scan_time;
+        float pierce_power_left;
+        float thrust_left;
+        int t_flags;
+        rf::Vector3 water_hit_point;
+        rf::Vector3 firing_pos;
+    };
+
+    struct SavegameLevelCorpseDataBlock
+    {
+        SavegameObjectDataBlock obj; // transform, uid, etc.
+        float create_time;
+        float lifetime_seconds;
+        int corpse_flags;
+        int entity_type;
+        std::string pose_name;
+        int emitter_kill_timestamp;
+        float body_temp;
+        int state_anim;
+        int action_anim;
+        int drop_anim;
+        int carry_anim;
+        int corpse_pose;
+        std::string helmet_name;
+        int item_uid;
+        int body_drop_sound_handle;
+
+        float mass;
+        float radius;
+        std::vector<rf::PCollisionSphere> cspheres;
+    };
+
     struct SavegameLevelData
     {
         SavegameLevelDataHeader header;
@@ -310,6 +358,8 @@ namespace asg
         std::vector<SavegameLevelParticleEmitterDataBlock> particle_emitters;
         std::vector<SavegameLevelKeyframeDataBlock> movers;
         std::vector<SavegameLevelPushRegionDataBlock> push_regions;
+        std::vector<SavegameLevelWeaponDataBlock> weapons;
+        std::vector<SavegameLevelCorpseDataBlock> corpses;
     };
     // maybe: lights (on/off state), 
 

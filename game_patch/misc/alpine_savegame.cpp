@@ -459,6 +459,70 @@ namespace asg
         return b;
     }
 
+    static SavegameLevelWeaponDataBlock make_weapon_block(rf::Weapon* w)
+    {
+        SavegameLevelWeaponDataBlock b{};
+
+        fill_object_block(w, b.obj);
+
+        b.next_weapon_uid = uid_from_handle(reinterpret_cast<intptr_t>(w->next));
+        b.prev_weapon_uid = uid_from_handle(reinterpret_cast<intptr_t>(w->prev));
+        b.info_index = w->info_index;
+        b.life_left_seconds = w->lifeleft_seconds;
+        b.fly_sound_handle = w->fly_sound_handle;
+        b.light_handle = w->light_handle;
+        b.weapon_flags = w->weapon_flags;
+        b.flicker_index = w->flicker_index;
+        b.sticky_host_uid = uid_from_handle(w->sticky_host_handle);
+        b.sticky_host_pos_offset = w->sticky_host_pos_offset;
+        b.sticky_host_orient = w->sticky_host_orient;
+        b.friendliness = int(w->friendliness);
+        b.target_uid = uid_from_handle(w->target_handle);
+        b.scan_time = w->scan_time.is_set() ? w->scan_time.time_until() : -1;
+        b.pierce_power_left = w->pierce_power_left;
+        b.thrust_left = w->thrust_left;
+        b.t_flags = w->t_flags;
+        b.water_hit_point = w->water_hit_point;
+        b.firing_pos = w->firing_pos;
+
+        return b;
+    }
+
+    static SavegameLevelCorpseDataBlock make_corpse_block(rf::Corpse* c)
+    {
+        SavegameLevelCorpseDataBlock b{};
+
+        fill_object_block(c, b.obj);
+
+        b.create_time = c->create_time;
+        b.lifetime_seconds = c->lifetime_seconds;
+        b.corpse_flags = c->corpse_flags;
+        b.entity_type = c->entity_type;
+        b.pose_name = c->corpse_pose_name.c_str();
+        b.emitter_kill_timestamp = c->emitter_kill_timestamp.is_set() ? c->emitter_kill_timestamp.time_until() : -1;
+        b.body_temp = c->body_temp;
+        b.state_anim = c->corpse_state_vmesh_anim_index;
+        b.action_anim = c->corpse_action_vmesh_anim_index;
+        b.drop_anim = c->corpse_drop_vmesh_anim_index;
+        b.carry_anim = c->corpse_carry_vmesh_anim_index;
+        b.corpse_pose = c->corpse_pose;
+        if (c->helmet_v3d_handle)
+            b.helmet_name = rf::vmesh_get_name(c->helmet_v3d_handle);
+        b.item_uid = uid_from_handle(c->item_handle);
+        b.body_drop_sound_handle = c->body_drop_sound_handle;
+
+        // optional: copy spheres & mass/radius
+        b.mass = c->p_data.mass;
+        b.radius = c->p_data.radius;
+
+        b.cspheres.clear();
+        for (int i = 0; i < c->p_data.cspheres.size(); ++i) {
+            b.cspheres.push_back(c->p_data.cspheres[i]);
+        }
+
+        return b;
+    }
+
     // serialize all entities into the given vector
     inline void serialize_all_entities(std::vector<SavegameEntityDataBlock>& out)
     {
@@ -653,6 +717,31 @@ namespace asg
         }
     }
 
+    inline void serialize_all_weapons(std::vector<SavegameLevelWeaponDataBlock>& out)
+    {
+        out.clear();
+        for (rf::Weapon* t = rf::weapon_list.next; t != &rf::weapon_list; t = t->next) {
+            if (t) {
+                // 0x800 is IN_LEVEL_TRANSITION
+                // 0x20000000 is unknown
+                if ((t->obj_flags & 0x20000800) == 0)
+                    out.push_back(make_weapon_block(t));
+            }
+        }
+    }
+
+    static void serialize_all_corpses(std::vector<SavegameLevelCorpseDataBlock>& out)
+    {
+        out.clear();
+        for (rf::Corpse* t = rf::corpse_list.next; t != &rf::corpse_list; t = t->next) {
+            if (t) {
+                // 0x800 is IN_LEVEL_TRANSITION
+                if ((t->obj_flags & 0x800) == 0)
+                    out.push_back(make_corpse_block(t));
+            }
+        }
+    }
+
     void serialize_all_objects(SavegameLevelData* data)
     {
         // entities
@@ -735,6 +824,18 @@ namespace asg
         data->movers.clear();
         serialize_all_keyframes(data->movers);
         xlog::warn("[ASG]       got {} movers for level '{}'", int(data->movers.size()), data->header.filename);
+
+        // weapons
+        xlog::warn("[ASG]     populating weapons for level '{}'", data->header.filename);
+        data->weapons.clear();
+        serialize_all_weapons(data->weapons);
+        xlog::warn("[ASG]       got {} weapons for level '{}'", int(data->weapons.size()), data->header.filename);
+
+        // corpses
+        xlog::warn("[ASG]     populating corpses for level '{}'", data->header.filename);
+        data->corpses.clear();
+        serialize_all_corpses(data->corpses);
+        xlog::warn("[ASG]       got {} corpses for level '{}'", int(data->corpses.size()), data->header.filename);
 
         // geo craters
         int n = rf::num_geomods_this_level;
@@ -1180,6 +1281,78 @@ static toml::table make_mover_table(const asg::SavegameLevelKeyframeDataBlock& b
     return t;
 }
 
+static toml::table make_weapon_table(const asg::SavegameLevelWeaponDataBlock& w)
+{
+    toml::table t = make_object_table(w.obj);
+
+    t.insert("next_weapon_uid", w.next_weapon_uid);
+    t.insert("prev_weapon_uid", w.prev_weapon_uid);
+    t.insert("info_index", w.info_index);
+    t.insert("life_left_seconds", w.life_left_seconds);
+    t.insert("fly_sound_handle", w.fly_sound_handle);
+    t.insert("light_handle", w.light_handle);
+    t.insert("weapon_flags", w.weapon_flags);
+    t.insert("flicker_index", w.flicker_index);
+    t.insert("sticky_host_uid", w.sticky_host_uid);
+    t.insert("sticky_host_pos_offset", toml::array{w.sticky_host_pos_offset.x, w.sticky_host_pos_offset.y, w.sticky_host_pos_offset.z});
+
+    toml::array sho;
+    for (auto const& row : {w.sticky_host_orient.rvec, w.sticky_host_orient.uvec, w.sticky_host_orient.fvec}) {
+        sho.push_back(toml::array{row.x, row.y, row.z});
+    }
+    t.insert("sticky_host_orient", sho);
+
+    t.insert("friendliness", w.friendliness);
+    t.insert("target_uid", w.target_uid);
+    t.insert("scan_time", w.scan_time);
+    t.insert("pierce_power_left", w.pierce_power_left);
+    t.insert("thrust_left", w.thrust_left);
+    t.insert("t_flags", w.t_flags);
+    t.insert("water_hit_point", toml::array{w.water_hit_point.x, w.water_hit_point.y, w.water_hit_point.z});
+    t.insert("firing_pos", toml::array{w.firing_pos.x, w.firing_pos.y, w.firing_pos.z});
+
+    return t;
+}
+
+static toml::table make_corpse_table(const asg::SavegameLevelCorpseDataBlock& c)
+{
+    toml::table t = make_object_table(c.obj);
+
+    // corpse‐specific
+    t.insert("create_time", c.create_time);
+    t.insert("lifetime_seconds", c.lifetime_seconds);
+    t.insert("corpse_flags", c.corpse_flags);
+    t.insert("entity_type", c.entity_type);
+    t.insert("pose_name", c.pose_name);
+    t.insert("emitter_kill_timestamp", c.emitter_kill_timestamp);
+    t.insert("body_temp", c.body_temp);
+
+    t.insert("state_anim", c.state_anim);
+    t.insert("action_anim", c.action_anim);
+    t.insert("drop_anim", c.drop_anim);
+    t.insert("carry_anim", c.carry_anim);
+    t.insert("corpse_pose", c.corpse_pose);
+
+    t.insert("helmet_name", c.helmet_name);
+    t.insert("item_uid", c.item_uid);
+
+    t.insert("body_drop_sound_handle", c.body_drop_sound_handle);
+
+    // collision spheres if you like:
+    t.insert("mass", c.mass);
+    t.insert("radius", c.radius);
+    toml::array spheres;
+    for (auto const& s : c.cspheres) {
+        toml::table st;
+        st.insert("center", toml::array{s.center.x, s.center.y, s.center.z});
+        st.insert("r", s.radius);
+        spheres.push_back(std::move(st));
+    }
+    t.insert("collision_spheres", std::move(spheres));
+
+    return t;
+}
+
 bool serialize_savegame_to_asg_file(const std::string& filename, const asg::SavegameData& d)
 {
     toml::table root;
@@ -1275,6 +1448,14 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
             mov_arr.push_back(make_mover_table(mov));
         }
         lt.insert("movers", std::move(mov_arr));
+
+        toml::array weap_arr;
+        for (auto const& w : lvl.weapons) weap_arr.push_back(make_weapon_table(w));
+        lt.insert("weapons", std::move(weap_arr));
+
+        toml::array corpse_arr;
+        for (auto const& c : lvl.corpses) corpse_arr.push_back(make_corpse_table(c));
+        lt.insert("corpses", std::move(corpse_arr));
 
         toml::array del_arr;
         for (int uid : lvl.deleted_event_uids) {
