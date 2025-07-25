@@ -265,6 +265,22 @@ namespace asg
         bool active;
     };
 
+    struct SavegameLevelKeyframeDataBlock
+    {
+        SavegameObjectDataBlock obj;
+        float rot_cur_pos;
+        int start_at_keyframe;
+        int stop_at_keyframe;
+        int mover_flags;
+        float travel_time_seconds;
+        float rotation_travel_time_seconds;
+        int wait_timestamp;
+        int trigger_uid;
+        float dist_travelled;
+        float cur_vel;
+        int stop_completely_at_keyframe;
+    };
+
     struct SavegameLevelData
     {
         SavegameLevelDataHeader header;
@@ -286,6 +302,7 @@ namespace asg
         std::vector<SavegameLevelDecalDataBlock> decals;
         std::vector<SavegameLevelBoltEmitterDataBlock> bolt_emitters;
         std::vector<SavegameLevelParticleEmitterDataBlock> particle_emitters;
+        std::vector<SavegameLevelKeyframeDataBlock> movers;
     };
 
     struct SavegameData

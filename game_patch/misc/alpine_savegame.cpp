@@ -24,6 +24,7 @@
 #include "../rf/clutter.h"
 #include "../rf/weapon.h"
 #include "../rf/level.h"
+#include "../rf/mover.h"
 #include "../rf/corpse.h"
 #include "../rf/multi.h"
 #include "../rf/trigger.h"
@@ -430,6 +431,25 @@ namespace asg
         return b;
     }
 
+    inline SavegameLevelKeyframeDataBlock make_keyframe_block(rf::Mover* m)
+    {
+        SavegameLevelKeyframeDataBlock b{};
+        fill_object_block(m, b.obj);
+        b.rot_cur_pos = m->rot_cur_pos;
+        b.start_at_keyframe = m->start_at_keyframe;
+        b.stop_at_keyframe = m->stop_at_keyframe;
+        b.mover_flags = m->mover_flags;
+        b.travel_time_seconds = m->travel_time_seconds;
+        b.rotation_travel_time_seconds = m->rotation_travel_time_seconds_unk;
+        b.wait_timestamp = m->wait_timestamp.time_until();
+        b.trigger_uid = uid_from_handle(m->trigger_handle);
+        b.dist_travelled = m->dist_travelled;
+        b.cur_vel = m->cur_vel;
+        b.stop_completely_at_keyframe = m->stop_completely_at_keyframe;
+
+        return b;
+    }
+
     // serialize all entities into the given vector
     inline void serialize_all_entities(std::vector<SavegameEntityDataBlock>& out)
     {
@@ -602,6 +622,16 @@ namespace asg
         }
     }
 
+    inline void serialize_all_keyframes(std::vector<SavegameLevelKeyframeDataBlock>& out)
+    {
+        out.clear();
+        rf::Mover* cur = rf::mover_list.next;
+        while (cur && cur != &rf::mover_list) {
+            out.push_back(make_keyframe_block(cur));
+            cur = cur->next;
+        }
+    }
+
     void serialize_all_objects(SavegameLevelData* data)
     {
         // entities
@@ -672,6 +702,11 @@ namespace asg
         data->particle_emitters.clear();
         serialize_all_particle_emitters(data->particle_emitters);
         xlog::warn("[ASG]       got {} particle emitters for level '{}'", int(data->particle_emitters.size()), data->header.filename);
+
+        xlog::warn("[ASG]     populating movers for level '{}'", data->header.filename);
+        data->movers.clear();
+        serialize_all_keyframes(data->movers);
+        xlog::warn("[ASG]       got {} movers for level '{}'", int(data->movers.size()), data->header.filename);
 
         // geo craters
         int n = rf::num_geomods_this_level;
@@ -1091,6 +1126,24 @@ static toml::table make_decal_table(const asg::SavegameLevelDecalDataBlock& d)
     return t;
 }
 
+static toml::table make_mover_table(const asg::SavegameLevelKeyframeDataBlock& b)
+{
+    toml::table t = make_object_table(b.obj);
+
+    t.insert("rot_cur_pos", b.rot_cur_pos);
+    t.insert("start_at_keyframe", b.start_at_keyframe);
+    t.insert("stop_at_keyframe", b.stop_at_keyframe);
+    t.insert("mover_flags", b.mover_flags);
+    t.insert("travel_time_seconds", b.travel_time_seconds);
+    t.insert("rotation_travel_time_seconds", b.rotation_travel_time_seconds);
+    t.insert("wait_timestamp", b.wait_timestamp);
+    t.insert("trigger_uid", b.trigger_uid);
+    t.insert("dist_travelled", b.dist_travelled);
+    t.insert("cur_vel", b.cur_vel);
+    t.insert("stop_completely_at_keyframe", b.stop_completely_at_keyframe);
+    return t;
+}
+
 bool serialize_savegame_to_asg_file(const std::string& filename, const asg::SavegameData& d)
 {
     toml::table root;
@@ -1176,6 +1229,12 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         toml::array pe_arr;
         for (auto const& pe : lvl.particle_emitters) pe_arr.push_back(make_particle_emitters_table(pe));
         lt.insert("particle_emitters", std::move(pe_arr));
+
+        toml::array mov_arr;
+        for (auto const& mov : lvl.movers) {
+            mov_arr.push_back(make_mover_table(mov));
+        }
+        lt.insert("movers", std::move(mov_arr));
 
         toml::array del_arr;
         for (int uid : lvl.deleted_event_uids) {

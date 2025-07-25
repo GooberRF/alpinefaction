@@ -61,6 +61,7 @@ namespace rf
     };
     static_assert(sizeof(Mover) == 0x32C);
 
+    static auto& mover_list = addr_as_ref<Mover>(0x0064E3B0);
     static auto& mover_brush_list = addr_as_ref<MoverBrush>(0x0064E6E0);
     static auto& mover_activate_from_trigger =
         addr_as_ref<void(int mover_handle, int trigger_handle, int activator_handle)>(0x0046ABA0);
