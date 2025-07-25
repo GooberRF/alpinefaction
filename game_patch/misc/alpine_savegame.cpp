@@ -28,6 +28,7 @@
 #include "../rf/multi.h"
 #include "../rf/trigger.h"
 #include "../rf/vmesh.h"
+#include "../rf/particle_emitter.h"
 #include "../rf/save_restore.h"
 #include "../multi/multi.h"
 
@@ -40,8 +41,9 @@ static std::vector<int> g_deleted_event_uids;
 // global buffer for persistent goals, replacement for g_persistent_goal_events and g_num_persistent_goal_events
 static std::vector<rf::PersistentGoalEvent> g_persistent_goals;
 
-// global buffer for deleted detail rooms, replacement for glass_deleted_rooms and num_killed_glass_room_uids
+// global buffer for deleted detail rooms, replacement for glass_deleted_rooms, num_killed_glass_room_uids, killed_glass_room_uids
 static std::vector<rf::GRoom*> g_deleted_rooms;
+static std::vector<int> g_deleted_room_uids;
 
 namespace asg
 {
@@ -410,6 +412,24 @@ namespace asg
         return b;
     }
 
+    inline SavegameLevelBoltEmitterDataBlock make_bolt_emitter_block(rf::BoltEmitter* e)
+    {
+        SavegameLevelBoltEmitterDataBlock b{};
+        b.uid = e->uid;
+        b.active = e->active;
+
+        return b;
+    }
+
+    inline SavegameLevelParticleEmitterDataBlock make_particle_emitter_block(rf::ParticleEmitter* e)
+    {
+        SavegameLevelParticleEmitterDataBlock b{};
+        b.uid = e->uid;
+        b.active = e->active;
+
+        return b;
+    }
+
     // serialize all entities into the given vector
     inline void serialize_all_entities(std::vector<SavegameEntityDataBlock>& out)
     {
@@ -469,6 +489,10 @@ namespace asg
         // clear every event vector
         lvl->when_dead_events.clear();
         lvl->make_invulnerable_events.clear();
+        lvl->goal_create_events.clear();
+        lvl->alarm_siren_events.clear();
+        lvl->cyclic_timer_events.clear();
+        lvl->other_events.clear();
 
         // grab the full array once
         auto full = rf::event_list;
@@ -512,7 +536,14 @@ namespace asg
 
     inline void serialize_deleted_events(std::vector<int>& out)
     {
+        out.clear();
         out = g_deleted_event_uids;
+    }
+
+    inline void serialize_killed_rooms(std::vector<int>& out)
+    {
+        out.clear();
+        out = g_deleted_room_uids;
     }
 
     inline void serialize_all_persistent_goals(std::vector<SavegameLevelPersistentGoalDataBlock>& out)
@@ -545,6 +576,30 @@ namespace asg
             }
             cur = cur->next;
         } while (cur && cur != list);
+    }
+
+    static void serialize_all_bolt_emitters(std::vector<SavegameLevelBoltEmitterDataBlock>& out)
+    {
+        out.clear();
+        auto& list = rf::bolt_emitter_list;
+        size_t n = list.size();
+        for (size_t i = 0; i < n; ++i) {
+            if (auto* be = list.get(i)) {
+                out.push_back(make_bolt_emitter_block(be));
+            }
+        }
+    }
+
+    static void serialize_all_particle_emitters(std::vector<SavegameLevelParticleEmitterDataBlock>& out)
+    {
+        out.clear();
+        auto& list = rf::particle_emitter_list;
+        size_t n = list.size();
+        for (size_t i = 0; i < n; ++i) {
+            if (auto* be = list.get(i)) {
+                out.push_back(make_particle_emitter_block(be));
+            }
+        }
     }
 
     void serialize_all_objects(SavegameLevelData* data)
@@ -599,6 +654,24 @@ namespace asg
         data->decals.clear();
         serialize_all_decals(data->decals);
         xlog::warn("[ASG]       got {} decals for level '{}'", int(data->decals.size()), data->header.filename);
+
+        // killed rooms
+        xlog::warn("[ASG]     populating killed rooms for level '{}'", data->header.filename);
+        data->killed_room_uids.clear();
+        serialize_killed_rooms(data->killed_room_uids);
+        xlog::warn("[ASG]       got {} killed rooms for level '{}'", int(data->killed_room_uids.size()), data->header.filename);
+
+        // bolt emitters
+        xlog::warn("[ASG]     populating bolt emitters for level '{}'", data->header.filename);
+        data->bolt_emitters.clear();
+        serialize_all_bolt_emitters(data->bolt_emitters);
+        xlog::warn("[ASG]       got {} bolt emitters for level '{}'", int(data->bolt_emitters.size()), data->header.filename);
+
+        // particle emitters
+        xlog::warn("[ASG]     populating particle emitters for level '{}'", data->header.filename);
+        data->particle_emitters.clear();
+        serialize_all_particle_emitters(data->particle_emitters);
+        xlog::warn("[ASG]       got {} particle emitters for level '{}'", int(data->particle_emitters.size()), data->header.filename);
 
         // geo craters
         int n = rf::num_geomods_this_level;
@@ -896,6 +969,22 @@ static toml::table make_trigger_table(const asg::SavegameTriggerDataBlock& b)
     return t;
 }
 
+static toml::table make_bolt_emitters_table(const asg::SavegameLevelBoltEmitterDataBlock& b)
+{
+    toml::table t;
+    t.insert("uid", b.uid);
+    t.insert("active", b.active);
+    return t;
+}
+
+static toml::table make_particle_emitters_table(const asg::SavegameLevelParticleEmitterDataBlock& b)
+{
+    toml::table t;
+    t.insert("uid", b.uid);
+    t.insert("active", b.active);
+    return t;
+}
+
 static toml::table make_event_table(const asg::SavegameEventDataBlock& ev)
 {
     toml::table t;
@@ -1073,6 +1162,20 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
             decal_arr.push_back(make_decal_table(dec));
         }
         lt.insert("decals", std::move(decal_arr));
+
+        toml::array killed_arr;
+        for (int uid : lvl.killed_room_uids) {
+            killed_arr.push_back(uid);
+        }
+        lt.insert("dead_room_uids", std::move(killed_arr));
+
+        toml::array be_arr;
+        for (auto const& be : lvl.bolt_emitters) be_arr.push_back(make_bolt_emitters_table(be));
+        lt.insert("bolt_emitters", std::move(be_arr));
+
+        toml::array pe_arr;
+        for (auto const& pe : lvl.particle_emitters) pe_arr.push_back(make_particle_emitters_table(pe));
+        lt.insert("particle_emitters", std::move(pe_arr));
 
         toml::array del_arr;
         for (int uid : lvl.deleted_event_uids) {
@@ -1302,25 +1405,6 @@ CodeInjection event_clear_persistent_goal_events_injection{
     },
 };
 
-CodeInjection glass_face_can_be_destroyed_injection{
-    0x00490BE4,
-    [](auto& regs) {
-
-        rf::GFace* f = regs.esi;
-        auto room = f->which_room;
-
-        auto it = std::find(g_deleted_rooms.begin(), g_deleted_rooms.end(), room);
-        if (it == g_deleted_rooms.end()) {
-            g_deleted_rooms.push_back(room);
-            //xlog::warn("deleting room {}", room->uid);
-        }
-        else {
-            xlog::warn("already dead {}", room->uid);
-            regs.eip = 0x00490BE0; // if room is already deleted, don't delete it again
-        }
-    },
-};
-
 CodeInjection glass_shard_level_init_injection{
     0x00491064,
     []() {
@@ -1328,6 +1412,7 @@ CodeInjection glass_shard_level_init_injection{
     },
 };
 
+// delete any rooms that have been marked for deletion
 FunHook<void()> glass_delete_rooms_hook{
     0x004921A0,
     []() {
@@ -1342,6 +1427,38 @@ FunHook<void()> glass_delete_rooms_hook{
         }
         else {
             glass_delete_rooms_hook.call_target();
+        }
+    }
+};
+
+CodeInjection glass_delete_room_injection{
+    0x00492306,
+    [](auto& regs) {
+        int uid = regs.edx;
+        g_deleted_room_uids.push_back(uid);
+    },
+};
+
+// determine which specific faces to shatter
+FunHook<bool(rf::GFace* f)> glass_face_can_be_destroyed_hook{
+    0x00490BB0,
+    [](rf::GFace* f) {
+
+        // only shatter glass faces with 4 vertices
+        if (!f || f->num_verts() != 4) {
+            return false;
+        }
+
+        auto room = f->which_room;
+        auto it = std::find(g_deleted_rooms.begin(), g_deleted_rooms.end(), room);
+        if (it == g_deleted_rooms.end()) {
+            g_deleted_rooms.push_back(room);
+            //xlog::warn("deleting room {}", room->uid);
+            return true;
+        }
+        else {
+            //xlog::warn("already dead room {}", room->uid);
+            return false;
         }
     }
 };
@@ -1364,8 +1481,9 @@ void alpine_savegame_apply_patch()
     event_add_persistent_goal_event_hook.install();
     event_clear_persistent_goal_events_injection.install();
 
-    // handle new array for deleted rooms
-    glass_face_can_be_destroyed_injection.install();
+    // handle new array for deleted detail rooms (glass)
     glass_shard_level_init_injection.install();
     glass_delete_rooms_hook.install();
+    glass_delete_room_injection.install();
+    glass_face_can_be_destroyed_hook.install();
 }

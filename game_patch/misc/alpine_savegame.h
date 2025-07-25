@@ -253,6 +253,18 @@ namespace asg
         std::string bitmap_filename;
     };
 
+    struct SavegameLevelBoltEmitterDataBlock
+    {
+        int uid;
+        bool active;
+    };
+
+    struct SavegameLevelParticleEmitterDataBlock
+    {
+        int uid;
+        bool active;
+    };
+
     struct SavegameLevelData
     {
         SavegameLevelDataHeader header;
@@ -272,6 +284,8 @@ namespace asg
         std::vector<SavegameEventAlarmSirenDataBlock> alarm_siren_events;
         std::vector<SavegameEventCyclicTimerDataBlock> cyclic_timer_events;
         std::vector<SavegameLevelDecalDataBlock> decals;
+        std::vector<SavegameLevelBoltEmitterDataBlock> bolt_emitters;
+        std::vector<SavegameLevelParticleEmitterDataBlock> particle_emitters;
     };
 
     struct SavegameData
