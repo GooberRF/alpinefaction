@@ -181,6 +181,12 @@ namespace rf
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
 
+    static auto& g_player_cover_id = addr_as_ref<int>(0x007CABBC);
+    static auto& undercover_weapon = addr_as_ref<int>(0x007CABC4);
+
+    static auto& player_undercover_start = addr_as_ref<void(int cover)>(0x004B00F0);
+    static auto& player_undercover_set_gun_skin = addr_as_ref<void()>(0x004B0610);
+    static auto& player_fpgun_get_vmesh_handle = addr_as_ref<VMesh*(Player* pp, int weapon_type)>(0x004AE0D0);
     static auto& player_from_entity_handle = addr_as_ref<Player*(int entity_handle)>(0x004A3740);
     static auto& player_is_undercover = addr_as_ref<bool()>(0x004B0580);
     static auto& player_undercover_alarm_is_on = addr_as_ref<bool()>(0x004B05F0);

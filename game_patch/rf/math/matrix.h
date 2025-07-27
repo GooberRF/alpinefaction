@@ -30,6 +30,11 @@ namespace rf
             AddrCaller{0x004FCFA0}.this_call(this, &forward_vector);
         }
 
+        void orthogonalize()
+        {
+            AddrCaller{0x004FC960}.this_call(this);
+        }
+
         void rand_quick()
         {
             Vector3 fvec;
@@ -42,6 +47,11 @@ namespace rf
         void extract_angles(float* pitch, float* roll, float* yaw)
         {
             AddrCaller{0x004FC060}.this_call(this, pitch, roll, yaw);
+        }
+
+        void assign(const Matrix3* src_mat)
+        {
+            AddrCaller{0x0040A3B0}.this_call(this, src_mat);
         }
     };
     static_assert(sizeof(Matrix3) == 0x24);

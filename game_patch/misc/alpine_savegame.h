@@ -13,10 +13,13 @@ namespace asg
     {
         uint8_t version;
         float game_time;
+        float level_time2;
+        float level_time_left;
         std::string mod_name;
         uint8_t num_saved_levels;
         std::vector<std::string> saved_level_filenames;
         std::string current_level_filename;
+        int current_level_idx;
     };
 
     struct AlpineLoggedHudMessage
@@ -38,26 +41,26 @@ namespace asg
 
     struct SavegameCommonDataPlayer
     {
-        int32_t entity_host_uid;
-        //int16_t clip_x, clip_y, clip_w, clip_h;
-        //float fov_h;
+        int entity_host_uid;
+        int16_t clip_x, clip_y, clip_w, clip_h;
+        float fov_h;
         //int32_t field_10;
         //std::string name;
         int16_t player_flags;
         //int16_t field_36;
-        int32_t entity_uid;
-        //uint8_t entity_type;
-        rf::ubyte spew_vector_index;
+        int entity_uid;
+        int entity_type;
+        char spew_vector_index;
         rf::Vector3 spew_pos;
         float key_items;
         int32_t view_obj_uid;
-        //char weapon_prefs[32];
+        char weapon_prefs[32];
         rf::Matrix3 fpgun_orient;
         rf::Vector3 fpgun_pos;
         uint8_t grenade_mode;
         //uint8_t game_difficulty;
         //int32_t field_A8;
-        //uint8_t flags;
+        uint8_t flags;
     };
 
     struct SavegameCommonData
@@ -70,15 +73,18 @@ namespace asg
     {
         int uid;
         int parent_uid;
-        int16_t life;
-        int16_t armor;
+        //int16_t life;
+        //int16_t armor;
+        float life;
+        float armor;
         rf::ShortVector pos;
         rf::ShortVector vel;
         //char friendliness;
         int friendliness;
         //char host_tag_handle;
         int host_tag_handle;
-        rf::Matrix3 orient;
+        //rf::Matrix3 orient;
+        rf::ShortQuat orient;
         int obj_flags;
         int host_uid;
         rf::Vector3 ang_momentum;
@@ -95,18 +101,18 @@ namespace asg
         int16_t weapons_clip_ammo[32];
         int16_t weapons_ammo[32];
         //char field_C0[64];
-        int32_t possesed_weapons_bitfield;
+        int possesed_weapons_bitfield;
         //char hate_list[32];
         std::vector<int> hate_list;
         //uint8_t hate_list_size;
-        uint8_t ai_mode;
-        uint8_t ai_submode;
-        uint8_t move_mode;
-        int32_t ai_mode_parm_0;
-        int32_t ai_mode_parm_1;
-        int32_t target_uid;
-        int32_t look_at_uid;
-        int32_t shoot_at_uid;
+        int ai_mode;
+        int ai_submode;
+        int move_mode;
+        int ai_mode_parm_0;
+        int ai_mode_parm_1;
+        int target_uid;
+        int look_at_uid;
+        int shoot_at_uid;
         // char field_13C[8];
         // int16_t field_144;
         // int16_t field_146;
@@ -127,14 +133,14 @@ namespace asg
         // uint8_t pad185;
         // uint8_t pad186;
         // uint8_t pad187;
-        int32_t corpse_carry_uid;
+        int corpse_carry_uid;
         // int32_t field_18C;
         // rf::Vector3 field_190;
-        int32_t ai_flags;
+        int ai_flags;
         rf::Vector3 eye_pos;
         rf::Matrix3 eye_orient;
-        int32_t entity_flags;
-        int32_t entity_flags2;
+        int entity_flags;
+        int entity_flags2;
         rf::Vector3 control_data_phb;
         rf::Vector3 control_data_eye_phb;
         rf::Vector3 control_data_local_vel;
@@ -380,5 +386,8 @@ namespace asg
 
 
     SavegameData build_savegame_data(rf::Player* pp);
+    int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr);
+    void clear_delayed_handles();
+    void resolve_delayed_handles();
 
 }

@@ -22,6 +22,7 @@
 #include "../rf/entity.h"
 #include "../rf/item.h"
 #include "../rf/clutter.h"
+#include "../rf/gameseq.h"
 #include "../rf/weapon.h"
 #include "../rf/level.h"
 #include "../rf/mover.h"
@@ -45,6 +46,10 @@ static std::vector<rf::PersistentGoalEvent> g_persistent_goals;
 // global buffer for deleted detail rooms, replacement for glass_deleted_rooms, num_killed_glass_room_uids, killed_glass_room_uids
 static std::vector<rf::GRoom*> g_deleted_rooms;
 static std::vector<int> g_deleted_room_uids;
+
+// global buffer for delayed save/restore uids and pointers, replacement for g_sr_uids, g_sr_handle_ptrs, and g_sr_uid_handle_mapping_len
+static std::vector<int> g_sr_delayed_uids;
+static std::vector<int*> g_sr_delayed_ptrs;
 
 namespace asg
 {
@@ -97,53 +102,205 @@ namespace asg
         }
 
         // build level data header
+        hdr.current_level_idx = idx;
+        xlog::warn("writing idx {}, filename {}", idx, cur);
         levels[idx].header.filename = cur;
-        levels[idx].header.level_time = level.time;
+        levels[idx].header.level_time = level_time_flt;
         levels[idx].header.aabb_min = rf::world_solid->bbox_min;
         levels[idx].header.aabb_max = rf::world_solid->bbox_max;
 
         return idx;
     }
 
-    inline void serialize_player(rf::Player* pp, SavegameCommonDataPlayer& out)
+    inline void serialize_player(rf::Player* pp, SavegameCommonDataPlayer& data)
     {
-        if (auto ent = rf::entity_from_handle(pp->entity_handle))
-            out.entity_host_uid = ent->uid;
-        else
-            out.entity_host_uid = -1;
-
-        out.spew_vector_index = pp->spew_vector_index;
-        out.spew_pos          = pp->spew_pos;
-
-        {
-            // replicate what the stock does: OR each bit into a uint32, then reinterpret
-            uint32_t bits = 0;
-            for (int i = 0; i < 32; ++i) {
-                if (pp->key_items[i]) bits |= (1u << i);
-            }
-            out.key_items = *reinterpret_cast<float*>(&bits);
+        xlog::warn("[SP] enter serialize_player pp={}", reinterpret_cast<void*>(pp));
+        if (!pp) {
+            xlog::error("[SP] pp is nullptr!");
+            return;
         }
 
-        auto rf_obj = rf::obj_from_handle(pp->view_from_handle);
-        rf_obj ? out.view_obj_uid = rf_obj->uid : out.view_obj_uid = -1;
+        // 1) host UID
+        if (auto e = rf::entity_from_handle(pp->entity_handle)) {
+            auto host = rf::obj_from_handle(e->host_handle);
+            data.entity_host_uid = host ? host->uid : -1;
+            xlog::warn("[SP] entity_host_uid = {}", data.entity_host_uid);
+        }
+        else {
+            data.entity_host_uid = -1;
+            xlog::warn("[SP] no entity, entity_host_uid = -1");
+        }
 
-        out.fpgun_pos    = *reinterpret_cast<const rf::Vector3*>(reinterpret_cast<const char*>(pp) + offsetof(rf::Player, shield_decals) + 12);
-        out.fpgun_orient = *reinterpret_cast<const rf::Matrix3*>(reinterpret_cast<const char*>(pp) + offsetof(rf::Player, shield_decals) + 3 * sizeof(rf::Vector3));
+        // 2) viewport
+        data.clip_x = pp->viewport.clip_x;
+        data.clip_y = pp->viewport.clip_y;
+        data.clip_w = pp->viewport.clip_w;
+        data.clip_h = pp->viewport.clip_h;
+        data.fov_h = pp->viewport.fov_h;
+        xlog::warn("[SP] viewport: x={} y={} w={} h={} fov={}", data.clip_x, data.clip_y, data.clip_w, data.clip_h,
+                   data.fov_h);
 
-        out.grenade_mode = *reinterpret_cast<const uint8_t*>(reinterpret_cast<const char*>(pp) + offsetof(rf::Player, shield_decals) + 22);
+        // 3) flags & entity info
+        data.player_flags = pp->flags;
+        xlog::warn("[SP] player_flags = 0x{:X}", data.player_flags);
+
+        if (auto ent = rf::entity_from_handle(pp->entity_handle)) {
+            data.entity_uid = ent->uid;
+            data.entity_type = pp->entity_type;
+            xlog::warn("[SP] entity_uid = {} entity_type = {}", data.entity_uid, (int)data.entity_type);
+        }
+        else {
+            data.entity_uid = -1;
+            data.entity_type = 0;
+            xlog::warn("[SP] no entity, entity_uid = -1, entity_type = 0");
+        }
+
+        // 4) spew
+        data.spew_vector_index = pp->spew_vector_index;
+        xlog::warn("[SP] spew_vector_index = {}", data.spew_vector_index);
+        //pp->spew_pos.assign(&data.spew_pos, &pp->spew_pos);
+        data.spew_pos = pp->spew_pos;
+        xlog::warn("[SP] spew_pos = ({:.3f},{:.3f},{:.3f})", data.spew_pos.x, data.spew_pos.y, data.spew_pos.z);
+
+        // 5) key items bitmask
+        {
+            uint32_t mask = 0;
+            for (int i = 0; i < 32; ++i)
+                if (pp->key_items[i])
+                    mask |= (1u << i);
+            data.key_items = *reinterpret_cast<float*>(&mask);
+            xlog::warn("[SP] key_items mask = 0x{:08X}", mask);
+        }
+
+        // 6) view object
+        if (auto v = rf::obj_from_handle(pp->view_from_handle)) {
+            data.view_obj_uid = v->uid;
+            xlog::warn("[SP] view_obj_uid = {}", data.view_obj_uid);
+        }
+        else {
+            data.view_obj_uid = -1;
+            xlog::warn("[SP] no view_obj, view_obj_uid = -1");
+        }
+
+        // 7) weapon_prefs
+        for (int i = 0; i < 32; ++i) {
+            data.weapon_prefs[i] = pp[1].key_items[i];
+        }
+        xlog::warn("[SP] weapon_prefs[0..3] = {},{},{},{}", data.weapon_prefs[0], data.weapon_prefs[1],
+                   data.weapon_prefs[2], data.weapon_prefs[3]);
+
+        // 8) first-person gun
+        {
+            auto base = reinterpret_cast<const char*>(pp) + offsetof(rf::Player, shield_decals);
+            auto pos_ptr = reinterpret_cast<const rf::Vector3*>(base + 12);
+            auto ori_ptr = reinterpret_cast<const rf::Matrix3*>(base + 12 + sizeof(rf::Vector3));
+
+            data.fpgun_pos = *pos_ptr;
+            data.fpgun_orient = *ori_ptr;
+            xlog::warn("[SP] fpgun_pos = ({:.3f},{:.3f},{:.3f})", data.fpgun_pos.x, data.fpgun_pos.y, data.fpgun_pos.z);
+            xlog::warn("[SP] fpgun_orient.rvec = ({:.3f},{:.3f},{:.3f})", data.fpgun_orient.rvec.x,
+                       data.fpgun_orient.rvec.y, data.fpgun_orient.rvec.z);
+        }
+
+        // 9) grenade mode
+        {
+            auto b = reinterpret_cast<const char*>(pp) + offsetof(rf::Player, shield_decals) + 22;
+            data.grenade_mode = *reinterpret_cast<const uint8_t*>(b);
+            xlog::warn("[SP] grenade_mode = {}", data.grenade_mode);
+        }
+
+        // 10) flags bit-packing
+        {
+            uint8_t low, high;
+            bool bit0 = (*reinterpret_cast<const uint8_t*>(reinterpret_cast<const char*>(pp) +
+                                                           offsetof(rf::Player, shield_decals) + 21) &
+                         1) != 0;
+            bool bit1 = (*reinterpret_cast<const uint8_t*>(reinterpret_cast<const char*>(pp) +
+                                                           offsetof(rf::Player, shield_decals) + 23) &
+                         1) != 0;
+            int cover = (rf::g_player_cover_id & 1);
+            auto ent = rf::entity_from_handle(pp->entity_handle);
+            int ai_high = ent ? ((ent->ai.ai_flags >> 16) & 1) : 0;
+
+            low = static_cast<uint8_t>(data.flags);
+            uint8_t part = bit0 ? 1 : 0;
+            low = static_cast<uint8_t>((low ^ ((low ^ part) & 1)) & 0xF1);
+
+            int tmp = (2 * cover) | ai_high;
+            tmp = 2 * tmp;
+            tmp = bit1 ? (tmp | 1) : tmp;
+            high = static_cast<uint8_t>(2 * tmp);
+
+            data.flags = low | high;
+            xlog::warn("[SP] flags packing → bit0={} bit1={} cover={} ai_high={} result=0x{:02X}", bit0, bit1, cover,
+                       ai_high, data.flags);
+        }
+
+        xlog::warn("[SP] exit serialize_player OK");
     }
+
 
     inline void fill_object_block(rf::Object* o, SavegameObjectDataBlock& out)
     {
+        if (!o) {
+            xlog::error("fill_object_block called for null object");
+            return;
+        }
+
         out.uid = o->uid;
+        out.parent_uid = uid_from_handle(o->parent_handle);
+        out.host_uid = uid_from_handle(o->host_handle);
+
+        out.life = o->life;
+        out.armor = o->armor;
+
+        rf::compress_vector3(rf::world_solid, &o->p_data.pos, &out.pos);
+
+        {
+            rf::Quaternion q;
+            // this is the stock Quaternion::__ct_matrix call
+            q.from_matrix(&o->orient);
+            // now assign into your compressed quat
+            //rf::ShortQuat::assign_0(&out.orient, &q);
+            out.orient.from_quat(&q);
+        }
+
+        out.friendliness = o->friendliness;
+        out.obj_flags = o->obj_flags;
+        out.host_tag_handle = (o->host_tag_handle < 0 ? -1 : o->host_tag_handle);
+
+        rf::Vector3 tmp;
+        o->p_data.ang_momentum.assign(&tmp, &o->p_data.ang_momentum);
+        out.ang_momentum = tmp;
+
+        if (o->p_data.vel.len() >= 1024.0f) {
+            rf::Vector3 zero = rf::zero_vector;
+            rf::compress_velocity(&zero, &out.vel);
+        }
+        else {
+            rf::compress_velocity(&o->p_data.vel, &out.vel);
+        }
+
+        // — Physics flags
+        out.physics_flags = o->p_data.flags;
+
+        // — (skin_name etc)
+        out.skin_name = "";
+
+        /* out.uid = o->uid;
         out.parent_uid = o->parent_handle; // may need to make this uid
         out.life = o->life;
         out.armor = o->armor;
-        out.pos = rf::ShortVector::from(o->pos);
-        out.vel = rf::ShortVector::from(o->p_data.vel);
+        //out.pos = rf::ShortVector::compress(rf::world_solid, o->pos);
+        //out.vel = rf::ShortVector::compress(rf::world_solid, o->p_data.vel);
+        rf::compress_vector3(rf::world_solid, &o->pos, &out.pos);
+        rf::compress_vector3(rf::world_solid, &o->p_data.vel, &out.vel);
         out.friendliness = o->friendliness;
         out.host_tag_handle = o->host_tag_handle;
-        out.orient = o->orient;
+        //out.orient = o->orient;
+        rf::Quaternion q;
+        q.extract_matrix(&o->orient);
+        out.orient.from_quat(&q);
         out.obj_flags = o->obj_flags;
         if (auto t = rf::obj_from_handle(o->host_handle))
             out.host_uid = t->uid;
@@ -151,7 +308,7 @@ namespace asg
             out.host_uid = -1;
         out.ang_momentum = o->p_data.ang_momentum;
         out.physics_flags = o->p_data.flags;
-        out.skin_name = "";
+        out.skin_name = "";*/
     }
 
     inline SavegameEntityDataBlock make_entity_block(rf::Entity* e)
@@ -185,7 +342,17 @@ namespace asg
         // more AI parameters
         b.ai_mode = e->ai.mode;
         b.ai_submode = e->ai.submode;
-        b.move_mode = reinterpret_cast<uint8_t>(e->move_mode);
+        //b.move_mode = e->move_mode->mode;
+
+        int mm;
+        for (mm = rf::MM_NONE; mm < 16; ++mm) {
+            if (e->move_mode == rf::movemode_get_mode(static_cast<rf::MovementMode>(mm)))
+                break;
+        }
+        if (mm >= 16)
+            mm = rf::MM_NONE;
+        b.move_mode = mm;
+
         b.ai_mode_parm_0 = e->ai.mode_parm_0;
         b.ai_mode_parm_1 = e->ai.mode_parm_1;
 
@@ -258,7 +425,8 @@ namespace asg
     {
         SavegameTriggerDataBlock b{};
         b.uid = t->uid;
-        b.pos = rf::ShortVector::from(t->pos);
+        //b.pos = rf::ShortVector::compress(rf::world_solid, t->pos);
+        rf::compress_vector3(rf::world_solid, &t->pos, &b.pos);
         b.count = t->count;
         b.time_last_activated = t->time_last_activated;
         b.trigger_flags = t->trigger_flags;
@@ -533,17 +701,34 @@ namespace asg
     }
 
     // serialize all entities into the given vector
-    inline void serialize_all_entities(std::vector<SavegameEntityDataBlock>& out)
+    inline void serialize_all_entities(std::vector<SavegameEntityDataBlock>& out, std::vector<int>& dead_entity_uids)
     {
         out.clear();
+        dead_entity_uids.clear();
+
         for (rf::Entity* e = rf::entity_list.next;
             e != &rf::entity_list;
             e = e->next)
         {
-            // todo: skip dead? need to investigate stock game behaviour to match
-            // stock game omits bats and fish, would be good to have that mapper-configurable for optimization
-            if (e) {
-                xlog::warn("[ASG]   serializing entity {}", e->uid);
+            if (!e)
+                continue;
+
+            if (e->obj_flags & 0x800) // IN_LEVEL_TRANSITION
+            {
+                xlog::warn("skipping UID {} - transition flag is set", e->uid);
+                continue;
+            }
+
+            std::string nm = e->info->name;
+            if (nm == "Bat" || nm == "Fish" || rf::obj_is_hidden(e)) {
+                // drop the UID
+                xlog::warn("UID {} dropped from save buffer", e->uid);
+                dead_entity_uids.push_back(e->uid);
+            }
+            else {
+                // serialize it normally
+                if (e->p_data.flags & 0x80000000) // physics_active
+                    e->obj_flags |= rf::ObjectFlags::OF_UNK_SAVEGAME_ENT;
                 out.push_back(make_entity_block(e));
             }
         }
@@ -555,7 +740,7 @@ namespace asg
         out.clear();
         for (rf::Item* i = rf::item_list.next; i != &rf::item_list; i = i->next) {
             if (i) {
-                xlog::warn("[ASG]   serializing item {}", i->uid);
+                //xlog::warn("[ASG]   serializing item {}", i->uid);
                 out.push_back(make_item_block(i));
             }
         }
@@ -567,7 +752,7 @@ namespace asg
         out.clear();
         for (rf::Clutter* c = rf::clutter_list.next; c != &rf::clutter_list; c = c->next) {
             if (c) {
-                xlog::warn("[ASG]   serializing clutter {}", c->uid);
+                //xlog::warn("[ASG]   serializing clutter {}", c->uid);
                 out.push_back(make_clutter_block(c));
             }
         }
@@ -579,7 +764,7 @@ namespace asg
         out.clear();
         for (rf::Trigger* t = rf::trigger_list.next; t != &rf::trigger_list; t = t->next) {
             if (t) {
-                xlog::warn("[ASG]   serializing trigger {}", t->uid);
+                //xlog::warn("[ASG]   serializing trigger {}", t->uid);
                 out.push_back(make_trigger_block(t));
             }
         }
@@ -770,7 +955,7 @@ namespace asg
         // entities
         xlog::warn("[ASG]     populating entities for level '{}'", data->header.filename);
         data->entities.clear();
-        serialize_all_entities(data->entities);
+        serialize_all_entities(data->entities, data->dead_entity_uids);
         xlog::warn("[ASG]       got {} entities for level '{}'", int(data->entities.size()), data->header.filename);
 
         // items
@@ -875,6 +1060,519 @@ namespace asg
             std::memcpy(data->geomod_craters.data(), rf::geomods_this_level, sizeof(rf::GeomodCraterData) * size_t(n));
         }
         xlog::warn("[ASG]       got {} geomod_craters for level '{}'", int(data->geomod_craters.size()), data->header.filename);
+
+        data->header.aabb_min = rf::world_solid->bbox_min;
+        data->header.aabb_max = rf::world_solid->bbox_max;
+    }
+
+    static void deserialize_object_state(rf::Object* o, const SavegameObjectDataBlock& src)
+    {
+        if (!o) {
+            xlog::error("deserialize_object_state: failed, null object pointer");
+            return;
+        }
+        //xlog::warn("setting UID {} for previous UID {}", src.uid, o->uid);
+        //o->uid = src.uid;
+        
+        // todo
+        //o->life = rf::decompress_life_armor(static_cast<uint16_t>(src.life));
+        //o->armor = rf::decompress_life_armor(static_cast<uint16_t>(src.armor));
+        o->life = src.life;
+        o->armor = src.armor;
+
+        rf::decompress_vector3(rf::world_solid, &src.pos, &o->p_data.pos);
+        o->pos = o->p_data.pos;
+        o->last_pos = o->p_data.pos;
+        o->p_data.next_pos = o->p_data.pos;
+
+         rf::Quaternion q;
+        q.unpack(&src.orient);
+        q.extract_matrix(&o->p_data.orient);
+        //rf::Matrix3::orthogonalize(&o->p_data.orient);
+        o->p_data.orient.orthogonalize();
+        o->orient = o->p_data.orient;
+
+        // if we were hidden before but unhidden in the save, call obj_unhide
+        auto old_flags = o->obj_flags;
+        o->friendliness = static_cast<rf::ObjFriendliness>(src.friendliness);
+        if ((old_flags & rf::ObjectFlags::OF_HIDDEN) && !(src.obj_flags & (int)rf::ObjectFlags::OF_HIDDEN)) {
+            rf::obj_unhide(o);
+        }
+
+        o->obj_flags = static_cast<rf::ObjectFlags>(src.obj_flags);
+
+        // parent_handle and host_handle are resolved later
+        add_handle_for_delayed_resolution(src.parent_uid, &o->parent_handle);
+        add_handle_for_delayed_resolution(src.host_uid, &o->host_handle);
+
+        // host_tag_handle is a raw byte in the save
+        o->host_tag_handle = (src.host_tag_handle == -1 ? -1 : (int8_t)src.host_tag_handle);
+
+
+        // ——— build physics info & re-init the body ———
+        // copy back angular momentum and flags
+        o->p_data.ang_momentum = src.ang_momentum;
+        o->p_data.flags = src.physics_flags;
+
+        // prepare the stock’s ObjectCreateInfo
+        rf::ObjectCreateInfo oci{};
+        // rotvel = ang_momentum / mass
+        {
+            //rf::Vector3 tmp;
+            //auto* div = rf::Vector3::get_divided(&src.ang_momentum, &tmp, o->p_data.mass);
+            //auto* div = src.ang_momentum.get_divided(&tmp, o->p_data.mass);
+            src.ang_momentum.get_divided(&oci.rotvel, o->p_data.mass);
+            //src.ang_momentum.get_divided();
+            //oci.rotvel = *div;
+        }
+        oci.body_inv = o->p_data.body_inv;
+        oci.drag = o->p_data.drag;
+        oci.mass = o->p_data.mass;
+        oci.material = o->material;
+        oci.orient = o->p_data.orient;
+        oci.physics_flags = src.physics_flags;
+        oci.pos = o->p_data.pos;
+        oci.radius = o->radius;
+        oci.solid = nullptr;
+        //rf::VArray::reset(&oci.spheres);
+        oci.spheres.clear(); // reset = clear?
+
+        // decompress velocity (stock calls decompress_velocity_vector)
+        rf::decompress_velocity_vector(&src.vel.x, &oci.vel);
+
+        // call the stock physics re-init
+        rf::physics_init_object(&o->p_data, &oci, /*call_callback=*/true);
+
+        // restore momentum & velocity
+        o->p_data.ang_momentum = src.ang_momentum;
+        rf::decompress_velocity_vector(&src.vel.x, &o->p_data.vel);
+
+        // restore flags and mark “just restored” bit (0x6000000)
+        o->p_data.flags = src.physics_flags;
+        o->obj_flags |= static_cast<rf::ObjectFlags>(0x06000000);
+
+        /*
+        //o->pos = rf::ShortVector::decompress(rf::world_solid, src.pos);
+        //o->p_data.vel = rf::ShortVector::decompress(rf::world_solid, src.vel);
+        rf::decompress_vector3(rf::world_solid, &src.pos, &o->pos);
+        rf::decompress_vector3(rf::world_solid, &src.vel, &o->p_data.vel);
+        o->friendliness = static_cast<rf::ObjFriendliness>(src.friendliness);
+        o->host_tag_handle = src.host_tag_handle;
+        //o->orient = src.orient;
+        rf::Quaternion q;
+        q.unpack(&src.orient);
+        q.extract_matrix(&o->orient);
+        o->obj_flags = static_cast<rf::ObjectFlags>(src.obj_flags);
+        o->parent_handle = src.parent_uid;
+
+        // host_handle was saved as a UID
+        if (src.host_uid >= 0) {
+            add_handle_for_delayed_resolution(src.host_uid, &o->host_handle);
+        }
+        else {
+            o->host_handle = -1;
+        }
+
+        o->p_data.ang_momentum = src.ang_momentum;
+        o->p_data.flags = src.physics_flags;*/
+    }
+
+    static void deserialize_entity_state(rf::Entity* e, const SavegameEntityDataBlock& src)
+    {
+        xlog::warn("unpacking entity {}", src.obj.uid);
+        deserialize_object_state(e, src.obj);
+
+        e->ai.current_primary_weapon = src.current_primary_weapon;
+        e->ai.current_secondary_weapon = src.current_secondary_weapon;
+        e->info_index = src.info_index;
+
+        for (int i = 0; i < 32; ++i) {
+            e->ai.clip_ammo[i] = src.weapons_clip_ammo[i];
+            e->ai.ammo[i] = src.weapons_ammo[i];
+        }
+
+        for (int i = 0; i < 32; ++i) {
+            e->ai.has_weapon[i] = (src.possesed_weapons_bitfield >> i) & 1;
+        }
+
+        e->ai.hate_list.clear();
+        for (int h : src.hate_list) e->ai.hate_list.add(h);
+
+        // AI params
+        e->ai.mode = static_cast<rf::AiMode>(src.ai_mode);
+        e->ai.submode = static_cast<rf::AiSubmode>(src.ai_submode);
+        //e->move_mode->mode = src.move_mode;
+        //e->move_mode->mode = 0;
+        e->move_mode = rf::movemode_get_mode(static_cast<rf::MovementMode>(src.move_mode));
+
+        e->ai.mode_parm_0 = src.ai_mode_parm_0;
+        e->ai.mode_parm_1 = src.ai_mode_parm_1;
+
+        if (src.target_uid >= 0)
+            add_handle_for_delayed_resolution(src.target_uid, &e->ai.target_handle);
+        else
+            e->ai.target_handle = -1;
+
+        if (src.look_at_uid >= 0)
+            add_handle_for_delayed_resolution(src.look_at_uid, &e->ai.look_at_handle);
+        else
+            e->ai.look_at_handle = -1;
+
+        if (src.shoot_at_uid >= 0)
+            add_handle_for_delayed_resolution(src.shoot_at_uid, &e->ai.shoot_at_handle);
+        else
+            e->ai.shoot_at_handle = -1;
+
+        e->ai.ci.rot = src.ci_rot;
+        e->ai.ci.move = src.ci_move;
+
+        if (src.corpse_carry_uid >= 0)
+            add_handle_for_delayed_resolution(src.corpse_carry_uid, &e->ai.corpse_carry_handle);
+        else
+            e->ai.corpse_carry_handle = -1;
+
+        e->ai.ai_flags = src.ai_flags;
+
+        e->eye_pos = src.eye_pos;
+        e->eye_orient = src.eye_orient;
+        e->entity_flags = src.entity_flags;
+        e->entity_flags2 = src.entity_flags2;
+        e->control_data.phb = src.control_data_phb;
+        e->control_data.eye_phb = src.control_data_eye_phb;
+        e->control_data.local_vel = src.control_data_local_vel;
+    }
+
+    inline void entity_deserialize_all_state(const std::vector<SavegameEntityDataBlock>& blocks, const std::vector<int>& dead_uids)
+    {
+        // reset any old delayed‐handle entries
+        clear_delayed_handles();
+
+        bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
+        xlog::warn("in transition? {}", in_transition);
+
+        // 1) replay or kill/hide existing ents
+        for (rf::Entity* ent = rf::entity_list.next; ent != &rf::entity_list; ent = ent->next) {
+            bool found = false;
+
+            // only replay if not “in transition only,” or we’re out of that mode
+            if ((ent->obj_flags & 0x800) == 0 || !in_transition) {
+                //xlog::warn("looking at ent {}", ent->uid);
+                // search for matching UID in our vector
+                for (auto const& blk : blocks) {
+                    //xlog::warn("ent uid in this block is {}", blk.obj.uid);
+                    if (ent->uid == blk.obj.uid) {
+                        xlog::warn("found a savegame block for ent {}", ent->uid);
+                        deserialize_entity_state(ent, blk);
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (found) {
+                // if this entity was dying in the save AND has that “end‐of‐level” flag, launch endgame
+                if ((ent->obj_flags & 2 || rf::entity_is_dying(ent)) && (ent->entity_flags & 0x400000)) {
+                    rf::endgame_launch(ent->name);
+                }
+                else if (ent->obj_flags & 2 || rf::entity_is_dying(ent)) {
+                    rf::obj_flag_dead(ent);
+                }
+            }
+            else {
+                std::string nm = ent->info->name;
+                bool is_dead = false; // already dead = hide, not dead = flag for death
+                if (nm == "Bat" || nm == "Fish") {
+                    is_dead = false; // kill bats and fish (shouldn't have been in the save struct anyway)
+                }
+                else {
+                    for (int uid : dead_uids)
+                        if (ent->uid == uid) {
+                            is_dead = true; // hide already dead entities
+                            break;
+                        }
+                    // kill any entities missing from savegame file but not already dead
+                }
+                if (is_dead)
+                    rf::obj_hide(ent);
+                else if (ent != rf::local_player_entity) // don't kill player
+                    rf::obj_flag_dead(ent);
+            }
+        }
+
+        // 2) spawn any “transition‐only” entities that were marked with 0x400 in their saved obj_flags
+        for (auto const& blk : blocks) {
+            if (blk.obj.obj_flags & 0x400) {
+                // skip if already in the world
+                bool exists = false;
+                for (rf::Entity* ent = rf::entity_list.next; ent != &rf::entity_list; ent = ent->next) {
+                    if (ent->uid == blk.obj.uid) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (exists)
+                    continue;
+
+                // rebuild orient + position
+                //rf::Quaternion q;
+                //Quaternion::__ct(&q);
+                //rf::Matrix3 m = blk.obj.orient;
+                //Matrix3::__ct(&m);
+                //q.unpack(&blk.obj.orient);
+                //q.extract_matrix(&m);
+                rf::Quaternion q;
+                q.unpack(&blk.obj.orient);
+                rf::Matrix3 m;
+                q.extract_matrix(&m);
+
+                //rf::Vector3 p = rf::ShortVector::decompress(rf::world_solid, blk.obj.pos);
+                
+                rf::Vector3 p;
+                rf::decompress_vector3(rf::world_solid, &blk.obj.pos, &p);
+
+
+
+
+                // create and replay
+                rf::Entity* ne = rf::entity_create(static_cast<int>(blk.info_index), &rf::default_entity_name, -1, p, m, 0, -1);
+                if (ne)
+                    deserialize_entity_state(ne, blk);
+            }
+        }
+
+        // 3) now patch up all the “UID→handle” placeholders we queued
+        resolve_delayed_handles();
+    }
+
+    void deserialize_all_objects(SavegameLevelData* lvl)
+    {
+        // reset our “UID → int*” mapping
+        clear_delayed_handles();
+
+        entity_deserialize_all_state(lvl->entities, lvl->dead_entity_uids);
+
+        xlog::warn("restoring current level time {} to buffer time {}", rf::level_time_flt, lvl->header.level_time);
+        rf::level_time_flt = lvl->header.level_time;
+        
+    }
+
+    // Replaces the stock sr_load_player; builds the in-world Entity and restores Player state
+    bool load_player(const asg::SavegameCommonDataPlayer* pd, rf::Player* player, const asg::SavegameEntityDataBlock* blk)
+    {
+        using namespace rf;
+        xlog::warn("1 unpacking player");
+
+        if (!pd || !player || !blk)
+            return false;
+
+        xlog::warn("2 unpacking player");
+
+        Quaternion q; // v25
+        q.unpack(&blk->obj.orient);
+        Matrix3 m; // a2
+        q.extract_matrix(&m);
+
+        Vector3 world_pos; // a3
+        decompress_vector3(world_solid, &blk->obj.pos, &world_pos);
+
+        Entity* ent = player_create_entity(player, static_cast<uint8_t>(pd->entity_type), &world_pos, &m, -1);
+        if (!ent) {
+            xlog::warn("failed to create player entity");
+            return false;
+        }
+            
+
+        if ((pd->flags & 0x04) != 0) {
+            // bit-3 of flags -> team (0/1)
+            player_undercover_start((pd->flags >> 3) & 1);
+            ent = local_player_entity;
+            int uw = undercover_weapon;
+            ent->ai.current_primary_weapon = uw;
+            player_fpgun_get_vmesh_handle(player, uw);
+            player_undercover_set_gun_skin();
+        }
+
+        if (!ent)
+            return false;
+
+        deserialize_entity_state(ent, *blk);
+
+        if (pd->entity_host_uid >= 0) {
+            if (auto host = obj_lookup_from_uid(pd->entity_host_uid))
+                ent->host_handle = host->handle;
+            else
+                ent->host_handle = -1;
+        }
+
+        player->flags = pd->player_flags & 0xFFF7; // clear bit-3 out
+        player->entity_type = static_cast<uint8_t>(pd->entity_type);
+
+        player->spew_vector_index = pd->spew_vector_index;
+        //Vector3::assign(&player->spew_pos, &world_pos, &pd->spew_pos);
+        player->spew_pos.assign(&world_pos, &pd->spew_pos);
+
+        {
+            uint32_t bits = *reinterpret_cast<const uint32_t*>(&pd->key_items);
+            for (int i = 0; i < 32; ++i) player->key_items[i] = (bits >> i) & 1;
+        }
+
+        if (pd->view_obj_uid >= 0) {
+            if (auto v = obj_lookup_from_uid(pd->view_obj_uid))
+                player->view_from_handle = v->handle;
+            else
+                player->view_from_handle = -1;
+        }
+        else {
+            player->view_from_handle = -1;
+        }
+
+        //    g) weapon_prefs[32]
+        //for (int i = 0; i < 32; ++i) {
+        //    player[1].settings.controls.bindings[i].default_mouse_btn_id = pd->weapon_prefs[i];
+        //}
+
+        Vector3* gun_pos = reinterpret_cast<Vector3*>(reinterpret_cast<char*>(&player->shield_decals) + 12);
+        Matrix3* gun_orient = reinterpret_cast<Matrix3*>(reinterpret_cast<char*>(&player->shield_decals) + 12 + sizeof(Vector3));
+        gun_pos->assign(&world_pos, &pd->fpgun_pos);
+        gun_orient->assign(&pd->fpgun_orient);
+
+        bool dec21 = (pd->flags & 0x01) != 0;
+        bool dec23 = (pd->flags & 0x02) != 0;
+        //player->shield_decals[21] = dec21;
+        //player->shield_decals[22] = pd->grenade_mode;
+        //player->shield_decals[23] = dec23;
+
+        int cur = ent->ai.current_primary_weapon;
+        if (cur == remote_charge_weapon_type && !dec23)
+            ent->ai.current_primary_weapon = remote_charge_det_weapon_type;
+
+        if (ent->host_handle != -1) {
+            int ht = ent->host_tag_handle;
+            ent->host_tag_handle = -1;
+
+            if (auto host = obj_from_handle(ent->host_handle); host && host->type == OT_ENTITY) {
+                //auto host_ent = reinterpret_cast<rf::Entity*>(host);
+                //auto host_ent = reinterpret_cast<rf::Entity*>(host);
+                entity_headlamp_turn_off(ent);
+                ent->attach_leech(ent->handle, ht);
+                //Entity::attach_leech(host, ent->handle, ht);
+                //host_ent.leech_attach(ent->handle, ht); // todo
+                //ent->last_pos.x = (ent->last_pos.x & ~0x0030000) | 0x0010000;
+                uint32_t bits = std::bit_cast<uint32_t>(ent->last_pos.x);
+                bits = (bits & ~0x0030000u) | 0x0010000u;
+                ent->last_pos.x = std::bit_cast<float>(bits);
+                obj_set_friendliness(ent, 1);
+
+                // copy two vectors at offsets +108, +120
+                /* Vector3::assign(
+                    reinterpret_cast<Vector3*>(&host->start_orient.fvec.y), &world_pos,
+                    reinterpret_cast<const Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 108));
+                Vector3::assign(
+                    reinterpret_cast<Vector3*>(&host->root_bone_index), &world_pos,
+                    reinterpret_cast<const Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 120));*/
+
+                auto src1 = reinterpret_cast<const rf::Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 108);
+                auto dst1 = reinterpret_cast<rf::Vector3*>(&host->start_orient.fvec.y);
+                rf::Vector3 tmp1;
+                dst1->assign(&tmp1, src1);
+
+                auto src2 = reinterpret_cast<const rf::Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 120);
+                auto dst2 = reinterpret_cast<rf::Vector3*>(&host->root_bone_index);
+                rf::Vector3 tmp2;
+                dst2->assign(&tmp2, src2);
+
+                if (entity_is_jeep_gunner(ent)) {
+                    ent->min_rel_eye_phb.assign(&world_pos, &jeep_gunner_min_phb);
+                    ent->max_rel_eye_phb.assign(&world_pos, &jeep_gunner_max_phb);
+                }
+                if (entity_is_automobile(ent))
+                    obj_physics_activate(host);
+            }
+        }
+
+        entity_update_collision_spheres(ent);
+
+        if (ent->entity_flags & 0x400) {
+            entity_crouch(ent);
+            player->is_crouched = true;
+        }
+
+        return true;
+
+        /*
+        // Only spawn a new player-entity when we're *not* in the middle of a level transition:
+        if (1==1||gameseq_get_state() != GS_LEVEL_TRANSITION) {
+            xlog::warn("3 unpacking player");
+            Quaternion q;
+            q.unpack(&blk->obj.orient);
+            Matrix3 m;
+            q.extract_matrix(&m);
+
+            // 2) Unpack position
+            //Vector3 world_pos = ShortVector::decompress(world_solid, blk->obj.pos);
+            Vector3 world_pos;
+            rf::decompress_vector3(rf::world_solid, &blk->obj.pos, &world_pos);
+            xlog::warn("[ASG]   spawn position = x={:.3f}, y={:.3f}, z={:.3f}", world_pos.x, world_pos.y, world_pos.z);
+
+            // 3) Spawn the Entity and replay its saved state
+            Entity* ent = rf::player_create_entity(player, static_cast<int>(blk->info_index), &world_pos, &m, -1);
+            if (!ent)
+                return false;
+
+            // copy back everything the stock would have:
+            asg::deserialize_entity_state(ent, *blk);
+
+            // 2) Unpack position
+            // Vector3 world_pos = ShortVector::decompress(world_solid, blk->obj.pos);
+            Vector3 world_pos2;
+            rf::decompress_vector3(rf::world_solid, &blk->obj.pos, &world_pos2);
+            xlog::warn("[ASG]   spawn position = x={:.3f}, y={:.3f}, z={:.3f}", world_pos2.x, world_pos2.y, world_pos2.z);
+            ent->pos = world_pos2;
+
+            // 4) Re-attach host (if any)
+            if (pd->entity_host_uid >= 0) {
+                if (auto host_obj = obj_lookup_from_uid(pd->entity_host_uid))
+                    ent->host_handle = host_obj->handle;
+                else
+                    ent->host_handle = -1;
+            }
+
+            // 5) Restore Player-specific fields:
+
+            // — spew index & position
+            player->spew_vector_index = pd->spew_vector_index;
+            player->spew_pos = pd->spew_pos;
+
+            // — key-items bitfield
+            {
+                uint32_t mask = *reinterpret_cast<const uint32_t*>(&pd->key_items);
+                for (int i = 0; i < 32; ++i) player->key_items[i] = (mask >> i) & 1;
+            }
+
+            // — view_from handle
+            if (pd->view_obj_uid >= 0) {
+                if (auto v = obj_lookup_from_uid(pd->view_obj_uid))
+                    player->view_from_handle = v->handle;
+                else
+                    player->view_from_handle = -1;
+            }
+            else {
+                player->view_from_handle = -1;
+            }
+
+            // — first-person gun transform
+            //   we know shield_decals layout; offset 12 bytes is gun-pos, next 3×Vector3 is orient
+            Vector3* gun_pos = reinterpret_cast<Vector3*>(reinterpret_cast<char*>(&player->shield_decals) + 12);
+            Matrix3* gun_orient =
+                reinterpret_cast<Matrix3*>(reinterpret_cast<char*>(&player->shield_decals) + 12 + sizeof(Vector3));
+            *gun_pos = pd->fpgun_pos;
+            *gun_orient = pd->fpgun_orient;
+
+            // — grenade mode
+            //player->gren = pd->grenade_mode;
+        }
+
+        return true;*/
     }
 
     SavegameData build_savegame_data(rf::Player* pp)
@@ -885,6 +1583,8 @@ namespace asg
         data.header.version = g_save_data.header.version;
         data.header.game_time = g_save_data.header.game_time;
         data.header.mod_name = g_save_data.header.mod_name;
+        data.header.level_time_left = rf::level_time2;
+        //data.header.level_time2 = 
 
         xlog::warn("[ASG]   header → time={} mod='{}'", data.header.game_time, data.header.mod_name);
 
@@ -920,6 +1620,39 @@ namespace asg
 
         return data;
     }
+
+    int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr)
+    {
+        g_sr_delayed_uids.push_back(uid);
+        g_sr_delayed_ptrs.push_back(obj_handle_ptr);
+        // return number of delayed uids
+        return int(g_sr_delayed_uids.size());
+    }
+
+    void clear_delayed_handles()
+    {
+        g_sr_delayed_uids.clear();
+        g_sr_delayed_ptrs.clear();
+    }
+
+    void resolve_delayed_handles()
+    {
+        for (size_t i = 0; i < g_sr_delayed_uids.size(); ++i) {
+            int uid = g_sr_delayed_uids[i];
+            int* dst = g_sr_delayed_ptrs[i];
+
+            if (auto obj = rf::obj_lookup_from_uid(uid)) {
+                xlog::warn("resolving handle for uid {}", uid);
+                *dst = obj->handle;
+            }
+            else {
+                //xlog::warn("no object to resolve handle for uid {}", uid);
+                *dst = -1;
+            }
+        }
+        // clear for the next transitional load
+        clear_delayed_handles();
+    }
 } // namespace asg
 
 static toml::table make_header_table(const asg::SavegameHeader& h)
@@ -929,6 +1662,7 @@ static toml::table make_header_table(const asg::SavegameHeader& h)
     hdr.insert("game_time", rf::level.global_time);
     hdr.insert("mod_name", rf::mod_param.found() ? rf::mod_param.get_arg() : "");
     hdr.insert("current_level_filename", h.current_level_filename);
+    hdr.insert("current_level_idx", h.current_level_idx);
     hdr.insert("num_saved_levels", h.num_saved_levels);
 
     toml::array slots;
@@ -1037,11 +1771,13 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
 
     // orient as 3×3 array
     toml::array orient;
-    for (auto const& row : {o.orient.rvec, o.orient.uvec, o.orient.fvec}) {
+    /* for (auto const& row : {o.orient.rvec, o.orient.uvec, o.orient.fvec}) {
         toml::array r{row.x, row.y, row.z};
         orient.push_back(std::move(r));
     }
-    t.insert("orient", std::move(orient));
+    t.insert("orient", std::move(orient));*/
+    toml::array quat{ o.orient.x, o.orient.y, o.orient.z, o.orient.w };
+    t.insert("orient", std::move(quat));
 
     t.insert("obj_flags", o.obj_flags);
     t.insert("host_uid", o.host_uid);
@@ -1544,6 +2280,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_save_game_hook{
             std::string newName = p.string();
 
             xlog::warn("writing new format save {} for player {}", newName, pp->name);
+            rf::sr::g_disable_saving_persistent_goals = false;
             asg::SavegameData data = asg::build_savegame_data(pp);
             return serialize_savegame_to_asg_file(newName, data);
         }
@@ -1560,14 +2297,20 @@ FunHook<void(rf::Player* pp)> sr_transitional_save_hook{
     [](rf::Player *pp) {
 
         if (g_alpine_game_config.use_new_savegame_format) {
+            rf::sr::g_disable_saving_persistent_goals = true;
+
+            //asg::serialize_player(pp, g_save_data.common.player);
+
             size_t idx = asg::ensure_current_level_slot();
             xlog::warn("[ASG] transitional_save: slot #{} = {}", idx, g_save_data.header.saved_level_filenames[idx]);
 
             asg::serialize_all_objects(&g_save_data.levels[idx]);
             xlog::warn("[ASG] transitional_save: serialized level {}", g_save_data.levels[idx].header.filename);
 
+            g_save_data.header.level_time_left = rf::level_time2;
+
             // maintain old code temporarily
-            sr_transitional_save_hook.call_target(pp);
+            //sr_transitional_save_hook.call_target(pp);
         }
         else {
             sr_transitional_save_hook.call_target(pp);
@@ -1580,6 +2323,7 @@ FunHook<void()> sr_reset_save_data_hook{
     0x004B52C0,
     []() {
         if (g_alpine_game_config.use_new_savegame_format) {
+            
             // clear new save data global
             g_save_data = {};
 
@@ -1651,6 +2395,114 @@ FunHook<void(const char* msg, int16_t persona_type)> hud_save_persona_msg_hook{
         }
         else {
             hud_save_persona_msg_hook.call_target(msg, persona_type);
+        }
+    }
+};
+
+FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
+    0x004B47A0,
+    [](const char* filename, rf::Player* pp) {
+
+        if (g_alpine_game_config.use_new_savegame_format) {
+            // 1) Transitional load: filename == "auto.svl"
+            //if (0 == _stricmp(filename, kAutoSvlName)) {
+            std::string filename_str = filename;
+            if (string_starts_with_ignore_case(filename_str, "auto.")) {
+                xlog::warn("ASG transitional load: loaded {}", filename_str);
+                // figure out which slot we’re transitioning into:
+                // stock engine sets hdr.current_level_idx during sr_serialize_to_buffer
+                //int idx = int(g_save_data.header.current_level_idx);
+
+                auto& hdr = g_save_data.header;
+                std::string cur = string_to_lower(rf::level.filename);
+                auto it = std::find(hdr.saved_level_filenames.begin(), hdr.saved_level_filenames.end(), cur);
+                if (it == hdr.saved_level_filenames.end()) {
+                    xlog::error("ASG transitional load: no saved slot for level '{}'", cur);
+                    return false;
+                }
+                int idx = int(std::distance(hdr.saved_level_filenames.begin(), it));
+                xlog::warn("ASG transitional load: using slot #{} for '{}'", idx, cur);
+                //xlog::warn("checking level IDX {}", idx);
+
+
+
+
+
+                if (idx < 0 || idx >= int(g_save_data.levels.size()))
+                    return false;
+
+                rf::timer_inc_game_paused();
+                auto& lvl = g_save_data.levels[idx];
+                xlog::warn("found level IDX {}, filename is {}", idx, lvl.header.filename);
+                // restore world bounds
+                xlog::warn("[ASG]   current bbox_min = x={:.3f}, y={:.3f}, z={:.3f}", rf::world_solid->bbox_min.x,
+                           rf::world_solid->bbox_min.y, rf::world_solid->bbox_min.z);
+                xlog::warn("[ASG]   current bbox_max = x={:.3f}, y={:.3f}, z={:.3f}", rf::world_solid->bbox_max.x,
+                           rf::world_solid->bbox_max.y, rf::world_solid->bbox_max.z);
+                xlog::warn("[ASG]   new bbmox_min = x={:.3f}, y={:.3f}, z={:.3f}", lvl.header.aabb_min.x,
+                           lvl.header.aabb_min.y, lvl.header.aabb_min.z);
+                xlog::warn("[ASG]   new bbmox_max = x={:.3f}, y={:.3f}, z={:.3f}", lvl.header.aabb_max.x,
+                           lvl.header.aabb_max.y, lvl.header.aabb_max.z);
+                rf::world_solid->bbox_min = lvl.header.aabb_min;
+                rf::world_solid->bbox_max = lvl.header.aabb_max;
+
+                // restore objects
+                asg::deserialize_all_objects(&lvl);
+
+                // restore the level timer
+                //xlog::warn("restoring current level time {} to buffer time {}", rf::level_time_flt, lvl.header.level_time);
+                //rf::level_time_flt = lvl.header.level_time;
+
+                // resolve pending handle fixes
+                asg::resolve_delayed_handles();
+                // restore the player to entity -999
+
+                // only if loading a new level
+                if (rf::gameseq_get_state() != rf::GS_LEVEL_TRANSITION) {
+                    asg::SavegameEntityDataBlock* player_block = nullptr;
+                    for (auto& e : lvl.entities) {
+                        if (e.obj.uid == -999) {
+                            player_block = &e;
+                            xlog::warn("found player, ent {}", player_block->obj.uid);
+                            break;
+                        }
+                    }
+                    if (!asg::load_player(&g_save_data.common.player, pp, player_block)) // TBD
+                    {
+                        rf::timer_dec_game_paused();
+                        rf::sr::reset_save_data();
+                        return false;
+                    }
+
+                    // resolve pending handle fixes
+                    asg::resolve_delayed_handles();
+                    // 1e) patch up any sticking‐to‐ground, music, difficulty, etc.
+                    auto player_ent = rf::obj_lookup_from_uid(-999);
+                    if (player_ent && player_ent->type == rf::ObjectType::OT_ENTITY) {
+                        xlog::warn("sticking player to ground");
+                        rf::physics_stick_to_ground(reinterpret_cast<rf::Entity*>(player_ent)); // TBD
+                        xlog::warn("stuck player to ground");
+                    }
+                    rf::game_set_skill_level(g_save_data.common.game.difficulty);
+                    // (and whatever else your stock hook does)
+                }
+                rf::timer_dec_game_paused();
+                return true;
+            }
+
+            // 2) On-disk load: a ".asg" file
+            if (std::filesystem::path(filename).extension() == ".asg") {
+                // parse TOML into g_save_data
+                //if (!deserialize_savegame_from_asg_file(filename, g_save_data)) // TBD
+                //    return false;
+
+                // now that we've repopulated g_save_data.header.current_level_idx etc,
+                // jump straight into the same transitional path:
+                //return sr_load_level_state_hook.call_target(kAutoSvlName, player);
+            }
+        }
+        else {
+            return sr_load_level_state_hook.call_target(filename, pp);
         }
     }
 };
@@ -1792,12 +2644,26 @@ FunHook<bool(rf::GFace* f)> glass_face_can_be_destroyed_hook{
     }
 };
 
+CallHook<void(rf::Object* obj, rf::Vector3* pos, rf::Matrix3* orient)> game_restore_object_after_level_transition_hook{
+    0x00435EE0, [](rf::Object* obj, rf::Vector3* pos, rf::Matrix3* orient) {
+        xlog::warn("[ASG] restoring object {} after level transition, pos {},{},{}", obj->uid, pos->x, pos->y, pos->z);
+
+        game_restore_object_after_level_transition_hook.call_target(obj, pos, orient);
+    }
+};
+
 void alpine_savegame_apply_patch()
 {
+    game_restore_object_after_level_transition_hook.install();
+
+    // handle serializing and saving asg files
     sr_save_game_hook.install();
     sr_transitional_save_hook.install();
     sr_reset_save_data_hook.install();
     hud_save_persona_msg_hook.install();
+
+    // handle deserializing and loading asg files
+    sr_load_level_state_hook.install();
 
     // handle new array for event deletion
     event_delete_injection.install();

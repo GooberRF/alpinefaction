@@ -116,9 +116,13 @@ namespace rf
         addr_as_ref<void(GRoom* room, float target_liquid_depth, float duration)>(0x0045E640);
     static auto& level_room_from_uid = addr_as_ref<GRoom*(int uid)>(0x0045E7C0);
 
+    static auto& level_time2 = *reinterpret_cast<float*>(0x006460F8);
+
     static auto& level = addr_as_ref<LevelInfo>(0x00645FD8);
     static auto& level_filename_to_load = addr_as_ref<String>(0x00646140);
     static auto& level_get_push_region_from_uid = addr_as_ref<PushRegion*(int uid)>(0x0045D6D0);
+
+    static auto& level_time_flt = *reinterpret_cast<float*>(0x006460F0);
 
     static auto& push_region_list = addr_as_ref<VArray<PushRegion*>>(0x006460BC);
 

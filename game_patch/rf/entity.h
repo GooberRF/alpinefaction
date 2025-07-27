@@ -203,6 +203,7 @@ namespace rf
     constexpr int MAX_ENTITY_TYPES = 75;
     static auto& num_entity_types = addr_as_ref<int>(0x0062F2D0);
     static auto& entity_types = addr_as_ref<EntityInfo[MAX_ENTITY_TYPES]>(0x005CC500);
+    static auto& default_entity_name = addr_as_ref<char>(0x0062F484);
 
     struct MoveMode
     {
@@ -214,6 +215,26 @@ namespace rf
         int rot_ref_x;
         int rot_ref_y;
         int rot_ref_z;
+    };
+
+    enum MovementMode : int
+    {
+        MM_NONE,
+        MM_RUN,
+        MM_CLIMB,
+        MM_FALL,
+        MM_SWIM,
+        MM_APC,
+        MM_APC_FALL,
+        MM_SUB,
+        MM_SUB_FALL,
+        MM_FIGHTER,
+        MM_TURRET,
+        MM_ROBOT_FLY,
+        MM_HOVER,
+        MM_FREELOOK_CAM,
+        MM_DEAD_CAM,
+        MM_DESCENT_FLY
     };
 
     struct EntityControlData
@@ -359,6 +380,11 @@ namespace rf
         int field_1488;
         VMesh *respawn_vfx_handle;
         Timestamp field_1490;
+
+        bool attach_leech(int leech_handle, int tag_handle)
+        {
+            return AddrCaller{0x00427240}.this_call<bool>(this, leech_handle, tag_handle);
+        }
     };
     static_assert(sizeof(Entity) == 0x1494);
 
@@ -407,6 +433,8 @@ namespace rf
 
     static auto& entity_from_handle = addr_as_ref<Entity*(int handle)>(0x00426FC0);
     static auto& entity_lookup_type = addr_as_ref<int(const char* name)>(0x004251C0);
+    static auto& player_create_entity =
+        addr_as_ref<Entity*(Player* pp, int entity_type, Vector3* pos, Matrix3* orient, int mp_character)>(0x004A4130);
     static auto& entity_create =
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,
         const Matrix3& orient, int create_flags, int mp_character)>(0x00422360);
@@ -418,6 +446,7 @@ namespace rf
     static auto& entity_is_vehicle = addr_as_ref<bool(Entity* ep)>(0x00429990);
     static auto& entity_is_local_player_or_player_attached = addr_as_ref<bool(Entity* ep)>(0x0042A910);
     static auto& entity_is_jeep_driver = addr_as_ref<bool(Entity *ep)>(0x0042AC80);
+    static auto& entity_is_automobile = addr_as_ref<bool(Entity* ep)>(0x0042D7B0);
     static auto& entity_is_jeep_gunner = addr_as_ref<bool(Entity *ep)>(0x0042ACD0);
     static auto& entity_is_local_player = addr_as_ref<bool(Entity* ep)>(0x0042A8E0);
     static auto& entity_is_driller = addr_as_ref<bool(Entity *ep)>(0x0042D780);
@@ -434,6 +463,7 @@ namespace rf
     static auto& entity_is_flying = addr_as_ref<bool(Entity* ep)>(0x0042A060);
     static auto& entity_make_fly = addr_as_ref<void(Entity* ep)>(0x00428130);
     static auto& entity_make_run = addr_as_ref<void(Entity* ep)>(0x004280B0);
+    static auto& entity_crouch = addr_as_ref<void(Entity* ep)>(0x004289D0);
     static auto& entity_on_ground = addr_as_ref<bool(Entity* ep)>(0x0042A0D0);
     static auto& entity_can_swim = addr_as_ref<bool(Entity* ep)>(0x00427FF0);
     static auto& entity_headlamp_turn_on = addr_as_ref<void(Entity* ep)>(0x00429560);
@@ -456,9 +486,15 @@ namespace rf
     static auto& entity_detach_from_host = addr_as_ref<void(Entity* ep)>(0x004279D0);
     static auto& entity_set_skin = addr_as_ref<void(Entity* ep, const char* skin_name)>(0x00428FB0);
     static auto& entity_sim_distance = addr_as_ref<float>(0x00589548);
+    static auto& physics_stick_to_ground = addr_as_ref<void(Entity* ep)>(0x004A0840);
+    static auto& entity_update_collision_spheres = addr_as_ref<void(Entity* ep)>(0x0041DA00);
+    static auto& movemode_get_mode = addr_as_ref<MoveMode*(MovementMode mode)>(0x004339D0);
 
     static auto& entity_list = addr_as_ref<Entity>(0x005CB060);
     static auto& local_player_entity = addr_as_ref<Entity*>(0x005CB054);
+
+    static auto& jeep_gunner_min_phb = addr_as_ref<Vector3>(0x007C7618);
+    static auto& jeep_gunner_max_phb = addr_as_ref<Vector3>(0x007C75F0);
 
     static auto& persona_info = addr_as_ref<PersonaInfo[0x10]>(0x0062F998);
 }

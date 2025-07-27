@@ -70,6 +70,7 @@ namespace rf::sr {
     static auto& can_save_now = addr_as_ref<bool()>(0x004B61A0);
     static bool& g_should_save_deleted_events = *reinterpret_cast<bool*>(0x00856501);
     static bool& g_disable_saving_persistent_goals = *reinterpret_cast<bool*>(0x008548E0);
+    static auto& reset_save_data = addr_as_ref<void()>(0x004B52C0);
 
     static auto& savegame_path = addr_as_ref<char[260]>(0x007DB3EC);
 }
