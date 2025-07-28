@@ -136,6 +136,11 @@ namespace rf
         {
             AddrCaller{0x004F8730}.this_call(this, ppm);
         }
+
+        GRoom* find_new_room(GRoom* org_room, Vector3* org_pos, Vector3* new_pos, const char* object_name)
+        {
+            return AddrCaller{0x004CD970}.this_call<GRoom*>(this, org_room, org_pos, new_pos, object_name);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
 
@@ -357,6 +362,22 @@ namespace rf
     };
     static_assert(sizeof(GPathNode) == 0x7C);
 
+    struct GDecalCreateInfo
+    {
+        Vector3 pos;
+        Matrix3 orient;
+        Vector3 extents;
+        int texture;
+        GRoom* room;
+        uint8_t alpha;
+        char padding[3];
+        int flags;
+        int object_handle;
+        GSolid* solid;
+        float scale;
+    };
+    static_assert(sizeof(GDecalCreateInfo) == 0x58);
+
     struct GDecal
     {
         Vector3 pos;
@@ -499,12 +520,14 @@ namespace rf
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);
 
     static auto& g_decal_get_list = addr_as_ref<void(GDecal** decal_list, int *out_num)>(0x004D7640);
+    static auto& g_decal_add = addr_as_ref<GDecal*(GDecalCreateInfo* dci)>(0x004D52E0);
 
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
 
     static auto& world_solid = addr_as_ref<GSolid*>(0x006460E8);
     static auto& num_geomods_this_level = *reinterpret_cast<int*>(0x00647C9C);
-    static auto* geomods_this_level = reinterpret_cast<GeomodCraterData*>(0x00648600);
+    //static auto* geomods_this_level = reinterpret_cast<GeomodCraterData*>(0x00648600);
+    static auto geomods_this_level = reinterpret_cast<GeomodCraterData*>(0x00648600);
     static auto& g_boolean_is_in_progress = addr_as_ref<bool()>(0x004DBC40);
 
     static auto& levelmod_load_state = addr_as_ref<void()>(0x004674B0);

@@ -78,13 +78,16 @@ namespace asg
         float life;
         float armor;
         rf::ShortVector pos;
+        rf::Vector3* pos_ha;
         rf::ShortVector vel;
+        rf::Vector3* vel_ha;
         //char friendliness;
         int friendliness;
         //char host_tag_handle;
         int host_tag_handle;
         //rf::Matrix3 orient;
         rf::ShortQuat orient;
+        rf::Matrix3* orient_ha;
         int obj_flags;
         int host_uid;
         rf::Vector3 ang_momentum;
@@ -181,7 +184,7 @@ namespace asg
     {
         int uid;
         rf::ShortVector pos;
-        // 2 bytes here, unsure what for
+        rf::Vector3* pos_ha;
         int count;
         float time_last_activated;
         int trigger_flags;

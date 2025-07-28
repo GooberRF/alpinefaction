@@ -403,6 +403,8 @@ namespace asg
         // — (skin_name etc)
         out.skin_name = "";
 
+        xlog::warn("made block for obj {}", o->uid);
+
         /* out.uid = o->uid;
         out.parent_uid = o->parent_handle; // may need to make this uid
         out.life = o->life;
@@ -825,7 +827,7 @@ namespace asg
             if (!e)
                 continue;
 
-            if (e->obj_flags & 0x800) // IN_LEVEL_TRANSITION
+            if (e->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) // IN_LEVEL_TRANSITION
             {
                 xlog::warn("skipping UID {} - transition flag is set", e->uid);
                 continue;
@@ -1042,7 +1044,7 @@ namespace asg
         for (rf::Corpse* t = rf::corpse_list.next; t != &rf::corpse_list; t = t->next) {
             if (t) {
                 // 0x800 is IN_LEVEL_TRANSITION
-                if ((t->obj_flags & 0x800) == 0)
+                if ((t->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) == 0)
                     out.push_back(make_corpse_block(t));
             }
         }
@@ -1165,6 +1167,7 @@ namespace asg
 
         // geo craters
         int n = rf::num_geomods_this_level;
+        xlog::warn("{} geomods this level", n);
         xlog::warn("[ASG]     populating {} geomod_craters for level '{}'", n, data->header.filename);
         data->geomod_craters.clear();
         if (n > 0) {
@@ -1322,7 +1325,7 @@ namespace asg
             bool found = false;
 
             // only replay if not “in transition only,” or we’re out of that mode
-            if ((ent->obj_flags & 0x800) == 0 || !in_transition) {
+            if ((ent->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) == 0 || !in_transition) {
                 //xlog::warn("looking at ent {}", ent->uid);
                 // search for matching UID in our vector
                 for (auto const& blk : blocks) {
@@ -1549,13 +1552,327 @@ namespace asg
         resolve_delayed_handles();
     }
 
+    static void apply_trigger_fields(rf::Trigger* t, const SavegameTriggerDataBlock& b)
+    {
+        // position
+        rf::decompress_vector3(rf::world_solid, &b.pos, &t->p_data.pos);
+        t->pos = t->p_data.pos;
+        t->p_data.next_pos = t->p_data.pos;
+
+        // simple scalars
+        t->count = b.count;
+        t->trigger_flags = b.trigger_flags;
+        t->time_last_activated = b.time_last_activated;
+
+        // activator handle
+        add_handle_for_delayed_resolution(b.activator_handle, &t->activator_handle);
+
+        // timestamps
+        rf::sr::sr_deserialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
+        rf::sr::sr_deserialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
+    }
+
+    static void trigger_deserialize_all_state(const std::vector<SavegameTriggerDataBlock>& blocks)
+    {
+        clear_delayed_handles();
+
+        // build UID→block map
+        std::unordered_map<int, SavegameTriggerDataBlock> tbl;
+        tbl.reserve(blocks.size());
+        for (auto const& b : blocks) tbl[b.uid] = b;
+
+        // walk the stock trigger_list
+        for (rf::Trigger* t = rf::trigger_list.next; t != &rf::trigger_list; t = t->next) {
+            auto it = tbl.find(t->uid);
+            if (it != tbl.end()) {
+                // found a savegame record → replay
+                apply_trigger_fields(t, it->second);
+            }
+            else {
+                // no record → kill/hide it
+                rf::obj_flag_dead(t);
+            }
+        }
+
+        // now fix up all queued handles
+        resolve_delayed_handles();
+    }
+
+    static void apply_clutter_fields(rf::Clutter* c, const SavegameClutterDataBlock& b)
+    {
+        // 1) restore the common Object fields (life, armor, pos/orient, physics, obj_flags, etc)
+        deserialize_object_state(c, b.obj);
+        xlog::warn("attempting to deserialize clutter {}", b.obj.uid);
+
+        // 2) rehydrate the two timestamps
+        rf::sr::sr_deserialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
+        rf::sr::sr_deserialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
+
+        // 3) rebuild the link list, queuing each uid for delayed resolution
+        c->links.clear();
+        for (int uid : b.links) {
+            c->links.add(-1);
+            int& slot = c->links[c->links.size() - 1];
+            add_handle_for_delayed_resolution(uid, &slot);
+        }
+    }
+
+    static void clutter_deserialize_all_state(const std::vector<SavegameClutterDataBlock>& blocks)
+    {
+        clear_delayed_handles();
+        xlog::warn("deserializing clutter...");
+
+        // build a UID → block map
+        std::unordered_map<int, SavegameClutterDataBlock> blkmap;
+        blkmap.reserve(blocks.size());
+        for (auto const& b : blocks) blkmap[b.obj.uid] = b;
+
+        // if you want to skip transition-only clutter exactly like stock:
+        bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
+
+        // walk the stock clutter_list
+        for (rf::Clutter* c = rf::clutter_list.next; c != &rf::clutter_list; c = c->next) {
+            // stock only replays if not “transition only” or we’re out of transition…
+            //if ((c->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) && in_transition)
+            //    continue;
+            
+            auto it = blkmap.find(c->uid);
+            xlog::warn("checking clutter from asg uid {}, original uid {}", it->second.obj.uid, c->uid);
+            if (it != blkmap.end()) {
+                apply_clutter_fields(c, it->second);
+            }
+            else {
+                // no saved block → kill it
+                rf::obj_flag_dead(c);
+            }
+        }
+
+        // finally resolve every delayed UID→handle you enqueued above
+        resolve_delayed_handles();
+    }
+
+    static void apply_item_fields(rf::Item* it, const SavegameItemDataBlock& b)
+    {
+        // 1) common Object fields
+        deserialize_object_state(it, b.obj);
+
+        // 2) restore the two timestamps
+        rf::sr::sr_deserialize_timestamp(&it->respawn_next, &b.respawn_timer);
+        it->alpha = *reinterpret_cast<const float*>(&b.alpha);
+        it->create_time = b.create_time;
+        it->item_flags = b.flags;
+    }
+
+    static void item_deserialize_all_state(const std::vector<SavegameItemDataBlock>& blocks)
+    {
+        clear_delayed_handles();
+
+        // build UID → block map
+        std::unordered_map<int, SavegameItemDataBlock> map;
+        map.reserve(blocks.size());
+        for (auto const& b : blocks) map[b.obj.uid] = b;
+
+        bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
+
+        // 1) replay or kill all existing items
+        for (rf::Item* it = rf::item_list.next; it != &rf::item_list; it = it->next) {
+            // skip transition-only items
+            if ((it->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) && in_transition)
+                continue;
+
+            auto f = map.find(it->uid);
+            if (f != map.end()) {
+                apply_item_fields(it, f->second);
+            }
+            else {
+                // not in save → kill
+                if (!(it->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION))
+                    rf::obj_flag_dead(it);
+            }
+        }
+
+        // spawn items that were in the save but not in the world by default
+        // todo: same for entities and clutter
+        for (auto const& b : blocks) {
+            if (!rf::obj_lookup_from_uid(b.obj.uid)) {
+                // decompress orient & pos
+                rf::Quaternion q;
+                q.unpack(&b.obj.orient);
+                rf::Matrix3 m;
+                q.extract_matrix(&m);
+                rf::Vector3 p;
+                rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+
+                // stock signature: item_create(cls_id, default_name, info_mesh, -1, &p, &m, -1,0,0)
+                rf::Item* ni = rf::item_create(b.item_cls_id, "", rf::item_counts[20 * b.item_cls_id], -1, &p, &m, -1, 0, 0);
+                if (ni)
+                    apply_item_fields(ni, b);
+            }
+        }
+
+        // 3) finally, resolve all the UID→handle lookups we enqueued
+        resolve_delayed_handles();
+    }
+
+    static void deserialize_bolt_emitters(const std::vector<SavegameLevelBoltEmitterDataBlock>& blocks)
+    {
+        auto& list = rf::bolt_emitter_list;
+        for (size_t i = 0, n = list.size(); i < n; ++i) {
+            auto* e = list.get(i);
+            if (!e)
+                continue;
+            // find a saved block with matching uid
+            auto it = std::find_if(blocks.begin(), blocks.end(), [&](auto const& blk) { return blk.uid == e->uid; });
+            if (it != blocks.end()) {
+                e->active = it->active;
+            }
+        }
+    }
+
+    static void deserialize_particle_emitters(const std::vector<SavegameLevelParticleEmitterDataBlock>& blocks)
+    {
+        auto& list = rf::particle_emitter_list;
+        for (size_t i = 0, n = list.size(); i < n; ++i) {
+            auto* e = list.get(i);
+            if (!e)
+                continue;
+            auto it = std::find_if(blocks.begin(), blocks.end(), [&](auto const& blk) { return blk.uid == e->uid; });
+            if (it != blocks.end()) {
+                e->active = it->active;
+            }
+        }
+    }
+
+    static void apply_mover_fields(rf::Mover* mv, const SavegameLevelKeyframeDataBlock& b)
+    {
+        // 1) restore the shared Object fields
+        deserialize_object_state(mv, b.obj);
+
+        // 2) replay all the mover-specific fields
+        mv->rot_cur_pos = b.rot_cur_pos;
+        mv->start_at_keyframe = b.start_at_keyframe;
+        mv->stop_at_keyframe = b.stop_at_keyframe;
+        mv->mover_flags = b.mover_flags;
+        mv->travel_time_seconds = b.travel_time_seconds;
+        mv->rotation_travel_time_seconds_unk = b.rotation_travel_time_seconds;
+        rf::sr::sr_deserialize_timestamp(&mv->wait_timestamp, &b.wait_timestamp);
+
+        if (b.trigger_uid >= 0)
+            add_handle_for_delayed_resolution(b.trigger_uid, &mv->trigger_handle);
+        else
+            mv->trigger_handle = -1;
+
+        mv->dist_travelled = b.dist_travelled;
+        mv->cur_vel = b.cur_vel;
+        mv->stop_completely_at_keyframe = b.stop_completely_at_keyframe;
+    }
+
+    static void mover_deserialize_all_state(const std::vector<SavegameLevelKeyframeDataBlock>& blocks)
+    {
+        clear_delayed_handles();
+
+        // build a UID → block map
+        std::unordered_map<int, SavegameLevelKeyframeDataBlock> blkmap;
+        blkmap.reserve(blocks.size());
+        for (auto const& b : blocks) blkmap[b.obj.uid] = b;
+
+        bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
+
+        // replay or kill/hide each mover in the world
+        for (rf::Mover* mv = rf::mover_list.next; mv != &rf::mover_list; mv = mv->next) {
+            // stock skips “in-transition only” movers while still in transition
+            if ((mv->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) && in_transition)
+                continue;
+
+            auto it = blkmap.find(mv->uid);
+            if (it != blkmap.end()) {
+                apply_mover_fields(mv, it->second);
+            }
+            else {
+                // no saved block → kill it
+                rf::obj_flag_dead(mv);
+            }
+        }
+
+        resolve_delayed_handles();
+    }
+
+    static void apply_push_region_fields(rf::PushRegion* pr, const SavegameLevelPushRegionDataBlock& b)
+    {
+        // simply restore the “enabled” flag
+        pr->is_enabled = b.active;
+    }
+
+    static void push_region_deserialize_all_state(const std::vector<SavegameLevelPushRegionDataBlock>& blocks)
+    {
+        // build a quick UID→active map
+        std::unordered_map<int, bool> active_map;
+        active_map.reserve(blocks.size());
+        for (auto const& blk : blocks) {
+            active_map[blk.uid] = blk.active;
+        }
+
+        // walk the engine’s push_region_list
+        auto& list = rf::push_region_list;
+        for (size_t i = 0, n = list.size(); i < n; ++i) {
+            if (auto* pr = list.get(i)) {
+                auto it = active_map.find(pr->uid);
+                if (it != active_map.end()) {
+                    apply_push_region_fields(pr, SavegameLevelPushRegionDataBlock{pr->uid, it->second});
+                }
+                // stock doesn’t delete missing push regions, so we don’t either
+            }
+        }
+    }
+
+    static void apply_decal_fields(const SavegameLevelDecalDataBlock& b)
+    {
+        // rebuild the stock GDecalCreateInfo
+        rf::GDecalCreateInfo dci{};
+        dci.pos = b.pos;
+        dci.orient = b.orient;
+        dci.extents = b.width;
+        // load the same bitmap
+        dci.texture = rf::bm::load(b.bitmap_filename.c_str(), -1, true);
+        dci.object_handle = -1;
+        dci.flags = b.flags;
+        dci.alpha = b.alpha;
+        dci.scale = b.tiling_scale;
+        // find a room for it
+        dci.room = rf::world_solid->find_new_room(0, &dci.pos, &dci.pos, 0);
+        dci.solid = rf::world_solid;
+
+        rf::g_decal_add(&dci);
+    }
+
+    static void decal_deserialize_all_state(const std::vector<SavegameLevelDecalDataBlock>& blocks)
+    {
+        // stock only ever re-adds saved decals, it never removes existing ones,
+        // so we just replay every saved block
+        for (auto const& blk : blocks) {
+            apply_decal_fields(blk);
+        }
+    }
+
     void deserialize_all_objects(SavegameLevelData* lvl)
     {
         // reset our “UID → int*” mapping
         clear_delayed_handles();
 
-        entity_deserialize_all_state(lvl->entities, lvl->dead_entity_uids);
         event_deserialize_all_state(*lvl);
+        deserialize_bolt_emitters(lvl->bolt_emitters);
+        deserialize_particle_emitters(lvl->particle_emitters);
+        entity_deserialize_all_state(lvl->entities, lvl->dead_entity_uids);
+        item_deserialize_all_state(lvl->items);
+        clutter_deserialize_all_state(lvl->clutter);
+        trigger_deserialize_all_state(lvl->triggers);
+        mover_deserialize_all_state(lvl->movers);
+        push_region_deserialize_all_state(lvl->push_regions);
+        decal_deserialize_all_state(lvl->decals);
+        // weapons
+        // blood pools
+        // corpses
+        // glass
 
         xlog::warn("restoring current level time {} to buffer time {}", rf::level_time_flt, lvl->header.level_time);
         rf::level_time_flt = lvl->header.level_time;
@@ -2884,6 +3201,446 @@ static bool parse_cyclic_timer_events(const toml::array& arr, std::vector<asg::S
     return true;
 }
 
+bool parse_clutter(const toml::array& arr, std::vector<asg::SavegameClutterDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto ct = *node.as_table();
+        asg::SavegameClutterDataBlock cb;
+        parse_object(ct, cb.obj);
+        cb.delayed_kill_timestamp = ct["delayed_kill_timestamp"].value_or(-1);
+        cb.corpse_create_timestamp = ct["corpse_create_timestamp"].value_or(-1);
+        if (auto links = ct["links"].as_array())
+            for (auto& v : *links)
+                if (auto uid = v.value<int>())
+                    cb.links.push_back(*uid);
+        out.push_back(std::move(cb));
+    }
+    return true;
+}
+
+bool parse_items(const toml::array& arr, std::vector<asg::SavegameItemDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameItemDataBlock ib{};
+        // 1) common object fields
+        parse_object(tbl, ib.obj);
+
+        // 2) item‐specific
+        ib.respawn_timer = tbl["respawn_timer"].value_or(-1);
+        ib.alpha = tbl["alpha"].value_or(0);
+        ib.create_time = tbl["create_time"].value_or(0);
+        ib.flags = tbl["flags"].value_or(0);
+        ib.item_cls_id = tbl["item_cls_id"].value_or(0);
+
+        out.push_back(std::move(ib));
+    }
+    return true;
+}
+
+bool parse_triggers(const toml::array& arr, std::vector<asg::SavegameTriggerDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameTriggerDataBlock tb{};
+        tb.uid = tbl["uid"].value_or(0);
+        asg::parse_i16_vector(tbl, "pos", tb.pos);
+        // position → decompress into ShortVector
+        /* if (auto pa = tbl["pos"].as_array()) {
+            auto v = asg::parse_f32_array(*pa);
+            if (v.size() == 3) {
+                rf::Vector3 tmp{v[0], v[1], v[2]};
+                rf::compress_vector3(rf::world_solid, &tmp, &tb.pos);
+            }
+        }*/
+        tb.count = tbl["count"].value_or(0);
+        tb.time_last_activated = tbl["time_last_activated"].value_or(0);
+        tb.trigger_flags = tbl["trigger_flags"].value_or(0);
+        tb.activator_handle = tbl["activator_handle"].value_or(-1);
+        tb.button_active_timestamp = tbl["button_active_timestamp"].value_or(-1);
+        tb.inside_timestamp = tbl["inside_timestamp"].value_or(-1);
+
+        // links
+        if (auto la = tbl["links"].as_array()) {
+            for (auto& v : *la)
+                if (auto uid = v.value<int>())
+                    tb.links.push_back(*uid);
+        }
+
+        out.push_back(std::move(tb));
+    }
+    return true;
+}
+
+bool parse_geomod_craters(const toml::array& arr, std::vector<rf::GeomodCraterData>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        rf::GeomodCraterData c{};
+        c.shape_index = tbl["shape_index"].value_or(0);
+        c.flags = tbl["flags"].value_or(0);
+        c.room_index = tbl["room_index"].value_or(0);
+
+        asg::parse_i16_vector(tbl, "pos", c.pos);
+        asg::parse_i16_vector(tbl, "hit_normal", c.hit_normal);
+        asg::parse_i16_quat(tbl, "orient", c.orient);
+
+        c.scale = tbl["scale"].value_or(1.0f);
+
+        out.push_back(std::move(c));
+    }
+    return true;
+}
+
+bool parse_bolt_emitters(const toml::array& arr, std::vector<asg::SavegameLevelBoltEmitterDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+        asg::SavegameLevelBoltEmitterDataBlock b{};
+        b.uid = tbl["uid"].value_or(0);
+        b.active = tbl["active"].value_or(false);
+        out.push_back(std::move(b));
+    }
+    return true;
+}
+
+bool parse_particle_emitters(const toml::array& arr, std::vector<asg::SavegameLevelParticleEmitterDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+        asg::SavegameLevelParticleEmitterDataBlock p{};
+        p.uid = tbl["uid"].value_or(0);
+        p.active = tbl["active"].value_or(false);
+        out.push_back(std::move(p));
+    }
+    return true;
+}
+
+bool parse_movers(const toml::array& arr, std::vector<asg::SavegameLevelKeyframeDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameLevelKeyframeDataBlock b{};
+        // 1) common Object sub‐block
+        parse_object(tbl, b.obj);
+
+        // 2) mover‐specific fields
+        b.rot_cur_pos = tbl["rot_cur_pos"].value_or(0.0f);
+        b.start_at_keyframe = tbl["start_at_keyframe"].value_or(0);
+        b.stop_at_keyframe = tbl["stop_at_keyframe"].value_or(0);
+        b.mover_flags = tbl["mover_flags"].value_or(0);
+        b.travel_time_seconds = tbl["travel_time_seconds"].value_or(0.0f);
+        b.rotation_travel_time_seconds = tbl["rotation_travel_time_seconds"].value_or(0.0f);
+        b.wait_timestamp = tbl["wait_timestamp"].value_or(-1);
+        b.trigger_uid = tbl["trigger_uid"].value_or(-1);
+        b.dist_travelled = tbl["dist_travelled"].value_or(0.0f);
+        b.cur_vel = tbl["cur_vel"].value_or(0.0f);
+        b.stop_completely_at_keyframe = tbl["stop_completely_at_keyframe"].value_or(false);
+
+        out.push_back(std::move(b));
+    }
+    return true;
+}
+
+bool parse_push_regions(const toml::array& arr, std::vector<asg::SavegameLevelPushRegionDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameLevelPushRegionDataBlock p{};
+        p.uid = tbl["uid"].value_or(0);
+        p.active = tbl["active"].value_or(false);
+        out.push_back(std::move(p));
+    }
+    return true;
+}
+
+bool parse_decals(const toml::array& arr, std::vector<asg::SavegameLevelDecalDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameLevelDecalDataBlock d{};
+        // pos [x,y,z]
+        if (auto pa = tbl["pos"].as_array()) {
+            auto v = asg::parse_f32_array(*pa);
+            if (v.size() == 3)
+                d.pos = {v[0], v[1], v[2]};
+        }
+
+        // orient [ [rvec], [uvec], [fvec] ]
+        if (auto oa = tbl["orient"].as_array()) {
+            int i = 0;
+            for (auto& rowNode : *oa) {
+                if (auto ra = rowNode.as_array()) {
+                    auto v = asg::parse_f32_array(*ra);
+                    if (v.size() == 3) {
+                        switch (i) {
+                        case 0:
+                            d.orient.rvec = {v[0], v[1], v[2]};
+                            break;
+                        case 1:
+                            d.orient.uvec = {v[0], v[1], v[2]};
+                            break;
+                        case 2:
+                            d.orient.fvec = {v[0], v[1], v[2]};
+                            break;
+                        }
+                    }
+                }
+                ++i;
+            }
+        }
+
+        // width [x,y,z]
+        if (auto wa = tbl["width"].as_array()) {
+            auto v = asg::parse_f32_array(*wa);
+            if (v.size() == 3)
+                d.width = {v[0], v[1], v[2]};
+        }
+
+        d.bitmap_filename = tbl["bitmap_filename"].value_or(std::string{});
+        d.flags = tbl["flags"].value_or(0);
+        d.alpha = tbl["alpha"].value_or(1.0f);
+        d.tiling_scale = tbl["tiling_scale"].value_or(1.0f);
+
+        out.push_back(std::move(d));
+    }
+    return true;
+}
+
+bool parse_weapons(const toml::array& arr, std::vector<asg::SavegameLevelWeaponDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameLevelWeaponDataBlock b{};
+        // 1) common Object fields
+        parse_object(tbl, b.obj);
+
+        // 2) weapon‐specific fields
+        b.next_weapon_uid = tbl["next_weapon_uid"].value_or(-1);
+        b.prev_weapon_uid = tbl["prev_weapon_uid"].value_or(-1);
+        b.info_index = tbl["info_index"].value_or(0);
+        b.life_left_seconds = tbl["life_left_seconds"].value_or(0.0f);
+        b.fly_sound_handle = tbl["fly_sound_handle"].value_or(0);
+        b.light_handle = tbl["light_handle"].value_or(0);
+        b.weapon_flags = tbl["weapon_flags"].value_or(0);
+        b.flicker_index = tbl["flicker_index"].value_or(0);
+        b.sticky_host_uid = tbl["sticky_host_uid"].value_or(-1);
+
+        // sticky_host_pos_offset [x,y,z]
+        if (auto so = tbl["sticky_host_pos_offset"].as_array()) {
+            auto v = asg::parse_f32_array(*so);
+            if (v.size() == 3)
+                b.sticky_host_pos_offset = {v[0], v[1], v[2]};
+        }
+
+        // sticky_host_orient as [[rvec],[uvec],[fvec]]
+        if (auto o = tbl["sticky_host_orient"].as_array()) {
+            int i = 0;
+            for (auto& rowNode : *o) {
+                if (auto ra = rowNode.as_array()) {
+                    auto v = asg::parse_f32_array(*ra);
+                    if (v.size() == 3) {
+                        switch (i) {
+                        case 0:
+                            b.sticky_host_orient.rvec = {v[0], v[1], v[2]};
+                            break;
+                        case 1:
+                            b.sticky_host_orient.uvec = {v[0], v[1], v[2]};
+                            break;
+                        case 2:
+                            b.sticky_host_orient.fvec = {v[0], v[1], v[2]};
+                            break;
+                        }
+                    }
+                }
+                ++i;
+            }
+        }
+
+        b.friendliness = tbl["friendliness"].value_or(0);
+        b.target_uid = tbl["target_uid"].value_or(-1);
+        b.scan_time = tbl["scan_time"].value_or(-1);
+        b.pierce_power_left = tbl["pierce_power_left"].value_or(0);
+        b.thrust_left = tbl["thrust_left"].value_or(0);
+        b.t_flags = tbl["t_flags"].value_or(0);
+
+        // water_hit_point [x,y,z]
+        if (auto wh = tbl["water_hit_point"].as_array()) {
+            auto v = asg::parse_f32_array(*wh);
+            if (v.size() == 3)
+                b.water_hit_point = {v[0], v[1], v[2]};
+        }
+
+        // firing_pos [x,y,z]
+        if (auto fp = tbl["firing_pos"].as_array()) {
+            auto v = asg::parse_f32_array(*fp);
+            if (v.size() == 3)
+                b.firing_pos = {v[0], v[1], v[2]};
+        }
+
+        out.push_back(std::move(b));
+    }
+    return true;
+}
+
+bool parse_blood_pools(const toml::array& arr, std::vector<asg::SavegameLevelBloodPoolDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameLevelBloodPoolDataBlock b{};
+        // pos [x,y,z]
+        if (auto pa = tbl["pos"].as_array()) {
+            auto v = asg::parse_f32_array(*pa);
+            if (v.size() == 3)
+                b.pos = {v[0], v[1], v[2]};
+        }
+
+        // orient [[rvec],[uvec],[fvec]]
+        if (auto oa = tbl["orient"].as_array()) {
+            int i = 0;
+            for (auto& rowNode : *oa) {
+                if (auto ra = rowNode.as_array()) {
+                    auto v = asg::parse_f32_array(*ra);
+                    if (v.size() == 3) {
+                        switch (i) {
+                        case 0:
+                            b.orient.rvec = {v[0], v[1], v[2]};
+                            break;
+                        case 1:
+                            b.orient.uvec = {v[0], v[1], v[2]};
+                            break;
+                        case 2:
+                            b.orient.fvec = {v[0], v[1], v[2]};
+                            break;
+                        }
+                    }
+                }
+                ++i;
+            }
+        }
+
+        // pool_color [r,g,b,a]
+        if (auto ca = tbl["pool_color"].as_array()) {
+            auto v = asg::parse_f32_array(*ca);
+            if (v.size() == 4) {
+                b.pool_color.red = v[0];
+                b.pool_color.green = v[1];
+                b.pool_color.blue = v[2];
+                b.pool_color.alpha = v[3];
+            }
+        }
+
+        out.push_back(std::move(b));
+    }
+    return true;
+}
+
+bool parse_corpses(const toml::array& arr, std::vector<asg::SavegameLevelCorpseDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameLevelCorpseDataBlock b{};
+        // 1) common Object fields
+        parse_object(tbl, b.obj);
+
+        // 2) corpse‐specific fields
+        b.create_time = tbl["create_time"].value_or(0);
+        b.lifetime_seconds = tbl["lifetime_seconds"].value_or(0.0f);
+        b.corpse_flags = tbl["corpse_flags"].value_or(0);
+        b.entity_type = tbl["entity_type"].value_or(0);
+        b.pose_name = tbl["pose_name"].value_or(std::string{});
+        b.emitter_kill_timestamp = tbl["emitter_kill_timestamp"].value_or(-1);
+        b.body_temp = tbl["body_temp"].value_or(0.0f);
+        b.state_anim = tbl["state_anim"].value_or(0);
+        b.action_anim = tbl["action_anim"].value_or(0);
+        b.drop_anim = tbl["drop_anim"].value_or(0);
+        b.carry_anim = tbl["carry_anim"].value_or(0);
+        b.corpse_pose = tbl["corpse_pose"].value_or(0);
+        b.helmet_name = tbl["helmet_name"].value_or(std::string{});
+        b.item_uid = tbl["item_uid"].value_or(-1);
+        b.body_drop_sound_handle = tbl["body_drop_sound_handle"].value_or(0);
+
+        // optional collision spheres
+        if (auto sa = tbl["collision_spheres"].as_array()) {
+            for (auto& sn : *sa) {
+                if (!sn.is_table())
+                    continue;
+                auto st = *sn.as_table();
+                rf::PCollisionSphere s{};
+                if (auto ca = st["center"].as_array()) {
+                    auto v = asg::parse_f32_array(*ca);
+                    if (v.size() == 3)
+                        s.center = {v[0], v[1], v[2]};
+                }
+                s.radius = st["r"].value_or(0.0f);
+                b.cspheres.push_back(std::move(s));
+            }
+        }
+
+        // mass & radius
+        b.mass = tbl["mass"].value_or(0.0f);
+        b.radius = tbl["radius"].value_or(0.0f);
+
+        out.push_back(std::move(b));
+    }
+    return true;
+}
+
+bool parse_killed_rooms(const toml::array& arr, std::vector<int>& out)
+{
+    out.clear();
+    for (auto& v : arr) {
+        if (auto uid = v.value<int>())
+            out.push_back(*uid);
+    }
+    return true;
+}
+
 bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& outLevels)
 {
     auto levels_node = root["levels"];
@@ -2932,24 +3689,58 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
         if (auto a = tbl["events_cyclic_timer"].as_array())
             parse_cyclic_timer_events(*a, lvl.cyclic_timer_events);
 
-        // when‐dead
-        /* if (auto we = tbl["events_when_dead"].as_array())
-            parse_when_dead_events(*we, lvl.when_dead_events);
+        if (auto cls = tbl["clutter"].as_array()) {
+            parse_clutter(*cls, lvl.clutter);
+        }
 
-        // goal‐create
-        if (auto ge = tbl["events_goal_create"].as_array())
-            parse_goal_create_events(*ge, lvl.goal_create_events);
+        if (auto items = tbl["items"].as_array()) {
+            parse_items(*items, lvl.items);
+        }
 
-        // alarm‐siren
-        if (auto ae = tbl["events_alarm_siren"].as_array())
-            parse_alarm_siren_events(*ae, lvl.alarm_siren_events);
+        if (auto trs = tbl["triggers"].as_array()) {
+            parse_triggers(*trs, lvl.triggers);
+        }
 
-        // cyclic‐timer
-        if (auto ce = tbl["events_cyclic_timer"].as_array())
-            parse_cyclic_timer_events(*ce, lvl.cyclic_timer_events);*/
+        if (auto crater_arr = tbl["geomod_craters"].as_array()) {
+            parse_geomod_craters(*crater_arr, lvl.geomod_craters);
+        }
 
+        if (auto be = tbl["bolt_emitters"].as_array()) {
+            parse_bolt_emitters(*be, lvl.bolt_emitters);
+        }
 
-        // …later you can parse items, clutter, triggers, events, decals, etc…
+        if (auto pe = tbl["particle_emitters"].as_array()) {
+            parse_particle_emitters(*pe, lvl.particle_emitters);
+        }
+
+        if (auto mv = tbl["movers"].as_array()) {
+            parse_movers(*mv, lvl.movers);
+        }
+
+        if (auto pr = tbl["push_regions"].as_array()) {
+            parse_push_regions(*pr, lvl.push_regions);
+        }
+
+        if (auto decs = tbl["decals"].as_array()) {
+            parse_decals(*decs, lvl.decals);
+        }
+
+        if (auto we = tbl["weapons"].as_array()) {
+            parse_weapons(*we, lvl.weapons);
+        }
+
+        if (auto bp = tbl["blood_pools"].as_array()) {
+            parse_blood_pools(*bp, lvl.blood_pools);
+        }
+
+        if (auto cs = tbl["corpses"].as_array()) {
+            parse_corpses(*cs, lvl.corpses);
+        }
+
+        if (auto kro = tbl["dead_room_uids"].as_array()) {
+            parse_killed_rooms(*kro, lvl.killed_room_uids);
+        }
+
         outLevels.push_back(std::move(lvl));
     }
     return true;
@@ -3505,10 +4296,11 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
 
             auto& hdr = g_save_data.header;
             auto& lvl = g_save_data.levels[slot_idx];
-
+            xlog::warn("geomod_craters size from save = {}", lvl.geomod_craters.size());
             // restore geomods
             num_geomods_this_level = lvl.geomod_craters.size();
             std::memcpy(geomods_this_level, lvl.geomod_craters.data(), sizeof(GeomodCraterData) * num_geomods_this_level);
+            xlog::warn("restored {} geomods", num_geomods_this_level);
             levelmod_load_state();
 
             // restore world bounds
