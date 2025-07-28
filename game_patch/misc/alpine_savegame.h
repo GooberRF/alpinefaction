@@ -107,6 +107,7 @@ namespace asg
         //uint8_t hate_list_size;
         int ai_mode;
         int ai_submode;
+        int entity_type;
         int move_mode;
         int ai_mode_parm_0;
         int ai_mode_parm_1;
@@ -383,7 +384,11 @@ namespace asg
         std::vector<SavegameLevelData> levels;
     };
 
-
+    struct AlpinePonr
+    {
+        std::string current_level_filename;
+        std::vector<std::string> levels_to_save;
+    };
 
     SavegameData build_savegame_data(rf::Player* pp);
     int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr);

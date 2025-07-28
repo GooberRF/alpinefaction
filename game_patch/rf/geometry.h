@@ -506,6 +506,9 @@ namespace rf
     static auto& num_geomods_this_level = *reinterpret_cast<int*>(0x00647C9C);
     static auto* geomods_this_level = reinterpret_cast<GeomodCraterData*>(0x00648600);
     static auto& g_boolean_is_in_progress = addr_as_ref<bool()>(0x004DBC40);
+
+    static auto& levelmod_load_state = addr_as_ref<void()>(0x004674B0);
+
     static auto& glass_delete_room = addr_as_ref<void(GRoom* room)>(0x004921F0);
     static auto& glass_shatter_face_with_weapon = addr_as_ref<void(GFace* face, Vector3* hit_point, Vector3* dir, bool from_packet)>(0x00491ED0);
 

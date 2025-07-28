@@ -66,6 +66,14 @@ namespace rf::sr {
     };
     static_assert(sizeof(LoggedHudMessage) == 0x108);
 
+    struct PonrTbl
+    {
+        char level[32];
+        int num_levels_to_save;
+        char levels_to_save[128];
+    };
+    static_assert(sizeof(PonrTbl) == 0xA4);
+
     static auto& save_game = addr_as_ref<bool(const char *filename, Player *pp)>(0x004B3B30);
     static auto& can_save_now = addr_as_ref<bool()>(0x004B61A0);
     static bool& g_should_save_deleted_events = *reinterpret_cast<bool*>(0x00856501);
@@ -73,4 +81,6 @@ namespace rf::sr {
     static auto& reset_save_data = addr_as_ref<void()>(0x004B52C0);
 
     static auto& savegame_path = addr_as_ref<char[260]>(0x007DB3EC);
-}
+    static auto& ponr = addr_as_ref<PonrTbl>(0x007DB4F0);
+    static auto& num_ponr = addr_as_ref<int>(0x007DAFE8);
+    }

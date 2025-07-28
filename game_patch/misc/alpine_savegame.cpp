@@ -13,6 +13,8 @@
 #include <xlog/xlog.h>
 #include "alpine_savegame.h"
 #include "alpine_settings.h"
+#include "../rf/file/file.h"
+#include "../os/console.h"
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/hud.h"
@@ -36,6 +38,7 @@
 
 // global save buffer, replacement for sr_data
 static asg::SavegameData g_save_data;
+static rf::sr::LoggedHudMessage g_tmpLoggedMessages[80]; // temporary storage of logged messages in stock game format, used for message log UI calls
 
 // global buffer for deleted events, replacement for g_DeletedEventsUidArray and g_DeletedEventsUidArrayLen
 static std::vector<int> g_deleted_event_uids;
@@ -51,6 +54,9 @@ static std::vector<int> g_deleted_room_uids;
 static std::vector<int> g_sr_delayed_uids;
 static std::vector<int*> g_sr_delayed_ptrs;
 
+// global buffer for ponr entries, replacement for ponr and num_ponr (really, the entirety of the stock ponr system)
+std::vector<asg::AlpinePonr> g_alpine_ponr;
+
 namespace asg
 {
     // Look up an object by handle and return its uid, or –1 if not found
@@ -62,8 +68,109 @@ namespace asg
         return -1;
     }
 
-    /// Ensure that `g_save_data` has a slot for the *current* level,
-    /// dropping the oldest if we already have four.
+    static std::vector<float> parse_f32_array(const toml::array& arr)
+    {
+        std::vector<float> v;
+        v.reserve(arr.size());
+        for (auto& e : arr) {
+            if (auto val = e.value<float>())
+                v.push_back(*val);
+            else
+                v.push_back(0.0f);
+        }
+        return v;
+    }
+
+    // Parse a 3-element integer array [x,y,z] directly into a ShortVector
+    bool parse_i16_vector(const toml::table& tbl, std::string_view key, rf::ShortVector& out)
+    {
+        if (auto arr = tbl[key].as_array()) {
+            auto& a = *arr;
+            if (a.size() == 3) {
+                // value_or<int>() will safely convert integer-valued TOML entries
+                out.x = static_cast<int16_t>(a[0].value_or<int>(0));
+                out.y = static_cast<int16_t>(a[1].value_or<int>(0));
+                out.z = static_cast<int16_t>(a[2].value_or<int>(0));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Parse a 4-element integer array [x,y,z,w] directly into a ShortQuat
+    bool parse_i16_quat(const toml::table& tbl, std::string_view key, rf::ShortQuat& out)
+    {
+        if (auto arr = tbl[key].as_array()) {
+            auto& a = *arr;
+            if (a.size() == 4) {
+                out.x = static_cast<int16_t>(a[0].value_or<int>(0));
+                out.y = static_cast<int16_t>(a[1].value_or<int>(0));
+                out.z = static_cast<int16_t>(a[2].value_or<int>(0));
+                out.w = static_cast<int16_t>(a[3].value_or<int>(0));
+                return true;
+            }
+        }
+        return false;
+    }
+
+    size_t pick_ponr_eviction_slot(const std::vector<std::string>& savedLevels, const std::string& currentLevel)
+    {
+        xlog::warn("[PONR] pick_ponr_eviction_slot: currentLevel='{}'", currentLevel);
+        xlog::warn("[PONR] savedLevels ({}):", savedLevels.size());
+        for (size_t i = 0; i < savedLevels.size(); ++i) {
+            xlog::warn("[PONR]   [{}] '{}'", i, savedLevels[i]);
+        }
+
+        // 1) find the PONR entry for this level
+        const AlpinePonr* ponrEntry = nullptr;
+        for (auto& e : g_alpine_ponr) {
+            if (_stricmp(e.current_level_filename.c_str(), currentLevel.c_str()) == 0) {
+                ponrEntry = &e;
+                break;
+            }
+        }
+        if (!ponrEntry) {
+            xlog::warn("[PONR] no PONR entry for '{}', default evict slot 0", currentLevel);
+            return 0;
+        }
+
+        xlog::warn("[PONR] found PONR entry for '{}'; keepList ({}):", currentLevel, ponrEntry->levels_to_save.size());
+        for (auto const& lvl : ponrEntry->levels_to_save) {
+            xlog::warn("[PONR]   keep '{}'", lvl);
+        }
+
+        size_t slotCount = savedLevels.size();
+        size_t keptSoFar = 0;
+
+        // 2) scan in-order looking for the first slot *not* in keepList
+        for (size_t i = 0; i < slotCount; ++i) {
+            bool isKeep =
+                std::any_of(ponrEntry->levels_to_save.begin(), ponrEntry->levels_to_save.end(),
+                            [&](auto const& want) { return _stricmp(want.c_str(), savedLevels[i].c_str()) == 0; });
+
+            xlog::warn("[PONR] slot[{}]='{}' → isKeep={}", i, savedLevels[i], isKeep);
+
+            if (isKeep) {
+                ++keptSoFar;
+                // if *all* slots are in the keep-list, evict the *last* one
+                if (keptSoFar == slotCount) {
+                    xlog::warn("[PONR] all {} slots are keep-list; evict last slot {}", slotCount, slotCount - 1);
+                    return slotCount - 1;
+                }
+            }
+            else {
+                // first slot *not* on the keep-list → evict it
+                xlog::warn("[PONR] evicting slot {} ('{}') — first not in keep-list", i, savedLevels[i]);
+                return i;
+            }
+        }
+
+        // should never get here, but just in case:
+        xlog::warn("[PONR] fallback: evict slot 0");
+        return 0;
+    }
+
+
     inline size_t ensure_current_level_slot()
     {
         using namespace rf;
@@ -80,11 +187,19 @@ namespace asg
 
         if (it == hdr.saved_level_filenames.end()) {
             // new level
-            if (hdr.saved_level_filenames.size() >= 4) {
+            /* if (hdr.saved_level_filenames.size() >= 4) {
                 // drop oldest
                 hdr.saved_level_filenames.erase(hdr.saved_level_filenames.begin());
                 levels.erase(levels.begin());
+            }*/
+
+            // drop using ponr - consider making the 4 configurable
+            if (hdr.saved_level_filenames.size() >= 4) {
+                size_t evict = pick_ponr_eviction_slot(hdr.saved_level_filenames, hdr.current_level_filename);
+                hdr.saved_level_filenames.erase(hdr.saved_level_filenames.begin() + evict);
+                levels.erase(levels.begin() + evict);
             }
+
 
             // append slot
             hdr.saved_level_filenames.push_back(cur);
@@ -144,7 +259,7 @@ namespace asg
         data.player_flags = pp->flags;
         xlog::warn("[SP] player_flags = 0x{:X}", data.player_flags);
 
-        if (auto ent = rf::entity_from_handle(pp->entity_handle)) {
+        if (auto ent = rf::local_player_entity) {
             data.entity_uid = ent->uid;
             data.entity_type = pp->entity_type;
             xlog::warn("[SP] entity_uid = {} entity_type = {}", data.entity_uid, (int)data.entity_type);
@@ -1294,7 +1409,7 @@ namespace asg
                 }
                 if (is_dead)
                     rf::obj_hide(ent);
-                else if (ent != rf::local_player_entity) // don't kill player
+                else if (ent != rf::local_player_entity && !rf::obj_is_hidden(ent)) // don't kill player or hidden entities
                     rf::obj_flag_dead(ent);
             }
         }
@@ -1708,6 +1823,22 @@ static toml::table make_common_player_table(const asg::SavegameCommonDataPlayer&
     cp.insert("key_items", p.key_items);
     cp.insert("view_obj_uid", p.view_obj_uid);
     cp.insert("grenade_mode", int(p.grenade_mode));
+
+    cp.insert("clip_x", p.clip_x);
+    cp.insert("clip_y", p.clip_y);
+    cp.insert("clip_w", p.clip_w);
+    cp.insert("clip_h", p.clip_h);
+    cp.insert("fov_h", p.fov_h);
+    cp.insert("player_flags", p.player_flags);
+    cp.insert("entity_uid", p.entity_uid);
+    cp.insert("entity_type", int(p.entity_type));
+
+    // weapon prefs:
+    toml::array wp;
+    for (auto w : p.weapon_prefs) wp.push_back(int(w));
+    cp.insert("weapon_prefs", std::move(wp));
+
+    cp.insert("flags", int(p.flags));
 
     // fpgun_orient
     toml::array orient;
@@ -2268,6 +2399,705 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
     return bool(ofs);
 }
 
+// returns false on any missing fields
+bool parse_asg_header(const toml::table& root, asg::SavegameHeader& out)
+{
+    xlog::warn("attempting to parse header for asg file");
+    // grab the “_header” table
+    if (auto hdr_node = root["_header"]; hdr_node && hdr_node.is_table()) {
+        auto hdr = hdr_node.as_table();
+
+        // simple scalars
+        out.mod_name = (*hdr)["mod_name"].value_or(std::string{});
+        out.game_time = (*hdr)["game_time"].value_or(0.f);
+        out.current_level_filename = (*hdr)["current_level_filename"].value_or(std::string{});
+        out.current_level_idx = (*hdr)["current_level_idx"].value_or(0);
+        out.num_saved_levels = (*hdr)["num_saved_levels"].value_or(0);
+
+        // array of strings
+        out.saved_level_filenames.clear();
+        if (auto arr = (*hdr)["saved_level_filenames"].as_array()) {
+            out.saved_level_filenames.reserve(arr->size());
+            for (auto& el : *arr)
+                if (auto s = el.value<std::string>())
+                    out.saved_level_filenames.push_back(*s);
+        }
+        return true;
+    }
+    return false;
+}
+
+bool sr_read_header_asg(const std::string& path, std::string& out_level, float& out_time)
+{
+    toml::table root;
+    try {
+        xlog::warn("parsing toml: {}", path);
+        root = toml::parse_file(path);
+    }
+    catch (...) {
+        xlog::warn("toml parse failed on {}", path);
+        return false;
+    }
+
+    asg::SavegameHeader hdr;
+    if (!parse_asg_header(root, hdr))
+        return false;
+
+    out_level = hdr.current_level_filename;
+    out_time = hdr.game_time;
+    return true;
+}
+
+bool parse_common_game(const toml::table& tbl, asg::SavegameCommonDataGame& out)
+{
+    out.difficulty = static_cast<rf::GameDifficultyLevel>(tbl["difficulty"].value_or(0));
+    out.newest_message_index = tbl["newest_message_index"].value_or(0);
+    out.num_logged_messages = tbl["num_logged_messages"].value_or(0);
+    out.messages_total_height = tbl["messages_total_height"].value_or(0);
+
+    out.messages.clear();
+    if (auto arr = tbl["logged_messages"].as_array()) {
+        for (auto& node : *arr) {
+            if (!node.is_table())
+                continue;
+            auto m = *node.as_table();
+            asg::AlpineLoggedHudMessage msg;
+            msg.persona_index = m["speaker"].value_or(0);
+            msg.time_string = m["time_string"].value_or(0);
+            msg.display_height = m["display_height"].value_or(0);
+            msg.message = m["message"].value_or(std::string{});
+            out.messages.push_back(std::move(msg));
+        }
+    }
+    return true;
+}
+
+bool parse_common_player(const toml::table& tbl, asg::SavegameCommonDataPlayer& out)
+{
+    out.entity_host_uid = tbl["entity_host_uid"].value_or(-1);
+    out.spew_vector_index = tbl["spew_vector_index"].value_or(0);
+    if (auto arr = tbl["spew_pos"].as_array()) {
+        auto v = asg::parse_f32_array(*arr);
+        if (v.size() == 3)
+            out.spew_pos = {v[0], v[1], v[2]};
+    }
+    out.key_items = tbl["key_items"].value_or(0.f);
+    out.view_obj_uid = tbl["view_obj_uid"].value_or(-1);
+    out.grenade_mode = static_cast<uint8_t>(tbl["grenade_mode"].value_or(0));
+
+    out.clip_x = tbl["clip_x"].value_or(0);
+    out.clip_y = tbl["clip_y"].value_or(0);
+    out.clip_w = tbl["clip_w"].value_or(0);
+    out.clip_h = tbl["clip_h"].value_or(0);
+    out.fov_h = tbl["fov_h"].value_or(0.f);
+    out.player_flags = tbl["player_flags"].value_or(0);
+    out.entity_uid = tbl["entity_uid"].value_or(-1);
+    xlog::warn("read entity_uid {}", out.entity_uid);
+    out.entity_type = static_cast<uint8_t>(tbl["entity_type"].value_or(0));
+    xlog::warn("read entity_type {}", out.entity_type);
+
+    if (auto arr = tbl["weapon_prefs"].as_array()) {
+        for (size_t i = 0; i < arr->size() && i < 32; ++i)
+            out.weapon_prefs[i] = static_cast<uint8_t>((*arr)[i].value_or(0));
+    }
+
+    out.flags = static_cast<uint8_t>(tbl["flags"].value_or(0));
+
+    // orient
+    if (auto orient = tbl["fpgun_orient"].as_array()) {
+        int i = 0;
+        for (auto& row : *orient) {
+            if (auto a = row.as_array()) {
+                auto v = asg::parse_f32_array(*a);
+                if (v.size() == 3) {
+                    if (i == 0)
+                        out.fpgun_orient.rvec = {v[0], v[1], v[2]};
+                    if (i == 1)
+                        out.fpgun_orient.uvec = {v[0], v[1], v[2]};
+                    if (i == 2)
+                        out.fpgun_orient.fvec = {v[0], v[1], v[2]};
+                }
+            }
+            ++i;
+        }
+    }
+
+    // pos
+    if (auto pos = tbl["fpgun_pos"].as_array()) {
+        auto v = asg::parse_f32_array(*pos);
+        if (v.size() == 3)
+            out.fpgun_pos = {v[0], v[1], v[2]};
+    }
+
+    return true;
+}
+
+bool parse_object(const toml::table& tbl, asg::SavegameObjectDataBlock& o)
+{
+    // basic ints
+    o.uid = tbl["uid"].value_or(0);
+    o.parent_uid = tbl["parent_uid"].value_or(-1);
+    o.life = tbl["life"].value_or(100.0f);
+    o.armor = tbl["armor"].value_or(0.0f);
+
+    asg::parse_i16_vector(tbl, "pos", o.pos);
+    asg::parse_i16_vector(tbl, "vel", o.vel);
+
+    o.friendliness = tbl["friendliness"].value_or(0);
+    o.host_tag_handle = tbl["host_tag_handle"].value_or(0);
+
+    asg::parse_i16_quat(tbl, "orient", o.orient);
+
+    o.obj_flags = tbl["obj_flags"].value_or(0);
+    o.host_uid = tbl["host_uid"].value_or(-1);
+
+    // ang_momentum [x,y,z] → Vector3
+    if (auto a = tbl["ang_momentum"].as_array()) {
+        auto v = asg::parse_f32_array(*a);
+        if (v.size() == 3)
+            o.ang_momentum = {v[0], v[1], v[2]};
+    }
+
+    o.physics_flags = tbl["physics_flags"].value_or(0);
+    o.skin_name = tbl["skin_name"].value_or(std::string{});
+
+    return true;
+}
+
+bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameEntityDataBlock e{};
+        // 2a) object sub‐block
+        parse_object(tbl, e.obj);
+
+        // 2b) AI & weapon state
+        e.current_primary_weapon = static_cast<uint8_t>(tbl["current_primary_weapon"].value_or(0));
+        e.current_secondary_weapon = static_cast<uint8_t>(tbl["current_secondary_weapon"].value_or(0));
+        e.info_index = tbl["info_index"].value_or(0);
+
+        // ammo arrays
+        if (auto ca = tbl["weapons_clip_ammo"].as_array()) {
+            auto v = asg::parse_f32_array(*ca);
+            for (size_t i = 0; i < v.size() && i < 32; ++i) e.weapons_clip_ammo[i] = int(v[i]);
+        }
+        if (auto aa = tbl["weapons_ammo"].as_array()) {
+            auto v = asg::parse_f32_array(*aa);
+            for (size_t i = 0; i < v.size() && i < 32; ++i) e.weapons_ammo[i] = int(v[i]);
+        }
+
+        e.possesed_weapons_bitfield = tbl["possesed_weapons_bitfield"].value_or(0);
+
+        // hate list
+        e.hate_list.clear();
+        if (auto ha = tbl["hate_list"].as_array()) {
+            for (auto& x : *ha)
+                if (auto vv = x.value<int>())
+                    e.hate_list.push_back(*vv);
+        }
+
+        // more AI…
+        e.ai_mode = static_cast<uint8_t>(tbl["ai_mode"].value_or(0));
+        e.ai_submode = static_cast<uint8_t>(tbl["ai_submode"].value_or(0));
+        e.move_mode = tbl["move_mode"].value_or(0);
+        e.ai_mode_parm_0 = tbl["ai_mode_parm_0"].value_or(0);
+        e.ai_mode_parm_1 = tbl["ai_mode_parm_1"].value_or(0);
+        e.target_uid = tbl["target_uid"].value_or(-1);
+        e.look_at_uid = tbl["look_at_uid"].value_or(-1);
+        e.shoot_at_uid = tbl["shoot_at_uid"].value_or(-1);
+
+        // compressed-vector AI state
+        if (auto a = tbl["ci_rot"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.ci_rot = {v[0], v[1], v[2]};
+        }
+        if (auto a = tbl["ci_move"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.ci_move = {v[0], v[1], v[2]};
+        }
+
+        e.corpse_carry_uid = tbl["corpse_carry_uid"].value_or(-1);
+        e.ai_flags = tbl["ai_flags"].value_or(0);
+
+        // vision & control
+        if (auto a = tbl["eye_pos"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.eye_pos = {v[0], v[1], v[2]};
+        }
+        if (auto eye = tbl["eye_orient"].as_array()) {
+            int idx = 0;
+            for (auto& row : *eye) {
+                if (auto r = row.as_array()) {
+                    auto v = asg::parse_f32_array(*r);
+                    if (v.size() == 3) {
+                        switch (idx) {
+                        case 0:
+                            e.eye_orient.rvec = {v[0], v[1], v[2]};
+                            break;
+                        case 1:
+                            e.eye_orient.uvec = {v[0], v[1], v[2]};
+                            break;
+                        case 2:
+                            e.eye_orient.fvec = {v[0], v[1], v[2]};
+                            break;
+                        }
+                    }
+                }
+                ++idx;
+            }
+        }
+
+        e.entity_flags = tbl["entity_flags"].value_or(0);
+        e.entity_flags2 = tbl["entity_flags2"].value_or(0);
+
+        // control_data vectors
+        if (auto a = tbl["control_data_phb"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.control_data_phb = {v[0], v[1], v[2]};
+        }
+        if (auto a = tbl["control_data_eye_phb"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.control_data_eye_phb = {v[0], v[1], v[2]};
+        }
+        if (auto a = tbl["control_data_local_vel"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.control_data_local_vel = {v[0], v[1], v[2]};
+        }
+
+        out.push_back(std::move(e));
+    }
+    return true;
+}
+
+bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& outLevels)
+{
+    auto levels_node = root["levels"];
+    if (!levels_node || !levels_node.is_array())
+        return false;
+
+    outLevels.clear();
+    for (auto& lvl_node : *levels_node.as_array()) {
+        if (!lvl_node.is_table())
+            continue;
+
+        auto tbl = *lvl_node.as_table();
+        asg::SavegameLevelData lvl;
+
+        // — Level header —
+        lvl.header.filename = tbl["filename"].value_or(std::string{});
+        lvl.header.level_time = tbl["level_time"].value_or(0.0);
+
+        if (auto a = tbl["aabb_min"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                lvl.header.aabb_min = {v[0], v[1], v[2]};
+        }
+        if (auto a = tbl["aabb_max"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                lvl.header.aabb_max = {v[0], v[1], v[2]};
+        }
+
+        // — Entities —
+        if (auto ents = tbl["entities"].as_array()) {
+            parse_entities(*ents, lvl.entities);
+        }
+
+        // …later you can parse items, clutter, triggers, events, decals, etc…
+        outLevels.push_back(std::move(lvl));
+    }
+    return true;
+}
+
+bool deserialize_savegame_from_asg_file(const std::string& filename, asg::SavegameData& out)
+{
+    // confirm requested asg file exists
+    if (!std::filesystem::exists(filename)) {
+        xlog::error("ASG file not found: {}", filename);
+        return false;
+    }
+
+    // load asg file
+    toml::table root;
+    try {
+        root = toml::parse_file(filename);
+    }
+    catch (const toml::parse_error& err) {
+        xlog::error("Failed to parse ASG {}: {}", filename, err.what());
+        return false;
+    }
+
+    // parse header
+    if (!parse_asg_header(root, out.header)) {
+        xlog::error("ASG header malformed or missing");
+        return false;
+    }
+
+    // parse common
+    if (auto common_tbl = root["common"].as_table()) {
+
+        if (auto game_tbl = (*common_tbl)["game"].as_table()) {
+            parse_common_game(*game_tbl, out.common.game);
+        }
+        else {
+            xlog::error("Missing or invalid [common.game]");
+            return false;
+        }
+
+        if (auto player_tbl = (*common_tbl)["player"].as_table()) {
+            parse_common_player(*player_tbl, out.common.player);
+        }
+        else {
+            xlog::error("Missing or invalid [common.player]");
+            return false;
+        }
+    }
+
+    if (!parse_levels(root, out.levels)) {
+        xlog::error("ASG malformed or missing levels section");
+        return false;
+    }
+    /*
+    // 4) Common
+    if (auto common_node = root["common"]; common_node && common_node.is_table()) {
+        auto common_tbl = *common_node.as_table();
+
+        // --- common.game ---
+        if (auto game_node = common_tbl["game"]; game_node && game_node.is_table()) {
+            auto game_tbl = *game_node.as_table();
+            auto& cg = out.common.game;
+
+            cg.difficulty = static_cast<rf::GameDifficultyLevel>(game_tbl["difficulty"].value_or(0));
+            cg.newest_message_index = game_tbl["newest_message_index"].value_or(0);
+            cg.num_logged_messages = game_tbl["num_logged_messages"].value_or(0);
+            cg.messages_total_height = game_tbl["messages_total_height"].value_or(0);
+
+            cg.messages.clear();
+            if (auto msgs = game_tbl["logged_messages"].as_array()) {
+                for (auto& m_node : *msgs) {
+                    if (!m_node.is_table())
+                        continue;
+                    auto m_tbl = *m_node.as_table();
+                    asg::AlpineLoggedHudMessage msg;
+                    msg.persona_index = m_tbl["speaker"].value_or(0);
+                    msg.time_string = m_tbl["time_string"].value_or(0);
+                    msg.display_height = m_tbl["display_height"].value_or(0);
+                    msg.message = m_tbl["message"].value_or(std::string{});
+                    cg.messages.push_back(std::move(msg));
+                }
+            }
+        }
+        else {
+            xlog::error("Missing or invalid [common.game]");
+            return false;
+        }
+
+        // --- common.player ---
+        if (auto player_node = common_tbl["player"]; player_node && player_node.is_table()) {
+            auto player_tbl = *player_node.as_table();
+            auto& cp = out.common.player;
+
+            cp.entity_host_uid = player_tbl["entity_host_uid"].value_or(-1);
+            cp.spew_vector_index = player_tbl["spew_vector_index"].value_or(0);
+
+            if (auto arr = player_tbl["spew_pos"].as_array()) {
+                auto v = asg::parse_f32_array(*arr);
+                if (v.size() == 3)
+                    cp.spew_pos = {v[0], v[1], v[2]};
+            }
+
+            cp.key_items = player_tbl["key_items"].value_or(0.f);
+            cp.view_obj_uid = player_tbl["view_obj_uid"].value_or(-1);
+            cp.grenade_mode = static_cast<uint8_t>(player_tbl["grenade_mode"].value_or(0));
+
+            // fpgun_orient is an array-of-arrays [ [rvec], [uvec], [fvec] ]
+            if (auto orient_arr = player_tbl["fpgun_orient"].as_array()) {
+                int idx = 0;
+                for (auto& row_node : *orient_arr) {
+                    if (auto row = row_node.as_array()) {
+                        auto v = asg::parse_f32_array(*row);
+                        if (v.size() == 3) {
+                            switch (idx) {
+                            case 0:
+                                cp.fpgun_orient.rvec = {v[0], v[1], v[2]};
+                                break;
+                            case 1:
+                                cp.fpgun_orient.uvec = {v[0], v[1], v[2]};
+                                break;
+                            case 2:
+                                cp.fpgun_orient.fvec = {v[0], v[1], v[2]};
+                                break;
+                            }
+                        }
+                    }
+                    ++idx;
+                }
+            }
+
+            // fpgun_pos [x,y,z]
+            if (auto fp = player_tbl["fpgun_pos"].as_array()) {
+                auto v = asg::parse_f32_array(*fp);
+                if (v.size() == 3)
+                    cp.fpgun_pos = {v[0], v[1], v[2]};
+            }
+        }
+        else {
+            xlog::error("Missing or invalid [common.player]");
+            return false;
+        }
+    }
+    else {
+        xlog::error("Missing [common]");
+        return false;
+    }
+
+
+    // 5) Levels
+    if (auto levels_node = root["levels"]; levels_node && levels_node.is_array()) {
+        auto& levels_arr = *levels_node.as_array();
+        out.levels.clear();
+
+        for (auto& lvl_node : levels_arr) {
+            if (!lvl_node.is_table())
+                continue;
+            auto lvl_tbl = *lvl_node.as_table();
+            asg::SavegameLevelData lvl;
+
+            // ——— Level header ———
+            lvl.header.filename = lvl_tbl["filename"].value_or(std::string{});
+            lvl.header.level_time = lvl_tbl["level_time"].value_or(0.0);
+
+            if (auto a = lvl_tbl["aabb_min"].as_array()) {
+                auto v = asg::parse_f32_array(*a);
+                if (v.size() == 3)
+                    lvl.header.aabb_min = {v[0], v[1], v[2]};
+            }
+            if (auto a = lvl_tbl["aabb_max"].as_array()) {
+                auto v = asg::parse_f32_array(*a);
+                if (v.size() == 3)
+                    lvl.header.aabb_max = {v[0], v[1], v[2]};
+            }
+
+            // ——— Entities ———
+            lvl.entities.clear();
+            if (auto ents = lvl_tbl["entities"].as_array()) {
+                for (auto& e_node : *ents) {
+                    if (!e_node.is_table())
+                        continue;
+                    auto et = *e_node.as_table();
+
+                    asg::SavegameEntityDataBlock e{};
+                    // object fields
+                    e.obj.uid = et["uid"].value_or(0);
+                    e.obj.parent_uid = et["parent_uid"].value_or(-1);
+                    e.obj.life = et["life"].value_or(0);
+                    e.obj.armor = et["armor"].value_or(0);
+
+                    if(auto pa = et["pos"].as_array())
+                    {
+                        auto v = asg::parse_f32_array(*pa);
+                        if (v.size() == 3) {
+                            // build a full-precision vector then compress it
+                            rf::Vector3 tmp{v[0], v[1], v[2]};
+                            rf::compress_vector3(rf::world_solid, &tmp, &e.obj.pos);
+                        }
+                    }
+
+                    if (auto va = et["vel"].as_array()) {
+                        auto v = asg::parse_f32_array(*va);
+                        if (v.size() == 3) {
+                            rf::Vector3 tmp{v[0], v[1], v[2]};
+                            // build a full-precision vector then compress it
+                            rf::compress_velocity(&tmp, &e.obj.vel);
+                        }
+                    }
+                    e.obj.friendliness = et["friendliness"].value_or(0);
+                    e.obj.host_tag_handle = et["host_tag_handle"].value_or(0);
+                    if (auto qa = et["orient"].as_array()) {
+                        auto v = asg::parse_f32_array(*qa);
+                        if (v.size() == 4) {
+                            rf::Quaternion q;
+                            q.x = v[0];
+                            q.y = v[1];
+                            q.z = v[2];
+                            q.w = v[3];
+                            e.obj.orient.from_quat(&q);
+                        }
+                    }
+                    e.obj.obj_flags = et["obj_flags"].value_or(0);
+                    e.obj.host_uid = et["host_uid"].value_or(-1);
+                    // …and any other object sub-fields you serialized…
+
+                    // AI + weapon state
+                    e.current_primary_weapon = static_cast<uint8_t>(et["current_primary_weapon"].value_or(0));
+                    e.current_secondary_weapon = static_cast<uint8_t>(et["current_secondary_weapon"].value_or(0));
+                    e.info_index = et["info_index"].value_or(0);
+
+                    if (auto ca = et["weapons_clip_ammo"].as_array()) {
+                        auto v = asg::parse_f32_array(*ca);
+                        for (size_t i = 0; i < v.size() && i < 32; ++i) e.weapons_clip_ammo[i] = static_cast<int>(v[i]);
+                    }
+                    if (auto aa = et["weapons_ammo"].as_array()) {
+                        auto v = asg::parse_f32_array(*aa);
+                        for (size_t i = 0; i < v.size() && i < 32; ++i) e.weapons_ammo[i] = static_cast<int>(v[i]);
+                    }
+                    e.possesed_weapons_bitfield = et["possesed_weapons_bitfield"].value_or(0);
+
+                    // hate list
+                    e.hate_list.clear();
+                    if (auto ha = et["hate_list"].as_array()) {
+                        for (auto& x : *ha)
+                            if (auto v = x.value<int>())
+                                e.hate_list.push_back(*v);
+                    }
+
+                    // AI modes, flags, etc.
+                    e.ai_mode = static_cast<uint8_t>(et["ai_mode"].value_or(0));
+                    e.ai_submode = static_cast<uint8_t>(et["ai_submode"].value_or(0));
+                    e.move_mode = et["move_mode"].value_or(0);
+                    e.ai_mode_parm_0 = et["ai_mode_parm_0"].value_or(0);
+                    e.ai_mode_parm_1 = et["ai_mode_parm_1"].value_or(0);
+                    e.target_uid = et["target_uid"].value_or(-1);
+                    e.look_at_uid = et["look_at_uid"].value_or(-1);
+                    e.shoot_at_uid = et["shoot_at_uid"].value_or(-1);
+                    // …and so on for ci_rot, ci_move, corpse_carry_uid, ai_flags,
+                    //     eye_pos/orient, entity_flags, control_data, etc.
+
+                    lvl.entities.push_back(std::move(e));
+                }
+            }
+
+            // ——— Items ———
+            lvl.items.clear();
+            if (auto items = lvl_tbl["items"].as_array()) {
+                for (auto& i_node : *items) {
+                    if (!i_node.is_table())
+                        continue;
+                    auto it = *i_node.as_table();
+                    asg::SavegameItemDataBlock ib{};
+                    ib.obj.uid = it["uid"].value_or(0);
+                    // …fill the rest of ib.obj like above…
+                    ib.respawn_timer = it["respawn_timer"].value_or(-1);
+                    ib.alpha = it["alpha"].value_or(0);
+                    ib.create_time = it["create_time"].value_or(0);
+                    ib.flags = it["flags"].value_or(0);
+                    ib.item_cls_id = it["item_cls_id"].value_or(0);
+                    lvl.items.push_back(std::move(ib));
+                }
+            }
+
+            // ——— Clutter ———
+            lvl.clutter.clear();
+            if (auto cls = lvl_tbl["clutter"].as_array()) {
+                for (auto& c_node : *cls) {
+                    if (!c_node.is_table())
+                        continue;
+                    auto ct = *c_node.as_table();
+                    asg::SavegameClutterDataBlock cb{};
+                    cb.obj.uid = ct["uid"].value_or(0);
+                    // …fill cb.obj…
+                    cb.delayed_kill_timestamp = ct["delayed_kill_timestamp"].value_or(-1);
+                    cb.corpse_create_timestamp = ct["corpse_create_timestamp"].value_or(-1);
+                    cb.links.clear();
+                    if (auto la = ct["links"].as_array()) {
+                        for (auto& x : *la)
+                            if (auto v = x.value<int>())
+                                cb.links.push_back(*v);
+                    }
+                    lvl.clutter.push_back(std::move(cb));
+                }
+            }
+
+            // ——— Triggers ———
+            lvl.triggers.clear();
+            if (auto trs = lvl_tbl["triggers"].as_array()) {
+                for (auto& t_node : *trs) {
+                    if (!t_node.is_table())
+                        continue;
+                    auto tt = *t_node.as_table();
+                    asg::SavegameTriggerDataBlock tb{};
+                    tb.uid = tt["uid"].value_or(0);
+                    if (auto pa = tt["pos"].as_array()) {
+                        auto v = asg::parse_f32_array(*pa);
+                        if (v.size() == 3) {
+                            // build a full-precision vector then compress it
+                            rf::Vector3 tmp{v[0], v[1], v[2]};
+                            rf::compress_vector3(rf::world_solid, &tmp, &tb.pos);
+                        }
+                    }
+                    tb.count = tt["count"].value_or(0);
+                    tb.time_last_activated = tt["time_last_activated"].value_or(0);
+                    tb.trigger_flags = tt["trigger_flags"].value_or(0);
+                    tb.activator_handle = tt["activator_handle"].value_or(-1);
+                    tb.button_active_timestamp = tt["button_active_timestamp"].value_or(-1);
+                    tb.inside_timestamp = tt["inside_timestamp"].value_or(-1);
+                    tb.links.clear();
+                    if (auto la = tt["links"].as_array()) {
+                        for (auto& x : *la)
+                            if (auto v = x.value<int>())
+                                tb.links.push_back(*v);
+                    }
+                    lvl.triggers.push_back(std::move(tb));
+                }
+            }
+
+            // ——— “Generic” events, invulnerable, when_dead, goal_create, alarm_siren, cyclic_timer ———
+            // use exactly the same pattern:
+            //   auto evs = lvl_tbl["events_generic"].as_array(); for each table → fill SavegameEventDataBlock etc…
+
+            // ——— Decals ———
+            lvl.decals.clear();
+            if (auto dcs = lvl_tbl["decals"].as_array()) {
+                for (auto& d_node : *dcs) {
+                    if (!d_node.is_table())
+                        continue;
+                    auto dt = *d_node.as_table();
+                    asg::SavegameLevelDecalDataBlock db{};
+                    if (auto pa = dt["pos"].as_array()) {
+                        auto v = asg::parse_f32_array(*pa);
+                        if (v.size() == 3)
+                            db.pos = {v[0], v[1], v[2]};
+                    }
+                    // …orient, width, flags, alpha, tiling_scale, bitmap_filename…
+                    lvl.decals.push_back(std::move(db));
+                }
+            }
+
+            // ——— Dead room UIDs ———
+            lvl.killed_room_uids.clear();
+            if (auto kro = lvl_tbl["dead_room_uids"].as_array()) {
+                for (auto& x : *kro)
+                    if (auto v = x.value<int>())
+                        lvl.killed_room_uids.push_back(*v);
+            }
+
+            // ——— Bolt‐emitters, particle‐emitters, push_regions, movers, weapons, corpses, blood_pools,
+            // deleted_event_uids, persistent_goals, geomod_craters ——— …same as above: grab each array via as_array(),
+            // loop, as_table(), fill your DataBlock…
+
+            out.levels.push_back(std::move(lvl));
+        }
+    }
+    else {
+        xlog::error("Missing or invalid [levels] array");
+        return false;
+    }*/
+
+
+    return true;
+}
+
 // save data to file when requested
 FunHook<bool(const char* filename, rf::Player* pp)> sr_save_game_hook{
     0x004B3B30,
@@ -2287,6 +3117,34 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_save_game_hook{
         else {
             xlog::warn("writing legacy format save {} for player {}", filename, pp->name);
             return sr_save_game_hook.call_target(filename, pp);
+        }
+    }
+};
+
+FunHook<void()> do_quick_load_hook{
+    0x004B5EB0,
+    []() {
+        if (g_alpine_game_config.use_new_savegame_format) {
+            std::filesystem::path save_dir{ rf::sr::savegame_path };
+            auto asg_path = save_dir / "quicksav.asg";
+            std::string asg_file = asg_path.string();
+
+            xlog::warn("loading new format quicksave from {}", asg_file);
+
+            // 2) Read just the header to get the level name
+            std::string level_name;
+            float saved_time = 0.f;
+            if (!sr_read_header_asg(asg_file, level_name, saved_time)) {
+                xlog::error("Failed to parse ASG header from {}", asg_file);
+                return; // malformed header
+            }
+
+            rf::level_set_level_to_load(level_name.c_str(), asg_file.c_str());
+            rf::gameseq_set_state(rf::GameState::GS_NEW_LEVEL, 0);
+        }
+        else {
+            xlog::warn("loading legacy format quicksave");
+            do_quick_load_hook.call_target();
         }
     }
 };
@@ -2364,6 +3222,7 @@ FunHook<void(const char* msg, int16_t persona_type)> hud_save_persona_msg_hook{
             // pack into structure
             asg::AlpineLoggedHudMessage m;
             m.message = std::move(wrapped);
+            //m.message = wrapped;
             m.time_string = int(std::time(nullptr));
             m.persona_index = persona_type;
             m.display_height = rf::gr::get_font_height(-1) * (num_lines + 1);
@@ -2403,107 +3262,92 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
     0x004B47A0,
     [](const char* filename, rf::Player* pp) {
 
-        if (g_alpine_game_config.use_new_savegame_format) {
-            // 1) Transitional load: filename == "auto.svl"
-            //if (0 == _stricmp(filename, kAutoSvlName)) {
-            std::string filename_str = filename;
-            if (string_starts_with_ignore_case(filename_str, "auto.")) {
-                xlog::warn("ASG transitional load: loaded {}", filename_str);
-                // figure out which slot we’re transitioning into:
-                // stock engine sets hdr.current_level_idx during sr_serialize_to_buffer
-                //int idx = int(g_save_data.header.current_level_idx);
-
-                auto& hdr = g_save_data.header;
-                std::string cur = string_to_lower(rf::level.filename);
-                auto it = std::find(hdr.saved_level_filenames.begin(), hdr.saved_level_filenames.end(), cur);
-                if (it == hdr.saved_level_filenames.end()) {
-                    xlog::error("ASG transitional load: no saved slot for level '{}'", cur);
-                    return false;
-                }
-                int idx = int(std::distance(hdr.saved_level_filenames.begin(), it));
-                xlog::warn("ASG transitional load: using slot #{} for '{}'", idx, cur);
-                //xlog::warn("checking level IDX {}", idx);
-
-
-
-
-
-                if (idx < 0 || idx >= int(g_save_data.levels.size()))
-                    return false;
-
-                rf::timer_inc_game_paused();
-                auto& lvl = g_save_data.levels[idx];
-                xlog::warn("found level IDX {}, filename is {}", idx, lvl.header.filename);
-                // restore world bounds
-                xlog::warn("[ASG]   current bbox_min = x={:.3f}, y={:.3f}, z={:.3f}", rf::world_solid->bbox_min.x,
-                           rf::world_solid->bbox_min.y, rf::world_solid->bbox_min.z);
-                xlog::warn("[ASG]   current bbox_max = x={:.3f}, y={:.3f}, z={:.3f}", rf::world_solid->bbox_max.x,
-                           rf::world_solid->bbox_max.y, rf::world_solid->bbox_max.z);
-                xlog::warn("[ASG]   new bbmox_min = x={:.3f}, y={:.3f}, z={:.3f}", lvl.header.aabb_min.x,
-                           lvl.header.aabb_min.y, lvl.header.aabb_min.z);
-                xlog::warn("[ASG]   new bbmox_max = x={:.3f}, y={:.3f}, z={:.3f}", lvl.header.aabb_max.x,
-                           lvl.header.aabb_max.y, lvl.header.aabb_max.z);
-                rf::world_solid->bbox_min = lvl.header.aabb_min;
-                rf::world_solid->bbox_max = lvl.header.aabb_max;
-
-                // restore objects
-                asg::deserialize_all_objects(&lvl);
-
-                // restore the level timer
-                //xlog::warn("restoring current level time {} to buffer time {}", rf::level_time_flt, lvl.header.level_time);
-                //rf::level_time_flt = lvl.header.level_time;
-
-                // resolve pending handle fixes
-                asg::resolve_delayed_handles();
-                // restore the player to entity -999
-
-                // only if loading a new level
-                if (rf::gameseq_get_state() != rf::GS_LEVEL_TRANSITION) {
-                    asg::SavegameEntityDataBlock* player_block = nullptr;
-                    for (auto& e : lvl.entities) {
-                        if (e.obj.uid == -999) {
-                            player_block = &e;
-                            xlog::warn("found player, ent {}", player_block->obj.uid);
-                            break;
-                        }
-                    }
-                    if (!asg::load_player(&g_save_data.common.player, pp, player_block)) // TBD
-                    {
-                        rf::timer_dec_game_paused();
-                        rf::sr::reset_save_data();
-                        return false;
-                    }
-
-                    // resolve pending handle fixes
-                    asg::resolve_delayed_handles();
-                    // 1e) patch up any sticking‐to‐ground, music, difficulty, etc.
-                    auto player_ent = rf::obj_lookup_from_uid(-999);
-                    if (player_ent && player_ent->type == rf::ObjectType::OT_ENTITY) {
-                        xlog::warn("sticking player to ground");
-                        rf::physics_stick_to_ground(reinterpret_cast<rf::Entity*>(player_ent)); // TBD
-                        xlog::warn("stuck player to ground");
-                    }
-                    rf::game_set_skill_level(g_save_data.common.game.difficulty);
-                    // (and whatever else your stock hook does)
-                }
-                rf::timer_dec_game_paused();
-                return true;
-            }
-
-            // 2) On-disk load: a ".asg" file
-            if (std::filesystem::path(filename).extension() == ".asg") {
-                // parse TOML into g_save_data
-                //if (!deserialize_savegame_from_asg_file(filename, g_save_data)) // TBD
-                //    return false;
-
-                // now that we've repopulated g_save_data.header.current_level_idx etc,
-                // jump straight into the same transitional path:
-                //return sr_load_level_state_hook.call_target(kAutoSvlName, player);
-            }
-        }
-        else {
+        if (!g_alpine_game_config.use_new_savegame_format) {
+            // fall back to the stock format
             return sr_load_level_state_hook.call_target(filename, pp);
         }
+
+        // A small helper to do exactly what you do for the "auto." path:
+        auto do_transition_load = [&](int slot_idx) -> bool {
+            using namespace rf;
+            // pause the game timer
+            timer_inc_game_paused();
+
+            auto& hdr = g_save_data.header;
+            auto& lvl = g_save_data.levels[slot_idx];
+
+            // restore geomods
+            num_geomods_this_level = lvl.geomod_craters.size();
+            std::memcpy(geomods_this_level, lvl.geomod_craters.data(), sizeof(GeomodCraterData) * num_geomods_this_level);
+            levelmod_load_state();
+
+            // restore world bounds
+            world_solid->bbox_min = lvl.header.aabb_min;
+            world_solid->bbox_max = lvl.header.aabb_max;
+
+            // restore everything else
+            deserialize_all_objects(&lvl);
+
+            // if we're out of the “transition” state, create the player entity
+            if (gameseq_get_state() != GS_LEVEL_TRANSITION) {
+                asg::SavegameEntityDataBlock const* player_blk = nullptr;
+                for (auto& e : lvl.entities) {
+                    if (e.obj.uid == -999) {
+                        player_blk = &e;
+                        break;
+                    }
+                }
+                if (!player_blk || !load_player(&g_save_data.common.player, pp, player_blk)) {
+                    timer_dec_game_paused();
+                    return false;
+                }
+                asg::resolve_delayed_handles();
+
+                if (auto o = obj_lookup_from_uid(-999); o && o->type == ObjectType::OT_ENTITY) {
+                    physics_stick_to_ground(reinterpret_cast<Entity*>(o));
+                }
+
+                // restore difficulty
+                game_set_skill_level(g_save_data.common.game.difficulty);
+            }
+
+            // final touches
+            trigger_disable_all();
+            timer_dec_game_paused();
+            return true;
+        };
+
+        std::string fn = filename;
+        auto path = std::filesystem::path(fn);
+
+        // 1) the in-memory “auto.” buffer
+        if (string_starts_with_ignore_case(fn, "auto.")) {
+            // find which slot matches the current level
+            auto& hdr = g_save_data.header;
+            std::string cur = string_to_lower(rf::level.filename);
+            auto it = std::find(hdr.saved_level_filenames.begin(), hdr.saved_level_filenames.end(), cur);
+            if (it == hdr.saved_level_filenames.end())
+                return false;
+            return do_transition_load(int(std::distance(hdr.saved_level_filenames.begin(), it)));
+        }
+
+        // 2) an on-disk “.asg” file
+        if (path.extension() == ".asg") {
+            // parse TOML into g_save_data
+            if (!deserialize_savegame_from_asg_file(fn, g_save_data))
+                return false;
+
+            // now that g_save_data is populated, do exactly the same transition logic
+            auto& hdr = g_save_data.header;
+            std::string cur = string_to_lower(rf::level.filename);
+            auto it = std::find(hdr.saved_level_filenames.begin(), hdr.saved_level_filenames.end(), cur);
+            if (it == hdr.saved_level_filenames.end())
+                return false;
+            return do_transition_load(int(std::distance(hdr.saved_level_filenames.begin(), it)));
+        }
+
+        // fall back to allow loading legacy saves
+        return sr_load_level_state_hook.call_target(filename, pp);
     }
 };
 
@@ -2652,15 +3496,268 @@ CallHook<void(rf::Object* obj, rf::Vector3* pos, rf::Matrix3* orient)> game_rest
     }
 };
 
+// todo: consider refactor to consolidate these with the similar functions in alpine_options.cpp
+// helper: trim whitespace from both ends
+static inline std::string trim(const std::string& s)
+{
+    auto ws = [](char c) { return std::isspace(static_cast<unsigned char>(c)); };
+    auto b = s.begin(), e = s.end();
+    b = std::find_if_not(b, e, ws);
+    e = std::find_if_not(s.rbegin(), std::string::const_reverse_iterator(b), ws).base();
+    return (b < e ? std::string(b, e) : std::string());
+}
+
+// helper: strip surrounding quotes if present
+static inline std::string unquote(const std::string& s)
+{
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+        return s.substr(1, s.size() - 2);
+    return s;
+}
+
+bool alpine_parse_ponr(const std::string& path)
+{
+    //xlog::warn("[PONR] Opening '{}'", path);
+    rf::File tbl;
+    if (tbl.open(path.c_str()) != 0) {
+        //xlog::warn("[PONR]  -> file open failed");
+        return false;
+    }
+
+    // read entire file into a string
+    std::string content;
+    std::string buf(2048, '\0');
+    int got;
+    while ((got = tbl.read(&buf[0], buf.size() - 1)) > 0) {
+        buf.resize(got);
+        content += buf;
+        buf.resize(2048, '\0');
+    }
+    tbl.close();
+
+     g_alpine_ponr.clear();
+    std::istringstream in(content);
+    std::string line;
+    int line_no = 0;
+
+    while (std::getline(in, line)) {
+        ++line_no;
+        std::string orig = line;
+        line = trim(line);
+        //xlog::warn("[PONR] Line {:3d}: '{}'", line_no, orig);
+
+        // skip blank lines or comments
+        if (line.empty() || line[0] == '#') {
+            //xlog::warn("[PONR]  -> skipping blank/comment");
+            continue;
+        }
+
+        // start a new block on "$Level:"
+        if (line.rfind("$Level:", 0) == 0) {
+            //xlog::warn("[PONR]  -> found $Level: directive");
+            asg::AlpinePonr entry;
+
+            // parse the filename after the colon
+            auto pos = line.find(':');
+            if (pos == std::string::npos) {
+                xlog::warn("[PONR]     malformed $Level: line, no ':'");
+                continue;
+            }
+            entry.current_level_filename = trim(line.substr(pos + 1));
+            entry.current_level_filename = unquote(entry.current_level_filename);
+            //xlog::warn("[PONR]     current_level_filename = '{}'", entry.current_level_filename);
+
+            // expect next non-comment line: "$Levels to save:"
+            while (std::getline(in, line)) {
+                ++line_no;
+                orig = line;
+                line = trim(line);
+                //xlog::warn("[PONR] Line {:3d}: '{}'", line_no, orig);
+
+                if (line.empty() || line[0] == '#') {
+                    //xlog::warn("[PONR]  -> skipping blank/comment");
+                    continue;
+                }
+                if (line.rfind("$Levels to save:", 0) == 0) {
+                    //xlog::warn("[PONR]  -> found $Levels to save:");
+                    // grab the integer
+                    int count = std::stoi(line.substr(line.find(':') + 1));
+                    //xlog::warn("[PONR]     count = {}", count);
+                    // read exactly `count` "+Save:" lines
+                    for (int i = 0; i < count; ++i) {
+                        if (!std::getline(in, line)) {
+                            xlog::warn("[PONR]     unexpected EOF while reading +Save entries");
+                            break;
+                        }
+                        ++line_no;
+                        orig = line;
+                        line = trim(line);
+                        //xlog::warn("[PONR] Line {:3d}: '{}'", line_no, orig);
+
+                        if (line.rfind("+Save:", 0) != 0) {
+                            //xlog::warn("[PONR]     skipping non-+Save: line, retrying");
+                            --i;
+                            continue;
+                        }
+                        auto qpos = line.find(':');
+                        std::string fn = trim(line.substr(qpos + 1));
+                        fn = unquote(fn);
+                        entry.levels_to_save.push_back(fn);
+                        //xlog::warn("[PONR]     +Save entry[{}] = '{}'", i, fn);
+                    }
+                }
+                else {
+                    //xlog::warn("[PONR]  -> expected $Levels to save:, got '{}'", line);
+                }
+                break;
+            }
+
+            // store the block
+            //xlog::warn("[PONR]  -> pushing AlpinePonr for '{}' ({} saves)", entry.current_level_filename, entry.levels_to_save.size());
+            g_alpine_ponr.push_back(std::move(entry));
+        }
+        // optional exit on explicit "#End"
+        else if (line == "#End") {
+            //xlog::warn("[PONR]  -> encountered #End, stopping parse");
+            break;
+        }
+        else {
+            //xlog::warn("[PONR]  -> unrecognized directive, skipping");
+        }
+    }
+
+    //xlog::warn("[PONR] Finished parsing, total entries = {}", g_alpine_ponr.size());
+    return !g_alpine_ponr.empty();
+}
+
+
+FunHook<bool()> sr_parse_ponr_table_hook{
+    0x004B36F0,
+    []() {
+         if (g_alpine_game_config.use_new_savegame_format) {
+            if (alpine_parse_ponr("ponr.tbl")) {
+                 //xlog::warn("Parsed {} entries from ponr.tbl", g_alpine_ponr.size());
+                 return true;
+            }
+            return false;
+        }
+        else {
+            return sr_parse_ponr_table_hook.call_target();
+        }
+    }
+};
+
+FunHook<int()> sr_get_num_logged_messages_hook{
+    0x004B57A0,
+    []() {
+         if (g_alpine_game_config.use_new_savegame_format) {
+            return g_save_data.common.game.num_logged_messages;
+        }
+        else {
+            return sr_get_num_logged_messages_hook.call_target();
+        }
+    }
+};
+
+FunHook<int()> sr_get_logged_messages_total_height_hook{
+    0x004B57E0,
+    []() {
+         if (g_alpine_game_config.use_new_savegame_format) {
+            return g_save_data.common.game.messages_total_height;
+        }
+        else {
+            return sr_get_logged_messages_total_height_hook.call_target();
+        }
+    }
+};
+
+FunHook<int()> sr_get_most_recent_logged_message_index_hook{
+    0x004B57C0,
+    []() {
+         if (g_alpine_game_config.use_new_savegame_format) {
+            return g_save_data.common.game.newest_message_index;
+        }
+        else {
+            return sr_get_most_recent_logged_message_index_hook.call_target();
+        }
+    }
+};
+
+FunHook<rf::sr::LoggedHudMessage*(int index)> sr_get_logged_message_hook{
+    0x004B5800,
+    [](int index) {
+         if (g_alpine_game_config.use_new_savegame_format) {
+            int count = (int)g_save_data.common.game.messages.size();
+            if (index < 0 || index >= count) {
+                xlog::error("Failed to get logged message ID {}", index);
+                return sr_get_logged_message_hook.call_target(index);
+            }
+
+            auto& alm = g_save_data.common.game.messages[index];
+            auto& out = g_tmpLoggedMessages[index];
+
+            memset(&out, 0, sizeof out);
+            strncpy(out.message, alm.message.c_str(), sizeof(out.message) - 1);
+            out.message[255] = '\0';
+            out.time_string = alm.time_string;
+            out.persona_index = alm.persona_index;
+            out.display_height = alm.display_height;
+            return &out;
+        }
+        else {
+            return sr_get_logged_message_hook.call_target(index);
+        }
+    }
+};
+
+ConsoleCommand2 parse_ponr_cmd{
+    "dbg_ponrparse",
+    []() {
+        rf::console::print("Parsing ponr.tbl...");
+        if (!alpine_parse_ponr("ponr.tbl")) {
+            rf::console::print("Failed to parse ponr.tbl");
+            return;
+        }
+        const size_t total = g_alpine_ponr.size();
+        rf::console::print("Parsed {} entries from ponr.tbl", total);
+        if (total == 0)
+            return;
+
+        rf::console::print("Number of levels listed in PONR store for each level file:");
+
+        std::string lineBuf;
+        for (size_t i = 0; i < total; ++i) {
+            const auto& e = g_alpine_ponr[i];
+            if (i % 8 != 0)
+                lineBuf += ", ";
+            lineBuf += e.current_level_filename + "(" + std::to_string(e.levels_to_save.size()) + ")";
+
+            // flush every 8 entries, or at end
+            if ((i % 8 == 7) || (i == total - 1)) {
+                rf::console::print("  {}", lineBuf);
+                lineBuf.clear();
+            }
+        }
+    },
+    "Force a parse of ponr.tbl",
+};
+
 void alpine_savegame_apply_patch()
 {
     game_restore_object_after_level_transition_hook.install();
 
     // handle serializing and saving asg files
     sr_save_game_hook.install();
+    do_quick_load_hook.install();
     sr_transitional_save_hook.install();
     sr_reset_save_data_hook.install();
+
+    // handle hud messages using new save buffer
     hud_save_persona_msg_hook.install();
+    sr_get_num_logged_messages_hook.install();
+    sr_get_logged_messages_total_height_hook.install();
+    sr_get_most_recent_logged_message_index_hook.install();
+    sr_get_logged_message_hook.install();
 
     // handle deserializing and loading asg files
     sr_load_level_state_hook.install();
@@ -2681,4 +3778,10 @@ void alpine_savegame_apply_patch()
     glass_delete_rooms_hook.install();
     glass_delete_room_injection.install();
     glass_face_can_be_destroyed_hook.install();
+
+    // handle new ponr system
+    sr_parse_ponr_table_hook.install();
+
+    // console commands
+    parse_ponr_cmd.register_cmd();
 }
