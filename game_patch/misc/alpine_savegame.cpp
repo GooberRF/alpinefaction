@@ -10,6 +10,7 @@
 #include <chrono>
 #include <ctime>
 #include <sstream>
+#include <unordered_set>
 #include <xlog/xlog.h>
 #include "alpine_savegame.h"
 #include "alpine_settings.h"
@@ -562,6 +563,7 @@ namespace asg
         SavegameEventDataBlock b{};
         b.event_type = e->event_type;
         b.uid = e->uid;
+        xlog::warn("saved delay {} to {} for uid {}", e->delay_seconds, b.delay, e->uid);
         b.delay = e->delay_seconds;
         b.is_on_state = e->delayed_msg;
         b.delay_timer = e->delay_timestamp.is_set() ? e->delay_timestamp.time_until() : -1;
@@ -659,17 +661,6 @@ namespace asg
             m.next_fire_timer = event->next_fire_timestamp.is_set() ? event->next_fire_timestamp.time_until() : -1;
             m.send_count = event->send_count;
 
-            // keeping the below around for later debugging - prints next 48 bytes after base event props
-            /*
-            auto* start = reinterpret_cast<uint8_t*>(event) + 693;
-            // print the pointer itself in hex
-            xlog::warn("[ASG] ---- CyclicTimerEvent @ {0:#x} ----", reinterpret_cast<uintptr_t>(event));
-
-            for (int i = 0; i < 48; ++i) {
-                // index in 2-digit decimal, byte in 0xHH hex
-                xlog::warn("[ASG] +{0:02d} = {1:#04x}", i, start[i]);
-            }
-            */
             xlog::warn("event {} is a valid Cyclic_Timer event with next_fire_timer {}, send_count {}, send_seconds {}",
                        event->uid, m.next_fire_timer, m.send_count, event->send_interval_seconds);
         }
@@ -1428,25 +1419,13 @@ namespace asg
                 if (exists)
                     continue;
 
-                // rebuild orient + position
-                //rf::Quaternion q;
-                //Quaternion::__ct(&q);
-                //rf::Matrix3 m = blk.obj.orient;
-                //Matrix3::__ct(&m);
-                //q.unpack(&blk.obj.orient);
-                //q.extract_matrix(&m);
                 rf::Quaternion q;
                 q.unpack(&blk.obj.orient);
                 rf::Matrix3 m;
                 q.extract_matrix(&m);
-
-                //rf::Vector3 p = rf::ShortVector::decompress(rf::world_solid, blk.obj.pos);
                 
                 rf::Vector3 p;
                 rf::decompress_vector3(rf::world_solid, &blk.obj.pos, &p);
-
-
-
 
                 // create and replay
                 rf::Entity* ne = rf::entity_create(static_cast<int>(blk.info_index), &rf::default_entity_name, -1, p, m, 0, -1);
@@ -1459,12 +1438,157 @@ namespace asg
         resolve_delayed_handles();
     }
 
+    static void apply_event_base_fields(rf::Event* e, const SavegameEventDataBlock& b)
+    {
+        e->delay_seconds = b.delay;        
+        rf::sr::sr_deserialize_timestamp(&e->delay_timestamp, &b.delay_timer);
+        e->delayed_msg = b.is_on_state;
+        add_handle_for_delayed_resolution(b.activated_by_entity_uid, &e->triggered_by_handle);
+        add_handle_for_delayed_resolution(b.activated_by_trigger_uid, &e->trigger_handle);
+
+        // todo: complicated due to delayed handle resolution. Serialization writes links as handles, probably pointless and needs to be uids
+        //e->links.clear();
+        //for (int link_uid : b.links) e->links.push_back(uid_to_handle(link_uid));
+    }
+
+    static void apply_generic_event(rf::Event* e, const SavegameEventDataBlock& b)
+    {
+        apply_event_base_fields(e, b);
+    }
+
+    static void apply_make_invuln_event(rf::Event* e, const SavegameEventMakeInvulnerableDataBlock& blk)
+    {
+        apply_event_base_fields(e, blk.ev);
+        auto* ev = static_cast<rf::MakeInvulnerableEvent*>(e);
+        rf::sr::sr_deserialize_timestamp(&ev->make_invuln_timestamp, &blk.time_left);
+    }
+
+    // When_Dead
+    static void apply_when_dead_event(rf::Event* e, const SavegameEventWhenDeadDataBlock& blk)
+    {
+        apply_event_base_fields(e, blk.ev);
+        auto* ev = static_cast<rf::WhenDeadEvent*>(e);
+        ev->message_sent = blk.message_sent;
+        ev->when_any_dead = blk.when_any_dead;
+    }
+
+    // Goal_Create
+    static void apply_goal_create_event(rf::Event* e, const SavegameEventGoalCreateDataBlock& blk)
+    {
+        apply_event_base_fields(e, blk.ev);
+        auto* ev = static_cast<rf::GoalCreateEvent*>(e);
+        ev->count = blk.count;
+    }
+
+    // Alarm_Siren
+    static void apply_alarm_siren_event(rf::Event* e, const SavegameEventAlarmSirenDataBlock& blk)
+    {
+        apply_event_base_fields(e, blk.ev);
+        auto* ev = static_cast<rf::AlarmSirenEvent*>(e);
+        ev->alarm_siren_playing = blk.alarm_siren_playing;
+    }
+
+    // Cyclic_Timer
+    static void apply_cyclic_timer_event(rf::Event* e, const SavegameEventCyclicTimerDataBlock& blk)
+    {
+        apply_event_base_fields(e, blk.ev);
+        auto* ev = static_cast<rf::CyclicTimerEvent*>(e);
+        rf::sr::sr_deserialize_timestamp(&ev->next_fire_timestamp, &blk.next_fire_timer);
+        ev->send_count = blk.send_count;
+    }
+
+    void event_deserialize_all_state(const SavegameLevelData& lvl)
+    {
+        clear_delayed_handles();
+
+        std::unordered_map<int, SavegameEventDataBlock> generic_map;
+        std::unordered_map<int, SavegameEventMakeInvulnerableDataBlock> invuln_map;
+        std::unordered_map<int, SavegameEventWhenDeadDataBlock> when_dead_map;
+        std::unordered_map<int, SavegameEventGoalCreateDataBlock> goal_create_map;
+        std::unordered_map<int, SavegameEventAlarmSirenDataBlock> alarm_siren_map;
+        std::unordered_map<int, SavegameEventCyclicTimerDataBlock> cyclic_timer_map;
+
+        generic_map.reserve(lvl.other_events.size());
+        for (auto const& ev : lvl.other_events) generic_map[ev.uid] = ev;
+        invuln_map.reserve(lvl.make_invulnerable_events.size());
+        for (auto const& ev : lvl.make_invulnerable_events) invuln_map[ev.ev.uid] = ev;
+        when_dead_map.reserve(lvl.when_dead_events.size());
+        for (auto const& ev : lvl.when_dead_events) when_dead_map[ev.ev.uid] = ev;
+        goal_create_map.reserve(lvl.goal_create_events.size());
+        for (auto const& ev : lvl.goal_create_events) goal_create_map[ev.ev.uid] = ev;
+        alarm_siren_map.reserve(lvl.alarm_siren_events.size());
+        for (auto const& ev : lvl.alarm_siren_events) alarm_siren_map[ev.ev.uid] = ev;
+        cyclic_timer_map.reserve(lvl.cyclic_timer_events.size());
+        for (auto const& ev : lvl.cyclic_timer_events) cyclic_timer_map[ev.ev.uid] = ev;
+
+        std::unordered_set<int> deleted_ids(lvl.deleted_event_uids.begin(), lvl.deleted_event_uids.end());
+
+        auto full = rf::event_list;
+        for (int i = 0, n = full.size(); i < n; ++i) {
+            rf::Event* e = full[i];
+            if (!e)
+                continue;
+
+            int uid = e->uid;
+            // delete events marked for deletion
+            if (deleted_ids.count(uid)) {
+                xlog::warn("Found in deleted UIDs array, deleting event UID {}", uid);
+                rf::event_delete(e);
+                continue;
+            }
+
+            // restore events by type
+            switch (static_cast<rf::EventType>(e->event_type)) {
+                case rf::EventType::Make_Invulnerable: {
+                    auto it = invuln_map.find(uid);
+                    if (it != invuln_map.end())
+                        apply_make_invuln_event(e, it->second);
+                    break;
+                }
+                case rf::EventType::When_Dead: {
+                    auto it = when_dead_map.find(uid);
+                    if (it != when_dead_map.end())
+                        apply_when_dead_event(e, it->second);
+                    break;
+                }
+                case rf::EventType::Goal_Create: {
+                    auto it = goal_create_map.find(uid);
+                    if (it != goal_create_map.end())
+                        apply_goal_create_event(e, it->second);
+                    break;
+                }
+                case rf::EventType::Alarm_Siren: {
+                    auto it = alarm_siren_map.find(uid);
+                    if (it != alarm_siren_map.end())
+                        apply_alarm_siren_event(e, it->second);
+                    break;
+                }
+                case rf::EventType::Cyclic_Timer: {
+                    auto it = cyclic_timer_map.find(uid);
+                    if (it != cyclic_timer_map.end())
+                        apply_cyclic_timer_event(e, it->second);
+                    break;
+                }
+                default: {
+                    auto it = generic_map.find(uid);
+                    if (it != generic_map.end())
+                        apply_generic_event(e, it->second);
+                    break;
+                }
+            }
+        }
+
+        // resolve delayed handles
+        resolve_delayed_handles();
+    }
+
     void deserialize_all_objects(SavegameLevelData* lvl)
     {
         // reset our “UID → int*” mapping
         clear_delayed_handles();
 
         entity_deserialize_all_state(lvl->entities, lvl->dead_entity_uids);
+        event_deserialize_all_state(*lvl);
 
         xlog::warn("restoring current level time {} to buffer time {}", rf::level_time_flt, lvl->header.level_time);
         rf::level_time_flt = lvl->header.level_time;
@@ -1738,9 +1862,13 @@ namespace asg
 
     int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr)
     {
-        g_sr_delayed_uids.push_back(uid);
-        g_sr_delayed_ptrs.push_back(obj_handle_ptr);
-        // return number of delayed uids
+        if (uid >= 0) {
+            g_sr_delayed_uids.push_back(uid);
+            g_sr_delayed_ptrs.push_back(obj_handle_ptr);
+        }
+        else {
+            *obj_handle_ptr = -1;
+        }
         return int(g_sr_delayed_uids.size());
     }
 
@@ -2680,6 +2808,117 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
     return true;
 }
 
+static asg::SavegameEventDataBlock parse_event_base_fields(const toml::table& tbl)
+{
+    asg::SavegameEventDataBlock b;
+    b.event_type = tbl["event_type"].value_or(-1);
+    b.uid = tbl["uid"].value_or(-1);
+    b.delay = tbl["delay"].value_or(0.0f);
+    b.is_on_state = tbl["is_on_state"].value_or(false);    
+    b.delay_timer = tbl["delay_timer"].value_or(-1);
+    xlog::warn("setting delay timer to {} for UID {}", b.delay_timer, b.uid);
+    b.activated_by_entity_uid = tbl["activated_by_entity_uid"].value_or(-1);
+    b.activated_by_trigger_uid = tbl["activated_by_trigger_uid"].value_or(-1);
+    if (auto arr = tbl["links"].as_array()) {
+        for (auto& v : *arr) b.links.push_back(v.value_or(-1));
+    }
+    return b;
+}
+
+static bool parse_generic_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlock>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        out.push_back(parse_event_base_fields(*node.as_table()));
+    }
+    return true;
+}
+
+static bool parse_make_invuln_events(const toml::array& arr, std::vector<asg::SavegameEventMakeInvulnerableDataBlock>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+        asg::SavegameEventMakeInvulnerableDataBlock mb;
+        mb.ev = parse_event_base_fields(tbl);
+        mb.time_left = tbl["time_left"].value_or(-1);
+        out.push_back(std::move(mb));
+    }
+    return true;
+}
+
+static bool parse_when_dead_events(const toml::array& arr, std::vector<asg::SavegameEventWhenDeadDataBlock>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+        asg::SavegameEventWhenDeadDataBlock ev;
+        ev.ev = parse_event_base_fields(tbl);
+        ev.message_sent = tbl["message_sent"].value_or(false);
+        ev.when_any_dead = tbl["when_any_dead"].value_or(false);
+        out.push_back(std::move(ev));
+    }
+    return true;
+}
+
+static bool parse_goal_create_events(const toml::array& arr, std::vector<asg::SavegameEventGoalCreateDataBlock>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+        asg::SavegameEventGoalCreateDataBlock ev;
+        ev.ev = parse_event_base_fields(tbl);
+        ev.count = tbl["count"].value_or(0);
+        out.push_back(std::move(ev));
+    }
+    return true;
+}
+
+static bool parse_alarm_siren_events(const toml::array& arr, std::vector<asg::SavegameEventAlarmSirenDataBlock>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+        asg::SavegameEventAlarmSirenDataBlock ev;
+        ev.ev = parse_event_base_fields(tbl);
+        ev.alarm_siren_playing = tbl["alarm_siren_playing"].value_or(false);
+        out.push_back(std::move(ev));
+    }
+    return true;
+}
+
+static bool parse_cyclic_timer_events(const toml::array& arr, std::vector<asg::SavegameEventCyclicTimerDataBlock>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+        asg::SavegameEventCyclicTimerDataBlock ev;
+        ev.ev = parse_event_base_fields(tbl);
+        ev.next_fire_timer = tbl["next_fire_timer"].value_or(-1);
+        ev.send_count = tbl["send_count"].value_or(0);
+        out.push_back(std::move(ev));
+    }
+    return true;
+}
+
 bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& outLevels)
 {
     auto levels_node = root["levels"];
@@ -2713,6 +2952,37 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
         if (auto ents = tbl["entities"].as_array()) {
             parse_entities(*ents, lvl.entities);
         }
+
+        // events
+        if (auto ge = tbl["events_generic"].as_array())
+            parse_generic_events(*ge, lvl.other_events);
+        if (auto ie = tbl["events_make_invulnerable"].as_array())
+            parse_make_invuln_events(*ie, lvl.make_invulnerable_events);
+        if (auto a = tbl["events_when_dead"].as_array())
+            parse_when_dead_events(*a, lvl.when_dead_events);
+        if (auto a = tbl["events_goal_create"].as_array())
+            parse_goal_create_events(*a, lvl.goal_create_events);
+        if (auto a = tbl["events_alarm_siren"].as_array())
+            parse_alarm_siren_events(*a, lvl.alarm_siren_events);
+        if (auto a = tbl["events_cyclic_timer"].as_array())
+            parse_cyclic_timer_events(*a, lvl.cyclic_timer_events);
+
+        // when‐dead
+        /* if (auto we = tbl["events_when_dead"].as_array())
+            parse_when_dead_events(*we, lvl.when_dead_events);
+
+        // goal‐create
+        if (auto ge = tbl["events_goal_create"].as_array())
+            parse_goal_create_events(*ge, lvl.goal_create_events);
+
+        // alarm‐siren
+        if (auto ae = tbl["events_alarm_siren"].as_array())
+            parse_alarm_siren_events(*ae, lvl.alarm_siren_events);
+
+        // cyclic‐timer
+        if (auto ce = tbl["events_cyclic_timer"].as_array())
+            parse_cyclic_timer_events(*ce, lvl.cyclic_timer_events);*/
+
 
         // …later you can parse items, clutter, triggers, events, decals, etc…
         outLevels.push_back(std::move(lvl));
@@ -3157,8 +3427,6 @@ FunHook<void(rf::Player* pp)> sr_transitional_save_hook{
         if (g_alpine_game_config.use_new_savegame_format) {
             rf::sr::g_disable_saving_persistent_goals = true;
 
-            //asg::serialize_player(pp, g_save_data.common.player);
-
             size_t idx = asg::ensure_current_level_slot();
             xlog::warn("[ASG] transitional_save: slot #{} = {}", idx, g_save_data.header.saved_level_filenames[idx]);
 
@@ -3166,9 +3434,6 @@ FunHook<void(rf::Player* pp)> sr_transitional_save_hook{
             xlog::warn("[ASG] transitional_save: serialized level {}", g_save_data.levels[idx].header.filename);
 
             g_save_data.header.level_time_left = rf::level_time2;
-
-            // maintain old code temporarily
-            //sr_transitional_save_hook.call_target(pp);
         }
         else {
             sr_transitional_save_hook.call_target(pp);
