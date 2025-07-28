@@ -531,7 +531,9 @@ namespace asg
 
         b.links.clear();
         for (auto handle_ptr : c->links) {
-            b.links.push_back(handle_ptr);
+            // convert handle to uid
+            int handle_ptr_uid = uid_from_handle(handle_ptr);
+            b.links.push_back(handle_ptr_uid);
         }
 
         return b;
@@ -552,7 +554,9 @@ namespace asg
 
         b.links.clear();
         for (auto handle_ptr : t->links) {
-            b.links.push_back(handle_ptr);
+            // convert handle to uid
+            int handle_ptr_uid = uid_from_handle(handle_ptr);
+            b.links.push_back(handle_ptr_uid);
         }
 
         return b;
@@ -572,7 +576,9 @@ namespace asg
 
         b.links.clear();
         for (auto handle_ptr : e->links) {
-            b.links.push_back(handle_ptr);
+            // convert handle to uid
+            int handle_ptr_uid = uid_from_handle(handle_ptr);
+            b.links.push_back(handle_ptr_uid);
         }
         return b;
     }
@@ -913,7 +919,7 @@ namespace asg
                 lvl->cyclic_timer_events.push_back(make_cyclic_timer_event_block(e));
                 break;
             default: // other events saved when they have a queued message
-                if (e->delay_timestamp.is_set()) {
+                if (e->delay_timestamp.is_set()) { // todo: maybe include all events? or allow mapper to designate?
                     lvl->other_events.push_back(make_event_base_block(e));
                 }
                 break;
@@ -1214,7 +1220,6 @@ namespace asg
         // host_tag_handle is a raw byte in the save
         o->host_tag_handle = (src.host_tag_handle == -1 ? -1 : (int8_t)src.host_tag_handle);
 
-
         // ——— build physics info & re-init the body ———
         // copy back angular momentum and flags
         o->p_data.ang_momentum = src.ang_momentum;
@@ -1222,15 +1227,8 @@ namespace asg
 
         // prepare the stock’s ObjectCreateInfo
         rf::ObjectCreateInfo oci{};
-        // rotvel = ang_momentum / mass
-        {
-            //rf::Vector3 tmp;
-            //auto* div = rf::Vector3::get_divided(&src.ang_momentum, &tmp, o->p_data.mass);
-            //auto* div = src.ang_momentum.get_divided(&tmp, o->p_data.mass);
-            src.ang_momentum.get_divided(&oci.rotvel, o->p_data.mass);
-            //src.ang_momentum.get_divided();
-            //oci.rotvel = *div;
-        }
+
+        src.ang_momentum.get_divided(&oci.rotvel, o->p_data.mass);
         oci.body_inv = o->p_data.body_inv;
         oci.drag = o->p_data.drag;
         oci.mass = o->p_data.mass;
@@ -1256,31 +1254,6 @@ namespace asg
         // restore flags and mark “just restored” bit (0x6000000)
         o->p_data.flags = src.physics_flags;
         o->obj_flags |= static_cast<rf::ObjectFlags>(0x06000000);
-
-        /*
-        //o->pos = rf::ShortVector::decompress(rf::world_solid, src.pos);
-        //o->p_data.vel = rf::ShortVector::decompress(rf::world_solid, src.vel);
-        rf::decompress_vector3(rf::world_solid, &src.pos, &o->pos);
-        rf::decompress_vector3(rf::world_solid, &src.vel, &o->p_data.vel);
-        o->friendliness = static_cast<rf::ObjFriendliness>(src.friendliness);
-        o->host_tag_handle = src.host_tag_handle;
-        //o->orient = src.orient;
-        rf::Quaternion q;
-        q.unpack(&src.orient);
-        q.extract_matrix(&o->orient);
-        o->obj_flags = static_cast<rf::ObjectFlags>(src.obj_flags);
-        o->parent_handle = src.parent_uid;
-
-        // host_handle was saved as a UID
-        if (src.host_uid >= 0) {
-            add_handle_for_delayed_resolution(src.host_uid, &o->host_handle);
-        }
-        else {
-            o->host_handle = -1;
-        }
-
-        o->p_data.ang_momentum = src.ang_momentum;
-        o->p_data.flags = src.physics_flags;*/
     }
 
     static void deserialize_entity_state(rf::Entity* e, const SavegameEntityDataBlock& src)
@@ -1307,35 +1280,23 @@ namespace asg
         // AI params
         e->ai.mode = static_cast<rf::AiMode>(src.ai_mode);
         e->ai.submode = static_cast<rf::AiSubmode>(src.ai_submode);
-        //e->move_mode->mode = src.move_mode;
-        //e->move_mode->mode = 0;
+
         e->move_mode = rf::movemode_get_mode(static_cast<rf::MovementMode>(src.move_mode));
 
         e->ai.mode_parm_0 = src.ai_mode_parm_0;
         e->ai.mode_parm_1 = src.ai_mode_parm_1;
 
-        if (src.target_uid >= 0)
             add_handle_for_delayed_resolution(src.target_uid, &e->ai.target_handle);
-        else
-            e->ai.target_handle = -1;
 
-        if (src.look_at_uid >= 0)
             add_handle_for_delayed_resolution(src.look_at_uid, &e->ai.look_at_handle);
-        else
-            e->ai.look_at_handle = -1;
 
-        if (src.shoot_at_uid >= 0)
             add_handle_for_delayed_resolution(src.shoot_at_uid, &e->ai.shoot_at_handle);
-        else
-            e->ai.shoot_at_handle = -1;
+
 
         e->ai.ci.rot = src.ci_rot;
         e->ai.ci.move = src.ci_move;
 
-        if (src.corpse_carry_uid >= 0)
-            add_handle_for_delayed_resolution(src.corpse_carry_uid, &e->ai.corpse_carry_handle);
-        else
-            e->ai.corpse_carry_handle = -1;
+        add_handle_for_delayed_resolution(src.corpse_carry_uid, &e->ai.corpse_carry_handle);
 
         e->ai.ai_flags = src.ai_flags;
 
@@ -1446,9 +1407,15 @@ namespace asg
         add_handle_for_delayed_resolution(b.activated_by_entity_uid, &e->triggered_by_handle);
         add_handle_for_delayed_resolution(b.activated_by_trigger_uid, &e->trigger_handle);
 
-        // todo: complicated due to delayed handle resolution. Serialization writes links as handles, probably pointless and needs to be uids
-        //e->links.clear();
-        //for (int link_uid : b.links) e->links.push_back(uid_to_handle(link_uid));
+        e->links.clear();
+        for (int link_uid : b.links) {
+            // push a placeholder handle
+            e->links.add(-1);
+            // reference to slot
+            int& slot = e->links[e->links.size() - 1];
+            // queue the UID for resolution
+            add_handle_for_delayed_resolution(link_uid, &slot);
+        }
     }
 
     static void apply_generic_event(rf::Event* e, const SavegameEventDataBlock& b)
@@ -1885,11 +1852,9 @@ namespace asg
             int* dst = g_sr_delayed_ptrs[i];
 
             if (auto obj = rf::obj_lookup_from_uid(uid)) {
-                xlog::warn("resolving handle for uid {}", uid);
                 *dst = obj->handle;
             }
             else {
-                //xlog::warn("no object to resolve handle for uid {}", uid);
                 *dst = -1;
             }
         }
