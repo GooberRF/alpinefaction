@@ -282,6 +282,7 @@ namespace rf
     static auto& hide_enemy_bullets = addr_as_ref<bool>(0x005A24D0);
 
     static auto& weapon_list = addr_as_ref<Weapon>(0x00872128);
+    static auto& weapon_create = addr_as_ref<Weapon*(int type, int parent_handle, Vector3* pos, Matrix3* orient, bool alt_fire, int flags)>(0x004C77A0);
 
     static auto& weapon_lookup_type = addr_as_ref<int(const char*)>(0x004C81F0);
     static auto& ammo_lookup_type = addr_as_ref<int(const char*)>(0x004C22B0);

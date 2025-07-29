@@ -50,5 +50,10 @@ namespace rf
     static auto& corpse_restore_mesh = addr_as_ref<void(Corpse *cp, const char *mesh_name)>(0x00417530);
 
     static auto& corpse_list = addr_as_ref<Corpse>(0x005CABB8);
-    static auto& g_blood_used_list = addr_as_ref<EntityBloodPool*>(0x0062F764);
-}
+    static auto& default_corpse_pose = addr_as_ref<char>(0x006469F4);
+    static auto& corpse_create = addr_as_ref<Corpse*(Entity* ep, const char* anim_tag_name, const Vector3* pos, const Matrix3* orient, bool permanent, bool force_last_frame)>(0x00416940);
+    //static auto& g_blood_used_list = addr_as_ref<EntityBloodPool*>(0x0062F764);
+    static auto& g_blood_free_list = addr_as_ref<rf::EntityBloodPool*>(0x0062F488);
+    static auto& g_blood_pools = addr_as_ref<rf::EntityBloodPool[8]>(0x0062F490);
+    static auto& g_blood_used_list = addr_as_ref<rf::EntityBloodPool*>(0x0062F764);
+    }

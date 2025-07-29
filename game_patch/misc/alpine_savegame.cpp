@@ -1757,10 +1757,7 @@ namespace asg
         mv->rotation_travel_time_seconds_unk = b.rotation_travel_time_seconds;
         rf::sr::sr_deserialize_timestamp(&mv->wait_timestamp, &b.wait_timestamp);
 
-        if (b.trigger_uid >= 0)
-            add_handle_for_delayed_resolution(b.trigger_uid, &mv->trigger_handle);
-        else
-            mv->trigger_handle = -1;
+        add_handle_for_delayed_resolution(b.trigger_uid, &mv->trigger_handle);
 
         mv->dist_travelled = b.dist_travelled;
         mv->cur_vel = b.cur_vel;
@@ -1854,6 +1851,268 @@ namespace asg
         }
     }
 
+    static void apply_weapon_fields(rf::Weapon* w, const SavegameLevelWeaponDataBlock& b)
+    {
+        // 1) Restore common Object state
+        deserialize_object_state(w, b.obj);
+
+        // 2) Restore weapon-specific fields
+        w->next = nullptr; // we'll resolve list links separately
+        w->prev = nullptr;
+        w->info_index = b.info_index;
+        w->lifeleft_seconds = b.life_left_seconds;
+        w->fly_sound_handle = b.fly_sound_handle;
+        w->light_handle = b.light_handle;
+        w->weapon_flags = b.weapon_flags;
+        w->flicker_index = b.flicker_index;
+
+        // sticky host
+        add_handle_for_delayed_resolution(b.sticky_host_uid, &w->sticky_host_handle);
+        w->sticky_host_pos_offset = b.sticky_host_pos_offset;
+        w->sticky_host_orient = b.sticky_host_orient;
+
+        // friendliness, target
+        w->friendliness = static_cast<rf::ObjFriendliness>(b.friendliness);
+        add_handle_for_delayed_resolution(b.target_uid, &w->target_handle);
+
+        // scan, piercing, thrust
+        rf::sr::sr_deserialize_timestamp(&w->scan_time, &b.scan_time);
+        w->pierce_power_left = b.pierce_power_left;
+        w->thrust_left = b.thrust_left;
+
+        // firing position
+        w->firing_pos = b.firing_pos;
+    }
+
+    static void weapon_deserialize_all_state(const std::vector<SavegameLevelWeaponDataBlock>& blocks)
+    {
+        clear_delayed_handles();
+        // build UID -> block map
+        std::unordered_map<int, SavegameLevelWeaponDataBlock> map;
+        map.reserve(blocks.size());
+        for (auto const& wb : blocks) map[wb.obj.uid] = wb;
+
+        bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
+
+        // 1) Restore or kill existing weapons
+        for (rf::Weapon* w = rf::weapon_list.next; w != &rf::weapon_list; w = w->next) {
+            if ((w->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) && in_transition)
+                continue;
+
+            auto it = map.find(w->uid);
+            if (it != map.end()) {
+                apply_weapon_fields(w, it->second);
+            }
+            else {
+                if (!(w->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION))
+                    rf::obj_flag_dead(w);
+            }
+        }
+
+        // 2) Spawn missing weapons
+        for (auto const& b : blocks) {
+            if (!rf::obj_lookup_from_uid(b.obj.uid)) {
+                // decompress orientation & position
+                rf::Quaternion q;
+                q.unpack(&b.obj.orient);
+                rf::Matrix3 m;
+                q.extract_matrix(&m);
+                rf::Vector3 p;
+                rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+
+                // create
+                rf::Weapon* nw = rf::weapon_create(b.info_index, -1, &p, &m, 0, 0);
+                if (nw) {
+                    apply_weapon_fields(nw, b);
+                }
+            }
+        }
+
+        // 3) Resolve all delayed handle lookups
+        resolve_delayed_handles();
+    }
+
+    // helper to unlink a pool from the free‐list
+    static void remove_from_blood_pool_free_list(rf::EntityBloodPool* p)
+    {
+        auto next = p->next;
+        auto prev = p->prev;
+
+        if (next == p) {
+            rf::g_blood_free_list = nullptr;
+        }
+        else {
+            if (rf::g_blood_free_list == p)
+                rf::g_blood_free_list = next;
+            next->prev = prev;
+            prev->next = next;
+        }
+        p->next = p->prev = nullptr;
+    }
+
+    // helper to insert a pool onto the used‐list
+    static void add_to_blood_pool_used_list(rf::EntityBloodPool* p)
+    {
+        if (!rf::g_blood_used_list) {
+            rf::g_blood_used_list = p;
+            p->next = p->prev = p;
+        }
+        else {
+            auto head = rf::g_blood_used_list;
+            auto tail = head->prev;
+            tail->next = p;
+            p->prev = tail;
+            p->next = head;
+            head->prev = p;
+        }
+    }
+
+    static void blood_pool_deserialize_all_state(const std::vector<SavegameLevelBloodPoolDataBlock>& blocks)
+    {
+        // replay all saved blood‐pools in order
+        for (auto const& b : blocks) {
+            // grab the first free pool
+            rf::EntityBloodPool* p = rf::g_blood_free_list;
+            if (!p)
+                break;
+
+            // 1) unlink it from the free list
+            remove_from_blood_pool_free_list(p);
+
+            // 2) restore our saved state
+            p->pool_pos = b.pos;
+            p->pool_orient = b.orient;
+            p->pool_color = b.pool_color;
+
+            // 3) link it into the used‐list
+            add_to_blood_pool_used_list(p);
+        }
+    }
+
+    static void apply_corpse_fields(rf::Corpse* c, const SavegameLevelCorpseDataBlock& b)
+    {
+        // 1) common Object fields (position/orient/physics/flags/etc)
+        deserialize_object_state(c, b.obj);
+
+        // 2) corpse‐specific simple fields
+        c->create_time = b.create_time;
+        c->lifetime_seconds = b.lifetime_seconds;
+        c->corpse_flags = b.corpse_flags;
+        c->entity_type = b.entity_type;
+        c->corpse_pose_name = b.pose_name.c_str();
+        rf::sr::sr_deserialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
+        c->body_temp = b.body_temp;
+        c->corpse_state_vmesh_anim_index = b.state_anim;
+        c->corpse_action_vmesh_anim_index = b.action_anim;
+        c->corpse_drop_vmesh_anim_index = b.drop_anim;
+        c->corpse_carry_vmesh_anim_index = b.carry_anim;
+        c->corpse_pose = b.corpse_pose;
+
+        // 3) re‐attach item handle
+        add_handle_for_delayed_resolution(b.item_uid, &c->item_handle);
+
+        // 4) any other handles
+        c->body_drop_sound_handle = b.body_drop_sound_handle;
+
+        // 5) rebuild collision spheres
+        c->p_data.mass = b.mass;
+        c->p_data.radius = b.radius;
+        c->p_data.cspheres.clear();
+        for (auto const& sph : b.cspheres) c->p_data.cspheres.add(sph);
+    }
+
+    static void corpse_deserialize_all_state(const std::vector<SavegameLevelCorpseDataBlock>& blocks)
+    {
+        clear_delayed_handles();
+
+        bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
+
+        // Build a quick UID→block map
+        std::unordered_map<int, SavegameLevelCorpseDataBlock> blkmap;
+        blkmap.reserve(blocks.size());
+        for (auto const& b : blocks) blkmap[b.obj.uid] = b;
+
+        // 1) Replay or kill existing corpses
+        for (rf::Corpse* c = rf::corpse_list.next; c != &rf::corpse_list; c = c->next) {
+            // stock skips IN_LEVEL_TRANSITION‐only corpses while transitioning
+            if ((c->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) && in_transition)
+                continue;
+
+            auto it = blkmap.find(c->uid);
+            if (it != blkmap.end()) {
+                apply_corpse_fields(c, it->second);
+            }
+            else {
+                rf::obj_flag_dead(c);
+            }
+        }
+
+        // 2) Spawn any corpses that were in the save but aren't in the world yet
+        for (auto const& b : blocks) {
+            if (auto obj_ep = rf::obj_lookup_from_uid(b.obj.uid)) {
+                // --- decompress orientation & position ---
+                rf::Quaternion q;
+                q.unpack(&b.obj.orient);
+                rf::Matrix3 m;
+                q.extract_matrix(&m);
+                rf::Vector3 p;
+                rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+                if (obj_ep->type == rf::ObjectType::OT_ENTITY) {
+                    auto ep = reinterpret_cast<rf::Entity*>(obj_ep);
+                    if (auto* newc = rf::corpse_create(ep, ep->info->corpse_anim_string, &p, &m, false, false)) {
+                        newc->uid = b.obj.uid;
+                        apply_corpse_fields(newc, b);
+                    }
+                }
+                
+                /*
+                // --- stock uses ObjectCreateInfo to build a Corpse object ---
+                rf::ObjectCreateInfo ci{};
+                ci.mass = b.mass;
+                ci.radius = b.radius;
+                ci.solid = nullptr; // or rf::world_solid if they expect it
+                ci.orient = m;
+                ci.pos = p;
+                ci.material =  3;
+                ci.physics_flags =  51;
+                // copy over collision spheres
+                for (auto const& sph : b.cspheres) ci.spheres.add(sph);
+
+                // --- now actually create it ---
+                if (auto* newc = reinterpret_cast<rf::Corpse*>(rf::obj_create(rf::ObjectType::OT_CORPSE,
+                                                                               -1,  -1, &ci,
+                                                                               true))) {
+                    // give it the right UID back if needed:
+                    newc->baseclass_0.uid = b.obj.uid;
+
+                    apply_corpse_fields(newc, b);
+                }*/
+            }
+        }
+
+        // 3) finally fix up any delayed handle‐lookups
+        resolve_delayed_handles();
+    }
+
+    static void apply_killed_glass_room(int room_uid)
+    {
+        if (auto* room = rf::world_solid->find_room_by_id(room_uid)) {
+            if (room->get_is_detail()) {
+                rf::glass_delete_room(room);
+            }
+        }
+    }
+
+    static void glass_deserialize_all_killed_state(const std::vector<int>& killed_room_uids)
+    {
+        if (killed_room_uids.empty())
+            return;
+
+        for (int uid : killed_room_uids) {
+            apply_killed_glass_room(uid);
+        }
+    }
+
     void deserialize_all_objects(SavegameLevelData* lvl)
     {
         // reset our “UID → int*” mapping
@@ -1869,10 +2128,10 @@ namespace asg
         mover_deserialize_all_state(lvl->movers);
         push_region_deserialize_all_state(lvl->push_regions);
         decal_deserialize_all_state(lvl->decals);
-        // weapons
-        // blood pools
-        // corpses
-        // glass
+        weapon_deserialize_all_state(lvl->weapons);
+        blood_pool_deserialize_all_state(lvl->blood_pools);
+        corpse_deserialize_all_state(lvl->corpses);
+        glass_deserialize_all_killed_state(lvl->killed_room_uids);
 
         xlog::warn("restoring current level time {} to buffer time {}", rf::level_time_flt, lvl->header.level_time);
         rf::level_time_flt = lvl->header.level_time;
@@ -2969,7 +3228,7 @@ bool parse_object(const toml::table& tbl, asg::SavegameObjectDataBlock& o)
     }
 
     o.physics_flags = tbl["physics_flags"].value_or(0);
-    o.skin_name = tbl["skin_name"].value_or(std::string{});
+    o.skin_name = tbl["skin_name"].value_or("");
 
     return true;
 }
@@ -3098,7 +3357,6 @@ static asg::SavegameEventDataBlock parse_event_base_fields(const toml::table& tb
     b.delay = tbl["delay"].value_or(0.0f);
     b.is_on_state = tbl["is_on_state"].value_or(false);    
     b.delay_timer = tbl["delay_timer"].value_or(-1);
-    xlog::warn("setting delay timer to {} for UID {}", b.delay_timer, b.uid);
     b.activated_by_entity_uid = tbl["activated_by_entity_uid"].value_or(-1);
     b.activated_by_trigger_uid = tbl["activated_by_trigger_uid"].value_or(-1);
     if (auto arr = tbl["links"].as_array()) {
@@ -3256,14 +3514,6 @@ bool parse_triggers(const toml::array& arr, std::vector<asg::SavegameTriggerData
         asg::SavegameTriggerDataBlock tb{};
         tb.uid = tbl["uid"].value_or(0);
         asg::parse_i16_vector(tbl, "pos", tb.pos);
-        // position → decompress into ShortVector
-        /* if (auto pa = tbl["pos"].as_array()) {
-            auto v = asg::parse_f32_array(*pa);
-            if (v.size() == 3) {
-                rf::Vector3 tmp{v[0], v[1], v[2]};
-                rf::compress_vector3(rf::world_solid, &tmp, &tb.pos);
-            }
-        }*/
         tb.count = tbl["count"].value_or(0);
         tb.time_last_activated = tbl["time_last_activated"].value_or(0);
         tb.trigger_flags = tbl["trigger_flags"].value_or(0);
@@ -3593,7 +3843,7 @@ bool parse_corpses(const toml::array& arr, std::vector<asg::SavegameLevelCorpseD
         b.lifetime_seconds = tbl["lifetime_seconds"].value_or(0.0f);
         b.corpse_flags = tbl["corpse_flags"].value_or(0);
         b.entity_type = tbl["entity_type"].value_or(0);
-        b.pose_name = tbl["pose_name"].value_or(std::string{});
+        b.pose_name = tbl["pose_name"].value_or("");
         b.emitter_kill_timestamp = tbl["emitter_kill_timestamp"].value_or(-1);
         b.body_temp = tbl["body_temp"].value_or(0.0f);
         b.state_anim = tbl["state_anim"].value_or(0);
@@ -3601,7 +3851,7 @@ bool parse_corpses(const toml::array& arr, std::vector<asg::SavegameLevelCorpseD
         b.drop_anim = tbl["drop_anim"].value_or(0);
         b.carry_anim = tbl["carry_anim"].value_or(0);
         b.corpse_pose = tbl["corpse_pose"].value_or(0);
-        b.helmet_name = tbl["helmet_name"].value_or(std::string{});
+        b.helmet_name = tbl["helmet_name"].value_or("");
         b.item_uid = tbl["item_uid"].value_or(-1);
         b.body_drop_sound_handle = tbl["body_drop_sound_handle"].value_or(0);
 

@@ -142,6 +142,11 @@ namespace rf
         {
             return AddrCaller{0x004CD970}.this_call<GRoom*>(this, org_room, org_pos, new_pos, object_name);
         }
+
+        GRoom* find_room_by_id(int id)
+        {
+            return AddrCaller{0x004D2FC0}.this_call<GRoom*>(this, id);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
 
@@ -215,6 +220,16 @@ namespace rf
         float liquid_surface_pan_v;
         VArray<GrLight*> cached_lights;
         int light_state;
+
+        bool get_is_detail()
+        {
+            return AddrCaller{0x00494A50}.this_call<bool>(this);
+        }
+
+        bool is_killable_glass()
+        {
+            return AddrCaller{0x00465F00}.this_call<bool>(this);
+        }
     };
     static_assert(sizeof(GRoom) == 0x1CC);
 
