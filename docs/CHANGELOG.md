@@ -65,6 +65,9 @@ Version 1.2.0 (Willow): Not yet released
 - Support `levelm` and `Play (Multi)` in RED launching KOTH maps with KOTH gamemode
 - Set default gamemode settings when starting a listen server
 
+[@is-this-c](https://github.com/is-this-c)
+- Simplify code that fixed broken events if their delay parameter was set
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix very niche case where armor values were displayed differently when Big HUD was enabled
@@ -86,9 +89,6 @@ Version 1.2.0 (Willow): Not yet released
 - Fix `Try Avoid Players` behaviour for spawn point selection not working properly
 - Fix rare crash when rapidly switching between players in first person spectate mode
 - Fix server processing `af_ping_location_req` packets when feature was turned off
-
-[@is-this-c](https://github.com/is-this-c)
-- Simplify code that fixed broken events if their delay parameter was set
 
 ### Commits from other repos
 [Dash Faction](https://github.com/rafalh/dashfaction) (Upstream)
