@@ -197,6 +197,8 @@ namespace rf
     static auto& event_lookup_persistent_goal_event = addr_as_ref<PersistentGoalEvent*(const char* name)>(0x004B8680);
     static auto& event_list = addr_as_ref<VArray<Event*>>(0x00856470);
     static auto& event_type_forwards_messages = addr_as_ref<bool(int event_type)>(0x004B8C40);
+    
+    static auto& Event__process = addr_as_ref<void __fastcall(rf::Event*)>(0x004B8CE0);
 
     // applies only to game, not level editor
     // original game events use a different order entirely in level editor, AF events in RED use the same
