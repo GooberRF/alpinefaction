@@ -88,7 +88,7 @@ Version 1.2.0 (Willow): Not yet released
 - Fix server processing `af_ping_location_req` packets when feature was turned off
 
 [@is-this-c](https://github.com/is-this-c)
-- Simplify code that fixed broken events if their delay parameter was set in Alpine Faction levels
+- Simplify code that fixed broken events if their delay parameter was set
 
 ### Commits from other repos
 [Dash Faction](https://github.com/rafalh/dashfaction) (Upstream)
