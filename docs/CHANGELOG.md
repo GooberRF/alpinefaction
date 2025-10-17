@@ -90,6 +90,9 @@ Version 1.2.0 (Willow): Not yet released
 - Fix rare crash when rapidly switching between players in first person spectate mode
 - Fix server processing `af_ping_location_req` packets when feature was turned off
 
+[@is-this-c](https://github.com/is-this-c)
+- Fix `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
+
 ### Commits from other repos
 [Dash Faction](https://github.com/rafalh/dashfaction) (Upstream)
 - Add support for Dash Level Properties chunk and full lightmap depth setting (commit f90f81a)

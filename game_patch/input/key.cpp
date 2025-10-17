@@ -410,6 +410,24 @@ CodeInjection item_touch_weapon_autoswitch_patch{
     }
 };
 
+CodeInjection key_down_handler_injection{
+    0x0051E9AC,
+    [] (auto& regs) {
+        const int virtual_key = addr_as_ref<int>(regs.esp + 4);
+        // For numeric keypads, we need to fix these keys' scan codes.
+        auto& scan_code = regs.eax;
+        if (virtual_key == VK_PRIOR) {
+            scan_code = rf::KEY_PAGEUP;
+        } else if (virtual_key == VK_NEXT) {
+            scan_code = rf::KEY_PAGEDOWN;
+        } else if (virtual_key == VK_END) {
+            scan_code = rf::KEY_END;
+        } else if (virtual_key == VK_HOME) {
+            scan_code = rf::KEY_HOME;
+        }
+    },
+};
+
 void key_apply_patch()
 {
     // Handle Alpine chat menus
@@ -435,4 +453,6 @@ void key_apply_patch()
 
     // Support suppress autoswitch bind
     item_touch_weapon_autoswitch_patch.install();
+
+    key_down_handler_injection.install();
 }
