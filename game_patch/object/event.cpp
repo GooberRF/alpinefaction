@@ -545,7 +545,7 @@ void apply_event_patches()
     hud_translate_special_character_token_hook.install();
 
     // fix some events not working if delay value is specified (alpine levels only)
-    EventUnhide__process_patch.install()
+    EventUnhide__process_patch.install();
     EventMakeInvulnerable__process_patch.install();
 
     // allow Holster_Player_Weapon and Holster_Weapon to be turned off (alpine levels only)
