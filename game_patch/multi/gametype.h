@@ -136,7 +136,6 @@ int multi_koth_get_red_team_score();
 int multi_koth_get_blue_team_score();
 void multi_koth_set_red_team_score(int score);
 void multi_koth_set_blue_team_score(int score);
-float cylinder_radius_for_box_inscribed(const rf::Trigger* t);
 HillInfo* koth_find_hill_by_uid(uint8_t uid);
 rf::Trigger* koth_resolve_trigger_from_uid(int uid);
 void koth_local_announce_hill_captured(const HillInfo* h, HillOwner new_owner, const uint8_t* ids, size_t ids_len);

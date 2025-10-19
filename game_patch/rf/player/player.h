@@ -205,5 +205,6 @@ namespace rf
     static auto& game_set_gore_level = addr_as_ref<void(int gore_setting)>(0x00436A10);
     static auto& player_settings_apply_graphics_options = addr_as_ref<void(Player* player)>(0x004A8D20);
     static auto& local_screen_flash = addr_as_ref<void(Player* pp, uint8_t r, uint8_t g, uint8_t b, uint8_t a)>(0x00416450);
-
+    static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
+    static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
 }

@@ -589,12 +589,11 @@ CodeInjection player_move_flashlight_light_patch {
         rf::Vector3 eye_pos = ep->eye_pos;
 
         float dist = eye_pos.distance_to(*pDest2);
-        regs.eax = *reinterpret_cast<float*>(0x005A0108) * sqrt(dist); // scale light radius
+        float adjusted_range = rf::g_player_flashlight_range * sqrt(dist);
+        regs.eax = adjusted_range;
 
-        //float mapped_dist = map_range(dist, 0.0f, *reinterpret_cast<float*>(0x005A0100), 1.0f, 0.05f);
         float mapped_dist = map_range(dist, 0.0f, g_local_headlamp_settings.max_range, 1.0f, 0.05f);
-        *reinterpret_cast<float*>(0x005A00FC) =
-            g_local_headlamp_settings.intensity * mapped_dist; // scale light intensity
+        rf::g_player_flashlight_intensity = g_local_headlamp_settings.intensity * mapped_dist;
     },
 };
 
