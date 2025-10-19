@@ -2,7 +2,14 @@ name: CI
 
 on:
   push:
+    paths-ignore:
+      - '**.md'
   pull_request:
+    paths-ignore:
+      - '**.md'
+
+permissions:
+  contents: read
 
 env:
   BUILD_TYPE: Release
@@ -10,6 +17,9 @@ env:
 
 jobs:
   build-mingw:
+    permissions:
+      contents: read
+      actions: write
     runs-on: ubuntu-24.04
 
     steps:
@@ -29,6 +39,7 @@ jobs:
       working-directory: ./build
       run: |
         cmake .. \
+          -G Ninja \
           -D CMAKE_C_COMPILER_LAUNCHER=sccache \
           -D CMAKE_CXX_COMPILER_LAUNCHER=sccache \
           -D CMAKE_BUILD_TYPE=$BUILD_TYPE \
@@ -39,6 +50,9 @@ jobs:
       run: cmake --build . -j $(nproc)
 
   build-msvc:
+    permissions:
+      contents: read
+      actions: write
     runs-on: windows-2022
 
     steps:
