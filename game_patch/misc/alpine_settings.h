@@ -125,6 +125,7 @@ struct AlpineGameSettings
     bool entity_pain_sounds = true;
     bool real_armor_values = false;
     bool always_show_spectators = false;
+    bool quick_exit = false;
     int colorblind_mode = 0; // 0=off,1=protanopia,2=deuteranopia,3=tritanopia
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;

@@ -95,6 +95,8 @@ Version 1.2.0 (Willow): Not yet released
 - Add `legacy_mover_velocity` and `legacy_mover_rot_accel` settings to level properties window in level editor
 
 [@is-this-c](https://github.com/is-this-c)
+- Add `key_quick_exit` command to restore keyboard shortcut `Shift+Esc` to quit out of Red Faction 
+- Add support to quit out of Red Faction, by window messages
 - Add `ui_remote_server_cfg` command and a configurable control to display a remote server's config
 - Add `ui_always_show_spectators` command to display spectators in multiplayer
 - Simplify code that fixed broken events if their delay parameter was set

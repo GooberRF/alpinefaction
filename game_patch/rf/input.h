@@ -8,8 +8,8 @@
 
 namespace rf
 {
-    enum Key
-    {
+    enum Key {
+        KEY_NONE = 0x0,
         KEY_ESC = 0x1,
         KEY_1 = 0x2,
         KEY_2 = 0x3,

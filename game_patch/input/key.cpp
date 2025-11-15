@@ -19,6 +19,7 @@
 #include "../rf/os/console.h"
 #include "../rf/os/os.h"
 #include "../multi/alpine_packets.h"
+#include "../os/console.h"
 
 static int starting_alpine_control_index = -1;
 
@@ -152,12 +153,43 @@ CodeInjection key_name_in_options_patch{
     },
 };
 
-CodeInjection key_get_hook{
+FunHook<rf::Key()> key_get_hook{
     0x0051F000,
-    []() {
+    [] {
         // Process messages here because when watching videos main loop is not running
         rf::os_poll();
+
+        const rf::Key key = key_get_hook.call_target();
+
+        if (rf::close_app_req) {
+            goto MAYBE_CANCEL_BINK;
+        }
+
+        if ((key & rf::KEY_MASK) == rf::KEY_ESC
+            && key & rf::KEY_SHIFTED
+            && g_alpine_game_config.quick_exit) {
+            rf::gameseq_set_state(rf::GameState::GS_QUITING, false);
+        MAYBE_CANCEL_BINK:
+            // If we are playing a video, cancel it.
+            const int bink_handle = addr_as_ref<int>(0x018871E4);
+            return bink_handle ? rf::KEY_ESC : rf::KEY_NONE;
+        }
+
+        return key;
+    }
+};
+
+ConsoleCommand2 key_quick_exit_cmd{
+    "key_quick_exit",
+    [] {
+        g_alpine_game_config.quick_exit =
+            !g_alpine_game_config.quick_exit;
+        rf::console::print(
+            "Shift+Esc to quit out of Red Faction is {}",
+            g_alpine_game_config.quick_exit ? "enabled" : "disabled"
+        );
     },
+    "Toggle Shift+Esc to quit out of Red Faction",
 };
 
 void alpine_control_config_add_item(rf::ControlConfig* config, const char* name, bool is_repeat,
@@ -458,6 +490,8 @@ void key_apply_patch()
 
     // win32 console support and addition of os_poll
     key_get_hook.install();
+
+    key_quick_exit_cmd.register_cmd();
 
     // Support suppress autoswitch bind
     item_touch_weapon_autoswitch_patch.install();
