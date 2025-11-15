@@ -15,6 +15,7 @@
 #include "../rf/weapon.h"
 #include "../hud/multi_spectate.h"
 #include "server_internal.h"
+#include "alpine_packets.h"
 
 bool kill_messages = true;
 
@@ -212,7 +213,7 @@ void gungame_weapon_notification(rf::Player* player, bool just_spawned)
                 prefix, next_weapon_type_string, frags_needed, frags_needed > 1 ? "s" : "");
         }        
 
-        send_chat_line_packet(msg.c_str(), player);
+        af_send_automated_chat_msg(msg, player);
     }
     else if (!final_level_notified[player]) { // only notify on last level once per round for each player
         int kill_cap = g_alpine_server_config_active_rules.gungame.final_level
@@ -224,7 +225,7 @@ void gungame_weapon_notification(rf::Player* player, bool just_spawned)
             msg = std::format("{} only needs {} more frag{} to win the game!", player->name, frags_needed_to_win,
                               frags_needed_to_win > 1 ? "s" : "");
 
-            send_chat_line_packet(msg.c_str(), nullptr);
+            af_broadcast_automated_chat_msg(msg);
             final_level_notified[player] = true;
         }
     }    
@@ -290,7 +291,7 @@ void handle_gungame_weapon_switch(rf::Player* player, rf::Entity* entity,
                         rf::multi_powerup_add(player, random_powerup, 10000);
                     }
                     level_completed_while_alive[player] = false; // reset rewards after granting one
-                    send_chat_line_packet(msg.c_str(), player);
+                    af_send_automated_chat_msg(msg, player);
                     send_sound_packet_throwaway(player, 35); // Jolt_05.wav
                 }                
             }

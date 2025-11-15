@@ -393,7 +393,7 @@ void handle_next_map_command(rf::Player* player)
     rf::String next_level_filename = rf::netgame.levels[next_idx];
     int version = get_level_file_version(next_level_filename);
     auto msg = std::format("Next level: {} (version {})", next_level_filename, version);
-    send_chat_line_packet(msg.c_str(), player);
+    af_send_automated_chat_msg(msg, player);
 }
 
 void handle_has_map_command(rf::Player* player, std::string_view level_name)
@@ -403,7 +403,7 @@ void handle_has_map_command(rf::Player* player, std::string_view level_name)
     auto availability = is_valid ? "available" : "NOT available";
     auto msg = std::format("Level {} is {} on the server.", checked_level_name, availability);
 
-    send_chat_line_packet(msg.c_str(), player);
+    af_send_automated_chat_msg(msg, player);
 }
 
 void handle_save_command(rf::Player* player, std::string_view save_name)
@@ -415,7 +415,7 @@ void handle_save_command(rf::Player* player, std::string_view save_name)
         save_data.pos = entity->pos;
         save_data.orient = entity->orient;
         pdata.saves.insert_or_assign(std::string{save_name}, save_data);
-        send_chat_line_packet("Your position has been saved!", player);
+        af_send_automated_chat_msg("Your position has been saved!", player);
     }
 }
 
@@ -437,10 +437,10 @@ void handle_load_command(rf::Player* player, std::string_view save_name)
             rf::send_entity_create_packet_to_all(entity);
             pdata.last_teleport_timestamp.set(300);
             pdata.last_teleport_pos = save_data.pos;
-            send_chat_line_packet("Your position has been restored!", player);
+            af_send_automated_chat_msg("Your position has been restored!", player);
         }
         else {
-            send_chat_line_packet("You do not have any position saved!", player);
+            af_send_automated_chat_msg("You do not have any position saved!", player);
         }
     }
 }
@@ -451,7 +451,7 @@ void handle_player_set_handicap(rf::Player* player, uint8_t amount)
     pdata.damage_handicap = amount;
     rf::console::print("At their request, {} has been given a {}% damage reduction handicap.", player->name, amount);
     auto msg = std::format("At your request, you have been given a {}% damage reduction handicap.", amount);
-    send_chat_line_packet(msg.c_str(), player);
+    af_send_automated_chat_msg(msg, player);
 }
 
 std::string get_ready_player_names(bool is_blue_team)
@@ -507,18 +507,18 @@ void handle_matchinfo_command(rf::Player* player)
         }        
     }
 
-    send_chat_line_packet(msg.c_str(), player);
+    af_send_automated_chat_msg(msg, player);
 }
 
 void handle_whosready_command(rf::Player* player)
 {
     if (g_match_info.pre_match_active) {
         auto msg = std::format("\xA6 Not ready: {}\n", get_unready_player_names());
-        send_chat_line_packet(msg.c_str(), nullptr);
+        af_broadcast_automated_chat_msg(msg);
     }
     else if (player) {
         auto msg = std::format("\xA6 No match is queued.");
-        send_chat_line_packet(msg.c_str(), player);
+        af_send_automated_chat_msg(msg, player);
     }
 }
 
@@ -529,7 +529,7 @@ static void handle_drop_flag_request(rf::Player* player)
     }
 
     if (!g_alpine_server_config_active_rules.flag_dropping) {
-        send_chat_line_packet("\xA6 This server has disabled flag dropping.", player);
+        af_send_automated_chat_msg("\xA6 This server has disabled flag dropping.", player);
         return;
     }
 
@@ -576,7 +576,7 @@ static void send_private_message_with_stats(rf::Player* player)
         stats->num_kills, stats->num_deaths, stats->max_streak,
         accuracy, stats->num_shots_hit, stats->num_shots_fired,
         stats->damage_given, stats->damage_received);
-    send_chat_line_packet(str.c_str(), player);
+    af_send_automated_chat_msg(str, player);
 }
 
 static void notify_for_upcoming_level_version_incompatible(rf::Player* player)
@@ -584,9 +584,9 @@ static void notify_for_upcoming_level_version_incompatible(rf::Player* player)
     std::string client_msg1 = "================== IMPORTANT ==================";
     std::string client_msg2 = "\xA6 Your client is NOT compatible with the next level!";
     std::string client_msg3 = "\xA6 To continue playing, upgrade at www.alpinefaction.com";
-    send_chat_line_packet(client_msg1.c_str(), player);
-    send_chat_line_packet(client_msg2.c_str(), player);
-    send_chat_line_packet(client_msg3.c_str(), player);
+    af_send_automated_chat_msg(client_msg1, player);
+    af_send_automated_chat_msg(client_msg2, player);
+    af_send_automated_chat_msg(client_msg3, player);
 
     auto server_msg = std::format("{} cannot load the upcoming level. The maximum RFL version they can load is {}.",
                     player->name, get_player_additional_data(player).max_rfl_version);    
@@ -599,10 +599,10 @@ static void notify_for_client_incompatible_with_switching_game_type(rf::Player* 
     std::string client_msg2 = "\xA6 Your client does not support changing game type.";
     std::string client_msg3 = "\xA6 You will be kicked, but can rejoin after the level changes.";
     std::string client_msg4 = "\xA6 To avoid this in the future, upgrade at www.alpinefaction.com";
-    send_chat_line_packet(client_msg1.c_str(), player);
-    send_chat_line_packet(client_msg2.c_str(), player);
-    send_chat_line_packet(client_msg3.c_str(), player);
-    send_chat_line_packet(client_msg4.c_str(), player);
+    af_send_automated_chat_msg(client_msg1, player);
+    af_send_automated_chat_msg(client_msg2, player);
+    af_send_automated_chat_msg(client_msg3, player);
+    af_send_automated_chat_msg(client_msg4, player);
 
     auto server_msg = std::format("{} doesn't support changing game type. They can rejoin after the level changes.", player->name);
     rf::console::printf(server_msg.c_str());
@@ -863,7 +863,7 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
     auto [cmd_name, cmd_arg] = strip_by_space(server_command);
 
     if (cmd_name == "info") {
-        send_chat_line_packet(std::format("Server powered by Alpine Faction {} ({}), build date: {} {}", VERSION_STR, VERSION_CODE, __DATE__, __TIME__).c_str(), sender);
+        af_send_automated_chat_msg(std::format("Server powered by Alpine Faction {} ({}), build date: {} {}", VERSION_STR, VERSION_CODE, __DATE__, __TIME__), sender);
     }
     else if (cmd_name == "vote") {
         auto [vote_name, vote_arg] = strip_by_space(cmd_arg);
@@ -906,7 +906,7 @@ bool check_server_chat_command(const char* msg, rf::Player* sender)
 {
     if (msg[0] == '/') {
         if (!handle_server_chat_command(msg + 1, sender))
-            send_chat_line_packet("Unrecognized server command!", sender);
+            af_send_automated_chat_msg("Unrecognized server command!", sender);
         return true;
     }
 
@@ -1223,7 +1223,7 @@ static bool check_player_ac_status([[maybe_unused]] rf::Player* player)
     if (g_additional_server_config.anticheat_level > 0) {
         bool verified = pf_is_player_verified(player);
         if (!verified) {
-            send_chat_line_packet(
+            af_send_automated_chat_msg(
                 "Sorry! Your spawn request was rejected because verification of your client software failed. "
                 "Please use the latest officially released version of Alpine Faction.",
                 player);
@@ -1237,7 +1237,7 @@ static bool check_player_ac_status([[maybe_unused]] rf::Player* player)
                 "Please make sure you do not have any mods installed and that your client software is up to date.",
                 ac_level, g_additional_server_config.anticheat_level
             );
-            send_chat_line_packet(msg.c_str(), player);
+            af_send_automated_chat_msg(msg, player);
             return false;
         }
     }
@@ -1296,7 +1296,7 @@ void start_match()
         g_match_info.team_size, g_match_info.team_size,
         get_ready_player_names(0), get_ready_player_names(1));
 
-    send_chat_line_packet(msg.c_str(), nullptr);
+    af_broadcast_automated_chat_msg(msg);
 
     g_match_info.active_match_players.clear();
 
@@ -1353,7 +1353,7 @@ void start_pre_match()
                 "Waiting for players. Ready up or use \"/vote nomatch\" to call a vote to cancel the match.",
                 g_match_info.team_size, g_match_info.team_size);
         
-            send_chat_line_packet(msg.c_str(), player);
+            af_send_automated_chat_msg(msg, player);
         }
 
 
@@ -1370,14 +1370,14 @@ void add_ready_player(rf::Player* player)
     const std::string_view team_name = (player->team == 0) ? "RED" : "BLUE";
 
     if (team_ready_list.contains(player)) {
-        send_chat_line_packet("\xA6 You are already ready.", player);
+        af_send_automated_chat_msg("\xA6 You are already ready.", player);
         return;
     }
 
     const auto match_team_size = static_cast<size_t>(g_match_info.team_size);
 
     if (team_ready_list.size() >= match_team_size) {
-        send_chat_line_packet("\xA6 Your team is full.", player);
+        af_send_automated_chat_msg("\xA6 Your team is full.", player);
         return;
     }
 
@@ -1385,19 +1385,19 @@ void add_ready_player(rf::Player* player)
     update_pre_match_powerups(player);
 
     auto ready_msg = std::format("\xA6 {} ({}) is ready!", player->name.c_str(), team_name);
-    send_chat_line_packet(ready_msg.c_str(), nullptr);
+    af_broadcast_automated_chat_msg(ready_msg);
 
     const auto ready_red = g_match_info.ready_players_red.size();
     const auto ready_blue = g_match_info.ready_players_blue.size();
 
     if (ready_red >= match_team_size && ready_blue >= match_team_size) {
-        send_chat_line_packet("\xA6 All players are ready. Match starting!", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 All players are ready. Match starting!");
         g_match_info.everyone_ready = true;
         start_match(); // Start the match
     }
     else {
         auto waiting_msg = std::format("\xA6 Still waiting for players - RED: {}, BLUE: {}.", match_team_size - ready_red, match_team_size - ready_blue);
-        send_chat_line_packet(waiting_msg.c_str(), nullptr);
+        af_broadcast_automated_chat_msg(waiting_msg);
     }
 }
 
@@ -1413,7 +1413,7 @@ void remove_ready_player(rf::Player* player)
     bool was_in_blue = g_match_info.ready_players_blue.erase(player) > 0;
 
     if (!was_in_red && !was_in_blue) {
-        send_chat_line_packet("You were not marked as ready.", player);
+        af_send_automated_chat_msg("You were not marked as ready.", player);
         return;
     }
 
@@ -1429,21 +1429,21 @@ void remove_ready_player(rf::Player* player)
         g_match_info.team_size - g_match_info.ready_players_blue.size());
 
     // send the message to the player who unreadied
-    send_chat_line_packet(msg_source.c_str(), player);
+    af_send_automated_chat_msg(msg_source, player);
 
     // send the message to other players
     for (rf::Player* proc_player : get_current_player_list(false)) {
         if (!proc_player || proc_player == player) {
             continue; // skip the player who started the vote
         }
-        send_chat_line_packet(msg_others.c_str(), proc_player);
+        af_send_automated_chat_msg(msg_others, proc_player);
     }
 }
 
 void toggle_ready_status(rf::Player* player)
 {
     if (!g_match_info.pre_match_active) {
-        send_chat_line_packet("\xA6 No match is queued. Use \"/vote match\" to queue a match.", player);
+        af_send_automated_chat_msg("\xA6 No match is queued. Use \"/vote match\" to queue a match.", player);
         return;
     }
 
@@ -1477,7 +1477,7 @@ void set_ready_status(rf::Player* player, bool is_ready)
         }
     }
     else {
-        send_chat_line_packet("\xA6 No match is queued. Use \"/vote match\" to queue a match.", player);
+        af_send_automated_chat_msg("\xA6 No match is queued. Use \"/vote match\" to queue a match.", player);
     }
 }
 
@@ -1514,8 +1514,8 @@ void match_do_frame()
         if (current_time >= g_match_info.last_match_reminder_time + 270) {
             g_match_info.last_match_reminder_time = current_time;
 
-            send_chat_line_packet(
-                "\xA6 No active match. Use \"/vote match <type> <map filename> [preset]\" to call a match vote.", nullptr);
+            af_broadcast_automated_chat_msg(
+                "\xA6 No active match. Use \"/vote match <type> <map filename> [preset]\" to call a match vote.");
         }
     }
     else if (g_match_info.pre_match_active) {
@@ -1534,7 +1534,7 @@ void match_do_frame()
                         "Ready up or use \"/vote nomatch\" to call a vote to cancel the match.",
                         g_match_info.team_size, g_match_info.team_size,
                         g_match_info.team_size - ready_red, g_match_info.team_size - ready_blue);
-                    send_chat_line_packet(msg.c_str(), player);
+                    af_send_automated_chat_msg(msg, player);
                 }
             }
         }
@@ -1621,7 +1621,7 @@ void player_idle_check(rf::Player* player)
     if (is_player_idle(player)) {
         rf::console::print("{} is idle and will be kicked if they don't spawn within 10 seconds.", player->name);
         std::string msg = std::format("\xA6 {}", g_alpine_server_config.inactivity_config.kick_message);
-        send_chat_line_packet(msg.c_str(), player);
+        af_send_automated_chat_msg(msg, player);
 
         // set timer to kick them after 10 seconds
         if (!additional_data.idle_kick_timestamp.valid()) {
@@ -1674,10 +1674,10 @@ bool check_can_player_spawn(rf::Player* player)
         send_chat_line_packet("\xA6 You must upgrade to Alpine Faction to play here. Learn more at alpinefaction.com", player);
         return false;
     case AlpineRestrictVerdict::need_release:
-        send_chat_line_packet("\xA6 This server requires an official Alpine Faction build. Get it at alpinefaction.com", player);
+        af_send_automated_chat_msg("\xA6 This server requires an official Alpine Faction build. Get it at alpinefaction.com", player);
         return false;
     case AlpineRestrictVerdict::need_update:
-        send_chat_line_packet("\xA6 This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com", player);
+        af_send_automated_chat_msg("\xA6 This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com", player);
         return false;
     }
     return false;
@@ -1699,7 +1699,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
         if (g_match_info.match_active && !is_player_in_match(player)) {
-            send_chat_line_packet("\xA6 You cannot spawn because a match is in progress. Please feel free to spectate.", player);
+            af_send_automated_chat_msg("\xA6 You cannot spawn because a match is in progress. Please feel free to spectate.", player);
             return;
         }
         if (g_alpine_server_config_active_rules.ideal_player_count < 32 &&
@@ -1707,7 +1707,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             count_spawned_players() >= g_alpine_server_config_active_rules.ideal_player_count) {
             std::string msg = std::format("\xA6 You're a bot and you can't spawn right now.");
 
-            send_chat_line_packet(msg.c_str(), player);
+            af_send_automated_chat_msg(msg, player);
             return;
         }
 
@@ -1715,7 +1715,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         if (pad.respawn_timer.valid() && !pad.respawn_timer.elapsed()) {
             float spawn_delay_left = std::max(static_cast<float>(pad.respawn_timer.time_until()) / 1000.0f, 0.001f); // at least 1ms
             std::string msg = std::format("\xA6 Respawn delay: {} seconds left until you can respawn.", spawn_delay_left);
-            send_chat_line_packet(msg.c_str(), player);
+            af_send_automated_chat_msg(msg, player);
             return;
         }
 
@@ -1827,7 +1827,7 @@ void server_reliable_socket_ready(rf::Player* player)
     if (g_alpine_server_config_active_rules.welcome_message.enabled) {
         if (!g_alpine_server_config.alpine_restricted_config.only_welcome_alpine || data.client_version == ClientVersion::alpine_faction) {
             auto msg = string_replace(g_alpine_server_config_active_rules.welcome_message.welcome_message, "$PLAYER", player->name.c_str());
-            send_chat_line_packet(msg.c_str(), player);
+            af_send_automated_chat_msg(msg, player);
         }
     }
 
@@ -1836,7 +1836,7 @@ void server_reliable_socket_ready(rf::Player* player)
         auto msg = std::format("\xA6 Match is queued and waiting for players: {}v{}! Use \"/ready\" to ready up.",
             g_match_info.team_size, g_match_info.team_size);
 
-        send_chat_line_packet(msg.c_str(), player);
+        af_send_automated_chat_msg(msg, player);
     }
 
     int pm = data.client_version_major;
@@ -1847,11 +1847,11 @@ void server_reliable_socket_ready(rf::Player* player)
         if (data.client_version != ClientVersion::alpine_faction) {
             auto msg = std::format(
                 "\xA6 Have you heard of Alpine Faction? It's a new patch with lots of new and modern features! This server encourages you to upgrade for the best player experience. Learn more at alpinefaction.com");
-            send_chat_line_packet(msg.c_str(), player);
+            send_chat_line_packet(msg, player);
         }
         else if (VERSION_TYPE == VERSION_TYPE_RELEASE && (pm < VERSION_MAJOR || (pm == VERSION_MAJOR && pn < VERSION_MINOR))) {
             auto msg = std::format("\xA6 A new version of Alpine Faction is available! Learn more at alpinefaction.com");
-            send_chat_line_packet(msg.c_str(), player);
+            af_send_automated_chat_msg(msg, player);
         }
     }
 }
@@ -2022,7 +2022,7 @@ FunHook<void()> multi_check_for_round_end_hook{
                 msg += g_alpine_server_config.alpine_restricted_config.overtime.additional_time > 0
                            ? std::format(", or in {} minutes!", g_alpine_server_config.alpine_restricted_config.overtime.additional_time)
                            : "!";
-                send_chat_line_packet(msg.c_str(), nullptr);
+                af_broadcast_automated_chat_msg(msg);
             }
             else {
                 set_manually_loaded_level(false);
@@ -2711,7 +2711,7 @@ void server_on_limbo_state_enter()
     if (get_upcoming_game_type() != rf::netgame.type) {
         std::string gt_swap_notif = std::format("\xA6 Game type will switch to {} for the next level.",
             get_game_type_string(get_upcoming_game_type()));
-        send_chat_line_packet(gt_swap_notif.c_str(), nullptr);
+        af_broadcast_automated_chat_msg(gt_swap_notif);
     }
 }
 

@@ -11,6 +11,9 @@
 #include "../os/console.h"
 #include "../misc/player.h"
 #include "hud_internal.h"
+#include "../misc/alpine_settings.h"
+#include <patch_common/CallHook.h>
+#include "../multi/alpine_packets.h"
 
 bool g_big_chatbox = false;
 bool g_all_players_muted = false;
@@ -94,17 +97,22 @@ void multi_hud_render_chat()
             rf::gr::string(x, y, msg.name.c_str(), chatbox_font);
             rf::gr::set_color(255, 255, 255, text_alpha);
             x += name_w;
-        }
-        else if (msg.color_id == 2) {
+        } else if (msg.color_id == 2) {
             rf::gr::set_color(227, 48, 47, text_alpha);
-        }
-        else if (msg.color_id == 3) {
+        } else if (msg.color_id == 3) {
             rf::gr::set_color(117, 117, 254, text_alpha);
-        }
-        else if (msg.color_id == 4) {
+        } else if (msg.color_id == 4) {
             rf::gr::set_color(255, 255, 255, text_alpha);
-        }
-        else {
+        } else if (msg.color_id == 6) {
+            if (g_alpine_game_config.simple_server_chat_msgs) {
+                rf::gr::set_color(255, 238, 140, text_alpha);
+            } else {
+                rf::gr::set_color(255, 215, 0, text_alpha);
+                rf::gr::string(x, y, msg.name.c_str(), chatbox_font);
+                rf::gr::set_color(255, 255, 255, text_alpha);
+                x += name_w;
+            }
+        } else {
             rf::gr::set_color(52, 255, 57, text_alpha);
         }
         rf::gr::string(x, y, msg.text.c_str(), chatbox_font);
@@ -235,6 +243,13 @@ ConsoleCommand2 mute_player_cmd{
     "Mutes a single player in multiplayer chat",
 };
 
+CallHook<void(const char*, bool)> process_rcon_req_packet_chat_say_hook{
+    0x0046C62F,
+    [] (const char* msg, const bool is_team_msg) {
+        af_broadcast_automated_chat_msg(msg);
+    },
+};
+
 void multi_hud_chat_apply_patches()
 {
     // Fix game beeping every frame if chat input buffer is full
@@ -258,6 +273,8 @@ void multi_hud_chat_apply_patches()
 
     // Do not strip '%' characters from chat messages
     write_mem<u8>(0x004785FD, asm_opcodes::jmp_rel_short);
+
+    process_rcon_req_packet_chat_say_hook.install();
 }
 
 void multi_hud_chat_set_big(bool is_big)

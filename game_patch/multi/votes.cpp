@@ -20,6 +20,7 @@
 #include "server_internal.h"
 #include "multi.h"
 #include "server.h"
+#include "alpine_packets.h"
 
 MatchInfo g_match_info;
 
@@ -78,7 +79,7 @@ public:
     virtual bool on_player_leave(rf::Player* player)
     {        
         if (player == owner) {
-            send_chat_line_packet("\xA6 Vote canceled: owner left the game!", nullptr);
+            af_broadcast_automated_chat_msg("\xA6 Vote canceled: owner left the game!");
             return false;
         }
         players_who_voted.erase(player);
@@ -93,7 +94,7 @@ public:
     bool add_player_vote(bool is_yes_vote, rf::Player* source)
     {
         if (players_who_voted.count(source) == 1) {
-            send_chat_line_packet("You already voted!", source);
+            af_send_automated_chat_msg("You already voted!", source);
         }
         else {
             players_who_voted[source] = is_yes_vote;
@@ -107,7 +108,7 @@ public:
 
             auto msg = std::format("\xA6 Vote status: Yes: {} No: {} Waiting: {}", yes_votes, no_votes,
                                    current_player_list.size() - players_who_voted.size());
-            send_chat_line_packet(msg.c_str(), nullptr);
+            af_broadcast_automated_chat_msg(msg);
             return check_for_early_vote_finish();
         }
         return true;
@@ -118,7 +119,7 @@ public:
         const auto& vote_config = get_config();
         std::time_t passed_time_sec = std::time(nullptr) - start_time;
         if (passed_time_sec >= vote_config.time_limit_seconds) {
-            send_chat_line_packet("\xA6 Vote timed out!", nullptr);
+            af_broadcast_automated_chat_msg("\xA6 Vote timed out!");
             return false;
         }
         if (passed_time_sec >= vote_config.time_limit_seconds / 2 && !reminder_sent) {
@@ -127,7 +128,7 @@ public:
             for (rf::Player* player : current_player_list) {
                 if (players_who_voted.find(player) == players_who_voted.end()) {
                     if (get_player_additional_data(player).client_version != ClientVersion::alpine_faction) { // don't send reminder pings to alpine clients
-                        send_chat_line_packet("\xA6 Send message \"/vote yes\" or \"/vote no\" to vote.", player);
+                        af_send_automated_chat_msg("\xA6 Send message \"/vote yes\" or \"/vote no\" to vote.", player);
                     }
                 }
             }
@@ -139,11 +140,11 @@ public:
     bool try_cancel_vote(rf::Player* source)
     {
         if (owner != source) {
-            send_chat_line_packet("You cannot cancel a vote you didn't start!", source);
+            af_send_automated_chat_msg("You cannot cancel a vote you didn't start!", source);
             return false;
         }
 
-        send_chat_line_packet("\xA6 Vote canceled!", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote canceled!");
         return true;
     }
 
@@ -158,12 +159,12 @@ protected:
 
     virtual void on_accepted()
     {
-        send_chat_line_packet("\xA6 Vote passed!", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote passed!");
     }
 
     virtual void on_rejected()
     {
-        send_chat_line_packet("\xA6 Vote failed!", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote failed!");
     }
 
     void send_vote_starting_msg(rf::Player* source)
@@ -176,7 +177,7 @@ protected:
         std::string base_msg = std::format("{} vote started by {}.\n", title, source->name);
 
         // Notify the player who started the vote
-        send_chat_line_packet(base_msg.c_str(), source);
+        af_send_automated_chat_msg(base_msg, source);
 
         // print to server console
         rf::console::printf(base_msg.c_str()); 
@@ -196,7 +197,7 @@ protected:
             const std::string& message_to_send =
                 get_player_additional_data(player).client_version == ClientVersion::alpine_faction ? msg_alpine : msg_non_alpine;
 
-            send_chat_line_packet(message_to_send.c_str(), player);
+            af_send_automated_chat_msg(message_to_send, player);
         }
     }
 
@@ -323,12 +324,12 @@ struct VoteMatch : public Vote
             g_match_info.match_level_name = rf::level.filename.c_str();
         }
         else {
-            send_chat_line_packet("\xA6 Invalid level specified! Try again, or omit level filename to use the current level.", source);
+            af_send_automated_chat_msg("\xA6 Invalid level specified! Try again, or omit level filename to use the current level.", source);
             return false;
         }
 
         if (g_match_info.team_size == -1) {
-            send_chat_line_packet("\xA6 Invalid match size! Supported sizes are 1v1 up to 8v8.", source);
+            af_send_automated_chat_msg("\xA6 Invalid match size! Supported sizes are 1v1 up to 8v8.", source);
             return false;
         }
 
@@ -339,14 +340,14 @@ struct VoteMatch : public Vote
             auto alias_it = g_alpine_server_config.rules_preset_aliases.find(*preset_alias);
             if (alias_it == g_alpine_server_config.rules_preset_aliases.end()) {
                 auto msg = std::format("\\xA6 Cannot start vote: rules preset '{}' is not defined!", *preset_alias);
-                send_chat_line_packet(msg.c_str(), source);
+                af_send_automated_chat_msg(msg, source);
                 return false;
             }
 
             auto preset_result = load_rules_preset_alias(*preset_alias);
             if (!preset_result) {
                 auto msg = std::format("\\xA6 Cannot start vote: failed to load rules preset '{}'", *preset_alias);
-                send_chat_line_packet(msg.c_str(), source);
+                af_send_automated_chat_msg(msg, source);
                 return false;
             }
 
@@ -358,7 +359,7 @@ struct VoteMatch : public Vote
             m_manual_rules_override ? m_manual_rules_override->rules.game_type : g_alpine_server_config_active_rules.game_type;
 
         if (desired_game_type == rf::NG_TYPE_DM) {
-            send_chat_line_packet("\xA6 Matches must be played on a team game type.", source);
+            af_send_automated_chat_msg("\xA6 Matches must be played on a team game type.", source);
             return false;
         }
 
@@ -401,7 +402,7 @@ struct VoteMatch : public Vote
             msg = std::format("\xA6 Vote passed. {} (rules preset '{}').", detail, *m_manual_rules_alias);
         else
             msg = std::format("\xA6 Vote passed. {}.", detail);
-        send_chat_line_packet(msg.c_str(), nullptr);
+        af_broadcast_automated_chat_msg(msg);
 
         g_match_info.pre_match_queued = true;
 
@@ -450,7 +451,7 @@ struct VoteCancelMatch : public Vote
     bool process_vote_arg(std::string_view arg, rf::Player* source) override
     {
         if (!g_match_info.match_active && !g_match_info.pre_match_active) {
-            send_chat_line_packet("\xA6 No active or queued match to cancel.", source);
+            af_send_automated_chat_msg("\xA6 No active or queued match to cancel.", source);
             return false;
         }
 
@@ -459,7 +460,7 @@ struct VoteCancelMatch : public Vote
 
     void on_accepted() override
     {
-        send_chat_line_packet("\xA6 Vote passed: The match has been canceled.", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote passed: The match has been canceled.");
 
         cancel_match();
     }
@@ -494,7 +495,7 @@ struct VoteKick : public Vote
 
     void on_accepted() override
     {
-        send_chat_line_packet("\xA6 Vote passed: kicking player", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote passed: kicking player");
         rf::multi_kick_player(m_target_player);
     }
 
@@ -528,7 +529,7 @@ struct VoteExtend : public Vote
 
     void on_accepted() override
     {
-        send_chat_line_packet("\xA6 Vote passed: extending round", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote passed: extending round");
         extend_round_time(5);
     }
 
@@ -562,7 +563,7 @@ struct VoteLevel : public Vote
 
         if (!is_valid) {
             auto msg = std::format("\xA6 Cannot start vote: level {} is not available on the server!", level_name);
-            send_chat_line_packet(msg.c_str(), source);
+            af_send_automated_chat_msg(msg, source);
             return false;
         }
 
@@ -573,14 +574,14 @@ struct VoteLevel : public Vote
             auto alias_it = g_alpine_server_config.rules_preset_aliases.find(preset_name);
             if (alias_it == g_alpine_server_config.rules_preset_aliases.end()) {
                 auto msg = std::format("\xA6 Cannot start vote: rules preset '{}' is not defined!", preset_name);
-                send_chat_line_packet(msg.c_str(), source);
+                af_send_automated_chat_msg(msg, source);
                 return false;
             }
 
             auto preset_result = load_rules_preset_alias(preset_name);
             if (!preset_result) {
                 auto msg = std::format("\xA6 Cannot start vote: failed to load rules preset '{}'", preset_name);
-                send_chat_line_packet(msg.c_str(), source);
+                af_send_automated_chat_msg(msg, source);
                 return false;
             }
 
@@ -608,7 +609,7 @@ struct VoteLevel : public Vote
                               m_level_name, *m_manual_rules_override->preset_alias);
         else
             msg = std::format("\xA6 Vote passed: changing level to {}", m_level_name);
-        send_chat_line_packet(msg.c_str(), nullptr);
+        af_broadcast_automated_chat_msg(msg);
         multi_change_level_alpine(m_level_name.c_str());
 
         if (m_manual_rules_override) {
@@ -642,7 +643,7 @@ struct VoteGametype : public Vote
     {
         arg = trim(arg);
         if (arg.empty()) {
-            send_chat_line_packet("\xA6 You must specify a gametype.", source);
+            af_send_automated_chat_msg("\xA6 You must specify a gametype.", source);
             return false;
         }
 
@@ -650,13 +651,13 @@ struct VoteGametype : public Vote
         gametype_part = trim(gametype_part);
 
         if (gametype_part.empty()) {
-            send_chat_line_packet("\xA6 You must specify a gametype name.", source);
+            af_send_automated_chat_msg("\xA6 You must specify a gametype name.", source);
             return false;
         }
 
         if (!is_gametype_name_valid(gametype_part)) {
             auto msg = std::format("\xA6 Invalid gametype '{}'!", gametype_part);
-            send_chat_line_packet(msg.c_str(), source);
+            af_send_automated_chat_msg(msg, source);
             return false;
         }
 
@@ -670,7 +671,7 @@ struct VoteGametype : public Vote
         auto [is_valid, normalized_level_name] = is_level_name_valid(level_part);
         if (!is_valid) {
             auto msg = std::format("\xA6 Cannot start vote: level {} is not available on the server!", normalized_level_name);
-            send_chat_line_packet(msg.c_str(), source);
+            af_send_automated_chat_msg(msg, source);
             return false;
         }
 
@@ -686,7 +687,7 @@ struct VoteGametype : public Vote
     void on_accepted() override
     {
         auto msg = std::format("\xA6 Vote passed: switching to {} on {}", string_to_upper(m_gametype_name), m_level_name);
-        send_chat_line_packet(msg.c_str(), nullptr);
+        af_broadcast_automated_chat_msg(msg);
 
         multi_set_gametype_alpine(m_gametype_name);
 
@@ -720,7 +721,7 @@ struct VoteRestart : public Vote
 
     void on_accepted() override
     {
-        send_chat_line_packet("\xA6 Vote passed: restarting level", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote passed: restarting level");
         restart_current_level();
     }
 
@@ -749,7 +750,7 @@ struct VoteNext : public Vote
 
     void on_accepted() override
     {
-        send_chat_line_packet("\xA6 Vote passed: loading next level", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote passed: loading next level");
         load_next_level();
     }
 
@@ -778,7 +779,7 @@ struct VoteRandom : public Vote
 
     void on_accepted() override
     {
-        send_chat_line_packet("\xA6 Vote passed: loading random level from rotation", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote passed: loading random level from rotation");
 
         // if dynamic rotation is on, just load the next level
         g_alpine_server_config.dynamic_rotation ? load_next_level() : load_rand_level();
@@ -809,7 +810,7 @@ struct VotePrevious : public Vote
 
     void on_accepted() override
     {
-        send_chat_line_packet("\xA6 Vote passed: loading previous level", nullptr);
+        af_broadcast_automated_chat_msg("\xA6 Vote passed: loading previous level");
         load_prev_level();
     }
 
@@ -834,24 +835,24 @@ public:
     bool StartVote(std::string_view arg, rf::Player* source)
     {
         if (active_vote) {
-            send_chat_line_packet("Another vote is currently in progress!", source);
+            af_send_automated_chat_msg("Another vote is currently in progress!", source);
             return false;
         }
 
         auto vote = std::make_unique<T>();
 
         if (!vote->get_config().enabled) {
-            send_chat_line_packet("This vote type is disabled!", source);
+            af_send_automated_chat_msg("This vote type is disabled!", source);
             return false;
         }
 
         if (!vote->is_allowed_in_limbo_state() && rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
-            send_chat_line_packet("Vote cannot be started now!", source);
+            af_send_automated_chat_msg("Vote cannot be started now!", source);
             return false;
         }
 
         if (vote->get_type() == VoteType::Match && (g_match_info.pre_match_active || g_match_info.match_active)) {
-            send_chat_line_packet(
+            af_send_automated_chat_msg(
                 "A match is already queued or in progress. Finish it before starting a new one.", source);
             return false;
         }
@@ -874,7 +875,7 @@ public:
     void OnLimboStateEnter()
     {
         if (active_vote && !active_vote.value()->is_allowed_in_limbo_state()) {
-            send_chat_line_packet("\xA6 Vote canceled!", nullptr);
+            af_broadcast_automated_chat_msg("\xA6 Vote canceled!");
             active_vote.reset();
         }
     }
@@ -882,7 +883,7 @@ public:
     void add_player_vote(bool is_yes_vote, rf::Player* source)
     {
         if (!active_vote) {
-            send_chat_line_packet("No vote in progress!", source);
+            af_send_automated_chat_msg("No vote in progress!", source);
             return;
         }
 
@@ -894,7 +895,7 @@ public:
     void try_cancel_vote(rf::Player* source)
     {
         if (!active_vote) {
-            send_chat_line_packet("No vote in progress!", source);
+            af_send_automated_chat_msg("No vote in progress!", source);
             return;
         }
 
@@ -919,7 +920,7 @@ VoteMgr g_vote_mgr;
 void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, rf::Player* sender)
 {
     if (get_player_additional_data(sender).client_version == ClientVersion::browser || ends_with(sender->name, " (Bot)")) {
-        send_chat_line_packet("Browsers and bots are not allowed to vote!", sender);
+        af_send_automated_chat_msg("Browsers and bots are not allowed to vote!", sender);
         return;
     }
     if (vote_name == "kick")
@@ -949,7 +950,7 @@ void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, 
     else if (vote_name == "cancel")
         g_vote_mgr.try_cancel_vote(sender);
     else
-        send_chat_line_packet("Unrecognized vote type!", sender);
+        af_send_automated_chat_msg("Unrecognized vote type!", sender);
 }
 
 void server_vote_do_frame()

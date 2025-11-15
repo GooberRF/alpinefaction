@@ -16,6 +16,8 @@
 #include "alpine_packets.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
+#include "../sound/sound.h"
+#include "../misc/alpine_settings.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
@@ -1396,28 +1398,28 @@ void af_send_server_cfg(rf::Player* player) {
     std::string output{};
     print_alpine_dedicated_server_config_info(output, true);
 
-    const auto send_msg = [player] (const std::string_view data) {
+    const auto send_msg = [player] (const std::string_view msg) {
         constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(af_server_msg_packet);
-        const size_t len = std::clamp(data.size(), 0uz, max_chunk_len);
+        const size_t len = std::clamp(msg.size(), 0uz, max_chunk_len);
 
-        af_server_msg_packet msg_packet;
-        msg_packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
-        msg_packet.header.size = static_cast<uint16_t>(
-            sizeof(msg_packet)
-                - sizeof(msg_packet.header)
+        af_server_msg_packet server_msg_packet;
+        server_msg_packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+        server_msg_packet.header.size = static_cast<uint16_t>(
+            sizeof(server_msg_packet)
+                - sizeof(server_msg_packet.header)
                 + len
         );
-        msg_packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG);
+        server_msg_packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG);
 
-        std::array<uint8_t, sizeof(msg_packet) + max_chunk_len> buf{}; 
-        std::memcpy(buf.data(), &msg_packet, sizeof(msg_packet));
-        uint8_t* msg = buf.data() + sizeof(msg_packet);
-        std::memcpy(msg, data.data(), len);
+        std::array<uint8_t, sizeof(server_msg_packet) + max_chunk_len> buf{}; 
+        std::memcpy(buf.data(), &server_msg_packet, sizeof(server_msg_packet));
+        uint8_t* ptr = buf.data() + sizeof(server_msg_packet);
+        std::memcpy(ptr, msg.data(), len);
 
         rf::multi_io_send_reliable(
             player,
             buf.data(),
-            msg_packet.header.size + sizeof(msg_packet.header),
+            server_msg_packet.header.size + sizeof(server_msg_packet.header),
             0
         );
 
@@ -1427,6 +1429,64 @@ void af_send_server_cfg(rf::Player* player) {
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
     for (const auto chunk : output | std::views::chunk(chunk_size)) {
         send_msg(std::string_view{chunk.begin(), chunk.end()});
+    }
+}
+
+void af_broadcast_automated_chat_msg(const std::string_view msg) {
+    af_send_automated_chat_msg(msg, nullptr);
+}
+
+void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player) {
+    // Are we a server?
+    if (!rf::is_multi || !rf::is_server) {
+        return;
+    }
+
+    if (player && !is_player_minimum_af_client_version(player, 1, 2)) {
+        send_chat_line_packet(msg, player);
+        return;
+    }
+
+    constexpr size_t max_len = rf::max_packet_size - sizeof(af_server_msg_packet);
+    const size_t len = std::clamp(msg.size(), 0uz, max_len);
+
+    af_server_msg_packet server_msg_packet;
+    server_msg_packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    server_msg_packet.header.size = static_cast<uint16_t>(
+        sizeof(server_msg_packet)
+            - sizeof(server_msg_packet.header)
+            + len
+    );
+    server_msg_packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_AUTOMATED_CHAT);
+
+    std::array<uint8_t, sizeof(server_msg_packet) + max_len> buf{}; 
+    std::memcpy(buf.data(), &server_msg_packet, sizeof(server_msg_packet));
+    uint8_t* ptr = buf.data() + sizeof(server_msg_packet);
+    std::memcpy(ptr, msg.data(), len);
+
+    if (player) {
+        rf::multi_io_send_reliable(
+            player,
+            buf.data(),
+            server_msg_packet.header.size + sizeof(server_msg_packet.header),
+            0
+        );
+    } else {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            if (rf::is_server && &player == rf::local_player) {
+                continue;
+            }
+            if (!is_player_minimum_af_client_version(&player, 1, 2)) {
+                send_chat_line_packet(msg, &player);
+            } else {
+                rf::multi_io_send_reliable(
+                    &player,
+                    buf.data(),
+                    server_msg_packet.header.size + sizeof(server_msg_packet.header),
+                    0
+                );
+            }
+        }
     }
 }
 
@@ -1448,10 +1508,17 @@ void af_process_server_msg_packet(
     std::memcpy(&msg_packet, data, sizeof(msg_packet));
 
     if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG)) {
-        const char* msg = static_cast<const char*>(data) + sizeof(msg_packet);
+        const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         g_remote_server_cfg_popup.add_content(
-            std::string_view{msg, len - sizeof(msg_packet)}
+            std::string_view{ptr, len - sizeof(msg_packet)}
         );
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_AUTOMATED_CHAT)) {
+        const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
+        const rf::String msg{std::string_view{ptr, len - sizeof(msg_packet)}};
+        rf::multi_chat_print(msg, rf::ChatMsgColor::gold_white, rf::String{"Server: "});
+        if (!g_alpine_game_config.simple_server_chat_msgs) {
+            rf::snd_play(4, 0, 0.f, 1.f);
+        }
     }
 }
 

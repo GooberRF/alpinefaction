@@ -104,7 +104,7 @@ FunHook<void()> multi_limbo_init{
             multi_player_set_can_endgame_vote(false); // servers can't endgame vote
 
             if (g_match_info.match_active) {
-                send_chat_line_packet("\xA6 Match complete!", nullptr);
+                af_broadcast_automated_chat_msg("\xA6 Match complete!");
                 g_match_info.reset();
             }
             else if (g_match_info.pre_match_active && g_match_info.everyone_ready) {
@@ -267,7 +267,7 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
         }
         if (g_alpine_server_config_active_rules.gungame.enabled &&
             !((ep->ai.current_primary_weapon == 1 && weapon_type == 0) || (ep->ai.current_primary_weapon == 0 && weapon_type == 1))) {
-            //send_chat_line_packet("Weapon switch denied. In GunGame, you get new weapons by getting frags.", pp);
+            // af_send_automated_chat_msg("Weapon switch denied. In GunGame, you get new weapons by getting frags.", pp);
             return;
         }
         bool has_weapon;
@@ -396,7 +396,7 @@ bool is_entity_out_of_ammo(rf::Entity *entity, int weapon_type, bool alt_fire)
 void send_private_message_for_cancelled_shot(rf::Player* player, const std::string& reason)
 {
     auto message = std::format("\xA6 Shot canceled: {}", reason);
-    send_chat_line_packet(message.c_str(), player);
+    af_send_automated_chat_msg(message, player);
 }
 
 bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)

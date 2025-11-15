@@ -1491,7 +1491,7 @@ void chat_menu_action_handler(rf::Key key) {
             // Commands do not play a chat sound or display for user
             const std::string msg = selected_element.long_string;
             if (!msg.empty()) {
-                send_chat_line_packet(msg.c_str(), nullptr);
+                send_chat_line_packet(msg, nullptr);
             }
         }
         else if (g_chat_menu_active == ChatMenuType::Spectate) {
@@ -1677,6 +1677,19 @@ ConsoleCommand2 ui_remote_server_cfg_cmd{
     "Toggle display of a remote server's config",
 };
 
+ConsoleCommand2 ui_simple_server_chat_messages_cmd{
+    "ui_simple_server_chat_messages",
+    [] {
+        g_alpine_game_config.simple_server_chat_msgs =
+            !g_alpine_game_config.simple_server_chat_msgs;
+        rf::console::print(
+            "Simple server chat messages is {}",
+            g_alpine_game_config.simple_server_chat_msgs ? "enabled" : "disabled"
+        );
+    },
+    "Toggle simple server chat messages",
+    "ui_simple_server_chat_messages",
+};
 
 void multi_hud_apply_patches()
 {
@@ -1704,6 +1717,7 @@ void multi_hud_apply_patches()
     ui_verbosetimer_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_remote_server_cfg_cmd.register_cmd();
+    ui_simple_server_chat_messages_cmd.register_cmd();
 
     control_config_get_mouse_delta_hook.install();
 }

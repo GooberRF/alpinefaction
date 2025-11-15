@@ -513,7 +513,7 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                 auto msg = std::format("\xA6 You can't change teams {}", is_player_ready(player)
                     ? "while ready for a match. Use \"/unready\" first."
                     : "during a match.");
-                send_chat_line_packet(msg.c_str(), player);
+                af_send_automated_chat_msg(msg, player);
                 return;
             }
         }        
@@ -1720,7 +1720,7 @@ std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable()
     return g_af_server_info;
 }
 
-void send_chat_line_packet(const char* msg, rf::Player* target, rf::Player* sender, bool is_team_msg)
+void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::Player* sender, bool is_team_msg)
 {
     if (!rf::is_server && sender == nullptr) {
         sender = rf::local_player;
@@ -1728,13 +1728,14 @@ void send_chat_line_packet(const char* msg, rf::Player* target, rf::Player* send
     rf::ubyte buf[512];
     RF_ChatLinePacket packet;
     packet.header.type = RF_GPT_CHAT_LINE;
-    packet.header.size = static_cast<uint16_t>(sizeof(packet) - sizeof(packet.header) + std::strlen(msg) + 1);
+    const size_t len = std::min(msg.size(), 255uz);
+    packet.header.size = static_cast<uint16_t>(sizeof(packet) - sizeof(packet.header) + len + 1);
     packet.player_id = sender ? sender->net_data->player_id : 0xFF;
     packet.is_team_msg = is_team_msg;
     std::memcpy(buf, &packet, sizeof(packet));
     char* packet_msg = reinterpret_cast<char*>(buf + sizeof(packet));
-    std::strncpy(packet_msg, msg, 255);
-    packet_msg[255] = 0;
+    std::strncpy(packet_msg, msg.data(), len);
+    packet_msg[len] = '\0';
     if (target == nullptr && rf::is_server) {
         rf::multi_io_send_reliable_to_all(buf, packet.header.size + sizeof(packet.header), 0);
         rf::console::print("Server: {}", msg);

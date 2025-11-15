@@ -30,6 +30,7 @@
 #include "../multi/gametype.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
+#include "../multi/alpine_packets.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_options.h"
@@ -217,7 +218,9 @@ FunHook<void(bool)> level_init_post_hook{
 
         if (rf::is_dedicated_server || rf::is_server) {
             if (g_match_info.match_active) {
-                send_chat_line_packet("=========== MATCH LIVE ===========", nullptr);
+                af_broadcast_automated_chat_msg(
+                    "=========== MATCH LIVE ==========="
+                );
             }
             else if (g_match_info.pre_match_queued) {
                 start_pre_match();

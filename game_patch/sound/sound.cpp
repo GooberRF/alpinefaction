@@ -772,7 +772,7 @@ void play_chat_sound(std::string& chat_message, bool is_taunt)
     }
 }
 
-void snd_ds_apply_patch();
+extern void snd_ds_apply_patch();
 
 void apply_sound_patches()
 {

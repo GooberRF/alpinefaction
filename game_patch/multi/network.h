@@ -102,18 +102,18 @@ struct AlpineFactionJoinAcceptPacketExt
 
     enum class Flags : uint32_t {
         none                = 0,
-        saving_enabled      = 1 << 0,
-        max_fov             = 1 << 1,
-        allow_fb_mesh       = 1 << 2,
-        allow_lmap          = 1 << 3,
-        allow_no_ss         = 1 << 4,
-        no_player_collide   = 1 << 5,
-        allow_no_mf         = 1 << 6,
-        click_limit         = 1 << 7,
-        unlimited_fps       = 1 << 8,
-        gaussian_spread     = 1 << 9,
-        location_pinging    = 1 << 10,
-        delayed_spawns      = 1 << 11,
+        saving_enabled      = 1u << 0,
+        max_fov             = 1u << 1,
+        allow_fb_mesh       = 1u << 2,
+        allow_lmap          = 1u << 3,
+        allow_no_ss         = 1u << 4,
+        no_player_collide   = 1u << 5,
+        allow_no_mf         = 1u << 6,
+        click_limit         = 1u << 7,
+        unlimited_fps       = 1u << 8,
+        gaussian_spread     = 1u << 9,
+        location_pinging    = 1u << 10,
+        delayed_spawns      = 1u << 11,
     } flags = Flags::none;
 
     float max_fov;

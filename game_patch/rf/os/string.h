@@ -41,6 +41,16 @@ namespace rf
         String(Pod pod) : m_pod(pod)
         {}
 
+        String(const std::string_view str) :
+            m_pod{
+                .max_len = static_cast<int>(str.size() + 1uz),
+                .buf = string_alloc(m_pod.max_len),
+            }
+        {
+            std::memcpy(m_pod.buf, str.data(), str.size());
+            m_pod.buf[str.size()] = '\0';
+        }
+
         ~String()
         {
             AddrCaller{0x004FF470}.this_call(this);

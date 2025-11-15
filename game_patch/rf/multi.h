@@ -171,6 +171,7 @@ namespace rf
         blue_blue = 3,
         white_white = 4,
         default_ = 5,
+        gold_white = 6,
     };
 
     constexpr size_t max_packet_size = 512;
