@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <vector>
+#include <filesystem>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/string.h"
@@ -363,7 +364,7 @@ struct WeaponStayExemptionConfig
         if (idx < 0)
             return false;
 
-        exemptions.emplace_back(WeaponStayExemptionEntry{exemption_enabled, std::string{name}, idx});
+        exemptions.emplace_back(exemption_enabled, std::string{name}, idx);
         return true;
     }
 };
@@ -626,7 +627,7 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
-    std::vector<std::string> applied_rules_preset_paths;
+    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
 };
 
 struct AlpineServerConfig
@@ -662,8 +663,8 @@ struct AlpineServerConfig
     VoteConfig vote_previous;
 
     AlpineServerConfigRules base_rules;
-    std::vector<std::string> base_rules_preset_paths;
-    std::map<std::string, std::string> rules_preset_aliases;
+    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
+    std::map<std::string, std::filesystem::path> rules_preset_aliases;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
     bool signal_cfg_changed = false;
@@ -691,7 +692,7 @@ struct AlpineServerConfig
 struct ManualRulesOverride
 {
     AlpineServerConfigRules rules;
-    std::vector<std::string> applied_preset_paths;
+    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_preset_paths;
     std::optional<std::string> preset_alias;
 };
 

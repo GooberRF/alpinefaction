@@ -277,8 +277,7 @@ void __fastcall UiLabel_create(rf::ui::Label& this_, int, rf::ui::Gadget *parent
     this_.parent = parent;
     this_.x = x;
     this_.y = y;
-    int text_w, text_h;
-    rf::gr::get_string_size(&text_w, &text_h, text, -1, font);
+    const auto [text_w, text_h] = rf::gr::get_string_size(text, font);
     this_.w = static_cast<int>(text_w / rf::ui::scale_x);
     this_.h = static_cast<int>(text_h / rf::ui::scale_y);
     this_.text = strdup(text);
@@ -318,31 +317,27 @@ void __fastcall UiLabel_set_text(rf::ui::Label& this_, int, const char *text, in
 }
 FunHook UiLabel_set_text_hook{0x00456DC0, UiLabel_set_text};
 
-void __fastcall UiLabel_render(rf::ui::Label& this_)
-{
-    if (!this_.enabled) {
-        rf::gr::set_color(48, 48, 48, 128);
+void __fastcall UiLabel_render(rf::ui::Label& this_) {
+    if (this_.text) {
+        if (!this_.enabled) {
+            rf::gr::set_color(48, 48, 48, 128);
+        } else if (this_.highlighted) {
+            rf::gr::set_color(240, 240, 240, 255);
+        } else {
+            rf::gr::set_color(this_.clr);
+        }
+        int x = static_cast<int>(this_.get_absolute_x() * rf::ui::scale_x);
+        int y = static_cast<int>(this_.get_absolute_y() * rf::ui::scale_y);
+        const auto [text_w, text_h] = rf::gr::get_string_size(this_.text, this_.font);
+        if (this_.align == rf::gr::ALIGN_CENTER) {
+            x += static_cast<int>(this_.w * rf::ui::scale_x / 2);
+        } else if (this_.align == rf::gr::ALIGN_RIGHT) {
+            x += static_cast<int>(this_.w * rf::ui::scale_x);
+        } else {
+            x += static_cast<int>(1 * rf::ui::scale_x);
+        }
+        rf::gr::string_aligned(this_.align, x, y, this_.text, this_.font);
     }
-    else if (this_.highlighted) {
-        rf::gr::set_color(240, 240, 240, 255);
-    }
-    else {
-        rf::gr::set_color(this_.clr);
-    }
-    int x = static_cast<int>(this_.get_absolute_x() * rf::ui::scale_x);
-    int y = static_cast<int>(this_.get_absolute_y() * rf::ui::scale_y);
-    int text_w, text_h;
-    rf::gr::get_string_size(&text_w, &text_h, this_.text, -1, this_.font);
-    if (this_.align == rf::gr::ALIGN_CENTER) {
-        x += static_cast<int>(this_.w * rf::ui::scale_x / 2);
-    }
-    else if (this_.align == rf::gr::ALIGN_RIGHT) {
-        x += static_cast<int>(this_.w * rf::ui::scale_x);
-    }
-    else {
-        x += static_cast<int>(1 * rf::ui::scale_x);
-    }
-    rf::gr::string_aligned(this_.align, x, y, this_.text, this_.font);
 
     debug_ui_layout(this_);
 }
@@ -382,8 +377,7 @@ void __fastcall UiInputBox_render(rf::ui::InputBox& this_, void*)
     if (this_.enabled && this_.highlighted) {
         rf::ui::update_input_box_cursor();
         if (rf::ui::input_box_cursor_visible) {
-            int text_w, text_h;
-            rf::gr::get_string_size(&text_w, &text_h, this_.text, -1, this_.font);
+            const auto [text_w, text_h] = rf::gr::get_string_size(this_.text, this_.font);
             rf::gr::string(text_offset_x + text_w, 0, "_", this_.font);
         }
     }
@@ -1689,9 +1683,16 @@ void ui_apply_patch()
     UiInputBox_process_key_hook.install();
 }
 
-void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num)
-{
-    rf::gr::get_string_size(w, h, s, s_len, font_num);
+void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num) {
+    std::tie(*w, *h) = rf::gr::get_string_size(
+        std::string_view{
+            s,
+            s_len == -1
+                ? std::strlen(s)
+                : static_cast<size_t>(s_len)
+        },
+        font_num
+    );
 #if SHARP_UI_TEXT
     *w = static_cast<int>(*w / rf::ui::scale_x);
     *h = static_cast<int>(*h / rf::ui::scale_y);

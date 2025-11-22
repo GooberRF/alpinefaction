@@ -281,13 +281,12 @@ void hud_rect_border(int x, int y, int w, int h, int border, rf::gr::Mode state)
 std::string hud_fit_string(std::string_view str, int max_w, int* str_w_out, int font_id)
 {
     std::string result{str};
-    int str_w, str_h;
     bool has_ellipsis = false;
-    rf::gr::get_string_size(&str_w, &str_h, result.c_str(), -1, font_id);
+    auto [str_w, str_h] = rf::gr::get_string_size(result, font_id);
     while (str_w > max_w) {
         result = result.substr(0, result.size() - (has_ellipsis ? 4 : 1)) + "...";
         has_ellipsis = true;
-        rf::gr::get_string_size(&str_w, &str_h, result.c_str(), -1, font_id);
+        std::tie(str_w, str_h) = rf::gr::get_string_size(result, font_id);
     }
     if (str_w_out) {
         *str_w_out = str_w;

@@ -103,19 +103,19 @@ std::string FactionFilesAFLink::get_extraction_path(const std::string& game_exe_
     std::filesystem::path base_path(game_exe_path);
 
     if (file_type == "map_mp" || file_type == "map_pack_mp") {
-        return (base_path / "user_maps" / "multi").string();
+        return (base_path / "user_maps" / "multi").generic_string();
     }
     else if (file_type == "map_sp") {
-        return (base_path / "user_maps" / "single").string();
+        return (base_path / "user_maps" / "single").generic_string();
     }
     else if (file_type == "mod_tc") {
-        return (base_path / "mods").string();
+        return (base_path / "mods").generic_string();
     }
     else if (file_type == "mod_clientside") {
-        return (base_path / "client_mods").string();
+        return (base_path / "client_mods").generic_string();
     }
 
-    return (base_path / "unknown_files").string(); // Fallback path
+    return (base_path / "unknown_files").generic_string(); // Fallback path
 }
 
 bool FactionFilesAFLink::extract_zip(const std::string& zip_path, const std::string& extract_to)

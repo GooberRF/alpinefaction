@@ -348,7 +348,7 @@ void CMainFrame_PlayMulti(CWnd* this_)
         return;
     }
 
-    std::string filename = std::filesystem::path(mainframe->doc->_d.m_strPathName.c_str()).filename().string();
+    std::string filename = std::filesystem::path(mainframe->doc->_d.m_strPathName.c_str()).filename().generic_string();
     if (filename.empty()) {
         xlog::error("No valid filename found!");
         return;

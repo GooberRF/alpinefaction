@@ -78,14 +78,13 @@ FunHook<void(rf::Player*)> hud_status_render_hook{
             rf::gr::set_color(rf::hud_full_color);
             int health = static_cast<int>(std::max(entity->life, 1.0f));
             auto health_str = std::to_string(health);
-            int text_w, text_h;
-            rf::gr::get_string_size(&text_w, &text_h, health_str.c_str(), -1, font_id);
+            auto [text_w, text_h] = rf::gr::get_string_size(health_str, font_id);
             auto [health_value_x, health_value_y] = hud_scale_coords(rf::hud_coords[rf::hud_health_value_ul_corner], scale);
             auto health_value_w = hud_scale_coords(rf::hud_coords[rf::hud_health_value_width_and_height], scale).x;
             rf::gr::string(health_value_x + (health_value_w - text_w) / 2, health_value_y, health_str.c_str(), font_id);
             rf::gr::set_color(rf::hud_mid_color);
             auto armor_str = std::to_string(static_cast<int>(std::lround(entity->armor * (g_alpine_game_config.real_armor_values ? 2.0f : 1.0f))));
-            rf::gr::get_string_size(&text_w, &text_h, armor_str.c_str(), -1, font_id);
+            std::tie(text_w, text_h) = rf::gr::get_string_size(armor_str, font_id);
             auto [envirosuit_value_x, envirosuit_value_y] = hud_scale_coords(rf::hud_coords[rf::hud_envirosuit_value_ul_corner], scale);
             auto envirosuit_value_w = hud_scale_coords(rf::hud_coords[rf::hud_envirosuit_value_width_and_height], scale).x;
             rf::gr::string(envirosuit_value_x + (envirosuit_value_w - text_w) / 2, envirosuit_value_y, armor_str.c_str(), font_id);

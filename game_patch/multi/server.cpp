@@ -180,9 +180,11 @@ FunHook<void ()> dedicated_server_load_config_hook{
 CodeInjection rf_process_command_line_dedicated_server_patch{
     0x004B28A0,
     []() {
-        if (get_ads_cmd_line_param().found()) {
-            rf::is_dedicated_server = get_ads_cmd_line_param().found();
-            std::string ads_filename = get_ads_cmd_line_param().get_arg();
+        const rf::CmdLineParam& ads_param = get_ads_cmd_line_param();
+        const bool ads_found = ads_param.found();
+        const char* const ads_filename = ads_param.get_arg();
+        if (ads_found && ads_filename) {
+            rf::is_dedicated_server = true;
             g_dedicated_launched_from_ads = true;
             g_ads_config_name = ads_filename;
             handle_min_param(); // check if -min switch was used
@@ -2274,7 +2276,7 @@ void multi_create_alpine_respawn_point(int uid, const char* name, rf::Vector3 po
         return; // reached max spawn points
     }
 
-    g_alpine_respawn_points.emplace_back(rf::AlpineRespawnPoint{uid, enabled, rf::String(name), pos, orient, red, blue});
+    g_alpine_respawn_points.emplace_back(uid, enabled, rf::String{name}, pos, orient, red, blue);
     //xlog::warn("New spawn point added! Name: {}, UID: {}, RedTeam: {}, BlueTeam: {}", name, uid, red, blue);
 }
 
@@ -2548,7 +2550,7 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
                 int threshold = itcfg->min_respawn_points;
                 // queue if no threshold or we're under it
                 if (threshold == 0 || threshold > static_cast<int>(g_alpine_respawn_points.size())) {
-                    queued_item_spawn_points.emplace_back(std::string(name), *pos, *orient);
+                    queued_item_spawn_points.emplace_back(std::string{name}, *pos, *orient);
                 }
             }
 

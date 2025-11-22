@@ -105,8 +105,8 @@ Version 1.2.0 (Willow): Not yet released
 - Add `ui_simple_server_chat_messages` command to display automated server chat messages without `Server: `
 - Color automated server chat messages with a gold name instead of a red name
 - Add `key_quick_exit` command to restore keyboard shortcut `Shift+Esc` to quit out of Red Faction
-- Support `Alt+F4` or pressing X on window to quit out of Red Faction
-- Add `ui_remote_server_cfg` command and a configurable control to display a remote server's config
+- Support `Alt+F4` or pressing X on the window to quit out of Red Faction
+- Add a configurable control to display a remote server's config
 - Add `ui_always_show_spectators` command to display spectators in multiplayer
 - Simplify code that fixed broken events if their delay parameter was set
 

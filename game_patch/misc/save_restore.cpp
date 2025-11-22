@@ -187,10 +187,10 @@ FunHook<void(rf::Object*)> sr_store_level_transition_object_mesh_hook{
     0x004B5660,
     [](rf::Object *obj) {
         if (obj->vmesh) {
-            g_level_transition_objects.emplace_back(LevelTransitionObject{
+            g_level_transition_objects.emplace_back(
                 obj->handle,
-                rf::vmesh_get_name(obj->vmesh),
-            });
+                rf::vmesh_get_name(obj->vmesh)
+            );
         }
     },
 };

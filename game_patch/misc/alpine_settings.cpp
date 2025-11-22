@@ -232,6 +232,13 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.quick_exit = std::stoi(settings["QuickExit"]);
         processed_keys.insert("QuickExit");
     }
+    if (settings.count("RemoteServerCfgDisplayMode")) {
+        g_alpine_game_config.remote_server_cfg_display_mode =
+            static_cast<RemoteServerCfgPopup::DisplayMode>(
+                std::stoi(settings["RemoteServerCfgDisplayMode"]) % RemoteServerCfgPopup::_DISPLAY_MODE_COUNT
+            );
+        processed_keys.insert("RemoteServerCfgDisplayMode");
+    }
     if (settings.count("ColorblindMode")) {
         int mode = std::stoi(settings["ColorblindMode"]);
         g_alpine_game_config.colorblind_mode = std::clamp(mode, 0, 3);
@@ -747,6 +754,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "AlpineBranding=" << g_alpine_game_config.af_branding << "\n";
     file << "RealArmorValues=" << g_alpine_game_config.real_armor_values << "\n";
     file << "AlwaysShowSpectators=" << g_alpine_game_config.always_show_spectators << "\n";
+    file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
     file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
     file << "QuickExit=" << g_alpine_game_config.quick_exit << "\n";
     file << "ColorblindMode=" << g_alpine_game_config.colorblind_mode << "\n";

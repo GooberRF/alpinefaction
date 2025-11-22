@@ -59,6 +59,10 @@ void multi_hud_render_chat()
         fade_out = rf::chat_fade_out_timer.time_until() / 750.0f;
     }
 
+    if (g_remote_server_cfg_popup.is_active()) {
+        return;
+    }
+
     int chatbox_font = hud_get_default_font();
     int clip_w = rf::gr::clip_width();
     int font_h = rf::gr::get_font_height(chatbox_font);
@@ -85,8 +89,7 @@ void multi_hud_render_chat()
         }
         int x = box_x + border + 6;
 
-        int name_w, name_h;
-        rf::gr::get_string_size(&name_w, &name_h, msg.name.c_str(), -1, chatbox_font);
+        const auto [name_w, name_h] = rf::gr::get_string_size(msg.name, chatbox_font);
         if (msg.color_id == 0 || msg.color_id == 1) {
             if (msg.color_id == 0) {
                 rf::gr::set_color(227, 48, 47, text_alpha);
@@ -151,10 +154,8 @@ void multi_hud_render_chat_inputbox(rf::String::Pod label_pod, rf::String::Pod m
     int input_box_x = (clip_w - box_w) / 2; // 157
 
     rf::String msg_shortened{msg};
-    int msg_w, msg_h;
-    rf::gr::get_string_size(&msg_w, &msg_h, msg_shortened.c_str(), -1, chatbox_font);
-    int label_w, label_h;
-    rf::gr::get_string_size(&label_w, &label_h, label.c_str(), -1, chatbox_font);
+    auto [msg_w, msg_h] = rf::gr::get_string_size(msg_shortened, chatbox_font);
+    const auto [label_w, label_h] = rf::gr::get_string_size(label, chatbox_font);
     int cursor_w = g_big_chatbox ? 10 : 5;
     int cursor_h = g_big_chatbox ? 2 : 1;
     int max_msg_w = content_w - cursor_w - 7 - label_w;
@@ -164,7 +165,7 @@ void multi_hud_render_chat_inputbox(rf::String::Pod label_pod, rf::String::Pod m
     }
     while (msg_w > max_msg_w) {
         msg_shortened = msg_shortened.substr(1, -1);
-        rf::gr::get_string_size(&msg_w, &msg_h, msg_shortened.c_str(), -1, chatbox_font);
+        std::tie(msg_w, msg_h) = rf::gr::get_string_size(msg_shortened, chatbox_font);
     }
 
     rf::gr::set_color(255, 255, 255, rf::scoreboard_visible ? 255 : chatbox_border_alpha);
@@ -249,6 +250,15 @@ CallHook<void(const char*, bool)> process_rcon_req_packet_chat_say_hook{
     },
 };
 
+FunHook<void(int)> multi_chat_say_show_hook{
+    0x00444A80,
+    [] (const int is_team_chat) {
+        if (!g_remote_server_cfg_popup.is_active()) {
+            multi_chat_say_show_hook.call_target(is_team_chat);
+        }
+    },
+};
+
 void multi_hud_chat_apply_patches()
 {
     // Fix game beeping every frame if chat input buffer is full
@@ -274,6 +284,8 @@ void multi_hud_chat_apply_patches()
     write_mem<u8>(0x004785FD, asm_opcodes::jmp_rel_short);
 
     process_rcon_req_packet_chat_say_hook.install();
+    
+    multi_chat_say_show_hook.install();
 }
 
 void multi_hud_chat_set_big(bool is_big)

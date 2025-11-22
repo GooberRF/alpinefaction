@@ -3,6 +3,7 @@
 #include "../rf/input.h"
 #include <variant>
 #include <vector>
+#include <optional>
 
 enum class ChatMenuType : int
 {
@@ -40,18 +41,41 @@ public:
     bool is_active();
     void toggle();
     void render();
+    bool is_compact();
+    bool uses_line_separators();
+    bool is_highlight_box();
+    bool is_left_aligned();
+
+    void finalize() {
+        m_finalized = true;
+    }
 
     void set_cfg_changed() {
         m_cfg_changed = true;
     }
 
+    enum DisplayMode : uint8_t {
+        DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX = 0,
+        DISPLAY_MODE_ALIGN_RIGHT_USE_LINE_SEPARATORS = 1,
+        DISPLAY_MODE_ALIGN_RIGHT_COMPACT = 2,
+        DISPLAY_MODE_ALIGN_LEFT_HIGHLIGHT_BOX = 3,
+        DISPLAY_MODE_ALIGN_LEFT_USE_LINE_SEPARATORS = 4,
+        DISPLAY_MODE_ALIGN_LEFT_COMPACT = 5,
+        _DISPLAY_MODE_COUNT = 6,
+    };
+
 private:
     void add_line(std::string_view line);
 
     using Line = std::variant<std::string, std::pair<std::string, std::string>>;
+
     std::vector<Line> m_lines{};
     std::string m_partial_line{};
+    int m_last_key_down = 0;
     bool m_cfg_changed = false;
+    bool m_need_restore_scroll = false;
+    std::optional<float> m_saved_scroll{};
+    bool m_finalized = false;
     bool m_is_active = false;
     struct {
         float current = 0.f;

@@ -153,4 +153,4 @@ void start_level_in_multi(std::string filename);
 std::optional<std::string> multi_ban_unban_last();
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);
-void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool password = false);
+void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool sanitize = false);

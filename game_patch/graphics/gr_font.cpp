@@ -379,10 +379,8 @@ void GrNewFont::draw(int x, int y, std::string_view text, rf::gr::Mode state) co
             }
         }
     }
-    int& current_string_x = addr_as_ref<int>(0x018871AC);
-    int& current_string_y = addr_as_ref<int>(0x018871B0);
-    current_string_x = pen_x;
-    current_string_y = y;
+    rf::gr::current_string_x = pen_x;
+    rf::gr::current_string_y = y;
 }
 
 void GrNewFont::draw_aligned(rf::gr::TextAlignment alignment, int x, int y, std::string_view text, rf::gr::Mode state) const
@@ -557,6 +555,32 @@ CodeInjection gr_create_font_increment_number_injection{
     []() {
         rf::gr::num_fonts++;
     },
+};
+
+int gr_fit_string(
+    std::string& text,
+    const int max_width,
+    const int font_id,
+    const std::string_view suffix
+) {
+    auto [text_w, text_h] = rf::gr::get_string_size(text, font_id);
+    if (text_w <= max_width) {
+        return text_w;
+    }
+
+    const auto [suffix_w, suffix_h] = rf::gr::get_string_size(suffix, font_id);
+    if (suffix_w > max_width) {
+        return text_w;
+    }
+
+    while (text_w + suffix_w > max_width && !text.empty()) {
+        const auto [last_w, last_h] = rf::gr::get_char_size(text.back(), font_id);
+        text_w -= last_w;
+        text.pop_back();
+    }
+
+    text.append(suffix);
+    return text_w + suffix_w;
 };
 
 void gr_font_apply_patch()

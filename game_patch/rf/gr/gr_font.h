@@ -57,6 +57,8 @@ namespace rf::gr
     static constexpr int max_fonts = 12;
     static auto& fonts = addr_as_ref<Font[max_fonts]>(0x01886C90);
     static auto& num_fonts = addr_as_ref<int>(0x018871A0);
+    static auto& current_string_x = addr_as_ref<int>(0x018871AC);
+    static auto& current_string_y = addr_as_ref<int>(0x018871B0);
 
     inline void string(int x, int y, const char *s, int font_num = -1, Mode mode = string_mode)
     {
@@ -79,6 +81,18 @@ namespace rf::gr
     }
 
     static auto& split_str = addr_as_ref<int(int *len_array, int *offset_array, char *s, int max_w, int max_lines, char unk_char, int font_num)>(0x00520810);
-    static auto& get_string_size = addr_as_ref<void(int *out_w, int *out_h, const char *s, int s_len, int font_num)>(0x0051F530);
     static auto& set_default_font = addr_as_ref<bool(const char *file_name)>(0x0051FE20);
+
+    inline std::pair<int, int> get_string_size(const std::string_view string, const int font_num) {
+        int w = 0, h = 0;
+        auto& get_string_size = addr_as_ref<
+            void(int* width, int* height, const char* string, int len, int font_num)
+        >(0x0051F530);
+        get_string_size(&w, &h, string.data(), string.size(), font_num);
+        return std::make_pair(w, h);
+    }
+
+    inline std::pair<int, int> get_char_size(const char letter, const int font_num) {
+        return get_string_size(std::string_view{&letter, 1uz}, font_num);
+    }
 }

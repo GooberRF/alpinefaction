@@ -394,7 +394,6 @@ namespace rf::gr
     static auto& gr_3d_cursor = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale)>(0x00516B10);
     static auto& gr_render_string_3d_pos = addr_as_ref<void(Vector3* pos, const char* string, int offset_x, int offset_y)>(0x00517010);
     static auto& gr_render_string_into_bitmap = addr_as_ref<void(int x, int y, int bm_handle, const char* s, int font)>(0x005203A0);
-    static auto& gr_get_string_size = addr_as_ref<void(int* w, int* h, const char* string, int len, int font_num)>(0x0051F530);
     static auto& gr_string_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, const char* string, int font_num, Mode mode)>(0x00520020);
     static auto& gr_3d_bitmap = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, Mode mode)>(0x00515B10);
     static auto& gr_3d_bitmap_angle = addr_as_ref<void(Vector3* pos, float angle, float scale, Mode mode)>(0x00515B40);

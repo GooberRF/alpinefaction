@@ -357,8 +357,7 @@ static NameLabelTex& ensure_hill_name_tex(const HillInfo& h, int font)
     auto& slot = g_koth_name_labels[key];
 
     if (slot.bm == -1 || slot.text != h.name || slot.font != font) {
-        int tw = 0, th = 0;
-        rf::gr::gr_get_string_size(&tw, &th, h.name.c_str(), (int)h.name.size(), font);
+        const auto [tw, th] = rf::gr::get_string_size(h.name, font);
 
         const int pad = 2;
         const int bw = std::max(1, tw + pad * 2);
@@ -557,8 +556,7 @@ void build_player_labels() {
         std::string label = player.name;
 
         // determine label width
-        int text_width = 0, text_height = 0;
-        rf::gr::gr_get_string_size(&text_width, &text_height, label.c_str(), label.size(), font);
+        const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
         int half_text_width = text_width / 2;
 
         render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, -25, font, 200, 200, 200, 223);
@@ -578,8 +576,7 @@ void build_ephemeral_world_hud_sprite_icons() {
         }
 
         // determine label width
-        int text_width = 0, text_height = 0;
-        rf::gr::gr_get_string_size(&text_width, &text_height, es.label.c_str(), es.label.size(), font);
+        const auto [text_width, text_height] = rf::gr::get_string_size(es.label, font);
         int half_text_width = text_width / 2;
 
         auto text_pos = es.pos;
@@ -620,8 +617,7 @@ void build_ephemeral_world_hud_strings() {
         std::string label = std::to_string(es.damage);
 
         // determine label width
-        int text_width = 0, text_height = 0;
-        rf::gr::gr_get_string_size(&text_width, &text_height, label.c_str(), label.size(), font);
+        const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
         int half_text_width = text_width / 2;
 
         render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, -25,

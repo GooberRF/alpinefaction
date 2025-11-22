@@ -477,8 +477,7 @@ static void hud_draw_cp_row_fullwidth(int x, int y, int w, int h, const HillInfo
     std::string fit_name = hud_fit_string(name_to_show.c_str(), (w - pad_l - pad_r - pct_w_room), nullptr, font_id);
 
     // name
-    int tw, th;
-    rf::gr::get_string_size(&tw, &th, fit_name.c_str(), -1, font_id);
+    const auto [tw, th] = rf::gr::get_string_size(fit_name, font_id);
     rf::gr::set_color(0, 0, 0, 220);
     rf::gr::string(x + pad_l + 1, y + (h - th) / 2 + 1, fit_name.c_str(), font_id); // shadow
     rf::gr::set_color(255, 255, 255, 255);
@@ -490,8 +489,7 @@ static void hud_draw_cp_row_fullwidth(int x, int y, int w, int h, const HillInfo
         static constexpr char kPermalockGlyph[] = {static_cast<char>(0xAB), '\0'}; // filled checkbox
         const char* lock_glyph =
             (hinfo.lock_status == HillLockStatus::HLS_Permalocked) ? kPermalockGlyph : kPadlockGlyph;
-        int lw, lh;
-        rf::gr::get_string_size(&lw, &lh, lock_glyph, -1, font_id);
+        const auto [lw, lh] = rf::gr::get_string_size(lock_glyph, font_id);
         rf::gr::set_color(0, 0, 0, 220);
         rf::gr::string(x + w - pad_r - lw + 1, y + (h - lh) / 2 + 1, lock_glyph, font_id); // shadow
         rf::gr::set_color(255, 255, 255, 255);
@@ -500,8 +498,7 @@ static void hud_draw_cp_row_fullwidth(int x, int y, int w, int h, const HillInfo
     else if (contested) {
         char pct_buf[5];
         std::snprintf(pct_buf, sizeof(pct_buf), "%d%%", (int)std::clamp(hinfo.capture_progress, (uint8_t)0, (uint8_t)100));
-        int pw, ph;
-        rf::gr::get_string_size(&pw, &ph, pct_buf, -1, font_id);
+        const auto [pw, ph] = rf::gr::get_string_size(pct_buf, font_id);
         rf::gr::set_color(0, 0, 0, 220);
         rf::gr::string(x + w - pad_r - pw + 1, y + (h - ph) / 2 + 1, pct_buf, font_id); // shadow
         rf::gr::set_color(255, 255, 255, 255);
@@ -582,9 +579,8 @@ static void hud_render_koth_dc_split_scores(
     // scores
     std::string rs = std::to_string(red_score);
     std::string bs = std::to_string(blue_score);
-    int rtw = 0, rth = 0, btw = 0, bth = 0;
-    rf::gr::get_string_size(&rtw, &rth, rs.c_str(), -1, font);
-    rf::gr::get_string_size(&btw, &bth, bs.c_str(), -1, font);
+    const auto [rtw, rth] = rf::gr::get_string_size(rs, font);
+    const auto [btw, bth] = rf::gr::get_string_size(bs, font);
     const int red_flag_x = left_x + pad_outer;
     const int red_flag_y = mid_y - (kMiniH);
     const int blue_flag_x = x + w - pad_outer - kMiniW;
@@ -695,9 +691,7 @@ static void hud_render_run_timer_widget(int x, int y, int w, int h, int font_id)
     };
 
     const std::string timer_string = build_run_timer_string();
-    int timer_w = 0;
-    int timer_h = 0;
-    rf::gr::get_string_size(&timer_w, &timer_h, timer_string.c_str(), -1, font_id);
+    const auto [timer_w, timer_h] = rf::gr::get_string_size(timer_string, font_id);
     const bool big_ui = g_big_team_scores_hud;
     const int timer_margin_x = big_ui ? 33 : 42;
     const int timer_x = x + timer_margin_x;
@@ -842,7 +836,6 @@ void multi_hud_render_team_scores()
 
     auto red_score_str = std::to_string(red_score);
     auto blue_score_str = std::to_string(blue_score);
-    int str_w, str_h;
     if (is_koth_dc) {
         hud_render_koth_dc_split_scores(
             box_x, box_y, box_w, box_h, red_score, blue_score, font_id, rf::hud_miniflag_red_bmh,
@@ -854,9 +847,9 @@ void multi_hud_render_team_scores()
         hud_render_run_timer_widget(box_x, box_y, box_w, box_h, font_id);
     }
     else if (game_type != rf::NG_TYPE_REV) {
-        rf::gr::get_string_size(&str_w, &str_h, red_score_str.c_str(), -1, font_id);
+        auto [str_w, str_h] = rf::gr::get_string_size(red_score_str, font_id);
         rf::gr::string(box_x + box_w - 5 - str_w, red_miniflag_label_y, red_score_str.c_str(), font_id);
-        rf::gr::get_string_size(&str_w, &str_h, blue_score_str.c_str(), -1, font_id);
+        std::tie(str_w, str_h) = rf::gr::get_string_size(blue_score_str, font_id);
         rf::gr::string(box_x + box_w - 5 - str_w, blue_miniflag_label_y, blue_score_str.c_str(), font_id);
     }
 
@@ -1068,6 +1061,48 @@ void multi_hud_render_local_player_spectators() {
     }
 }
 
+CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
+    0x0043D6D6,
+    [] (int* const dx, int* const dy, int* dz) {
+        // If active, do not write mouse wheel scroll delta.
+        if (g_remote_server_cfg_popup.is_active()) {
+            int tmp{};
+            dz = &tmp;
+        }
+        control_config_get_mouse_delta_hook.call_target(dx, dy, dz);
+    }
+};
+
+bool RemoteServerCfgPopup::is_compact() {
+    return g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_RIGHT_COMPACT
+        || g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_LEFT_COMPACT;
+};
+
+bool RemoteServerCfgPopup::uses_line_separators() {
+    return g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_RIGHT_USE_LINE_SEPARATORS
+        || g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_LEFT_USE_LINE_SEPARATORS;
+}
+
+bool RemoteServerCfgPopup::is_highlight_box() {
+    return g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX
+        || g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_LEFT_HIGHLIGHT_BOX;
+}
+
+bool RemoteServerCfgPopup::is_left_aligned() {
+    return g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_LEFT_HIGHLIGHT_BOX
+        || g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_LEFT_USE_LINE_SEPARATORS
+        || g_alpine_game_config.remote_server_cfg_display_mode
+        == DISPLAY_MODE_ALIGN_LEFT_COMPACT;
+}
+
 void RemoteServerCfgPopup::reset() {
     *this = RemoteServerCfgPopup{};
 }
@@ -1098,16 +1133,47 @@ void RemoteServerCfgPopup::add_content(const std::string_view content) {
     }
 }
 
-void RemoteServerCfgPopup::add_line(const std::string_view line) {
-    const size_t colon = line.find(':');
-    if (colon != std::string::npos
-        && line.size() > colon + 1
-        && line[colon + 1] != '/') {
-        const std::string key{line.substr(0, colon + 1)};
-        const std::string value{ltrim(line.substr(colon + 1))};
-        m_lines.emplace_back(std::make_pair(std::move(key), std::move(value)));
+void RemoteServerCfgPopup::add_line(std::string_view line) {
+    size_t new_line = line.find_first_of("\r\n");
+    if (new_line != std::string_view::npos) {
+        line = line.substr(0, new_line);
+    }
+
+    constexpr float ref_width  = 1280.f;
+    constexpr float ref_height = 800.f;
+    const float scale_x = rf::gr::clip_width() / ref_width;
+    const float scale_y = rf::gr::clip_height() / ref_height;
+    const float ui_scale = std::min(scale_x, scale_y);
+    const int font_id = hud_get_default_font();
+    const int w = static_cast<int>(680.f * ui_scale);
+    const int content_w = w;
+    const int line_w = content_w - 20 - static_cast<int>(50.f * ui_scale);
+    const auto [space_w, space_h] = rf::gr::get_char_size(' ', font_id);
+
+    const size_t colon = line.find(":");
+    const size_t arrow = line.find("->");
+    if (colon != std::string::npos) {
+        std::string key{line.substr(0, colon + 1)};
+        std::string value{ltrim(line.substr(colon + 1))};
+        const auto [key_w, key_h] = rf::gr::get_string_size(key, font_id);
+        gr_fit_string(value, line_w - key_w - space_w, font_id);
+        m_lines.push_back(std::pair{std::move(key), std::move(value)});
+    } else if (arrow != std::string::npos) {
+        std::string key{rtrim(line.substr(0, arrow))};
+        std::string value{ltrim(line.substr(arrow + 2))};
+        key += " ->";
+        const auto [key_w, key_h] = rf::gr::get_string_size(key, font_id);
+        gr_fit_string(value, line_w - key_w - space_w, font_id);
+        m_lines.push_back(std::pair{std::move(key), std::move(value)});
     } else {
-        m_lines.emplace_back(std::string{line});
+        std::string text{line};
+        gr_fit_string(text, line_w, font_id);
+        // HACKFIX: We want to color `.toml` files.
+        if (line.starts_with("    ") && line.contains(".toml")) {
+            m_lines.push_back(std::pair{"", std::move(text)});
+        } else {
+            m_lines.push_back(std::move(text));
+        }
     }
 }
 
@@ -1117,69 +1183,159 @@ bool RemoteServerCfgPopup::is_active() {
 
 void RemoteServerCfgPopup::toggle() {
     if (!m_is_active && m_cfg_changed) {
+        const float saved_scroll = m_scroll.current;
         reset();
+        m_need_restore_scroll = true;
+        m_saved_scroll.emplace(saved_scroll);
     }
+
     m_is_active = !m_is_active;
+
     if (m_is_active && m_lines.empty()) {
         af_send_server_cfg_request();
     }
 }
 
-CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
-    0x0043D6D6,
-    [] (int* const dx, int* const dy, int* dz) {
-        // If active, do not write mouse wheel scroll delta.
-        if (g_remote_server_cfg_popup.is_active()) {
-            int tmp{};
-            dz = &tmp;
-        }
-        control_config_get_mouse_delta_hook.call_target(dx, dy, dz);
-    }
-};
-
 void RemoteServerCfgPopup::render() {
     constexpr float ref_width  = 1280.f;
     constexpr float ref_height = 800.f;
 
-    const float scale_x = rf::gr::clip_width()  / ref_width;
+    const float scale_x = rf::gr::clip_width() / ref_width;
     const float scale_y = rf::gr::clip_height() / ref_height;
     const float ui_scale = std::min(scale_x, scale_y);
 
-    constexpr float base_x = 300.f;
-    constexpr float base_y = 75.f;
-
-    int x = static_cast<int>(base_x * ui_scale);
-    int y = static_cast<int>(base_y * ui_scale);
-    int w = rf::gr::clip_width() - (x * 2);
-    int h = rf::gr::clip_height() - (y * 2);
-
     const int font_id = hud_get_default_font();
     const int label_font_id = font_id;
-    const int line_height = rf::gr::get_font_height(font_id);
+
+    int sep_thickness = g_remote_server_cfg_popup.is_compact() ? 0 : 1;
+    int line_factor = g_remote_server_cfg_popup.is_compact() ? 2 : 6;
+
+    constexpr rf::Key display_mode_key = rf::KEY_BACKSP;
+
+    if (rf::key_get_and_reset_down_counter(display_mode_key)
+        && !rf::console::console_is_visible()) {
+        const int delta = rf::key_is_down(rf::KEY_LSHIFT)
+            || rf::key_is_down(rf::KEY_RSHIFT)
+            ? -1
+            : 1;
+        const auto value = std::to_underlying(
+            g_alpine_game_config.remote_server_cfg_display_mode
+        );
+        g_alpine_game_config.remote_server_cfg_display_mode =
+            static_cast<RemoteServerCfgPopup::DisplayMode>(
+                (value + delta + RemoteServerCfgPopup::_DISPLAY_MODE_COUNT)
+                % RemoteServerCfgPopup::_DISPLAY_MODE_COUNT
+            );
+        const int new_sep_thickness = g_remote_server_cfg_popup.is_compact() ? 0 : 1;
+        const int new_line_factor = g_remote_server_cfg_popup.is_compact() ? 2 : 6;
+        const int old_line_height = rf::gr::get_font_height(font_id) + line_factor;
+        const int old_total_height = (m_lines.size() + 1)
+            * (old_line_height + sep_thickness)
+            + sep_thickness;
+        const int new_line_height =  rf::gr::get_font_height(font_id) + new_line_factor;
+        const int new_total_height = (m_lines.size() + 1)
+            * (new_line_height + new_sep_thickness)
+            + new_sep_thickness;
+
+        const float ratio_current = old_total_height > 0
+            ? m_scroll.current / static_cast<float>(old_total_height)
+            : 0.f;
+        const float ratio_target = old_total_height > 0
+            ? m_scroll.target / static_cast<float>(old_total_height)
+            : 0.f;
+
+        m_scroll.current = ratio_current * new_total_height;
+        m_scroll.target = ratio_target * new_total_height;
+
+        const int label_h = 10 + rf::gr::get_font_height(label_font_id) + 10;
+        const int h = static_cast<int>(500.f * ui_scale)
+            / (new_line_height + new_sep_thickness)
+            * (new_line_height + new_sep_thickness)
+            + label_h
+            * 2
+            + sep_thickness;
+        const float max_scroll = static_cast<float>(
+            std::max(0, new_total_height - h + label_h * 2)
+        );
+
+        m_scroll.current = std::clamp(m_scroll.current, 0.f, max_scroll);
+        m_scroll.target  = std::clamp(m_scroll.target, 0.f, max_scroll);
+
+        sep_thickness = new_sep_thickness;
+        line_factor = new_line_factor;
+    }
+
+    const int line_height = rf::gr::get_font_height(font_id) + line_factor;
+    const int line_pad_h = line_factor / 2;
+    const int total_height = (m_lines.size() + 1)
+        * (line_height + sep_thickness)
+        + sep_thickness;
+    const int label_h = 10 + rf::gr::get_font_height(label_font_id) + 10;
+
+    const int w = static_cast<int>(680.f * ui_scale);
+    const int x = (rf::gr::clip_width() - w) / 2;
+    const int h = static_cast<int>(500.f * ui_scale)
+        / (line_height + sep_thickness)
+        * (line_height + sep_thickness)
+        + label_h
+        * 2
+        + sep_thickness;
+    const int y = (rf::gr::clip_height() - h) / 2;
+
+    const float max_scroll = static_cast<float>(
+        std::max(0, total_height - h + label_h * 2)
+    );
 
     int clip_x = 0, clip_y = 0, clip_w = 0, clip_h = 0;
     rf::gr::get_clip(&clip_x, &clip_y, &clip_w, &clip_h);
 
-    const float scroll_step = 40.f;
     int mouse_dx = 0, mouse_dy = 0, mouse_dz = 0;
     rf::mouse_get_delta(mouse_dx, mouse_dy, mouse_dz);
     if (mouse_dz != 0) {
-        m_scroll.target += mouse_dz > 0 ? -scroll_step : scroll_step;
+        m_scroll.target += (mouse_dz > 0 ? -2 : 2) * (line_height + sep_thickness);
+        m_last_key_down = 0;
     }
 
-    const float key_scroll_speed = 400.f;
+    const float key_scroll_speed = 600.f;
     if (rf::key_is_down(rf::KEY_UP)) {
         m_scroll.target -= key_scroll_speed * rf::frametime;
+        m_last_key_down = 1;
     }
     if (rf::key_is_down(rf::KEY_DOWN)) {
         m_scroll.target += key_scroll_speed * rf::frametime;
+        m_last_key_down = -1;
     }
 
-    const int total_height = m_lines.size() * line_height;
-    const int label_h = 10 + rf::gr::get_font_height(label_font_id) + 10;
-    const float max_scroll = static_cast<float>(
-        std::max(0, total_height - h + (label_h * 2) + (10 * 2))
-    );
+    if (!rf::key_is_down(rf::KEY_UP)
+        && !rf::key_is_down(rf::KEY_DOWN)
+        && m_last_key_down) {
+        const float line_h = static_cast<float>(line_height + sep_thickness);
+
+        float rem = std::fmod(m_scroll.target, line_h);
+        if (std::fabs(rem) > 1e-3f) {
+            if (rem < 0.f) {
+                rem += line_h;
+            }
+
+            if (m_last_key_down < 0) {
+                m_scroll.target += line_h - rem;
+            } else {
+                m_scroll.target -= rem;
+            }
+        }
+
+        m_last_key_down = 0;
+    }
+
+    if (m_need_restore_scroll
+        && m_saved_scroll.has_value()
+        && m_finalized) {
+        m_scroll.target = std::clamp(m_saved_scroll.value(), 0.f, max_scroll);
+        m_scroll.current = m_scroll.target;
+        m_saved_scroll.reset();
+        m_need_restore_scroll = false;
+    }
+
     m_scroll.target = std::clamp(m_scroll.target, 0.f, max_scroll);
 
     const float delta = std::fabs(m_scroll.target - m_scroll.current);
@@ -1209,45 +1365,129 @@ void RemoteServerCfgPopup::render() {
     }
 
     rf::gr::set_color(0, 0, 0, 128);
-    // rf::gr::rect(x, y + label_h, w, h - (label_h * 2));
+    // rf::gr::rect(x, y + label_h, w, h - label_h * 2);
     rf::gr::rect(x, y, w, h);
 
     // rf::gr::set_color(100, 100, 100, 30);
     // rf::gr::rect(x, y, w, label_h);
-    rf::gr::set_color(255, 255, 255, 255);
     // rf::gr::set_color(255, 200, 100, 255);
+
+    const std::string_view base_text = "REMOTE SERVER CONFIG";
+    const std::string_view separator_text = " | ";
+    const std::string_view outdated_text = "OUTDATED";
+
+    const auto [base_w, base_h] = rf::gr::get_string_size(base_text, label_font_id);
+
+    int total_w = base_w;
+    if (m_cfg_changed) {
+        const auto [sep_w, sep_h] = rf::gr::get_string_size(separator_text, label_font_id);
+        const auto [out_w, out_h] = rf::gr::get_string_size(outdated_text, label_font_id);
+        total_w += sep_w + out_w;
+    }
+
+    const int center_x = x + w / 2;
+    const int left_x = center_x - total_w / 2;
+
+    rf::gr::set_color(255, 255, 255, 255);
     rf::gr::string_aligned(
-        rf::gr::ALIGN_CENTER,
-        x + (w / 2),
+        rf::gr::ALIGN_LEFT,
+        left_x,
         y + 10,
-        m_cfg_changed ? "REMOTE SERVER CONFIG | OUTDATED" : "REMOTE SERVER CONFIG",
+        base_text.data(),
         label_font_id
     );
+
+    if (m_cfg_changed) {
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::string_aligned(
+            rf::gr::ALIGN_LEFT,
+            rf::gr::current_string_x,
+            y + 10,
+            separator_text.data(),
+            label_font_id
+        );
+
+        rf::gr::set_color(255, 80, 80, 255);
+        rf::gr::string_aligned(
+            rf::gr::ALIGN_LEFT,
+            rf::gr::current_string_x,
+            y + 10,
+            outdated_text.data(),
+            label_font_id
+        );
+    }
 
     const int content_x = x;
     const int content_y = y + label_h;
     const int content_w = w;
-    const int content_h = h - label_h - label_h;
+    const int content_h = h - label_h * 2;
     rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
 
-    int line_y = std::lround(10.f - m_scroll.current);
+    int line_y = std::lround(-m_scroll.current);
+
+    if (g_remote_server_cfg_popup.uses_line_separators()) {
+        rf::gr::set_clip(0, content_y - sep_thickness, rf::gr::clip_width(), content_h);
+        rf::gr::set_color(180, 180, 180, 64);
+        rf::gr::rect(content_x, line_y + sep_thickness, content_w, sep_thickness);
+        rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
+    } else if (g_remote_server_cfg_popup.is_highlight_box()) {
+        rf::gr::set_color(100, 255, 200, 255);
+        rf::gr::rect(content_x, 0, content_w, sep_thickness);
+    }
+
+    line_y += sep_thickness;
+
+    rf::gr::set_color(180, 180, 180, 255);
+
+    const auto get_display_mode_msg = [] (const rf::Key key) {
+        rf::String key_name{};
+        rf::control_config_get_key_name(&key_name, key);
+        return std::format("Press {} to Cycle Display Modes", key_name);
+    };
+
+    static const std::string display_mode_msg = get_display_mode_msg(display_mode_key);
+
+    rf::gr::string_aligned(
+        rf::gr::ALIGN_CENTER,
+        content_x + content_w / 2,
+        line_y + line_pad_h,
+        display_mode_msg.c_str(),
+        font_id
+    );
+
+    line_y += line_height;
 
     for (const auto& line : m_lines) {
-        if (line_y + line_height < 0) {
-            line_y += line_height;
+        if (line_y + line_height + sep_thickness < 0) {
+            line_y += line_height + sep_thickness;
             continue;
         } else if (line_y > content_h) {
             break;
         }
 
+        if (g_remote_server_cfg_popup.uses_line_separators()) {
+            rf::gr::set_clip(0, content_y - sep_thickness, rf::gr::clip_width(), content_h + sep_thickness * 2);
+            rf::gr::set_color(180, 180, 180, 64);
+            rf::gr::rect(content_x, line_y + sep_thickness, content_w, sep_thickness);
+            rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
+        } else if (g_remote_server_cfg_popup.is_highlight_box()
+            && line_y != 0
+            && line_y != content_h - 1) {
+            rf::gr::set_color(180, 180, 180, 64);
+            rf::gr::rect(content_x, line_y, content_w, sep_thickness);
+        }
+
+        line_y += sep_thickness;
+
         rf::gr::set_color(255, 255, 255, 255);
+        const int line_w = content_w - 20 - static_cast<int>(50.f * ui_scale);
         if (std::holds_alternative<std::pair<std::string, std::string>>(line)) {
             const auto& [key, value] =
                 std::get<std::pair<std::string, std::string>>(line);
             rf::gr::string_aligned(
                 rf::gr::ALIGN_LEFT,
                 content_x + 20,
-                line_y,
+                line_y + line_pad_h,
                 key.c_str(),
                 font_id
             );
@@ -1258,24 +1498,49 @@ void RemoteServerCfgPopup::render() {
             } else {
                 rf::gr::set_color(100, 200, 255, 255);
             }
-            rf::gr::string_aligned(
-                rf::gr::ALIGN_RIGHT,
-                content_x + content_w - static_cast<int>(50.f * ui_scale),
-                line_y,
-                value.c_str(),
-                font_id
-            );
+            if (g_remote_server_cfg_popup.is_left_aligned()) {
+                const auto [space_w, space_h] = rf::gr::get_char_size(' ', font_id);
+                rf::gr::string_aligned(
+                    rf::gr::ALIGN_LEFT,
+                    rf::gr::current_string_x + space_w,
+                    line_y + line_pad_h,
+                    value.c_str(),
+                    font_id
+                );
+            } else {
+                rf::gr::string_aligned(
+                    rf::gr::ALIGN_RIGHT,
+                    content_x + content_w - static_cast<int>(50.f * ui_scale),
+                    line_y + line_pad_h,
+                    value.c_str(),
+                    font_id
+                );
+            }
         } else if (std::holds_alternative<std::string>(line)) {
+            const std::string text = std::get<std::string>(line);
+            if (text.starts_with(rf::level.filename.c_str())) {
+                rf::gr::set_color(255, 0, 255, 255);
+            }
             rf::gr::string_aligned(
                 rf::gr::ALIGN_LEFT,
                 content_x + 20,
-                line_y,
-                std::get<std::string>(line).c_str(),
+                line_y + line_pad_h,
+                text.c_str(),
                 font_id
             );
         }
 
         line_y += line_height;
+    }
+
+    if (g_remote_server_cfg_popup.uses_line_separators()) {
+        rf::gr::set_clip(0, content_y + sep_thickness, rf::gr::clip_width(), content_h);
+        rf::gr::set_color(180, 180, 180, 64);
+        rf::gr::rect(content_x, line_y - sep_thickness, content_w, sep_thickness);
+        rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
+    } else if (g_remote_server_cfg_popup.is_highlight_box()) {
+        rf::gr::set_color(100, 255, 200, 255);
+        rf::gr::rect(content_x, content_h - 1, content_w, sep_thickness);
     }
 
     if (total_height > content_h) {
@@ -1310,13 +1575,21 @@ void RemoteServerCfgPopup::render() {
     rf::gr::set_color(255, 255, 255, 255);
     rf::gr::string_aligned(
         rf::gr::ALIGN_CENTER,
-        x + (w / 2),
+        x + w / 2,
         y + h - label_h + 10,
-        std::format("PRESS {} TO CLOSE", key).c_str(),
+        std::format("Press {} to Close", key).c_str(),
         label_font_id
     );
 }
 
+FunHook<void()> hud_msg_render_hook{
+    0x004382D0,
+    [] {
+        if (!g_remote_server_cfg_popup.is_active()) {
+            hud_msg_render_hook.call_target();
+        }
+    },
+};
 
 CodeInjection multi_hud_render_patch{
     0x00476D76,
@@ -1711,11 +1984,8 @@ void build_time_left_string_format() {
         time_left_string_format = "";
     }
 
-    int format_text_width = 0, format_text_height = 0;
-
-    rf::gr::gr_get_string_size(&format_text_width, &format_text_height, 
-                               time_left_string_format.c_str(),
-                               time_left_string_format.size(), 0);
+    const auto [format_text_width, format_text_height] =
+        rf::gr::get_string_size(time_left_string_format, 0);
 
     time_left_string_x_pos_offset = 135 + format_text_width;
     time_left_string_y_pos_offset = 21;
@@ -1764,16 +2034,6 @@ ConsoleCommand2 ui_always_show_specators_cmd{
     "ui_always_show_specators",
 };
 
-ConsoleCommand2 ui_remote_server_cfg_cmd{
-    "ui_remote_server_cfg",
-    [] {
-        if (is_server_minimum_af_version(1, 2)) {
-            g_remote_server_cfg_popup.toggle();
-        }
-    },
-    "Toggle display of a remote server's config",
-};
-
 ConsoleCommand2 ui_simple_server_chat_messages_cmd{
     "ui_simple_server_chat_messages",
     [] {
@@ -1790,6 +2050,7 @@ ConsoleCommand2 ui_simple_server_chat_messages_cmd{
 
 void multi_hud_apply_patches()
 {
+    hud_msg_render_hook.install();
     multi_hud_render_patch.install();
     AsmWriter{0x00477790}.jmp(multi_hud_render_team_scores);
     multi_hud_render_team_scores_new_gamemodes_patch.install();
@@ -1813,7 +2074,6 @@ void multi_hud_apply_patches()
     ui_playernames_cmd.register_cmd();
     ui_verbosetimer_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
-    ui_remote_server_cfg_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();
 
     control_config_get_mouse_delta_hook.install();

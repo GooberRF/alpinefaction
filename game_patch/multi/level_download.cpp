@@ -497,8 +497,7 @@ void multi_level_download_do_frame()
         float bytes_per_sec = operation.get_bytes_per_sec();
 
         auto level_name_str = std::format("Level name: {}", info.name);
-        int str_w, str_h;
-        rf::gr::get_string_size(&str_w, &str_h, level_name_str.c_str(), -1, medium_font);
+        const auto [str_w, str_h] = rf::gr::get_string_size(level_name_str, medium_font);
         int info_x = center_x - str_w / 2;
         int info_spacing = medium_font_h * 3 / 2;
         rf::gr::string(info_x, y, level_name_str.c_str(), medium_font);
