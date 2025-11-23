@@ -23,6 +23,7 @@
 #include "alpine_packets.h"
 #include "multi.h"
 #include "../os/console.h"
+#include "../os/os.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
 #include "../main/main.h"
@@ -201,6 +202,7 @@ void set_server_window_title() {
 void on_dedicated_server_launch_post() {
     initialize_game_info_server_flags(); // build global flags var used in game_info packets
     set_server_window_title();
+    set_dedicated_server_timer_frequency();
 
     // shuffle maplist on legacy server config (ADS shuffle is handled when rotation is built)
     if (!g_dedicated_launched_from_ads && g_alpine_server_config.dynamic_rotation) {

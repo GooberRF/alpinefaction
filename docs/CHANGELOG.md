@@ -110,6 +110,9 @@ Version 1.2.0 (Willow): Not yet released
 - Add `ui_always_show_spectators` command to display spectators in multiplayer
 - Simplify code that fixed broken events if their delay parameter was set
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Improve dedicated server framerate consistency
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix very niche case where armor values were displayed differently when Big HUD was enabled
