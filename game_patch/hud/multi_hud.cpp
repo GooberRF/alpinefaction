@@ -1,6 +1,7 @@
 #include <ranges>
 #include <algorithm>
 #include <tuple>
+#include <format>
 #include <cstdint>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
@@ -669,6 +670,16 @@ static std::tuple<int, int, int, int> get_run_timer_color()
     return {255, 255, 255, 255};
 }
 
+static std::string build_run_timer_reset_label()
+{
+    if (!rf::local_player) {
+        return "Reset: ?";
+    }
+
+    const rf::String key = get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SELF_KILL));
+    return std::format("Reset: {}", key.c_str());
+}
+
 static void hud_render_run_timer_widget(int x, int y, int w, int h, int font_id)
 {
     rf::gr::set_color(0, 0, 0, 150);
@@ -682,21 +693,34 @@ static void hud_render_run_timer_widget(int x, int y, int w, int h, int font_id)
     rf::gr::set_color(255, 255, 255, 170);
     rf::gr::rect_border(x, y, w, h);
 
-    auto draw_shadow_text = [&](int tx, int ty, const std::string& text) {
+    auto draw_shadow_text = [&](int tx, int ty, const std::string& text, int font, int r, int g, int b, int a) {
         rf::gr::set_color(0, 0, 0, 230);
-        rf::gr::string(tx + 1, ty + 1, text.c_str(), font_id);
-        const auto [r, g, b, a] = get_run_timer_color();
+        rf::gr::string(tx + 1, ty + 1, text.c_str(), font);
         rf::gr::set_color(r, g, b, a);
-        rf::gr::string(tx, ty, text.c_str(), font_id);
+        rf::gr::string(tx, ty, text.c_str(), font);
     };
+
+    const std::string reset_label = build_run_timer_reset_label();
+    const int label_font_id = hud_get_small_font();
+    int label_w = 0;
+    int label_h = 0;
+    rf::gr::get_string_size(&label_w, &label_h, reset_label.c_str(), -1, label_font_id);
 
     const std::string timer_string = build_run_timer_string();
     const auto [timer_w, timer_h] = rf::gr::get_string_size(timer_string, font_id);
     const bool big_ui = g_big_team_scores_hud;
     const int timer_margin_x = big_ui ? 33 : 42;
     const int timer_x = x + timer_margin_x;
-    const int timer_y = y + (h - timer_h) / 2;
-    draw_shadow_text(timer_x, timer_y, timer_string);
+    const int center_x = x + w / 2;
+    const int label_x = center_x - (label_w / 2);
+    const int vertical_spacing = 2;
+    const int content_h = label_h + vertical_spacing + timer_h;
+    const int start_y = y + (h - content_h) / 2;
+    const int label_y = start_y;
+    const int timer_y = label_y + label_h + vertical_spacing;
+    draw_shadow_text(label_x, label_y, reset_label, label_font_id, 180, 180, 180, 255);
+    const auto [timer_r, timer_g, timer_b, timer_a] = get_run_timer_color();
+    draw_shadow_text(timer_x, timer_y, timer_string, font_id, timer_r, timer_g, timer_b, timer_a);
 }
 
 void multi_hud_render_team_scores()

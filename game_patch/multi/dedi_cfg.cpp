@@ -15,7 +15,6 @@
 #include <sstream>
 #include <numeric>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 #include <windows.h>
 #include <winsock2.h>
@@ -789,10 +788,6 @@ static void add_level_entry_from_table(AlpineServerConfig& cfg, const toml::tabl
     cfg.levels.push_back(std::move(entry));
 }
 
-static bool is_include_key(std::string_view k) {
-    return k == "include" || k == "includes";
-}
-
 static void apply_rules_preset_aliases(AlpineServerConfig& cfg, const toml::table& tbl, const fs::path& base_dir)
 {
     for (auto&& [alias_key, node] : tbl) {
@@ -834,7 +829,7 @@ static void apply_rules_preset_aliases(AlpineServerConfig& cfg, const toml::tabl
     }
 }
 
-// apply base config single keys (main and includes)
+// apply base config single keys
 static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string& key, const toml::node& node)
 {
     if (key == "ads_version") {
@@ -903,7 +898,7 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     }
 }
 
-// apply base config toml tables (main and includes)
+// apply base config toml tables
 static void apply_known_table_in_order(AlpineServerConfig& cfg, const std::string& key, const toml::table& tbl, const fs::path& base_dir)
 {
     if (key == "inactivity")
@@ -955,7 +950,7 @@ static void apply_known_table_in_order(AlpineServerConfig& cfg, const std::strin
     }
 }
 
-// apply known array toml nodes (main and includes)
+// apply known array toml nodes
 static void apply_known_array_in_order(AlpineServerConfig& cfg, const std::string& key, const toml::array& arr, const fs::path& base_dir)
 {
     if (key == "levels") {
@@ -970,15 +965,10 @@ static void apply_known_array_in_order(AlpineServerConfig& cfg, const std::strin
     }
 }
 
-// unified parser for main and included config files
+// unified parser for config files
 static void apply_config_table_in_order(
-    AlpineServerConfig& cfg, const toml::table& tbl, const fs::path& base_dir, std::vector<fs::path>& load_stack, int depth, ParsePass pass)
+    AlpineServerConfig& cfg, const toml::table& tbl, const fs::path& base_dir, ParsePass pass)
 {
-    if (depth > 16) {
-        rf::console::print("  [ERROR] include depth exceeded under {}\n", base_dir.generic_string());
-        return;
-    }
-
     struct Entry
     {
         std::string key;
@@ -1001,7 +991,7 @@ static void apply_config_table_in_order(
         entries.push_back(std::move(e));
     }
 
-    // custom sorting so includes are processed in the proper position
+    // custom sorting so entries are processed in file order when metadata is available
     std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
         if (a.line != b.line)
             return a.line < b.line;
@@ -1015,39 +1005,6 @@ static void apply_config_table_in_order(
         // Single keys
         if (pass == ParsePass::Core) {
             apply_known_key_in_order(cfg, key, v);
-        }
-
-        if (is_include_key(key)) {
-            auto load_one = [&](const std::string& inc) {
-                fs::path child = fs::weakly_canonical(base_dir / inc);
-                if (std::find(load_stack.begin(), load_stack.end(), child) != load_stack.end()) {
-                    rf::console::print("  [ERROR] include cycle detected at {}\n", child.generic_string());
-                    return;
-                }
-                try {
-                    toml::table child_tbl = toml::parse_file(child.generic_string());
-                    rf::console::print("  Parsing include {} for {} pass\n", child.generic_string(), pass == ParsePass::Core ? "config" : "level");
-                    load_stack.push_back(child);
-                    apply_config_table_in_order(cfg, child_tbl, child.parent_path(), load_stack, depth + 1, pass);
-                    load_stack.pop_back();
-                }
-                catch (const toml::parse_error& err) {
-                    rf::console::print("  [ERROR] failed to parse {}: {}\n", child.generic_string(), err.description());
-                }
-            };
-
-            if (auto arr = v.as_array()) {
-                for (auto& n : *arr)
-                    if (auto s = n.value<std::string>())
-                        load_one(*s);
-            }
-            else if (auto s = v.value<std::string>()) {
-                load_one(*s);
-            }
-            else {
-                rf::console::print("  [WARN] '{}' must be a string or array of strings.\n", key);
-            }
-            continue;
         }
 
         // Arrays
@@ -1071,7 +1028,7 @@ static void apply_config_table_in_order(
 
             // allow root table workaround to allow root config after subsections in parent toml
             if (key == "root") {
-                apply_config_table_in_order(cfg, *sub_tbl, base_dir, load_stack, depth, pass);
+                apply_config_table_in_order(cfg, *sub_tbl, base_dir, pass);
             }
             else {
                 apply_known_table_in_order(cfg, key, *sub_tbl, base_dir);
@@ -1097,14 +1054,12 @@ void load_ads_server_config(std::string ads_config_name)
         return;
     }
 
- std::vector<fs::path> load_stack;
     const fs::path root_path = fs::weakly_canonical(fs::path(ads_config_name));
-    load_stack.push_back(root_path);
 
     // config pass
-    apply_config_table_in_order(cfg, root, root_path.parent_path(), load_stack, 0, ParsePass::Core);
+    apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Core);
     // level pass
-    apply_config_table_in_order(cfg, root, root_path.parent_path(), load_stack, 0, ParsePass::Levels);
+    apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Levels);
 
     rf::console::print("\n");
 

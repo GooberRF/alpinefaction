@@ -55,6 +55,10 @@ CodeInjection level_read_moving_group_travel_time_patch{
                     }
                 }
             }
+            // "Start Moving Backward" doesn't behave correctly for rotating movers, and it's not necessary
+            if (mci->rotate_in_place) {
+                mci->is_moving_backwards = false;
+            }
         }
     }
 };

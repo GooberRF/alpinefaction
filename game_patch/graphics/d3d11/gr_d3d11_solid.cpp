@@ -221,7 +221,8 @@ namespace df::gr::d3d11
 
         geometry_buffers_.bind_buffers(render_context);
         for (SolidBatch& b : batches) {
-            render_context.set_mode(b.mode, {255, 255, 255, 255}, rf::gr::show_lightmaps);
+            bool lightmap_only = rf::gr::show_lightmaps && what != FaceRenderType::alpha;
+            render_context.set_mode(b.mode, {255, 255, 255, 255}, lightmap_only);
             render_context.set_textures(b.textures[0], b.textures[1]);
             //xlog::warn("DrawIndexed {} {}", b.num_indices, b.start_index);
             render_context.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
