@@ -702,9 +702,7 @@ static void hud_render_run_timer_widget(int x, int y, int w, int h, int font_id)
 
     const std::string reset_label = build_run_timer_reset_label();
     const int label_font_id = hud_get_small_font();
-    int label_w = 0;
-    int label_h = 0;
-    rf::gr::get_string_size(&label_w, &label_h, reset_label.c_str(), -1, label_font_id);
+    const auto [label_w, label_h] = rf::gr::get_string_size(reset_label, label_font_id);
 
     const std::string timer_string = build_run_timer_string();
     const auto [timer_w, timer_h] = rf::gr::get_string_size(timer_string, font_id);
