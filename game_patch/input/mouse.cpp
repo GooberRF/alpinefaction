@@ -55,6 +55,9 @@ FunHook<void()> mouse_eval_deltas_di_hook{
     []() {
         mouse_eval_deltas_di_hook.call_target();
 
+        // Fix invalid mouse scroll delta, when DirectInput is turned off.
+        rf::mouse_old_z = rf::mouse_wheel_pos;
+
         // center cursor if in game
         if (rf::keep_mouse_centered) {
             POINT pt{rf::gr::screen_width() / 2, rf::gr::screen_height() / 2};

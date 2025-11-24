@@ -1324,11 +1324,11 @@ void RemoteServerCfgPopup::render() {
     }
 
     const float key_scroll_speed = 600.f;
-    if (rf::key_is_down(rf::KEY_UP)) {
+    if (rf::key_is_down(rf::KEY_UP) && !rf::console::console_is_visible()) {
         m_scroll.target -= key_scroll_speed * rf::frametime;
         m_last_key_down = 1;
     }
-    if (rf::key_is_down(rf::KEY_DOWN)) {
+    if (rf::key_is_down(rf::KEY_DOWN) && !rf::console::console_is_visible()) {
         m_scroll.target += key_scroll_speed * rf::frametime;
         m_last_key_down = -1;
     }

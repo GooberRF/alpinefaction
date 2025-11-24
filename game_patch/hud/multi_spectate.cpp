@@ -465,7 +465,8 @@ void multi_spectate_render()
     int scr_h = rf::gr::screen_height();
 
     if (!g_spectate_mode_enabled) {
-        if (rf::player_is_dead(rf::local_player)) {
+        if (rf::player_is_dead(rf::local_player)
+            && !g_remote_server_cfg_popup.is_active()) {
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
             int y = scr_h - (g_alpine_game_config.big_hud ? 170 : 155);
             rf::gr::string(10, y, "Press Jump to enter Spectate Mode", medium_font);
@@ -483,25 +484,27 @@ void multi_spectate_render()
             rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "SPECTATE MODE", large_font);
         });
 
-        int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120);
-        int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
-        int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
-        std::string next_player_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
-        std::string prev_player_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
-        std::string exit_spec_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_JUMP);
-        std::string spec_menu_text = get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU));
-        const char* hints[][3] = {
-            {next_player_text.c_str(), "Next Player"},
-            {prev_player_text.c_str(), "Previous Player"},
-            {spec_menu_text.c_str(), "Open Spectate Options Menu"},
-            {exit_spec_text.c_str(), "Exit Spectate Mode"},
-        };
-        for (auto& hint : hints) {
-            rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-            rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, hints_left_x, hints_y, hint[0], medium_font);
-            rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
-            rf::gr::string(hints_right_x, hints_y, hint[1], medium_font);
-            hints_y += medium_font_h;
+        if (!g_remote_server_cfg_popup.is_active()) {
+            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120);
+            int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
+            int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
+            std::string next_player_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
+            std::string prev_player_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
+            std::string exit_spec_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_JUMP);
+            std::string spec_menu_text = get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU));
+            const char* hints[][3] = {
+                {next_player_text.c_str(), "Next Player"},
+                {prev_player_text.c_str(), "Previous Player"},
+                {spec_menu_text.c_str(), "Open Spectate Options Menu"},
+                {exit_spec_text.c_str(), "Exit Spectate Mode"},
+            };
+            for (auto& hint : hints) {
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
+                rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, hints_left_x, hints_y, hint[0], medium_font);
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+                rf::gr::string(hints_right_x, hints_y, hint[1], medium_font);
+                hints_y += medium_font_h;
+            }
         }
     }
 
