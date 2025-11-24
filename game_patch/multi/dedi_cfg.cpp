@@ -1738,7 +1738,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
     }
 
     std::string output{};
-    print_alpine_dedicated_server_config_info(output, !g_ads_minimal_server_info, true);
+    print_alpine_dedicated_server_config_info(output, !g_ads_minimal_server_info);
     rf::console::print("{}", output.c_str());
 }
 
