@@ -196,8 +196,8 @@ struct af_spectate_notify_packet {
 
 enum af_server_msg_type : uint8_t {
     AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG = 0x1,
-    AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG_EOF = 0x2,
-    AF_SERVER_MSG_TYPE_AUTOMATED_CHAT = 0x3,
+    AF_SERVER_MSG_TYPE_AUTOMATED_CHAT = 0x2,
+    AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG_EOF = 0x3,
 };
 
 struct af_server_msg_packet {
