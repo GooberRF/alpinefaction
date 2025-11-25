@@ -1112,11 +1112,11 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_DELAYED_SPAWNS;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
-        g_alpine_server_config.signal_cfg_changed = false;
-        for (const auto& player : SinglyLinkedList{rf::player_list}) {
+        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
             auto& pdata = get_player_additional_data(&player);
             pdata.remote_server_cfg_sent = false;
         }
+        g_alpine_server_config.signal_cfg_changed = false;
     }
     pkt.af_flags = af;
 
@@ -1430,8 +1430,13 @@ void af_send_server_cfg(rf::Player* player) {
         return;
     }
 
-    std::string output{};
-    print_alpine_dedicated_server_config_info(output, true, true);
+    if (g_alpine_server_config.sanitized_server_cfg.empty()) {
+        print_alpine_dedicated_server_config_info(
+            g_alpine_server_config.sanitized_server_cfg,
+            true,
+            true
+        );
+    }
 
     const auto send_msg = [player] (const std::string_view msg) {
         constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(af_server_msg_packet);
@@ -1462,7 +1467,8 @@ void af_send_server_cfg(rf::Player* player) {
     };
 
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
-    for (const auto chunk : output | std::views::chunk(chunk_size)) {
+    for (const auto chunk : g_alpine_server_config.sanitized_server_cfg
+        | std::views::chunk(chunk_size)) {
         send_msg(std::string_view{chunk.begin(), chunk.end()});
     }
 
