@@ -153,6 +153,8 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
 void start_level_in_multi(std::string filename);
 std::optional<std::string> multi_ban_unban_last();
 std::string_view multi_game_type_name(rf::NetGameType game_type);
+std::string_view multi_game_type_name_upper(rf::NetGameType game_type);
+std::string_view multi_game_type_name_short(rf::NetGameType game_type);
 [[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);

@@ -1066,62 +1066,6 @@ void load_ads_server_config(std::string ads_config_name)
     g_alpine_server_config = std::move(cfg);
 }
 
-std::string get_game_type_string(rf::NetGameType game_type) {
-    std::string out_string;
-    switch (game_type) {
-        case rf::NetGameType::NG_TYPE_TEAMDM:
-            out_string = "TDM";
-            break;
-        case rf::NetGameType::NG_TYPE_CTF:
-            out_string = "CTF";
-            break;
-        case rf::NetGameType::NG_TYPE_KOTH:
-            out_string = "KOTH";
-            break;
-        case rf::NetGameType::NG_TYPE_DC:
-            out_string = "DC";
-            break;
-        case rf::NetGameType::NG_TYPE_REV:
-            out_string = "REV";
-            break;
-        case rf::NetGameType::NG_TYPE_RUN:
-            out_string = "RUN";
-            break;
-        default:
-            out_string = "DM";
-            break;
-    }
-    return out_string;
-}
-
-std::string get_game_type_string_long(rf::NetGameType game_type) {
-    std::string out_string;
-    switch (game_type) {
-        case rf::NetGameType::NG_TYPE_TEAMDM:
-            out_string = "Team Deathmatch";
-            break;
-        case rf::NetGameType::NG_TYPE_CTF:
-            out_string = "Capture the Flag";
-            break;
-        case rf::NetGameType::NG_TYPE_KOTH:
-            out_string = "King of the Hill";
-            break;
-        case rf::NetGameType::NG_TYPE_DC:
-            out_string = "Damage Control";
-            break;
-        case rf::NetGameType::NG_TYPE_REV:
-            out_string = "Revolt";
-            break;
-        case rf::NetGameType::NG_TYPE_RUN:
-            out_string = "Run";
-            break;
-        default:
-            out_string = "Deathmatch";
-             break;
-    }
-    return out_string;
-}
-
 void print_gungame(std::string& output, const GunGameConfig& cur, const GunGameConfig& base_cfg, bool base = true)
 {
     const auto iter = std::back_inserter(output);
@@ -1220,7 +1164,7 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     // game type
     if (base || rules.game_type != b.game_type)
-        std::format_to(iter, "  Game type:                             {}\n", get_game_type_string(rules.game_type));
+        std::format_to(iter, "  Game type:                             {}\n", multi_game_type_name_short(rules.game_type));
 
     // time limit
     if (base || rules.time_limit != b.time_limit)
@@ -1764,15 +1708,15 @@ bool apply_game_type_for_current_level() {
         if (!g_ads_minimal_server_info && !has_already_queued_change && desired != upcoming) {
             if (g_manual_rules_override && g_manual_rules_override->preset_alias) {
                 rf::console::print("Applying rules preset '{}' game type {} for manually loaded level {}...\n",
-                    *g_manual_rules_override->preset_alias, get_game_type_string(desired), rf::level_filename_to_load);
+                    *g_manual_rules_override->preset_alias, multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
             else if (g_manual_rules_override) {
                 rf::console::print("Applying manual override game type {} for manually loaded level {}...\n",
-                    get_game_type_string(desired), rf::level_filename_to_load);
+                    multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
             else {
                 rf::console::print("Applying base game type {} for manually loaded level {}...\n",
-                    get_game_type_string(desired), rf::level_filename_to_load);
+                    multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
         }
     }
@@ -1787,7 +1731,7 @@ bool apply_game_type_for_current_level() {
         if (!g_ads_minimal_server_info && !has_already_queued_change && desired != upcoming) {
             std::string_view level_name = idx_valid ? std::string_view(cfg.levels[idx].level_filename) : std::string_view("UNKNOWN");
             rf::console::print("Applying game type {} for server rotation index {} ({})...\n",
-                get_game_type_string(desired), idx, level_name);
+                multi_game_type_name_short(desired), idx, level_name);
         }
     }
 
@@ -1796,13 +1740,13 @@ bool apply_game_type_for_current_level() {
         changed_this_call = set_upcoming_game_type(desired);
     }
     //else
-    //    xlog::warn("apply_game_type_for_current_level: Skipping set, upcoming GT already queued to {}", get_game_type_string(upcoming));
+    //    xlog::warn("apply_game_type_for_current_level: Skipping set, upcoming GT already queued to {}", multi_game_type_name_short(upcoming));
 
 
     /*xlog::warn("apply_game_type_for_current_level: desired={}, upcoming={}, current={}, changed={}, alreadyQueued={}",
-                get_game_type_string(desired),
-                get_game_type_string(upcoming),
-                get_game_type_string(netgame.type),
+                multi_game_type_name_short(desired),
+                multi_game_type_name_short(upcoming),
+                multi_game_type_name_short(netgame.type),
                 changed_this_call,
                 has_already_queued_change);*/
 

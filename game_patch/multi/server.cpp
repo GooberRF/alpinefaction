@@ -350,7 +350,7 @@ FunHook<void ()> dcf_info_hook{
             auto time_line = std::format("{}:  {} {}, {}h {}m {}s\n", rf::strings::level_time, days, rf::strings::days, hours, minutes, seconds);
             rf::console::print("{}", time_line);
 
-            rf::console::print("{}: {}\n", "Game type", get_game_type_string_long(rf::netgame.type));
+            rf::console::print("{}: {}\n", "Game type", multi_game_type_name(rf::netgame.type));
         }
         else {
             rf::console::print("No level loaded\n");
@@ -811,7 +811,7 @@ ConsoleCommand2 sv_game_type_cmd{
                     }
 
                     auto msg = std::format("\xA6 Loading {} on {}", display_level_name,
-                                           get_game_type_string_long(*resolved_type));
+                                           multi_game_type_name(*resolved_type));
                     rf::multi_chat_say(msg.c_str(), false);
 
                     multi_change_level_alpine(level_to_load.c_str());
@@ -821,7 +821,7 @@ ConsoleCommand2 sv_game_type_cmd{
                 }
             }
             else {
-                rf::console::print("Current game type: {}\n", get_game_type_string_long(rf::netgame.type));
+                rf::console::print("Current game type: {}\n", multi_game_type_name(rf::netgame.type));
             }
         }
         else {
@@ -865,7 +865,7 @@ static void print_alpine_restrict_status_summary()
 
     rf::console::print("Alpine restriction summary:");
     rf::console::print("  Level: {} (RFL version {})", rf::level.filename.c_str(), level_version);
-    rf::console::print("  Gametype: {} (ID {})", get_game_type_string_long(game_type), static_cast<int>(game_type));
+    rf::console::print("  Gametype: {} (ID {})", multi_game_type_name(game_type), static_cast<int>(game_type));
     rf::console::print("  Server rules auto-require Alpine: {}{}", auto_require_alpine ? "yes" : "no",
         auto_require_alpine ? std::format(" (min version 1.{})", auto_min_minor) : "");
     rf::console::print("  Server config requires Alpine: {}", cfg.clients_require_alpine ? "yes" : "no");
@@ -2927,7 +2927,7 @@ void server_on_limbo_state_enter()
 
     if (get_upcoming_game_type() != rf::netgame.type) {
         std::string gt_swap_notif = std::format("\xA6 Game type will switch to {} for the next level.",
-            get_game_type_string(get_upcoming_game_type()));
+            multi_game_type_name_short(get_upcoming_game_type()));
         af_broadcast_automated_chat_msg(gt_swap_notif);
     }
 }

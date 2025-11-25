@@ -69,7 +69,7 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
     if (!dry_run) {
         const std::string game_info = std::format(
             "{} \x95 {}/{} PLAYING",
-            multi_game_type_name(game_type),
+            multi_game_type_name_upper(game_type),
             multi_num_spawned_players(),
             rf::multi_num_players()
         );
@@ -101,7 +101,7 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 std::chrono::seconds{rf::level.level_timestamp}
             },
             rf::level.name,
-            get_filename_without_ext(string_to_lower(rf::level.filename)),
+            rf::level.filename,
             rf::level.author
         );
         gr_fit_string(level_info, w - 20);
