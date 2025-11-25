@@ -103,6 +103,8 @@ Version 1.2.0 (Willow): Not yet released
 - Add `ui_runtimer` command to toggle display of timer in RUN game type
 
 [@is-this-c](https://github.com/is-this-c)
+- Support `•` in TrueType fonts
+- Add the year and the number of spawned players to the scoreboard
 - Add `ui_simple_server_chat_messages` command to display automated server chat messages without `Server: `
 - Color automated server chat messages with a gold name instead of a red name
 - Add `key_quick_exit` command to restore keyboard shortcut `Shift+Esc` to quit out of Red Faction
