@@ -1430,9 +1430,9 @@ void af_send_server_cfg(rf::Player* player) {
         return;
     }
 
-    if (g_alpine_server_config.sanitized_server_cfg.empty()) {
+    if (g_alpine_server_config.printed_cfg.empty()) {
         print_alpine_dedicated_server_config_info(
-            g_alpine_server_config.sanitized_server_cfg,
+            g_alpine_server_config.printed_cfg,
             true,
             true
         );
@@ -1467,7 +1467,7 @@ void af_send_server_cfg(rf::Player* player) {
     };
 
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
-    for (const auto chunk : g_alpine_server_config.sanitized_server_cfg
+    for (const auto chunk : g_alpine_server_config.printed_cfg
         | std::views::chunk(chunk_size)) {
         send_msg(std::string_view{chunk.begin(), chunk.end()});
     }
