@@ -408,7 +408,8 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
 };
 
 void handle_vote_or_ready_up_msg(const std::string_view msg) {
-    const std::string_view vote_start_prefix = "\n=============== VOTE STARTING ===============\n";
+    constexpr std::string_view vote_start_prefix =
+        "\n=============== VOTE STARTING ===============\n";
 
     if (string_starts_with_ignore_case(msg, vote_start_prefix)) {
         // Move past the prefix to start parsing the actual vote title
@@ -424,7 +425,7 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     }
 
     // possible messages that end a vote
-    const std::array<std::string_view, 4> vote_end_messages = {
+    constexpr std::array<std::string_view, 4> vote_end_messages = {
         "\xA6 Vote failed",
         "\xA6 Vote passed",
         "\xA6 Vote canceled",
@@ -440,7 +441,7 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     }
 
     // possible messages that indicate ready up state
-    const std::array<std::string_view, 4> ready_messages = {
+    constexpr std::array<std::string_view, 4> ready_messages = {
         "\xA6 You are NOT ready",
         "\n>>>>>>>>>>>>>>>>> ", // For initial match queue
         "\xA6 Match is queued and waiting for players",
@@ -456,7 +457,10 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     }
 
     // remove ready up prompt if match is cancelled prematurely
-    if (string_starts_with_ignore_case(msg, "\xA6 Vote passed: The match has been canceled")) {
+    if (string_starts_with_ignore_case(
+        msg,
+        "\xA6 Vote passed: The match has been canceled"
+    )) {
         set_local_pre_match_active(false);
     }
 
