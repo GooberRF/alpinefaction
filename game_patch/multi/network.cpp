@@ -407,6 +407,63 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
     },
 };
 
+void handle_vote_or_ready_up_msg(const std::string_view msg) {
+    const std::string_view vote_start_prefix = "\n=============== VOTE STARTING ===============\n";
+
+    if (string_starts_with_ignore_case(msg, vote_start_prefix)) {
+        // Move past the prefix to start parsing the actual vote title
+        const std::string_view title = msg.substr(vote_start_prefix.size());
+        // Find the position of " vote started by"
+        const size_t vote_started_by = title.find(" vote started by");
+        if (vote_started_by != std::string::npos) {
+            // Extract vote type by copying characters up to the found position
+            const std::string vote_type{title.substr(0, vote_started_by)};
+            // Pass extracted vote type to the handler
+            draw_hud_vote_notification(vote_type.c_str());
+        }
+    }
+
+    // possible messages that end a vote
+    const std::array<std::string_view, 4> vote_end_messages = {
+        "\xA6 Vote failed",
+        "\xA6 Vote passed",
+        "\xA6 Vote canceled",
+        "\xA6 Vote timed out"
+    };
+
+    // remove the vote notification if the vote has ended
+    for (const std::string_view& end_msg : vote_end_messages) {
+        if (string_starts_with_ignore_case(msg, end_msg)) {
+            remove_hud_vote_notification();
+            break;
+        }
+    }
+
+    // possible messages that indicate ready up state
+    const std::array<std::string_view, 4> ready_messages = {
+        "\xA6 You are NOT ready",
+        "\n>>>>>>>>>>>>>>>>> ", // For initial match queue
+        "\xA6 Match is queued and waiting for players",
+        "\xA6 You are no longer ready"
+    };
+
+    // display the notification if player should ready
+    for (const std::string_view& ready_msg : ready_messages) {
+        if (string_starts_with_ignore_case(msg, ready_msg)) {
+            set_local_pre_match_active(true);
+            break;
+        }
+    }
+
+    // remove ready up prompt if match is cancelled prematurely
+    if (string_starts_with_ignore_case(msg, "\xA6 Vote passed: The match has been canceled")) {
+        set_local_pre_match_active(false);
+    }
+
+    // play radio messages and taunts
+    handle_chat_message_sound(std::string{msg});
+}
+
 FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
     0x00444860,
     [](char* data, const rf::NetAddr& addr) {
@@ -427,67 +484,10 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
 
             if (check_server_chat_command(msg, src_player))
                 return;
+        } else if (!rf::is_dedicated_server) {
+            handle_vote_or_ready_up_msg(data + 2);
         }
-        else if (!rf::is_dedicated_server) {
-            char* msg = data + 2;
-            const char* vote_start_prefix = "\n=============== VOTE STARTING ===============\n";
 
-            if (string_starts_with_ignore_case(msg, vote_start_prefix)) {
-
-                // Move past the prefix to start parsing the actual vote title
-                msg += strlen(vote_start_prefix);
-
-                // Find the position of " vote started by"
-                const char* vote_end = strstr(msg, " vote started by");
-                if (vote_end) {
-                    // Extract vote type by copying characters up to the found position
-                    std::string vote_type(msg, vote_end - msg);
-
-                    // Pass extracted vote type to the handler
-                    draw_hud_vote_notification(vote_type.c_str());
-                }
-            }
-
-            // possible messages that end a vote
-            const std::array<const char*, 4> vote_end_messages = {
-                "\xA6 Vote failed",
-                "\xA6 Vote passed",
-                "\xA6 Vote canceled",
-                "\xA6 Vote timed out"
-            };
-
-            // remove the vote notification if the vote has ended
-            for (const auto& end_msg : vote_end_messages) {
-                if (string_starts_with_ignore_case(msg, end_msg)) {
-                    remove_hud_vote_notification();
-                    break;
-                }
-            }
-
-            // possible messages that indicate ready up state
-            const std::array<const char*, 4> ready_messages = {
-                "\xA6 You are NOT ready",
-                "\n>>>>>>>>>>>>>>>>> ", // For initial match queue
-                "\xA6 Match is queued and waiting for players",
-                "\xA6 You are no longer ready"
-            };
-
-            // display the notification if player should ready
-            for (const auto& ready_msg : ready_messages) {
-                if (string_starts_with_ignore_case(msg, ready_msg)) {
-                    set_local_pre_match_active(true);
-                    break;
-                }
-            }
-
-            // remove ready up prompt if match is cancelled prematurely
-            if (string_starts_with_ignore_case(msg, "\xA6 Vote passed: The match has been canceled")) {
-                set_local_pre_match_active(false);
-            }
-
-            // play radio messages and taunts
-            handle_chat_message_sound(msg);
-        }        
         process_chat_line_packet_hook.call_target(data, addr);
     },
 };
