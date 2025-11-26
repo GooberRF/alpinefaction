@@ -1741,15 +1741,21 @@ void draw_chat_menu_text(int x, int y) {
     }
 
     // Draw text
-    int str_x = x + 4;
+    int str_x = x + 8;
     int str_y = y + 4;
     rf::gr::set_color(255, 255, 180, 0xCC);
-    rf::gr::string_aligned(rf::gr::ALIGN_LEFT, str_x, str_y, main_string.str().c_str(), 1);
+    rf::gr::string_aligned(
+        rf::gr::ALIGN_LEFT,
+        str_x,
+        str_y,
+        main_string.str().c_str(),
+        hud_get_default_font()
+    );
 }
 
 void hud_render_draw_chat_menu() {
-    int w = static_cast<int>(200);
-    int h = static_cast<int>(166);
+    int w = static_cast<int>(g_alpine_game_config.big_hud ? 315 : 200);
+    int h = static_cast<int>(g_alpine_game_config.big_hud ? 345 : 166);
     int x = static_cast<int>(10);
     int y = (static_cast<int>(rf::gr::screen_height()) - h) / 2;
     rf::gr::set_color(0, 0, 0, 0x80);

@@ -365,14 +365,14 @@ void GrNewFont::draw(int x, int y, std::string_view text, rf::gr::Mode state) co
     for (auto ch : text) {
         if (ch == '\n') {
             pen_x = x;
-            y += line_spacing_;
+            pen_y += line_spacing_;
         }
         else {
             auto glyph_idx = char_map_[static_cast<unsigned char>(ch)];
             if (glyph_idx != -1) {
                 const auto& glyph_info = glyphs_[glyph_idx];
                 if (glyph_info.bm_w) {
-                    //rf::gr::rect(pen_x + glyph_info.x, pen_y + glyph_info.y, glyph_info.bm_w, glyph_info.bm_h);
+                    // rf::gr::rect(pen_x + glyph_info.x, pen_y + glyph_info.y, glyph_info.bm_w, glyph_info.bm_h);
                     rf::gr::bitmap_ex(bitmap_, pen_x + glyph_info.x, pen_y + glyph_info.y, glyph_info.bm_w, glyph_info.bm_h, glyph_info.bm_x, glyph_info.bm_y, state);
                 }
                 pen_x += glyph_info.advance_x;
