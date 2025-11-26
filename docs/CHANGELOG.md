@@ -165,7 +165,7 @@ Version 1.2.0 (Willow): Not yet released
 [@rafalh](https://github.com/rafalh)
 - Fix warnings in main menu caused by missing files (e.g. bigboom.vbm)
 - Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
-- Add support for `DashLevelProps::lightmaps_full_depth`
+- Add level property which enables full lightmaps depth (enabled by default in new maps)
 
 ### Imported libraries
 - [toml++](https://github.com/marzer/tomlplusplus) by Mark Gillard
