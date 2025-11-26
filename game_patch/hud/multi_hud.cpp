@@ -38,6 +38,7 @@
 #include "../misc/player.h"
 #include "multi_scoreboard.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/network.h"
 
 static bool g_big_team_scores_hud = false;
 constexpr bool g_debug_team_scores_hud = false;
@@ -1923,13 +1924,11 @@ void chat_menu_action_handler(rf::Key key) {
     }
 }
 
-FunHook<void(rf::Player*, const char*, int)> chat_add_msg_hook{
+FunHook<void(const rf::Player*, const char*, int)> chat_add_msg_hook{
     0x00443FB0,
-    [](rf::Player* player, const char* message, int message_type) {
-
-        handle_chat_message_sound(message);
-
-        chat_add_msg_hook.call_target(player, message, message_type);
+    [] (const rf::Player* const player, const char* const msg, const int message_type) {
+        handle_sound_msg(msg);
+        chat_add_msg_hook.call_target(player, msg, message_type);
     },
 };
 

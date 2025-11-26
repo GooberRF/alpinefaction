@@ -597,30 +597,13 @@ CodeInjection gamesound_parse_sounds_table_patch{
     },
 };
 
-void play_chat_sound(std::string& chat_message, bool is_taunt)
-{
+void play_chat_sound(const std::string_view msg, const bool is_taunt) {
     if (is_taunt && !g_alpine_game_config.play_taunt_sounds) {
         return; // taunts are turned off
     }
 
-    // Remove the prefix from chat_message before comparing
-    constexpr std::string_view normal_prefix = "\xA8 ";
-    constexpr std::string_view taunt_prefix = "\xA8[Taunt] ";
-
-    if (chat_message.starts_with(normal_prefix)) {
-        chat_message.erase(0, normal_prefix.size());
-    }
-    else if (chat_message.starts_with(taunt_prefix)) {
-        chat_message.erase(0, taunt_prefix.size());
-    }
-    else {
-        //xlog::warn("Unrecognized radio message {}", chat_message);
-        return;
-    }
-
     // Mapping of chat messages to custom sound IDs - strings must match exactly
-    static const std::unordered_map<std::string, int> sound_map =
-    {
+    static const std::unordered_map<std::string_view, int> sound_map = {
         // Express
         {"Hello", 0},
         {"Goodbye", 1},
@@ -762,11 +745,13 @@ void play_chat_sound(std::string& chat_message, bool is_taunt)
     };
 
     // Lookup the sound ID and play it
-    auto it = sound_map.find(chat_message);
+    const auto it = sound_map.find(msg);
     if (it != sound_map.end()) {
-        int sound_id = it->second;
-        if ((sound_id <= 5 && g_alpine_game_config.play_global_rad_msg_sounds) || (sound_id > 5 && g_alpine_game_config.play_team_rad_msg_sounds)) {
-            play_local_sound_2d(get_custom_chat_message_sound_id(sound_id, is_taunt), 2, 1.0f);
+        const int sound_id = it->second;
+        if (sound_id <= 5 && g_alpine_game_config.play_global_rad_msg_sounds
+            || sound_id > 5 && g_alpine_game_config.play_team_rad_msg_sounds
+        ) {
+            play_local_sound_2d(get_custom_chat_message_sound_id(sound_id, is_taunt), 2, 1.f);
             // xlog::warn("Playing custom sound {} for radio message {}", sound_id, chat_message);
         }
     }

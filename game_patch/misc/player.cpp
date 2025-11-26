@@ -454,15 +454,6 @@ ConsoleCommand2 damage_screen_flash_cmd{
     "Toggle damage screen flash effect",
 };
 
-void handle_chat_message_sound(std::string message) {
-    if (string_starts_with_ignore_case(message, "\xA8[Taunt] ")) {
-        play_chat_sound(message, true);
-    }
-    else if (string_starts_with_ignore_case(message, "\xA8 ")) {
-        play_chat_sound(message, false);
-    }
-}
-
 void play_local_sound_3d(uint16_t sound_id, rf::Vector3 pos, int group, float volume) {
     rf::snd_play_3d(sound_id, pos, volume, rf::Vector3{}, group);
 }

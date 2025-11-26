@@ -462,9 +462,16 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     if (string_starts_with_ignore_case(msg, match_canceled_msg)) {
         set_local_pre_match_active(false);
     }
+}
 
-    // play radio messages and taunts
-    handle_chat_message_sound(std::string{msg});
+void handle_sound_msg(const std::string_view msg) {
+    constexpr std::string_view normal_prefix = "\xA8 ";
+    constexpr std::string_view taunt_prefix = "\xA8[Taunt] ";
+    if (string_starts_with_ignore_case(msg, taunt_prefix)) {
+        play_chat_sound(msg.substr(taunt_prefix.size()), true);
+    } else if (string_starts_with_ignore_case(msg, normal_prefix)) {
+        play_chat_sound(msg.substr(normal_prefix.size()), false);
+    }
 }
 
 FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
@@ -475,20 +482,24 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             verify_player_id_in_packet(&data[0], addr, "chat_line");
 
             rf::Player* src_player = rf::multi_find_player_by_addr(addr);
-            if (!src_player)
+            if (!src_player) {
                 return; // shouldnt happen (protected in rf::multi_io_process_packets)
+            }
 
             const uint8_t team_msg = static_cast<uint8_t>(data[1]);
-            char* msg = data + 2;
+            const char* msg = data + 2;
 
             if (team_msg && rf::is_dedicated_server) {
                 rf::multi_chat_add_msg(src_player, msg, true);
             }
 
-            if (check_server_chat_command(msg, src_player))
+            if (check_server_chat_command(msg, src_player)) {
                 return;
+            }
         } else if (!rf::is_dedicated_server) {
-            handle_vote_or_ready_up_msg(data + 2);
+            const char* msg = data + 2;
+            handle_vote_or_ready_up_msg(msg);
+            handle_sound_msg(msg);
         }
 
         process_chat_line_packet_hook.call_target(data, addr);
