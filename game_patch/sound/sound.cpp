@@ -748,8 +748,8 @@ void play_chat_sound(const std::string_view msg, const bool is_taunt) {
     const auto it = sound_map.find(msg);
     if (it != sound_map.end()) {
         const int sound_id = it->second;
-        if (sound_id <= 5 && g_alpine_game_config.play_global_rad_msg_sounds
-            || sound_id > 5 && g_alpine_game_config.play_team_rad_msg_sounds
+        if ((sound_id <= 5 && g_alpine_game_config.play_global_rad_msg_sounds)
+            || (sound_id > 5 && g_alpine_game_config.play_team_rad_msg_sounds)
         ) {
             play_local_sound_2d(get_custom_chat_message_sound_id(sound_id, is_taunt), 2, 1.f);
             // xlog::warn("Playing custom sound {} for radio message {}", sound_id, chat_message);
