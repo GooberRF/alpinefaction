@@ -407,13 +407,13 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
     },
 };
 
-void handle_vote_or_ready_up_msg(const std::string_view msg) {
+void handle_vote_or_ready_up_msg(const std::string_view message) {
     constexpr std::string_view vote_start_prefix =
         "\n=============== VOTE STARTING ===============\n";
 
-    if (string_starts_with_ignore_case(msg, vote_start_prefix)) {
+    if (string_starts_with_ignore_case(message, vote_start_prefix)) {
         // Move past the prefix to start parsing the actual vote title
-        const std::string_view title = msg.substr(vote_start_prefix.size());
+        const std::string_view title = message.substr(vote_start_prefix.size());
         // Find the position of " vote started by"
         const size_t vote_started_by = title.find(" vote started by");
         if (vote_started_by != std::string::npos) {
@@ -434,7 +434,7 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
 
     // remove the vote notification if the vote has ended
     for (const std::string_view& end_msg : vote_end_messages) {
-        if (string_starts_with_ignore_case(msg, end_msg)) {
+        if (string_starts_with_ignore_case(message, end_msg)) {
             remove_hud_vote_notification();
             break;
         }
@@ -450,22 +450,21 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
 
     // display the notification if player should ready
     for (const std::string_view& ready_msg : ready_messages) {
-        if (string_starts_with_ignore_case(msg, ready_msg)) {
+        if (string_starts_with_ignore_case(message, ready_msg)) {
             set_local_pre_match_active(true);
             break;
         }
     }
 
     // remove ready up prompt if match is cancelled prematurely
-    if (string_starts_with_ignore_case(
-        msg,
-        "\xA6 Vote passed: The match has been canceled"
-    )) {
+    constexpr std::string_view match_canceled_message =
+        "\xA6 Vote passed: The match has been canceled";
+    if (string_starts_with_ignore_case(message, match_canceled_message)) {
         set_local_pre_match_active(false);
     }
 
     // play radio messages and taunts
-    handle_chat_message_sound(std::string{msg});
+    handle_chat_message_sound(std::string{message});
 }
 
 FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
