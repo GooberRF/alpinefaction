@@ -119,6 +119,11 @@ Version 1.2.0 (Willow): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Improve dedicated server framerate consistency
 
+[@rafalh](https://github.com/rafalh)
+- Fix warnings in main menu caused by missing files (e.g. bigboom.vbm)
+- Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
+- Add support for `DashLevelProps::lightmaps_full_depth`
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix very niche case where armor values were displayed differently when Big HUD was enabled
@@ -157,12 +162,9 @@ Version 1.2.0 (Willow): Not yet released
 - Fix rare crash when starting to spectate a player immediately when they land on a surface
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix `pf_ac_verify_player` stub, so `pf_pure_status::rfsb` works
 - Fix `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
 - Fix a potential crash after a client quits a game if Directd3D 11 is enabled
-
-### Commits from other repos
-[Dash Faction](https://github.com/rafalh/dashfaction) (Upstream)
-- Add support for Dash Level Properties chunk and full lightmap depth setting (commit f90f81a)
 
 ### Imported libraries
 - [toml++](https://github.com/marzer/tomlplusplus) by Mark Gillard
@@ -523,8 +525,6 @@ Version 1.9.0 (released 2025-04-06)
 - Disable adding faces to fix PS2 tiling in editor
 - Disable red background in log window if geometry limits are crossed in editor
 - Update geometry limits in editor so they show static pools size (crossing it can have tiny performance impact)
-- Add level property which enables full lightmaps depth (enabled by default in new maps)
-- Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
 
 [@GooberRF](https://github.com/GooberRF)
 - Fix crash when `verify_level` command is run without a level being loaded
