@@ -15,6 +15,10 @@ struct WorldHUDAssets
     int koth_neutral;
     int koth_neutral_atk;
     int koth_neutral_def;
+    int koth_atk_red;
+    int koth_atk_blue;
+    int koth_def_red;
+    int koth_def_blue;
     int koth_red;
     int koth_blue;
     int koth_neutral_c;

@@ -191,6 +191,17 @@ FunHook<void()> multi_limbo_init{
                 blue = static_cast<int>(!rev_all_points_permalocked());
                 break;
             }
+            case rf::NG_TYPE_ESC: {
+                for (const auto& hill : g_koth_info.hills) {
+                    if (hill.ownership == HillOwner::HO_Red) {
+                        red++;
+                    }
+                    else if (hill.ownership == HillOwner::HO_Blue) {
+                        blue++;
+                    }
+                }
+                break;
+            }
             default:
                 break;
             }
@@ -619,6 +630,7 @@ void start_level_in_multi(std::string filename) {
             : string_starts_with_ignore_case(filename, "dc") ? rf::NetGameType::NG_TYPE_DC
             : string_starts_with_ignore_case(filename, "rev") ? rf::NetGameType::NG_TYPE_REV
             : string_starts_with_ignore_case(filename, "run") ? rf::NetGameType::NG_TYPE_RUN
+            : string_starts_with_ignore_case(filename, "esc") ? rf::NetGameType::NG_TYPE_ESC
             : rf::NetGameType::NG_TYPE_DM;
         rf::netgame.name = "Alpine Faction Test Server";
         rf::netgame.password = "password";

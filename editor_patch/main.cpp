@@ -42,7 +42,6 @@ static bool g_is_saving_af_version = true;
 static bool g_skip_legacy_level_warning = false;
 
 static const auto g_editor_app = reinterpret_cast<std::byte*>(0x006F9DA0);
-static auto& g_main_frame = addr_as_ref<std::byte*>(0x006F9E68);
 
 static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...)>(0x00444980);
 
@@ -454,7 +453,7 @@ void ApplyLevelPatches();
 void ApplyEventsPatches();
 void ApplyTexturesPatches();
 
-void LoadDashEditorPackfile()
+void LoadAlpineEditorPackfile()
 {
     static auto& vpackfile_add = addr_as_ref<int __cdecl(const char *name, const char *dir)>(0x004CA930);
     static auto& root_path = addr_as_ref<char[256]>(0x0158CA10);
@@ -471,7 +470,7 @@ void LoadDashEditorPackfile()
 CodeInjection vpackfile_init_injection{
     0x004CA533,
     []() {
-        LoadDashEditorPackfile();
+        LoadAlpineEditorPackfile();
     },
 };
 

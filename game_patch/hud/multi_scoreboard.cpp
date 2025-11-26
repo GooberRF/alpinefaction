@@ -148,7 +148,7 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 red_score = multi_koth_get_red_team_score();
                 blue_score = multi_koth_get_blue_team_score();
             }
-            else if (game_type == rf::NG_TYPE_REV) {
+            else if (game_type == rf::NG_TYPE_REV || game_type == rf::NG_TYPE_ESC) {
                 static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
                 static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
                 int flag_bm_w, flag_bm_h;
@@ -157,7 +157,7 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 rf::gr::bitmap(hud_flag_blue_bm, x + w * 4 / 6 - flag_bm_w / 2, cur_y);
             }
             // draw scores
-            if (game_type != rf::NG_TYPE_REV) {
+            if (game_type != rf::NG_TYPE_REV && game_type != rf::NG_TYPE_ESC) {
                 rf::gr::set_color(0xD0, 0x20, 0x20, 0xFF);
                 int team_scores_font = rf::scoreboard_big_font;
                 auto red_score_str = std::to_string(red_score);

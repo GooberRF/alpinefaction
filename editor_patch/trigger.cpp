@@ -97,7 +97,6 @@ void __fastcall CTriggerPropsDialog_DoDataExchange_new(CWnd* this_, int, CDataEx
     }
 }
 
-
 const char* activated_by_names[] = {
     "Players Only",
     "All Objects",

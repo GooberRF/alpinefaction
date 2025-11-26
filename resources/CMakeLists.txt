@@ -119,6 +119,10 @@ add_packfile(alpinefaction.vpp
     images/af_wh_koth_base_neutral.tga
     images/af_wh_koth_atk_neutral.tga
     images/af_wh_koth_def_neutral.tga
+    images/af_wh_koth_atk_red.tga
+    images/af_wh_koth_def_red.tga
+    images/af_wh_koth_atk_blue.tga
+    images/af_wh_koth_def_blue.tga
     images/af_wh_koth_base_red.tga
     images/af_wh_koth_base_blue.tga
     images/af_wh_koth_cont_neutral.tga

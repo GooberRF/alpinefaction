@@ -728,8 +728,10 @@ void multi_hud_render_team_scores()
 
     const auto game_type = rf::multi_get_game_type();
     const bool is_koth_dc = (game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC);
+    const bool is_esc = (game_type == rf::NG_TYPE_ESC);
     const bool is_rev = (game_type == rf::NG_TYPE_REV);
     const bool is_run = (game_type == rf::NG_TYPE_RUN);
+    const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
     if (is_run && !show_run_timer) {
@@ -741,7 +743,7 @@ void multi_hud_render_team_scores()
         box_w = g_big_team_scores_hud ? 240 : 185;
         box_h = g_big_team_scores_hud ? 60  : 40;
     }
-    else if (is_rev) {
+    else if (is_rev || is_esc) {
         box_w = g_big_team_scores_hud ? 240 : 185;
     }
     else {
@@ -761,7 +763,7 @@ void multi_hud_render_team_scores()
     int flag_x = g_big_team_scores_hud ? 410 : 205;
     float flag_scale = g_big_team_scores_hud ? 1.5f : 1.0f;
 
-    if (!is_koth_dc && !is_run && !is_rev) {
+    if (!is_hill_score && !is_run) {
         rf::gr::rect(box_x, box_y, box_w, box_h);
     }
     int font_id = hud_get_default_font();
@@ -822,7 +824,7 @@ void multi_hud_render_team_scores()
         }
     }
 
-    if (multi_is_team_game_type() && !is_koth_dc && !is_run && !is_rev) {
+    if (multi_is_team_game_type() && !is_hill_score && !is_run) {
         float miniflag_scale = g_big_team_scores_hud ? 1.5f : 1.0f;
         rf::gr::set_color(255, 255, 255, 255);
         if (rf::local_player) {
@@ -873,7 +875,7 @@ void multi_hud_render_team_scores()
     else if (is_run) {
         hud_render_run_timer_widget(box_x, box_y, box_w, box_h, font_id);
     }
-    else if (game_type != rf::NG_TYPE_REV) {
+    else if (!is_rev && !is_esc) {
         auto [str_w, str_h] = rf::gr::get_string_size(red_score_str, font_id);
         rf::gr::string(box_x + box_w - 5 - str_w, red_miniflag_label_y, red_score_str.c_str(), font_id);
         std::tie(str_w, str_h) = rf::gr::get_string_size(blue_score_str, font_id);
@@ -881,7 +883,7 @@ void multi_hud_render_team_scores()
     }
 
     // render capture point bars
-    if (is_koth_dc || is_rev) {
+    if (is_koth_dc || is_rev || is_esc) {
         hud_render_cp_strip_koth_dc_fullwidth(box_x, box_y, box_w);
     }
 }
@@ -889,7 +891,7 @@ void multi_hud_render_team_scores()
 CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     0x00476DEB,
     [](auto& regs) {
-        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run()) {
+        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc()) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
     }
@@ -1054,7 +1056,8 @@ void multi_hud_render_local_player_spectators() {
         const bool is_koth_or_dc = game_type == rf::NG_TYPE_KOTH
             || game_type == rf::NG_TYPE_DC;
         const bool is_rev = game_type == rf::NG_TYPE_REV;
-        const int box_w = is_koth_or_dc || is_rev
+        const bool is_esc = game_type == rf::NG_TYPE_ESC;
+        const int box_w = is_koth_or_dc || is_rev || is_esc
             ? g_alpine_game_config.big_hud ? 240 : 185
             : g_alpine_game_config.big_hud ? 370 : 185;
         constexpr int box_x = 10;
@@ -1324,11 +1327,11 @@ void RemoteServerCfgPopup::render() {
     }
 
     const float key_scroll_speed = 600.f;
-    if (rf::key_is_down(rf::KEY_UP)) {
+    if (rf::key_is_down(rf::KEY_UP) && !rf::console::console_is_visible()) {
         m_scroll.target -= key_scroll_speed * rf::frametime;
         m_last_key_down = 1;
     }
-    if (rf::key_is_down(rf::KEY_DOWN)) {
+    if (rf::key_is_down(rf::KEY_DOWN) && !rf::console::console_is_visible()) {
         m_scroll.target += key_scroll_speed * rf::frametime;
         m_last_key_down = -1;
     }

@@ -80,6 +80,109 @@ CodeInjection CLevelDialog_OnOK_patch{
     },
 };
 
+static bool is_link_allowed(const DedObject* src, const DedObject* dst)
+{
+    const auto t0 = src->type;
+    const auto t1 = dst->type;
+
+    return
+        t0 == DedObjectType::DED_TRIGGER ||
+        t0 == DedObjectType::DED_EVENT ||
+        (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT) ||
+        (t0 == DedObjectType::DED_CLUTTER && t1 == DedObjectType::DED_LIGHT);
+}
+
+void __fastcall CDedLevel_DoLink_new(CDedLevel* this_);
+FunHook<decltype(CDedLevel_DoLink_new)> CDedLevel_DoLink_hook{
+    0x00415850,
+    CDedLevel_DoLink_new,
+};
+void __fastcall CDedLevel_DoLink_new(CDedLevel* this_)
+{
+    auto& sel = this_->selection;
+    const int count = sel.get_size();
+
+    if (count < 2) {
+        g_main_frame->DedMessageBox(
+            "You must select at least 2 objects to create a link.",
+            "Error",
+            0
+        );
+        return;
+    }
+
+    DedObject* src = sel[0];
+    if (!src) {
+        g_main_frame->DedMessageBox(
+            "You must select at least 2 objects to create a link.",
+            "Error",
+            0
+        );
+        return;
+    }
+
+    int num_success = 0;
+    std::vector<int> attempted_dst_uids; // valid destination UIDs
+
+    for (int i = 1; i < count; ++i) {
+        DedObject* dst = sel[i];
+        if (!dst) {
+            continue;
+        }
+
+        if (!is_link_allowed(src, dst)) {
+            xlog::warn(
+                "DoLink: disallowed type combination src_type={} dst_type={}",
+                static_cast<int>(src->type),
+                static_cast<int>(dst->type)
+            );
+            continue;
+        }
+
+        attempted_dst_uids.push_back(dst->uid);
+
+        int old_size = src->links.get_size();
+        int idx = src->links.add_if_not_exists_int(dst->uid);
+
+        if (idx < 0) {
+            xlog::warn("DoLink: Failed to add link src_uid={} dst_uid={}", src->uid, dst->uid);
+        }
+        else if (idx >= old_size) {
+            ++num_success;
+            xlog::debug("DoLink: Added new link src_uid={} -> dst_uid={}", src->uid, dst->uid);
+        }
+        else {
+            xlog::debug("DoLink: Link already existed src_uid={} -> dst_uid={}", src->uid, dst->uid);
+        }
+    }
+
+    if (num_success == 0) {
+        std::string dst_list;
+        for (size_t i = 0; i < attempted_dst_uids.size(); ++i) {
+            if (i > 0) {
+                dst_list += ", ";
+            }
+            dst_list += std::to_string(attempted_dst_uids[i]);
+        }
+
+        std::string msg;
+        if (!attempted_dst_uids.empty()) {
+            msg = "All links from selected source UID " +
+                  std::to_string(src->uid) +
+                  " to valid destination UID(s) " +
+                  dst_list +
+                  " already exist.";
+        } else {
+            msg = "No valid link combinations were found for selected source UID " +
+                std::to_string(src->uid) +
+                ".";
+        }
+
+        g_main_frame->DedMessageBox(msg.c_str(), "Error", 0);
+        return;
+    }
+}
+
 void ApplyLevelPatches()
 {
     // include space for default AlpineLevelProperties chunk in newly created rfls
@@ -108,4 +211,7 @@ void ApplyLevelPatches()
     write_mem<std::uint8_t>(0x0041CB07 + 1, default_fog);
     write_mem<std::uint8_t>(0x0041CB09 + 1, default_fog);
     write_mem<std::uint8_t>(0x0041CB0B + 1, default_fog);
+
+    // Allow creating multiple links in a single operation
+    CDedLevel_DoLink_hook.install();
 }

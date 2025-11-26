@@ -346,6 +346,22 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_ESC: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(3.0f);
+            rules.location_pinging = true;
+
+            // secondary weapon
+            rules.spawn_loadout.add("Remote Charge", 3, false, true);
+
+            // primary weapon
+            rules.spawn_loadout.remove("12mm handgun", false);
+            rules.default_player_weapon.set_weapon("Machine Pistol");
+
+            rules.spawn_loadout.loadouts_active = true;
+            break;
+        }
+
         case rf::NetGameType::NG_TYPE_RUN: {
             rules.set_pvp_damage_modifier(0.0f);
             rules.no_player_collide = true;
@@ -1559,7 +1575,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         auto& ot = cfg.overtime;
         std::format_to(iter, "    Overtime:                            {}\n", ot.enabled);
         if (ot.enabled) {
-            std::format_to(iter, "      Additional time:                   {}\n", ot.additional_time);
+            std::format_to(iter, "      Additional time:                   {} min\n", ot.additional_time);
             std::format_to(iter, "      Tie when flag stolen:              {}\n", ot.consider_tie_if_flag_stolen);
         }
     }
@@ -1667,6 +1683,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
     // on launch does this before tracker registration
     if (!on_launch) {
         load_ads_server_config(ads_config_name);
+        g_alpine_server_config.printed_cfg.clear();
         cfg.signal_cfg_changed = true;
     }
 

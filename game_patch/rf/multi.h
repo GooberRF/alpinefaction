@@ -115,11 +115,11 @@ namespace rf
         NG_TYPE_DM = 0,
         NG_TYPE_CTF = 1,
         NG_TYPE_TEAMDM = 2,
-        NG_TYPE_KOTH = 3,   // as of AF v1.2
-        NG_TYPE_DC = 4,     // as of AF v1.2
-        NG_TYPE_REV = 5,    // as of AF v1.2
-        NG_TYPE_RUN = 6,    // as of AF v1.2
-        NG_TYPE_ESC = 7,    // as of AF v1.2
+        NG_TYPE_KOTH = 3,   // King of the Hill, as of AF v1.2
+        NG_TYPE_DC = 4,     // Damage Control, as of AF v1.2
+        NG_TYPE_REV = 5,    // Revolt, as of AF v1.2
+        NG_TYPE_RUN = 6,    // Run, as of AF v1.2
+        NG_TYPE_ESC = 7,    // Escalation, as of AF v1.2
     };
 
     enum NetGameFlags

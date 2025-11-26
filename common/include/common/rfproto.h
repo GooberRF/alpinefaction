@@ -171,6 +171,7 @@ enum RF_GameType
     RF_GT_DC = 0x04,
     RF_GT_REV = 0x05,
     RF_GT_RUN = 0x06,
+    RF_GT_ESC = 0x07,
 };
 
 enum RF_ServerFlags

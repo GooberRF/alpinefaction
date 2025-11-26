@@ -60,7 +60,7 @@ private:
 public:
     virtual ~Vote() = default;
 
-    virtual VoteType get_type() const = 0;    
+    virtual VoteType get_type() const = 0;
 
     bool start(std::string_view arg, rf::Player* source)
     {
@@ -149,6 +149,24 @@ public:
         return true;
     }
 
+    static bool player_meets_alpine_restrict(rf::Player* p)
+    {
+        const auto& pad = get_player_additional_data(p);
+
+        ClientVersionInfoProfile info{
+            pad.client_version,
+            pad.client_version_major,
+            pad.client_version_minor,
+            pad.client_version_patch,
+            pad.client_version_type,
+            pad.max_rfl_version,
+        };
+
+        const auto [verdict, verdict_string, hard_reject] = evaluate_alpine_restrict_status(info, false);
+
+        return verdict == AlpineRestrictVerdict::ok;
+    }
+
 protected:
     [[nodiscard]] virtual std::string get_title() const = 0;
     [[nodiscard]] virtual const VoteConfig& get_config() const = 0;
@@ -195,6 +213,10 @@ protected:
                 continue; // skip the player who started the vote
             }
 
+            if (!player_meets_alpine_restrict(player)) {
+                continue;
+            }
+
             const std::string& message_to_send =
                 get_player_additional_data(player).client_version == ClientVersion::alpine_faction ? msg_alpine : msg_non_alpine;
 
@@ -219,6 +241,8 @@ protected:
         if (get_player_additional_data(p).client_version == ClientVersion::browser)
             return false;
         if (ends_with(p->name, " (Bot)"))
+            return false;
+        if (!player_meets_alpine_restrict(p))
             return false;
         return true;
     }
@@ -922,6 +946,11 @@ void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, 
 {
     if (get_player_additional_data(sender).client_version == ClientVersion::browser || ends_with(sender->name, " (Bot)")) {
         af_send_automated_chat_msg("Browsers and bots are not allowed to vote!", sender);
+        return;
+    }
+    if (!Vote::player_meets_alpine_restrict(sender)) {
+        af_send_automated_chat_msg(
+            "You can't vote because your client does not meet the server's requirements. Visit alpinefaction.com to upgrade.", sender);
         return;
     }
     if (vote_name == "kick")

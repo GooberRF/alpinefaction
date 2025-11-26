@@ -667,6 +667,7 @@ struct AlpineServerConfig
     std::map<std::string, std::filesystem::path> rules_preset_aliases;
     std::vector<AlpineServerConfigLevelEntry> levels;
 
+    std::string printed_cfg{};
     bool signal_cfg_changed = false;
 
     // =============================================

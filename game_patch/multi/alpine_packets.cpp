@@ -873,6 +873,7 @@ static void af_process_koth_hill_state_packet(const void* data, size_t len, cons
     h->net_last_state = h->state;
     h->net_last_dir = h->steal_dir;
     h->net_last_prog_bucket = static_cast<uint8_t>(h->capture_progress / 5);
+    h->net_last_lock_status = h->lock_status;
     h->client_hold_ms_accum = 0; // reset prediction accumulator
 
     // Scores are authoritative
@@ -1112,11 +1113,11 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_DELAYED_SPAWNS;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
-        g_alpine_server_config.signal_cfg_changed = false;
-        for (const auto& player : SinglyLinkedList{rf::player_list}) {
+        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
             auto& pdata = get_player_additional_data(&player);
             pdata.remote_server_cfg_sent = false;
         }
+        g_alpine_server_config.signal_cfg_changed = false;
     }
     pkt.af_flags = af;
 
@@ -1136,6 +1137,7 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
             break;
         case rf::NetGameType::NG_TYPE_RUN:
         case rf::NetGameType::NG_TYPE_REV:
+        case rf::NetGameType::NG_TYPE_ESC:
             pkt.win_condition = static_cast<uint32_t>(0); // no wincon necessary
             break;
         default:
@@ -1234,6 +1236,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
                 break;
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
+            case rf::NetGameType::NG_TYPE_ESC:
                 break; // no wincon necessary
             default:
                 rf::netgame.max_kills = static_cast<int>(pkt.win_condition);
@@ -1430,8 +1433,13 @@ void af_send_server_cfg(rf::Player* player) {
         return;
     }
 
-    std::string output{};
-    print_alpine_dedicated_server_config_info(output, true, true);
+    if (g_alpine_server_config.printed_cfg.empty()) {
+        print_alpine_dedicated_server_config_info(
+            g_alpine_server_config.printed_cfg,
+            true,
+            true
+        );
+    }
 
     const auto send_msg = [player] (const std::string_view msg) {
         constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(af_server_msg_packet);
@@ -1462,7 +1470,8 @@ void af_send_server_cfg(rf::Player* player) {
     };
 
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
-    for (const auto chunk : output | std::views::chunk(chunk_size)) {
+    for (const auto chunk : g_alpine_server_config.printed_cfg
+        | std::views::chunk(chunk_size)) {
         send_msg(std::string_view{chunk.begin(), chunk.end()});
     }
 

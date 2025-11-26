@@ -19,6 +19,11 @@ struct CWnd
 {
     int _vft;
     CWnd_mbrs _d;
+
+    int DedMessageBox(LPCSTR lpText, LPCSTR lpCaption, UINT uType)
+    {
+        return AddrCaller{0x00531BBA}.this_call<int>(this, lpText, lpCaption, uType);
+    }
 };
 static_assert(sizeof(CWnd) == 0x3C, "CWnd size mismatch!");
 
@@ -161,7 +166,6 @@ struct Matrix3
 };
 static_assert(sizeof(Matrix3) == 0x24, "Matrix3 size mismatch!");
 
-
 template<typename T>
 struct VArray
 {
@@ -169,25 +173,6 @@ struct VArray
     int capacity;
     T* data_ptr;
 
-    // Default constructor
-    VArray() : size(0), capacity(0), data_ptr(nullptr) {}
-
-    // Destructor to clean up allocated memory
-    ~VArray()
-    {
-        delete[] data_ptr;
-    }
-
-    // Add a new element, resizing if necessary
-    void add(const T& element)
-    {
-        if (size >= capacity) {
-            resize();
-        }
-        data_ptr[size++] = element;
-    }
-
-    // Access operator for non-const access
     T& operator[](size_t index)
     {
         if (index >= static_cast<size_t>(size)) {
@@ -196,7 +181,6 @@ struct VArray
         return data_ptr[index];
     }
 
-    // Access operator for const access
     const T& operator[](size_t index) const
     {
         if (index >= static_cast<size_t>(size)) {
@@ -205,50 +189,27 @@ struct VArray
         return data_ptr[index];
     }
 
-    // Get the current number of elements
     int get_size() const
     {
         return size;
     }
 
-    // Get the current capacity
     int get_capacity() const
     {
         return capacity;
     }
 
-    // Clear the array without deallocating memory
-    void clear()
+    int add_if_not_exists_raw(void* value)
     {
-        size = 0;
+        return AddrCaller{0x004127E0}.this_call<int>(this, value);
     }
 
-    // Check if the array is empty
-    bool empty() const
+    int add_if_not_exists_int(int value)
     {
-        return size == 0;
-    }
-
-private:
-    // Resize the internal array, doubling the capacity
-    void resize()
-    {
-        int new_capacity = (capacity == 0) ? 1 : capacity * 2;
-        T* new_data = new T[new_capacity];
-
-        // Move old data to the new array
-        for (int i = 0; i < size; ++i) {
-            new_data[i] = std::move(data_ptr[i]);
-        }
-
-        // Free old data and update pointers
-        delete[] data_ptr;
-        data_ptr = new_data;
-        capacity = new_capacity;
+        return add_if_not_exists_raw(reinterpret_cast<void*>(value));
     }
 };
 static_assert(sizeof(VArray<int>) == 0xC, "VArray size mismatch!");
-
 
 struct VString
 {
@@ -617,3 +578,4 @@ static_assert(sizeof(VFile) == 0x114);
 bool get_is_saving_af_version();
 
 static auto& editor_file_default_matrix = *reinterpret_cast<Matrix3*>(0x01642060);
+static auto& g_main_frame = addr_as_ref<CWnd*>(0x006F9E68);

@@ -46,6 +46,10 @@ void load_world_hud_assets() {
     g_world_hud_assets.koth_neutral = rf::bm::load("af_wh_koth_base_neutral.tga", -1, true);
     g_world_hud_assets.koth_neutral_atk = rf::bm::load("af_wh_koth_atk_neutral.tga", -1, true);
     g_world_hud_assets.koth_neutral_def = rf::bm::load("af_wh_koth_def_neutral.tga", -1, true);
+    g_world_hud_assets.koth_atk_red = rf::bm::load("af_wh_koth_atk_red.tga", -1, true);
+    g_world_hud_assets.koth_atk_blue = rf::bm::load("af_wh_koth_atk_blue.tga", -1, true);
+    g_world_hud_assets.koth_def_red = rf::bm::load("af_wh_koth_def_red.tga", -1, true);
+    g_world_hud_assets.koth_def_blue = rf::bm::load("af_wh_koth_def_blue.tga", -1, true);
     g_world_hud_assets.koth_red = rf::bm::load("af_wh_koth_base_red.tga", -1, true);
     g_world_hud_assets.koth_blue = rf::bm::load("af_wh_koth_base_blue.tga", -1, true);
     g_world_hud_assets.koth_neutral_c = rf::bm::load("af_wh_koth_cont_neutral.tga", -1, true);
@@ -431,6 +435,7 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     const bool locked = (h.lock_status != HillLockStatus::HLS_Available);
 
     int ring_bmp = 0;
+    bool esc_show_role_icon = false;
 
     // neutral base ring
     if (contested) {
@@ -438,6 +443,25 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     }
     else if (locked) {
         ring_bmp = g_world_hud_assets.koth_neutral_l;
+    }
+    else if (gt_is_esc() && !multi_spectate_is_spectating() && rf::local_player) {
+        const HillOwner local_team = (rf::local_player->team == 0) ? HillOwner::HO_Red : HillOwner::HO_Blue;
+        const HillOwner owner = h.ownership;
+        const bool local_can_attack = esc_team_can_attack_hill(h, local_team);
+        const bool hill_is_neutral = (h.ownership == HillOwner::HO_Neutral);
+
+        const int neutral_atk_bmp = g_world_hud_assets.koth_neutral_atk;
+        const int atk_bmp = (owner == HillOwner::HO_Red)
+            ? g_world_hud_assets.koth_atk_red
+            : (owner == HillOwner::HO_Blue) ? g_world_hud_assets.koth_atk_blue
+            : neutral_atk_bmp;
+        const int def_bmp = (owner == HillOwner::HO_Red)
+            ? g_world_hud_assets.koth_def_red
+            : (owner == HillOwner::HO_Blue) ? g_world_hud_assets.koth_def_blue
+            : g_world_hud_assets.koth_neutral_def;
+
+        ring_bmp = hill_is_neutral ? neutral_atk_bmp : (local_can_attack ? atk_bmp : def_bmp);
+        esc_show_role_icon = true;
     }
     else if (gt_is_rev() && !multi_spectate_is_spectating()) {
         const bool local_is_red = (rf::local_player && rf::local_player->team == 0);
@@ -448,15 +472,17 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     }
 
     // owned base ring
-    if (h.ownership == HillOwner::HO_Red) {
-        ring_bmp = contested ? g_world_hud_assets.koth_red_c
-            : locked  ? g_world_hud_assets.koth_red_l
-            : g_world_hud_assets.koth_red;
-    }
-    else if (h.ownership == HillOwner::HO_Blue) {
-        ring_bmp = contested ? g_world_hud_assets.koth_blue_c
-            : locked  ? g_world_hud_assets.koth_blue_l
-            : g_world_hud_assets.koth_blue;
+    if (!esc_show_role_icon) {
+        if (h.ownership == HillOwner::HO_Red) {
+            ring_bmp = contested ? g_world_hud_assets.koth_red_c
+                       : locked  ? g_world_hud_assets.koth_red_l
+                                 : g_world_hud_assets.koth_red;
+        }
+        else if (h.ownership == HillOwner::HO_Blue) {
+            ring_bmp = contested ? g_world_hud_assets.koth_blue_c
+                       : locked  ? g_world_hud_assets.koth_blue_l
+                                 : g_world_hud_assets.koth_blue;
+        }
     }
 
     // capture progress bar
@@ -507,12 +533,23 @@ static void build_koth_hill_icons()
     if (!rf::is_multi || !multi_is_game_type_with_hills())
         return;
 
-    // KOTH/DC: respect overdraw cvar, REV: respect overdraw cvar for active point, no overdraw for others
+    const auto gt = rf::multi_get_game_type();
+    const bool overdraw_enabled = g_alpine_game_config.world_hud_overdraw;
+    const bool is_rev_or_esc = gt == rf::NetGameType::NG_TYPE_REV || gt == rf::NetGameType::NG_TYPE_ESC;
+
     for (const auto& h : g_koth_info.hills) {
-        const auto render_mode =
-            h.lock_status == HillLockStatus::HLS_Available ?
-            (g_alpine_game_config.world_hud_overdraw ? WorldHUDRenderMode::overdraw : WorldHUDRenderMode::no_overdraw)
-            : WorldHUDRenderMode::no_overdraw;
+        auto render_mode = WorldHUDRenderMode::no_overdraw;
+
+        if (overdraw_enabled) {
+            // REV/ESC: only overdraw for active point
+            // other modes: overdraw for all points
+            const bool allow_overdraw_for_hill = !is_rev_or_esc || (h.lock_status == HillLockStatus::HLS_Available);
+
+            if (allow_overdraw_for_hill) {
+                render_mode = WorldHUDRenderMode::overdraw;
+            }
+        }
+
         render_koth_icon_for_hill(h, render_mode);
     }
 }

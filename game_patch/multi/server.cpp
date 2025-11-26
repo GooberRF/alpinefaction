@@ -747,6 +747,9 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_equals_ignore_case(gametype_name, "run")) {
         return rf::NetGameType::NG_TYPE_RUN;
     }
+    if (string_equals_ignore_case(gametype_name, "esc")) {
+        return rf::NetGameType::NG_TYPE_ESC;
+    }
 
     return std::nullopt;
 }
@@ -1225,6 +1228,9 @@ FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_RUN) {
             return string_contains_ignore_case(filename, "run");
+        }
+        else if (ng_type == rf::NetGameType::NG_TYPE_ESC) {
+            return string_starts_with_ignore_case(filename, "esc");
         }
         return string_starts_with_ignore_case(filename, "dm") || string_starts_with_ignore_case(filename, "pdm");
     },
@@ -2143,7 +2149,45 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_KOTH: {
         return multi_koth_get_red_team_score() == multi_koth_get_blue_team_score();
     }
-    default: // other modes (e.g. REV and RUN) can't be tied
+    case rf::NG_TYPE_REV: {
+        if (g_koth_info.hills.empty())
+            return false;
+
+        const int final_stage = g_koth_info.hills.back().stage;
+
+        // check if any hill in the final stage is being contested or captured
+        for (const auto& hill : g_koth_info.hills) {
+            if (hill.stage != final_stage)
+                continue;
+            if (hill.lock_status != HillLockStatus::HLS_Available)
+                continue;
+
+            const bool contested = (hill.net_last_red > 0);
+            const bool progress = (hill.capture_progress > 0);
+
+            if (progress || contested)
+                return true;
+        }
+
+        return false;
+    }
+    case rf::NG_TYPE_ESC: {
+        if (g_koth_info.hills.empty())
+            return false;
+
+        // check if the center hill is being contested or captured
+        for (const auto& hill : g_koth_info.hills) {
+            if (hill.role == HillRole::HR_Center) {
+                const bool contested = (hill.net_last_red > 0 && hill.net_last_blue > 0);
+                const bool progress = (hill.capture_progress > 0);
+
+                return hill.lock_status == HillLockStatus::HLS_Available && (progress || contested);
+            }
+        }
+
+        return false;
+    }
+    default: // other modes (e.g. RUN) can't be tied
         return false;
     }
 }
@@ -2224,13 +2268,19 @@ FunHook<void()> multi_check_for_round_end_hook{
                 }
                 break;
             }
+            case rf::NG_TYPE_ESC: {
+                if (esc_all_points_owned_by_one_team()) {
+                    round_over = true;
+                }
+                break;
+            }
             default: // other modes (e.g. RUN) have no round end condition except timer
                 break;
             }
         }
 
         if (round_over && rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
-            //xlog::warn("round time up {}, overtime? {}, already? {}, tied? {}", time_up, g_additional_server_config.overtime.enabled, g_is_overtime, round_is_tied(game_type));
+            //xlog::warn("round time up {}, overtime? {}, already? {}, tied? {}", time_up, g_alpine_server_config.overtime.enabled, g_is_overtime, round_is_tied(game_type));
 
             if (time_up && g_alpine_server_config.overtime.enabled && !g_is_overtime && g_match_info.match_active && round_is_tied(game_type)) {
                 g_is_overtime = true;

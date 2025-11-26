@@ -4,6 +4,7 @@
 #include <xlog/xlog.h>
 #include "../rf/trigger.h"
 #include "../rf/os/string.h"
+#include "../rf/os/timestamp.h"
 #include "../rf/multi.h"
 
 // forward declarations
@@ -19,7 +20,8 @@ static const char* const multi_rfl_prefixes[] = {
     "koth",
     "dc",
     "rev",
-    "run"};
+    "run",
+    "esc"};
 
 enum class HillOwner : int
 {
@@ -81,6 +83,7 @@ struct HillInfo
     float outline_offset = 0.0f;
     float capture_rate = 0.0f;
     rf::EventCapturePointHandler* handler = nullptr; // used for world HUD icon
+    HillRole role = HillRole::HR_Center;
     HillOwner ownership = HillOwner::HO_Neutral;
     HillOwner steal_dir = HillOwner::HO_Neutral;
     HillState state = HillState::HS_Idle;
@@ -90,6 +93,8 @@ struct HillInfo
     int capture_milli = 0; // 0 - 100000 (100% = 100000)
     std::vector<int> mp_spawn_uids;
     int stage = 0; // order of hills in REV
+    int cap_gain_sfx_handle = -1;
+    bool cap_gain_sfx_playing = false;
 
     // debug tracking
     int dbg_last_red = -1;
@@ -105,6 +110,7 @@ struct HillInfo
     HillOwner net_last_dir = HillOwner::HO_Neutral;
     HillState net_last_state = HillState::HS_Idle;
     uint8_t net_last_prog_bucket = 255;
+    HillLockStatus net_last_lock_status = HillLockStatus::HLS_Available;
     int client_hold_ms_accum = 0;
 
     // clientside visual smoothing
@@ -165,8 +171,11 @@ bool multi_is_team_game_type();
 bool gt_is_koth();
 bool gt_is_dc();
 bool gt_is_rev();
+bool gt_is_esc();
 bool gt_is_run();
 bool rev_all_points_permalocked();
+bool esc_all_points_owned_by_one_team();
+bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);
 int multi_koth_get_red_team_score();
 int multi_koth_get_blue_team_score();
 void multi_koth_set_red_team_score(int score);

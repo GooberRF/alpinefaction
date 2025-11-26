@@ -105,7 +105,7 @@ struct AlpineLevelProperties
 struct CDedLevel
 {
     char padding_before_selection[0x298];
-    VArray<int> selection;
+    VArray<DedObject*> selection;
     char padding_after_selection[0x608 - (0x298 + 0xC)];
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)

@@ -13,6 +13,7 @@ Version 1.2.0 (Willow): Not yet released
 - Add `Damage Control` (DC) multiplayer game type
 - Add `Revolt` (REV) multiplayer game type
 - Add `Run` (RUN) multiplayer game type
+- Add `Escalation` (ESC) multiplayer game type
 - Add colorblind mode rendering filter (Direct3D 11 renderer only)
 - Add client-configurable settings to control application of weapon auto switch
 - Add server-configurable weapon loadouts for players in multiplayer
@@ -55,7 +56,7 @@ Version 1.2.0 (Willow): Not yet released
 - Add `Control_Point_Handler` event
 - Add `cl_outlineheightscale` command to scale height of control point outlines
 - Add `cl_outlinesegments` command to set segment count for control point outline rings
-- Add game type selection for `Gametype_Gate` event for KOTH, DC, REV, RUN
+- Add game type selection for `Gametype_Gate` event for KOTH, DC, REV, RUN, ESC
 - Print vote initiation alerts to dedicated server console
 - Add `reject_incompatible_clients` ADS setting
 - Add `r_colorblind` command for configuring colorblind mode rendering filter (Direct3D 11 renderer only)
@@ -101,6 +102,10 @@ Version 1.2.0 (Willow): Not yet released
 - Add `sv_restrict_status` command to check status of client restrictions on the current map and ruleset
 - Add tracking of `Loads` to scoreboard in RUN game type
 - Add `ui_runtimer` command to toggle display of timer in RUN game type
+- Allow `K` link hotkey in level editor to create multiple links at once
+- Dynamically scale `Spectating:` name plate based on player name length
+- Color player name on name plate based on their team in team game types
+- Exclude clients from votes if they don't meet the server's minimum requirements
 
 [@is-this-c](https://github.com/is-this-c)
 - Support `•` in TrueType fonts
