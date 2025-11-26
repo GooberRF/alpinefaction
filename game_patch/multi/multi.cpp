@@ -528,6 +528,8 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Revolt"};
     } else if (game_type == rf::NG_TYPE_RUN) {
         return std::string_view{"Run"};
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"Escalation"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
@@ -549,7 +551,9 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"REVOLT"};
     } else if (game_type == rf::NG_TYPE_RUN) {
         return std::string_view{"RUN"};
-    } else {
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"ESCALATION"};
+    }  else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
         }
@@ -570,6 +574,8 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"REV"};
     } else if (game_type == rf::NG_TYPE_RUN) {
         return std::string_view{"RUN"};
+    }  else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"ESC"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));

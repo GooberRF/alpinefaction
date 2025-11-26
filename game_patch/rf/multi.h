@@ -119,6 +119,7 @@ namespace rf
         NG_TYPE_DC = 4,     // as of AF v1.2
         NG_TYPE_REV = 5,    // as of AF v1.2
         NG_TYPE_RUN = 6,    // as of AF v1.2
+        NG_TYPE_ESC = 7,    // as of AF v1.2
     };
 
     enum NetGameFlags
