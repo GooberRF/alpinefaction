@@ -119,11 +119,6 @@ Version 1.2.0 (Willow): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Improve dedicated server framerate consistency
 
-[@rafalh](https://github.com/rafalh)
-- Fix warnings in main menu caused by missing files (e.g. bigboom.vbm)
-- Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
-- Add support for `DashLevelProps::lightmaps_full_depth`
-
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix very niche case where armor values were displayed differently when Big HUD was enabled
@@ -165,6 +160,12 @@ Version 1.2.0 (Willow): Not yet released
 - Fix `pf_ac_verify_player` stub, so `pf_pure_status::rfsb` works
 - Fix `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
 - Fix a potential crash after a client quits a game if Directd3D 11 is enabled
+
+### From [Dash Faction](https://github.com/rafalh/dashfaction)
+[@rafalh](https://github.com/rafalh)
+- Fix warnings in main menu caused by missing files (e.g. bigboom.vbm)
+- Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
+- Add support for `DashLevelProps::lightmaps_full_depth`
 
 ### Imported libraries
 - [toml++](https://github.com/marzer/tomlplusplus) by Mark Gillard
