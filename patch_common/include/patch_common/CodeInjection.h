@@ -252,9 +252,9 @@ protected:
     using WrapperPtr = void*;
 
     WrapperPtr m_wrapper_ptr;
-
+    // WithoutRegsAccess will always crash if needs_trampoline == false, so protect against that
     BaseCodeInjectionWithoutRegsAccess(uintptr_t addr, WrapperPtr wrapper_ptr, bool needs_trampoline) :
-        BaseCodeInjection(addr, needs_trampoline), m_wrapper_ptr(wrapper_ptr)
+        BaseCodeInjection(addr, true), m_wrapper_ptr(wrapper_ptr)
     {}
 
     void emit_code(AsmWriter& asm_writter, void* trampoline) override;
