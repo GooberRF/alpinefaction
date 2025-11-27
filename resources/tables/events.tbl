@@ -489,4 +489,7 @@ $RFE Level1:      "AF_Catalysts"
 $Event Name:      "Capture_Point_Handler"
 $RFE Level1:      "AF_Gameplay"
 
+$Event Name:      "Set_Gameplay_Rule"
+$RFE Level1:      "AF_Gameplay"
+
 #End

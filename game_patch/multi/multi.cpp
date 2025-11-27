@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
@@ -27,6 +28,8 @@
 #include "../rf/os/console.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
+#include "../rf/player/player.h"
+#include "../rf/localize.h"
 #include "../rf/ai.h"
 #include "../rf/item.h"
 #include "../main/main.h"
@@ -521,6 +524,81 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
 void multi_init_player(rf::Player* player)
 {
     multi_kill_init_player(player);
+}
+
+std::string_view multi_game_type_name(const rf::NetGameType game_type) {
+    if (game_type == rf::NG_TYPE_DM) {
+        return std::string_view{"Deathmatch"};
+    } else if (game_type == rf::NG_TYPE_CTF) {
+        return std::string_view{"Capture the Flag"};
+    } else if (game_type == rf::NG_TYPE_KOTH) {
+        return std::string_view{"King of the Hill"};
+    } else if (game_type == rf::NG_TYPE_DC) {
+        return std::string_view{"Damage Control"};
+    } else if (game_type == rf::NG_TYPE_REV) {
+        return std::string_view{"Revolt"};
+    } else if (game_type == rf::NG_TYPE_RUN) {
+        return std::string_view{"Run"};
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"Escalation"};
+    } else {
+        if (game_type != rf::NG_TYPE_TEAMDM) {
+            xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
+        }
+        return std::string_view{"Team Deathmatch"};
+    }
+}
+
+std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
+    if (game_type == rf::NG_TYPE_DM) {
+        return std::string_view{rf::strings::deathmatch};
+    } else if (game_type == rf::NG_TYPE_CTF) {
+        return std::string_view{rf::strings::capture_the_flag};
+    } else if (game_type == rf::NG_TYPE_KOTH) {
+        return std::string_view{"KING OF THE HILL"};
+    } else if (game_type == rf::NG_TYPE_DC) {
+        return std::string_view{"DAMAGE CONTROL"};
+    } else if (game_type == rf::NG_TYPE_REV) {
+        return std::string_view{"REVOLT"};
+    } else if (game_type == rf::NG_TYPE_RUN) {
+        return std::string_view{"RUN"};
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"ESCALATION"};
+    } else {
+        if (game_type != rf::NG_TYPE_TEAMDM) {
+            xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
+        }
+        return std::string_view{rf::strings::team_deathmatch};
+    }
+}
+
+std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
+    if (game_type == rf::NG_TYPE_DM) {
+        return std::string_view{"DM"};
+    } else if (game_type == rf::NG_TYPE_CTF) {
+        return std::string_view{"CTF"};
+    } else if (game_type == rf::NG_TYPE_KOTH) {
+        return std::string_view{"KOTH"};
+    } else if (game_type == rf::NG_TYPE_DC) {
+        return std::string_view{"DC"};
+    } else if (game_type == rf::NG_TYPE_REV) {
+        return std::string_view{"REV"};
+    } else if (game_type == rf::NG_TYPE_RUN) {
+        return std::string_view{"RUN"};
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"ESC"};
+    } else {
+        if (game_type != rf::NG_TYPE_TEAMDM) {
+            xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
+        }
+        return std::string_view{"TDM"};
+    }
+}
+
+int multi_num_spawned_players() {
+    return std::ranges::count_if(SinglyLinkedList{rf::player_list}, [] (const auto& p) {
+        return !rf::player_is_dead(&p) && !rf::player_is_dying(&p);
+    });
 }
 
 void configure_custom_gametype_listen_server_settings() {

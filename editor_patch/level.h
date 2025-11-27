@@ -18,6 +18,7 @@ struct AlpineLevelProperties
     bool legacy_cyclic_timers = false;
     // v2
     bool legacy_movers = false;
+    bool starts_with_headlamp = true;
 
     static constexpr std::uint32_t current_alpine_chunk_version = 2u;
 
@@ -28,6 +29,7 @@ struct AlpineLevelProperties
     {
         legacy_cyclic_timers = true;
         legacy_movers = true;
+        starts_with_headlamp = true;
     }
 
     void Serialize(rf::File& file) const
@@ -38,6 +40,7 @@ struct AlpineLevelProperties
         file.write<std::uint8_t>(legacy_cyclic_timers ? 1u : 0u);
         // v2
         file.write<std::uint8_t>(legacy_movers ? 1u : 0u);
+        file.write<std::uint8_t>(starts_with_headlamp ? 1u : 0u);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -98,6 +101,10 @@ struct AlpineLevelProperties
                 return;
             legacy_movers = (u8 != 0);
             xlog::debug("[AlpineLevelProps] legacy_movers {}", legacy_movers);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            starts_with_headlamp = (u8 != 0);
+            xlog::debug("[AlpineLevelProps] starts_with_headlamp {}", starts_with_headlamp);
         }
     }
 };

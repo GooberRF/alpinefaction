@@ -154,7 +154,6 @@ struct Vector3
 };
 static_assert(sizeof(Vector3) == 0xC, "Vector3 size mismatch!");
 
-
 struct Matrix3
 {
     Vector3 rvec;

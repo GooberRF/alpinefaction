@@ -89,6 +89,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"When_Captured", 140},
                 {"Set_Capture_Point_Owner", 141},
                 {"Owner_Gate", 142},
+                {"Set_Gameplay_Rule", 143},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -157,6 +158,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {140, []() { return new rf::EventWhenCaptured(); }},
                 {141, []() { return new rf::EventSetCapturePointOwner(); }},
                 {142, []() { return new rf::EventOwnerGate(); }},
+                {143, []() { return new rf::EventSetGameplayRule(); }},
             };
 
             // find type and allocate
@@ -229,6 +231,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {140, [](rf::Event* e) { delete static_cast<rf::EventWhenCaptured*>(e); }},
                 {141, [](rf::Event* e) { delete static_cast<rf::EventSetCapturePointOwner*>(e); }},
                 {142, [](rf::Event* e) { delete static_cast<rf::EventOwnerGate*>(e); }},
+                {143, [](rf::Event* e) { delete static_cast<rf::EventSetGameplayRule*>(e); }},
             };
 
             // find type and deallocate
@@ -710,6 +713,17 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
             if (event) {
                 event->handler_uid = params.int1;
                 event->required_owner = params.int2;
+            }
+            return event;
+        }
+    },
+    // Set_Gameplay_Rule
+    {
+        rf::EventType::Set_Gameplay_Rule, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Gameplay_Rule));
+            auto* event = dynamic_cast<rf::EventSetGameplayRule*>(base_event);
+            if (event) {
+                event->rule = static_cast<rf::GameplayRule>(params.int1);
             }
             return event;
         }

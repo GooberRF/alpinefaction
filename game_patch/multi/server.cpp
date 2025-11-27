@@ -350,7 +350,7 @@ FunHook<void ()> dcf_info_hook{
             auto time_line = std::format("{}:  {} {}, {}h {}m {}s\n", rf::strings::level_time, days, rf::strings::days, hours, minutes, seconds);
             rf::console::print("{}", time_line);
 
-            rf::console::print("{}: {}\n", "Game type", get_game_type_string_long(rf::netgame.type));
+            rf::console::print("{}: {}\n", "Game type", multi_game_type_name(rf::netgame.type));
         }
         else {
             rf::console::print("No level loaded\n");
@@ -814,7 +814,7 @@ ConsoleCommand2 sv_game_type_cmd{
                     }
 
                     auto msg = std::format("\xA6 Loading {} on {}", display_level_name,
-                                           get_game_type_string_long(*resolved_type));
+                                           multi_game_type_name(*resolved_type));
                     rf::multi_chat_say(msg.c_str(), false);
 
                     multi_change_level_alpine(level_to_load.c_str());
@@ -824,7 +824,7 @@ ConsoleCommand2 sv_game_type_cmd{
                 }
             }
             else {
-                rf::console::print("Current game type: {}\n", get_game_type_string_long(rf::netgame.type));
+                rf::console::print("Current game type: {}\n", multi_game_type_name(rf::netgame.type));
             }
         }
         else {
@@ -868,7 +868,7 @@ static void print_alpine_restrict_status_summary()
 
     rf::console::print("Alpine restriction summary:");
     rf::console::print("  Level: {} (RFL version {})", rf::level.filename.c_str(), level_version);
-    rf::console::print("  Gametype: {} (ID {})", get_game_type_string_long(game_type), static_cast<int>(game_type));
+    rf::console::print("  Gametype: {} (ID {})", multi_game_type_name(game_type), static_cast<int>(game_type));
     rf::console::print("  Server rules auto-require Alpine: {}{}", auto_require_alpine ? "yes" : "no",
         auto_require_alpine ? std::format(" (min version 1.{})", auto_min_minor) : "");
     rf::console::print("  Server config requires Alpine: {}", cfg.clients_require_alpine ? "yes" : "no");
@@ -2125,13 +2125,12 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_CTF: {
         int red_score = rf::multi_ctf_get_red_team_score();
         int blue_score = rf::multi_ctf_get_blue_team_score();
-        //xlog::warn("red: {}, blue: {}", red_score, blue_score);
 
         if (red_score == blue_score) {
             return true;
         }
 
-        if (g_alpine_server_config.overtime.consider_tie_if_flag_stolen) {
+        if (g_alpine_server_config_active_rules.overtime.consider_tie_if_flag_stolen) {
             bool red_flag_stolen = !rf::multi_ctf_is_red_flag_in_base();
             bool blue_flag_stolen = !rf::multi_ctf_is_blue_flag_in_base();
 
@@ -2145,9 +2144,32 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_TEAMDM: {
         return rf::multi_tdm_get_red_team_score() == rf::multi_tdm_get_blue_team_score();
     }
-    case rf::NG_TYPE_DC:
-    case rf::NG_TYPE_KOTH: {
+    case rf::NG_TYPE_DC: {
         return multi_koth_get_red_team_score() == multi_koth_get_blue_team_score();
+    }
+    case rf::NG_TYPE_KOTH: {
+        const int red_score = multi_koth_get_red_team_score();
+        const int blue_score = multi_koth_get_blue_team_score();
+
+        if (red_score == blue_score)
+            return true;
+
+        if (g_koth_info.hills.empty() || !g_alpine_server_config_active_rules.overtime.consider_tie_if_hill_contested)
+            return false;
+
+        const auto& hill = g_koth_info.hills.front(); // koth has only 1 hill
+
+        const HillOwner leading_team = (red_score > blue_score) ? HillOwner::HO_Red : HillOwner::HO_Blue;
+        const HillOwner trailing_team = opposite(leading_team);
+        const bool trailing_present = (trailing_team == HillOwner::HO_Red) ? hill.net_last_red > 0 : hill.net_last_blue > 0;
+        const bool trailing_capturing = hill.steal_dir == trailing_team && hill.capture_progress > 0;
+        const bool trailing_controls = hill.ownership == trailing_team;
+
+        // tied if trailing team is present, is owner, is actively stealing, or has remaining capture progress
+        if (trailing_present || trailing_capturing || trailing_controls)
+            return true;
+
+        return false;
     }
     case rf::NG_TYPE_REV: {
         if (g_koth_info.hills.empty())
@@ -2202,6 +2224,11 @@ bool rev_all_points_permalocked()
             return false;
     }
     return true;
+}
+
+bool server_is_match_mode_enabled()
+{
+    return g_alpine_server_config.vote_match.enabled;
 }
 
 FunHook<void()> multi_check_for_round_end_hook{
@@ -2280,15 +2307,16 @@ FunHook<void()> multi_check_for_round_end_hook{
         }
 
         if (round_over && rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
-            //xlog::warn("round time up {}, overtime? {}, already? {}, tied? {}", time_up, g_alpine_server_config.overtime.enabled, g_is_overtime, round_is_tied(game_type));
+            //xlog::warn("round time up {}, overtime? {}, already? {}, tied? {}", time_up, g_alpine_server_config_active_rules.overtime.enabled, g_is_overtime, round_is_tied(game_type));
+            const bool overtime_allowed = !server_is_match_mode_enabled() || g_match_info.match_active;
 
-            if (time_up && g_alpine_server_config.overtime.enabled && !g_is_overtime && g_match_info.match_active && round_is_tied(game_type)) {
+            if (time_up && g_alpine_server_config_active_rules.overtime.enabled && !g_is_overtime && overtime_allowed && round_is_tied(game_type)) {
                 g_is_overtime = true;
-                extend_round_time(g_alpine_server_config.overtime.additional_time);
+                extend_round_time(g_alpine_server_config_active_rules.overtime.additional_time);
 
                 std::string msg = std::format("\xA6 OVERTIME! Game will end when the tie is broken");
-                msg += g_alpine_server_config.overtime.additional_time > 0
-                           ? std::format(", or in {} minutes!", g_alpine_server_config.overtime.additional_time)
+                msg += g_alpine_server_config_active_rules.overtime.additional_time > 0
+                           ? std::format(", or in {} minutes!", g_alpine_server_config_active_rules.overtime.additional_time)
                            : "!";
                 af_broadcast_automated_chat_msg(msg);
             }
@@ -2977,7 +3005,7 @@ void server_on_limbo_state_enter()
 
     if (get_upcoming_game_type() != rf::netgame.type) {
         std::string gt_swap_notif = std::format("\xA6 Game type will switch to {} for the next level.",
-            get_game_type_string(get_upcoming_game_type()));
+            multi_game_type_name_short(get_upcoming_game_type()));
         af_broadcast_automated_chat_msg(gt_swap_notif);
     }
 }
@@ -3043,14 +3071,14 @@ std::tuple<bool, int, bool> server_features_require_alpine_client()
     int min_minor_version = 0;    // minimum alpine minor version required
     bool hard_reject = false;     // reject non-alpine clients outright, also decides if they will be kicked on map change
 
-    if (g_alpine_server_config.vote_match.enabled) {
+    if (g_alpine_server_config.vote_match.enabled ||
+        g_alpine_server_config_active_rules.no_player_collide ||
+        g_alpine_server_config_active_rules.location_pinging) {
         requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 1);
     }
 
-    if (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active ||
-        g_alpine_server_config_active_rules.no_player_collide ||
-        g_alpine_server_config_active_rules.location_pinging) {
+    if (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active) {
         requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 2);
     }
@@ -3077,11 +3105,6 @@ const AlpineServerConfig& server_get_alpine_config()
 bool server_is_modded()
 {
     return !g_alpine_server_config.require_client_mod && rf::mod_param.found();
-}
-
-bool server_is_match_mode_enabled()
-{
-    return g_alpine_server_config.vote_match.enabled;
 }
 
 bool server_is_alpine_only_enabled()

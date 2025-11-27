@@ -121,6 +121,7 @@ struct AlpineGameSettings
     bool scoreboard_anim = true;
     bool autosave = true;
     bool af_branding = true;
+    int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
     bool player_join_beep = false;
     bool full_range_lighting = true;
     bool always_clamp_official_lightmaps = false;

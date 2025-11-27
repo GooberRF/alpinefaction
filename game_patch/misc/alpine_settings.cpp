@@ -216,6 +216,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.af_branding = std::stoi(settings["AlpineBranding"]);
         processed_keys.insert("AlpineBranding");
     }
+    if (settings.count("SeasonalEffect")) {
+        g_alpine_game_config.seasonal_effect = std::stoi(settings["SeasonalEffect"]);
+        processed_keys.insert("SeasonalEffect");
+    }
     if (settings.count("RealArmorValues")) {
         g_alpine_game_config.real_armor_values = std::stoi(settings["RealArmorValues"]);
         processed_keys.insert("RealArmorValues");
@@ -756,6 +760,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
     file << "SaveConsoleHistory=" << g_alpine_game_config.save_console_history << "\n";
     file << "AlpineBranding=" << g_alpine_game_config.af_branding << "\n";
+    file << "SeasonalEffect=" << g_alpine_game_config.seasonal_effect << "\n";
     file << "RealArmorValues=" << g_alpine_game_config.real_armor_values << "\n";
     file << "AlwaysShowSpectators=" << g_alpine_game_config.always_show_spectators << "\n";
     file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";

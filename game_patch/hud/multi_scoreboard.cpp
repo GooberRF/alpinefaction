@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <common/utils/list-utils.h>
 #include <optional>
@@ -22,6 +23,7 @@
 #include "../rf/os/timer.h"
 #include "../main/main.h"
 #include "hud_internal.h"
+#include "../graphics/gr.h"
 
 #define DEBUG_SCOREBOARD 0
 
@@ -65,41 +67,13 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
 
     // Draw Game Type name
     if (!dry_run) {
-        int num_players = rf::multi_num_players();
-        std::string player_count_str =
-            " | " + std::to_string(num_players) + (num_players > 1 ? " PLAYERS" : " PLAYER");
-
-        std::string game_type_name;
-        switch (game_type) {
-            case rf::NG_TYPE_TEAMDM:
-                game_type_name = rf::strings::team_deathmatch;
-                break;
-            case rf::NG_TYPE_CTF:
-                game_type_name = rf::strings::capture_the_flag;
-                break;
-            case rf::NG_TYPE_KOTH:
-                game_type_name = "KING OF THE HILL";
-                break;
-            case rf::NG_TYPE_DC:
-                game_type_name = "DAMAGE CONTROL";
-                break;
-            case rf::NG_TYPE_REV:
-                game_type_name = "REVOLT";
-                break;
-            case rf::NG_TYPE_RUN:
-                game_type_name = "RUN";
-                break;
-            case rf::NG_TYPE_ESC:
-                game_type_name = "ESCALATION";
-                break;
-            default:
-                game_type_name = rf::strings::deathmatch;
-                break;
-        }
-
-        game_type_name += player_count_str;
-
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, game_type_name.c_str());
+        const std::string game_info = std::format(
+            "{} \x95 {}/{} PLAYING",
+            multi_game_type_name_upper(game_type),
+            multi_num_spawned_players(),
+            rf::multi_num_players()
+        );
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, game_info.c_str());
     }
     int font_h = rf::gr::get_font_height(-1);
     cur_y += font_h + 8;
@@ -121,10 +95,17 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
     // Draw level
     if (!dry_run) {
         rf::gr::set_color(0xB0, 0xB0, 0xB0, 0xFF);
-        auto level_info = rf::String::format("{} ({}) by {}", rf::level.name, rf::level.filename, rf::level.author);
-        rf::String level_info_stripped;
-        rf::fit_scoreboard_string(&level_info_stripped, level_info, w - 20); // Note: this destroys input string
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, level_info_stripped);
+        std::string level_info = std::format(
+            "{1} \x95 {0:%Y} ({2}) by {3}",
+            std::chrono::sys_seconds{
+                std::chrono::seconds{rf::level.level_timestamp}
+            },
+            rf::level.name,
+            rf::level.filename,
+            rf::level.author
+        );
+        gr_fit_string(level_info, w - 20);
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, level_info.c_str());
     }
     cur_y += font_h + 3;
 

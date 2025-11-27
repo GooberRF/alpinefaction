@@ -63,7 +63,8 @@ enum class AlpineDedEventID : int
     Modify_Respawn_Point,
     When_Captured,
     Set_Capture_Point_Owner,
-    Owner_Gate
+    Owner_Gate,
+    Set_Gameplay_Rule
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept

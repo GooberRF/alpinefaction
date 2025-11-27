@@ -6,6 +6,7 @@
 #include <common/utils/string-utils.h>
 #include "../graphics/gr.h"
 #include "../rf/file/file.h"
+#include "../misc/vpackfile.h"
 #include "dds.h"
 
 int bm_calculate_pitch(int w, rf::bm::Format format)
@@ -108,7 +109,7 @@ bm_read_header_hook{
             bm_type = rf::bm::TYPE_NONE;
         }
 
-        if (bm_type == rf::bm::TYPE_NONE) {
+        if (bm_type == rf::bm::TYPE_NONE && !is_known_missing_asset(filename)) {
             xlog::warn("Failed to load bitmap header for '{}'", filename);
         }
 

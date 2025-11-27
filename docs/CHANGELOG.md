@@ -22,7 +22,7 @@ Version 1.2.0 (Willow): Not yet released
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Raise maximum confgurable pixels/m apply map texture setting in level editor to 8192
-- Default level ambient light and fog color to flat black (0, 0, 0) instead of stock game default (40, 40, 40)
+- Default level fog color to flat black (0, 0, 0) instead of stock game default (40, 40, 40)
 - Update Level Properties window strings to be more descriptive
 - Add `cl_wh_altdmgindicators` command to toggle cumulative world HUD damage indicators
 - Add `ui_realarmor` command to toggle real armor display on HUD (1:1 with health instead of the 2:1 default)
@@ -44,7 +44,6 @@ Version 1.2.0 (Willow): Not yet released
 - Support weapon stay exemption functionality for any weapons, including stock fusion behaviour and weapons from TC mods
 - Deprecate `$Max FOV` dedicated server setting
 - Support GunGame configuration using weapon names (from `weapons.tbl`) rather than weapon indices
-- Restrict overtime configuration to match mode
 - Add support for custom weapon loadouts in dedicated servers
 - Identify Alpine Faction and Dash Faction players in server console on join and when `info` command is run
 - Log player join request rejection reason to server console on attempted join
@@ -106,9 +105,18 @@ Version 1.2.0 (Willow): Not yet released
 - Dynamically scale `Spectating:` name plate based on player name length
 - Color player name on name plate based on their team in team game types
 - Exclude clients from votes if they don't meet the server's minimum requirements
+- Add winter seasonal effect to main menu background
+- Suppress missing asset warnings for files known to be referenced by but missing from the stock game
+- Add `Play in multi (camera)` button to level editor
+- Add `Player starts with headlamp` setting to level properties window in level editor
+- Add `Set_Gameplay_Rule` event and first supported rule `Player has headlamp`
+- Rearrange quick access buttons on level editor toolbar
+- Add level editor hotkey `F9` to play in multi, and `F10` to play in multi (camera))
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `bighud` support for chat menus
+- Support `•` in TrueType fonts
+- Add the year and the number of spawned players to the scoreboard
 - Add `ui_simple_server_chat_messages` command to display automated server chat messages without `Server: `
 - Color automated server chat messages with a gold name instead of a red name
 - Add `key_quick_exit` command to restore keyboard shortcut `Shift+Esc` to quit out of Red Faction
@@ -132,7 +140,7 @@ Version 1.2.0 (Willow): Not yet released
 - Fix `Advertise AF` sometimes sending the wrong advert to players running old Alpine versions
 - Fix inactivity incorrectly being tracked when endgame scoreboard is displayed
 - Fix very niche case where server could crash if gungame is on and a weapon type is invalid
-- Fix overtime initiating even if no match is active
+- Fix overtime initiating in match mode even if no match is active
 - Fix scanner and scope sensitivity set in options menu not applying until new level is loaded
 - Fix Direct3D 11 renderer crashing when generating realtime bitmaps
 - Fix Direct3D 11 renderer not rendering dynamic lighting on skeletal meshes
@@ -158,12 +166,14 @@ Version 1.2.0 (Willow): Not yet released
 - Fix rare crash when starting to spectate a player immediately when they land on a surface
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix `pf_ac_verify_player` stub, so `pf_pure_status::rfsb` works
 - Fix `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
 - Fix a potential crash after a client quits a game if Directd3D 11 is enabled
 
-### Commits from other repos
-[Dash Faction](https://github.com/rafalh/dashfaction) (Upstream)
-- Add support for Dash Level Properties chunk and full lightmap depth setting (commit f90f81a)
+### From [Dash Faction](https://github.com/rafalh/dashfaction)
+[@rafalh](https://github.com/rafalh)
+- Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
+- Add `DashLevelProps::lightmaps_full_depth`
 
 ### Imported libraries
 - [toml++](https://github.com/marzer/tomlplusplus) by Mark Gillard
@@ -524,7 +534,6 @@ Version 1.9.0 (released 2025-04-06)
 - Disable adding faces to fix PS2 tiling in editor
 - Disable red background in log window if geometry limits are crossed in editor
 - Update geometry limits in editor so they show static pools size (crossing it can have tiny performance impact)
-- Add level property which enables full lightmaps depth (enabled by default in new maps)
 
 [@GooberRF](https://github.com/GooberRF)
 - Fix crash when `verify_level` command is run without a level being loaded

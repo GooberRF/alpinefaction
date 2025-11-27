@@ -33,6 +33,8 @@
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
 static std::string g_launcher_pathname;
+static bool g_is_play_in_multi = false;
+static std::string g_red_cmdline;
 
 constexpr size_t max_texture_name_len = 31;
 
@@ -338,35 +340,61 @@ void CMainFrame_InvertSelection(CWnd* this_)
     RedrawEditorAfterModification();
 }
 
+static char* patch_cmdline_if_multi(char* original)
+{
+    if (!original) {
+        return original;
+    }
+
+    if (!g_is_play_in_multi) {
+        return original;
+    }
+
+    g_red_cmdline.assign(original);
+
+    constexpr const char needle[] = "-level ";
+    auto pos = g_red_cmdline.find(needle);
+    if (pos != std::string::npos) {
+        // already has -levelm (defensive)
+        if (g_red_cmdline.compare(pos, 8, "-levelm ") != 0) {
+            // insert m before the space
+            g_red_cmdline.insert(pos + 6, "m");
+        }
+    }
+
+    return g_red_cmdline.data();
+}
+
+CodeInjection CMainFrame_OnPlayLevel_injection{
+    0x00447B32,
+    [](auto& regs) {
+        char* original = regs.edx;
+        auto* patched = patch_cmdline_if_multi(original);
+        regs.edx = reinterpret_cast<uintptr_t>(patched);
+    },
+};
+
+CodeInjection CMainFrame_OnPlayLevelFromCameraCmd_injection{
+    0x00448024,
+    [](auto& regs) {
+        char* original = regs.edx;
+        auto* patched = patch_cmdline_if_multi(original);
+        regs.edx = reinterpret_cast<uintptr_t>(patched);
+    },
+};
+
 void CMainFrame_PlayMulti(CWnd* this_)
 {
-    xlog::warn("Full Launcher Path: {}", g_launcher_pathname);
-    CMainFrame* mainframe = reinterpret_cast<CMainFrame*>(GetMainFrame());
-    if (!mainframe || !mainframe->doc) {
-        xlog::error("Failed to get CMainFrame or document!");
-        return;
-    }
+    g_is_play_in_multi = true;
+    AddrCaller{0x004478B0}.this_call<int>(this_); // CMainFrame_OnPlayLevel
+    g_is_play_in_multi = false;
+}
 
-    std::string filename = std::filesystem::path(mainframe->doc->_d.m_strPathName.c_str()).filename().generic_string();
-    if (filename.empty()) {
-        xlog::error("No valid filename found!");
-        return;
-    }
-
-    xlog::warn("Launching game with filename: {}", filename);
-
-    std::string commandLine = g_launcher_pathname + " -game -levelm \"" + filename + "\"";
-    xlog::warn("Running: {}", commandLine);
-
-    STARTUPINFOA startupInfo{};
-    PROCESS_INFORMATION processInfo{};
-    startupInfo.cb = sizeof(startupInfo);
-
-    if (!CreateProcessA(g_launcher_pathname.c_str(),
-                        commandLine.data(),
-                        nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, nullptr, &startupInfo, &processInfo)) {
-        xlog::error("Failed to launch game! Error Code: {}", GetLastError());
-    }
+void CMainFrame_PlayMultiFromCamera(CWnd* this_)
+{
+    g_is_play_in_multi = true;
+    AddrCaller{0x00447B90}.this_call<int>(this_); // CMainFrame_OnPlayLevelFromCameraCmd
+    g_is_play_in_multi = false;
 }
 
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
@@ -402,6 +430,9 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case ID_PLAY_MULTI:
                 handler = std::bind(CMainFrame_PlayMulti, this_);
+                break;
+            case ID_PLAY_MULTI_CAMERA:
+                handler = std::bind(CMainFrame_PlayMultiFromCamera, this_);
                 break;
         }
 
@@ -687,6 +718,10 @@ extern "C" DWORD DF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     CMainFrame_OnPlayLevelCmd_skip_level_dir_injection.install();
     CMainFrame_OnPlayLevelFromCameraCmd_skip_level_dir_injection.install();
 
+    // Change -level command to -levelm for play in multi buttons
+    CMainFrame_OnPlayLevel_injection.install();
+    CMainFrame_OnPlayLevelFromCameraCmd_injection.install();
+
     // Add additional file paths for V3M loading
     CEditorApp_InitInstance_additional_file_paths_injection.install();
 
@@ -747,7 +782,7 @@ extern "C" DWORD DF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Fix random crash when opening cutscene properties
     CCutscenePropertiesDialog_ct_crash_fix.install();
 
-    // Load DashEditor.vpp
+    // Load alpinefaction.vpp
     vpackfile_init_injection.install();
 
     // Add maps_af.txt to the collection of files scanned for default textures in order to add more textures from the

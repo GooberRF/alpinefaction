@@ -27,6 +27,7 @@
 #include "../multi/alpine_packets.h"
 #include "../hud/hud_world.h"
 #include <common/utils/list-utils.h>
+#include <common/version/version.h>
 #include <common/config/GameConfig.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
@@ -35,6 +36,15 @@
 
 std::unordered_map<const rf::Player*, PlayerAdditionalData> g_player_additional_data_map;
 static rf::PlayerHeadlampSettings g_local_headlamp_settings;
+
+void set_headlamp_toggle_enabled(bool enabled)
+{
+    g_headlamp_toggle_enabled = enabled;
+
+    if (!g_headlamp_toggle_enabled && rf::local_player_entity && rf::entity_headlamp_is_on(rf::local_player_entity)) {
+        rf::entity_headlamp_turn_off(rf::local_player_entity);
+    }
+}
 
 void find_player(const StringMatcher& query, std::function<void(rf::Player*)> consumer)
 {
@@ -56,7 +66,8 @@ PlayerAdditionalData& get_player_additional_data(const rf::Player* const player)
 }
 
 // used for compatibility checks
-bool is_player_minimum_af_client_version(rf::Player* player, int version_major, int version_minor) {
+bool is_player_minimum_af_client_version(rf::Player* player, int version_major, int version_minor, bool only_release)
+{
     if (!player) {
         return false;
     }
@@ -71,9 +82,14 @@ bool is_player_minimum_af_client_version(rf::Player* player, int version_major, 
         return false;
     }
 
+    if (only_release && info.client_version_type != VERSION_TYPE_RELEASE) {
+        return false;
+    }
+
     if (info.client_version_major > version_major) {
         return true;
     }
+
     if (info.client_version_major < version_major) {
         return false;
     }
@@ -453,15 +469,6 @@ ConsoleCommand2 damage_screen_flash_cmd{
     },
     "Toggle damage screen flash effect",
 };
-
-void handle_chat_message_sound(std::string message) {
-    if (string_starts_with_ignore_case(message, "\xA8[Taunt] ")) {
-        play_chat_sound(message, true);
-    }
-    else if (string_starts_with_ignore_case(message, "\xA8 ")) {
-        play_chat_sound(message, false);
-    }
-}
 
 void play_local_sound_3d(uint16_t sound_id, rf::Vector3 pos, int group, float volume) {
     rf::snd_play_3d(sound_id, pos, volume, rf::Vector3{}, group);
