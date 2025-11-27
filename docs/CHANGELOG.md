@@ -163,7 +163,6 @@ Version 1.2.0 (Willow): Not yet released
 
 ### From [Dash Faction](https://github.com/rafalh/dashfaction)
 [@rafalh](https://github.com/rafalh)
-- Fix warnings in main menu caused by missing files (e.g. bigboom.vbm)
 - Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
 - Add `DashLevelProps::lightmaps_full_depth`
 
