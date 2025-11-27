@@ -286,8 +286,8 @@ CodeInjection level_load_lightmaps_color_conv_patch{
                 || (!DashLevelProps::instance().lightmaps_full_depth
                 && !g_alpine_game_config.full_range_lighting)) {
                 should_clamp = true;
-                constexpr int default_clamp_floor = 0x202020FF;
-                floor_clamp = default_clamp_floor;
+                constexpr int default_floor_clamp = 0x202020FF;
+                floor_clamp = default_floor_clamp;
             }
         }
 
