@@ -300,20 +300,16 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         if (should_clamp) {
             xlog::debug("Applying lightmap clamping");
 
-            // Extract RGB components from clamping values
             const rf::gr::Color floor = rf::gr::Color::from_hex(floor_clamp);
             const rf::gr::Color ceiling = rf::gr::Color::from_hex(ceiling_clamp);
 
             for (int i = 0; i < lightmap->w * lightmap->h * 3; i += 3) {
-                // Apply floor clamp
-                lightmap->buf[i] = std::max(lightmap->buf[i], floor.red);
-                lightmap->buf[i + 1] = std::max(lightmap->buf[i + 1], floor.green);
-                lightmap->buf[i + 2] = std::max(lightmap->buf[i + 2], floor.blue);
-
-                // Apply ceiling clamp.
-                lightmap->buf[i] = std::min(lightmap->buf[i], ceiling.red);
-                lightmap->buf[i + 1] = std::min(lightmap->buf[i + 1], ceiling.green);
-                lightmap->buf[i + 2] = std::min(lightmap->buf[i + 2], ceiling.blue);
+                lightmap->buf[i] =
+                    std::clamp(lightmap->buf[i], floor.red, ceiling.red);
+                lightmap->buf[i + 1] =
+                    std::clamp(lightmap->buf[i + 1], floor.green, ceiling.green);
+                lightmap->buf[i + 2] =
+                    std::clamp(lightmap->buf[i + 2], floor.blue, ceiling.blue);
             }
         }
 
