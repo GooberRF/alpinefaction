@@ -235,15 +235,6 @@ CodeInjection g_face_does_point_lie_in_face_crashfix{
     },
 };
 
-rf::gr::Color color_from_u32(const uint32_t color) {
-    return rf::gr::Color{
-        static_cast<rf::ubyte>((color >> 24) & 0xFF),
-        static_cast<rf::ubyte>((color >> 16) & 0xFF),
-        static_cast<rf::ubyte>((color >> 8) & 0xFF),
-        static_cast<rf::ubyte>(color & 0xFF)
-    };
-}
-
 CodeInjection level_load_lightmaps_color_conv_patch{
     0x004ED3E9,
     [](auto& regs) {
@@ -310,8 +301,8 @@ CodeInjection level_load_lightmaps_color_conv_patch{
             xlog::debug("Applying lightmap clamping");
 
             // Extract RGB components from clamping values
-            const rf::gr::Color floor = color_from_u32(floor_clamp);
-            const rf::gr::Color ceiling = color_from_u32(ceiling_clamp);
+            const rf::gr::Color floor = rf::gr::Color::from_hex(floor_clamp);
+            const rf::gr::Color ceiling = rf::gr::Color::from_hex(ceiling_clamp);
 
             for (int i = 0; i < lightmap->w * lightmap->h * 3; i += 3) {
                 // Apply floor clamp
@@ -322,7 +313,7 @@ CodeInjection level_load_lightmaps_color_conv_patch{
                 // Apply ceiling clamp.
                 lightmap->buf[i] = std::min(lightmap->buf[i], ceiling.red);
                 lightmap->buf[i + 1] = std::min(lightmap->buf[i + 1], ceiling.green);
-                lightmap->buf[i + 2] = std::min(lightmap->buf[i + 2], ceiling.blue);;
+                lightmap->buf[i + 2] = std::min(lightmap->buf[i + 2], ceiling.blue);
             }
         }
 
