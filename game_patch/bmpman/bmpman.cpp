@@ -109,7 +109,7 @@ bm_read_header_hook{
             bm_type = rf::bm::TYPE_NONE;
         }
 
-        if (bm_type == rf::bm::TYPE_NONE && !is_known_missing_asset(filename)) {
+        if (bm_type == rf::bm::TYPE_NONE && !is_known_missing_stock_asset(filename)) {
             xlog::warn("Failed to load bitmap header for '{}'", filename);
         }
 
