@@ -1700,70 +1700,76 @@ void multi_hud_level_init() {
     g_level_chat_menu_present = has_valid_entries;
 }
 
-void draw_chat_menu_text(int x, int y) {
+void draw_chat_menu_text(const int x, int y, const int max_width) {
     if (!g_active_menu) {
         return;
     }
 
-    std::ostringstream main_string;
-    // Get the menu name
-    std::string menu_name = g_active_menu->display_string;
+    const int font_id = rf::gr::load_font(
+        g_alpine_game_config.big_hud ? "regularfont.ttf:13" : "rfpc-medium.vf"
+    );
+    const int font_height = rf::gr::get_font_height(font_id);
 
-    main_string << menu_name << "\n\n";
+    rf::gr::set_color(255, 255, 180, 0xCC);
+    rf::gr::string_aligned(
+        rf::gr::ALIGN_LEFT,
+        x + 8,
+        y + 4,
+        g_active_menu->display_string.c_str(),
+        font_id
+    );
 
-    int display_index = 1; // Number to display
-    constexpr size_t max_length = 19; // Max allowed characters before truncation
+    y += font_height * 2;
 
-    for (const auto& element : g_active_menu->elements) {
-        // If the element is not valid for this game mode, skip it completely (no blank slot)
+    int display_index = 1;
+    for (const ChatMenuElement& element : g_active_menu->elements) {
+        // If the element is not valid for this game mode, skip it
+        // completely (no blank slot)
         if (!is_element_valid(element)) {
-            main_string << "\n";
+            y += font_height;
             ++display_index; // Skip this number
             continue;
         }
 
-        // Otherwise, display the menu item, truncating if too long
-        std::string display_name = element.display_string.empty() ? element.long_string : element.display_string;
-        if (display_name.length() > max_length) {
-            display_name = display_name.substr(0, max_length) + "...";
-        }
-        main_string << display_index << ": " << display_name << "\n";
+        const std::string_view display_name = element.display_string.empty()
+            ? element.long_string
+            : element.display_string;
+        std::string line = std::format("{}: {}", display_index, display_name);
+        gr_fit_string(line, max_width - 8 * 2, font_id);
+        rf::gr::string_aligned(
+            rf::gr::ALIGN_LEFT,
+            x + 8,
+            y + 4,
+            line.c_str(),
+            font_id
+        );
 
+        y += font_height;
         ++display_index;
     }
 
     // Add back or exit option
-    if (g_previous_menu) {
-        main_string << "\n0: BACK\n";
-    }
-    else {
-        main_string << "\n0: EXIT\n";
-    }
-
-    // Draw text
-    int str_x = x + 8;
-    int str_y = y + 4;
-    rf::gr::set_color(255, 255, 180, 0xCC);
     rf::gr::string_aligned(
         rf::gr::ALIGN_LEFT,
-        str_x,
-        str_y,
-        main_string.str().c_str(),
-        hud_get_default_font()
+        x + 8,
+        y + 4,
+        g_previous_menu ? "\n0: BACK\n" : "\n0: EXIT\n",
+        font_id
     );
 }
 
 void hud_render_draw_chat_menu() {
-    int w = static_cast<int>(g_alpine_game_config.big_hud ? 315 : 200);
-    int h = static_cast<int>(g_alpine_game_config.big_hud ? 345 : 166);
-    int x = static_cast<int>(10);
-    int y = (static_cast<int>(rf::gr::screen_height()) - h) / 2;
+    const int w = g_alpine_game_config.big_hud ? 280 : 200;
+    const int h = g_alpine_game_config.big_hud ? 269 : 166;
+    const int x = 10;
+    const int y = (rf::gr::screen_height() - h) / 2;
+
     rf::gr::set_color(0, 0, 0, 0x80);
     rf::gr::rect(x, y, w, h);
     rf::gr::set_color(79, 216, 255, 0x80);
     rf::gr::rect_border(x, y, w, h);
 
-    draw_chat_menu_text(x, y);
+    draw_chat_menu_text(x, y, w);
 }
 
 void set_chat_menu_state(ChatMenuType state) {
