@@ -664,6 +664,34 @@ static void load_additional_packfiles_new()
     }
 }
 
+bool is_known_missing_stock_asset(const std::string_view filename) {
+    static constexpr std::array<std::string_view, 3> missing_filenames = {
+        "bigboom.vbm",
+        "fp_shotgun_reload.wav",
+        "laser loop.wav",
+    };
+
+    for (const std::string_view missing : missing_filenames) {
+        if (filename.size() != missing.size()) {
+            continue;
+        }
+
+        bool matches = true;
+        for (size_t i = 0; i < filename.size(); ++i) {
+            if (std::tolower(static_cast<uint8_t>(filename[i])) != missing[i]) {
+                matches = false;
+                break;
+            }
+        }
+
+        if (matches) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void vpackfile_apply_patches()
 {
     // VPackfile handling implemetation getting rid of all limits
