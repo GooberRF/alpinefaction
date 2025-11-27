@@ -1700,7 +1700,7 @@ void multi_hud_level_init() {
     g_level_chat_menu_present = has_valid_entries;
 }
 
-void draw_chat_menu_text(const int x, int y, const int max_width) {
+void draw_chat_menu_text(const int x, int y, const int w) {
     if (!g_active_menu) {
         return;
     }
@@ -1735,7 +1735,7 @@ void draw_chat_menu_text(const int x, int y, const int max_width) {
             ? element.long_string
             : element.display_string;
         std::string line = std::format("{}: {}", display_index, display_name);
-        gr_fit_string(line, max_width - 8 * 2, font_id);
+        gr_fit_string(line, w - 8 * 2, font_id);
         rf::gr::string_aligned(
             rf::gr::ALIGN_LEFT,
             x + 8,
