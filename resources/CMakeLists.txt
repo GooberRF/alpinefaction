@@ -193,7 +193,6 @@ add_packfile(alpinefaction.vpp
     images/mtl_archway04-mip1.tga
     images/pls_airlockmat01-mip2.tga
     images/consolebutton2A.tga
-    images/dummy/bigboom.vbm # Dummy bitmap to silence warning
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
@@ -212,10 +211,6 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk3.v3m
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
-
-    # Dummy audio files to silence warnings
-    audio/dummy/fp_shotgun_reload.wav
-    "audio/dummy/Laser loop.wav"
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin
