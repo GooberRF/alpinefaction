@@ -1759,7 +1759,7 @@ void draw_chat_menu_text(const int x, int y, const int w) {
 }
 
 void hud_render_draw_chat_menu() {
-    const int w = g_alpine_game_config.big_hud ? 280 : 200;
+    const int w = g_alpine_game_config.big_hud ? 281 : 200;
     const int h = g_alpine_game_config.big_hud ? 269 : 166;
     const int x = 10;
     const int y = (rf::gr::screen_height() - h) / 2;
