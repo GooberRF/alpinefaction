@@ -128,9 +128,9 @@ static void spectate_next_player(const bool dir, const bool try_alive_players_fi
             == std::optional{pf_pure_status::rfsb};
         if (new_target == g_spectate_mode_target) {
             break; // nothing found
-        } else if (try_alive_players_first && rf::player_is_dead(new_target)) {
-            continue;
         } else if (is_browser) {
+            continue;
+        } else if (try_alive_players_first && rf::player_is_dead(new_target)) {
             continue;
         } else if (new_target != rf::local_player) {
             multi_spectate_set_target_player(new_target);
