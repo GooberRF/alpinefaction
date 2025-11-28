@@ -252,8 +252,8 @@ protected:
     using WrapperPtr = void*;
 
     WrapperPtr m_wrapper_ptr;
-    // WithoutRegsAccess will always crash if needs_trampoline == false, so protect against that
-    BaseCodeInjectionWithoutRegsAccess(uintptr_t addr, WrapperPtr wrapper_ptr, bool needs_trampoline) :
+
+    BaseCodeInjectionWithoutRegsAccess(uintptr_t addr, WrapperPtr wrapper_ptr) :
         BaseCodeInjection(addr, true), m_wrapper_ptr(wrapper_ptr)
     {}
 
@@ -266,8 +266,8 @@ class CodeInjection2<T, decltype(std::declval<T>()())> : public BaseCodeInjectio
     T m_functor;
 
 public:
-    CodeInjection2(uintptr_t addr, T handler, bool needs_trampoline) :
-        BaseCodeInjectionWithoutRegsAccess(addr, reinterpret_cast<WrapperPtr>(&wrapper), needs_trampoline),
+    CodeInjection2(uintptr_t addr, T handler) :
+        BaseCodeInjectionWithoutRegsAccess(addr, reinterpret_cast<WrapperPtr>(&wrapper)),
         m_functor(handler)
     {}
 
@@ -278,11 +278,20 @@ private:
     }
 };
 
-template<typename T>
-class CodeInjection : public CodeInjection2<T>
-{
+template <typename T>
+class CodeInjection : public CodeInjection2<T> {
 public:
-    CodeInjection(uintptr_t addr, T handler, bool needs_trampoline = true) :
-        CodeInjection2<T>(addr, handler, needs_trampoline)
-    {}
+    CodeInjection(const uintptr_t addr, const T handler)
+        requires std::invocable<T&>
+        : CodeInjection2<T>(addr, handler) {
+    }
+
+    CodeInjection(
+        const uintptr_t addr,
+        const T handler,
+        const bool needs_trampoline = true
+    )
+        requires std::invocable<T&, BaseCodeInjection::Regs&>
+        : CodeInjection2<T>(addr, handler, needs_trampoline) {
+    }
 };
