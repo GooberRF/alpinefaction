@@ -234,7 +234,7 @@ class CodeInjection2<T, decltype(std::declval<T>()(std::declval<BaseCodeInjectio
 public:
     CodeInjection2(uintptr_t addr, T handler, bool needs_trampoline) :
         BaseCodeInjectionWithRegsAccess(addr, reinterpret_cast<WrapperPtr>(&wrapper), needs_trampoline),
-        m_functor(handler)
+        m_functor(std::move(handler))
     {}
 
 private:
@@ -268,7 +268,7 @@ class CodeInjection2<T, decltype(std::declval<T>()())> : public BaseCodeInjectio
 public:
     CodeInjection2(uintptr_t addr, T handler) :
         BaseCodeInjectionWithoutRegsAccess(addr, reinterpret_cast<WrapperPtr>(&wrapper)),
-        m_functor(handler)
+        m_functor(std::move(handler))
     {}
 
 private:
@@ -281,17 +281,17 @@ private:
 template <typename T>
 class CodeInjection : public CodeInjection2<T> {
 public:
-    CodeInjection(const uintptr_t addr, const T handler)
+    CodeInjection(const uintptr_t addr, T handler)
         requires std::invocable<T&>
-        : CodeInjection2<T>(addr, handler) {
+        : CodeInjection2<T>(addr, std::move(handler)) {
     }
 
     CodeInjection(
         const uintptr_t addr,
-        const T handler,
+        T handler,
         const bool needs_trampoline = true
     )
         requires std::invocable<T&, BaseCodeInjection::Regs&>
-        : CodeInjection2<T>(addr, handler, needs_trampoline) {
+        : CodeInjection2<T>(addr, std::move(handler), needs_trampoline) {
     }
 };
