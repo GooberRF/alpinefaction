@@ -458,7 +458,7 @@ CallHook level_init_pre_console_output_hook{
                 reset_local_pending_game_type();
             }
 
-            rf::console::print("-- Level Initializing: {} ({}) --", rf::level_filename_to_load, get_game_type_string(rf::netgame.type));
+            rf::console::print("-- Level Initializing: {} ({}) --", rf::level_filename_to_load, multi_game_type_name_short(rf::netgame.type));
             apply_rules_for_current_level();
         }
         else { // SP

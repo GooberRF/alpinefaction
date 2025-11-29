@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <memory>
+#include <vector>
 #include <cstring>
 #include <cassert>
 #include <windows.h>
@@ -10,6 +12,7 @@
 #include "../../rf/v3d.h"
 #include "../../rf/character.h"
 #include "../../misc/misc.h"
+#include "../../rf/level.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_context.h"
@@ -39,6 +42,14 @@ namespace df::gr::d3d11
     {
     public:
         MeshRenderCache(VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context);
+
+        const std::vector<GpuVertex>& vertices() const
+        {
+            return vertices_;
+        }
+
+    private:
+        std::vector<GpuVertex> vertices_;
     };
 
     MeshRenderCache::MeshRenderCache(VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context) :
@@ -46,6 +57,7 @@ namespace df::gr::d3d11
     {
         std::size_t num_verts = 0;
         std::size_t num_inds = 0;
+        base_vertex_offset_ = vertex_buffer.size();
         for (int lod_index = 0; lod_index < lod_mesh->num_levels; ++lod_index) {
             rf::VifMesh* mesh = lod_mesh->meshes[lod_index];
             for (int chunk_index = 0; chunk_index < mesh->num_chunks; ++chunk_index) {
@@ -65,6 +77,7 @@ namespace df::gr::d3d11
         for (int lod_index = 0; lod_index < lod_mesh->num_levels; ++lod_index) {
             rf::VifMesh* mesh = lod_mesh->meshes[lod_index];
             meshes_[lod_index].batches.reserve(mesh->num_chunks);
+            meshes_[lod_index].vertex_offset = gpu_verts.size();
             for (int chunk_index = 0; chunk_index < mesh->num_chunks; ++chunk_index) {
                 rf::VifChunk& chunk = mesh->chunks[chunk_index];
                 std::size_t start_index = gpu_inds.size();
@@ -106,10 +119,12 @@ namespace df::gr::d3d11
                     index_buffer.size() + start_index, num_indices, base_vertex,
                     chunk.texture_idx, chunk.mode, double_sided);
             }
+            meshes_[lod_index].vertex_count = gpu_verts.size() - meshes_[lod_index].vertex_offset;
         }
         xlog::debug("Creating mesh geometry buffers: verts {} inds {}", gpu_verts.size(), gpu_inds.size());
 
-        vertex_buffer.write(gpu_verts.data(), gpu_verts.size(), render_context);
+        vertices_ = std::move(gpu_verts);
+        vertex_buffer.write(vertices_.data(), vertices_.size(), render_context);
         index_buffer.write(gpu_inds.data(), gpu_inds.size(), render_context);
     }
 
@@ -485,12 +500,63 @@ namespace df::gr::d3d11
             assert(false);
         }
         rf::Color color{255, 255, 255};
+        auto add_clamped = [](const rf::Color& a, const rf::Color& b) {
+            rf::Color sum{};
+            sum.red = std::min<int>(a.red + b.red, 255);
+            sum.green = std::min<int>(a.green + b.green, 255);
+            sum.blue = std::min<int>(a.blue + b.blue, 255);
+            sum.alpha = 255;
+            return sum;
+        };
+
+        bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         if (!ir_scanner) {
-            color = params.ambient_color;
+            if (is_character_mesh) {
+                color = rf::level.ambient_light; // todo: vertex colors for skeletal meshes
+                //color = params.ambient_color;
+            } else {
+                // replicate approximate light level from stock game DX9
+                color = add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
+            }
         } else {
             color = params.self_illum;
         }
         color.alpha = static_cast<ubyte>(params.alpha);
+
+        bool use_vertex_colors = params.vertex_colors != nullptr;
+        render_context_.update_lights();
+
+        if (use_vertex_colors) {
+            if (auto mesh_cache = dynamic_cast<const MeshRenderCache*>(&cache)) {
+                const auto& mesh = mesh_cache->get_mesh(lod_index);
+                if (mesh.vertex_count > 0) {
+                    const auto& base_vertices = mesh_cache->vertices();
+                    auto start_it = base_vertices.begin() + mesh.vertex_offset;
+                    auto end_it = start_it + mesh.vertex_count;
+                    std::vector<GpuVertex> updated_vertices(start_it, end_it);
+
+                    struct PackedRgb
+                    {
+                        ubyte red;
+                        ubyte green;
+                        ubyte blue;
+                    };
+
+                    auto vertex_colors = reinterpret_cast<const PackedRgb*>(params.vertex_colors);
+                    for (std::size_t i = 0; i < mesh.vertex_count; ++i) {
+                        const auto& rgb = vertex_colors[i];
+                        rf::Color color{rgb.red, rgb.green, rgb.blue, 255};
+                        updated_vertices[i].diffuse = pack_color(color);
+                    }
+
+                    UINT vertex_offset_bytes = static_cast<UINT>((mesh_cache->base_vertex_offset() + mesh.vertex_offset) * sizeof(GpuVertex));
+                    UINT bytes_to_write = static_cast<UINT>(mesh.vertex_count * sizeof(GpuVertex));
+                    D3D11_BOX box{vertex_offset_bytes, 0, 0, vertex_offset_bytes + bytes_to_write, 1, 1};
+                    render_context_.device_context()->UpdateSubresource(
+                        v3d_vb_.buffer(), 0, &box, updated_vertices.data(), bytes_to_write, bytes_to_write);
+                }
+            }
+        }
 
         auto& batches = cache.get_batches(lod_index);
 

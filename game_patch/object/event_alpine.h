@@ -21,7 +21,8 @@
 #include "../rf/trigger.h"
 #include "../rf/particle_emitter.h"
 #include "../main/main.h"
-#include "../object/object.h"
+#include "object.h"
+#include "../misc/player.h"
 #include "../multi/gametype.h"
 #include "../rf/player/player.h"
 #include "../rf/os/timestamp.h"
@@ -138,6 +139,11 @@ namespace rf
         enemy_team,
         red_team,
         blue_team
+    };
+
+    enum class GameplayRule : int
+    {
+        player_has_headlamp,
     };
 
     // start alpine event structs
@@ -2319,6 +2325,45 @@ namespace rf
             }
 
             return false;
+        }
+    };
+
+    // id 143
+    struct EventSetGameplayRule : Event
+    {
+        GameplayRule rule = GameplayRule::player_has_headlamp;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventSetGameplayRule*>(event);
+                this_event->rule = static_cast<GameplayRule>(std::stoi(value));
+            };
+        }
+
+        void turn_on() override
+        {
+            switch (rule) {
+                case GameplayRule::player_has_headlamp:
+                    set_headlamp_toggle_enabled(true);
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        void turn_off() override
+        {
+            switch (rule) {
+                case GameplayRule::player_has_headlamp:
+                    set_headlamp_toggle_enabled(false);
+                    break;
+                default:
+                    break;
+            }
         }
     };
 

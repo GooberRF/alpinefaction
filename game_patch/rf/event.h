@@ -338,7 +338,8 @@ namespace rf
         Modify_Respawn_Point,
         When_Captured,
         Set_Capture_Point_Owner,
-        Owner_Gate
+        Owner_Gate,
+        Set_Gameplay_Rule
     };
 
     // int to EventType

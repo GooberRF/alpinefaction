@@ -65,7 +65,7 @@ namespace df::gr::d3d11
     {
     public:
         LightsBuffer(ID3D11Device* device);
-        void update(ID3D11DeviceContext* device_context);
+        void update(ID3D11DeviceContext* device_context, bool force_neutral = false);
 
         operator ID3D11Buffer*() const
         {
@@ -349,9 +349,9 @@ namespace df::gr::d3d11
             }
         }
 
-        void update_lights()
+        void update_lights(bool force_neutral = false)
         {
-            lights_buffer_.update(device_context_);
+            lights_buffer_.update(device_context_, force_neutral);
         }
 
         void draw_indexed(int index_count, int index_start_location, int base_vertex_location)

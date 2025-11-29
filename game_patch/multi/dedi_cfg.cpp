@@ -82,6 +82,23 @@ void handle_log_param()
     g_ads_full_console_log = get_log_cmd_line_param().found();
 }
 
+static OvertimeConfig parse_overtime_config(const toml::table& t)
+{
+    OvertimeConfig v;
+    if (auto x = t["enabled"].value<bool>())
+        v.enabled = *x;
+
+    if (v.enabled) {
+        if (auto x = t["time"].value<int>())
+            v.set_additional_time(*x);
+        if (auto x = t["tie_when_flag_stolen"].value<bool>())
+            v.consider_tie_if_flag_stolen = *x;
+        if (auto x = t["tie_when_hill_contested"].value<bool>())
+            v.consider_tie_if_hill_contested = *x;
+    }
+    return v;
+}
+
 static DefaultPlayerWeaponConfig parse_default_player_weapon(const toml::table& t, DefaultPlayerWeaponConfig c)
 {
     if (auto x = t["weapon_name"].value<std::string>()) {
@@ -417,6 +434,9 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
 
     if (auto v = t["time_limit"].value<float>())
         o.set_time_limit(*v);
+    if (auto v = t["overtime"].as_table())
+        o.overtime = parse_overtime_config(*v);
+
     if (auto v = t["individual_kill_limit"].value<int>())
         o.set_individual_kill_limit(*v);
     if (auto v = t["team_kill_limit"].value<int>())
@@ -556,21 +576,6 @@ static VoteConfig parse_vote_config(const toml::table& t)
             v.ignore_nonvoters = *x;
         if (auto x = t["time"].value<float>())
             v.set_time_limit_seconds(*x);
-    }
-    return v;
-}
-
-static OvertimeConfig parse_overtime_config(const toml::table& t)
-{
-    OvertimeConfig v;
-    if (auto x = t["enabled"].value<bool>())
-        v.enabled = *x;
-
-    if (v.enabled) {
-        if (auto x = t["time"].value<int>())
-            v.set_additional_time(*x);
-        if (auto x = t["tie_when_flag_stolen"].value<bool>())
-            v.consider_tie_if_flag_stolen = *x;
     }
     return v;
 }
@@ -925,13 +930,8 @@ static void apply_known_table_in_order(AlpineServerConfig& cfg, const std::strin
         cfg.alpine_restricted_config = parse_alpine_restrict_config(tbl);
     else if (key == "click_limiter")
         cfg.click_limiter_config = parse_click_limiter_config(tbl);
-    else if (key == "vote_match") {
+    else if (key == "vote_match")
         cfg.vote_match = parse_vote_config(tbl);
-        if (cfg.vote_match.enabled) {
-            if (auto sub = tbl["overtime"].as_table())
-                cfg.overtime = parse_overtime_config(*sub);
-        }
-    }
     else if (key == "vote_kick")
         cfg.vote_kick = parse_vote_config(tbl);
     else if (key == "vote_level")
@@ -1082,68 +1082,6 @@ void load_ads_server_config(std::string ads_config_name)
     g_alpine_server_config = std::move(cfg);
 }
 
-std::string get_game_type_string(rf::NetGameType game_type) {
-    std::string out_string;
-    switch (game_type) {
-        case rf::NetGameType::NG_TYPE_TEAMDM:
-            out_string = "TDM";
-            break;
-        case rf::NetGameType::NG_TYPE_CTF:
-            out_string = "CTF";
-            break;
-        case rf::NetGameType::NG_TYPE_KOTH:
-            out_string = "KOTH";
-            break;
-        case rf::NetGameType::NG_TYPE_DC:
-            out_string = "DC";
-            break;
-        case rf::NetGameType::NG_TYPE_REV:
-            out_string = "REV";
-            break;
-        case rf::NetGameType::NG_TYPE_RUN:
-            out_string = "RUN";
-            break;
-        case rf::NetGameType::NG_TYPE_ESC:
-            out_string = "ESC";
-            break;
-        default:
-            out_string = "DM";
-            break;
-    }
-    return out_string;
-}
-
-std::string get_game_type_string_long(rf::NetGameType game_type) {
-    std::string out_string;
-    switch (game_type) {
-        case rf::NetGameType::NG_TYPE_TEAMDM:
-            out_string = "Team Deathmatch";
-            break;
-        case rf::NetGameType::NG_TYPE_CTF:
-            out_string = "Capture the Flag";
-            break;
-        case rf::NetGameType::NG_TYPE_KOTH:
-            out_string = "King of the Hill";
-            break;
-        case rf::NetGameType::NG_TYPE_DC:
-            out_string = "Damage Control";
-            break;
-        case rf::NetGameType::NG_TYPE_REV:
-            out_string = "Revolt";
-            break;
-        case rf::NetGameType::NG_TYPE_RUN:
-            out_string = "Run";
-            break;
-        case rf::NetGameType::NG_TYPE_ESC:
-            out_string = "Escalation";
-            break;
-        default:
-            out_string = "Deathmatch";
-            break;
-    }
-    return out_string;
-}
-
 void print_gungame(std::string& output, const GunGameConfig& cur, const GunGameConfig& base_cfg, bool base = true)
 {
     const auto iter = std::back_inserter(output);
@@ -1242,11 +1180,26 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     // game type
     if (base || rules.game_type != b.game_type)
-        std::format_to(iter, "  Game type:                             {}\n", get_game_type_string(rules.game_type));
+        std::format_to(iter, "  Game type:                             {}\n", multi_game_type_name_short(rules.game_type));
 
     // time limit
     if (base || rules.time_limit != b.time_limit)
         std::format_to(iter, "  Time limit:                            {} min\n", rules.time_limit / 60.0f);
+
+    const bool overtime_changed =
+        rules.overtime.enabled != b.overtime.enabled ||
+        (rules.overtime.enabled && (rules.overtime.additional_time != b.overtime.additional_time ||
+          rules.overtime.consider_tie_if_flag_stolen != b.overtime.consider_tie_if_flag_stolen ||
+          rules.overtime.consider_tie_if_hill_contested != b.overtime.consider_tie_if_hill_contested));
+
+    if (base || overtime_changed) {
+        std::format_to(iter, "  Overtime:                              {}\n", rules.overtime.enabled);
+        if (rules.overtime.enabled) {
+            std::format_to(iter, "    Additional time:                     {} min\n", rules.overtime.additional_time);
+            std::format_to(iter, "    Tie when flag stolen (CTF):          {}\n", rules.overtime.consider_tie_if_flag_stolen);
+            std::format_to(iter, "    Tie when hill contested (KOTH):      {}\n", rules.overtime.consider_tie_if_hill_contested);
+        }
+    }
 
     // score limits
     if (base || rules.individual_kill_limit != b.individual_kill_limit)
@@ -1634,12 +1587,6 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     if (vm.enabled) {
         std::format_to(iter, "    Ignore nonvoters:                    {}\n", vm.ignore_nonvoters);
         std::format_to(iter, "    Time limit:                          {} sec\n", vm.time_limit_seconds);
-        auto& ot = cfg.overtime;
-        std::format_to(iter, "    Overtime:                            {}\n", ot.enabled);
-        if (ot.enabled) {
-            std::format_to(iter, "      Additional time:                   {} min\n", ot.additional_time);
-            std::format_to(iter, "      Tie when flag stolen:              {}\n", ot.consider_tie_if_flag_stolen);
-        }
     }
 
     auto print_vote = [&](std::string name, const VoteConfig& v) {
@@ -1787,15 +1734,15 @@ bool apply_game_type_for_current_level() {
         if (!g_ads_minimal_server_info && !has_already_queued_change && desired != upcoming) {
             if (g_manual_rules_override && g_manual_rules_override->preset_alias) {
                 rf::console::print("Applying rules preset '{}' game type {} for manually loaded level {}...\n",
-                    *g_manual_rules_override->preset_alias, get_game_type_string(desired), rf::level_filename_to_load);
+                    *g_manual_rules_override->preset_alias, multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
             else if (g_manual_rules_override) {
                 rf::console::print("Applying manual override game type {} for manually loaded level {}...\n",
-                    get_game_type_string(desired), rf::level_filename_to_load);
+                    multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
             else {
                 rf::console::print("Applying base game type {} for manually loaded level {}...\n",
-                    get_game_type_string(desired), rf::level_filename_to_load);
+                    multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
         }
     }
@@ -1810,7 +1757,7 @@ bool apply_game_type_for_current_level() {
         if (!g_ads_minimal_server_info && !has_already_queued_change && desired != upcoming) {
             std::string_view level_name = idx_valid ? std::string_view(cfg.levels[idx].level_filename) : std::string_view("UNKNOWN");
             rf::console::print("Applying game type {} for server rotation index {} ({})...\n",
-                get_game_type_string(desired), idx, level_name);
+                multi_game_type_name_short(desired), idx, level_name);
         }
     }
 
@@ -1819,13 +1766,13 @@ bool apply_game_type_for_current_level() {
         changed_this_call = set_upcoming_game_type(desired);
     }
     //else
-    //    xlog::warn("apply_game_type_for_current_level: Skipping set, upcoming GT already queued to {}", get_game_type_string(upcoming));
+    //    xlog::warn("apply_game_type_for_current_level: Skipping set, upcoming GT already queued to {}", multi_game_type_name_short(upcoming));
 
 
     /*xlog::warn("apply_game_type_for_current_level: desired={}, upcoming={}, current={}, changed={}, alreadyQueued={}",
-                get_game_type_string(desired),
-                get_game_type_string(upcoming),
-                get_game_type_string(netgame.type),
+                multi_game_type_name_short(desired),
+                multi_game_type_name_short(upcoming),
+                multi_game_type_name_short(netgame.type),
                 changed_this_call,
                 has_already_queued_change);*/
 

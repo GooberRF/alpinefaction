@@ -1528,7 +1528,7 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
             continue;
         }
 
-        if (is_player_minimum_af_client_version(&player, 1, 2)) {
+        if (is_player_minimum_af_client_version(&player, 1, 2, true)) {
             rf::multi_io_send_reliable(
                 &player,
                 &buf.packet,
@@ -1546,7 +1546,7 @@ void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player) 
         return;
     }
 
-    if (is_player_minimum_af_client_version(player, 1, 2)) {
+    if (is_player_minimum_af_client_version(player, 1, 2, true)) {
         const af_server_msg_packet_buf buf = build_automated_chat_msg_packet(msg);
 
         rf::multi_io_send_reliable(
@@ -1587,11 +1587,10 @@ void af_process_server_msg_packet(
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_AUTOMATED_CHAT)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const rf::String msg{std::string_view{ptr, len - sizeof(msg_packet)}};
+        handle_vote_or_ready_up_msg(msg);
         rf::multi_chat_print(msg, rf::ChatMsgColor::gold_white, rf::String{"Server: "});
         if (!g_alpine_game_config.simple_server_chat_msgs) {
             rf::snd_play(4, 0, 0.f, 1.f);
         }
     }
 }
-
-

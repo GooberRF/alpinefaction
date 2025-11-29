@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 44; // must be 1 higher than actual count
+constexpr int new_event_count = 45; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -84,6 +84,7 @@ const char* additional_event_names[new_event_count] = {
     "When_Captured",
     "Set_Capture_Point_Owner",
     "Owner_Gate",
+    "Set_Gameplay_Rule",
     "_dummy"
 };
 
@@ -643,6 +644,18 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         },
         {
             {FIELD_INT2, true}
+        }
+    }},
+    {AlpineDedEventID::Set_Gameplay_Rule, {
+        {FIELD_INT1},
+        {
+            {FIELD_INT1, "Rule to set (int1):"}
+        },
+        {
+            {FIELD_INT1, {"Player has headlamp"}}
+        },
+        {
+            {FIELD_INT1, true}
         }
     }},
 };

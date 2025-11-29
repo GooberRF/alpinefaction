@@ -3,8 +3,14 @@
 #include <patch_common/CodeInjection.h>
 #include <common/version/version.h>
 #include <xlog/xlog.h>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <random>
+#include <vector>
 #include "../rf/ui.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
@@ -19,6 +25,7 @@
 #include "../graphics/gr.h"
 #include "../os/os.h"
 #include "misc.h"
+#include "alpine_settings.h"
 
 constexpr int EGG_ANIM_ENTER_TIME = 2000;
 constexpr int EGG_ANIM_LEAVE_TIME = 2000;
@@ -35,6 +42,94 @@ namespace rf
 {
     static auto& menu_version_label = addr_as_ref<ui::Gadget>(0x0063C088);
     static auto& main_menu_music_sig = addr_as_ref<int>(0x005990F8);
+}
+
+struct Snowflake
+{
+    float x;
+    float y;
+    float speed;
+    float sway_phase;
+    float sway_speed;
+    float size;
+};
+
+static std::vector<Snowflake> g_menu_snowflakes;
+
+static bool is_snow_season()
+{
+    const std::time_t time_now = std::time(nullptr);
+    const std::tm date_now = *std::localtime(&time_now);
+
+    const int month = date_now.tm_mon;
+    const int day = date_now.tm_mday;
+
+    return (month == 11 && day >= 11 && day <= 31); // Dec 11 - 31
+}
+
+static void reset_menu_snowflakes()
+{
+    g_menu_snowflakes.clear();
+}
+
+static void ensure_menu_snowflakes()
+{
+    if (!g_menu_snowflakes.empty())
+        return;
+
+    constexpr int flake_count = 100;
+    std::uniform_real_distribution<float> x_dist(0.0f, static_cast<float>(rf::gr::screen_width()));
+    std::uniform_real_distribution<float> y_dist(0.0f, static_cast<float>(rf::gr::screen_height()));
+    std::uniform_real_distribution<float> speed_dist(35.0f, 90.0f);
+    std::uniform_real_distribution<float> sway_speed_dist(1.5f, 3.5f);
+    std::uniform_real_distribution<float> size_dist(1.5f, 6.5f);
+
+    g_menu_snowflakes.reserve(flake_count);
+    for (int i = 0; i < flake_count; ++i) {
+        g_menu_snowflakes.push_back({
+            x_dist(g_rng),
+            y_dist(g_rng),
+            speed_dist(g_rng),
+            std::uniform_real_distribution<float>(0.0f, static_cast<float>(2 * PI))(g_rng),
+            sway_speed_dist(g_rng),
+            size_dist(g_rng),
+        });
+    }
+}
+
+static void update_and_render_menu_snow()
+{
+    const float screen_w = static_cast<float>(rf::gr::screen_width());
+    const float screen_h = static_cast<float>(rf::gr::screen_height());
+    const float dt = rf::frametime;
+
+    ensure_menu_snowflakes();
+
+    rf::gr::set_color(255, 255, 255, 200);
+
+    for (auto& flake : g_menu_snowflakes) {
+        flake.y += flake.speed * dt;
+        flake.sway_phase += flake.sway_speed * dt;
+        flake.x += std::sin(flake.sway_phase) * 20.0f * dt;
+
+        if (flake.y > screen_h) {
+            flake.y = -flake.size;
+            flake.x = std::uniform_real_distribution<float>(0.0f, screen_w)(g_rng);
+        }
+
+        if (flake.x < -flake.size) {
+            flake.x = screen_w + flake.size;
+        }
+        else if (flake.x > screen_w + flake.size) {
+            flake.x = -flake.size;
+        }
+
+        int draw_x = static_cast<int>(flake.x);
+        int draw_y = static_cast<int>(flake.y);
+        int draw_size = std::max(1, static_cast<int>(flake.size));
+
+        rf::gr::rect(draw_x, draw_y, draw_size, draw_size);
+    }
 }
 
 // Note: fastcall is used because MSVC does not allow free thiscall functions
@@ -144,6 +239,24 @@ FunHook<void()> mainmenu_init_hook{
     []() {
         mainmenu_init_hook.call_target();
         apply_maximum_fps(); // set maximum FPS
+        reset_menu_snowflakes();
+    },
+};
+
+FunHook<void()> menu_draw_background_hook{
+    0x00442CE0,
+    []() {
+        menu_draw_background_hook.call_target();
+
+        if (g_alpine_game_config.seasonal_effect > 0) {
+            if (g_alpine_game_config.seasonal_effect == 2 ||
+                (g_alpine_game_config.seasonal_effect == 1 && is_snow_season())) {
+                update_and_render_menu_snow();
+            }
+            else {
+                reset_menu_snowflakes();
+            }
+        }
     },
 };
 
@@ -258,6 +371,9 @@ void apply_main_menu_patches()
 
     // Make menu background scrolling smooth on high resolutions
     menu_draw_background_injection.install();
+
+    // Render seasonal effects
+    menu_draw_background_hook.install();
 
     // Fix clicking fav checkbox in server list
     multi_servers_on_list_click_injection.install();

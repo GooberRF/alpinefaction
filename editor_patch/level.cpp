@@ -66,6 +66,7 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         auto& alpine_level_props = CDedLevel::Get()->GetAlpineLevelProperties();
         CheckDlgButton(hdlg, IDC_LEGACY_CYCLIC_TIMERS, alpine_level_props.legacy_cyclic_timers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_LEGACY_MOVERS, alpine_level_props.legacy_movers ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_STARTS_WITH_HEADLAMP, alpine_level_props.starts_with_headlamp ? BST_CHECKED : BST_UNCHECKED);
     },
 };
 
@@ -77,6 +78,7 @@ CodeInjection CLevelDialog_OnOK_patch{
         auto& alpine_level_props = CDedLevel::Get()->GetAlpineLevelProperties();
         alpine_level_props.legacy_cyclic_timers = IsDlgButtonChecked(hdlg, IDC_LEGACY_CYCLIC_TIMERS) == BST_CHECKED;
         alpine_level_props.legacy_movers = IsDlgButtonChecked(hdlg, IDC_LEGACY_MOVERS) == BST_CHECKED;
+        alpine_level_props.starts_with_headlamp = IsDlgButtonChecked(hdlg, IDC_STARTS_WITH_HEADLAMP) == BST_CHECKED;
     },
 };
 
@@ -199,15 +201,8 @@ void ApplyLevelPatches()
     // Avoid clamping lightmaps when loading rfl files
     AsmWriter{0x004A5D6A}.jmp(0x004A5D6E);
 
-    // Default level ambient light and fog color to flat black
-    constexpr std::uint8_t default_ambient_light = 0;
+    // Default level fog color to flat black
     constexpr std::uint8_t default_fog = 0;
-    write_mem<std::uint8_t>(0x0041CABD + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CABF + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CAC1 + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CAD3 + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CAD5 + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CAD7 + 1, default_ambient_light);
     write_mem<std::uint8_t>(0x0041CB07 + 1, default_fog);
     write_mem<std::uint8_t>(0x0041CB09 + 1, default_fog);
     write_mem<std::uint8_t>(0x0041CB0B + 1, default_fog);

@@ -699,9 +699,11 @@ namespace df::gr::d3d11
     void SolidRenderer::render_sky_room(GRoom *room)
     {
         xlog::trace("Rendering sky room {} cache {}", room->room_index, room->geo_cache);
+        render_context_.update_lights(true);
         before_render(sky_room_offset, rf::identity_matrix);
         render_room_faces(rf::level.geometry, room, FaceRenderType::opaque);
         render_room_faces(rf::level.geometry, room, FaceRenderType::alpha);
+        render_context_.update_lights();
     }
 
     void SolidRenderer::render_movable_solid(GSolid* solid, const Vector3& pos, const Matrix3& orient)

@@ -31,7 +31,7 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     // Populate combo boxes with static content
     m_renderer_combo.AddString("Direct3D 8");
     m_renderer_combo.AddString("Direct3D 9 (recommended)");
-    m_renderer_combo.AddString("Direct3D 11 (experimental)");
+    m_renderer_combo.AddString("Direct3D 11 (testing)");
 
     m_wnd_mode_combo.AddString("Exclusive Fullscreen");
     m_wnd_mode_combo.AddString("Windowed");

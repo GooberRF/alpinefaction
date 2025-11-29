@@ -14,6 +14,7 @@ struct AlpineLevelProperties
     bool legacy_cyclic_timers = true;
     // v2
     bool legacy_movers = true;
+    bool starts_with_headlamp = true;
 
     static AlpineLevelProperties& instance()
     {
@@ -79,6 +80,10 @@ struct AlpineLevelProperties
                 return;
             legacy_movers = (u8 != 0);
             xlog::debug("[AlpineLevelProps] legacy_movers {}", legacy_movers);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            starts_with_headlamp = (u8 != 0);
+            xlog::debug("[AlpineLevelProps] starts_with_headlamp {}", starts_with_headlamp);
         }
     }
 };

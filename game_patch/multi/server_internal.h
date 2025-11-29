@@ -251,6 +251,7 @@ struct OvertimeConfig
     bool enabled = false;
     int additional_time = 5;
     bool consider_tie_if_flag_stolen = false;
+    bool consider_tie_if_hill_contested = true;
 
     // =============================================
 
@@ -519,6 +520,7 @@ struct AlpineServerConfigRules
     // stock game rules
     rf::NetGameType game_type = rf::NetGameType::NG_TYPE_DM;
     float time_limit = 600.0f;
+    OvertimeConfig overtime;
     int individual_kill_limit = 30;
     int team_kill_limit = 100;
     int cap_limit = 5;
@@ -652,7 +654,6 @@ struct AlpineServerConfig
     DamageNotificationConfig damage_notification_config;
     ClickLimiterConfig click_limiter_config;
     VoteConfig vote_match;
-    OvertimeConfig overtime;
     VoteConfig vote_kick;
     VoteConfig vote_level;
     VoteConfig vote_gametype;

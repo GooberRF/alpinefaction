@@ -31,15 +31,20 @@ static float g_character_ambient_light_g = 1.0f;
 static float g_character_ambient_light_b = 1.0f;
 bool g_character_meshes_are_fullbright = false;
 
-void obj_mesh_lighting_alloc_one(rf::Object *objp)
+void obj_mesh_lighting_alloc_one(rf::Object* objp)
 {
-    // Note: ObjDeleteMesh frees mesh_lighting_data
+    if ((objp->type != rf::OT_ITEM && objp->type != rf::OT_CLUTTER) ||
+        !objp->vmesh ||
+        (objp->obj_flags & rf::OF_DELAYED_DELETE) ||
+        rf::vmesh_get_type(objp->vmesh) != rf::MESH_TYPE_STATIC) {
+        return;
+    }
     assert(objp->mesh_lighting_data == nullptr);
     auto size = rf::vmesh_calc_lighting_data_size(objp->vmesh);
     objp->mesh_lighting_data = rf::rf_malloc(size);
 }
 
-void obj_mesh_lighting_free_one(rf::Object *objp)
+void obj_mesh_lighting_free_one(rf::Object* objp)
 {
     if (objp->mesh_lighting_data) {
         rf::rf_free(objp->mesh_lighting_data);
@@ -47,28 +52,24 @@ void obj_mesh_lighting_free_one(rf::Object *objp)
     }
 }
 
-void obj_mesh_lighting_update_one(rf::Object *objp)
+void obj_mesh_lighting_update_one(rf::Object* objp)
 {
-    gr_light_use_static(true);
+    if (!objp->mesh_lighting_data)
+        return;
+
+    if (g_alpine_game_config.mesh_static_lighting) {
+        gr_light_use_static(true);
+    }
+
     rf::vmesh_update_lighting_data(objp->vmesh, objp->room, objp->pos, objp->orient, objp->mesh_lighting_data);
-    gr_light_use_static(false);
+
+    if (g_alpine_game_config.mesh_static_lighting)
+        gr_light_use_static(false);
 }
 
-static bool obj_should_be_lit(rf::Object *objp)
+void obj_mesh_lighting_maybe_update(rf::Object* objp)
 {
-    if (!g_alpine_game_config.mesh_static_lighting) {
-        return false;
-    }
-    if (!objp->vmesh || rf::vmesh_get_type(objp->vmesh) != rf::MESH_TYPE_STATIC) {
-        return false;
-    }
-    // Clutter object always use static lighting
-    return objp->type == rf::OT_CLUTTER || objp->type == rf::OT_ITEM;
-}
-
-void obj_mesh_lighting_maybe_update(rf::Object *objp)
-{
-    if (!objp->mesh_lighting_data && obj_should_be_lit(objp)) {
+    if (!objp->mesh_lighting_data) {
         obj_mesh_lighting_alloc_one(objp);
         obj_mesh_lighting_update_one(objp);
     }
@@ -125,16 +126,12 @@ FunHook<void()> obj_light_calculate_hook{
         rf::gr::light_matrix.make_identity();
         rf::gr::light_base.zero();
 
-        if (g_alpine_game_config.mesh_static_lighting) {
-            // Enable static lights
-            gr_light_use_static(true);
-            // Calculate lighting for meshes now
-            obj_light_calculate_hook.call_target();
-            // Switch back to dynamic lights
-            gr_light_use_static(false);
+        for (auto& it : DoublyLinkedList{rf::item_list}) {
+            obj_mesh_lighting_update_one(&it);
         }
-        else {
-            obj_light_calculate_hook.call_target();
+
+        for (auto& cl : DoublyLinkedList{rf::clutter_list}) {
+            obj_mesh_lighting_update_one(&cl);
         }
     },
 };
@@ -142,19 +139,12 @@ FunHook<void()> obj_light_calculate_hook{
 FunHook<void()> obj_light_alloc_hook{
     0x0048B1D0,
     []() {
-        for (auto& item: DoublyLinkedList{rf::item_list}) {
-            if (item.vmesh && !(item.obj_flags & rf::OF_DELAYED_DELETE)
-                && rf::vmesh_get_type(item.vmesh) == rf::MESH_TYPE_STATIC) {
-                auto size = rf::vmesh_calc_lighting_data_size(item.vmesh);
-                item.mesh_lighting_data = rf::rf_malloc(size);
-            }
+        for (auto& it : DoublyLinkedList{rf::item_list}) {
+            obj_mesh_lighting_alloc_one(&it);
         }
-        for (auto& clutter: DoublyLinkedList{rf::clutter_list}) {
-            if (clutter.vmesh && !(clutter.obj_flags & rf::OF_DELAYED_DELETE)
-                && rf::vmesh_get_type(clutter.vmesh) == rf::MESH_TYPE_STATIC) {
-                auto size = rf::vmesh_calc_lighting_data_size(clutter.vmesh);
-                clutter.mesh_lighting_data = rf::rf_malloc(size);
-            }
+
+        for (auto& cl : DoublyLinkedList{rf::clutter_list}) {
+            obj_mesh_lighting_alloc_one(&cl);
         }
     },
 };
@@ -162,13 +152,12 @@ FunHook<void()> obj_light_alloc_hook{
 FunHook<void()> obj_light_free_hook{
     0x0048B370,
     []() {
-        for (auto& item: DoublyLinkedList{rf::item_list}) {
-            rf::rf_free(item.mesh_lighting_data);
-            item.mesh_lighting_data = nullptr;
+        for (auto& it : DoublyLinkedList{rf::item_list}) {
+            obj_mesh_lighting_free_one(&it);
         }
-        for (auto& clutter: DoublyLinkedList{rf::clutter_list}) {
-            rf::rf_free(clutter.mesh_lighting_data);
-            clutter.mesh_lighting_data = nullptr;
+
+        for (auto& cl : DoublyLinkedList{rf::clutter_list}) {
+            obj_mesh_lighting_free_one(&cl);
         }
     },
 };

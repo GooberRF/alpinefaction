@@ -10,6 +10,7 @@
 #include "../rf/file/file.h"
 #include "../rf/mover.h"
 #include "level.h"
+#include "player.h"
 #include "../multi/server.h"
 
 CodeInjection level_read_data_check_restore_status_patch{
@@ -99,6 +100,7 @@ CodeInjection level_load_init_patch{
     []() {
         AlpineLevelProperties::instance() = {};
         DashLevelProps::instance() = {};
+        set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
     },
 };
 
@@ -112,6 +114,7 @@ CodeInjection level_load_chunk_patch{
         // handling for alpine level props chunk
         if (chunk_id == alpine_props_chunk_id) {
             AlpineLevelProperties::instance().deserialize(file, chunk_len);
+            set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
             regs.eip = 0x004608EF; // loop back to begin next chunk
         }
 

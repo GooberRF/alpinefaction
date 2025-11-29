@@ -134,7 +134,7 @@ namespace rf
         int *alt_tex;
         float field_14_unk_fire;
         gr::Color field_18;
-        ubyte *vertex_colors;
+        ubyte* vertex_colors;
         int powerup_bitmaps[2];
         gr::Color ambient_color;
         Matrix3 orient;
