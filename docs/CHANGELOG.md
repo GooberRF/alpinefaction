@@ -166,8 +166,8 @@ Version 1.2.0 (Willow): Not yet released
 - Fix rare crash when starting to spectate a player immediately when they land on a surface
 
 [@is-this-c](https://github.com/is-this-c)
-- Fix `pf_ac_verify_player` stub, so `pf_pure_status::rfsb` works
-- Fix `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
+- Fix `pf_ac_verify_player` stub, so `pf_player_stats_packet` is sent, when a player joins
+- Support `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
 - Fix a potential crash after a client quits a game if Directd3D 11 is enabled
 
 ### From [Dash Faction](https://github.com/rafalh/dashfaction)
