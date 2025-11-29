@@ -307,15 +307,14 @@ CodeInjection level_load_lightmaps_color_conv_patch{
                 || ceiling.green < floor.green
                 || ceiling.blue < floor.blue)
             {
-                xlog::warn("Invalid lightmap clamping range");
+                xlog::warn("Normalizing an invalid lightmap clamping range");
             }
 
             const auto [r_min, r_max] = std::minmax(floor.red, ceiling.red);
             const auto [g_min, g_max] = std::minmax(floor.green, ceiling.green);
             const auto [b_min, b_max] = std::minmax(floor.blue, ceiling.blue);
 
-            const int pixel_count = lightmap->w * lightmap->h;
-            for (int i = 0; i < pixel_count * 3; i += 3) {
+            for (int i = 0; i < lightmap->w * lightmap->h * 3; i += 3) {
                 lightmap->buf[i + 0] = std::clamp(lightmap->buf[i + 0], r_min, r_max);
                 lightmap->buf[i + 1] = std::clamp(lightmap->buf[i + 1], g_min, g_max);
                 lightmap->buf[i + 2] = std::clamp(lightmap->buf[i + 2], b_min, b_max);
