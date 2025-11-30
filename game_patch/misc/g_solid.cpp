@@ -247,33 +247,47 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         if (!rf::gr::lock(lightmap->bm_handle, 0, &lock, rf::gr::LOCK_WRITE_ONLY))
             return;
 
-        uint32_t clamp_floor = 0; // no floor
-        uint32_t clamp_ceiling = 0xFFFFFFFF; // no ceiling
+        uint32_t floor_clamp = 0; // no floor
+        uint32_t ceiling_clamp = 0xFFFFFFFF; // no ceiling
         bool should_clamp = false; // no clamping by default
         bool floor_clamp_defined = false;
 
         // Check if the level explicitly defines clamp floor
-        if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::LightmapClampFloor)) {
-            clamp_floor = get_level_info_value<uint32_t>(AlpineLevelInfoID::LightmapClampFloor);
+        if (g_alpine_level_info_config
+            .is_option_loaded(
+                rf::level.filename,
+                AlpineLevelInfoID::LightmapClampFloor
+            )
+        ) {
+            floor_clamp = get_level_info_value<uint32_t>(
+                AlpineLevelInfoID::LightmapClampFloor
+            );
             floor_clamp_defined = true;
             should_clamp = true;
         }
 
         // Check if the level explicitly defines clamp ceiling
-        if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::LightmapClampCeiling)) {
-            clamp_ceiling = get_level_info_value<uint32_t>(AlpineLevelInfoID::LightmapClampCeiling);
+        if (g_alpine_level_info_config
+            .is_option_loaded(
+                rf::level.filename,
+                AlpineLevelInfoID::LightmapClampCeiling
+            )
+        ) {
+            ceiling_clamp = get_level_info_value<uint32_t>(
+                AlpineLevelInfoID::LightmapClampCeiling
+            );
             should_clamp = true;
         }
 
         // If no per-level floor clamp, consider using legacy clamping for non-Alpine levels
         if (!floor_clamp_defined && rf::level.version < 300) {
-            if ((g_alpine_game_config.always_clamp_official_lightmaps && rf::level.version < 200) ||
-                (!DashLevelProps::instance().lightmaps_full_depth && !g_alpine_game_config.full_range_lighting)) {
+            if ((g_alpine_game_config.always_clamp_official_lightmaps
+                && rf::level.version < 200)
+                || (!DashLevelProps::instance().lightmaps_full_depth
+                && !g_alpine_game_config.full_range_lighting)) {
                 should_clamp = true;
-
-                if (!floor_clamp_defined) {
-                    clamp_floor = 0x202020FF; // default floor clamp (R,G,B = 32)
-                }
+                constexpr int default_floor_clamp = 0x202020FF;
+                floor_clamp = default_floor_clamp;
             }
         }
 
@@ -286,20 +300,24 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         if (should_clamp) {
             xlog::debug("Applying lightmap clamping");
 
-            // Extract RGB components from clamping values
-            auto [clamp_r_floor, clamp_g_floor, clamp_b_floor, _] = extract_color_components(clamp_floor);
-            auto [clamp_r_ceiling, clamp_g_ceiling, clamp_b_ceiling, __] = extract_color_components(clamp_ceiling);
+            const rf::gr::Color floor = rf::gr::Color::from_hex(floor_clamp);
+            const rf::gr::Color ceiling = rf::gr::Color::from_hex(ceiling_clamp);
+
+            if (ceiling.red < floor.red
+                || ceiling.green < floor.green
+                || ceiling.blue < floor.blue)
+            {
+                xlog::warn("Normalizing an invalid lightmap clamping range");
+            }
+
+            const auto [r_min, r_max] = std::minmax(floor.red, ceiling.red);
+            const auto [g_min, g_max] = std::minmax(floor.green, ceiling.green);
+            const auto [b_min, b_max] = std::minmax(floor.blue, ceiling.blue);
 
             for (int i = 0; i < lightmap->w * lightmap->h * 3; i += 3) {
-                // Apply floor clamp
-                lightmap->buf[i] = std::max(lightmap->buf[i], static_cast<uint8_t>(clamp_r_floor));
-                lightmap->buf[i + 1] = std::max(lightmap->buf[i + 1], static_cast<uint8_t>(clamp_g_floor));
-                lightmap->buf[i + 2] = std::max(lightmap->buf[i + 2], static_cast<uint8_t>(clamp_b_floor));
-
-                // Apply ceiling clamp
-                lightmap->buf[i] = std::min(lightmap->buf[i], static_cast<uint8_t>(clamp_r_ceiling));
-                lightmap->buf[i + 1] = std::min(lightmap->buf[i + 1], static_cast<uint8_t>(clamp_g_ceiling));
-                lightmap->buf[i + 2] = std::min(lightmap->buf[i + 2], static_cast<uint8_t>(clamp_b_ceiling));
+                lightmap->buf[i + 0] = std::clamp(lightmap->buf[i + 0], r_min, r_max);
+                lightmap->buf[i + 1] = std::clamp(lightmap->buf[i + 1], g_min, g_max);
+                lightmap->buf[i + 2] = std::clamp(lightmap->buf[i + 2], b_min, b_max);
             }
         }
 

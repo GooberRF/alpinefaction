@@ -151,5 +151,5 @@ template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::true_type {};
 
 bool packet_check_whitelist(int packet_type);
-void handle_vote_or_ready_up_msg(const std::string_view msg);
+void handle_vote_or_ready_up_msg(std::string_view msg);
 void handle_sound_msg(std::string_view name);

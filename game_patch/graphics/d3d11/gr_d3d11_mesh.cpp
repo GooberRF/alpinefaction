@@ -483,29 +483,6 @@ namespace df::gr::d3d11
             sum.alpha = 255;
             return sum;
         };
-        auto get_character_light_level = [](const rf::Color& a, const rf::Color& b) {
-            auto pick = [](int ca, int cb) -> rf::ubyte {
-                int value;
-                if (cb == 255 && ca < 255) {
-                    // mesh amb is 255, probably because player is standing on invisible geometry or a mover
-                    // prevents completely white lighting and produces light level similar to stock RF
-                    value = ca + 40;
-                }
-                else {
-                    // normal - highest of mesh amb and level amb
-                    value = std::max(ca, cb);
-                }
-
-                return static_cast<rf::ubyte>(std::clamp(value, 0, 255));
-            };
-
-            rf::Color out{};
-            out.red = pick(a.red, b.red);
-            out.green = pick(a.green, b.green);
-            out.blue = pick(a.blue, b.blue);
-            out.alpha = 255;
-            return out;
-        };
 
         bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         if (!ir_scanner) {
@@ -516,7 +493,6 @@ namespace df::gr::d3d11
                 }
                 else {
                     // replicate approximate light level from stock game DX9
-                    //color = get_character_light_level(rf::level.ambient_light, params.ambient_color); // ambient_color shifts randomly sometimes, needs to be further looked into
                     color = add_clamped(rf::level.ambient_light, {64, 64, 64, 64});
                 }
             } else { // static meshes

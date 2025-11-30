@@ -114,27 +114,33 @@ void multi_spectate_set_target_player(rf::Player* player)
 #endif // SPECTATE_MODE_SHOW_WEAPON
 }
 
-static void spectate_next_player(bool dir, bool try_alive_players_first = false)
-{
-    rf::Player* new_target;
-    if (g_spectate_mode_enabled)
-        new_target = g_spectate_mode_target;
-    else
-        new_target = rf::local_player;
+static void spectate_next_player(const bool dir, const bool try_alive_players_first = false) {
+    rf::Player* new_target = g_spectate_mode_enabled
+        ? g_spectate_mode_target
+        : rf::local_player;
     while (true) {
         new_target = dir ? new_target->next : new_target->prev;
-        if (!new_target || new_target == g_spectate_mode_target)
+        if (!new_target) {
+            break;
+        }
+        const bool is_browser = get_player_additional_data(new_target)
+            .received_ac_status
+            == std::optional{pf_pure_status::rfsb};
+        if (new_target == g_spectate_mode_target) {
             break; // nothing found
-        if (try_alive_players_first && rf::player_is_dead(new_target))
+        } else if (is_browser) {
             continue;
-        if (new_target != rf::local_player) {
+        } else if (try_alive_players_first && rf::player_is_dead(new_target)) {
+            continue;
+        } else if (new_target != rf::local_player) {
             multi_spectate_set_target_player(new_target);
             return;
         }
     }
 
-    if (try_alive_players_first)
+    if (try_alive_players_first) {
         spectate_next_player(dir, false);
+    }
 }
 
 void multi_spectate_enter_freelook()
