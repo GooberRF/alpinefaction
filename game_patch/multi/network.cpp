@@ -26,7 +26,6 @@
 #include "network.h"
 #include "multi.h"
 #include "alpine_packets.h"
-#include "purefaction/pf_packets.h"
 #include "server.h"
 #include "server_internal.h"
 #include "../main/main.h"
@@ -187,7 +186,9 @@ enum packet_type : uint8_t {
     obj_kill               = 0x27,
     item_apply             = 0x28,
     boolean_               = 0x29,
-    mover_update           = 0x2A, // unused
+    // Note: `mover_update` overlaps with `pf_player_stats`.
+    // Has an empty handler in stock netcode.
+    mover_update           = 0x2A,
     respawn                = 0x2B,
     entity_create          = 0x2C,
     item_create            = 0x2D,
@@ -200,6 +201,7 @@ enum packet_type : uint8_t {
     sound                  = 0x34,
     team_score             = 0x35,
     glass_kill             = 0x36,
+    pf_player_stats        = 0x2A,
     af_ping_location_req   = 0x50,
     af_ping_location       = 0x51,
     af_damage_notify       = 0x52,
@@ -277,8 +279,6 @@ std::array g_client_side_packet_whitelist{
     obj_kill,
     item_apply,
     boolean_,
-    // Note: mover_update packet is sent by PF server. Handler is empty so it is safe to enable it.
-    mover_update,
     respawn,
     entity_create,
     item_create,
@@ -287,6 +287,7 @@ std::array g_client_side_packet_whitelist{
     sound,
     team_score,
     glass_kill,
+    pf_player_stats,
     af_ping_location,
     af_damage_notify,
     af_obj_update,
@@ -296,8 +297,7 @@ std::array g_client_side_packet_whitelist{
     af_just_died_info,
     af_server_info,
     af_spectate_notify,
-    af_server_msg,
-    pf_packet_type::player_stats
+    af_server_msg
 };
 // clang-format on
 
