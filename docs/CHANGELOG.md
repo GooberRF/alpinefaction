@@ -119,7 +119,7 @@ Version 1.2.0 (Willow): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Send `pf_player_stats_packet` with score
-- Add browser and spectator icons to the scoreboard
+- Add browser and spectator icon logic
 - Add `bighud` support for chat menus
 - Support `•` in TrueType fonts
 - Add the year and the number of spawned players to the scoreboard
