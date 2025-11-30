@@ -394,7 +394,7 @@ namespace df::gr::d3d11
         render_caches_.clear();
     }
 
-    void MeshRenderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, rf::MeshRenderParams params)
+    void MeshRenderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params)
     {
         page_in_v3d_mesh(lod_mesh);
 
@@ -406,28 +406,10 @@ namespace df::gr::d3d11
 
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
 
-        // WIP: support static ambient lighting for v3ds, todo dynamic lighting
-        const bool ir_scanner = (params.flags & MRF_SCANNER_1) != 0;
-        if (!ir_scanner) {
-            rf::Vector3 ambient_light{0.f, 0.f, 0.f};
-            light_get_ambient(&ambient_light.x, &ambient_light.y, &ambient_light.z);
-            ambient_light *= 255.f;
-            // RF uses some hard-coded lights here but for now let's keep it simple
-            ambient_light += 40.f;
-            // Ignore ambient_color from params, it changes sharply and RF uses it only indirectly for
-            // its hard-coded lights
-            params.ambient_color.set(
-                static_cast<rf::ubyte>(std::min(ambient_light.x, 255.f)),
-                static_cast<rf::ubyte>(std::min(ambient_light.y, 255.f)),
-                static_cast<rf::ubyte>(std::min(ambient_light.z, 255.f)),
-                255
-            );
-        }
-
         draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
     }
 
-    void MeshRenderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, rf::MeshRenderParams params)
+    void MeshRenderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params)
     {
         page_in_character_mesh(lod_mesh);
         auto render_cache = reinterpret_cast<CharacterMeshRenderCache*>(lod_mesh->render_cache);
@@ -452,14 +434,12 @@ namespace df::gr::d3d11
         render_cache->update_bone_transforms_buffer(ci, render_context_);
         render_cache->bind_buffers(render_context_, morphed);
 
-        const bool ir_scanner = (params.flags & MRF_SCANNER_1) != 0;
-        if (!ir_scanner
-            && g_character_meshes_are_fullbright
-            && (params.flags & MRF_FIRST_PERSON) == 0) {
-            params.ambient_color.set(255, 255, 255, 255);
+        rf::MeshRenderParams params_char = params;
+        if (g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0) {
+            params_char.ambient_color.set(255, 255, 255, 255);
         }
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
+        draw_cached_mesh(lod_mesh, *render_cache, params_char, lod_index);
     }
 
     void MeshRenderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
