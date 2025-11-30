@@ -115,8 +115,10 @@ Version 1.2.0 (Willow): Not yet released
 - Deprecate `level_info_ext` and `map_info_ext`, use `level_info` and `map_info` instead
 - Add `Override static mesh ambient light scale` setting to level properties window in level editor
 - Update output of `level_info` command to include advanced level properties
+- Add browser and spectator icon assets
 
 [@is-this-c](https://github.com/is-this-c)
+- Add browser and spectator icons to the scoreboard
 - Add `bighud` support for chat menus
 - Support `•` in TrueType fonts
 - Add the year and the number of spawned players to the scoreboard

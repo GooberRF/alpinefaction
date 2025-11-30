@@ -1928,6 +1928,29 @@ CodeInjection send_players_obj_update_packets_injection{
     },
 };
 
+FunHook<void(rf::Player*)> send_netgame_update_packet_hook{
+    0x00484DD0,
+    [] (rf::Player* const player) {
+        const auto send_stats = [] (rf::Player* const player) {
+            const auto& pdata = get_player_additional_data(player);
+            if (pdata.client_version == ClientVersion::pure_faction
+                || is_player_minimum_af_client_version(player, 1, 2)) {
+                send_pf_player_stats_packet(player);
+            }
+        };
+
+        if (!player) {
+            for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+                send_stats(&player);
+            }
+        } else {
+            send_stats(player);
+        }
+
+        send_netgame_update_packet_hook.call_target(player);
+    },
+};
+
 void network_init()
 {
     // Support af_obj_update packet
@@ -2100,4 +2123,7 @@ void network_init()
 
     // Ignore browsers when calculating player count for info requests
     game_info_num_players_hook.install();
+
+    // Send `pf_player_stats_packet` with score.
+    send_netgame_update_packet_hook.install();
 }

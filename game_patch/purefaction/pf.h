@@ -13,3 +13,4 @@ void pf_player_init(rf::Player* player);
 void pf_player_level_load(rf::Player* player);
 bool pf_is_player_verified(rf::Player* player);
 int pf_get_player_ac_level(rf::Player*);
+void send_pf_player_stats_packet(rf::Player* player);

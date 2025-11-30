@@ -24,6 +24,7 @@
 #include "../main/main.h"
 #include "hud_internal.h"
 #include "../graphics/gr.h"
+#include "../misc/player.h"
 
 #define DEBUG_SCOREBOARD 0
 
@@ -225,24 +226,44 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
     // Draw the list
     for (rf::Player* player : players) {
         if (!dry_run) {
-            bool is_local_player = player == rf::player_list;
-            if (is_local_player)
-                rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
-            else
-                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+            static const int green_bm = rf::bm::load("afsbi_spawned.tga", -1, true);
+            static const int red_bm = rf::bm::load("afsbi_dead.tga", -1, true);
+            static const int browser_bm = rf::bm::load("afsbi_brow.tga", -1, true);
+            static const int spectator_bm = rf::bm::load("afsbi_spec.tga", -1, true);
+            static const int hud_micro_flag_red_bm =
+                rf::bm::load("hud_microflag_red.tga", -1, true);
+            static const int hud_micro_flag_blue_bm =
+                rf::bm::load("hud_microflag_blue.tga", -1, true);
 
-            static int green_bm = rf::bm::load("DF_green.tga", -1, true);
-            static int red_bm = rf::bm::load("DF_red.tga", -1, true);
-            static int hud_micro_flag_red_bm = rf::bm::load("hud_microflag_red.tga", -1, true);
-            static int hud_micro_flag_blue_bm = rf::bm::load("hud_microflag_blue.tga", -1, true);
+            const int status_bm = std::invoke([=] {
+                const auto& pdata = get_player_additional_data(player);
+                if (pdata.received_ac_status == std::optional{pf_pure_status::rfsb}) {
+                    return browser_bm;
+                } else if (pdata.received_ac_status
+                    == std::optional{pf_pure_status::af_spectator}) {
+                    return spectator_bm;
+                } else {
+                    if (player == red_flag_player) {
+                        return hud_micro_flag_red_bm;
+                    } else if (player == blue_flag_player) {
+                        return hud_micro_flag_blue_bm;
+                    } else {
+                        const rf::Entity* const entity =
+                            rf::entity_from_handle(player->entity_handle);
+                        return entity ? green_bm : red_bm;
+                    }
+                }
+            });
 
-            rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
-            int status_bm = entity ? green_bm : red_bm;
-            if (player == red_flag_player)
-                status_bm = hud_micro_flag_red_bm;
-            else if (player == blue_flag_player)
-                status_bm = hud_micro_flag_blue_bm;
+            rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
             hud_scaled_bitmap(status_bm, status_x, static_cast<int>(y + 2 * scale), scale);
+
+            const bool is_local_player = player == rf::player_list;
+            if (is_local_player) {
+                rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
+            } else {
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+            }
 
             rf::String player_name_stripped;
             rf::fit_scoreboard_string(&player_name_stripped, player->name, name_w - static_cast<int>(12 * scale)); // Note: this destroys Name

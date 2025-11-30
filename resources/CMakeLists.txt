@@ -134,11 +134,17 @@ add_packfile(alpinefaction.vpp
     images/af_wh_koth_fill_red.tga
     images/af_wh_koth_fill_blue.tga
     images/af_wh_koth_ring_fade.tga
-    images/DF_green.tga
-    images/DF_red.tga
+    images/afsbi_spawned.tga
+    images/afsbi_dead.tga
+    images/afsbi_spec.tga
+    images/afsbi_brow.tga
     images/scope_zoom_corner256_red.tga
     images/128blackcircle.tga
     images/ass2_scope_circle.tga
+    images/afsbi_spawned_1.tga
+    images/afsbi_dead_1.tga
+    images/afsbi_spec_1.tga
+    images/afsbi_brow_1.tga
     images/DF_green_1.tga
     images/DF_red_1.tga
     images/reticle_1.tga

@@ -30,7 +30,9 @@ void pf_send_reliable_packet(rf::Player* player, const void* data, int len)
 void send_pf_player_stats_packet(rf::Player* player)
 {
     // Send: server -> client
-    assert(rf::is_server);
+    if (!rf::is_server) {
+        return;
+    }
 
     std::byte packet_buf[rf::max_packet_size];
     pf_player_stats_packet stats_packet{};
@@ -206,22 +208,19 @@ bool pf_process_raw_unreliable_packet(const void* data, int len, const rf::NetAd
     return false;
 }
 
-void pf_player_init([[ maybe_unused ]] rf::Player* player)
-{
-    assert(rf::is_server);
-    pf_ac_init_player(player);
+void pf_player_init([[ maybe_unused ]] rf::Player* const player) {
+    if (rf::is_server) {
+        pf_ac_init_player(player);
+    }
 }
 
-void pf_player_level_load(rf::Player* player)
-{
-    assert(rf::is_server);
-    pf_ac_verify_player(player);
+void pf_player_level_load(rf::Player* const player) {
+    if (rf::is_server) {
+        pf_ac_verify_player(player);
+    }
 }
 
-void pf_player_verified(rf::Player* player, pf_pure_status pure_status)
-{
-    assert(rf::is_server);
-    send_pf_player_stats_packet(player);
+void pf_player_verified(rf::Player* const player, const pf_pure_status pure_status) {
 }
 
 bool pf_is_player_verified(rf::Player* player)
