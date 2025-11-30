@@ -26,6 +26,7 @@
 #include "network.h"
 #include "multi.h"
 #include "alpine_packets.h"
+#include "purefaction/pf_packets.h"
 #include "server.h"
 #include "server_internal.h"
 #include "../main/main.h"
@@ -295,7 +296,8 @@ std::array g_client_side_packet_whitelist{
     af_just_died_info,
     af_server_info,
     af_spectate_notify,
-    af_server_msg
+    af_server_msg,
+    pf_packet_type::player_stats
 };
 // clang-format on
 
@@ -1940,8 +1942,8 @@ FunHook<void(rf::Player*)> send_netgame_update_packet_hook{
         };
 
         if (!player) {
-            for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-                send_stats(&player);
+            for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+                send_stats(&p);
             }
         } else {
             send_stats(player);

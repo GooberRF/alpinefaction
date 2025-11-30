@@ -47,10 +47,14 @@ void send_pf_player_stats_packet(rf::Player* player)
         auto& player_stats = *static_cast<PlayerStatsNew*>(current_player.stats);
         pf_player_stats_packet::player_stats out_stats{};
         out_stats.player_id = current_player.net_data->player_id;
-        const pf_pure_status pure_status = pf_ac_get_pure_status(&current_player);
-        out_stats.is_pure = static_cast<uint8_t>(
-            get_player_additional_data(&current_player).client_version == ClientVersion::browser ? pf_pure_status::rfsb : pure_status
-        );
+        pf_pure_status pure_status = pf_ac_get_pure_status(&current_player);
+        const auto& pdata = get_player_additional_data(&current_player);
+        if (pdata.spectatee.has_value()) {
+            pure_status = pf_pure_status::af_spectator;
+        } else if (pdata.client_version == ClientVersion::browser) {
+            pure_status = pf_pure_status::rfsb;
+        }
+        out_stats.is_pure = static_cast<uint8_t>(pure_status);
         out_stats.accuracy = static_cast<uint8_t>(player_stats.calc_accuracy() * 100.f);
         out_stats.streak_max = player_stats.max_streak;
         out_stats.streak_current = player_stats.current_streak;
@@ -220,7 +224,10 @@ void pf_player_level_load(rf::Player* const player) {
     }
 }
 
-void pf_player_verified(rf::Player* const player, const pf_pure_status pure_status) {
+void pf_player_verified(
+    [[ maybe_unused ]] rf::Player* const player,
+    [[ maybe_unused ]] const pf_pure_status pure_status
+) {
 }
 
 bool pf_is_player_verified(rf::Player* player)
