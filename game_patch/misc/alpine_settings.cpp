@@ -228,6 +228,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.always_show_spectators = std::stoi(settings["AlwaysShowSpectators"]);
         processed_keys.insert("AlwaysShowSpectators");
     }
+    if (settings.count("FreeCamAccelMode")) {
+        g_alpine_game_config.set_spectate_freelook_mode(std::stoi(settings["FreeCamAccelMode"]));
+        processed_keys.insert("FreeCamAccelMode");
+    }
+    if (settings.count("FreeCamAccelModMode")) {
+        g_alpine_game_config.set_spectate_freelook_modifier_mode(std::stoi(settings["FreeCamAccelModMode"]));
+        processed_keys.insert("FreeCamAccelModMode");
+    }
     if (settings.count("SimpleServerChatMsgs")) {
         g_alpine_game_config.simple_server_chat_msgs = std::stoi(settings["SimpleServerChatMsgs"]);
         processed_keys.insert("SimpleServerChatMsgs");
@@ -601,6 +609,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.suppress_autoswitch_alias = std::stoi(settings["SuppressAutoswitchBindAlias"]);
         processed_keys.insert("SuppressAutoswitchBindAlias");
     }
+    if (settings.count("FreeCamAccelModAlias")) {
+        g_alpine_game_config.spec_accel_mod_alias = std::stoi(settings["FreeCamAccelModAlias"]);
+        processed_keys.insert("FreeCamAccelModAlias");
+    }
     if (settings.count("StaticScopeSensitivity")) {
         g_alpine_game_config.scope_static_sensitivity = std::stoi(settings["StaticScopeSensitivity"]);
         processed_keys.insert("StaticScopeSensitivity");
@@ -683,6 +695,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "SwapSGBinds=" << g_alpine_game_config.swap_sg_controls << "\n";
     file << "SkipCutsceneBindAlias=" << g_alpine_game_config.skip_cutscene_bind_alias << "\n";
     file << "SuppressAutoswitchBindAlias=" << g_alpine_game_config.suppress_autoswitch_alias << "\n";
+    file << "FreeCamAccelModAlias=" << g_alpine_game_config.spec_accel_mod_alias << "\n";
     file << "StaticScopeSensitivity=" << g_alpine_game_config.scope_static_sensitivity << "\n";
     file << "ScopeSensitivityModifier=" << g_alpine_game_config.scope_sensitivity_modifier << "\n";
     file << "ScannerSensitivityModifier=" << g_alpine_game_config.scanner_sensitivity_modifier << "\n";
@@ -763,6 +776,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "SeasonalEffect=" << g_alpine_game_config.seasonal_effect << "\n";
     file << "RealArmorValues=" << g_alpine_game_config.real_armor_values << "\n";
     file << "AlwaysShowSpectators=" << g_alpine_game_config.always_show_spectators << "\n";
+    file << "FreeCamAccelMode=" << g_alpine_game_config.spectate_freelook_mode << "\n";
+    file << "FreeCamAccelModMode=" << g_alpine_game_config.spectate_freelook_modifier_mode << "\n";
     file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
     file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
     file << "QuickExit=" << g_alpine_game_config.quick_exit << "\n";

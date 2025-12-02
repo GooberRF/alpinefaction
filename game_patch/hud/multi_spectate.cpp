@@ -329,6 +329,58 @@ ConsoleCommand2 spectate_cmd{
     "spectate [<player_name>]",
 };
 
+static const char* get_freelook_speed_name(const int mode)
+{
+    switch (mode) {
+        case 0: return "slow";
+        case 1: return "normal";
+        case 2: return "fast";
+        case 3: return "really fast";
+        default: return "unknown";
+    }
+}
+
+static bool is_valid_freelook_speed_mode(const int mode)
+{
+    return mode >= 0 && mode <= 3;
+}
+
+ConsoleCommand2 spectate_freelook_mode_cmd{
+    "spectate_freelookaccel",
+    [](int mode) {
+        if (!is_valid_freelook_speed_mode(mode)) {
+            rf::console::print("Invalid freelook spectate acceleration mode {} (expected 0-3)", mode);
+            return;
+        }
+
+        g_alpine_game_config.set_spectate_freelook_mode(mode);
+        rf::console::print(
+            "Freelook spectate acceleration mode set to {}",
+            get_freelook_speed_name(g_alpine_game_config.spectate_freelook_mode)
+        );
+    },
+    "Sets default freelook spectate acceleration mode (0=slow, 1=normal, 2=fast, 3=really fast)",
+    "spectate_freelookaccel <0-3>",
+};
+
+ConsoleCommand2 spectate_freelook_modifier_cmd{
+    "spectate_freelookmodifier",
+    [](int mode) {
+        if (!is_valid_freelook_speed_mode(mode)) {
+            rf::console::print("Invalid freelook spectate acceleration mode {} (expected 0-3)", mode);
+            return;
+        }
+
+        g_alpine_game_config.set_spectate_freelook_modifier_mode(mode);
+        rf::console::print(
+            "Freelook spectate acceleration mode modifier set to {}",
+            get_freelook_speed_name(g_alpine_game_config.spectate_freelook_modifier_mode)
+        );
+    },
+    "Sets freelook spectate acceleration mode when the key is held (0=slow, 1=normal, 2=fast, 3=really fast)",
+    "spectate_freelookmodifier <0-3>",
+};
+
 static ConsoleCommand2 spectate_mode_minimal_ui_cmd{
     "spectate_minui",
     []() {
@@ -401,6 +453,8 @@ void multi_spectate_appy_patch()
     spectate_cmd.register_cmd();
     spectate_mode_minimal_ui_cmd.register_cmd();
     spectate_mode_follow_killer_cmd.register_cmd();
+    spectate_freelook_mode_cmd.register_cmd();
+    spectate_freelook_modifier_cmd.register_cmd();
 
 #if SPECTATE_MODE_SHOW_WEAPON
 

@@ -14,10 +14,6 @@ Version 1.2.0 (Willow): Not yet released
 - Add `Revolt` (REV) multiplayer game type
 - Add `Run` (RUN) multiplayer game type
 - Add `Escalation` (ESC) multiplayer game type
-- Add colorblind mode rendering filter (Direct3D 11 renderer only)
-- Add client-configurable settings to control application of weapon auto switch
-- Add server-configurable weapon loadouts for players in multiplayer
-- Add server-configurable respawn delay for players in multiplayer
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -45,6 +41,7 @@ Version 1.2.0 (Willow): Not yet released
 - Deprecate `$Max FOV` dedicated server setting
 - Support GunGame configuration using weapon names (from `weapons.tbl`) rather than weapon indices
 - Add support for custom weapon loadouts in dedicated servers
+- Add support for spawn delays in dedicated servers
 - Identify Alpine Faction and Dash Faction players in server console on join and when `info` command is run
 - Log player join request rejection reason to server console on attempted join
 - Log accepted and rejected `rcon` commands to server console
@@ -116,6 +113,7 @@ Version 1.2.0 (Willow): Not yet released
 - Add `Override static mesh ambient light scale` setting to level properties window in level editor
 - Update output of `level_info` command to include advanced level properties
 - Add browser and spectator icon assets
+- Add freelook spectate acceleration modes and modifier
 
 [@is-this-c](https://github.com/is-this-c)
 - Send `pf_player_stats_packet` with score
@@ -175,6 +173,7 @@ Version 1.2.0 (Willow): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Set `rf::gr::text_2d_mode` to ignore fog
+- Fix `gr_d3d_bitmap`, so `gr_d3d_set_state` is called earlier
 - Support `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
 - Fix a potential crash after a client quits a game if Directd3D 11 is enabled
 

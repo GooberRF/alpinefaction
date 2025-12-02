@@ -5,17 +5,19 @@
 #include "../main/main.h"
 #include "../rf/multi.h"
 #include "../os/console.h"
+#include "../input/input.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/alpine_options.h"
 #include "../multi/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "../rf/player/control_config.h"
 #include "../rf/os/frametime.h"
 
 constexpr auto screen_shake_fps = 150.0f;
-
 static float g_camera_shake_factor = 0.6f;
+static float freelook_cam_base_accel = 10.0f; // set on freelook camera entity creation
 
 bool server_side_restrict_disable_ss = false;
 
@@ -141,6 +143,66 @@ CodeInjection footsteps_get_camera_mode_patch{
     },
 };
 
+CodeInjection camera_create_for_player_freelook_camera_patch{
+    0x0040D64B,
+    [](auto& regs) {
+        rf::Entity* camera_entity = regs.esi;
+        if (camera_entity) {
+            // store the base accel value for freelook camera, ensures compatibility with
+            // mods that change the acceleration value of the "Freelook camera" entity
+            freelook_cam_base_accel = camera_entity->info->acceleration;
+        }
+    },
+};
+
+CodeInjection free_camera_do_frame_patch{
+    0x0040D9CC,
+    [](auto& regs) {
+        rf::Camera* cp = regs.ebx;
+        if (cp && cp->mode == rf::CameraMode::CAMERA_FREELOOK) {
+            if (auto* cep = cp->camera_entity) {
+                if (!cep || !cep->info)
+                    return;
+
+                auto* player = rf::local_player;                
+                bool should_apply_accel_mod = false;
+
+                // check Ping Location control
+                if (rf::control_is_control_down(&player->settings.controls, get_af_control(rf::AlpineControlConfigAction::AF_ACTION_PING_LOCATION))) {
+                    should_apply_accel_mod = true;
+                }
+
+                // check alias
+                if (!should_apply_accel_mod && g_alpine_game_config.spec_accel_mod_alias >= 0 &&
+                    rf::control_is_control_down(&player->settings.controls, static_cast<rf::ControlConfigAction>(g_alpine_game_config.spec_accel_mod_alias))) {
+                    should_apply_accel_mod = true;
+                }
+
+                auto get_accel_mod = [](int mode) {
+                    switch (mode) {
+                    case 0: return 0.1f;
+                    case 2: return 2.0f;
+                    case 3: return 10.0f;
+                    default: return 1.0f;
+                    }
+                };
+
+                float accel_mod = 1.0f;
+                if (should_apply_accel_mod) {
+                    accel_mod = get_accel_mod(g_alpine_game_config.spectate_freelook_modifier_mode);
+                    xlog::warn("mode {}", g_alpine_game_config.spectate_freelook_modifier_mode);
+                }
+                else {
+                    accel_mod = get_accel_mod(g_alpine_game_config.spectate_freelook_mode);
+                    xlog::warn("modeb {}", g_alpine_game_config.spectate_freelook_mode);
+                }
+
+                cep->info->acceleration = freelook_cam_base_accel * accel_mod;
+            }
+        }
+    },
+};
+
 void camera_do_patch()
 {
     // Fix crash when executing camera2 command in main menu
@@ -157,6 +219,10 @@ void camera_do_patch()
 
     // Fix crash when camera is invalid in footstep emit sound function
     footsteps_get_camera_mode_patch.install();
+
+    // Freelook camera accel and modifier
+    camera_create_for_player_freelook_camera_patch.install();
+    free_camera_do_frame_patch.install();
 
     // handle turning off screen shake
     disable_weaphake_cmd.register_cmd();

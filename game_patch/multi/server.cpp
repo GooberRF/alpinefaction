@@ -1344,12 +1344,10 @@ std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots)
 
     for (auto& player : linked_player_list) {
         auto additional_data = get_player_additional_data(&player);
+        const bool is_browser = additional_data.is_browser();
+        const bool is_bot = additional_data.is_bot();
 
-        if (include_browsers || !additional_data.is_browser()) {
-            player_list.push_back(&player);
-        }
-
-        if (include_bots || !additional_data.is_bot()) {
+        if ((is_browser && include_browsers) || (is_bot && include_bots) || (!is_browser && !is_bot)) {
             player_list.push_back(&player);
         }
     }
