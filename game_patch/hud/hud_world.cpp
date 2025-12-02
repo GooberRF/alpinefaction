@@ -262,8 +262,8 @@ void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, i
         {
             int screen_x = static_cast<int>(dest.sx) + offset_x;
             int screen_y = static_cast<int>(dest.sy) + offset_y;
-            // text_3d_mode and text_2d_mode both have issues with fog
-            auto render_mode = rf::level.distance_fog_far_clip == 0.0f ? rf::gr::text_2d_mode : rf::gr::bitmap_3d_mode;
+            rf::gr::Mode render_mode = rf::gr::text_2d_mode;
+            render_mode.set_fog_type(rf::gr::FOG_NOT_ALLOWED);
             rf::gr::set_color(r, g, b, a);
             rf::gr::string(screen_x, screen_y, text.c_str(), font, render_mode);
         }
