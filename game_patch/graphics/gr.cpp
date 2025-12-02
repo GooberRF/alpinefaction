@@ -457,4 +457,7 @@ void gr_apply_patch()
     lod_distance_scale_cmd.register_cmd();
     picmip_cmd.register_cmd();
     colorblind_cmd.register_cmd();
+
+    // Fix `rf::gr::text_2d_mode`.
+    AsmWriter{0x0050BB40}.push(rf::gr::FOG_NOT_ALLOWED);
 }
