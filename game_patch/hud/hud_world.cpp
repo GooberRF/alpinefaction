@@ -262,10 +262,8 @@ void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, i
         {
             int screen_x = static_cast<int>(dest.sx) + offset_x;
             int screen_y = static_cast<int>(dest.sy) + offset_y;
-            rf::gr::Mode render_mode = rf::gr::text_2d_mode;
-            render_mode.set_fog_type(rf::gr::FOG_NOT_ALLOWED);
             rf::gr::set_color(r, g, b, a);
-            rf::gr::string(screen_x, screen_y, text.c_str(), font, render_mode);
+            rf::gr::string(screen_x, screen_y, text.c_str(), font);
         }
     }
 }
@@ -1256,4 +1254,7 @@ void hud_world_apply_patch()
     set_cp_outline_segments_cmd.register_cmd();
     set_cp_column_segments_cmd.register_cmd();
     set_cp_column_height_scale_cmd.register_cmd();
+
+    // Fix `rf::gr::text_2d_mode`.
+    AsmWriter{0x0050BB40}.push(rf::gr::FOG_NOT_ALLOWED);
 }
