@@ -1982,7 +1982,7 @@ CallHook<void(int, int, const char*, int, rf::gr::Mode)> multi_hud_render_target
         multi_hud_render_target_player_name_hook.call_target(x, y, s, font_num, mode);
         if (g_target_player_is_bot) {
             const rf::gr::Color saved_color = rf::gr::screen.current_color;
-            rf::gr::set_color(255, 238, 180, 255);
+            rf::gr::set_color(255, 250, 205, 255);
             rf::gr::string(rf::gr::current_string_x, y, " bot", font_num, mode);
             rf::gr::set_color(saved_color);
         }

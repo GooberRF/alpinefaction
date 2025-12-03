@@ -656,7 +656,7 @@ void multi_spectate_render() {
     );
     if (is_bot) {
         const rf::gr::Color saved_color = rf::gr::screen.current_color;
-        rf::gr::set_color(255, 238, 180, 255);
+        rf::gr::set_color(255, 250, 205, 255);
         rf::gr::string(rf::gr::current_string_x, name_y, " bot", large_font);
         rf::gr::set_color(saved_color);
     }

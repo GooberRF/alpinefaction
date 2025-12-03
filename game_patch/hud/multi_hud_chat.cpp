@@ -107,7 +107,7 @@ void multi_hud_render_chat()
             rf::gr::set_color(255, 255, 255, text_alpha);
         } else if (msg.color_id == 6) {
             if (g_alpine_game_config.simple_server_chat_msgs) {
-                rf::gr::set_color(255, 238, 140, text_alpha);
+                rf::gr::set_color(255, 250, 205, text_alpha);
             } else {
                 rf::gr::set_color(255, 215, 0, text_alpha);
                 rf::gr::string(x, y, msg.name.c_str(), chatbox_font);
