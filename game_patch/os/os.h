@@ -44,22 +44,6 @@ public:
         return _start_time.has_value();
     }
 
-    [[nodiscard]] std::chrono::nanoseconds clamped_time_until() const {
-        return std::max(std::chrono::nanoseconds{0}, time_until());
-    }
-
-    [[nodiscard]] float clamped_time_until_sec() const {
-        return std::max(0.f, time_until_sec());
-    }
-
-    [[nodiscard]] int64_t clamped_time_until_ms() const {
-         return std::max<int64_t>(0, time_until_ms());
-    }
-
-    [[nodiscard]] int64_t clamped_time_until_ns() const {
-        return std::max<int64_t>(0, time_until_ns());
-    }
-
     [[nodiscard]] std::chrono::nanoseconds time_until() const {
         if (!valid()) {
             return std::chrono::nanoseconds{0};

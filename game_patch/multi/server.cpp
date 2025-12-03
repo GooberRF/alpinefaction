@@ -278,9 +278,10 @@ int get_level_file_version(const std::string& file_name)
 
 void print_player_info(rf::Player* player, bool new_join) {
     const auto& pdata = get_player_additional_data(player);
+    const bool is_bot = pdata.is_bot();
 
     if (player == rf::local_player) {
-        if (pdata.is_bot()) {
+        if (is_bot) {
             rf::console::print("- {} (local bot)", player->name);
         } else {
             rf::console::print("- {} (local player)", player->name);
@@ -289,7 +290,7 @@ void print_player_info(rf::Player* player, bool new_join) {
     }
 
     std::string name = player->name;
-    if (pdata.is_bot()) {
+    if (is_bot) {
         name += " (bot)";
     } else if (is_player_idle(player)) {
         name += " (idle)";
@@ -1358,9 +1359,11 @@ std::vector<rf::Player*> get_clients(
 
     for (auto& player : SinglyLinkedList{rf::player_list}) {
         const auto& pdata = get_player_additional_data(&player);
-        if ((pdata.is_browser() && include_browsers)
-            || (pdata.is_bot() && include_bots)
-            || (!pdata.is_browser() && !pdata.is_bot()))
+        const bool is_bot = pdata.is_bot();
+        const bool is_browser = pdata.is_browser();
+        if ((is_browser && include_browsers)
+            || (is_bot && include_bots)
+            || (!is_browser && !is_bot))
         {
             clients.push_back(&player);
         }
