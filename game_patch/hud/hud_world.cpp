@@ -419,6 +419,14 @@ bool hill_vis_contested(HillInfo& h)
     return h.vis_contested;
 }
 
+static int get_world_hud_font(const bool world_hud_big_text) {
+    if (world_hud_big_text) {
+        return rf::gr::load_font("boldfont.ttf:17");
+    } else {
+        return rf::gr::load_font("boldfont.ttf:14");
+    }
+}
+
 static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
 {
     if (!h.trigger)
@@ -506,7 +514,7 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     }
 
     // hill name label
-    const int font = !g_alpine_game_config.world_hud_big_text;
+    const int font = get_world_hud_font(g_alpine_game_config.world_hud_big_text);
     NameLabelTex& lbl = ensure_hill_name_tex(h, font);
 
     const float text_h_world = ring_scale * 0.55f;
@@ -559,7 +567,7 @@ void build_player_labels() {
     bool show_teammates = g_alpine_game_config.world_hud_team_player_labels && is_team_mode && !is_spectating;
     auto spectate_target = multi_spectate_get_target_player();
 
-    int font = !g_alpine_game_config.world_hud_big_text;
+    const int font = get_world_hud_font(g_alpine_game_config.world_hud_big_text);
     auto player_list = SinglyLinkedList{rf::player_list};
 
     for (auto& player : player_list) {
@@ -604,7 +612,7 @@ void build_ephemeral_world_hud_sprite_icons() {
     });
 
     for (const auto& es : ephemeral_world_hud_sprites) {
-        int font = !g_alpine_game_config.world_hud_big_text;
+        const int font = get_world_hud_font(g_alpine_game_config.world_hud_big_text);
 
         if (es.bitmap != -1) {
             do_render_world_hud_sprite(es.pos, 1.0f, es.bitmap, es.render_mode, true, true, true);
@@ -627,20 +635,17 @@ void build_ephemeral_world_hud_strings() {
 
     for (const auto& es : ephemeral_world_hud_strings) {
         int label_y_offset = 0;
-        int font = !g_alpine_game_config.world_hud_big_text;
+        const int font = get_world_hud_font(g_alpine_game_config.world_hud_big_text);
         rf::Vector3 string_pos = es.pos;
         string_pos.y += 0.85f;
 
         if (es.float_away) {
             // Calculate the progress of the fade effect
-            float progress = es.duration > 0
-                ? static_cast<float>(es.timestamp.time_until()) / static_cast<float>(es.duration)
-                : 0.0f;
-            progress = std::clamp(progress, 0.0f, 1.0f); // confirm within bounds
-            string_pos.y += (1.0f - progress) * 3.0f;
+            const float progress = es.timestamp.elapsed_frac();
+            string_pos.y += progress * 3.0f;
 
             // Apply wind effect
-            float elapsed_time = static_cast<float>(es.duration) * (1.0f - progress);
+            const float elapsed_time = es.timestamp.time_since_sec();
             float wind_amplitude = 0.15f;
             float wind_frequency_x = 12.0f;
             float wind_frequency_z = 9.0f;
@@ -656,7 +661,7 @@ void build_ephemeral_world_hud_strings() {
         int half_text_width = text_width / 2;
 
         render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, -25,
-            font, 255, 255, 255, 223);
+            font, 255, 255, 0, 255);
     }
 }
 
@@ -1098,8 +1103,7 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     es.pos = pos;
     es.player_id = damaged_player_id;
     es.damage = damage;
-    es.duration = 1000;
-    es.timestamp.set(es.duration);
+    es.timestamp.set_ms(1000);
     es.float_away = true;
     es.wind_phase_offset = wind_offset_dist(g_rng);
 

@@ -462,6 +462,9 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.balance_teams = *v;
     if (auto v = t["ideal_player_count"].value<int>())
         o.set_ideal_player_count(*v);
+    if (auto v = t["bot_shared_secret"].value<uint32_t>()) {
+        o.set_bot_shared_secret(*v);
+    }
     if (auto v = t["saving_enabled"].value<bool>())
         o.saving_enabled = *v;
     if (auto v = t["flag_dropping"].value<bool>())
@@ -1173,7 +1176,7 @@ void print_gungame(std::string& output, const GunGameConfig& cur, const GunGameC
     }
 }
 
-void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool base = true)
+void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool base = true, const bool sanitize = false)
 {
     const auto iter = std::back_inserter(output);
     const auto& b = g_alpine_server_config.base_rules;
@@ -1228,6 +1231,9 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Balance teams:                         {}\n", rules.balance_teams);
     if (base || rules.ideal_player_count != b.ideal_player_count)
         std::format_to(iter, "  Ideal player count:                    {}\n", rules.ideal_player_count);
+    if ((base || rules.bot_shared_secret != b.bot_shared_secret) && !sanitize) {
+        std::format_to(iter, "  Bot shared secret:                     {}\n", rules.bot_shared_secret);
+    }
     if (base || rules.saving_enabled != b.saving_enabled)
         std::format_to(iter, "  Position saving:                       {}\n", rules.saving_enabled);
     if (base || rules.flag_dropping != b.flag_dropping)
@@ -1512,7 +1518,7 @@ void print_rules_with_presets(std::string& output, const AlpineServerConfigRules
             }
         }
     }
-    print_rules(output, rules, base);
+    print_rules(output, rules, base, sanitize);
 }
 
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool sanitize) {

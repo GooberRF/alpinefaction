@@ -146,6 +146,7 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
     uint8_t version_type = 0u;
     uint32_t max_rfl_version = 0u;
     Flags flags = Flags::none;
+    std::optional<uint32_t> bot_shared_secret{};
 };
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::true_type {};

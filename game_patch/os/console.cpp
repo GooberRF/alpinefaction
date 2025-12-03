@@ -244,9 +244,9 @@ void apply_console_history_setting() {
     rf::console::console_keep_history = g_alpine_game_config.save_console_history;
 }
 
-void console_commands_apply_patches();
-void console_auto_complete_apply_patches();
-void console_commands_init();
+extern void console_commands_apply_patches();
+extern void console_auto_complete_apply_patches();
+extern void console_commands_init();
 
 void console_apply_patches()
 {
@@ -259,6 +259,9 @@ void console_apply_patches()
     write_mem<u8>(0x005098D6, console_color.blue);
     write_mem<u8>(0x005098D8, console_color.green);
     write_mem<u8>(0x005098DA, console_color.red);
+
+    // Support unsigned hexadecimal arguments.
+    AsmWriter{0x0050B0B0}.call(std::strtoul);
 
     // Fix console rendering when changing level
     AsmWriter(0x0047C490).ret();

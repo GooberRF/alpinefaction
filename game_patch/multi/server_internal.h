@@ -57,7 +57,7 @@ enum class ParsePass
 struct SpawnProtectionConfig
 {
     bool enabled = false;
-    int duration = 1500;
+    uint32_t duration = 1500;
     bool use_powerup = false;
 
     // =============================================
@@ -71,9 +71,9 @@ struct SpawnProtectionConfig
 struct InactivityConfig
 {
     bool enabled = false;
-    int new_player_grace_ms = 120000;
-    int allowed_inactive_ms = 30000;
-    int warning_duration_ms = 10000;
+    uint32_t new_player_grace_ms = 120000;
+    uint32_t allowed_inactive_ms = 30000;
+    uint32_t warning_duration_ms = 10000;
     std::string kick_message = "You have been marked as idle due to inactivity! You will be kicked from the game unless you respawn in the next 10 seconds.";
 
     // =============================================
@@ -204,7 +204,7 @@ struct CriticalHitsConfig
     bool enabled = false;
     //int sound_id = 35; // hardcoded
     //int rate_limit = 10; // hardcoded
-    int reward_duration = 1500;
+    uint32_t reward_duration = 1500;
     float base_chance = 0.1f;
     bool dynamic_scale = true;
     float dynamic_damage_bonus_ceiling = 1200.0f;
@@ -533,6 +533,7 @@ struct AlpineServerConfigRules
     bool force_respawn = false;
     bool balance_teams = false;
     int ideal_player_count = 32;
+    uint32_t bot_shared_secret = 0;
     bool saving_enabled = false;
     bool flag_dropping = true;
     bool flag_captures_while_stolen = false;
@@ -594,6 +595,11 @@ struct AlpineServerConfigRules
     {
         ideal_player_count = std::clamp(count, 1, 32);
     }
+
+    void set_bot_shared_secret(const uint32_t secret) {
+        bot_shared_secret = secret;
+    }
+
     void set_flag_return_time(float in_time)
     {
         ctf_flag_return_time_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
@@ -781,7 +787,7 @@ void load_prev_level();
 void server_vote_on_player_leave(rf::Player* player);
 void server_vote_on_limbo_state_enter();
 void process_delayed_kicks();
-void kick_player_delayed(rf::Player* player);
+void kick_player_delayed(const rf::Player* player);
 bool ends_with(const rf::String& str, const std::string& suffix);
 const AlpineServerConfig& server_get_alpine_config();
 rf::CmdLineParam& get_ads_cmd_line_param();

@@ -277,18 +277,31 @@ int get_level_file_version(const std::string& file_name)
 }
 
 void print_player_info(rf::Player* player, bool new_join) {
+    const auto& pdata = get_player_additional_data(player);
+
     if (player == rf::local_player) {
-        rf::console::print("- {} (local player)",player->name);
+        if (pdata.is_bot()) {
+            rf::console::print("- {} (local bot)", player->name);
+        } else {
+            rf::console::print("- {} (local player)", player->name);
+        }
         return;
+    }
+
+    std::string name = player->name;
+    if (pdata.is_bot()) {
+        name += " (bot)";
+    } else if (is_player_idle(player)) {
+        name += " (idle)";
+    } else if (pdata.is_browser()) {
+        name += " (browser)";
     }
 
     // clients have only limited info
-    if (!rf::is_server && !rf::is_dedicated_server) {
-        rf::console::print("- {} | Ping: {}", player->name, player->net_data->ping);
+    if (!rf::is_server) {
+        rf::console::print("- {} | Ping: {}", name, player->net_data->ping);
         return;
     }
-
-    auto& pdata = get_player_additional_data(player);
 
     std::string client_info;
     if (pdata.client_version == ClientVersion::alpine_faction) {
@@ -312,11 +325,11 @@ void print_player_info(rf::Player* player, bool new_join) {
     addr.S_un.S_addr = ntohl(player_addr.ip_addr);
     if (new_join) {
         rf::console::print("===| {}{} | IP: {}:{} | {} | Max RFL: {} |===",
-            player->name, rf::strings::has_joined, inet_ntoa(addr), player->net_data->addr.port, client_info, pdata.max_rfl_version);
+            name, rf::strings::has_joined, inet_ntoa(addr), player->net_data->addr.port, client_info, pdata.max_rfl_version);
     }
     else {
         rf::console::print("- {} | IP: {}:{} | {} | Max RFL: {} | Ping: {} | HC: {}%",
-            player->name, inet_ntoa(addr), player->net_data->addr.port, client_info, pdata.max_rfl_version, player->net_data->ping, pdata.damage_handicap);
+            name, inet_ntoa(addr), player->net_data->addr.port, client_info, pdata.max_rfl_version, player->net_data->ping, pdata.damage_handicap);
     }
 }
 
@@ -1336,23 +1349,24 @@ static bool check_player_ac_status([[maybe_unused]] rf::Player* player)
     return true;
 }
 
-std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots)
-{
-    std::vector<rf::Player*> player_list;
+std::vector<rf::Player*> get_clients(
+    const bool include_browsers,
+    const bool include_bots
+) {
+    std::vector<rf::Player*> clients{};
+    clients.reserve(32);
 
-    SinglyLinkedList<rf::Player> linked_player_list{rf::player_list};
-
-    for (auto& player : linked_player_list) {
-        auto additional_data = get_player_additional_data(&player);
-        const bool is_browser = additional_data.is_browser();
-        const bool is_bot = additional_data.is_bot();
-
-        if ((is_browser && include_browsers) || (is_bot && include_bots) || (!is_browser && !is_bot)) {
-            player_list.push_back(&player);
+    for (auto& player : SinglyLinkedList{rf::player_list}) {
+        const auto& pdata = get_player_additional_data(&player);
+        if ((pdata.is_browser() && include_browsers)
+            || (pdata.is_bot() && include_bots)
+            || (!pdata.is_browser() && !pdata.is_bot()))
+        {
+            clients.push_back(&player);
         }
     }
 
-    return player_list;
+    return clients;
 }
 
 static bool should_balance_teams(rf::NetGameType current_game_type)
@@ -1660,48 +1674,24 @@ std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_inp
     return {is_valid, level_name};
 }
 
-// Function to count total spawned players (including bots and humans)
-int count_spawned_players()
-{
-    auto player_list = SinglyLinkedList{rf::player_list};
-
-    return std::count_if(player_list.begin(), player_list.end(), [](rf::Player& player) {
-        rf::Entity* entity = rf::entity_from_handle(player.entity_handle);
-        return entity != nullptr;
-    });
-}
-
-void update_player_active_status(rf::Player* player)
-{
+void update_player_active_status(const rf::Player* const player) {
     if (rf::is_dedicated_server && g_alpine_server_config.inactivity_config.enabled) {
-        auto& additional_data = get_player_additional_data(player);
-        additional_data.idle_kick_timestamp.invalidate();
-        additional_data.idle_check_timestamp.set(g_alpine_server_config.inactivity_config.allowed_inactive_ms);    
-        //xlog::warn("player {} active now! timestamp {}", player->name, get_player_additional_data(player).last_activity_ms);
+        auto& pdata = get_player_additional_data(player);
+        pdata.idle_kick_timestamp.invalidate();
+        pdata.idle_check_timestamp
+            .set(g_alpine_server_config.inactivity_config.allowed_inactive_ms);
+        // xlog::warn("player {} active now! timestamp {}", player->name, get_player_additional_data(player).last_activity_ms);
     }
 }
 
-bool is_player_idle(rf::Player* player)
-{
-    // Check if the player's idle timer has elapsed
-    const auto& additional_data = get_player_additional_data(player);
-    bool is_idle = additional_data.idle_check_timestamp.valid()
-        ? additional_data.idle_check_timestamp.elapsed()
-        : false;
-
-    // Player is idle if timer has elapsed and they're not spawned
-    return is_idle && rf::player_is_dead(player);
-}
-
-void player_idle_check(rf::Player* player)
-{
-    const auto& additional_data = get_player_additional_data(player);
+void player_idle_check(rf::Player* const player) {
+    auto& pdata = get_player_additional_data(player);
     if (!g_alpine_server_config.inactivity_config.enabled) {
-        return; // don't continue if inactivity monitoring is disabled
+        return;
     }
 
-    if (additional_data.idle_kick_timestamp.valid()) {
-        if (additional_data.idle_kick_timestamp.elapsed()) {
+    if (pdata.idle_kick_timestamp.valid()) {
+        if (pdata.idle_kick_timestamp.elapsed()) {
             kick_player_delayed(player);
         }
         return; // don't continue if a kick is already pending
@@ -1711,7 +1701,8 @@ void player_idle_check(rf::Player* player)
         return; // don't mark players as idle unless we're in gameplay
     }
 
-    if (additional_data.client_version == ClientVersion::browser || ends_with(player->name, " (Bot)")) {
+    if (pdata.client_version == ClientVersion::browser
+        || pdata.is_bot_player) {
         return; // don't mark browsers or bots as idle
     }
 
@@ -1719,18 +1710,28 @@ void player_idle_check(rf::Player* player)
         return; // don't mark players as idle during a match or pre-match
     }
 
-    if (player->net_data->join_time_ms > (rf::timer_get_milliseconds() - g_alpine_server_config.inactivity_config.new_player_grace_ms)) {
+    if (player->net_data->join_time_ms
+        > (rf::timer_get_milliseconds()
+            - g_alpine_server_config.inactivity_config.new_player_grace_ms)) {
         return; // don't mark new players as idle
     }
 
     if (is_player_idle(player)) {
-        rf::console::print("{} is idle and will be kicked if they don't spawn within 10 seconds.", player->name);
-        std::string msg = std::format("\xA6 {}", g_alpine_server_config.inactivity_config.kick_message);
+        rf::console::print(
+            "{} is idle and will be kicked if they don't spawn within 10 seconds.",
+             player->name
+        );
+        std::string msg = std::format(
+            "\xA6 {}",
+            g_alpine_server_config.inactivity_config.kick_message
+        );
         af_send_automated_chat_msg(msg, player);
 
         // set timer to kick them after 10 seconds
-        if (!additional_data.idle_kick_timestamp.valid()) {
-            get_player_additional_data(player).idle_kick_timestamp.set(g_alpine_server_config.inactivity_config.warning_duration_ms);
+        if (!pdata.idle_kick_timestamp.valid()) {
+            pdata
+                .idle_kick_timestamp
+                .set(g_alpine_server_config.inactivity_config.warning_duration_ms);
         }
     }
 }
@@ -1896,7 +1897,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
     0x00480820,
     [](rf::Player* player) {
         update_player_active_status(player); // active pulse on spawn
-        const auto& pad = get_player_additional_data(player);
+        const auto& pdata = get_player_additional_data(player);
 
         if (g_alpine_server_config_active_rules.force_character.enabled) {
             player->settings.multi_character = g_alpine_server_config_active_rules.force_character.character_index;
@@ -1911,9 +1912,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             af_send_automated_chat_msg("\xA6 You cannot spawn because a match is in progress. Please feel free to spectate.", player);
             return;
         }
-        if (g_alpine_server_config_active_rules.ideal_player_count < 32 &&
-            ends_with(player->name, " (Bot)") &&
-            count_spawned_players() >= g_alpine_server_config_active_rules.ideal_player_count) {
+        if (pdata.is_spawn_disabled_bot()) {
             std::string msg = std::format("\xA6 You're a bot and you can't spawn right now.");
 
             af_send_automated_chat_msg(msg, player);
@@ -1921,8 +1920,8 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         }
 
         // if a respawn timer has been set by the server, enforce it
-        if (pad.respawn_timer.valid() && !pad.respawn_timer.elapsed()) {
-            float spawn_delay_left = std::max(static_cast<float>(pad.respawn_timer.time_until()) / 1000.0f, 0.001f); // at least 1ms
+        if (pdata.respawn_timer.valid() && !pdata.respawn_timer.elapsed()) {
+            float spawn_delay_left = std::max(static_cast<float>(pdata.respawn_timer.time_until()) / 1000.0f, 0.001f); // at least 1ms
             std::string msg = std::format("\xA6 Respawn delay: {} seconds left until you can respawn.", spawn_delay_left);
             af_send_automated_chat_msg(msg, player);
             return;

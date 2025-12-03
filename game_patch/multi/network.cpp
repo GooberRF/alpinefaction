@@ -47,6 +47,7 @@
 #include "../os/console.h"
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
+#include "../misc/tlv.h"
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
@@ -56,7 +57,7 @@
 int g_update_rate = 30; // client netfps
 
 ClientVersion g_joining_client_version = ClientVersion::unknown;
-AlpineFactionJoinReqPacketExt g_joining_player_info;
+AlpineFactionJoinReqPacketExt g_joining_player_info{};
 StashedPacket g_join_request_stashed;
 static const uint8_t* g_rx_base = nullptr;
 static size_t g_rx_len = 0;
@@ -964,23 +965,60 @@ std::pair<std::unique_ptr<std::byte[]>, size_t> append_af_v3_tail(
     return extend_packet_bytes(pkt, len, tail.data(), tail.size());
 }
 
+ConsoleCommand2 bot_shared_secret_cmd{
+    "bot_shared_secret",
+    [] (const std::optional<uint32_t> secret) {
+        if (rf::is_dedicated_server) {
+            rf::console::print(
+                "This console variable is not available on dedicated servers"
+            );
+            return;
+        }
+
+        if (secret.has_value()) {
+            g_alpine_game_config.bot_shared_secret = secret.value();
+        }
+
+        if (g_alpine_game_config.bot_shared_secret) {
+            rf::console::print(
+                "Bot shared secret is {}",
+                g_alpine_game_config.bot_shared_secret
+            );
+        } else {
+             rf::console::print("Bot shared secret is 0 [disabled]");
+        }
+    },
+    "Set a shared secret to signal your client as a bot",
+};
+
+enum JoinReqTlv : uint8_t {
+    JR_TLV_BOT_SHARED_SECRET = 0x1,
+};
+
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
     0x0047ABFB,
-    [](const rf::NetAddr* addr, std::byte* data, size_t len) {
-
+    [] (const rf::NetAddr* const addr, std::byte* const data, const size_t len) {
         // Add Alpine Faction info to join_req packet
-        AFJoinReq_v2 ext_data;
-        ext_data.signature = ALPINE_FACTION_SIGNATURE;
-        ext_data.version_major = VERSION_MAJOR;
-        ext_data.version_minor = VERSION_MINOR;
-        ext_data.version_patch = VERSION_PATCH;
-        ext_data.version_type = VERSION_TYPE;
-        ext_data.max_rfl_version = MAXIMUM_RFL_VERSION;
-        ext_data.flags = 0u;
+        AFJoinReq_v2 ext_data{
+            .signature = ALPINE_FACTION_SIGNATURE,
+            .version_major = VERSION_MAJOR,
+            .version_minor = VERSION_MINOR,
+            .version_patch = VERSION_PATCH,
+            .version_type = VERSION_TYPE,
+            .max_rfl_version = MAXIMUM_RFL_VERSION,
+            .flags = 0u,
+        };
 
-        std::vector<uint8_t> tlvs;
-
-        auto [buf, new_len] = append_af_v3_tail(data, len, ext_data, tlvs);
+        std::vector<uint8_t> tlvs{};
+        tlvs.reserve(32);
+        TlvWriter<JoinReqTlv> writer{tlvs};
+        if (g_alpine_game_config.bot_shared_secret) {
+            writer.write_le(
+                JR_TLV_BOT_SHARED_SECRET,
+                g_alpine_game_config.bot_shared_secret
+            );
+        }
+        const auto [buf, new_len] = append_af_v3_tail(data, len, ext_data, tlvs);
 
         return send_join_req_packet_hook.call_target(addr, buf.get(), new_len);
     },
@@ -1183,7 +1221,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
     // try to parse as v3 (AF v1.2+)
     const AFJoinReq_v2* pre = nullptr;
     const uint8_t *tlv_b = nullptr, *tlv_e = nullptr;
-    
+
     if (parse_af_tail_v3(payload, plen, pre, tlv_b, tlv_e)) {
         xlog::debug("matched v3 join_req tail with signature {}", pre->signature);
         g_joining_client_version = ClientVersion::alpine_faction;
@@ -1194,6 +1232,17 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
         g_joining_player_info.version_type = pre->version_type;
         g_joining_player_info.max_rfl_version = pre->max_rfl_version;
         g_joining_player_info.flags = static_cast<AlpineFactionJoinReqPacketExt::Flags>(pre->flags);
+
+        TlvReader<JoinReqTlv> reader{tlv_b, tlv_e};
+        while (std::optional value = reader.next()) {
+            if (value->type == JR_TLV_BOT_SHARED_SECRET) {
+                const uint32_t secret = value->read_le<uint32_t>();
+                if (secret) {
+                    g_joining_player_info.bot_shared_secret = std::optional{secret};
+                }
+            }
+        }
+
         return true;
     }
 
@@ -1295,6 +1344,11 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                 pdata.client_version_patch = g_joining_player_info.version_patch;
                 pdata.client_version_type = g_joining_player_info.version_type;
                 pdata.max_rfl_version = g_joining_player_info.max_rfl_version;
+
+                if (g_joining_player_info.bot_shared_secret
+                    == std::optional{g_alpine_server_config.base_rules.bot_shared_secret}) {
+                    pdata.is_bot_player = true;
+                }
 
                 // reset for safety
                 g_joining_player_info = {};
@@ -2064,6 +2118,8 @@ void network_init()
     process_join_accept_injection.install();
     process_join_accept_send_game_info_req_injection.install();
     multi_stop_hook.install();
+
+    bot_shared_secret_cmd.register_cmd();
 
     // print rcon commands
     process_rcon_packet_log1.install();

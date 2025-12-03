@@ -66,35 +66,34 @@ PlayerAdditionalData& get_player_additional_data(const rf::Player* const player)
 }
 
 // used for compatibility checks
-bool is_player_minimum_af_client_version(rf::Player* player, int version_major, int version_minor, bool only_release)
-{
+bool is_player_minimum_af_client_version(
+    const rf::Player* const player,
+    const int version_major,
+    const int version_minor,
+    const bool only_release
+) {
     if (!player) {
         return false;
     }
 
-    const auto it = g_player_additional_data_map.find(player);
-    if (it == g_player_additional_data_map.end()) {
+    const auto& pdata = get_player_additional_data(player);
+    if (pdata.client_version != ClientVersion::alpine_faction) {
         return false;
     }
 
-    const auto& info = it->second;
-    if (info.client_version != ClientVersion::alpine_faction) {
+    if (only_release && pdata.client_version_type != VERSION_TYPE_RELEASE) {
         return false;
     }
 
-    if (only_release && info.client_version_type != VERSION_TYPE_RELEASE) {
-        return false;
-    }
-
-    if (info.client_version_major > version_major) {
+    if (pdata.client_version_major > version_major) {
         return true;
     }
 
-    if (info.client_version_major < version_major) {
+    if (pdata.client_version_major < version_major) {
         return false;
     }
 
-    return info.client_version_minor >= version_minor;
+    return pdata.client_version_minor >= version_minor;
 }
 
 bool is_server_minimum_af_version(int version_major, int version_minor) {
@@ -105,6 +104,20 @@ bool is_server_minimum_af_version(int version_major, int version_minor) {
     }
 
     return server_info->version_major >= version_major && server_info->version_minor >= version_minor;
+}
+
+bool is_player_idle(const rf::Player* const player) {
+    const auto& pdata = get_player_additional_data(player);
+    if (rf::is_server) {
+        // Check if the player's idle timer has elapsed
+        const bool is_idle = pdata.idle_check_timestamp.valid()
+            && pdata.idle_check_timestamp.elapsed();
+        // Player is idle if timer has elapsed and they're not spawned
+        return is_idle && rf::player_is_dead(player);
+    } else {
+        return pdata.received_ac_status
+            == std::optional{pf_pure_status::af_idle};
+    }
 }
 
 std::string build_local_spawn_string(bool can_respawn) {

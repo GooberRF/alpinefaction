@@ -43,6 +43,14 @@ inline T console_read_arg()
     return value_opt.value();
 }
 
+template <>
+inline std::optional<unsigned int> console_read_arg() {
+    if (!console_read_arg_internal(rf::console::ARG_INT)) {
+        return {};
+    }
+    return std::optional{static_cast<unsigned int>(rf::console::int_arg)};
+}
+
 template<>
 inline std::optional<int> console_read_arg()
 {
@@ -73,6 +81,14 @@ inline std::optional<std::string> console_read_arg()
 {
     if (!console_read_arg_internal(rf::console::ARG_STR))
         return {};
+    return std::optional{rf::console::str_arg};
+}
+
+template <>
+inline std::optional<std::string_view> console_read_arg() {
+    if (!console_read_arg_internal(rf::console::ARG_STR)) {
+        return {};
+    }
     return std::optional{rf::console::str_arg};
 }
 

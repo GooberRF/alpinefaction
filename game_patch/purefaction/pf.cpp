@@ -11,6 +11,7 @@
 #include "pf_packets.h"
 #include "pf_ac.h"
 #include "../misc/player.h"
+#include "../multi/server.h"
 
 void pf_send_reliable_packet(rf::Player* player, const void* data, int len)
 {
@@ -47,13 +48,22 @@ void send_pf_player_stats_packet(rf::Player* player)
         auto& player_stats = *static_cast<PlayerStatsNew*>(current_player.stats);
         pf_player_stats_packet::player_stats out_stats{};
         out_stats.player_id = current_player.net_data->player_id;
-        pf_pure_status pure_status = pf_ac_get_pure_status(&current_player);
-        const auto& pdata = get_player_additional_data(&current_player);
-        if (pdata.spectatee.has_value()) {
-            pure_status = pf_pure_status::af_spectator;
-        } else if (pdata.client_version == ClientVersion::browser) {
-            pure_status = pf_pure_status::rfsb;
-        }
+        const pf_pure_status pure_status = std::invoke([&] {
+            const auto& pdata = get_player_additional_data(&current_player);
+            if (pdata.is_spectator()) {
+                return pf_pure_status::af_spectator;
+            } else if (is_player_idle(&current_player)) {
+                return pf_pure_status::af_idle;
+            } else if (pdata.is_spawn_disabled_bot()) {
+                return pf_pure_status::af_spawn_disabled_bot;
+            } else if (pdata.is_bot()) {
+                return pf_pure_status::af_bot;
+            } else if (pdata.is_browser()) {
+                return pf_pure_status::rfsb;
+            } else {
+                return pf_ac_get_pure_status(&current_player);
+            }
+        });
         out_stats.is_pure = static_cast<uint8_t>(pure_status);
         out_stats.accuracy = static_cast<uint8_t>(player_stats.calc_accuracy() * 100.f);
         out_stats.streak_max = player_stats.max_streak;

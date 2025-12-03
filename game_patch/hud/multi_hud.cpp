@@ -1970,14 +1970,40 @@ FunHook<void(const rf::Player*, const char*, int)> chat_add_msg_hook{
     },
 };
 
+static bool g_target_player_is_bot = false;
+
 // displays name of player you're pointing at
 CallHook<void(int, int, const char*, int, rf::gr::Mode)> multi_hud_render_target_player_name_hook{
     0x00478140,
-    [](int x, int y, const char* s, int font_num, rf::gr::Mode mode) {
+    [] (int x, int y, const char* s, int font_num, rf::gr::Mode mode) {
         if (!g_alpine_game_config.display_target_player_names) {
             return;
         }
         multi_hud_render_target_player_name_hook.call_target(x, y, s, font_num, mode);
+        if (g_target_player_is_bot) {
+            const rf::gr::Color saved_color = rf::gr::screen.current_color;
+            rf::gr::set_color(255, 238, 180, 255);
+            rf::gr::string(rf::gr::current_string_x, y, " bot", font_num, mode);
+            rf::gr::set_color(saved_color);
+        }
+    },
+};
+
+CodeInjection multi_hud_update_target_player_patch_1{
+    0x00477F06,
+    [] (const auto& regs) {
+        const rf::Player* const player = addr_as_ref<const rf::Player*>(regs.esi - 8);
+        const auto& pdata = get_player_additional_data(player);
+        g_target_player_is_bot = pdata.is_bot();
+    },
+};
+
+CodeInjection multi_hud_update_target_player_patch_2{
+    0x00477F8C,
+    [] (const auto& regs) {
+        const rf::Player* const player = addr_as_ref<const rf::Player*>(regs.esi - 8);
+        const auto& pdata = get_player_additional_data(player);
+        g_target_player_is_bot = pdata.is_bot();
     },
 };
 
@@ -2138,6 +2164,11 @@ void multi_hud_apply_patches()
 
     // Drawing of targeted player names in multi
     multi_hud_render_target_player_name_hook.install();
+    multi_hud_update_target_player_patch_1.install();
+    multi_hud_update_target_player_patch_2.install();
+
+    constexpr float multi_hud_target_player_name_alpha = 255.f;
+    write_mem<float>(0x00478021 + 6, multi_hud_target_player_name_alpha);
 
     // Play radio message and taunt sounds
     chat_add_msg_hook.install();

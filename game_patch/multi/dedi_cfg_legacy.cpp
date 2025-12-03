@@ -54,7 +54,7 @@ void parse_boolean_option(rf::Parser& parser, const char* key, bool& option, con
     }
 }
 
-void parse_uint_option(rf::Parser& parser, const char* key, int& option, const char* label = nullptr)
+void parse_uint_option(rf::Parser& parser, const char* key, unsigned int& option, const char* label = nullptr)
 {
     if (parser.parse_optional(key)) {
         option = parser.parse_uint();
@@ -225,6 +225,8 @@ void parse_miscellaneous_options(rf::Parser& parser)
 {
     parse_int_option(parser, "$Desired Player Count:", g_alpine_server_config_active_rules.ideal_player_count,
                      "Desired Player Count");
+    parse_uint_option(parser, "$Bot Shared Secret:", g_alpine_server_config_active_rules.bot_shared_secret,
+                      "Bot Shared Secret");
     parse_boolean_option(parser, "$Use SP Damage Calculation:", g_alpine_server_config.use_sp_damage_calculation,
                          "Use SP Damage Calculation");
     parse_int_option(parser, "$CTF Flag Return Time:", g_alpine_server_config_active_rules.ctf_flag_return_time_ms,

@@ -136,13 +136,12 @@ ConsoleCommand2 map_prev_cmd{
     "Load previous level",
 };
 
-void kick_player_delayed(rf::Player* player)
-{
+void kick_player_delayed(const rf::Player* const player) {
     rf::console::print("{}{}", player->name, rf::strings::was_kicked);
     g_players_to_kick.push_back(player->net_data->player_id);
 }
 
-CallHook<void(rf::Player*)> multi_kick_player_hook{0x0047B9BD, kick_player_delayed};
+CallHook<void(const rf::Player*)> multi_kick_player_hook{0x0047B9BD, kick_player_delayed};
 
 void process_delayed_kicks()
 {

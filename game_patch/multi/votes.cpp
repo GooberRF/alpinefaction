@@ -234,16 +234,17 @@ protected:
         }
     }
 
-    static bool is_eligible_voter(rf::Player* p)
-    {
-        if (!p)
+    static bool is_eligible_voter(rf::Player* const p) {
+        if (!p) {
             return false;
-        if (get_player_additional_data(p).client_version == ClientVersion::browser)
+        }
+        const auto& pdata = get_player_additional_data(p);
+        if (pdata.client_version == ClientVersion::browser
+            || pdata.is_bot_player
+            || is_player_idle(p)
+            || !player_meets_alpine_restrict(p)) {
             return false;
-        if (ends_with(p->name, " (Bot)"))
-            return false;
-        if (!player_meets_alpine_restrict(p))
-            return false;
+        }
         return true;
     }
 
@@ -944,15 +945,21 @@ VoteMgr g_vote_mgr;
 
 void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, rf::Player* sender)
 {
-    if (get_player_additional_data(sender).client_version == ClientVersion::browser || ends_with(sender->name, " (Bot)")) {
+    const auto& pdata = get_player_additional_data(sender);
+    if (pdata.client_version == ClientVersion::browser || pdata.is_bot_player) {
         af_send_automated_chat_msg("Browsers and bots are not allowed to vote!", sender);
         return;
-    }
-    if (!Vote::player_meets_alpine_restrict(sender)) {
+    } else if (!Vote::player_meets_alpine_restrict(sender)) {
         af_send_automated_chat_msg(
-            "You can't vote because your client does not meet the server's requirements. Visit alpinefaction.com to upgrade.", sender);
+            "You can't vote, because your client does not meet the server's requirements. Visit alpinefaction.com to upgrade.",
+            sender
+        );
+        return;
+    } else if (is_player_idle(sender)) {
+        af_send_automated_chat_msg("Idle players are not allowed to vote!", sender);
         return;
     }
+
     if (vote_name == "kick")
         g_vote_mgr.StartVote<VoteKick>(vote_arg, sender);
     else if (vote_name == "level" || vote_name == "map")

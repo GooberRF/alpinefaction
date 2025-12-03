@@ -49,25 +49,41 @@ struct PlayerAdditionalData
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 
-    bool is_bot() const
-    {
+    bool is_spectator() const {
+        if (rf::is_server) {
+            return spectatee.has_value();
+        } else {
+            return received_ac_status == std::optional{pf_pure_status::af_spectator};
+        }
+    }
+
+    bool is_bot() const {
         if (rf::is_server) {
             return is_bot_player;
+        } else {
+            return received_ac_status == std::optional{pf_pure_status::af_bot}
+                || received_ac_status
+                == std::optional{pf_pure_status::af_spawn_disabled_bot};
         }
     }
 
-    bool is_spawn_disabled_bot() const
-    {
+    bool is_spawn_disabled_bot() const {
         if (rf::is_server) {
-            return is_bot_player && g_alpine_server_config_active_rules.ideal_player_count < 32 &&
-                   multi_num_spawned_players() >= g_alpine_server_config_active_rules.ideal_player_count;
+            return is_bot_player
+                && g_alpine_server_config_active_rules.ideal_player_count < 32
+                && multi_num_spawned_players()
+                >= g_alpine_server_config_active_rules.ideal_player_count;
+        } else {
+            return received_ac_status
+                == std::optional{pf_pure_status::af_spawn_disabled_bot};
         }
     }
 
-    bool is_browser() const
-    {
+    bool is_browser() const {
         if (rf::is_server) {
             return client_version == ClientVersion::browser;
+        } else {
+            return received_ac_status == std::optional{pf_pure_status::rfsb};
         }
     }
 };
@@ -87,10 +103,16 @@ void find_player(const StringMatcher& query, std::function<void(rf::Player*)> co
 void reset_player_additional_data(const rf::Player* player);
 PlayerAdditionalData& get_player_additional_data(const rf::Player* player);
 void play_local_hit_sound(bool died);
-bool is_player_minimum_af_client_version(rf::Player* player, int version_major, int version_minor, bool only_release = false);
+bool is_player_minimum_af_client_version(
+    const rf::Player* player,
+    int version_major,
+    int version_minor,
+    bool only_release = false
+);
 bool is_server_minimum_af_version(int version_major, int version_minor);
 void player_multi_level_post_init();
 void update_player_flashlight();
 void ping_looked_at_location();
 void fpgun_play_random_idle_anim();
 void set_headlamp_toggle_enabled(bool enabled);
+bool is_player_idle(const rf::Player* player);

@@ -36,10 +36,10 @@ void multi_create_alpine_respawn_point(int uid, const char* name, rf::Vector3 po
 void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type);
 void multi_update_gungame_weapon(rf::Player* player, bool force_notification);
 void gungame_on_player_spawn(rf::Player* player);
-void update_player_active_status(rf::Player* player);
+void update_player_active_status(const rf::Player* player);
 void player_idle_check(rf::Player* player);
 void send_sound_packet_throwaway(rf::Player* target, int sound_id);
 void multi_change_level_alpine(const char* filename);
 const char* get_rand_level_filename();
 void shuffle_level_array();void process_queued_spawn_points_from_items();
-
+bool is_player_idle(const rf::Player* player);

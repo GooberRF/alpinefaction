@@ -142,6 +142,8 @@ add_packfile(alpinefaction.vpp
     images/afsbi_spec_1.tga
     images/afsbi_brow.tga
     images/afsbi_brow_1.tga
+    images/afsbi_idle.tga
+    images/afsbi_idle_1.tga
     images/scope_zoom_corner256_red.tga
     images/128blackcircle.tga
     images/ass2_scope_circle.tga

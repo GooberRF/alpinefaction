@@ -1515,7 +1515,7 @@ af_server_msg_packet_buf build_automated_chat_msg_packet(
 }
 
 void af_broadcast_automated_chat_msg(const std::string_view msg) {
-    if (!rf::is_multi || !rf::is_server) {
+    if (!rf::is_server) {
         return;
     }
 
@@ -1542,7 +1542,7 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
 }
 
 void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player) {
-    if (!rf::is_multi || !rf::is_server || !player) {
+    if (!rf::is_server || !player) {
         return;
     }
 

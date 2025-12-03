@@ -43,6 +43,22 @@ namespace rf
         {
             AddrCaller{0x004FC060}.this_call(this, pitch, roll, yaw);
         }
+
+        void transpose() {
+            AddrCaller{0x004FC8A0}.this_call(this, this);
+        }
+
+        void inverse() {
+            AddrCaller{0x004FCCF0}.this_call(this);
+        }
+
+        void mul(const Matrix3& other) {
+            AddrCaller{0x0040EA80}.this_call(this, this, &other);
+        }
+
+        void mul_transpose(const Matrix3& other) {
+            AddrCaller{0x004FF0F0}.this_call(this, this, &other);
+        }
     };
     static_assert(sizeof(Matrix3) == 0x24);
 

@@ -116,6 +116,12 @@ Version 1.2.0 (Willow): Not yet released
 - Add freelook spectate acceleration modes and modifier
 
 [@is-this-c](https://github.com/is-this-c)
+- Add `Tlv{Writer, Reader}` and `HighResTimer`
+- Prevent idle players from voting
+- Add colored `bot` text to a bot's name
+- Add `bot`, `browser`, `spectator`, and `idle` text to `info` command's output
+- Add `bot_shared_secret` command to signal your client as a bot
+- Add `$Bot Shared Secret` legacy and `bot_shared_secret` ADS options for dedicated servers
 - Send `pf_player_stats_packet` with score
 - Add browser and spectator icon logic
 - Ignore browsers in spectate mode
@@ -125,10 +131,10 @@ Version 1.2.0 (Willow): Not yet released
 - Add `ui_simple_server_chat_messages` command to display automated server chat messages without `Server: `
 - Color automated server chat messages with a gold name instead of a red name
 - Add `key_quick_exit` command to restore keyboard shortcut `Shift+Esc` to quit out of Red Faction
-- Support `Alt+F4` or pressing X on the window to quit out of Red Faction
+- Support Alt+F4 or window close button (X) to quit out of Red Faction
 - Add a configurable control to display a remote server's config
-- Add `ui_always_show_spectators` command to display spectators in multiplayer
-- Simplify code that fixed broken events if their delay parameter was set
+- Add `ui_always_show_spectators` command to always display spectators in multiplayer
+- Improve code that fixed broken events if their delay parameter was set
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Improve dedicated server framerate consistency
@@ -172,6 +178,7 @@ Version 1.2.0 (Willow): Not yet released
 - Fix rare crash when starting to spectate a player immediately when they land on a surface
 
 [@is-this-c](https://github.com/is-this-c)
+- For console arguments, parse hexadecimal values as unsigned integers
 - Set `rf::gr::text_2d_mode` to ignore fog
 - Fix `gr_d3d_bitmap`, so `gr_d3d_set_state` is called earlier
 - Support `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads

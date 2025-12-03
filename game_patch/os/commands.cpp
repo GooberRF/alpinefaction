@@ -23,13 +23,13 @@
 ConsoleCommand2 dot_cmd{
     ".",
     [] (const std::string pattern) {
-        for (i32 i = 0; i < rf::console::num_commands; ++i) {
-            const rf::console::Command* cmd = g_commands_buffer[i];
+        for (int i = 0; i < rf::console::num_commands; ++i) {
+            const rf::console::Command* const cmd = g_commands_buffer[i];
             if (string_contains_ignore_case(cmd->name, pattern)
-                || (cmd->help && string_contains_ignore_case(cmd->help, pattern))) {    
-                if (cmd->help) {   
-                    rf::console::print("{} - {}", cmd->name, cmd->help);        
-                } else { 
+                || (cmd->help && string_contains_ignore_case(cmd->help, pattern))) {
+                if (cmd->help) {
+                    rf::console::print("{} - {}", cmd->name, cmd->help);
+                } else {
                     rf::console::print("{}", cmd->name);
                 }
             }

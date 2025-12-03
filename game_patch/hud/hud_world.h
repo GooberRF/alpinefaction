@@ -2,6 +2,7 @@
 
 #include "../rf/os/timestamp.h"
 #include "../rf/math/vector.h"
+#include "../os/os.h"
 
 struct WorldHUDAssets
 {
@@ -83,8 +84,7 @@ struct EphemeralWorldHUDString
     uint8_t player_id;
     uint16_t damage;
     WorldHUDRenderMode render_mode = WorldHUDRenderMode::overdraw;
-    rf::Timestamp timestamp;
-    int duration = 10000;
+    HighResTimer timestamp;
     bool float_away = false;
     float wind_phase_offset = 0.0f;
 };

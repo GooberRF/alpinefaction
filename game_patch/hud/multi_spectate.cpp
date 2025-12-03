@@ -123,12 +123,10 @@ static void spectate_next_player(const bool dir, const bool try_alive_players_fi
         if (!new_target) {
             break;
         }
-        const bool is_browser = get_player_additional_data(new_target)
-            .received_ac_status
-            == std::optional{pf_pure_status::rfsb};
+        const auto& pdata = get_player_additional_data(new_target);
         if (new_target == g_spectate_mode_target) {
             break; // nothing found
-        } else if (is_browser) {
+        } else if (pdata.is_browser()) {
             continue;
         } else if (try_alive_players_first && rf::player_is_dead(new_target)) {
             continue;
@@ -510,9 +508,11 @@ static void draw_with_shadow(int x, int y, int shadow_dx, int shadow_dy, rf::Col
     fun(x, y);
 }
 
-void multi_spectate_render()
-{
-    if (rf::hud_disabled || rf::gameseq_get_state() != rf::GS_GAMEPLAY || multi_spectate_is_freelook()) {
+void multi_spectate_render() {
+    if (rf::hud_disabled
+        || rf::gameseq_get_state() != rf::GS_GAMEPLAY
+        || multi_spectate_is_freelook())
+    {
         return;
     }
 
@@ -540,18 +540,38 @@ void multi_spectate_render()
     if (!g_alpine_game_config.spectate_mode_minimal_ui) {
         int title_x = scr_w / 2;
         int title_y = g_alpine_game_config.big_hud ? 250 : 150;
-        draw_with_shadow(title_x, title_y, 2, 2, white_clr, shadow_clr, [=](int x, int y) {
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "SPECTATE MODE", large_font);
-        });
+        draw_with_shadow(
+            title_x,
+            title_y,
+            2,
+            2,
+            white_clr,
+            shadow_clr,
+            [=] (int x, int y) {
+                rf::gr::string_aligned(
+                    rf::gr::ALIGN_CENTER,
+                    x,
+                    y,
+                    "SPECTATE MODE",
+                    large_font
+                );
+            }
+        );
 
         if (!g_remote_server_cfg_popup.is_active()) {
             int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120);
             int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
             int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
-            std::string next_player_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
-            std::string prev_player_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
-            std::string exit_spec_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_JUMP);
-            std::string spec_menu_text = get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU));
+            std::string next_player_text =
+                get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
+            std::string prev_player_text = get_action_bind_name(
+                rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK
+            );
+            std::string exit_spec_text =
+                get_action_bind_name(rf::ControlConfigAction::CC_ACTION_JUMP);
+            std::string spec_menu_text = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU)
+            );
             const char* hints[][3] = {
                 {next_player_text.c_str(), "Next Player"},
                 {prev_player_text.c_str(), "Previous Player"},
@@ -560,7 +580,13 @@ void multi_spectate_render()
             };
             for (auto& hint : hints) {
                 rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-                rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, hints_left_x, hints_y, hint[0], medium_font);
+                rf::gr::string_aligned(
+                    rf::gr::ALIGN_RIGHT,
+                    hints_left_x,
+                    hints_y,
+                    hint[0],
+                    medium_font
+                );
                 rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
                 rf::gr::string(hints_right_x, hints_y, hint[1], medium_font);
                 hints_y += medium_font_h;
@@ -573,8 +599,15 @@ void multi_spectate_render()
 
     const char* target_name = g_spectate_mode_target->name;
     const char* spectating_label = "Spectating:";
-    auto [spectating_label_w, spectating_label_h] = rf::gr::get_string_size(spectating_label, small_font);
-    auto [target_name_w, target_name_h] = rf::gr::get_string_size(target_name, large_font);
+    const auto [spectating_label_w, spectating_label_h] =
+        rf::gr::get_string_size(spectating_label, small_font);
+    auto [target_name_w, target_name_h] =
+        rf::gr::get_string_size(target_name, large_font);
+    const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", large_font);
+    const auto& pdata = get_player_additional_data(g_spectate_mode_target);
+    if (pdata.is_bot()) {
+        target_name_w += bot_w;
+    }
 
     const int padding_y = g_alpine_game_config.big_hud ? 4 : 2;
     const int padding_x = g_alpine_game_config.big_hud ? 24 : 16;
@@ -594,7 +627,13 @@ void multi_spectate_render()
     const int name_y = label_y + spectating_label_h + line_gap;
 
     rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, bar_x + bar_w / 2, label_y, spectating_label, small_font);
+    rf::gr::string_aligned(
+        rf::gr::ALIGN_CENTER,
+        bar_x + bar_w / 2,
+        label_y,
+        spectating_label,
+        small_font
+    );
     if (multi_is_team_game_type()) {
         if (g_spectate_mode_target->team) {
             rf::gr::set_color(0x34, 0x4E, 0xA7, 0xFF);
@@ -606,7 +645,20 @@ void multi_spectate_render()
     else {
         rf::gr::set_color(0xFF, 0x88, 0x22, 0xFF);
     }
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, bar_x + bar_w / 2, name_y, target_name, large_font);
+    const int x = target_name_w / -2 + (bar_x + bar_w / 2);
+    rf::gr::string_aligned(
+        rf::gr::ALIGN_LEFT,
+        x,
+        name_y,
+        target_name,
+        large_font
+    );
+    if (pdata.is_bot()) {
+        const rf::gr::Color saved_color = rf::gr::screen.current_color;
+        rf::gr::set_color(255, 238, 180, 255);
+        rf::gr::string(rf::gr::current_string_x, name_y, " bot", large_font);
+        rf::gr::set_color(saved_color);
+    }
 
     rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
     if (!entity) {
@@ -614,12 +666,32 @@ void multi_spectate_render()
         static int blood_bm = rf::bm::load("bloodsmear07_A.tga", -1, true);
         int blood_w, blood_h;
         rf::bm::get_dimensions(blood_bm, &blood_w, &blood_h);
-        rf::gr::bitmap_scaled(blood_bm, (scr_w - blood_w * 2) / 2, (scr_h - blood_h * 2) / 2, blood_w * 2,
-                             blood_h * 2, 0, 0, blood_w, blood_h, false, false, rf::gr::bitmap_clamp_mode);
+        rf::gr::bitmap_scaled(
+            blood_bm,
+            (scr_w - blood_w * 2) / 2,
+            (scr_h - blood_h * 2) / 2,
+            blood_w * 2,
+            blood_h * 2,
+            0,
+            0,
+            blood_w,
+            blood_h,
+            false,
+            false,
+            rf::gr::bitmap_clamp_mode
+        );
 
         rf::Color dead_clr{0xF0, 0x20, 0x10, 0xC0};
-        draw_with_shadow(scr_w / 2, scr_h / 2, 2, 2, dead_clr, shadow_clr, [=](int x, int y) {
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "DEAD", large_font);
-        });
+        draw_with_shadow(
+            scr_w / 2,
+            scr_h / 2,
+            2,
+            2,
+            dead_clr,
+            shadow_clr,
+            [=] (int x, int y) {
+                rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "DEAD", large_font);
+            }
+        );
     }
 }
