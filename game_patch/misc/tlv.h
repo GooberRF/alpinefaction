@@ -5,6 +5,7 @@
 
 template <typename E>
 requires std::is_enum_v<E>
+    && (sizeof(std::underlying_type_t<E>) == 1)
 class TlvWriter {
 public:
     explicit TlvWriter(std::vector<uint8_t>& buf)
@@ -31,6 +32,7 @@ private:
 
 template <typename E>
 requires std::is_enum_v<E>
+    && (sizeof(std::underlying_type_t<E>) == 1)
 class TlvReader {
 public:
     TlvReader(const uint8_t* const begin, const uint8_t* const end)
