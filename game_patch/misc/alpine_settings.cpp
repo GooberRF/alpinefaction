@@ -224,14 +224,6 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.real_armor_values = std::stoi(settings["RealArmorValues"]);
         processed_keys.insert("RealArmorValues");
     }
-    if (settings.count("FreeCamAccelMode")) {
-        g_alpine_game_config.set_spectate_freelook_mode(std::stoi(settings["FreeCamAccelMode"]));
-        processed_keys.insert("FreeCamAccelMode");
-    }
-    if (settings.count("FreeCamAccelModMode")) {
-        g_alpine_game_config.set_spectate_freelook_modifier_mode(std::stoi(settings["FreeCamAccelModMode"]));
-        processed_keys.insert("FreeCamAccelModMode");
-    }
     if (settings.count("QuickExit")) {
         g_alpine_game_config.quick_exit = std::stoi(settings["QuickExit"]);
         processed_keys.insert("QuickExit");
@@ -775,8 +767,6 @@ void alpine_player_settings_save(rf::Player* player)
     file << "AlpineBranding=" << g_alpine_game_config.af_branding << "\n";
     file << "SeasonalEffect=" << g_alpine_game_config.seasonal_effect << "\n";
     file << "RealArmorValues=" << g_alpine_game_config.real_armor_values << "\n";
-    file << "FreeCamAccelMode=" << g_alpine_game_config.spectate_freelook_mode << "\n";
-    file << "FreeCamAccelModMode=" << g_alpine_game_config.spectate_freelook_modifier_mode << "\n";
     file << "ColorblindMode=" << g_alpine_game_config.colorblind_mode << "\n";
     file << "AutoswitchFireWait=" << g_alpine_game_config.suppress_autoswitch_fire_wait << "\n";
     file << "AlwaysAutoswitchEmpty=" << g_alpine_game_config.always_autoswitch_empty << "\n";
