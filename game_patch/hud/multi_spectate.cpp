@@ -474,7 +474,9 @@ void multi_spectate_render() {
         if (rf::player_is_dead(rf::local_player)
             && !g_remote_server_cfg_popup.is_active()) {
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-            int y = scr_h - (g_alpine_game_config.big_hud ? 170 : 155);
+            const int bottom_death_bar_y = rf::gr::screen_height()
+                - static_cast<int>(rf::gr::screen_height() * .125f);
+            const int y = bottom_death_bar_y - rf::gr::get_font_height(medium_font) - 5;
             rf::gr::string(10, y, "Press Jump to enter Spectate Mode", medium_font);
         }
         return;
