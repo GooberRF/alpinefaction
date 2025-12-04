@@ -270,7 +270,7 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
             }
 
             std::string player_name_stripped = player->name;
-            const auto [space_w, space_h] = rf::gr::get_string_size(" ", -1);
+            const auto [space_w, space_h] = rf::gr::get_char_size(' ', -1);
             const bool is_bot = pdata.is_bot();
             if (is_bot) {
                 const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", -1);
