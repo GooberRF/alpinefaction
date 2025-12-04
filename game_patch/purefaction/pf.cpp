@@ -52,12 +52,12 @@ void send_pf_player_stats_packet(rf::Player* player)
             const auto& pdata = get_player_additional_data(&current_player);
             if (pdata.is_spectator()) {
                 return pf_pure_status::af_spectator;
-            } else if (is_player_idle(&current_player)) {
-                return pf_pure_status::af_idle;
             } else if (pdata.is_spawn_disabled_bot()) {
                 return pf_pure_status::af_spawn_disabled_bot;
             } else if (pdata.is_bot()) {
                 return pf_pure_status::af_bot;
+            } else if (is_player_idle(&current_player)) {
+                return pf_pure_status::af_idle;
             } else if (pdata.is_browser()) {
                 return pf_pure_status::rfsb;
             } else {

@@ -1346,8 +1346,17 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                 pdata.max_rfl_version = g_joining_player_info.max_rfl_version;
 
                 if (g_joining_player_info.bot_shared_secret
-                    == std::optional{g_alpine_server_config.base_rules.bot_shared_secret}) {
+                    == std::optional{g_alpine_server_config.bot_shared_secret}) {
                     pdata.is_bot_player = true;
+                    rf::console::print(
+                        "{}'s bot shared secret was valid",
+                        valid_player->name
+                    );
+                } else {
+                    rf::console::print(
+                        "{}'s bot shared secret was invalid",
+                        valid_player->name
+                    );
                 }
 
                 // reset for safety

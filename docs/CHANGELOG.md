@@ -112,7 +112,7 @@ Version 1.2.0 (Willow): Not yet released
 - Deprecate `level_info_ext` and `map_info_ext`, use `level_info` and `map_info` instead
 - Add `Override static mesh ambient light scale` setting to level properties window in level editor
 - Update output of `level_info` command to include advanced level properties
-- Add browser and spectator icon assets
+- Add browser, spectator, and idle icon assets
 - Add freelook spectate acceleration modes and modifier
 
 [@is-this-c](https://github.com/is-this-c)
@@ -121,9 +121,9 @@ Version 1.2.0 (Willow): Not yet released
 - Add colored `bot` text to a bot's name
 - Add `bot`, `browser`, `spectator`, and `idle` text to `info` command's output
 - Add `bot_shared_secret` command to signal your client as a bot
-- Add `$Bot Shared Secret` legacy and `bot_shared_secret` ADS options for dedicated servers
+- Add a `bot_shared_secret` ADS option for dedicated servers
 - Send `pf_player_stats_packet` with score
-- Add browser and spectator icon logic
+- Add browser, spectator, and idle icon logic
 - Ignore browsers in spectate mode
 - Add `bighud` support for chat menus
 - Support `•` in TrueType fonts

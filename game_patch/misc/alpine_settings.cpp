@@ -572,8 +572,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("RemoteServerCfgDisplayMode");
     }
     if (settings.count("BotSharedSecret")) {
-        char* end = nullptr;
-        g_alpine_game_config.bot_shared_secret = std::strtoul(settings["BotSharedSecret"].c_str(), &end, 0);
+        g_alpine_game_config.bot_shared_secret = std::stoul(settings["BotSharedSecret"]);
         processed_keys.insert("BotSharedSecret");
     }
 

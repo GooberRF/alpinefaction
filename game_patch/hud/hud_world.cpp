@@ -420,11 +420,9 @@ bool hill_vis_contested(HillInfo& h)
 }
 
 static int get_world_hud_font(const bool world_hud_big_text) {
-    if (world_hud_big_text) {
-        return rf::gr::load_font("boldfont.ttf:17");
-    } else {
-        return rf::gr::load_font("boldfont.ttf:14");
-    }
+    static const int large_font = rf::gr::load_font("boldfont.ttf:17");
+    static const int small_font = rf::gr::load_font("boldfont.ttf:14");
+    return world_hud_big_text ? large_font : small_font;
 }
 
 static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
