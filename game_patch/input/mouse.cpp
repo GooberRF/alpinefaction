@@ -40,6 +40,13 @@ bool set_direct_input_enabled(bool enabled)
     return true;
 }
 
+int get_mouse_scroll_wheel_value()
+{
+    int mouse_dx = 0, mouse_dy = 0, mouse_dz = 0;
+    rf::mouse_get_delta(mouse_dx, mouse_dy, mouse_dz);
+    return mouse_dz;
+}
+
 FunHook<void()> mouse_eval_deltas_hook{
     0x0051DC70,
     []() {

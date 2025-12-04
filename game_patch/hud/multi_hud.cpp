@@ -358,38 +358,12 @@ static const ChatMenuList command_menu{
     }
 };
 
-// Spectate freelook default speed
-static const ChatMenuList spectate_freelook_speed_menu{
-    .display_string = "FREELOOK SPEED",
-    .type = ChatMenuListType::Basic,
-    .elements = {
-        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Slow", "spectate_freelookmode 0"},
-        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Normal", "spectate_freelookmode 1"},
-        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Fast", "spectate_freelookmode 2"},
-        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Really fast", "spectate_freelookmode 3"},
-    }
-};
-
-// Spectate freelook modifier speed
-static const ChatMenuList spectate_freelook_modifier_menu{
-    .display_string = "FREELOOK MODIFIER",
-    .type = ChatMenuListType::Basic,
-    .elements = {
-        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Slow", "spectate_freelookmodifier 0"},
-        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Normal", "spectate_freelookmodifier 1"},
-        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Fast", "spectate_freelookmodifier 2"},
-        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Really fast", "spectate_freelookmodifier 3"},
-    }
-};
-
 // Spectate
 static const ChatMenuList spectate_menu{
     .display_string = "SPECTATE MODE",
     .type = ChatMenuListType::Basic,
     .elements = {
         //{false, ChatMenuListName::Null, ChatMenuListType::Basic, "Free camera", "spectate"},
-        {true, ChatMenuListName::SpectateFreelookDefault, ChatMenuListType::Basic, "Freelook accel base", ""},
-        {true, ChatMenuListName::SpectateFreelookModifier, ChatMenuListType::Basic, "Freelook accel mod", ""},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Follow killer", "spectate_followkiller"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Minimal UI", "spectate_minui"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Player labels", "spectate_playerlabels"},
@@ -1898,8 +1872,6 @@ void chat_menu_action_handler(rf::Key key) {
             case ChatMenuListName::Powerup: g_active_menu = &powerup_menu; break;
             case ChatMenuListName::Flag: g_active_menu = &ctf_menu; break;
             case ChatMenuListName::Map: g_active_menu = &level_menu; break;
-            case ChatMenuListName::SpectateFreelookDefault: g_active_menu = &spectate_freelook_speed_menu; break;
-            case ChatMenuListName::SpectateFreelookModifier: g_active_menu = &spectate_freelook_modifier_menu; break;
 
             // Taunt menu
             case ChatMenuListName::Intimidation: g_active_menu = &intimidation_menu; break;

@@ -259,18 +259,57 @@ namespace rf::ui
     static auto& audio_music_button = addr_as_ref<Button>(0x00642098);
     static auto& audio_message_button = addr_as_ref<Button>(0x00642228);
 
-    // options menu globals
+    // options
     static auto& g_MenuMainButtonsY = *reinterpret_cast<int*>(0x00598FCC);
     static auto& menu_button_offset_y = *reinterpret_cast<int*>(0x00598FD0);
     static auto& g_fOptionsMenuOffset = *reinterpret_cast<float*>(0x0063F8D8);
     static auto& options_menu_tab_move_anim_speed = addr_as_ref<float>(0x0063F930);
     static auto& options_current_panel = addr_as_ref<int>(0x0059A5D4);
     static auto& menu_move_anim_speed = addr_as_ref<float>(0x00598FD4);
-    static auto& options_current_panel_id = addr_as_ref<int>(0x0059A5D8);
+    static auto& options_incoming_panel = addr_as_ref<int>(0x0059A5D8);
     static auto& options_close_current_panel = addr_as_ref<int()>(0x0044F8D0);
     static auto& options_set_panel_open = addr_as_ref<void()>(0x0044F8C0);
     static auto& options_panel_x = addr_as_ref<int>(0x0063C058);
     static auto& options_panel_y = addr_as_ref<int>(0x00598FE0);
     static auto& options_animated_offset = addr_as_ref<float>(0x0063FA14);
     static auto& options_back_button = addr_as_ref<Button>(0x0063FB28);
+    static auto& options_is_panel_open = addr_as_ref<bool>(0x0063F920);
+
+    // options -> game
+    static auto& options_game_autoswitch_priority_up_on_click = addr_as_ref<void(int x, int y)>(0x00452E90);
+    static auto& options_game_autoswitch_priority_down_on_click = addr_as_ref<void(int x, int y)>(0x00452EE0);
+    static auto& options_game_current_gadget = addr_as_ref<int>(0x0064204C);
+
+    // options -> controls
+    static auto& options_controls_bindings_up_on_click = addr_as_ref<void(int x, int y)>(0x004500E0);
+    static auto& options_controls_bindings_down_on_click = addr_as_ref<void(int x, int y)>(0x00450130);
+    static auto& options_controls_current_gadget = addr_as_ref<int>(0x0063FFE8);
+    static auto& options_controls_waiting_for_key = addr_as_ref<bool>(0x00640060);
+
+    // multi -> create game
+    static auto& create_game_map_list_up_on_click = addr_as_ref<void(int x, int y)>(0x004451F0);
+    static auto& create_game_map_list_down_on_click = addr_as_ref<void(int x, int y)>(0x00445260);
+    static auto& create_game_options_current_gadget = addr_as_ref<int>(0x0063CA8C);
+    static auto& create_game_current_tab = addr_as_ref<int>(0x0063F850);
+
+    // multi -> join server
+    static auto& join_game_server_list_up_on_click = addr_as_ref<void(int x, int y)>(0x0044B4C0);
+    static auto& join_game_server_list_down_on_click = addr_as_ref<void(int x, int y)>(0x0044B520);
+    static auto& join_game_current_gadget = addr_as_ref<int>(0x0063EE78);
+
+    // load game
+    static auto& load_game_up_on_click = addr_as_ref<void(int x, int y)>(0x0043F8C0);
+    static auto& load_game_down_on_click = addr_as_ref<void(int x, int y)>(0x0043F940);
+    static auto& load_game_current_gadget = addr_as_ref<int>(0x0063B810);
+
+    // save game
+    static auto& save_game_up_on_click = addr_as_ref<void(int x, int y)>(0x00441240);
+    static auto& save_game_down_on_click = addr_as_ref<void(int x, int y)>(0x004412D0);
+    static auto& save_game_current_gadget = addr_as_ref<int>(0x0063BCB8);
+
+    // message log panel
+    static auto& message_log_up_on_click = addr_as_ref<void(int x, int y)>(0x00454F80);
+    static auto& message_log_down_on_click = addr_as_ref<void(int x, int y)>(0x00454FD0);
+    static auto& message_log_current_gadget = addr_as_ref<int>(0x006428D8);
+
 }

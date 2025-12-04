@@ -18,6 +18,11 @@
 constexpr auto screen_shake_fps = 150.0f;
 static float g_camera_shake_factor = 0.6f;
 static float freelook_cam_base_accel = 10.0f; // set on freelook camera entity creation
+static float freelook_cam_accel_scale = 1.0f;
+
+constexpr float freelook_accel_min_scale = 0.25f;
+constexpr float freelook_accel_max_scale = 20.0f;
+constexpr float freelook_accel_scroll_step = 0.25f;
 
 bool server_side_restrict_disable_ss = false;
 
@@ -151,6 +156,7 @@ CodeInjection camera_create_for_player_freelook_camera_patch{
             // store the base accel value for freelook camera, ensures compatibility with
             // mods that change the acceleration value of the "Freelook camera" entity
             freelook_cam_base_accel = camera_entity->info->acceleration;
+            freelook_cam_accel_scale = 1.0f;
         }
     },
 };
@@ -164,38 +170,29 @@ CodeInjection free_camera_do_frame_patch{
                 if (!cep || !cep->info)
                     return;
 
-                auto* player = rf::local_player;                
-                bool should_apply_accel_mod = false;
-
-                // check Ping Location control
-                if (rf::control_is_control_down(&player->settings.controls, get_af_control(rf::AlpineControlConfigAction::AF_ACTION_PING_LOCATION))) {
-                    should_apply_accel_mod = true;
-                }
-
-                // check alias
-                if (!should_apply_accel_mod && g_alpine_game_config.spec_accel_mod_alias >= 0 &&
-                    rf::control_is_control_down(&player->settings.controls, static_cast<rf::ControlConfigAction>(g_alpine_game_config.spec_accel_mod_alias))) {
-                    should_apply_accel_mod = true;
-                }
-
-                auto get_accel_mod = [](int mode) {
-                    switch (mode) {
-                    case 0: return 0.1f;
-                    case 2: return 2.0f;
-                    case 3: return 10.0f;
-                    default: return 1.0f;
-                    }
-                };
-
-                float accel_mod = 1.0f;
-                if (should_apply_accel_mod) {
-                    accel_mod = get_accel_mod(g_alpine_game_config.spectate_freelook_modifier_mode);
+                if (!rf::is_multi) {
+                    cep->info->acceleration = freelook_cam_base_accel; // `camera2` in SP ignores accel scale
+                    return;
                 }
                 else {
-                    accel_mod = get_accel_mod(g_alpine_game_config.spectate_freelook_mode);
-                }
+                    auto* player = rf::local_player;
+                    int mouse_dz = get_mouse_scroll_wheel_value();
 
-                cep->info->acceleration = freelook_cam_base_accel * accel_mod;
+                    if (mouse_dz != 0) {
+                        // normalize at 120.0 units per scroll notch
+                        const float scroll_notches = static_cast<float>(mouse_dz) / 120.0f;
+                        freelook_cam_accel_scale += freelook_accel_scroll_step * scroll_notches;
+                        freelook_cam_accel_scale = std::clamp(
+                            freelook_cam_accel_scale, freelook_accel_min_scale, freelook_accel_max_scale);
+                    }
+
+                    if (rf::control_is_control_down(&player->settings.controls,
+                        get_af_control(rf::AlpineControlConfigAction::AF_ACTION_PING_LOCATION))) {
+                        freelook_cam_accel_scale = 1.0f;
+                    }
+
+                    cep->info->acceleration = freelook_cam_base_accel * freelook_cam_accel_scale;
+                }
             }
         }
     },

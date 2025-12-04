@@ -24,6 +24,7 @@
 #include "../main/main.h"
 #include "../graphics/gr.h"
 #include "../os/os.h"
+#include "../input/input.h"
 #include "misc.h"
 #include "alpine_settings.h"
 
@@ -352,6 +353,130 @@ CodeInjection snd_music_update_volume_hook{
     },
 };
 
+CodeInjection multi_create_game_do_frame_patch{
+    0x0044EA8D,
+    [](auto& regs) {
+        // tab 0 = options
+        // gadget 5 = map list
+        if (rf::ui::create_game_current_tab == 0 && rf::ui::create_game_options_current_gadget == 5) {
+            int mouse_dz = get_mouse_scroll_wheel_value();
+            if (mouse_dz != 0) {
+                mouse_dz > 0 ? rf::ui::create_game_map_list_up_on_click(-1, -1)
+                             : rf::ui::create_game_map_list_down_on_click(-1, -1);
+            }
+        }
+    },
+};
+
+CodeInjection multi_join_server_do_frame_patch{
+    0x0044D16C,
+    [](auto& regs) {
+        // 3 = server list
+        // 4, 5, 6 = scroll bar and buttons
+        // 7, 8, 9, 10, 11, 12 = column headers
+        if (rf::ui::join_game_current_gadget >= 3 && rf::ui::join_game_current_gadget <= 12) {
+            int mouse_dz = get_mouse_scroll_wheel_value();
+            if (mouse_dz != 0) {
+                mouse_dz > 0 ? rf::ui::join_game_server_list_up_on_click(-1, -1)
+                             : rf::ui::join_game_server_list_down_on_click(-1, -1);
+            }
+        }
+    },
+};
+
+CodeInjection options_do_frame_patch{
+    0x0044F211,
+    [](auto& regs) {
+        if (rf::ui::options_is_panel_open) {
+            int mouse_dz = get_mouse_scroll_wheel_value();
+
+            // 0 = game
+            // 1 = video
+            // 2 = audio
+            // 3 = controls
+            // 4 = advanced
+            switch (rf::ui::options_current_panel) {
+                case 0: { // game
+                    // 4 = autoswitch priority list
+                    if (rf::ui::options_game_current_gadget == 4) {
+                        if (mouse_dz != 0) {
+                            mouse_dz > 0 ? rf::ui::options_game_autoswitch_priority_up_on_click(-1, -1)
+                                         : rf::ui::options_game_autoswitch_priority_down_on_click(-1, -1);
+                        }
+                    }
+
+                    break;
+                }
+
+                case 3: { // controls
+                    if (rf::ui::options_controls_waiting_for_key)
+                        break; // do not scroll if waiting for an input to bind
+
+                    // 2 = binds list
+                    if (rf::ui::options_controls_current_gadget == 2) {
+                        if (mouse_dz != 0) {
+                            mouse_dz > 0 ? rf::ui::options_controls_bindings_up_on_click(-1, -1)
+                                         : rf::ui::options_controls_bindings_down_on_click(-1, -1);
+                        }
+                    }
+
+                    break;
+                }
+
+                default: {
+                    break;
+                }
+            }
+        }
+    },
+};
+
+CodeInjection game_load_do_frame_patch{
+    0x004408E1,
+    [](auto& regs) {
+        // 0 = save list
+        // 1, 2, 3 = scroll bar and buttons
+        if (rf::ui::load_game_current_gadget >= 0 && rf::ui::load_game_current_gadget <= 3) {
+            int mouse_dz = get_mouse_scroll_wheel_value();
+            if (mouse_dz != 0) {
+                mouse_dz > 0 ? rf::ui::load_game_up_on_click(-1, -1)
+                             : rf::ui::load_game_down_on_click(-1, -1);
+            }
+        }
+    },
+};
+
+CodeInjection game_save_do_frame_patch{
+    0x004422D1,
+    [](auto& regs) {
+        // 3 = save list
+        // 4, 5, 6 = scroll bar and buttons
+        if (rf::ui::save_game_current_gadget >= 3 && rf::ui::save_game_current_gadget <= 6) {
+            int mouse_dz = get_mouse_scroll_wheel_value();
+            if (mouse_dz != 0) {
+                mouse_dz > 0 ? rf::ui::save_game_up_on_click(-1, -1)
+                             : rf::ui::save_game_down_on_click(-1, -1);
+            }
+        }
+    },
+};
+
+CodeInjection message_log_do_frame_patch{
+    0x00455148,
+    [](auto& regs) {
+        // 1 = close button
+        // 0 = scroll bar and buttons
+        // list can't be selected directly, gadget -1 when not hovering close or scroll bar
+        if (rf::ui::message_log_current_gadget != 1) {
+            int mouse_dz = get_mouse_scroll_wheel_value();
+            if (mouse_dz != 0) {
+                mouse_dz > 0 ? rf::ui::message_log_up_on_click(-1, -1)
+                             : rf::ui::message_log_down_on_click(-1, -1);
+            }
+        }
+    },
+};
+
 void apply_main_menu_patches()
 {
     // Main menu init
@@ -388,4 +513,12 @@ void apply_main_menu_patches()
     gameplay_close_vol_hook.install(); //set last Music_Start sig volume to 0 in gameplay_close
     snd_music_update_volume_hook.install(); //don't update volume on last Music_Start sig in snd_music_update_volume
     gameplay_init_vol_hook.install(); //set last Music_Start sig volume back to what it should be in gameplay_init
+
+    // Support scroll wheel in menu list boxes
+    multi_create_game_do_frame_patch.install();
+    multi_join_server_do_frame_patch.install();
+    options_do_frame_patch.install();
+    game_load_do_frame_patch.install();
+    game_save_do_frame_patch.install();
+    message_log_do_frame_patch.install();
 }

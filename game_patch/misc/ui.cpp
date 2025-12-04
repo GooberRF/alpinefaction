@@ -1363,7 +1363,7 @@ static void options_alpine_on_click() {
     }
 
     rf::ui::options_menu_tab_move_anim_speed = -rf::ui::menu_move_anim_speed;
-    rf::ui::options_current_panel_id = alpine_options_panel_id;
+    rf::ui::options_incoming_panel = alpine_options_panel_id;
     rf::ui::options_set_panel_open(); // Transition to new panel
 }
 

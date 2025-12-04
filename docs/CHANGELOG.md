@@ -113,7 +113,9 @@ Version 1.2.0 (Willow): Not yet released
 - Add `Override static mesh ambient light scale` setting to level properties window in level editor
 - Update output of `level_info` command to include advanced level properties
 - Add browser, spectator, and idle icon assets
-- Add freelook spectate acceleration modes and modifier
+- Support setting freelook spectator camera accel with scroll wheel
+- Alias `Ping Location` control to reset to freelook spectator camera accel to base value
+- Add scroll wheel support to message log panel and scrollable item lists in menus
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Tlv{Writer, Reader}` and `HighResTimer`

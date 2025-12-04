@@ -129,16 +129,6 @@ struct AlpineGameSettings
     bool entity_pain_sounds = true;
     bool real_armor_values = false;
     bool always_show_spectators = false;
-    int spectate_freelook_mode = 1; // 0=slow,1=normal,2=fast,3=superfast
-    void set_spectate_freelook_mode(int mode)
-    {
-        spectate_freelook_mode = std::clamp(mode, 0, 3);
-    }
-    int spectate_freelook_modifier_mode = 2; // 0=slow,1=normal,2=fast,3=superfast
-    void set_spectate_freelook_modifier_mode(int mode)
-    {
-        spectate_freelook_modifier_mode = std::clamp(mode, 0, 3);
-    }
     RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =
         RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX;
     bool simple_server_chat_msgs = true;
@@ -146,7 +136,6 @@ struct AlpineGameSettings
     uint32_t bot_shared_secret = 0;
     int colorblind_mode = 0; // 0=off,1=protanopia,2=deuteranopia,3=tritanopia
     int suppress_autoswitch_alias = -1;
-    int spec_accel_mod_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
 
