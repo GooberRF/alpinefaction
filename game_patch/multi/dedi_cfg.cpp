@@ -874,7 +874,7 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
             cfg.set_rcon_password(*v);
     }
     else if (key == "bot_shared_secret") {
-        if (toml::v3::optional v = node.value<uint32_t>()) {
+        if (const auto v = node.value<uint32_t>()) {
             cfg.set_bot_shared_secret(*v);
         }
     }
