@@ -53,11 +53,12 @@ public:
 
         template <std::integral T>
         T read_le() const {
-            T res = 0;
+            using U = std::make_unsigned_t<T>;
+            U res = 0;
             for (size_t i = 0; i < len && i < sizeof(T); ++i) {
-                res |= static_cast<T>(value[i]) << 8 * i;
+                res |= static_cast<U>(value[i]) << 8 * i;
             }
-            return res;
+            return static_cast<T>(res);
         }
     };
 
