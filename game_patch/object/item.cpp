@@ -24,7 +24,7 @@ int item_lookup_type(const char* name)
     auto name_view = std::string_view(name);
     auto it =
         std::find_if(std::begin(rf::item_info), std::begin(rf::item_info) + rf::num_item_types, [name_view](const rf::ItemInfo& item) {
-            return string_equals_ignore_case(name_view, item.cls_name);
+            return string_iequals(name_view, item.cls_name);
         });
 
     return (it != std::begin(rf::item_info) + rf::num_item_types)

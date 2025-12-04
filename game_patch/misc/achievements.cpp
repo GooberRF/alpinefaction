@@ -395,7 +395,7 @@ void AchievementManager::grant_achievement(AchievementName achievement, int coun
 
             case AchievementCategory::kava:
                 // Only allow Kava achievements if Kava mod is loaded
-                if (!string_equals_ignore_case(mod_name, "Kava")) {
+                if (!string_iequals(mod_name, "Kava")) {
                     return;
                 }
                 break;
@@ -692,84 +692,84 @@ void achievement_check_trigger(rf::Trigger* trigger) {
         switch (trigger_uid) {
             // base campaign
             case 6736: {
-                if (string_equals_ignore_case(rfl_filename, "l9s3.rfl")) {
+                if (string_iequals(rfl_filename, "l9s3.rfl")) {
                     grant_achievement(AchievementName::SecretFusion); // secret fusion
                 }
                 break;
             }
 
             case 8656: {
-                if (string_equals_ignore_case(rfl_filename, "l1s1.rfl")) {
+                if (string_iequals(rfl_filename, "l1s1.rfl")) {
                     grant_achievement(AchievementName::StartCampaign); // game start
                 }
                 break;
             }
 
             case 7661: {
-                if (string_equals_ignore_case(rfl_filename, "train02.rfl")) {
+                if (string_iequals(rfl_filename, "train02.rfl")) {
                     grant_achievement(AchievementName::FinishTraining); // finish training
                 }
                 break;
             }
 
             case 7961: {
-                if (string_equals_ignore_case(rfl_filename, "train01.rfl")) {
+                if (string_iequals(rfl_filename, "train01.rfl")) {
                     grant_achievement(AchievementName::StartTraining); // start training
                 }
                 break;
             }
 
             case 4234: {
-                if (string_equals_ignore_case(rfl_filename, "l10s3.rfl")) {
+                if (string_iequals(rfl_filename, "l10s3.rfl")) {
                     grant_achievement(AchievementName::UnderwaterSub); // drop sub in underwater base
                 }
                 break;
             }
 
             case 3350: {
-                if (string_equals_ignore_case(rfl_filename, "l4s4.rfl")) {
+                if (string_iequals(rfl_filename, "l4s4.rfl")) {
                     grant_achievement(AchievementName::Ventilation); // exit ventilation
                 }
                 break;
             }
 
             case 4502: {
-                if (string_equals_ignore_case(rfl_filename, "l5s2.rfl")) {
+                if (string_iequals(rfl_filename, "l5s2.rfl")) {
                     grant_achievement(AchievementName::DestroyGeothermal); // destroy geothermal
                 }
                 break;
             }
 
             case 8571: {
-                if (string_equals_ignore_case(rfl_filename, "l19s1.rfl")) {
+                if (string_iequals(rfl_filename, "l19s1.rfl")) {
                     grant_achievement(AchievementName::MercJail); // merc prison
                 }
                 break;
             }
 
             case 7095: {
-                if (string_equals_ignore_case(rfl_filename, "l6s3.rfl")) {
+                if (string_iequals(rfl_filename, "l6s3.rfl")) {
                     grant_achievement(AchievementName::AdminFountain); // l6s3 fountain
                 }
                 break;
             }
 
             case 4029: {
-                if (string_equals_ignore_case(rfl_filename, "l5s3.rfl")) {
+                if (string_iequals(rfl_filename, "l5s3.rfl")) {
                     grant_achievement(AchievementName::SubCraneButton); // crane button
                 }
                 break;
             }
 
             case 5658: {
-                if (string_equals_ignore_case(rfl_filename, "l2s2a.rfl")) {
+                if (string_iequals(rfl_filename, "l2s2a.rfl")) {
                     grant_achievement(AchievementName::SaveBarracksMiner); // barracks miner prison
                 }
                 break;
             }
 
             case 357: {
-                if (string_equals_ignore_case(rfl_filename, "l1s3.rfl")) {
+                if (string_iequals(rfl_filename, "l1s3.rfl")) {
                     grant_achievement(AchievementName::DropAPCBridge);
                 }
                 break;
@@ -777,21 +777,21 @@ void achievement_check_trigger(rf::Trigger* trigger) {
 
             case 10414:     // in cell
             case 9918: {    // "2" button. "ALL" button links to event 11768 (handled in event section)
-                if (string_equals_ignore_case(rfl_filename, "l11s2.rfl")) {
+                if (string_iequals(rfl_filename, "l11s2.rfl")) {
                     grant_achievement(AchievementName::MinerCapekPrison);
                 }
                 break;
             }
 
             case 9617: {
-                if (string_equals_ignore_case(rfl_filename, "l14s3.rfl")) {
+                if (string_iequals(rfl_filename, "l14s3.rfl")) {
                     grant_achievement(AchievementName::MissileLaunchSabotage);
                 }
                 break;
             }
 
             case 6937: {
-                if (string_equals_ignore_case(rfl_filename, "L6S3.rfl") &&
+                if (string_iequals(rfl_filename, "L6S3.rfl") &&
                     rf::player_is_undercover() &&
                     !rf::player_undercover_alarm_is_on()) {
                     grant_achievement(AchievementName::AdminStealth); // admin stealth finish
@@ -842,28 +842,28 @@ void achievement_check_event(rf::Event* event) {
         switch (event_uid) {
             // base campaign
             case 20787: {
-                if (string_equals_ignore_case(rfl_filename, "l17s2.rfl")) {
+                if (string_iequals(rfl_filename, "l17s2.rfl")) {
                     grant_achievement(AchievementName::ComputersSpaceStation); // computers in space station
                 }
                 break;
             }
 
             case 9613: {
-                if (string_equals_ignore_case(rfl_filename, "l15s4.rfl")) {
+                if (string_iequals(rfl_filename, "l15s4.rfl")) {
                     grant_achievement(AchievementName::GoSpaceStation); // stowaway on shuttle
                 }
                 break;
             }
 
             case 18248: {
-                if (string_equals_ignore_case(rfl_filename, "l17s4.rfl")) {
+                if (string_iequals(rfl_filename, "l17s4.rfl")) {
                     grant_achievement(AchievementName::DestroySpaceStation); // destroy space station
                 }
                 break;
             }
 
             case 10626: {
-                if (string_equals_ignore_case(rfl_filename, "l11s3.rfl") &&
+                if (string_iequals(rfl_filename, "l11s3.rfl") &&
                     rf::local_player_entity->ai.current_primary_weapon != 12) { // flamethrower
                     grant_achievement(AchievementName::KillCapekFlamethrower); // kill capek with not flamethrower
                 }
@@ -871,35 +871,35 @@ void achievement_check_event(rf::Event* event) {
             }
 
             case 7005: {
-                if (string_equals_ignore_case(rfl_filename, "l10s4.rfl")) {
+                if (string_iequals(rfl_filename, "l10s4.rfl")) {
                     grant_achievement(AchievementName::CapekVoiceEnd); // end of capek message series
                 }
                 break;
             }
 
             case 10367: {
-                if (string_equals_ignore_case(rfl_filename, "l8s4.rfl")) {
+                if (string_iequals(rfl_filename, "l8s4.rfl")) {
                     grant_achievement(AchievementName::MeetCapek); // meet capek
                 }
                 break;
             }
 
             case 4407: {
-                if (string_equals_ignore_case(rfl_filename, "l5s2.rfl")) {
+                if (string_iequals(rfl_filename, "l5s2.rfl")) {
                     grant_achievement(AchievementName::DestroyPumpStations); // when pump stations dead geothermal
                 }
                 break;
             }
 
             case 9729: {
-                if (string_equals_ignore_case(rfl_filename, "l1s1.rfl")) {
+                if (string_iequals(rfl_filename, "l1s1.rfl")) {
                     grant_achievement(AchievementName::SaveMinesMiner); // save mines miner
                 }
                 break;
             }
 
             case 9370: {
-                if (string_equals_ignore_case(rfl_filename, "l8s2.rfl")) {
+                if (string_iequals(rfl_filename, "l8s2.rfl")) {
                     grant_achievement(AchievementName::MedLabStealth); // finished med labs doctor mission
                 }
                 break;
@@ -928,7 +928,7 @@ void achievement_check_entity_death(rf::Entity* entity) {
         //xlog::warn("entity died {}, {}, {}, {}, killer {}", entity_uid, entity_script_name, entity_class_name, rfl_filename, killed_by_player);
 
         // special handling since this entity is created by code and has no reliable UID
-        if (string_equals_ignore_case(rfl_filename, "l20s2.rfl") && entity_script_name == "masako_endgame") {
+        if (string_iequals(rfl_filename, "l20s2.rfl") && entity_script_name == "masako_endgame") {
             grant_achievement(AchievementName::KillMasako); // kill masako
             return;
         }
@@ -936,28 +936,28 @@ void achievement_check_entity_death(rf::Entity* entity) {
         switch (entity_uid) {
             // base campaign
             case 7007: {
-                if (string_equals_ignore_case(rfl_filename, "l10s4.rfl")) {
+                if (string_iequals(rfl_filename, "l10s4.rfl")) {
                     grant_achievement(AchievementName::KillSnake); // kill big snake
                 }
                 break;
             }
 
             case 10696: {
-                if (string_equals_ignore_case(rfl_filename, "l7s4.rfl")) {
+                if (string_iequals(rfl_filename, "l7s4.rfl")) {
                     grant_achievement(AchievementName::DestroyTrashBot); // kill trash bot
                 }
                 break;
             }
 
             case 844: {
-                if (string_equals_ignore_case(rfl_filename, "l3s4.rfl")) {
+                if (string_iequals(rfl_filename, "l3s4.rfl")) {
                     grant_achievement(AchievementName::KillDrone); // kill drone
                 }
                 break;
             }
 
             case 3828: {
-                if (string_equals_ignore_case(rfl_filename, "l6s3.rfl")) {
+                if (string_iequals(rfl_filename, "l6s3.rfl")) {
                     grant_achievement(AchievementName::KillDavis); // kill davis
                 }
                 break;
@@ -968,7 +968,7 @@ void achievement_check_entity_death(rf::Entity* entity) {
         }
 
         // base campaign
-        if (string_equals_ignore_case(rfl_filename, "l1s1.rfl")) {
+        if (string_iequals(rfl_filename, "l1s1.rfl")) {
             static const std::initializer_list<int> all_fish_uids = {9142, 9146, 9147, 9338};
 
             if (!are_any_objects_alive(all_fish_uids)) {
@@ -976,7 +976,7 @@ void achievement_check_entity_death(rf::Entity* entity) {
             }
         }
 
-        if (string_equals_ignore_case(rfl_filename, "l2s2a.rfl")) {
+        if (string_iequals(rfl_filename, "l2s2a.rfl")) {
             static const std::initializer_list<int> all_guard_uids = {
                 8384, 8385, 8393, 8386, 8394, 8395, 8377, 8378, 8327, 8326, 8388, 8382, 8383, 8390
             };
@@ -987,7 +987,7 @@ void achievement_check_entity_death(rf::Entity* entity) {
         }
 
 
-        if (string_equals_ignore_case(rfl_filename, "l6s1.rfl")) {
+        if (string_iequals(rfl_filename, "l6s1.rfl")) {
             static const std::initializer_list<int> all_civilian_uids = {
                 4563, 4564, 4570, 4803, 4838, 5137, 5226, 4555, 4562, 4565, 4804, 4839, 4964, 5138, 5134, 4556
             };
@@ -1065,7 +1065,7 @@ void achievement_check_item_picked_up(rf::Item* item) {
         //xlog::warn("item picked up {}, {}, {}, {}", item_uid, item_script_name, item_class_name, rfl_filename);
 
         // clear MedMax achievement cache if not the right map
-        if (!string_equals_ignore_case(rfl_filename, "train01.rfl") && !achievement_state_info.train01_med_max_uids.empty()) {
+        if (!string_iequals(rfl_filename, "train01.rfl") && !achievement_state_info.train01_med_max_uids.empty()) {
             achievement_state_info.train01_med_max_uids.clear();
         }
 
@@ -1078,7 +1078,7 @@ void achievement_check_item_picked_up(rf::Item* item) {
             case 7746:
             case 7747:
             case 7748: {
-                if (string_equals_ignore_case(rfl_filename, "l4s3.rfl")) {
+                if (string_iequals(rfl_filename, "l4s3.rfl")) {
                     grant_achievement(AchievementName::SecretStash); // 7 items behind geo secret in l4s3
                 }
                 break;
@@ -1089,7 +1089,7 @@ void achievement_check_item_picked_up(rf::Item* item) {
             case 8547:
             case 7442:
             case 7444: {
-                if (string_equals_ignore_case(rfl_filename, "train01.rfl")) {
+                if (string_iequals(rfl_filename, "train01.rfl")) {
                     achievement_state_info.train01_med_max_uids.push_back(item_uid);
                     if (achievement_state_info.train01_med_max_uids.size() >= 5) {
                         grant_achievement(AchievementName::MedMax);
@@ -1222,8 +1222,8 @@ CodeInjection ai_drop_corpse_achievement_patch{
     0x00409ADB,
     []() {
         std::string rfl_filename = rf::level.filename;
-        if (!string_equals_ignore_case(rfl_filename, "train01.rfl") &&
-            !string_equals_ignore_case(rfl_filename, "train02.rfl")) {
+        if (!string_iequals(rfl_filename, "train01.rfl") &&
+            !string_iequals(rfl_filename, "train02.rfl")) {
             grant_achievement_sp(AchievementName::DropCorpse); // drop a corpse
         }
     },
@@ -1282,8 +1282,8 @@ CodeInjection ai_medic_activate_achievement_patch{
     0x0040A73C,
     []() {
         std::string rfl_filename = rf::level.filename;
-        if (!string_equals_ignore_case(rfl_filename, "train01.rfl") &&
-            !string_equals_ignore_case(rfl_filename, "train02.rfl")) {
+        if (!string_iequals(rfl_filename, "train01.rfl") &&
+            !string_iequals(rfl_filename, "train02.rfl")) {
             grant_achievement_sp(AchievementName::UseMedic); // get healed by a medic
         }
     },
@@ -1300,8 +1300,8 @@ CodeInjection player_attach_to_security_camera_achievement_patch{
     0x004A1950,
     []() {
         std::string rfl_filename = rf::level.filename;
-        if (!string_equals_ignore_case(rfl_filename, "train01.rfl") &&
-            !string_equals_ignore_case(rfl_filename, "train02.rfl")) {
+        if (!string_iequals(rfl_filename, "train01.rfl") &&
+            !string_iequals(rfl_filename, "train02.rfl")) {
             grant_achievement_sp(AchievementName::ViewMonitor); // security monitor
         }
     },
@@ -1327,7 +1327,7 @@ CodeInjection stuck_with_remote_charge_achievement_patch{
         rf::AiInfo* aip = regs.edx;
 
         if (aip) {
-            if (aip->ep->uid == 4707 && string_equals_ignore_case(rf::level.filename, "l5s4.rfl")) {
+            if (aip->ep->uid == 4707 && string_iequals(rf::level.filename, "l5s4.rfl")) {
                 grant_achievement_sp(AchievementName::AdminMinerBerserk);
             }
             else {
@@ -1348,7 +1348,7 @@ CodeInjection glass_shatter_achievement_patch{
 
             //xlog::warn("{}, {}", achievement_state_info.glass_house_shatter_timestamp, achievement_state_info.glass_house_shatters);
 
-            if (string_equals_ignore_case(rfl_filename, "glass_house.rfl")) {
+            if (string_iequals(rfl_filename, "glass_house.rfl")) {
                 achievement_state_info.glass_house_shatters += 1;
                 if (achievement_state_info.glass_house_shatters == 64) {
                     grant_achievement_sp(AchievementName::GlassHouseShatter);
@@ -1459,7 +1459,7 @@ CodeInjection player_handle_use_vehicle_achievement_patch{
             else if (entity->info->name == "sub") {
                 grant_achievement_sp(AchievementName::EnterSub); // enter a sub
 
-                if (entity->uid == 8163 && string_equals_ignore_case(rf::level.filename, "l5s3.rfl")) {
+                if (entity->uid == 8163 && string_iequals(rf::level.filename, "l5s3.rfl")) {
                     grant_achievement_sp(AchievementName::SecretSub); // hidden sub after geothermal
                 }
             }
@@ -1507,35 +1507,35 @@ CodeInjection event_activate_links_achievement_patch{
         if (!rf::is_multi) {
             switch (event_uid) {
                 case 8711: {
-                    if (string_equals_ignore_case(rfl_filename, "l3s2.rfl")) {
+                    if (string_iequals(rfl_filename, "l3s2.rfl")) {
                         grant_achievement(AchievementName::LockedInTram); // train in miner registration
                     }
                     break;
                 }
 
                 case 2014: {
-                    if (string_equals_ignore_case(rfl_filename, "l3s3.rfl")) {
+                    if (string_iequals(rfl_filename, "l3s3.rfl")) {
                         grant_achievement(AchievementName::MissShuttle); // shuttle blow up (maybe below slow isn't such a bad thing)
                     }
                     break;
                 }
 
                 case 9458: {
-                    if (string_equals_ignore_case(rfl_filename, "l4s1a.rfl")) {
+                    if (string_iequals(rfl_filename, "l4s1a.rfl")) {
                         grant_achievement(AchievementName::HendrixHackDoor); // abandoned mines door
                     }
                     break;
                 }
 
                 case 11768: {
-                    if (string_equals_ignore_case(rfl_filename, "l11s2.rfl")) {
+                    if (string_iequals(rfl_filename, "l11s2.rfl")) {
                         grant_achievement(AchievementName::MinerCapekPrison);
                     }
                     break;
                 }
 
                 case 3337: {
-                    if (string_equals_ignore_case(rfl_filename, "l4s4.rfl")) {
+                    if (string_iequals(rfl_filename, "l4s4.rfl")) {
                         grant_achievement(AchievementName::HendrixHackDoor);
                     }
                     break;
@@ -1632,7 +1632,7 @@ void reset_achievement_state_info() {
     state_info->train01_med_max_uids.clear();
 
     // store starting difficulty, checked for achievements on bomb defuse
-    if (string_equals_ignore_case(rf::level.filename, "l1s1.rfl")) {
+    if (string_iequals(rf::level.filename, "l1s1.rfl")) {
         state_info->game_start_difficulty = rf::game_get_skill_level();
     }
 }

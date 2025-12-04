@@ -517,17 +517,17 @@ std::string get_unready_player_names()
 
 void handle_matchinfo_command(rf::Player* player)
 {
-    auto msg = std::format("\xA6 No match is queued.");
+    auto msg = std::format("No match is queued.");
 
     if (g_match_info.pre_match_active) {
         if (!g_match_info.ready_players_red.empty() || !g_match_info.ready_players_blue.empty()) {
-            msg = std::format("\xA6 These players are ready:\n"
+            msg = std::format("These players are ready:\n"
                                    "RED TEAM: {}\n"
                                    "BLUE TEAM: {}\n",
                                    get_ready_player_names(0), get_ready_player_names(1));
         }
         else {
-            msg = std::format("\xA6 No players are ready.");
+            msg = std::format("No players are ready.");
         }        
     }
 
@@ -537,11 +537,11 @@ void handle_matchinfo_command(rf::Player* player)
 void handle_whosready_command(rf::Player* player)
 {
     if (g_match_info.pre_match_active) {
-        auto msg = std::format("\xA6 Not ready: {}\n", get_unready_player_names());
+        auto msg = std::format("Not ready: {}\n", get_unready_player_names());
         af_broadcast_automated_chat_msg(msg);
     }
     else if (player) {
-        auto msg = std::format("\xA6 No match is queued.");
+        auto msg = std::format("No match is queued.");
         af_send_automated_chat_msg(msg, player);
     }
 }
@@ -553,7 +553,7 @@ static void handle_drop_flag_request(rf::Player* player)
     }
 
     if (!g_alpine_server_config_active_rules.flag_dropping) {
-        af_send_automated_chat_msg("\xA6 This server has disabled flag dropping.", player);
+        af_send_automated_chat_msg("This server has disabled flag dropping.", player);
         return;
     }
 
@@ -606,8 +606,8 @@ static void send_private_message_with_stats(rf::Player* player)
 static void notify_for_upcoming_level_version_incompatible(rf::Player* player)
 {
     std::string client_msg1 = "================== IMPORTANT ==================";
-    std::string client_msg2 = "\xA6 Your client is NOT compatible with the next level!";
-    std::string client_msg3 = "\xA6 To continue playing, upgrade at www.alpinefaction.com";
+    std::string client_msg2 = "Your client is NOT compatible with the next level!";
+    std::string client_msg3 = "To continue playing, upgrade at www.alpinefaction.com";
     af_send_automated_chat_msg(client_msg1, player);
     af_send_automated_chat_msg(client_msg2, player);
     af_send_automated_chat_msg(client_msg3, player);
@@ -620,9 +620,9 @@ static void notify_for_upcoming_level_version_incompatible(rf::Player* player)
 static void notify_for_client_incompatible_with_switching_game_type(rf::Player* player)
 {
     std::string client_msg1 = "================== IMPORTANT ==================";
-    std::string client_msg2 = "\xA6 Your client does not support changing game type.";
-    std::string client_msg3 = "\xA6 You will be kicked, but can rejoin after the level changes.";
-    std::string client_msg4 = "\xA6 To avoid this in the future, upgrade at www.alpinefaction.com";
+    std::string client_msg2 = "Your client does not support changing game type.";
+    std::string client_msg3 = "You will be kicked, but can rejoin after the level changes.";
+    std::string client_msg4 = "To avoid this in the future, upgrade at www.alpinefaction.com";
     af_send_automated_chat_msg(client_msg1, player);
     af_send_automated_chat_msg(client_msg2, player);
     af_send_automated_chat_msg(client_msg3, player);
@@ -714,7 +714,7 @@ static std::pair<bool, int> find_rotation_index_for_level(std::string_view level
     const auto& cfg = g_alpine_server_config;
 
     for (int i = 0; i < (int)cfg.levels.size(); ++i) {
-        if (string_equals_ignore_case(cfg.levels[i].level_filename, wanted)) {
+        if (string_iequals(cfg.levels[i].level_filename, wanted)) {
             return {true, i};
         }
     }
@@ -741,28 +741,28 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (gametype_name.empty()) {
         return std::nullopt;
     }
-    if (string_equals_ignore_case(gametype_name, "dm")) {
+    if (string_iequals(gametype_name, "dm")) {
         return rf::NetGameType::NG_TYPE_DM;
     }
-    if (string_equals_ignore_case(gametype_name, "tdm") || string_equals_ignore_case(gametype_name, "teamdm")) {
+    if (string_iequals(gametype_name, "tdm") || string_iequals(gametype_name, "teamdm")) {
         return rf::NetGameType::NG_TYPE_TEAMDM;
     }
-    if (string_equals_ignore_case(gametype_name, "ctf")) {
+    if (string_iequals(gametype_name, "ctf")) {
         return rf::NetGameType::NG_TYPE_CTF;
     }
-    if (string_equals_ignore_case(gametype_name, "koth")) {
+    if (string_iequals(gametype_name, "koth")) {
         return rf::NetGameType::NG_TYPE_KOTH;
     }
-    if (string_equals_ignore_case(gametype_name, "dc")) {
+    if (string_iequals(gametype_name, "dc")) {
         return rf::NetGameType::NG_TYPE_DC;
     }
-    if (string_equals_ignore_case(gametype_name, "rev")) {
+    if (string_iequals(gametype_name, "rev")) {
         return rf::NetGameType::NG_TYPE_REV;
     }
-    if (string_equals_ignore_case(gametype_name, "run")) {
+    if (string_iequals(gametype_name, "run")) {
         return rf::NetGameType::NG_TYPE_RUN;
     }
-    if (string_equals_ignore_case(gametype_name, "esc")) {
+    if (string_iequals(gametype_name, "esc")) {
         return rf::NetGameType::NG_TYPE_ESC;
     }
 
@@ -828,7 +828,7 @@ ConsoleCommand2 sv_game_type_cmd{
                         display_level_name.resize(display_level_name.size() - 4);
                     }
 
-                    auto msg = std::format("\xA6 Loading {} on {}", display_level_name,
+                    auto msg = std::format("Loading {} on {}", display_level_name,
                                            multi_game_type_name(*resolved_type));
                     rf::multi_chat_say(msg.c_str(), false);
 
@@ -1230,24 +1230,24 @@ FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
     0x00445050,
     [](const char *filename, int ng_type) {
         if (ng_type == rf::NetGameType::NG_TYPE_CTF) {
-            return string_starts_with_ignore_case(filename, "ctf") || string_starts_with_ignore_case(filename, "pctf");
+            return string_istarts_with(filename, "ctf") || string_istarts_with(filename, "pctf");
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_KOTH) {
-            return string_starts_with_ignore_case(filename, "koth");
+            return string_istarts_with(filename, "koth");
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_DC) {
-            return string_starts_with_ignore_case(filename, "dc");
+            return string_istarts_with(filename, "dc");
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_REV) {
-            return string_starts_with_ignore_case(filename, "rev");
+            return string_istarts_with(filename, "rev");
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_RUN) {
-            return string_starts_with_ignore_case(filename, "run") || is_known_run_level(filename);
+            return string_istarts_with(filename, "run") || is_known_run_level(filename);
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_ESC) {
-            return string_starts_with_ignore_case(filename, "esc");
+            return string_istarts_with(filename, "esc");
         }
-        return string_starts_with_ignore_case(filename, "dm") || string_starts_with_ignore_case(filename, "pdm");
+        return string_istarts_with(filename, "dm") || string_istarts_with(filename, "pdm");
     },
 };
 
@@ -1492,33 +1492,33 @@ void add_ready_player(rf::Player* player)
     const std::string_view team_name = (player->team == 0) ? "RED" : "BLUE";
 
     if (team_ready_list.contains(player)) {
-        af_send_automated_chat_msg("\xA6 You are already ready.", player);
+        af_send_automated_chat_msg("You are already ready.", player);
         return;
     }
 
     const auto match_team_size = static_cast<size_t>(g_match_info.team_size);
 
     if (team_ready_list.size() >= match_team_size) {
-        af_send_automated_chat_msg("\xA6 Your team is full.", player);
+        af_send_automated_chat_msg("Your team is full.", player);
         return;
     }
 
     team_ready_list.insert(player);
     update_pre_match_powerups(player);
 
-    auto ready_msg = std::format("\xA6 {} ({}) is ready!", player->name.c_str(), team_name);
+    auto ready_msg = std::format("{} ({}) is ready!", player->name.c_str(), team_name);
     af_broadcast_automated_chat_msg(ready_msg);
 
     const auto ready_red = g_match_info.ready_players_red.size();
     const auto ready_blue = g_match_info.ready_players_blue.size();
 
     if (ready_red >= match_team_size && ready_blue >= match_team_size) {
-        af_broadcast_automated_chat_msg("\xA6 All players are ready. Match starting!");
+        af_broadcast_automated_chat_msg("All players are ready. Match starting!");
         g_match_info.everyone_ready = true;
         start_match(); // Start the match
     }
     else {
-        auto waiting_msg = std::format("\xA6 Still waiting for players - RED: {}, BLUE: {}.", match_team_size - ready_red, match_team_size - ready_blue);
+        auto waiting_msg = std::format("Still waiting for players - RED: {}, BLUE: {}.", match_team_size - ready_red, match_team_size - ready_blue);
         af_broadcast_automated_chat_msg(waiting_msg);
     }
 }
@@ -1541,11 +1541,11 @@ void remove_ready_player(rf::Player* player)
 
     update_pre_match_powerups(player);
 
-    auto msg_source = std::format("\xA6 You are no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
+    auto msg_source = std::format("You are no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
         g_match_info.team_size - g_match_info.ready_players_red.size(),
         g_match_info.team_size - g_match_info.ready_players_blue.size());
 
-    auto msg_others = std::format("\xA6 {} is no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
+    auto msg_others = std::format("{} is no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
         player->name.c_str(),
         g_match_info.team_size - g_match_info.ready_players_red.size(),
         g_match_info.team_size - g_match_info.ready_players_blue.size());
@@ -1565,12 +1565,12 @@ void remove_ready_player(rf::Player* player)
 void toggle_ready_status(rf::Player* player)
 {
     if (!g_match_info.pre_match_active) {
-        af_send_automated_chat_msg("\xA6 No match is queued. Use \"/vote match\" to queue a match.", player);
+        af_send_automated_chat_msg("No match is queued. Use \"/vote match\" to queue a match.", player);
         return;
     }
 
     if (get_player_additional_data(player).client_version != ClientVersion::alpine_faction) {
-        af_send_automated_chat_msg("\xA6 Only Alpine Faction clients can ready for matches. Learn more: alpinefaction.com", player);
+        af_send_automated_chat_msg("Only Alpine Faction clients can ready for matches. Learn more: alpinefaction.com", player);
         return;
     }
 
@@ -1586,7 +1586,7 @@ void toggle_ready_status(rf::Player* player)
 void set_ready_status(rf::Player* player, bool is_ready)
 {
     if (get_player_additional_data(player).client_version != ClientVersion::alpine_faction) {
-        af_send_automated_chat_msg("\xA6 Only Alpine Faction clients can ready for matches. Learn more: alpinefaction.com", player);
+        af_send_automated_chat_msg("Only Alpine Faction clients can ready for matches. Learn more: alpinefaction.com", player);
         return;
     }
 
@@ -1599,7 +1599,7 @@ void set_ready_status(rf::Player* player, bool is_ready)
         }
     }
     else {
-        af_send_automated_chat_msg("\xA6 No match is queued. Use \"/vote match\" to queue a match.", player);
+        af_send_automated_chat_msg("No match is queued. Use \"/vote match\" to queue a match.", player);
     }
 }
 
@@ -1637,7 +1637,7 @@ void match_do_frame()
             g_match_info.last_match_reminder_time = current_time;
 
             af_broadcast_automated_chat_msg(
-                "\xA6 No active match. Use \"/vote match <type> <map filename> [preset]\" to call a match vote.");
+                "No active match. Use \"/vote match <type> <map filename> [preset]\" to call a match vote.");
         }
     }
     else if (g_match_info.pre_match_active) {
@@ -1652,7 +1652,7 @@ void match_do_frame()
             for (rf::Player* player : get_clients(false, false)) {
                 if (!is_player_ready(player)) {                    
                     auto msg = std::format(
-                        "\xA6 You are NOT ready! {}v{} match queued, waiting for players - RED: {}, BLUE: {}.\n"
+                        "You are NOT ready! {}v{} match queued, waiting for players - RED: {}, BLUE: {}.\n"
                         "Ready up or use \"/vote nomatch\" to call a vote to cancel the match.",
                         g_match_info.team_size, g_match_info.team_size,
                         g_match_info.team_size - ready_red, g_match_info.team_size - ready_blue);
@@ -1668,7 +1668,7 @@ std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_inp
     std::string level_name{level_name_input};
 
     // add ".rfl" if it's missing
-    if (!string_ends_with_ignore_case(level_name, ".rfl")) {
+    if (!string_iends_with(level_name, ".rfl")) {
         level_name += ".rfl";
     }
 
@@ -1724,11 +1724,8 @@ void player_idle_check(rf::Player* const player) {
             "{} is idle and will be kicked if they don't spawn within 10 seconds.",
              player->name
         );
-        std::string msg = std::format(
-            "\xA6 {}",
-            g_alpine_server_config.inactivity_config.kick_message
-        );
-        af_send_automated_chat_msg(msg, player);
+
+        af_send_automated_chat_msg(g_alpine_server_config.inactivity_cfg.kick_message, player);
 
         // set timer to kick them after 10 seconds
         if (!pdata.idle_kick_timestamp.valid()) {
@@ -1884,13 +1881,13 @@ bool check_can_player_spawn(rf::Player* player)
     case AlpineRestrictVerdict::ok:
         return true;
     case AlpineRestrictVerdict::need_alpine:
-        af_send_automated_chat_msg("\xA6 You must upgrade to Alpine Faction to play here. Learn more at alpinefaction.com", player);
+        af_send_automated_chat_msg("You must upgrade to Alpine Faction to play here. Learn more at alpinefaction.com", player);
         return false;
     case AlpineRestrictVerdict::need_release:
-        af_send_automated_chat_msg("\xA6 This server requires an official Alpine Faction build. Get it at alpinefaction.com", player);
+        af_send_automated_chat_msg("This server requires an official Alpine Faction build. Get it at alpinefaction.com", player);
         return false;
     case AlpineRestrictVerdict::need_update:
-        af_send_automated_chat_msg("\xA6 This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com", player);
+        af_send_automated_chat_msg("This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com", player);
         return false;
     }
     return false;
@@ -1912,11 +1909,11 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
         if (g_match_info.match_active && !is_player_in_match(player)) {
-            af_send_automated_chat_msg("\xA6 You cannot spawn because a match is in progress. Please feel free to spectate.", player);
+            af_send_automated_chat_msg("You cannot spawn because a match is in progress. Please feel free to spectate.", player);
             return;
         }
         if (pdata.is_spawn_disabled_bot()) {
-            std::string msg = std::format("\xA6 You're a bot and you can't spawn right now.");
+            std::string msg = std::format("You're a bot and you can't spawn right now.");
 
             af_send_automated_chat_msg(msg, player);
             return;
@@ -1925,7 +1922,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         // if a respawn timer has been set by the server, enforce it
         if (pdata.respawn_timer.valid() && !pdata.respawn_timer.elapsed()) {
             float spawn_delay_left = std::max(static_cast<float>(pdata.respawn_timer.time_until()) / 1000.0f, 0.001f); // at least 1ms
-            std::string msg = std::format("\xA6 Respawn delay: {} seconds left until you can respawn.", spawn_delay_left);
+            std::string msg = std::format("Respawn delay: {} seconds left until you can respawn.", spawn_delay_left);
             af_send_automated_chat_msg(msg, player);
             return;
         }
@@ -2044,7 +2041,7 @@ void server_reliable_socket_ready(rf::Player* player)
 
     // alert alpine clients to the queued match on join
     if (g_match_info.pre_match_active && data.client_version == ClientVersion::alpine_faction) {    
-        auto msg = std::format("\xA6 Match is queued and waiting for players: {}v{}! Use \"/ready\" to ready up.",
+        auto msg = std::format("Match is queued and waiting for players: {}v{}! Use \"/ready\" to ready up.",
             g_match_info.team_size, g_match_info.team_size);
 
         af_send_automated_chat_msg(msg, player);
@@ -2057,11 +2054,11 @@ void server_reliable_socket_ready(rf::Player* player)
     if (g_alpine_server_config.alpine_restricted_config.advertise_alpine) {
         if (data.client_version != ClientVersion::alpine_faction) {
             auto msg = std::format(
-                "\xA6 Have you heard of Alpine Faction? It's a new patch with lots of new and modern features! This server encourages you to upgrade for the best player experience. Learn more at alpinefaction.com");
+                "Have you heard of Alpine Faction? It's a new patch with lots of new and modern features! This server encourages you to upgrade for the best player experience. Learn more at alpinefaction.com");
             af_send_automated_chat_msg(msg, player);
         }
         else if (VERSION_TYPE == VERSION_TYPE_RELEASE && (pm < VERSION_MAJOR || (pm == VERSION_MAJOR && pn < VERSION_MINOR))) {
-            auto msg = std::format("\xA6 A new version of Alpine Faction is available! Learn more at alpinefaction.com");
+            auto msg = std::format("A new version of Alpine Faction is available! Learn more at alpinefaction.com");
             af_send_automated_chat_msg(msg, player);
         }
     }
@@ -2319,7 +2316,7 @@ FunHook<void()> multi_check_for_round_end_hook{
                 g_is_overtime = true;
                 extend_round_time(g_alpine_server_config_active_rules.overtime.additional_time);
 
-                std::string msg = std::format("\xA6 OVERTIME! Game will end when the tie is broken");
+                std::string msg = std::format("OVERTIME! Game will end when the tie is broken");
                 msg += g_alpine_server_config_active_rules.overtime.additional_time > 0
                            ? std::format(", or in {} minutes!", g_alpine_server_config_active_rules.overtime.additional_time)
                            : "!";
@@ -3009,7 +3006,7 @@ void server_on_limbo_state_enter()
     }
 
     if (get_upcoming_game_type() != rf::netgame.type) {
-        std::string gt_swap_notif = std::format("\xA6 Game type will switch to {} for the next level.",
+        std::string gt_swap_notif = std::format("Game type will switch to {} for the next level.",
             multi_game_type_name_short(get_upcoming_game_type()));
         af_broadcast_automated_chat_msg(gt_swap_notif);
     }

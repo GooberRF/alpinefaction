@@ -30,7 +30,7 @@
 
 static bool is_vpp_filename(const char* filename)
 {
-    return string_ends_with_ignore_case(filename, ".vpp");
+    return string_iends_with(filename, ".vpp");
 }
 
 static std::vector<std::string> unzip(const char* path, const char* output_dir,

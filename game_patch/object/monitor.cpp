@@ -102,7 +102,7 @@ void replace_monitor_screen_bitmap(rf::Monitor& mon, int hbm)
     rf::vmesh_get_materials_array(vmesh, &num_materials, &materials);
     for (int i = 0; i < num_materials; ++i) {
         auto& mat = materials[i];
-        if (string_equals_ignore_case(mat.name, "screen.tga")) {
+        if (string_iequals(mat.name, "screen.tga")) {
             mat.texture = hbm;
             *mat.mat_field_20 = 0.0f;
         }

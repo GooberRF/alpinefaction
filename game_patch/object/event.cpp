@@ -82,13 +82,13 @@ CodeInjection switch_model_event_custom_mesh_patch{
         }
         auto& mesh_name = *static_cast<rf::String*>(regs.esi);
         std::string_view mesh_name_sv{mesh_name.c_str()};
-        if (string_ends_with_ignore_case(mesh_name_sv, ".v3m")) {
+        if (string_iends_with(mesh_name_sv, ".v3m")) {
             mesh_type = rf::MESH_TYPE_STATIC;
         }
-        else if (string_ends_with_ignore_case(mesh_name_sv, ".v3c")) {
+        else if (string_iends_with(mesh_name_sv, ".v3c")) {
             mesh_type = rf::MESH_TYPE_CHARACTER;
         }
-        else if (string_ends_with_ignore_case(mesh_name_sv, ".vfx")) {
+        else if (string_iends_with(mesh_name_sv, ".vfx")) {
             mesh_type = rf::MESH_TYPE_ANIM_FX;
         }
     },
@@ -192,7 +192,7 @@ FunHook<void()> event_level_init_post_hook{
     0x004BD890,
     []() {
         event_level_init_post_hook.call_target();
-        if (string_equals_ignore_case(rf::level.filename, "L5S2.rfl")) {
+        if (string_iequals(rf::level.filename, "L5S2.rfl")) {
             // HACKFIX: make Set_Liquid_Depth events properties in lava control room more sensible
             xlog::trace("Changing Set_Liquid_Depth events in this level...");
             auto* event1 = static_cast<EventSetLiquidDepthHook*>(rf::event_lookup_from_uid(3940));
@@ -202,7 +202,7 @@ FunHook<void()> event_level_init_post_hook{
                 event2->duration = 1.5f;
             }
         }
-        if (string_equals_ignore_case(rf::level.filename, "L5S3.rfl")) {
+        if (string_iequals(rf::level.filename, "L5S3.rfl")) {
             // Fix submarine exploding - change delay of two events to make submarine physics enabled later
             xlog::trace("Fixing Submarine exploding bug...");
             int uids[] = {4679, 4680};
@@ -486,35 +486,35 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
         };
 
         // Match known HUD tokens
-        if (string_equals_ignore_case(token_str, "FIRE"))
+        if (string_iequals(token_str, "FIRE"))
             replacement = get_binding_or_unbound(rf::strings::fire);
-        else if (string_equals_ignore_case(token_str, "ALT_FIRE"))
+        else if (string_iequals(token_str, "ALT_FIRE"))
             replacement = get_binding_or_unbound(rf::strings::alt_fire);
-        else if (string_equals_ignore_case(token_str, "USE"))
+        else if (string_iequals(token_str, "USE"))
             replacement = get_binding_or_unbound(rf::strings::use);
-        else if (string_equals_ignore_case(token_str, "JUMP"))
+        else if (string_iequals(token_str, "JUMP"))
             replacement = get_binding_or_unbound(rf::strings::jump);
-        else if (string_equals_ignore_case(token_str, "CROUCH"))
+        else if (string_iequals(token_str, "CROUCH"))
             replacement = get_binding_or_unbound(rf::strings::crouch);
-        else if (string_equals_ignore_case(token_str, "HOLSTER"))
+        else if (string_iequals(token_str, "HOLSTER"))
             replacement = get_binding_or_unbound(rf::strings::holster);
-        else if (string_equals_ignore_case(token_str, "RELOAD"))
+        else if (string_iequals(token_str, "RELOAD"))
             replacement = get_binding_or_unbound(rf::strings::reload);
-        else if (string_equals_ignore_case(token_str, "NEXT_WEAPON"))
+        else if (string_iequals(token_str, "NEXT_WEAPON"))
             replacement = get_binding_or_unbound(rf::strings::next_weapon);
-        else if (string_equals_ignore_case(token_str, "PREV_WEAPON"))
+        else if (string_iequals(token_str, "PREV_WEAPON"))
             replacement = get_binding_or_unbound(rf::strings::prev_weapon);
-        else if (string_equals_ignore_case(token_str, "MESSAGE_LOG"))
+        else if (string_iequals(token_str, "MESSAGE_LOG"))
             replacement = get_binding_or_unbound(rf::strings::message_log);
-        else if (string_equals_ignore_case(token_str, "QUICK_SAVE"))
+        else if (string_iequals(token_str, "QUICK_SAVE"))
             replacement = get_binding_or_unbound(rf::strings::quick_save);
-        else if (string_equals_ignore_case(token_str, "QUICK_LOAD"))
+        else if (string_iequals(token_str, "QUICK_LOAD"))
             replacement = get_binding_or_unbound(rf::strings::quick_load);
-        else if (string_equals_ignore_case(token_str, "HEADLAMP"))
+        else if (string_iequals(token_str, "HEADLAMP"))
             replacement = get_binding_or_unbound("Toggle headlamp");
-        else if (string_equals_ignore_case(token_str, "SKIP_CUTSCENE"))
+        else if (string_iequals(token_str, "SKIP_CUTSCENE"))
             replacement = get_binding_or_unbound("Skip cutscene");
-        else if (string_starts_with_ignore_case(token_str, "goal_")) {
+        else if (string_istarts_with(token_str, "goal_")) {
             std::string goal_name = token_str.substr(5);
             if (auto goal_val = rf::get_named_goal_value(goal_name)) {
                 replacement = std::to_string(*goal_val);

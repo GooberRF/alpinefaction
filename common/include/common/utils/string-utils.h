@@ -30,7 +30,7 @@ inline std::string_view trim(std::string_view s)
     return rtrim(ltrim(s));
 }
 
-inline std::pair<std::string_view, std::string_view> split_once_ws(std::string_view s)
+inline std::pair<std::string_view, std::string_view> split_once_whitespace(std::string_view s)
 {
     s = trim(s);
     const auto pos = s.find_first_of(" \t");
@@ -79,7 +79,7 @@ inline std::string string_to_upper(std::string_view str)
     return output;
 }
 
-inline bool string_equals_ignore_case(std::string_view left, std::string_view right)
+inline bool string_iequals(std::string_view left, std::string_view right)
 {
     return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](unsigned char a, unsigned char b) {
         return std::tolower(a) == std::tolower(b);
@@ -91,9 +91,9 @@ inline bool string_starts_with(std::string_view str, std::string_view prefix)
     return str.starts_with(prefix);
 }
 
-inline bool string_starts_with_ignore_case(std::string_view str, std::string_view prefix)
+inline bool string_istarts_with(std::string_view str, std::string_view prefix)
 {
-    return string_equals_ignore_case(str.substr(0, prefix.size()), prefix);
+    return string_iequals(str.substr(0, prefix.size()), prefix);
 }
 
 inline bool string_ends_with(std::string_view str, std::string_view suffix)
@@ -101,9 +101,9 @@ inline bool string_ends_with(std::string_view str, std::string_view suffix)
     return str.ends_with(suffix);
 }
 
-inline bool string_ends_with_ignore_case(std::string_view str, std::string_view suffix)
+inline bool string_iends_with(std::string_view str, std::string_view suffix)
 {
-    return str.size() >= suffix.size() && string_equals_ignore_case(str.substr(str.size() - suffix.size()), suffix);
+    return str.size() >= suffix.size() && string_iequals(str.substr(str.size() - suffix.size()), suffix);
 }
 
 inline bool string_contains(std::string_view str, char ch)
@@ -116,7 +116,7 @@ inline bool string_contains(std::string_view str, std::string_view infix)
     return str.find(infix) != std::string_view::npos;
 }
 
-inline bool string_contains_ignore_case(std::string_view str, std::string_view infix)
+inline bool string_icontains(std::string_view str, std::string_view infix)
 {
     std::string_view::iterator it = std::search(str.begin(), str.end(),
         infix.begin(), infix.end(),  [](unsigned char a, unsigned char b) {
@@ -186,13 +186,13 @@ public:
                 return false;
         }
         else {
-            if (!m_exact.empty() && !string_equals_ignore_case(input, m_exact))
+            if (!m_exact.empty() && !string_iequals(input, m_exact))
                 return false;
-            if (!m_prefix.empty() && !string_starts_with_ignore_case(input, m_prefix))
+            if (!m_prefix.empty() && !string_istarts_with(input, m_prefix))
                 return false;
-            if (!m_infix.empty() && !string_contains_ignore_case(input, m_infix))
+            if (!m_infix.empty() && !string_icontains(input, m_infix))
                 return false;
-            if (!m_suffix.empty() && !string_ends_with_ignore_case(input, m_suffix))
+            if (!m_suffix.empty() && !string_iends_with(input, m_suffix))
                 return false;
         }
         return true;

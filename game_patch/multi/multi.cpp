@@ -625,12 +625,12 @@ void start_level_in_multi(std::string filename) {
         rf::netgame.geomod_limit = 64;
         rf::netgame.max_captures = 5;
         rf::netgame.flags = 0; // no broadcast to tracker
-        rf::netgame.type = string_starts_with_ignore_case(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
-            : string_starts_with_ignore_case(filename, "koth") ? rf::NetGameType::NG_TYPE_KOTH
-            : string_starts_with_ignore_case(filename, "dc") ? rf::NetGameType::NG_TYPE_DC
-            : string_starts_with_ignore_case(filename, "rev") ? rf::NetGameType::NG_TYPE_REV
-            : string_starts_with_ignore_case(filename, "run") ? rf::NetGameType::NG_TYPE_RUN
-            : string_starts_with_ignore_case(filename, "esc") ? rf::NetGameType::NG_TYPE_ESC
+        rf::netgame.type = string_istarts_with(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
+            : string_istarts_with(filename, "koth") ? rf::NetGameType::NG_TYPE_KOTH
+            : string_istarts_with(filename, "dc") ? rf::NetGameType::NG_TYPE_DC
+            : string_istarts_with(filename, "rev") ? rf::NetGameType::NG_TYPE_REV
+            : string_istarts_with(filename, "run") ? rf::NetGameType::NG_TYPE_RUN
+            : string_istarts_with(filename, "esc") ? rf::NetGameType::NG_TYPE_ESC
             : rf::NetGameType::NG_TYPE_DM;
         rf::netgame.name = "Alpine Faction Test Server";
         rf::netgame.password = "password";

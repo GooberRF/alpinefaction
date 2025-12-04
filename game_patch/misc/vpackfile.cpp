@@ -283,7 +283,7 @@ static int vpackfile_add_new(const char* filename, const char* dir)
 static rf::VPackfile* vpackfile_find_packfile(const char* filename)
 {
     for (auto& packfile : g_packfiles) {
-        if (string_equals_ignore_case(packfile->filename, filename))
+        if (string_iequals(packfile->filename, filename))
             return packfile.get();
     }
 
@@ -523,7 +523,7 @@ void force_file_from_packfile(const char* name, const char* packfile_name)
     rf::VPackfile* packfile = vpackfile_find_packfile(packfile_name);
     if (packfile) {
         for (auto& entry : packfile->files) {
-            if (string_equals_ignore_case(entry.name, name)) {
+            if (string_iequals(entry.name, name)) {
                 vpackfile_add_to_lookup_table(&entry);
             }
         }

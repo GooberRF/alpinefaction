@@ -319,7 +319,7 @@ namespace df::gr::d3d11
     void GRenderCacheBuilder::add_face(GFace* face, GSolid* solid)
     {
         // HACKFIX: fix skybox rendering issue in dm-rfu-friday.rfl caused by "Show Sky" flag being set on skybox faces
-        if (is_sky_ && face->attributes.is_show_sky() && string_equals_ignore_case(rf::level.filename, "dm-rfu-friday.rfl")) {
+        if (is_sky_ && face->attributes.is_show_sky() && string_iequals(rf::level.filename, "dm-rfu-friday.rfl")) {
             face->attributes.flags &= ~FACE_SHOW_SKY;
         }
         if (!should_render_face(face)) {

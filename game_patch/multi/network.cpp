@@ -414,7 +414,7 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     constexpr std::string_view vote_start_prefix =
         "\n=============== VOTE STARTING ===============\n";
 
-    if (string_starts_with_ignore_case(msg, vote_start_prefix)) {
+    if (string_istarts_with(msg, vote_start_prefix)) {
         // Move past the prefix to start parsing the actual vote title
         const std::string_view title = msg.substr(vote_start_prefix.size());
         // Find the position of " vote started by"
@@ -437,32 +437,40 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
 
     // remove the vote notification if the vote has ended
     for (const std::string_view& end_msg : vote_end_messages) {
-        if (string_starts_with_ignore_case(msg, end_msg)) {
+        if (string_istarts_with(msg, end_msg)
+            || string_istarts_with(msg, end_msg.substr(2))) {
             remove_hud_vote_notification();
-            break;
+            return;
         }
     }
 
+     // For initial match queue
+    if (string_istarts_with(msg, "\n>>>>>>>>>>>>>>>>> ")) {
+        set_local_pre_match_active(true);
+        return;
+    }
+
     // possible messages that indicate ready up state
-    constexpr std::array<std::string_view, 4> ready_messages = {
+    constexpr std::array<std::string_view, 3> ready_messages = {
         "\xA6 You are NOT ready",
-        "\n>>>>>>>>>>>>>>>>> ", // For initial match queue
         "\xA6 Match is queued and waiting for players",
         "\xA6 You are no longer ready"
     };
 
     // display the notification if player should ready
     for (const std::string_view& ready_msg : ready_messages) {
-        if (string_starts_with_ignore_case(msg, ready_msg)) {
+        if (string_istarts_with(msg, ready_msg)
+            || string_istarts_with(msg, ready_msg.substr(2))) {
             set_local_pre_match_active(true);
-            break;
+            return;
         }
     }
 
     // remove ready up prompt if match is cancelled prematurely
     constexpr std::string_view match_canceled_msg =
         "\xA6 Vote passed: The match has been canceled";
-    if (string_starts_with_ignore_case(msg, match_canceled_msg)) {
+    if (string_istarts_with(msg, match_canceled_msg)
+        || string_istarts_with(msg, match_canceled_msg.substr(2))) {
         set_local_pre_match_active(false);
     }
 }
@@ -470,28 +478,29 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
 void handle_sound_msg(const std::string_view msg) {
     constexpr std::string_view normal_prefix = "\xA8 ";
     constexpr std::string_view taunt_prefix = "\xA8[Taunt] ";
-    if (string_starts_with_ignore_case(msg, taunt_prefix)) {
+    if (string_istarts_with(msg, taunt_prefix)) {
         play_chat_sound(msg.substr(taunt_prefix.size()), true);
-    } else if (string_starts_with_ignore_case(msg, normal_prefix)) {
+    } else if (string_istarts_with(msg, normal_prefix)) {
         play_chat_sound(msg.substr(normal_prefix.size()), false);
     }
 }
 
 FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
     0x00444860,
-    [](char* data, const rf::NetAddr& addr) {
+    [] (char* const data, const rf::NetAddr& addr) {
+        const char* const msg = data + 2;
+
         // server-side and client-side
         if (rf::is_server) {
             verify_player_id_in_packet(&data[0], addr, "chat_line");
 
-            rf::Player* src_player = rf::multi_find_player_by_addr(addr);
+            rf::Player* const src_player = rf::multi_find_player_by_addr(addr);
             if (!src_player) {
-                return; // shouldnt happen (protected in rf::multi_io_process_packets)
+                // shouldnt happen (protected in rf::multi_io_process_packets)
+                return;
             }
 
             const uint8_t team_msg = static_cast<uint8_t>(data[1]);
-            const char* msg = data + 2;
-
             if (team_msg && rf::is_dedicated_server) {
                 rf::multi_chat_add_msg(src_player, msg, true);
             }
@@ -499,9 +508,12 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             if (check_server_chat_command(msg, src_player)) {
                 return;
             }
-        } else if (!rf::is_dedicated_server) {
-            const char* msg = data + 2;
+        }
+
+        const bool msg_from_server = data[0] == -1;
+        if (msg_from_server) {
             handle_vote_or_ready_up_msg(msg);
+        } else {
             handle_sound_msg(msg);
         }
 
@@ -528,7 +540,7 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
             rf::Player* player = rf::multi_find_player_by_id(data[0]);
             //xlog::warn("Player {}, team {}", player->name, player->team);
             if (is_player_ready(player) || is_player_in_match(player)) {
-                auto msg = std::format("\xA6 You can't change teams {}", is_player_ready(player)
+                auto msg = std::format("You can't change teams {}", is_player_ready(player)
                     ? "while ready for a match. Use \"/unready\" first."
                     : "during a match.");
                 af_send_automated_chat_msg(msg, player);

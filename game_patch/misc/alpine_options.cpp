@@ -50,7 +50,7 @@ bool is_known_run_level(const std::string& filename)
 {
     std::string level_name = filename;
     
-    if (!string_ends_with_ignore_case(level_name, ".rfl")) {
+    if (!string_iends_with(level_name, ".rfl")) {
         level_name += ".rfl";
     }
 

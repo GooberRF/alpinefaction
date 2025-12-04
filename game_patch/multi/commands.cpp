@@ -84,7 +84,7 @@ ConsoleCommand2 map_ext_cmd{
         if (validate_is_server() && validate_not_limbo()) {
             int minutes = minutes_opt.value_or(5);
             extend_round_time(minutes);
-            std::string msg = std::format("\xA6 Round extended by {} minutes", minutes);
+            std::string msg = std::format("Round extended by {} minutes", minutes);
             rf::multi_chat_say(msg.c_str(), false);
         }
     },
@@ -96,7 +96,7 @@ ConsoleCommand2 map_rest_cmd{
     "map_rest",
     []() {
         if (validate_is_server() && validate_not_limbo()) {
-            rf::multi_chat_say("\xA6 Restarting current level", false);
+            rf::multi_chat_say("Restarting current level", false);
             restart_current_level();
         }
     },
@@ -107,7 +107,7 @@ ConsoleCommand2 map_next_cmd{
     "map_next",
     []() {
         if (validate_is_server() && validate_not_limbo()) {
-            rf::multi_chat_say("\xA6 Loading next level", false);
+            rf::multi_chat_say("Loading next level", false);
             load_next_level();
         }
     },
@@ -118,7 +118,7 @@ ConsoleCommand2 map_rand_cmd{
     "map_rand",
     []() {
         if (validate_is_server() && validate_not_limbo()) {
-            rf::multi_chat_say("\xA6 Loading random level from rotation", false);
+            rf::multi_chat_say("Loading random level from rotation", false);
             load_rand_level();
         }
     },
@@ -129,7 +129,7 @@ ConsoleCommand2 map_prev_cmd{
     "map_prev",
     []() {
         if (validate_is_server() && validate_not_limbo()) {
-            rf::multi_chat_say("\xA6 Loading previous level", false);
+            rf::multi_chat_say("Loading previous level", false);
             load_prev_level();
         }
     },
