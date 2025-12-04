@@ -1335,10 +1335,8 @@ void RemoteServerCfgPopup::render() {
     int clip_x = 0, clip_y = 0, clip_w = 0, clip_h = 0;
     rf::gr::get_clip(&clip_x, &clip_y, &clip_w, &clip_h);
 
-    int mouse_dx = 0, mouse_dy = 0, mouse_dz = 0;
-    rf::mouse_get_delta(mouse_dx, mouse_dy, mouse_dz);
-    if (mouse_dz != 0) {
-        m_scroll.target += (mouse_dz > 0 ? -2 : 2) * (line_height + sep_thickness);
+    if (rf::mouse_dz != 0) {
+        m_scroll.target += (rf::mouse_dz > 0 ? -2 : 2) * (line_height + sep_thickness);
         m_last_key_down = 0;
     }
 
@@ -1426,8 +1424,10 @@ void RemoteServerCfgPopup::render() {
 
     int total_w = base_w;
     if (m_cfg_changed) {
-        const auto [sep_w, sep_h] = rf::gr::get_string_size(separator_text, label_font_id);
-        const auto [out_w, out_h] = rf::gr::get_string_size(outdated_text, label_font_id);
+        const auto [sep_w, sep_h]
+            = rf::gr::get_string_size(separator_text, label_font_id);
+        const auto [out_w, out_h]
+            = rf::gr::get_string_size(outdated_text, label_font_id);
         total_w += sep_w + out_w;
     }
 
@@ -1476,9 +1476,6 @@ void RemoteServerCfgPopup::render() {
         rf::gr::set_color(180, 180, 180, 64);
         rf::gr::rect(content_x, line_y + sep_thickness, content_w, sep_thickness);
         rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
-    } else if (g_remote_server_cfg_popup.is_highlight_box()) {
-        rf::gr::set_color(100, 255, 200, 255);
-        rf::gr::rect(content_x, 0, content_w, sep_thickness);
     }
 
     line_y += sep_thickness;
@@ -1512,7 +1509,12 @@ void RemoteServerCfgPopup::render() {
         }
 
         if (g_remote_server_cfg_popup.uses_line_separators()) {
-            rf::gr::set_clip(0, content_y - sep_thickness, rf::gr::clip_width(), content_h + sep_thickness * 2);
+            rf::gr::set_clip(
+                0,
+                content_y - sep_thickness,
+                rf::gr::clip_width(),
+                content_h + sep_thickness * 2
+            );
             rf::gr::set_color(180, 180, 180, 64);
             rf::gr::rect(content_x, line_y + sep_thickness, content_w, sep_thickness);
             rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
@@ -1586,6 +1588,7 @@ void RemoteServerCfgPopup::render() {
         rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
     } else if (g_remote_server_cfg_popup.is_highlight_box()) {
         rf::gr::set_color(100, 255, 200, 255);
+        rf::gr::rect(content_x, 0, content_w, sep_thickness);
         rf::gr::rect(content_x, content_h - 1, content_w, sep_thickness);
     }
 
