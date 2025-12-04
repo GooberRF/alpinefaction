@@ -273,29 +273,6 @@ void parse_alpine_locking(rf::Parser& parser)
     }
 }
 
-void parse_inactivity_settings(rf::Parser& parser)
-{
-    if (parser.parse_optional("$Kick Inactive Players:")) {
-        g_alpine_server_config.inactivity_config.enabled = parser.parse_bool();
-        rf::console::print("Kick Inactive Players: {}",
-                           g_alpine_server_config.inactivity_config.enabled ? "true" : "false");
-
-        parse_uint_option(parser, "+Grace Period:", g_alpine_server_config.inactivity_config.new_player_grace_ms,
-                          "+Grace Period");
-        parse_uint_option(parser, "+Maximum Idle Time:", g_alpine_server_config.inactivity_config.allowed_inactive_ms,
-                          "+Maximum Idle Time");
-        parse_uint_option(parser, "+Warning Period:", g_alpine_server_config.inactivity_config.warning_duration_ms,
-                          "+Warning Period");
-
-        if (parser.parse_optional("+Idle Warning Message:")) {
-            rf::String kick_message;
-            parser.parse_string(&kick_message);
-            g_alpine_server_config.inactivity_config.kick_message = kick_message.c_str();
-            rf::console::print("+Idle Warning Message: {}", g_alpine_server_config.inactivity_config.kick_message);
-        }
-    }
-}
-
 void parse_item_respawn_time_override(rf::Parser& parser)
 {
     while (parser.parse_optional("$Item Respawn Time Override:")) {
@@ -342,7 +319,6 @@ void load_additional_server_config(rf::Parser& parser)
     // Misc config
     parse_miscellaneous_options(parser);
     parse_alpine_locking(parser);
-    parse_inactivity_settings(parser);
 
     parse_boolean_option(parser, "$Use Gaussian Bullet Spread:", g_alpine_server_config.gaussian_spread,
                          "Use Gaussian Bullet Spread");

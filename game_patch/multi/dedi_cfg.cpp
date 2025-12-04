@@ -587,14 +587,18 @@ static InactivityConfig parse_inactivity_config(const toml::table &t)
         o.enabled = *v;
 
     if (o.enabled) {
+        if (auto v = t["kick_after_warning"].value<bool>())
+            o.kick_after_warning = *v;
         if (auto v = t["new_player_grace"].value<float>())
             o.set_new_player_grace(*v);
         if (auto v = t["allowed_inactive"].value<float>())
             o.set_allowed_inactive(*v);
-        if (auto v = t["warning_duration"].value<float>())
-            o.set_warning_duration(*v);
-        if (auto v = t["kick_message"].value<std::string>())
-            o.kick_message = *v;
+        if (o.kick_after_warning) {
+            if (auto v = t["warning_duration"].value<float>())
+                o.set_warning_duration(*v);
+            if (auto v = t["kick_message"].value<std::string>())
+                o.kick_message = *v;
+        }
     }
     return o;
 }
@@ -1558,12 +1562,15 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
 
     // inactivity
-    std::format_to(iter, "  Kick inactive players:                 {}\n", cfg.inactivity_config.enabled);
+    std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);
     if (cfg.inactivity_config.enabled) {
         std::format_to(iter, "    New player grace period:             {} sec\n", cfg.inactivity_config.new_player_grace_ms / 1000.0f);
         std::format_to(iter, "    Allowed inactivity time:             {} sec\n", cfg.inactivity_config.allowed_inactive_ms / 1000.0f);
-        std::format_to(iter, "    Warning duration:                    {} sec\n", cfg.inactivity_config.warning_duration_ms / 1000.0f);
-        std::format_to(iter, "    Kick message:                        {}\n", cfg.inactivity_config.kick_message);
+        std::format_to(iter, "    Kick after warning:                  {}\n", cfg.inactivity_config.kick_after_warning);
+        if (cfg.inactivity_config.kick_after_warning) {
+            std::format_to(iter, "    Warning duration:                    {} sec\n", cfg.inactivity_config.warning_duration_ms / 1000.0f);
+            std::format_to(iter, "    Kick message:                        {}\n", cfg.inactivity_config.kick_message);
+        }
     }
 
     // click limiter

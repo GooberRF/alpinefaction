@@ -133,4 +133,5 @@ namespace rf
     static auto& keep_mouse_centered = addr_as_ref<bool>(0x01885471);
     static auto& mouse_wheel_pos = addr_as_ref<int>(0x018853C8);
     static auto& mouse_old_z = addr_as_ref<int>(0x01885480);
+    static auto& mouse_dz = addr_as_ref<int>(0x0188546C);
 }

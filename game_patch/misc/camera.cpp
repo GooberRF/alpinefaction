@@ -176,7 +176,7 @@ CodeInjection free_camera_do_frame_patch{
                 }
                 else {
                     auto* player = rf::local_player;
-                    int mouse_dz = get_mouse_scroll_wheel_value();
+                    const int mouse_dz = rf::mouse_dz;
 
                     if (mouse_dz != 0) {
                         // normalize at 120.0 units per scroll notch

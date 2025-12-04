@@ -359,10 +359,13 @@ CodeInjection multi_create_game_do_frame_patch{
         // tab 0 = options
         // gadget 5 = map list
         if (rf::ui::create_game_current_tab == 0 && rf::ui::create_game_options_current_gadget == 5) {
-            int mouse_dz = get_mouse_scroll_wheel_value();
+            int mouse_dz = rf::mouse_dz;
             if (mouse_dz != 0) {
-                mouse_dz > 0 ? rf::ui::create_game_map_list_up_on_click(-1, -1)
-                             : rf::ui::create_game_map_list_down_on_click(-1, -1);
+                if (mouse_dz > 0) {
+                    rf::ui::create_game_map_list_up_on_click(-1, -1);
+                } else {
+                    rf::ui::create_game_map_list_down_on_click(-1, -1);
+                }
             }
         }
     },
@@ -375,10 +378,13 @@ CodeInjection multi_join_server_do_frame_patch{
         // 4, 5, 6 = scroll bar and buttons
         // 7, 8, 9, 10, 11, 12 = column headers
         if (rf::ui::join_game_current_gadget >= 3 && rf::ui::join_game_current_gadget <= 12) {
-            int mouse_dz = get_mouse_scroll_wheel_value();
+            int mouse_dz = rf::mouse_dz;
             if (mouse_dz != 0) {
-                mouse_dz > 0 ? rf::ui::join_game_server_list_up_on_click(-1, -1)
-                             : rf::ui::join_game_server_list_down_on_click(-1, -1);
+                if (mouse_dz > 0) {
+                    rf::ui::join_game_server_list_up_on_click(-1, -1);
+                } else {
+                    rf::ui::join_game_server_list_down_on_click(-1, -1);
+                }
             }
         }
     },
@@ -388,7 +394,7 @@ CodeInjection options_do_frame_patch{
     0x0044F211,
     [](auto& regs) {
         if (rf::ui::options_is_panel_open) {
-            int mouse_dz = get_mouse_scroll_wheel_value();
+            int mouse_dz = rf::mouse_dz;
 
             // 0 = game
             // 1 = video
@@ -400,8 +406,11 @@ CodeInjection options_do_frame_patch{
                     // 4 = autoswitch priority list
                     if (rf::ui::options_game_current_gadget == 4) {
                         if (mouse_dz != 0) {
-                            mouse_dz > 0 ? rf::ui::options_game_autoswitch_priority_up_on_click(-1, -1)
-                                         : rf::ui::options_game_autoswitch_priority_down_on_click(-1, -1);
+                            if (mouse_dz > 0) {
+                                rf::ui::options_game_autoswitch_priority_up_on_click(-1, -1);
+                            } else {
+                                rf::ui::options_game_autoswitch_priority_down_on_click(-1, -1);
+                            }
                         }
                     }
 
@@ -415,8 +424,11 @@ CodeInjection options_do_frame_patch{
                     // 2 = binds list
                     if (rf::ui::options_controls_current_gadget == 2) {
                         if (mouse_dz != 0) {
-                            mouse_dz > 0 ? rf::ui::options_controls_bindings_up_on_click(-1, -1)
-                                         : rf::ui::options_controls_bindings_down_on_click(-1, -1);
+                            if (mouse_dz > 0) {
+                                rf::ui::options_controls_bindings_up_on_click(-1, -1);
+                            } else {
+                                rf::ui::options_controls_bindings_down_on_click(-1, -1);
+                            }
                         }
                     }
 
@@ -437,10 +449,13 @@ CodeInjection game_load_do_frame_patch{
         // 0 = save list
         // 1, 2, 3 = scroll bar and buttons
         if (rf::ui::load_game_current_gadget >= 0 && rf::ui::load_game_current_gadget <= 3) {
-            int mouse_dz = get_mouse_scroll_wheel_value();
+            int mouse_dz = rf::mouse_dz;
             if (mouse_dz != 0) {
-                mouse_dz > 0 ? rf::ui::load_game_up_on_click(-1, -1)
-                             : rf::ui::load_game_down_on_click(-1, -1);
+                if (mouse_dz > 0) {
+                    rf::ui::load_game_up_on_click(-1, -1);
+                } else {
+                    rf::ui::load_game_down_on_click(-1, -1);
+                }
             }
         }
     },
@@ -452,10 +467,13 @@ CodeInjection game_save_do_frame_patch{
         // 3 = save list
         // 4, 5, 6 = scroll bar and buttons
         if (rf::ui::save_game_current_gadget >= 3 && rf::ui::save_game_current_gadget <= 6) {
-            int mouse_dz = get_mouse_scroll_wheel_value();
+            int mouse_dz = rf::mouse_dz;
             if (mouse_dz != 0) {
-                mouse_dz > 0 ? rf::ui::save_game_up_on_click(-1, -1)
-                             : rf::ui::save_game_down_on_click(-1, -1);
+                if (mouse_dz > 0) {
+                    rf::ui::save_game_up_on_click(-1, -1);
+                } else {
+                    rf::ui::save_game_down_on_click(-1, -1);
+                }
             }
         }
     },
@@ -468,10 +486,13 @@ CodeInjection message_log_do_frame_patch{
         // 0 = scroll bar and buttons
         // list can't be selected directly, gadget -1 when not hovering close or scroll bar
         if (rf::ui::message_log_current_gadget != 1) {
-            int mouse_dz = get_mouse_scroll_wheel_value();
+            int mouse_dz = rf::mouse_dz;
             if (mouse_dz != 0) {
-                mouse_dz > 0 ? rf::ui::message_log_up_on_click(-1, -1)
-                             : rf::ui::message_log_down_on_click(-1, -1);
+                if (mouse_dz > 0) {
+                    rf::ui::message_log_up_on_click(-1, -1);
+                } else {
+                    rf::ui::message_log_down_on_click(-1, -1);
+                }
             }
         }
     },

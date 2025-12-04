@@ -71,6 +71,7 @@ struct SpawnProtectionConfig
 struct InactivityConfig
 {
     bool enabled = false;
+    bool kick_after_warning = true;
     uint32_t new_player_grace_ms = 120000;
     uint32_t allowed_inactive_ms = 30000;
     uint32_t warning_duration_ms = 10000;

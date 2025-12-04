@@ -1688,13 +1688,14 @@ void update_player_active_status(const rf::Player* const player) {
 }
 
 void player_idle_check(rf::Player* const player) {
+    const auto& inactivity_cfg = g_alpine_server_config.inactivity_config;
     auto& pdata = get_player_additional_data(player);
-    if (!g_alpine_server_config.inactivity_config.enabled) {
+    if (!inactivity_cfg.enabled) {
         return;
     }
 
     if (pdata.idle_kick_timestamp.valid()) {
-        if (pdata.idle_kick_timestamp.elapsed()) {
+        if (inactivity_cfg.kick_after_warning && pdata.idle_kick_timestamp.elapsed()) {
             kick_player_delayed(player);
         }
         return; // don't continue if a kick is already pending
@@ -1714,24 +1715,25 @@ void player_idle_check(rf::Player* const player) {
     }
 
     if (player->net_data->join_time_ms
-        > (rf::timer_get_milliseconds()
-            - g_alpine_server_config.inactivity_config.new_player_grace_ms)) {
+        > (rf::timer_get_milliseconds() - inactivity_cfg.new_player_grace_ms)) {
         return; // don't mark new players as idle
     }
 
     if (is_player_idle(player)) {
+        if (!inactivity_cfg.kick_after_warning) {
+            return;
+        }
+
         rf::console::print(
             "{} is idle and will be kicked if they don't spawn within 10 seconds.",
              player->name
         );
 
-        af_send_automated_chat_msg(g_alpine_server_config.inactivity_cfg.kick_message, player);
+        af_send_automated_chat_msg(inactivity_cfg.kick_message, player);
 
         // set timer to kick them after 10 seconds
         if (!pdata.idle_kick_timestamp.valid()) {
-            pdata
-                .idle_kick_timestamp
-                .set(g_alpine_server_config.inactivity_config.warning_duration_ms);
+            pdata.idle_kick_timestamp.set(inactivity_cfg.warning_duration_ms);
         }
     }
 }

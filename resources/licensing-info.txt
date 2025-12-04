@@ -36,6 +36,9 @@ natalie <webmistress@natalie.ee>:
 * Code contributions
 * Assistance evaluating levels for `pow2tex` fix
 
+is-this-c:
+* Code contributions
+
 HeyItsDuke:
 * Rocket launcher lock on reticle for Big HUD
 * Assistance evaluating levels for `pow2tex` fix

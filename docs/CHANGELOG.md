@@ -116,6 +116,7 @@ Version 1.2.0 (Willow): Not yet released
 - Support setting freelook spectator camera accel with scroll wheel
 - Alias `Ping Location` control to reset to freelook spectator camera accel to base value
 - Add scroll wheel support to message log panel and scrollable item lists in menus
+- Add `kick after warning` option to dedicated server client inactivity tracking
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Tlv{Writer, Reader}` and `HighResTimer`
