@@ -378,7 +378,6 @@ namespace df::gr::d3d11
         vertices_ = std::move(gpu_verts_1);
 
         // clamp to at least 1 byte to avoid D3D11 error when creating empty buffers (should never happen under normal circumstances anyway)
-        const auto vertex_count = vertices_.size();
         const UINT vb0_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(gpu_verts_0[0]) * gpu_verts_0.size()));
         const UINT vb1_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(GpuCharacterVertex1) * vertices_.size()));
         const UINT ib_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(gpu_inds[0]) * gpu_inds.size()));
