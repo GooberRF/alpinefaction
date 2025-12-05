@@ -84,14 +84,16 @@ std::optional<uint32_t> parse_hex_color_string(const std::string& value)
 
 std::string format_hex_color_string(uint32_t color)
 {
-    std::ostringstream stream;
-    uint8_t alpha = static_cast<uint8_t>(color & 0xFF);
-    bool include_alpha = alpha != 0xFF;
-    uint32_t encoded_value = include_alpha ? color : (color >> 8);
+    const auto alpha = static_cast<uint8_t>(color & 0xFF);
+    const bool include_alpha = (alpha != 0xFF);
+    const uint32_t encoded_value = include_alpha ? color : (color >> 8);
 
-    stream << std::uppercase << std::hex << std::setfill('0')
-           << std::setw(include_alpha ? 8 : 6) << encoded_value;
-    return stream.str();
+    if (include_alpha) {
+        return std::format("{:08X}", encoded_value);
+    }
+    else {
+        return std::format("{:06X}", encoded_value);
+    }
 }
 
 // parse colors to 0-255 ints
