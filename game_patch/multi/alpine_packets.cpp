@@ -1292,13 +1292,11 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
     //xlog::warn("af_server_info processed - gt {}, cooldown {}", pkt.game_type, server_info.semi_auto_cooldown.value());
 }
 
+constexpr int FREE_SPEC_ID = 255;
+
 void af_send_spectate_start_packet(const rf::Player* const spectatee) {
     // Are we a client?
     if (!rf::is_multi || rf::is_server) {
-        return;
-    }
-
-    if (!spectatee->net_data) {
         return;
     }
 
@@ -1307,7 +1305,14 @@ void af_send_spectate_start_packet(const rf::Player* const spectatee) {
         static_cast<uint8_t>(af_packet_type::af_spectate_start);
     spectate_start_packet.header.size = sizeof(spectate_start_packet)
         - sizeof(spectate_start_packet.header);
-    spectate_start_packet.spectatee_id = spectatee->net_data->player_id;
+
+    if (!spectatee) {
+        spectate_start_packet.spectatee_id = FREE_SPEC_ID;
+    } else if (spectatee->net_data) {
+        spectate_start_packet.spectatee_id = spectatee->net_data->player_id;
+    } else {
+        return;
+    }
 
     af_send_packet(
         rf::local_player,
@@ -1341,7 +1346,7 @@ void af_process_spectate_start_packet(
     rf::Player* const spectatee = rf::multi_find_player_by_id(
         spectate_start_packet.spectatee_id
     );
-    if (!spectatee) {
+    if (!spectatee && spectate_start_packet.spectatee_id != FREE_SPEC_ID) {
         return;
     }
 
@@ -1374,7 +1379,7 @@ void af_send_spectate_notify_packet(
         return;
     }
 
-    if (!spectator->net_data) {
+    if (!spectator || !spectator->net_data) {
         return;
     }
 

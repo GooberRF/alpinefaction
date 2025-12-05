@@ -82,7 +82,7 @@ void multi_spectate_set_target_player(rf::Player* player)
     }
 
     bool entering_player_spectate = (player != rf::local_player);
-    
+
     if (entering_player_spectate) {
         g_local_queued_delayed_spawn = false;
         stop_draw_respawn_timer_notification();
@@ -148,6 +148,7 @@ void multi_spectate_enter_freelook()
 
     rf::multi_kill_local_player();
     rf::camera_enter_freelook(rf::local_player->cam);
+    af_send_spectate_start_packet(nullptr);
 
     // auto& hud_msg_current_index = addr_as_ref<int>(0x00597104);
     // hud_msg_current_index = -1;
@@ -174,10 +175,12 @@ rf::Player* multi_spectate_get_target_player()
 
 void multi_spectate_leave()
 {
-    if (g_spectate_mode_enabled)
+    if (g_spectate_mode_enabled) {
         multi_spectate_set_target_player(nullptr);
-    else
+    } else {
         set_camera_target(rf::local_player);
+        af_send_spectate_start_packet(rf::local_player);
+    }
 }
 
 bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pressed)
