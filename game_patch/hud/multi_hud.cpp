@@ -1978,8 +1978,8 @@ CallHook<void(int, int, const char*, int, rf::gr::Mode)> multi_hud_render_target
 CodeInjection multi_hud_update_target_player_patch_1{
     0x00477F06,
     [] (const auto& regs) {
-        const rf::Player* const player = addr_as_ref<const rf::Player*>(regs.esi - 8);
-        const auto& pdata = get_player_additional_data(player);
+        const rf::Player& player = addr_as_ref<rf::Player>(regs.esi - 8);
+        const auto& pdata = get_player_additional_data(&player);
         g_target_player_is_bot = pdata.is_bot();
     },
 };
@@ -1987,8 +1987,8 @@ CodeInjection multi_hud_update_target_player_patch_1{
 CodeInjection multi_hud_update_target_player_patch_2{
     0x00477F8C,
     [] (const auto& regs) {
-        const rf::Player* const player = addr_as_ref<const rf::Player*>(regs.esi - 8);
-        const auto& pdata = get_player_additional_data(player);
+        const rf::Player& player = addr_as_ref<rf::Player>(regs.edi - 8);
+        const auto& pdata = get_player_additional_data(&player);
         g_target_player_is_bot = pdata.is_bot();
     },
 };
