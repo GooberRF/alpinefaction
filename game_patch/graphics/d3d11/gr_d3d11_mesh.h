@@ -20,6 +20,8 @@ namespace df::gr::d3d11
     class StateManager;
     class RenderContext;
 
+    void on_character_fullbright_state_changed(bool enabled);
+
     class BaseMeshRenderCache
     {
     public:

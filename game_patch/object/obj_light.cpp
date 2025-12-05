@@ -16,6 +16,7 @@
 #include "../rf/level.h"
 #include "../rf/clutter.h"
 #include "../rf/gr/gr.h"
+#include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../rf/multi.h"
 #include "../rf/crt.h"
 #include "../os/console.h"
@@ -88,6 +89,7 @@ void evaluate_fullbright_meshes()
     if (!rf::LEVEL_LOADED)
         return;
 
+    bool previous_fullbright_state = g_character_meshes_are_fullbright;
     g_character_meshes_are_fullbright = false; // reset
 
     if (g_alpine_game_config.try_fullbright_characters) {
@@ -102,8 +104,12 @@ void evaluate_fullbright_meshes()
         }
     }
 
-    // DX11 is set in gr_d3d11_mesh.cpp
-    if (g_game_config.renderer != GameConfig::Renderer::d3d11) {
+    if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+        if (g_character_meshes_are_fullbright != previous_fullbright_state) {
+            df::gr::d3d11::on_character_fullbright_state_changed(g_character_meshes_are_fullbright);
+        }
+    }
+    else { // d3d9
         // Use fullbright (1.0) for each channel if selected and allowed, otherwise use level ambient light
         if (g_character_meshes_are_fullbright) {
             g_character_ambient_light_r = 1.0f;

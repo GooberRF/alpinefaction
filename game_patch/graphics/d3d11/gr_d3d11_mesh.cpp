@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <memory>
 #include <vector>
 #include <cstring>
@@ -24,6 +25,18 @@ namespace df::gr::d3d11
 {
     constexpr unsigned initial_vb_size = 6000;
     constexpr unsigned initial_ib_size = 10000;
+
+    static uint64_t character_vertex_color_generation = 1;
+
+    static uint64_t current_character_vertex_color_generation()
+    {
+        return character_vertex_color_generation;
+    }
+
+    void on_character_fullbright_state_changed(bool)
+    {
+        ++character_vertex_color_generation;
+    }
 
     static bool is_vif_chunk_double_sided(const VifChunk& chunk)
     {
@@ -224,16 +237,61 @@ namespace df::gr::d3d11
 
         void update_morphed_vertices_buffer(rf::Skeleton* skeleton, int time, RenderContext& render_context);
 
+        const std::vector<GpuCharacterVertex1>& vertices() const
+        {
+            return vertices_;
+        }
+
+        bool should_upload_vertex_colors(
+            int lod_index, const void* source, const std::array<rf::ubyte, 3>& sample, uint64_t generation) const
+        {
+            return last_vertex_color_generations_[lod_index] != generation
+                || last_vertex_color_sources_[lod_index] != source
+                || last_vertex_color_samples_[lod_index] != sample;
+        }
+
+        void mark_vertex_colors_uploaded(
+            int lod_index, const void* source, const std::array<rf::ubyte, 3>& sample, uint64_t generation) const
+        {
+            last_vertex_color_sources_[lod_index] = source;
+            last_vertex_color_generations_[lod_index] = generation;
+            last_vertex_color_samples_[lod_index] = sample;
+        }
+
+        bool missing_vertex_colors_logged(int lod_index) const
+        {
+            return missing_vertex_colors_logged_[lod_index];
+        }
+
+        void mark_missing_vertex_colors_logged(int lod_index) const
+        {
+            missing_vertex_colors_logged_[lod_index] = true;
+        }
+
+        ID3D11Buffer* vertex_buffer_1() const
+        {
+            return vertex_buffer_1_;
+        }
+
     private:
         ComPtr<ID3D11Buffer> vertex_buffer_0_;
         ComPtr<ID3D11Buffer> vertex_buffer_1_;
         ComPtr<ID3D11Buffer> morphed_vertex_buffer_0_;
         ComPtr<ID3D11Buffer> index_buffer_;
         BoneTransformsBuffer bone_transforms_buffer_;
+        std::vector<GpuCharacterVertex1> vertices_;
+        mutable std::vector<bool> missing_vertex_colors_logged_;
+        mutable std::vector<const void*> last_vertex_color_sources_;
+        mutable std::vector<uint64_t> last_vertex_color_generations_;
+        mutable std::vector<std::array<rf::ubyte, 3>> last_vertex_color_samples_;
     };
 
     CharacterMeshRenderCache::CharacterMeshRenderCache(VifLodMesh* lod_mesh, ID3D11Device* device) :
-        BaseMeshRenderCache(lod_mesh), bone_transforms_buffer_{device}
+        BaseMeshRenderCache(lod_mesh), bone_transforms_buffer_{device},
+        missing_vertex_colors_logged_(lod_mesh->num_levels, false),
+        last_vertex_color_sources_(lod_mesh->num_levels, nullptr),
+        last_vertex_color_generations_(lod_mesh->num_levels, 0),
+        last_vertex_color_samples_(lod_mesh->num_levels, {255, 255, 255})
     {
         std::size_t num_verts = 0;
         std::size_t num_inds = 0;
@@ -258,6 +316,7 @@ namespace df::gr::d3d11
         for (int lod_index = 0; lod_index < lod_mesh->num_levels; ++lod_index) {
             rf::VifMesh* mesh = lod_mesh->meshes[lod_index];
             meshes_[lod_index].batches.reserve(mesh->num_chunks);
+            meshes_[lod_index].vertex_offset = gpu_verts_1.size();
 
             for (int chunk_index = 0; chunk_index < mesh->num_chunks; ++chunk_index) {
                 rf::VifChunk& chunk = mesh->chunks[chunk_index];
@@ -312,11 +371,20 @@ namespace df::gr::d3d11
                     start_index, num_indices, base_vertex,
                     chunk.texture_idx, chunk.mode, double_sided);
             }
+            meshes_[lod_index].vertex_count = gpu_verts_1.size() - meshes_[lod_index].vertex_offset;
         }
         xlog::debug("Creating mesh render buffer - verts {} inds {}", gpu_verts_0.size(), gpu_inds.size());
 
+        vertices_ = std::move(gpu_verts_1);
+
+        // clamp to at least 1 byte to avoid D3D11 error when creating empty buffers (should never happen under normal circumstances anyway)
+        const auto vertex_count = vertices_.size();
+        const UINT vb0_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(gpu_verts_0[0]) * gpu_verts_0.size()));
+        const UINT vb1_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(GpuCharacterVertex1) * vertices_.size()));
+        const UINT ib_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(gpu_inds[0]) * gpu_inds.size()));
+
         CD3D11_BUFFER_DESC vb_0_desc{
-            sizeof(gpu_verts_0[0]) * gpu_verts_0.size(),
+            vb0_byte_width,
             D3D11_BIND_VERTEX_BUFFER,
             D3D11_USAGE_IMMUTABLE,
         };
@@ -326,17 +394,17 @@ namespace df::gr::d3d11
         );
 
         CD3D11_BUFFER_DESC vb_1_desc{
-            sizeof(gpu_verts_1[1]) * gpu_verts_1.size(),
+            vb1_byte_width,
             D3D11_BIND_VERTEX_BUFFER,
-            D3D11_USAGE_IMMUTABLE,
+            D3D11_USAGE_DEFAULT,
         };
-        D3D11_SUBRESOURCE_DATA vb_1_subres_data{gpu_verts_1.data(), 0, 0};
+        D3D11_SUBRESOURCE_DATA vb_1_subres_data{vertices_.data(), 0, 0};
         DF_GR_D3D11_CHECK_HR(
             device->CreateBuffer(&vb_1_desc, &vb_1_subres_data, &vertex_buffer_1_)
         );
 
         CD3D11_BUFFER_DESC ib_desc{
-            sizeof(gpu_inds[0]) * gpu_inds.size(),
+            ib_byte_width,
             D3D11_BIND_INDEX_BUFFER,
             D3D11_USAGE_IMMUTABLE,
         };
@@ -355,8 +423,12 @@ namespace df::gr::d3d11
                 rf::VifChunk& chunk = mesh->chunks[chunk_index];
                 num_verts += chunk.num_vecs;
             }
+
+            const UINT morphed_byte_width =
+                std::max<UINT>(1u, static_cast<UINT>(sizeof(GpuCharacterVertex0) * std::max(0, num_verts)));
+
             CD3D11_BUFFER_DESC morphed_vb_0_desc{
-                sizeof(GpuCharacterVertex0) * num_verts,
+                morphed_byte_width,
                 D3D11_BIND_VERTEX_BUFFER,
                 D3D11_USAGE_DYNAMIC,
                 D3D11_CPU_ACCESS_WRITE,
@@ -498,17 +570,10 @@ namespace df::gr::d3d11
 
         bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         if (!ir_scanner) {
+            // replicate approximate lighting level from stock game DX9
             if (is_character_mesh) {
-                if (g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0) {
-                    // fullbright character skins
-                    color = {255, 255, 255, 255};
-                }
-                else {
-                    // replicate approximate light level from stock game DX9
-                    color = add_clamped(rf::level.ambient_light, {64, 64, 64, 64});
-                }
+                color = add_clamped(params.ambient_color, {224, 224, 224, 224});
             } else { // static meshes
-                // replicate approximate light level from stock game DX9
                 color = add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
             }
         } else {
@@ -518,6 +583,17 @@ namespace df::gr::d3d11
 
         bool use_vertex_colors = params.vertex_colors != nullptr;
         render_context_.update_lights();
+
+        /*
+        bool fullbright_character = is_character_mesh && g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0;
+        if (!use_vertex_colors && is_character_mesh && !fullbright_character) {
+            if (auto mesh_cache = dynamic_cast<const CharacterMeshRenderCache*>(&cache)) {
+                if (!mesh_cache->missing_vertex_colors_logged(lod_index)) {
+                    xlog::warn("Character mesh {} missing vertex colors for LOD {}", static_cast<void*>(lod_mesh), lod_index);
+                    mesh_cache->mark_missing_vertex_colors_logged(lod_index);
+                }
+            }
+        }*/
 
         if (use_vertex_colors) {
             if (auto mesh_cache = dynamic_cast<const MeshRenderCache*>(&cache)) {
@@ -543,12 +619,47 @@ namespace df::gr::d3d11
                             updated_vertices[i].diffuse = pack_color(color);
                         }
 
-                    UINT vertex_offset_bytes = static_cast<UINT>((mesh_cache->base_vertex_offset() + mesh.vertex_offset) * sizeof(GpuVertex));
+                        UINT vertex_offset_bytes = static_cast<UINT>((mesh_cache->base_vertex_offset() + mesh.vertex_offset) * sizeof(GpuVertex));
                         UINT bytes_to_write = static_cast<UINT>(mesh.vertex_count * sizeof(GpuVertex));
                         D3D11_BOX box{vertex_offset_bytes, 0, 0, vertex_offset_bytes + bytes_to_write, 1, 1};
                         render_context_.device_context()->UpdateSubresource(
                             v3d_vb_.buffer(), 0, &box, updated_vertices.data(), bytes_to_write, bytes_to_write);
                         mesh_cache->mark_vertex_colors_uploaded(lod_index);
+                    }
+                }
+            }
+            else if (auto mesh_cache = dynamic_cast<const CharacterMeshRenderCache*>(&cache)) {
+                const auto& mesh = mesh_cache->get_mesh(lod_index);
+                if (mesh.vertex_count > 0) {
+                    const auto& base_vertices = mesh_cache->vertices();
+                    auto start_it = base_vertices.begin() + mesh.vertex_offset;
+                    auto end_it = start_it + mesh.vertex_count;
+                    std::vector<GpuCharacterVertex1> updated_vertices(start_it, end_it);
+
+                    struct PackedRgb
+                    {
+                        ubyte red;
+                        ubyte green;
+                        ubyte blue;
+                    };
+
+                    auto vertex_colors = reinterpret_cast<const PackedRgb*>(params.vertex_colors);
+                    std::array<rf::ubyte, 3> first_color{vertex_colors[0].red, vertex_colors[0].green, vertex_colors[0].blue};
+                    uint64_t generation = current_character_vertex_color_generation();
+
+                    if (mesh_cache->should_upload_vertex_colors(lod_index, params.vertex_colors, first_color, generation)) {
+                        for (std::size_t i = 0; i < mesh.vertex_count; ++i) {
+                            const auto& rgb = vertex_colors[i];
+                            rf::Color color{rgb.red, rgb.green, rgb.blue, 255};
+                            updated_vertices[i].diffuse = pack_color(color);
+                        }
+
+                        UINT vertex_offset_bytes = static_cast<UINT>(mesh.vertex_offset * sizeof(GpuCharacterVertex1));
+                        UINT bytes_to_write = static_cast<UINT>(mesh.vertex_count * sizeof(GpuCharacterVertex1));
+                        D3D11_BOX box{vertex_offset_bytes, 0, 0, vertex_offset_bytes + bytes_to_write, 1, 1};
+                        render_context_.device_context()->UpdateSubresource(mesh_cache->vertex_buffer_1(), 0, &box, updated_vertices.data(), bytes_to_write, bytes_to_write);
+                        mesh_cache->mark_vertex_colors_uploaded(lod_index, params.vertex_colors, first_color, generation);
+                        //xlog::debug("Uploaded character mesh vertex colors for LOD {} ({} verts)", lod_index, mesh.vertex_count);
                     }
                 }
             }
