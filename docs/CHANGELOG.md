@@ -141,7 +141,8 @@ Version 1.2.0 (Willow): Not yet released
 - Support Alt+F4 or window close button (X) to quit out of Red Faction
 - Add a configurable control to display a remote server's config
 - Add `ui_always_show_spectators` command to always display spectators in multiplayer
-- Improve code that fixed broken events if their delay parameter was set
+- Add network code for spectators
+- Improve code that fixed broken events, if their delay parameter was set
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Improve dedicated server framerate consistency
@@ -189,7 +190,7 @@ Version 1.2.0 (Willow): Not yet released
 - Set `rf::gr::text_2d_mode` to ignore fog
 - Fix `gr_d3d_bitmap`, so `gr_d3d_set_state` is called earlier
 - Support `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
-- Fix a potential crash after a client quits a game if Directd3D 11 is enabled
+- Fix a potential crash, after a client quits a game, if Directd3D 11 is enabled
 
 ### From [Dash Faction](https://github.com/rafalh/dashfaction)
 [@rafalh](https://github.com/rafalh)
