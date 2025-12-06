@@ -41,6 +41,128 @@ std::optional<std::string> afs_cmd_line_filename;
 
 AlpineGameSettings g_alpine_game_config;
 
+std::optional<uint32_t> parse_hex_color_string(const std::string& value)
+{
+    auto value_view = std::string_view{value};
+
+    constexpr auto is_separator = [](unsigned char c) {
+        return c == ',' || std::isspace(c) != 0;
+    };
+
+    const bool has_decimal_separator = std::ranges::any_of(value_view, is_separator);
+
+    if (has_decimal_separator) {
+        std::array<uint32_t, 4> rgba{};
+        std::size_t component_count = 0;
+        std::size_t position = 0;
+
+        while (position < value_view.size()) {
+            while (position < value_view.size() && is_separator(static_cast<unsigned char>(value_view[position]))) {
+                ++position;
+            }
+
+            if (position == value_view.size()) {
+                break;
+            }
+
+            const auto start = position;
+            while (position < value_view.size() && !is_separator(static_cast<unsigned char>(value_view[position]))) {
+                ++position;
+            }
+
+            const auto component_view = value_view.substr(start, position - start);
+            int parsed_value = 0;
+            const auto result = std::from_chars(component_view.data(), component_view.data() + component_view.size(), parsed_value, 10);
+
+            if (result.ec != std::errc{} || parsed_value < 0 || parsed_value > 255) {
+                return std::nullopt;
+            }
+
+            if (component_count >= rgba.size()) {
+                return std::nullopt;
+            }
+
+            rgba[component_count++] = static_cast<uint32_t>(parsed_value);
+        }
+
+        if (component_count != 3 && component_count != 4) {
+            return std::nullopt;
+        }
+
+        if (component_count == 3) {
+            rgba[3] = 0xFF;
+        }
+
+        return (rgba[0] << 24) | (rgba[1] << 16) | (rgba[2] << 8) | rgba[3];
+    }
+
+    std::string hex_buffer;
+    hex_buffer.reserve(value_view.size());
+    std::ranges::copy_if(value_view, std::back_inserter(hex_buffer), [](unsigned char c) { return std::isspace(c) == 0; });
+
+    auto hex_view = std::string_view{hex_buffer};
+    if (hex_view.starts_with("0x") || hex_view.starts_with("0X")) {
+        hex_view.remove_prefix(2);
+    }
+
+    if (hex_view.size() != 6 && hex_view.size() != 8) {
+        return std::nullopt;
+    }
+
+    if (!std::ranges::all_of(hex_view, [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+        return std::nullopt;
+    }
+
+    // Set color, assuming fully opaque if alpha value is not specified
+    uint32_t color = 0;
+    const auto result = std::from_chars(hex_view.data(), hex_view.data() + hex_view.size(), color, 16);
+    if (result.ec != std::errc{}) {
+        return std::nullopt;
+    }
+
+    if (hex_view.size() == 6) {
+        color = (color << 8) | 0xFF;
+    }
+
+    return color;
+}
+
+std::string format_hex_color_string(uint32_t color)
+{
+    const auto alpha = static_cast<uint8_t>(color & 0xFF);
+    const bool include_alpha = (alpha != 0xFF);
+    const uint32_t encoded_value = include_alpha ? color : (color >> 8);
+
+    if (include_alpha) {
+        return std::format("{:08X}", encoded_value);
+    }
+    else {
+        return std::format("{:06X}", encoded_value);
+    }
+}
+
+// parse colors to 0-255 ints
+std::tuple<int, int, int, int> extract_color_components(uint32_t color)
+{
+    return std::make_tuple(
+        (color >> 24) & 0xFF, // Red
+        (color >> 16) & 0xFF, // Green
+        (color >> 8) & 0xFF,  // Blue
+        color & 0xFF          // Alpha
+    );
+}
+
+// parse colors to 0.0-1.0 floats
+std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color)
+{
+    return std::make_tuple(
+        ((color >> 24) & 0xFF) / 255.0f, // Red   (0-1)
+        ((color >> 16) & 0xFF) / 255.0f, // Green (0-1)
+        ((color >> 8)  & 0xFF) / 255.0f, // Blue  (0-1)
+        (color & 0xFF) / 255.0f          // Alpha (0-1)
+    );
+}
+
 static rf::CmdLineParam& get_afs_cmd_line_param()
 {
     static rf::CmdLineParam afs_param{"-afs", "", true};
@@ -323,11 +445,6 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_fpgun_fov_scale(std::stof(settings["FPGunFOVScale"]));
         processed_keys.insert("FPGunFOVScale");
     }
-    if (settings.count("BigHUD")) {
-        g_alpine_game_config.big_hud = std::stoi(settings["BigHUD"]);
-        set_big_hud(g_alpine_game_config.big_hud);
-        processed_keys.insert("BigHUD");
-    }
     if (settings.count("DisableWeaponShake")) {
         g_alpine_game_config.try_disable_weapon_shake = std::stoi(settings["DisableWeaponShake"]);
         processed_keys.insert("DisableWeaponShake");
@@ -343,10 +460,6 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("DisableMuzzleFlashLights")) {
         g_alpine_game_config.try_disable_muzzle_flash_lights = std::stoi(settings["DisableMuzzleFlashLights"]);
         processed_keys.insert("DisableMuzzleFlashLights");
-    }
-    if (settings.count("ReticleScale")) {
-        g_alpine_game_config.set_reticle_scale(std::stof(settings["ReticleScale"]));
-        processed_keys.insert("ReticleScale");
     }
     if (settings.count("ShowGlares")) {
         g_alpine_game_config.show_glares = std::stoi(settings["ShowGlares"]);
@@ -396,6 +509,87 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("AlwaysClampOfficialLightmaps")) {
         g_alpine_game_config.always_clamp_official_lightmaps = std::stoi(settings["AlwaysClampOfficialLightmaps"]);
         processed_keys.insert("AlwaysClampOfficialLightmaps");
+    }
+
+    // Load UI settings
+    if (settings.count("BigHUD")) {
+        g_alpine_game_config.big_hud = std::stoi(settings["BigHUD"]);
+        set_big_hud(g_alpine_game_config.big_hud);
+        processed_keys.insert("BigHUD");
+    }
+    if (settings.count("ReticleScale")) {
+        g_alpine_game_config.set_reticle_scale(std::stof(settings["ReticleScale"]));
+        processed_keys.insert("ReticleScale");
+    }
+    if (settings.count("SniperScopeColor")) {
+        auto color_override = parse_hex_color_string(settings["SniperScopeColor"]);
+        if (color_override) {
+            g_alpine_game_config.sniper_scope_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid sniper scope color override: {}", settings["SniperScopeColor"]);
+        }
+        processed_keys.insert("SniperScopeColor");
+    }
+    if (settings.count("PrecisionScopeColor")) {
+        auto color_override = parse_hex_color_string(settings["PrecisionScopeColor"]);
+        if (color_override) {
+            g_alpine_game_config.precision_scope_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid precision scope color override: {}", settings["PrecisionScopeColor"]);
+        }
+        processed_keys.insert("PrecisionScopeColor");
+    }
+    if (settings.count("RailScopeColor")) {
+        auto color_override = parse_hex_color_string(settings["RailScopeColor"]);
+        if (color_override) {
+            g_alpine_game_config.rail_scope_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid rail scope color override: {}", settings["RailScopeColor"]);
+        }
+        processed_keys.insert("RailScopeColor");
+    }
+    if (settings.count("ArAmmoColor")) {
+        auto color_override = parse_hex_color_string(settings["ArAmmoColor"]);
+        if (color_override) {
+            g_alpine_game_config.ar_ammo_digit_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid AR ammo digit color override: {}", settings["ArAmmoColor"]);
+        }
+        processed_keys.insert("ArAmmoColor");
+    }
+    if (settings.count("DamageNotifyColor")) {
+        auto color_override = parse_hex_color_string(settings["DamageNotifyColor"]);
+        if (color_override) {
+            g_alpine_game_config.damage_notify_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid damage notification color override: {}", settings["DamageNotifyColor"]);
+        }
+        processed_keys.insert("DamageNotifyColor");
+    }
+    if (settings.count("LocationPingColor")) {
+        auto color_override = parse_hex_color_string(settings["LocationPingColor"]);
+        if (color_override) {
+            g_alpine_game_config.location_ping_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid location ping color override: {}", settings["LocationPingColor"]);
+        }
+        processed_keys.insert("LocationPingColor");
+    }
+    if (settings.count("MultiTimerColor")) {
+        auto color_override = parse_hex_color_string(settings["MultiTimerColor"]);
+        if (color_override) {
+            g_alpine_game_config.multi_timer_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid multiplayer timer color override: {}", settings["MultiTimerColor"]);
+        }
+        processed_keys.insert("MultiTimerColor");
     }
 
     // Load singleplayer settings
@@ -806,12 +1000,10 @@ void alpine_player_settings_save(rf::Player* player)
     file << "TextureDetailLevel=" << player->settings.textures_resolution_level << "\n";
     file << "HorizontalFOV=" << g_alpine_game_config.horz_fov << "\n";
     file << "FPGunFOVScale=" << g_alpine_game_config.fpgun_fov_scale << "\n";
-    file << "BigHUD=" << g_alpine_game_config.big_hud << "\n";
     file << "DisableWeaponShake=" << g_alpine_game_config.try_disable_weapon_shake << "\n";
     file << "FullbrightCharacters=" << g_alpine_game_config.try_fullbright_characters << "\n";
     file << "DisableTextures=" << g_alpine_game_config.try_disable_textures << "\n";
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
-    file << "ReticleScale=" << g_alpine_game_config.reticle_scale << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
     file << "Picmip=" << g_alpine_game_config.picmip << "\n";
@@ -823,6 +1015,32 @@ void alpine_player_settings_save(rf::Player* player)
     file << "SimulationDistance=" << g_alpine_game_config.entity_sim_distance << "\n";
     file << "FullRangeLighting=" << g_alpine_game_config.full_range_lighting << "\n";
     file << "AlwaysClampOfficialLightmaps=" << g_alpine_game_config.always_clamp_official_lightmaps << "\n";
+
+    // UI
+    file << "\n[UISettings]\n";
+    file << "BigHUD=" << g_alpine_game_config.big_hud << "\n";
+    file << "ReticleScale=" << g_alpine_game_config.reticle_scale << "\n";
+    if (g_alpine_game_config.sniper_scope_color_override) {
+        file << "SniperScopeColor=" << format_hex_color_string(*g_alpine_game_config.sniper_scope_color_override) << "\n";
+    }
+    if (g_alpine_game_config.precision_scope_color_override) {
+        file << "PrecisionScopeColor=" << format_hex_color_string(*g_alpine_game_config.precision_scope_color_override) << "\n";
+    }
+    if (g_alpine_game_config.rail_scope_color_override) {
+        file << "RailScopeColor=" << format_hex_color_string(*g_alpine_game_config.rail_scope_color_override) << "\n";
+    }
+    if (g_alpine_game_config.ar_ammo_digit_color_override) {
+        file << "ArAmmoColor=" << format_hex_color_string(*g_alpine_game_config.ar_ammo_digit_color_override) << "\n";
+    }
+    if (g_alpine_game_config.damage_notify_color_override) {
+        file << "DamageNotifyColor=" << format_hex_color_string(*g_alpine_game_config.damage_notify_color_override) << "\n";
+    }
+    if (g_alpine_game_config.location_ping_color_override) {
+        file << "LocationPingColor=" << format_hex_color_string(*g_alpine_game_config.location_ping_color_override) << "\n";
+    }
+    if (g_alpine_game_config.multi_timer_color_override) {
+        file << "MultiTimerColor=" << format_hex_color_string(*g_alpine_game_config.multi_timer_color_override) << "\n";
+    }
 
     // Singleplayer
     file << "\n[SingleplayerSettings]\n";

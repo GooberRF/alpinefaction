@@ -11,10 +11,15 @@
 #include "mfc_types.h"
 #include "resources.h"
 
+// Forward declarations
+int get_level_rfl_version();
+void set_initial_level_rfl_version();
+
 // add AlpineLevelProperties chunk after stock game chunks when creating a new level
 CodeInjection CDedLevel_construct_patch{
     0x004181B8,
     [](auto& regs) {
+        set_initial_level_rfl_version();
         std::byte* level = regs.esi;
         new (&level[stock_cdedlevel_size]) AlpineLevelProperties();
     },
@@ -66,6 +71,10 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
     0x004676C0,
     [](auto& regs) {
         HWND hdlg = WndToHandle(regs.esi);
+        int level_version = get_level_rfl_version();
+        std::string version = std::to_string(level_version);
+        SetDlgItemTextA(hdlg, IDC_LEVEL_VERSION, version.c_str());
+
         auto& alpine_level_props = CDedLevel::Get()->GetAlpineLevelProperties();
         CheckDlgButton(hdlg, IDC_LEGACY_CYCLIC_TIMERS, alpine_level_props.legacy_cyclic_timers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_LEGACY_MOVERS, alpine_level_props.legacy_movers ? BST_CHECKED : BST_UNCHECKED);

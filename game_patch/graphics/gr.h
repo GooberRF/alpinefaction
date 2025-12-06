@@ -14,6 +14,15 @@ float gr_scale_fov_hor_plus(float horizontal_fov);
 bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, float half_w, float half_h, rf::gr::Mode mode);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
 
+inline constexpr rf::gr::Mode overdraw_colorized_3d_bitmap{
+        rf::gr::TEXTURE_SOURCE_WRAP,
+        rf::gr::COLOR_SOURCE_VERTEX_PLUS_TEXTURE,
+        rf::gr::ALPHA_SOURCE_TEXTURE,
+        rf::gr::ALPHA_BLEND_ALPHA,
+        rf::gr::ZBUFFER_TYPE_NONE,
+        rf::gr::FOG_NOT_ALLOWED
+    };
+
 template<typename F>
 void gr_font_run_with_default(int font_id, F fun)
 {

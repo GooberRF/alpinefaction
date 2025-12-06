@@ -56,10 +56,10 @@ void send_pf_player_stats_packet(rf::Player* player)
                 return pf_pure_status::af_spawn_disabled_bot;
             } else if (pdata.is_bot()) {
                 return pf_pure_status::af_bot;
-            } else if (is_player_idle(&current_player)) {
-                return pf_pure_status::af_idle;
             } else if (pdata.is_browser()) {
                 return pf_pure_status::rfsb;
+            } else if (is_player_idle(&current_player)) {
+                return pf_pure_status::af_idle;
             } else {
                 return pf_ac_get_pure_status(&current_player);
             }

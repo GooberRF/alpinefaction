@@ -117,6 +117,10 @@ Version 1.2.0 (Willow): Not yet released
 - Alias `Ping Location` control to reset to freelook spectator camera accel to base value
 - Add scroll wheel support to message log panel and scrollable item lists in menus
 - Add `kick after warning` option to dedicated server client inactivity tracking
+- Add `ui_color_sniper_scope`, `ui_color_precision_scope`, and `ui_color_rail_scope` commands
+- Add `ui_color_ar_ammo` and `ui_color_damage_notify` commands
+- Add `RFL version` to level editor `Level Properties` window
+- Add `ui_color_location_ping` and `ui_color_multi_timer` commands
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Tlv{Writer, Reader}` and `HighResTimer`
@@ -159,7 +163,7 @@ Version 1.2.0 (Willow): Not yet released
 - Fix Direct3D 11 renderer crashing when generating realtime bitmaps
 - Fix dynamic lights not rendering on meshes (fixed in Direct3D 11 only)
 - Fix dynamic lights not rendering on mover brushes (fixed in Direct3D 11 only)
-- Fix Direct3D 11 renderer not properly rendering vertex lighting for static meshes
+- Fix Direct3D 11 renderer not properly rendering vertex lighting for meshes
 - Fix `r_fullbright`, `r_lightmaps`, and `r_nearest` not working properly on Direct3D 11 renderer
 - Fix `Winner` and `Game Over` sounds played at the end of a match usually being wrong
 - Fix `Try Avoid Players` behaviour for spawn point selection not working properly

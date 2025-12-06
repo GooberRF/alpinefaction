@@ -6,6 +6,7 @@
 #include <patch_common/AsmWriter.h>
 #include <regex>
 #include "player.h"
+#include "alpine_settings.h"
 #include "../misc/vpackfile.h"
 #include "../os/console.h"
 #include "../rf/file/file.h"
@@ -74,29 +75,6 @@ std::string trim(const std::string& str, bool remove_quotes = false)
     }
 
     return trimmed;
-}
-
-// Helper functions for individual data types
-
-// parse colors to 0-255 ints
-std::tuple<int, int, int, int> extract_color_components(uint32_t color)
-{
-    return std::make_tuple((color >> 24) & 0xFF, // red
-                           (color >> 16) & 0xFF, // green
-                           (color >> 8) & 0xFF,  // blue
-                           color & 0xFF          // alpha
-    );
-}
-
-// parse colors to 0.0-1.0 floats
-std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color)
-{
-    return std::make_tuple(
-        ((color >> 24) & 0xFF) / 255.0f, // Red   (0-1)
-        ((color >> 16) & 0xFF) / 255.0f, // Green (0-1)
-        ((color >> 8)  & 0xFF) / 255.0f, // Blue  (0-1)
-        (color & 0xFF) / 255.0f          // Alpha (0-1)
-    );
 }
 
 // ===== Parsers for AlpineOptions =====
@@ -438,24 +416,42 @@ void open_url(const std::string& url)
 CallHook<void(int, int, int, int)> fpgun_ar_ammo_digit_color_hook{
     0x004ABC03,
     [](int red, int green, int blue, int alpha) {
-        auto ar_ammo_color = get_option_value<uint32_t>(AlpineOptionID::AssaultRifleAmmoColor);
-        std::tie(red, green, blue, alpha) = extract_color_components(ar_ammo_color);
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::AssaultRifleAmmoColor)) {
+            auto ar_ammo_color = get_option_value<uint32_t>(AlpineOptionID::AssaultRifleAmmoColor);
+            std::tie(red, green, blue, alpha) = extract_color_components(ar_ammo_color);
+        }
+        else if (g_alpine_game_config.ar_ammo_digit_color_override) {
+            std::tie(red, green, blue, alpha) =
+                extract_color_components(*g_alpine_game_config.ar_ammo_digit_color_override);
+        }
         fpgun_ar_ammo_digit_color_hook.call_target(red, green, blue, alpha);
     }
 };
 
 CallHook<void(int, int, int, int)> precision_rifle_scope_color_hook{
     0x004AC850, [](int red, int green, int blue, int alpha) {
-        auto pr_scope_color = get_option_value<uint32_t>(AlpineOptionID::PrecisionRifleScopeColor);
-        std::tie(red, green, blue, alpha) = extract_color_components(pr_scope_color);
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::PrecisionRifleScopeColor)) {
+            auto pr_scope_color = get_option_value<uint32_t>(AlpineOptionID::PrecisionRifleScopeColor);
+            std::tie(red, green, blue, alpha) = extract_color_components(pr_scope_color);
+        }
+        else if (g_alpine_game_config.precision_scope_color_override) {
+            std::tie(red, green, blue, alpha) =
+                extract_color_components(*g_alpine_game_config.precision_scope_color_override);
+        }
         precision_rifle_scope_color_hook.call_target(red, green, blue, alpha);
     }
 };
 
 CallHook<void(int, int, int, int)> sniper_rifle_scope_color_hook{
     0x004AC458, [](int red, int green, int blue, int alpha) {
-        auto sr_scope_color = get_option_value<uint32_t>(AlpineOptionID::SniperRifleScopeColor);
-        std::tie(red, green, blue, alpha) = extract_color_components(sr_scope_color);
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::SniperRifleScopeColor)) {
+            auto sr_scope_color = get_option_value<uint32_t>(AlpineOptionID::SniperRifleScopeColor);
+            std::tie(red, green, blue, alpha) = extract_color_components(sr_scope_color);
+        }
+        else if (g_alpine_game_config.sniper_scope_color_override) {
+            std::tie(red, green, blue, alpha) =
+                extract_color_components(*g_alpine_game_config.sniper_scope_color_override);
+        }
         sniper_rifle_scope_color_hook.call_target(red, green, blue, alpha);
     }
 };
@@ -478,8 +474,14 @@ CallHook<void(int, int, int, int)> rail_gun_fire_flash_hook{
 
 CallHook<void(int, int, int, int)> rail_driver_scanner_color_hook{
     0x004323AA, [](int red, int green, int blue, int alpha) {
-        auto rail_scope_color = get_option_value<uint32_t>(AlpineOptionID::RailDriverScannerColor);
-        std::tie(red, green, blue, alpha) = extract_color_components(rail_scope_color);
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::RailDriverScannerColor)) {
+            auto rail_scope_color = get_option_value<uint32_t>(AlpineOptionID::RailDriverScannerColor);
+            std::tie(red, green, blue, alpha) = extract_color_components(rail_scope_color);
+        }
+        else if (g_alpine_game_config.rail_scope_color_override) {
+            std::tie(red, green, blue, alpha) =
+                extract_color_components(*g_alpine_game_config.rail_scope_color_override);
+        }
         rail_driver_scanner_color_hook.call_target(red, green, blue, alpha);
     }
 };
@@ -640,17 +642,11 @@ void apply_af_options_patches()
     // ===========================
     // af_client.tbl
     // ===========================
-    if (g_alpine_options_config.is_option_loaded(AlpineOptionID::AssaultRifleAmmoColor)) {
-        fpgun_ar_ammo_digit_color_hook.install();
-    }
+    fpgun_ar_ammo_digit_color_hook.install();
 
-    if (g_alpine_options_config.is_option_loaded(AlpineOptionID::PrecisionRifleScopeColor)) {
-        precision_rifle_scope_color_hook.install();
-    }
+    precision_rifle_scope_color_hook.install();
 
-    if (g_alpine_options_config.is_option_loaded(AlpineOptionID::SniperRifleScopeColor)) {
-        sniper_rifle_scope_color_hook.install();
-    }
+    sniper_rifle_scope_color_hook.install();
 
     if (g_alpine_options_config.is_option_loaded(AlpineOptionID::RailDriverFireGlowColor)) {
         rail_gun_fire_glow_hook.install();
@@ -660,9 +656,7 @@ void apply_af_options_patches()
         rail_gun_fire_flash_hook.install();
     }
 
-    if (g_alpine_options_config.is_option_loaded(AlpineOptionID::RailDriverScannerColor)) {
-        rail_driver_scanner_color_hook.install();
-    }
+    rail_driver_scanner_color_hook.install();
 
     // ===========================
     // af_game.tbl

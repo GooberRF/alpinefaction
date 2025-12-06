@@ -28,7 +28,7 @@ bool server_allow_disable_muzzle_flash();
 bool server_apply_click_limiter();
 bool server_allow_unlimited_fps();
 bool server_gaussian_spread();
-std::tuple<bool, int, bool> server_features_require_alpine_client();
+std::tuple<bool, int, bool, bool> server_features_require_alpine_client();
 void server_reliable_socket_ready(rf::Player* player);
 bool server_weapon_items_give_full_ammo();
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo);

@@ -63,6 +63,20 @@ void load_world_hud_assets() {
     g_world_hud_assets.koth_ring_fade = rf::bm::load("af_wh_koth_ring_fade.tga", -1, true);
 }
 
+static rf::gr::Mode bitmap_mode_from(WorldHUDRenderMode render_mode)
+{
+    switch (render_mode) {
+    case WorldHUDRenderMode::no_overdraw_glow:
+        return rf::gr::glow_3d_bitmap_mode;
+    case WorldHUDRenderMode::overdraw:
+        return rf::gr::bitmap_3d_mode;
+    case WorldHUDRenderMode::overdraw_colorized:
+        return overdraw_colorized_3d_bitmap;
+    default:
+        return rf::gr::bitmap_3d_mode_no_z;
+    }
+}
+
 void do_render_world_hud_sprite(rf::Vector3 pos, float base_scale, int bitmap_handle,
     WorldHUDRenderMode render_mode, bool stay_inside_fog, bool distance_scaling, bool only_draw_during_gameplay) {
 
@@ -72,21 +86,7 @@ void do_render_world_hud_sprite(rf::Vector3 pos, float base_scale, int bitmap_ha
 
     auto vec = pos;
     auto scale = base_scale;
-    auto bitmap_mode = rf::gr::bitmap_3d_mode_no_z; // default (no_overdraw)
-
-    // handle render mode
-    switch (render_mode) {
-        case WorldHUDRenderMode::no_overdraw_glow:
-            bitmap_mode = rf::gr::glow_3d_bitmap_mode;
-            break;
-        case WorldHUDRenderMode::overdraw:
-            bitmap_mode = rf::gr::bitmap_3d_mode;
-            break;
-        case WorldHUDRenderMode::no_overdraw:
-        default:
-            bitmap_mode = rf::gr::bitmap_3d_mode_no_z;
-            break;
-    }
+    auto bitmap_mode = bitmap_mode_from(render_mode);
 
     // handle distance scaling and fog distance adjustment
     if (stay_inside_fog || distance_scaling) {
@@ -292,18 +292,6 @@ static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = 
 
     v.dist_factor = std::max(distance, 1.0f) / WorldHUDRender::reference_distance;
     return v;
-}
-
-static rf::gr::Mode bitmap_mode_from(WorldHUDRenderMode render_mode)
-{
-    switch (render_mode) {
-    case WorldHUDRenderMode::no_overdraw_glow:
-        return rf::gr::glow_3d_bitmap_mode;
-    case WorldHUDRenderMode::overdraw:
-        return rf::gr::bitmap_3d_mode;
-    default:
-        return rf::gr::bitmap_3d_mode_no_z;
-    }
 }
 
 static inline void koth_owner_color(HillOwner owner, HillLockStatus lock_status, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a)
@@ -612,6 +600,7 @@ void build_ephemeral_world_hud_sprite_icons() {
     for (const auto& es : ephemeral_world_hud_sprites) {
         const int font = get_world_hud_font(g_alpine_game_config.world_hud_big_text);
 
+        rf::gr::set_color(es.color.red, es.color.green, es.color.blue, es.color.alpha);
         if (es.bitmap != -1) {
             do_render_world_hud_sprite(es.pos, 1.0f, es.bitmap, es.render_mode, true, true, true);
         }
@@ -622,7 +611,7 @@ void build_ephemeral_world_hud_sprite_icons() {
 
         auto text_pos = es.pos;
         render_string_3d_pos_new(text_pos, es.label.c_str(), -half_text_width, -25,
-            font, 255, 255, 255, 223);
+            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
     }
 }
 
@@ -659,7 +648,7 @@ void build_ephemeral_world_hud_strings() {
         int half_text_width = text_width / 2;
 
         render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, -25,
-            font, 255, 255, 0, 255);
+            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
     }
 }
 
@@ -1069,6 +1058,14 @@ void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name
     es.label = player_name;
     es.player_id = player_id;
     es.timestamp.set(4000);
+    es.render_mode = WorldHUDRenderMode::overdraw_colorized;
+
+    if (g_alpine_game_config.location_ping_color_override) {
+        es.color = rf::Color::from_hex(*g_alpine_game_config.location_ping_color_override);
+    }
+    else {
+        es.color = {255, 255, 255, 223};
+    }
 
     play_local_sound_3d(get_custom_sound_id(1), pos, 0, 1.0f);
 
@@ -1104,6 +1101,14 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     es.timestamp.set_ms(1000);
     es.float_away = true;
     es.wind_phase_offset = wind_offset_dist(g_rng);
+
+    if (g_alpine_game_config.damage_notify_color_override)
+    {
+        es.color = rf::Color::from_hex(*g_alpine_game_config.damage_notify_color_override);
+    }
+    else {
+        es.color = {255, 255, 0, 255};
+    }
 
     ephemeral_world_hud_strings.push_back(es);
 }

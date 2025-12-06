@@ -13,8 +13,6 @@
 // ======= Globals and utility =======
 void load_af_options_config();
 void load_level_info_config(const std::string& level_filename);
-std::tuple<int, int, int, int> extract_color_components(uint32_t color);
-std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color);
 
 // ======= Alpine options =======
 enum class AlpineOptionID

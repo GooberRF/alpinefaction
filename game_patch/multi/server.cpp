@@ -874,10 +874,10 @@ static std::string describe_alpine_restrict_verdict(const std::pair<AlpineRestri
 static void print_alpine_restrict_status_summary()
 {
     const auto& cfg = g_alpine_server_config.alpine_restricted_config;
-    const auto [auto_require_alpine, auto_min_minor, hard_reject] = server_features_require_alpine_client();
+    const auto [auto_require_alpine, auto_min_minor, hard_reject, auto_require_release] = server_features_require_alpine_client();
     const bool reject_non_alpine = cfg.reject_non_alpine_clients || hard_reject;
     const bool require_alpine = cfg.clients_require_alpine || auto_require_alpine;
-    const bool enforce_release = cfg.alpine_require_release_build;
+    const bool enforce_release = cfg.alpine_require_release_build || auto_require_release;
     const auto level_version = get_level_file_version(rf::level.filename.c_str());
     const auto game_type = rf::multi_get_game_type();
 
@@ -890,8 +890,7 @@ static void print_alpine_restrict_status_summary()
     rf::console::print("  Non-Alpine clients rejected: {}", reject_non_alpine ? "yes" : "no");
     rf::console::print("  Require stable AF build: {}", enforce_release ? "yes" : "no");
 
-    const uint32_t max_rfl = MAXIMUM_RFL_VERSION;
-    const uint32_t alpine_max_rfl = MAXIMUM_RFL_VERSION;
+    const uint32_t alpine_v2_max_rfl = 302u;
     const uint32_t alpine_v1_max_rfl = 301u;
     const uint32_t legacy_max_rfl = 200u;
 
@@ -901,13 +900,13 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
-    rf::console::print("{}", describe_client("Alpine Faction 1.2", ClientVersionInfoProfile{ClientVersion::alpine_faction, VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, VERSION_TYPE, max_rfl}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.2-dev", ClientVersionInfoProfile{ClientVersion::alpine_faction, VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, VERSION_TYPE_DEV, max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.2", ClientVersionInfoProfile{ClientVersion::alpine_faction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v2_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.2-dev", ClientVersionInfoProfile{ClientVersion::alpine_faction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v2_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.1", ClientVersionInfoProfile{ClientVersion::alpine_faction, 1u, 1u, 0u, VERSION_TYPE_RELEASE, alpine_v1_max_rfl}));
     rf::console::print("{}", describe_client("Dash Faction 1.9", ClientVersionInfoProfile{ClientVersion::dash_faction, 1u, 9u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
     rf::console::print("{}", describe_client("Pure Faction 3.0", ClientVersionInfoProfile{ClientVersion::pure_faction, 3u, 0u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
     rf::console::print("{}", describe_client("Official RF 1.21", ClientVersionInfoProfile{ClientVersion::unknown, 1u, 2u, 1u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
-    rf::console::print("{}", describe_client("RFSB 5.1.4", ClientVersionInfoProfile{ClientVersion::browser, 5u, 1u, 4u, VERSION_TYPE_RELEASE, max_rfl}));
+    rf::console::print("{}", describe_client("RFSB 5.1.4", ClientVersionInfoProfile{ClientVersion::browser, 5u, 1u, 4u, VERSION_TYPE_RELEASE, MAXIMUM_RFL_VERSION}));
 }
 
 ConsoleCommand2 alpine_restrict_status_cmd{
@@ -1752,10 +1751,10 @@ std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_st
 {
     const auto& cfg = g_alpine_server_config.alpine_restricted_config;
 
-    const auto [auto_require_alpine, min_minor_version, hard_reject] = server_features_require_alpine_client();
+    const auto [auto_require_alpine, min_minor_version, hard_reject, require_release_version] = server_features_require_alpine_client();
     const bool reject_non_alpine = cfg.reject_non_alpine_clients || hard_reject;
     const bool require_alpine = cfg.clients_require_alpine || auto_require_alpine;
-    const bool enforce_release_build = cfg.alpine_require_release_build;
+    const bool enforce_release_build = cfg.alpine_require_release_build || require_release_version;
 
     if (require_alpine) {
         if (info.client_version != ClientVersion::alpine_faction) {
@@ -3069,14 +3068,24 @@ bool server_gaussian_spread()
     return g_alpine_server_config.gaussian_spread;
 }
 
-std::tuple<bool, int, bool> server_features_require_alpine_client()
+std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 {
     bool requires_alpine = false; // alpine required to spawn
     int min_minor_version = 0;    // minimum alpine minor version required
     bool hard_reject = false;     // reject non-alpine clients outright, also decides if they will be kicked on map change
+    bool require_release_version = false; // require players to use a release build
+    constexpr int match_mode_minimum_trusted_minor_version =
+        VERSION_TYPE == VERSION_TYPE_RELEASE // match mode requires players use the latest stable release
+        ? VERSION_MINOR                      // we are a release build, require our version
+        : VERSION_MINOR - 1;                 // we are a beta/dev build, require the previous version
 
-    if (g_alpine_server_config.vote_match.enabled ||
-        g_alpine_server_config_active_rules.no_player_collide ||
+    if (g_alpine_server_config.vote_match.enabled) {
+        requires_alpine = true;
+        require_release_version = true;
+        min_minor_version = std::max(min_minor_version, match_mode_minimum_trusted_minor_version);
+    }
+
+    if (g_alpine_server_config_active_rules.no_player_collide ||
         g_alpine_server_config_active_rules.location_pinging) {
         requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 1);
@@ -3093,7 +3102,7 @@ std::tuple<bool, int, bool> server_features_require_alpine_client()
         min_minor_version = std::max(min_minor_version, 2);
     }
 
-    return {requires_alpine, min_minor_version, hard_reject};
+    return {requires_alpine, min_minor_version, hard_reject, require_release_version};
 }
 
 bool server_weapon_items_give_full_ammo()
@@ -3113,13 +3122,13 @@ bool server_is_modded()
 
 bool server_is_alpine_only_enabled()
 {
-    const auto [auto_require_alpine, min_ver, hard_reject] = server_features_require_alpine_client();
+    const auto [auto_require_alpine, min_ver, hard_reject, auto_require_release] = server_features_require_alpine_client();
     return g_alpine_server_config.alpine_restricted_config.clients_require_alpine || auto_require_alpine;
 }
 
 bool server_rejects_legacy_clients()
 {
-    const auto [auto_require_alpine, min_ver, hard_reject] = server_features_require_alpine_client();
+    const auto [auto_require_alpine, min_ver, hard_reject, auto_require_release] = server_features_require_alpine_client();
     return g_alpine_server_config.alpine_restricted_config.reject_non_alpine_clients || hard_reject;
 }
 

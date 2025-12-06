@@ -85,3 +85,4 @@ int hud_transform_value(int val, int old_max, int new_max);
 int hud_scale_value(int val, int max, float scale);
 void message_log_apply_patch();
 void hud_world_apply_patch();
+void hud_colors_apply_patch();

@@ -2,6 +2,7 @@
 
 #include "../rf/os/timestamp.h"
 #include "../rf/math/vector.h"
+#include "../rf/gr/gr.h"
 #include "../os/os.h"
 
 struct WorldHUDAssets
@@ -62,7 +63,8 @@ enum class WorldHUDRenderMode : int
 {
     no_overdraw,
     no_overdraw_glow,
-    overdraw
+    overdraw,
+    overdraw_colorized
 };
 
 struct EphemeralWorldHUDSprite
@@ -76,6 +78,7 @@ struct EphemeralWorldHUDSprite
     int duration = 10000;
     bool float_away = false;
     float wind_phase_offset = 0.0f;
+    rf::Color color{255, 255, 255, 255};
 };
 
 struct EphemeralWorldHUDString
@@ -87,6 +90,7 @@ struct EphemeralWorldHUDString
     HighResTimer timestamp;
     bool float_away = false;
     float wind_phase_offset = 0.0f;
+    rf::Color color = {255, 255, 255, 255};
 };
 
 struct NameLabelTex

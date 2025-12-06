@@ -42,6 +42,7 @@ bool g_skip_wnd_set_text = false;
 
 static bool g_is_saving_af_version = true;
 static bool g_skip_legacy_level_warning = false;
+static int g_current_level_version = -1;
 
 static const auto g_editor_app = reinterpret_cast<std::byte*>(0x006F9DA0);
 
@@ -67,6 +68,16 @@ HWND GetMainFrameHandle()
 bool get_is_saving_af_version()
 {
     return g_is_saving_af_version;
+}
+
+int get_level_rfl_version()
+{
+    return g_current_level_version;
+}
+
+void set_initial_level_rfl_version()
+{
+    g_current_level_version = MAXIMUM_RFL_VERSION;
 }
 
 void OpenLevel(const char* level_path)
@@ -568,10 +579,12 @@ CodeInjection texture_name_buffer_overflow_injection2{
 };
 
 CodeInjection LoadSaveLevel_patch{
-    0x0041CD20, [](auto& regs) {
+    0x0041CD20,
+    [](auto& regs) {
         int* version = reinterpret_cast<int*>(regs.esi + 0x54);
         *version = MAXIMUM_RFL_VERSION; // set rfl version saved to file
         regs.eip = 0x0041CD27; // skip version being set to 200 by original code
+        g_current_level_version = *version;
     }
 };
 
@@ -620,8 +633,10 @@ void ShowLegacyLevelDialog(int current_version, int new_version) {
 }
 
 CodeInjection LoadSaveLevel_patch2{
-    0x0041CDAA, [](auto& regs) {
+    0x0041CDAA,
+    [](auto& regs) {
         int* version = regs.edi;
+        g_current_level_version = *version;
 
         if (*version < 300 && !g_skip_legacy_level_warning) {
             xlog::info("Displaying legacy level warning dialog");
@@ -632,7 +647,8 @@ CodeInjection LoadSaveLevel_patch2{
 
 // disable splash screen if editor is launched with -level switch, fixes splash screen issue with version popup
 CodeInjection disable_splash_screen_on_load_level {
-    0x00482672, [](auto& regs) {
+    0x00482672,
+    [](auto& regs) {
         static auto& argv = addr_as_ref<char**>(0x01DBF8E4);
         static auto& argc = addr_as_ref<int>(0x01DBF8E0);
         for (int i = 1; i < argc; ++i) {

@@ -11,6 +11,7 @@
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/misc.h"
+#include "../rf/os/timestamp.h"
 #include "../os/console.h"
 #include "../misc/player.h"
 #include "../main/main.h"
@@ -54,6 +55,7 @@ struct Vote
 private:
     std::time_t start_time = 0;
     bool reminder_sent = false;
+    rf::Timestamp early_finish_check_timer;
     std::map<rf::Player*, bool> players_who_voted;
     rf::Player* owner;
 
@@ -71,6 +73,7 @@ public:
         send_vote_starting_msg(source);
 
         start_time = std::time(nullptr);
+        early_finish_check_timer.set(1000);
 
         players_who_voted.insert({source, true});
 
@@ -78,8 +81,9 @@ public:
     }
 
     virtual bool on_player_leave(rf::Player* player)
-    {        
+    {
         if (player == owner) {
+            early_finish_check_timer.invalidate();
             af_broadcast_automated_chat_msg("Vote canceled: owner left the game!");
             return false;
         }
@@ -118,9 +122,38 @@ public:
     bool do_frame()
     {
         const auto& vote_config = get_config();
+
+        if (!early_finish_check_timer.valid() || early_finish_check_timer.elapsed()) {
+            if (!check_for_early_vote_finish()) {
+                early_finish_check_timer.invalidate();
+                return false;
+            }
+            early_finish_check_timer.set(1000);
+        }
+
         std::time_t passed_time_sec = std::time(nullptr) - start_time;
         if (passed_time_sec >= vote_config.time_limit_seconds) {
+            int yes_votes = std::count_if(players_who_voted.begin(), players_who_voted.end(), [](auto& p) {
+                return p.second;
+            });
+            int no_votes = std::count_if(players_who_voted.begin(), players_who_voted.end(), [](auto& p) {
+                return !p.second;
+            });
+
+            const auto current = get_clients(false, false);
+            int remaining = 0;
+            for (auto* p : current) {
+                if (is_eligible_voter(p) && players_who_voted.count(p) == 0) {
+                    ++remaining;
+                }
+            }
+
+            if (!vote_config.ignore_nonvoters) {
+                no_votes += remaining;
+            }
+
             af_broadcast_automated_chat_msg("Vote timed out!");
+            finish_vote(yes_votes > no_votes);
             return false;
         }
         if (passed_time_sec >= vote_config.time_limit_seconds / 2 && !reminder_sent) {
@@ -145,6 +178,7 @@ public:
             return false;
         }
 
+        early_finish_check_timer.invalidate();
         af_broadcast_automated_chat_msg("Vote canceled!");
         return true;
     }
@@ -226,6 +260,8 @@ protected:
 
     void finish_vote(bool is_accepted)
     {
+        early_finish_check_timer.invalidate();
+
         if (is_accepted) {
             on_accepted();
         }
@@ -250,22 +286,21 @@ protected:
 
     bool check_for_early_vote_finish()
     {
-        int yes_votes = std::count_if(players_who_voted.begin(), players_who_voted.end(), [](auto& p)
-                { return p.second; });
-        int no_votes = std::count_if(players_who_voted.begin(), players_who_voted.end(), [](auto& p)
-                { return !p.second; });
+        int yes_votes = std::count_if(players_who_voted.begin(), players_who_voted.end(),
+            [](const auto& p) {
+                return p.second && is_eligible_voter(p.first);
+            });
+
+        int no_votes = std::count_if(players_who_voted.begin(), players_who_voted.end(),
+            [](const auto& p) {
+                return !p.second && is_eligible_voter(p.first);
+            });
 
         const auto current = get_clients(false, false);
         int remaining = 0;
         for (auto* p : current) {
             if (is_eligible_voter(p) && players_who_voted.count(p) == 0)
                 ++remaining;
-        }
-
-        const auto& vote_config = get_config();
-        if (!vote_config.ignore_nonvoters) {
-            no_votes += remaining;
-            remaining = 0;
         }
 
         const bool can_pass = yes_votes > no_votes + remaining;

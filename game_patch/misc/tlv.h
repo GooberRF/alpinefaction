@@ -52,7 +52,11 @@ public:
         size_t len;
 
         template <std::integral T>
-        T read_le() const {
+        std::optional<T> read_le() const {
+            if (len != sizeof(T)) {
+                return std::nullopt;
+            }
+
             using U = std::make_unsigned_t<T>;
             U res = 0;
             for (size_t i = 0; i < len && i < sizeof(T); ++i) {

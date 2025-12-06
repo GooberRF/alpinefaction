@@ -111,6 +111,8 @@ FONT 8, "MS Sans Serif"
     EDITTEXT        1094, 64, 25, 96, 14, ES_AUTOHSCROLL
     LTEXT           "Date:", -1, 7, 44, 18, 8
     LTEXT           "Date", 1026, 64, 44, 96, 8
+    LTEXT           "RFL version:", -1, 170, 9, 50, 8
+    LTEXT           "-1", IDC_LEVEL_VERSION, 213, 9, 50, 8
     GROUPBOX        "Ambient Light", -1, 7, 57, 284, 49
     LTEXT           "Color:", -1, 25, 72, 19, 8
     CONTROL         "List1", 1088, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 87, 69, 40, 14, WS_EX_STATICEDGE

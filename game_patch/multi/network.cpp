@@ -1248,9 +1248,9 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
         TlvReader<JoinReqTlv> reader{tlv_b, tlv_e};
         while (std::optional value = reader.next()) {
             if (value->type == JR_TLV_BOT_SHARED_SECRET) {
-                const uint32_t secret = value->read_le<uint32_t>();
-                if (secret) {
-                    g_joining_player_info.bot_shared_secret = std::optional{secret};
+                const std::optional<uint32_t> secret = value->read_le<uint32_t>();
+                if (secret && *secret) {
+                    g_joining_player_info.bot_shared_secret = secret;
                 }
             }
         }
@@ -1364,7 +1364,7 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                         "{}'s bot shared secret was valid",
                         valid_player->name
                     );
-                } else {
+                } else if (g_joining_player_info.bot_shared_secret.has_value()) {
                     rf::console::print(
                         "{}'s bot shared secret was invalid",
                         valid_player->name

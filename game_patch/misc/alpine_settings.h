@@ -139,6 +139,14 @@ struct AlpineGameSettings
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
 
+    std::optional<uint32_t> sniper_scope_color_override{};
+    std::optional<uint32_t> precision_scope_color_override{};
+    std::optional<uint32_t> rail_scope_color_override{};
+    std::optional<uint32_t> ar_ammo_digit_color_override{};
+    std::optional<uint32_t> damage_notify_color_override{};
+    std::optional<uint32_t> location_ping_color_override{};
+    std::optional<uint32_t> multi_timer_color_override{};
+
     int picmip = 1;
     void set_picmip(int value)
     {
@@ -218,6 +226,10 @@ struct AlpineGameSettings
 };
 
 extern AlpineGameSettings g_alpine_game_config;
+std::optional<uint32_t> parse_hex_color_string(const std::string& value);
+std::string format_hex_color_string(uint32_t color);
+std::tuple<int, int, int, int> extract_color_components(uint32_t color);
+std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color);
 void initialize_alpine_core_config();
 void alpine_core_config_save();
 void set_big_hud(bool is_big);
