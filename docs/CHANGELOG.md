@@ -6,6 +6,8 @@ Version 1.3.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@is-this-c](https://github.com/is-this-c)
+- Improve freelook spectate logic after level transition
 
 ### Bug fixes
 

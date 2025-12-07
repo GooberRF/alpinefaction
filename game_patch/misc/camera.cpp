@@ -14,6 +14,8 @@
 #include "../rf/player/camera.h"
 #include "../rf/player/control_config.h"
 #include "../rf/os/frametime.h"
+#include "player.h"
+#include "../hud/multi_spectate.h"
 
 constexpr auto screen_shake_fps = 150.0f;
 static float g_camera_shake_factor = 0.6f;
@@ -198,11 +200,36 @@ CodeInjection free_camera_do_frame_patch{
     },
 };
 
+CodeInjection multi_get_state_info_camera_enter_fixed_patch{
+    0x0048201F,
+    [] (auto& regs) {
+        rf::Entity* const camera_entity = rf::local_player->cam->camera_entity;
+        // Our camera is set to a respawn point, but `CAMERA_FIXED_VIEW`
+        // overwrites it.
+        float pitch = .0f, yaw = .0f, roll = .0f;
+        camera_entity->p_data.orient.extract_angles(
+            &pitch,
+            &roll,
+            &yaw
+        );
+        camera_entity->control_data.phb.set(.0f, yaw, .0f);
+        camera_entity->control_data.eye_phb.set(.0f, .0f, .0f);
+
+        // We should reset velocity.
+        camera_entity->p_data.vel.set(.0f, .0f, .0f);
+
+        // Re-enter freelook spectate mode.
+        const rf::Player* const target_player = multi_spectate_get_target_player();
+        const auto& pdata = get_player_additional_data(rf::local_player);
+        if (pdata.is_spectator() && target_player == rf::local_player) {
+            rf::camera_enter_freelook(rf::local_player->cam);
+            regs.eip = 0x00482024;
+        }
+    }
+};
+
 void camera_do_patch()
 {
-    // Fix crash when executing camera2 command in main menu
-    AsmWriter(0x0040DCFC).nop(5);
-
     // Maintain third person camera mode if set
     camera_enter_first_person_level_post.install();
 
@@ -224,4 +251,7 @@ void camera_do_patch()
     camera_shake_hook.install();
     force_disable_camerashake_cmd.register_cmd();
     camera_shake_global_hook.install();
+
+    // Improve freelook spectate logic after level transition.
+    multi_get_state_info_camera_enter_fixed_patch.install();
 }

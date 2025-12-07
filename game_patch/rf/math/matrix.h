@@ -43,6 +43,10 @@ namespace rf
         {
             AddrCaller{0x004FC060}.this_call(this, pitch, roll, yaw);
         }
+        
+        void set_from_angles(const float pitch, const float roll, const float yaw) {
+            AddrCaller{0x004FBEE0}.this_call(this, pitch, roll, yaw);
+        }
 
         void transpose() {
             AddrCaller{0x004FC8A0}.this_call(this, this);

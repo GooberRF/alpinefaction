@@ -417,7 +417,7 @@ void handle_camera_command(FunHook<void()>& hook)
     std::string helper_text =
         (current_mode == rf::CAMERA_FIRST_PERSON) ? "" : " Use `camera1` to return to first person.";
 
-    rf::console::print("Camera mode set to {}.{}", mode_text, helper_text);    
+    rf::console::print("Camera mode set to {}.{}", mode_text, helper_text);
 }
 
 FunHook<void()> camera1_cmd_hook{0x00431270, []() { handle_camera_command(camera1_cmd_hook); }};

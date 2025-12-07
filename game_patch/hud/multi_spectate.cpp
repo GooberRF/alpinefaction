@@ -327,7 +327,7 @@ ConsoleCommand2 spectate_cmd{
         }
     },
     "Toggles spectate mode (first person or free-look depending on the argument)",
-    "spectate [<player_name>]",
+    "spectate [player_name]",
 };
 
 static ConsoleCommand2 spectate_mode_minimal_ui_cmd{
