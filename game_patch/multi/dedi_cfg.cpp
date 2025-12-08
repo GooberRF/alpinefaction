@@ -322,7 +322,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
     switch (game_type) {
         case rf::NetGameType::NG_TYPE_KOTH: {
             rules.spawn_delay.enabled = true;
-            rules.spawn_delay.set_base_value(5.0f);
+            rules.spawn_delay.set_base_value(2.0f);
             rules.location_pinging = true;
 
             // secondary weapon

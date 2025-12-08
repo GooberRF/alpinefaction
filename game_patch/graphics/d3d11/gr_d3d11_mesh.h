@@ -20,7 +20,8 @@ namespace df::gr::d3d11
     class StateManager;
     class RenderContext;
 
-    void on_character_fullbright_state_changed(bool enabled);
+    void on_character_fullbright_state_changed();
+    void on_static_vertex_color_state_changed();
 
     class BaseMeshRenderCache
     {
@@ -119,7 +120,7 @@ namespace df::gr::d3d11
         void flush_caches();
 
     private:
-        void draw_cached_mesh(rf::VifLodMesh *lod_mesh, const BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index);
+        void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index);
 
         ComPtr<ID3D11Device> device_;
         RenderContext& render_context_;

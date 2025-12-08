@@ -69,7 +69,7 @@ void async_submit_vote(FactionFilesClient::VoteInfo vote_info)
         //xlog::info("Using vote URL: {}", vote_url);
 
         // Create HTTP session
-        HttpSession session("Alpine Faction v1.3.0 Vote");
+        HttpSession session("Alpine Faction v1.2.1 Vote");
 
         try {
             session.set_connect_timeout(3000);

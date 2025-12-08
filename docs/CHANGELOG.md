@@ -1,15 +1,23 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.3.0 (TBD): Not yet released
+Version 1.2.1 (TBD): Not yet released
 --------------------------------
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Change default spawn delay for KOTH mode from 5 seconds to 2 seconds
+- Drop support for Direct3D 11 renderer on GPUs without D3D level 10_0 (or higher) support
+
 [@is-this-c](https://github.com/is-this-c)
 - Improve freelook spectate logic after level transition
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix `af_send_packet` errors in dedicated server console when players enter or exit freecam spectate
+- Fix each instance of a mesh in a level sharing the same static lighting data in Direct3D 11 renderer
+- Fix Direct3D 11 renderer enforcing a minimum of 8 dynamic lights per scene, new limit is 32
 
 Version 1.2.0 (Willow): Released Dec-06-2025
 --------------------------------

@@ -24,7 +24,7 @@ struct PointLight {
     float3 color;
 };
 
-#define MAX_POINT_LIGHTS 8
+#define MAX_POINT_LIGHTS 32
 
 cbuffer LightsBuffer : register(b1)
 {

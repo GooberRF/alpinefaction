@@ -229,7 +229,7 @@ void AchievementManager::sync_with_ff()
         std::string response;
 
         try {
-            HttpSession session("Alpine Faction v1.3.0 Achievement Sync");
+            HttpSession session("Alpine Faction v1.2.1 Achievement Sync");
             HttpRequest request(url, "GET", session);
             request.send();
 
@@ -269,7 +269,7 @@ void AchievementManager::send_update_to_ff()
         std::string response;
 
         try {
-            HttpSession session("Alpine Faction v1.3.0 Achievement Push");
+            HttpSession session("Alpine Faction v1.2.1 Achievement Push");
             HttpRequest request(url, "POST", session);
             request.set_content_type("application/x-www-form-urlencoded");
 

@@ -755,12 +755,11 @@ void multi_hud_render_team_scores()
     if (is_koth_dc || is_run) {
         box_w = g_big_team_scores_hud ? 240 : 185;
         box_h = g_big_team_scores_hud ? 60  : 40;
-    }
-    else if (is_rev || is_esc) {
+    } else if (is_rev || is_esc) {
         box_w = g_big_team_scores_hud ? 240 : 185;
-    }
-    else {
-        box_w = g_big_team_scores_hud ? 350 : 185;
+    } else {
+        const int ctf_box_w = rf::gr::clip_width() <= 1280 ? 350 : 370;
+        box_w = g_big_team_scores_hud ? ctf_box_w : 185;
         box_h = g_big_team_scores_hud ? 80  : 55;
     }
 
@@ -1087,9 +1086,10 @@ void multi_hud_render_local_player_spectators() {
             || game_type == rf::NG_TYPE_DC;
         const bool is_rev = game_type == rf::NG_TYPE_REV;
         const bool is_esc = game_type == rf::NG_TYPE_ESC;
+        const int ctf_box_w = rf::gr::clip_width() <= 1280 ? 350 : 370;
         const int box_w = is_koth_or_dc || is_rev || is_esc
             ? g_alpine_game_config.big_hud ? 240 : 185
-            : g_alpine_game_config.big_hud ? 350 : 185;
+            : g_alpine_game_config.big_hud ? ctf_box_w : 185;
         constexpr int box_x = 10;
 
         int x = 10;

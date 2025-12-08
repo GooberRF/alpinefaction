@@ -17,7 +17,7 @@ void UpdateChecker::CheckForUpdates()
     xlog::info("Checking for updates...");
 
     // Create an HttpSession
-    HttpSession session("Alpine Faction v1.3.0 Update");
+    HttpSession session("Alpine Faction v1.2.1 Update");
 
     try {
         HttpRequest req(update_url, "GET", session);

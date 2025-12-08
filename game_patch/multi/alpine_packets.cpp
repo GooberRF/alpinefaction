@@ -23,7 +23,10 @@
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
     if (!player || !player->net_data) {
-        if (data && len >= static_cast<int>(sizeof(RF_GamePacketHeader))) {
+        if (player == nullptr) { // expected for af_spectate_notify packet when using freecam spec
+            xlog::debug("af_send_packet: Attempted to send to null player");
+        }
+        else if (data && len >= static_cast<int>(sizeof(RF_GamePacketHeader))) {
             RF_GamePacketHeader header{};
             std::memcpy(&header, data, sizeof(header));
             xlog::error("af_send_packet: Attempted to send to invalid player (type 0x{:x}, size {}, buf_len {})",

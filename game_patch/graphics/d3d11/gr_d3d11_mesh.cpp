@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 #include <cstring>
 #include <cassert>
@@ -27,15 +29,59 @@ namespace df::gr::d3d11
     constexpr unsigned initial_ib_size = 10000;
 
     static uint64_t character_vertex_color_generation = 1;
+    static uint64_t static_vertex_color_generation = 1;
 
+    struct PackedRgb
+    {
+        ubyte red;
+        ubyte green;
+        ubyte blue;
+    };
+
+    struct VertexColorKey
+    {
+        const void* source;
+        std::array<rf::ubyte, 3> sample;
+
+        bool operator==(const VertexColorKey& other) const
+        {
+            return source == other.source && sample == other.sample;
+        }
+    };
+
+    struct VertexColorKeyHasher
+    {
+        std::size_t operator()(const VertexColorKey& key) const noexcept
+        {
+            std::size_t hash = std::hash<const void*>{}(key.source);
+            std::uint32_t packed_sample = static_cast<std::uint32_t>(key.sample[0])
+                | (static_cast<std::uint32_t>(key.sample[1]) << 8)
+                | (static_cast<std::uint32_t>(key.sample[2]) << 16);
+            return hash ^ (static_cast<std::size_t>(packed_sample) << 1);
+        }
+    };
+
+    // Character generation helpers
     static uint64_t current_character_vertex_color_generation()
     {
         return character_vertex_color_generation;
     }
 
-    void on_character_fullbright_state_changed(bool)
+    void on_character_fullbright_state_changed()
     {
         ++character_vertex_color_generation;
+    }
+
+    // Static-mesh generation helpers
+    static uint64_t current_static_vertex_color_generation()
+    {
+        return static_vertex_color_generation;
+    }
+
+    // currently unused
+    void on_static_vertex_color_state_changed()
+    {
+        ++static_vertex_color_generation;
     }
 
     static bool is_vif_chunk_double_sided(const VifChunk& chunk)
@@ -61,24 +107,38 @@ namespace df::gr::d3d11
             return vertices_;
         }
 
-        bool vertex_colors_uploaded(int lod_index) const
-        {
-            return vertex_colors_uploaded_[lod_index];
-        }
-
-        void mark_vertex_colors_uploaded(int lod_index) const
-        {
-            vertex_colors_uploaded_[lod_index] = true;
-        }
+        const std::vector<BaseMeshRenderCache::Batch>& get_or_create_vertex_color_batches(
+            int lod_index,
+            const void* source,
+            const std::array<rf::ubyte, 3>& sample,
+            const PackedRgb* vertex_colors,
+            BufferWrapper& vertex_buffer,
+            RenderContext& render_context);
 
     private:
+        struct VertexColorVariant
+        {
+            std::vector<BaseMeshRenderCache::Batch> batches;
+        };
+
         std::vector<GpuVertex> vertices_;
-        mutable std::vector<bool> vertex_colors_uploaded_;
+
+        // Per-LOD map of vertex-color variants
+        std::vector<std::unordered_map<VertexColorKey, VertexColorVariant, VertexColorKeyHasher>> vertex_color_batches_;
+
+        // Per-LOD generation tracking for static vertex colors
+        std::vector<uint64_t> last_vertex_color_generations_;
     };
 
-    MeshRenderCache::MeshRenderCache(VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context) :
+    MeshRenderCache::MeshRenderCache(
+        VifLodMesh* lod_mesh,
+        BufferWrapper& vertex_buffer,
+        BufferWrapper& index_buffer,
+        RenderContext& render_context
+    ) :
         BaseMeshRenderCache(lod_mesh),
-        vertex_colors_uploaded_(lod_mesh->num_levels, false)
+        vertex_color_batches_(lod_mesh->num_levels),
+        last_vertex_color_generations_(lod_mesh->num_levels, 0)
     {
         std::size_t num_verts = 0;
         std::size_t num_inds = 0;
@@ -139,7 +199,7 @@ namespace df::gr::d3d11
                     }
                 }
 
-                int num_indices = gpu_inds.size() - start_index;
+                int num_indices = static_cast<int>(gpu_inds.size() - start_index);
                 meshes_[lod_index].batches.emplace_back(
                     index_buffer.size() + start_index, num_indices, base_vertex,
                     chunk.texture_idx, chunk.mode, double_sided);
@@ -149,8 +209,66 @@ namespace df::gr::d3d11
         xlog::debug("Creating mesh geometry buffers: verts {} inds {}", gpu_verts.size(), gpu_inds.size());
 
         vertices_ = std::move(gpu_verts);
-        vertex_buffer.write(vertices_.data(), vertices_.size(), render_context);
-        index_buffer.write(gpu_inds.data(), gpu_inds.size(), render_context);
+        vertex_buffer.write(vertices_.data(), static_cast<unsigned>(vertices_.size()), render_context);
+        index_buffer.write(gpu_inds.data(), static_cast<unsigned>(gpu_inds.size()), render_context);
+    }
+
+    const std::vector<BaseMeshRenderCache::Batch>& MeshRenderCache::get_or_create_vertex_color_batches(
+        int lod_index,
+        const void* source,
+        const std::array<rf::ubyte, 3>& sample,
+        const PackedRgb* vertex_colors,
+        BufferWrapper& vertex_buffer,
+        RenderContext& render_context)
+    {
+        const auto& mesh = get_mesh(lod_index);
+        if (mesh.vertex_count == 0) {
+            return mesh.batches;
+        }
+
+        VertexColorKey key{source, sample};
+        auto& variants = vertex_color_batches_[lod_index];
+
+        // Invalidate cached variants for this LOD if the static vertex-color generation has changed
+        const auto generation = current_static_vertex_color_generation();
+        auto& last_gen = last_vertex_color_generations_[lod_index];
+        if (last_gen != generation) {
+            variants.clear();
+            last_gen = generation;
+        }
+
+        auto it = variants.find(key);
+        if (it != variants.end()) {
+            return it->second.batches;
+        }
+
+        // Build a new vertex-color variant for this LOD
+        auto start_it = vertices_.begin() + mesh.vertex_offset;
+        auto end_it = start_it + mesh.vertex_count;
+        std::vector<GpuVertex> updated_vertices(start_it, end_it);
+
+        for (std::size_t i = 0; i < mesh.vertex_count; ++i) {
+            const auto& rgb = vertex_colors[i];
+            rf::Color color{rgb.red, rgb.green, rgb.blue, 255};
+            updated_vertices[i].diffuse = pack_color(color);
+        }
+
+        std::size_t vertex_offset = vertex_buffer.size();
+        vertex_buffer.write(updated_vertices.data(), static_cast<unsigned>(updated_vertices.size()), render_context);
+
+        auto batches = mesh.batches;
+
+        const std::size_t old_first_vertex = base_vertex_offset_ + mesh.vertex_offset;
+        const std::size_t new_first_vertex = vertex_offset;
+        const int base_delta = static_cast<int>(new_first_vertex - old_first_vertex);
+
+        for (auto& batch : batches) {
+            batch.base_vertex += base_delta;
+        }
+
+        return variants
+            .emplace(key, VertexColorVariant{std::move(batches)})
+            .first->second.batches;
     }
 
     struct alignas(16) BoneTransformsBufferData
@@ -242,21 +360,13 @@ namespace df::gr::d3d11
             return vertices_;
         }
 
-        bool should_upload_vertex_colors(
-            int lod_index, const void* source, const std::array<rf::ubyte, 3>& sample, uint64_t generation) const
-        {
-            return last_vertex_color_generations_[lod_index] != generation
-                || last_vertex_color_sources_[lod_index] != source
-                || last_vertex_color_samples_[lod_index] != sample;
-        }
-
-        void mark_vertex_colors_uploaded(
-            int lod_index, const void* source, const std::array<rf::ubyte, 3>& sample, uint64_t generation) const
-        {
-            last_vertex_color_sources_[lod_index] = source;
-            last_vertex_color_generations_[lod_index] = generation;
-            last_vertex_color_samples_[lod_index] = sample;
-        }
+        ID3D11Buffer* get_or_create_vertex_color_buffer(
+            int lod_index,
+            const void* source,
+            const std::array<rf::ubyte, 3>& sample,
+            const PackedRgb* vertex_colors,
+            uint64_t generation,
+            ID3D11Device* device);
 
         bool missing_vertex_colors_logged(int lod_index) const
         {
@@ -281,17 +391,15 @@ namespace df::gr::d3d11
         BoneTransformsBuffer bone_transforms_buffer_;
         std::vector<GpuCharacterVertex1> vertices_;
         mutable std::vector<bool> missing_vertex_colors_logged_;
-        mutable std::vector<const void*> last_vertex_color_sources_;
+        std::vector<std::unordered_map<VertexColorKey, ComPtr<ID3D11Buffer>, VertexColorKeyHasher>> vertex_color_buffers_;
         mutable std::vector<uint64_t> last_vertex_color_generations_;
-        mutable std::vector<std::array<rf::ubyte, 3>> last_vertex_color_samples_;
     };
 
     CharacterMeshRenderCache::CharacterMeshRenderCache(VifLodMesh* lod_mesh, ID3D11Device* device) :
         BaseMeshRenderCache(lod_mesh), bone_transforms_buffer_{device},
         missing_vertex_colors_logged_(lod_mesh->num_levels, false),
-        last_vertex_color_sources_(lod_mesh->num_levels, nullptr),
-        last_vertex_color_generations_(lod_mesh->num_levels, 0),
-        last_vertex_color_samples_(lod_mesh->num_levels, {255, 255, 255})
+        vertex_color_buffers_(lod_mesh->num_levels),
+        last_vertex_color_generations_(lod_mesh->num_levels, 0)
     {
         std::size_t num_verts = 0;
         std::size_t num_inds = 0;
@@ -411,6 +519,56 @@ namespace df::gr::d3d11
         DF_GR_D3D11_CHECK_HR(
             device->CreateBuffer(&ib_desc, &ib_subres_data, &index_buffer_)
         );
+    }
+
+    ID3D11Buffer* CharacterMeshRenderCache::get_or_create_vertex_color_buffer(
+        int lod_index,
+        const void* source,
+        const std::array<rf::ubyte, 3>& sample,
+        const PackedRgb* vertex_colors,
+        uint64_t generation,
+        ID3D11Device* device)
+    {
+        auto& variants = vertex_color_buffers_[lod_index];
+        if (last_vertex_color_generations_[lod_index] != generation) {
+            variants.clear();
+            last_vertex_color_generations_[lod_index] = generation;
+        }
+
+        VertexColorKey key{source, sample};
+        auto it = variants.find(key);
+        if (it != variants.end()) {
+            return it->second.get();
+        }
+
+        const auto& mesh = get_mesh(lod_index);
+        if (mesh.vertex_count == 0) {
+            return vertex_buffer_1_;
+        }
+
+        auto updated_vertices = vertices_;
+        auto start_it = updated_vertices.begin() + mesh.vertex_offset;
+        for (std::size_t i = 0; i < mesh.vertex_count; ++i) {
+            const auto& rgb = vertex_colors[i];
+            rf::Color color{rgb.red, rgb.green, rgb.blue, 255};
+            start_it[i].diffuse = pack_color(color);
+        }
+
+        const UINT vb1_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(GpuCharacterVertex1) * updated_vertices.size()));
+
+        CD3D11_BUFFER_DESC vb_desc{
+            vb1_byte_width,
+            D3D11_BIND_VERTEX_BUFFER,
+            D3D11_USAGE_DEFAULT,
+        };
+
+        D3D11_SUBRESOURCE_DATA vb_subres_data{updated_vertices.data(), 0, 0};
+        ComPtr<ID3D11Buffer> vertex_buffer;
+        DF_GR_D3D11_CHECK_HR(
+            device->CreateBuffer(&vb_desc, &vb_subres_data, &vertex_buffer)
+        );
+
+        return variants.emplace(key, std::move(vertex_buffer)).first->second.get();
     }
 
     void CharacterMeshRenderCache::update_morphed_vertices_buffer(rf::Skeleton* skeleton, int time, RenderContext& render_context)
@@ -533,7 +691,7 @@ namespace df::gr::d3d11
         return lod_mesh->meshes[lod_index]->tex_handles;
     }
 
-    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, const BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index)
+    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index)
     {
         const int* tex_handles = get_tex_handles(lod_mesh, params, lod_index);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -583,6 +741,9 @@ namespace df::gr::d3d11
         bool use_vertex_colors = params.vertex_colors != nullptr;
         render_context_.update_lights();
 
+        const std::vector<BaseMeshRenderCache::Batch>* batches_ptr = &cache.get_batches(lod_index);
+        ID3D11Buffer* character_vertex_buffer_override = nullptr;
+
         /*
         bool fullbright_character = is_character_mesh && g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0;
         if (!use_vertex_colors && is_character_mesh && !fullbright_character) {
@@ -595,76 +756,34 @@ namespace df::gr::d3d11
         }*/
 
         if (use_vertex_colors) {
-            if (auto mesh_cache = dynamic_cast<const MeshRenderCache*>(&cache)) {
-                if (!mesh_cache->vertex_colors_uploaded(lod_index)) {
-                    const auto& mesh = mesh_cache->get_mesh(lod_index);
-                    if (mesh.vertex_count > 0) {
-                        const auto& base_vertices = mesh_cache->vertices();
-                        auto start_it = base_vertices.begin() + mesh.vertex_offset;
-                        auto end_it = start_it + mesh.vertex_count;
-                        std::vector<GpuVertex> updated_vertices(start_it, end_it);
-
-                        struct PackedRgb
-                        {
-                            ubyte red;
-                            ubyte green;
-                            ubyte blue;
-                        };
-
-                        auto vertex_colors = reinterpret_cast<const PackedRgb*>(params.vertex_colors);
-                        for (std::size_t i = 0; i < mesh.vertex_count; ++i) {
-                            const auto& rgb = vertex_colors[i];
-                            rf::Color color{rgb.red, rgb.green, rgb.blue, 255};
-                            updated_vertices[i].diffuse = pack_color(color);
-                        }
-
-                        UINT vertex_offset_bytes = static_cast<UINT>((mesh_cache->base_vertex_offset() + mesh.vertex_offset) * sizeof(GpuVertex));
-                        UINT bytes_to_write = static_cast<UINT>(mesh.vertex_count * sizeof(GpuVertex));
-                        D3D11_BOX box{vertex_offset_bytes, 0, 0, vertex_offset_bytes + bytes_to_write, 1, 1};
-                        render_context_.device_context()->UpdateSubresource(
-                            v3d_vb_.buffer(), 0, &box, updated_vertices.data(), bytes_to_write, bytes_to_write);
-                        mesh_cache->mark_vertex_colors_uploaded(lod_index);
-                    }
-                }
-            }
-            else if (auto mesh_cache = dynamic_cast<const CharacterMeshRenderCache*>(&cache)) {
+            if (auto mesh_cache = dynamic_cast<MeshRenderCache*>(&cache)) {
                 const auto& mesh = mesh_cache->get_mesh(lod_index);
                 if (mesh.vertex_count > 0) {
-                    const auto& base_vertices = mesh_cache->vertices();
-                    auto start_it = base_vertices.begin() + mesh.vertex_offset;
-                    auto end_it = start_it + mesh.vertex_count;
-                    std::vector<GpuCharacterVertex1> updated_vertices(start_it, end_it);
+                    auto vertex_colors = reinterpret_cast<const PackedRgb*>(params.vertex_colors);
+                    std::array<rf::ubyte, 3> first_color{vertex_colors[0].red, vertex_colors[0].green, vertex_colors[0].blue};
 
-                    struct PackedRgb
-                    {
-                        ubyte red;
-                        ubyte green;
-                        ubyte blue;
-                    };
-
+                    batches_ptr = &mesh_cache->get_or_create_vertex_color_batches(
+                        lod_index, params.vertex_colors, first_color, vertex_colors, v3d_vb_, render_context_);
+                }
+            }
+            else if (auto mesh_cache = dynamic_cast<CharacterMeshRenderCache*>(&cache)) {
+                const auto& mesh = mesh_cache->get_mesh(lod_index);
+                if (mesh.vertex_count > 0) {
                     auto vertex_colors = reinterpret_cast<const PackedRgb*>(params.vertex_colors);
                     std::array<rf::ubyte, 3> first_color{vertex_colors[0].red, vertex_colors[0].green, vertex_colors[0].blue};
                     uint64_t generation = current_character_vertex_color_generation();
 
-                    if (mesh_cache->should_upload_vertex_colors(lod_index, params.vertex_colors, first_color, generation)) {
-                        for (std::size_t i = 0; i < mesh.vertex_count; ++i) {
-                            const auto& rgb = vertex_colors[i];
-                            rf::Color color{rgb.red, rgb.green, rgb.blue, 255};
-                            updated_vertices[i].diffuse = pack_color(color);
-                        }
-
-                        UINT vertex_offset_bytes = static_cast<UINT>(mesh.vertex_offset * sizeof(GpuCharacterVertex1));
-                        UINT bytes_to_write = static_cast<UINT>(mesh.vertex_count * sizeof(GpuCharacterVertex1));
-                        D3D11_BOX box{vertex_offset_bytes, 0, 0, vertex_offset_bytes + bytes_to_write, 1, 1};
-                        render_context_.device_context()->UpdateSubresource(mesh_cache->vertex_buffer_1(), 0, &box, updated_vertices.data(), bytes_to_write, bytes_to_write);
-                        mesh_cache->mark_vertex_colors_uploaded(lod_index, params.vertex_colors, first_color, generation);
-                        //xlog::debug("Uploaded character mesh vertex colors for LOD {} ({} verts)", lod_index, mesh.vertex_count);
-                    }
+                    character_vertex_buffer_override = mesh_cache->get_or_create_vertex_color_buffer(
+                        lod_index, params.vertex_colors, first_color, vertex_colors, generation, render_context_.device());
                 }
             }
         }
 
-        auto& batches = cache.get_batches(lod_index);
+        if (character_vertex_buffer_override) {
+            render_context_.set_vertex_buffer(character_vertex_buffer_override, sizeof(GpuCharacterVertex1), 1);
+        }
+
+        const auto& batches = *batches_ptr;
 
         for (auto& b : batches) {
             // ccrunch tool chunkifies mesh and inits render mode flags

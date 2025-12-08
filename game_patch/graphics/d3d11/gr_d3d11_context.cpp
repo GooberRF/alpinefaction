@@ -177,7 +177,7 @@ namespace df::gr::d3d11
 
     struct LightsBufferData
     {
-        static constexpr int max_point_lights = 8;
+        static constexpr int max_point_lights = 32; // max dynamic lights in a scene, matches stock game DX9 maximum
 
         struct PointLight
         {
