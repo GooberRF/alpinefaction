@@ -233,8 +233,7 @@ CodeInjection player_dying_frame_respawn_req_patch{ // force respawn
     0x004A6DCA,
     [] (auto& regs) {
         if (!rf::is_server) {
-            const auto& pdata = get_player_additional_data(rf::local_player);
-            if (pdata.is_spawn_disabled_bot()) {
+            if (get_player_additional_data(rf::local_player).is_spawn_disabled_bot()) {
                 regs.eip = 0x004A6DF8;
                 return;
             }

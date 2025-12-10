@@ -14,6 +14,7 @@ Version 1.2.1 (TBD): Not yet released
 - Add `ui_fpsavg` command set FPS counter averaging window
 
 [@is-this-c](https://github.com/is-this-c)
+- Improve bot decommission logic
 - Improve freelook spectate logic after level transition
 
 ### Bug fixes
