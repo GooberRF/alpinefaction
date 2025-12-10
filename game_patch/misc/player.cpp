@@ -203,15 +203,14 @@ void reset_local_delayed_spawn() {
     g_respawn_timer_local.invalidate();
 }
 
-static constexpr float BOT_SPAWN_WAIT_TIME = 5.f;
-
 CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
     0x004A678B,
     [] (auto& regs) {
         if (!rf::is_server) {
+            constexpr float SPAWN_WAIT_TIME_SECS = 5.f;
             const auto& pdata = get_player_additional_data(rf::local_player);
             if (pdata.is_spawn_disabled_bot()
-                || (pdata.is_bot() && rf::level.global_time < BOT_SPAWN_WAIT_TIME)) {
+                || (pdata.is_bot() && rf::level.global_time < SPAWN_WAIT_TIME_SECS)) {
                 rf::String prefix{};
                 rf::String msg{"You are not allowed to spawn right now"};
                 rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);

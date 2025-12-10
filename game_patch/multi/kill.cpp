@@ -467,8 +467,8 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
     update_player_active_status(killed_player); // active pulse on killed
 
     auto& pdata = get_player_additional_data(killed_player);
-    constexpr int DEATH_WAIT_TIME = 5;
-    pdata.death_wait_timer.set(std::chrono::seconds{DEATH_WAIT_TIME});
+    constexpr int DEATH_WAIT_TIME_SECS = 5;
+    pdata.death_wait_timer.set(std::chrono::seconds{DEATH_WAIT_TIME_SECS});
 
     auto* killed_stats = static_cast<PlayerStatsNew*>(killed_player->stats);
     killed_stats->inc_deaths();

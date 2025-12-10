@@ -1676,7 +1676,7 @@ std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_inp
     return {is_valid, level_name};
 }
 
-void bot_decommision_check() {
+void bot_decommission_check() {
     const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
     if (!rf::is_server || cfg_rules.ideal_player_count >= 32) {
         return;
@@ -1685,7 +1685,6 @@ void bot_decommision_check() {
     int active_persons = 0;
     int active_bots = 0;
     int disabled_bots = 0;
-    int spawned_bots = 0;
 
     for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
         const auto& pdata = get_player_additional_data(&player);
@@ -1697,10 +1696,6 @@ void bot_decommision_check() {
             && !rf::player_is_dying(&player);
 
         if (pdata.is_bot()) {
-            if (is_spawned) {
-                ++spawned_bots;
-            }
-
             if (pdata.is_spawn_disabled_bot()) {
                 ++disabled_bots;
             } else {
@@ -3067,7 +3062,7 @@ void server_do_frame()
     server_vote_do_frame();
     match_do_frame();
     process_delayed_kicks();
-    bot_decommision_check();
+    bot_decommission_check();
 }
 
 void server_on_limbo_state_enter()
