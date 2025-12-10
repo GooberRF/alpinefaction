@@ -1692,9 +1692,6 @@ void bot_decommission_check() {
             continue;
         }
 
-        const bool is_spawned = !rf::player_is_dead(&player)
-            && !rf::player_is_dying(&player);
-
         if (pdata.is_bot()) {
             if (pdata.is_spawn_disabled_bot()) {
                 ++disabled_bots;
@@ -1702,6 +1699,8 @@ void bot_decommission_check() {
                 ++active_bots;
             }
         } else {
+            const bool is_spawned = !rf::player_is_dead(&player)
+                && !rf::player_is_dying(&player);
             const bool waiting = pdata.death_wait_timer.valid()
                 && !pdata.death_wait_timer.elapsed();
             if (is_spawned || waiting) {
