@@ -141,7 +141,7 @@ void multi_do_patch();
 void multi_after_full_game_init();
 void multi_init_player(rf::Player* player);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
-const std::optional<AlpineFactionServerInfo>& get_df_server_info();
+const std::optional<AlpineFactionServerInfo>& get_af_server_info();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
 void multi_level_download_do_frame();
 void multi_level_download_abort();

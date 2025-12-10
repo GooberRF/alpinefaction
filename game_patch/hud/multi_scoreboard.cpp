@@ -186,7 +186,7 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
     bool show_kd = game_type != rf::NG_TYPE_RUN;
     int kd_w = show_kd ? static_cast<int>(70 * scale) : 0;
     int caps_w = game_type == rf::NG_TYPE_CTF ? static_cast<int>(45 * scale) : 0;
-    const auto& server_info = get_df_server_info();
+    const auto& server_info = get_af_server_info();
     bool saving_enabled = server_info.has_value() && server_info->saving_enabled;
     bool show_loads = game_type == rf::NG_TYPE_RUN && saving_enabled;
     int loads_w = show_loads ? static_cast<int>(55 * scale) : 0;

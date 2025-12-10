@@ -17,6 +17,7 @@
 #include "../hud/multi_spectate.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../misc/player.h"
 
 bool kill_messages = true;
 
@@ -327,6 +328,9 @@ void multi_kill_init_player(rf::Player* player)
 {
     auto* stats = static_cast<PlayerStatsNew*>(player->stats);
     stats->clear();
+
+    auto& pdata = get_player_additional_data(player);
+    pdata.death_wait_timer.invalidate();
 }
 
 FunHook<void()> multi_level_init_hook{
@@ -461,6 +465,10 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
     }
 
     update_player_active_status(killed_player); // active pulse on killed
+
+    auto& pdata = get_player_additional_data(killed_player);
+    constexpr int DEATH_WAIT_TIME = 5;
+    pdata.death_wait_timer.set(std::chrono::seconds{DEATH_WAIT_TIME});
 
     auto* killed_stats = static_cast<PlayerStatsNew*>(killed_player->stats);
     killed_stats->inc_deaths();

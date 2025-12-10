@@ -1066,7 +1066,7 @@ static void af_process_just_died_info_packet(const void* data, size_t len, const
         return;
     }
 
-    if (!get_df_server_info().has_value() || !get_df_server_info()->delayed_spawns) {
+    if (!get_af_server_info().has_value() || !get_af_server_info()->delayed_spawns) {
         xlog::warn("just_died_info: delayed spawns are not enabled in this server");
         return; // delayed spawns are disabled in this server, how did you get this packet?
     }

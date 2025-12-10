@@ -1473,7 +1473,7 @@ void start_pre_match()
                 "\n>>>>>>>>>>>>>>>>> {}v{} MATCH QUEUED <<<<<<<<<<<<<<<<<\n"
                 "Waiting for players. Ready up or use \"/vote nomatch\" to call a vote to cancel the match.",
                 g_match_info.team_size, g_match_info.team_size);
-        
+
             af_send_automated_chat_msg(msg, player);
         }
 
@@ -1674,6 +1674,108 @@ std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_inp
     bool is_valid = rf::get_file_checksum(level_name.c_str()) != 0;
 
     return {is_valid, level_name};
+}
+
+void bot_decommision_check() {
+    const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
+    if (!rf::is_server || cfg_rules.ideal_player_count >= 32) {
+        return;
+    }
+
+    int active_persons = 0;
+    int active_bots = 0;
+    int disabled_bots = 0;
+    int spawned_bots = 0;
+
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        const auto& pdata = get_player_additional_data(&player);
+        if (pdata.is_browser()) {
+            continue;
+        }
+
+        const bool is_spawned = !rf::player_is_dead(&player)
+            && !rf::player_is_dying(&player);
+
+        if (pdata.is_bot()) {
+            if (is_spawned) {
+                ++spawned_bots;
+            }
+
+            if (pdata.is_spawn_disabled_bot()) {
+                ++disabled_bots;
+            } else {
+                ++active_bots;
+            }
+        } else {
+            const bool waiting = pdata.death_wait_timer.valid()
+                && !pdata.death_wait_timer.elapsed();
+            if (is_spawned || waiting) {
+                ++active_persons;
+            }
+        }
+    }
+
+    const int desired_active_bots = std::max(
+        0,
+        cfg_rules.ideal_player_count - active_persons
+    );
+
+    std::vector<const rf::Player*> candidates{};
+    if (active_bots < desired_active_bots) {
+        int need = desired_active_bots - active_bots;
+
+        candidates.reserve(disabled_bots);
+        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            auto& pdata = get_player_additional_data(&player);
+            if (!pdata.is_bot() || !pdata.is_spawn_disabled) {
+                continue;
+            }
+            candidates.push_back(&player);
+        }
+
+        std::ranges::sort(
+            candidates,
+            [] (const rf::Player* player, const rf::Player* rhs) {
+                return player->stats->score > rhs->stats->score;
+            }
+        );
+
+        for (const rf::Player* player : candidates) {
+            if (need <= 0) {
+                break;
+            }
+            auto& pdata = get_player_additional_data(player);
+            pdata.is_spawn_disabled = false;
+            --need;
+        }
+    } else if (active_bots > desired_active_bots) {
+        int excess = active_bots - desired_active_bots;
+
+        candidates.reserve(active_bots);
+        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            auto& pdata = get_player_additional_data(&player);
+            if (!pdata.is_bot() || pdata.is_spawn_disabled) {
+                continue;
+            }
+            candidates.push_back(&player);
+        }
+
+        std::ranges::sort(
+            candidates,
+            [] (const rf::Player* player, const rf::Player* rhs) {
+                return player->stats->score < rhs->stats->score;
+            }
+        );
+
+        for (const rf::Player* player : candidates) {
+            if (excess <= 0) {
+                break;
+            }
+            auto& pdata = get_player_additional_data(player);
+            pdata.is_spawn_disabled = true;
+            --excess;
+        }
+    }
 }
 
 void update_player_active_status(const rf::Player* const player) {
@@ -1915,7 +2017,6 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         }
         if (pdata.is_spawn_disabled_bot()) {
             std::string msg = std::format("You're a bot and you can't spawn right now.");
-
             af_send_automated_chat_msg(msg, player);
             return;
         }
@@ -2780,7 +2881,7 @@ CallHook<rf::Entity*(int, const char*, int, rf::Vector3*, rf::Matrix3*, int, int
     0x004A41D3,
     [](int type, const char* name, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient, int create_flags, int mp_character) {
 
-        if (get_df_server_info().has_value() && get_df_server_info()->no_player_collide) {
+        if (get_af_server_info().has_value() && get_af_server_info()->no_player_collide) {
             create_flags |= 0x4;
         }
 
@@ -2966,6 +3067,7 @@ void server_do_frame()
     server_vote_do_frame();
     match_do_frame();
     process_delayed_kicks();
+    bot_decommision_check();
 }
 
 void server_on_limbo_state_enter()

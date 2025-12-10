@@ -170,7 +170,7 @@ bool should_use_gaussian_spread()
     else if ((rf::is_dedicated_server || rf::is_server) && g_alpine_server_config.gaussian_spread) {
         return true;
     }
-    else if (rf::is_multi && get_df_server_info().has_value() && get_df_server_info()->gaussian_spread) {
+    else if (rf::is_multi && get_af_server_info().has_value() && get_af_server_info()->gaussian_spread) {
         return true;
     }
 
@@ -192,7 +192,7 @@ bool should_apply_click_limiter() {
         return true;
     }
 
-    if (rf::is_multi && get_df_server_info().has_value() && get_df_server_info()->click_limit) {
+    if (rf::is_multi && get_af_server_info().has_value() && get_af_server_info()->click_limit) {
         return true;
     }
 
@@ -202,8 +202,8 @@ bool should_apply_click_limiter() {
 // hack approach - fire wait override for player-controlled semi auto weapons that have
 // default fire wait 500ms like pistol and PR in stock weapons.tbl
 int get_semi_auto_fire_wait_override() {
-    if (rf::is_multi && get_df_server_info().has_value()) {
-        return get_df_server_info()->semi_auto_cooldown.value_or(90);
+    if (rf::is_multi && get_af_server_info().has_value()) {
+        return get_af_server_info()->semi_auto_cooldown.value_or(90);
     }
     else {
         return 90;

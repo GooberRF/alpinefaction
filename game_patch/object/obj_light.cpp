@@ -94,7 +94,7 @@ void evaluate_fullbright_meshes()
 
     if (g_alpine_game_config.try_fullbright_characters) {
         bool server_side_restrict_fb_mesh =
-            rf::is_multi && !rf::is_server && get_df_server_info() && !get_df_server_info()->allow_fb_mesh;
+            rf::is_multi && !rf::is_server && get_af_server_info() && !get_af_server_info()->allow_fb_mesh;
 
         if (server_side_restrict_fb_mesh) {
             rf::console::print("This server does not allow you to force fullbright meshes!");
@@ -207,7 +207,7 @@ CallHook<void(rf::Entity&)> entity_update_muzzle_flash_light_hook{
 void evaluate_restrict_disable_muzzle_flash()
 {
     server_side_restrict_disable_muzzle_flash =
-        rf::is_multi && !rf::is_server && get_df_server_info() && !get_df_server_info()->allow_no_mf;
+        rf::is_multi && !rf::is_server && get_af_server_info() && !get_af_server_info()->allow_no_mf;
 
     if (server_side_restrict_disable_muzzle_flash) {
         if (g_alpine_game_config.try_disable_muzzle_flash_lights) {

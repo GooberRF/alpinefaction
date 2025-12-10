@@ -70,7 +70,7 @@ FunHook<void(rf::Camera*, float, float)> camera_shake_global_hook{
 void evaluate_restrict_disable_ss()
 {
     server_side_restrict_disable_ss =
-        rf::is_multi && !rf::is_server && get_df_server_info() && !get_df_server_info()->allow_no_ss;
+        rf::is_multi && !rf::is_server && get_af_server_info() && !get_af_server_info()->allow_no_ss;
 
     if (server_side_restrict_disable_ss) {
         if (g_alpine_game_config.try_disable_weapon_shake) {

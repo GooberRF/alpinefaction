@@ -432,8 +432,8 @@ bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
     if (rf::weapon_is_semi_automatic(weapon_type)) {
 
         // if semi auto click limit is on
-        if (get_df_server_info().has_value() &&
-            get_df_server_info()->click_limit) {
+        if (get_af_server_info().has_value() &&
+            get_af_server_info()->click_limit) {
 
             // use override value for pistol/PR in stock game
             // stock game pistol has alt fire wait of 200ms, so can't use normal min logic for it

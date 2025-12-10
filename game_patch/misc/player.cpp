@@ -97,7 +97,7 @@ bool is_player_minimum_af_client_version(
 }
 
 bool is_server_minimum_af_version(int version_major, int version_minor) {
-    auto& server_info = get_df_server_info();
+    auto& server_info = get_af_server_info();
 
     if (!server_info.has_value()) {
         return false;
@@ -113,7 +113,7 @@ bool is_player_idle(const rf::Player* const player) {
         const bool is_idle = pdata.idle_check_timestamp.valid()
             && pdata.idle_check_timestamp.elapsed();
         // Player is idle if timer has elapsed and they're not spawned
-        return is_idle && rf::player_is_dead(player);
+        return is_idle && rf::player_is_dead(player) && !pdata.is_spectator();
     } else {
         return pdata.received_ac_status
             == std::optional{pf_pure_status::af_idle};
@@ -183,9 +183,7 @@ void attempt_spawn_local_player(rf::Player* pp) {
         }
         g_local_queued_delayed_spawn = false;
         stop_draw_respawn_timer_notification();
-        return;
     }
-    return;
 }
 
 void local_delayed_spawn_do_frame() {
@@ -205,11 +203,26 @@ void reset_local_delayed_spawn() {
     g_respawn_timer_local.invalidate();
 }
 
+static constexpr float BOT_SPAWN_WAIT_TIME = 5.f;
+
 CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
     0x004A678B,
-    [](auto& regs) {
-        if ((get_df_server_info().has_value() && get_df_server_info()->delayed_spawns) ||
-            (rf::is_server && g_alpine_server_config_active_rules.spawn_delay.enabled)) {
+    [] (auto& regs) {
+        if (!rf::is_server) {
+            const auto& pdata = get_player_additional_data(rf::local_player);
+            if (pdata.is_spawn_disabled_bot()
+                || (pdata.is_bot() && rf::level.global_time < BOT_SPAWN_WAIT_TIME)) {
+                rf::String prefix{};
+                rf::String msg{"You are not allowed to spawn right now"};
+                rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
+                regs.eip = 0x004A67BB;
+                return;
+            }
+        }
+
+        const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
+        if ((get_af_server_info().has_value() && get_af_server_info()->delayed_spawns)
+            || (rf::is_server && cfg_rules.spawn_delay.enabled)) {
             g_local_queued_delayed_spawn = true;
             regs.eip = 0x004A67BB;
         }
@@ -218,9 +231,18 @@ CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
 
 CodeInjection player_dying_frame_respawn_req_patch{ // force respawn
     0x004A6DCA,
-    [](auto& regs) {
-        if ((get_df_server_info().has_value() && get_df_server_info()->delayed_spawns) ||
-            (rf::is_server && g_alpine_server_config_active_rules.spawn_delay.enabled)) {
+    [] (auto& regs) {
+        if (!rf::is_server) {
+            const auto& pdata = get_player_additional_data(rf::local_player);
+            if (pdata.is_spawn_disabled_bot()) {
+                regs.eip = 0x004A6DF8;
+                return;
+            }
+        }
+
+        const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
+        if ((get_af_server_info().has_value() && get_af_server_info()->delayed_spawns)
+            || (rf::is_server && cfg_rules.spawn_delay.enabled)) {
             g_local_queued_delayed_spawn = true;
             regs.eip = 0x004A6DF8;
         }
@@ -552,7 +574,7 @@ void ping_looked_at_location() {
         return;
     }
 
-    if (!get_df_server_info().has_value() || !get_df_server_info()->location_pinging) {
+    if (!get_af_server_info().has_value() || !get_af_server_info()->location_pinging) {
         rf::String msg{"This server does not allow you to ping locations"};
         rf::String prefix;
         rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);

@@ -6,6 +6,7 @@
 #include <string>
 #include <common/utils/string-utils.h>
 #include "../multi/multi.h"
+#include "../os/os.h"
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/timestamp.h"
@@ -33,6 +34,8 @@ struct PlayerAdditionalData
     uint8_t client_version_type = 0;
     uint32_t max_rfl_version = 200;
     std::optional<pf_pure_status> received_ac_status{};
+    HighResTimer death_wait_timer{};
+    bool is_spawn_disabled = false;
     bool is_bot_player = false;
     bool is_muted = false;
     int last_hitsound_sent_ms = 0;
@@ -69,10 +72,7 @@ struct PlayerAdditionalData
 
     bool is_spawn_disabled_bot() const {
         if (rf::is_server) {
-            return is_bot_player
-                && g_alpine_server_config_active_rules.ideal_player_count < 32
-                && multi_num_spawned_players()
-                >= g_alpine_server_config_active_rules.ideal_player_count;
+            return is_bot_player && is_spawn_disabled;
         } else {
             return received_ac_status
                 == std::optional{pf_pure_status::af_spawn_disabled_bot};

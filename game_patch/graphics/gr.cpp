@@ -126,7 +126,7 @@ float gr_scale_world_fov(float horizontal_fov = 90.0f)
         horizontal_fov = gr_scale_fov_hor_plus(horizontal_fov);
     }
 
-    const auto& server_info_opt = get_df_server_info();
+    const auto& server_info_opt = get_af_server_info();
     if (server_info_opt && server_info_opt.value().max_fov) {
         horizontal_fov = std::min(horizontal_fov, server_info_opt.value().max_fov.value());
     }
@@ -161,7 +161,7 @@ ConsoleCommand2 fov_cmd{
         }
         rf::console::print("Horizontal FOV: {:.2f}", gr_scale_world_fov());
 
-        const auto& server_info_opt = get_df_server_info();
+        const auto& server_info_opt = get_af_server_info();
         if (server_info_opt && server_info_opt.value().max_fov) {
             rf::console::print("Server FOV limit: {:.2f}", server_info_opt.value().max_fov.value());
         }
@@ -211,7 +211,7 @@ ConsoleCommand2 colorblind_cmd{
 void evaluate_lightmaps_only()
 {
     bool server_side_restrict_lightmaps_only =
-        rf::is_multi && !rf::is_server && get_df_server_info() && !get_df_server_info()->allow_lmap;
+        rf::is_multi && !rf::is_server && get_af_server_info() && !get_af_server_info()->allow_lmap;
 
     if (server_side_restrict_lightmaps_only) {
         if (g_alpine_game_config.try_disable_textures) {

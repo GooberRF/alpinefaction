@@ -1721,7 +1721,7 @@ FunHook<void()> multi_stop_hook{
     },
 };
 
-const std::optional<AlpineFactionServerInfo>& get_df_server_info()
+const std::optional<AlpineFactionServerInfo>& get_af_server_info()
 {
     return g_af_server_info;
 }
