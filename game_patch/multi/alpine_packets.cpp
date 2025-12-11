@@ -1363,6 +1363,8 @@ void af_process_spectate_start_packet(
         return;
     }
 
+    update_player_active_status(spectator);
+
     auto& pdata = get_player_additional_data(spectator);
     const bool exited_spectate = spectatee == spectator;
     if (exited_spectate) {
