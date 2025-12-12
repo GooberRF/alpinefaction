@@ -1690,8 +1690,9 @@ void bot_decommission_check() {
 
     int active_persons = 0;
 
-    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        auto& pdata = get_player_additional_data(&player);
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        const auto& pdata = get_player_additional_data(&player);
+
         if (pdata.is_browser()) {
             continue;
         }
