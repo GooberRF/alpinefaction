@@ -34,7 +34,7 @@ struct PlayerAdditionalData
     uint8_t client_version_type = 0;
     uint32_t max_rfl_version = 200;
     std::optional<pf_pure_status> received_ac_status{};
-    HighResTimer death_wait_timer{};
+    HighResTimer bot_death_wait_timer{};
     bool is_spawn_disabled = false;
     bool is_bot_player = false;
     bool is_muted = false;

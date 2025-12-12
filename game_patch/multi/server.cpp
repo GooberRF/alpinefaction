@@ -1682,59 +1682,56 @@ void bot_decommission_check() {
         return;
     }
 
-    int active_persons = 0;
-    int active_bots = 0;
-    int disabled_bots = 0;
+    static std::vector<const rf::Player*> active_candidates{};
+    active_candidates.clear();
 
-    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        const auto& pdata = get_player_additional_data(&player);
+    static std::vector<const rf::Player*> disabled_candidates{};
+    disabled_candidates.clear();
+
+    int active_persons = 0;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        auto& pdata = get_player_additional_data(&player);
         if (pdata.is_browser()) {
             continue;
         }
 
         if (pdata.is_bot()) {
             if (pdata.is_spawn_disabled_bot()) {
-                ++disabled_bots;
+                disabled_candidates.push_back(&player);
             } else {
-                ++active_bots;
+                active_candidates.push_back(&player);
             }
         } else {
             const bool is_spawned = !rf::player_is_dead(&player)
                 && !rf::player_is_dying(&player);
-            const bool waiting = pdata.death_wait_timer.valid()
-                && !pdata.death_wait_timer.elapsed();
+            const bool waiting = pdata.bot_death_wait_timer.valid()
+                && !pdata.bot_death_wait_timer.elapsed();
+
             if (is_spawned || waiting) {
                 ++active_persons;
             }
         }
     }
 
+    const int active_bots = static_cast<int>(active_candidates.size());
+
     const int desired_active_bots = std::max(
         0,
         cfg_rules.ideal_player_count - active_persons
     );
 
-    std::vector<const rf::Player*> candidates{};
     if (active_bots < desired_active_bots) {
         int need = desired_active_bots - active_bots;
 
-        candidates.reserve(disabled_bots);
-        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            auto& pdata = get_player_additional_data(&player);
-            if (!pdata.is_bot() || !pdata.is_spawn_disabled) {
-                continue;
-            }
-            candidates.push_back(&player);
-        }
-
         std::ranges::sort(
-            candidates,
+            disabled_candidates,
             [] (const rf::Player* player, const rf::Player* rhs) {
                 return player->stats->score > rhs->stats->score;
             }
         );
 
-        for (const rf::Player* player : candidates) {
+        for (const rf::Player* player : disabled_candidates) {
             if (need <= 0) {
                 break;
             }
@@ -1745,23 +1742,14 @@ void bot_decommission_check() {
     } else if (active_bots > desired_active_bots) {
         int excess = active_bots - desired_active_bots;
 
-        candidates.reserve(active_bots);
-        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            auto& pdata = get_player_additional_data(&player);
-            if (!pdata.is_bot() || pdata.is_spawn_disabled) {
-                continue;
-            }
-            candidates.push_back(&player);
-        }
-
         std::ranges::sort(
-            candidates,
+            active_candidates,
             [] (const rf::Player* player, const rf::Player* rhs) {
                 return player->stats->score < rhs->stats->score;
             }
         );
 
-        for (const rf::Player* player : candidates) {
+        for (const rf::Player* player : active_candidates) {
             if (excess <= 0) {
                 break;
             }
