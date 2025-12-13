@@ -1210,32 +1210,43 @@ void RemoteServerCfgPopup::add_line(std::string_view line) {
     const int line_w = content_w - 20 - static_cast<int>(50.f * ui_scale);
     const auto [space_w, space_h] = rf::gr::get_char_size(' ', font_id);
 
+    const auto push_kv_line = [&] (
+        std::string key,
+        std::string value,
+        const std::string_view key_suffix
+    ) {
+        const auto [key_w, key_h] = rf::gr::get_string_size(key, font_id);
+        const auto [value_w, value_h] = rf::gr::get_string_size(value, font_id);
+        int max_key_w = static_cast<int>(line_w * .6f);
+        int max_value_w = line_w - max_key_w - space_w;
+        if (key_w < max_key_w) {
+            max_value_w = line_w - key_w - space_w;
+        } else if (value_w < max_value_w) {
+            max_key_w = line_w - value_w - space_w;
+        }
+        gr_fit_string(value, max_value_w, font_id);
+        gr_fit_string(key, max_key_w, font_id, key_suffix);
+        _lines.push_back(std::pair{std::move(key), std::move(value)});
+    };
+
     const size_t colon = line.find(":");
     const size_t arrow = line.find("->");
     if (colon != std::string::npos) {
         std::string key{line.substr(0, colon + 1)};
         std::string value{ltrim(line.substr(colon + 1))};
-        if (value.empty()) {
-            gr_fit_string(key, line_w, font_id);
-        } else {
-            gr_fit_string(key, static_cast<int>(line_w * .6f), font_id);
-        }
-        const auto [key_w, key_h] = rf::gr::get_string_size(key, font_id);
-        gr_fit_string(value, line_w - key_w - space_w, font_id);
-        _lines.push_back(std::pair{std::move(key), std::move(value)});
+        push_kv_line(std::move(key), std::move(value), "- :");
     } else if (arrow != std::string::npos) {
         std::string key{rtrim(line.substr(0, arrow))};
         std::string value{ltrim(line.substr(arrow + 2))};
         key += " ->";
-        const auto [key_w, key_h] = rf::gr::get_string_size(key, font_id);
-        gr_fit_string(value, line_w - key_w - space_w, font_id);
-        _lines.push_back(std::pair{std::move(key), std::move(value)});
+        push_kv_line(std::move(key), std::move(value), "- ->");
     } else {
         std::string text{line};
         gr_fit_string(text, line_w, font_id);
         // HACKFIX: We want to color `.toml` files.
         if (line.starts_with("    ") && line.contains(".toml")) {
-            _lines.push_back(std::pair{"", std::move(text)});
+            std::string empty_key{};
+            _lines.push_back(std::pair{std::move(empty_key), std::move(text)});
         } else {
             _lines.push_back(std::move(text));
         }
