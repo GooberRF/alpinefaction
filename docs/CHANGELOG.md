@@ -16,6 +16,7 @@ Version 1.2.1 (TBD): Not yet released
 - Deprecate `cl_wh_bigtext` command
 
 [@is-this-c](https://github.com/is-this-c)
+- Support `PgUp`, `PgDown`, `End`, and `Home` in remote server config UI
 - Improve bot decommission logic
 - Improve freelook spectate logic after level transition
 
@@ -28,6 +29,10 @@ Version 1.2.1 (TBD): Not yet released
 - Fix dynamic lights not illuminating meshes in Direct3D 11 renderer when 2 or more rotating movers are active and `Legacy movers` is false
 - Fix ESC mode capture progress not being reset when a control point becomes locked
 - Fix Direct3D 11 renderer not always properly applying dynamic lights to static meshes
+
+[@is-this-c](https://github.com/is-this-c)
+- Use packet queues for remote server config transfers
+- Fix key up logic for num pad `PgUp`, `PgDown`, `End`, and `Home`
 
 Version 1.2.0 (Willow): Released Dec-06-2025
 --------------------------------

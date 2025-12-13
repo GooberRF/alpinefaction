@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../rf/input.h"
+#include "../os/os.h"
 #include <variant>
 #include <vector>
 #include <optional>
@@ -48,11 +49,11 @@ public:
     bool is_left_aligned();
 
     void finalize() {
-        m_finalized = true;
+        _finalized = true;
     }
 
     void set_cfg_changed() {
-        m_cfg_changed = true;
+        _cfg_changed = true;
     }
 
     enum DisplayMode : uint8_t {
@@ -68,19 +69,22 @@ public:
 private:
     void add_line(std::string_view line);
 
-    using Line = std::variant<std::string, std::pair<std::string, std::string>>;
+    using KeyValue = std::pair<std::string, std::string>;
+    using Line = std::variant<std::string, KeyValue>;
 
-    std::vector<Line> m_lines{};
-    std::string m_partial_line{};
-    int m_last_key_down = 0;
-    bool m_cfg_changed = false;
-    bool m_need_restore_scroll = false;
-    std::optional<float> m_saved_scroll{};
-    bool m_finalized = false;
-    bool m_is_active = false;
+    std::vector<Line> _lines{};
+    std::string _partial_line{};
+    int _last_key_down = 0;
+    bool _cfg_changed = false;
+    bool _need_restore_scroll = false;
+    std::optional<float> _saved_scroll{};
+    HighResTimer _page_up_timer{};
+    HighResTimer _page_down_timer{};
+    bool _finalized = false;
+    bool _is_active = false;
     struct {
         float current = 0.f;
         float target = 0.f;
         float velocity = 0.f;
-    } m_scroll{};
+    } _scroll{};
 } g_remote_server_cfg_popup{};
