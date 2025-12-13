@@ -16,7 +16,7 @@ Version 1.2.1 (TBD): Not yet released
 - Deprecate `cl_wh_bigtext` command
 
 [@is-this-c](https://github.com/is-this-c)
-- Improve formatting in remote server config UI
+- Improve text logic in remote server config UI
 - Support `PgUp`, `PgDown`, `End`, and `Home` in remote server config UI
 - Improve bot decommission logic
 - Improve freelook spectate logic after level transition
