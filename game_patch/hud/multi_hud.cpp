@@ -1472,7 +1472,7 @@ void RemoteServerCfgPopup::render() {
     } else if (rf::key_get_and_reset_down_counter(rf::KEY_END)
         && !rf::console::console_is_visible()) {
         if (std::lround(_scroll.current) != static_cast<int>(max_scroll) - MIN_DELTA) {
-             _scroll.target = max_scroll;
+            _scroll.target = max_scroll;
         }
     }
 
