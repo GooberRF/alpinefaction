@@ -19,6 +19,7 @@ namespace rf
 
     // nw/psnet
 
+    #pragma pack(push, 4)
     struct NetAddr
     {
         uint32_t ip_addr;
@@ -26,15 +27,21 @@ namespace rf
 
         bool operator==(const NetAddr &other) const = default;
     };
+    #pragma pack(pop)
     static_assert(sizeof(NetAddr) == 0x8);
 
-    static auto& net_init_socket = addr_as_ref<void(unsigned short port)>(0x00528F10);
-    static auto& net_addr_to_string = addr_as_ref<void(char *buf, int buf_size, const NetAddr& addr)>(0x00529FE0);
-    static auto& net_send = addr_as_ref<void(const NetAddr &addr, const void *data, int len)>(0x0052A080);
-    static auto& net_same = addr_as_ref<int(const NetAddr &addr1, const NetAddr &addr2, bool check_port)>(0x0052A930);
+    constexpr int NET_MAX_REL_SOCKETS = 40;
 
+    static const auto& net_init_socket = addr_as_ref<void(unsigned short port)>(0x00528F10);
+    static const auto& net_addr_to_string = addr_as_ref<void(char *buf, int buf_size, const NetAddr& addr)>(0x00529FE0);
+    static const auto& net_send = addr_as_ref<void(const NetAddr &addr, const void *data, int len)>(0x0052A080);
+    static const auto& net_same = addr_as_ref<int(const NetAddr &addr1, const NetAddr &addr2, bool check_port)>(0x0052A930);
+    static const auto& net_rel_send = addr_as_ref<int(int, const uint8_t*, int)>(0x0052A310);
     static auto& net_udp_socket = addr_as_ref<int>(0x005A660C);
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
+
+    struct NetReliableSocket;
+    static auto& net_rel_sockets = addr_as_ref<NetReliableSocket[NET_MAX_REL_SOCKETS]>(0x01B479E8);
 
     // multi
 
@@ -176,6 +183,40 @@ namespace rf
         gold_white = 6,
     };
 
+    enum NetReliableSocketStatus: uint32_t {
+        EMPTY = 0x0,
+        CONNECTED = 0x1,
+        TIMED_OUT = 0x2,
+        UNK_3 = 0x3,
+        CONNECTED_REMOTE = 0x4,
+        CONNECTING = 0x5,
+    };
+    static_assert(sizeof(NetReliableSocketStatus) == 4);
+
+    #pragma pack(push, 1)
+    struct NetReliableSocket {
+        void *sbuffers[75];
+        int16_t ssequence[75];
+        int timesent[75];
+        int16_t send_len[75];
+        int rbuffers[75];
+        int recv_len[75];
+        int16_t rsequence[75];
+        int last_packet_received;
+        int last_packet_sent;
+        NetReliableSocketStatus status;
+        int16_t oursequence;
+        int16_t theirsequence;
+        rf::NetAddr net_addr;
+        int pings[10];
+        char ping_pos;
+        int num_ping_samples;
+        int ping_median;
+        int retransmission_timeout;
+    };
+    #pragma pack(pop)
+    static_assert(sizeof(NetReliableSocket) == 1727);
+
     constexpr size_t max_packet_size = 512;
 
     static auto& multi_get_game_type = addr_as_ref<NetGameType()>(0x00470770);
@@ -276,7 +317,4 @@ namespace rf
     static auto& multiplayer_crouch_walk_speed = addr_as_ref<float>(0x00594590);
 
     constexpr int multi_max_player_id = 256;
-
-    
-
 }
