@@ -342,19 +342,34 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
     return y - initial_y;
 }
 
-void filter_and_sort_players(std::vector<rf::Player*>& players, std::optional<int> team_id)
-{
+void filter_and_sort_players(
+    std::vector<rf::Player*>& players,
+    const std::optional<int> team_id
+) {
     players.clear();
     players.reserve(32);
 
-    auto player_list = SinglyLinkedList{rf::player_list};
-    for (auto& player : player_list) {
-        if (!team_id || player.team == team_id.value())
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!team_id || player.team == team_id.value()) {
             players.push_back(&player);
+        }
     }
-    std::sort(players.begin(), players.end(), [](auto player1, auto player2) {
-        return player1->stats->score > player2->stats->score;
-    });
+
+    std::ranges::sort(
+        players,
+        [] (const rf::Player* const player_1, const rf::Player* const player_2) {
+            if (player_1->stats->score != player_2->stats->score) {
+                return player_1->stats->score > player_2->stats->score;
+            }
+            const auto& pdata_1 = get_player_additional_data(player_1);
+            const auto& pdata_2 = get_player_additional_data(player_2);
+            if (pdata_1.is_proper_player()) {
+                return pdata_2.is_bot() || pdata_2.is_browser();
+            } else {
+                return pdata_1.is_bot() && pdata_2.is_browser();
+            }
+        }
+    );
 }
 
 void draw_scoreboard_internal_new(bool draw) {

@@ -60,6 +60,10 @@ struct PlayerAdditionalData
         }
     }
 
+    bool is_proper_player() const {
+        return !is_bot() && !is_browser();
+    }
+
     bool is_bot() const {
         if (rf::is_server) {
             return is_bot_player;
