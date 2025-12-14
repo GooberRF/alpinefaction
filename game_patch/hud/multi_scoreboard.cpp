@@ -363,6 +363,7 @@ void filter_and_sort_players(
             }
             const auto& pdata_1 = get_player_additional_data(player_1);
             const auto& pdata_2 = get_player_additional_data(player_2);
+            // Sort players before bots, and both before browsers.
             if (pdata_1.is_proper_player()) {
                 return pdata_2.is_bot() || pdata_2.is_browser();
             } else {
