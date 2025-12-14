@@ -16,10 +16,11 @@ Version 1.2.1 (TBD): Not yet released
 - Deprecate `cl_wh_bigtext` command
 
 [@is-this-c](https://github.com/is-this-c)
-- Improve text logic in remote server config UI
+- Improve scoreboard sorting for clients whose scores are equal
+- Improve text formatting in remote server config UI
 - Support `PgUp`, `PgDown`, `End`, and `Home` in remote server config UI
-- Improve bot decommission logic
-- Improve freelook spectate logic after level transition
+- Improve bot decommissioning
+- Improve freelook spectate mode after level transition
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
