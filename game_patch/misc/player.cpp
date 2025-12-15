@@ -180,7 +180,9 @@ void reset_local_delayed_spawn() {
 CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
     0x004A678B,
     [] (auto& regs) {
-        if (!rf::is_server && rf::local_player->is_spawn_disabled_bot()) {
+        if (!rf::is_server
+            && rf::local_player->is_bot
+            && rf::local_player->is_spawn_disabled) {
             rf::String prefix{};
             rf::String msg{"You are not allowed to spawn right now"};
             rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
@@ -200,7 +202,12 @@ CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
 CodeInjection player_dying_frame_respawn_req_patch{ // force respawn
     0x004A6DCA,
     [] (auto& regs) {
-        if (!rf::is_server && rf::local_player->is_spawn_disabled_bot()) {
+        if (!rf::is_server
+            && rf::local_player->is_bot
+            && rf::local_player->is_spawn_disabled) {
+            rf::String prefix{};
+            rf::String msg{"You are not allowed to force respawn right now"};
+            rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
             regs.eip = 0x004A6DF8;
             return;
         }
@@ -662,7 +669,7 @@ void update_player_flashlight() {
             g_local_headlamp_settings.b,
             _a) = // alpha is discarded
             extract_normalized_color_components(headlamp_color);
-    }    
+    }
     else {
         g_local_headlamp_settings.r = 1.0f;
         g_local_headlamp_settings.g = 0.872f;
@@ -715,6 +722,19 @@ void update_player_flashlight() {
     //*reinterpret_cast<float*>(0x005A0100) = g_local_headlamp_settings.max_range;     // max range (stock 12.0)
     *reinterpret_cast<float*>(0x005A0108) = g_local_headlamp_settings.base_radius;   // base radius (stock 3.0)
     AsmWriter{0x004A6AF3}.push(2);                                                 // attenuation algo (stock 0)
+}
+
+bool player_is_idle(const rf::Player* const player) {
+    if (rf::is_server) {
+        // Check if the player's idle timer has elapsed
+        const bool is_idle = player->idle.check_timer.valid()
+            && player->idle.check_timer.elapsed();
+        // Player is idle if timer has elapsed and they're not spawned
+        return is_idle && rf::player_is_dead(player) && !player->is_spectator;
+    } else {
+        return player->received_pf_status
+            == std::optional{pf_pure_status::af_idle};
+    }
 }
 
 FunHook<rf::Player* __fastcall(rf::Player*)> player_ctor_hook{

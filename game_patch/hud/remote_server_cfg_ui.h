@@ -8,8 +8,9 @@
 #include <vector>
 
 inline struct RemoteServerCfgPopup {
-public:
+private:
     using Self = RemoteServerCfgPopup;
+public:
 
     static bool uses_line_separators();
     static bool is_compact();

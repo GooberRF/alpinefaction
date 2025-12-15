@@ -237,13 +237,14 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
                 rf::bm::load("hud_microflag_blue.tga", -1, true);
 
             const int status_bm = std::invoke([&] {
-                if (player->is_browser()) {
+                if (player->is_browser) {
                     return browser_bm;
-                } else if (player->is_spectator()) {
+                } else if (player->is_spectator) {
                     return spectator_bm;
-                } else if ((player->is_spawn_disabled_bot()
+                } else if ((player->is_bot
+                    && player->is_spawn_disabled
                     && rf::player_is_dead(player))
-                    || player->is_idle()) {
+                    || player_is_idle(player)) {
                     return idle_bm;
                 } else {
                     if (player == red_flag_player) {
@@ -270,7 +271,7 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
 
             std::string player_name_stripped = player->name;
             const auto [space_w, space_h] = rf::gr::get_char_size(' ', -1);
-            const bool is_bot = player->is_bot();
+            const bool is_bot = player->is_bot;
             if (is_bot) {
                 const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", -1);
                 gr_fit_string(
@@ -361,10 +362,10 @@ void filter_and_sort_players(
                 return player_1->stats->score > player_2->stats->score;
             }
             // Sort players before bots, and both before browsers.
-            if (player_1->is_human_player()) {
-                return player_2->is_bot() || player_2->is_browser();
+            if (player_1->is_human_player) {
+                return player_2->is_bot || player_2->is_browser;
             } else {
-                return player_1->is_bot() && player_2->is_browser();
+                return player_1->is_bot && player_2->is_browser;
             }
         }
     );

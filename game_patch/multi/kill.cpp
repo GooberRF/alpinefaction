@@ -332,13 +332,14 @@ void multi_kill_init_player(rf::Player* player)
 
 FunHook<void()> multi_level_init_hook{
     0x0046E450,
-    []() {
-        auto player_list = SinglyLinkedList{rf::player_list};
-        for (auto& player : player_list) {
+    [] {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
             multi_kill_init_player(&player);
-            player.last_fragged_time.reset();
-            if (player.is_bot()) {
-                player.is_spawn_disabled = true;
+            if (rf::is_server) {
+                player.death_time.reset();
+                if (player.is_bot) {
+                    player.is_spawn_disabled = true;
+                }
             }
         }
 
@@ -467,7 +468,9 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     update_player_active_status(killed_player); // active pulse on killed
 
-    killed_player->last_fragged_time.emplace(std::chrono::high_resolution_clock::now());
+    if (rf::is_server) {
+        killed_player->death_time.emplace(std::chrono::high_resolution_clock::now());
+    }
 
     auto* killed_stats = static_cast<PlayerStatsNew*>(killed_player->stats);
     killed_stats->inc_deaths();
@@ -476,7 +479,7 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
         auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
         if (killer_player != killed_player) {
             rf::player_add_score(killer_player, 1);
-            killer_stats->inc_kills();            
+            killer_stats->inc_kills();
         }
         else {
             rf::player_add_score(killer_player, -1);
@@ -490,8 +493,6 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
             multi_update_gungame_weapon(killer_player, false);
         }
     }
-    
-    
 }
 
 FunHook<void(rf::Entity*)> entity_on_death_hook{

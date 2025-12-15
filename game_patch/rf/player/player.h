@@ -1,23 +1,23 @@
 #pragma once
 
-#include <common/utils/list-utils.h>
-#include <patch_common/MemUtils.h>
-#include "../math/vector.h"
-#include "../math/matrix.h"
-#include "../os/timestamp.h"
-#include "../os/string.h"
 #include "../gr/gr.h"
+#include "../math/matrix.h"
+#include "../math/vector.h"
+#include "../os/string.h"
+#include "../os/timestamp.h"
 #include "control_config.h"
 #include "player_fpgun.h"
+#include <common/utils/list-utils.h>
+#include <patch_common/MemUtils.h>
 
 #ifdef DASH_FACTION
-#include <map>
-#include "../multi.h"
 #include "../../os/os.h"
 #include "../../purefaction/pf_packets.h"
+#include "../multi.h"
+#include <map>
 
 constexpr float BOT_LEVEL_START_WAIT_TIME_SEC = 5.f;
-constexpr float BOT_OPPONENT_FRAGGED_WAIT_TIME_SEC = 5.f;
+constexpr float BOT_OPPONENT_DEATH_WAIT_TIME_SEC = 5.f;
 
 struct PlayerNetGameSaveData {
     rf::Vector3 pos{};
@@ -43,25 +43,35 @@ struct ClientVersionInfoProfile {
 
 struct PlayerAdditionalData {
     ClientVersionInfoProfile version_info{};
-    std::optional<pf_pure_status> received_ac_status{};
-    std::optional<std::chrono::high_resolution_clock::time_point> last_fragged_time{};
+    std::optional<pf_pure_status> received_pf_status{};
+    std::optional<std::chrono::high_resolution_clock::time_point> death_time{};
+
+    bool is_bot = false;
     bool is_spawn_disabled = false;
-    bool is_bot_player = false;
+    bool is_browser = false;
+    bool is_human_player = true;
+    bool is_spectator = false;
     bool is_muted = false;
+
     std::optional<int> last_hit_sound_sent_ms{};
     std::optional<int> last_critical_sound_sent_ms{};
+
     struct {
         std::map<std::string, PlayerNetGameSaveData> saves{};
         rf::Vector3 last_teleport_pos{};
         rf::TimestampRealtime last_teleport_timer{};
     } saving{};
-    std::optional<int> last_spawn_point_index{};
+
     struct {
         rf::TimestampRealtime check_timer{};
         rf::TimestampRealtime kick_timer{};
     } idle{};
-    rf::Timestamp respawn_timer{}; // only used when configured in ADS
-    uint8_t damage_handicap = 0; // percentile
+
+    std::optional<int> last_spawn_point_index{};
+    // only used when configured in ADS
+    rf::Timestamp respawn_timer{};
+    // percentile
+    uint8_t damage_handicap = 0;
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 };
@@ -240,16 +250,8 @@ namespace rf
         : PlayerBase
 #ifdef DASH_FACTION
         , PlayerAdditionalData
-    {
-        bool is_spectator(this const Player& self);
-        bool is_human_player(this const Player& self);
-        bool is_bot(this const Player& self);
-        bool is_spawn_disabled_bot(this const Player& self);
-        bool is_browser(this const Player& self);
-        bool is_idle(this const Player& self);
-#else
-    {
 #endif
+    {
     };
 
     template <>
@@ -293,59 +295,4 @@ namespace rf
     static auto& local_screen_flash = addr_as_ref<void(Player* pp, uint8_t r, uint8_t g, uint8_t b, uint8_t a)>(0x00416450);
     static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
     static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
-
-#ifdef DASH_FACTION
-    inline bool Player::is_spectator(this const Player& self) {
-        if (is_server) {
-            return self.spectatee.has_value();
-        } else {
-            return self.received_ac_status
-                == std::optional{pf_pure_status::af_spectator};
-        }
-    }
-
-    inline bool Player::is_human_player(this const Player& self) {
-        return !self.is_bot() && !self.is_browser();
-    }
-
-    inline bool Player::is_bot(this const Player& self) {
-        if (is_server) {
-            return self.is_bot_player;
-        } else {
-            return self.received_ac_status == std::optional{pf_pure_status::af_bot}
-                || self.received_ac_status
-                == std::optional{pf_pure_status::af_spawn_disabled_bot};
-        }
-    }
-
-    inline bool Player::is_spawn_disabled_bot(this const Player& self) {
-        if (is_server) {
-            return self.is_bot_player && self.is_spawn_disabled;
-        } else {
-            return self.received_ac_status
-                == std::optional{pf_pure_status::af_spawn_disabled_bot};
-        }
-    }
-
-    inline bool Player::is_browser(this const Player& self) {
-        if (is_server) {
-            return self.version_info.software == ClientSoftware::Browser;
-        } else {
-            return self.received_ac_status == std::optional{pf_pure_status::rfsb};
-        }
-    }
-
-    inline bool Player::is_idle(this const Player& self) {
-        if (is_server) {
-            // Check if the player's idle timer has elapsed
-            const bool is_idle = self.idle.check_timer.valid()
-                && self.idle.check_timer.elapsed();
-            // Player is idle if timer has elapsed and they're not spawned
-            return is_idle && player_is_dead(&self) && !self.is_spectator();
-        } else {
-            return self.received_ac_status
-                == std::optional{pf_pure_status::af_idle};
-        }
-    }
-#endif
 }

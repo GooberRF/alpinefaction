@@ -1488,7 +1488,7 @@ CodeInjection multi_hud_update_target_player_patch_1{
     0x00477F06,
     [] (const auto& regs) {
         const rf::Player& player = addr_as_ref<rf::Player>(regs.esi - 8);
-        g_target_player_is_bot = player.is_bot();
+        g_target_player_is_bot = player.is_bot;
     },
 };
 
@@ -1496,7 +1496,7 @@ CodeInjection multi_hud_update_target_player_patch_2{
     0x00477F8C,
     [] (const auto& regs) {
         const rf::Player& player = addr_as_ref<rf::Player>(regs.edi - 8);
-        g_target_player_is_bot = player.is_bot();
+        g_target_player_is_bot = player.is_bot;
     },
 };
 

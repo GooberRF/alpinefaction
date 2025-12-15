@@ -323,7 +323,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
     self.scroll.target = std::clamp(self.scroll.target, 0.f, max_scroll);
 
     const float delta = std::fabs(self.scroll.target - self.scroll.current);
-    // HACKFIX: If its delta falls below 1.0, it can cause stutter.
+    // HACKFIX: If `delta` falls below 1.0, it can cause a final stutter.
     constexpr int MIN_DELTA = 1;
     if (delta >= static_cast<float>(MIN_DELTA)) {
         const auto smooth_cd = [] (

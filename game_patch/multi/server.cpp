@@ -277,7 +277,7 @@ int get_level_file_version(const std::string& file_name)
 }
 
 void print_player_info(rf::Player* player, bool new_join) {
-    const bool is_bot = player->is_bot();
+    const bool is_bot = player->is_bot;
 
     if (player == rf::local_player) {
         if (is_bot) {
@@ -291,9 +291,9 @@ void print_player_info(rf::Player* player, bool new_join) {
     std::string name = player->name;
     if (is_bot) {
         name += " (bot)";
-    } else if (player->is_idle()) {
+    } else if (player_is_idle(player)) {
         name += " (idle)";
-    } else if (player->is_browser()) {
+    } else if (player->is_browser) {
         name += " (browser)";
     }
 
@@ -1347,12 +1347,10 @@ std::vector<rf::Player*> get_clients(
     std::vector<rf::Player*> clients{};
     clients.reserve(32);
 
-    for (auto& player : SinglyLinkedList{rf::player_list}) {
-        const bool is_bot = player.is_bot();
-        const bool is_browser = player.is_browser();
-        if ((is_browser && include_browsers)
-            || (is_bot && include_bots)
-            || (!is_browser && !is_bot))
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if ((player.is_browser && include_browsers)
+            || (player.is_bot && include_bots)
+            || (!player.is_browser && !player.is_bot))
         {
             clients.push_back(&player);
         }
@@ -1732,7 +1730,7 @@ void bot_decommission_check() {
 
     const bool is_team_mode = multi_is_team_game_type();
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser()) {
+        if (player.is_browser) {
             continue;
         }
 
@@ -1741,8 +1739,8 @@ void bot_decommission_check() {
             continue;
         }
 
-        if (player.is_bot()) {
-            if (player.is_spawn_disabled_bot()) {
+        if (player.is_bot) {
+            if (player.is_spawn_disabled) {
                 disabled_candidates[team].push_back(&player);
             } else {
                 active_candidates[team].push_back(&player);
@@ -1751,11 +1749,11 @@ void bot_decommission_check() {
             const bool is_spawned = !rf::player_is_dead(&player)
                 && !rf::player_is_dying(&player);
             const auto now = std::chrono::high_resolution_clock::now();
-            const bool was_just_fragged = player.last_fragged_time
-                && now - *player.last_fragged_time
-                    < std::chrono::duration<float>(BOT_OPPONENT_FRAGGED_WAIT_TIME_SEC);
+            const bool was_just_unspawned = player.death_time
+                && now - *player.death_time
+                    < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
 
-            if (is_spawned || was_just_fragged) {
+            if (is_spawned || was_just_unspawned) {
                 ++active_persons_per_team[team];
             }
         }
@@ -1807,7 +1805,7 @@ void player_idle_check(rf::Player* const player) {
     }
 
     if (player->version_info.software == ClientSoftware::Browser
-        || player->is_bot_player) {
+        || player->is_bot) {
         return; // don't mark browsers or bots as idle
     }
 
@@ -1820,7 +1818,7 @@ void player_idle_check(rf::Player* const player) {
         return; // don't mark new players as idle
     }
 
-    if (player->is_idle()) {
+    if (player_is_idle(player)) {
         if (!inactivity_cfg.kick_after_warning) {
             return;
         }
@@ -1987,7 +1985,8 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         update_player_active_status(player); // active pulse on spawn
 
         if (g_alpine_server_config_active_rules.force_character.enabled) {
-            player->settings.multi_character = g_alpine_server_config_active_rules.force_character.character_index;
+            player->settings.multi_character =
+                g_alpine_server_config_active_rules.force_character.character_index;
         }
         if (!check_can_player_spawn(player)) {
             return;
@@ -1996,10 +1995,13 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
         if (g_match_info.match_active && !is_player_in_match(player)) {
-            af_send_automated_chat_msg("You cannot spawn because a match is in progress. Please feel free to spectate.", player);
+            af_send_automated_chat_msg(
+                "You cannot spawn because a match is in progress. Please feel free to spectate.",
+                player
+            );
             return;
         }
-        if (player->is_spawn_disabled_bot()) {
+        if (player->is_bot && player->is_spawn_disabled) {
             std::string msg = std::format("You're a bot and you can't spawn right now.");
             af_send_automated_chat_msg(msg, player);
             return;
@@ -2007,8 +2009,14 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
 
         // if a respawn timer has been set by the server, enforce it
         if (player->respawn_timer.valid() && !player->respawn_timer.elapsed()) {
-            float spawn_delay_left = std::max(static_cast<float>(player->respawn_timer.time_until()) / 1000.0f, 0.001f); // at least 1ms
-            std::string msg = std::format("Respawn delay: {} seconds left until you can respawn.", spawn_delay_left);
+            const float spawn_delay_left = std::max(
+                static_cast<float>(player->respawn_timer.time_until()) / 1000.f,
+                .001f // at least 1ms
+            );
+            std::string msg = std::format(
+                "Respawn delay: {} seconds left until you can respawn.",
+                spawn_delay_left
+            );
             af_send_automated_chat_msg(msg, player);
             return;
         }
@@ -2029,11 +2037,11 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             }
 
             // inform newly spawned players of their loadout
-            if (rf::is_server &&
-                (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active &&
-                !g_alpine_server_config_active_rules.gungame.enabled) // no loadouts when gungame is on
-                ) {
-
+            if (rf::is_server
+                && (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
+                    // no loadouts when gungame is on
+                    && !g_alpine_server_config_active_rules.gungame.enabled)
+            ) {
                 // Add each weapon in the loadout to the player on the server
                 for (auto const& e : g_alpine_server_config_active_rules.spawn_loadout.red_weapons) {
                     rf::player_add_weapon(player, e.index, e.reserve_ammo);
@@ -2044,8 +2052,11 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                             rf::ai_add_weapon(&ep->ai, rf::remote_charge_det_weapon_type, 0);
                     }
                 }
-                
-                af_send_just_spawned_loadout(player, g_alpine_server_config_active_rules.spawn_loadout.red_weapons);
+
+                af_send_just_spawned_loadout(
+                    player,
+                    g_alpine_server_config_active_rules.spawn_loadout.red_weapons
+                );
             }
         }
 

@@ -45,19 +45,19 @@ void send_pf_player_stats_packet(rf::Player* player)
     size_t packet_len = sizeof(stats_packet);
     auto player_list = SinglyLinkedList{rf::player_list};
     for (auto& current_player : player_list) {
-        auto& player_stats = *static_cast<PlayerStatsNew*>(current_player.stats);
+        PlayerStatsNew& player_stats = *static_cast<PlayerStatsNew*>(current_player.stats);
         pf_player_stats_packet::player_stats out_stats{};
         out_stats.player_id = current_player.net_data->player_id;
         const pf_pure_status pure_status = std::invoke([&] {
-            if (current_player.is_spectator()) {
+            if (current_player.spectatee) {
                 return pf_pure_status::af_spectator;
-            } else if (current_player.is_spawn_disabled_bot()) {
-                return pf_pure_status::af_spawn_disabled_bot;
-            } else if (current_player.is_bot()) {
-                return pf_pure_status::af_bot;
-            } else if (current_player.is_browser()) {
+            } else if (current_player.is_bot) {
+                return current_player.is_spawn_disabled
+                    ? pf_pure_status::af_spawn_disabled_bot
+                    : pf_pure_status::af_bot;
+            } else if (current_player.version_info.software == ClientSoftware::Browser) {
                 return pf_pure_status::rfsb;
-            } else if (current_player.is_idle()) {
+            } else if (player_is_idle(&current_player)) {
                 return pf_pure_status::af_idle;
             } else {
                 return pf_ac_get_pure_status(&current_player);
@@ -127,10 +127,17 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
         player_stats_ptr += sizeof(in_stats);
         auto* player = rf::multi_find_player_by_id(in_stats.player_id);
         if (player) {
-            auto& stats = *static_cast<PlayerStatsNew*>(player->stats);
-            if (in_stats.is_pure <= static_cast<uint8_t>(pf_pure_status::_last_variant)) {
-                player->received_ac_status
-                    = std::optional{static_cast<pf_pure_status>(in_stats.is_pure)};
+            PlayerStatsNew& stats = *static_cast<PlayerStatsNew*>(player->stats);
+            if (in_stats.is_pure<= static_cast<uint8_t>(pf_pure_status::_last_variant)) {
+                const auto pf_status = static_cast<pf_pure_status>(in_stats.is_pure);
+                player->received_pf_status = std::optional{pf_status};
+                player->is_bot = pf_status == pf_pure_status::af_bot
+                    || pf_status == pf_pure_status::af_spawn_disabled_bot;
+                player->is_spawn_disabled =
+                    pf_status == pf_pure_status::af_spawn_disabled_bot;
+                player->is_spectator = pf_status == pf_pure_status::af_spectator;
+                player->is_browser = pf_status == pf_pure_status::rfsb;
+                player->is_human_player = !player->is_bot && !player->is_browser;
             }
             stats.max_streak = in_stats.streak_max;
             stats.current_streak = in_stats.streak_current;

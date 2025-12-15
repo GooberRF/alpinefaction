@@ -1363,7 +1363,7 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
 
                 if (g_joining_player_info.bot_shared_secret
                     == std::optional{g_alpine_server_config.bot_shared_secret}) {
-                    valid_player->is_bot_player = true;
+                    valid_player->is_bot = true;
                     valid_player->is_spawn_disabled = true;
                     rf::console::print(
                         "{}'s bot shared secret was valid",

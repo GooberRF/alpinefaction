@@ -267,8 +267,8 @@ protected:
             return false;
         }
         if (p->version_info.software == ClientSoftware::Browser
-            || p->is_bot_player
-            || p->is_idle()
+            || p->is_bot
+            || player_is_idle(p)
             || !player_meets_alpine_restrict(p)) {
             return false;
         }
@@ -1066,7 +1066,7 @@ VoteMgr g_vote_mgr;
 
 void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, rf::Player* sender)
 {
-    if (sender->version_info.software == ClientSoftware::Browser || sender->is_bot_player) {
+    if (sender->version_info.software == ClientSoftware::Browser || sender->is_bot) {
         af_send_automated_chat_msg("Browsers and bots are not allowed to vote!", sender, true);
         return;
     } else if (!Vote::player_meets_alpine_restrict(sender)) {
@@ -1075,7 +1075,7 @@ void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, 
             sender, true
         );
         return;
-    } else if (sender->is_idle()) {
+    } else if (player_is_idle(sender)) {
         af_send_automated_chat_msg("Idle players are not allowed to vote!", sender, true);
         return;
     }
