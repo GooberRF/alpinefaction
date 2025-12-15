@@ -34,7 +34,7 @@ Version 1.2.1 (TBD): Not yet released
 - Fix Direct3D 11 renderer not always properly applying dynamic lights to static meshes
 
 [@is-this-c](https://github.com/is-this-c)
-- Use packet queues for remote server config transfers
+- Use packet queues for remote server config transfers, so as to prevent potential timeouts
 - Fix key up logic for num pad `PgUp`, `PgDown`, `End`, and `Home`
 
 Version 1.2.0 (Willow): Released Dec-06-2025
