@@ -2,8 +2,10 @@
 
 #include <cstdint>
 #include <variant>
+#include <vector>
 #include <common/rfproto.h>
 #include "gametype.h"
+#include "../multi/server_internal.h"
 #include "../rf/multi.h"
 
 #pragma pack(push, 1)

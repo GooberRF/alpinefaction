@@ -3,6 +3,7 @@
 #include <algorithm>
 #include "../rf/os/timestamp.h"
 #include "../hud/hud.h"
+#include "../hud/remote_server_cfg_ui.h"
 
 extern bool g_loaded_alpine_settings_file;
 
