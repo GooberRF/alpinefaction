@@ -236,15 +236,14 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
             static const int hud_micro_flag_blue_bm =
                 rf::bm::load("hud_microflag_blue.tga", -1, true);
 
-            const auto& pdata = get_player_additional_data(player);
             const int status_bm = std::invoke([&] {
-                if (pdata.is_browser()) {
+                if (player->is_browser()) {
                     return browser_bm;
-                } else if (pdata.is_spectator()) {
+                } else if (player->is_spectator()) {
                     return spectator_bm;
-                } else if ((pdata.is_spawn_disabled_bot()
+                } else if ((player->is_spawn_disabled_bot()
                     && rf::player_is_dead(player))
-                    || is_player_idle(player)) {
+                    || player->is_idle()) {
                     return idle_bm;
                 } else {
                     if (player == red_flag_player) {
@@ -271,7 +270,7 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
 
             std::string player_name_stripped = player->name;
             const auto [space_w, space_h] = rf::gr::get_char_size(' ', -1);
-            const bool is_bot = pdata.is_bot();
+            const bool is_bot = player->is_bot();
             if (is_bot) {
                 const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", -1);
                 gr_fit_string(
@@ -361,13 +360,11 @@ void filter_and_sort_players(
             if (player_1->stats->score != player_2->stats->score) {
                 return player_1->stats->score > player_2->stats->score;
             }
-            const auto& pdata_1 = get_player_additional_data(player_1);
-            const auto& pdata_2 = get_player_additional_data(player_2);
             // Sort players before bots, and both before browsers.
-            if (pdata_1.is_proper_player()) {
-                return pdata_2.is_bot() || pdata_2.is_browser();
+            if (player_1->is_human_player()) {
+                return player_2->is_bot() || player_2->is_browser();
             } else {
-                return pdata_1.is_bot() && pdata_2.is_browser();
+                return player_1->is_bot() && player_2->is_browser();
             }
         }
     );

@@ -202,8 +202,7 @@ static bool is_muted_player(rf::Player *pp)
     if (g_all_players_muted) {
         return true;
     }
-    auto& pdata = get_player_additional_data(pp);
-    return pdata.is_muted;
+    return pp->is_muted;
 }
 
 CodeInjection process_chat_line_packet_injection{
@@ -233,14 +232,13 @@ ConsoleCommand2 mute_all_players_cmd{
 ConsoleCommand2 mute_player_cmd{
     "mute_player",
     [] (const std::string_view player_name) {
-        const rf::Player* const pp = find_best_matching_player(player_name.data());
+        rf::Player* const pp = find_best_matching_player(player_name.data());
         if (pp) {
-            auto& pdata = get_player_additional_data(pp);
-            pdata.is_muted = !pdata.is_muted;
+            pp->is_muted = !pp->is_muted;
             rf::console::print(
                 "Player {} is {}",
                 pp->name,
-                pdata.is_muted ? "muted" : "unmuted"
+                pp->is_muted ? "muted" : "unmuted"
             );
         }
     },

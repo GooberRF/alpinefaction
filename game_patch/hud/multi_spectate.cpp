@@ -123,10 +123,9 @@ static void spectate_next_player(const bool dir, const bool try_alive_players_fi
         if (!new_target) {
             break;
         }
-        const auto& pdata = get_player_additional_data(new_target);
         if (new_target == g_spectate_mode_target) {
             break; // nothing found
-        } else if (pdata.is_browser()) {
+        } else if (new_target->is_browser()) {
             continue;
         } else if (try_alive_players_first && rf::player_is_dead(new_target)) {
             continue;
@@ -555,8 +554,7 @@ void multi_spectate_render() {
     auto [target_name_w, target_name_h] =
         rf::gr::get_string_size(target_name, large_font);
     const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", large_font);
-    const auto& pdata = get_player_additional_data(g_spectate_mode_target);
-    const bool is_bot = pdata.is_bot();
+    const bool is_bot = g_spectate_mode_target->is_bot();
     if (is_bot) {
         target_name_w += bot_w;
     }

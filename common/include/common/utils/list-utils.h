@@ -2,7 +2,12 @@
 
 #include <iterator>
 
-template<typename T, T* const T::*NEXT_PTR = &T::next>
+template <typename T>
+struct singly_list_traits {
+    static constexpr auto NEXT_PTR = &T::next;
+};
+
+template<typename T, auto NEXT_PTR = singly_list_traits<T>::NEXT_PTR>
 class SinglyLinkedList
 {
     std::reference_wrapper<T*> m_list;
@@ -77,7 +82,16 @@ public:
     }
 };
 
-template<typename T, T* const T::*NEXT_PTR = &T::next, T* const T::*PREV_PTR = &T::prev>
+template <typename T>
+struct doubly_list_traits : singly_list_traits<T>  {
+    static constexpr auto PREV_PTR = &T::prev;
+};
+
+template <
+    typename T,
+    auto NEXT_PTR = doubly_list_traits<T>::NEXT_PTR,
+    auto PREV_PTR = doubly_list_traits<T>::PREV_PTR
+>
 class DoublyLinkedList
 {
     std::reference_wrapper<T> m_list;

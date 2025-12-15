@@ -34,7 +34,6 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 
-std::unordered_map<const rf::Player*, PlayerAdditionalData> g_player_additional_data_map;
 static rf::PlayerHeadlampSettings g_local_headlamp_settings;
 
 void set_headlamp_toggle_enabled(bool enabled)
@@ -55,16 +54,6 @@ void find_player(const StringMatcher& query, std::function<void(rf::Player*)> co
     }
 }
 
-void reset_player_additional_data(const rf::Player* const player)
-{
-    g_player_additional_data_map.erase(player);
-}
-
-PlayerAdditionalData& get_player_additional_data(const rf::Player* const player)
-{
-    return g_player_additional_data_map[player];
-}
-
 // used for compatibility checks
 bool is_player_minimum_af_client_version(
     const rf::Player* const player,
@@ -76,24 +65,23 @@ bool is_player_minimum_af_client_version(
         return false;
     }
 
-    const auto& pdata = get_player_additional_data(player);
-    if (pdata.client_version != ClientVersion::alpine_faction) {
+    if (player->version_info.software != ClientSoftware::AlpineFaction) {
         return false;
     }
 
-    if (only_release && pdata.client_version_type != VERSION_TYPE_RELEASE) {
+    if (only_release && player->version_info.type != VERSION_TYPE_RELEASE) {
         return false;
     }
 
-    if (pdata.client_version_major > version_major) {
+    if (player->version_info.major > version_major) {
         return true;
     }
 
-    if (pdata.client_version_major < version_major) {
+    if (player->version_info.major < version_major) {
         return false;
     }
 
-    return pdata.client_version_minor >= version_minor;
+    return player->version_info.minor >= version_minor;
 }
 
 bool is_server_minimum_af_version(int version_major, int version_minor) {
@@ -104,20 +92,6 @@ bool is_server_minimum_af_version(int version_major, int version_minor) {
     }
 
     return server_info->version_major >= version_major && server_info->version_minor >= version_minor;
-}
-
-bool is_player_idle(const rf::Player* const player) {
-    const auto& pdata = get_player_additional_data(player);
-    if (rf::is_server) {
-        // Check if the player's idle timer has elapsed
-        const bool is_idle = pdata.idle_check_timestamp.valid()
-            && pdata.idle_check_timestamp.elapsed();
-        // Player is idle if timer has elapsed and they're not spawned
-        return is_idle && rf::player_is_dead(player) && !pdata.is_spectator();
-    } else {
-        return pdata.received_ac_status
-            == std::optional{pf_pure_status::af_idle};
-    }
 }
 
 std::string build_local_spawn_string(bool can_respawn) {
@@ -206,17 +180,12 @@ void reset_local_delayed_spawn() {
 CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
     0x004A678B,
     [] (auto& regs) {
-        if (!rf::is_server) {
-            constexpr float BOT_SPAWN_WAIT_TIME_SEC = 5.f;
-            const auto& pdata = get_player_additional_data(rf::local_player);
-            if (pdata.is_spawn_disabled_bot()
-                || (pdata.is_bot() && rf::level.global_time < BOT_SPAWN_WAIT_TIME_SEC)) {
-                rf::String prefix{};
-                rf::String msg{"You are not allowed to spawn right now"};
-                rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
-                regs.eip = 0x004A67BB;
-                return;
-            }
+        if (!rf::is_server && rf::local_player->is_spawn_disabled_bot()) {
+            rf::String prefix{};
+            rf::String msg{"You are not allowed to spawn right now"};
+            rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
+            regs.eip = 0x004A67BB;
+            return;
         }
 
         const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
@@ -231,11 +200,9 @@ CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
 CodeInjection player_dying_frame_respawn_req_patch{ // force respawn
     0x004A6DCA,
     [] (auto& regs) {
-        if (!rf::is_server) {
-            if (get_player_additional_data(rf::local_player).is_spawn_disabled_bot()) {
-                regs.eip = 0x004A6DF8;
-                return;
-            }
+        if (!rf::is_server && rf::local_player->is_spawn_disabled_bot()) {
+            regs.eip = 0x004A6DF8;
+            return;
         }
 
         const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
@@ -258,14 +225,13 @@ FunHook<rf::Player*(bool)> player_create_hook{
 
 FunHook<void(rf::Player*)> player_destroy_hook{
     0x004A35C0,
-    [](rf::Player* player) {        
+    [](rf::Player* player) {
         multi_spectate_on_destroy_player(player);
-        reset_player_additional_data(player);
-        player_destroy_hook.call_target(player);
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
         }
+        player_destroy_hook.call_target(player);
     },
 };
 
@@ -751,8 +717,34 @@ void update_player_flashlight() {
     AsmWriter{0x004A6AF3}.push(2);                                                 // attenuation algo (stock 0)
 }
 
+FunHook<rf::Player* __fastcall(rf::Player*)> player_ctor_hook{
+    0x00472AD0,
+    [] (rf::Player* const player) {
+        player_ctor_hook.call_target(player);
+        PlayerAdditionalData* const player_add_data =
+            static_cast<PlayerAdditionalData*>(player);
+        new (player_add_data) PlayerAdditionalData{};
+        return player;
+    }
+};
+
+FunHook<void __fastcall(rf::Player*)> player_dtor_hook{
+    0x00472B80,
+    [] (rf::Player* const player) {
+        player_dtor_hook.call_target(player);
+        PlayerAdditionalData* const player_add_data =
+            static_cast<PlayerAdditionalData*>(player);
+        player_add_data->~PlayerAdditionalData();
+    }
+};
+
 void player_do_patch()
 {
+    // Extend `rf::Player` structure.
+    AsmWriter{0x004A3329}.push<size_t>(sizeof(rf::Player));
+    player_ctor_hook.install();
+    player_dtor_hook.install();
+
     // Support player headlamp
     player_move_flashlight_light_patch.install();
     update_player_flashlight();

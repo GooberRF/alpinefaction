@@ -57,7 +57,7 @@
 
 int g_update_rate = 30; // client netfps
 
-ClientVersion g_joining_client_version = ClientVersion::unknown;
+ClientSoftware g_joining_client_version = ClientSoftware::Unknown;
 AlpineFactionJoinReqPacketExt g_joining_player_info{};
 StashedPacket g_join_request_stashed;
 static const uint8_t* g_rx_base = nullptr;
@@ -1159,7 +1159,7 @@ static bool parse_af_tail_v3(const uint8_t* payload, size_t payload_len, const A
 
 static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_t rawlen)
 {
-    g_joining_client_version = ClientVersion::unknown;
+    g_joining_client_version = ClientSoftware::Unknown;
     g_joining_player_info = {};
     if (!pkt || datalen < sizeof(RF_GamePacketHeader) || rawlen < sizeof(RF_GamePacketHeader))
         return false;
@@ -1189,7 +1189,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
             t.c8 == 0xBD;
 
         if (is_rfsb) {
-            g_joining_client_version = ClientVersion::browser;
+            g_joining_client_version = ClientSoftware::Browser;
             g_joining_player_info.af_signature = t.sig;
             g_joining_player_info.version_major = 5u;
             g_joining_player_info.version_minor = 1u;
@@ -1216,7 +1216,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
             t.c6 == 0x00;
 
         if (is_rfsb) {
-            g_joining_client_version = ClientVersion::browser;
+            g_joining_client_version = ClientSoftware::Browser;
             g_joining_player_info.af_signature = t.sig;
             g_joining_player_info.version_major = 5u;
             g_joining_player_info.version_minor = 0u;
@@ -1240,7 +1240,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
 
     if (parse_af_tail_v3(payload, plen, pre, tlv_b, tlv_e)) {
         xlog::debug("matched v3 join_req tail with signature {}", pre->signature);
-        g_joining_client_version = ClientVersion::alpine_faction;
+        g_joining_client_version = ClientSoftware::AlpineFaction;
         g_joining_player_info.af_signature = pre->signature;
         g_joining_player_info.version_major = pre->version_major;
         g_joining_player_info.version_minor = pre->version_minor;
@@ -1268,7 +1268,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
         const auto* v2 = reinterpret_cast<const AFJoinReq_v2*>(p);
         xlog::debug("matched v2 join_req tail, sig {}", v2->signature);
         if (v2->signature == ALPINE_FACTION_SIGNATURE) {
-            g_joining_client_version = ClientVersion::alpine_faction;
+            g_joining_client_version = ClientSoftware::AlpineFaction;
             g_joining_player_info.af_signature = v2->signature;
             g_joining_player_info.version_major = v2->version_major;
             g_joining_player_info.version_minor = v2->version_minor;
@@ -1286,7 +1286,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
         const auto* v1 = reinterpret_cast<const AFJoinReq_v1*>(p);
         xlog::debug("matched v1 join_req tail, sig {}", v1->signature);
         if (v1->signature == ALPINE_FACTION_SIGNATURE) {
-            g_joining_client_version = ClientVersion::alpine_faction;
+            g_joining_client_version = ClientSoftware::AlpineFaction;
             g_joining_player_info.af_signature = v1->signature;
             g_joining_player_info.version_major = v1->version_major;
             g_joining_player_info.version_minor = v1->version_minor;
@@ -1304,7 +1304,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
         const auto* v2 = reinterpret_cast<const DFJoinReq_v1*>(p);
         xlog::debug("matched df join_req tail, sig {}", v2->signature);
         if (v2->signature == DASH_FACTION_SIGNATURE) {
-            g_joining_client_version = ClientVersion::dash_faction;
+            g_joining_client_version = ClientSoftware::DashFaction;
             g_joining_player_info.af_signature = v2->signature;
             g_joining_player_info.version_major = v2->version_major;
             g_joining_player_info.version_minor = v2->version_minor;
@@ -1316,7 +1316,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
         }
         // Dash v1.9 clients masquerading as Alpine v1.1 clients
         else if (v2->signature == ALPINE_FACTION_SIGNATURE) {
-            g_joining_client_version = ClientVersion::dash_faction;
+            g_joining_client_version = ClientSoftware::DashFaction;
             g_joining_player_info.af_signature = v2->signature;
             g_joining_player_info.version_major = 1u;
             g_joining_player_info.version_minor = 9u;
@@ -1330,7 +1330,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
 
     // not Alpine or Dash, assume it's a v1.2 retail client
     // could also be PF, but no way implemented yet to detect that
-    g_joining_client_version = ClientVersion::unknown;
+    g_joining_client_version = ClientSoftware::Unknown;
     g_joining_player_info.af_signature = 0u;
     g_joining_player_info.version_major = 1u;
     g_joining_player_info.version_minor = 2u;
@@ -1349,21 +1349,22 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
         process_join_req_packet_hook.call_target(pPacket, addr);
 
         if (rf::Player* valid_player = rf::multi_find_player_by_addr(*addr)) { // player successfully joined
-            if (g_joining_client_version == ClientVersion::alpine_faction ||
-                g_joining_client_version == ClientVersion::dash_faction ||
-                g_joining_client_version == ClientVersion::browser) {
-                auto& pdata = get_player_additional_data(valid_player);
-
-                pdata.client_version = g_joining_client_version;
-                pdata.client_version_major = g_joining_player_info.version_major;
-                pdata.client_version_minor = g_joining_player_info.version_minor;
-                pdata.client_version_patch = g_joining_player_info.version_patch;
-                pdata.client_version_type = g_joining_player_info.version_type;
-                pdata.max_rfl_version = g_joining_player_info.max_rfl_version;
+            if (g_joining_client_version == ClientSoftware::AlpineFaction ||
+                g_joining_client_version == ClientSoftware::DashFaction ||
+                g_joining_client_version == ClientSoftware::Browser) {
+                valid_player->version_info = ClientVersionInfoProfile{
+                    .software = g_joining_client_version,
+                    .major = g_joining_player_info.version_major,
+                    .minor = g_joining_player_info.version_minor,
+                    .patch = g_joining_player_info.version_patch,
+                    .type = g_joining_player_info.version_type,
+                    .max_rfl_ver = g_joining_player_info.max_rfl_version
+                };
 
                 if (g_joining_player_info.bot_shared_secret
                     == std::optional{g_alpine_server_config.bot_shared_secret}) {
-                    pdata.is_bot_player = true;
+                    valid_player->is_bot_player = true;
+                    valid_player->is_spawn_disabled = true;
                     rf::console::print(
                         "{}'s bot shared secret was valid",
                         valid_player->name
@@ -1377,7 +1378,7 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
 
                 // reset for safety
                 g_joining_player_info = {};
-                g_joining_client_version = ClientVersion::unknown;
+                g_joining_client_version = ClientSoftware::Unknown;
             }
 
             if (g_dedicated_launched_from_ads) {
@@ -1425,7 +1426,7 @@ FunHook<int(rf::NetAddr*, rf::JoinRequest*)> check_access_for_new_player_hook {
 };
 
 static std::tuple<AlpineRestrictVerdict, std::string, bool> check_join_request_restrict_status(
-    ClientVersion cv, const AlpineFactionJoinReqPacketExt& info)
+    ClientSoftware cv, const AlpineFactionJoinReqPacketExt& info)
 {
     const ClientVersionInfoProfile version_info{cv, info.version_major, info.version_minor, info.version_patch, info.version_type, info.max_rfl_version};
 
@@ -1740,14 +1741,16 @@ FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
 
 FunHook<void()> multi_stop_hook{
     0x0046E2C0,
-    []() {
+    [] {
         g_af_server_info.reset(); // Clear server info when leaving
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving
         reset_local_pending_game_type(); // clear pending game type when leaving
         if (rf::local_player) {
-            reset_player_additional_data(rf::local_player); // clear player additional data when leaving
+            PlayerAdditionalData* const player_add_data =
+                static_cast<PlayerAdditionalData*>(rf::local_player);
+            *player_add_data = PlayerAdditionalData{};
         }
         multi_stop_hook.call_target();
     },
@@ -2017,8 +2020,8 @@ CallHook<int()> game_info_num_players_hook{
     []() {
         int player_count = 0;
         auto player_list = SinglyLinkedList{rf::player_list};
-        for (auto& current_player : player_list) {
-            if (get_player_additional_data(&current_player).client_version == ClientVersion::browser) continue;
+        for (const auto& current_player : player_list) {
+            if (current_player.version_info.software == ClientSoftware::Browser) continue;
             player_count++;
         }
         return player_count;
@@ -2044,8 +2047,7 @@ FunHook<void(rf::Player*)> send_netgame_update_packet_hook{
     0x00484DD0,
     [] (rf::Player* const player) {
         const auto send_stats = [] (rf::Player* const player) {
-            const auto& pdata = get_player_additional_data(player);
-            if (pdata.client_version == ClientVersion::pure_faction
+            if (player->version_info.software == ClientSoftware::PureFaction
                 || is_player_minimum_af_client_version(player, 1, 2)) {
                 send_pf_player_stats_packet(player);
             }

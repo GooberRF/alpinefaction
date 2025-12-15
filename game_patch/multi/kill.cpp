@@ -295,7 +295,7 @@ void handle_gungame_weapon_switch(rf::Player* player, rf::Entity* entity,
                     level_completed_while_alive[player] = false; // reset rewards after granting one
                     af_send_automated_chat_msg(msg, player);
                     send_sound_packet_throwaway(player, 35); // Jolt_05.wav
-                }                
+                }
             }
 
             if (current_score == 0) {
@@ -328,11 +328,6 @@ void multi_kill_init_player(rf::Player* player)
 {
     auto* stats = static_cast<PlayerStatsNew*>(player->stats);
     stats->clear();
-
-    auto& pdata = get_player_additional_data(player);
-    if (!pdata.is_bot()) {
-        pdata.bot_death_wait_timer.invalidate();
-    }
 }
 
 FunHook<void()> multi_level_init_hook{
@@ -341,6 +336,10 @@ FunHook<void()> multi_level_init_hook{
         auto player_list = SinglyLinkedList{rf::player_list};
         for (auto& player : player_list) {
             multi_kill_init_player(&player);
+            player.last_fragged_time.reset();
+            if (player.is_bot()) {
+                player.is_spawn_disabled = true;
+            }
         }
 
         multi_level_init_hook.call_target();
@@ -468,11 +467,7 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     update_player_active_status(killed_player); // active pulse on killed
 
-    auto& pdata = get_player_additional_data(killed_player);
-    if (!pdata.is_bot()) {
-        constexpr int BOT_DEATH_WAIT_TIME_SEC = 5;
-        pdata.bot_death_wait_timer.set(std::chrono::seconds{BOT_DEATH_WAIT_TIME_SEC});
-    }
+    killed_player->last_fragged_time.emplace(std::chrono::high_resolution_clock::now());
 
     auto* killed_stats = static_cast<PlayerStatsNew*>(killed_player->stats);
     killed_stats->inc_deaths();

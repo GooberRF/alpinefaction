@@ -636,10 +636,9 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             break;
         }
         case af_client_req_type::af_req_server_cfg: {
-            auto& pdata = get_player_additional_data(player);
-            if (!pdata.remote_server_cfg_sent) {
+            if (!player->remote_server_cfg_sent) {
                 af_send_server_cfg(player);
-                pdata.remote_server_cfg_sent = true;
+                player->remote_server_cfg_sent = true;
             }
             break;
         }
@@ -1126,9 +1125,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_DELAYED_SPAWNS;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
-        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            auto& pdata = get_player_additional_data(&player);
-            pdata.remote_server_cfg_sent = false;
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            player.remote_server_cfg_sent = false;
         }
         g_alpine_server_config.signal_cfg_changed = false;
     }
@@ -1344,7 +1342,7 @@ void af_process_spectate_start_packet(
         return;
     }
 
-    const rf::Player* const spectator = rf::multi_find_player_by_addr(addr);
+    rf::Player* const spectator = rf::multi_find_player_by_addr(addr);
     if (!spectator) {
         return;
     }
@@ -1365,22 +1363,24 @@ void af_process_spectate_start_packet(
 
     update_player_active_status(spectator);
 
-    auto& pdata = get_player_additional_data(spectator);
     const bool exited_spectate = spectatee == spectator;
     if (exited_spectate) {
-        if (pdata.spectatee) {
-            af_send_spectate_notify_packet(pdata.spectatee.value(), spectator, false);
-            pdata.spectatee.reset();
+        if (spectator->spectatee) {
+            af_send_spectate_notify_packet(
+                *spectator->spectatee,
+                spectator,
+                false
+            );
+            spectator->spectatee.reset();
         }
     } else {
-        if (pdata.spectatee && pdata.spectatee.value() == spectatee) {
-            return;
+        if (!spectator->spectatee || *spectator->spectatee != spectatee) {
+            if (spectator->spectatee) {
+                af_send_spectate_notify_packet(*spectator->spectatee, spectator, false);
+            }
+            af_send_spectate_notify_packet(spectatee, spectator, true);
+            spectator->spectatee.emplace(spectatee);
         }
-        if (pdata.spectatee) {
-            af_send_spectate_notify_packet(pdata.spectatee.value(), spectator, false);
-        }
-        af_send_spectate_notify_packet(spectatee, spectator, true);
-        pdata.spectatee.emplace(spectatee);
     }
 }
 
@@ -1389,12 +1389,7 @@ void af_send_spectate_notify_packet(
     const rf::Player* const spectator,
     const bool does_spectate
 ) {
-    // Are we a server?
-    if (!rf::is_server) {
-        return;
-    }
-
-    if (!spectator || !spectator->net_data) {
+    if (!rf::is_server || !spectator || !spectator->net_data) {
         return;
     }
 

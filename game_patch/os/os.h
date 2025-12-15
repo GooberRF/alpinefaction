@@ -28,8 +28,14 @@ public:
         _start_time.emplace(clock::now());
     }
 
-    void set_sec(const uint64_t secs) {
-        set(std::chrono::seconds{secs});
+    void set_sec(const float sec) {
+        set(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<float>{sec}
+        ));
+    }
+
+    void set_sec(const uint64_t sec) {
+        set(std::chrono::seconds{sec});
     }
 
     void set_ms(const uint64_t ms) {

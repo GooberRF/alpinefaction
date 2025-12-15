@@ -49,16 +49,15 @@ void send_pf_player_stats_packet(rf::Player* player)
         pf_player_stats_packet::player_stats out_stats{};
         out_stats.player_id = current_player.net_data->player_id;
         const pf_pure_status pure_status = std::invoke([&] {
-            const auto& pdata = get_player_additional_data(&current_player);
-            if (pdata.is_spectator()) {
+            if (current_player.is_spectator()) {
                 return pf_pure_status::af_spectator;
-            } else if (pdata.is_spawn_disabled_bot()) {
+            } else if (current_player.is_spawn_disabled_bot()) {
                 return pf_pure_status::af_spawn_disabled_bot;
-            } else if (pdata.is_bot()) {
+            } else if (current_player.is_bot()) {
                 return pf_pure_status::af_bot;
-            } else if (pdata.is_browser()) {
+            } else if (current_player.is_browser()) {
                 return pf_pure_status::rfsb;
-            } else if (is_player_idle(&current_player)) {
+            } else if (current_player.is_idle()) {
                 return pf_pure_status::af_idle;
             } else {
                 return pf_ac_get_pure_status(&current_player);
@@ -130,7 +129,7 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
         if (player) {
             auto& stats = *static_cast<PlayerStatsNew*>(player->stats);
             if (in_stats.is_pure <= static_cast<uint8_t>(pf_pure_status::_last_variant)) {
-                get_player_additional_data(player).received_ac_status
+                player->received_ac_status
                     = std::optional{static_cast<pf_pure_status>(in_stats.is_pure)};
             }
             stats.max_streak = in_stats.streak_max;

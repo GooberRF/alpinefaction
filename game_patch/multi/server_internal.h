@@ -537,6 +537,7 @@ struct AlpineServerConfigRules
     bool force_respawn = false;
     bool balance_teams = false;
     int ideal_player_count = 32;
+    uint32_t bot_shared_secret = 0;
     bool saving_enabled = false;
     bool flag_dropping = true;
     bool flag_captures_while_stolen = false;
@@ -598,6 +599,11 @@ struct AlpineServerConfigRules
     {
         ideal_player_count = std::clamp(count, 1, 32);
     }
+
+    void set_bot_shared_secret(const uint32_t secret) {
+        bot_shared_secret = secret;
+    }
+
     void set_flag_return_time(float in_time)
     {
         ctf_flag_return_time_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
