@@ -252,45 +252,45 @@ void RemoteServerCfgPopup::render(this Self& self) {
             * (static_cast<float>(line_h + separator_h));
     }
 
-    const int page_h = h - label_h * 2 - separator_h;
-    constexpr int PAGE_UP_DOWN_GRACE_PERIOD_MS = 500;
-    constexpr int PAGE_UP_DOWN_WAIT_TIME_MS = 100;
-    if (rf::key_is_down(rf::KEY_PAGEUP)
-        && !rf::console::console_is_visible()
-        && (!self.page_up_timer.valid() || self.page_up_timer.elapsed())
-    ) {
-        self.scroll.target
-            -= static_cast<float>(page_h - (line_h + separator_h));
-        const int wait_time = self.page_up_timer.valid()
-            ? PAGE_UP_DOWN_WAIT_TIME_MS
-            : PAGE_UP_DOWN_GRACE_PERIOD_MS;
-        self.page_up_timer.set(std::chrono::milliseconds{wait_time});
-    }
-    if (rf::key_is_down(rf::KEY_PAGEDOWN)
-        && !rf::console::console_is_visible()
-        && (!self.page_down_timer.valid() || self.page_down_timer.elapsed())
-    ) {
-        self.scroll.target
-            += static_cast<float>(page_h - (line_h + separator_h));
-        const int wait_time = self.page_down_timer.valid()
-            ? PAGE_UP_DOWN_WAIT_TIME_MS
-            : PAGE_UP_DOWN_GRACE_PERIOD_MS;
-        self.page_down_timer.set(std::chrono::milliseconds{wait_time});
-    }
-    if (!rf::key_is_down(rf::KEY_PAGEUP) && self.page_up_timer.valid()) {
-        self.page_up_timer.invalidate();
-    }
-    if (!rf::key_is_down(rf::KEY_PAGEDOWN) && self.page_down_timer.valid()) {
-        self.page_down_timer.invalidate();
-    }
+    if (!rf::console::console_is_visible()) {
+        const int page_h = h - label_h * 2 - separator_h;
+        constexpr int PAGE_UP_DOWN_GRACE_PERIOD_MS = 500;
+        constexpr int PAGE_UP_DOWN_WAIT_TIME_MS = 100;
+        if (rf::key_is_down(rf::KEY_PAGEUP)
+            && (!self.page_up_timer.valid() || self.page_up_timer.elapsed())
+        ) {
+            self.scroll.target
+                -= static_cast<float>(page_h - (line_h + separator_h));
+            const int wait_time = self.page_up_timer.valid()
+                ? PAGE_UP_DOWN_WAIT_TIME_MS
+                : PAGE_UP_DOWN_GRACE_PERIOD_MS;
+            self.page_up_timer.set(std::chrono::milliseconds{wait_time});
+        }
+        if (rf::key_is_down(rf::KEY_PAGEDOWN)
+            && (!self.page_down_timer.valid() || self.page_down_timer.elapsed())
+        ) {
+            self.scroll.target
+                += static_cast<float>(page_h - (line_h + separator_h));
+            const int wait_time = self.page_down_timer.valid()
+                ? PAGE_UP_DOWN_WAIT_TIME_MS
+                : PAGE_UP_DOWN_GRACE_PERIOD_MS;
+            self.page_down_timer.set(std::chrono::milliseconds{wait_time});
+        }
+        if (!rf::key_is_down(rf::KEY_PAGEUP) && self.page_up_timer.valid()) {
+            self.page_up_timer.invalidate();
+        }
+        if (!rf::key_is_down(rf::KEY_PAGEDOWN) && self.page_down_timer.valid()) {
+            self.page_down_timer.invalidate();
+        }
 
-    constexpr float KEY_SCROLL_SPEED = 600.f;
-    if (rf::key_is_down(rf::KEY_UP) && !rf::console::console_is_visible()) {
-        self.scroll.target -= KEY_SCROLL_SPEED * rf::frametime;
-        self.last_key_down = 1;
-    } else if (rf::key_is_down(rf::KEY_DOWN) && !rf::console::console_is_visible()) {
-        self.scroll.target += KEY_SCROLL_SPEED * rf::frametime;
-        self.last_key_down = -1;
+        constexpr float KEY_SCROLL_SPEED = 600.f;
+        if (rf::key_is_down(rf::KEY_UP)) {
+            self.scroll.target -= KEY_SCROLL_SPEED * rf::frametime;
+            self.last_key_down = 1;
+        } else if (rf::key_is_down(rf::KEY_DOWN)) {
+            self.scroll.target += KEY_SCROLL_SPEED * rf::frametime;
+            self.last_key_down = -1;
+        }
     }
 
     if (!rf::key_is_down(rf::KEY_UP)
@@ -348,15 +348,14 @@ void RemoteServerCfgPopup::render(this Self& self) {
         );
     }
 
-    if (rf::key_get_and_reset_down_counter(rf::KEY_HOME)
-        && !rf::console::console_is_visible()) {
-        if (std::lround(self.scroll.current) != MIN_DELTA) {
+    if (!rf::console::console_is_visible()) {
+        if (rf::key_get_and_reset_down_counter(rf::KEY_HOME)
+            && std::lround(self.scroll.current) > MIN_DELTA) {
             self.scroll.target = .0f;
-        }
-    } else if (rf::key_get_and_reset_down_counter(rf::KEY_END)
-        && !rf::console::console_is_visible()) {
-        if (std::lround(self.scroll.current) != static_cast<int>(max_scroll) - MIN_DELTA) {
-             self.scroll.target = max_scroll;
+        } else if (rf::key_get_and_reset_down_counter(rf::KEY_END)
+            && std::lround(self.scroll.current)
+                < std::lround(max_scroll - static_cast<float>(MIN_DELTA))) {
+            self.scroll.target = max_scroll;
         }
     }
 
