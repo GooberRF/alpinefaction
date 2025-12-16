@@ -1717,13 +1717,17 @@ void send_queues_rel_add_packet(
     const uint8_t* const data,
     const size_t len
 ) {
-    g_send_queues_rel[socket_id].emplace_back(data, data + len);
+    if (socket_id >= 0 && socket_id < std::size(g_send_queues_rel)) {
+        g_send_queues_rel[socket_id].emplace_back(data, data + len);
+    }
 }
 
 FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
     0x0052A750,
     [] (int* const socket_id, const bool send_dis_conn_packet) {
-        g_send_queues_rel[*socket_id].clear();
+        if (socket_id && *socket_id >= 0 && *socket_id < std::size(g_send_queues_rel)) {
+            g_send_queues_rel[*socket_id].clear();
+        }
         return psnet_rel_close_socket_hook.call_target(socket_id, send_dis_conn_packet);
     },
 };
@@ -2084,6 +2088,10 @@ FunHook<void()> multi_io_do_frame_hook{
             );
 
             const int socket_id = &socket - rf::net_rel_sockets;
+            if (socket_id < 0 || socket_id >= std::size(g_send_queues_rel)) {
+                continue;
+            }
+
             std::deque<std::vector<uint8_t>>& queue = g_send_queues_rel[socket_id];
             while (!queue.empty() && send_limit) {
                 std::vector<uint8_t>& packet = queue.front();
