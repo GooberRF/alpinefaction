@@ -260,7 +260,13 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
             });
 
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
-            hud_scaled_bitmap(status_bm, status_x, static_cast<int>(y + 2 * scale), scale);
+            const bool has_flag_bm = player == red_flag_player || player == blue_flag_player;
+            hud_scaled_bitmap(
+                status_bm,
+                status_x,
+                y + static_cast<int>((has_flag_bm ? 2.f : 2.5f) * scale),
+                scale
+            );
 
             const bool is_local_player = player == rf::player_list;
             if (is_local_player) {
