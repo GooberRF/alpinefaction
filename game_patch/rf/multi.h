@@ -215,7 +215,7 @@ namespace rf
         int retransmission_timeout;
     };
     #pragma pack(pop)
-    static_assert(sizeof(NetReliableSocket) == 1727);
+    static_assert(sizeof(NetReliableSocket) == 0x6BF);
 
     constexpr size_t max_packet_size = 512;
 

@@ -1712,6 +1712,12 @@ static std::array<
     rf::NET_MAX_REL_SOCKETS
 > g_send_queues_rel{};
 
+void send_queues_rel_clear_packets(const int socket_id) {
+    if (socket_id >= 0 && socket_id < std::size(g_send_queues_rel)) {
+        g_send_queues_rel[socket_id].clear();
+    }
+}
+
 void send_queues_rel_add_packet(
     const int socket_id,
     const uint8_t* const data,
@@ -1743,6 +1749,7 @@ FunHook<void()> multi_stop_hook{
         if (rf::local_player) {
             reset_player_additional_data(rf::local_player); // clear player additional data when leaving
         }
+        // Listen servers should clear `g_send_queues_rel`.
         g_send_queues_rel = {};
         multi_stop_hook.call_target();
     },
@@ -2069,6 +2076,20 @@ FunHook<void()> multi_io_do_frame_hook{
 
         // Drain `g_send_queues_rel`.
         for (const rf::NetReliableSocket& socket : rf::net_rel_sockets) {
+            if (socket.status != rf::NetReliableSocketStatus::CONNECTED) {
+                continue;
+            }
+
+            const int socket_id = &socket - rf::net_rel_sockets;
+            if (socket_id < 0 || socket_id >= std::size(g_send_queues_rel)) {
+                 continue;
+            }
+
+            std::deque<std::vector<uint8_t>>& queue = g_send_queues_rel[socket_id];
+            if (queue.empty()) {
+                continue;
+            }
+
             int empty_send_slots = 0;
             for (const void* const sbuffers : socket.sbuffers) {
                 if (!sbuffers) {
@@ -2087,12 +2108,6 @@ FunHook<void()> multi_io_do_frame_hook{
                     * QUEUE_FACTOR
             );
 
-            const int socket_id = &socket - rf::net_rel_sockets;
-            if (socket_id < 0 || socket_id >= std::size(g_send_queues_rel)) {
-                continue;
-            }
-
-            std::deque<std::vector<uint8_t>>& queue = g_send_queues_rel[socket_id];
             while (!queue.empty() && send_limit) {
                 std::vector<uint8_t>& packet = queue.front();
                 if (packet.empty()) {

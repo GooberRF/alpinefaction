@@ -1747,6 +1747,9 @@ void bot_decommission_check() {
         }
 
         const int team = is_team_mode ? player.team : rf::TEAM_RED;
+        if (team < 0 || team >= MAX_TEAMS) {
+            continue;
+        }
 
         if (pdata.is_bot()) {
             if (pdata.is_spawn_disabled_bot()) {

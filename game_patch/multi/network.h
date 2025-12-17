@@ -154,4 +154,5 @@ struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::t
 bool packet_check_whitelist(int packet_type);
 void handle_vote_or_ready_up_msg(std::string_view msg);
 void handle_sound_msg(std::string_view name);
+void send_queues_rel_clear_packets(int socket_id);
 void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
