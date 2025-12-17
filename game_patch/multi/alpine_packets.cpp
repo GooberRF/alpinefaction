@@ -1488,6 +1488,7 @@ void af_send_server_cfg(rf::Player* player) {
         return len;
     };
 
+    // We cannot send multiple server configs at once.
     send_queues_rel_clear_packets(player->net_data->reliable_socket);
 
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
