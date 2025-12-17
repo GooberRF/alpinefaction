@@ -2073,23 +2073,19 @@ FunHook<void()> multi_io_do_frame_hook{
         }
 
         // Drain `g_send_queues_rel`.
-        for (const rf::NetReliableSocket& socket : rf::net_rel_sockets) {
-            if (socket.status != rf::NetReliableSocketStatus::CONNECTED) {
+        for (int i = 0; i < std::size(rf::net_rel_sockets); ++i) {
+            if (rf::net_rel_sockets[i].status
+                    != rf::NetReliableSocketStatus::CONNECTED) {
                 continue;
             }
 
-            const int socket_id = &socket - rf::net_rel_sockets;
-            if (socket_id < 0 || socket_id >= std::size(g_send_queues_rel)) {
-                 continue;
-            }
-
-            std::deque<std::vector<uint8_t>>& queue = g_send_queues_rel[socket_id];
+            std::deque<std::vector<uint8_t>>& queue = g_send_queues_rel[i];
             if (queue.empty()) {
                 continue;
             }
 
             int empty_send_slots = 0;
-            for (const void* const sbuffers : socket.sbuffers) {
+            for (const void* const sbuffers : rf::net_rel_sockets[i].sbuffers) {
                 if (!sbuffers) {
                     ++empty_send_slots;
                 }
@@ -2112,7 +2108,7 @@ FunHook<void()> multi_io_do_frame_hook{
                     queue.pop_front();
                 } else {
                     const int res =
-                        rf::net_rel_send(socket_id, packet.data(), packet.size());
+                        rf::net_rel_send(i, packet.data(), packet.size());
                     if (res <= 0) {
                         break;
                     }
