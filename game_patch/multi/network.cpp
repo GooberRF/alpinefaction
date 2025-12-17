@@ -1749,8 +1749,6 @@ FunHook<void()> multi_stop_hook{
         if (rf::local_player) {
             reset_player_additional_data(rf::local_player); // clear player additional data when leaving
         }
-        // Listen servers should clear `g_send_queues_rel`.
-        g_send_queues_rel = {};
         multi_stop_hook.call_target();
     },
 };
