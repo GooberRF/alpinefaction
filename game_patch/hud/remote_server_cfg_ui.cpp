@@ -11,34 +11,34 @@
 #include <format>
 #include <utility>
 
-bool RemoteServerCfgPopup::is_compact() {
+static bool display_mode_is_compact() {
     return g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_RIGHT_COMPACT
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_COMPACT
         || g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_LEFT_COMPACT;
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_LEFT_COMPACT;
 };
 
-bool RemoteServerCfgPopup::uses_line_separators() {
+static bool display_mode_uses_line_separators() {
     return g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_RIGHT_USE_LINE_SEPARATORS
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_USE_LINE_SEPARATORS
         || g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_LEFT_USE_LINE_SEPARATORS;
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_LEFT_USE_LINE_SEPARATORS;
 }
 
-bool RemoteServerCfgPopup::is_highlight_box() {
+static bool display_mode_is_highlight_box() {
     return g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX
         || g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_LEFT_HIGHLIGHT_BOX;
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_LEFT_HIGHLIGHT_BOX;
 }
 
-bool RemoteServerCfgPopup::is_left_aligned() {
+static bool display_mode_is_left_aligned() {
     return g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_LEFT_HIGHLIGHT_BOX
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_LEFT_HIGHLIGHT_BOX
         || g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_LEFT_USE_LINE_SEPARATORS
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_LEFT_USE_LINE_SEPARATORS
         || g_alpine_game_config.remote_server_cfg_display_mode
-        == DISPLAY_MODE_ALIGN_LEFT_COMPACT;
+        == RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_LEFT_COMPACT;
 }
 
 void RemoteServerCfgPopup::reset(this Self& self) {
@@ -166,8 +166,8 @@ void RemoteServerCfgPopup::render(this Self& self) {
     const int font_id = hud_get_default_font();
     const int label_font_id = font_id;
 
-    int separator_h = g_remote_server_cfg_popup.is_compact() ? 0 : 1;
-    int line_factor = g_remote_server_cfg_popup.is_compact() ? 2 : 6;
+    int separator_h = display_mode_is_compact() ? 0 : 1;
+    int line_factor = display_mode_is_compact() ? 2 : 6;
 
     constexpr rf::Key DISPLAY_MODE_KEY = rf::KEY_BACKSP;
 
@@ -186,8 +186,8 @@ void RemoteServerCfgPopup::render(this Self& self) {
                     % Self::_DISPLAY_MODE_COUNT
             );
 
-        const int new_separator_h = g_remote_server_cfg_popup.is_compact() ? 0 : 1;
-        const int new_line_factor = g_remote_server_cfg_popup.is_compact() ? 2 : 6;
+        const int new_separator_h = display_mode_is_compact() ? 0 : 1;
+        const int new_line_factor = display_mode_is_compact() ? 2 : 6;
         const int old_line_h = rf::gr::get_font_height(font_id) + line_factor;
         const int old_total_h = (self.lines.size() + 1)
             * (old_line_h + separator_h)
@@ -415,7 +415,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
 
     int line_y = std::lround(-self.scroll.current);
 
-    if (g_remote_server_cfg_popup.uses_line_separators()) {
+    if (display_mode_uses_line_separators()) {
         rf::gr::set_color(180, 180, 180, 64);
         rf::gr::set_clip(0, content_y - MIN_DELTA, rf::gr::clip_width(), content_h);
         rf::gr::rect(content_x, line_y + MIN_DELTA, content_w, separator_h);
@@ -448,7 +448,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
             break;
         }
 
-        if (g_remote_server_cfg_popup.uses_line_separators()) {
+        if (display_mode_uses_line_separators()) {
             rf::gr::set_color(180, 180, 180, 64);
             rf::gr::set_clip(
                 0,
@@ -458,7 +458,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
             );
             rf::gr::rect(content_x, line_y + MIN_DELTA, content_w, separator_h);
             rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
-        } else if (g_remote_server_cfg_popup.is_highlight_box()) {
+        } else if (display_mode_is_highlight_box()) {
             rf::gr::set_color(180, 180, 180, 64);
             rf::gr::rect(content_x, line_y, content_w, separator_h);
         }
@@ -484,7 +484,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
             } else {
                 rf::gr::set_color(100, 200, 255, 255);
             }
-            if (g_remote_server_cfg_popup.is_left_aligned()) {
+            if (display_mode_is_left_aligned()) {
                 const auto [space_w, space_h] = rf::gr::get_char_size(' ', font_id);
                 rf::gr::string_aligned(
                     rf::gr::ALIGN_LEFT,
@@ -518,12 +518,12 @@ void RemoteServerCfgPopup::render(this Self& self) {
         line_y += line_h;
     }
 
-    if (g_remote_server_cfg_popup.uses_line_separators()) {
+    if (display_mode_uses_line_separators()) {
         rf::gr::set_color(180, 180, 180, 64);
         rf::gr::set_clip(0, content_y + MIN_DELTA, rf::gr::clip_width(), content_h);
         rf::gr::rect(content_x, line_y - MIN_DELTA, content_w, separator_h);
         rf::gr::set_clip(0, content_y, rf::gr::clip_width(), content_h);
-    } else if (g_remote_server_cfg_popup.is_highlight_box()) {
+    } else if (display_mode_is_highlight_box()) {
         rf::gr::set_color(255, 255, 0, 255);
         rf::gr::rect(content_x, 0, content_w, separator_h);
         rf::gr::rect(content_x, content_h - separator_h, content_w, separator_h);

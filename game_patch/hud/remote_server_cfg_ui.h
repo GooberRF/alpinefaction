@@ -10,12 +10,8 @@
 inline struct RemoteServerCfgPopup {
 private:
     using Self = RemoteServerCfgPopup;
-public:
 
-    static bool uses_line_separators();
-    static bool is_compact();
-    static bool is_highlight_box();
-    static bool is_left_aligned();
+public:
     bool is_active(this const Self& self);
     void reset(this Self& self);
     void add_content(this Self& self, std::string_view content);

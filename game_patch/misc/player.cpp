@@ -745,7 +745,7 @@ FunHook<rf::Player* __fastcall(rf::Player*)> player_ctor_hook{
         player_ctor_hook.call_target(player);
         PlayerAdditionalData* const player_add_data =
             static_cast<PlayerAdditionalData*>(player);
-        new (player_add_data) PlayerAdditionalData{};
+        std::construct_at(player_add_data);
         return player;
     }
 };
@@ -753,10 +753,10 @@ FunHook<rf::Player* __fastcall(rf::Player*)> player_ctor_hook{
 FunHook<void __fastcall(rf::Player*)> player_dtor_hook{
     0x00472B80,
     [] (rf::Player* const player) FASTCALL_LAMBDA {
-        player_dtor_hook.call_target(player);
         PlayerAdditionalData* const player_add_data =
             static_cast<PlayerAdditionalData*>(player);
-        player_add_data->~PlayerAdditionalData();
+        std::destroy_at(player_add_data);
+        player_dtor_hook.call_target(player);
     }
 };
 
