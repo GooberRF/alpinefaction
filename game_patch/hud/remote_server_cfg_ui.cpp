@@ -41,12 +41,12 @@ bool RemoteServerCfgPopup::is_left_aligned() {
         == DISPLAY_MODE_ALIGN_LEFT_COMPACT;
 }
 
-void RemoteServerCfgPopup::reset(this Self& self) {
-    self = Self{};
+void RemoteServerCfgPopup::reset(this RemoteServerCfgPopup& self) {
+    self = RemoteServerCfgPopup{};
 }
 
 void RemoteServerCfgPopup::add_content(
-    this Self& self,
+    this RemoteServerCfgPopup& self,
     const std::string_view content
 ) {
     size_t i = 0;
@@ -75,7 +75,7 @@ void RemoteServerCfgPopup::add_content(
 }
 
 void RemoteServerCfgPopup::add_line(
-    this Self& self,
+    this RemoteServerCfgPopup& self,
     std::string_view line
 ) {
     const size_t new_line = line.find_first_of("\r\n");
@@ -137,11 +137,11 @@ void RemoteServerCfgPopup::add_line(
     }
 }
 
-bool RemoteServerCfgPopup::is_active(this const Self& self) {
+bool RemoteServerCfgPopup::is_active(this const RemoteServerCfgPopup& self) {
     return self.active;
 }
 
-void RemoteServerCfgPopup::toggle(this Self& self) {
+void RemoteServerCfgPopup::toggle(this RemoteServerCfgPopup& self) {
     if (!self.active && self.cfg_changed) {
         const float saved_scroll = self.scroll.current;
         self.reset();
@@ -156,7 +156,7 @@ void RemoteServerCfgPopup::toggle(this Self& self) {
     }
 }
 
-void RemoteServerCfgPopup::render(this Self& self) {
+void RemoteServerCfgPopup::render(this RemoteServerCfgPopup& self) {
     constexpr float REF_WIDTH  = 1280.f;
     constexpr float REF_HEIGHT = 800.f;
     const float scale_x = rf::gr::clip_width() / REF_WIDTH;
@@ -181,9 +181,9 @@ void RemoteServerCfgPopup::render(this Self& self) {
             g_alpine_game_config.remote_server_cfg_display_mode
         );
         g_alpine_game_config.remote_server_cfg_display_mode =
-            static_cast<Self::DisplayMode>(
-                (value + delta + Self::_DISPLAY_MODE_COUNT)
-                    % Self::_DISPLAY_MODE_COUNT
+            static_cast<RemoteServerCfgPopup::DisplayMode>(
+                (value + delta + RemoteServerCfgPopup::_DISPLAY_MODE_COUNT)
+                    % RemoteServerCfgPopup::_DISPLAY_MODE_COUNT
             );
 
         const int new_separator_h = g_remote_server_cfg_popup.is_compact() ? 0 : 1;
@@ -467,9 +467,9 @@ void RemoteServerCfgPopup::render(this Self& self) {
 
         rf::gr::set_color(255, 255, 255, 255);
         const int line_w = content_w - 20 - static_cast<int>(50.f * ui_scale);
-        if (std::holds_alternative<Self::KeyValue>(line)) {
+        if (std::holds_alternative<RemoteServerCfgPopup::KeyValue>(line)) {
             const auto& [key, value] =
-                std::get<Self::KeyValue>(line);
+                std::get<RemoteServerCfgPopup::KeyValue>(line);
             rf::gr::string_aligned(
                 rf::gr::ALIGN_LEFT,
                 content_x + 20,

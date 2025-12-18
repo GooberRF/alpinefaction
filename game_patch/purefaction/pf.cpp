@@ -128,7 +128,7 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
         auto* player = rf::multi_find_player_by_id(in_stats.player_id);
         if (player) {
             PlayerStatsNew& stats = *static_cast<PlayerStatsNew*>(player->stats);
-            if (in_stats.is_pure<= static_cast<uint8_t>(pf_pure_status::_last_variant)) {
+            if (in_stats.is_pure <= static_cast<uint8_t>(pf_pure_status::_last_variant)) {
                 const auto pf_status = static_cast<pf_pure_status>(in_stats.is_pure);
                 player->received_pf_status = std::optional{pf_status};
                 player->is_bot = pf_status == pf_pure_status::af_bot

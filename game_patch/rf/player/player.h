@@ -254,17 +254,6 @@ namespace rf
     {
     };
 
-    template <>
-    struct singly_list_traits<Player> {
-        static constexpr auto NEXT_PTR = &PlayerBase::next;
-    };
-
-    template <>
-    struct doubly_list_traits<Player> : singly_list_traits<Player> {
-        static constexpr auto PREV_PTR = &PlayerBase::prev;
-    };
-
-
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
 
@@ -296,3 +285,13 @@ namespace rf
     static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
     static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
 }
+
+template <>
+struct singly_list_traits<rf::Player> {
+    static constexpr auto NEXT_PTR = &rf::PlayerBase::next;
+};
+
+template <>
+struct doubly_list_traits<rf::Player>: singly_list_traits<rf::Player> {
+    static constexpr auto PREV_PTR = &rf::PlayerBase::prev;
+};
