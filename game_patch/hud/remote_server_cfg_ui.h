@@ -8,23 +8,25 @@
 #include <vector>
 
 inline struct RemoteServerCfgPopup {
+private:
+    using Self = RemoteServerCfgPopup;
 public:
 
     static bool uses_line_separators();
     static bool is_compact();
     static bool is_highlight_box();
     static bool is_left_aligned();
-    bool is_active(this const RemoteServerCfgPopup& self);
-    void reset(this RemoteServerCfgPopup& self);
-    void add_content(this RemoteServerCfgPopup& self, std::string_view content);
-    void toggle(this RemoteServerCfgPopup& self);
-    void render(this RemoteServerCfgPopup& self);
+    bool is_active(this const Self& self);
+    void reset(this Self& self);
+    void add_content(this Self& self, std::string_view content);
+    void toggle(this Self& self);
+    void render(this Self& self);
 
-    void finalize(this RemoteServerCfgPopup& self) {
+    void finalize(this Self& self) {
         self.finalized = true;
     }
 
-    void set_cfg_changed(this RemoteServerCfgPopup& self) {
+    void set_cfg_changed(this Self& self) {
         self.cfg_changed = true;
     }
 
@@ -39,7 +41,7 @@ public:
     };
 
 private:
-    void add_line(this RemoteServerCfgPopup& self, std::string_view line);
+    void add_line(this Self& self, std::string_view line);
 
     using KeyValue = std::pair<std::string, std::string>;
     using Line = std::variant<std::string, KeyValue>;
