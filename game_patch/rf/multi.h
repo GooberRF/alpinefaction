@@ -193,22 +193,22 @@ namespace rf
 
     #pragma pack(push, 1)
     struct NetReliableSocket {
-        void *sbuffers[75];
-        int16_t ssequence[75];
+        void* sbuffers[75];
+        uint16_t ssequence[75];
         int timesent[75];
         int16_t send_len[75];
-        int rbuffers[75];
+        void* rbuffers[75];
         int recv_len[75];
-        int16_t rsequence[75];
+        uint16_t rsequence[75];
         int last_packet_received;
         int last_packet_sent;
         NetReliableSocketStatus status;
-        int16_t oursequence;
-        int16_t theirsequence;
+        uint16_t oursequence;
+        uint16_t theirsequence;
         rf::NetAddr net_addr;
         int pings[10];
-        char ping_pos;
-        int num_ping_samples;
+        uint8_t ping_pos;
+        uint32_t num_ping_samples;
         int ping_median;
         int retransmission_timeout;
     };
