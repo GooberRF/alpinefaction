@@ -180,7 +180,7 @@ void reset_local_delayed_spawn() {
 CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
     0x004A678B,
     [] (auto& regs) {
-        // Save network bandwidth.
+        // Do not waste packets.
         if (!rf::is_server
             && rf::local_player->is_bot
             && rf::local_player->is_spawn_disabled) {
@@ -203,7 +203,7 @@ CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
 CodeInjection player_dying_frame_respawn_req_patch{ // force respawn
     0x004A6DCA,
     [] (auto& regs) {
-        // Save network bandwidth.
+        // Do not waste packets.
         if (!rf::is_server
             && rf::local_player->is_bot
             && rf::local_player->is_spawn_disabled) {
