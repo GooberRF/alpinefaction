@@ -741,7 +741,7 @@ bool player_is_idle(const rf::Player* const player) {
 
 FunHook<rf::Player* __fastcall(rf::Player*)> player_ctor_hook{
     0x00472AD0,
-    [] (rf::Player* const player) {
+    [] (rf::Player* const player) FASTCALL_LAMBDA {
         player_ctor_hook.call_target(player);
         PlayerAdditionalData* const player_add_data =
             static_cast<PlayerAdditionalData*>(player);
@@ -752,7 +752,7 @@ FunHook<rf::Player* __fastcall(rf::Player*)> player_ctor_hook{
 
 FunHook<void __fastcall(rf::Player*)> player_dtor_hook{
     0x00472B80,
-    [] (rf::Player* const player) {
+    [] (rf::Player* const player) FASTCALL_LAMBDA {
         player_dtor_hook.call_target(player);
         PlayerAdditionalData* const player_add_data =
             static_cast<PlayerAdditionalData*>(player);

@@ -2,14 +2,14 @@ name: CI
 
 on:
   push:
-    paths-ignore:
+    paths-ignore: &paths
       - '**.md'
   pull_request:
-    paths-ignore:
-      - '**.md'
+    paths-ignore: *paths
 
 permissions:
   contents: read
+  actions: write
 
 env:
   BUILD_TYPE: Release
@@ -17,10 +17,9 @@ env:
 
 jobs:
   build-mingw:
-    permissions:
-      contents: read
-      actions: write
     runs-on: ubuntu-24.04
+    container:
+      image: debian:trixie
 
     steps:
     - uses: actions/checkout@v4
@@ -28,9 +27,10 @@ jobs:
 
     - name: Install packages
       run: |
-        sudo dpkg --add-architecture i386
-        sudo apt-get update
-        sudo apt-get install --no-install-recommends g++-mingw-w64-i686-posix ninja-build wine32 wine
+        dpkg --add-architecture i386
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates
 
     - name: Create build environment
       run: cmake -E make_directory ./build
@@ -47,13 +47,13 @@ jobs:
 
     - name: Build
       working-directory: ./build
-      run: cmake --build . -j $(nproc)
+      run: |
+        export WINEPREFIX=$GITHUB_WORKSPACE/.wine
+        mkdir -p $WINEPREFIX
+        cmake --build . -j $(nproc)
 
   build-msvc:
-    permissions:
-      contents: read
-      actions: write
-    runs-on: windows-2022
+    runs-on: windows-2025
 
     steps:
     - uses: actions/checkout@v4
@@ -66,7 +66,7 @@ jobs:
       run: |
         $vs = (Get-CimInstance MSFT_VSInstance -Namespace root/cimv2/vs).InstallLocation
         Write-Output (Join-Path $vs Common7\Tools) >> $env:GITHUB_PATH
-         
+
     - name: Create build environment
       run: cmake -E make_directory .\build
 
