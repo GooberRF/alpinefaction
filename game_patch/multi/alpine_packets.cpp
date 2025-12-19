@@ -1354,34 +1354,30 @@ void af_process_spectate_start_packet(
 
     std::memcpy(&spectate_start_packet, data, sizeof(spectate_start_packet));
 
-    rf::Player* const spectatee = rf::multi_find_player_by_id(
+    rf::Player* const new_target = rf::multi_find_player_by_id(
         spectate_start_packet.spectatee_id
     );
-    if (!spectatee && spectate_start_packet.spectatee_id != FREE_SPEC_ID) {
+    if (!new_target && spectate_start_packet.spectatee_id != FREE_SPEC_ID) {
         return;
     }
 
     update_player_active_status(spectator);
 
-    const bool exited_spectate = spectatee == spectator;
-    if (exited_spectate) {
-        if (spectator->spectatee) {
-            af_send_spectate_notify_packet(
-                *spectator->spectatee,
-                spectator,
-                false
-            );
-            spectator->spectatee.reset();
-        }
-    } else {
-        if (!spectator->spectatee || *spectator->spectatee != spectatee) {
-            if (spectator->spectatee) {
-                af_send_spectate_notify_packet(*spectator->spectatee, spectator, false);
-            }
-            af_send_spectate_notify_packet(spectatee, spectator, true);
-            spectator->spectatee.emplace(spectatee);
-        }
+    const bool exited_spectate = spectator == new_target;
+    rf::Player* const old_target = spectator->spectatee.value_or(nullptr);
+    const bool target_changed = old_target != new_target;
+
+    if (old_target && (exited_spectate || target_changed)) {
+        af_send_spectate_notify_packet(old_target, spectator, false);
     }
+
+    if (!exited_spectate && target_changed && new_target) {
+        af_send_spectate_notify_packet(new_target, spectator, true);
+    }
+
+    spectator->spectatee = exited_spectate
+        ? std::nullopt
+        : std::optional{new_target};
 }
 
 void af_send_spectate_notify_packet(
