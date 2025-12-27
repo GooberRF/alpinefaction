@@ -127,7 +127,6 @@ set(SRCS
     debug/unresponsive.cpp
     multi/alpine_packets.cpp
     multi/alpine_packets.h
-    multi/dedi_cfg_legacy.cpp
     multi/dedi_cfg.cpp
     multi/multi.h
     multi/multi.cpp

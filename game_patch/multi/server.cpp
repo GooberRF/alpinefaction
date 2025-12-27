@@ -81,7 +81,6 @@ static const std::vector<std::string> possible_central_item_names = {
     "Multi Super Health"
 }; // prioritized list of common central items
 int current_center_item_priority = possible_central_item_names.size();
-
 AlpineServerConfig g_alpine_server_config;
 AlpineServerConfigRules g_alpine_server_config_active_rules; // currently active rules which are applied
 std::optional<ManualRulesOverride> g_manual_rules_override;
@@ -173,8 +172,14 @@ FunHook<void ()> dedicated_server_load_config_hook{
             on_dedicated_server_launch_post();
         }
         else {
-            dedicated_server_load_config_hook.call_target();
-		}
+            constexpr auto msg =
+                "Legacy '-dedicated' dedicated server functionality has been deprecated.\n"
+                "You should launch your server with `-ads` using a TOML config instead.\n\n"
+                "To build a TOML config for your server, visit https://dedi.alpinefaction.com\n\n"
+                "For more information or to find support, visit https://alpinefaction.com/help\n";
+            rf::console::printf(msg);
+            rf::console::do_critical_error();
+        }
     },
 };
 
@@ -206,11 +211,6 @@ void on_dedicated_server_launch_post() {
     initialize_game_info_server_flags(); // build global flags var used in game_info packets
     set_server_window_title();
     set_dedicated_server_timer_frequency();
-
-    // shuffle maplist on legacy server config (ADS shuffle is handled when rotation is built)
-    if (!g_dedicated_launched_from_ads && g_alpine_server_config.dynamic_rotation) {
-        shuffle_level_array();
-    }
 }
 
 // should weapons drop on player death?
@@ -234,23 +234,6 @@ CodeInjection entity_reload_current_primary_patch{
             int used_ammo = regs.eax;
             regs.ecx = current_reserve + used_ammo; // negate the reload subtraction
         }
-    },
-};
-
-// used only in legacy dedi serv mode
-CodeInjection dedicated_server_load_config_patch{
-    0x0046E103,
-    [](auto& regs) {
-        auto& parser = *reinterpret_cast<rf::Parser*>(regs.esp - 4 + 0x4C0 - 0x470);
-        load_additional_server_config(parser);
-    },
-};
-
-// used only in legacy dedi serv mode
-CodeInjection dedicated_server_load_post_map_patch{
-    0x0046E216,
-    [](auto& regs) {
-        on_dedicated_server_launch_post();
     },
 };
 
@@ -667,19 +650,17 @@ CodeInjection multi_limbo_leave_pre_patch{
 
 void shuffle_level_array()
 {
-    // ads servers, shuffle the level+rules array (ssot) and then sync the netgame levels array
-    if (g_dedicated_launched_from_ads) {
-        auto& cfg = g_alpine_server_config;
+    // ADS servers, shuffle the level+rules array (SSOT) and then sync the netgame levels array
+    if (!g_dedicated_launched_from_ads)
+        return;
 
-        if (cfg.levels.size() <= 0)
-            return;
+    auto& cfg = g_alpine_server_config;
 
-        std::ranges::shuffle(cfg.levels, g_rng);
-        rebuild_rotation_from_cfg(); // sync netgame levels array
-    }
-    else { // legacy servers shuffle netgame array directly
-        std::ranges::shuffle(rf::netgame.levels, g_rng);
-    }
+    if (cfg.levels.size() <= 0)
+        return;
+
+    std::ranges::shuffle(cfg.levels, g_rng);
+    rebuild_rotation_from_cfg(); // sync netgame levels array
     xlog::info("Shuffled level rotation");
 }
 
@@ -2959,8 +2940,6 @@ void server_init()
     // Additional server config
     dedicated_server_load_config_hook.install(); // asd loading
     rf_process_command_line_dedicated_server_patch.install(); // set dedi server bool when launching via ads
-    dedicated_server_load_config_patch.install();
-    dedicated_server_load_post_map_patch.install();
 
     // handle weapon dropping and infinite magazines
     entity_drop_weapon_patch.install();

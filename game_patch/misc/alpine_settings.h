@@ -92,7 +92,8 @@ struct AlpineGameSettings
     bool try_disable_muzzle_flash_lights = false;
     bool world_hud_ctf_icons = true;
     bool world_hud_alt_damage_indicators = false;
-    bool world_hud_overdraw = true;
+    bool world_hud_flag_overdraw = true;
+    bool world_hud_hill_overdraw = true;
     bool world_hud_damage_numbers = true;
     bool world_hud_spectate_player_labels = false;
     bool world_hud_team_player_labels = false;
@@ -127,6 +128,11 @@ struct AlpineGameSettings
     bool nearest_texture_filtering = false;
     bool direct_input = true;
     bool scoreboard_anim = true;
+    bool scoreboard_split_simple = true;
+    bool scoreboard_split_spectators = true;
+    bool scoreboard_split_bots = false;
+    bool scoreboard_split_browsers = true;
+    bool scoreboard_split_idle = false;
     bool autosave = true;
     bool af_branding = true;
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow

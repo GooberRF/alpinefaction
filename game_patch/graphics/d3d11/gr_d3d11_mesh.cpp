@@ -752,10 +752,23 @@ namespace df::gr::d3d11
             if (is_character_mesh) {
                 color = add_clamped(params.ambient_color, {224, 224, 224, 224});
             } else { // static meshes
-                color = add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
+                if (params.flags & MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) { // third person weapon models
+                    if (g_character_meshes_are_fullbright) {
+                        color = {255, 255, 255, 255};
+                    }
+                    else {
+                        color = params.ambient_color;
+                    }
+                }
+                else {
+                    color = add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
+                }
             }
         } else {
-            color = params.self_illum;
+            // IR render colours:
+            // characters are rendered using self_illum (derived from dist + body temp in player_fpgun_render_ir)
+            // vehicles are rendered white
+            color = is_character_mesh ? params.self_illum : rf::Color{255, 255, 255, 255};
         }
         color.alpha = static_cast<ubyte>(params.alpha);
 

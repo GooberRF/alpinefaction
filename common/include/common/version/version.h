@@ -24,7 +24,7 @@
 
 // Version used for Alpine settings files
 #define ADS_VERSION            1      // .toml dedicated server config files
-#define AFS_VERSION            8      // alpine_settings.ini
+#define AFS_VERSION            9      // alpine_settings.ini
 #define AFCC_VERSION           1      // alpine_system.ini
 
 // Increment only when absolutely necessary! Will break level compatibility for older clients.

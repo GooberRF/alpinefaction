@@ -94,8 +94,10 @@ static rf::ui::Checkbox ao_bighud_cbox;
 static rf::ui::Label ao_bighud_label;
 static rf::ui::Checkbox ao_ctfwh_cbox;
 static rf::ui::Label ao_ctfwh_label;
-static rf::ui::Checkbox ao_overdrawwh_cbox;
-static rf::ui::Label ao_overdrawwh_label;
+static rf::ui::Checkbox ao_flag_overdrawwh_cbox;
+static rf::ui::Label ao_flag_overdrawwh_label;
+static rf::ui::Checkbox ao_hill_overdrawwh_cbox;
+static rf::ui::Label ao_hill_overdrawwh_label;
 static rf::ui::Checkbox ao_sbanim_cbox;
 static rf::ui::Label ao_sbanim_label;
 static rf::ui::Checkbox ao_teamlabels_cbox;
@@ -843,10 +845,16 @@ void ao_ctfwh_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.world_hud_ctf_icons);
 }
 
-void ao_overdrawwh_cbox_on_click(int x, int y) {
-    g_alpine_game_config.world_hud_overdraw = !g_alpine_game_config.world_hud_overdraw;
-    ao_overdrawwh_cbox.checked = g_alpine_game_config.world_hud_overdraw;
-    ao_play_button_snd(g_alpine_game_config.world_hud_overdraw);
+void ao_flag_overdrawwh_cbox_on_click(int x, int y) {
+    g_alpine_game_config.world_hud_flag_overdraw = !g_alpine_game_config.world_hud_flag_overdraw;
+    ao_flag_overdrawwh_cbox.checked = g_alpine_game_config.world_hud_flag_overdraw;
+    ao_play_button_snd(g_alpine_game_config.world_hud_flag_overdraw);
+}
+
+void ao_hill_overdrawwh_cbox_on_click(int x, int y) {
+    g_alpine_game_config.world_hud_hill_overdraw = !g_alpine_game_config.world_hud_hill_overdraw;
+    ao_hill_overdrawwh_cbox.checked = g_alpine_game_config.world_hud_hill_overdraw;
+    ao_play_button_snd(g_alpine_game_config.world_hud_hill_overdraw);
 }
 
 void ao_sbanim_cbox_on_click(int x, int y) {
@@ -1163,17 +1171,19 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_ctfwh_cbox, &ao_ctfwh_label, &alpine_options_panel1, ao_ctfwh_cbox_on_click, g_alpine_game_config.world_hud_ctf_icons, 280, 54, "CTF icons");
     alpine_options_panel_checkbox_init(
-        &ao_overdrawwh_cbox, &ao_overdrawwh_label, &alpine_options_panel1, ao_overdrawwh_cbox_on_click, g_alpine_game_config.world_hud_overdraw, 280, 84, "Icon overdraw");
+        &ao_flag_overdrawwh_cbox, &ao_flag_overdrawwh_label, &alpine_options_panel1, ao_flag_overdrawwh_cbox_on_click, g_alpine_game_config.world_hud_flag_overdraw, 280, 84, "Overdraw flags");
     alpine_options_panel_checkbox_init(
-        &ao_sbanim_cbox, &ao_sbanim_label, &alpine_options_panel1, ao_sbanim_cbox_on_click, g_alpine_game_config.scoreboard_anim, 280, 114, "Scoreboard anim");
+        &ao_hill_overdrawwh_cbox, &ao_hill_overdrawwh_label, &alpine_options_panel1, ao_hill_overdrawwh_cbox_on_click, g_alpine_game_config.world_hud_hill_overdraw, 280, 114, "Overdraw CPs");
     alpine_options_panel_checkbox_init(
-        &ao_teamlabels_cbox, &ao_teamlabels_label, &alpine_options_panel1, ao_teamlabels_cbox_on_click, g_alpine_game_config.world_hud_team_player_labels, 280, 144, "Label teammates");
+        &ao_sbanim_cbox, &ao_sbanim_label, &alpine_options_panel1, ao_sbanim_cbox_on_click, g_alpine_game_config.scoreboard_anim, 280, 144, "Scoreboard anim");
     alpine_options_panel_checkbox_init(
-        &ao_minimaltimer_cbox, &ao_minimaltimer_label, &alpine_options_panel1, ao_minimaltimer_cbox_on_click, !g_alpine_game_config.verbose_time_left_display, 280, 174, "Minimal timer");
+        &ao_teamlabels_cbox, &ao_teamlabels_label, &alpine_options_panel1, ao_teamlabels_cbox_on_click, g_alpine_game_config.world_hud_team_player_labels, 280, 174, "Label teammates");
     alpine_options_panel_checkbox_init(
-        &ao_targetnames_cbox, &ao_targetnames_label, &alpine_options_panel1, ao_targetnames_cbox_on_click, g_alpine_game_config.display_target_player_names, 280, 204, "Target names");
+        &ao_minimaltimer_cbox, &ao_minimaltimer_label, &alpine_options_panel1, ao_minimaltimer_cbox_on_click, !g_alpine_game_config.verbose_time_left_display, 280, 204, "Minimal timer");
     alpine_options_panel_checkbox_init(
-        &ao_always_show_spectators_cbox, &ao_always_show_spectators_label, &alpine_options_panel1, ao_always_show_spectators_cbox_on_click, g_alpine_game_config.always_show_spectators, 280, 234, "Show spectators");
+        &ao_targetnames_cbox, &ao_targetnames_label, &alpine_options_panel1, ao_targetnames_cbox_on_click, g_alpine_game_config.display_target_player_names, 280, 234, "Target names");
+    alpine_options_panel_checkbox_init(
+        &ao_always_show_spectators_cbox, &ao_always_show_spectators_label, &alpine_options_panel1, ao_always_show_spectators_cbox_on_click, g_alpine_game_config.always_show_spectators, 280, 264, "Show spectators");
 
     // panel 2
     alpine_options_panel_checkbox_init(

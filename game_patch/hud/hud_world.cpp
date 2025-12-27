@@ -158,7 +158,8 @@ void build_ctf_flag_icons()
             }
         }
 
-        auto render_mode = g_alpine_game_config.world_hud_overdraw ? WorldHUDRenderMode::overdraw : WorldHUDRenderMode::no_overdraw;
+        auto render_mode = g_alpine_game_config.world_hud_flag_overdraw ? WorldHUDRenderMode::overdraw
+                                                                        : WorldHUDRenderMode::no_overdraw;
 
         do_render_world_hud_sprite(vec, 0.6f, bitmap_handle, render_mode, true, true, true);
     };
@@ -537,7 +538,7 @@ static void build_koth_hill_icons()
         return;
 
     const auto gt = rf::multi_get_game_type();
-    const bool overdraw_enabled = g_alpine_game_config.world_hud_overdraw;
+    const bool overdraw_enabled = g_alpine_game_config.world_hud_hill_overdraw;
     const bool is_rev_or_esc = gt == rf::NetGameType::NG_TYPE_REV || gt == rf::NetGameType::NG_TYPE_ESC;
 
     for (const auto& h : g_koth_info.hills) {
@@ -1188,14 +1189,30 @@ ConsoleCommand2 worldhudctf_cmd{
     "cl_wh_ctf",
 };
 
-ConsoleCommand2 worldhudoverdraw_cmd{
-    "cl_wh_objoverdraw",
+ConsoleCommand2 worldhudflagoverdraw_cmd{
+    "cl_wh_flagoverdraw",
     []() {
-        g_alpine_game_config.world_hud_overdraw = !g_alpine_game_config.world_hud_overdraw;
-        rf::console::print("World HUD overdraw is {}", g_alpine_game_config.world_hud_overdraw ? "enabled" : "disabled");
+        g_alpine_game_config.world_hud_flag_overdraw = !g_alpine_game_config.world_hud_flag_overdraw;
+        rf::console::print(
+            "World HUD overdraw for CTF flag sprites is {}",
+            g_alpine_game_config.world_hud_flag_overdraw ? "enabled" : "disabled"
+        );
     },
-    "Toggle whether world HUD indicators for objectives are drawn on top of everything else",
-    "cl_wh_objoverdraw",
+    "Toggle whether world HUD sprites for CTF flags are drawn on top of everything else",
+    "cl_wh_flagoverdraw",
+};
+
+ConsoleCommand2 worldhudhilloverdraw_cmd{
+    "cl_wh_cpoverdraw",
+    []() {
+        g_alpine_game_config.world_hud_hill_overdraw = !g_alpine_game_config.world_hud_hill_overdraw;
+        rf::console::print(
+            "World HUD overdraw for control point sprites is {}",
+            g_alpine_game_config.world_hud_hill_overdraw ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether world HUD sprites for control points are drawn on top of everything else",
+    "cl_wh_cpoverdraw",
 };
 
 ConsoleCommand2 worldhuddamagenumbers_cmd{
@@ -1296,7 +1313,8 @@ void hud_world_apply_patch()
     // register commands
     worldhudaltdmgindicators_cmd.register_cmd();
     worldhudctf_cmd.register_cmd();
-    worldhudoverdraw_cmd.register_cmd();
+    worldhudflagoverdraw_cmd.register_cmd();
+    worldhudhilloverdraw_cmd.register_cmd();
     worldhuddamagenumbers_cmd.register_cmd();
     worldhudspectateplayerlabels_cmd.register_cmd();
     worldhudteamplayerlabels_cmd.register_cmd();

@@ -36,7 +36,8 @@ namespace df::gr::d3d11
     static auto& geo_cache_rooms = addr_as_ref<GRoom*[256]>(0x01375DB4);
     static auto& geo_cache_num_rooms = addr_as_ref<int>(0x013761B8);
     static auto& sky_room_center = addr_as_ref<Vector3>(0x0088FB10);
-    static auto& sky_room_offset = addr_as_ref<rf::Vector3>(0x0087BB00);
+    static auto& sky_room_offset = addr_as_ref<Vector3>(0x0087BB00);
+    static auto& sky_room_orient = addr_as_ref<Matrix3*>(0x009BB56C);
 
     static auto& set_currently_rendered_room = addr_as_ref<void (GRoom *room)>(0x004D3350);
 
@@ -700,7 +701,16 @@ namespace df::gr::d3d11
     {
         xlog::trace("Rendering sky room {} cache {}", room->room_index, room->geo_cache);
         render_context_.update_lights(true);
-        before_render(sky_room_offset, rf::identity_matrix);
+        if (const Matrix3* skybox_orient = sky_room_orient) {
+            Matrix3 skybox_orient_inv = *skybox_orient;
+            skybox_orient_inv.inverse();
+
+            const Vector3 rotated_center = skybox_orient_inv.transform_vector(sky_room_center);
+            before_render(sky_room_offset + sky_room_center - rotated_center, skybox_orient_inv);
+        }
+        else {
+            before_render(sky_room_offset, rf::identity_matrix);
+        }
         render_room_faces(rf::level.geometry, room, FaceRenderType::opaque);
         render_room_faces(rf::level.geometry, room, FaceRenderType::alpha);
         render_context_.update_lights();

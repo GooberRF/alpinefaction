@@ -63,6 +63,15 @@ namespace rf
         void mul_transpose(const Matrix3& other) {
             AddrCaller{0x004FF0F0}.this_call(this, this, &other);
         }
+
+        Vector3 transform_vector(const Vector3& v) const
+        {
+            return Vector3{
+                rvec.x * v.x + uvec.x * v.y + fvec.x * v.z,
+                rvec.y * v.x + uvec.y * v.y + fvec.y * v.z,
+                rvec.z * v.x + uvec.z * v.y + fvec.z * v.z,
+            };
+        }
     };
     static_assert(sizeof(Matrix3) == 0x24);
 

@@ -236,17 +236,24 @@ FunHook<void(int, float, float, rf::Color*)> gr_d3d_get_texel_hook{
             // Assume wrap addressing mode
             u = std::fmod(u, 1.0f);
             v = std::fmod(v, 1.0f);
+
             if (u < 0.0f) {
                 u += 1.0f;
             }
             if (v < 0.0f) {
                 v += 1.0f;
             }
+
             int x = std::lround(u * lock.w);
             int y = std::lround(v * lock.h);
+
+            // Note: clamp to prevent an OOB
+            // rounding can produce x == w or y == h when u or v are near 1.0, which is past the last valid pixel
+            // causes occasional crashes depending on where the OOB lands, most commonly reported on 'dm-oranmentsb2.rfl'
+            x = std::clamp(x, 0, lock.w - 1);
+            y = std::clamp(y, 0, lock.h - 1);
+
             *out_color = bm_get_pixel(lock.data, lock.format, lock.stride_in_bytes, x, y);
-
-
             rf::gr::unlock(&lock);
         }
         else {

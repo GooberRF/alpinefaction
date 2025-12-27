@@ -21,6 +21,7 @@
 #include "../rf/hud.h"
 #include "../rf/level.h"
 #include "../rf/os/timer.h"
+#include "../os/console.h"
 #include "../main/main.h"
 #include "hud_internal.h"
 #include "../graphics/gr.h"
@@ -43,6 +44,83 @@ static unsigned g_anim_ticks = 0;
 static bool g_enter_anim = false;
 static bool g_leave_anim = false;
 static bool g_big_scoreboard = false;
+
+struct ScoreboardPlayerList
+{
+    std::vector<rf::Player*> players{};
+    std::vector<size_t> divider_indices{};
+};
+
+enum class ScoreboardCategory
+{
+    Active,
+    Bot,
+    Spectator,
+    Idle,
+    Browser,
+};
+
+static ScoreboardCategory get_scoreboard_category(const rf::Player* player)
+{
+    const auto& pdata = get_player_additional_data(player);
+
+    if (g_alpine_game_config.scoreboard_split_bots && pdata.is_bot()) {
+        return ScoreboardCategory::Bot;
+    }
+
+    if (g_alpine_game_config.scoreboard_split_spectators && pdata.is_spectator()) {
+        return ScoreboardCategory::Spectator;
+    }
+
+    if (g_alpine_game_config.scoreboard_split_idle && pdata.received_ac_status == std::optional{pf_pure_status::af_idle}) {
+        return ScoreboardCategory::Idle;
+    }
+
+    if (g_alpine_game_config.scoreboard_split_browsers && pdata.is_browser()) {
+        return ScoreboardCategory::Browser;
+    }
+
+    return ScoreboardCategory::Active;
+}
+
+static std::vector<size_t> calculate_divider_indices(const std::vector<rf::Player*>& players)
+{
+    std::vector<size_t> divider_indices{};
+    if (players.empty()) {
+        return divider_indices;
+    }
+
+    // split once for all categories other than active
+    if (g_alpine_game_config.scoreboard_split_simple) {
+        bool has_active = false;
+        std::optional<size_t> first_non_active{};
+
+        for (size_t i = 0; i < players.size(); ++i) {
+            const ScoreboardCategory cat = get_scoreboard_category(players[i]);
+            has_active = has_active || (cat == ScoreboardCategory::Active);
+
+            if (cat != ScoreboardCategory::Active && !first_non_active) {
+                first_non_active = i;
+            }
+        }
+
+        if (has_active && first_non_active) {
+            divider_indices.push_back(*first_non_active);
+        }
+        return divider_indices;
+    }
+
+    // split at every category
+    ScoreboardCategory current = get_scoreboard_category(players.front());
+    for (size_t i = 1; i < players.size(); ++i) {
+        const ScoreboardCategory next = get_scoreboard_category(players[i]);
+        if (next != current) {
+            divider_indices.push_back(i);
+            current = next;
+        }
+    }
+    return divider_indices;
+}
 
 bool multi_scoreboard_is_visible() {
     return g_scoreboard_visible;
@@ -175,11 +253,20 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
     return cur_y - y;
 }
 
-int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int y, int w, float scale,
-    rf::NetGameType game_type, bool dry_run = false)
+int draw_scoreboard_players(
+    const ScoreboardPlayerList& player_list,
+    int x,
+    int y,
+    int w,
+    float scale,
+    rf::NetGameType game_type,
+    bool dry_run = false)
 {
     int initial_y = y;
     int font_h = rf::gr::get_font_height(-1);
+    const int row_spacing = font_h;
+    const int divider_spacing = row_spacing / 4;
+    const int divider_height = std::max(1, static_cast<int>(scale));
 
     int status_w = static_cast<int>(12 * scale);
     int score_w = static_cast<int>(50 * scale);
@@ -224,7 +311,21 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
     rf::Player* blue_flag_player = rf::multi_ctf_get_blue_flag_player();
 
     // Draw the list
-    for (rf::Player* player : players) {
+    size_t next_divider = 0;
+    for (size_t i = 0; i < player_list.players.size(); ++i) {
+        rf::Player* player = player_list.players[i];
+
+        if (next_divider < player_list.divider_indices.size()
+            && i == player_list.divider_indices[next_divider]) {
+            y += divider_spacing - divider_height;
+            if (!dry_run) {
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+                rf::gr::rect(x, y, w, divider_height);
+            }
+            y += divider_spacing;
+            ++next_divider;
+        }
+
         if (!dry_run) {
             static const int green_bm = rf::bm::load("afsbi_spawned.tga", -1, true);
             static const int red_bm = rf::bm::load("afsbi_dead.tga", -1, true);
@@ -348,22 +449,30 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
     return y - initial_y;
 }
 
-void filter_and_sort_players(
-    std::vector<rf::Player*>& players,
-    const std::optional<int> team_id
-) {
-    players.clear();
-    players.reserve(32);
+ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
+{
+    ScoreboardPlayerList player_list{};
+    player_list.players.reserve(32);
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (!team_id || player.team == team_id.value()) {
-            players.push_back(&player);
+            player_list.players.push_back(&player);
         }
     }
 
     std::ranges::sort(
-        players,
+        player_list.players,
         [] (const rf::Player* const player_1, const rf::Player* const player_2) {
+            const auto& pdata_1 = get_player_additional_data(player_1);
+            const auto& pdata_2 = get_player_additional_data(player_2);
+
+            const ScoreboardCategory category_1 = get_scoreboard_category(player_1);
+            const ScoreboardCategory category_2 = get_scoreboard_category(player_2);
+
+            if (category_1 != category_2) {
+                return category_1 < category_2;
+            }
+
             if (player_1->stats->score != player_2->stats->score) {
                 return player_1->stats->score > player_2->stats->score;
             }
@@ -375,6 +484,10 @@ void filter_and_sort_players(
             }
         }
     );
+
+    player_list.divider_indices = calculate_divider_indices(player_list.players);
+
+    return player_list;
 }
 
 void draw_scoreboard_internal_new(bool draw) {
@@ -383,33 +496,37 @@ void draw_scoreboard_internal_new(bool draw) {
     }
 
     const rf::NetGameType game_type = rf::multi_get_game_type();
-    std::vector<rf::Player*> left_players{}, right_players{};
+    ScoreboardPlayerList left_players{}, right_players{};
     bool split_columns = multi_game_type_is_team_type(game_type);
 #if DEBUG_SCOREBOARD
     if (split_columns) {
         for (int i = 0; i < 16; ++i) {
-            left_players.push_back(rf::local_player);
+            left_players.players.push_back(rf::local_player);
         }
         for (int i = 0; i < 16; ++i) {
-            right_players.push_back(rf::local_player);
+            right_players.players.push_back(rf::local_player);
         }
     } else {
         for (int i = 0; i < 32; ++i) {
-            left_players.push_back(rf::local_player);
+            left_players.players.push_back(rf::local_player);
         }
     }
     {
 #else
     if (split_columns) {
-        filter_and_sort_players(left_players, {rf::TEAM_RED});
-        filter_and_sort_players(right_players, {rf::TEAM_BLUE});
+        left_players = filter_and_sort_players({rf::TEAM_RED});
+        right_players = filter_and_sort_players({rf::TEAM_BLUE});
     } else {
-        filter_and_sort_players(left_players, {});
+        left_players = filter_and_sort_players({});
 #endif
-        if (left_players.size() > 16) {
-            const auto overflow_start = left_players.begin() + 16;
-            right_players.assign(overflow_start, left_players.end());
-            left_players.erase(overflow_start, left_players.end());
+        if (left_players.players.size() > 16) {
+            const auto overflow_start = left_players.players.begin() + 16;
+            right_players.players.assign(overflow_start, left_players.players.end());
+            left_players.players.erase(overflow_start, left_players.players.end());
+
+            left_players.divider_indices = calculate_divider_indices(left_players.players);
+            right_players.divider_indices = calculate_divider_indices(right_players.players);
+
             split_columns = true;
         }
     }
@@ -495,6 +612,71 @@ void draw_scoreboard_internal_new(bool draw) {
 
 FunHook<void(bool)> draw_scoreboard_internal_hook{0x00470880, draw_scoreboard_internal_new};
 
+ConsoleCommand2 ui_scoreboard_spectators_cmd{
+    "ui_sb_spectators",
+    [] {
+        g_alpine_game_config.scoreboard_split_spectators = !g_alpine_game_config.scoreboard_split_spectators;
+        rf::console::print(
+            "Scoreboard spectator separation is {}",
+            g_alpine_game_config.scoreboard_split_spectators ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether spectators are grouped separately on the scoreboard",
+    "ui_sb_spectators",
+};
+
+ConsoleCommand2 ui_scoreboard_bots_cmd{
+    "ui_sb_bots",
+    [] {
+        g_alpine_game_config.scoreboard_split_bots = !g_alpine_game_config.scoreboard_split_bots;
+        rf::console::print(
+            "Scoreboard bot separation is {}",
+            g_alpine_game_config.scoreboard_split_bots ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether bots are grouped separately on the scoreboard",
+    "ui_sb_bots",
+};
+
+ConsoleCommand2 ui_scoreboard_browsers_cmd{
+    "ui_sb_browsers",
+    [] {
+        g_alpine_game_config.scoreboard_split_browsers = !g_alpine_game_config.scoreboard_split_browsers;
+        rf::console::print(
+            "Scoreboard browser separation is {}",
+            g_alpine_game_config.scoreboard_split_browsers ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether browsers are grouped separately on the scoreboard",
+    "ui_sb_browsers",
+};
+
+ConsoleCommand2 ui_scoreboard_idle_cmd{
+    "ui_sb_idle",
+    [] {
+        g_alpine_game_config.scoreboard_split_idle = !g_alpine_game_config.scoreboard_split_idle;
+        rf::console::print(
+            "Scoreboard idle player separation is {}",
+            g_alpine_game_config.scoreboard_split_idle ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether idle players are grouped separately on the scoreboard",
+    "ui_sb_idle",
+};
+
+ConsoleCommand2 ui_scoreboard_simple_cmd{
+    "ui_sb_simplesplit",
+    [] {
+        g_alpine_game_config.scoreboard_split_simple = !g_alpine_game_config.scoreboard_split_simple;
+        rf::console::print(
+            "Simple scoreboard separation is {}",
+            g_alpine_game_config.scoreboard_split_simple ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether each scoreboard grouping is displayed individually",
+    "ui_sb_simplesplit",
+};
+
 void scoreboard_maybe_render(bool show_scoreboard)
 {
     if (g_alpine_game_config.scoreboard_anim) {
@@ -522,6 +704,11 @@ void scoreboard_maybe_render(bool show_scoreboard)
 void multi_scoreboard_apply_patch()
 {
     draw_scoreboard_internal_hook.install();
+    ui_scoreboard_spectators_cmd.register_cmd();
+    ui_scoreboard_bots_cmd.register_cmd();
+    ui_scoreboard_browsers_cmd.register_cmd();
+    ui_scoreboard_idle_cmd.register_cmd();
+    ui_scoreboard_simple_cmd.register_cmd();
 }
 
 void multi_scoreboard_set_hidden(bool hidden)

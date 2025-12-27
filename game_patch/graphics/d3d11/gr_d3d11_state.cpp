@@ -140,6 +140,15 @@ namespace df::gr::d3d11
             break;
         }
 
+        // Do not write backbuffer alpha for blends
+        // Fixes rocket launcher infrared scanner dynamic textures drawing semi-transparent
+        if (desc.RenderTarget[0].BlendEnable) {
+            desc.RenderTarget[0].RenderTargetWriteMask =
+                D3D11_COLOR_WRITE_ENABLE_RED |
+                D3D11_COLOR_WRITE_ENABLE_GREEN |
+                D3D11_COLOR_WRITE_ENABLE_BLUE;
+        }
+
         ComPtr<ID3D11BlendState> blend_state;
         check_hr(
             device_->CreateBlendState(&desc, &blend_state),

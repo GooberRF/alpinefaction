@@ -199,6 +199,39 @@ static bool esc_role_exists(HillRole role)
     return esc_find_hill_by_role(role) != nullptr;
 }
 
+static std::vector<HillRole> esc_path_for_team(HillOwner team)
+{
+    std::vector<HillRole> path;
+    path.reserve(5);
+
+    switch (team) {
+        case HillOwner::HO_Red:
+            path.push_back(HillRole::HR_RedBase);
+            if (esc_role_exists(HillRole::HR_RedForward))
+                path.push_back(HillRole::HR_RedForward);
+            path.push_back(HillRole::HR_Center);
+            if (esc_role_exists(HillRole::HR_BlueForward))
+                path.push_back(HillRole::HR_BlueForward);
+            path.push_back(HillRole::HR_BlueBase);
+            break;
+
+        case HillOwner::HO_Blue:
+            path.push_back(HillRole::HR_BlueBase);
+            if (esc_role_exists(HillRole::HR_BlueForward))
+                path.push_back(HillRole::HR_BlueForward);
+            path.push_back(HillRole::HR_Center);
+            if (esc_role_exists(HillRole::HR_RedForward))
+                path.push_back(HillRole::HR_RedForward);
+            path.push_back(HillRole::HR_RedBase);
+            break;
+
+        default:
+            break;
+    }
+
+    return path;
+}
+
 HillInfo* koth_find_hill_by_uid(uint8_t uid)
 {
     for (auto& h : g_koth_info.hills)
@@ -558,39 +591,6 @@ static const char* to_string(HillState s)
     }
 }
 
-static std::vector<HillRole> esc_path_for_team(HillOwner team)
-{
-    std::vector<HillRole> path;
-    path.reserve(5);
-
-    switch (team) {
-        case HillOwner::HO_Red:
-            path.push_back(HillRole::HR_RedBase);
-            if (esc_role_exists(HillRole::HR_RedForward))
-                path.push_back(HillRole::HR_RedForward);
-            path.push_back(HillRole::HR_Center);
-            if (esc_role_exists(HillRole::HR_BlueForward))
-                path.push_back(HillRole::HR_BlueForward);
-            path.push_back(HillRole::HR_BlueBase);
-            break;
-
-        case HillOwner::HO_Blue:
-            path.push_back(HillRole::HR_BlueBase);
-            if (esc_role_exists(HillRole::HR_BlueForward))
-                path.push_back(HillRole::HR_BlueForward);
-            path.push_back(HillRole::HR_Center);
-            if (esc_role_exists(HillRole::HR_RedForward))
-                path.push_back(HillRole::HR_RedForward);
-            path.push_back(HillRole::HR_RedBase);
-            break;
-
-        default:
-            break;
-    }
-
-    return path;
-}
-
 static bool hill_has_spawn_uid(const HillInfo& hill, int rp_uid)
 {
     return std::find(hill.mp_spawn_uids.begin(), hill.mp_spawn_uids.end(), rp_uid) != hill.mp_spawn_uids.end();
@@ -667,6 +667,17 @@ static bool esc_should_enable_respawn_point_for_team(int rp_uid, HillOwner team)
 
     if (team != HillOwner::HO_Red && team != HillOwner::HO_Blue)
         return false;
+
+    // Before the center hill has been captured by either team, only center-linked spawns are active for both teams
+    // After the center hill is captured, spawn them at their current defense hill
+    if (auto* center = esc_find_hill_by_role(HillRole::HR_Center)) {
+        if (center->ownership == HillOwner::HO_Neutral) {
+            if (hill_has_spawn_uid(*center, rp_uid))
+                return true;
+
+            return false;
+        }
+    }
 
     for (auto& hill : g_koth_info.hills) {
         if (!esc_is_defense_hill_for_team(&hill, team))

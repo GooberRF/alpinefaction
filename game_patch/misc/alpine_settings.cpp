@@ -281,6 +281,14 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("AFSFileVersion");
     }
 
+    // Load deprecated settings
+    // handle WorldHUDOverdraw setting (deprecated in AFS v9), parse into world_hud_flag_overdraw
+    if (settings.count("WorldHUDOverdraw") && loaded_afs_version < 9) {
+        g_alpine_game_config.world_hud_flag_overdraw = std::stoi(settings["WorldHUDOverdraw"]);
+        processed_keys.insert("WorldHUDOverdraw");
+        xlog::info("Successfully parsed legacy setting 'WorldHUDOverdraw' from loaded pre-v9 AFS file.");
+    }
+
     // Load player settings
     if (settings.count("PlayerName")) {
         std::string player_name = settings["PlayerName"];
@@ -635,6 +643,26 @@ bool alpine_player_settings_load(rf::Player* player)
         }
         processed_keys.insert("PingLabelTextScale");
     }
+    if (settings.count("ScoreboardSplitSpectators")) {
+        g_alpine_game_config.scoreboard_split_spectators = std::stoi(settings["ScoreboardSplitSpectators"]);
+        processed_keys.insert("ScoreboardSplitSpectators");
+    }
+    if (settings.count("ScoreboardSplitBots")) {
+        g_alpine_game_config.scoreboard_split_bots = std::stoi(settings["ScoreboardSplitBots"]);
+        processed_keys.insert("ScoreboardSplitBots");
+    }
+    if (settings.count("ScoreboardSplitBrowsers")) {
+        g_alpine_game_config.scoreboard_split_browsers = std::stoi(settings["ScoreboardSplitBrowsers"]);
+        processed_keys.insert("ScoreboardSplitBrowsers");
+    }
+    if (settings.count("ScoreboardSplitIdle")) {
+        g_alpine_game_config.scoreboard_split_idle = std::stoi(settings["ScoreboardSplitIdle"]);
+        processed_keys.insert("ScoreboardSplitIdle");
+    }
+    if (settings.count("SimpleScoreboardSplit")) {
+        g_alpine_game_config.scoreboard_split_simple = std::stoi(settings["SimpleScoreboardSplit"]);
+        processed_keys.insert("SimpleScoreboardSplit");
+    }
 
     // Load singleplayer settings
     if (settings.count("DifficultyLevel")) {
@@ -675,9 +703,13 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.world_hud_ctf_icons = std::stoi(settings["WorldHUDObjIcons"]);
         processed_keys.insert("WorldHUDObjIcons");
     }
-    if (settings.count("WorldHUDOverdraw")) {
-        g_alpine_game_config.world_hud_overdraw = std::stoi(settings["WorldHUDOverdraw"]);
-        processed_keys.insert("WorldHUDOverdraw");
+    if (settings.count("WorldHUDFlagOverdraw")) {
+        g_alpine_game_config.world_hud_flag_overdraw = std::stoi(settings["WorldHUDFlagOverdraw"]);
+        processed_keys.insert("WorldHUDFlagOverdraw");
+    }
+    if (settings.count("WorldHUDHillOverdraw")) {
+        g_alpine_game_config.world_hud_hill_overdraw = std::stoi(settings["WorldHUDHillOverdraw"]);
+        processed_keys.insert("WorldHUDHillOverdraw");
     }
     if (settings.count("WorldHUDDamageNumbers")) {
         g_alpine_game_config.world_hud_damage_numbers = std::stoi(settings["WorldHUDDamageNumbers"]);
@@ -1094,6 +1126,11 @@ void alpine_player_settings_save(rf::Player* player)
     if (g_alpine_game_config.world_hud_ping_label_text_scale) {
         file << "PingLabelTextScale=" << *g_alpine_game_config.world_hud_ping_label_text_scale << "\n";
     }
+    file << "ScoreboardSplitSpectators=" << g_alpine_game_config.scoreboard_split_spectators << "\n";
+    file << "ScoreboardSplitBots=" << g_alpine_game_config.scoreboard_split_bots << "\n";
+    file << "ScoreboardSplitBrowsers=" << g_alpine_game_config.scoreboard_split_browsers << "\n";
+    file << "ScoreboardSplitIdle=" << g_alpine_game_config.scoreboard_split_idle << "\n";
+    file << "SimpleScoreboardSplit=" << g_alpine_game_config.scoreboard_split_simple << "\n";
 
     // Singleplayer
     file << "\n[SingleplayerSettings]\n";
@@ -1109,7 +1146,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "\n[MultiplayerSettings]\n";
     file << "MultiplayerCharacter=" << player->settings.multi_character << "\n";
     file << "WorldHUDObjIcons=" << g_alpine_game_config.world_hud_ctf_icons << "\n";
-    file << "WorldHUDOverdraw=" << g_alpine_game_config.world_hud_overdraw << "\n";
+    file << "WorldHUDFlagOverdraw=" << g_alpine_game_config.world_hud_flag_overdraw << "\n";
+    file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";

@@ -8,13 +8,17 @@ Version 1.2.1 (TBD): Not yet released
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Change default spawn delay for KOTH, DC, and ESC from 5, 2.5, 3 seconds respectively to 2 seconds
-- Drop support for Direct3D 11 renderer on GPUs without D3D level 10_0 (or higher) support
+- Deprecate support for Direct3D 11 renderer on GPUs without D3D level 10_0 (or higher) support
 - Improve FPS/ping HUD display
 - Change prefix for `showfps` and `showping` console commands to `ui`
 - Add `ui_fpsavg` command set FPS counter averaging window
 - Add `ui_scale_damage_notify`, `ui_scale_player_label`, and `ui_scale_ping_label` commands
 - Deprecate `cl_wh_bigtext` command
 - Increase workspace area on UV Unwrap dialog in level editor
+- Deprecate `cl_wh_objoverdraw` command, split functionality into `cl_wh_flagoverdraw` and `cl_wh_cpoverdraw`
+- Deprecate legacy `-dedicated` dedicated server functionality, add informational error message when used
+- Add `ui_sb_spectators`, `ui_sb_bots`, `ui_sb_browsers`, `ui_sb_idle` to control scoreboard division categories
+- Add `ui_sb_simplesplit` to control behaviour of scoreboard divisions for desired categories
 
 [@is-this-c](https://github.com/is-this-c)
 - Improve scoreboard sorting for clients whose scores are equal
@@ -32,6 +36,13 @@ Version 1.2.1 (TBD): Not yet released
 - Fix dynamic lights not illuminating meshes in Direct3D 11 renderer when 2 or more rotating movers are active and `Legacy movers` is false
 - Fix ESC mode capture progress not being reset when a control point becomes locked
 - Fix Direct3D 11 renderer not always properly applying dynamic lights to static meshes
+- Fix players spawning at the wrong control point in ESC when the center point is neutral
+- Fix rare crash when shooting at alpha-masked surfaces (fixes crash in community level `dm-oranmentsb2.rfl`)
+- Fix skybox rotation not being rendered by Direct3D 11 renderer
+- Fix third person weapon models being rendered fullbright by Direct3D 11 renderer
+- Fix `r_fullbright` not extending in Direct3D 11 renderer to third person weapon models held by players
+- Fix Rocket Launcher infrared scanner being drawn semi-transparent in Direct3D 11 renderer
+- Fix vehicles not rendering in Rocket Launcher infrared scanner in Direct3D 11 renderer
 
 [@is-this-c](https://github.com/is-this-c)
 - Use packet queues for remote server config transfers, so as to prevent potential timeouts

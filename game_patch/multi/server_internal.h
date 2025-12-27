@@ -804,6 +804,4 @@ void initialize_game_info_server_flags();
 std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gametype_name);
 bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);
-void load_ads_server_config();
 void launch_alpine_dedicated_server();
-void load_additional_server_config(rf::Parser& parser);
