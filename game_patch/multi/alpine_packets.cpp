@@ -1548,8 +1548,7 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
                 0
             );
         } else {
-            std::string legacy_msg = std::string("\xA6 ") + std::string(msg);
-            send_chat_line_packet(legacy_msg, &player);
+            send_chat_line_packet(std::format("\xA6 {}", msg), &player);
         }
     }
 }
