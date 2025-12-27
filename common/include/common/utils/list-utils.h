@@ -7,7 +7,7 @@ struct singly_list_traits {
     static constexpr T* const T::* NEXT_PTR = &T::next;
 };
 
-template<typename T, auto NEXT_PTR = singly_list_traits<T>::NEXT_PTR>
+template <typename T, auto NEXT_PTR = singly_list_traits<T>::NEXT_PTR>
 class SinglyLinkedList
 {
     std::reference_wrapper<T*> m_list;

@@ -3,6 +3,7 @@
 #include <cassert>
 #include <array>
 #include <ranges>
+#include <common/utils/bool-utils.h>
 #include <common/utils/list-utils.h>
 #include <common/rfproto.h>
 #include <xlog/xlog.h>
@@ -1375,9 +1376,7 @@ void af_process_spectate_start_packet(
         af_send_spectate_notify_packet(new_target, spectator, true);
     }
 
-    spectator->spectatee = exited_spectate
-        ? std::nullopt
-        : std::optional{new_target};
+    spectator->spectatee = then_some(exited_spectate, new_target);
 }
 
 void af_send_spectate_notify_packet(

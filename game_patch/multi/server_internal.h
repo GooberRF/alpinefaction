@@ -565,7 +565,6 @@ struct AlpineServerConfigRules
     GunGameConfig gungame;
 
     // =============================================
-
     void set_time_limit(float count)
     {
         time_limit = std::max(count, 10.0f);
@@ -598,7 +597,6 @@ struct AlpineServerConfigRules
     {
         ideal_player_count = std::clamp(count, 1, 32);
     }
-
     void set_flag_return_time(float in_time)
     {
         ctf_flag_return_time_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));

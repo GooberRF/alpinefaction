@@ -129,8 +129,9 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
         if (player) {
             PlayerStatsNew& stats = *static_cast<PlayerStatsNew*>(player->stats);
             if (in_stats.is_pure <= static_cast<uint8_t>(pf_pure_status::_last_variant)) {
-                const auto pf_status = static_cast<pf_pure_status>(in_stats.is_pure);
-                player->received_pf_status = std::optional{pf_status};
+                const pf_pure_status pf_status =
+                    static_cast<pf_pure_status>(in_stats.is_pure);
+
                 player->is_bot = pf_status == pf_pure_status::af_bot
                     || pf_status == pf_pure_status::af_spawn_disabled_bot;
                 player->is_spawn_disabled =
@@ -138,6 +139,8 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
                 player->is_spectator = pf_status == pf_pure_status::af_spectator;
                 player->is_browser = pf_status == pf_pure_status::rfsb;
                 player->is_human_player = !player->is_bot && !player->is_browser;
+
+                player->received_pf_status = std::optional{pf_status};
             }
             stats.max_streak = in_stats.streak_max;
             stats.current_streak = in_stats.streak_current;

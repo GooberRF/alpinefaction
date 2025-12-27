@@ -62,21 +62,19 @@ enum class ScoreboardCategory
 
 static ScoreboardCategory get_scoreboard_category(const rf::Player* player)
 {
-    const auto& pdata = get_player_additional_data(player);
-
-    if (g_alpine_game_config.scoreboard_split_bots && pdata.is_bot()) {
+    if (g_alpine_game_config.scoreboard_split_bots && player->is_bot) {
         return ScoreboardCategory::Bot;
     }
 
-    if (g_alpine_game_config.scoreboard_split_spectators && pdata.is_spectator()) {
+    if (g_alpine_game_config.scoreboard_split_spectators && player->is_spectator) {
         return ScoreboardCategory::Spectator;
     }
 
-    if (g_alpine_game_config.scoreboard_split_idle && pdata.received_ac_status == std::optional{pf_pure_status::af_idle}) {
+    if (g_alpine_game_config.scoreboard_split_idle && player_is_idle(player)) {
         return ScoreboardCategory::Idle;
     }
 
-    if (g_alpine_game_config.scoreboard_split_browsers && pdata.is_browser()) {
+    if (g_alpine_game_config.scoreboard_split_browsers && player->is_browser) {
         return ScoreboardCategory::Browser;
     }
 
@@ -470,9 +468,6 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
     std::ranges::sort(
         player_list.players,
         [] (const rf::Player* const player_1, const rf::Player* const player_2) {
-            const auto& pdata_1 = get_player_additional_data(player_1);
-            const auto& pdata_2 = get_player_additional_data(player_2);
-
             const ScoreboardCategory category_1 = get_scoreboard_category(player_1);
             const ScoreboardCategory category_2 = get_scoreboard_category(player_2);
 
@@ -483,6 +478,7 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
             if (player_1->stats->score != player_2->stats->score) {
                 return player_1->stats->score > player_2->stats->score;
             }
+
             // Sort players before bots, and both before browsers.
             if (player_1->is_human_player) {
                 return player_2->is_bot || player_2->is_browser;

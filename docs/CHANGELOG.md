@@ -45,8 +45,8 @@ Version 1.2.1 (TBD): Not yet released
 - Fix vehicles not rendering in Rocket Launcher infrared scanner in Direct3D 11 renderer
 
 [@is-this-c](https://github.com/is-this-c)
-- Use packet queues for remote server config transfers, so as to prevent potential timeouts
-- Fix key up logic for num pad `PgUp`, `PgDown`, `End`, and `Home`
+- Use packet queues for remote server config transfers, in order to prevent timeouts
+- Fix key up events for num pad `PgUp`, `PgDown`, `End`, and `Home`
 
 Version 1.2.0 (Willow): Released Dec-06-2025
 --------------------------------
