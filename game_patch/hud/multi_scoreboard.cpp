@@ -360,12 +360,19 @@ int draw_scoreboard_players(
                 }
             });
 
+            int bm_w = 0, bm_h = 0;
+            rf::bm::get_dimensions(status_bm, &bm_w, &bm_h);
+            const int offset = std::lround(
+                (static_cast<float>(font_h)
+                - static_cast<float>(bm_h)
+                * scale)
+                / 2.f
+            );
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
-            const bool has_flag_bm = player == red_flag_player || player == blue_flag_player;
             hud_scaled_bitmap(
                 status_bm,
                 status_x,
-                y + static_cast<int>((has_flag_bm ? 2.f : 2.5f) * scale),
+                y + offset,
                 scale
             );
 
