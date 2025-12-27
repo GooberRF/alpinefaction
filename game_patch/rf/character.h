@@ -9,7 +9,7 @@ namespace rf
     struct MvfAnimTrigger
     {
         char name[16] = {0};
-        float value = 0.0f;
+        int value = 0;
     };
     static_assert(sizeof(MvfAnimTrigger) == 0x14);
 

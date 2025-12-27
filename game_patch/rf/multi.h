@@ -24,6 +24,8 @@ namespace rf
     {
         uint32_t ip_addr;
         uint16_t port;
+        // padding byte
+        // padding byte
 
         bool operator==(const NetAddr &other) const = default;
     };
