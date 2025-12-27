@@ -3,6 +3,7 @@
 #include <cassert>
 #include <array>
 #include <ranges>
+#include <common/utils/bool-utils.h>
 #include <common/utils/list-utils.h>
 #include <common/rfproto.h>
 #include <xlog/xlog.h>
@@ -636,10 +637,9 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             break;
         }
         case af_client_req_type::af_req_server_cfg: {
-            auto& pdata = get_player_additional_data(player);
-            if (!pdata.remote_server_cfg_sent) {
+            if (!player->remote_server_cfg_sent) {
                 af_send_server_cfg(player);
-                pdata.remote_server_cfg_sent = true;
+                player->remote_server_cfg_sent = true;
             }
             break;
         }
@@ -1126,9 +1126,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_DELAYED_SPAWNS;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
-        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            auto& pdata = get_player_additional_data(&player);
-            pdata.remote_server_cfg_sent = false;
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            player.remote_server_cfg_sent = false;
         }
         g_alpine_server_config.signal_cfg_changed = false;
     }
@@ -1344,7 +1343,7 @@ void af_process_spectate_start_packet(
         return;
     }
 
-    const rf::Player* const spectator = rf::multi_find_player_by_addr(addr);
+    rf::Player* const spectator = rf::multi_find_player_by_addr(addr);
     if (!spectator) {
         return;
     }
@@ -1356,32 +1355,28 @@ void af_process_spectate_start_packet(
 
     std::memcpy(&spectate_start_packet, data, sizeof(spectate_start_packet));
 
-    rf::Player* const spectatee = rf::multi_find_player_by_id(
+    rf::Player* const new_target = rf::multi_find_player_by_id(
         spectate_start_packet.spectatee_id
     );
-    if (!spectatee && spectate_start_packet.spectatee_id != FREE_SPEC_ID) {
+    if (!new_target && spectate_start_packet.spectatee_id != FREE_SPEC_ID) {
         return;
     }
 
     update_player_active_status(spectator);
 
-    auto& pdata = get_player_additional_data(spectator);
-    const bool exited_spectate = spectatee == spectator;
-    if (exited_spectate) {
-        if (pdata.spectatee) {
-            af_send_spectate_notify_packet(pdata.spectatee.value(), spectator, false);
-            pdata.spectatee.reset();
-        }
-    } else {
-        if (pdata.spectatee && pdata.spectatee.value() == spectatee) {
-            return;
-        }
-        if (pdata.spectatee) {
-            af_send_spectate_notify_packet(pdata.spectatee.value(), spectator, false);
-        }
-        af_send_spectate_notify_packet(spectatee, spectator, true);
-        pdata.spectatee.emplace(spectatee);
+    const bool in_spectate = spectator != new_target;
+    rf::Player* const old_target = spectator->spectatee.value_or(nullptr);
+    const bool target_changed = old_target != new_target;
+
+    if (old_target && (!in_spectate || target_changed)) {
+        af_send_spectate_notify_packet(old_target, spectator, false);
     }
+
+    if (in_spectate && target_changed && new_target) {
+        af_send_spectate_notify_packet(new_target, spectator, true);
+    }
+
+    spectator->spectatee = then_some(in_spectate, new_target);
 }
 
 void af_send_spectate_notify_packet(
@@ -1389,12 +1384,7 @@ void af_send_spectate_notify_packet(
     const rf::Player* const spectator,
     const bool does_spectate
 ) {
-    // Are we a server?
-    if (!rf::is_server) {
-        return;
-    }
-
-    if (!spectator || !spectator->net_data) {
+    if (!rf::is_server || !spectator || !spectator->net_data) {
         return;
     }
 
@@ -1558,8 +1548,7 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
                 0
             );
         } else {
-            std::string legacy_msg = std::string("\xA6 ") + std::string(msg);
-            send_chat_line_packet(legacy_msg, &player);
+            send_chat_line_packet(std::format("\xA6 {}", msg), &player);
         }
     }
 }

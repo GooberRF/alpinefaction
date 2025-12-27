@@ -1,13 +1,81 @@
 #pragma once
 
-#include <patch_common/MemUtils.h>
-#include "../math/vector.h"
-#include "../math/matrix.h"
-#include "../os/timestamp.h"
-#include "../os/string.h"
 #include "../gr/gr.h"
+#include "../math/matrix.h"
+#include "../math/vector.h"
+#include "../os/string.h"
+#include "../os/timestamp.h"
 #include "control_config.h"
 #include "player_fpgun.h"
+#include <common/utils/list-utils.h>
+#include <patch_common/MemUtils.h>
+
+#ifdef DASH_FACTION
+#include "../../os/os.h"
+#include "../../purefaction/pf_packets.h"
+#include "../multi.h"
+#include <map>
+
+constexpr float BOT_LEVEL_START_WAIT_TIME_SEC = 5.f;
+constexpr float BOT_OPPONENT_DEATH_WAIT_TIME_SEC = 5.f;
+
+struct PlayerNetGameSaveData {
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+};
+
+enum class ClientSoftware {
+    Unknown = 0,
+    Browser = 1,
+    PureFaction = 2,
+    DashFaction = 3,
+    AlpineFaction = 4
+};
+
+struct ClientVersionInfoProfile {
+    ClientSoftware software = ClientSoftware::Unknown;
+    uint8_t major = 0;
+    uint8_t minor = 0;
+    uint8_t patch = 0;
+    uint8_t type = 0;
+    uint32_t max_rfl_ver = 200;
+};
+
+struct PlayerAdditionalData {
+    ClientVersionInfoProfile version_info{};
+    std::optional<pf_pure_status> received_pf_status{};
+    std::optional<std::chrono::high_resolution_clock::time_point> death_time{};
+
+    bool is_bot = false;
+    bool is_spawn_disabled = false;
+    bool is_browser = false;
+    bool is_human_player = true;
+    bool is_spectator = false;
+    bool is_muted = false;
+
+    std::optional<int> last_hit_sound_sent_ms{};
+    std::optional<int> last_critical_sound_sent_ms{};
+
+    struct {
+        std::map<std::string, PlayerNetGameSaveData> saves{};
+        rf::Vector3 last_teleport_pos{};
+        rf::TimestampRealtime last_teleport_timer{};
+    } saving{};
+
+    struct {
+        rf::TimestampRealtime check_timer{};
+        rf::TimestampRealtime kick_timer{};
+    } idle{};
+
+    std::optional<int> last_spawn_point_index{};
+    // only used when configured in ADS
+    rf::Timestamp respawn_timer{};
+    // percentile
+    uint8_t damage_handicap = 0;
+    std::optional<rf::Player*> spectatee{};
+    bool remote_server_cfg_sent = false;
+};
+#endif
 
 namespace rf
 {
@@ -122,7 +190,7 @@ namespace rf
         PF_END_LEVEL_AFTER_BLACKOUT = 0x1000,
     };
 
-    struct Player
+    struct PlayerBase
     {
         struct Player *next;
         struct Player *prev;
@@ -176,7 +244,16 @@ namespace rf
         ubyte last_damage_dir;
         PlayerNetData *net_data;
     };
-    static_assert(sizeof(Player) == 0x1204);
+    static_assert(sizeof(PlayerBase) == 0x1204);
+
+    struct Player
+        : PlayerBase
+#ifdef DASH_FACTION
+        , PlayerAdditionalData
+#endif
+    {
+    };
+    static_assert(alignof(PlayerAdditionalData) == 0x8);
 
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
@@ -209,3 +286,13 @@ namespace rf
     static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
     static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
 }
+
+template <>
+struct singly_list_traits<rf::Player> {
+    static constexpr auto NEXT_PTR = &rf::PlayerBase::next;
+};
+
+template <>
+struct doubly_list_traits<rf::Player>: singly_list_traits<rf::Player> {
+    static constexpr auto PREV_PTR = &rf::PlayerBase::prev;
+};

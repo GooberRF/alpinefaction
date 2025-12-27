@@ -62,21 +62,19 @@ enum class ScoreboardCategory
 
 static ScoreboardCategory get_scoreboard_category(const rf::Player* player)
 {
-    const auto& pdata = get_player_additional_data(player);
-
-    if (g_alpine_game_config.scoreboard_split_bots && pdata.is_bot()) {
+    if (g_alpine_game_config.scoreboard_split_bots && player->is_bot) {
         return ScoreboardCategory::Bot;
     }
 
-    if (g_alpine_game_config.scoreboard_split_spectators && pdata.is_spectator()) {
+    if (g_alpine_game_config.scoreboard_split_spectators && player->is_spectator) {
         return ScoreboardCategory::Spectator;
     }
 
-    if (g_alpine_game_config.scoreboard_split_idle && pdata.received_ac_status == std::optional{pf_pure_status::af_idle}) {
+    if (g_alpine_game_config.scoreboard_split_idle && player_is_idle(player)) {
         return ScoreboardCategory::Idle;
     }
 
-    if (g_alpine_game_config.scoreboard_split_browsers && pdata.is_browser()) {
+    if (g_alpine_game_config.scoreboard_split_browsers && player->is_browser) {
         return ScoreboardCategory::Browser;
     }
 
@@ -337,15 +335,15 @@ int draw_scoreboard_players(
             static const int hud_micro_flag_blue_bm =
                 rf::bm::load("hud_microflag_blue.tga", -1, true);
 
-            const auto& pdata = get_player_additional_data(player);
             const int status_bm = std::invoke([&] {
-                if (pdata.is_browser()) {
+                if (player->is_browser) {
                     return browser_bm;
-                } else if (pdata.is_spectator()) {
+                } else if (player->is_spectator) {
                     return spectator_bm;
-                } else if ((pdata.is_spawn_disabled_bot()
+                } else if ((player->is_bot
+                    && player->is_spawn_disabled
                     && rf::player_is_dead(player))
-                    || is_player_idle(player)) {
+                    || player_is_idle(player)) {
                     return idle_bm;
                 } else {
                     if (player == red_flag_player) {
@@ -360,8 +358,21 @@ int draw_scoreboard_players(
                 }
             });
 
+            int bm_w = 0, bm_h = 0;
+            rf::bm::get_dimensions(status_bm, &bm_w, &bm_h);
+            const int offset = std::lround(
+                (static_cast<float>(font_h)
+                - static_cast<float>(bm_h)
+                * scale)
+                / 2.f
+            );
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
-            hud_scaled_bitmap(status_bm, status_x, static_cast<int>(y + 2 * scale), scale);
+            hud_scaled_bitmap(
+                status_bm,
+                status_x,
+                y + offset,
+                scale
+            );
 
             const bool is_local_player = player == rf::player_list;
             if (is_local_player) {
@@ -372,7 +383,7 @@ int draw_scoreboard_players(
 
             std::string player_name_stripped = player->name;
             const auto [space_w, space_h] = rf::gr::get_char_size(' ', -1);
-            const bool is_bot = pdata.is_bot();
+            const bool is_bot = player->is_bot;
             if (is_bot) {
                 const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", -1);
                 gr_fit_string(
@@ -457,9 +468,6 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
     std::ranges::sort(
         player_list.players,
         [] (const rf::Player* const player_1, const rf::Player* const player_2) {
-            const auto& pdata_1 = get_player_additional_data(player_1);
-            const auto& pdata_2 = get_player_additional_data(player_2);
-
             const ScoreboardCategory category_1 = get_scoreboard_category(player_1);
             const ScoreboardCategory category_2 = get_scoreboard_category(player_2);
 
@@ -470,11 +478,12 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
             if (player_1->stats->score != player_2->stats->score) {
                 return player_1->stats->score > player_2->stats->score;
             }
+
             // Sort players before bots, and both before browsers.
-            if (pdata_1.is_proper_player()) {
-                return pdata_2.is_bot() || pdata_2.is_browser();
+            if (player_1->is_human_player) {
+                return player_2->is_bot || player_2->is_browser;
             } else {
-                return pdata_1.is_bot() && pdata_2.is_browser();
+                return player_1->is_bot && player_2->is_browser;
             }
         }
     );

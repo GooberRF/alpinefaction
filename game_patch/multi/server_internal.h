@@ -565,7 +565,6 @@ struct AlpineServerConfigRules
     GunGameConfig gungame;
 
     // =============================================
-    
     void set_time_limit(float count)
     {
         time_limit = std::max(count, 10.0f);

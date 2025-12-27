@@ -1,5 +1,11 @@
 #pragma once
 
+#ifdef _MSC_VER
+#define FASTCALL_LAMBDA
+#else
+#define FASTCALL_LAMBDA __attribute__((fastcall))
+#endif
+
 // For generic types that are functors, delegate to its 'operator()'
 template<typename T>
 struct function_traits : public function_traits<decltype(&T::operator())>

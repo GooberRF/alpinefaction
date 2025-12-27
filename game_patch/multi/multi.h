@@ -102,31 +102,12 @@ struct AlpineFactionServerInfo
     int dc_score_limit = 0;
 };
 
-enum ClientVersion
-{
-    unknown = 0,
-    browser = 1,
-    pure_faction = 2,
-    dash_faction = 3,
-    alpine_faction = 4
-};
-
 enum class AlpineRestrictVerdict : uint8_t
 {
     ok = 0,
     need_alpine = 1,
     need_release = 2,
     need_update = 3
-};
-
-struct ClientVersionInfoProfile
-{
-    ClientVersion client_version = ClientVersion::unknown;
-    uint8_t version_major = 0u;
-    uint8_t version_minor = 0u;
-    uint8_t version_patch = 0u;
-    uint8_t version_type = 0u;
-    uint32_t max_rfl_version = 0u;
 };
 
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);

@@ -220,8 +220,7 @@ CodeInjection multi_get_state_info_camera_enter_fixed_patch{
 
         // Re-enter freelook spectate mode.
         const rf::Player* const target_player = multi_spectate_get_target_player();
-        const auto& pdata = get_player_additional_data(rf::local_player);
-        if (pdata.is_spectator() && target_player == rf::local_player) {
+        if (rf::local_player->is_spectator && target_player == rf::local_player) {
             rf::camera_enter_freelook(rf::local_player->cam);
             regs.eip = 0x00482024;
         }

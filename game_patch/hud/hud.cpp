@@ -4,8 +4,10 @@
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
 #include "hud.h"
-#include "multi_scoreboard.h"
 #include "hud_internal.h"
+#include "multi_scoreboard.h"
+#include "multi_spectate.h"
+#include "remote_server_cfg_ui.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 #include "../os/console.h"
@@ -17,7 +19,6 @@
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "../rf/gameseq.h"
-#include "multi_spectate.h"
 
 int g_target_player_name_font = -1;
 

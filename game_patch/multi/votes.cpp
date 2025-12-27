@@ -163,7 +163,7 @@ public:
 
             for (rf::Player* player : current_player_list) {
                 if (players_who_voted.find(player) == players_who_voted.end()) {
-                    if (get_player_additional_data(player).client_version != ClientVersion::alpine_faction) { // don't send reminder pings to alpine clients
+                    if (player->version_info.software != ClientSoftware::AlpineFaction) { // don't send reminder pings to alpine clients
                         af_send_automated_chat_msg("Send message \"/vote yes\" or \"/vote no\" to vote.", player);
                     }
                 }
@@ -185,21 +185,9 @@ public:
         return true;
     }
 
-    static bool player_meets_alpine_restrict(rf::Player* p)
-    {
-        const auto& pad = get_player_additional_data(p);
-
-        ClientVersionInfoProfile info{
-            pad.client_version,
-            pad.client_version_major,
-            pad.client_version_minor,
-            pad.client_version_patch,
-            pad.client_version_type,
-            pad.max_rfl_version,
-        };
-
-        const auto [verdict, verdict_string, hard_reject] = evaluate_alpine_restrict_status(info, false);
-
+    static bool player_meets_alpine_restrict(rf::Player* p) {
+        const auto [verdict, verdict_string, hard_reject] =
+            evaluate_alpine_restrict_status(p->version_info, false);
         return verdict == AlpineRestrictVerdict::ok;
     }
 
@@ -254,7 +242,9 @@ protected:
             }
 
             const std::string& message_to_send =
-                get_player_additional_data(player).client_version == ClientVersion::alpine_faction ? msg_alpine : msg_non_alpine;
+                player->version_info.software == ClientSoftware::AlpineFaction
+                    ? msg_alpine
+                    : msg_non_alpine;
 
             af_send_automated_chat_msg(message_to_send, player);
         }
@@ -276,10 +266,9 @@ protected:
         if (!p) {
             return false;
         }
-        const auto& pdata = get_player_additional_data(p);
-        if (pdata.client_version == ClientVersion::browser
-            || pdata.is_bot_player
-            || is_player_idle(p)
+        if (p->version_info.software == ClientSoftware::Browser
+            || p->is_bot
+            || player_is_idle(p)
             || !player_meets_alpine_restrict(p)) {
             return false;
         }
@@ -1077,8 +1066,7 @@ VoteMgr g_vote_mgr;
 
 void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, rf::Player* sender)
 {
-    const auto& pdata = get_player_additional_data(sender);
-    if (pdata.client_version == ClientVersion::browser || pdata.is_bot_player) {
+    if (sender->version_info.software == ClientSoftware::Browser || sender->is_bot) {
         af_send_automated_chat_msg("Browsers and bots are not allowed to vote!", sender, true);
         return;
     } else if (!Vote::player_meets_alpine_restrict(sender)) {
@@ -1087,7 +1075,7 @@ void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, 
             sender, true
         );
         return;
-    } else if (is_player_idle(sender)) {
+    } else if (player_is_idle(sender)) {
         af_send_automated_chat_msg("Idle players are not allowed to vote!", sender, true);
         return;
     }

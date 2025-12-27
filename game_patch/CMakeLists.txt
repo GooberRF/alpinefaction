@@ -107,6 +107,8 @@ set(SRCS
     hud/hud.h
     hud/hud_world.cpp
     hud/hud_world.h
+    hud/remote_server_cfg_ui.cpp
+    hud/remote_server_cfg_ui.h
     hud/multi_scoreboard.cpp
     hud/multi_scoreboard.h
     hud/multi_spectate.cpp
