@@ -1364,19 +1364,19 @@ void af_process_spectate_start_packet(
 
     update_player_active_status(spectator);
 
-    const bool exited_spectate = spectator == new_target;
+    const bool in_spectate = spectator != new_target;
     rf::Player* const old_target = spectator->spectatee.value_or(nullptr);
     const bool target_changed = old_target != new_target;
 
-    if (old_target && (exited_spectate || target_changed)) {
+    if (old_target && (!in_spectate || target_changed)) {
         af_send_spectate_notify_packet(old_target, spectator, false);
     }
 
-    if (!exited_spectate && target_changed && new_target) {
+    if (in_spectate && target_changed && new_target) {
         af_send_spectate_notify_packet(new_target, spectator, true);
     }
 
-    spectator->spectatee = then_some(exited_spectate, new_target);
+    spectator->spectatee = then_some(in_spectate, new_target);
 }
 
 void af_send_spectate_notify_packet(
