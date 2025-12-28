@@ -21,11 +21,12 @@ Version 1.2.1 (TBD): Not yet released
 - Add `ui_scoreboard_simplesplit` to control behaviour of scoreboard divisions for desired categories
 
 [@is-this-c](https://github.com/is-this-c)
-- Improve scoreboard sorting for clients whose scores are equal
-- Improve text formatting in remote server config UI
+- Add tied-score sorting to the scoreboard, so browsers are below bots, and bots below human players
+- Improve text layout in remote server config UI
 - Support `PgUp`, `PgDown`, `End`, and `Home` in remote server config UI
 - Improve bot decommissioning
-- Improve freelook spectate mode after level transition
+- Re-enter freelook spectate mode after level transition
+- Fix freelook spectate mode's yaw after level load
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
