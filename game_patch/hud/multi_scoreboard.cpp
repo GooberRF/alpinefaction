@@ -614,7 +614,7 @@ void draw_scoreboard_internal_new(bool draw) {
 FunHook<void(bool)> draw_scoreboard_internal_hook{0x00470880, draw_scoreboard_internal_new};
 
 ConsoleCommand2 ui_scoreboard_spectators_cmd{
-    "ui_sb_spectators",
+    "ui_scoreboard_split_spectators",
     [] {
         g_alpine_game_config.scoreboard_split_spectators = !g_alpine_game_config.scoreboard_split_spectators;
         rf::console::print(
@@ -623,11 +623,11 @@ ConsoleCommand2 ui_scoreboard_spectators_cmd{
         );
     },
     "Toggle whether spectators are grouped separately on the scoreboard",
-    "ui_sb_spectators",
+    "ui_scoreboard_split_spectators",
 };
 
 ConsoleCommand2 ui_scoreboard_bots_cmd{
-    "ui_sb_bots",
+    "ui_scoreboard_split_bots",
     [] {
         g_alpine_game_config.scoreboard_split_bots = !g_alpine_game_config.scoreboard_split_bots;
         rf::console::print(
@@ -636,11 +636,11 @@ ConsoleCommand2 ui_scoreboard_bots_cmd{
         );
     },
     "Toggle whether bots are grouped separately on the scoreboard",
-    "ui_sb_bots",
+    "ui_scoreboard_split_bots",
 };
 
 ConsoleCommand2 ui_scoreboard_browsers_cmd{
-    "ui_sb_browsers",
+    "ui_scoreboard_split_browsers",
     [] {
         g_alpine_game_config.scoreboard_split_browsers = !g_alpine_game_config.scoreboard_split_browsers;
         rf::console::print(
@@ -649,11 +649,11 @@ ConsoleCommand2 ui_scoreboard_browsers_cmd{
         );
     },
     "Toggle whether browsers are grouped separately on the scoreboard",
-    "ui_sb_browsers",
+    "ui_scoreboard_split_browsers",
 };
 
 ConsoleCommand2 ui_scoreboard_idle_cmd{
-    "ui_sb_idle",
+    "ui_scoreboard_split_idle",
     [] {
         g_alpine_game_config.scoreboard_split_idle = !g_alpine_game_config.scoreboard_split_idle;
         rf::console::print(
@@ -662,11 +662,11 @@ ConsoleCommand2 ui_scoreboard_idle_cmd{
         );
     },
     "Toggle whether idle players are grouped separately on the scoreboard",
-    "ui_sb_idle",
+    "ui_scoreboard_split_idle",
 };
 
 ConsoleCommand2 ui_scoreboard_simple_cmd{
-    "ui_sb_simplesplit",
+    "ui_scoreboard_simplesplit",
     [] {
         g_alpine_game_config.scoreboard_split_simple = !g_alpine_game_config.scoreboard_split_simple;
         rf::console::print(
@@ -675,7 +675,7 @@ ConsoleCommand2 ui_scoreboard_simple_cmd{
         );
     },
     "Toggle whether each scoreboard grouping is displayed individually",
-    "ui_sb_simplesplit",
+    "ui_scoreboard_simplesplit",
 };
 
 void scoreboard_maybe_render(bool show_scoreboard)

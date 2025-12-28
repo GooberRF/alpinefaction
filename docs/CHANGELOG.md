@@ -17,8 +17,8 @@ Version 1.2.1 (TBD): Not yet released
 - Increase workspace area on UV Unwrap dialog in level editor
 - Deprecate `cl_wh_objoverdraw` command, split functionality into `cl_wh_flagoverdraw` and `cl_wh_cpoverdraw`
 - Deprecate legacy `-dedicated` dedicated server functionality, add informational error message when used
-- Add `ui_sb_spectators`, `ui_sb_bots`, `ui_sb_browsers`, `ui_sb_idle` to control scoreboard division categories
-- Add `ui_sb_simplesplit` to control behaviour of scoreboard divisions for desired categories
+- Add `ui_scoreboard_split_spectators`, `ui_scoreboard_split_bots`, `ui_scoreboard_split_browsers`, `ui_scoreboard_split_idle` to control scoreboard division categories
+- Add `ui_scoreboard_simplesplit` to control behaviour of scoreboard divisions for desired categories
 
 [@is-this-c](https://github.com/is-this-c)
 - Improve scoreboard sorting for clients whose scores are equal
