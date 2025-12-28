@@ -306,12 +306,11 @@ public:
     }
 
     template <typename T>
-    AsmWriter& push(T) = delete;
+    AsmWriter& push(const T) = delete;
 
     template <typename T>
-    AsmWriter& push(T* imm)
-    {
-        return push(reinterpret_cast<int32_t>(imm));
+    AsmWriter& push(T* const imm) {
+        return push<int32_t>(reinterpret_cast<int32_t>(imm));
     }
 
     AsmWriter& add(const AsmRegMem& dst_rm, int32_t imm32)

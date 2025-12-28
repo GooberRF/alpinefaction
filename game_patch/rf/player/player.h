@@ -75,6 +75,7 @@ struct PlayerAdditionalData {
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 };
+static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif
 
 namespace rf
@@ -253,7 +254,6 @@ namespace rf
 #endif
     {
     };
-    static_assert(alignof(PlayerAdditionalData) == 0x8);
 
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
