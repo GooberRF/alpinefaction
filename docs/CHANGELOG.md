@@ -48,6 +48,7 @@ Version 1.2.1 (TBD): Not yet released
 - Fix vehicles not rendering in Rocket Launcher infrared scanner in Direct3D 11 renderer
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix Alpine Faction launcher's querying of MSAA levels in Direct3D 11
 - Use packet queues for remote server config transfers
 - Fix key up logic for num pad `PgUp`, `PgDown`, `End`, and `Home`
 
