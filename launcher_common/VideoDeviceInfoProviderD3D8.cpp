@@ -88,7 +88,7 @@ std::set<uint32_t> VideoDeviceInfoProviderD3D8::get_multisample_types(
     const uint32_t format,
     const bool windowed)
 {
-    std::set<unsigned> result{};
+    std::set<uint32_t> result{};
     for (uint32_t i = 2; i <= 16; ++i) {
         const HRESULT hr = m_d3d->CheckDeviceMultiSampleType(
             adapter,
