@@ -335,28 +335,26 @@ int draw_scoreboard_players(
             static const int hud_micro_flag_blue_bm =
                 rf::bm::load("hud_microflag_blue.tga", -1, true);
 
-            const int status_bm = std::invoke([&] {
-                if (player->is_browser) {
-                    return browser_bm;
-                } else if (player->is_spectator) {
-                    return spectator_bm;
-                } else if ((player->is_bot
-                    && player->is_spawn_disabled
-                    && rf::player_is_dead(player))
-                    || player_is_idle(player)) {
-                    return idle_bm;
-                } else {
-                    if (player == red_flag_player) {
-                        return hud_micro_flag_red_bm;
-                    } else if (player == blue_flag_player) {
-                        return hud_micro_flag_blue_bm;
-                    } else {
-                        const rf::Entity* const entity =
-                            rf::entity_from_handle(player->entity_handle);
-                        return entity ? green_bm : red_bm;
-                    }
-                }
-            });
+        const bool is_spawned = !rf::player_is_dead(player)
+            && !rf::player_is_dying(player);
+        const int status_bm = std::invoke([&] {
+            if (player->is_browser) {
+                return browser_bm;
+            } else if (player->is_spectator) {
+                return spectator_bm;
+            } else if ((player->is_bot
+                && player->is_spawn_disabled
+                && !is_spawned)
+                || player_is_idle(player)) {
+                return idle_bm;
+            } else if (player == red_flag_player) {
+                return hud_micro_flag_red_bm;
+            } else if (player == blue_flag_player) {
+                return hud_micro_flag_blue_bm;
+            } else {
+                return is_spawned ? green_bm : red_bm;
+            }
+        });
 
             int bm_w = 0, bm_h = 0;
             rf::bm::get_dimensions(status_bm, &bm_w, &bm_h);
