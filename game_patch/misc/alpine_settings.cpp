@@ -529,10 +529,6 @@ bool alpine_player_settings_load(rf::Player* player)
         set_big_hud(g_alpine_game_config.big_hud);
         processed_keys.insert("BigHUD");
     }
-    if (settings.count("ReticleScale")) {
-        g_alpine_game_config.set_reticle_scale(std::stof(settings["ReticleScale"]));
-        processed_keys.insert("ReticleScale");
-    }
     if (settings.count("SniperScopeColor")) {
         auto color_override = parse_hex_color_string(settings["SniperScopeColor"]);
         if (color_override) {
@@ -613,6 +609,36 @@ bool alpine_player_settings_load(rf::Player* player)
         }
         processed_keys.insert("TeammateLabelColor");
     }
+    if (settings.count("ReticleColor")) {
+        auto color_override = parse_hex_color_string(settings["ReticleColor"]);
+        if (color_override) {
+            g_alpine_game_config.reticle_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid reticle color override: {}", settings["ReticleColor"]);
+        }
+        processed_keys.insert("ReticleColor");
+    }
+    if (settings.count("ReticleLockedColor")) {
+        auto color_override = parse_hex_color_string(settings["ReticleLockedColor"]);
+        if (color_override) {
+            g_alpine_game_config.reticle_locked_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid reticle color override: {}", settings["ReticleLockedColor"]);
+        }
+        processed_keys.insert("ReticleLockedColor");
+    }
+    if (settings.count("ReticleScale")) {
+        const float scale = std::stof(settings["ReticleScale"]);
+        if (scale == 1.0f) {
+            g_alpine_game_config.clear_reticle_scale();
+        }
+        else {
+            g_alpine_game_config.set_reticle_scale(scale);
+        }
+        processed_keys.insert("ReticleScale");
+    }
     if (settings.count("DamageNotifyTextScale")) {
         const float scale = std::stof(settings["DamageNotifyTextScale"]);
         if (scale == 1.0f) {
@@ -642,6 +668,10 @@ bool alpine_player_settings_load(rf::Player* player)
             g_alpine_game_config.set_world_hud_ping_label_text_scale(scale);
         }
         processed_keys.insert("PingLabelTextScale");
+    }
+    if (settings.count("ColorizeCustomReticles")) {
+        g_alpine_game_config.colorize_custom_reticles = std::stoi(settings["ColorizeCustomReticles"]);
+        processed_keys.insert("ColorizeCustomReticles");
     }
     if (settings.count("ScoreboardSplitSpectators")) {
         g_alpine_game_config.scoreboard_split_spectators = std::stoi(settings["ScoreboardSplitSpectators"]);
@@ -1092,7 +1122,6 @@ void alpine_player_settings_save(rf::Player* player)
     // UI
     file << "\n[UISettings]\n";
     file << "BigHUD=" << g_alpine_game_config.big_hud << "\n";
-    file << "ReticleScale=" << g_alpine_game_config.reticle_scale << "\n";
     if (g_alpine_game_config.sniper_scope_color_override) {
         file << "SniperScopeColor=" << format_hex_color_string(*g_alpine_game_config.sniper_scope_color_override) << "\n";
     }
@@ -1114,8 +1143,17 @@ void alpine_player_settings_save(rf::Player* player)
     if (g_alpine_game_config.multi_timer_color_override) {
         file << "MultiTimerColor=" << format_hex_color_string(*g_alpine_game_config.multi_timer_color_override) << "\n";
     }
+    if (g_alpine_game_config.reticle_color_override) {
+        file << "ReticleColor=" << format_hex_color_string(*g_alpine_game_config.reticle_color_override) << "\n";
+    }
+    if (g_alpine_game_config.reticle_locked_color_override) {
+        file << "ReticleLockedColor=" << format_hex_color_string(*g_alpine_game_config.reticle_locked_color_override) << "\n";
+    }
     if (g_alpine_game_config.teammate_label_color_override) {
         file << "TeammateLabelColor=" << format_hex_color_string(*g_alpine_game_config.teammate_label_color_override) << "\n";
+    }
+    if (g_alpine_game_config.reticle_scale) {
+        file << "ReticleScale=" << *g_alpine_game_config.reticle_scale << "\n";
     }
     if (g_alpine_game_config.world_hud_damage_text_scale) {
         file << "DamageNotifyTextScale=" << *g_alpine_game_config.world_hud_damage_text_scale << "\n";
@@ -1126,6 +1164,7 @@ void alpine_player_settings_save(rf::Player* player)
     if (g_alpine_game_config.world_hud_ping_label_text_scale) {
         file << "PingLabelTextScale=" << *g_alpine_game_config.world_hud_ping_label_text_scale << "\n";
     }
+    file << "ColorizeCustomReticles=" << g_alpine_game_config.colorize_custom_reticles << "\n";
     file << "ScoreboardSplitSpectators=" << g_alpine_game_config.scoreboard_split_spectators << "\n";
     file << "ScoreboardSplitBots=" << g_alpine_game_config.scoreboard_split_bots << "\n";
     file << "ScoreboardSplitBrowsers=" << g_alpine_game_config.scoreboard_split_browsers << "\n";

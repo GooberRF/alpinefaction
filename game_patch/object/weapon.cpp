@@ -3,6 +3,7 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/ShortTypes.h>
+#include <array>
 #include <xlog/xlog.h>
 #include "../multi/server.h"
 #include "../rf/player/player.h"
@@ -13,7 +14,11 @@
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+
+static std::array<uint8_t, 64U> weapon_reticle_custom_mask{}; // bit 0 = _0, bit 1 = _1
+static std::pair<bool, bool> rocket_locked_custom_reticle = {false, false};
 
 bool entity_is_reloading_player_select_weapon_new(rf::Entity* entity)
 {
@@ -48,6 +53,66 @@ CodeInjection weapons_tbl_buffer_overflow_fix_2{
         }
     },
 };
+
+CodeInjection weapon_init_track_reticle_bitmap_injection{
+    0x004C6756,
+    [](auto& regs) {
+        weapon_reticle_custom_mask.fill(0);
+        rocket_locked_custom_reticle = {false, false};
+
+        for (int i = 0; i < 64; ++i) {
+            const int bm_handle = rf::weapon_types[i].hud_reticle_bitmap;
+            if (bm_handle > 0) {
+                const char* bm_filename = rf::bm::get_filename(bm_handle);
+                if (!bm_filename)
+                    continue;
+
+                auto bm_filename_base = string_remove_any_suffix_before_extension(bm_filename, {"_0", "_1"});
+                auto bm_filename_0 = string_add_suffix_before_extension(bm_filename_base, "_0");
+                auto bm_filename_1 = string_add_suffix_before_extension(bm_filename_base, "_1");
+                bool customized_0 = !file_loaded_from_alpinefaction_vpp(bm_filename_0.c_str());
+                bool customized_1 = !file_loaded_from_alpinefaction_vpp(bm_filename_1.c_str());
+
+                //xlog::warn("weap {} ({}), bmh {}, bmf {}, custom? 0:{} 1:{}", i, rf::weapon_types[i].name, bm_handle, bm_filename_base, customized_0, customized_1);
+
+                weapon_reticle_custom_mask[i] = (customized_0 ? 0x1 : 0) | (customized_1 ? 0x2 : 0);
+            }
+
+            // special case for rocket lock on reticle
+            // if there were more than one of these, we'd have another array, but that would be a waste here
+            if (i == rf::rocket_launcher_weapon_type) {
+                const int bm_locked_handle = rf::weapon_types[i].hud_locked_reticle_bitmap;
+                if (bm_locked_handle > 0) {
+                    const char* bm_filename = rf::bm::get_filename(bm_locked_handle);
+                    if (!bm_filename)
+                        continue;
+
+                    auto bm_filename_base = string_remove_any_suffix_before_extension(bm_filename, {"_0", "_1"});
+                    auto bm_filename_0 = string_add_suffix_before_extension(bm_filename_base, "_0");
+                    auto bm_filename_1 = string_add_suffix_before_extension(bm_filename_base, "_1");
+                    bool customized_0 = !file_loaded_from_alpinefaction_vpp(bm_filename_0.c_str());
+                    bool customized_1 = !file_loaded_from_alpinefaction_vpp(bm_filename_1.c_str());
+
+                    //xlog::warn("LOCKED{}, bmh {}, bmf {}, custom? 0:{} 1:{}", i, bm_locked_handle, bm_filename_base, customized_0, customized_1);
+
+                    rocket_locked_custom_reticle = {customized_0, customized_1};
+                }
+            }
+        }
+    },
+};
+
+bool weapon_reticle_is_customized(int weapon_id, bool bighud) {
+    if (static_cast<unsigned>(weapon_id) >= weapon_reticle_custom_mask.size())
+        return false;
+
+    const uint8_t mask = weapon_reticle_custom_mask[weapon_id];
+    return (mask & (bighud ? 0x2 : 0x1)) != 0;
+}
+
+bool rocket_locked_reticle_is_customized(bool bighud) {
+    return bighud ? rocket_locked_custom_reticle.second : rocket_locked_custom_reticle.first;
+}
 
 FunHook<void(rf::Weapon*)> weapon_move_one_hook{
     0x004C69A0,
@@ -310,6 +375,9 @@ void apply_weapon_patches()
     // Fix crashes caused by too many records in weapons.tbl file
     weapons_tbl_buffer_overflow_fix_1.install();
     weapons_tbl_buffer_overflow_fix_2.install();
+
+    // Track which weapon reticles are customized
+    weapon_init_track_reticle_bitmap_injection.install();
 
 #if 0
     // Fix weapon switch glitch when reloading (should be used on Match Mode)

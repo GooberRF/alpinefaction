@@ -73,6 +73,7 @@ namespace rf
     static auto& player_fpgun_play_anim = addr_as_ref<void(Player* pp, WeaponAction action)>(0x004A9380);
     static auto& player_fpgun_reset_idle_timeout = addr_as_ref<void(Player* pp)>(0x004AD980);
     static auto& player_fpgun_stop_idle_actions = addr_as_ref<void(Player* pp)>(0x004A9FD0);
+    static auto& player_fpgun_locked_on = addr_as_ref<bool(Player* pp)>(0x004ACEA0);
     static auto& player_fpgun_set_state = addr_as_ref<void(Player* player, int weapon_type)>(0x004AA230);
     static auto& player_fpgun_process = addr_as_ref<void(Player* player)>(0x004AA6D0);
     static auto& player_fpgun_is_zoomed = addr_as_ref<bool(Player* player)>(0x004ACE90);

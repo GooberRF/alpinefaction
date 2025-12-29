@@ -137,13 +137,13 @@ void frametime_render_ui()
 }
 
 ConsoleCommand2 fps_counter_cmd{
-    "ui_showfps",
+    "ui_show_fps",
     []() {
         g_alpine_game_config.fps_counter = !g_alpine_game_config.fps_counter;
         rf::console::print("FPS counter display is {}", g_alpine_game_config.fps_counter ? "enabled" : "disabled");
     },
     "Toggle FPS counter",
-    "ui_showfps",
+    "ui_show_fps",
 };
 
 ConsoleCommand2 fps_counter_average_cmd{
@@ -161,13 +161,13 @@ ConsoleCommand2 fps_counter_average_cmd{
 };
 
 ConsoleCommand2 ping_display_cmd{
-    "ui_showping",
+    "ui_show_ping",
     []() {
         g_alpine_game_config.ping_display = !g_alpine_game_config.ping_display;
         rf::console::print("Ping counter display is {}", g_alpine_game_config.ping_display ? "enabled" : "disabled");
     },
     "Toggle ping counter",
-    "ui_showping",
+    "ui_show_ping",
 };
 
 CallHook<void(int)> frametime_calculate_sleep_hook{

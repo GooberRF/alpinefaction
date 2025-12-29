@@ -44,6 +44,7 @@ add_packfile(alpinefaction.vpp
     tables/DM_EuropaOneOutpost1-1_info.tbl
     tables/CTF_EuropaOneOutpost_info.tbl
     tables/dm-SpecialForces_info.tbl
+    tables/Dm-NukeTown2050_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
@@ -147,6 +148,10 @@ add_packfile(alpinefaction.vpp
     images/scope_zoom_corner256_red.tga
     images/128blackcircle.tga
     images/ass2_scope_circle.tga
+    images/reticle_0.tga
+    images/reticle_rocket_0.tga
+    images/reticle_rocketlock_0.tga
+    images/scope_ret_0.tga
     images/reticle_1.tga
     images/reticle_rocket_1.tga
     images/reticle_rocketlock_1.tga

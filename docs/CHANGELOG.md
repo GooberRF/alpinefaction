@@ -19,6 +19,10 @@ Version 1.2.1 (TBD): Not yet released
 - Deprecate legacy `-dedicated` dedicated server functionality, add informational error message when used
 - Add `ui_scoreboard_split_spectators`, `ui_scoreboard_split_bots`, `ui_scoreboard_split_browsers`, `ui_scoreboard_split_idle` to control scoreboard division categories
 - Add `ui_scoreboard_simplesplit` to control behaviour of scoreboard divisions for desired categories
+- Add `ui_color_reticle` and `ui_color_reticle_locked` commands to set reticle color overrides
+- Add `ui_colorize_custom_reticles` command to toggle colorization of custom reticles
+- Add `ui_scale_reticle` command and apply standardized UI element scaling method
+- Add compatibility table (lightmap clamp floor) for `Dm-NukeTown2050.rfl`
 
 [@is-this-c](https://github.com/is-this-c)
 - Add tied-score sorting to the scoreboard, so browsers are below bots, and bots below human players
@@ -46,6 +50,7 @@ Version 1.2.1 (TBD): Not yet released
 - Fix vehicles not rendering in Rocket Launcher infrared scanner in Direct3D 11 renderer
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix Alpine Faction Launcher's querying of MSAA levels in Direct3D 11
 - Use packet queues for remote server config transfers, in order to prevent network timeouts
 - Fix key up events for Num Pad `PgUp`, `PgDown`, `End`, and `Home`
 

@@ -140,6 +140,85 @@ inline std::string string_replace(const std::string_view& str, const std::string
     return result;
 }
 
+inline std::string string_add_suffix_before_extension(std::string_view filename, std::string_view suffix)
+{
+    if (suffix.empty())
+        return std::string{filename};
+
+    const size_t dot = filename.rfind('.');
+    if (dot == std::string_view::npos) {
+        std::string out;
+        out.reserve(filename.size() + suffix.size());
+        out.append(filename);
+        out.append(suffix);
+        return out;
+    }
+
+    std::string out;
+    out.reserve(filename.size() + suffix.size());
+    out.append(filename.substr(0, dot));
+    out.append(suffix);
+    out.append(filename.substr(dot));
+    return out;
+}
+
+inline std::string string_remove_suffix_before_extension(std::string_view filename, std::string_view suffix, bool case_sensitive = false)
+{
+    if (suffix.empty())
+        return std::string{filename};
+
+    const size_t dot = filename.rfind('.');
+    const std::string_view stem = (dot == std::string_view::npos) ? filename : filename.substr(0, dot);
+    const std::string_view ext  = (dot == std::string_view::npos) ? std::string_view{} : filename.substr(dot);
+
+    if (stem.size() < suffix.size())
+        return std::string{filename};
+
+    const std::string_view tail = stem.substr(stem.size() - suffix.size());
+
+    const bool match = case_sensitive ? (tail == suffix) : string_iequals(tail, suffix);
+    if (!match)
+        return std::string{filename};
+
+    std::string out;
+    out.reserve(filename.size());
+    out.append(stem.substr(0, stem.size() - suffix.size()));
+    out.append(ext);
+    return out;
+}
+
+inline std::string string_remove_any_suffix_before_extension(
+    std::string_view filename,
+    std::initializer_list<std::string_view> suffixes,
+    bool case_sensitive = false)
+{
+    for (const auto suffix : suffixes) {
+        std::string candidate = string_remove_suffix_before_extension(filename, suffix, case_sensitive);
+        if (candidate != filename) {
+            return candidate;
+        }
+    }
+    return std::string{filename};
+}
+
+inline bool string_has_suffix_before_extension(
+    std::string_view filename,
+    std::string_view suffix,
+    bool case_sensitive = false)
+{
+    if (suffix.empty())
+        return true;
+
+    const size_t dot = filename.rfind('.');
+    const std::string_view stem = (dot == std::string_view::npos) ? filename : filename.substr(0, dot);
+
+    if (stem.size() < suffix.size())
+        return false;
+
+    const std::string_view tail = stem.substr(stem.size() - suffix.size());
+    return case_sensitive ? (tail == suffix) : string_iequals(tail, suffix);
+}
+
 struct StringMatcher
 {
 private:

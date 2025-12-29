@@ -288,8 +288,8 @@ void print_player_info(rf::Player* player, bool new_join) {
 
     std::string client_info;
     if (player->version_info.software == ClientSoftware::AlpineFaction) {
-        client_info = std::format("Alpine Faction {}.{}-{}",
-            player->version_info.major, player->version_info.minor, player->version_info.type == VERSION_TYPE_RELEASE ? "stable" : "dev");
+        client_info = std::format("Alpine Faction {}.{}.{}-{}",
+            player->version_info.major, player->version_info.minor, player->version_info.patch, player->version_info.type == VERSION_TYPE_RELEASE ? "stable" : "dev");
     }
     else if (player->version_info.software == ClientSoftware::DashFaction) {
         client_info = std::format("Dash Faction {}.{}{}",
@@ -875,9 +875,10 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
-    rf::console::print("{}", describe_client("Alpine Faction 1.2", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v2_max_rfl}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.2-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v2_max_rfl}));
-    rf::console::print("{}", describe_client("Alpine Faction 1.1", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 1u, 0u, VERSION_TYPE_RELEASE, alpine_v1_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.2.1", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 1u, VERSION_TYPE_RELEASE, alpine_v2_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.2.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v2_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.2.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v2_max_rfl}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.1.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 1u, 0u, VERSION_TYPE_RELEASE, alpine_v1_max_rfl}));
     rf::console::print("{}", describe_client("Dash Faction 1.9", ClientVersionInfoProfile{ClientSoftware::DashFaction, 1u, 9u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
     rf::console::print("{}", describe_client("Pure Faction 3.0", ClientVersionInfoProfile{ClientSoftware::PureFaction, 3u, 0u, 0u, VERSION_TYPE_RELEASE, legacy_max_rfl}));
     rf::console::print("{}", describe_client("Official RF 1.21", ClientVersionInfoProfile{ClientSoftware::Unknown, 1u, 2u, 1u, VERSION_TYPE_RELEASE, legacy_max_rfl}));

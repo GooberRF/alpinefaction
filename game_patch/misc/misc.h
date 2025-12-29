@@ -20,3 +20,6 @@ void evaluate_restrict_disable_muzzle_flash();
 void initialize_achievement_manager();
 void set_levelmod_autotexture_ppm();
 void clear_explicit_upcoming_game_type_request();
+bool file_loaded_from_alpinefaction_vpp(const char* filename);
+bool weapon_reticle_is_customized(int weapon_id, bool bighud);
+bool rocket_locked_reticle_is_customized(bool bighud);

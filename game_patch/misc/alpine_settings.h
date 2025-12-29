@@ -46,12 +46,6 @@ struct AlpineGameSettings
         scanner_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
     }
 
-    float reticle_scale = 1.0f;
-    void set_reticle_scale(float scale)
-    {
-        reticle_scale = std::clamp(scale, 0.0f, 100.0f);
-    }
-
     float level_sound_volume = 1.0f;
     void set_level_sound_volume(float scale)
     {
@@ -162,8 +156,25 @@ struct AlpineGameSettings
     std::optional<uint32_t> location_ping_color_override{};
     std::optional<uint32_t> multi_timer_color_override{};
     std::optional<uint32_t> teammate_label_color_override{};
+    std::optional<uint32_t> reticle_color_override{};
+    std::optional<uint32_t> reticle_locked_color_override{};
+    bool colorize_custom_reticles = false;
 
     // hud scale overrides
+    std::optional<float> reticle_scale{};
+    float get_reticle_scale() const
+    {
+        return reticle_scale.value_or(1.0f);
+    }
+    void set_reticle_scale(float scale)
+    {
+        reticle_scale = std::clamp(scale, 0.0f, 100.0f);
+    }
+    void clear_reticle_scale()
+    {
+        reticle_scale.reset();
+    }
+
     std::optional<float> world_hud_damage_text_scale{};
     float get_world_hud_damage_text_scale() const
     {

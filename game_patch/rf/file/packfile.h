@@ -23,6 +23,8 @@ namespace rf
         // track whether the packfile was from user_maps or client_mods
         bool is_user_maps;
         bool is_client_mods;
+        bool is_mods;
+        bool is_alpinefaction_vpp;
 #endif
     };
 #ifndef DASH_FACTION

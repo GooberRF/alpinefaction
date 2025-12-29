@@ -11,7 +11,8 @@ enum class UIScaleElement
 {
     DamageNotify,
     PlayerLabel,
-    PingLabel
+    PingLabel,
+    Reticle
 };
 
 struct UIScaleCommandContext
@@ -38,6 +39,11 @@ UIScaleCommandContext get_ui_scale_context(UIScaleElement element)
                 "Location ping label text",
                 g_alpine_game_config.world_hud_ping_label_text_scale,
             };
+        case UIScaleElement::Reticle:
+            return {
+                "Reticle",
+                g_alpine_game_config.reticle_scale,
+            };
         default:
             static std::optional<float> unused_target{};
             return {"unknown", unused_target};
@@ -56,6 +62,9 @@ void set_ui_scale_value(UIScaleElement element, float scale)
         case UIScaleElement::PingLabel:
             g_alpine_game_config.set_world_hud_ping_label_text_scale(scale);
             return;
+        case UIScaleElement::Reticle:
+            g_alpine_game_config.set_reticle_scale(scale);
+            return;
         default:
             return;
     }
@@ -72,6 +81,9 @@ void clear_ui_scale_value(UIScaleElement element)
             return;
         case UIScaleElement::PingLabel:
             g_alpine_game_config.clear_world_hud_ping_label_text_scale();
+            return;
+        case UIScaleElement::Reticle:
+            g_alpine_game_config.clear_reticle_scale();
             return;
         default:
             return;
@@ -149,9 +161,25 @@ ConsoleCommand2 ping_label_scale_cmd{
     "ui_scale_ping_label <scale|clear>",
 };
 
+ConsoleCommand2 reticle_scale_cmd{
+    "ui_scale_reticle",
+    [](std::optional<std::string> scale_opt) {
+        handle_ui_scale_console_command(scale_opt, UIScaleElement::Reticle);
+    },
+    "Scale reticle.",
+    "ui_scale_reticle <scale|clear>",
+};
+
+DcCommandAlias legacy_reticle_scale_cmd{
+    "ui_reticlescale",
+    reticle_scale_cmd
+};
+
 void hud_scale_apply_patch()
 {
     damage_notify_scale_cmd.register_cmd();
     player_label_scale_cmd.register_cmd();
     ping_label_scale_cmd.register_cmd();
+    reticle_scale_cmd.register_cmd();
+    legacy_reticle_scale_cmd.register_cmd();
 }

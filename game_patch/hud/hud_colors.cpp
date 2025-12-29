@@ -186,6 +186,51 @@ ConsoleCommand2 teammate_label_color_cmd{
     "ui_color_team_label <RRGGBB|RRGGBBAA|clear>",
 };
 
+ConsoleCommand2 reticle_color_cmd{
+    "ui_color_reticle",
+    [](std::optional<std::string> color_opt) {
+        handle_hex_color_console_command(
+            color_opt,
+            "Reticle color override",
+            g_alpine_game_config.reticle_color_override);
+
+        if (g_alpine_game_config.reticle_color_override) {
+            rf::console::print("Color override is {}being applied to custom reticles. Use ui_colorize_custom_reticles to change this behavior.", g_alpine_game_config.colorize_custom_reticles ? "" : "NOT ");
+        }
+    },
+    "Set reticle color override.",
+    "ui_color_reticle <RRGGBB|RRGGBBAA|clear>",
+};
+
+ConsoleCommand2 reticle_locked_color_cmd{
+    "ui_color_reticle_locked",
+    [](std::optional<std::string> color_opt) {
+        handle_hex_color_console_command(
+            color_opt,
+            "Locked reticle color override",
+            g_alpine_game_config.reticle_locked_color_override);
+
+        if (g_alpine_game_config.reticle_locked_color_override) {
+            rf::console::print("Color override is {}being applied to custom reticles. Use ui_colorize_custom_reticles to change this behavior.", g_alpine_game_config.colorize_custom_reticles ? "" : "NOT ");
+        }
+    },
+    "Set locked reticle color override (SP only).",
+    "ui_color_reticle_locked <RRGGBB|RRGGBBAA|clear>",
+};
+
+ConsoleCommand2 reticle_color_custom_cmd{
+    "ui_colorize_custom_reticles",
+    [](std::optional<std::string> color_opt) {
+        g_alpine_game_config.colorize_custom_reticles = !g_alpine_game_config.colorize_custom_reticles;
+        rf::console::print(
+            "Colorization of custom reticle textures is {}",
+            g_alpine_game_config.colorize_custom_reticles ? "enabled" : "disabled"
+        );
+    },
+    "Should reticle color overrides be applied to custom reticles? This will produce undesirable effects with non-greyscale reticle textures",
+    "ui_colorize_custom_reticles",
+};
+
 void hud_colors_apply_patch()
 {
     sniper_scope_color_cmd.register_cmd();
@@ -196,4 +241,7 @@ void hud_colors_apply_patch()
     location_ping_color_cmd.register_cmd();
     multi_timer_color_cmd.register_cmd();
     teammate_label_color_cmd.register_cmd();
+    reticle_color_cmd.register_cmd();
+    reticle_locked_color_cmd.register_cmd();
+    reticle_color_custom_cmd.register_cmd();
 }

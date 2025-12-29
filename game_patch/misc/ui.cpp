@@ -1341,7 +1341,7 @@ void alpine_options_panel_do_frame(int x)
     ao_scopesens_butlabel.text = ao_scopesens_butlabel_text;
 
     // ret scale
-    snprintf(ao_retscale_butlabel_text, sizeof(ao_retscale_butlabel_text), "%6.2f", g_alpine_game_config.reticle_scale);
+    snprintf(ao_retscale_butlabel_text, sizeof(ao_retscale_butlabel_text), "%6.2f", g_alpine_game_config.get_reticle_scale());
     ao_retscale_butlabel.text = ao_retscale_butlabel_text;
 
     // max fps

@@ -231,16 +231,25 @@ static int vpackfile_add_new(const char* filename, const char* dir)
     packfile->path[sizeof(packfile->path) - 1] = '\0';
     packfile->field_a0 = 0;
     packfile->num_files = 0;
-    // packfile->is_user_maps = rf::vpackfile_loading_user_maps; // this is set to true for user_maps
-    // check for is_user_maps based on dir (like is_client_mods) instead of 0x01BDB21C
+
     packfile->is_user_maps = (dir && (
             stricmp(dir, "user_maps\\projects\\") == 0 ||
             stricmp(dir, "user_maps\\multi\\") == 0 ||
             stricmp(dir, "user_maps\\single\\") == 0));
+
     packfile->is_client_mods = (dir && stricmp(dir, "client_mods\\") == 0);
 
-    xlog::debug("Packfile {} is from {}user_maps, {}client_mods", filename, packfile->is_user_maps ? "" : "NOT ",
-               packfile->is_client_mods ? "" : "NOT ");
+    packfile->is_mods = (dir && PathIsRelativeA(dir) && StrCmpNIA(dir, "mods\\", 5) == 0);
+
+    packfile->is_alpinefaction_vpp = (filename && stricmp(filename, "alpinefaction.vpp") == 0);
+
+    xlog::debug(
+        "Packfile {} is from {}user_maps, {}client_mods, {}mods, {}alpinefaction.vpp",
+        filename,
+        packfile->is_user_maps ? "" : "NOT ",
+        packfile->is_client_mods ? "" : "NOT ",
+        packfile->is_mods ? "" : "NOT ",
+        packfile->is_alpinefaction_vpp ? "" : "NOT ");
 
     // Process file header
     char buf[0x800];
@@ -465,6 +474,28 @@ static rf::VPackfileEntry* vpackfile_find_new(const char* filename)
     }
     xlog::trace("Cannot find file {}", filename_str);
     return nullptr;
+}
+
+bool file_changed_by_client_mod(const char* filename)
+{
+    rf::VPackfileEntry* entry = vpackfile_find_new(filename);
+    if (entry) {
+        if (entry->parent->is_client_mods || entry->parent->is_user_maps) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool file_loaded_from_alpinefaction_vpp(const char* filename)
+{
+    rf::VPackfileEntry* entry = vpackfile_find_new(filename);
+    if (entry) {
+        if (entry->parent->is_alpinefaction_vpp) {
+            return true;
+        }
+    }
+    return false;
 }
 
 CodeInjection vpackfile_open_check_seek_result_injection{
