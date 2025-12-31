@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.2.1 (TBD): Not yet released
+Version 1.2.1 (Willow): Released Dec-30-2025
 --------------------------------
 ### Major features
 
@@ -23,6 +23,12 @@ Version 1.2.1 (TBD): Not yet released
 - Add `ui_colorize_custom_reticles` command to toggle colorization of custom reticles
 - Add `ui_scale_reticle` command and apply standardized UI element scaling method
 - Add compatibility table (lightmap clamp floor) for `Dm-NukeTown2050.rfl`
+- Add `cl_hitsounds_min_interval` command to configure minimum delay between hit sounds
+- Add `af_server_req` packet type
+- Support gibbing from explosive damage in multiplayer
+- Add `gibbing` dedicated server config section to allow server host to configure gibbing behaviour
+- Add `Ctrl + K` hotkey in level editor to create links in the opposite direction from the standard `K` hotkey
+- Add `cl_gibchunks`, `cl_gibvelocityscale`, and `cl_giblifetimems` commands to customize gibbing behaviour
 
 [@is-this-c](https://github.com/is-this-c)
 - Add tied-score sorting to the scoreboard, so browsers are below bots, and bots below human players
@@ -48,6 +54,13 @@ Version 1.2.1 (TBD): Not yet released
 - Fix `r_fullbright` not extending in Direct3D 11 renderer to third person weapon models held by players
 - Fix Rocket Launcher infrared scanner being drawn semi-transparent in Direct3D 11 renderer
 - Fix vehicles not rendering in Rocket Launcher infrared scanner in Direct3D 11 renderer
+- Fix faces with "Full Bright" flag having randomly generated lightmaps applied after the first geo
+- Fix dynamic lights being far dimmer than expected in Direct3D 11 renderer
+- Fix players having to wait 1 second before being able to queue a spawn in a server with spawn delay enabled
+- Fix hit sounds sometimes being very loud due to multiple playing simultaneously
+- Fix `Spawning...` text appearing on screen in freelook spectate mode after queuing a spawn in a server with spawn delay enabled
+- Fix RFSB 5.1.6 clients being falsely detected as legacy clients
+- Fix gibbing being triggered from explosive damage far more rarely than intended
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix Alpine Faction Launcher's querying of MSAA levels in Direct3D 11

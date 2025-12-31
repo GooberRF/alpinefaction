@@ -155,3 +155,5 @@ struct CDedLevel
     }
 };
 static_assert(sizeof(CDedLevel) == 0x608);
+
+void DedLevel_DoBackLink();

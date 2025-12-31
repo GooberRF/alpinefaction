@@ -93,6 +93,15 @@ struct AlpineGameSettings
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
+
+    static constexpr int min_hit_sound_interval_ms = 0;
+    static constexpr int max_hit_sound_interval_ms = 1000;
+    int hit_sound_min_interval_ms = 20;
+    void set_hit_sound_min_interval_ms(int interval_ms)
+    {
+        hit_sound_min_interval_ms = std::clamp(interval_ms, min_hit_sound_interval_ms, max_hit_sound_interval_ms);
+    }
+
     bool play_taunt_sounds = true;
     bool play_global_rad_msg_sounds = true;
     bool play_team_rad_msg_sounds = true;
@@ -135,6 +144,27 @@ struct AlpineGameSettings
     bool always_clamp_official_lightmaps = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
+    static constexpr int min_gib_chunk_count = 7;
+    static constexpr int max_gib_chunk_count = 100;
+    int gib_chunk_count = 14;
+    void set_gib_chunk_count(int count)
+    {
+        gib_chunk_count = std::clamp(count, min_gib_chunk_count, max_gib_chunk_count);
+    }
+    static constexpr float min_gib_velocity_scale = 3.0f;
+    static constexpr float max_gib_velocity_scale = 100.0f;
+    float gib_velocity_scale = 15.0f;
+    void set_gib_velocity_scale(float scale)
+    {
+        gib_velocity_scale = std::clamp(scale, min_gib_velocity_scale, max_gib_velocity_scale);
+    }
+    static constexpr int min_gib_lifetime_ms = 1000;
+    static constexpr int max_gib_lifetime_ms = 15000;
+    int gib_lifetime_ms = 7000;
+    void set_gib_lifetime_ms(int lifetime_ms)
+    {
+        gib_lifetime_ms = std::clamp(lifetime_ms, min_gib_lifetime_ms, max_gib_lifetime_ms);
+    }
     bool real_armor_values = false;
     bool always_show_spectators = false;
     RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =

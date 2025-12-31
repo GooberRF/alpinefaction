@@ -108,6 +108,7 @@ namespace rf::gr
 
     static auto& light_filter_set_solid = addr_as_ref<int(GSolid *s, bool include_dynamic, bool include_static)>(0x004D9DD0);
     static auto& light_filter_reset = addr_as_ref<void()>(0x004D9FA0);
+    static auto& light_delete = addr_as_ref<void(int handle, bool force_static_update)>(0x004D9130);
     static auto& light_get_ambient = addr_as_ref<void(float *r, float *g, float *b)>(0x004D8D10);
     static auto& light_alloc = addr_as_ref<int(bool dynamic)>(0x004D8E10);
     static auto& gr_light_create_spotlight =

@@ -28,6 +28,7 @@
 #include "resources.h"
 #include "mfc_types.h"
 #include "vtypes.h"
+#include "level.h"
 #include "event.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
@@ -409,6 +410,12 @@ void CMainFrame_PlayMultiFromCamera(CWnd* this_)
     g_is_play_in_multi = false;
 }
 
+void CMainFrame_BackLink([[maybe_unused]] CWnd* this_)
+{
+    DedLevel_DoBackLink();
+    RedrawEditorAfterModification();
+}
+
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
 {
     constexpr int CN_COMMAND = 0;
@@ -445,6 +452,9 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case ID_PLAY_MULTI_CAMERA:
                 handler = std::bind(CMainFrame_PlayMultiFromCamera, this_);
+                break;
+            case ID_BACK_LINK:
+                handler = std::bind(CMainFrame_BackLink, this_);
                 break;
         }
 

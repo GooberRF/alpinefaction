@@ -121,14 +121,9 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
         (t0 == DedObjectType::DED_CLUTTER && t1 == DedObjectType::DED_LIGHT);
 }
 
-void __fastcall CDedLevel_DoLink_new(CDedLevel* this_);
-FunHook<decltype(CDedLevel_DoLink_new)> CDedLevel_DoLink_hook{
-    0x00415850,
-    CDedLevel_DoLink_new,
-};
-void __fastcall CDedLevel_DoLink_new(CDedLevel* this_)
+void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
 {
-    auto& sel = this_->selection;
+    auto& sel = level->selection;
     const int count = sel.get_size();
 
     if (count < 2) {
@@ -140,8 +135,8 @@ void __fastcall CDedLevel_DoLink_new(CDedLevel* this_)
         return;
     }
 
-    DedObject* src = sel[0];
-    if (!src) {
+    DedObject* primary = sel[0];
+    if (!primary) {
         g_main_frame->DedMessageBox(
             "You must select at least 2 objects to create a link.",
             "Error",
@@ -151,11 +146,12 @@ void __fastcall CDedLevel_DoLink_new(CDedLevel* this_)
     }
 
     int num_success = 0;
-    std::vector<int> attempted_dst_uids; // valid destination UIDs
+    std::vector<int> attempted_uids;
 
     for (int i = 1; i < count; ++i) {
-        DedObject* dst = sel[i];
-        if (!dst) {
+        DedObject* src = reverse_link_direction ? sel[i] : primary;
+        DedObject* dst = reverse_link_direction ? primary : sel[i];
+        if (!src || !dst) {
             continue;
         }
 
@@ -168,7 +164,7 @@ void __fastcall CDedLevel_DoLink_new(CDedLevel* this_)
             continue;
         }
 
-        attempted_dst_uids.push_back(dst->uid);
+        attempted_uids.push_back(reverse_link_direction ? src->uid : dst->uid);
 
         int old_size = src->links.get_size();
         int idx = src->links.add_if_not_exists_int(dst->uid);
@@ -186,30 +182,59 @@ void __fastcall CDedLevel_DoLink_new(CDedLevel* this_)
     }
 
     if (num_success == 0) {
-        std::string dst_list;
-        for (size_t i = 0; i < attempted_dst_uids.size(); ++i) {
+        std::string uid_list;
+        for (size_t i = 0; i < attempted_uids.size(); ++i) {
             if (i > 0) {
-                dst_list += ", ";
+                uid_list += ", ";
             }
-            dst_list += std::to_string(attempted_dst_uids[i]);
+            uid_list += std::to_string(attempted_uids[i]);
         }
 
         std::string msg;
-        if (!attempted_dst_uids.empty()) {
-            msg = "All links from selected source UID " +
-                  std::to_string(src->uid) +
-                  " to valid destination UID(s) " +
-                  dst_list +
-                  " already exist.";
+        if (!attempted_uids.empty()) {
+            if (reverse_link_direction) {
+                msg = "All links to selected destination UID " +
+                        std::to_string(primary->uid) +
+                        " from valid source UID(s) " +
+                        uid_list +
+                        " already exist.";
+            } else {
+                msg = "All links from selected source UID " +
+                        std::to_string(primary->uid) +
+                        " to valid destination UID(s) " +
+                        uid_list +
+                        " already exist.";
+            }
         } else {
-            msg = "No valid link combinations were found for selected source UID " +
-                std::to_string(src->uid) +
-                ".";
+            if (reverse_link_direction) {
+                msg = "No valid link combinations were found for selected destination UID " +
+                    std::to_string(primary->uid) +
+                    ".";
+            } else {
+                msg = "No valid link combinations were found for selected source UID " +
+                    std::to_string(primary->uid) +
+                    ".";
+            }
         }
 
         g_main_frame->DedMessageBox(msg.c_str(), "Error", 0);
         return;
     }
+}
+
+void __fastcall CDedLevel_DoLink_new(CDedLevel* this_);
+FunHook<decltype(CDedLevel_DoLink_new)> CDedLevel_DoLink_hook{
+    0x00415850,
+    CDedLevel_DoLink_new,
+};
+void __fastcall CDedLevel_DoLink_new(CDedLevel* this_)
+{
+    DedLevel_DoLinkImpl(this_, false);
+}
+
+void DedLevel_DoBackLink()
+{
+    DedLevel_DoLinkImpl(CDedLevel::Get(), true);
 }
 
 void ApplyLevelPatches()

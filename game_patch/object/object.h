@@ -28,6 +28,7 @@ rf::AlpineRespawnPoint* get_alpine_respawn_point_by_uid(int uid);
 void set_alpine_respawn_point_enabled(rf::AlpineRespawnPoint* point, bool enabled);
 void set_alpine_respawn_point_teams(rf::AlpineRespawnPoint* point, bool red, bool blue);
 std::vector<rf::AlpineRespawnPoint> get_alpine_respawn_points();
+void entity_set_gib_flag(rf::Entity* ep);
 
 constexpr size_t old_obj_limit = 1024;
 constexpr size_t obj_limit = 65536;

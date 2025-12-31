@@ -56,6 +56,7 @@ namespace rf
     {
         FACE_SHOW_SKY = 1,
         FACE_LIQUID = 0x4,
+        FACE_FULL_BRIGHT = 0x20,
         FACE_SEE_THRU = 0x40,
         FACE_INVISIBLE = 0x2000,
     };

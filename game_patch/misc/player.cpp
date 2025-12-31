@@ -59,6 +59,7 @@ bool is_player_minimum_af_client_version(
     const rf::Player* const player,
     const int version_major,
     const int version_minor,
+    const int version_patch,
     const bool only_release
 ) {
     if (!player) {
@@ -81,7 +82,15 @@ bool is_player_minimum_af_client_version(
         return false;
     }
 
-    return player->version_info.minor >= version_minor;
+    if (player->version_info.minor > version_minor) {
+        return true;
+    }
+
+    if (player->version_info.minor < version_minor) {
+        return false;
+    }
+
+    return player->version_info.patch >= version_patch;
 }
 
 bool is_server_minimum_af_version(int version_major, int version_minor) {
@@ -178,7 +187,7 @@ void reset_local_delayed_spawn() {
 }
 
 CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
-    0x004A678B,
+    0x004A6778,
     [] (auto& regs) {
         // Do not waste packets.
         if (!rf::is_server
@@ -491,7 +500,22 @@ void play_local_hit_sound(bool died) {
         return; // turned off
     }
 
+    static rf::TimestampRealtime hit_sound_timestamp;
+    static bool last_hit_sound_was_died = false;
+    const int interval_ms = g_alpine_game_config.hit_sound_min_interval_ms;
+    if (interval_ms > 0) {
+        const bool recently_played = hit_sound_timestamp.valid() && !hit_sound_timestamp.elapsed();
+        if (recently_played && !(died && !last_hit_sound_was_died)) {
+            return;
+        }
+        hit_sound_timestamp.set(interval_ms);
+    }
+    else {
+        hit_sound_timestamp.invalidate();
+    }
+
     play_local_sound_2d(get_custom_sound_id(died ? 3 : 2), 0, 1.0f);
+    last_hit_sound_was_died = died;
 }
 
 ConsoleCommand2 tauntsound_cmd{
@@ -512,6 +536,17 @@ ConsoleCommand2 localhitsound_cmd{
     },
     "Toggle whether to play a sound when you hit players in multiplayer (if enabled by an Alpine Faction server)",
     "cl_hitsounds",
+};
+
+ConsoleCommand2 hit_sound_interval_cmd{
+    "cl_hitsounds_min_interval",
+    [](std::optional<int> interval_ms) {
+        if (interval_ms) {
+            g_alpine_game_config.set_hit_sound_min_interval_ms(interval_ms.value());
+        }
+        rf::console::print("Hit sound minimum interval is {} ms.", g_alpine_game_config.hit_sound_min_interval_ms);
+    },
+    "Set a minimum interval between damage notification hit sounds in milliseconds",
 };
 
 ConsoleCommand2 location_ping_display_cmd{
@@ -841,6 +876,7 @@ void player_do_patch()
     swap_shotgun_controls_cmd.register_cmd();
     play_join_beep_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
+    hit_sound_interval_cmd.register_cmd();
     tauntsound_cmd.register_cmd();
     set_autoswitch_fire_wait_cmd.register_cmd();
     location_ping_display_cmd.register_cmd();

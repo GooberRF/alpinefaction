@@ -214,6 +214,30 @@ CodeInjection face_scroll_fix{
     },
 };
 
+CodeInjection ingame_add_lightmap_to_face_fullbright_fix{
+    0x004E5BBE,
+    [](auto& regs) {
+        // idea for future AlpineLevelProps bool:
+        // Use level ambient light for surfaces without lighting (geo craters and uncalced)
+        // would need to do the same operation as below
+        rf::GSurface* surface = regs.esi;
+        rf::GFace* face = regs.edi;
+
+        if (!surface || !face)
+            return;
+
+        if (face->attributes.flags & rf::GFaceFlags::FACE_FULL_BRIGHT) {
+            surface->fullbright = true; // should be set already anyway, but just in case
+
+            xlog::debug("Skipping lightmap generation for fullbright face {} (surface {})",
+                face->attributes.face_id,
+                surface->index);
+
+            regs.eip = 0x004E5C33;
+        }
+    },
+};
+
 CodeInjection g_proctex_update_water_speed_fix{
     0x004E68A0,
     [](auto& regs) {
@@ -694,6 +718,9 @@ void g_solid_do_patch()
 
     // Fix face scroll in levels after version 0xB4
     face_scroll_fix.install();
+
+    // Fix faces with "fullbright" flag having randomly generated lightmaps applied after geomod
+    ingame_add_lightmap_to_face_fullbright_fix.install();
 
     // Fix water waves animation on high FPS
     AsmWriter(0x004E68A0, 0x004E68A9).nop();

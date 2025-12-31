@@ -23,8 +23,8 @@
 #define VERSION_CODE           "Willow"
 
 // Version used for Alpine settings files
-#define ADS_VERSION            1      // .toml dedicated server config files
-#define AFS_VERSION            10     // alpine_settings.ini
+#define ADS_VERSION            2      // .toml dedicated server config files
+#define AFS_VERSION            11     // alpine_settings.ini
 #define AFCC_VERSION           1      // alpine_system.ini
 
 // Increment only when absolutely necessary! Will break level compatibility for older clients.

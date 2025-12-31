@@ -519,6 +519,20 @@ struct ClickLimiterConfig
     }
 };
 
+struct GibConfig
+{
+    bool enabled = true;
+    bool all_damage = false;
+    float damage_threshold = 100.0f;
+
+    // =============================================
+
+    void set_damage_threshold(float threshold)
+    {
+        damage_threshold = std::clamp(threshold, 1.0f, 6000.0f);
+    }
+};
+
 struct AlpineServerConfigRules
 {
     // stock game rules
@@ -552,6 +566,7 @@ struct AlpineServerConfigRules
     WeaponLoadoutConfig spawn_loadout;
     SpawnProtectionConfig spawn_protection;
     NewSpawnLogicConfig spawn_logic;
+    GibConfig gibbing;
     WelcomeMessageConfig welcome_message;
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;

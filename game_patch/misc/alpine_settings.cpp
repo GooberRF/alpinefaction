@@ -308,6 +308,18 @@ bool alpine_player_settings_load(rf::Player* player)
     else {
         rf::game_set_gore_level(2); // if gore level not in ini file, default to 2
     }
+    if (settings.count("GibChunkCount")) {
+        g_alpine_game_config.set_gib_chunk_count(std::stoi(settings["GibChunkCount"]));
+        processed_keys.insert("GibChunkCount");
+    }
+    if (settings.count("GibVelocityScale")) {
+        g_alpine_game_config.set_gib_velocity_scale(std::stof(settings["GibVelocityScale"]));
+        processed_keys.insert("GibVelocityScale");
+    }
+    if (settings.count("GibLifetimeMs")) {
+        g_alpine_game_config.set_gib_lifetime_ms(std::stoi(settings["GibLifetimeMs"]));
+        processed_keys.insert("GibLifetimeMs");
+    }
 
     if (settings.count("ShowFPGun")) {
         player->settings.render_fpgun = std::stoi(settings["ShowFPGun"]);
@@ -761,6 +773,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.play_hit_sounds = std::stoi(settings["PlayHitsounds"]);
         processed_keys.insert("PlayHitsounds");
     }
+    if (settings.count("HitSoundIntervalMs")) {
+        g_alpine_game_config.set_hit_sound_min_interval_ms(std::stoi(settings["HitSoundIntervalMs"]));
+        processed_keys.insert("HitSoundIntervalMs");
+    }
     if (settings.count("PlayTaunts")) {
         g_alpine_game_config.play_taunt_sounds = std::stoi(settings["PlayTaunts"]);
         processed_keys.insert("PlayTaunts");
@@ -1052,6 +1068,9 @@ void alpine_player_settings_save(rf::Player* player)
     file << "\n[PlayerSettings]\n";
     file << "PlayerName=" << player->name << "\n";
     file << "GoreLevel=" << rf::game_get_gore_level() << "\n";
+    file << "GibChunkCount=" << g_alpine_game_config.gib_chunk_count << "\n";
+    file << "GibVelocityScale=" << g_alpine_game_config.gib_velocity_scale << "\n";
+    file << "GibLifetimeMs=" << g_alpine_game_config.gib_lifetime_ms << "\n";
     file << "ShowFPGun=" << player->settings.render_fpgun << "\n";
     file << "AutoswitchWeapons=" << player->settings.autoswitch_weapons << "\n";
     file << "NeverAutoswitchExplosives=" << player->settings.dont_autoswitch_to_explosives << "\n";
@@ -1192,6 +1211,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
+    file << "HitSoundIntervalMs=" << g_alpine_game_config.hit_sound_min_interval_ms << "\n";
     file << "PlayTaunts=" << g_alpine_game_config.play_taunt_sounds << "\n";
     file << "ShowRunTimer=" << g_alpine_game_config.show_run_timer << "\n";
     file << "VisualRicochet=" << g_alpine_game_config.multi_ricochet << "\n";

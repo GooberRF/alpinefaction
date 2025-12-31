@@ -6,6 +6,7 @@
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
 #include "../os/console.h"
+#include "../rf/gr/gr_light.h"
 #include "../rf/entity.h"
 #include "../rf/event.h"
 #include "../rf/corpse.h"
@@ -234,54 +235,27 @@ CodeInjection entity_process_pre_hide_riot_shield_injection{
     },
 };
 
-// avoids gibbing if gore level is too low or if this specific corpse shouldn't gib
-/* CodeInjection corpse_damage_patch{
-    0x00417C6A,
-    [](auto& regs) {
-        rf::Corpse* cp = regs.esi;
-
-        // don't destroy corpses that should persist
-        if (cp->corpse_flags & 0x400 ||         // drools_slime (used by snakes)
-            cp->corpse_flags & 0x4)             // custom_state_anim (used by sea creature)
-        {
-            regs.eip = 0x00417C97;
-        }
+void entity_set_gib_flag(rf::Entity* ep) {
+    if (rf::game_get_gore_level() < 2) {
+        return;
     }
-};*/
 
-// avoids playing pain sounds for gibbing entities (broken atm)
-CodeInjection entity_damage_gib_no_pain_sound_patch {
-    0x0041A51F,
-    [](auto& regs) {        
-        rf::Entity* ep = regs.esi;
-        //float pain_sound_volume = regs.eax;
-        if (ep->entity_flags & 0x80) {
-            //pain_sound_volume = 0.0f;
-            //xlog::warn("nosound");
-            regs.eip = 0x0041A550;
-        }
-    }
-};
-
-/* CodeInjection entity_damage_gib_no_pain_sound_patch{
-    0x0041A548,
-    [](auto& regs) {        
-        rf::Entity* ep = regs.esi;
-        float pain_sound_volume = regs.eax;
-        if (ep->entity_flags & 0x80) {
-            pain_sound_volume = 0.0f;
-        }
-    }
-};*/
+    ep->entity_flags |= 0x80;
+}
 
 FunHook<void(int)> entity_blood_throw_gibs_hook{
     0x0042E3C0, [](int handle) {
-        rf::Object* objp = rf::obj_from_handle(handle);
+        // don't spawn gibs on a dedicated server
+        if (rf::is_dedicated_server) {
+            return;
+        }
 
-        // should only gib on gore level 2 or higher
+        // only gib on gore level 2 or higher
         if (rf::game_get_gore_level() < 2) {
             return;
         }
+
+        rf::Object* objp = rf::obj_from_handle(handle);
 
         // only gib flesh entities and corpses
         if (!objp || (objp->type != rf::OT_ENTITY && objp->type != rf::OT_CORPSE) || objp->material != 3) {
@@ -300,11 +274,13 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
             return;
         }
 
-        static constexpr int gib_count = 14; // 7 in original
-        static constexpr float velocity_scale = 15.0f;
+        // delete entity muzzle light if active, prevents persistent dynamic lights after entity is deleted
+        if (entity->muzzle_light_handle > -1) {
+            rf::gr::light_delete(entity->muzzle_light_handle, 0);
+        }
+
         static constexpr float spin_scale_min = 10.0f;
         static constexpr float spin_scale_max = 25.0f;
-        static constexpr int lifetime_ms = 7000;
         static constexpr float velocity_factor = 0.5f;
         static const char* snd_set = "gib bounce";
         static const std::vector<const char*> gib_filenames = {
@@ -314,6 +290,9 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
             "meatchunk4.v3m",
             "meatchunk5.v3m"};
 
+        const int gib_count = g_alpine_game_config.gib_chunk_count; // 7 from Volition
+        const float velocity_scale = g_alpine_game_config.gib_velocity_scale;
+        const int lifetime_ms = g_alpine_game_config.gib_lifetime_ms;
         for (int i = 0; i < gib_count; ++i) {
             rf::DebrisCreateStruct debris_info;
 
@@ -382,6 +361,45 @@ ConsoleCommand2 cl_gorelevel_cmd{
     },
     "Set gore level.",
     "cl_gorelevel [level]"
+};
+
+ConsoleCommand2 cl_gibchunks_cmd{
+    "cl_gibchunks",
+    [](std::optional<int> count) {
+        if (count) {
+            g_alpine_game_config.set_gib_chunk_count(*count);
+            rf::console::print("Gib chunk count is {}", g_alpine_game_config.gib_chunk_count);
+        }
+        else {
+            rf::console::print("Gib chunk count is {}", g_alpine_game_config.gib_chunk_count);
+        }
+    },
+    "Set gib chunk count.",
+    "cl_gibchunks [count]"
+};
+
+ConsoleCommand2 cl_gibvelocityscale_cmd{
+    "cl_gibvelocityscale",
+    [](std::optional<float> scale) {
+        if (scale) {
+            g_alpine_game_config.set_gib_velocity_scale(*scale);
+        }
+        rf::console::print("Gib velocity scale is {}", g_alpine_game_config.gib_velocity_scale);
+    },
+    "Set gib velocity scale.",
+    "cl_gibvelocityscale [scale]"
+};
+
+ConsoleCommand2 cl_giblifetimems_cmd{
+    "cl_giblifetimems",
+    [](std::optional<int> lifetime_ms) {
+        if (lifetime_ms) {
+            g_alpine_game_config.set_gib_lifetime_ms(*lifetime_ms);
+        }
+        rf::console::print("Gib lifetime is {} ms", g_alpine_game_config.gib_lifetime_ms);
+    },
+    "Set gib lifetime in milliseconds.",
+    "cl_giblifetimems [milliseconds]"
 };
 
 // makes some entities red - unfinished
@@ -472,11 +490,12 @@ void entity_do_patch()
 
 	// Restore cut stock game feature for entities and corpses exploding into chunks
 	entity_blood_throw_gibs_hook.install();
-    //corpse_damage_patch.install();
-    //entity_damage_gib_no_pain_sound_patch.install();
 
     // Commands
     sp_exposuredamage_cmd.register_cmd();
     cl_gorelevel_cmd.register_cmd();
+    cl_gibchunks_cmd.register_cmd();
+    cl_gibvelocityscale_cmd.register_cmd();
+    cl_giblifetimems_cmd.register_cmd();
     cl_painsounds_cmd.register_cmd();
 }

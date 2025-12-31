@@ -81,8 +81,9 @@ float4 main(VsOutput input) : SV_TARGET
             float3 light_dir = normalize(light_vec);
             float dist = length(light_vec);
             float atten = saturate(dist / point_lights[i].radius);
-            float intensity = (1 - atten) * saturate(dot(input.norm, light_dir));
-            light_color += point_lights[i].color * intensity;
+            atten = atten * atten * (3.0f - 2.0f * atten);
+            float intensity = (1.0f - atten) * saturate(dot(input.norm, light_dir));
+            light_color += point_lights[i].color * intensity * 1.5;
         }
     }
 

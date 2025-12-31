@@ -451,9 +451,10 @@ void handle_load_command(rf::Player* player, std::string_view save_name)
 
 void handle_player_set_handicap(rf::Player* player, uint8_t amount)
 {
-    player->damage_handicap = amount;
-    rf::console::print("At their request, {} has been given a {}% damage reduction handicap.", player->name, amount);
-    auto msg = std::format("At your request, you have been given a {}% damage reduction handicap.", amount);
+    const uint8_t applied = static_cast<uint8_t>(std::clamp<int>(amount, 0, 99));
+    player->damage_handicap = applied;
+    rf::console::print("At their request, {} has been given a {}% damage reduction handicap.", player->name, applied);
+    auto msg = std::format("At your request, you have been given a {}% damage reduction handicap.", applied);
     af_send_automated_chat_msg(msg, player);
 }
 
@@ -1103,20 +1104,35 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
-        // should entity gib?
-        if (damaged_ep->life < -5.0f &&
-            damage_type == 3 &&                         // explosive
-            damaged_ep->material == 3 &&                // flesh
-            rf::game_get_gore_level() >= 2 &&
-            !(damaged_ep->entity_flags & 0x2000000) &&  // custom_corpse (used by snakes and sea creature)
-            !(damaged_ep->entity_flags & 0x1) &&        // dying
-            !(damaged_ep->entity_flags & 0x1000) &&     // in_water
-            !(damaged_ep->entity_flags & 0x2000))       // eye_under_water
-        {
-            damaged_ep->entity_flags |= 0x80;
-        }
-
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
+
+        // should entity gib?
+        if (damaged_ep) { // damaged_ep can sometimes be invalid at this point
+            if (!rf::is_multi) { // SP gibbing
+                if (damaged_ep->life < -100.0f &&               // very dead
+                    damage_type == 3 &&                         // explosive
+                    damaged_ep->material == 3 &&                // flesh
+                    !(damaged_ep->entity_flags & 0x2000000) &&  // custom_corpse (used by snakes and sea creature)
+                    !(damaged_ep->entity_flags & 0x1) &&        // dying
+                    !(damaged_ep->entity_flags & 0x1000) &&     // in_water
+                    !(damaged_ep->entity_flags & 0x2000))       // eye_under_water
+                {
+                    entity_set_gib_flag(damaged_ep);
+                }
+            }
+            else if (rf::is_server && g_alpine_server_config_active_rules.gibbing.enabled) { // MP gibbing
+                const auto& gibbing = g_alpine_server_config_active_rules.gibbing;
+                if (damaged_ep->life < 0.0f &&                      // dead
+                    damage > gibbing.damage_threshold &&            // big damage (default 100.0)
+                    (gibbing.all_damage || damage_type == 3) &&     // explosive
+                    damaged_ep->material == 3 &&                    // flesh
+                    !(damaged_ep->entity_flags & 0x1))              // dying
+                {
+                    entity_set_gib_flag(damaged_ep);
+                    af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
+                }
+            }
+        }
 
         // damaged_ep may be invalid at this point. If so, assume dead to avoid a rare crash from checking life
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
@@ -1133,7 +1149,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {
 
                     // use new packet for clients that can process it (Alpine 1.1+)
-                    if (is_player_minimum_af_client_version(killer_player, 1, 1)) {
+                    if (is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
                         //xlog::warn("sending damage notify to {}, is dead? {}", killer_player->name, is_dead);
                         af_send_damage_notify_packet(
                             damaged_player->net_data->player_id,
@@ -1969,6 +1985,9 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         if (g_alpine_server_config_active_rules.force_character.enabled) {
             player->settings.multi_character =
                 g_alpine_server_config_active_rules.force_character.character_index;
+        }
+        if (pdata.is_browser()) {
+            return;
         }
         if (!check_can_player_spawn(player)) {
             return;

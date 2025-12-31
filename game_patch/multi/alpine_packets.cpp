@@ -20,6 +20,7 @@
 #include "../hud/hud.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
+#include "../object/object.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
@@ -118,6 +119,10 @@ bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::P
         }
         case af_packet_type::af_server_msg: {
             af_process_server_msg_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_server_req: {
+            af_process_server_req_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -302,8 +307,8 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf
     int rounded_damage = static_cast<int>(std::round(damage));
     damage_notify_packet.damage = static_cast<uint16_t>(std::max(1, rounded_damage)); // round damage with minimum 1
 
-    damage_notify_packet.flags = 0; // init flags
-    damage_notify_packet.flags = (damage_notify_packet.flags & ~0x01) | (died << 0);
+    damage_notify_packet.flags =
+        (static_cast<uint8_t>(died)       << 0);
 
     std::memcpy(packet_buf, &damage_notify_packet, sizeof(damage_notify_packet));
 
@@ -528,9 +533,23 @@ void af_send_handicap_request(uint8_t amount)
     af_send_client_req_packet(packet);
 }
 
+// af_req_handicap
 void serialize_payload(const HandicapPayload& payload, std::byte* buf, size_t& offset)
 {
     buf[offset++] = static_cast<std::byte>(payload.amount);
+}
+
+// af_req_server_cfg
+void serialize_payload(const std::monostate& payload, const std::byte* const buf, const size_t& offset)
+{
+    // nothing to do
+}
+
+// af_sreq_should_gib
+void serialize_payload(const ShouldGibPayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
 }
 
 void af_send_server_cfg_request() {
@@ -545,13 +564,6 @@ void af_send_server_cfg_request() {
     client_req_packet.payload = std::monostate{};
 
     af_send_client_req_packet(client_req_packet);
-}
-
-void serialize_payload(
-    const std::monostate& payload,
-    const std::byte* const buf,
-    const size_t& offset
-) {
 }
 
 // send client request packet
@@ -592,46 +604,50 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
         return;
     }
 
-    const auto* header = static_cast<const RF_GamePacketHeader*>(data);
-    if (header->type != static_cast<uint8_t>(af_packet_type::af_client_req)) {
-        xlog::warn("af_process_client_req_packet: unexpected type {}", header->type);
+    RF_GamePacketHeader header{};
+    std::memcpy(&header, data, sizeof(header));
+
+    if (header.type != static_cast<uint8_t>(af_packet_type::af_client_req)) {
+        xlog::warn("af_process_client_req_packet: unexpected type {}", header.type);
         return;
     }
 
-    const size_t expected_wire_size = sizeof(RF_GamePacketHeader) + header->size;
+    const size_t expected_wire_size = sizeof(RF_GamePacketHeader) + static_cast<size_t>(header.size);
     if (expected_wire_size > len) {
         xlog::warn("af_process_client_req_packet: truncated packet ({} > {})", expected_wire_size, len);
         return;
     }
 
-    if (header->size < sizeof(uint8_t)) {
-        xlog::warn("af_process_client_req_packet: payload too small ({})", header->size);
+    if (header.size < sizeof(uint8_t)) {
+        xlog::warn("af_process_client_req_packet: payload too small ({})", header.size);
         return;
     }
 
-    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
-    size_t offset = sizeof(RF_GamePacketHeader); // skip header
-
     rf::Player* player = rf::multi_find_player_by_addr(addr);
-
     if (!player || !player->net_data) {
         xlog::warn("af_process_client_req_packet: no valid player for addr");
         return;
     }
 
-    af_client_req_type req_type = static_cast<af_client_req_type>(bytes[offset++]);
-    af_client_req_packet packet;
-    std::memcpy(&packet.header, data, sizeof(RF_GamePacketHeader));
-    packet.req_type = req_type;
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+
+    const size_t payload_begin = sizeof(RF_GamePacketHeader);
+    const size_t payload_end = sizeof(RF_GamePacketHeader) + static_cast<size_t>(header.size);
+
+    size_t offset = payload_begin;
+    const auto req_type = static_cast<af_client_req_type>(bytes[offset++]);
+
+    // Remaining payload types after req_type
+    const size_t remaining = (offset <= payload_end) ? (payload_end - offset) : 0;
 
     switch (req_type) {
         case af_client_req_type::af_req_handicap: {
-            if (offset + 1 > len) {
+            if (remaining < 1) {
                 xlog::warn("af_process_client_req_packet: Handicap payload too short");
                 return;
             }
+
             uint8_t amount = bytes[offset];
-            packet.payload = HandicapPayload{amount};
 
             handle_player_set_handicap(player, amount);
             break;
@@ -644,9 +660,122 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             break;
         }
         default: {
-            xlog::warn("af_process_client_req_packet: Unknown req_type {}", static_cast<int>(req_type));
+            xlog::debug("af_process_client_req_packet: unknown req_type {}", static_cast<int>(req_type));
             return;
         }
+    }
+}
+
+void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player)
+{
+    // Send: server -> client
+    if (!rf::is_server || !player || !player->net_data) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    size_t offset = 0;
+
+    std::memcpy(buf + offset, &packet.header, sizeof(packet.header));
+    offset += sizeof(packet.header);
+
+    buf[offset++] = static_cast<std::byte>(packet.req_type);
+
+    std::visit([&](const auto& payload) { serialize_payload(payload, buf, offset); }, packet.payload);
+
+    int total_len = static_cast<int>(offset);
+    af_send_packet(player, buf, total_len, true);
+}
+
+void af_send_should_gib_req(uint32_t obj_handle)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(uint32_t);
+    packet.req_type = af_server_req_type::af_sreq_should_gib;
+    packet.payload = ShouldGibPayload{obj_handle};
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (is_player_minimum_af_client_version(&player, 1, 2, 1)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    if (len < sizeof(RF_GamePacketHeader)) {
+        xlog::warn("af_process_server_req_packet: packet too short for header (len={})", len);
+        return;
+    }
+
+    RF_GamePacketHeader header{};
+    std::memcpy(&header, data, sizeof(header));
+
+    if (header.type != static_cast<uint8_t>(af_packet_type::af_server_req)) {
+        xlog::warn("af_process_server_req_packet: unexpected type {}", header.type);
+        return;
+    }
+
+    const size_t expected_wire_size = sizeof(RF_GamePacketHeader) + static_cast<size_t>(header.size);
+    if (expected_wire_size > len) {
+        xlog::warn("af_process_server_req_packet: truncated packet ({} > {})", expected_wire_size, len);
+        return;
+    }
+
+    if (header.size < sizeof(uint8_t)) {
+        xlog::warn("af_process_server_req_packet: payload too small ({})", header.size);
+        return;
+    }
+
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+
+    const size_t payload_begin = sizeof(RF_GamePacketHeader);
+    const size_t payload_end = sizeof(RF_GamePacketHeader) + static_cast<size_t>(header.size);
+
+    size_t offset = payload_begin;
+    const auto req_type = static_cast<af_server_req_type>(bytes[offset++]);
+
+    // remaining payload bytes after req_type
+    const size_t remaining = (offset <= payload_end) ? (payload_end - offset) : 0;
+
+    switch (req_type) {
+        case af_server_req_type::af_sreq_should_gib: {
+            if (remaining < sizeof(uint32_t)) {
+                xlog::warn("af_process_server_req_packet: ShouldGib payload too short");
+                return;
+            }
+
+            uint32_t obj_handle = 0;
+            std::memcpy(&obj_handle, bytes + offset, sizeof(obj_handle));
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(obj_handle);
+            if (!remote_object) {
+                xlog::warn("af_process_server_req_packet: invalid remote handle {:x}", obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::warn("af_process_server_req_packet: invalid entity handle {:x}", obj_handle);
+                return;
+            }
+
+            entity_set_gib_flag(entity);
+            break;
+        }
+        default:
+            xlog::debug("af_process_server_req_packet: unknown req_type {}", static_cast<int>(req_type));
+            break;
     }
 }
 
@@ -1540,7 +1669,7 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
             continue;
         }
 
-        if (is_player_minimum_af_client_version(&player, 1, 2)) {
+        if (is_player_minimum_af_client_version(&player, 1, 2, 0)) {
             rf::multi_io_send_reliable(
                 &player,
                 &buf.packet,
@@ -1562,7 +1691,7 @@ void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player, 
         rf::console::print("Server (to {}): {}", player->name, msg);
     }
 
-    if (is_player_minimum_af_client_version(player, 1, 2)) {
+    if (is_player_minimum_af_client_version(player, 1, 2, 0)) {
         const af_server_msg_packet_buf buf = build_automated_chat_msg_packet(msg);
 
         rf::multi_io_send_reliable(

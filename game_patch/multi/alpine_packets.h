@@ -35,6 +35,7 @@ enum class af_packet_type : uint8_t
     af_spectate_start = 0x5B,           // Alpine 1.2
     af_spectate_notify = 0x5C,          // Alpine 1.2
     af_server_msg = 0x5D,               // Alpine 1.2
+    af_server_req = 0x5E,               // Alpine 1.2.1
 };
 
 struct af_ping_location_req_packet
@@ -91,6 +92,25 @@ struct af_client_req_packet
     RF_GamePacketHeader header;
     af_client_req_type req_type;
     af_client_payload payload;
+};
+
+enum class af_server_req_type : uint8_t
+{
+    af_sreq_should_gib = 0x0,
+};
+
+struct ShouldGibPayload
+{
+    uint32_t obj_handle = 0;
+};
+
+using af_server_req_payload = std::variant<ShouldGibPayload>;
+
+struct af_server_req_packet
+{
+    RF_GamePacketHeader header;
+    af_server_req_type req_type;
+    af_server_req_payload payload;
 };
 
 enum class af_just_spawned_info_type : uint8_t
@@ -224,6 +244,9 @@ void af_send_obj_update_packet(rf::Player* player);
 static void af_process_obj_update_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_client_req_packet(const af_client_req_packet& packet);
 static void af_process_client_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
+void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player);
+void af_send_should_gib_req(uint32_t obj_handle);
+static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_just_spawned_loadout(rf::Player* to_player, std::vector<WeaponLoadoutEntry> loadout);
 static void af_process_just_spawned_info_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_koth_hill_state_packet(rf::Player* player, const HillInfo& h, const Presence& pres); // sent to new joiners

@@ -612,11 +612,12 @@ enum RF_EntityAmpFlags
 
 enum RF_EntityStateFlags
 {
-    RF_AF_HIDDEN_WEAPON = 0x01, // not used in multi
-    RF_AF_CROUCH        = 0x04,
-    RF_AF_ZOOM          = 0x08,
-    RF_AF_WEAPON_FIRE   = 0x10, // used only for remote charges and granades
-    RF_AF_WEAPON_FIRE2  = 0x20, // unknown
+    RF_ES_WEAPON_HIDDEN = 0x01,
+    RF_ES_WEAPON_CUSTOM_MODE = 0x02,
+    RF_ES_CROUCHING = 0x04,
+    RF_ES_ZOOMING = 0x08,
+    RF_ES_ATTACK_ANIM0_ACTIVE = 0x10, // replicated attack anim slot 0 state/intent (used by grenade/remote charge/flamethrower)
+    RF_ES_ATTACK_ANIM1_ACTIVE = 0x20, // replicated attack anim slot 1 state/intent
 };
 
 struct RF_ObjectUpdate

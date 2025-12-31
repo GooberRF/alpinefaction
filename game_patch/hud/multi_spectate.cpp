@@ -147,6 +147,8 @@ void multi_spectate_enter_freelook()
 
     rf::multi_kill_local_player();
     rf::camera_enter_freelook(rf::local_player->cam);
+    g_local_queued_delayed_spawn = false;
+    stop_draw_respawn_timer_notification();
     af_send_spectate_start_packet(nullptr);
 
     // auto& hud_msg_current_index = addr_as_ref<int>(0x00597104);
