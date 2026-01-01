@@ -1335,7 +1335,7 @@ static bool parse_af_join_req_any_tail(const uint8_t* pkt, size_t datalen, size_
     // Uses conn rate 12345 but otherwise join_req is indistinguishable from RF 1.2
     // Only remaining false positive is a retail/PF client with rate exactly 12345 (possible but extremely unlikely)
     if (g_conn_rate_stashed.has_value() && g_conn_rate_stashed.value() == 12345) { // rfsb 5.1.6
-        g_joining_client_version = ClientVersion::browser;
+        g_joining_client_version = ClientSoftware::Browser;
         g_joining_player_info.af_signature = 0u;
         g_joining_player_info.version_major = 5u;
         g_joining_player_info.version_minor = 1u;

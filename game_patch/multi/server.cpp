@@ -1986,7 +1986,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             player->settings.multi_character =
                 g_alpine_server_config_active_rules.force_character.character_index;
         }
-        if (pdata.is_browser()) {
+        if (player->is_browser) {
             return;
         }
         if (!check_can_player_spawn(player)) {

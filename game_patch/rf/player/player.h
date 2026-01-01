@@ -10,7 +10,7 @@
 #include <common/utils/list-utils.h>
 #include <patch_common/MemUtils.h>
 
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
 #include "../../os/os.h"
 #include "../../purefaction/pf_packets.h"
 #include "../multi.h"
@@ -249,7 +249,7 @@ namespace rf
 
     struct Player
         : PlayerBase
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         , PlayerAdditionalData
 #endif
     {
