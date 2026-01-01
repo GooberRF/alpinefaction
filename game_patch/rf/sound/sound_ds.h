@@ -52,7 +52,7 @@ namespace rf
         SCHF_UNK8 = 0x8,
     };
 
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
     // In DF sound channels limit has been raised
     extern DsChannel ds_channels[num_sound_channels];
 #else

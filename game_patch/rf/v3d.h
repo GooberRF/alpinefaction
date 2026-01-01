@@ -104,7 +104,7 @@ namespace rf
         int flags;
         int num_original_vecs;
         int unk_field_from_v3d_file;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         void *render_cache;
 #endif
     };
@@ -120,7 +120,7 @@ namespace rf
         float radius;
         Vector3 bbox_min;
         Vector3 bbox_max;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         void *render_cache;
 #endif
     };

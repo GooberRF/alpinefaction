@@ -110,8 +110,8 @@ void CrashReportApp::PrepareReport(const CommandLineInfo& cmd_line_info) try
 
     ReadProcessMemory(process_handle, config_ptr, &m_config, sizeof(CrashHandlerConfig), nullptr);
 
-    auto crash_dump_filename = GetTempFileNameInTempDir("DF_Dump");
-    auto exc_info_filename = GetTempFileNameInTempDir("DF_ExcInfo");
+    auto crash_dump_filename = GetTempFileNameInTempDir("AF_Dump");
+    auto exc_info_filename = GetTempFileNameInTempDir("AF_ExcInfo");
 
     MiniDumpHelper dump_helper;
 

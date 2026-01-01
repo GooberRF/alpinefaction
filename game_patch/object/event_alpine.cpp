@@ -90,6 +90,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"Set_Capture_Point_Owner", 141},
                 {"Owner_Gate", 142},
                 {"Set_Gameplay_Rule", 143},
+                {"When_Round_Ends", 144},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -159,6 +160,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {141, []() { return new rf::EventSetCapturePointOwner(); }},
                 {142, []() { return new rf::EventOwnerGate(); }},
                 {143, []() { return new rf::EventSetGameplayRule(); }},
+                {144, []() { return new rf::EventWhenRoundEnds(); }},
             };
 
             // find type and allocate
@@ -232,6 +234,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {141, [](rf::Event* e) { delete static_cast<rf::EventSetCapturePointOwner*>(e); }},
                 {142, [](rf::Event* e) { delete static_cast<rf::EventOwnerGate*>(e); }},
                 {143, [](rf::Event* e) { delete static_cast<rf::EventSetGameplayRule*>(e); }},
+                {144, [](rf::Event* e) { delete static_cast<rf::EventWhenRoundEnds*>(e); }},
             };
 
             // find type and deallocate
@@ -276,7 +279,8 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Capture_Point_Handler,
         rf::EventType::Set_Capture_Point_Owner,
         rf::EventType::When_Captured,
-        rf::EventType::Owner_Gate
+        rf::EventType::Owner_Gate,
+        rf::EventType::When_Round_Ends
     };
 
     return forward_exempt_ids.find(event_type) != forward_exempt_ids.end();

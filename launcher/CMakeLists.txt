@@ -2,7 +2,7 @@ set(SRCS
     AboutDlg.cpp
     AboutDlg.h
     CMakeLists.txt
-    DashFactionLauncher.rc
+    AlpineFactionLauncher.rc
     DownloadProgressDlg.cpp
     DownloadProgressDlg.h
     faction_files.h

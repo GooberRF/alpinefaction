@@ -110,7 +110,7 @@ namespace rf
         VArray<GVertex*> sel_vertices;
         VArray<GFace*> sel_faces;
         VArray<GFace*> last_sel_faces;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         VArray<GDecal*> decals;
         int padding[126];
 #else
@@ -168,7 +168,7 @@ namespace rf
         int last_frame_rendered_alpha;
         float life;
         bool is_invincible;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         VArray<GDecal*> decals;
         int padding[46];
 #else

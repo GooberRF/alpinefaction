@@ -17,7 +17,7 @@ namespace rf::bm
         FORMAT_888_RGB = 0x6,
         FORMAT_8888_ARGB = 0x7,
         FORMAT_88_BUMPDUDV = 0x8, // not supported by D3D routines
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         // custom formats
         FORMAT_888_BGR = 0x9,        // used by lightmaps
         FORMAT_RENDER_TARGET = 0x10, // texture is used as render target
@@ -38,7 +38,7 @@ namespace rf::bm
         TYPE_VAF = 0x4,
         TYPE_VBM = 0x5,
         TYPE_M2V = 0x6,
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         // Custom bitmap types
         TYPE_DDS = 0x10,
 #endif
@@ -69,7 +69,7 @@ namespace rf::bm
         BitmapEntry* prev;
         char field_5C;
         ubyte cached_material_idx;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         bool dynamic;
 #endif
         int total_bytes_for_all_levels;

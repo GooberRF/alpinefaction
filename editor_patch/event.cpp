@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 45; // must be 1 higher than actual count
+constexpr int new_event_count = 46; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -85,6 +85,7 @@ const char* additional_event_names[new_event_count] = {
     "Set_Capture_Point_Owner",
     "Owner_Gate",
     "Set_Gameplay_Rule",
+    "When_Round_Ends",
     "_dummy"
 };
 
@@ -403,9 +404,11 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
                 "Dedicated server",
                 "Client",
                 "Triggering player",
-                "Red team",
+                "Blue team (spawned)",
+                "Red team (spawned)",
+                "Player that has flag",
                 "Blue team",
-                "Player that has flag"
+                "Red team"
                 }
             }
         },

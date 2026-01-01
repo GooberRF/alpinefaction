@@ -1,6 +1,19 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
+Version 1.3.0 (TBD): Not yet released
+--------------------------------
+### Major features
+
+### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Add values to scope param for `Scope_Gate` event to test for team regardless of whether local player is spawned
+- Add `When_Round_Ends` event
+
+### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix `Blue team` and `Red team` labels being swapped in `Scope_Gate` int1 field in level editor
+
 Version 1.2.1 (Willow): Released Dec-30-2025
 --------------------------------
 ### Major features

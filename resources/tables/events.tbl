@@ -478,6 +478,9 @@ $RFE Level1:      "AF_Catalysts"
 $Event Name:      "When_Captured"
 $RFE Level1:      "AF_Catalysts"
 
+$Event Name:      "When_Round_Ends"
+$RFE Level1:      "AF_Catalysts"
+
 #End
 
 // ------------------------------------------------

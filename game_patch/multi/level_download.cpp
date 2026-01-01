@@ -192,7 +192,7 @@ std::vector<std::string> LevelDownloadWorker::operator()()
     }
     xlog::trace("LevelDownloadWorker got level info");
 
-    auto temp_filename = get_temp_path_name("DF_Level_");
+    auto temp_filename = get_temp_path_name("AF_Level_");
     try {
         shared_data_->state = LevelDownloadState::fetching_data;
         download_archive(shared_data_->level_info.value().ticket_id, temp_filename.c_str());

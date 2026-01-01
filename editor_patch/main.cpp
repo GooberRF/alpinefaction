@@ -511,11 +511,11 @@ void LoadAlpineEditorPackfile()
     static auto& vpackfile_add = addr_as_ref<int __cdecl(const char *name, const char *dir)>(0x004CA930);
     static auto& root_path = addr_as_ref<char[256]>(0x0158CA10);
 
-    auto df_dir = get_module_dir(g_module);
+    auto af_dir = get_module_dir(g_module);
     std::string old_root_path = root_path;
-    std::strncpy(root_path, df_dir.c_str(), sizeof(root_path) - 1);
+    std::strncpy(root_path, af_dir.c_str(), sizeof(root_path) - 1);
     if (!vpackfile_add("alpinefaction.vpp", nullptr)) {
-        xlog::error("Failed to load alpinefaction.vpp from {}", df_dir);
+        xlog::error("Failed to load alpinefaction.vpp from {}", af_dir);
     }
     std::strncpy(root_path, old_root_path.c_str(), sizeof(root_path) - 1);
 }
@@ -724,7 +724,7 @@ void apply_af_level_editor_changes()
     AsmWriter{0x0043A0EF}.nop(3);
 }
 
-extern "C" DWORD DF_DLL_EXPORT Init([[maybe_unused]] void* unused)
+extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 {
     InitLogging();
     InitCrashHandler();

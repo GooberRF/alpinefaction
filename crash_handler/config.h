@@ -8,4 +8,4 @@
 
 #define CRASHHANDLER_WEBSVC_ENABLED 1
 #define CRASHHANDLER_WEBSVC_URL "https://crashout.alpinefaction.com/submit"
-#define CRASHHANDLER_WEBSVC_AGENT "Alpine Faction v1.2.1 Crash"
+#define CRASHHANDLER_WEBSVC_AGENT "Alpine Faction v1.3.0 Crash"

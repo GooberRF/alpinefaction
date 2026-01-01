@@ -51,7 +51,7 @@ namespace rf::ui
     {
         int bg_bitmap;
         int selected_bitmap;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         int reserved0;
         char* text;
         int font;
@@ -167,7 +167,7 @@ namespace rf::ui
     {
         Color clr;
         int bitmap;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         char* text;
         int font;
         gr::TextAlignment align;
@@ -212,7 +212,7 @@ namespace rf::ui
     {
         static constexpr int max_items = 16;
         int item_text_bitmaps[max_items];
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         char* items_text[max_items];
         int items_font[max_items];
 #else

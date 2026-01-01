@@ -507,26 +507,26 @@ CodeInjection vpackfile_open_check_seek_result_injection{
     },
 };
 
-static void load_dashfaction_vpp()
+static void load_alpinefaction_vpp()
 {
-    // Load DashFaction specific packfile
-    std::string df_vpp_dir = get_module_dir(g_hmodule);
-    const char* df_vpp_base_name = "alpinefaction.vpp";
-    if (!PathFileExistsA((df_vpp_dir + df_vpp_base_name).c_str())) {
+    // Load AlpineFaction specific packfile
+    std::string af_vpp_dir = get_module_dir(g_hmodule);
+    const char* af_vpp_base_name = "alpinefaction.vpp";
+    if (!PathFileExistsA((af_vpp_dir + af_vpp_base_name).c_str())) {
         // Remove trailing slash
-        if (df_vpp_dir.back() == '\\') {
-            df_vpp_dir.pop_back();
+        if (af_vpp_dir.back() == '\\') {
+            af_vpp_dir.pop_back();
         }
         // Remove the last component from the path leaving the trailing slash
         // This is needed to allow running/debugging from MSVC
-        auto pos = df_vpp_dir.rfind('\\');
+        auto pos = af_vpp_dir.rfind('\\');
         if (pos != std::string::npos) {
-            df_vpp_dir.resize(pos + 1);
+            af_vpp_dir.resize(pos + 1);
         }
     }
-    xlog::info("Loading {} from directory: {}", df_vpp_base_name, df_vpp_dir);
-    if (!rf::vpackfile_add(df_vpp_base_name, df_vpp_dir.c_str())) {
-        xlog::error("Failed to load {}", df_vpp_base_name);
+    xlog::info("Loading {} from directory: {}", af_vpp_base_name, af_vpp_dir);
+    if (!rf::vpackfile_add(af_vpp_base_name, af_vpp_dir.c_str())) {
+        xlog::error("Failed to load {}", af_vpp_base_name);
     }
 }
 
@@ -608,7 +608,7 @@ static void vpackfile_init_new()
     if (!rf::is_dedicated_server) {
         rf::vpackfile_add("music.vpp", nullptr);
         rf::vpackfile_add("ui.vpp", nullptr);
-        load_dashfaction_vpp();
+        load_alpinefaction_vpp();
     }
     rf::vpackfile_add("tables.vpp", nullptr);
     addr_as_ref<int>(0x01BDB218) = 1;          // VPackfilesLoaded

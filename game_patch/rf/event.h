@@ -49,7 +49,7 @@ namespace rf
     enum EventFlags : int
     {
         EVENT_FLAG_PAUSED = 0x1,
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         EVENT_FLAG_QUEUED = 0x2
 #endif
     };
@@ -339,7 +339,8 @@ namespace rf
         When_Captured,
         Set_Capture_Point_Owner,
         Owner_Gate,
-        Set_Gameplay_Rule
+        Set_Gameplay_Rule,
+        When_Round_Ends
     };
 
     // int to EventType

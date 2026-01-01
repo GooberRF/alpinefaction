@@ -101,9 +101,11 @@ namespace rf
         dedicated,
         client,
         triggered_by,
+        blue_team_spawned,
+        red_team_spawned,
+        has_flag,
         blue_team,
-        red_team,
-        has_flag
+        red_team
     };
 
     enum class GoalInsideCheckSubject : int
@@ -1044,14 +1046,20 @@ namespace rf
             case ScopeGateTests::triggered_by:
                 pass = (local_player && (local_player->entity_handle == this->triggered_by_handle));
                 break;
-            case ScopeGateTests::red_team:
+            case ScopeGateTests::blue_team_spawned:
                 pass = (local_player_entity && (local_player_entity->team == 1));
                 break;
-            case ScopeGateTests::blue_team:
+            case ScopeGateTests::red_team_spawned:
                 pass = (local_player_entity && (local_player_entity->team == 0));
                 break;
             case ScopeGateTests::has_flag:
                 pass = (local_player && (multi_ctf_get_blue_flag_player() == local_player || multi_ctf_get_red_flag_player() == local_player));
+                break;
+            case ScopeGateTests::blue_team:
+                pass = (local_player && (local_player->team == 1));
+                break;
+            case ScopeGateTests::red_team:
+                pass = (local_player && (local_player->team == 0));
                 break;
             default:
                 break;
@@ -2363,6 +2371,45 @@ namespace rf
                     break;
                 default:
                     break;
+            }
+        }
+    };
+
+    // id 144
+    struct EventWhenRoundEnds : Event
+    {
+        void turn_on() override
+        {
+            activate_links(this->trigger_handle, this->triggered_by_handle, true);
+        }
+
+        void do_activate_links(int trigger_handle, int triggered_by_handle, bool on) override
+        {
+            for (int link_handle : this->links) {
+                Object* obj = obj_from_handle(link_handle);
+
+                if (obj) {
+                    ObjectType type = obj->type;
+                    switch (type) {
+                    case OT_MOVER: {
+                        mover_activate_from_trigger(obj->handle, -1, -1);
+                        break;
+                    }
+                    case OT_TRIGGER: {
+                        Trigger* trigger = static_cast<Trigger*>(obj);
+                        trigger_enable(trigger);
+                        break;
+                    }
+                    case OT_EVENT: {
+                        Event* event = static_cast<Event*>(obj);
+                        // Note can't use activate because it isn't allocated for stock events
+                        event_signal_on(link_handle, -1, -1);
+                        break;
+                    }
+                    default:
+                        break;
+                    }
+                }
             }
         }
     };

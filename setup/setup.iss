@@ -2,7 +2,7 @@
 #define SrcRootDir ".."
 #define BinDir "..\build\Release\bin"
 #define PatchesDir "patches\output"
-#define AppVer "1.2.1_Willow-dev"
+#define AppVer "1.3.0_TBD"
 
 [Setup]
 AppId={{005AA7-D71920-FFC72C-4B6E-82D3-9F7B12A3C8D1}}

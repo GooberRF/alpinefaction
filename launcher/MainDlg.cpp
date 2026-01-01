@@ -340,7 +340,7 @@ std::string replace_html_breaks(const std::string& input)
 void MainDlg::FetchNews()
 {
     try {
-        HttpSession session{"Alpine Faction v1.2.1 News"};
+        HttpSession session{"Alpine Faction v1.3.0 News"};
         HttpRequest req{"https://update.alpinefaction.com/news.php", "GET", session};
         req.send();
 

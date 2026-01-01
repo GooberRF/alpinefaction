@@ -21,6 +21,7 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/os/os.h"
+#include "../rf/event.h"
 #include "../rf/gameseq.h"
 #include "../rf/os/timer.h"
 #include "../rf/player/camera.h"
@@ -101,6 +102,8 @@ void handle_levelm_param()
 FunHook<void()> multi_limbo_init{
     0x0047C280,
     []() {
+        rf::activate_all_events_of_type(rf::EventType::When_Round_Ends, -1, -1, true);
+
         int limbo_time = 10000;
 
         if (rf::is_server) {

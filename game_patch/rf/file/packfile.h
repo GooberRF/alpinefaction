@@ -13,13 +13,13 @@ namespace rf
         char path[128];
         uint32_t field_a0;
         uint32_t num_files;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         std::vector<VPackfileEntry> files;
 #else
         VPackfileEntry *files;
 #endif
         uint32_t file_size;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         // track whether the packfile was from user_maps or client_mods
         bool is_user_maps;
         bool is_client_mods;
@@ -27,7 +27,7 @@ namespace rf
         bool is_alpinefaction_vpp;
 #endif
     };
-#ifndef DASH_FACTION
+#ifndef ALPINE_FACTION
     static_assert(sizeof(VPackfile) == 0xB0);
 #endif
 

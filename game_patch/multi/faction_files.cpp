@@ -9,7 +9,7 @@
 #include "../os/console.h"
 #include "faction_files.h"
 
-static const char level_download_agent_name[] = "Alpine Faction v1.2.1 Autodl";
+static const char level_download_agent_name[] = "Alpine Faction v1.3.0 Autodl";
 static const char level_download_base_url[] = "https://autodl.factionfiles.com";
 
 FactionFilesClient::FactionFilesClient() : session_{level_download_agent_name}
