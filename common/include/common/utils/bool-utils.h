@@ -4,18 +4,24 @@
 #include <optional>
 
 template <std::invocable F>
-[[nodiscard]] std::optional<std::remove_cvref_t<std::invoke_result_t<F>>> then(
-    const bool cond,
-    F&& f
-) {
+[[nodiscard]] constexpr auto then(const bool cond, F&& f) -> std::conditional_t<
+    std::is_void_v<std::invoke_result_t<F>>,
+    std::optional<std::monostate>,
+    std::optional<std::decay_t<std::invoke_result_t<F>>>
+> {
     if (cond) {
-        return std::optional{std::invoke(std::forward<F>(f))};
+        if constexpr (std::is_void_v<std::invoke_result_t<F>>) {
+            std::invoke(std::forward<F>(f));
+            return std::optional{std::monostate{}};
+        } else {
+            return std::optional{std::invoke(std::forward<F>(f))};
+        }
     }
     return std::nullopt;
 }
 
 template <typename T>
-[[nodiscard]] std::optional<std::remove_cvref_t<T>> then_some(
+[[nodiscard]] constexpr std::optional<std::decay_t<T>> then_some(
     const bool cond,
     T&& value
 ) {
