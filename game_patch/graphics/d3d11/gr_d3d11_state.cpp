@@ -87,72 +87,65 @@ namespace df::gr::d3d11
         return sampler_state;
     }
 
-    ComPtr<ID3D11BlendState> StateManager::create_blend_state(gr::AlphaBlend ab)
-    {
-        CD3D11_BLEND_DESC desc{CD3D11_DEFAULT()};
+    ComPtr<ID3D11BlendState> StateManager::create_blend_state(const gr::AlphaBlend ab) {
+        CD3D11_BLEND_DESC desc{D3D11_DEFAULT};
+
+        // Do not write alpha.
+        // Fixes semi-transparent infrared scanners.
+        // Emulates `D3DFMT_X8R8G8B8`.
+        desc.RenderTarget[0].RenderTargetWriteMask =
+            D3D11_COLOR_WRITE_ENABLE_RED
+                | D3D11_COLOR_WRITE_ENABLE_GREEN
+                | D3D11_COLOR_WRITE_ENABLE_BLUE;
 
         switch (ab) {
-        case gr::ALPHA_BLEND_NONE:
-            desc.RenderTarget[0].BlendEnable = FALSE;
-            break;
-        case gr::ALPHA_BLEND_ADDITIVE:
-            desc.RenderTarget[0].BlendEnable = TRUE;
-            desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
-            desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-            desc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
-            desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
-            break;
-        case gr::ALPHA_BLEND_ALPHA_ADDITIVE:
-        case gr::ALPHA_BLEND_SRC_COLOR:
-            desc.RenderTarget[0].BlendEnable = TRUE;
-            desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
-            desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_SRC_ALPHA;
-            desc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
-            desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ONE;
-            break;
-        case gr::ALPHA_BLEND_ALPHA:
-            desc.RenderTarget[0].BlendEnable = TRUE;
-            desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
-            desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_SRC_ALPHA;
-            desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-            desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-            break;
-        case gr::ALPHA_BLEND_LIGHTMAP:
-            desc.RenderTarget[0].BlendEnable = TRUE;
-            desc.RenderTarget[0].SrcBlend = D3D11_BLEND_DEST_COLOR;
-            desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_DEST_COLOR;
-            desc.RenderTarget[0].DestBlend = D3D11_BLEND_ZERO;
-            desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
-            break;
-        case gr::ALPHA_BLEND_SUBTRACTIVE:
-            desc.RenderTarget[0].BlendEnable = TRUE;
-            desc.RenderTarget[0].SrcBlend = D3D11_BLEND_INV_DEST_COLOR;
-            desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_INV_DEST_COLOR;
-            desc.RenderTarget[0].DestBlend = D3D11_BLEND_ZERO;
-            desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_ZERO;
-            break;
-        case gr::ALPHA_BLEND_SWAPPED_SRC_DEST_COLOR:
-            desc.RenderTarget[0].BlendEnable = TRUE;
-            desc.RenderTarget[0].SrcBlend = D3D11_BLEND_DEST_COLOR;
-            desc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_DEST_COLOR;
-            desc.RenderTarget[0].DestBlend = D3D11_BLEND_SRC_COLOR;
-            desc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_SRC_COLOR;
-            break;
+            case gr::ALPHA_BLEND_NONE: {
+                desc.RenderTarget[0].BlendEnable = FALSE;
+                break;
+            }
+            case gr::ALPHA_BLEND_ADDITIVE: {
+                desc.RenderTarget[0].BlendEnable = TRUE;
+                desc.RenderTarget[0].SrcBlend = D3D11_BLEND_ONE;
+                desc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
+                break;
+            }
+            case gr::ALPHA_BLEND_ALPHA_ADDITIVE:
+            case gr::ALPHA_BLEND_SRC_COLOR: {
+                desc.RenderTarget[0].BlendEnable = TRUE;
+                desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+                desc.RenderTarget[0].DestBlend = D3D11_BLEND_ONE;
+                break;
+            }
+            case gr::ALPHA_BLEND_ALPHA: {
+                desc.RenderTarget[0].BlendEnable = TRUE;
+                desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+                desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+                break;
+            }
+            case gr::ALPHA_BLEND_LIGHTMAP: {
+                desc.RenderTarget[0].BlendEnable = TRUE;
+                desc.RenderTarget[0].SrcBlend = D3D11_BLEND_DEST_COLOR;
+                desc.RenderTarget[0].DestBlend = D3D11_BLEND_ZERO;
+                break;
+            }
+            case gr::ALPHA_BLEND_SUBTRACTIVE: {
+                desc.RenderTarget[0].BlendEnable = TRUE;
+                desc.RenderTarget[0].SrcBlend = D3D11_BLEND_INV_DEST_COLOR;
+                desc.RenderTarget[0].DestBlend = D3D11_BLEND_ZERO;
+                break;
+            }
+            case gr::ALPHA_BLEND_SWAPPED_SRC_DEST_COLOR: {
+                desc.RenderTarget[0].BlendEnable = TRUE;
+                desc.RenderTarget[0].SrcBlend = D3D11_BLEND_DEST_COLOR;
+                desc.RenderTarget[0].DestBlend = D3D11_BLEND_SRC_COLOR;
+                break;
+            }
         }
 
-        // Do not write backbuffer alpha for blends
-        // Fixes rocket launcher infrared scanner dynamic textures drawing semi-transparent
-        if (desc.RenderTarget[0].BlendEnable) {
-            desc.RenderTarget[0].RenderTargetWriteMask =
-                D3D11_COLOR_WRITE_ENABLE_RED |
-                D3D11_COLOR_WRITE_ENABLE_GREEN |
-                D3D11_COLOR_WRITE_ENABLE_BLUE;
-        }
-
-        ComPtr<ID3D11BlendState> blend_state;
+        ComPtr<ID3D11BlendState> blend_state{};
         check_hr(
             device_->CreateBlendState(&desc, &blend_state),
-            [=]() { xlog::error("Failed to create blend state {}", static_cast<int>(ab)); }
+            [=] { xlog::error("Failed to create blend state {}", static_cast<int>(ab)); }
         );
         return blend_state;
     }
