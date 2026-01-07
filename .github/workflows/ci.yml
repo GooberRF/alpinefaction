@@ -7,9 +7,7 @@ on:
   pull_request:
     paths-ignore: *paths
 
-permissions:
-  contents: read
-  actions: write
+permissions: {}
 
 env:
   BUILD_TYPE: Release
