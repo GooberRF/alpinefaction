@@ -104,7 +104,7 @@ void evaluate_fullbright_meshes()
         }
     }
 
-    if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+    if (is_d3d11()) {
         if (g_character_meshes_are_fullbright != previous_fullbright_state) {
             df::gr::d3d11::on_character_fullbright_state_changed();
         }

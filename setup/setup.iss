@@ -2,7 +2,7 @@
 #define SrcRootDir ".."
 #define BinDir "..\build\Release\bin"
 #define PatchesDir "patches\output"
-#define AppVer "1.3.0_TBD"
+#define AppVer "1.3.0_Bakeapple"
 
 [Setup]
 AppId={{005AA7-D71920-FFC72C-4B6E-82D3-9F7B12A3C8D1}}
@@ -91,6 +91,7 @@ Root: HKCR; Subkey: ".rfl"; ValueType: "string"; ValueData: "AlpineFactionLevelE
 Root: HKCR; Subkey: "AlpineFactionLevelEditor"; ValueType: "string"; ValueData: "Alpine Faction Level Editor"; Flags: uninsdeletekey; Tasks: rflassoc
 ;Root: HKCR; Subkey: "AlpineFactionLevelEditor\DefaultIcon"; ValueType: "string"; ValueData: "{app}\AlpineFactionLauncher.exe,0"; Tasks: rflassoc
 Root: HKCR; Subkey: "AlpineFactionLevelEditor\shell\open\command"; ValueType: "string"; ValueData: """{app}\AlpineFactionLauncher.exe"" -editor -level ""%1"""; Tasks: rflassoc
+Root: HKCU; Subkey: "Software\Volition\Red Faction\Alpine Faction"; ValueType: dword; ValueName: "DisplayWhatsNew"; ValueData: "1"; Flags: uninsdeletevalue; Check: IsUpgradeInstall
 
 [CustomMessages]
 RFExeLocation=The setup wizard will attempt to automatically locate RF.exe in your Red Faction install directory.%n%nIf the detected location is wrong, you must correct it to ensure Alpine Faction functions correctly.%n%n%n%nIMPORTANT: Please ensure the file you specify is named RF.exe, not RedFaction.exe%n%n
@@ -400,6 +401,12 @@ end;
 function PatchGameTaskCheck(): Boolean;
 begin
     Result := GetArrayLength(Patches) > 0;
+end;
+
+function IsUpgradeInstall(): Boolean;
+begin
+    Result := RegKeyExists(HKEY_LOCAL_MACHINE, ExpandConstant('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1'))
+        or RegKeyExists(HKEY_CURRENT_USER, ExpandConstant('SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1'));
 end;
 
 // Event functions

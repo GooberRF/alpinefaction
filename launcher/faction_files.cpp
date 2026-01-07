@@ -8,11 +8,12 @@
 #include <filesystem>
 #include <ios>
 #include <xlog/xlog.h>
+#include <common/version/version.h>
 
 static const char file_info_base_url[] = "https://autodl.factionfiles.com/aflauncher/v1/fileinfo.php?id=";
 static const char file_download_base_url[] = "https://autodl.factionfiles.com/aflauncher/v1/downloadfile.php?ticketid=";
 
-FactionFilesAFLink::FactionFilesAFLink() : session_("Alpine Faction v1.3.0 Install")
+FactionFilesAFLink::FactionFilesAFLink() : session_(AF_USER_AGENT_SUFFIX("Install"))
 {
     session_.set_connect_timeout(2000);
     session_.set_receive_timeout(3000);

@@ -194,6 +194,7 @@ FunHook<void(bool)> level_init_post_hook{
         multi_level_init_post_gametypes();
 
         if (!rf::is_dedicated_server) {
+            explosion_flash_lights_level_init();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();
             if (!rf::is_multi) {

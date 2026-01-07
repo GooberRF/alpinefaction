@@ -71,6 +71,7 @@ namespace df::gr::d3d11
         void render_sky_room(rf::GRoom *room);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
+        void reset_solid_cache_after_boolean();
         void render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params);
         void render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params);
         void clear_vif_cache(rf::VifLodMesh *lod_mesh);

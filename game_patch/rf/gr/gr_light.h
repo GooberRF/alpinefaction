@@ -111,11 +111,11 @@ namespace rf::gr
     static auto& light_delete = addr_as_ref<void(int handle, bool force_static_update)>(0x004D9130);
     static auto& light_get_ambient = addr_as_ref<void(float *r, float *g, float *b)>(0x004D8D10);
     static auto& light_alloc = addr_as_ref<int(bool dynamic)>(0x004D8E10);
-    static auto& gr_light_create_spotlight =
-        addr_as_ref<int(rf::Vector3* pos, rf::Vector3* dir, float fov1, float fov2, float r2, float intensity, float r,
-                        float g, float b, bool dynamic, rf::gr::LightShadowcastCondition shadow_condition, float atten,
-                        int atten_algo, bool sq_fov_falloff)>(0x004D8F80);
-
+    static auto& light_create_point = addr_as_ref<int(rf::Vector3* pos, float r2, float intensity, float r, float g, float b,
+        bool dynamic, rf::gr::LightShadowcastCondition shadow_condition, int atten_algo)>(0x004D8ED0);
+    static auto& light_create_spotlight = addr_as_ref<int(rf::Vector3* pos, rf::Vector3* dir, float fov1, float fov2, float r2,
+        float intensity, float r, float g, float b, bool dynamic, rf::gr::LightShadowcastCondition shadow_condition, float atten,
+        int atten_algo, bool sq_fov_falloff)>(0x004D8F80);
 
     static auto& num_relevant_lights = addr_as_ref<int>(0x00C9687C);
     static auto& relevant_lights = addr_as_ref<Light*[1100]>(0x00C4D588);

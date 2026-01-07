@@ -16,11 +16,13 @@
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/gr/gr.h"
+#include "../rf/gameseq.h"
 #include "../rf/level.h"
 #include "../rf/geometry.h"
 #include "../rf/player/player.h"
 #include "../rf/multi.h"
 #include "../rf/os/os.h"
+#include "../rf/os/frametime.h"
 #include "../rf/item.h"
 #include "../rf/clutter.h"
 #include "gr.h"
@@ -201,11 +203,20 @@ ConsoleCommand2 colorblind_cmd{
             rf::console::print("Usage: r_colorblind <off|protanopia|deuteranopia|tritanopia>");
             return;
         }
-        g_alpine_game_config.colorblind_mode = new_mode;
-        rf::console::print("Colorblind mode set to {} (Direct3D 11 mode only)", names[new_mode]);
+        g_alpine_game_config.set_colorblind_mode(new_mode);
+        rf::console::print("Colorblind mode set to {} (Direct3D 11 renderer only)", names[g_alpine_game_config.colorblind_mode]);
     },
-    "Configure colorblind mode rendering filter (Direct3D 11 mode only)",
+    "Configure colorblind mode rendering filter (Direct3D 11 renderer only)",
     "r_colorblind <off|protanopia|deuteranopia|tritanopia>",
+};
+
+ConsoleCommand2 precache_rooms_cmd{
+    "r_precache_rooms",
+    []() {
+        g_alpine_game_config.precache_rooms = !g_alpine_game_config.precache_rooms;
+        rf::console::print("D3D11 room precaching is {}", g_alpine_game_config.precache_rooms ? "enabled" : "disabled");
+    },
+    "Toggle room precaching in D3D11 renderer (increases initial level load time, reduces risk of hitches during gameplay)",
 };
 
 void evaluate_lightmaps_only()
@@ -248,10 +259,72 @@ FunHook<float(const rf::Vector3&)> gr_get_apparent_distance_from_camera_hook{
     },
 };
 
+FunHook<void()> vclip_init_hook{
+    0x004C12A0,
+    []() {
+        vclip_init_hook.call_target();
+        explosion_flash_lights_init();
+    },
+};
+
+FunHook<void()> explosion_do_frame_hook{
+    0x0048E290,
+    []() {
+        explosion_do_frame_hook.call_target();
+        explosion_flash_lights_do_frame();
+    },
+};
+
+CallHook<int(int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+    float radius, int parent_handle, rf::Vector3* dir, bool play_sound)> vclip_play_3d_weapon_hook{
+    0x004C8A5C,
+    [](int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+        float radius, int parent_handle, rf::Vector3* dir, bool play_sound) {
+        int success = vclip_play_3d_weapon_hook.call_target(index, src_room, src_pos, pos, radius, parent_handle, dir, play_sound);
+
+        if (!rf::is_dedicated_server &&
+            is_d3d11() &&
+            g_alpine_game_config.explosion_weapon_flash_lights &&
+            rf::gameseq_get_state() != rf::GameState::GS_MULTI_LIMBO &&
+            success >= 0) {
+            float radius_scale, intensity, r, g, b;
+            int duration_ms;
+            if (vclip_should_do_explosion_flash(true, index, &radius_scale, &intensity, &r, &g, &b, &duration_ms)) {
+                explosion_flash_light_create_offset(*pos, *dir, 0.5f, radius * radius_scale, intensity, r, g, b, duration_ms);
+            }
+        }
+
+        return success;
+    },
+};
+
+CallHook<int(int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+    float radius, int parent_handle, rf::Vector3* dir, bool play_sound)> vclip_play_3d_env_hook{
+    0x004364BC,
+    [](int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+        float radius, int parent_handle, rf::Vector3* dir, bool play_sound) {
+        int success = vclip_play_3d_env_hook.call_target(index, src_room, src_pos, pos, radius, parent_handle, dir, play_sound);
+
+        if (!rf::is_dedicated_server &&
+            is_d3d11() &&
+            g_alpine_game_config.explosion_env_flash_lights &&
+            rf::gameseq_get_state() != rf::GameState::GS_MULTI_LIMBO &&
+            success >= 0) {
+            float radius_scale, intensity, r, g, b;
+            int duration_ms;
+            if (vclip_should_do_explosion_flash(false, index, &radius_scale, &intensity, &r, &g, &b, &duration_ms)) {
+                explosion_flash_light_create(*pos, radius * radius_scale, intensity, r, g, b, duration_ms, false);
+            }
+        }
+
+        return success;
+    },
+};
+
 bool gr_is_texture_format_supported(rf::bm::Format format)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
-        if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+        if (is_d3d11()) {
             return true;
         }
         else {
@@ -264,7 +337,7 @@ bool gr_is_texture_format_supported(rf::bm::Format format)
 bool gr_set_render_target(int bm_handle)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
-        if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+        if (is_d3d11()) {
             return df::gr::d3d11::set_render_target(bm_handle);
         }
         else {
@@ -278,7 +351,7 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
                             float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
-        if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+        if (is_d3d11()) {
             df::gr::d3d11::bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
         }
         else {
@@ -291,7 +364,7 @@ void gr_set_window_mode(rf::gr::WindowMode window_mode)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         rf::gr::screen.window_mode = window_mode;
-        if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+        if (is_d3d11()) {
             df::gr::d3d11::update_window_mode();
         }
         else {
@@ -303,7 +376,7 @@ void gr_set_window_mode(rf::gr::WindowMode window_mode)
 void gr_update_texture_filtering()
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
-        if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+        if (is_d3d11()) {
             df::gr::d3d11::update_texture_filtering();
         }
         else {
@@ -348,11 +421,11 @@ ConsoleCommand2 picmip_cmd{
             gr_update_texture_filtering();
         }
         rf::console::print(
-            "Texture resolution divisor is set to {} (Direct3D 11 mode only, 1 = full resolution)",
+            "Texture resolution divisor is set to {} (Direct3D 11 renderer only, 1 = full resolution)",
             g_alpine_game_config.picmip
         );
     },
-    "Sets the global texture resolution divisor (Direct3D 11 mode only)",
+    "Sets the global texture resolution divisor (Direct3D 11 renderer only)",
     "r_picmip <divisor>",
 };
 
@@ -444,6 +517,12 @@ void gr_apply_patch()
     gr_get_apparent_distance_from_camera_hook.install();
     gr_d3d_render_lod_vif_injection.install();
 
+    // Handle explosion dynamic light flashes
+    vclip_init_hook.install();
+    explosion_do_frame_hook.install();
+    vclip_play_3d_weapon_hook.install();
+    vclip_play_3d_env_hook.install();
+
     // Fix gr_rect_border not drawing left border
     AsmWriter{0x0050DF2D}.push(asm_regs::ebp).push(asm_regs::ebx);
 
@@ -457,6 +536,7 @@ void gr_apply_patch()
     lod_distance_scale_cmd.register_cmd();
     picmip_cmd.register_cmd();
     colorblind_cmd.register_cmd();
+    precache_rooms_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<uint8_t>(rf::gr::FOG_NOT_ALLOWED);

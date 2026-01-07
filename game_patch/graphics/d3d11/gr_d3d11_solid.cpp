@@ -473,6 +473,7 @@ namespace df::gr::d3d11
         RoomRenderCache(rf::GSolid* solid, rf::GRoom* room, ID3D11Device* device);
         ~RoomRenderCache() {}
         void render(FaceRenderType render_type, ID3D11Device* device, RenderContext& context);
+        void mark_after_boolean();
 
         rf::GRoom* room() const
         {
@@ -534,6 +535,13 @@ namespace df::gr::d3d11
 
         if (cache_) {
             cache_.value().render(render_type, context);
+        }
+    }
+
+    void RoomRenderCache::mark_after_boolean()
+    {
+        if (state_ == 1) {
+            state_ = 2;
         }
     }
 
@@ -655,7 +663,7 @@ namespace df::gr::d3d11
             room_cache_.push_back(std::make_unique<RoomRenderCache>(solid, room, device_));
             cache = room_cache_.back().get();
             room->geo_cache = reinterpret_cast<GCache*>(cache);
-            geo_cache_rooms[geo_cache_num_rooms++] = room;
+            geo_cache_rooms_.push_back(room);
         }
         return cache;
     }
@@ -694,7 +702,18 @@ namespace df::gr::d3d11
         room_cache_.clear();
         detail_render_cache_.clear();
         mover_render_cache_.clear();
+        geo_cache_rooms_.clear();
         geo_cache_num_rooms = 0;
+    }
+
+    void SolidRenderer::reset_cache_after_boolean()
+    {
+        for (rf::GRoom* room : geo_cache_rooms_) {
+            auto cache = reinterpret_cast<RoomRenderCache*>(room->geo_cache);
+            if (cache) {
+                cache->mark_after_boolean();
+            }
+        }
     }
 
     void SolidRenderer::render_sky_room(GRoom *room)
@@ -803,8 +822,10 @@ namespace df::gr::d3d11
 
     void SolidRenderer::page_in_solid(rf::GSolid* solid)
     {
-        for (rf::GRoom* room: solid->cached_normal_room_list) {
-            get_or_create_normal_room_cache(solid, room);
+        if (g_alpine_game_config.precache_rooms) {
+            for (rf::GRoom* room : solid->cached_normal_room_list) {
+                get_or_create_normal_room_cache(solid, room);
+            }
         }
         for (rf::GRoom* room: solid->cached_detail_room_list) {
             get_or_create_detail_room_cache(solid, room);

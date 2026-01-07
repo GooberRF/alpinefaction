@@ -1,23 +1,41 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.3.0 (TBD): Not yet released
+Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
+- Standardize user agent string format across all use cases
+
+### Bug fixes
+
+Version 1.2.2 (Willow): Released Jan-04-2026
+--------------------------------
+### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
 - Add values to scope param for `Scope_Gate` event to test for team regardless of whether local player is spawned
 - Add `When_Round_Ends` event
+- Bump RFL version to 303
+- Add dynamic light flashes for explosions from weapons and clutter/entity deaths (Direct3D 11 renderer only)
+- Add `cl_explosionflashweapons` and `cl_explosionflashenv` commands
+- Add `r_precache_rooms` command to toggle front-loaded precaching (Direct3D 11 renderer only)
+- Add dynamic light glows from entities that are on fire (Direct3D 11 renderer only)
+- Add `cl_burningentityglow` command
+- Suppress main launcher window if user clicks `OK` to be redirected to download a new Alpine update
+- Add `What's New` window on first launch of launcher after an update has been installed
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix `Blue team` and `Red team` labels being swapped in `Scope_Gate` int1 field in level editor
+- Fix crash when gibbing some corpses in single player
+- Fix crash due to overflowing room cache buffer in Direct3D 11 renderer when loading very complex levels
+- Fix label offset for FPS/Ping display when `bighud` is disabled
+- Fix servers with game type ESC being incorrectly displayed on the server list as game type RUN
 
 Version 1.2.1 (Willow): Released Dec-30-2025
 --------------------------------
-### Major features
-
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Change default spawn delay for KOTH, DC, and ESC from 5, 2.5, 3 seconds respectively to 2 seconds

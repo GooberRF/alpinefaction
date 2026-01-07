@@ -287,6 +287,13 @@ namespace df::gr::d3d11
         }
     }
 
+    void reset_solid_render_cache_after_boolean()
+    {
+        if (renderer) {
+            renderer->reset_solid_cache_after_boolean();
+        }
+    }
+
     void delete_texture(int bm_handle)
     {
         renderer->texture_mark_dirty(bm_handle);
@@ -423,6 +430,7 @@ void gr_d3d11_apply_patch()
     // Do not use built-in render cache
     AsmWriter{0x004F0B90}.jmp(clear_solid_render_cache); // g_render_cache_clear
     AsmWriter{0x004F0B20}.ret(); // g_render_cache_init
+    AsmWriter{0x004F0BD0}.jmp(reset_solid_render_cache_after_boolean); // g_render_cache_reset_after_boolean
 
     using namespace asm_regs;
     AsmWriter{0x00544FC0}.jmp(flip); // gr_d3d_flip

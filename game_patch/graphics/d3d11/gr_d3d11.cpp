@@ -507,6 +507,11 @@ namespace df::gr::d3d11
         solid_renderer_->clear_cache();
     }
 
+    void Renderer::reset_solid_cache_after_boolean()
+    {
+        solid_renderer_->reset_cache_after_boolean();
+    }
+
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params)
     {
         dyn_geo_renderer_->flush();

@@ -9,6 +9,7 @@
 #include <common/error/error-utils.h>
 #include <common/utils/string-utils.h>
 #include <common/HttpRequest.h>
+#include <common/config/RegKey.h>
 #include <launcher_common/PatchedAppLauncher.h>
 #include <launcher_common/UpdateChecker.h>
 #include "ImageButton.h"
@@ -19,6 +20,7 @@
 
 #define WM_UPDATE_CHECK (WM_USER + 10)
 #define WM_SHOW_FFLINK_REMINDER (WM_USER + 20)
+#define WM_SHOW_WHATS_NEW (WM_USER + 30)
 
 MainDlg::MainDlg() : CDialog(IDD_MAIN)
 {
@@ -114,6 +116,12 @@ BOOL MainDlg::OnInitDialog()
     // Set placeholder text for mod box when no selection
     SendMessage(m_mod_selector.GetHwnd(), CB_SETCUEBANNER, 0, (LPARAM)L"No mod selected...");
 
+    // show "what's new" popup if first launch since installing an update
+    if (ShouldShowWhatsNew()) {
+        HWND hwnd = GetHwnd();
+        PostMessageA(hwnd, WM_SHOW_WHATS_NEW, 0, 0);
+    }
+
     // show reminder if first launch
     if (!game_config.suppress_first_launch_window) {
         HWND hwnd = GetHwnd();
@@ -130,6 +138,15 @@ LRESULT MainDlg::OnShowFFLinkReminder(WPARAM wparam, LPARAM lparam)
 {
     FFLinkReminderDlg reminderDlg;
     reminderDlg.DoModal(GetHwnd());
+
+    return 0;
+}
+
+LRESULT MainDlg::OnShowWhatsNew(WPARAM wparam, LPARAM lparam)
+{
+    ClearWhatsNewFlag();
+    std::string content = FetchWhatsNewContent();
+    MessageBoxA(content.c_str(), "What's new?", MB_OK | MB_ICONINFORMATION);
 
     return 0;
 }
@@ -286,6 +303,10 @@ INT_PTR MainDlg::DialogProc(UINT msg, WPARAM wparam, LPARAM lparam)
         return OnShowFFLinkReminder(wparam, lparam);
     }
 
+    if (msg == WM_SHOW_WHATS_NEW) {
+        return OnShowWhatsNew(wparam, lparam);
+    }
+
     return CDialog::DialogProc(msg, wparam, lparam);
 }
 
@@ -340,7 +361,7 @@ std::string replace_html_breaks(const std::string& input)
 void MainDlg::FetchNews()
 {
     try {
-        HttpSession session{"Alpine Faction v1.3.0 News"};
+        HttpSession session{AF_USER_AGENT_SUFFIX("News")};
         HttpRequest req{"https://update.alpinefaction.com/news.php", "GET", session};
         req.send();
 
@@ -362,6 +383,68 @@ void MainDlg::FetchNews()
     catch (const std::exception& e) {
         xlog::error("Failed to fetch news: {}", e.what());
         m_news_box.SetWindowTextA("Failed to load news.");
+    }
+}
+
+bool MainDlg::ShouldShowWhatsNew()
+{
+    try {
+        RegKey reg_key(HKEY_CURRENT_USER, "SOFTWARE\\Volition\\Red Faction\\Alpine Faction", KEY_READ | KEY_WRITE);
+        if (!reg_key.is_open()) {
+            return false;
+        }
+
+        bool should_show = false;
+        uint32_t value = 0;
+        std::string value_string;
+        if (reg_key.read_value("DisplayWhatsNew", &value)) {
+            should_show = value != 0;
+        }
+        else if (reg_key.read_value("DisplayWhatsNew", &value_string)) {
+            std::string lower_value = string_to_lower(value_string);
+            should_show = (lower_value == "1");
+        }
+
+        return should_show;
+    }
+    catch (const std::exception& e) {
+        xlog::error("Failed to read DisplayWhatsNew registry value: {}", e.what());
+        return false;
+    }
+}
+
+std::string MainDlg::FetchWhatsNewContent()
+{
+    constexpr std::string_view content = R"(
+Thanks for updating, and welcome to Alpine Faction v1.2.2!
+
+Highlights from this release are listed below. This is not a complete changelog.
+
+Changes:
+- New event for use in custom maps: When_Round_Ends
+- Add dynamic light flashes from explosions
+- Add dynamic light glows from burning entities
+
+Fixes:
+- Fix crash when gibbing corpses in single player
+- Fix crash when loading extremely complex levels using Direct3D 11 renderer
+
+If you run into issues, have questions, or just want to join the active community, click the Discord icon in the main launcher window to drop by the Red Faction Community Discord.
+)";
+
+    return std::string{content};
+}
+
+void MainDlg::ClearWhatsNewFlag()
+{
+    try {
+        RegKey reg_key(HKEY_CURRENT_USER, "SOFTWARE\\Volition\\Red Faction\\Alpine Faction", KEY_WRITE);
+        if (reg_key.is_open()) {
+            reg_key.write_value("DisplayWhatsNew", 0u);
+        }
+    }
+    catch (const std::exception& e) {
+        xlog::error("Failed to clear DisplayWhatsNew registry value: {}", e.what());
     }
 }
 

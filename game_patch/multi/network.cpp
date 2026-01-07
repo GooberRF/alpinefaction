@@ -352,9 +352,8 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
 CodeInjection process_game_info_packet_game_type_bounds_patch{
     0x0047B30B,
     [](auto& regs) {
-        // Valid game types are between 0 and 6
-        // 3 = KOTH, 4 = DC, 5 = REV, 6 = RUN
-        regs.ecx = std::clamp<int>(regs.ecx, 0, 6);
+        // Valid game types are members of the NetGameType enum
+        regs.ecx = std::clamp<int>(regs.ecx, 0, 7);
     },
 };
 

@@ -95,6 +95,7 @@ static void frametime_render_fps_counter()
 
         rf::gr::set_color(0, 255, 0, 255);
         const int value_anchor = rf::gr::screen_width() - 20;
+        const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
         int y = 10;
         if (rf::gameseq_in_gameplay()) {
             y = g_alpine_game_config.big_hud ? 110 : 60;
@@ -105,7 +106,7 @@ static void frametime_render_fps_counter()
 
         int font_id = hud_get_default_font();
         const std::string_view fps_label = "FPS:";
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - 125, y, fps_label.data(), font_id);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, y, fps_label.data(), font_id);
         rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
     }
 
@@ -114,6 +115,7 @@ static void frametime_render_fps_counter()
         auto text = std::format("{}", clamped_ping);
         rf::gr::set_color(0, 255, 0, 255);
         const int value_anchor = rf::gr::screen_width() - 20;
+        const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
         const int gap = 6;
         int y = g_alpine_game_config.big_hud ? 35 : 25;
         if (rf::gameseq_in_gameplay()) {
@@ -125,7 +127,7 @@ static void frametime_render_fps_counter()
 
         int font_id = hud_get_default_font();
         const std::string_view ping_label = "Ping:";
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - 125, y, ping_label.data(), font_id);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, y, ping_label.data(), font_id);
         rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
     }
 }

@@ -36,6 +36,7 @@ namespace df::gr::d3d11
         void render_alpha_detail(rf::GRoom *room, rf::GSolid *solid);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void clear_cache();
+        void reset_cache_after_boolean();
         void page_in_solid(rf::GSolid* solid);
 
         void page_in_movable_solid(rf::GSolid* solid)
@@ -66,5 +67,6 @@ namespace df::gr::d3d11
         std::vector<std::unique_ptr<RoomRenderCache>> room_cache_;
         std::vector<std::unique_ptr<GRenderCache>> detail_render_cache_;
         std::unordered_map<rf::GSolid*, std::unique_ptr<GRenderCache>> mover_render_cache_;
+        std::vector<rf::GRoom*> geo_cache_rooms_;
     };
 }
