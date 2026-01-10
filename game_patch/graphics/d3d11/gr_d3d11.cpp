@@ -358,6 +358,11 @@ namespace df::gr::d3d11
         texture_manager_->remove_ref(bm_handle);
     }
 
+    void Renderer::reset_sampler_states()
+    {
+        state_manager_->clear_sampler_state_cache();
+    }
+
     bool Renderer::lock(int bm_handle, int section, rf::gr::LockInfo *lock)
     {
         return texture_manager_->lock(bm_handle, section, lock);
@@ -502,6 +507,11 @@ namespace df::gr::d3d11
         solid_renderer_->clear_cache();
     }
 
+    void Renderer::reset_solid_cache_after_boolean()
+    {
+        solid_renderer_->reset_cache_after_boolean();
+    }
+
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params)
     {
         dyn_geo_renderer_->flush();
@@ -548,6 +558,11 @@ namespace df::gr::d3d11
     void Renderer::flush_caches()
     {
         mesh_renderer_->flush_caches();
+    }
+
+    void Renderer::reset_static_vertex_color_tracking()
+    {
+        mesh_renderer_->reset_static_vertex_color_tracking();
     }
 
     float Renderer::z_far() const

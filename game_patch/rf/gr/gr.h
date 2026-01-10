@@ -85,8 +85,7 @@ namespace rf::gr
     };
     static_assert(sizeof(Vertex) == 0x30);
 
-    enum TextureSource
-    {
+    enum TextureSource {
         TEXTURE_SOURCE_NONE = 0x0,
         TEXTURE_SOURCE_WRAP = 0x1,
         TEXTURE_SOURCE_CLAMP = 0x2,
@@ -101,8 +100,7 @@ namespace rf::gr
         TEXTURE_SOURCE_MT_CLAMP_TRILIN = 0xB,
     };
 
-    enum ColorSource
-    {
+    enum ColorSource {
         COLOR_SOURCE_VERTEX = 0x0,
         COLOR_SOURCE_TEXTURE = 0x1,
         COLOR_SOURCE_VERTEX_TIMES_TEXTURE = 0x2,
@@ -110,16 +108,14 @@ namespace rf::gr
         COLOR_SOURCE_VERTEX_TIMES_TEXTURE_2X = 0x4,
     };
 
-    enum AlphaSource
-    {
+    enum AlphaSource {
         ALPHA_SOURCE_VERTEX = 0x0,
         ALPHA_SOURCE_VERTEX_NONDARKENING = 0x1,
         ALPHA_SOURCE_TEXTURE = 0x2,
         ALPHA_SOURCE_VERTEX_TIMES_TEXTURE = 0x3,
     };
 
-    enum AlphaBlend
-    {
+    enum AlphaBlend {
         ALPHA_BLEND_NONE = 0x0,
         ALPHA_BLEND_ADDITIVE = 0x1,
         ALPHA_BLEND_ALPHA_ADDITIVE = 0x2,
@@ -130,8 +126,7 @@ namespace rf::gr
         ALPHA_BLEND_SWAPPED_SRC_DEST_COLOR = 0x7,
     };
 
-    enum ZbufferType
-    {
+    enum ZbufferType {
         ZBUFFER_TYPE_NONE = 0x0,
         ZBUFFER_TYPE_READ = 0x1,
         ZBUFFER_TYPE_READ_EQUAL = 0x2,
@@ -140,8 +135,7 @@ namespace rf::gr
         ZBUFFER_TYPE_FULL_ALPHA_TEST = 0x5,
     };
 
-    enum FogType
-    {
+    enum FogType {
         FOG_ALLOWED = 0x0,
         FOG_ALLOWED_ADD2 = 0x1,
         FOG_ALLOWED_MULT2 = 0x2,
@@ -383,7 +377,7 @@ namespace rf::gr
     static auto& lighting_enabled = addr_as_ref<bool()>(0x004DB8B0);
     static auto& cull_bounding_box = addr_as_ref<bool (const Vector3& mn, const Vector3& mx)>(0x00518750);
     static auto& poly = addr_as_ref<bool (int num, Vertex **vertices, TMapperFlags vertex_attributes, Mode mode, bool constant_sw, float sw)>(0x005159A0);
-    static auto& rotate_vertex = addr_as_ref<ubyte (Vertex *vertex_out, const Vector3& vec_in)>(0x00518360);
+    static auto& rotate_vertex = addr_as_ref<ubyte (Vertex *vertex_out, const Vector3* vec_in)>(0x00518360);
     static auto& world_poly = addr_as_ref<bool (int bm_handle, int n_verts, const Vector3* verts, const Vector2* uvs, Mode mode, const Color& color)>(0x00517110);
     static auto& start_instance = addr_as_ref<void(const Vector3& pos, const Matrix3& orient)>(0x00517F00);
     static auto& stop_instance = addr_as_ref<void()>(0x00517F20);
@@ -393,10 +387,11 @@ namespace rf::gr
     static auto& gr_line_arrow = addr_as_ref<void(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)>(0x00516AD0);
     static auto& gr_3d_cursor = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale)>(0x00516B10);
     static auto& gr_render_string_3d_pos = addr_as_ref<void(Vector3* pos, const char* string, int offset_x, int offset_y)>(0x00517010);
-    static auto& gr_get_string_size = addr_as_ref<void(int* w, int* h, const char* string, int len, int font_num)>(0x0051F530);
+    static auto& gr_render_string_into_bitmap = addr_as_ref<void(int x, int y, int bm_handle, const char* s, int font)>(0x005203A0);
     static auto& gr_string_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, const char* string, int font_num, Mode mode)>(0x00520020);
     static auto& gr_3d_bitmap = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, Mode mode)>(0x00515B10);
     static auto& gr_3d_bitmap_angle = addr_as_ref<void(Vector3* pos, float angle, float scale, Mode mode)>(0x00515B40);
+    static auto& gr_3d_bitmap_angle_wh = addr_as_ref<void(Vector3* pos, float angle, float width, float height, Mode mode)>(0x00555B20);
 
     inline void set_color(ubyte r, ubyte g, ubyte b, ubyte a = screen.current_color.alpha)
     {

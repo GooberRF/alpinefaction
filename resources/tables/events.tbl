@@ -382,13 +382,19 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Set_Light_Color"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "Modify_Respawn_Point"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Set_Capture_Point_Owner"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------
 // Flow Control Events in Alpine Faction
 // ------------------------------------------------
 
-#AplineFlow
+#AlpineFlow
 
 $Event Name:      "Sequence"
 $RFE Level1:      "AF_Flow"
@@ -417,13 +423,16 @@ $RFE Level1:      "AF_Flow"
 $Event Name:      "Gametype_Gate"
 $RFE Level1:      "AF_Flow"
 
+$Event Name:      "Owner_Gate"
+$RFE Level1:      "AF_Flow"
+
 #End
 
 // ------------------------------------------------
 // Utility Events in Alpine Faction
 // ------------------------------------------------
 
-#AplineUtility
+#AlpineUtility
 
 $Event Name:      "Set_Variable"
 $RFE Level1:      "AF_Utility"
@@ -449,18 +458,41 @@ $RFE Level1:      "AF_Utility"
 $Event Name:      "Light_State"
 $RFE Level1:      "AF_Utility"
 
+$Event Name:      "Respawn_Point_State"
+$RFE Level1:      "AF_Utility"
+
 #End
 
 // ------------------------------------------------
 // Catalyst Events in Alpine Faction
 // ------------------------------------------------
 
-#AplineCatalysts
+#AlpineCatalysts
 
 $Event Name:      "AF_When_Dead"
 $RFE Level1:      "AF_Catalysts"
 
 $Event Name:      "When_Picked_Up"
 $RFE Level1:      "AF_Catalysts"
+
+$Event Name:      "When_Captured"
+$RFE Level1:      "AF_Catalysts"
+
+$Event Name:      "When_Round_Ends"
+$RFE Level1:      "AF_Catalysts"
+
+#End
+
+// ------------------------------------------------
+// Gameplay Logic Events in Alpine Faction
+// ------------------------------------------------
+
+#AlpineGameplay
+
+$Event Name:      "Capture_Point_Handler"
+$RFE Level1:      "AF_Gameplay"
+
+$Event Name:      "Set_Gameplay_Rule"
+$RFE Level1:      "AF_Gameplay"
 
 #End

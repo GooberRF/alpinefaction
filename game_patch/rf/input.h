@@ -8,8 +8,8 @@
 
 namespace rf
 {
-    enum Key
-    {
+    enum Key {
+        KEY_NONE = 0x0,
         KEY_ESC = 0x1,
         KEY_1 = 0x2,
         KEY_2 = 0x3,
@@ -131,4 +131,7 @@ namespace rf
     static auto& direct_input_disabled = addr_as_ref<bool>(0x005A4F88);
     static auto& di_mouse = addr_as_ref<LPDIRECTINPUTDEVICE8A>(0x0188545C);
     static auto& keep_mouse_centered = addr_as_ref<bool>(0x01885471);
+    static auto& mouse_wheel_pos = addr_as_ref<int>(0x018853C8);
+    static auto& mouse_old_z = addr_as_ref<int>(0x01885480);
+    static auto& mouse_dz = addr_as_ref<int>(0x0188546C);
 }

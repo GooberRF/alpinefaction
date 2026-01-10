@@ -37,9 +37,10 @@ VsOutput main(VsInput input)
 {
     VsOutput output;
     float3 world_pos = mul(float4(input.pos.xyz, 1), world_mat);
+    float3 world_norm = mul(float4(input.norm, 0.0f), world_mat);
     float3 view_pos = mul(float4(world_pos, 1), view_mat);
     output.pos = mul(float4(view_pos, 1), proj_mat);
-    output.norm = input.norm;
+    output.norm = normalize(world_norm);
     output.uv0 = input.uv0.xy + input.uv0.zw * time;
     output.uv1 = input.uv1;
     output.color = input.color;

@@ -22,7 +22,7 @@ BEGIN
             VALUE "FileDescription", VER_FILE_DESCRIPTION
             VALUE "FileVersion", VERSION_STR
             VALUE "InternalName", VER_ORIGINAL_FILENAME
-            VALUE "LegalCopyright", "Alpine Faction is Copyright (C) 2025 Goober. All rights reserved. Alpine Faction is a fork of Dash Faction (Copyright (C) 2022 rafalh)."
+            VALUE "LegalCopyright", "Alpine Faction is Copyright (C) 2026 Goober. All rights reserved. Alpine Faction is a fork of Dash Faction (Copyright (C) 2022 rafalh)."
             VALUE "OriginalFilename", VER_ORIGINAL_FILENAME
             VALUE "ProductName", PRODUCT_NAME
             VALUE "ProductVersion", VERSION_STR

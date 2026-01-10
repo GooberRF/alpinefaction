@@ -13,6 +13,32 @@
 #define PRINTF_FMT_ATTRIBUTE(fmt_idx, va_idx)
 #endif
 
+inline std::string_view ltrim(std::string_view s)
+{
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.front()))) s.remove_prefix(1);
+    return s;
+}
+
+inline std::string_view rtrim(std::string_view s)
+{
+    while (!s.empty() && std::isspace(static_cast<unsigned char>(s.back()))) s.remove_suffix(1);
+    return s;
+}
+
+inline std::string_view trim(std::string_view s)
+{
+    return rtrim(ltrim(s));
+}
+
+inline std::pair<std::string_view, std::string_view> split_once_whitespace(std::string_view s)
+{
+    s = trim(s);
+    const auto pos = s.find_first_of(" \t");
+    if (pos == std::string_view::npos)
+        return {s, {}};
+    return {trim(s.substr(0, pos)), trim(s.substr(pos + 1))};
+}
+
 inline std::vector<std::string_view> string_split(std::string_view str, char delim = ' ')
 {
     std::vector<std::string_view> output;
@@ -43,7 +69,17 @@ inline std::string string_to_lower(std::string_view str)
     return output;
 }
 
-inline bool string_equals_ignore_case(std::string_view left, std::string_view right)
+inline std::string string_to_upper(std::string_view str)
+{
+    std::string output;
+    output.reserve(str.size());
+    std::transform(str.begin(), str.end(), std::back_inserter(output), [](unsigned char ch) {
+        return std::toupper(ch);
+    });
+    return output;
+}
+
+inline bool string_iequals(std::string_view left, std::string_view right)
 {
     return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](unsigned char a, unsigned char b) {
         return std::tolower(a) == std::tolower(b);
@@ -55,9 +91,9 @@ inline bool string_starts_with(std::string_view str, std::string_view prefix)
     return str.starts_with(prefix);
 }
 
-inline bool string_starts_with_ignore_case(std::string_view str, std::string_view prefix)
+inline bool string_istarts_with(std::string_view str, std::string_view prefix)
 {
-    return string_equals_ignore_case(str.substr(0, prefix.size()), prefix);
+    return string_iequals(str.substr(0, prefix.size()), prefix);
 }
 
 inline bool string_ends_with(std::string_view str, std::string_view suffix)
@@ -65,9 +101,9 @@ inline bool string_ends_with(std::string_view str, std::string_view suffix)
     return str.ends_with(suffix);
 }
 
-inline bool string_ends_with_ignore_case(std::string_view str, std::string_view suffix)
+inline bool string_iends_with(std::string_view str, std::string_view suffix)
 {
-    return str.size() >= suffix.size() && string_equals_ignore_case(str.substr(str.size() - suffix.size()), suffix);
+    return str.size() >= suffix.size() && string_iequals(str.substr(str.size() - suffix.size()), suffix);
 }
 
 inline bool string_contains(std::string_view str, char ch)
@@ -80,7 +116,7 @@ inline bool string_contains(std::string_view str, std::string_view infix)
     return str.find(infix) != std::string_view::npos;
 }
 
-inline bool string_contains_ignore_case(std::string_view str, std::string_view infix)
+inline bool string_icontains(std::string_view str, std::string_view infix)
 {
     std::string_view::iterator it = std::search(str.begin(), str.end(),
         infix.begin(), infix.end(),  [](unsigned char a, unsigned char b) {
@@ -102,6 +138,85 @@ inline std::string string_replace(const std::string_view& str, const std::string
         pos += replacement.size();
     }
     return result;
+}
+
+inline std::string string_add_suffix_before_extension(std::string_view filename, std::string_view suffix)
+{
+    if (suffix.empty())
+        return std::string{filename};
+
+    const size_t dot = filename.rfind('.');
+    if (dot == std::string_view::npos) {
+        std::string out;
+        out.reserve(filename.size() + suffix.size());
+        out.append(filename);
+        out.append(suffix);
+        return out;
+    }
+
+    std::string out;
+    out.reserve(filename.size() + suffix.size());
+    out.append(filename.substr(0, dot));
+    out.append(suffix);
+    out.append(filename.substr(dot));
+    return out;
+}
+
+inline std::string string_remove_suffix_before_extension(std::string_view filename, std::string_view suffix, bool case_sensitive = false)
+{
+    if (suffix.empty())
+        return std::string{filename};
+
+    const size_t dot = filename.rfind('.');
+    const std::string_view stem = (dot == std::string_view::npos) ? filename : filename.substr(0, dot);
+    const std::string_view ext  = (dot == std::string_view::npos) ? std::string_view{} : filename.substr(dot);
+
+    if (stem.size() < suffix.size())
+        return std::string{filename};
+
+    const std::string_view tail = stem.substr(stem.size() - suffix.size());
+
+    const bool match = case_sensitive ? (tail == suffix) : string_iequals(tail, suffix);
+    if (!match)
+        return std::string{filename};
+
+    std::string out;
+    out.reserve(filename.size());
+    out.append(stem.substr(0, stem.size() - suffix.size()));
+    out.append(ext);
+    return out;
+}
+
+inline std::string string_remove_any_suffix_before_extension(
+    std::string_view filename,
+    std::initializer_list<std::string_view> suffixes,
+    bool case_sensitive = false)
+{
+    for (const auto suffix : suffixes) {
+        std::string candidate = string_remove_suffix_before_extension(filename, suffix, case_sensitive);
+        if (candidate != filename) {
+            return candidate;
+        }
+    }
+    return std::string{filename};
+}
+
+inline bool string_has_suffix_before_extension(
+    std::string_view filename,
+    std::string_view suffix,
+    bool case_sensitive = false)
+{
+    if (suffix.empty())
+        return true;
+
+    const size_t dot = filename.rfind('.');
+    const std::string_view stem = (dot == std::string_view::npos) ? filename : filename.substr(0, dot);
+
+    if (stem.size() < suffix.size())
+        return false;
+
+    const std::string_view tail = stem.substr(stem.size() - suffix.size());
+    return case_sensitive ? (tail == suffix) : string_iequals(tail, suffix);
 }
 
 struct StringMatcher
@@ -150,13 +265,13 @@ public:
                 return false;
         }
         else {
-            if (!m_exact.empty() && !string_equals_ignore_case(input, m_exact))
+            if (!m_exact.empty() && !string_iequals(input, m_exact))
                 return false;
-            if (!m_prefix.empty() && !string_starts_with_ignore_case(input, m_prefix))
+            if (!m_prefix.empty() && !string_istarts_with(input, m_prefix))
                 return false;
-            if (!m_infix.empty() && !string_contains_ignore_case(input, m_infix))
+            if (!m_infix.empty() && !string_icontains(input, m_infix))
                 return false;
-            if (!m_suffix.empty() && !string_ends_with_ignore_case(input, m_suffix))
+            if (!m_suffix.empty() && !string_iends_with(input, m_suffix))
                 return false;
         }
         return true;

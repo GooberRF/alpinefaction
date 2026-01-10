@@ -1,6 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include "../rf/os/timestamp.h"
+#include "../hud/hud.h"
+#include "../hud/remote_server_cfg_ui.h"
 
 extern bool g_loaded_alpine_settings_file;
 
@@ -43,12 +46,6 @@ struct AlpineGameSettings
         scanner_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
     }
 
-    float reticle_scale = 1.0f;
-    void set_reticle_scale(float scale)
-    {
-        reticle_scale = std::clamp(scale, 0.0f, 100.0f);
-    }
-
     float level_sound_volume = 1.0f;
     void set_level_sound_volume(float scale)
     {
@@ -89,24 +86,45 @@ struct AlpineGameSettings
     bool try_disable_muzzle_flash_lights = false;
     bool world_hud_ctf_icons = true;
     bool world_hud_alt_damage_indicators = false;
-    bool world_hud_overdraw = true;
-    bool world_hud_big_text = true;
+    bool world_hud_flag_overdraw = true;
+    bool world_hud_hill_overdraw = true;
     bool world_hud_damage_numbers = true;
     bool world_hud_spectate_player_labels = false;
     bool world_hud_team_player_labels = false;
+    bool show_location_pings = true;
     bool play_hit_sounds = true;
+
+    static constexpr int min_hit_sound_interval_ms = 0;
+    static constexpr int max_hit_sound_interval_ms = 1000;
+    int hit_sound_min_interval_ms = 20;
+    void set_hit_sound_min_interval_ms(int interval_ms)
+    {
+        hit_sound_min_interval_ms = std::clamp(interval_ms, min_hit_sound_interval_ms, max_hit_sound_interval_ms);
+    }
+
     bool play_taunt_sounds = true;
     bool play_global_rad_msg_sounds = true;
     bool play_team_rad_msg_sounds = true;
     bool unlimited_semi_auto = false;
     bool gaussian_spread = false;
+    bool show_run_timer = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;
+    bool explosion_weapon_flash_lights = true;
+    bool explosion_env_flash_lights = true;
+    bool burning_entity_lights = true;
     bool death_bars = true;
     bool mesh_static_lighting = true;
     bool show_glares = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;
+    static constexpr int min_fps_counter_average_ms = 0;
+    static constexpr int max_fps_counter_average_ms = 60000;
+    int fps_counter_average_ms = 100;
+    void set_fps_counter_average_ms(int window_ms)
+    {
+        fps_counter_average_ms = std::clamp(window_ms, min_fps_counter_average_ms, max_fps_counter_average_ms);
+    }
     bool ping_display = true;
     bool spectate_mode_minimal_ui = false;
     bool save_console_history = false; // checked before config loaded, must be false here
@@ -116,17 +134,135 @@ struct AlpineGameSettings
     bool nearest_texture_filtering = false;
     bool direct_input = true;
     bool scoreboard_anim = true;
+    bool scoreboard_split_simple = true;
+    bool scoreboard_split_spectators = true;
+    bool scoreboard_split_bots = false;
+    bool scoreboard_split_browsers = true;
+    bool scoreboard_split_idle = false;
     bool autosave = true;
     bool use_new_savegame_format = true;
     bool af_branding = true;
+    int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
     bool player_join_beep = false;
     bool full_range_lighting = true;
     bool always_clamp_official_lightmaps = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
+    static constexpr int min_gib_chunk_count = 7;
+    static constexpr int max_gib_chunk_count = 100;
+    int gib_chunk_count = 14;
+    void set_gib_chunk_count(int count)
+    {
+        gib_chunk_count = std::clamp(count, min_gib_chunk_count, max_gib_chunk_count);
+    }
+    static constexpr float min_gib_velocity_scale = 3.0f;
+    static constexpr float max_gib_velocity_scale = 100.0f;
+    float gib_velocity_scale = 15.0f;
+    void set_gib_velocity_scale(float scale)
+    {
+        gib_velocity_scale = std::clamp(scale, min_gib_velocity_scale, max_gib_velocity_scale);
+    }
+    static constexpr int min_gib_lifetime_ms = 1000;
+    static constexpr int max_gib_lifetime_ms = 15000;
+    int gib_lifetime_ms = 7000;
+    void set_gib_lifetime_ms(int lifetime_ms)
+    {
+        gib_lifetime_ms = std::clamp(lifetime_ms, min_gib_lifetime_ms, max_gib_lifetime_ms);
+    }
     bool real_armor_values = false;
+    bool always_show_spectators = false;
+    RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =
+        RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX;
+    bool simple_server_chat_msgs = true;
+    bool quick_exit = false;
+    uint32_t bot_shared_secret = 0;
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
+    bool apply_exposure_damage = true;
+
+    // hud color overrides
+    std::optional<uint32_t> sniper_scope_color_override{};
+    std::optional<uint32_t> precision_scope_color_override{};
+    std::optional<uint32_t> rail_scope_color_override{};
+    std::optional<uint32_t> ar_ammo_digit_color_override{};
+    std::optional<uint32_t> damage_notify_color_override{};
+    std::optional<uint32_t> location_ping_color_override{};
+    std::optional<uint32_t> multi_timer_color_override{};
+    std::optional<uint32_t> teammate_label_color_override{};
+    std::optional<uint32_t> reticle_color_override{};
+    std::optional<uint32_t> reticle_locked_color_override{};
+    bool colorize_custom_reticles = false;
+
+    // hud scale overrides
+    std::optional<float> reticle_scale{};
+    float get_reticle_scale() const
+    {
+        return reticle_scale.value_or(1.0f);
+    }
+    void set_reticle_scale(float scale)
+    {
+        reticle_scale = std::clamp(scale, 0.0f, 100.0f);
+    }
+    void clear_reticle_scale()
+    {
+        reticle_scale.reset();
+    }
+
+    std::optional<float> world_hud_damage_text_scale{};
+    float get_world_hud_damage_text_scale() const
+    {
+        return world_hud_damage_text_scale.value_or(1.0f);
+    }
+    void set_world_hud_damage_text_scale(float scale)
+    {
+        world_hud_damage_text_scale = std::clamp(scale, 0.5f, 3.0f);
+    }
+    void clear_world_hud_damage_text_scale()
+    {
+        world_hud_damage_text_scale.reset();
+    }
+
+    std::optional<float> world_hud_label_text_scale{};
+    float get_world_hud_label_text_scale() const
+    {
+        return world_hud_label_text_scale.value_or(1.0f);
+    }
+    void set_world_hud_label_text_scale(float scale)
+    {
+        world_hud_label_text_scale = std::clamp(scale, 0.5f, 3.0f);
+    }
+    void clear_world_hud_label_text_scale()
+    {
+        world_hud_label_text_scale.reset();
+    }
+
+    std::optional<float> world_hud_ping_label_text_scale{};
+    float get_world_hud_ping_label_text_scale() const
+    {
+        return world_hud_ping_label_text_scale.value_or(1.0f);
+    }
+    void set_world_hud_ping_label_text_scale(float scale)
+    {
+        world_hud_ping_label_text_scale = std::clamp(scale, 0.5f, 3.0f);
+    }
+    void clear_world_hud_ping_label_text_scale()
+    {
+        world_hud_ping_label_text_scale.reset();
+    }
+
+    int picmip = 1; // d3d11 only
+    void set_picmip(int value)
+    {
+        picmip = std::clamp(value, 1, 256);
+    }
+
+    int colorblind_mode = 0;    // 0=off,1=protanopia,2=deuteranopia,3=tritanopia (d3d11 only)
+    void set_colorblind_mode(int value)
+    {
+        colorblind_mode = std::clamp(value, 0, 3);
+    }
+
+    bool precache_rooms = true; // d3d11 only
 
     int suppress_autoswitch_fire_wait = 0;
     void set_suppress_autoswitch_fire_wait(int value)
@@ -174,9 +310,46 @@ struct AlpineGameSettings
     {
         desired_handicap = std::clamp(value, 0, 99);
     }
+
+    float control_point_outline_height_scale = 5.0f;
+    void set_control_point_outline_height_scale(float scale)
+    {
+        control_point_outline_height_scale = std::clamp(scale, 0.0f, 1000.0f);
+    }
+
+    int control_point_outline_segments = 32;
+    void set_control_point_outline_segments(int segments)
+    {
+        control_point_outline_segments = std::clamp(segments, 3, 256);
+    }
+
+    int control_point_column_segments = 8;
+    void set_control_point_column_segments(int segments)
+    {
+        control_point_column_segments = std::clamp(segments, 3, 256);
+    }
+
+    float control_point_column_height_scale = 1.0f;
+    void set_control_point_column_height_scale(float scale)
+    {
+        control_point_column_height_scale = std::clamp(scale, 0.0f, 1000.0f);
+    }
+};
+
+struct FpsCounterState
+{
+    int last_window_ms = -1;
+    float display_fps = 0.0f;
+    int accumulated_frames = 0;
+    float accumulated_time = 0.0f;
+    rf::TimestampRealtime window_timer;
 };
 
 extern AlpineGameSettings g_alpine_game_config;
+std::optional<uint32_t> parse_hex_color_string(const std::string& value);
+std::string format_hex_color_string(uint32_t color);
+std::tuple<int, int, int, int> extract_color_components(uint32_t color);
+std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color);
 void initialize_alpine_core_config();
 void alpine_core_config_save();
 void set_big_hud(bool is_big);
@@ -190,3 +363,4 @@ void gr_update_texture_filtering();
 void set_play_sound_events_volume_scale();
 void apply_entity_sim_distance();
 void gr_d3d_update_vsync();
+bool is_d3d11();

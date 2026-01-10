@@ -121,13 +121,24 @@ namespace rf
     template<typename T = char>
     struct VArray_String
     {
-        int size = 0;
+        int num = 0;
         int capacity = 0;
         T* data = nullptr;
 
+    public:
+        [[nodiscard]] int size() const
+        {
+            return num;
+        }
+
+        [[nodiscard]] bool empty() const
+        {
+            return num == 0;
+        }
+
         void clear()
         {
-            size = 0;
+            num = 0;
         }
 
         void add(T element)
@@ -147,7 +158,7 @@ namespace rf
 
         T* end()
         {
-            return data + size;
+            return data + num;
         }
 
         ~VArray_String()

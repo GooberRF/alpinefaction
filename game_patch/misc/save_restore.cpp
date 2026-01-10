@@ -187,10 +187,10 @@ FunHook<void(rf::Object*)> sr_store_level_transition_object_mesh_hook{
     0x004B5660,
     [](rf::Object *obj) {
         if (obj->vmesh) {
-            g_level_transition_objects.emplace_back(LevelTransitionObject{
+            g_level_transition_objects.emplace_back(
                 obj->handle,
-                rf::vmesh_get_name(obj->vmesh),
-            });
+                rf::vmesh_get_name(obj->vmesh)
+            );
         }
     },
 };
@@ -257,8 +257,8 @@ FunHook<void()> quick_save_hook{
     0x004B6160,
     []() {
         quick_save_hook.call_target();
-        bool server_side_saving_enabled = rf::is_multi && !rf::is_server && get_df_server_info()
-            && get_df_server_info().value().saving_enabled;
+        bool server_side_saving_enabled = rf::is_multi && !rf::is_server && get_af_server_info()
+            && get_af_server_info().value().saving_enabled;
         if (server_side_saving_enabled) {
             send_chat_line_packet("/save", nullptr);
         }
@@ -269,8 +269,8 @@ FunHook<void()> quick_load_hook{
     0x004B6180,
     []() {
         quick_load_hook.call_target();
-        bool server_side_saving_enabled = rf::is_multi && !rf::is_server && get_df_server_info()
-            && get_df_server_info().value().saving_enabled;
+        bool server_side_saving_enabled = rf::is_multi && !rf::is_server && get_af_server_info()
+            && get_af_server_info().value().saving_enabled;
         if (server_side_saving_enabled) {
             send_chat_line_packet("/load", nullptr);
         }

@@ -18,20 +18,32 @@
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../sound/sound.h"
+#include "../input/input.h"
 #include "../multi/multi.h"
+#include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../hud/multi_spectate.h"
+#include "../hud/hud.h"
 #include "../multi/alpine_packets.h"
 #include "../hud/hud_world.h"
 #include <common/utils/list-utils.h>
+#include <common/version/version.h>
 #include <common/config/GameConfig.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 
-std::unordered_map<const rf::Player*, PlayerAdditionalData> g_player_additional_data_map;
 static rf::PlayerHeadlampSettings g_local_headlamp_settings;
+
+void set_headlamp_toggle_enabled(bool enabled)
+{
+    g_headlamp_toggle_enabled = enabled;
+
+    if (!g_headlamp_toggle_enabled && rf::local_player_entity && rf::entity_headlamp_is_on(rf::local_player_entity)) {
+        rf::entity_headlamp_turn_off(rf::local_player_entity);
+    }
+}
 
 void find_player(const StringMatcher& query, std::function<void(rf::Player*)> consumer)
 {
@@ -42,35 +54,47 @@ void find_player(const StringMatcher& query, std::function<void(rf::Player*)> co
     }
 }
 
-void reset_player_additional_data(const rf::Player* const player)
-{
-    g_player_additional_data_map.erase(player);
-}
-
-PlayerAdditionalData& get_player_additional_data(rf::Player* player)
-{
-    return g_player_additional_data_map[player];
-}
-
 // used for compatibility checks
-bool is_player_minimum_af_client_version(rf::Player* player, int version_major, int version_minor) {
+bool is_player_minimum_af_client_version(
+    const rf::Player* const player,
+    const int version_major,
+    const int version_minor,
+    const int version_patch,
+    const bool only_release
+) {
     if (!player) {
         return false;
     }
 
-    auto& player_info = g_player_additional_data_map[player];
-
-    if (!&player_info) {
+    if (player->version_info.software != ClientSoftware::AlpineFaction) {
         return false;
     }
 
-    return player_info.is_alpine &&
-        player_info.alpine_version_major >= version_major &&
-        player_info.alpine_version_minor >= version_minor;
+    if (only_release && player->version_info.type != VERSION_TYPE_RELEASE) {
+        return false;
+    }
+
+    if (player->version_info.major > version_major) {
+        return true;
+    }
+
+    if (player->version_info.major < version_major) {
+        return false;
+    }
+
+    if (player->version_info.minor > version_minor) {
+        return true;
+    }
+
+    if (player->version_info.minor < version_minor) {
+        return false;
+    }
+
+    return player->version_info.patch >= version_patch;
 }
 
 bool is_server_minimum_af_version(int version_major, int version_minor) {
-    auto& server_info = get_df_server_info();
+    auto& server_info = get_af_server_info();
 
     if (!server_info.has_value()) {
         return false;
@@ -78,6 +102,135 @@ bool is_server_minimum_af_version(int version_major, int version_minor) {
 
     return server_info->version_major >= version_major && server_info->version_minor >= version_minor;
 }
+
+std::string build_local_spawn_string(bool can_respawn) {
+    std::string respawn_timer_notification_text = "";
+    if (!can_respawn) {
+        respawn_timer_notification_text = "You are not allowed to spawn right now";
+    }
+    else if (!g_respawn_timer_local.valid() || g_respawn_timer_local.elapsed()) {
+        if (g_local_queued_delayed_spawn) {
+            respawn_timer_notification_text = "Spawning...";
+        }
+        else {
+            std::string respawn_key_text = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
+            respawn_timer_notification_text = "Press " + respawn_key_text + " to spawn";
+        }
+    }
+    else {
+        int ms_left = g_respawn_timer_local.time_until();
+
+        int tenths = (ms_left > 0) ? ((ms_left + 99) / 100) : 0;
+
+        if (tenths > 0) {
+            int whole = tenths / 10;
+            int frac = tenths % 10;
+            bool singular = (tenths == 10);
+            respawn_timer_notification_text =
+                std::format("{} in {}.{} second{}", g_local_queued_delayed_spawn ? "Spawning" : "You can spawn", whole, frac, singular ? "" : "s");
+        }
+        else {
+            respawn_timer_notification_text.clear();
+        }
+    }
+    return respawn_timer_notification_text;
+}
+
+void set_local_spawn_delay(bool can_respawn, bool force_respawn, int spawn_delay) {
+    // only called by Alpine packet handler when ADS server has configured spawn delay
+    if (!rf::is_multi || rf::is_dedicated_server) {
+        return; // safety, should never happen
+    }    
+
+    g_local_queued_delayed_spawn = can_respawn && force_respawn;
+    g_respawn_timer_local.set(spawn_delay);
+    //xlog::warn("setting delay {}, {}", spawn_delay, g_respawn_timer_local.time_until());
+    draw_respawn_timer_notification(can_respawn, force_respawn, spawn_delay);
+}
+
+void attempt_spawn_local_player(rf::Player* pp) {
+    if (!g_respawn_timer_local.valid() || g_respawn_timer_local.elapsed()) {
+        // allow immediate retry after local delay timer resets, only used for click spawning
+        // avoids niche case delays where you click with <1 sec remaining and death anim is still playing
+        rf::local_spawn_attempt_timer.set(1);
+
+        if (rf::is_server) { // listen server hosts
+            rf::multi_spawn_player_server_side(pp);
+        }
+        else if (pp && pp->net_data) {
+            rf::send_respawn_req_packet(pp->settings.multi_character, pp->net_data->player_id);
+        }
+        else {
+            xlog::warn("Local delayed spawn was attempted but failed");
+            return;
+        }
+        g_local_queued_delayed_spawn = false;
+        stop_draw_respawn_timer_notification();
+    }
+}
+
+void local_delayed_spawn_do_frame() {
+    if (!g_local_queued_delayed_spawn) {
+        return; // no delayed spawn queued
+    }
+
+    if (!rf::is_multi || rf::is_dedicated_server) {
+        return; // safety, should never happen
+    }
+
+    attempt_spawn_local_player(rf::local_player);
+}
+
+void reset_local_delayed_spawn() {
+    stop_draw_respawn_timer_notification();
+    g_respawn_timer_local.invalidate();
+}
+
+CodeInjection player_execute_action_respawn_req_patch{ // click to spawn
+    0x004A6778,
+    [] (auto& regs) {
+        // Do not waste packets.
+        if (!rf::is_server
+            && rf::local_player->is_bot
+            && rf::local_player->is_spawn_disabled) {
+            rf::String prefix{};
+            rf::String msg{"You are not allowed to spawn right now"};
+            rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
+            regs.eip = 0x004A67BB;
+            return;
+        }
+
+        const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
+        if ((get_af_server_info().has_value() && get_af_server_info()->delayed_spawns)
+            || (rf::is_server && cfg_rules.spawn_delay.enabled)) {
+            g_local_queued_delayed_spawn = true;
+            regs.eip = 0x004A67BB;
+        }
+    }
+};
+
+CodeInjection player_dying_frame_respawn_req_patch{ // force respawn
+    0x004A6DCA,
+    [] (auto& regs) {
+        // Do not waste packets.
+        if (!rf::is_server
+            && rf::local_player->is_bot
+            && rf::local_player->is_spawn_disabled) {
+            rf::String prefix{};
+            rf::String msg{"You are not allowed to force respawn right now"};
+            rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
+            regs.eip = 0x004A6DF8;
+            return;
+        }
+
+        const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
+        if ((get_af_server_info().has_value() && get_af_server_info()->delayed_spawns)
+            || (rf::is_server && cfg_rules.spawn_delay.enabled)) {
+            g_local_queued_delayed_spawn = true;
+            regs.eip = 0x004A6DF8;
+        }
+    }
+};
 
 FunHook<rf::Player*(bool)> player_create_hook{
     0x004A3310,
@@ -90,14 +243,13 @@ FunHook<rf::Player*(bool)> player_create_hook{
 
 FunHook<void(rf::Player*)> player_destroy_hook{
     0x004A35C0,
-    [](rf::Player* player) {        
+    [](rf::Player* player) {
         multi_spectate_on_destroy_player(player);
-        reset_player_additional_data(player);
-        player_destroy_hook.call_target(player);
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
         }
+        player_destroy_hook.call_target(player);
     },
 };
 
@@ -113,6 +265,8 @@ FunHook<rf::Entity*(rf::Player*, int, const rf::Vector3*, const rf::Matrix3*, in
             rf::Vector3 cam_pos = rf::camera_get_pos(pp->cam);
             rf::Matrix3 cam_orient = rf::camera_get_orient(pp->cam);
             rf::snd_update_sounds(cam_pos, rf::zero_vector, cam_orient);
+            reset_local_delayed_spawn();
+            multi_hud_on_local_spawn();
         }
         return ep;
     },
@@ -309,6 +463,9 @@ FunHook<void()> players_do_frame_hook{
         if (multi_spectate_is_spectating()) {
             rf::hud_do_frame(multi_spectate_get_target_player());
         }
+        else {
+            local_delayed_spawn_do_frame(); // try to spawn if a delayed spawn is queued
+        }
     },
 };
 
@@ -330,14 +487,35 @@ ConsoleCommand2 damage_screen_flash_cmd{
     "Toggle damage screen flash effect",
 };
 
-void handle_chat_message_sound(std::string message) {
-    if (string_starts_with_ignore_case(message, "\xA8[Taunt] ")) {
-        play_chat_sound(message, true);
-    }
-    else if (string_starts_with_ignore_case(message, "\xA8 ")) {
-        play_chat_sound(message, false);
-    }
-}
+ConsoleCommand2 weapon_explosion_flash_lights_cmd{
+    "cl_explosionflashweapons",
+    []() {
+        g_alpine_game_config.explosion_weapon_flash_lights = !g_alpine_game_config.explosion_weapon_flash_lights;
+        rf::console::print("Explosion flash lights from weapons are {}",
+            g_alpine_game_config.explosion_weapon_flash_lights ? "enabled" : "disabled");
+    },
+    "Toggle explosion flash dynamic lights from weapons (Direct3D 11 renderer only)",
+};
+
+ConsoleCommand2 env_explosion_flash_lights_cmd{
+    "cl_explosionflashenv",
+    []() {
+        g_alpine_game_config.explosion_env_flash_lights = !g_alpine_game_config.explosion_env_flash_lights;
+        rf::console::print("Explosion flash lights from environmental sources are {}",
+            g_alpine_game_config.explosion_env_flash_lights ? "enabled" : "disabled");
+    },
+    "Toggle explosion flash dynamic lights from environmental sources (Direct3D 11 renderer only)",
+};
+
+ConsoleCommand2 burning_entity_lights_cmd{
+    "cl_burningentityglow",
+    []() {
+        g_alpine_game_config.burning_entity_lights = !g_alpine_game_config.burning_entity_lights;
+        rf::console::print("Dynamic light glow from burning entities is {}",
+            g_alpine_game_config.burning_entity_lights ? "enabled" : "disabled");
+    },
+    "Toggle dynamic light glow from burning entities (Direct3D 11 renderer only)",
+};
 
 void play_local_sound_3d(uint16_t sound_id, rf::Vector3 pos, int group, float volume) {
     rf::snd_play_3d(sound_id, pos, volume, rf::Vector3{}, group);
@@ -352,7 +530,22 @@ void play_local_hit_sound(bool died) {
         return; // turned off
     }
 
+    static rf::TimestampRealtime hit_sound_timestamp;
+    static bool last_hit_sound_was_died = false;
+    const int interval_ms = g_alpine_game_config.hit_sound_min_interval_ms;
+    if (interval_ms > 0) {
+        const bool recently_played = hit_sound_timestamp.valid() && !hit_sound_timestamp.elapsed();
+        if (recently_played && !(died && !last_hit_sound_was_died)) {
+            return;
+        }
+        hit_sound_timestamp.set(interval_ms);
+    }
+    else {
+        hit_sound_timestamp.invalidate();
+    }
+
     play_local_sound_2d(get_custom_sound_id(died ? 3 : 2), 0, 1.0f);
+    last_hit_sound_was_died = died;
 }
 
 ConsoleCommand2 tauntsound_cmd{
@@ -375,6 +568,27 @@ ConsoleCommand2 localhitsound_cmd{
     "cl_hitsounds",
 };
 
+ConsoleCommand2 hit_sound_interval_cmd{
+    "cl_hitsounds_min_interval",
+    [](std::optional<int> interval_ms) {
+        if (interval_ms) {
+            g_alpine_game_config.set_hit_sound_min_interval_ms(interval_ms.value());
+        }
+        rf::console::print("Hit sound minimum interval is {} ms.", g_alpine_game_config.hit_sound_min_interval_ms);
+    },
+    "Set a minimum interval between damage notification hit sounds in milliseconds",
+};
+
+ConsoleCommand2 location_ping_display_cmd{
+    "cl_locationpings",
+    []() {
+        g_alpine_game_config.show_location_pings = !g_alpine_game_config.show_location_pings;
+        rf::console::print("Location pinging is {}", g_alpine_game_config.show_location_pings ? "enabled" : "disabled");
+    },
+    "Toggle whether location pinging is enabled (only available in team gametypes and in RUN)",
+    "cl_locationpings",
+};
+
 ConsoleCommand2 set_autoswitch_fire_wait_cmd{
     "cl_autoswitchfirewait",
     [](std::optional<int> new_fire_wait) {
@@ -391,14 +605,21 @@ void ping_looked_at_location() {
         return;
     }
 
-    if (!get_df_server_info().has_value() || !get_df_server_info()->location_pinging) {
+    if (!g_alpine_game_config.show_location_pings) {
+        rf::String msg{"Failed to ping location because the setting is turned off"};
+        rf::String prefix;
+        rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
+        return;
+    }
+
+    if (!get_af_server_info().has_value() || !get_af_server_info()->location_pinging) {
         rf::String msg{"This server does not allow you to ping locations"};
         rf::String prefix;
         rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
         return;
     }
 
-    if (rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_DM) {
+    if (!multi_is_team_game_type() && !gt_is_run()) {
         rf::String msg{"Location pinging is only available in team gametypes"};
         rf::String prefix;
         rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, prefix);
@@ -446,8 +667,8 @@ CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, void*)> player_cockpit_vme
     [](rf::VMesh *vmesh, rf::Vector3 *pos, rf::Matrix3 *orient, void *params) {
         rf::Matrix3 new_orient = *orient;
 
-        if (string_equals_ignore_case(rf::vmesh_get_name(vmesh), "driller01.vfx")) {
-            float m = static_cast<float>(rf::gr::screen_width()) / static_cast<float>(rf::gr::screen_height()) / (4.0 / 3.0);
+        if (string_iequals(rf::vmesh_get_name(vmesh), "driller01.vfx")) {
+            float m = static_cast<float>(rf::gr::screen_width()) / static_cast<float>(rf::gr::screen_height()) / (4.0f / 3.0f);
             new_orient.rvec *= m;
         }
 
@@ -478,14 +699,18 @@ CodeInjection player_move_flashlight_light_patch {
         rf::Vector3 eye_pos = ep->eye_pos;
 
         float dist = eye_pos.distance_to(*pDest2);
-        regs.eax = *reinterpret_cast<float*>(0x005A0108) * sqrt(dist); // scale light radius
+        float adjusted_range = rf::g_player_flashlight_range * sqrt(dist);
+        regs.eax = adjusted_range;
 
-        //float mapped_dist = map_range(dist, 0.0f, *reinterpret_cast<float*>(0x005A0100), 1.0f, 0.05f);
         float mapped_dist = map_range(dist, 0.0f, g_local_headlamp_settings.max_range, 1.0f, 0.05f);
-        *reinterpret_cast<float*>(0x005A00FC) =
-            g_local_headlamp_settings.intensity * mapped_dist; // scale light intensity
+        rf::g_player_flashlight_intensity = g_local_headlamp_settings.intensity * mapped_dist;
     },
 };
+
+void player_multi_level_post_init() {
+    g_local_queued_delayed_spawn = false;
+    stop_draw_respawn_timer_notification();
+}
 
 // called on game start and during each level post init
 void update_player_flashlight() {
@@ -493,7 +718,7 @@ void update_player_flashlight() {
     //color
     if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::PlayerHeadlampColor)) {
         auto headlamp_color =
-            get_level_info_value<uint32_t>(rf::level.filename, AlpineLevelInfoID::PlayerHeadlampColor);
+            get_level_info_value<uint32_t>(AlpineLevelInfoID::PlayerHeadlampColor);
         float _a;
 
         std::tie(g_local_headlamp_settings.r,
@@ -511,7 +736,7 @@ void update_player_flashlight() {
             g_local_headlamp_settings.b,
             _a) = // alpha is discarded
             extract_normalized_color_components(headlamp_color);
-    }    
+    }
     else {
         g_local_headlamp_settings.r = 1.0f;
         g_local_headlamp_settings.g = 0.872f;
@@ -521,7 +746,7 @@ void update_player_flashlight() {
     //intensity
     if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::PlayerHeadlampIntensity)) {
         g_local_headlamp_settings.intensity = std::clamp(
-            get_level_info_value<float>(rf::level.filename, AlpineLevelInfoID::PlayerHeadlampIntensity), 0.0f, 0.99f);
+            get_level_info_value<float>(AlpineLevelInfoID::PlayerHeadlampIntensity), 0.0f, 0.99f);
     }
     else if (g_alpine_options_config.is_option_loaded(AlpineOptionID::PlayerHeadlampIntensity)) {
         g_local_headlamp_settings.intensity =
@@ -534,7 +759,7 @@ void update_player_flashlight() {
     //range
     if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::PlayerHeadlampRange)) {
         g_local_headlamp_settings.max_range =
-            get_level_info_value<float>(rf::level.filename, AlpineLevelInfoID::PlayerHeadlampRange);
+            get_level_info_value<float>(AlpineLevelInfoID::PlayerHeadlampRange);
     }
     else if (g_alpine_options_config.is_option_loaded(AlpineOptionID::PlayerHeadlampRange)) {
         g_local_headlamp_settings.max_range = get_option_value<float>(AlpineOptionID::PlayerHeadlampRange);
@@ -546,7 +771,7 @@ void update_player_flashlight() {
     //radius
     if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::PlayerHeadlampRadius)) {
         g_local_headlamp_settings.base_radius =
-            get_level_info_value<float>(rf::level.filename, AlpineLevelInfoID::PlayerHeadlampRadius);
+            get_level_info_value<float>(AlpineLevelInfoID::PlayerHeadlampRadius);
     }
     else if (g_alpine_options_config.is_option_loaded(AlpineOptionID::PlayerHeadlampRadius)) {
         g_local_headlamp_settings.base_radius = get_option_value<float>(AlpineOptionID::PlayerHeadlampRadius);
@@ -566,8 +791,47 @@ void update_player_flashlight() {
     AsmWriter{0x004A6AF3}.push(2);                                                 // attenuation algo (stock 0)
 }
 
+bool player_is_idle(const rf::Player* const player) {
+    if (rf::is_server) {
+        // Check if the player's idle timer has elapsed
+        const bool is_idle = player->idle.check_timer.valid()
+            && player->idle.check_timer.elapsed();
+        // Player is idle if timer has elapsed and they're not spawned
+        return is_idle && rf::player_is_dead(player) && !player->is_spectator;
+    } else {
+        return player->received_pf_status
+            == std::optional{pf_pure_status::af_idle};
+    }
+}
+
+FunHook<rf::Player* __fastcall(rf::Player*)> player_ctor_hook{
+    0x00472AD0,
+    [] (rf::Player* const player) FASTCALL_LAMBDA {
+        player_ctor_hook.call_target(player);
+        PlayerAdditionalData* const player_add_data =
+            static_cast<PlayerAdditionalData*>(player);
+        std::construct_at(player_add_data);
+        return player;
+    }
+};
+
+FunHook<void __fastcall(rf::Player*)> player_dtor_hook{
+    0x00472B80,
+    [] (rf::Player* const player) FASTCALL_LAMBDA {
+        PlayerAdditionalData* const player_add_data =
+            static_cast<PlayerAdditionalData*>(player);
+        std::destroy_at(player_add_data);
+        player_dtor_hook.call_target(player);
+    }
+};
+
 void player_do_patch()
 {
+    // Extend `rf::Player` structure.
+    AsmWriter{0x004A3329}.push<size_t>(sizeof(rf::Player));
+    player_ctor_hook.install();
+    player_dtor_hook.install();
+
     // Support player headlamp
     player_move_flashlight_light_patch.install();
     update_player_flashlight();
@@ -575,6 +839,10 @@ void player_do_patch()
     // general hooks
     player_create_hook.install();
     player_destroy_hook.install();
+
+    // Support spawn delays in ADS servers
+    player_execute_action_respawn_req_patch.install();
+    player_dying_frame_respawn_req_patch.install();
 
     // Allow swapping Assault Rifle primary and alternate fire controls
     player_fire_primary_weapon_hook.install();
@@ -632,12 +900,17 @@ void player_do_patch()
 
     // Commands
     damage_screen_flash_cmd.register_cmd();
+    weapon_explosion_flash_lights_cmd.register_cmd();
+    env_explosion_flash_lights_cmd.register_cmd();
+    burning_entity_lights_cmd.register_cmd();
     death_bars_cmd.register_cmd();
     swap_assault_rifle_controls_cmd.register_cmd();
     swap_grenade_controls_cmd.register_cmd();
     swap_shotgun_controls_cmd.register_cmd();
     play_join_beep_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
+    hit_sound_interval_cmd.register_cmd();
     tauntsound_cmd.register_cmd();
     set_autoswitch_fire_wait_cmd.register_cmd();
+    location_ping_display_cmd.register_cmd();
 }

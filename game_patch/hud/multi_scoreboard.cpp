@@ -1,11 +1,14 @@
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <common/utils/list-utils.h>
+#include <optional>
 #include <patch_common/FunHook.h>
 #include "multi_scoreboard.h"
 #include "../input/input.h"
 #include "../multi/endgame_votes.h"
 #include "../multi/multi.h"
+#include "../multi/gametype.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/player/control_config.h"
@@ -18,8 +21,11 @@
 #include "../rf/hud.h"
 #include "../rf/level.h"
 #include "../rf/os/timer.h"
+#include "../os/console.h"
 #include "../main/main.h"
 #include "hud_internal.h"
+#include "../graphics/gr.h"
+#include "../misc/player.h"
 
 #define DEBUG_SCOREBOARD 0
 
@@ -38,6 +44,85 @@ static unsigned g_anim_ticks = 0;
 static bool g_enter_anim = false;
 static bool g_leave_anim = false;
 static bool g_big_scoreboard = false;
+
+struct ScoreboardPlayerList
+{
+    std::vector<rf::Player*> players{};
+    std::vector<size_t> divider_indices{};
+};
+
+enum class ScoreboardCategory
+{
+    Active,
+    Bot,
+    Spectator,
+    Idle,
+    Browser,
+};
+
+static ScoreboardCategory get_scoreboard_category(const rf::Player* player)
+{
+    if (g_alpine_game_config.scoreboard_split_bots && player->is_bot) {
+        return ScoreboardCategory::Bot;
+    }
+
+    if (g_alpine_game_config.scoreboard_split_spectators && player->is_spectator) {
+        return ScoreboardCategory::Spectator;
+    }
+
+    if (g_alpine_game_config.scoreboard_split_idle && player_is_idle(player)) {
+        return ScoreboardCategory::Idle;
+    }
+
+    if (g_alpine_game_config.scoreboard_split_browsers && player->is_browser) {
+        return ScoreboardCategory::Browser;
+    }
+
+    return ScoreboardCategory::Active;
+}
+
+static std::vector<size_t> calculate_divider_indices(const std::vector<rf::Player*>& players)
+{
+    std::vector<size_t> divider_indices{};
+    if (players.empty()) {
+        return divider_indices;
+    }
+
+    // split once for all categories other than active
+    if (g_alpine_game_config.scoreboard_split_simple) {
+        bool has_active = false;
+        std::optional<size_t> first_non_active{};
+
+        for (size_t i = 0; i < players.size(); ++i) {
+            const ScoreboardCategory cat = get_scoreboard_category(players[i]);
+            has_active = has_active || (cat == ScoreboardCategory::Active);
+
+            if (cat != ScoreboardCategory::Active && !first_non_active) {
+                first_non_active = i;
+            }
+        }
+
+        if (has_active && first_non_active) {
+            divider_indices.push_back(*first_non_active);
+        }
+        return divider_indices;
+    }
+
+    // split at every category
+    ScoreboardCategory current = get_scoreboard_category(players.front());
+    for (size_t i = 1; i < players.size(); ++i) {
+        const ScoreboardCategory next = get_scoreboard_category(players[i]);
+        if (next != current) {
+            divider_indices.push_back(i);
+            current = next;
+        }
+    }
+    return divider_indices;
+}
+
+bool multi_scoreboard_is_visible() {
+    return g_scoreboard_visible;
+}
 
 void multi_scoreboard_set_big(bool is_big)
 {
@@ -59,17 +144,13 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
 
     // Draw Game Type name
     if (!dry_run) {
-        int num_players = rf::multi_num_players();
-        std::string player_count_str =
-            " | " + std::to_string(num_players) + (num_players > 1 ? " PLAYERS" : " PLAYER");
-
-        std::string game_type_name = (game_type == rf::NG_TYPE_DM)    ? rf::strings::deathmatch
-                                     : (game_type == rf::NG_TYPE_CTF) ? rf::strings::capture_the_flag
-                                                                      : rf::strings::team_deathmatch;
-
-        game_type_name += player_count_str;
-
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, game_type_name.c_str());
+        const std::string game_info = std::format(
+            "{} \x95 {}/{} PLAYING",
+            multi_game_type_name_upper(game_type),
+            multi_num_spawned_players(),
+            rf::multi_num_players()
+        );
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, game_info.c_str());
     }
     int font_h = rf::gr::get_font_height(-1);
     cur_y += font_h + 8;
@@ -91,10 +172,17 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
     // Draw level
     if (!dry_run) {
         rf::gr::set_color(0xB0, 0xB0, 0xB0, 0xFF);
-        auto level_info = rf::String::format("{} ({}) by {}", rf::level.name, rf::level.filename, rf::level.author);
-        rf::String level_info_stripped;
-        rf::fit_scoreboard_string(&level_info_stripped, level_info, w - 20); // Note: this destroys input string
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, level_info_stripped);
+        std::string level_info = std::format(
+            "{1} \x95 {0:%Y} ({2}) by {3}",
+            std::chrono::sys_seconds{
+                std::chrono::seconds{rf::level.level_timestamp}
+            },
+            rf::level.name,
+            rf::level.filename,
+            rf::level.author
+        );
+        gr_fit_string(level_info, w - 20);
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, level_info.c_str());
     }
     cur_y += font_h + 3;
 
@@ -110,7 +198,7 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
     cur_y += font_h + 8;
 
     // Draw team scores
-    if (game_type != rf::NG_TYPE_DM) {
+    if (multi_game_type_is_team_type(game_type)) {
         if (!dry_run) {
             unsigned red_score = 0, blue_score = 0;
             if (game_type == rf::NG_TYPE_CTF) {
@@ -127,13 +215,34 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 red_score = rf::multi_tdm_get_red_team_score();
                 blue_score = rf::multi_tdm_get_blue_team_score();
             }
-            rf::gr::set_color(0xD0, 0x20, 0x20, 0xFF);
-            int team_scores_font = rf::scoreboard_big_font;
-            auto red_score_str = std::to_string(red_score);
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x + w * 1 / 6, cur_y + 10, red_score_str.c_str(), team_scores_font);
-            rf::gr::set_color(0x20, 0x20, 0xD0, 0xFF);
-            auto blue_score_str = std::to_string(blue_score);
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x + w * 5 / 6, cur_y + 10, blue_score_str.c_str(), team_scores_font);
+            else if (game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC) { // todo: new HUD icons for koth/dc
+                static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
+                static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
+                int flag_bm_w, flag_bm_h;
+                rf::bm::get_dimensions(hud_flag_red_bm, &flag_bm_w, &flag_bm_h);
+                rf::gr::bitmap(hud_flag_red_bm, x + w * 2 / 6 - flag_bm_w / 2, cur_y);
+                rf::gr::bitmap(hud_flag_blue_bm, x + w * 4 / 6 - flag_bm_w / 2, cur_y);
+                red_score = multi_koth_get_red_team_score();
+                blue_score = multi_koth_get_blue_team_score();
+            }
+            else if (game_type == rf::NG_TYPE_REV || game_type == rf::NG_TYPE_ESC) {
+                static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
+                static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
+                int flag_bm_w, flag_bm_h;
+                rf::bm::get_dimensions(hud_flag_red_bm, &flag_bm_w, &flag_bm_h);
+                rf::gr::bitmap(hud_flag_red_bm, x + w * 2 / 6 - flag_bm_w / 2, cur_y);
+                rf::gr::bitmap(hud_flag_blue_bm, x + w * 4 / 6 - flag_bm_w / 2, cur_y);
+            }
+            // draw scores
+            if (game_type != rf::NG_TYPE_REV && game_type != rf::NG_TYPE_ESC) {
+                rf::gr::set_color(0xD0, 0x20, 0x20, 0xFF);
+                int team_scores_font = rf::scoreboard_big_font;
+                auto red_score_str = std::to_string(red_score);
+                rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x + w * 1 / 6, cur_y + 10, red_score_str.c_str(), team_scores_font);
+                rf::gr::set_color(0x20, 0x20, 0xD0, 0xFF);
+                auto blue_score_str = std::to_string(blue_score);
+                rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x + w * 5 / 6, cur_y + 10, blue_score_str.c_str(), team_scores_font);
+            }
         }
 
         cur_y += 60;
@@ -142,34 +251,54 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
     return cur_y - y;
 }
 
-int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int y, int w, float scale,
-    rf::NetGameType game_type, bool dry_run = false)
+int draw_scoreboard_players(
+    const ScoreboardPlayerList& player_list,
+    int x,
+    int y,
+    int w,
+    float scale,
+    rf::NetGameType game_type,
+    bool dry_run = false)
 {
     int initial_y = y;
     int font_h = rf::gr::get_font_height(-1);
+    const int row_spacing = font_h;
+    const int divider_spacing = row_spacing / 4;
+    const int divider_height = std::max(1, static_cast<int>(scale));
 
     int status_w = static_cast<int>(12 * scale);
     int score_w = static_cast<int>(50 * scale);
-    int kd_w = static_cast<int>(70 * scale);
+    bool show_kd = game_type != rf::NG_TYPE_RUN;
+    int kd_w = show_kd ? static_cast<int>(70 * scale) : 0;
     int caps_w = game_type == rf::NG_TYPE_CTF ? static_cast<int>(45 * scale) : 0;
+    const auto& server_info = get_af_server_info();
+    bool saving_enabled = server_info.has_value() && server_info->saving_enabled;
+    bool show_loads = game_type == rf::NG_TYPE_RUN && saving_enabled;
+    int loads_w = show_loads ? static_cast<int>(55 * scale) : 0;
     int ping_w = static_cast<int>(35 * scale);
-    int name_w = w - status_w - score_w - kd_w - caps_w - ping_w;
+    int name_w = w - status_w - score_w - kd_w - caps_w - loads_w - ping_w;
 
     int status_x = x;
     int name_x = status_x + status_w;
     int score_x = name_x + name_w;
     int kd_x = score_x + score_w;
     int caps_x = kd_x + kd_w;
-    int ping_x = caps_x + caps_w;
+    int loads_x = caps_x + caps_w;
+    int ping_x = loads_x + loads_w;
 
     // Draw list header
     if (!dry_run) {
         rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
         rf::gr::string(name_x, y, rf::strings::player);
         rf::gr::string(score_x, y, rf::strings::score); // Note: RF uses "Frags"
-        rf::gr::string(kd_x, y, "K/D");
+        if (show_kd) {
+            rf::gr::string(kd_x, y, "K/D");
+        }
         if (game_type == rf::NG_TYPE_CTF) {
             rf::gr::string(caps_x, y, rf::strings::caps);
+        }
+        if (show_loads) {
+            rf::gr::string(loads_x, y, "Loads");
         }
         rf::gr::string(ping_x, y, rf::strings::ping, -1);
     }
@@ -180,55 +309,137 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
     rf::Player* blue_flag_player = rf::multi_ctf_get_blue_flag_player();
 
     // Draw the list
-    for (rf::Player* player : players) {
+    size_t next_divider = 0;
+    for (size_t i = 0; i < player_list.players.size(); ++i) {
+        rf::Player* player = player_list.players[i];
+
+        if (next_divider < player_list.divider_indices.size()
+            && i == player_list.divider_indices[next_divider]) {
+            y += divider_spacing - divider_height;
+            if (!dry_run) {
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+                rf::gr::rect(x, y, w, divider_height);
+            }
+            y += divider_spacing;
+            ++next_divider;
+        }
+
         if (!dry_run) {
-            bool is_local_player = player == rf::player_list;
-            if (is_local_player)
+            static const int green_bm = rf::bm::load("afsbi_spawned.tga", -1, true);
+            static const int red_bm = rf::bm::load("afsbi_dead.tga", -1, true);
+            static const int browser_bm = rf::bm::load("afsbi_brow.tga", -1, true);
+            static const int spectator_bm = rf::bm::load("afsbi_spec.tga", -1, true);
+            static const int idle_bm = rf::bm::load("afsbi_idle.tga", -1, true);
+            static const int hud_micro_flag_red_bm =
+                rf::bm::load("hud_microflag_red.tga", -1, true);
+            static const int hud_micro_flag_blue_bm =
+                rf::bm::load("hud_microflag_blue.tga", -1, true);
+
+        const bool is_spawned = !rf::player_is_dead(player)
+            && !rf::player_is_dying(player);
+        const int status_bm = std::invoke([&] {
+            if (player->is_browser) {
+                return browser_bm;
+            } else if (player->is_spectator) {
+                return spectator_bm;
+            } else if ((player->is_bot
+                && player->is_spawn_disabled
+                && !is_spawned)
+                || player_is_idle(player)) {
+                return idle_bm;
+            } else if (player == red_flag_player) {
+                return hud_micro_flag_red_bm;
+            } else if (player == blue_flag_player) {
+                return hud_micro_flag_blue_bm;
+            } else {
+                return is_spawned ? green_bm : red_bm;
+            }
+        });
+
+            int bm_w = 0, bm_h = 0;
+            rf::bm::get_dimensions(status_bm, &bm_w, &bm_h);
+            const int offset = std::lround(
+                (static_cast<float>(font_h)
+                - static_cast<float>(bm_h)
+                * scale)
+                / 2.f
+            );
+            rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+            hud_scaled_bitmap(
+                status_bm,
+                status_x,
+                y + offset,
+                scale
+            );
+
+            const bool is_local_player = player == rf::player_list;
+            if (is_local_player) {
                 rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
-            else
+            } else {
                 rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+            }
 
-            static int green_bm = rf::bm::load("DF_green.tga", -1, true);
-            static int red_bm = rf::bm::load("DF_red.tga", -1, true);
-            static int hud_micro_flag_red_bm = rf::bm::load("hud_microflag_red.tga", -1, true);
-            static int hud_micro_flag_blue_bm = rf::bm::load("hud_microflag_blue.tga", -1, true);
+            std::string player_name_stripped = player->name;
+            const auto [space_w, space_h] = rf::gr::get_char_size(' ', -1);
+            const bool is_bot = player->is_bot;
+            if (is_bot) {
+                const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", -1);
+                gr_fit_string(
+                    player_name_stripped,
+                    name_w - bot_w - space_w
+                );
+            } else {
+                gr_fit_string(
+                    player_name_stripped,
+                    name_w - space_w
+                );
+            }
 
-            rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
-            int status_bm = entity ? green_bm : red_bm;
-            if (player == red_flag_player)
-                status_bm = hud_micro_flag_red_bm;
-            else if (player == blue_flag_player)
-                status_bm = hud_micro_flag_blue_bm;
-            hud_scaled_bitmap(status_bm, status_x, static_cast<int>(y + 2 * scale), scale);
-
-            rf::String player_name_stripped;
-            rf::fit_scoreboard_string(&player_name_stripped, player->name, name_w - static_cast<int>(12 * scale)); // Note: this destroys Name
-            rf::gr::string(name_x, y, player_name_stripped);
+            if (is_bot) {
+                rf::gr::string(name_x, y, player_name_stripped.c_str());
+                rf::gr::set_color(255, 250, 205, 255);
+                rf::gr::string(rf::gr::current_string_x, y, " bot");
+                if (is_local_player) {
+                    rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
+                } else {
+                    rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+                }
+            } else {
+                rf::gr::string(name_x, y, player_name_stripped.c_str());
+            }
 
 #if DEBUG_SCOREBOARD
             int score = 999;
             int num_kills = 999;
             int num_deaths = 999;
-            int caps = 999;
+            int caps_or_loads = 999;
             int ping = 9999;
 #else
-            auto* stats = static_cast<PlayerStatsNew*>(player->stats);
+            const PlayerStatsNew* stats = static_cast<PlayerStatsNew*>(player->stats);
             int score = stats->score;
             int num_kills = stats->num_kills;
             int num_deaths = stats->num_deaths;
-            int caps = stats->caps;
+            int caps_or_loads = stats->caps;
             int ping = player->net_data ? player->net_data->ping : 0;
 #endif
 
-            auto score_str = std::to_string(score);
+            int displayed_score = game_type == rf::NG_TYPE_RUN ? num_deaths : score;
+            auto score_str = std::to_string(displayed_score);
             rf::gr::string(score_x, y, score_str.c_str());
 
-            auto kills_deaths_str = std::format("{}/{}", num_kills, num_deaths);
-            rf::gr::string(kd_x, y, kills_deaths_str.c_str());
+            if (show_kd) {
+                auto kills_deaths_str = std::format("{}/{}", num_kills, num_deaths);
+                rf::gr::string(kd_x, y, kills_deaths_str.c_str());
+            }
 
             if (game_type == rf::NG_TYPE_CTF) {
-                auto caps_str = std::to_string(caps);
+                auto caps_str = std::to_string(caps_or_loads);
                 rf::gr::string(caps_x, y, caps_str.c_str());
+            }
+
+            if (show_loads) {
+                auto loads_str = std::to_string(caps_or_loads);
+                rf::gr::string(loads_x, y, loads_str.c_str());
             }
 
             auto ping_str = std::to_string(ping);
@@ -241,48 +452,85 @@ int draw_scoreboard_players(const std::vector<rf::Player*>& players, int x, int 
     return y - initial_y;
 }
 
-void filter_and_sort_players(std::vector<rf::Player*>& players, std::optional<int> team_id)
+ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
 {
-    players.clear();
-    players.reserve(32);
+    ScoreboardPlayerList player_list{};
+    player_list.players.reserve(32);
 
-    auto player_list = SinglyLinkedList{rf::player_list};
-    for (auto& player : player_list) {
-        if (!team_id || player.team == team_id.value())
-            players.push_back(&player);
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!team_id || player.team == team_id.value()) {
+            player_list.players.push_back(&player);
+        }
     }
-    std::sort(players.begin(), players.end(), [](auto player1, auto player2) {
-        return player1->stats->score > player2->stats->score;
-    });
+
+    std::ranges::sort(
+        player_list.players,
+        [] (const rf::Player* const player_1, const rf::Player* const player_2) {
+            const ScoreboardCategory category_1 = get_scoreboard_category(player_1);
+            const ScoreboardCategory category_2 = get_scoreboard_category(player_2);
+
+            if (category_1 != category_2) {
+                return category_1 < category_2;
+            }
+
+            if (player_1->stats->score != player_2->stats->score) {
+                return player_1->stats->score > player_2->stats->score;
+            }
+
+            // Sort players before bots, and both before browsers.
+            if (player_1->is_human_player) {
+                return player_2->is_bot || player_2->is_browser;
+            } else {
+                return player_1->is_bot && player_2->is_browser;
+            }
+        }
+    );
+
+    player_list.divider_indices = calculate_divider_indices(player_list.players);
+
+    return player_list;
 }
 
-void draw_scoreboard_internal_new(bool draw)
-{
-    if (g_scoreboard_force_hide || !draw)
+void draw_scoreboard_internal_new(bool draw) {
+    if (g_scoreboard_force_hide || !draw) {
         return;
+    }
 
-    auto game_type = rf::multi_get_game_type();
-    std::vector<rf::Player*> left_players, right_players;
+    const rf::NetGameType game_type = rf::multi_get_game_type();
+    ScoreboardPlayerList left_players{}, right_players{};
+    bool split_columns = multi_game_type_is_team_type(game_type);
 #if DEBUG_SCOREBOARD
-    for (int i = 0; i < 24; ++i) {
-        left_players.push_back(rf::local_player);
+    if (split_columns) {
+        for (int i = 0; i < 16; ++i) {
+            left_players.players.push_back(rf::local_player);
+        }
+        for (int i = 0; i < 16; ++i) {
+            right_players.players.push_back(rf::local_player);
+        }
+    } else {
+        for (int i = 0; i < 32; ++i) {
+            left_players.players.push_back(rf::local_player);
+        }
     }
-    for (int i = 0; i < 8; ++i) {
-        right_players.push_back(rf::local_player);
-    }
-    game_type = rf::NG_TYPE_CTF;
-    bool group_by_team = game_type != rf::NG_TYPE_DM;
+    {
 #else
-    // Sort players by score
-    bool group_by_team = game_type != rf::NG_TYPE_DM;
-    if (group_by_team) {
-        filter_and_sort_players(left_players, {rf::TEAM_RED});
-        filter_and_sort_players(right_players, {rf::TEAM_BLUE});
-    }
-    else {
-        filter_and_sort_players(left_players, {});
-    }
+    if (split_columns) {
+        left_players = filter_and_sort_players({rf::TEAM_RED});
+        right_players = filter_and_sort_players({rf::TEAM_BLUE});
+    } else {
+        left_players = filter_and_sort_players({});
 #endif
+        if (left_players.players.size() > 16) {
+            const auto overflow_start = left_players.players.begin() + 16;
+            right_players.players.assign(overflow_start, left_players.players.end());
+            left_players.players.erase(overflow_start, left_players.players.end());
+
+            left_players.divider_indices = calculate_divider_indices(left_players.players);
+            right_players.divider_indices = calculate_divider_indices(right_players.players);
+
+            split_columns = true;
+        }
+    }
 
     // Animation
     float anim_progress = 1.0f;
@@ -290,10 +538,11 @@ void draw_scoreboard_internal_new(bool draw)
     float progress_h = 1.0f;
     if (g_alpine_game_config.scoreboard_anim) {
         unsigned anim_delta = rf::timer_get(1000) - g_anim_ticks;
-        if (g_enter_anim)
+        if (g_enter_anim) {
             anim_progress = anim_delta / ENTER_ANIM_MS;
-        else if (g_leave_anim)
+        } else if (g_leave_anim) {
             anim_progress = (LEAVE_ANIM_MS - anim_delta) / LEAVE_ANIM_MS;
+        }
 
         if (g_leave_anim && anim_progress <= 0.0f) {
             g_scoreboard_visible = false;
@@ -312,11 +561,10 @@ void draw_scoreboard_internal_new(bool draw)
     // Note: fit_scoreboard_string does not support providing font by argument so default font must be changed
     if (g_big_scoreboard) {
         rf::gr::set_default_font(hud_get_default_font_name(true));
-        w = std::min(!group_by_team ? 900 : 1400, rf::gr::clip_width());
+        w = std::min(!split_columns ? 900 : 1400, rf::gr::clip_width() - 10);
         scale = 2.0f;
-    }
-    else {
-        w = std::min(!group_by_team ? 450 : 700, rf::gr::clip_width());
+    } else {
+        w = std::min(!split_columns ? 450 : 700, rf::gr::clip_width() - 10);
         scale = 1.0f;
     }
 
@@ -348,12 +596,11 @@ void draw_scoreboard_internal_new(bool draw)
     }
 
     y += draw_scoreboard_header(x, y, w, game_type);
-    if (group_by_team) {
+    if (split_columns) {
         int table_w = (w - left_padding - middle_padding - right_padding) / 2;
         draw_scoreboard_players(left_players, x + left_padding, y, table_w, scale, game_type);
         draw_scoreboard_players(right_players, x + left_padding + table_w + middle_padding, y, table_w, scale, game_type);
-    }
-    else {
+    } else {
         int table_w = w - left_padding - right_padding;
         draw_scoreboard_players(left_players, x + left_padding, y, table_w, scale, game_type);
     }
@@ -365,6 +612,71 @@ void draw_scoreboard_internal_new(bool draw)
 }
 
 FunHook<void(bool)> draw_scoreboard_internal_hook{0x00470880, draw_scoreboard_internal_new};
+
+ConsoleCommand2 ui_scoreboard_spectators_cmd{
+    "ui_scoreboard_split_spectators",
+    [] {
+        g_alpine_game_config.scoreboard_split_spectators = !g_alpine_game_config.scoreboard_split_spectators;
+        rf::console::print(
+            "Scoreboard spectator separation is {}",
+            g_alpine_game_config.scoreboard_split_spectators ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether spectators are grouped separately on the scoreboard",
+    "ui_scoreboard_split_spectators",
+};
+
+ConsoleCommand2 ui_scoreboard_bots_cmd{
+    "ui_scoreboard_split_bots",
+    [] {
+        g_alpine_game_config.scoreboard_split_bots = !g_alpine_game_config.scoreboard_split_bots;
+        rf::console::print(
+            "Scoreboard bot separation is {}",
+            g_alpine_game_config.scoreboard_split_bots ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether bots are grouped separately on the scoreboard",
+    "ui_scoreboard_split_bots",
+};
+
+ConsoleCommand2 ui_scoreboard_browsers_cmd{
+    "ui_scoreboard_split_browsers",
+    [] {
+        g_alpine_game_config.scoreboard_split_browsers = !g_alpine_game_config.scoreboard_split_browsers;
+        rf::console::print(
+            "Scoreboard browser separation is {}",
+            g_alpine_game_config.scoreboard_split_browsers ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether browsers are grouped separately on the scoreboard",
+    "ui_scoreboard_split_browsers",
+};
+
+ConsoleCommand2 ui_scoreboard_idle_cmd{
+    "ui_scoreboard_split_idle",
+    [] {
+        g_alpine_game_config.scoreboard_split_idle = !g_alpine_game_config.scoreboard_split_idle;
+        rf::console::print(
+            "Scoreboard idle player separation is {}",
+            g_alpine_game_config.scoreboard_split_idle ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether idle players are grouped separately on the scoreboard",
+    "ui_scoreboard_split_idle",
+};
+
+ConsoleCommand2 ui_scoreboard_simple_cmd{
+    "ui_scoreboard_simplesplit",
+    [] {
+        g_alpine_game_config.scoreboard_split_simple = !g_alpine_game_config.scoreboard_split_simple;
+        rf::console::print(
+            "Simple scoreboard separation is {}",
+            g_alpine_game_config.scoreboard_split_simple ? "enabled" : "disabled"
+        );
+    },
+    "Toggle whether each scoreboard grouping is displayed individually",
+    "ui_scoreboard_simplesplit",
+};
 
 void scoreboard_maybe_render(bool show_scoreboard)
 {
@@ -393,6 +705,11 @@ void scoreboard_maybe_render(bool show_scoreboard)
 void multi_scoreboard_apply_patch()
 {
     draw_scoreboard_internal_hook.install();
+    ui_scoreboard_spectators_cmd.register_cmd();
+    ui_scoreboard_bots_cmd.register_cmd();
+    ui_scoreboard_browsers_cmd.register_cmd();
+    ui_scoreboard_idle_cmd.register_cmd();
+    ui_scoreboard_simple_cmd.register_cmd();
 }
 
 void multi_scoreboard_set_hidden(bool hidden)

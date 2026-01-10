@@ -20,7 +20,7 @@ endfunction()
 
 
 add_packfile(alpinefaction.vpp
-    tables/maps_df.txt
+    tables/maps_af.txt
     tables/events.tbl
     tables/af_level_quirks.tbl
 
@@ -44,6 +44,7 @@ add_packfile(alpinefaction.vpp
     tables/DM_EuropaOneOutpost1-1_info.tbl
     tables/CTF_EuropaOneOutpost_info.tbl
     tables/dm-SpecialForces_info.tbl
+    tables/Dm-NukeTown2050_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
@@ -116,13 +117,41 @@ add_packfile(alpinefaction.vpp
     images/af_wh_mp_spawn.tga
     images/af_wh_ping1.tga
     images/af_achtrophy1.tga
-    images/DF_green.tga
-    images/DF_red.tga
+    images/af_wh_koth_base_neutral.tga
+    images/af_wh_koth_atk_neutral.tga
+    images/af_wh_koth_def_neutral.tga
+    images/af_wh_koth_atk_red.tga
+    images/af_wh_koth_def_red.tga
+    images/af_wh_koth_atk_blue.tga
+    images/af_wh_koth_def_blue.tga
+    images/af_wh_koth_base_red.tga
+    images/af_wh_koth_base_blue.tga
+    images/af_wh_koth_cont_neutral.tga
+    images/af_wh_koth_cont_red.tga
+    images/af_wh_koth_cont_blue.tga
+    images/af_wh_koth_lock_neutral.tga
+    images/af_wh_koth_lock_red.tga
+    images/af_wh_koth_lock_blue.tga
+    images/af_wh_koth_fill_red.tga
+    images/af_wh_koth_fill_blue.tga
+    images/af_wh_koth_ring_fade.tga
+    images/afsbi_spawned.tga
+    images/afsbi_spawned_1.tga
+    images/afsbi_dead.tga
+    images/afsbi_dead_1.tga
+    images/afsbi_spec.tga
+    images/afsbi_spec_1.tga
+    images/afsbi_brow.tga
+    images/afsbi_brow_1.tga
+    images/afsbi_idle.tga
+    images/afsbi_idle_1.tga
     images/scope_zoom_corner256_red.tga
     images/128blackcircle.tga
     images/ass2_scope_circle.tga
-    images/DF_green_1.tga
-    images/DF_red_1.tga
+    images/reticle_0.tga
+    images/reticle_rocket_0.tga
+    images/reticle_rocketlock_0.tga
+    images/scope_ret_0.tga
     images/reticle_1.tga
     images/reticle_rocket_1.tga
     images/reticle_rocketlock_1.tga

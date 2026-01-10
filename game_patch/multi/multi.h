@@ -1,9 +1,12 @@
 #pragma once
 
 #include <optional>
+#include <string>
+#include <utility>
 #include <xlog/xlog.h>
 #include "server_internal.h"
 #include "../rf/player/player.h"
+#include "../rf/multi.h"
 #include "../rf/entity.h"
 #include "../rf/os/timer.h"
 
@@ -94,21 +97,47 @@ struct AlpineFactionServerInfo
     bool unlimited_fps = false;
     bool gaussian_spread = false;
     bool location_pinging = false;
+    bool delayed_spawns = false;
+    int koth_score_limit = 0;
+    int dc_score_limit = 0;
 };
 
+enum class AlpineRestrictVerdict : uint8_t
+{
+    ok = 0,
+    need_alpine = 1,
+    need_release = 2,
+    need_update = 3
+};
+
+void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
+void reset_local_pending_game_type();
+const bool was_level_loaded_manually();
+void set_manually_loaded_level(bool is_true);
+bool version_is_older(int aMaj, int aMin, int bMaj, int bMin);
+void enforce_alpine_hard_reject_for_all_players_on_current_level();
+std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_status(const ClientVersionInfoProfile& info, bool check_level_version);
 void multi_level_download_update();
 void multi_do_patch();
 void multi_after_full_game_init();
 void multi_init_player(rf::Player* player);
-void send_chat_line_packet(const char* msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
-const std::optional<AlpineFactionServerInfo>& get_df_server_info();
+void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
+const std::optional<AlpineFactionServerInfo>& get_af_server_info();
+std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
 void multi_level_download_do_frame();
 void multi_level_download_abort();
 void multi_ban_apply_patch();
 int get_level_file_version(const std::string& file_name);
+void print_player_info(rf::Player* player, bool new_join);
 void print_all_player_info();
 void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
 void start_level_in_multi(std::string filename);
 std::optional<std::string> multi_ban_unban_last();
+std::string_view multi_game_type_name(rf::NetGameType game_type);
+std::string_view multi_game_type_name_upper(rf::NetGameType game_type);
+std::string_view multi_game_type_name_short(rf::NetGameType game_type);
+std::string_view multi_game_type_prefix(rf::NetGameType game_type);
+[[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);
+void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool sanitize = false);

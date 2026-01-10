@@ -1,4 +1,9 @@
+#include <algorithm>
+#include <array>
+#include <cstdint>
 #include <memory>
+#include <unordered_map>
+#include <vector>
 #include <cstring>
 #include <cassert>
 #include <windows.h>
@@ -9,6 +14,8 @@
 #include "../../rf/math/quaternion.h"
 #include "../../rf/v3d.h"
 #include "../../rf/character.h"
+#include "../../misc/misc.h"
+#include "../../rf/level.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_context.h"
@@ -20,6 +27,78 @@ namespace df::gr::d3d11
 {
     constexpr unsigned initial_vb_size = 6000;
     constexpr unsigned initial_ib_size = 10000;
+
+    static uint64_t character_vertex_color_generation = 1;
+    static uint64_t static_vertex_color_generation = 1;
+    static std::vector<MeshRenderer*> mesh_renderers;
+
+    struct PackedRgb
+    {
+        ubyte red;
+        ubyte green;
+        ubyte blue;
+    };
+
+    struct VertexColorKey
+    {
+        const void* source;
+        std::array<rf::ubyte, 3> sample;
+
+        bool operator==(const VertexColorKey& other) const
+        {
+            return source == other.source && sample == other.sample;
+        }
+    };
+
+    struct VertexColorKeyHasher
+    {
+        std::size_t operator()(const VertexColorKey& key) const noexcept
+        {
+            std::size_t hash = std::hash<const void*>{}(key.source);
+            std::uint32_t packed_sample = static_cast<std::uint32_t>(key.sample[0])
+                | (static_cast<std::uint32_t>(key.sample[1]) << 8)
+                | (static_cast<std::uint32_t>(key.sample[2]) << 16);
+            return hash ^ (static_cast<std::size_t>(packed_sample) << 1);
+        }
+    };
+
+    // Character generation helpers
+    static uint64_t current_character_vertex_color_generation()
+    {
+        return character_vertex_color_generation;
+    }
+
+    void on_character_fullbright_state_changed()
+    {
+        ++character_vertex_color_generation;
+    }
+
+    // Static-mesh generation helpers
+    static uint64_t current_static_vertex_color_generation()
+    {
+        return static_vertex_color_generation;
+    }
+
+    void on_static_vertex_color_state_changed(rf::VifLodMesh* changed_lod_mesh)
+    {
+        // Vertex color changes invalidate cached vertex color batches
+        // bump generation to append new vertex color data to shared buffer
+        const auto generation = ++static_vertex_color_generation;
+
+        xlog::debug("D3D11 static vertex colors: bumped generation to {} for {} ({} renderer(s))",
+            generation,
+            changed_lod_mesh ? "targeted mesh" : "all meshes",
+            mesh_renderers.size());
+
+        // If this happens frequently (like rapid Switch_Model use), bumping this generation causes us
+        // to keep appending new vertex color data to the shared buffers until we run out of memory.
+        // Let each renderer rewind its caches once per generation bump to avoid.
+        // Note this uses uint64 for total safety and because there's no real cost to doing so,
+        // realistically this will never come remotely close to needing a uint64.
+        for (auto* renderer : mesh_renderers) {
+            renderer->handle_static_vertex_color_state_change(changed_lod_mesh, generation);
+        }
+    }
 
     static bool is_vif_chunk_double_sided(const VifChunk& chunk)
     {
@@ -38,13 +117,48 @@ namespace df::gr::d3d11
     {
     public:
         MeshRenderCache(VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context);
+
+        const std::vector<GpuVertex>& vertices() const
+        {
+            return vertices_;
+        }
+
+        const std::vector<BaseMeshRenderCache::Batch>& get_or_create_vertex_color_batches(
+            int lod_index,
+            const void* source,
+            const std::array<rf::ubyte, 3>& sample,
+            const PackedRgb* vertex_colors,
+            BufferWrapper& vertex_buffer,
+            RenderContext& render_context);
+
+    private:
+        struct VertexColorVariant
+        {
+            std::vector<BaseMeshRenderCache::Batch> batches;
+        };
+
+        std::vector<GpuVertex> vertices_;
+
+        // Per-LOD map of vertex-color variants
+        std::vector<std::unordered_map<VertexColorKey, VertexColorVariant, VertexColorKeyHasher>> vertex_color_batches_;
+
+        // Per-LOD generation tracking for static vertex colors
+        std::vector<uint64_t> last_vertex_color_generations_;
     };
 
-    MeshRenderCache::MeshRenderCache(VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context) :
-        BaseMeshRenderCache(lod_mesh)
+    MeshRenderCache::MeshRenderCache(
+        VifLodMesh* lod_mesh,
+        BufferWrapper& vertex_buffer,
+        BufferWrapper& index_buffer,
+        RenderContext& render_context
+    ) :
+        BaseMeshRenderCache(lod_mesh),
+        vertex_color_batches_(lod_mesh->num_levels),
+        last_vertex_color_generations_(lod_mesh->num_levels, 0)
     {
         std::size_t num_verts = 0;
         std::size_t num_inds = 0;
+        base_vertex_offset_ = vertex_buffer.size();
         for (int lod_index = 0; lod_index < lod_mesh->num_levels; ++lod_index) {
             rf::VifMesh* mesh = lod_mesh->meshes[lod_index];
             for (int chunk_index = 0; chunk_index < mesh->num_chunks; ++chunk_index) {
@@ -64,6 +178,7 @@ namespace df::gr::d3d11
         for (int lod_index = 0; lod_index < lod_mesh->num_levels; ++lod_index) {
             rf::VifMesh* mesh = lod_mesh->meshes[lod_index];
             meshes_[lod_index].batches.reserve(mesh->num_chunks);
+            meshes_[lod_index].vertex_offset = gpu_verts.size();
             for (int chunk_index = 0; chunk_index < mesh->num_chunks; ++chunk_index) {
                 rf::VifChunk& chunk = mesh->chunks[chunk_index];
                 std::size_t start_index = gpu_inds.size();
@@ -100,16 +215,76 @@ namespace df::gr::d3d11
                     }
                 }
 
-                int num_indices = gpu_inds.size() - start_index;
+                int num_indices = static_cast<int>(gpu_inds.size() - start_index);
                 meshes_[lod_index].batches.emplace_back(
                     index_buffer.size() + start_index, num_indices, base_vertex,
                     chunk.texture_idx, chunk.mode, double_sided);
             }
+            meshes_[lod_index].vertex_count = gpu_verts.size() - meshes_[lod_index].vertex_offset;
         }
         xlog::debug("Creating mesh geometry buffers: verts {} inds {}", gpu_verts.size(), gpu_inds.size());
 
-        vertex_buffer.write(gpu_verts.data(), gpu_verts.size(), render_context);
-        index_buffer.write(gpu_inds.data(), gpu_inds.size(), render_context);
+        vertices_ = std::move(gpu_verts);
+        vertex_buffer.write(vertices_.data(), static_cast<unsigned>(vertices_.size()), render_context);
+        index_buffer.write(gpu_inds.data(), static_cast<unsigned>(gpu_inds.size()), render_context);
+    }
+
+    const std::vector<BaseMeshRenderCache::Batch>& MeshRenderCache::get_or_create_vertex_color_batches(
+        int lod_index,
+        const void* source,
+        const std::array<rf::ubyte, 3>& sample,
+        const PackedRgb* vertex_colors,
+        BufferWrapper& vertex_buffer,
+        RenderContext& render_context)
+    {
+        const auto& mesh = get_mesh(lod_index);
+        if (mesh.vertex_count == 0) {
+            return mesh.batches;
+        }
+
+        VertexColorKey key{source, sample};
+        auto& variants = vertex_color_batches_[lod_index];
+
+        // Invalidate cached variants for this LOD if the static vertex-color generation has changed
+        const auto generation = current_static_vertex_color_generation();
+        auto& last_gen = last_vertex_color_generations_[lod_index];
+        if (last_gen != generation) {
+            variants.clear();
+            last_gen = generation;
+        }
+
+        auto it = variants.find(key);
+        if (it != variants.end()) {
+            return it->second.batches;
+        }
+
+        // Build a new vertex-color variant for this LOD
+        auto start_it = vertices_.begin() + mesh.vertex_offset;
+        auto end_it = start_it + mesh.vertex_count;
+        std::vector<GpuVertex> updated_vertices(start_it, end_it);
+
+        for (std::size_t i = 0; i < mesh.vertex_count; ++i) {
+            const auto& rgb = vertex_colors[i];
+            rf::Color color{rgb.red, rgb.green, rgb.blue, 255};
+            updated_vertices[i].diffuse = pack_color(color);
+        }
+
+        std::size_t vertex_offset = vertex_buffer.size();
+        vertex_buffer.write(updated_vertices.data(), static_cast<unsigned>(updated_vertices.size()), render_context);
+
+        auto batches = mesh.batches;
+
+        const std::size_t old_first_vertex = base_vertex_offset_ + mesh.vertex_offset;
+        const std::size_t new_first_vertex = vertex_offset;
+        const int base_delta = static_cast<int>(new_first_vertex - old_first_vertex);
+
+        for (auto& batch : batches) {
+            batch.base_vertex += base_delta;
+        }
+
+        return variants
+            .emplace(key, VertexColorVariant{std::move(batches)})
+            .first->second.batches;
     }
 
     struct alignas(16) BoneTransformsBufferData
@@ -196,16 +371,51 @@ namespace df::gr::d3d11
 
         void update_morphed_vertices_buffer(rf::Skeleton* skeleton, int time, RenderContext& render_context);
 
+        const std::vector<GpuCharacterVertex1>& vertices() const
+        {
+            return vertices_;
+        }
+
+        ID3D11Buffer* get_or_create_vertex_color_buffer(
+            int lod_index,
+            const void* source,
+            const std::array<rf::ubyte, 3>& sample,
+            const PackedRgb* vertex_colors,
+            uint64_t generation,
+            ID3D11Device* device);
+
+        bool missing_vertex_colors_logged(int lod_index) const
+        {
+            return missing_vertex_colors_logged_[lod_index];
+        }
+
+        void mark_missing_vertex_colors_logged(int lod_index) const
+        {
+            missing_vertex_colors_logged_[lod_index] = true;
+        }
+
+        ID3D11Buffer* vertex_buffer_1() const
+        {
+            return vertex_buffer_1_;
+        }
+
     private:
         ComPtr<ID3D11Buffer> vertex_buffer_0_;
         ComPtr<ID3D11Buffer> vertex_buffer_1_;
         ComPtr<ID3D11Buffer> morphed_vertex_buffer_0_;
         ComPtr<ID3D11Buffer> index_buffer_;
         BoneTransformsBuffer bone_transforms_buffer_;
+        std::vector<GpuCharacterVertex1> vertices_;
+        mutable std::vector<bool> missing_vertex_colors_logged_;
+        std::vector<std::unordered_map<VertexColorKey, ComPtr<ID3D11Buffer>, VertexColorKeyHasher>> vertex_color_buffers_;
+        mutable std::vector<uint64_t> last_vertex_color_generations_;
     };
 
     CharacterMeshRenderCache::CharacterMeshRenderCache(VifLodMesh* lod_mesh, ID3D11Device* device) :
-        BaseMeshRenderCache(lod_mesh), bone_transforms_buffer_{device}
+        BaseMeshRenderCache(lod_mesh), bone_transforms_buffer_{device},
+        missing_vertex_colors_logged_(lod_mesh->num_levels, false),
+        vertex_color_buffers_(lod_mesh->num_levels),
+        last_vertex_color_generations_(lod_mesh->num_levels, 0)
     {
         std::size_t num_verts = 0;
         std::size_t num_inds = 0;
@@ -230,6 +440,7 @@ namespace df::gr::d3d11
         for (int lod_index = 0; lod_index < lod_mesh->num_levels; ++lod_index) {
             rf::VifMesh* mesh = lod_mesh->meshes[lod_index];
             meshes_[lod_index].batches.reserve(mesh->num_chunks);
+            meshes_[lod_index].vertex_offset = gpu_verts_1.size();
 
             for (int chunk_index = 0; chunk_index < mesh->num_chunks; ++chunk_index) {
                 rf::VifChunk& chunk = mesh->chunks[chunk_index];
@@ -284,11 +495,19 @@ namespace df::gr::d3d11
                     start_index, num_indices, base_vertex,
                     chunk.texture_idx, chunk.mode, double_sided);
             }
+            meshes_[lod_index].vertex_count = gpu_verts_1.size() - meshes_[lod_index].vertex_offset;
         }
         xlog::debug("Creating mesh render buffer - verts {} inds {}", gpu_verts_0.size(), gpu_inds.size());
 
+        vertices_ = std::move(gpu_verts_1);
+
+        // clamp to at least 1 byte to avoid D3D11 error when creating empty buffers (should never happen under normal circumstances anyway)
+        const UINT vb0_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(gpu_verts_0[0]) * gpu_verts_0.size()));
+        const UINT vb1_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(GpuCharacterVertex1) * vertices_.size()));
+        const UINT ib_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(gpu_inds[0]) * gpu_inds.size()));
+
         CD3D11_BUFFER_DESC vb_0_desc{
-            sizeof(gpu_verts_0[0]) * gpu_verts_0.size(),
+            vb0_byte_width,
             D3D11_BIND_VERTEX_BUFFER,
             D3D11_USAGE_IMMUTABLE,
         };
@@ -298,17 +517,17 @@ namespace df::gr::d3d11
         );
 
         CD3D11_BUFFER_DESC vb_1_desc{
-            sizeof(gpu_verts_1[1]) * gpu_verts_1.size(),
+            vb1_byte_width,
             D3D11_BIND_VERTEX_BUFFER,
-            D3D11_USAGE_IMMUTABLE,
+            D3D11_USAGE_DEFAULT,
         };
-        D3D11_SUBRESOURCE_DATA vb_1_subres_data{gpu_verts_1.data(), 0, 0};
+        D3D11_SUBRESOURCE_DATA vb_1_subres_data{vertices_.data(), 0, 0};
         DF_GR_D3D11_CHECK_HR(
             device->CreateBuffer(&vb_1_desc, &vb_1_subres_data, &vertex_buffer_1_)
         );
 
         CD3D11_BUFFER_DESC ib_desc{
-            sizeof(gpu_inds[0]) * gpu_inds.size(),
+            ib_byte_width,
             D3D11_BIND_INDEX_BUFFER,
             D3D11_USAGE_IMMUTABLE,
         };
@@ -316,6 +535,56 @@ namespace df::gr::d3d11
         DF_GR_D3D11_CHECK_HR(
             device->CreateBuffer(&ib_desc, &ib_subres_data, &index_buffer_)
         );
+    }
+
+    ID3D11Buffer* CharacterMeshRenderCache::get_or_create_vertex_color_buffer(
+        int lod_index,
+        const void* source,
+        const std::array<rf::ubyte, 3>& sample,
+        const PackedRgb* vertex_colors,
+        uint64_t generation,
+        ID3D11Device* device)
+    {
+        auto& variants = vertex_color_buffers_[lod_index];
+        if (last_vertex_color_generations_[lod_index] != generation) {
+            variants.clear();
+            last_vertex_color_generations_[lod_index] = generation;
+        }
+
+        VertexColorKey key{source, sample};
+        auto it = variants.find(key);
+        if (it != variants.end()) {
+            return it->second.get();
+        }
+
+        const auto& mesh = get_mesh(lod_index);
+        if (mesh.vertex_count == 0) {
+            return vertex_buffer_1_;
+        }
+
+        auto updated_vertices = vertices_;
+        auto start_it = updated_vertices.begin() + mesh.vertex_offset;
+        for (std::size_t i = 0; i < mesh.vertex_count; ++i) {
+            const auto& rgb = vertex_colors[i];
+            rf::Color color{rgb.red, rgb.green, rgb.blue, 255};
+            start_it[i].diffuse = pack_color(color);
+        }
+
+        const UINT vb1_byte_width = std::max<UINT>(1u, static_cast<UINT>(sizeof(GpuCharacterVertex1) * updated_vertices.size()));
+
+        CD3D11_BUFFER_DESC vb_desc{
+            vb1_byte_width,
+            D3D11_BIND_VERTEX_BUFFER,
+            D3D11_USAGE_DEFAULT,
+        };
+
+        D3D11_SUBRESOURCE_DATA vb_subres_data{updated_vertices.data(), 0, 0};
+        ComPtr<ID3D11Buffer> vertex_buffer;
+        DF_GR_D3D11_CHECK_HR(
+            device->CreateBuffer(&vb_desc, &vb_subres_data, &vertex_buffer)
+        );
+
+        return variants.emplace(key, std::move(vertex_buffer)).first->second.get();
     }
 
     void CharacterMeshRenderCache::update_morphed_vertices_buffer(rf::Skeleton* skeleton, int time, RenderContext& render_context)
@@ -327,8 +596,12 @@ namespace df::gr::d3d11
                 rf::VifChunk& chunk = mesh->chunks[chunk_index];
                 num_verts += chunk.num_vecs;
             }
+
+            const UINT morphed_byte_width =
+                std::max<UINT>(1u, static_cast<UINT>(sizeof(GpuCharacterVertex0) * std::max(0, num_verts)));
+
             CD3D11_BUFFER_DESC morphed_vb_0_desc{
-                sizeof(GpuCharacterVertex0) * num_verts,
+                morphed_byte_width,
                 D3D11_BIND_VERTEX_BUFFER,
                 D3D11_USAGE_DYNAMIC,
                 D3D11_CPU_ACCESS_WRITE,
@@ -365,15 +638,20 @@ namespace df::gr::d3d11
         [[maybe_unused]] StateManager& state_manager, RenderContext& render_context) :
         device_{std::move(device)}, render_context_{render_context},
         v3d_vb_{initial_vb_size, sizeof(GpuVertex), D3D11_BIND_VERTEX_BUFFER, device_},
-        v3d_ib_{initial_ib_size, sizeof(rf::ushort), D3D11_BIND_INDEX_BUFFER, device_}
+        v3d_ib_{initial_ib_size, sizeof(rf::ushort), D3D11_BIND_INDEX_BUFFER, device_},
+        last_static_vertex_color_generation_{current_static_vertex_color_generation()}
     {
         standard_vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::standard);
         character_vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::character);
         pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
+
+        mesh_renderers.push_back(this);
     }
 
     MeshRenderer::~MeshRenderer()
     {
+        mesh_renderers.erase(std::remove(mesh_renderers.begin(), mesh_renderers.end(), this), mesh_renderers.end());
+
         // Note: meshes are already destroyed here
         render_caches_.clear();
     }
@@ -389,6 +667,7 @@ namespace df::gr::d3d11
         render_context_.set_index_buffer(v3d_ib_.buffer());
 
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
+
         draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
     }
 
@@ -416,6 +695,7 @@ namespace df::gr::d3d11
         }
         render_cache->update_bone_transforms_buffer(ci, render_context_);
         render_cache->bind_buffers(render_context_, morphed);
+
         draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
     }
 
@@ -432,7 +712,7 @@ namespace df::gr::d3d11
         return lod_mesh->meshes[lod_index]->tex_handles;
     }
 
-    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, const BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index)
+    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index)
     {
         const int* tex_handles = get_tex_handles(lod_mesh, params, lod_index);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -457,27 +737,87 @@ namespace df::gr::d3d11
             assert(false);
         }
         rf::Color color{255, 255, 255};
+        auto add_clamped = [](const rf::Color& a, const rf::Color& b) {
+            rf::Color sum{};
+            sum.red = std::min<int>(a.red + b.red, 255);
+            sum.green = std::min<int>(a.green + b.green, 255);
+            sum.blue = std::min<int>(a.blue + b.blue, 255);
+            sum.alpha = 255;
+            return sum;
+        };
+
+        bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         if (!ir_scanner) {
-            // Ignore ambient_color from params, it changes sharply and RF uses it only indirectly for
-            // its hard-coded lights
-            float ambient_r, ambient_g, ambient_b;
-            light_get_ambient(&ambient_r, &ambient_g, &ambient_b);
-            color.set(
-                static_cast<rf::ubyte>(ambient_r * 255.0f),
-                static_cast<rf::ubyte>(ambient_g * 255.0f),
-                static_cast<rf::ubyte>(ambient_b * 255.0f),
-                255
-            );
-            // RF uses some hard-coded lights here but for now let's keep it simple
-            color.red += 40;
-            color.green += 40;
-            color.blue += 40;
+            // replicate approximate lighting level from stock game DX9
+            if (is_character_mesh) {
+                color = add_clamped(params.ambient_color, {224, 224, 224, 224});
+            } else { // static meshes
+                if (params.flags & MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) { // third person weapon models
+                    if (g_character_meshes_are_fullbright) {
+                        color = {255, 255, 255, 255};
+                    }
+                    else {
+                        color = params.ambient_color;
+                    }
+                }
+                else {
+                    color = add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
+                }
+            }
         } else {
-            color = params.self_illum;
+            // IR render colours:
+            // characters are rendered using self_illum (derived from dist + body temp in player_fpgun_render_ir)
+            // vehicles are rendered white
+            color = is_character_mesh ? params.self_illum : rf::Color{255, 255, 255, 255};
         }
         color.alpha = static_cast<ubyte>(params.alpha);
 
-        auto& batches = cache.get_batches(lod_index);
+        bool use_vertex_colors = params.vertex_colors != nullptr;
+        render_context_.update_lights();
+
+        const std::vector<BaseMeshRenderCache::Batch>* batches_ptr = &cache.get_batches(lod_index);
+        ID3D11Buffer* character_vertex_buffer_override = nullptr;
+
+        /*
+        bool fullbright_character = is_character_mesh && g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0;
+        if (!use_vertex_colors && is_character_mesh && !fullbright_character) {
+            if (auto mesh_cache = dynamic_cast<const CharacterMeshRenderCache*>(&cache)) {
+                if (!mesh_cache->missing_vertex_colors_logged(lod_index)) {
+                    xlog::warn("Character mesh {} missing vertex colors for LOD {}", static_cast<void*>(lod_mesh), lod_index);
+                    mesh_cache->mark_missing_vertex_colors_logged(lod_index);
+                }
+            }
+        }*/
+
+        if (use_vertex_colors) {
+            if (auto mesh_cache = dynamic_cast<MeshRenderCache*>(&cache)) {
+                const auto& mesh = mesh_cache->get_mesh(lod_index);
+                if (mesh.vertex_count > 0) {
+                    auto vertex_colors = reinterpret_cast<const PackedRgb*>(params.vertex_colors);
+                    std::array<rf::ubyte, 3> first_color{vertex_colors[0].red, vertex_colors[0].green, vertex_colors[0].blue};
+
+                    batches_ptr = &mesh_cache->get_or_create_vertex_color_batches(
+                        lod_index, params.vertex_colors, first_color, vertex_colors, v3d_vb_, render_context_);
+                }
+            }
+            else if (auto mesh_cache = dynamic_cast<CharacterMeshRenderCache*>(&cache)) {
+                const auto& mesh = mesh_cache->get_mesh(lod_index);
+                if (mesh.vertex_count > 0) {
+                    auto vertex_colors = reinterpret_cast<const PackedRgb*>(params.vertex_colors);
+                    std::array<rf::ubyte, 3> first_color{vertex_colors[0].red, vertex_colors[0].green, vertex_colors[0].blue};
+                    uint64_t generation = current_character_vertex_color_generation();
+
+                    character_vertex_buffer_override = mesh_cache->get_or_create_vertex_color_buffer(
+                        lod_index, params.vertex_colors, first_color, vertex_colors, generation, render_context_.device());
+                }
+            }
+        }
+
+        if (character_vertex_buffer_override) {
+            render_context_.set_vertex_buffer(character_vertex_buffer_override, sizeof(GpuCharacterVertex1), 1);
+        }
+
+        const auto& batches = *batches_ptr;
 
         for (auto& b : batches) {
             // ccrunch tool chunkifies mesh and inits render mode flags
@@ -552,6 +892,52 @@ namespace df::gr::d3d11
 
         v3d_vb_.clear();
         v3d_ib_.clear();
+
+        reset_static_vertex_color_tracking();
+    }
+
+    void MeshRenderer::reset_static_vertex_color_tracking()
+    {
+        static_vertex_color_generation = 1;
+        last_static_vertex_color_generation_ = current_static_vertex_color_generation();
+        xlog::debug(
+            "D3D11 renderer {}: reset static vertex color tracking to generation {}",
+            static_cast<const void*>(this),
+            last_static_vertex_color_generation_);
+    }
+
+    bool MeshRenderer::has_cache(const rf::VifLodMesh* lod_mesh) const
+    {
+        return render_caches_.find(const_cast<rf::VifLodMesh*>(lod_mesh)) != render_caches_.end();
+    }
+
+    void MeshRenderer::handle_static_vertex_color_state_change(rf::VifLodMesh* changed_lod_mesh, uint64_t generation)
+    {
+        if (last_static_vertex_color_generation_ == generation) {
+            return;
+        }
+
+        const bool target_cached = changed_lod_mesh && has_cache(changed_lod_mesh);
+        const std::size_t cached_count = render_caches_.size();
+
+        std::string cache_action;
+        if (cached_count == 0) {
+            cache_action = "no cached meshes to flush";
+        } else {
+            cache_action = "flushing " + std::to_string(cached_count) + " cached mesh(es)";
+            flush_caches();
+        }
+
+        xlog::debug(
+            "D3D11 renderer {}: static vertex colors generation {} -> {} (mesh {} [{}]) - {}",
+            static_cast<const void*>(this),
+            last_static_vertex_color_generation_,
+            generation,
+            static_cast<const void*>(changed_lod_mesh),
+            target_cached ? "cached" : "not cached",
+            cache_action);
+
+        last_static_vertex_color_generation_ = generation;
     }
 
     BufferWrapper::BufferWrapper(unsigned initial_capacity, unsigned el_size, UINT bind_flag, ID3D11Device* device) :

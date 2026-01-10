@@ -1,6 +1,7 @@
 #include "endgame_votes.h"
 #include <xlog/xlog.h>
 #include <thread>
+#include <common/version/version.h>
 #include "../main/main.h"
 #include "../misc/misc.h"
 #include "../hud/multi_scoreboard.h"
@@ -69,7 +70,7 @@ void async_submit_vote(FactionFilesClient::VoteInfo vote_info)
         //xlog::info("Using vote URL: {}", vote_url);
 
         // Create HTTP session
-        HttpSession session("Alpine Faction v1.2.0 Vote");
+        HttpSession session(AF_USER_AGENT_SUFFIX("Vote"));
 
         try {
             session.set_connect_timeout(3000);

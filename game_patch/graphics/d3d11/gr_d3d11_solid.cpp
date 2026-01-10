@@ -13,6 +13,7 @@
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/level.h"
 #include "../../os/console.h"
+#include "../../misc/misc.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_shader.h"
@@ -36,7 +37,8 @@ namespace df::gr::d3d11
     static auto& geo_cache_rooms = addr_as_ref<GRoom*[256]>(0x01375DB4);
     static auto& geo_cache_num_rooms = addr_as_ref<int>(0x013761B8);
     static auto& sky_room_center = addr_as_ref<Vector3>(0x0088FB10);
-    static auto& sky_room_offset = addr_as_ref<rf::Vector3>(0x0087BB00);
+    static auto& sky_room_offset = addr_as_ref<Vector3>(0x0087BB00);
+    static auto& sky_room_orient = addr_as_ref<Matrix3*>(0x009BB56C);
 
     static auto& set_currently_rendered_room = addr_as_ref<void (GRoom *room)>(0x004D3350);
 
@@ -221,7 +223,8 @@ namespace df::gr::d3d11
 
         geometry_buffers_.bind_buffers(render_context);
         for (SolidBatch& b : batches) {
-            render_context.set_mode(b.mode);
+            bool lightmap_only = rf::gr::show_lightmaps && what != FaceRenderType::alpha;
+            render_context.set_mode(b.mode, {255, 255, 255, 255}, lightmap_only);
             render_context.set_textures(b.textures[0], b.textures[1]);
             //xlog::warn("DrawIndexed {} {}", b.num_indices, b.start_index);
             render_context.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
@@ -317,6 +320,10 @@ namespace df::gr::d3d11
 
     void GRenderCacheBuilder::add_face(GFace* face, GSolid* solid)
     {
+        // HACKFIX: fix skybox rendering issue in dm-rfu-friday.rfl caused by "Show Sky" flag being set on skybox faces
+        if (is_sky_ && face->attributes.is_show_sky() && string_iequals(rf::level.filename, "dm-rfu-friday.rfl")) {
+            face->attributes.flags &= ~FACE_SHOW_SKY;
+        }
         if (!should_render_face(face)) {
             return;
         }
@@ -418,6 +425,9 @@ namespace df::gr::d3d11
             std::size_t start_index = ib_data.size();
             std::size_t base_vertex = vb_data.size();
             for (DecalPoly* dp : dps) {
+                GDecal* decal = dp->my_decal;
+                ubyte alpha = rfl_version_minimum(304) ? decal->alpha : 255;
+                int diffuse = pack_color(Color{255, 255, 255, alpha});
                 auto face = dp->face;
                 auto fvert = face->edge_loop;
                 auto face_start_index = static_cast<ushort>(vb_data.size() - base_vertex);
@@ -429,7 +439,7 @@ namespace df::gr::d3d11
                     gpu_vert.z = fvert->vertex->pos.z;
                     Vector3 normal = calculate_face_vertex_normal(fvert, face);
                     gpu_vert.norm = {normal.x, normal.y, normal.z};
-                    gpu_vert.diffuse = 0xFFFFFFFF;
+                    gpu_vert.diffuse = diffuse;
                     gpu_vert.u0 = dp->uvs[fvert_index].x;
                     gpu_vert.v0 = dp->uvs[fvert_index].y;
                     gpu_vert.u0_pan_speed = 0.0f;
@@ -467,6 +477,7 @@ namespace df::gr::d3d11
         RoomRenderCache(rf::GSolid* solid, rf::GRoom* room, ID3D11Device* device);
         ~RoomRenderCache() {}
         void render(FaceRenderType render_type, ID3D11Device* device, RenderContext& context);
+        void mark_after_boolean();
 
         rf::GRoom* room() const
         {
@@ -528,6 +539,13 @@ namespace df::gr::d3d11
 
         if (cache_) {
             cache_.value().render(render_type, context);
+        }
+    }
+
+    void RoomRenderCache::mark_after_boolean()
+    {
+        if (state_ == 1) {
+            state_ = 2;
         }
     }
 
@@ -649,7 +667,7 @@ namespace df::gr::d3d11
             room_cache_.push_back(std::make_unique<RoomRenderCache>(solid, room, device_));
             cache = room_cache_.back().get();
             room->geo_cache = reinterpret_cast<GCache*>(cache);
-            geo_cache_rooms[geo_cache_num_rooms++] = room;
+            geo_cache_rooms_.push_back(room);
         }
         return cache;
     }
@@ -688,15 +706,37 @@ namespace df::gr::d3d11
         room_cache_.clear();
         detail_render_cache_.clear();
         mover_render_cache_.clear();
+        geo_cache_rooms_.clear();
         geo_cache_num_rooms = 0;
+    }
+
+    void SolidRenderer::reset_cache_after_boolean()
+    {
+        for (rf::GRoom* room : geo_cache_rooms_) {
+            auto cache = reinterpret_cast<RoomRenderCache*>(room->geo_cache);
+            if (cache) {
+                cache->mark_after_boolean();
+            }
+        }
     }
 
     void SolidRenderer::render_sky_room(GRoom *room)
     {
         xlog::trace("Rendering sky room {} cache {}", room->room_index, room->geo_cache);
-        before_render(sky_room_offset, rf::identity_matrix);
+        render_context_.update_lights(true);
+        if (const Matrix3* skybox_orient = sky_room_orient) {
+            Matrix3 skybox_orient_inv = *skybox_orient;
+            skybox_orient_inv.inverse();
+
+            const Vector3 rotated_center = skybox_orient_inv.transform_vector(sky_room_center);
+            before_render(sky_room_offset + sky_room_center - rotated_center, skybox_orient_inv);
+        }
+        else {
+            before_render(sky_room_offset, rf::identity_matrix);
+        }
         render_room_faces(rf::level.geometry, room, FaceRenderType::opaque);
         render_room_faces(rf::level.geometry, room, FaceRenderType::alpha);
+        render_context_.update_lights();
     }
 
     void SolidRenderer::render_movable_solid(GSolid* solid, const Vector3& pos, const Matrix3& orient)
@@ -786,8 +826,10 @@ namespace df::gr::d3d11
 
     void SolidRenderer::page_in_solid(rf::GSolid* solid)
     {
-        for (rf::GRoom* room: solid->cached_normal_room_list) {
-            get_or_create_normal_room_cache(solid, room);
+        if (g_alpine_game_config.precache_rooms) {
+            for (rf::GRoom* room : solid->cached_normal_room_list) {
+                get_or_create_normal_room_cache(solid, room);
+            }
         }
         for (rf::GRoom* room: solid->cached_detail_room_list) {
             get_or_create_detail_room_cache(solid, room);

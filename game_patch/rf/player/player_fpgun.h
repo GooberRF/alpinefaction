@@ -52,6 +52,28 @@ namespace rf
     };
     static_assert(sizeof(PlayerFpgunData) == 0x104);
 
+    enum WeaponAction : int
+    {
+        WA_FIRE = 0x0,
+        WA_ALT_FIRE = 0x1,
+        WA_FIRE_FAIL = 0x2,
+        WA_IDLE_1 = 0x3,
+        WA_IDLE_2 = 0x4,
+        WA_IDLE_3 = 0x5,
+        WA_DRAW = 0x6,
+        WA_HOLSTER = 0x7,
+        WA_RELOAD = 0x8,
+        WA_JUMP = 0x9,
+        WA_CUSTOM_START = 0xA,
+        WA_CUSTOM_LEAVE = 0xB,
+    };
+
+    static auto& player_fpgun_action_anim_exists = addr_as_ref<bool(int weapon_class, WeaponAction action)>(0x004A9EC0);
+    static auto& player_fpgun_action_anim_is_playing = addr_as_ref<bool(Player* pp, WeaponAction action)>(0x004AD8C0);
+    static auto& player_fpgun_play_anim = addr_as_ref<void(Player* pp, WeaponAction action)>(0x004A9380);
+    static auto& player_fpgun_reset_idle_timeout = addr_as_ref<void(Player* pp)>(0x004AD980);
+    static auto& player_fpgun_stop_idle_actions = addr_as_ref<void(Player* pp)>(0x004A9FD0);
+    static auto& player_fpgun_locked_on = addr_as_ref<bool(Player* pp)>(0x004ACEA0);
     static auto& player_fpgun_set_state = addr_as_ref<void(Player* player, int weapon_type)>(0x004AA230);
     static auto& player_fpgun_process = addr_as_ref<void(Player* player)>(0x004AA6D0);
     static auto& player_fpgun_is_zoomed = addr_as_ref<bool(Player* player)>(0x004ACE90);

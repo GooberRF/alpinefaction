@@ -6,10 +6,11 @@
 #include <functional>
 #include <stdexcept>
 #include <xlog/xlog.h>
+#include <common/version/version.h>
 #include "../os/console.h"
 #include "faction_files.h"
 
-static const char level_download_agent_name[] = "Alpine Faction v1.2.0 Autodl";
+static const char level_download_agent_name[] = AF_USER_AGENT_SUFFIX("Autodl");
 static const char level_download_base_url[] = "https://autodl.factionfiles.com";
 
 FactionFilesClient::FactionFilesClient() : session_{level_download_agent_name}

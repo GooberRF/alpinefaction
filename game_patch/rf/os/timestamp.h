@@ -64,6 +64,11 @@ namespace rf
             return AddrCaller{0x004FA590}.this_call<int>(this);
         }
 
+        [[nodiscard]] int time_since() const
+        {
+            return AddrCaller{0x004FA5D0}.this_call<int>(this);
+        }
+
         [[nodiscard]] bool valid() const
         {
             return AddrCaller{0x004FA5E0}.this_call<bool>(this);

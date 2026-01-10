@@ -165,6 +165,13 @@ enum RF_GameType
     RF_GT_DM     = 0x00,
     RF_GT_CTF    = 0x01,
     RF_GT_TEAMDM = 0x02,
+    // Below types are supported in Alpine v1.2+, but game_info packets
+    // delivered to legacy clients uses 0x02 instead to prevent them crashing
+    RF_GT_KOTH = 0x03,
+    RF_GT_DC = 0x04,
+    RF_GT_REV = 0x05,
+    RF_GT_RUN = 0x06,
+    RF_GT_ESC = 0x07,
 };
 
 enum RF_ServerFlags
@@ -605,11 +612,12 @@ enum RF_EntityAmpFlags
 
 enum RF_EntityStateFlags
 {
-    RF_AF_HIDDEN_WEAPON = 0x01, // not used in multi
-    RF_AF_CROUCH        = 0x04,
-    RF_AF_ZOOM          = 0x08,
-    RF_AF_WEAPON_FIRE   = 0x10, // used only for remote charges and granades
-    RF_AF_WEAPON_FIRE2  = 0x20, // unknown
+    RF_ES_WEAPON_HIDDEN = 0x01,
+    RF_ES_WEAPON_CUSTOM_MODE = 0x02,
+    RF_ES_CROUCHING = 0x04,
+    RF_ES_ZOOMING = 0x08,
+    RF_ES_ATTACK_ANIM0_ACTIVE = 0x10, // replicated attack anim slot 0 state/intent (used by grenade/remote charge/flamethrower)
+    RF_ES_ATTACK_ANIM1_ACTIVE = 0x20, // replicated attack anim slot 1 state/intent
 };
 
 struct RF_ObjectUpdate

@@ -11,6 +11,7 @@
 #include <patch_common/CallHook.h>
 #include <vector>
 #include <format>
+#include <optional>
 
 std::vector<int> g_players_to_kick;
 
@@ -21,32 +22,42 @@ void extend_round_time(int minutes)
 
 void restart_current_level()
 {
-    rf::multi_change_level(rf::level.filename.c_str());
+    std::optional<ManualRulesOverride> manual_rules_override;
+    if (g_manual_rules_override)
+        manual_rules_override = *g_manual_rules_override;
+
+    multi_change_level_alpine(rf::level.filename.c_str());
+
+    if (manual_rules_override)
+        set_manual_rules_override(std::move(*manual_rules_override));
 }
 
 void load_next_level()
 {
-    rf::multi_change_level(nullptr);
+    clear_manual_rules_override();
+    multi_change_level_alpine(nullptr);
 }
 
 void load_prev_level()
 {
+    clear_manual_rules_override();
     rf::netgame.current_level_index--;
     if (rf::netgame.current_level_index < 0) {
         rf::netgame.current_level_index = rf::netgame.levels.size() - 1;
     }
     if (g_prev_level.empty()) {
         // this is the first level running - use previous level from rotation
-        rf::multi_change_level(rf::netgame.levels[rf::netgame.current_level_index]);
+        multi_change_level_alpine(rf::netgame.levels[rf::netgame.current_level_index].c_str());
     }
     else {
-        rf::multi_change_level(g_prev_level.c_str());
+        multi_change_level_alpine(g_prev_level.c_str());
     }
 }
 
 void load_rand_level()
 {
-    rf::multi_change_level(get_rand_level_filename());
+    clear_manual_rules_override();
+    multi_change_level_alpine(get_rand_level_filename());
 }
 
 bool validate_is_server()
@@ -73,7 +84,7 @@ ConsoleCommand2 map_ext_cmd{
         if (validate_is_server() && validate_not_limbo()) {
             int minutes = minutes_opt.value_or(5);
             extend_round_time(minutes);
-            std::string msg = std::format("\xA6 Round extended by {} minutes", minutes);
+            std::string msg = std::format("Round extended by {} minutes", minutes);
             rf::multi_chat_say(msg.c_str(), false);
         }
     },
@@ -85,7 +96,7 @@ ConsoleCommand2 map_rest_cmd{
     "map_rest",
     []() {
         if (validate_is_server() && validate_not_limbo()) {
-            rf::multi_chat_say("\xA6 Restarting current level", false);
+            rf::multi_chat_say("Restarting current level", false);
             restart_current_level();
         }
     },
@@ -96,7 +107,7 @@ ConsoleCommand2 map_next_cmd{
     "map_next",
     []() {
         if (validate_is_server() && validate_not_limbo()) {
-            rf::multi_chat_say("\xA6 Loading next level", false);
+            rf::multi_chat_say("Loading next level", false);
             load_next_level();
         }
     },
@@ -107,7 +118,7 @@ ConsoleCommand2 map_rand_cmd{
     "map_rand",
     []() {
         if (validate_is_server() && validate_not_limbo()) {
-            rf::multi_chat_say("\xA6 Loading random level from rotation", false);
+            rf::multi_chat_say("Loading random level from rotation", false);
             load_rand_level();
         }
     },
@@ -118,19 +129,19 @@ ConsoleCommand2 map_prev_cmd{
     "map_prev",
     []() {
         if (validate_is_server() && validate_not_limbo()) {
-            rf::multi_chat_say("\xA6 Loading previous level", false);
+            rf::multi_chat_say("Loading previous level", false);
             load_prev_level();
         }
     },
     "Load previous level",
 };
 
-void kick_player_delayed(rf::Player* player)
-{
+void kick_player_delayed(const rf::Player* const player) {
+    rf::console::print("{}{}", player->name, rf::strings::was_kicked);
     g_players_to_kick.push_back(player->net_data->player_id);
 }
 
-CallHook<void(rf::Player*)> multi_kick_player_hook{0x0047B9BD, kick_player_delayed};
+CallHook<void(const rf::Player*)> multi_kick_player_hook{0x0047B9BD, kick_player_delayed};
 
 void process_delayed_kicks()
 {

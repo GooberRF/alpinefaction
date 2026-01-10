@@ -170,7 +170,9 @@ int LauncherApp::Run()
     }
 
     // Check for updates
-    UpdateChecker::CheckForUpdates();
+    if (UpdateChecker::CheckForUpdates()) {
+        return 0;
+    }
 
     // Show main dialog
     xlog::info("Showing main dialog");
@@ -188,7 +190,7 @@ bool LauncherApp::ValidateAFLinkToken(const std::string& fflink_token)
     std::string verify_url = "https://link.factionfiles.com/aflauncher/v1/link_check.php?token=" + fflink_token;
     //xlog::info("AFLink validity check URL: {}", verify_url);
 
-    HttpSession session("Alpine Faction v1.2.0 Link");
+    HttpSession session(AF_USER_AGENT_SUFFIX("Link"));
 
     try {
         session.set_connect_timeout(3000);
@@ -293,12 +295,12 @@ bool LauncherApp::LaunchGame(HWND hwnd, const char* mod_name)
         ss << "Game directory validation has failed! File " << e.get_file_name() << " has unrecognized hash sum.\n\n"
             << "SHA1:\n" << e.get_sha1();
         if (e.get_file_name() == "tables.vpp") {
-            ss << "\n\nIt can prevent multiplayer functionality or entire game from working properly.\n"
-                << "If your game has not been updated to 1.20 please do it first. If this warning still shows up "
-                << "replace your tables.vpp file with original 1.20 NA " << e.get_file_name() << " available on FactionFiles.com.\n"
-                << "Do you want to open download page?";
+            ss << "\n\nThis will prevent the game from functioning properly.\n"
+                << "If your game has not been updated to 1.20, please do that first. If this warning still shows up, "
+                << "replace your tables.vpp file with the original 1.20 NA " << e.get_file_name() << " available on FactionFiles.com.\n"
+                << "Do you want to open the download page?";
             std::string str = ss.str();
-            download_url = "https://www.factionfiles.com/ff.php?action=file&id=517871";
+            download_url = "https://www.factionfiles.com/ff.php?action=file&id=4729";
             int result = Message(hwnd, str.c_str(), nullptr, MB_YESNOCANCEL | MB_ICONWARNING);
             if (result == IDYES) {
                 ShellExecuteA(hwnd, "open", download_url.c_str(), nullptr, nullptr, SW_SHOW);
@@ -330,17 +332,17 @@ bool LauncherApp::LaunchGame(HWND hwnd, const char* mod_name)
             nullptr, MB_OK | MB_ICONERROR);
     }
     catch (FileNotFoundException&) {
-        Message(hwnd, "Game executable has not been found. Please set a proper path in Options.",
+        Message(hwnd, "Game executable has not been found. Please set the correct path in Options.",
                 nullptr, MB_OK | MB_ICONERROR);
     }
     catch (FileHashVerificationException &e) {
         std::stringstream ss;
         ss << "Unsupported game executable has been detected!\n\n"
             << "SHA1:\n" << e.get_sha1() << "\n\n"
-            << "Alpine Faction supports only unmodified Red Faction 1.20 NA executable.\n"
-            << "If your game has not been updated to 1.20 please do it first. If the error still shows up "
-            << "replace your RF.exe file with original 1.20 NA RF.exe available on FactionFiles.com.\n"
-            << "Click OK to open download page.";
+            << "Alpine Faction requires an unmodified Red Faction 1.20 NA executable.\n"
+            << "If your game has not been updated to 1.20, please do that first. If this error still shows up, "
+            << "replace your RF.exe file with the original 1.20 NA RF.exe available on FactionFiles.com.\n"
+            << "Click OK to open the download page.";
         std::string str = ss.str();
         if (Message(hwnd, str.c_str(), nullptr, MB_OKCANCEL | MB_ICONERROR) == IDOK) {
             ShellExecuteA(hwnd, "open", "https://www.factionfiles.com/ff.php?action=file&id=517545", nullptr, nullptr,

@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
 #include <float.h>
 #include "../../rf/gr/gr.h"
+#include "../../rf/gr/gr_light.h"
 #include "../../rf/os/os.h"
 #include "../../rf/v3d.h"
 #include "../../rf/character.h"
@@ -11,6 +13,7 @@
 #include "../../rf/mover.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
+#include "../../misc/misc.h"
 #include "gr_d3d11.h"
 
 namespace df::gr::d3d11
@@ -48,6 +51,11 @@ namespace df::gr::d3d11
         xlog::info("Initializing D3D11");
         renderer.emplace(hwnd);
         rf::os_add_msg_handler(msg_handler);
+
+        // set these here to prevent a crash during realtime creation or clearing of bitmaps
+        // stock game sets these in gr_d3d_init_device
+        rf::bm::max_d3d_texture_resolution_h = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+        rf::bm::max_d3d_texture_resolution_w = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 
         // Switch FPU to single-precision mode for backward compatibility
         // Direct3D 8/9 does it automatically unless D3DCREATE_FPU_PRESERVE flag is used,
@@ -146,6 +154,13 @@ namespace df::gr::d3d11
         renderer->texture_remove_ref(bm_handle);
     }
 
+    void update_texture_filtering()
+    {
+        if (renderer) {
+            renderer->reset_sampler_states();
+        }
+    }
+
     void render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
     {
         renderer->render_solid(solid, rooms, num_rooms);
@@ -175,6 +190,83 @@ namespace df::gr::d3d11
 
     void render_character_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, int lod_index, const rf::MeshRenderParams& params)
     {
+        if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels) {
+            bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) == 0;
+            bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character;
+
+            if (synthesize_colors) {
+                rf::MeshRenderParams params_with_vertex_colors = params;
+
+                float ambient_r = static_cast<float>(params.ambient_color.red);
+                float ambient_g = static_cast<float>(params.ambient_color.green);
+                float ambient_b = static_cast<float>(params.ambient_color.blue);
+                float lvl_ambient_r = static_cast<float>(rf::level.ambient_light.red);
+                float lvl_ambient_g = static_cast<float>(rf::level.ambient_light.green);
+                float lvl_ambient_b = static_cast<float>(rf::level.ambient_light.blue);
+
+                // if mesh amb color is full white it is usually because player is standing on a mover or a surface
+                // without lightmaps. Take a guess on a reasonable light level for the map so it doesn't look as ugly
+                if (ambient_r == 255 && ambient_g == 255 && ambient_b == 255) {
+                    ambient_r = lvl_ambient_r + 64.0f;
+                    ambient_g = lvl_ambient_g + 64.0f;
+                    ambient_b = lvl_ambient_b + 64.0f;
+                }
+
+                constexpr float scale = 1.5f;
+                constexpr float bias = 32.0f;
+
+                params_with_vertex_colors.ambient_color.red =
+                    static_cast<rf::ubyte>(std::clamp(ambient_r * scale + bias, 0.0f, 255.0f));
+                params_with_vertex_colors.ambient_color.green =
+                    static_cast<rf::ubyte>(std::clamp(ambient_g * scale + bias, 0.0f, 255.0f));
+                params_with_vertex_colors.ambient_color.blue =
+                    static_cast<rf::ubyte>(std::clamp(ambient_b * scale + bias, 0.0f, 255.0f));
+
+                //xlog::warn("built amb color {},{},{}", params_with_vertex_colors.ambient_color.red, params_with_vertex_colors.ambient_color.green, params_with_vertex_colors.ambient_color.blue);
+
+                rf::VifMesh* lod_mesh_level = lod_mesh->meshes[lod_index];
+                int total_vertices = 0;
+                for (int chunk_index = 0; chunk_index < lod_mesh_level->num_chunks; ++chunk_index) {
+                    total_vertices += lod_mesh_level->chunks[chunk_index].num_vecs;
+                }
+
+                struct ScratchVertexColors
+                {
+                    std::vector<rf::ubyte> data;
+                    rf::Color last_color{0, 0, 0, 255};
+                    std::size_t last_vertex_count = 0;
+                };
+
+                static thread_local ScratchVertexColors scratch_vertex_colors;
+                scratch_vertex_colors.data.resize(static_cast<std::size_t>(total_vertices) * 3);
+
+                rf::Color base_color = params_with_vertex_colors.ambient_color;
+                if (fullbright_character) {
+                    base_color = {255, 255, 255, 255};
+                }
+
+                bool color_changed =
+                    scratch_vertex_colors.last_color.red != base_color.red ||
+                    scratch_vertex_colors.last_color.green != base_color.green ||
+                    scratch_vertex_colors.last_color.blue != base_color.blue ||
+                    scratch_vertex_colors.last_vertex_count != static_cast<std::size_t>(total_vertices);
+
+                if (color_changed) {
+                    for (std::size_t i = 0; i < scratch_vertex_colors.data.size(); i += 3) {
+                        scratch_vertex_colors.data[i] = base_color.red;
+                        scratch_vertex_colors.data[i + 1] = base_color.green;
+                        scratch_vertex_colors.data[i + 2] = base_color.blue;
+                    }
+                    scratch_vertex_colors.last_color = base_color;
+                    scratch_vertex_colors.last_vertex_count = static_cast<std::size_t>(total_vertices);
+                }
+
+                params_with_vertex_colors.vertex_colors = scratch_vertex_colors.data.data();
+                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors);
+                return;
+            }
+        }
+
         renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
     }
 
@@ -192,6 +284,13 @@ namespace df::gr::d3d11
     {
         if (renderer) {
             renderer->clear_solid_cache();
+        }
+    }
+
+    void reset_solid_render_cache_after_boolean()
+    {
+        if (renderer) {
+            renderer->reset_solid_cache_after_boolean();
         }
     }
 
@@ -261,10 +360,10 @@ namespace df::gr::d3d11
         },
     };
 
-    static CodeInjection vif_lod_mesh_dtor_injection{
+    static CodeInjection vif_lod_mesh_destroy_injection{
         0x005695D0,
         [](auto& regs) {
-            rf::VifLodMesh* lod_mesh = regs.ecx;
+            const auto lod_mesh = addr_as_ref<rf::VifLodMesh*>(regs.esp + 4);
             if (renderer) {
                 renderer->clear_vif_cache(lod_mesh);
             }
@@ -299,6 +398,7 @@ namespace df::gr::d3d11
                 for (rf::MoverBrush& mb : DoublyLinkedList{rf::mover_brush_list}) {
                     renderer->page_in_movable_solid(mb.geometry);
                 }
+                renderer->reset_static_vertex_color_tracking();
             }
         },
     };
@@ -321,7 +421,7 @@ void gr_d3d11_apply_patch()
     gr_d3d_setup_3d_injection.install();
     gr_d3d_setup_fustrum_injection.install();
     vif_lod_mesh_ctor_injection.install();
-    vif_lod_mesh_dtor_injection.install();
+    vif_lod_mesh_destroy_injection.install();
     v3d_page_in_injection.install();
     character_instance_page_in_injection.install();
     level_page_in_injection.install();
@@ -330,6 +430,7 @@ void gr_d3d11_apply_patch()
     // Do not use built-in render cache
     AsmWriter{0x004F0B90}.jmp(clear_solid_render_cache); // g_render_cache_clear
     AsmWriter{0x004F0B20}.ret(); // g_render_cache_init
+    AsmWriter{0x004F0BD0}.jmp(reset_solid_render_cache_after_boolean); // g_render_cache_reset_after_boolean
 
     using namespace asm_regs;
     AsmWriter{0x00544FC0}.jmp(flip); // gr_d3d_flip

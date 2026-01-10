@@ -50,7 +50,10 @@ namespace rf
         AF_ACTION_COMMAND_MENU = 0x9,
         AF_ACTION_PING_LOCATION = 0xA,
         AF_ACTION_SPECTATE_MENU = 0xB,
-        AF_ACTION_NO_AUTOSWITCH = 0xC
+        AF_ACTION_NO_AUTOSWITCH = 0xC,
+        AF_ACTION_REMOTE_SERVER_CFG = 0xD,
+        AF_ACTION_INSPECT_WEAPON = 0xE,
+        _AF_ACTION_LAST_VARIANT = AF_ACTION_INSPECT_WEAPON
     };
 
     struct ControlConfigItem

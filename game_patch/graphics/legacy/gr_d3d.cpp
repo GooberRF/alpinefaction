@@ -114,23 +114,25 @@ CodeInjection gr_d3d_init_error_patch{
     0x00545CBD,
     [](auto& regs) {
         auto hr = static_cast<HRESULT>(regs.eax);
-        xlog::error("D3D CreateDevice failed (hr 0x{:x} - {})", hr, get_d3d_error_str(hr));
+        xlog::error("D3D CreateDevice failed (hr {})", get_d3d_error_str(hr));
 
-        auto text = std::format("Failed to create Direct3D device object - error 0x{:X} ({}).\n"
+        auto text = std::format("Failed to create Direct3D device object - error {}.\n"
                                  "A critical error has occurred and the program cannot continue.\n"
                                  "Press OK to exit the program",
-                                 hr, get_d3d_error_str(hr));
+                                 get_d3d_error_str(hr));
 
         hr = rf::gr::d3d::d3d->CheckDeviceType(rf::gr::d3d::adapter_idx, D3DDEVTYPE_HAL, rf::gr::d3d::pp.BackBufferFormat,
             rf::gr::d3d::pp.BackBufferFormat, rf::gr::d3d::pp.Windowed);
         if (FAILED(hr)) {
-            xlog::error("CheckDeviceType for format {} failed: {:x}", static_cast<unsigned>(rf::gr::d3d::pp.BackBufferFormat), hr);
+            xlog::error("CheckDeviceType for format {} failed: {}",
+                static_cast<unsigned>(rf::gr::d3d::pp.BackBufferFormat), get_d3d_error_str(hr));
         }
 
         hr = rf::gr::d3d::d3d->CheckDeviceFormat(rf::gr::d3d::adapter_idx, D3DDEVTYPE_HAL, rf::gr::d3d::pp.BackBufferFormat,
             D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_SURFACE, rf::gr::d3d::pp.AutoDepthStencilFormat);
         if (FAILED(hr)) {
-            xlog::error("CheckDeviceFormat for depth-stencil format {} failed: {:x}", static_cast<unsigned>(rf::gr::d3d::pp.AutoDepthStencilFormat), hr);
+            xlog::error("CheckDeviceFormat for depth-stencil format {} failed: {}",
+                static_cast<unsigned>(rf::gr::d3d::pp.AutoDepthStencilFormat), get_d3d_error_str(hr));
         }
 
         if (!(rf::gr::d3d::device_caps.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT)) {
@@ -200,7 +202,7 @@ CodeInjection update_pp_hook{
                 rf::gr::d3d::pp.MultiSampleType = multi_sample_type;
             }
             else {
-                xlog::warn("MSAA not supported (0x{:x})...", hr);
+                xlog::warn("MSAA not supported ({})...", get_d3d_error_str(hr));
                 g_game_config.msaa = D3DMULTISAMPLE_NONE;
             }
         }
@@ -218,8 +220,6 @@ CodeInjection update_pp_hook{
 
         // Override depth format to avoid card specific hackfixes that makes it different on Nvidia and AMD
         rf::gr::d3d::pp.AutoDepthStencilFormat = determine_depth_buffer_format(rf::gr::d3d::pp.BackBufferFormat);
-
-        gr_d3d_texture_init();
     },
 };
 
@@ -483,6 +483,43 @@ CodeInjection gr_d3d_lock_crash_fix{
     },
 };
 
+FunHook<
+    void(int, int, int, int, int, int, int, int, int, bool, bool, rf::gr::Mode)
+> gr_d3d_bitmap_hook{
+    0x00550AA0,
+    [] (
+        const int bm_handle,
+        const int x,
+        const int y,
+        const int w,
+        const int h,
+        const int sx,
+        const int sy,
+        const int sw,
+        const int sh,
+        const bool flip_x,
+        const bool flip_y,
+        const rf::gr::Mode mode
+    ) {
+        // `gr_d3d_bitmap` calls `gr_d3d_set_state` too late.
+        rf::gr::d3d::set_state(mode);
+        gr_d3d_bitmap_hook.call_target(
+            bm_handle,
+            x,
+            y,
+            w,
+            h,
+            sx,
+            sy,
+            sw,
+            sh,
+            flip_x,
+            flip_y,
+            mode
+        );
+    },
+};
+
 CodeInjection gr_d3d_bitmap_patch_1{
     0x00550CD6,
     [](auto& regs) {
@@ -603,7 +640,7 @@ CodeInjection gr_d3d_init_load_library_injection{
     0x005459AE,
     [](auto& regs) {
         if (g_game_config.renderer == GameConfig::Renderer::d3d9) {
-            auto d3d8to9_path = get_module_dir(g_hmodule) + "\\d3d8to9.dll";
+            auto d3d8to9_path = get_module_dir(g_hmodule) + "d3d8to9.dll";
             xlog::info("Loading d3d8to9.dll: {}", d3d8to9_path);
             HMODULE d3d8to9_module = LoadLibraryA(d3d8to9_path.c_str());
             if (d3d8to9_module) {
@@ -827,6 +864,7 @@ void gr_d3d_apply_patch()
     // gr_d3d_set_state, gr_d3d_set_state_and_texture and gr_d3d_tcache_set
     gr_d3d_bitmap_patch_1.install();
     gr_d3d_bitmap_patch_2.install();
+    gr_d3d_bitmap_hook.install();
     gr_d3d_line_patch_1.install();
     gr_d3d_line_patch_2.install();
     gr_d3d_line_vertex_internal_patch_1.install();

@@ -4,6 +4,7 @@
 #include <patch_common/AsmWriter.h>
 #include <unordered_map>
 #include "multi.h"
+#include "gametype.h"
 #include "endgame_votes.h"
 #include "../main/main.h"
 #include "server.h"
@@ -15,6 +16,8 @@
 #include "../rf/weapon.h"
 #include "../hud/multi_spectate.h"
 #include "server_internal.h"
+#include "alpine_packets.h"
+#include "../misc/player.h"
 
 bool kill_messages = true;
 
@@ -35,102 +38,120 @@ public:
     {
         score_to_weapon_map.clear();
 
-        if (g_additional_server_config.gungame.dynamic_progression) {
-            // Create a map to group weapon levels by tiers (kill_level)
+        const auto& gg = g_alpine_server_config_active_rules.gungame;
+        if (!gg.enabled) {
+            xlog::warn("GunGame disabled because score -> weapon map is empty");
+            return;
+        }
+
+        const int effective_kill_limit = (gg.final_level ? gg.final_level->kills :
+            (!multi_game_type_is_team_type(rf::multi_get_game_type())
+                ? g_alpine_server_config_active_rules.individual_kill_limit
+                : g_alpine_server_config_active_rules.team_kill_limit)
+            );
+
+        if (gg.dynamic_progression) {
+            xlog::info("Initializing GunGame (Dynamic) for effective kill limit {}", effective_kill_limit);
+
+            // Group weapons by tier
             std::map<int, std::vector<int>> tiered_levels;
-            for (const auto& [tier, weapon_level] : g_additional_server_config.gungame.levels) {
-                tiered_levels[tier].emplace_back(weapon_level);
+            for (const auto& e : gg.levels) {
+                if (e.tier >= 1 && e.weapon_index >= 0) {
+                    tiered_levels[e.tier].push_back(e.weapon_index);
+                }
             }
 
-            int effective_kill_limit = g_additional_server_config.gungame.final_level
-                                           ? g_additional_server_config.gungame.final_level->first
-                                           : rf::multi_kill_limit;
-
-            xlog::info("Initializing GunGame levels with Dynamic Progression. Tiers: {}, Kill Limit: {}", tiered_levels.size(), effective_kill_limit);
-
-            // Calculate the total number of weapons
+            // Count total weapons across all tiers
             int total_weapons = 0;
-            for (const auto& [_, weapons] : tiered_levels) {
-                total_weapons += static_cast<int>(weapons.size());
+            for (auto const& [_, v] : tiered_levels) total_weapons += static_cast<int>(v.size());
+            if (total_weapons == 0) {
+                xlog::warn("GunGame (Dynamic): no valid tiered weapons configured.");
+                return;
             }
 
             int accumulated_kills = 0;
-            int remaining_kills = effective_kill_limit;
-            int total_tiers = static_cast<int>(tiered_levels.size());
+            int remaining_kills = std::max(0, effective_kill_limit);
 
-            // Iterate over each tier, shuffle within each tier, and assign weapons proportionally to kill levels
             for (auto& [tier, weapons] : tiered_levels) {
+                // Shuffle within tier
                 std::shuffle(weapons.begin(), weapons.end(), g_rng);
 
-                // Calculate the proportional range for this tier
-                int tier_kills = (remaining_kills * weapons.size()) / total_weapons;
+                // Proportional allocation
+                const int tier_kills = (remaining_kills * static_cast<int>(weapons.size())) / total_weapons;
+                const int weapon_interval = (tier_kills > 0 && !weapons.empty())
+                                                ? std::max(1, tier_kills / static_cast<int>(weapons.size()))
+                                                : 1;
 
-                // Adjust the interval based on the weapons in this tier
-                int weapon_interval = (tier_kills > 0) ? (tier_kills / weapons.size()) : 1;
+                for (int widx : weapons) {
+                    // Map current threshold -> weapon
+                    score_to_weapon_map[accumulated_kills] = widx;
+                    xlog::info("Tier {}, Kill Level = {}, WeaponIdx = {}", tier, accumulated_kills, widx);
 
-                for (int weapon_level : weapons) {
-                    // Assign weapon to the current kill level and increment
-                    score_to_weapon_map[accumulated_kills] = weapon_level;
-                    xlog::info("Tier {}, Kill Level = {}, Weapon = {}", tier, accumulated_kills, weapon_level);
-
-                    // Accumulate kills, but stop at effective_kill_limit
-                    accumulated_kills += weapon_interval;
-                    accumulated_kills = std::min(accumulated_kills, effective_kill_limit);
-
-                    // If we've hit the kill limit, stop distributing
+                    // Advance accumulated kills, clamp to limit
+                    accumulated_kills = std::min(accumulated_kills + weapon_interval, effective_kill_limit);
                     if (accumulated_kills >= effective_kill_limit)
                         break;
                 }
 
-                // Update remaining kills and tiers
-                remaining_kills = effective_kill_limit - accumulated_kills;
-                total_weapons -= weapons.size();
-
-                if (accumulated_kills >= effective_kill_limit) {
+                // Update remaining and total weights
+                remaining_kills = std::max(0, effective_kill_limit - accumulated_kills);
+                total_weapons -= static_cast<int>(weapons.size());
+                if (accumulated_kills >= effective_kill_limit || total_weapons <= 0)
                     break;
-                }
-            }            
+            }
         }
         else {
-            xlog::info("Initializing GunGame levels with Manual Progression.");
+            xlog::info("Initializing GunGame (Manual)");
 
-            // Make sure the levels are ordered sequentially
-            std::sort(g_additional_server_config.gungame.levels.begin(),
-                      g_additional_server_config.gungame.levels.end(),
-                      [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+            // Collect valid manual entries (kills >= 0) and sort
+            std::vector<GunGameLevelEntry> manual;
+            manual.reserve(gg.levels.size());
+            for (auto const& e : gg.levels) {
+                if (e.kills >= 0 && e.weapon_index >= 0)
+                    manual.push_back(e);
+            }
+            std::sort(manual.begin(), manual.end(), [](auto const& a, auto const& b) { return a.kills < b.kills; });
 
-            // Build level array
-            for (const auto& [kill_level, weapon_level] : g_additional_server_config.gungame.levels) {
-                score_to_weapon_map[kill_level] = weapon_level;
-
-                xlog::info("Kill Level = {}, Weapon = {}", kill_level, weapon_level); 
-            }            
+            // Build the map
+            for (auto const& e : manual) {
+                score_to_weapon_map[e.kills] = e.weapon_index;
+                xlog::info("Kill Level = {}, WeaponIdx = {}", e.kills, e.weapon_index);
+            }
         }
 
-        // Handle specified final level
-        if (g_additional_server_config.gungame.final_level) {
-            const auto& [final_kill_level, final_weapon_level] = *g_additional_server_config.gungame.final_level;
-            score_to_weapon_map[final_kill_level] = final_weapon_level;
+        // Final level override (if present)
+        if (gg.final_level && gg.final_level->weapon_index >= 0) {
+            score_to_weapon_map[gg.final_level->kills] = gg.final_level->weapon_index;
+            xlog::info("Final Level: Kill Level = {}, WeaponIdx = {}", gg.final_level->kills,
+                       gg.final_level->weapon_index);
+        }
 
-            xlog::info("Final Level: Kill Level = {}, Weapon = {}", final_kill_level, final_weapon_level);
+        // Defensive: ensure we at least map 0 -> something if the map is still empty
+        if (score_to_weapon_map.empty()) {
+            xlog::warn("GunGame produced an empty score->weapon map.");
         }
     }
 
     std::optional<int> get_weapon_for_score(int score) const
     {
-        // If score is negative, return the weapon at the lowest kill level (if any)
+        if (score_to_weapon_map.empty())
+            return std::nullopt;
+
+        // Negative scores -> first weapon threshold
         if (score < 0) {
-            return score_to_weapon_map.empty() ? std::nullopt : std::optional{score_to_weapon_map.begin()->second};
+            return std::optional{score_to_weapon_map.begin()->second};
         }
 
-        // Find the closest match for the score or the next higher score
+        // Lower_bound logic: exact or closest lower
         auto it = score_to_weapon_map.lower_bound(score);
-
-        // Return exact match or closest lower score, if any
         if (it != score_to_weapon_map.end() && it->first == score) {
-            return it->second; // Exact match
+            return it->second;
         }
-        return (it != score_to_weapon_map.begin()) ? std::optional{std::prev(it)->second} : std::nullopt;
+        if (it == score_to_weapon_map.begin()) {
+            // No lower threshold exists
+            return std::nullopt;
+        }
+        return std::prev(it)->second;
     }
 
 //private:
@@ -148,10 +169,14 @@ void reset_gungame_notifications()
 void gungame_weapon_notification(rf::Player* player, bool just_spawned)
 {    
     int current_score = player->stats->score;
-    int weapon_type = *weapon_manager.get_weapon_for_score(current_score);
 
-    if (current_score < 0 || !weapon_type) {
-        return;
+    auto opt = weapon_manager.get_weapon_for_score(current_score);
+    if (!opt)
+        return; // prevent crash if weapon is somehow not valid
+    int weapon_type = *opt;
+
+    if (current_score < 0) {
+        return; // no notifications until you use the first weapon to get back to 0
     }
 
     auto next_it = weapon_manager.score_to_weapon_map.upper_bound(current_score);
@@ -190,16 +215,19 @@ void gungame_weapon_notification(rf::Player* player, bool just_spawned)
                 prefix, next_weapon_type_string, frags_needed, frags_needed > 1 ? "s" : "");
         }        
 
-        send_chat_line_packet(msg.c_str(), player);
+        af_send_automated_chat_msg(msg, player);
     }
     else if (!final_level_notified[player]) { // only notify on last level once per round for each player
-        int frags_needed_to_win = rf::multi_kill_limit - current_score;
+        int kill_cap = g_alpine_server_config_active_rules.gungame.final_level
+                           ? g_alpine_server_config_active_rules.gungame.final_level->kills
+                           : rf::multi_kill_limit;
+        int frags_needed_to_win = kill_cap - current_score;
 
         if (frags_needed_to_win > 0) {
             msg = std::format("{} only needs {} more frag{} to win the game!", player->name, frags_needed_to_win,
                               frags_needed_to_win > 1 ? "s" : "");
 
-            send_chat_line_packet(msg.c_str(), nullptr);
+            af_broadcast_automated_chat_msg(msg);
             final_level_notified[player] = true;
         }
     }    
@@ -209,7 +237,7 @@ void handle_gungame_weapon_switch(rf::Player* player, rf::Entity* entity,
     const GunGameWeaponManager& weapon_manager, bool just_spawned)
 {
     if (!player || !entity) {
-        xlog::error("Invalid player or entity passed to handle_gungame_weapon_switch.");
+        //xlog::error("Invalid player or entity passed to handle_gungame_weapon_switch.");
         return;
     }
 
@@ -227,11 +255,10 @@ void handle_gungame_weapon_switch(rf::Player* player, rf::Entity* entity,
 
             if (!just_spawned) {
                 // give a reward if they finished the whole level in a single life
-                if (g_additional_server_config.gungame.rampage_rewards && level_completed_while_alive[player]) {
+                if (g_alpine_server_config_active_rules.gungame.rampage_rewards && level_completed_while_alive[player]) {
                     std::vector<std::string> prefixes = {
                     "RAMPAGE",
                     "UNSTOPPABLE",
-                    "HOLY SHIT",
                     "KILLING SPREE",
                     "SQUEEGEE TIME",
                     "DOMINATION"
@@ -266,9 +293,9 @@ void handle_gungame_weapon_switch(rf::Player* player, rf::Entity* entity,
                         rf::multi_powerup_add(player, random_powerup, 10000);
                     }
                     level_completed_while_alive[player] = false; // reset rewards after granting one
-                    send_chat_line_packet(msg.c_str(), player);
+                    af_send_automated_chat_msg(msg, player);
                     send_sound_packet_throwaway(player, 35); // Jolt_05.wav
-                }                
+                }
             }
 
             if (current_score == 0) {
@@ -284,7 +311,7 @@ void handle_gungame_weapon_switch(rf::Player* player, rf::Entity* entity,
         server_set_player_weapon(player, entity, weapon_type);       
     }
     else {
-        xlog::info("GunGame: No weapon assigned for score {}. Player '{}' retains current weapon.", current_score, player->name);
+        xlog::warn("GunGame: No weapon assigned for score {}. Player {} retains current weapon.", current_score, player->name);
     }
 }
 
@@ -305,10 +332,15 @@ void multi_kill_init_player(rf::Player* player)
 
 FunHook<void()> multi_level_init_hook{
     0x0046E450,
-    []() {
-        auto player_list = SinglyLinkedList{rf::player_list};
-        for (auto& player : player_list) {
+    [] {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
             multi_kill_init_player(&player);
+            if (rf::is_server) {
+                player.death_time.reset();
+                if (player.is_bot) {
+                    player.is_spawn_disabled = true;
+                }
+            }
         }
 
         multi_level_init_hook.call_target();
@@ -316,13 +348,10 @@ FunHook<void()> multi_level_init_hook{
         // Stop allowing endgame votes after the next level starts
         multi_player_set_can_endgame_vote(false);
 
-        if (g_additional_server_config.gungame.enabled)
-        {
+        const auto& gg = g_alpine_server_config_active_rules.gungame;
+        if (gg.enabled) {
             reset_gungame_notifications();
-            if (g_additional_server_config.gungame.dynamic_progression || weapon_manager.score_to_weapon_map.empty()) {
-                // Build the map at the start of each level if it's dynamic. Otherwise, only when the first map loads
-                weapon_manager.initialize_score_to_weapon_map();
-            }
+            weapon_manager.initialize_score_to_weapon_map();
         }
     },
 };
@@ -404,7 +433,7 @@ void multi_apply_kill_reward(rf::Player* player)
         return;
     }
 
-    const auto& conf = server_get_df_config();
+    const auto& conf = g_alpine_server_config_active_rules.kill_rewards;
 
     // Ensure that max health/armor limits do not decrease current values
     float max_life_limit = std::max(ep->life, conf.kill_reward_health_super ? 200.0f : ep->info->max_life);
@@ -439,6 +468,10 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     update_player_active_status(killed_player); // active pulse on killed
 
+    if (rf::is_server) {
+        killed_player->death_time.emplace(std::chrono::high_resolution_clock::now());
+    }
+
     auto* killed_stats = static_cast<PlayerStatsNew*>(killed_player->stats);
     killed_stats->inc_deaths();
 
@@ -446,7 +479,7 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
         auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
         if (killer_player != killed_player) {
             rf::player_add_score(killer_player, 1);
-            killer_stats->inc_kills();            
+            killer_stats->inc_kills();
         }
         else {
             rf::player_add_score(killer_player, -1);
@@ -456,12 +489,10 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
         multi_spectate_on_player_kill(killed_player, killer_player);
 
-        if (g_additional_server_config.gungame.enabled && killer_player != killed_player) {
+        if (g_alpine_server_config_active_rules.gungame.enabled && killer_player != killed_player) {
             multi_update_gungame_weapon(killer_player, false);
         }
     }
-    
-    
 }
 
 FunHook<void(rf::Entity*)> entity_on_death_hook{

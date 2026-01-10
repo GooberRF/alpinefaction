@@ -41,6 +41,11 @@ namespace rf
         {
             return AddrCaller{0x00409F40}.this_call<Vector3*>(this, tmp_vec, src_vec);
         }
+      
+        void get_substracted(Vector3* out_result, const Vector3* other)
+        {
+            AddrCaller{0x00409FA0}.this_call(this, out_result, other);
+        }
 
         [[nodiscard]] Vector3 cross(const Vector3& other) const
         {
@@ -285,6 +290,7 @@ namespace rf
     static_assert(sizeof(Vector3) == 0xC);
 
     static auto& zero_vector = addr_as_ref<Vector3>(0x0173C378);
+    static auto& file_default_vector = *reinterpret_cast<Vector3*>(0x01BDB238);
 
     struct Vector2
     {
@@ -334,6 +340,7 @@ namespace rf
     static_assert(sizeof(ShortVector) == 0x6);
 
     static auto& vec2_zero_vector = addr_as_ref<Vector2>(0x0173C370);
+    static auto& vec_dist = addr_as_ref<float(const rf::Vector3*, const rf::Vector3*)>(0x004FAED0);
     static auto& vec_dist_squared = addr_as_ref<float(const rf::Vector3*, const rf::Vector3*)>(0x004FAF00);
     static auto& vec_dist_approx = addr_as_ref<float(const rf::Vector3*, const rf::Vector3*)>(0x004FAF30);
 

@@ -93,9 +93,12 @@ set(SRCS
     graphics/d3d11/gr_d3d11_vertex.h
     graphics/d3d11/gr_d3d11_buffer.h
     graphics/d3d11/gr_d3d11_hooks.cpp
+    graphics/d3d11/gr_d3d11_hooks.h
     input/input.h
     input/mouse.cpp
     input/key.cpp
+    hud/hud_colors.cpp
+    hud/hud_scale.cpp
     hud/hud_personas.cpp
     hud/hud_status.cpp
     hud/hud_weapons.cpp
@@ -104,6 +107,8 @@ set(SRCS
     hud/hud.h
     hud/hud_world.cpp
     hud/hud_world.h
+    hud/remote_server_cfg_ui.cpp
+    hud/remote_server_cfg_ui.h
     hud/multi_scoreboard.cpp
     hud/multi_scoreboard.h
     hud/multi_spectate.cpp
@@ -122,10 +127,14 @@ set(SRCS
     debug/unresponsive.cpp
     multi/alpine_packets.cpp
     multi/alpine_packets.h
+    multi/dedi_cfg.cpp
     multi/multi.h
     multi/multi.cpp
+    multi/gametype.h
+    multi/gametype.cpp
     multi/kill.cpp
     multi/network.cpp
+    multi/network.h
     multi/level_download.cpp
     multi/server.h
     multi/server.cpp
@@ -147,6 +156,7 @@ set(SRCS
     os/os.cpp
     os/os.h
     object/object.h
+    object/mover.h
     object/object_private.h
     object/event_alpine.h
     object/entity.cpp
@@ -158,6 +168,7 @@ set(SRCS
     object/cutscene.cpp
     object/glare.cpp
     object/object.cpp
+    object/mover.cpp
     object/monitor.cpp
     object/particle.cpp
     object/obj_light.cpp
@@ -200,7 +211,7 @@ set(SRCS
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
 
 add_library(AlpineFaction SHARED ${SRCS})
-target_compile_features(AlpineFaction PUBLIC cxx_std_20)
+target_compile_features(AlpineFaction PUBLIC cxx_std_23)
 set_target_properties(AlpineFaction PROPERTIES
     PREFIX ""
     CXX_EXTENSIONS NO

@@ -8,6 +8,7 @@ void apply_weapon_patches();
 void trigger_apply_patches();
 void obj_do_patch();
 void monitor_do_patch();
+void mover_do_patch();
 void entity_do_patch();
 void item_do_patch();
 void particle_do_patch();

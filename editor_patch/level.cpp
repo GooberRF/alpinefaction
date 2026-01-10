@@ -3,15 +3,23 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include "level.h"
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
 
+// Forward declarations
+int get_level_rfl_version();
+void set_initial_level_rfl_version();
+
 // add AlpineLevelProperties chunk after stock game chunks when creating a new level
 CodeInjection CDedLevel_construct_patch{
     0x004181B8,
     [](auto& regs) {
+        set_initial_level_rfl_version();
         std::byte* level = regs.esi;
         new (&level[stock_cdedlevel_size]) AlpineLevelProperties();
     },
@@ -38,7 +46,7 @@ CodeInjection CDedLevel_LoadLevel_patch2{
             std::size_t chunk_size = regs.ebx;
             if (chunk_id == alpine_props_chunk_id) {
                 auto& alpine_level_props = level.GetAlpineLevelProperties();
-                alpine_level_props.Deserialize(file);
+                alpine_level_props.Deserialize(file, chunk_size);
                 regs.eip = 0x0043090C;
             }
         }
@@ -63,8 +71,18 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
     0x004676C0,
     [](auto& regs) {
         HWND hdlg = WndToHandle(regs.esi);
+        int level_version = get_level_rfl_version();
+        std::string version = std::to_string(level_version);
+        SetDlgItemTextA(hdlg, IDC_LEVEL_VERSION, version.c_str());
+
         auto& alpine_level_props = CDedLevel::Get()->GetAlpineLevelProperties();
         CheckDlgButton(hdlg, IDC_LEGACY_CYCLIC_TIMERS, alpine_level_props.legacy_cyclic_timers ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_LEGACY_MOVERS, alpine_level_props.legacy_movers ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_STARTS_WITH_HEADLAMP, alpine_level_props.starts_with_headlamp ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER, alpine_level_props.override_static_mesh_ambient_light_modifier ? BST_CHECKED : BST_UNCHECKED);
+        char buffer[32];
+        std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
+        SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
     },
 };
 
@@ -75,8 +93,149 @@ CodeInjection CLevelDialog_OnOK_patch{
         HWND hdlg = WndToHandle(regs.ecx);
         auto& alpine_level_props = CDedLevel::Get()->GetAlpineLevelProperties();
         alpine_level_props.legacy_cyclic_timers = IsDlgButtonChecked(hdlg, IDC_LEGACY_CYCLIC_TIMERS) == BST_CHECKED;
+        alpine_level_props.legacy_movers = IsDlgButtonChecked(hdlg, IDC_LEGACY_MOVERS) == BST_CHECKED;
+        alpine_level_props.starts_with_headlamp = IsDlgButtonChecked(hdlg, IDC_STARTS_WITH_HEADLAMP) == BST_CHECKED;
+        alpine_level_props.override_static_mesh_ambient_light_modifier = IsDlgButtonChecked(hdlg, IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER) == BST_CHECKED;
+        char buffer[64] = {};
+        GetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer, static_cast<int>(sizeof(buffer)));
+        char* end = nullptr;
+        float modifier = std::strtof(buffer, &end);
+        if (end != buffer && std::isfinite(modifier)) {
+            if (modifier < 0.0f) {
+                modifier = 0.0f;
+            }
+            alpine_level_props.static_mesh_ambient_light_modifier = modifier;
+        }
     },
 };
+
+static bool is_link_allowed(const DedObject* src, const DedObject* dst)
+{
+    const auto t0 = src->type;
+    const auto t1 = dst->type;
+
+    return
+        t0 == DedObjectType::DED_TRIGGER ||
+        t0 == DedObjectType::DED_EVENT ||
+        (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT) ||
+        (t0 == DedObjectType::DED_CLUTTER && t1 == DedObjectType::DED_LIGHT);
+}
+
+void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
+{
+    auto& sel = level->selection;
+    const int count = sel.get_size();
+
+    if (count < 2) {
+        g_main_frame->DedMessageBox(
+            "You must select at least 2 objects to create a link.",
+            "Error",
+            0
+        );
+        return;
+    }
+
+    DedObject* primary = sel[0];
+    if (!primary) {
+        g_main_frame->DedMessageBox(
+            "You must select at least 2 objects to create a link.",
+            "Error",
+            0
+        );
+        return;
+    }
+
+    int num_success = 0;
+    std::vector<int> attempted_uids;
+
+    for (int i = 1; i < count; ++i) {
+        DedObject* src = reverse_link_direction ? sel[i] : primary;
+        DedObject* dst = reverse_link_direction ? primary : sel[i];
+        if (!src || !dst) {
+            continue;
+        }
+
+        if (!is_link_allowed(src, dst)) {
+            xlog::warn(
+                "DoLink: disallowed type combination src_type={} dst_type={}",
+                static_cast<int>(src->type),
+                static_cast<int>(dst->type)
+            );
+            continue;
+        }
+
+        attempted_uids.push_back(reverse_link_direction ? src->uid : dst->uid);
+
+        int old_size = src->links.get_size();
+        int idx = src->links.add_if_not_exists_int(dst->uid);
+
+        if (idx < 0) {
+            xlog::warn("DoLink: Failed to add link src_uid={} dst_uid={}", src->uid, dst->uid);
+        }
+        else if (idx >= old_size) {
+            ++num_success;
+            xlog::debug("DoLink: Added new link src_uid={} -> dst_uid={}", src->uid, dst->uid);
+        }
+        else {
+            xlog::debug("DoLink: Link already existed src_uid={} -> dst_uid={}", src->uid, dst->uid);
+        }
+    }
+
+    if (num_success == 0) {
+        std::string uid_list;
+        for (size_t i = 0; i < attempted_uids.size(); ++i) {
+            if (i > 0) {
+                uid_list += ", ";
+            }
+            uid_list += std::to_string(attempted_uids[i]);
+        }
+
+        std::string msg;
+        if (!attempted_uids.empty()) {
+            if (reverse_link_direction) {
+                msg = "All links to selected destination UID " +
+                        std::to_string(primary->uid) +
+                        " from valid source UID(s) " +
+                        uid_list +
+                        " already exist.";
+            } else {
+                msg = "All links from selected source UID " +
+                        std::to_string(primary->uid) +
+                        " to valid destination UID(s) " +
+                        uid_list +
+                        " already exist.";
+            }
+        } else {
+            if (reverse_link_direction) {
+                msg = "No valid link combinations were found for selected destination UID " +
+                    std::to_string(primary->uid) +
+                    ".";
+            } else {
+                msg = "No valid link combinations were found for selected source UID " +
+                    std::to_string(primary->uid) +
+                    ".";
+            }
+        }
+
+        g_main_frame->DedMessageBox(msg.c_str(), "Error", 0);
+        return;
+    }
+}
+
+void __fastcall CDedLevel_DoLink_new(CDedLevel* this_);
+FunHook<decltype(CDedLevel_DoLink_new)> CDedLevel_DoLink_hook{
+    0x00415850,
+    CDedLevel_DoLink_new,
+};
+void __fastcall CDedLevel_DoLink_new(CDedLevel* this_)
+{
+    DedLevel_DoLinkImpl(this_, false);
+}
+
+void DedLevel_DoBackLink()
+{
+    DedLevel_DoLinkImpl(CDedLevel::Get(), true);
+}
 
 void ApplyLevelPatches()
 {
@@ -94,16 +253,12 @@ void ApplyLevelPatches()
     // Avoid clamping lightmaps when loading rfl files
     AsmWriter{0x004A5D6A}.jmp(0x004A5D6E);
 
-    // Default level ambient light and fog color to flat black
-    constexpr std::uint8_t default_ambient_light = 0;
+    // Default level fog color to flat black
     constexpr std::uint8_t default_fog = 0;
-    write_mem<std::uint8_t>(0x0041CABD + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CABF + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CAC1 + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CAD3 + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CAD5 + 1, default_ambient_light);
-    write_mem<std::uint8_t>(0x0041CAD7 + 1, default_ambient_light);
     write_mem<std::uint8_t>(0x0041CB07 + 1, default_fog);
     write_mem<std::uint8_t>(0x0041CB09 + 1, default_fog);
     write_mem<std::uint8_t>(0x0041CB0B + 1, default_fog);
+
+    // Allow creating multiple links in a single operation
+    CDedLevel_DoLink_hook.install();
 }

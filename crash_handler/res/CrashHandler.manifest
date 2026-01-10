@@ -3,9 +3,9 @@
   <assemblyIdentity
     version="1.0.0.0"
     processorArchitecture="X86"
-    name="rafalh.DashFaction.CrashHandler"
+    name="goober.AlpineFaction.CrashHandler"
     type="win32" />
-  <description>DashFaction crash reporting system</description>
+  <description>Alpine Faction crash reporting utility</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity

@@ -19,22 +19,31 @@ namespace rf
 
     // nw/psnet
 
+    #pragma pack(push, 4)
     struct NetAddr
     {
         uint32_t ip_addr;
         uint16_t port;
+        // padding byte
+        // padding byte
 
         bool operator==(const NetAddr &other) const = default;
     };
+    #pragma pack(pop)
     static_assert(sizeof(NetAddr) == 0x8);
 
-    static auto& net_init_socket = addr_as_ref<void(unsigned short port)>(0x00528F10);
-    static auto& net_addr_to_string = addr_as_ref<void(char *buf, int buf_size, const NetAddr& addr)>(0x00529FE0);
-    static auto& net_send = addr_as_ref<void(const NetAddr &addr, const void *data, int len)>(0x0052A080);
-    static auto& net_same = addr_as_ref<int(const NetAddr &addr1, const NetAddr &addr2, bool check_port)>(0x0052A930);
+    constexpr int NET_MAX_REL_SOCKETS = 40;
 
+    static const auto& net_init_socket = addr_as_ref<void(unsigned short port)>(0x00528F10);
+    static const auto& net_addr_to_string = addr_as_ref<void(char *buf, int buf_size, const NetAddr& addr)>(0x00529FE0);
+    static const auto& net_send = addr_as_ref<void(const NetAddr &addr, const void *data, int len)>(0x0052A080);
+    static const auto& net_same = addr_as_ref<int(const NetAddr &addr1, const NetAddr &addr2, bool check_port)>(0x0052A930);
+    static const auto& net_rel_send = addr_as_ref<int(int, const uint8_t*, int)>(0x0052A310);
     static auto& net_udp_socket = addr_as_ref<int>(0x005A660C);
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
+
+    struct NetReliableSocket;
+    static auto& net_rel_sockets = addr_as_ref<NetReliableSocket[NET_MAX_REL_SOCKETS]>(0x01B479E8);
 
     // multi
 
@@ -115,6 +124,11 @@ namespace rf
         NG_TYPE_DM = 0,
         NG_TYPE_CTF = 1,
         NG_TYPE_TEAMDM = 2,
+        NG_TYPE_KOTH = 3,   // King of the Hill, as of AF v1.2
+        NG_TYPE_DC = 4,     // Damage Control, as of AF v1.2
+        NG_TYPE_REV = 5,    // Revolt, as of AF v1.2
+        NG_TYPE_RUN = 6,    // Run, as of AF v1.2
+        NG_TYPE_ESC = 7,    // Escalation, as of AF v1.2
     };
 
     enum NetGameFlags
@@ -125,9 +139,11 @@ namespace rf
         NG_FLAG_RANDOM_MAP_ROTATION = 0x8,
         NG_FLAG_WEAPON_STAY = 0x10,
         NG_FLAG_FORCE_RESPAWN = 0x20,
+        NG_FLAG_TEAM_DAMAGE_LOW = 0x40,
         NG_FLAG_FALL_DAMAGE = 0x80,
         NG_FLAG_REAL_FALL_DAMAGE = 0x100,
-        NG_FLAG_TEAM_DAMAGE = 0x240,
+        NG_FLAG_TEAM_DAMAGE_HIGH = 0x200,
+        NG_FLAG_TEAM_DAMAGE = 0x240, // unsure why this is split into two
         NG_FLAG_NOT_LAN_ONLY = 0x400,
         NG_FLAG_BALANCE_TEAMS = 0x2000,
     };
@@ -147,7 +163,15 @@ namespace rf
         int max_captures;
         NetAddr server_addr;
         int current_level_index;
-        VArray<String> levels;
+        VArray_String<String> levels;
+    };
+
+    struct JoinRequest
+    {
+        String password;
+        String name;
+        int entity_type;
+        int ac_info[4];
     };
 
     enum class ChatMsgColor
@@ -158,7 +182,42 @@ namespace rf
         blue_blue = 3,
         white_white = 4,
         default_ = 5,
+        gold_white = 6,
     };
+
+    enum NetReliableSocketStatus: uint32_t {
+        EMPTY = 0x0,
+        CONNECTED = 0x1,
+        TIMED_OUT = 0x2,
+        UNK_3 = 0x3,
+        CONNECTED_REMOTE = 0x4,
+        CONNECTING = 0x5,
+    };
+    static_assert(sizeof(NetReliableSocketStatus) == 4);
+
+    #pragma pack(push, 1)
+    struct NetReliableSocket {
+        void* sbuffers[75];
+        uint16_t ssequence[75];
+        int timesent[75];
+        int16_t send_len[75];
+        void* rbuffers[75];
+        int recv_len[75];
+        uint16_t rsequence[75];
+        int last_packet_received;
+        int last_packet_sent;
+        NetReliableSocketStatus status;
+        uint16_t oursequence;
+        uint16_t theirsequence;
+        rf::NetAddr net_addr;
+        int pings[10];
+        uint8_t ping_pos;
+        uint32_t num_ping_samples;
+        int ping_median;
+        int retransmission_timeout;
+    };
+    #pragma pack(pop)
+    static_assert(sizeof(NetReliableSocket) == 0x6BF);
 
     constexpr size_t max_packet_size = 512;
 
@@ -174,6 +233,11 @@ namespace rf
     static auto& multi_time_limit = addr_as_ref<float>(0x0064EC4C);
     static auto& multi_kill_limit = addr_as_ref<int>(0x0064EC50);
     static auto& multi_cap_limit = addr_as_ref<int>(0x0064EC58);
+    static auto& multi_geo_limit = addr_as_ref<int>(0x0064EC54);
+    static auto& multi_max_players = addr_as_ref<int>(0x0064EC44);
+    static auto& multi_server_flags = addr_as_ref<NetGameFlags>(0x0064EC40);
+    static auto& multi_game_type = addr_as_ref<int>(0x0064EC3C);
+    static auto& multi_level_switch_queued = addr_as_ref<int>(0x0064EC64);
     static auto& ctf_flag_cooldown_timestamp = addr_as_ref<Timestamp>(0x006C74F4);
     static auto& multi_ctf_drop_flag = addr_as_ref<void(Player* pp)>(0x00473F40);
     static auto& multi_ctf_get_red_team_score = addr_as_ref<uint8_t()>(0x00475020);
@@ -184,6 +248,8 @@ namespace rf
     static auto& multi_ctf_is_blue_flag_in_base = addr_as_ref<bool()>(0x00474EA0);
     static auto& multi_ctf_get_blue_flag_pos = addr_as_ref<Vector3*(Vector3*)>(0x00474F40);
     static auto& multi_ctf_get_red_flag_pos = addr_as_ref<Vector3*(Vector3*)>(0x00474EC0);
+    static auto& multi_ctf_flag_blue_stolen_timestamp = addr_as_ref<Timestamp>(0x006C7544);
+    static auto& multi_ctf_flag_red_stolen_timestamp = addr_as_ref<Timestamp>(0x006C754C);
     static auto& ctf_red_flag_item = addr_as_ref<Object*>(0x006C7560);
     static auto& ctf_blue_flag_item = addr_as_ref<Object*>(0x006C7564);
     static auto& ctf_red_flag_pos = addr_as_ref<Vector3>(0x006C7500);
@@ -198,11 +264,10 @@ namespace rf
     static auto& multi_ping_player = addr_as_ref<void(Player*)>(0x00484D00);
     static auto& send_entity_create_packet = addr_as_ref<void(Entity *entity, Player* player)>(0x00475160);
     static auto& send_entity_create_packet_to_all = addr_as_ref<void(Entity *entity)>(0x00475110);
-    static auto& multi_respawn_create_point = addr_as_ref<int(const char* name, uint8_t team, const rf::Vector3* pos,
-        rf::Matrix3* orient, bool red_team, bool blue_team, bool bot)>(0x00470190);
     static auto& multi_find_character = addr_as_ref<int(const char *name)>(0x00476270);
     static auto& multi_chat_print = addr_as_ref<void(String::Pod text, ChatMsgColor color, String::Pod prefix)>(0x004785A0);
     static auto& multi_chat_say = addr_as_ref<void(const char *msg, bool is_team_msg)>(0x00444150);
+    static auto& multi_chat_add_msg = addr_as_ref<void(Player* pp, const char* msg, bool is_team_msg)>(0x00443FB0);
     static auto& multi_is_connecting_to_server = addr_as_ref<uint8_t(const NetAddr& addr)>(0x0044AD80);
     using MultiIoProcessPackets_Type = void(const void* data, size_t len, const NetAddr& addr, Player* player);
     static auto& multi_io_process_packets = addr_as_ref<MultiIoProcessPackets_Type>(0x004790D0);
@@ -216,6 +281,11 @@ namespace rf
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
     static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int clip_ammo, int ammo)>(0x00485B50);
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
+    static auto& send_item_create_packet = addr_as_ref<void(Item* item, int16_t* index)>(0x00479A20); // send_item_create_packet3
+    static auto& send_respawn_req_packet = addr_as_ref<void(uint32_t multi_character, uint8_t player_id)>(0x004809D0); // client -> server
+    static auto& multi_spawn_player_server_side = addr_as_ref<void(Player* pp)>(0x00480820);
+    static auto& multi_limbo_timer = addr_as_ref<Timestamp>(0x006D6138);
+    static auto& local_spawn_attempt_timer = addr_as_ref<Timestamp>(0x007C718C);
 
 
     static auto& set_in_mp_flag = addr_as_ref<void()>(0x0046ED50);
@@ -249,7 +319,4 @@ namespace rf
     static auto& multiplayer_crouch_walk_speed = addr_as_ref<float>(0x00594590);
 
     constexpr int multi_max_player_id = 256;
-
-    
-
 }

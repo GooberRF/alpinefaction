@@ -30,7 +30,7 @@
 
 static bool is_vpp_filename(const char* filename)
 {
-    return string_ends_with_ignore_case(filename, ".vpp");
+    return string_iends_with(filename, ".vpp");
 }
 
 static std::vector<std::string> unzip(const char* path, const char* output_dir,
@@ -192,7 +192,7 @@ std::vector<std::string> LevelDownloadWorker::operator()()
     }
     xlog::trace("LevelDownloadWorker got level info");
 
-    auto temp_filename = get_temp_path_name("DF_Level_");
+    auto temp_filename = get_temp_path_name("AF_Level_");
     try {
         shared_data_->state = LevelDownloadState::fetching_data;
         download_archive(shared_data_->level_info.value().ticket_id, temp_filename.c_str());
@@ -497,8 +497,7 @@ void multi_level_download_do_frame()
         float bytes_per_sec = operation.get_bytes_per_sec();
 
         auto level_name_str = std::format("Level name: {}", info.name);
-        int str_w, str_h;
-        rf::gr::get_string_size(&str_w, &str_h, level_name_str.c_str(), -1, medium_font);
+        const auto [str_w, str_h] = rf::gr::get_string_size(level_name_str, medium_font);
         int info_x = center_x - str_w / 2;
         int info_spacing = medium_font_h * 3 / 2;
         rf::gr::string(info_x, y, level_name_str.c_str(), medium_font);

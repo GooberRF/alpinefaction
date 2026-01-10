@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
@@ -6,11 +7,13 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <common/version/version.h>
+#include <common/utils/list-utils.h>
 #include "multi.h"
 #include "endgame_votes.h"
 #include "multi_private.h"
 #include "alpine_packets.h"
 #include "server_internal.h"
+#include "gametype.h"
 #include "../hud/hud.h"
 #include "../rf/file/file.h"
 #include "../rf/level.h"
@@ -18,12 +21,16 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/os/os.h"
+#include "../rf/event.h"
 #include "../rf/gameseq.h"
 #include "../rf/os/timer.h"
+#include "../rf/player/camera.h"
 #include "../rf/multi.h"
 #include "../rf/os/console.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
+#include "../rf/player/player.h"
+#include "../rf/localize.h"
 #include "../rf/ai.h"
 #include "../rf/item.h"
 #include "../main/main.h"
@@ -95,11 +102,29 @@ void handle_levelm_param()
 FunHook<void()> multi_limbo_init{
     0x0047C280,
     []() {
-        multi_limbo_init.call_target();
+        rf::activate_all_events_of_type(rf::EventType::When_Round_Ends, -1, -1, true);
+
+        int limbo_time = 10000;
+
         if (rf::is_server) {
             server_on_limbo_state_enter();
             multi_player_set_can_endgame_vote(false); // servers can't endgame vote
+
+            if (g_match_info.match_active) {
+                af_broadcast_automated_chat_msg("\xA6 Match complete!");
+                g_match_info.reset();
+            }
+            else if (g_match_info.pre_match_active && g_match_info.everyone_ready) {
+                limbo_time = 5000; // reduce limbo time to 5 sec on match start (will always be a restart of the current map)
+                g_match_info.match_active = g_match_info.everyone_ready;
+                g_match_info.everyone_ready = false;
+                g_match_info.pre_match_active = false;
+            }
+            else if (g_match_info.pre_match_active) {
+                cancel_match(); // cancel match if map forcefully ends during pre-match phase
+            }
         }
+
         // don't let clients vote if the map has been played for less than 1 min
         else if(rf::level.time >= 60.0f) {
             multi_player_set_can_endgame_vote(true);
@@ -110,6 +135,86 @@ FunHook<void()> multi_limbo_init{
             remove_hud_vote_notification();
             set_local_pre_match_active(false);
         }
+
+        if (!rf::player_list) {
+            xlog::trace("Wait between levels shortened because server is empty");
+            limbo_time = 100;
+        }
+
+        rf::multi_limbo_timer.set(limbo_time);
+
+        if (!rf::local_player)
+            return;
+
+        rf::camera_enter_random_fixed_pos();
+        rf::camera_enter_fixed(rf::local_player->cam);
+        rf::local_screen_flash(rf::local_player, 0xFF, 0xFF, 0xFF, 0x01);
+
+        const auto gt = rf::multi_get_game_type();
+        bool we_win = false;
+
+        if (gt == rf::NG_TYPE_DM) {
+            // need at least 2 players to possibly win
+            if (rf::multi_num_players() >= 2) {
+                int my_score = 0;
+                int max_score = 0;
+
+                if (rf::local_player->stats)
+                    my_score = rf::local_player->stats->score;
+
+                for (auto& p : SinglyLinkedList{rf::player_list}) {
+                    if (p.stats && p.stats->score > max_score)
+                        max_score = p.stats->score;
+                }
+
+                we_win = (my_score >= max_score); // count it as a win if tied for win
+            }
+        }
+        else if (gt != rf::NG_TYPE_RUN) { // no winner in run
+            int red = 0, blue = 0;
+            switch (gt) {
+            case rf::NG_TYPE_CTF: {
+                red = rf::multi_ctf_get_red_team_score();
+                blue = rf::multi_ctf_get_blue_team_score();
+                break;
+            }
+            case rf::NG_TYPE_TEAMDM: {
+                red = rf::multi_tdm_get_red_team_score();
+                blue = rf::multi_tdm_get_blue_team_score();
+                break;
+            }
+            case rf::NG_TYPE_DC:
+            case rf::NG_TYPE_KOTH: {
+                red = multi_koth_get_red_team_score();
+                blue = multi_koth_get_blue_team_score();
+                break;
+            }
+            case rf::NG_TYPE_REV: {
+                red = static_cast<int>(rev_all_points_permalocked());
+                blue = static_cast<int>(!rev_all_points_permalocked());
+                break;
+            }
+            case rf::NG_TYPE_ESC: {
+                for (const auto& hill : g_koth_info.hills) {
+                    if (hill.ownership == HillOwner::HO_Red) {
+                        red++;
+                    }
+                    else if (hill.ownership == HillOwner::HO_Blue) {
+                        blue++;
+                    }
+                }
+                break;
+            }
+            default:
+                break;
+            }
+            if (rf::local_player->team == 0)
+                we_win = (red > blue);
+            else if (rf::local_player->team == 1)
+                we_win = (blue > red);
+        }
+
+        rf::snd_play(we_win ? 80 : 78, 0, 0.0f, 1.0f);
     },
 };
 
@@ -178,9 +283,9 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             // Nothing to do
             return;
         }
-        if (g_additional_server_config.gungame.enabled && !((ep->ai.current_primary_weapon == 1 && weapon_type == 0) ||
-                                                            (ep->ai.current_primary_weapon == 0 && weapon_type == 1))) {
-            //send_chat_line_packet("Weapon switch denied. In GunGame, you get new weapons by getting frags.", pp);
+        if (g_alpine_server_config_active_rules.gungame.enabled &&
+            !((ep->ai.current_primary_weapon == 1 && weapon_type == 0) || (ep->ai.current_primary_weapon == 0 && weapon_type == 1))) {
+            // af_send_automated_chat_msg("Weapon switch denied. In GunGame, you get new weapons by getting frags.", pp);
             return;
         }
         bool has_weapon;
@@ -309,7 +414,7 @@ bool is_entity_out_of_ammo(rf::Entity *entity, int weapon_type, bool alt_fire)
 void send_private_message_for_cancelled_shot(rf::Player* player, const std::string& reason)
 {
     auto message = std::format("\xA6 Shot canceled: {}", reason);
-    send_chat_line_packet(message.c_str(), player);
+    af_send_automated_chat_msg(message, player);
 }
 
 bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
@@ -330,8 +435,8 @@ bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
     if (rf::weapon_is_semi_automatic(weapon_type)) {
 
         // if semi auto click limit is on
-        if (get_df_server_info().has_value() &&
-            get_df_server_info()->click_limit) {
+        if (get_af_server_info().has_value() &&
+            get_af_server_info()->click_limit) {
 
             // use override value for pistol/PR in stock game
             // stock game pistol has alt fire wait of 200ms, so can't use normal min logic for it
@@ -424,111 +529,156 @@ void multi_init_player(rf::Player* player)
     multi_kill_init_player(player);
 }
 
-FunHook<void(rf::Entity*)> entity_set_nano_flag_hook{
-    0x0042D270,
-    [](rf::Entity* ep) {
-
-        ep->armor = std::fmax(ep->armor, 100.0f);
-        ep->entity_flags2 |= 0x80000; // nano pickup flag
-        ep->info->flags |= 0x2000000; // nano shield flag
-        rf::entity_make_fly(ep);
-        rf::obj_emit_sound2(ep, ep->pos, 37, 1.5, 0); // sound 38
-    },
-};
-
-FunHook<void(rf::Entity*)> entity_remove_nano_flag_hook{
-    0x0042D280,
-    [](rf::Entity* ep) {
-
-        ep->armor = std::fmax(ep->armor, 100.0f);
-        ep->entity_flags2 &= ~0x80000; // nano pickup flag
-        ep->info->flags &= ~0x2000000; // nano shield flag
-        rf::entity_make_freefall(ep);
-        //rf::obj_emit_sound2(ep, ep->pos, 37, 1.5, 0); // sound 38
-    },
-};
-
-CodeInjection multi_powerup_add_nano_patch { // unfinished and disabled, look at multi_powerup_add
-    0x004801C6,
-    [](auto& regs) {
-        rf::Player* pp = regs.edi;
-        xlog::warn("hooked, player {}", pp->name);
-        int powerup_type = regs.ecx;
-        xlog::warn("put: {}", powerup_type);
-        rf::Entity* ep = regs.eax;
-        xlog::warn("hooked, entity {}, flags {}", ep->name, ep->entity_flags2);
-        rf::entity_set_nano_flag(ep);
-        //ep->info->flags |= 0x2000000;
-        xlog::warn("hooked, entity {}, flags {}, has nano? {}", ep->name, ep->entity_flags2, rf::entity_has_nano_shield(ep));
-        xlog::warn("infoflags1 {}, infoflags2 {}", ep->info->flags, ep->info->flags2);
-        
-
-    },
-};
-
-CodeInjection multi_powerup_remove_nano_patch {
-    0x0048029E,
-    [](auto& regs) {
-        rf::Player* pp = regs.edi;
-        xlog::warn("hooked, player {}", pp->name);
-        int powerup_type = regs.ecx;
-        xlog::warn("removing: {}", powerup_type);
-        rf::Entity* ep = regs.eax;
-        xlog::warn("hooked for remove, entity {}, flags {}", ep->name, ep->entity_flags2);
-        if (powerup_type == 4)
-        {
-            rf::entity_remove_nano_flag(ep);
+std::string_view multi_game_type_name(const rf::NetGameType game_type) {
+    if (game_type == rf::NG_TYPE_DM) {
+        return std::string_view{"Deathmatch"};
+    } else if (game_type == rf::NG_TYPE_CTF) {
+        return std::string_view{"Capture the Flag"};
+    } else if (game_type == rf::NG_TYPE_KOTH) {
+        return std::string_view{"King of the Hill"};
+    } else if (game_type == rf::NG_TYPE_DC) {
+        return std::string_view{"Damage Control"};
+    } else if (game_type == rf::NG_TYPE_REV) {
+        return std::string_view{"Revolt"};
+    } else if (game_type == rf::NG_TYPE_RUN) {
+        return std::string_view{"Run"};
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"Escalation"};
+    } else {
+        if (game_type != rf::NG_TYPE_TEAMDM) {
+            xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
         }
-        xlog::warn("hooked, entity {}, flags {}, has nano? {}", ep->name, ep->entity_flags2, rf::entity_has_nano_shield(ep));
-        xlog::warn("infoflags1 {}, infoflags2 {}", ep->info->flags, ep->info->flags2);
-    },
-};
+        return std::string_view{"Team Deathmatch"};
+    }
+}
 
-CodeInjection multi_powerup_remove_all_for_player_nano_patch {
-    0x0048039A,
-    [](auto& regs) {
-        int powerup_type = regs.esi;
-        xlog::warn("removing all: {}", powerup_type);
-        rf::Entity* ep = regs.ebp;
-        xlog::warn("hooked for remove, entity {}, flags {}", ep->name, ep->entity_flags2);
-        if (powerup_type == 4)
-        {
-            rf::entity_remove_nano_flag(ep);
+std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
+    if (game_type == rf::NG_TYPE_DM) {
+        return std::string_view{rf::strings::deathmatch};
+    } else if (game_type == rf::NG_TYPE_CTF) {
+        return std::string_view{rf::strings::capture_the_flag};
+    } else if (game_type == rf::NG_TYPE_KOTH) {
+        return std::string_view{"KING OF THE HILL"};
+    } else if (game_type == rf::NG_TYPE_DC) {
+        return std::string_view{"DAMAGE CONTROL"};
+    } else if (game_type == rf::NG_TYPE_REV) {
+        return std::string_view{"REVOLT"};
+    } else if (game_type == rf::NG_TYPE_RUN) {
+        return std::string_view{"RUN"};
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"ESCALATION"};
+    } else {
+        if (game_type != rf::NG_TYPE_TEAMDM) {
+            xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
         }
-        xlog::warn("hooked, entity {}, flags {}, has nano? {}", ep->name, ep->entity_flags2, rf::entity_has_nano_shield(ep));
-        xlog::warn("infoflags1 {}, infoflags2 {}", ep->info->flags, ep->info->flags2);
-    },
-};
+        return std::string_view{rf::strings::team_deathmatch};
+    }
+}
+
+std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
+    if (game_type == rf::NG_TYPE_DM) {
+        return std::string_view{"DM"};
+    } else if (game_type == rf::NG_TYPE_CTF) {
+        return std::string_view{"CTF"};
+    } else if (game_type == rf::NG_TYPE_KOTH) {
+        return std::string_view{"KOTH"};
+    } else if (game_type == rf::NG_TYPE_DC) {
+        return std::string_view{"DC"};
+    } else if (game_type == rf::NG_TYPE_REV) {
+        return std::string_view{"REV"};
+    } else if (game_type == rf::NG_TYPE_RUN) {
+        return std::string_view{"RUN"};
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"ESC"};
+    } else {
+        if (game_type != rf::NG_TYPE_TEAMDM) {
+            xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
+        }
+        return std::string_view{"TDM"};
+    }
+}
+
+std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
+    if (game_type == rf::NG_TYPE_DM) {
+        return std::string_view{"dm"};
+    } else if (game_type == rf::NG_TYPE_TEAMDM) {
+        return std::string_view{"dm"};
+    } else if (game_type == rf::NG_TYPE_CTF) {
+        return std::string_view{"ctf"};
+    } else if (game_type == rf::NG_TYPE_KOTH) {
+        return std::string_view{"koth"};
+    } else if (game_type == rf::NG_TYPE_DC) {
+        return std::string_view{"dc"};
+    } else if (game_type == rf::NG_TYPE_REV) {
+        return std::string_view{"rev"};
+    } else if (game_type == rf::NG_TYPE_RUN) {
+        return std::string_view{"run"};
+    } else if (game_type == rf::NG_TYPE_ESC) {
+        return std::string_view{"esc"};
+    } else {
+        if (game_type != rf::NG_TYPE_TEAMDM) {
+            xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
+        }
+        return std::string_view{"dm"};
+    }
+}
+
+int multi_num_spawned_players() {
+    return std::ranges::count_if(SinglyLinkedList{rf::player_list}, [] (const auto& p) {
+        return !rf::player_is_dead(&p) && !rf::player_is_dying(&p);
+    });
+}
+
+void configure_custom_gametype_listen_server_settings() {
+    // reset to defaults
+    g_alpine_server_config = AlpineServerConfig{};
+    g_alpine_server_config_active_rules = AlpineServerConfigRules{};
+    set_upcoming_game_type(rf::netgame.type);
+
+    auto& rules = g_alpine_server_config_active_rules;
+    rules.game_type = rf::netgame.type;
+    apply_defaults_for_game_type(rules.game_type, rules);
+    rules.set_koth_score_limit(3600);
+    rules.set_dc_score_limit(3600);
+}
 
 void start_level_in_multi(std::string filename) {
 
     auto [is_valid, valid_filename] = is_level_name_valid(filename);
 
     if (is_valid) {
-        rf::VArray_String<rf::String>* levels_ptr = reinterpret_cast<rf::VArray_String<rf::String>*>(0x0064EC68);
+        rf::netgame.levels.add(valid_filename.c_str());
+        rf::netgame.max_time_seconds = 3600.0f;
+        rf::netgame.max_kills = 30;
+        rf::netgame.geomod_limit = 64;
+        rf::netgame.max_captures = 5;
+        rf::netgame.flags = 0; // no broadcast to tracker
+        rf::netgame.type = string_istarts_with(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
+            : string_istarts_with(filename, "koth") ? rf::NetGameType::NG_TYPE_KOTH
+            : string_istarts_with(filename, "dc") ? rf::NetGameType::NG_TYPE_DC
+            : string_istarts_with(filename, "rev") ? rf::NetGameType::NG_TYPE_REV
+            : string_istarts_with(filename, "run") ? rf::NetGameType::NG_TYPE_RUN
+            : string_istarts_with(filename, "esc") ? rf::NetGameType::NG_TYPE_ESC
+            : rf::NetGameType::NG_TYPE_DM;
+        rf::netgame.name = "Alpine Faction Test Server";
+        rf::netgame.password = "password";
 
-        if (levels_ptr) {
-            levels_ptr->add(valid_filename.c_str());
-        }
+        configure_custom_gametype_listen_server_settings();
 
         rf::set_in_mp_flag();
-        rf::multi_start(0,0);
-
-        *reinterpret_cast<float*>(0x0064EC4C) = 3600.0f;                            // time limit
-        *reinterpret_cast<int*>(0x0064EC50) = 30;                                   // kill limit
-        *reinterpret_cast<int*>(0x0064EC58) = 5;                                    // cap limit
-        *reinterpret_cast<int*>(0x0064EC54) = 64;                                   // geo limit
-        *reinterpret_cast<int*>(0x0064EC40) = 0;                                    // server options flags (team damage, fall damage, etc.)
-        *reinterpret_cast<rf::String*>(0x0064EC28) = "Alpine Faction Test Server";  // server name
-        //*reinterpret_cast<rf::String*>(0x0064EC30) = "password";                    // password
-        *reinterpret_cast<int*>(0x0064EC3C) = string_starts_with_ignore_case(filename, "ctf") ? 1 : 0; // game type
-        *reinterpret_cast<int*>(0x0064EC40) &= 0xFFFFFBFF;                          // do not broadcast to tracker
-
+        rf::multi_start(0, 0);
         rf::multi_hud_clear_chat();
         rf::multi_load_next_level();
         rf::multi_init_server();
     }
 }
+
+CodeInjection multi_customize_listen_server_settings_patch {
+    0x0044E485,
+    [](auto& regs) {
+        configure_custom_gametype_listen_server_settings();
+    },
+};
 
 ConsoleCommand2 levelm_cmd{
     "levelm",
@@ -549,14 +699,6 @@ ConsoleCommand2 levelm_cmd{
 DcCommandAlias mapm_cmd{
     "mapm",
     levelm_cmd,
-};
-
-ConsoleCommand2 connected_clients_cmd{
-    "sv_connectedclients",
-    []() {
-        print_all_player_info();
-    },
-    "Shows client and maximum RFL version information for connected players",
 };
 
 ConsoleCommand2 mapver_cmd{
@@ -633,26 +775,19 @@ CallHook<float(int, float, int, int, int, rf::PCollisionOut*, int, bool)> obj_ap
     }
 };
 
+CallHook<void(const char* filename)> level_cmd_multi_change_level_hook{
+    0x00435108,
+    [](const char* filename) {
+        if (rf::is_multi)
+            set_manually_loaded_level(true); // "level" console command
+        level_cmd_multi_change_level_hook.call_target(filename);
+    }
+};
+
 void multi_do_patch()
 {
-    
-
-    //entity_set_nano_flag_hook.install();
-    //entity_remove_nano_flag_hook.install();
-    //multi_powerup_add_nano_patch.install();
-    //multi_powerup_remove_nano_patch.install();
-    //multi_powerup_remove_all_for_player_nano_patch.install();
-    //AsmWriter(0x00480032).cmp(asm_regs::esi, 0x0059EF50); // nanoshield force (dont use)
-    //AsmWriter(0x004210CC).jmp(0x00421108); // nano shield vfx remove
-    //AsmWriter(0x004222DF).jmp(0x00422315); // nano shield vfx remove
-    //AsmWriter(0x00422ACA).jmp(0x00422AD0); // force all entities to have shield
-
     multi_limbo_init.install();
     multi_start_injection.install();
-
-    // Allow server to customize dropped flag return timer in ms
-    AsmWriter{0x00473B88}.push(g_additional_server_config.ctf_flag_return_time_ms); // blue flag
-    AsmWriter{0x00473B28}.push(g_additional_server_config.ctf_flag_return_time_ms); // red flag
 
     // Fix CTF flag not returning to the base if the other flag was returned when the first one was waiting
     ctf_flag_return_fix.install();
@@ -666,6 +801,9 @@ void multi_do_patch()
     // Make sure CTF flag does not spin in new level if it was dropped in the previous level
     multi_ctf_level_init_hook.install();
 
+    // Set custom listen server settings based on gametype
+    multi_customize_listen_server_settings_patch.install();
+
     multi_kill_do_patch();
     faction_files_do_patch();
     level_download_do_patch();
@@ -678,13 +816,15 @@ void multi_do_patch()
     // Fix lava damage sometimes being attributed to a player
     obj_apply_damage_lava_hook.install();
 
+    // Flag manually loaded levels from "level" command
+    level_cmd_multi_change_level_hook.install();
+
     // Init cmd line param
     get_url_cmd_line_param();
     get_levelm_cmd_line_param();
 
     // console commands
     levelm_cmd.register_cmd();
-    connected_clients_cmd.register_cmd();
     mapver_cmd.register_cmd();
     mapm_cmd.register_cmd();
     set_handicap_cmd.register_cmd();
@@ -692,6 +832,7 @@ void multi_do_patch()
 
 void multi_after_full_game_init()
 {
+    populate_gametype_table();
     handle_url_param();
     handle_levelm_param();
 }

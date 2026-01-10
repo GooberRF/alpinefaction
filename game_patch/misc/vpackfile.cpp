@@ -231,16 +231,25 @@ static int vpackfile_add_new(const char* filename, const char* dir)
     packfile->path[sizeof(packfile->path) - 1] = '\0';
     packfile->field_a0 = 0;
     packfile->num_files = 0;
-    // packfile->is_user_maps = rf::vpackfile_loading_user_maps; // this is set to true for user_maps
-    // check for is_user_maps based on dir (like is_client_mods) instead of 0x01BDB21C
+
     packfile->is_user_maps = (dir && (
             stricmp(dir, "user_maps\\projects\\") == 0 ||
             stricmp(dir, "user_maps\\multi\\") == 0 ||
             stricmp(dir, "user_maps\\single\\") == 0));
+
     packfile->is_client_mods = (dir && stricmp(dir, "client_mods\\") == 0);
 
-    xlog::debug("Packfile {} is from {}user_maps, {}client_mods", filename, packfile->is_user_maps ? "" : "NOT ",
-               packfile->is_client_mods ? "" : "NOT ");
+    packfile->is_mods = (dir && PathIsRelativeA(dir) && StrCmpNIA(dir, "mods\\", 5) == 0);
+
+    packfile->is_alpinefaction_vpp = (filename && stricmp(filename, "alpinefaction.vpp") == 0);
+
+    xlog::debug(
+        "Packfile {} is from {}user_maps, {}client_mods, {}mods, {}alpinefaction.vpp",
+        filename,
+        packfile->is_user_maps ? "" : "NOT ",
+        packfile->is_client_mods ? "" : "NOT ",
+        packfile->is_mods ? "" : "NOT ",
+        packfile->is_alpinefaction_vpp ? "" : "NOT ");
 
     // Process file header
     char buf[0x800];
@@ -283,7 +292,7 @@ static int vpackfile_add_new(const char* filename, const char* dir)
 static rf::VPackfile* vpackfile_find_packfile(const char* filename)
 {
     for (auto& packfile : g_packfiles) {
-        if (string_equals_ignore_case(packfile->filename, filename))
+        if (string_iequals(packfile->filename, filename))
             return packfile.get();
     }
 
@@ -467,6 +476,28 @@ static rf::VPackfileEntry* vpackfile_find_new(const char* filename)
     return nullptr;
 }
 
+bool file_changed_by_client_mod(const char* filename)
+{
+    rf::VPackfileEntry* entry = vpackfile_find_new(filename);
+    if (entry) {
+        if (entry->parent->is_client_mods || entry->parent->is_user_maps) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool file_loaded_from_alpinefaction_vpp(const char* filename)
+{
+    rf::VPackfileEntry* entry = vpackfile_find_new(filename);
+    if (entry) {
+        if (entry->parent->is_alpinefaction_vpp) {
+            return true;
+        }
+    }
+    return false;
+}
+
 CodeInjection vpackfile_open_check_seek_result_injection{
     0x0052C301,
     [](auto& regs) {
@@ -476,26 +507,26 @@ CodeInjection vpackfile_open_check_seek_result_injection{
     },
 };
 
-static void load_dashfaction_vpp()
+static void load_alpinefaction_vpp()
 {
-    // Load DashFaction specific packfile
-    std::string df_vpp_dir = get_module_dir(g_hmodule);
-    const char* df_vpp_base_name = "alpinefaction.vpp";
-    if (!PathFileExistsA((df_vpp_dir + df_vpp_base_name).c_str())) {
+    // Load AlpineFaction specific packfile
+    std::string af_vpp_dir = get_module_dir(g_hmodule);
+    const char* af_vpp_base_name = "alpinefaction.vpp";
+    if (!PathFileExistsA((af_vpp_dir + af_vpp_base_name).c_str())) {
         // Remove trailing slash
-        if (df_vpp_dir.back() == '\\') {
-            df_vpp_dir.pop_back();
+        if (af_vpp_dir.back() == '\\') {
+            af_vpp_dir.pop_back();
         }
         // Remove the last component from the path leaving the trailing slash
         // This is needed to allow running/debugging from MSVC
-        auto pos = df_vpp_dir.rfind('\\');
+        auto pos = af_vpp_dir.rfind('\\');
         if (pos != std::string::npos) {
-            df_vpp_dir.resize(pos + 1);
+            af_vpp_dir.resize(pos + 1);
         }
     }
-    xlog::info("Loading {} from directory: {}", df_vpp_base_name, df_vpp_dir);
-    if (!rf::vpackfile_add(df_vpp_base_name, df_vpp_dir.c_str())) {
-        xlog::error("Failed to load {}", df_vpp_base_name);
+    xlog::info("Loading {} from directory: {}", af_vpp_base_name, af_vpp_dir);
+    if (!rf::vpackfile_add(af_vpp_base_name, af_vpp_dir.c_str())) {
+        xlog::error("Failed to load {}", af_vpp_base_name);
     }
 }
 
@@ -523,7 +554,7 @@ void force_file_from_packfile(const char* name, const char* packfile_name)
     rf::VPackfile* packfile = vpackfile_find_packfile(packfile_name);
     if (packfile) {
         for (auto& entry : packfile->files) {
-            if (string_equals_ignore_case(entry.name, name)) {
+            if (string_iequals(entry.name, name)) {
                 vpackfile_add_to_lookup_table(&entry);
             }
         }
@@ -577,7 +608,7 @@ static void vpackfile_init_new()
     if (!rf::is_dedicated_server) {
         rf::vpackfile_add("music.vpp", nullptr);
         rf::vpackfile_add("ui.vpp", nullptr);
-        load_dashfaction_vpp();
+        load_alpinefaction_vpp();
     }
     rf::vpackfile_add("tables.vpp", nullptr);
     addr_as_ref<int>(0x01BDB218) = 1;          // VPackfilesLoaded
@@ -662,6 +693,34 @@ static void load_additional_packfiles_new()
         //rf::game_add_path(mod_dir.c_str(), ".vpp");
         load_vpp_files_from_directory(mod_file.c_str(), mod_dir.c_str());
     }
+}
+
+bool is_known_missing_stock_asset(const std::string_view filename) {
+    static constexpr std::array<std::string_view, 3> missing_filenames = {
+        "bigboom.vbm",
+        "fp_shotgun_reload.wav",
+        "laser loop.wav",
+    };
+
+    for (const std::string_view missing : missing_filenames) {
+        if (filename.size() != missing.size()) {
+            continue;
+        }
+
+        bool matches = true;
+        for (size_t i = 0; i < filename.size(); ++i) {
+            if (std::tolower(static_cast<uint8_t>(filename[i])) != missing[i]) {
+                matches = false;
+                break;
+            }
+        }
+
+        if (matches) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void vpackfile_apply_patches()

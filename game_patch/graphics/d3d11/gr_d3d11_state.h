@@ -69,6 +69,11 @@ namespace df::gr::d3d11
             return p.first->second;
         }
 
+        void clear_sampler_state_cache()
+        {
+            sampler_state_cache_.clear();
+        }
+
     private:
         ComPtr<ID3D11RasterizerState> create_rasterizer_state(D3D11_CULL_MODE cull_mode, int depth_bias, bool depth_clip_enable);
         ComPtr<ID3D11SamplerState> create_sampler_state(rf::gr::TextureSource ts);

@@ -13,8 +13,6 @@
 // ======= Globals and utility =======
 void load_af_options_config();
 void load_level_info_config(const std::string& level_filename);
-std::tuple<int, int, int, int> extract_color_components(uint32_t color);
-std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color);
 
 // ======= Alpine options =======
 enum class AlpineOptionID
@@ -150,18 +148,25 @@ struct LevelInfoMetadata
 // Main configuration structure for level info
 struct AlpineLevelInfoConfig
 {
-    // maps of level options and mesh replacements
-    std::unordered_map<std::string, std::unordered_map<AlpineLevelInfoID, LevelInfoValue>> level_options;
-    std::unordered_map<std::string, std::unordered_map<std::string, std::string>> mesh_replacements; // stored lowercase
+    std::string current_level;
+    std::unordered_map<AlpineLevelInfoID, LevelInfoValue> level_options;
+    std::unordered_map<std::string, std::string> mesh_replacements; // stored lowercase
+
+    void reset_for_level(const std::string& level)
+    {
+        current_level = level;
+        level_options.clear();
+        mesh_replacements.clear();
+    }
 
     // Check if an option exists for a given level
     bool is_option_loaded(const std::string& level, AlpineLevelInfoID option_id) const
     {
-        auto level_it = level_options.find(level);
-        if (level_it != level_options.end()) {
-            return level_it->second.find(option_id) != level_it->second.end();
+        if (level != current_level) {
+            return false; // should never happen
         }
-        return false; // no options loaded for this level
+
+        return level_options.find(option_id) != level_options.end();
     }
 };
 
@@ -169,9 +174,9 @@ extern AlpineLevelInfoConfig g_alpine_level_info_config;
 
 // Get an option value for a level
 template<typename T>
-inline T get_level_info_value(const std::string& level, AlpineLevelInfoID id)
+inline T get_level_info_value(AlpineLevelInfoID id)
 {
-    return std::get<T>(g_alpine_level_info_config.level_options.at(level).at(id));
+    return std::get<T>(g_alpine_level_info_config.level_options.at(id));
 }
 
 // Get an option value with a default fallback
@@ -179,10 +184,11 @@ template<typename T>
 inline T get_level_info_or_default(const std::string& level, AlpineLevelInfoID id, T default_value)
 {
     if (g_alpine_level_info_config.is_option_loaded(level, id)) {
-        return get_level_info_value<T>(level, id);
+        return get_level_info_value<T>(id);
     }
     return default_value;
 }
 
 bool is_p2t_fix_level(const std::string& filename);
+bool is_known_run_level(const std::string& filename);
 void open_url(const std::string& url);

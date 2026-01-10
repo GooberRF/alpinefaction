@@ -5,6 +5,7 @@
 #include <common/config/BuildConfig.h>
 #include "alpine_options.h"
 #include "alpine_settings.h"
+#include "../multi/gametype.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../rf/sound/sound.h"
@@ -79,8 +80,7 @@ void player_fpgun_move_sounds(const rf::Vector3& camera_pos, const rf::Vector3& 
 void player_fpgun_reload_meshes(bool force)
 {
     int fpgun_team = 999;
-    auto game_type = rf::multi_get_game_type();
-    if (game_type == rf::NG_TYPE_TEAMDM || game_type == rf::NG_TYPE_CTF) {
+    if (multi_is_team_game_type()) {
         fpgun_team = g_fpgun_main_player->team;
     }
     auto& fpgun_meshes_current_mp_character = addr_as_ref<int>(0x005A0AEC);
@@ -96,6 +96,85 @@ void player_fpgun_reload_meshes(bool force)
         }
     }
 }
+
+void fpgun_play_random_idle_anim()
+{
+    auto* pp = rf::local_player;
+    if (!pp)
+        return;
+
+    const int weapon_cls_id = rf::player_get_current_weapon(pp);
+    if (weapon_cls_id < 0)
+        return;
+
+    bool deny_play_idle =
+        rf::player_fpgun_is_in_state_anim(pp, rf::WeaponState::WS_LOOP_FIRE) ||
+        rf::player_fpgun_action_anim_is_playing(pp, rf::WeaponAction::WA_RELOAD) ||
+        rf::player_fpgun_action_anim_is_playing(pp, rf::WeaponAction::WA_IDLE_1) ||
+        rf::player_fpgun_action_anim_is_playing(pp, rf::WeaponAction::WA_IDLE_2) ||
+        rf::player_fpgun_action_anim_is_playing(pp, rf::WeaponAction::WA_IDLE_3) ||
+        rf::player_fpgun_action_anim_is_playing(pp, rf::WeaponAction::WA_HOLSTER) ||
+        rf::player_fpgun_action_anim_is_playing(pp, rf::WeaponAction::WA_DRAW);
+
+    if (deny_play_idle)
+        return;
+
+    rf::WeaponAction candidates[3];
+    int count = 0;
+
+    for (int action = static_cast<int>(rf::WeaponAction::WA_IDLE_1);
+        action <= static_cast<int>(rf::WeaponAction::WA_IDLE_3);
+        ++action)
+    {
+        auto wa = static_cast<rf::WeaponAction>(action);
+        if (rf::player_fpgun_action_anim_exists(weapon_cls_id, wa)) {
+            candidates[count++] = wa;
+        }
+    }
+
+    if (count == 0)
+        return;
+
+    const double roll = std::generate_canonical<double, 16>(g_rng);
+    int idx = 0;
+
+    if (count == 1) {
+        idx = 0;
+    }
+    else if (count == 2) {
+        // 90% first, 10% second
+        idx = (roll < 0.9) ? 0 : 1;
+    }
+    else { // count == 3
+        // 60% first, 30% second, 10% third
+        if (roll < 0.6)
+            idx = 0;
+        else if (roll < 0.9)
+            idx = 1;
+        else
+            idx = 2;
+    }
+
+    rf::player_fpgun_play_anim(pp, candidates[idx]);
+    rf::player_fpgun_reset_idle_timeout(pp);
+}
+
+CodeInjection player_fpgun_update_state_anim_stop_idle_injection{
+    0x004AA3FA,
+    [](auto& regs) {
+        rf::Player* pp = regs.esi;
+        if (pp) {
+            rf::player_fpgun_stop_idle_actions(pp);
+        }
+    },
+};
+
+CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
+    0x004AA4E4,
+    [](rf::Player* pp) {
+        return;
+    },
+};
 
 #ifndef NDEBUG
 
@@ -181,6 +260,13 @@ CodeInjection player_fpgun_render_main_player_entity_injection{
     },
 };
 
+CodeInjection players_cleanup_injection{
+    0x004A259C,
+    []() {
+        g_fpgun_main_player = nullptr;
+    },
+};
+
 void player_fpgun_do_patch()
 {
 #if SPECTATE_MODE_SHOW_WEAPON
@@ -202,6 +288,8 @@ void player_fpgun_do_patch()
     write_mem_ptr(0x004AEB86 + 1, &g_fpgun_main_player); // player_fpgun_delete_meshes
     write_mem_ptr(0x004A44BF + 2, &g_fpgun_main_player); // player_create_entity
     write_mem_ptr(0x004A44F7 + 2, &g_fpgun_main_player); // player_create_entity
+
+    players_cleanup_injection.install(); // fixes crash at 0x004AEB8F in player_fpgun_delete_meshes
 
     player_fpgun_render_main_player_entity_injection.install();
 
@@ -251,6 +339,12 @@ void player_fpgun_do_patch()
 
     // Render rocket launcher scanner image every frame
     // addr_as_ref<bool>(0x5A1020) = 0;
+
+    // do not stop playing idle anim when fpgun state anim changes
+    player_fpgun_stop_idle_actions_hook.install();
+
+    // stop idle anims when starting auto fire (semi auto is already handled by stock game)
+    player_fpgun_update_state_anim_stop_idle_injection.install();
 
     // Allow customizing fpgun fov
     player_fpgun_render_gr_setup_3d_hook.install();

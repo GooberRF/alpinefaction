@@ -1,44 +1,308 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.2.0 (Willow): Not yet released
+Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
+- Standardize user agent string format across all use cases
+- Bump RFL version to 304
+- Support `Alpha` field in `Decal` objects placed in version >= 304 levels (Direct3D 11 renderer only)
+- Improve output of object create failure log message
+
+### Bug fixes
+
+Version 1.2.2 (Willow): Released Jan-04-2026
+--------------------------------
+### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Add values to scope param for `Scope_Gate` event to test for team regardless of whether local player is spawned
+- Add `When_Round_Ends` event
+- Bump RFL version to 303
+- Add dynamic light flashes for explosions from weapons and clutter/entity deaths (Direct3D 11 renderer only)
+- Add `cl_explosionflashweapons` and `cl_explosionflashenv` commands
+- Add `r_precache_rooms` command to toggle front-loaded precaching (Direct3D 11 renderer only)
+- Add dynamic light glows from entities that are on fire (Direct3D 11 renderer only)
+- Add `cl_burningentityglow` command
+- Suppress main launcher window if user clicks `OK` to be redirected to download a new Alpine update
+- Add `What's New` window on first launch of launcher after an update has been installed
+
+### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix `Blue team` and `Red team` labels being swapped in `Scope_Gate` int1 field in level editor
+- Fix crash when gibbing some corpses in single player
+- Fix crash due to overflowing room cache buffer in Direct3D 11 renderer when loading very complex levels
+- Fix label offset for FPS/Ping display when `bighud` is disabled
+- Fix servers with game type ESC being incorrectly displayed on the server list as game type RUN
+
+Version 1.2.1 (Willow): Released Dec-30-2025
+--------------------------------
+### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Change default spawn delay for KOTH, DC, and ESC from 5, 2.5, 3 seconds respectively to 2 seconds
+- Deprecate support for Direct3D 11 renderer on GPUs without D3D level 10_0 (or higher) support
+- Improve FPS/ping HUD display
+- Change prefix for `showfps` and `showping` console commands to `ui`
+- Add `ui_fpsavg` command set FPS counter averaging window
+- Add `ui_scale_damage_notify`, `ui_scale_player_label`, and `ui_scale_ping_label` commands
+- Deprecate `cl_wh_bigtext` command
+- Increase workspace area on UV Unwrap dialog in level editor
+- Deprecate `cl_wh_objoverdraw` command, split functionality into `cl_wh_flagoverdraw` and `cl_wh_cpoverdraw`
+- Deprecate legacy `-dedicated` dedicated server functionality, add informational error message when used
+- Add `ui_scoreboard_split_spectators`, `ui_scoreboard_split_bots`, `ui_scoreboard_split_browsers`, `ui_scoreboard_split_idle` to control scoreboard division categories
+- Add `ui_scoreboard_simplesplit` to control behaviour of scoreboard divisions for desired categories
+- Add `ui_color_reticle` and `ui_color_reticle_locked` commands to set reticle color overrides
+- Add `ui_colorize_custom_reticles` command to toggle colorization of custom reticles
+- Add `ui_scale_reticle` command and apply standardized UI element scaling method
+- Add compatibility table (lightmap clamp floor) for `Dm-NukeTown2050.rfl`
+- Add `cl_hitsounds_min_interval` command to configure minimum delay between hit sounds
+- Add `af_server_req` packet type
+- Support gibbing from explosive damage in multiplayer
+- Add `gibbing` dedicated server config section to allow server host to configure gibbing behaviour
+- Add `Ctrl + K` hotkey in level editor to create links in the opposite direction from the standard `K` hotkey
+- Add `cl_gibchunks`, `cl_gibvelocityscale`, and `cl_giblifetimems` commands to customize gibbing behaviour
+
+[@is-this-c](https://github.com/is-this-c)
+- Add tied-score sorting to the scoreboard, so browsers are below bots, and bots below human players
+- Improve text layout in remote server config UI
+- Support `PgUp`, `PgDown`, `End`, and `Home` in remote server config UI
+- Improve bot decommissioning
+- Re-enter freelook spectate mode after level transition
+- Fix freelook spectate mode's yaw after level load
+
+### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix `af_send_packet` errors in dedicated server console when players enter or exit freecam spectate
+- Fix each instance of a mesh in a level sharing the same static lighting data in Direct3D 11 renderer
+- Fix Direct3D 11 renderer enforcing a minimum of 8 dynamic lights per scene, new limit is 32
+- Fix some character meshes derendering when 2 or more rotating movers are active and `Legacy movers` is false
+- Fix dynamic lights not illuminating meshes in Direct3D 11 renderer when 2 or more rotating movers are active and `Legacy movers` is false
+- Fix ESC mode capture progress not being reset when a control point becomes locked
+- Fix Direct3D 11 renderer not always properly applying dynamic lights to static meshes
+- Fix players spawning at the wrong control point in ESC when the center point is neutral
+- Fix rare crash when shooting at alpha-masked surfaces (fixes crash in community level `dm-oranmentsb2.rfl`)
+- Fix skybox rotation not being rendered by Direct3D 11 renderer
+- Fix third person weapon models being rendered fullbright by Direct3D 11 renderer
+- Fix `r_fullbright` not extending in Direct3D 11 renderer to third person weapon models held by players
+- Fix Rocket Launcher infrared scanner being drawn semi-transparent in Direct3D 11 renderer
+- Fix vehicles not rendering in Rocket Launcher infrared scanner in Direct3D 11 renderer
+- Fix faces with "Full Bright" flag having randomly generated lightmaps applied after the first geo
+- Fix dynamic lights being far dimmer than expected in Direct3D 11 renderer
+- Fix players having to wait 1 second before being able to queue a spawn in a server with spawn delay enabled
+- Fix hit sounds sometimes being very loud due to multiple playing simultaneously
+- Fix `Spawning...` text appearing on screen in freelook spectate mode after queuing a spawn in a server with spawn delay enabled
+- Fix RFSB 5.1.6 clients being falsely detected as legacy clients
+- Fix gibbing being triggered from explosive damage far more rarely than intended
+
+[@is-this-c](https://github.com/is-this-c)
+- Fix Alpine Faction Launcher's querying of MSAA levels in Direct3D 11
+- Use packet queues for remote server config transfers, in order to prevent network timeouts
+- Fix key up events for Num Pad `PgUp`, `PgDown`, `End`, and `Home`
+
+Version 1.2.0 (Willow): Released Dec-06-2025
+--------------------------------
+### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Implement TOML-based `ADS` configuration for dedicated servers
+    - Per-level rules configuration for server hosts
+    - On-demand loading of changed settings without server needing restart
+    - Support changing server game type on-demand or per-level
+- Add `King of the Hill` (KOTH) multiplayer game type
+- Add `Damage Control` (DC) multiplayer game type
+- Add `Revolt` (REV) multiplayer game type
+- Add `Run` (RUN) multiplayer game type
+- Add `Escalation` (ESC) multiplayer game type
+
+### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
 - Raise maximum confgurable pixels/m apply map texture setting in level editor to 8192
-- Default level ambient light and fog color to flat black (0, 0, 0) instead of stock game default (40, 40, 40)
+- Default level fog color to flat black (0, 0, 0) instead of stock game default (40, 40, 40)
 - Update Level Properties window strings to be more descriptive
 - Add `cl_wh_altdmgindicators` command to toggle cumulative world HUD damage indicators
 - Add `ui_realarmor` command to toggle real armor display on HUD (1:1 with health instead of the 2:1 default)
 - Add `-afs FILENAME` command line argument to specify a settings file when launching
 - Add `Suppress autoswitch` control bind (if held while picking up a weapon, autoswitch is suppressed)
-- Add `SuppressAutoswitchBindAlias` setting to `alpine_settings.ini`
-- Add `$Flag Captures While Stolen` dedicated server config option
+- Add `Flag Captures While Stolen` dedicated server config option
 - Add damage reduction handicap feature
 - Add `mp_handicap` command to configure your damage reduction handicap (0 - 99%)
-- Add `DesiredHandicap` setting to `alpine_settings.ini`
 - Add `cl_autoswitchfirewait` command to suppress autoswitch during and immediately after weapon fire
-- Add `AutoswitchFireWait` setting to `alpine_settings.ini`
 - Maintain third person camera view between level loads after `camera3` command entered
 - Add `cl_autoswitchempty` command to always autoswitch empty weapons even if autoswitch is turned off
-- Add `AlwaysAutoswitchEmpty` setting to `alpine_settings.ini`
 - Bump RFL version to 302
 - Add support for custom AlpineLevelProperties chunk in rfl files
-- Add handling for `Legacy Cyclic_Timers` option in level files in editor and game
+- Add `legacy_cyclic_timers` setting to level properties window in level editor
+- Add "ignore nonvoters" option to dedicated server vote configs
+- Reformatted output of `info` command to contain more useful info
+- Deprecate `sv_connectedclients` command as all info is now in the output of `info`
+- Updated new player joining message printed to ADS server console to include socket, client info, and max RFL version
+- Support weapon stay exemption functionality for any weapons, including stock fusion behaviour and weapons from TC mods
+- Deprecate `$Max FOV` dedicated server setting
+- Support GunGame configuration using weapon names (from `weapons.tbl`) rather than weapon indices
+- Add support for custom weapon loadouts in dedicated servers
+- Add support for spawn delays in dedicated servers
+- Identify Alpine Faction and Dash Faction players in server console on join and when `info` command is run
+- Log player join request rejection reason to server console on attempted join
+- Log accepted and rejected `rcon` commands to server console
+- Log accepted and rejected `rcon_request` commands to server console
+- Log all chat messages to server console
+- Add support for control points as game type objectives
+- Report custom gamemodes to legacy clients as TDM for compatibility
+- Add `Control_Point_Handler` event
+- Add `cl_outlineheightscale` command to scale height of control point outlines
+- Add `cl_outlinesegments` command to set segment count for control point outline rings
+- Add game type selection for `Gametype_Gate` event for KOTH, DC, REV, RUN, ESC
+- Print vote initiation alerts to dedicated server console
+- Add `reject_incompatible_clients` ADS setting
+- Add `r_colorblind` command for configuring colorblind mode rendering filter (Direct3D 11 renderer only)
+- Add `r_picmip` command to configure texture resolution divisor (Direct3D 11 renderer only)
+- Identify known server browser clients in server console on join and when `info` command is run
+- Log a warning to console when trying to load a mesh file that doesn't exist
+- Add `-min` command line argument to launch ADS servers with minimal console logging
+- Add `-log` command line argument to log full console output from ADS servers
+- Add `cl_columnsegments` command to set segment count for control point light columns
+- Add `cl_columnheightscale` command to scale height of control point light columns
+- Support `levelm` and `Play (Multi)` in RED launching KOTH maps with KOTH gamemode
+- Set default gamemode settings when starting a listen server
+- Add `sp_exposuredamage` command to control exposure damage when outside without armor
+- Add `sv_gametype` command to override server configured game type
+- Update `info` command output to include current game type
+- Add game type to `Level initializing` console message on level load
+- Communicate changed server settings to supported clients
+- Support game type switching on client without having to rejoin
+- Kick legacy clients on game type switch and notify them they can rejoin
+- Add `vote gametype` chat command
+- Support mappers associating MP respawn points with control points
+- Add `Respawn_Point_State` event
+- Add `Modify_Respawn_Point` event
+- Add new team scores HUD widget and capture point progress bars for KOTH and DC game types
+- Simplify and optimize level info (`mapname_info.tbl`) handling
+- Support locked capture points
+- Support stage param on `Capture_Point_State` event
+- Add `Set_Capture_Point_Owner` event
+- Add `When_Captured` event
+- Add `Owner_Gate` event
+- Allow using `Edit Links` window in level editor to link objects to MP respawn points
+- Support rule presets and aliases in ADS dedicated servers
+- Add preset support to `vote level` and `vote match` chat commands
+- Expand `sv_gametype` to allow setting a new level
+- Add `gt` alias to `sv_gametype` command
+- Allow `sv_gametype` execution via rcon
+- Add `dbg_numgeos` debug command to count number of geo craters in current level
+- Add legacy mover setting to level properties window in level editor
+- Add `Inspect weapon` control bind
+- Add `cl_locationpings` command to toggle location pinging functionality
+- Fit scoreboard on screen by splitting into columns when server has > 16 players
+- Deprecate `enforce_min_server_version` Alpine restrict setting
+- Add `sv_restrict_status` command to check status of client restrictions on the current map and ruleset
+- Add tracking of `Loads` to scoreboard in RUN game type
+- Add `ui_runtimer` command to toggle display of timer in RUN game type
+- Allow `K` link hotkey in level editor to create multiple links at once
+- Dynamically scale `Spectating:` name plate based on player name length
+- Color player name on name plate based on their team in team game types
+- Exclude clients from votes if they don't meet the server's minimum requirements
+- Add winter seasonal effect to main menu background
+- Suppress missing asset warnings for files known to be referenced by but missing from the stock game
+- Add `Play in multi (camera)` button to level editor
+- Add `Player starts with headlamp` setting to level properties window in level editor
+- Add `Set_Gameplay_Rule` event and first supported rule `Player has headlamp`
+- Rearrange quick access buttons on level editor toolbar
+- Add level editor hotkey `F9` to play in multi, and `F10` to play in multi (camera))
+- Deprecate `level_info_ext` and `map_info_ext`, use `level_info` and `map_info` instead
+- Add `Override static mesh ambient light scale` setting to level properties window in level editor
+- Update output of `level_info` command to include advanced level properties
+- Add browser, spectator, and idle icon assets
+- Support setting freelook spectator camera accel with scroll wheel
+- Alias `Ping Location` control to reset to freelook spectator camera accel to base value
+- Add scroll wheel support to message log panel and scrollable item lists in menus
+- Add `kick after warning` option to dedicated server client inactivity tracking
+- Add `ui_color_sniper_scope`, `ui_color_precision_scope`, and `ui_color_rail_scope` commands
+- Add `ui_color_ar_ammo` and `ui_color_damage_notify` commands
+- Add `RFL version` to level editor `Level Properties` window
+- Add `ui_color_location_ping` and `ui_color_multi_timer` commands
+- Use team colors for player name labels when spectating in team gametypes
+- Add `ui_color_team_label` command
+- Add `allowed_levels`, `add_rotation_to_allowed_levels`, and `only_allow_gametype_prefix` options for `vote level` configs
+- Automatically add `.rfl` extension if not present in level filenames for ADS dedicated server config
+
+[@is-this-c](https://github.com/is-this-c)
+- Add `Tlv{Writer, Reader}` and `HighResTimer`
+- Prevent idle players from voting
+- Add colored `bot` text to a bot's name
+- Add `bot`, `browser`, `spectator`, and `idle` text to `info` command's output
+- Add `bot_shared_secret` command to signal your client as a bot
+- Add a `bot_shared_secret` ADS option for dedicated servers
+- Send `pf_player_stats_packet` with score
+- Add browser, spectator, and idle icon logic
+- Ignore browsers in spectate mode
+- Add `bighud` support for chat menus
+- Support `•` in TrueType fonts
+- Add the year and the number of spawned players to the scoreboard
+- Add `ui_simple_server_chat_messages` command to display automated server chat messages without `Server: `
+- Color automated server chat messages with a gold name instead of a red name
+- Add `key_quick_exit` command to restore keyboard shortcut `Shift+Esc` to quit out of Red Faction
+- Support Alt+F4 or window close button (X) to quit out of Red Faction
+- Add a configurable control to display a remote server's config
+- Add `ui_always_show_spectators` command to always display spectators in multiplayer
+- Add network code for spectators
+- Improve code that fixed broken events, if their delay parameter was set
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Improve dedicated server framerate consistency
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix very niche case where armor values were displayed differently when Big HUD was enabled
-- Fix DX11 renderer not properly rendering detail brushes in skyboxes
+- Fix Direct3D 11 renderer not properly rendering detail brushes in skyboxes
 - Fix super powerups applying in SP in non-Alpine levels
-- Fix `Cyclic_Timer` event activating twice on initial activation (unless `Legacy Cyclic_Timers` is on)
+- Fix `Cyclic_Timer` event activating twice on initial activation (subject to legacy switch)
 - Fix broken rendering of particle emitter 23616 on community level `dm-birthday.rfl`
+- Fix broken rendering of particle emitter 14313 on community level `DM-RFU2-Halloween.rfl`
+- Fix `NAME has been kicked` not being printed to server console when players kicked due to inactivity
+- Fix `Advertise AF` sometimes sending the wrong advert to players running old Alpine versions
+- Fix inactivity incorrectly being tracked when endgame scoreboard is displayed
+- Fix very niche case where server could crash if gungame is on and a weapon type is invalid
+- Fix overtime initiating in match mode even if no match is active
+- Fix scanner and scope sensitivity set in options menu not applying until new level is loaded
+- Fix Direct3D 11 renderer crashing when generating realtime bitmaps
+- Fix dynamic lights not rendering on meshes (fixed in Direct3D 11 only)
+- Fix dynamic lights not rendering on mover brushes (fixed in Direct3D 11 only)
+- Fix Direct3D 11 renderer not properly rendering vertex lighting for meshes
+- Fix `r_fullbright`, `r_lightmaps`, and `r_nearest` not working properly on Direct3D 11 renderer
+- Fix `Winner` and `Game Over` sounds played at the end of a match usually being wrong
+- Fix `Try Avoid Players` behaviour for spawn point selection not working properly
+- Fix rare crash when rapidly switching between players in first person spectate mode
+- Fix server processing `af_ping_location_req` packets when feature was turned off
+- Fix `Solo ignore resets` trigger option not working properly
+- Fix `No match is queued` message mistakenly being sent to all players instead of just the requester
+- Fix match mode logic error if map is changed during pre-match phase
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `dm-rfu-friday.rfl`
+- Fix MP timer alert sounds not playing if already played once this level (e.g. if level is extended)
+- Fix rare crash on game shutdown when certain mods are loaded
+- Fix low velocity translating movers not working as expected (subject to legacy switch)
+- Fix accelerating/decelerating rotating movers not working as expected (subject to legacy switch)
+- Fix `Ping Pong Infinite`, `Loop Once`, and `Loop Infinite` modes for rotating movers (subject to legacy switch)
+- Fix `Lift` mode not working for translating movers (subject to legacy switch)
+- Fix strange behaviour of translating movers when accel + decel > total travel time (subject to legacy switch)
+- Fix crash when `Force Orient` flag is used with translating movers
+- Fix `Force Orient` mover flag not working (subject to legacy switch)
+- Fix rare crash when starting to spectate a player immediately when they land on a surface
 
-### Imports from other repos
-[Dash Faction](https://github.com/rafalh/dashfaction) (Upstream)
-- Add support for Dash Level Properties chunk and full lightmap depth setting (commit f90f81a)
+[@is-this-c](https://github.com/is-this-c)
+- For console arguments, parse hexadecimal values as unsigned integers
+- Set `rf::gr::text_2d_mode` to ignore fog
+- Fix `gr_d3d_bitmap`, so `gr_d3d_set_state` is called earlier
+- Support `PgUp`, `PgDown`, `End`, and `Home` on numeric keypads
+- Fix a potential crash, after a client quits a game, if Directd3D 11 is enabled
+
+### From [Dash Faction](https://github.com/rafalh/dashfaction)
+[@rafalh](https://github.com/rafalh)
+- Fix compatibility with misbehaving GPU drivers which report support for texture formats which they don't actually support (e.g. VirtualBox)
+- Add `DashLevelProps::lightmaps_full_depth`
+
+### Imported libraries
+- [toml++](https://github.com/marzer/tomlplusplus) by Mark Gillard
 
 Version 1.1.0 (Tamarack): Released Apr-19-2025
 --------------------------------
@@ -396,7 +660,6 @@ Version 1.9.0 (released 2025-04-06)
 - Disable adding faces to fix PS2 tiling in editor
 - Disable red background in log window if geometry limits are crossed in editor
 - Update geometry limits in editor so they show static pools size (crossing it can have tiny performance impact)
-- Add level property which enables full lightmaps depth (enabled by default in new maps)
 
 [@GooberRF](https://github.com/GooberRF)
 - Fix crash when `verify_level` command is run without a level being loaded

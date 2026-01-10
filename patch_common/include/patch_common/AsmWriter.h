@@ -305,26 +305,12 @@ public:
         return *this;
     }
 
-    AsmWriter& push(int32_t imm)
-    {
-        if (abs(imm) < 128)
-            return push(static_cast<i8>(imm));
-        write<u8>(0x68); // Opcode
-        write<i32>(static_cast<i32>(imm));
-        return *this;
-    }
+    template <typename T>
+    AsmWriter& push(const T) = delete;
 
-    template<typename T>
-    AsmWriter& push(const T* imm)
-    {
-        return push(reinterpret_cast<int32_t>(imm));
-    }
-
-    AsmWriter& push(int8_t imm)
-    {
-        write<u8>(0x6A); // Opcode
-        write<i8>(static_cast<i8>(imm));
-        return *this;
+    template <typename T>
+    AsmWriter& push(T* const imm) {
+        return push<int32_t>(reinterpret_cast<int32_t>(imm));
     }
 
     AsmWriter& add(const AsmRegMem& dst_rm, int32_t imm32)
@@ -618,6 +604,28 @@ private:
         return abs(static_cast<int32_t>(imm)) < 128;
     }
 };
+
+template <>
+inline AsmWriter& AsmWriter::push<int8_t>(const int8_t imm) {
+    write<u8>(0x6A); // Opcode
+    write<i8>(imm);
+    return *this;
+}
+
+template <>
+inline AsmWriter& AsmWriter::push<int32_t>(const int32_t imm) {
+    if (std::abs(imm) < 128) {
+        return push<int8_t>(imm);
+    }
+    write<u8>(0x68); // Opcode
+    write<i32>(imm);
+    return *this;
+}
+
+template <>
+inline AsmWriter& AsmWriter::push<uint32_t>(const uint32_t imm) {
+    return push<int32_t>(imm);
+}
 
 template<>
 inline AsmWriter& AsmWriter::fld<float>(const AsmRegMem& src_rm)

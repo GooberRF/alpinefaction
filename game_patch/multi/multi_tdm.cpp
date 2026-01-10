@@ -109,12 +109,6 @@ void multi_tdm_apply_patch()
     // multi_hud_render_team_scores
     AsmWriter{0x00477BCD}.nop(5); // and eax, 0xFF
     AsmWriter{0x00477BD9}.nop(5); // and eax, 0xFF
-    // multi_limbo_init
-    AsmWriter{0x0047C300, 0x0047C302}.mov(ebx, eax); // mov bl, al
-    AsmWriter{0x0047C307, 0x0047C309}.cmp(eax, ebx); // cmp al, bl
-    AsmWriter{0x0047C318, 0x0047C31A}.mov(ebx, eax); // mov bl, al
-    AsmWriter{0x0047C34B, 0x0047C34D}.mov(ebx, eax); // mov bl, al
-    AsmWriter{0x0047C352, 0x0047C354}.cmp(eax, ebx); // cmp al, bl
     // Note: multi_hud_render_scoreboard_old (0x00478150) is not used
 
     // Change the range of allowed values for Max Kills dedicated server config option to 1-999

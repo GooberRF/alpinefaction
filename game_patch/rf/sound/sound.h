@@ -72,7 +72,7 @@ namespace rf
     static auto& sounds = addr_as_ref<Sound[2600]>(0x01CD3BA8);
     static auto& sound_enabled = addr_as_ref<bool>(0x017543D8);
     static auto& ds3d_enabled = addr_as_ref<bool>(0x01AED340);
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
     // In DF sound channels limit has been raised
     constexpr int num_sound_channels = 64;
     extern SoundInstance sound_instances[num_sound_channels];
@@ -94,6 +94,7 @@ namespace rf
 
     static auto snd_load_hint = addr_as_ref<int(int handle)>(0x005054D0);
     static auto snd_play = addr_as_ref<int(int handle, int group, float pan, float volume)>(0x00505560);
+    static auto snd_stop = addr_as_ref<void(int handle)>(0x00505A40);
     static auto snd_play_3d = addr_as_ref<int(int handle, const Vector3& pos, float vol_scale, const Vector3& unused, int group)>(0x005056A0);
     static auto snd_init_instance = addr_as_ref<int(SoundInstance* instance)>(0x00505680);
     static auto snd_stop_all_paused = addr_as_ref<void()>(0x005059F0);

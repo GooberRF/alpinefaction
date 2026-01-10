@@ -3,6 +3,7 @@
 #include <patch_common/AsmOpcodes.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
+#include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "../misc/misc.h"
 #include "../rf/particle_emitter.h"
@@ -23,9 +24,15 @@ FunHook<rf::ParticleEmitter*(int, rf::ParticleEmitterType&, rf::GRoom*, rf::Vect
             new_type.min_spawn_delay = std::max(new_type.min_spawn_delay, min_spawn_delay);
             new_type.max_spawn_delay = std::max(new_type.max_spawn_delay, min_spawn_delay);
 
-            // hackfix for particle emitter on dm-birthday.rfl which doesn't render properly with the spawn delay fix
-            if (type.uid == 23616 && rf::level.filename == "dm-birthday.rfl") {
+            // hackfixes for specific particle emitters which don't render properly with the spawn delay fix
+            if (type.uid == 23616 && string_iequals(rf::level.filename, "dm-birthday.rfl")) {
                 new_type.particle_flags &= ~0x4;    // turn off fade
+                new_type.min_spawn_delay = 1.0f;    // set spawn delay to 1 sec
+                new_type.max_spawn_delay = 1.0f;
+                new_type.min_life_secs = 1.0f;      // set decay to 1 sec
+                new_type.max_life_secs = 1.0f;
+            }
+            else if (type.uid == 14313 && string_iequals(rf::level.filename, "DM-RFU2-Halloween.rfl")) {
                 new_type.min_spawn_delay = 1.0f;    // set spawn delay to 1 sec
                 new_type.max_spawn_delay = 1.0f;
                 new_type.min_life_secs = 1.0f;      // set decay to 1 sec

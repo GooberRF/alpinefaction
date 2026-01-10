@@ -16,10 +16,12 @@
 #include "alpine_options.h"
 #include "alpine_settings.h"
 #include "misc.h"
+#include "level.h"
 #include "../sound/sound.h"
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../multi/server.h"
 #include "../rf/gr/gr.h"
 #include "../rf/player/player.h"
 #include "../rf/multi.h"
@@ -58,6 +60,18 @@ bool g_in_mp_game = false;
 bool g_jump_to_multi_server_list = false;
 std::optional<JoinMpGameData> g_join_mp_game_seq_data;
 std::optional<std::string> g_levelm_filename;
+std::optional<rf::NetGameType> g_local_pending_game_type; // used for pending gt received from server. I don't like this being here, todo: refactor
+std::optional<int> g_local_pending_win_condition;
+
+void set_local_pending_game_type(rf::NetGameType game_type, int win_condition) {
+    g_local_pending_game_type = game_type;
+    g_local_pending_win_condition = win_condition;
+}
+
+void reset_local_pending_game_type() {
+    g_local_pending_game_type.reset();
+    g_local_pending_win_condition.reset();
+}
 
 bool tc_mod_is_loaded()
 {
@@ -202,15 +216,6 @@ FunHook<void()> multi_after_players_packet_hook{
         g_in_mp_game = true;
         mp_send_handicap_request(false);
     },
-};
-
-CodeInjection mover_rotating_keyframe_oob_crashfix{
-    0x0046A559,
-    [](auto& regs) {
-        float& unk_time = *reinterpret_cast<float*>(regs.esi + 0x308);
-        unk_time = 0;
-        regs.eip = 0x0046A89D;
-    }
 };
 
 CodeInjection parser_xstr_oob_fix{
@@ -414,7 +419,52 @@ CodeInjection game_set_file_paths_injection{
 CallHook level_init_pre_console_output_hook{
     0x00435ABB,
     []() {
-        rf::console::print("-- Level Initializing: {} --", rf::level_filename_to_load);
+        if (rf::is_multi) {
+            // server delayed gametype swap
+            if (rf::is_dedicated_server && g_dedicated_launched_from_ads) {
+                apply_game_type_for_current_level();
+                rf::netgame.type = get_upcoming_game_type();
+                clear_explicit_upcoming_game_type_request();
+            }
+
+            // local client delayed gametype swap
+            if (!rf::is_server) {
+                if (g_local_pending_game_type.has_value()) {
+                    rf::netgame.type = g_local_pending_game_type.value();
+
+                    if (g_local_pending_win_condition.has_value() && get_af_server_info_mutable().has_value()) {
+                        auto& server_info = get_af_server_info_mutable().value();
+                        switch (rf::netgame.type) {
+                        case rf::NetGameType::NG_TYPE_CTF:
+                            rf::netgame.max_captures = g_local_pending_win_condition.value();
+                            break;
+                        case rf::NetGameType::NG_TYPE_KOTH:
+                            server_info.koth_score_limit = g_local_pending_win_condition.value();
+                            break;
+                        case rf::NetGameType::NG_TYPE_DC:
+                            server_info.dc_score_limit = g_local_pending_win_condition.value();
+                            break;
+                        case rf::NetGameType::NG_TYPE_ESC:
+                        case rf::NetGameType::NG_TYPE_REV:
+                            break;
+                        case rf::NetGameType::NG_TYPE_RUN:
+                            break;
+                        default:
+                            rf::netgame.max_kills = g_local_pending_win_condition.value();
+                            break;
+                        }
+                    }
+                }
+
+                reset_local_pending_game_type();
+            }
+
+            rf::console::print("-- Level Initializing: {} ({}) --", rf::level_filename_to_load, multi_game_type_name_short(rf::netgame.type));
+            apply_rules_for_current_level();
+        }
+        else { // SP
+            rf::console::print("-- Level Initializing: {} --", rf::level_filename_to_load);
+        }
     },
 };
 
@@ -535,9 +585,6 @@ void misc_init()
 
     // Log critical error message
     critical_error_log_injection.install();
-
-    // Fix crash when skipping cutscene after robot kill in L7S4
-    mover_rotating_keyframe_oob_crashfix.install();
 
     // Fix crash in LEGO_MP mod caused by XSTR(1000, "RL"); for some reason it does not crash in PF...
     parser_xstr_oob_fix.install();

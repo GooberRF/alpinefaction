@@ -2,6 +2,7 @@
 
 #include <patch_common/MemUtils.h>
 #include "../os/vtypes.h"
+#include "../os/string.h"
 
 namespace rf
 {
@@ -52,6 +53,11 @@ namespace rf
             AddrCaller{0x005242A0}.this_call(this);
         }
 
+        [[nodiscard]] int get_version() const
+        {
+            return AddrCaller{0x005239C0}.this_call<int>(this);
+        }
+
         [[nodiscard]] bool check_version(int min_ver) const
         {
             return AddrCaller{0x00523990}.this_call<bool>(this, min_ver);
@@ -82,9 +88,34 @@ namespace rf
             return AddrCaller{0x0052CF60}.this_call<int>(this, buf, buf_len, min_ver, unused);
         }
 
+        void read_vector(Vector3* mat, int ver, Vector3* deflt)
+        {
+            AddrCaller{0x0052CA00}.this_call(this, mat, ver, deflt);
+        }
+
         void read_matrix(Matrix3* mat, int ver, Matrix3* deflt)
         {
             AddrCaller{0x0052CAC0}.this_call(this, mat, ver, deflt);
+        }
+
+        void read_string(String* mat, int ver, String* deflt)
+        {
+            AddrCaller{0x0052CC10}.this_call(this, mat, ver, deflt);
+        }
+
+        float read_float(int min_ver, float def_val)
+        {
+            return AddrCaller{0x0052C9B0}.this_call<float>(this, min_ver, def_val);
+        }
+
+        int read_int(int min_ver, int def_val)
+        {
+            return AddrCaller{0x0052C910}.this_call<int>(this, min_ver, def_val);
+        }
+
+        bool read_bool(int min_ver, bool def_val)
+        {
+            return AddrCaller{0x0052C780}.this_call<bool>(this, min_ver, def_val);
         }
 
         template<typename T>

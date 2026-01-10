@@ -36,7 +36,7 @@ public:
         std::ostringstream ss;
         unsigned zeros = 0;
         while (zeros < 32) {
-            if (mask_ & (1 << zeros)) {
+            if (mask_ & (1u << zeros)) {
                 break;
             }
             ++zeros;
@@ -46,7 +46,7 @@ public:
 
         for (unsigned i = 0; i < 4; ++i) {
             unsigned shift = (3 - i) * 8;
-            if (is_cidr || (mask_ & (0xFF << shift))) {
+            if (is_cidr || (mask_ & (0xFFu << shift))) {
                 ss << ((ip_ >> shift) & 0xFF);
             } else {
                 ss << '*';
@@ -85,8 +85,8 @@ IpRange IpRange::parse(const std::string& s)
             }
             cur_ptr = result.ptr;
             unsigned shift = ((3 - i) * 8);
-            ip |= n << shift;
-            mask |= 0xFF << shift;
+            ip |= static_cast<unsigned int>(n) << shift;
+            mask |= 0xFFu << shift;
             if (i < 3) {
                 if (*cur_ptr != '.') {
                     throw std::runtime_error("invalid ip");

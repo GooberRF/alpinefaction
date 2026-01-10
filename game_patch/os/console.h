@@ -16,6 +16,7 @@ void console_init();
 void console_apply_patches();
 void console_register_command(rf::console::Command* cmd);
 rf::Player* find_best_matching_player(const char* name);
+void console_start_server_log();
 
 class DcInvalidArgTypeError : public std::exception
 {};
@@ -40,6 +41,14 @@ inline T console_read_arg()
     if (!value_opt)
         throw DcRequiredArgMissingError();
     return value_opt.value();
+}
+
+template <>
+inline std::optional<unsigned int> console_read_arg() {
+    if (!console_read_arg_internal(rf::console::ARG_INT)) {
+        return {};
+    }
+    return std::optional{static_cast<unsigned int>(rf::console::int_arg)};
 }
 
 template<>
@@ -72,6 +81,14 @@ inline std::optional<std::string> console_read_arg()
 {
     if (!console_read_arg_internal(rf::console::ARG_STR))
         return {};
+    return std::optional{rf::console::str_arg};
+}
+
+template <>
+inline std::optional<std::string_view> console_read_arg() {
+    if (!console_read_arg_internal(rf::console::ARG_STR)) {
+        return {};
+    }
     return std::optional{rf::console::str_arg};
 }
 

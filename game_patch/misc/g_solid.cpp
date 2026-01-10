@@ -214,6 +214,30 @@ CodeInjection face_scroll_fix{
     },
 };
 
+CodeInjection ingame_add_lightmap_to_face_fullbright_fix{
+    0x004E5BBE,
+    [](auto& regs) {
+        // idea for future AlpineLevelProps bool:
+        // Use level ambient light for surfaces without lighting (geo craters and uncalced)
+        // would need to do the same operation as below
+        rf::GSurface* surface = regs.esi;
+        rf::GFace* face = regs.edi;
+
+        if (!surface || !face)
+            return;
+
+        if (face->attributes.flags & rf::GFaceFlags::FACE_FULL_BRIGHT) {
+            surface->fullbright = true; // should be set already anyway, but just in case
+
+            xlog::debug("Skipping lightmap generation for fullbright face {} (surface {})",
+                face->attributes.face_id,
+                surface->index);
+
+            regs.eip = 0x004E5C33;
+        }
+    },
+};
+
 CodeInjection g_proctex_update_water_speed_fix{
     0x004E68A0,
     [](auto& regs) {
@@ -247,33 +271,47 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         if (!rf::gr::lock(lightmap->bm_handle, 0, &lock, rf::gr::LOCK_WRITE_ONLY))
             return;
 
-        uint32_t clamp_floor = 0; // no floor
-        uint32_t clamp_ceiling = 0xFFFFFFFF; // no ceiling
+        uint32_t floor_clamp = 0; // no floor
+        uint32_t ceiling_clamp = 0xFFFFFFFF; // no ceiling
         bool should_clamp = false; // no clamping by default
         bool floor_clamp_defined = false;
 
         // Check if the level explicitly defines clamp floor
-        if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::LightmapClampFloor)) {
-            clamp_floor = get_level_info_value<uint32_t>(rf::level.filename, AlpineLevelInfoID::LightmapClampFloor);
+        if (g_alpine_level_info_config
+            .is_option_loaded(
+                rf::level.filename,
+                AlpineLevelInfoID::LightmapClampFloor
+            )
+        ) {
+            floor_clamp = get_level_info_value<uint32_t>(
+                AlpineLevelInfoID::LightmapClampFloor
+            );
             floor_clamp_defined = true;
             should_clamp = true;
         }
 
         // Check if the level explicitly defines clamp ceiling
-        if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::LightmapClampCeiling)) {
-            clamp_ceiling = get_level_info_value<uint32_t>(rf::level.filename, AlpineLevelInfoID::LightmapClampCeiling);
+        if (g_alpine_level_info_config
+            .is_option_loaded(
+                rf::level.filename,
+                AlpineLevelInfoID::LightmapClampCeiling
+            )
+        ) {
+            ceiling_clamp = get_level_info_value<uint32_t>(
+                AlpineLevelInfoID::LightmapClampCeiling
+            );
             should_clamp = true;
         }
 
         // If no per-level floor clamp, consider using legacy clamping for non-Alpine levels
         if (!floor_clamp_defined && rf::level.version < 300) {
-            if ((g_alpine_game_config.always_clamp_official_lightmaps && rf::level.version < 200) ||
-                (!DashLevelProps::instance().lightmaps_full_depth && !g_alpine_game_config.full_range_lighting)) {
+            if ((g_alpine_game_config.always_clamp_official_lightmaps
+                && rf::level.version < 200)
+                || (!DashLevelProps::instance().lightmaps_full_depth
+                && !g_alpine_game_config.full_range_lighting)) {
                 should_clamp = true;
-
-                if (!floor_clamp_defined) {
-                    clamp_floor = 0x202020FF; // default floor clamp (R,G,B = 32)
-                }
+                constexpr int default_floor_clamp = 0x202020FF;
+                floor_clamp = default_floor_clamp;
             }
         }
 
@@ -286,20 +324,24 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         if (should_clamp) {
             xlog::debug("Applying lightmap clamping");
 
-            // Extract RGB components from clamping values
-            auto [clamp_r_floor, clamp_g_floor, clamp_b_floor, _] = extract_color_components(clamp_floor);
-            auto [clamp_r_ceiling, clamp_g_ceiling, clamp_b_ceiling, __] = extract_color_components(clamp_ceiling);
+            const rf::gr::Color floor = rf::gr::Color::from_hex(floor_clamp);
+            const rf::gr::Color ceiling = rf::gr::Color::from_hex(ceiling_clamp);
+
+            if (ceiling.red < floor.red
+                || ceiling.green < floor.green
+                || ceiling.blue < floor.blue)
+            {
+                xlog::warn("Normalizing an invalid lightmap clamping range");
+            }
+
+            const auto [r_min, r_max] = std::minmax(floor.red, ceiling.red);
+            const auto [g_min, g_max] = std::minmax(floor.green, ceiling.green);
+            const auto [b_min, b_max] = std::minmax(floor.blue, ceiling.blue);
 
             for (int i = 0; i < lightmap->w * lightmap->h * 3; i += 3) {
-                // Apply floor clamp
-                lightmap->buf[i] = std::max(lightmap->buf[i], static_cast<uint8_t>(clamp_r_floor));
-                lightmap->buf[i + 1] = std::max(lightmap->buf[i + 1], static_cast<uint8_t>(clamp_g_floor));
-                lightmap->buf[i + 2] = std::max(lightmap->buf[i + 2], static_cast<uint8_t>(clamp_b_floor));
-
-                // Apply ceiling clamp
-                lightmap->buf[i] = std::min(lightmap->buf[i], static_cast<uint8_t>(clamp_r_ceiling));
-                lightmap->buf[i + 1] = std::min(lightmap->buf[i + 1], static_cast<uint8_t>(clamp_g_ceiling));
-                lightmap->buf[i + 2] = std::min(lightmap->buf[i + 2], static_cast<uint8_t>(clamp_b_ceiling));
+                lightmap->buf[i + 0] = std::clamp(lightmap->buf[i + 0], r_min, r_max);
+                lightmap->buf[i + 1] = std::clamp(lightmap->buf[i + 1], g_min, g_max);
+                lightmap->buf[i + 2] = std::clamp(lightmap->buf[i + 2], b_min, b_max);
             }
         }
 
@@ -487,6 +529,26 @@ static ConsoleCommand2 dbg_room_clip_wnd_cmd{
     },
 };
 
+ConsoleCommand2 dbg_num_geomods_cmd{
+    "dbg_numgeos",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded!");
+            return;
+        }
+
+        if (rf::is_multi && !rf::is_server) {
+            rf::console::print("In multiplayer, this command can only be run by the server.");
+            return;
+        }
+
+        int max_geos = rf::is_multi ? rf::netgame.geomod_limit : 128;
+
+        rf::console::print("{} craters in the current level out of a maximum of {}", rf::g_num_geomods_this_level, max_geos);
+    },
+    "Count the number of geomod craters in the current level",
+};
+
 void g_solid_render_ui()
 {
     if (g_show_room_clip_wnd && rf::gameseq_in_gameplay()) {
@@ -513,28 +575,12 @@ CodeInjection levelmod_do_blast_autotexture_ppm_patch{
 
 void set_levelmod_autotexture_ppm() {
     if (g_alpine_level_info_config.is_option_loaded(rf::level.filename, AlpineLevelInfoID::CraterTexturePPM)) {
-        g_crater_autotexture_ppm = get_level_info_value<float>(rf::level.filename, AlpineLevelInfoID::CraterTexturePPM);
+        g_crater_autotexture_ppm = get_level_info_value<float>(AlpineLevelInfoID::CraterTexturePPM);
     }
     else {
         g_crater_autotexture_ppm = 32.0f;
     }
 }
-
-// currently unused
-CallHook<void(rf::GSolid*, rf::GSolid*, rf::GBooleanOperation, bool, rf::Vector3*, rf::Matrix3*, rf::GSolid*,
-    rf::GBooleanOperation, float, float*, bool, rf::Vector3*, rf::Vector3*)> g_boolean_begin_hook{
-    0x00466D9D,
-        [](rf::GSolid* a, rf::GSolid* b, rf::GBooleanOperation op, bool verbose, rf::Vector3* b_pos,
-            rf::Matrix3* b_orient, rf::GSolid* other_solid, rf::GBooleanOperation other_op, float scale,
-            float* other_area, bool propagate_textures, rf::Vector3* a12, rf::Vector3* a13) {
-        
-        xlog::warn("g_boolean_begin hook called: verbose={}, scale={}, propagate_textures={}", verbose, scale, propagate_textures);
-        
-
-        // Call the original function
-        g_boolean_begin_hook.call_target(a, b, op, verbose, b_pos, b_orient, other_solid, other_op, scale, other_area, propagate_textures, a12, a13);
-    },
-};
 
 // verify proposed new sky room UID is a sky room and if so, set it as the override
 void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale)
@@ -650,9 +696,6 @@ void g_solid_do_patch()
     sky_room_eye_position_patch.install();
     level_release_sky_room_shutdown_patch.install();
 
-    // geomod experimental
-    //g_boolean_begin_hook.install();
-
     // Buffer overflows in solid_read
     // Note: Buffer size is 1024 but opcode allows only 1 byte size
     //       What is more important bm_load copies texture name to 32 bytes long buffers
@@ -675,6 +718,9 @@ void g_solid_do_patch()
 
     // Fix face scroll in levels after version 0xB4
     face_scroll_fix.install();
+
+    // Fix faces with "fullbright" flag having randomly generated lightmaps applied after geomod
+    ingame_add_lightmap_to_face_fullbright_fix.install();
 
     // Fix water waves animation on high FPS
     AsmWriter(0x004E68A0, 0x004E68A9).nop();
@@ -713,6 +759,7 @@ void g_solid_do_patch()
     // Commands
     max_decals_cmd.register_cmd();
     dbg_room_clip_wnd_cmd.register_cmd();
+    dbg_num_geomods_cmd.register_cmd();
     lighting_color_range_cmd.register_cmd();
     clamp_official_lightmaps_cmd.register_cmd();
 }

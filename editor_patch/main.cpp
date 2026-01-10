@@ -28,11 +28,14 @@
 #include "resources.h"
 #include "mfc_types.h"
 #include "vtypes.h"
+#include "level.h"
 #include "event.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
 static std::string g_launcher_pathname;
+static bool g_is_play_in_multi = false;
+static std::string g_red_cmdline;
 
 constexpr size_t max_texture_name_len = 31;
 
@@ -40,9 +43,9 @@ bool g_skip_wnd_set_text = false;
 
 static bool g_is_saving_af_version = true;
 static bool g_skip_legacy_level_warning = false;
+static int g_current_level_version = -1;
 
 static const auto g_editor_app = reinterpret_cast<std::byte*>(0x006F9DA0);
-static auto& g_main_frame = addr_as_ref<std::byte*>(0x006F9E68);
 
 static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...)>(0x00444980);
 
@@ -66,6 +69,16 @@ HWND GetMainFrameHandle()
 bool get_is_saving_af_version()
 {
     return g_is_saving_af_version;
+}
+
+int get_level_rfl_version()
+{
+    return g_current_level_version;
+}
+
+void set_initial_level_rfl_version()
+{
+    g_current_level_version = MAXIMUM_RFL_VERSION;
 }
 
 void OpenLevel(const char* level_path)
@@ -139,7 +152,8 @@ CodeInjection CDialog_DoModal_injection{
         // Customize:
         // - 148: trigger properties dialog
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_TRIGGER_PROPERTIES) ||
-            lpszTemplateName == MAKEINTRESOURCE(IDD_LEVEL_PROPERTIES)
+            lpszTemplateName == MAKEINTRESOURCE(IDD_LEVEL_PROPERTIES) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP)
         ) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
         }
@@ -339,35 +353,67 @@ void CMainFrame_InvertSelection(CWnd* this_)
     RedrawEditorAfterModification();
 }
 
+static char* patch_cmdline_if_multi(char* original)
+{
+    if (!original) {
+        return original;
+    }
+
+    if (!g_is_play_in_multi) {
+        return original;
+    }
+
+    g_red_cmdline.assign(original);
+
+    constexpr const char needle[] = "-level ";
+    auto pos = g_red_cmdline.find(needle);
+    if (pos != std::string::npos) {
+        // already has -levelm (defensive)
+        if (g_red_cmdline.compare(pos, 8, "-levelm ") != 0) {
+            // insert m before the space
+            g_red_cmdline.insert(pos + 6, "m");
+        }
+    }
+
+    return g_red_cmdline.data();
+}
+
+CodeInjection CMainFrame_OnPlayLevel_injection{
+    0x00447B32,
+    [](auto& regs) {
+        char* original = regs.edx;
+        auto* patched = patch_cmdline_if_multi(original);
+        regs.edx = reinterpret_cast<uintptr_t>(patched);
+    },
+};
+
+CodeInjection CMainFrame_OnPlayLevelFromCameraCmd_injection{
+    0x00448024,
+    [](auto& regs) {
+        char* original = regs.edx;
+        auto* patched = patch_cmdline_if_multi(original);
+        regs.edx = reinterpret_cast<uintptr_t>(patched);
+    },
+};
+
 void CMainFrame_PlayMulti(CWnd* this_)
 {
-    xlog::warn("Full Launcher Path: {}", g_launcher_pathname);
-    CMainFrame* mainframe = reinterpret_cast<CMainFrame*>(GetMainFrame());
-    if (!mainframe || !mainframe->doc) {
-        xlog::error("Failed to get CMainFrame or document!");
-        return;
-    }
+    g_is_play_in_multi = true;
+    AddrCaller{0x004478B0}.this_call<int>(this_); // CMainFrame_OnPlayLevel
+    g_is_play_in_multi = false;
+}
 
-    std::string filename = std::filesystem::path(mainframe->doc->_d.m_strPathName.c_str()).filename().string();
-    if (filename.empty()) {
-        xlog::error("No valid filename found!");
-        return;
-    }
+void CMainFrame_PlayMultiFromCamera(CWnd* this_)
+{
+    g_is_play_in_multi = true;
+    AddrCaller{0x00447B90}.this_call<int>(this_); // CMainFrame_OnPlayLevelFromCameraCmd
+    g_is_play_in_multi = false;
+}
 
-    xlog::warn("Launching game with filename: {}", filename);
-
-    std::string commandLine = g_launcher_pathname + " -game -levelm \"" + filename + "\"";
-    xlog::warn("Running: {}", commandLine);
-
-    STARTUPINFOA startupInfo{};
-    PROCESS_INFORMATION processInfo{};
-    startupInfo.cb = sizeof(startupInfo);
-
-    if (!CreateProcessA(g_launcher_pathname.c_str(),
-                        commandLine.data(),
-                        nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, nullptr, &startupInfo, &processInfo)) {
-        xlog::error("Failed to launch game! Error Code: {}", GetLastError());
-    }
+void CMainFrame_BackLink([[maybe_unused]] CWnd* this_)
+{
+    DedLevel_DoBackLink();
+    RedrawEditorAfterModification();
 }
 
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
@@ -403,6 +449,12 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case ID_PLAY_MULTI:
                 handler = std::bind(CMainFrame_PlayMulti, this_);
+                break;
+            case ID_PLAY_MULTI_CAMERA:
+                handler = std::bind(CMainFrame_PlayMultiFromCamera, this_);
+                break;
+            case ID_BACK_LINK:
+                handler = std::bind(CMainFrame_BackLink, this_);
                 break;
         }
 
@@ -454,16 +506,16 @@ void ApplyLevelPatches();
 void ApplyEventsPatches();
 void ApplyTexturesPatches();
 
-void LoadDashEditorPackfile()
+void LoadAlpineEditorPackfile()
 {
     static auto& vpackfile_add = addr_as_ref<int __cdecl(const char *name, const char *dir)>(0x004CA930);
     static auto& root_path = addr_as_ref<char[256]>(0x0158CA10);
 
-    auto df_dir = get_module_dir(g_module);
+    auto af_dir = get_module_dir(g_module);
     std::string old_root_path = root_path;
-    std::strncpy(root_path, df_dir.c_str(), sizeof(root_path) - 1);
+    std::strncpy(root_path, af_dir.c_str(), sizeof(root_path) - 1);
     if (!vpackfile_add("alpinefaction.vpp", nullptr)) {
-        xlog::error("Failed to load alpinefaction.vpp from {}", df_dir);
+        xlog::error("Failed to load alpinefaction.vpp from {}", af_dir);
     }
     std::strncpy(root_path, old_root_path.c_str(), sizeof(root_path) - 1);
 }
@@ -471,7 +523,7 @@ void LoadDashEditorPackfile()
 CodeInjection vpackfile_init_injection{
     0x004CA533,
     []() {
-        LoadDashEditorPackfile();
+        LoadAlpineEditorPackfile();
     },
 };
 
@@ -538,10 +590,12 @@ CodeInjection texture_name_buffer_overflow_injection2{
 };
 
 CodeInjection LoadSaveLevel_patch{
-    0x0041CD20, [](auto& regs) {
+    0x0041CD20,
+    [](auto& regs) {
         int* version = reinterpret_cast<int*>(regs.esi + 0x54);
         *version = MAXIMUM_RFL_VERSION; // set rfl version saved to file
         regs.eip = 0x0041CD27; // skip version being set to 200 by original code
+        g_current_level_version = *version;
     }
 };
 
@@ -590,11 +644,13 @@ void ShowLegacyLevelDialog(int current_version, int new_version) {
 }
 
 CodeInjection LoadSaveLevel_patch2{
-    0x0041CDAA, [](auto& regs) {
+    0x0041CDAA,
+    [](auto& regs) {
         int* version = regs.edi;
+        g_current_level_version = *version;
 
         if (*version < 300 && !g_skip_legacy_level_warning) {
-            xlog::warn("Displaying legacy level warning dialog");
+            xlog::info("Displaying legacy level warning dialog");
             ShowLegacyLevelDialog(*version, MAXIMUM_RFL_VERSION);
         }
     }
@@ -602,7 +658,8 @@ CodeInjection LoadSaveLevel_patch2{
 
 // disable splash screen if editor is launched with -level switch, fixes splash screen issue with version popup
 CodeInjection disable_splash_screen_on_load_level {
-    0x00482672, [](auto& regs) {
+    0x00482672,
+    [](auto& regs) {
         static auto& argv = addr_as_ref<char**>(0x01DBF8E4);
         static auto& argc = addr_as_ref<int>(0x01DBF8E0);
         for (int i = 1; i < argc; ++i) {
@@ -641,6 +698,9 @@ void apply_af_level_editor_changes()
     AsmWriter(0x0041D0AF).push(0x12C);
     AsmWriter(0x0041D0BC).push(0x12C);
 
+    // Allow linking to multiplayer respawn points
+    AsmWriter(0x004698C7).nop(2);
+
     // Remove legacy geometry maximums from build output window
     static char new_faces_string[] = "Faces: %d\n";                                  // Replace "Faces: %d/%d\n"
     static char new_face_vertices_string[] = "Face Vertices: %d\n";                  // Replace "Face Vertices: %d/%d\n"
@@ -664,7 +724,7 @@ void apply_af_level_editor_changes()
     AsmWriter{0x0043A0EF}.nop(3);
 }
 
-extern "C" DWORD DF_DLL_EXPORT Init([[maybe_unused]] void* unused)
+extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 {
     InitLogging();
     InitCrashHandler();
@@ -684,6 +744,10 @@ extern "C" DWORD DF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     AsmWriter(0x00448024, 0x0044802B).mov(eax, g_launcher_pathname.c_str());
     CMainFrame_OnPlayLevelCmd_skip_level_dir_injection.install();
     CMainFrame_OnPlayLevelFromCameraCmd_skip_level_dir_injection.install();
+
+    // Change -level command to -levelm for play in multi buttons
+    CMainFrame_OnPlayLevel_injection.install();
+    CMainFrame_OnPlayLevelFromCameraCmd_injection.install();
 
     // Add additional file paths for V3M loading
     CEditorApp_InitInstance_additional_file_paths_injection.install();
@@ -745,10 +809,10 @@ extern "C" DWORD DF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Fix random crash when opening cutscene properties
     CCutscenePropertiesDialog_ct_crash_fix.install();
 
-    // Load DashEditor.vpp
+    // Load alpinefaction.vpp
     vpackfile_init_injection.install();
 
-    // Add maps_df.txt to the collection of files scanned for default textures in order to add more textures from the
+    // Add maps_af.txt to the collection of files scanned for default textures in order to add more textures from the
     // base game to the texture browser
     // Especially add Rck_DefaultP.tga to default textures to fix error when packing a level containing a particle
     // emitter with default properties
@@ -758,7 +822,7 @@ extern "C" DWORD DF_DLL_EXPORT Init([[maybe_unused]] void* unused)
         "maps2.txt",
         "maps3.txt",
         "maps4.txt",
-        "maps_df.txt",
+        "maps_af.txt",
         nullptr,
     };
     write_mem_ptr(0x0041B813 + 1, maps_files_names);

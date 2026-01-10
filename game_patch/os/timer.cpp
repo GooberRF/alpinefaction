@@ -1,4 +1,6 @@
 #include <windows.h>
+#include <xlog/xlog.h>
+#include <mmsystem.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include "../rf/os/timer.h"
@@ -25,6 +27,13 @@ FunHook<int(int)> timer_get_hook{
         return static_cast<int>(current_qpc_value.QuadPart / g_qpc_frequency.QuadPart);
     },
 };
+
+void set_dedicated_server_timer_frequency()
+{
+    if (timeBeginPeriod(1) != TIMERR_NOERROR) {
+        xlog::info("Failed to set 1ms timer resolution, server framerate may be unstable.");
+    }
+}
 
 void timer_apply_patch()
 {

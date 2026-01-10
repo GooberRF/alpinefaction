@@ -6,6 +6,7 @@
 #include <patch_common/AsmWriter.h>
 #include <regex>
 #include "player.h"
+#include "alpine_settings.h"
 #include "../misc/vpackfile.h"
 #include "../os/console.h"
 #include "../rf/file/file.h"
@@ -36,6 +37,7 @@ AlpineOptionsConfig g_alpine_options_config;
 AlpineLevelInfoConfig g_alpine_level_info_config;
 
 static std::unordered_set<std::string> g_p2t_fix_levels; // list of levels to apply power2tex fix
+static std::unordered_set<std::string> g_known_run_levels; // list of run mode levels manually added
 static std::string af_default_player_entity = "miner1";
 static std::string af_suit_player_entity = "parker_suit";
 static std::string af_sci_player_entity = "parker_sci";
@@ -43,6 +45,17 @@ static std::string af_sci_player_entity = "parker_sci";
 bool is_p2t_fix_level(const std::string& filename)
 {
     return g_p2t_fix_levels.contains(string_to_lower(filename));
+}
+
+bool is_known_run_level(const std::string& filename)
+{
+    std::string level_name = filename;
+    
+    if (!string_iends_with(level_name, ".rfl")) {
+        level_name += ".rfl";
+    }
+
+    return g_known_run_levels.contains(string_to_lower(level_name));
 }
 
 // trim leading and trailing whitespace
@@ -62,29 +75,6 @@ std::string trim(const std::string& str, bool remove_quotes = false)
     }
 
     return trimmed;
-}
-
-// Helper functions for individual data types
-
-// parse colors to 0-255 ints
-std::tuple<int, int, int, int> extract_color_components(uint32_t color)
-{
-    return std::make_tuple((color >> 24) & 0xFF, // red
-                           (color >> 16) & 0xFF, // green
-                           (color >> 8) & 0xFF,  // blue
-                           color & 0xFF          // alpha
-    );
-}
-
-// parse colors to 0.0-1.0 floats
-std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color)
-{
-    return std::make_tuple(
-        ((color >> 24) & 0xFF) / 255.0f, // Red   (0-1)
-        ((color >> 16) & 0xFF) / 255.0f, // Green (0-1)
-        ((color >> 8)  & 0xFF) / 255.0f, // Blue  (0-1)
-        (color & 0xFF) / 255.0f          // Alpha (0-1)
-    );
 }
 
 // ===== Parsers for AlpineOptions =====
@@ -299,6 +289,13 @@ const std::unordered_map<std::string, LevelInfoMetadata> level_info_metadata = {
 // Load level info from filename_info.tbl
 void load_level_info_config(const std::string& level_filename)
 {
+    if (g_alpine_level_info_config.current_level == level_filename) {
+        xlog::debug("Reusing previously loaded mapname_info.tbl settings for {}", level_filename);
+        return; // already loaded, reuse
+    }
+
+    g_alpine_level_info_config.reset_for_level(level_filename);
+
     std::string base_filename = level_filename.substr(0, level_filename.size() - 4);
     std::string info_filename = base_filename + "_info.tbl";
     auto level_info_file = std::make_unique<rf::File>();
@@ -367,7 +364,7 @@ void load_level_info_config(const std::string& level_filename)
         if (option_name == "$Mesh Replacement") {
             auto parsed_value = parse_mesh_replacement(option_value);
             if (parsed_value) {
-                g_alpine_level_info_config.mesh_replacements[level_filename][string_to_lower(parsed_value->first)]= parsed_value->second;
+                g_alpine_level_info_config.mesh_replacements[string_to_lower(parsed_value->first)] = parsed_value->second;
 
                 xlog::debug("Mesh Replacement Added: {} -> {} in {}", parsed_value->first, parsed_value->second, level_filename);
             }
@@ -384,7 +381,7 @@ void load_level_info_config(const std::string& level_filename)
             const auto& metadata = meta_it->second;
             auto parsed_value = metadata.parse_function(option_value);
             if (parsed_value) {
-                g_alpine_level_info_config.level_options[level_filename][metadata.id] = *parsed_value;
+                g_alpine_level_info_config.level_options[metadata.id] = *parsed_value;
                 xlog::debug("Parsed and applied {} for {}: {}", option_name, level_filename, option_value);
             }
         }
@@ -419,24 +416,42 @@ void open_url(const std::string& url)
 CallHook<void(int, int, int, int)> fpgun_ar_ammo_digit_color_hook{
     0x004ABC03,
     [](int red, int green, int blue, int alpha) {
-        auto ar_ammo_color = get_option_value<uint32_t>(AlpineOptionID::AssaultRifleAmmoColor);
-        std::tie(red, green, blue, alpha) = extract_color_components(ar_ammo_color);
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::AssaultRifleAmmoColor)) {
+            auto ar_ammo_color = get_option_value<uint32_t>(AlpineOptionID::AssaultRifleAmmoColor);
+            std::tie(red, green, blue, alpha) = extract_color_components(ar_ammo_color);
+        }
+        else if (g_alpine_game_config.ar_ammo_digit_color_override) {
+            std::tie(red, green, blue, alpha) =
+                extract_color_components(*g_alpine_game_config.ar_ammo_digit_color_override);
+        }
         fpgun_ar_ammo_digit_color_hook.call_target(red, green, blue, alpha);
     }
 };
 
 CallHook<void(int, int, int, int)> precision_rifle_scope_color_hook{
     0x004AC850, [](int red, int green, int blue, int alpha) {
-        auto pr_scope_color = get_option_value<uint32_t>(AlpineOptionID::PrecisionRifleScopeColor);
-        std::tie(red, green, blue, alpha) = extract_color_components(pr_scope_color);
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::PrecisionRifleScopeColor)) {
+            auto pr_scope_color = get_option_value<uint32_t>(AlpineOptionID::PrecisionRifleScopeColor);
+            std::tie(red, green, blue, alpha) = extract_color_components(pr_scope_color);
+        }
+        else if (g_alpine_game_config.precision_scope_color_override) {
+            std::tie(red, green, blue, alpha) =
+                extract_color_components(*g_alpine_game_config.precision_scope_color_override);
+        }
         precision_rifle_scope_color_hook.call_target(red, green, blue, alpha);
     }
 };
 
 CallHook<void(int, int, int, int)> sniper_rifle_scope_color_hook{
     0x004AC458, [](int red, int green, int blue, int alpha) {
-        auto sr_scope_color = get_option_value<uint32_t>(AlpineOptionID::SniperRifleScopeColor);
-        std::tie(red, green, blue, alpha) = extract_color_components(sr_scope_color);
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::SniperRifleScopeColor)) {
+            auto sr_scope_color = get_option_value<uint32_t>(AlpineOptionID::SniperRifleScopeColor);
+            std::tie(red, green, blue, alpha) = extract_color_components(sr_scope_color);
+        }
+        else if (g_alpine_game_config.sniper_scope_color_override) {
+            std::tie(red, green, blue, alpha) =
+                extract_color_components(*g_alpine_game_config.sniper_scope_color_override);
+        }
         sniper_rifle_scope_color_hook.call_target(red, green, blue, alpha);
     }
 };
@@ -459,8 +474,14 @@ CallHook<void(int, int, int, int)> rail_gun_fire_flash_hook{
 
 CallHook<void(int, int, int, int)> rail_driver_scanner_color_hook{
     0x004323AA, [](int red, int green, int blue, int alpha) {
-        auto rail_scope_color = get_option_value<uint32_t>(AlpineOptionID::RailDriverScannerColor);
-        std::tie(red, green, blue, alpha) = extract_color_components(rail_scope_color);
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::RailDriverScannerColor)) {
+            auto rail_scope_color = get_option_value<uint32_t>(AlpineOptionID::RailDriverScannerColor);
+            std::tie(red, green, blue, alpha) = extract_color_components(rail_scope_color);
+        }
+        else if (g_alpine_game_config.rail_scope_color_override) {
+            std::tie(red, green, blue, alpha) =
+                extract_color_components(*g_alpine_game_config.rail_scope_color_override);
+        }
         rail_driver_scanner_color_hook.call_target(red, green, blue, alpha);
     }
 };
@@ -621,17 +642,11 @@ void apply_af_options_patches()
     // ===========================
     // af_client.tbl
     // ===========================
-    if (g_alpine_options_config.is_option_loaded(AlpineOptionID::AssaultRifleAmmoColor)) {
-        fpgun_ar_ammo_digit_color_hook.install();
-    }
+    fpgun_ar_ammo_digit_color_hook.install();
 
-    if (g_alpine_options_config.is_option_loaded(AlpineOptionID::PrecisionRifleScopeColor)) {
-        precision_rifle_scope_color_hook.install();
-    }
+    precision_rifle_scope_color_hook.install();
 
-    if (g_alpine_options_config.is_option_loaded(AlpineOptionID::SniperRifleScopeColor)) {
-        sniper_rifle_scope_color_hook.install();
-    }
+    sniper_rifle_scope_color_hook.install();
 
     if (g_alpine_options_config.is_option_loaded(AlpineOptionID::RailDriverFireGlowColor)) {
         rail_gun_fire_glow_hook.install();
@@ -641,9 +656,7 @@ void apply_af_options_patches()
         rail_gun_fire_flash_hook.install();
     }
 
-    if (g_alpine_options_config.is_option_loaded(AlpineOptionID::RailDriverScannerColor)) {
-        rail_driver_scanner_color_hook.install();
-    }
+    rail_driver_scanner_color_hook.install();
 
     // ===========================
     // af_game.tbl
@@ -795,15 +808,22 @@ void load_single_af_options_file(const std::string& file_name)
         std::string option_value = trim(line.substr(delimiter_pos + 1), false);
 
         // Handle af_level_quirks.tbl
-        if (file_name == "af_level_quirks.tbl" && option_name == "$P2T Fix") {
+        if (file_name == "af_level_quirks.tbl" &&
+            (option_name == "$P2T Fix" || option_name == "$Known Run Maps")) {
             std::regex filename_pattern("\\\"([^\"]+)\\\"");
             auto begin = std::sregex_iterator(option_value.begin(), option_value.end(), filename_pattern);
             auto end = std::sregex_iterator();
 
             for (std::sregex_iterator i = begin; i != end; ++i) {
                 std::string filename = (*i)[1].str();
-                g_p2t_fix_levels.insert(string_to_lower(filename));
-                //xlog::warn("P2T Fix level added: {}", filename);
+                if (option_name == "$P2T Fix") {
+                    g_p2t_fix_levels.insert(string_to_lower(filename));
+                    //xlog::warn("P2T Fix level added: {}", filename);
+                }
+                else if (option_name == "$Known Run Maps") {
+                    g_known_run_levels.insert(string_to_lower(filename));
+                    //xlog::warn("Run mode level added: {}", filename);
+                }
             }
 
             continue;

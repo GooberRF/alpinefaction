@@ -1,6 +1,6 @@
 //{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
-// Used by DashFactionLauncher.rc
+// Used by AlpineFactionLauncher.rc
 //
 #define IDC_STATIC -1
 #define IDC_SUPPORT_LINK                3

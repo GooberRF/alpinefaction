@@ -1,13 +1,90 @@
 #pragma once
 
-#include <patch_common/MemUtils.h>
-#include "../math/vector.h"
-#include "../math/matrix.h"
-#include "../os/timestamp.h"
-#include "../os/string.h"
 #include "../gr/gr.h"
+#include "../math/matrix.h"
+#include "../math/vector.h"
+#include "../os/string.h"
+#include "../os/timestamp.h"
 #include "control_config.h"
 #include "player_fpgun.h"
+#include <common/utils/list-utils.h>
+#include <patch_common/MemUtils.h>
+
+#ifdef ALPINE_FACTION
+#include "../../os/os.h"
+#include "../../purefaction/pf_packets.h"
+#include "../multi.h"
+#include <map>
+
+constexpr float BOT_LEVEL_START_WAIT_TIME_SEC = 5.f;
+constexpr float BOT_OPPONENT_DEATH_WAIT_TIME_SEC = 5.f;
+
+struct PlayerNetGameSaveData {
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+};
+
+enum class ClientSoftware {
+    Unknown = 0,
+    Browser = 1,
+    PureFaction = 2,
+    DashFaction = 3,
+    AlpineFaction = 4
+};
+
+struct ClientVersionInfoProfile {
+    ClientSoftware software = ClientSoftware::Unknown;
+    uint8_t major = 0;
+    uint8_t minor = 0;
+    uint8_t patch = 0;
+    uint8_t type = 0;
+    uint32_t max_rfl_ver = 200;
+};
+
+struct PlayerAdditionalData {
+    // Shared variables.
+    bool is_bot = false;
+    bool is_spawn_disabled = false;
+    bool is_browser = false;
+    bool is_spectator = false;
+    bool is_human_player = true;
+
+    // Client-side variables.
+    std::optional<pf_pure_status> received_pf_status{};
+    bool is_muted = false;
+
+    // Server-side variables.
+    ClientVersionInfoProfile version_info{};
+    std::optional<std::chrono::high_resolution_clock::time_point> death_time{};
+
+    std::optional<int> last_hit_sound_ms{};
+    std::optional<int> last_critical_sound_ms{};
+
+    struct {
+        std::map<std::string, PlayerNetGameSaveData> saves{};
+        rf::Vector3 last_teleport_pos{};
+        rf::TimestampRealtime last_teleport_timer{};
+    } saving{};
+
+    struct {
+        rf::TimestampRealtime check_timer{};
+        rf::TimestampRealtime kick_timer{};
+    } idle{};
+
+    std::optional<int> last_spawn_point_index{};
+
+    // Requires `spawn_delay` to be enabled.
+    rf::Timestamp respawn_timer{};
+
+    // Percentile.
+    uint8_t damage_handicap = 0;
+
+    // `std::nullptr` represents freelook spectate mode.
+    std::optional<rf::Player*> spectatee{};
+    bool remote_server_cfg_sent = false;
+};
+static_assert(alignof(PlayerAdditionalData) == 0x8);
+#endif
 
 namespace rf
 {
@@ -122,7 +199,7 @@ namespace rf
         PF_END_LEVEL_AFTER_BLACKOUT = 0x1000,
     };
 
-    struct Player
+    struct PlayerBase
     {
         struct Player *next;
         struct Player *prev;
@@ -176,7 +253,15 @@ namespace rf
         ubyte last_damage_dir;
         PlayerNetData *net_data;
     };
-    static_assert(sizeof(Player) == 0x1204);
+    static_assert(sizeof(PlayerBase) == 0x1204);
+
+    struct Player
+        : PlayerBase
+#ifdef ALPINE_FACTION
+        , PlayerAdditionalData
+#endif
+    {
+    };
 
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
@@ -190,8 +275,8 @@ namespace rf
     static auto& player_from_entity_handle = addr_as_ref<Player*(int entity_handle)>(0x004A3740);
     static auto& player_is_undercover = addr_as_ref<bool()>(0x004B0580);
     static auto& player_undercover_alarm_is_on = addr_as_ref<bool()>(0x004B05F0);
-    static auto& player_is_dead = addr_as_ref<bool(Player *player)>(0x004A4920);
-    static auto& player_is_dying = addr_as_ref<bool(Player *player)>(0x004A4940);
+    static auto& player_is_dead = addr_as_ref<bool(const Player *player)>(0x004A4920);
+    static auto& player_is_dying = addr_as_ref<bool(const Player *player)>(0x004A4940);
     static auto& player_add_score = addr_as_ref<void(Player *player, int delta)>(0x004A7460);
     static auto& player_get_ai = addr_as_ref<AiInfo*(Player *player)>(0x004A3260);
     static auto& player_get_weapon_total_ammo = addr_as_ref<int(Player *player, int weapon_type)>(0x004A3280);
@@ -204,9 +289,14 @@ namespace rf
     static auto& player_start_death_fade = addr_as_ref<void(Player *pp, float time_sec, void (*callback)(Player *))>(0x004A73E0);
     static auto& get_player_entity_parent_vmesh = addr_as_ref<VMesh*(Player*)>(0x004A7830);
     static auto& game_get_skill_level = addr_as_ref<GameDifficultyLevel()>(0x004369D0);
-    static auto& game_set_skill_level = addr_as_ref<void(GameDifficultyLevel)>(0x00436970);    
+    static auto& game_set_skill_level = addr_as_ref<void(GameDifficultyLevel)>(0x00436970);
+    static auto& player_get_current_weapon = addr_as_ref<int(Player* pp)>(0x004A5910);
+    static auto& player_set_default_primary = addr_as_ref<void(Player* pp, int weapon_type)>(0x004A4070);
+    static auto& player_add_weapon = addr_as_ref<void(Player* pp, int weapon_type, int ammo)>(0x004A4000);  
     static auto& game_get_gore_level = addr_as_ref<int()>(0x00436A20);
     static auto& game_set_gore_level = addr_as_ref<void(int gore_setting)>(0x00436A10);
     static auto& player_settings_apply_graphics_options = addr_as_ref<void(Player* player)>(0x004A8D20);
-
+    static auto& local_screen_flash = addr_as_ref<void(Player* pp, uint8_t r, uint8_t g, uint8_t b, uint8_t a)>(0x00416450);
+    static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
+    static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
 }

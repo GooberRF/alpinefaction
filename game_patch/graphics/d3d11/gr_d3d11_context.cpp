@@ -177,7 +177,7 @@ namespace df::gr::d3d11
 
     struct LightsBufferData
     {
-        static constexpr int max_point_lights = 8;
+        static constexpr int max_point_lights = 32; // max dynamic lights in a scene, matches stock game DX9 maximum
 
         struct PointLight
         {
@@ -202,7 +202,7 @@ namespace df::gr::d3d11
         DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, nullptr, &buffer_));
     }
 
-    void LightsBuffer::update(ID3D11DeviceContext* device_context)
+    void LightsBuffer::update(ID3D11DeviceContext* device_context, bool force_neutral)
     {
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
@@ -210,23 +210,29 @@ namespace df::gr::d3d11
         );
 
         LightsBufferData data{};
-        for (int i = 0; i < std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights); ++i) {
-            LightsBufferData::PointLight& gpu_light = data.point_lights[i];
-            // Make sure radius is never 0 because we divide by it
-            gpu_light.radius = 0.0001f;
+        if (!force_neutral) {
+            for (int i = 0; i < std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights); ++i) {
+                LightsBufferData::PointLight& gpu_light = data.point_lights[i];
+                // Make sure radius is never 0 because we divide by it
+                gpu_light.radius = 0.0001f;
+            }
+
+            rf::gr::light_get_ambient(&data.ambient_light[0], &data.ambient_light[1], &data.ambient_light[2]);
+
+            int num_point_lights = std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights);
+            data.num_point_lights = static_cast<float>(num_point_lights);
+
+            for (int i = 0; i < num_point_lights; ++i) {
+                rf::gr::Light* light = rf::gr::relevant_lights[i];
+                LightsBufferData::PointLight& gpu_light = data.point_lights[i];
+                gpu_light.pos = {light->vec.x, light->vec.y, light->vec.z};
+                gpu_light.color = {light->r, light->g, light->b, 1.0f};
+                gpu_light.radius = light->rad_2;
+            }
         }
-
-        rf::gr::light_get_ambient(&data.ambient_light[0], &data.ambient_light[1], &data.ambient_light[2]);
-
-        int num_point_lights = std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights);
-        data.num_point_lights = static_cast<float>(num_point_lights);
-
-        for (int i = 0; i < num_point_lights; ++i) {
-            rf::gr::Light* light = rf::gr::relevant_lights[i];
-            LightsBufferData::PointLight& gpu_light = data.point_lights[i];
-            gpu_light.pos = {light->vec.x, light->vec.y, light->vec.z};
-            gpu_light.color = {light->r, light->g, light->b, 1.0f};
-            gpu_light.radius = light->rad_2;
+        else {
+            data.ambient_light = {1.0f, 1.0f, 1.0f};
+            data.num_point_lights = 0.0f;
         }
 
         std::memcpy(mapped_subres.pData, &data, sizeof(data));
@@ -239,9 +245,10 @@ namespace df::gr::d3d11
         std::array<float, 4> current_color;
         float alpha_test;
         float fog_far;
-        float pad0[2];
+        float colorblind_mode;
+        float disable_textures;
         std::array<float, 3> fog_color;
-        float pad1;
+        float pad0;
     };
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
@@ -278,6 +285,9 @@ namespace df::gr::d3d11
                 static_cast<float>(gr::screen.fog_color.blue) / 255.0f,
             };
         }
+        data.colorblind_mode = static_cast<float>(current_colorblind_mode_);
+        data.disable_textures = current_lightmap_only_ ? 1.0f : 0.0f;
+        data.pad0 = 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

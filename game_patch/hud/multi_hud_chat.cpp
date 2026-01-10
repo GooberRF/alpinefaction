@@ -11,6 +11,9 @@
 #include "../os/console.h"
 #include "../misc/player.h"
 #include "hud_internal.h"
+#include "../misc/alpine_settings.h"
+#include <patch_common/CallHook.h>
+#include "../multi/alpine_packets.h"
 
 bool g_big_chatbox = false;
 bool g_all_players_muted = false;
@@ -56,6 +59,10 @@ void multi_hud_render_chat()
         fade_out = rf::chat_fade_out_timer.time_until() / 750.0f;
     }
 
+    if (g_remote_server_cfg_popup.is_active()) {
+        return;
+    }
+
     int chatbox_font = hud_get_default_font();
     int clip_w = rf::gr::clip_width();
     int font_h = rf::gr::get_font_height(chatbox_font);
@@ -82,29 +89,32 @@ void multi_hud_render_chat()
         }
         int x = box_x + border + 6;
 
-        int name_w, name_h;
-        rf::gr::get_string_size(&name_w, &name_h, msg.name.c_str(), -1, chatbox_font);
+        const auto [name_w, name_h] = rf::gr::get_string_size(msg.name, chatbox_font);
         if (msg.color_id == 0 || msg.color_id == 1) {
             if (msg.color_id == 0) {
                 rf::gr::set_color(227, 48, 47, text_alpha);
-            }
-            else {
+            } else {
                 rf::gr::set_color(117, 117, 254, text_alpha);
             }
             rf::gr::string(x, y, msg.name.c_str(), chatbox_font);
             rf::gr::set_color(255, 255, 255, text_alpha);
             x += name_w;
-        }
-        else if (msg.color_id == 2) {
+        } else if (msg.color_id == 2) {
             rf::gr::set_color(227, 48, 47, text_alpha);
-        }
-        else if (msg.color_id == 3) {
+        } else if (msg.color_id == 3) {
             rf::gr::set_color(117, 117, 254, text_alpha);
-        }
-        else if (msg.color_id == 4) {
+        } else if (msg.color_id == 4) {
             rf::gr::set_color(255, 255, 255, text_alpha);
-        }
-        else {
+        } else if (msg.color_id == 6) {
+            if (g_alpine_game_config.simple_server_chat_msgs) {
+                rf::gr::set_color(255, 250, 205, text_alpha);
+            } else {
+                rf::gr::set_color(255, 215, 0, text_alpha);
+                rf::gr::string(x, y, msg.name.c_str(), chatbox_font);
+                rf::gr::set_color(255, 255, 255, text_alpha);
+                x += name_w;
+            }
+        } else {
             rf::gr::set_color(52, 255, 57, text_alpha);
         }
         rf::gr::string(x, y, msg.text.c_str(), chatbox_font);
@@ -144,10 +154,8 @@ void multi_hud_render_chat_inputbox(rf::String::Pod label_pod, rf::String::Pod m
     int input_box_x = (clip_w - box_w) / 2; // 157
 
     rf::String msg_shortened{msg};
-    int msg_w, msg_h;
-    rf::gr::get_string_size(&msg_w, &msg_h, msg_shortened.c_str(), -1, chatbox_font);
-    int label_w, label_h;
-    rf::gr::get_string_size(&label_w, &label_h, label.c_str(), -1, chatbox_font);
+    auto [msg_w, msg_h] = rf::gr::get_string_size(msg_shortened, chatbox_font);
+    const auto [label_w, label_h] = rf::gr::get_string_size(label, chatbox_font);
     int cursor_w = g_big_chatbox ? 10 : 5;
     int cursor_h = g_big_chatbox ? 2 : 1;
     int max_msg_w = content_w - cursor_w - 7 - label_w;
@@ -157,7 +165,7 @@ void multi_hud_render_chat_inputbox(rf::String::Pod label_pod, rf::String::Pod m
     }
     while (msg_w > max_msg_w) {
         msg_shortened = msg_shortened.substr(1, -1);
-        rf::gr::get_string_size(&msg_w, &msg_h, msg_shortened.c_str(), -1, chatbox_font);
+        std::tie(msg_w, msg_h) = rf::gr::get_string_size(msg_shortened, chatbox_font);
     }
 
     rf::gr::set_color(255, 255, 255, rf::scoreboard_visible ? 255 : chatbox_border_alpha);
@@ -194,8 +202,7 @@ static bool is_muted_player(rf::Player *pp)
     if (g_all_players_muted) {
         return true;
     }
-    auto& pdata = get_player_additional_data(pp);
-    return pdata.is_muted;
+    return pp->is_muted;
 }
 
 CodeInjection process_chat_line_packet_injection{
@@ -224,15 +231,34 @@ ConsoleCommand2 mute_all_players_cmd{
 
 ConsoleCommand2 mute_player_cmd{
     "mute_player",
-    [](std::string player_name) {
-        rf::Player* pp = find_best_matching_player(player_name.c_str());
+    [] (const std::string_view player_name) {
+        rf::Player* const pp = find_best_matching_player(player_name.data());
         if (pp) {
-            auto& pdata = get_player_additional_data(pp);
-            pdata.is_muted = !pdata.is_muted;
-            rf::console::print("Player {} is {}", pp->name, pdata.is_muted ? "muted" : "unmuted");
+            pp->is_muted = !pp->is_muted;
+            rf::console::print(
+                "Player {} is {}",
+                pp->name,
+                pp->is_muted ? "muted" : "unmuted"
+            );
         }
     },
     "Mutes a single player in multiplayer chat",
+};
+
+CallHook<void(const char*, bool)> process_rcon_req_packet_chat_say_hook{
+    0x0046C62F,
+    [] (const char* msg, const bool is_team_msg) {
+        af_broadcast_automated_chat_msg(msg);
+    },
+};
+
+FunHook<void(int)> multi_chat_say_show_hook{
+    0x00444A80,
+    [] (const int is_team_chat) {
+        if (!g_remote_server_cfg_popup.is_active()) {
+            multi_chat_say_show_hook.call_target(is_team_chat);
+        }
+    },
 };
 
 void multi_hud_chat_apply_patches()
@@ -258,6 +284,10 @@ void multi_hud_chat_apply_patches()
 
     // Do not strip '%' characters from chat messages
     write_mem<u8>(0x004785FD, asm_opcodes::jmp_rel_short);
+
+    process_rcon_req_packet_chat_say_hook.install();
+    
+    multi_chat_say_show_hook.install();
 }
 
 void multi_hud_chat_set_big(bool is_big)

@@ -5,5 +5,5 @@
 class UpdateChecker
 {
 public:
-    static void CheckForUpdates();
+    static bool CheckForUpdates();
 };

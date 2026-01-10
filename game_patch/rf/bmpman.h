@@ -17,7 +17,7 @@ namespace rf::bm
         FORMAT_888_RGB = 0x6,
         FORMAT_8888_ARGB = 0x7,
         FORMAT_88_BUMPDUDV = 0x8, // not supported by D3D routines
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         // custom formats
         FORMAT_888_BGR = 0x9,        // used by lightmaps
         FORMAT_RENDER_TARGET = 0x10, // texture is used as render target
@@ -38,7 +38,7 @@ namespace rf::bm
         TYPE_VAF = 0x4,
         TYPE_VBM = 0x5,
         TYPE_M2V = 0x6,
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         // Custom bitmap types
         TYPE_DDS = 0x10,
 #endif
@@ -69,7 +69,7 @@ namespace rf::bm
         BitmapEntry* prev;
         char field_5C;
         ubyte cached_material_idx;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         bool dynamic;
 #endif
         int total_bytes_for_all_levels;
@@ -86,9 +86,16 @@ namespace rf::bm
     static auto& get_format = addr_as_ref<Format(int bm_handle)>(0x005106F0);
     static auto& get_type = addr_as_ref<Type(int bm_handle)>(0x0050F350);
     static auto& get_cache_slot = addr_as_ref<int(int bm_handle)>(0x0050F440);
+    static auto& release = addr_as_ref<void(int bm_handle)>(0x00511960);
+    static auto& clear_user_bitmap = addr_as_ref<void(int bm_handle)>(0x00511C30);
+    static auto& texture_add_ref = addr_as_ref<void(int bm_handle)>(0x0050E850);
     static auto& get_mipmap_info = addr_as_ref<void(int bm_handle, int *w, int *h, int *num_pixels, int *mip_levels)>(0x00510680);
     static auto& lock = addr_as_ref<Format(int handle, ubyte **data, ubyte **pal)>(0x00510780);
     static auto& unlock = addr_as_ref<void(int)>(0x00511700);
+
+    // required for realtime bitmap generation, set in gr_d3d_init_device for DX8/9
+    static auto& max_d3d_texture_resolution_h = addr_as_ref<int>(0x017C7C00);
+    static auto& max_d3d_texture_resolution_w = addr_as_ref<int>(0x017C7BFC);
 
     static auto& bm_set_resolution_level_for_all = addr_as_ref<void(int level)>(0x0050EF10);
 

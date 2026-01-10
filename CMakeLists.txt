@@ -1,6 +1,6 @@
 # CMake 3.15 is required for CMAKE_MSVC_RUNTIME_LIBRARY.
 cmake_minimum_required(VERSION 3.15)
-project(DashFaction)
+project(AlpineFaction)
 
 if(NOT "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")
     message(FATAL_ERROR "Only x86 (32 bit) platform is supported!")
@@ -28,7 +28,7 @@ add_compile_definitions(
     _WIN32_IE=0x0501
     # needed for GetModuleFileNameEx resolution before Windows 7
     PSAPI_VERSION=1
-    DASH_FACTION
+    ALPINE_FACTION
     "$<$<CONFIG:Debug>:DEBUG>"
 )
 

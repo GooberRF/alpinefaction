@@ -19,6 +19,8 @@
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
 #include "../os/console.h"
+#include "../rf/v3d.h"
+#include "../graphics/d3d11/gr_d3d11_mesh.h"
 
 bool event_debug_enabled;
 
@@ -82,13 +84,13 @@ CodeInjection switch_model_event_custom_mesh_patch{
         }
         auto& mesh_name = *static_cast<rf::String*>(regs.esi);
         std::string_view mesh_name_sv{mesh_name.c_str()};
-        if (string_ends_with_ignore_case(mesh_name_sv, ".v3m")) {
+        if (string_iends_with(mesh_name_sv, ".v3m")) {
             mesh_type = rf::MESH_TYPE_STATIC;
         }
-        else if (string_ends_with_ignore_case(mesh_name_sv, ".v3c")) {
+        else if (string_iends_with(mesh_name_sv, ".v3c")) {
             mesh_type = rf::MESH_TYPE_CHARACTER;
         }
-        else if (string_ends_with_ignore_case(mesh_name_sv, ".vfx")) {
+        else if (string_iends_with(mesh_name_sv, ".vfx")) {
             mesh_type = rf::MESH_TYPE_ANIM_FX;
         }
     },
@@ -118,6 +120,18 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
             }
             rf::physics_delete_object(&obj->p_data);
             rf::physics_create_object(&obj->p_data, &oci);
+
+            // D3D11 renderer: reset static mesh vertex colors for the swapped mesh
+            if (g_game_config.renderer == GameConfig::Renderer::d3d11 &&
+                obj->vmesh &&
+                rf::vmesh_get_type(obj->vmesh) == rf::MESH_TYPE_STATIC) {
+
+                // The VIF LOD mesh instance points at the submesh that was swapped in
+                if (auto* lod_mesh = static_cast<rf::VifLodMesh*>(obj->vmesh->instance)) {
+                    xlog::debug("D3D11 renderer: vertex color state changed for mesh {} on UID {}", obj->vmesh->filename, obj->uid);
+                    df::gr::d3d11::on_static_vertex_color_state_changed(lod_mesh);
+                }
+            }
         }
     },
 };
@@ -192,7 +206,7 @@ FunHook<void()> event_level_init_post_hook{
     0x004BD890,
     []() {
         event_level_init_post_hook.call_target();
-        if (string_equals_ignore_case(rf::level.filename, "L5S2.rfl")) {
+        if (string_iequals(rf::level.filename, "L5S2.rfl")) {
             // HACKFIX: make Set_Liquid_Depth events properties in lava control room more sensible
             xlog::trace("Changing Set_Liquid_Depth events in this level...");
             auto* event1 = static_cast<EventSetLiquidDepthHook*>(rf::event_lookup_from_uid(3940));
@@ -202,7 +216,7 @@ FunHook<void()> event_level_init_post_hook{
                 event2->duration = 1.5f;
             }
         }
-        if (string_equals_ignore_case(rf::level.filename, "L5S3.rfl")) {
+        if (string_iequals(rf::level.filename, "L5S3.rfl")) {
             // Fix submarine exploding - change delay of two events to make submarine physics enabled later
             xlog::trace("Fixing Submarine exploding bug...");
             int uids[] = {4679, 4680};
@@ -409,133 +423,19 @@ CodeInjection Event__turn_off_redirector_patch {
     }
 };
 
-void event_process_fixed_delay_patch(rf::GenericEvent* event) {
-
-    // fixed delay handling for events broken in stock game
-    if (af_rfl_version(rf::level.version) && event && event->delay_timestamp.elapsed()) {
-
-        if (event_debug_enabled) {
-            rf::console::print("Processing {} message in event {} ({}) (delayed)",
-                event->delayed_msg ? "ON" : "OFF", event->name, event->uid);
-        }
-
-        if (event->delayed_msg) {
-            switch (static_cast<rf::EventType>(event->event_type)) {
-                case rf::EventType::UnHide: {
-                    using EventTurnOnFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOnFn event_turn_on = reinterpret_cast<EventTurnOnFn>(0x004BCDD0);
-                    event_turn_on(event);
-                    break;
-                }
-                case rf::EventType::Alarm_Siren: {
-                    using EventTurnOnFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOnFn event_turn_on = reinterpret_cast<EventTurnOnFn>(0x004BA830);
-                    event_turn_on(event);
-                    break;
-                }
-                case rf::EventType::Make_Invulnerable: {
-                    using EventTurnOnFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOnFn event_turn_on = reinterpret_cast<EventTurnOnFn>(0x004BC7C0);
-                    event_turn_on(event);
-                    break;
-                }
-                case rf::EventType::Cyclic_Timer: {
-                    using EventTurnOnFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOnFn event_turn_on = reinterpret_cast<EventTurnOnFn>(0x004BB7A0);
-                    event_turn_on(event);
-                    break;
-                }
-                case rf::EventType::Play_Sound: {
-                    using EventTurnOnFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOnFn event_turn_on = reinterpret_cast<EventTurnOnFn>(0x004BA440);
-                    event_turn_on(event);
-                    break;
-                }
-                default: {
-                    //xlog::warn("Something {} turned on", event->uid);
-                }
-            }
-        }
-        else {
-            switch (static_cast<rf::EventType>(event->event_type)) {
-                case rf::EventType::UnHide: {
-                    using EventTurnOffFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOffFn event_turn_off = reinterpret_cast<EventTurnOffFn>(0x004BCDE0);
-                    event_turn_off(event);
-                    break;
-                }
-                case rf::EventType::Alarm_Siren: {
-                    using EventTurnOffFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOffFn event_turn_off = reinterpret_cast<EventTurnOffFn>(0x004BA8C0);
-                    event_turn_off(event);
-                    break;
-                }
-                case rf::EventType::Make_Invulnerable: {
-                    using EventTurnOffFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOffFn event_turn_off = reinterpret_cast<EventTurnOffFn>(0x004BC880);
-                    event_turn_off(event);
-                    break;
-                }
-                case rf::EventType::Cyclic_Timer: {
-                    using EventTurnOffFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOffFn event_turn_off = reinterpret_cast<EventTurnOffFn>(0x004BB8A0);
-                    event_turn_off(event);
-                    break;
-                }
-                case rf::EventType::Play_Sound: {
-                    using EventTurnOffFn = void(__thiscall*)(rf::GenericEvent*);
-                    static EventTurnOffFn event_turn_off = reinterpret_cast<EventTurnOffFn>(0x004BA690);
-                    event_turn_off(event);
-                    break;
-                }
-                default: {
-                    //xlog::warn("Something {} turned off", event->uid);
-                }
-            }
-        }
-
-        if (rf::event_type_forwards_messages(event->event_type)) {
-            using EventActivateLinksFn = void(__thiscall*)(rf::GenericEvent*, int, int, bool);
-            static EventActivateLinksFn event_activate_links = reinterpret_cast<EventActivateLinksFn>(0x004B8B00);
-            event_activate_links(event, event->trigger_handle, event->triggered_by_handle, event->delayed_msg);
-        }
-
-        event->delay_timestamp.invalidate();
-    }
-}
-
-CodeInjection EventUnhide__process_patch {
-    0x004BCDF0, [](auto& regs) {
-        rf::GenericEvent* event = regs.ecx;
-        event_process_fixed_delay_patch(event);
+CodeInjection EventUnhide__process_patch{
+    0x004BCDF0, 
+    [] (const auto& regs) {
+        rf::Event* const event = regs.ecx;
+        rf::Event__process(event);
     }
 };
 
-CodeInjection EventAlarmSiren__process_patch {
-    0x004BA880, [](auto& regs) {
-        rf::GenericEvent* event = regs.ecx;
-        event_process_fixed_delay_patch(event);
-    }
-};
-
-CodeInjection EventMakeInvulnerable__process_patch {
-    0x004BC8F0, [](auto& regs) {
-        rf::GenericEvent* event = regs.ecx;
-        event_process_fixed_delay_patch(event);
-    }
-};
-
-CodeInjection EventCyclicTimer__process_patch {
-    0x004BB7B0, [](auto& regs) {
-        rf::GenericEvent* event = regs.ecx;
-        event_process_fixed_delay_patch(event);
-    }
-};
-
-CodeInjection EventSound__process_patch {
-    0x004BA570, [](auto& regs) {
-        rf::GenericEvent* event = regs.ecx;
-        event_process_fixed_delay_patch(event);
+CodeInjection EventMakeInvulnerable__process_patch{
+    0x004BC8F0,
+    [] (const auto& regs) {
+        rf::Event* const event = regs.ecx;
+        rf::Event__process(event);
     }
 };
 
@@ -600,35 +500,35 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
         };
 
         // Match known HUD tokens
-        if (string_equals_ignore_case(token_str, "FIRE"))
+        if (string_iequals(token_str, "FIRE"))
             replacement = get_binding_or_unbound(rf::strings::fire);
-        else if (string_equals_ignore_case(token_str, "ALT_FIRE"))
+        else if (string_iequals(token_str, "ALT_FIRE"))
             replacement = get_binding_or_unbound(rf::strings::alt_fire);
-        else if (string_equals_ignore_case(token_str, "USE"))
+        else if (string_iequals(token_str, "USE"))
             replacement = get_binding_or_unbound(rf::strings::use);
-        else if (string_equals_ignore_case(token_str, "JUMP"))
+        else if (string_iequals(token_str, "JUMP"))
             replacement = get_binding_or_unbound(rf::strings::jump);
-        else if (string_equals_ignore_case(token_str, "CROUCH"))
+        else if (string_iequals(token_str, "CROUCH"))
             replacement = get_binding_or_unbound(rf::strings::crouch);
-        else if (string_equals_ignore_case(token_str, "HOLSTER"))
+        else if (string_iequals(token_str, "HOLSTER"))
             replacement = get_binding_or_unbound(rf::strings::holster);
-        else if (string_equals_ignore_case(token_str, "RELOAD"))
+        else if (string_iequals(token_str, "RELOAD"))
             replacement = get_binding_or_unbound(rf::strings::reload);
-        else if (string_equals_ignore_case(token_str, "NEXT_WEAPON"))
+        else if (string_iequals(token_str, "NEXT_WEAPON"))
             replacement = get_binding_or_unbound(rf::strings::next_weapon);
-        else if (string_equals_ignore_case(token_str, "PREV_WEAPON"))
+        else if (string_iequals(token_str, "PREV_WEAPON"))
             replacement = get_binding_or_unbound(rf::strings::prev_weapon);
-        else if (string_equals_ignore_case(token_str, "MESSAGE_LOG"))
+        else if (string_iequals(token_str, "MESSAGE_LOG"))
             replacement = get_binding_or_unbound(rf::strings::message_log);
-        else if (string_equals_ignore_case(token_str, "QUICK_SAVE"))
+        else if (string_iequals(token_str, "QUICK_SAVE"))
             replacement = get_binding_or_unbound(rf::strings::quick_save);
-        else if (string_equals_ignore_case(token_str, "QUICK_LOAD"))
+        else if (string_iequals(token_str, "QUICK_LOAD"))
             replacement = get_binding_or_unbound(rf::strings::quick_load);
-        else if (string_equals_ignore_case(token_str, "HEADLAMP"))
+        else if (string_iequals(token_str, "HEADLAMP"))
             replacement = get_binding_or_unbound("Toggle headlamp");
-        else if (string_equals_ignore_case(token_str, "SKIP_CUTSCENE"))
+        else if (string_iequals(token_str, "SKIP_CUTSCENE"))
             replacement = get_binding_or_unbound("Skip cutscene");
-        else if (string_starts_with_ignore_case(token_str, "goal_")) {
+        else if (string_istarts_with(token_str, "goal_")) {
             std::string goal_name = token_str.substr(5);
             if (auto goal_val = rf::get_named_goal_value(goal_name)) {
                 replacement = std::to_string(*goal_val);
@@ -660,10 +560,7 @@ void apply_event_patches()
 
     // fix some events not working if delay value is specified (alpine levels only)
     EventUnhide__process_patch.install();
-    EventAlarmSiren__process_patch.install();
     EventMakeInvulnerable__process_patch.install();
-    EventCyclicTimer__process_patch.install();
-    EventSound__process_patch.install();
 
     // allow Holster_Player_Weapon and Holster_Weapon to be turned off (alpine levels only)
     Event__turn_off_redirector_patch.install();

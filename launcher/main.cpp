@@ -11,9 +11,9 @@
 void InitLogging()
 {
     auto app_data_dir = Win32xx::GetAppDataPath();
-    auto df_data_dir = app_data_dir + "\\Alpine Faction";
-    CreateDirectoryA(df_data_dir, nullptr);
-    auto log_file_path = df_data_dir + "\\AlpineFactionLauncher.log";
+    auto af_data_dir = app_data_dir + "\\Alpine Faction";
+    CreateDirectoryA(af_data_dir, nullptr);
+    auto log_file_path = af_data_dir + "\\AlpineFactionLauncher.log";
     xlog::LoggerConfig::get()
         .add_appender<xlog::FileAppender>(log_file_path.GetString(), false)
         .add_appender<xlog::ConsoleAppender>()

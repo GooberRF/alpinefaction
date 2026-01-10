@@ -27,8 +27,10 @@
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
 #include "../multi/multi.h"
+#include "../multi/gametype.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
+#include "../multi/alpine_packets.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_options.h"
@@ -122,6 +124,7 @@ FunHook<int()> rf_do_frame_hook{
         rf::os_poll();
         high_fps_update();
         server_do_frame();
+        koth_do_frame();
         int result = rf_do_frame_hook.call_target();
         maybe_autosave();
         debug_do_frame_post();
@@ -188,8 +191,10 @@ FunHook<void(bool)> level_init_post_hook{
         process_queued_spawn_points_from_items();
         populate_world_hud_sprite_events();
         reset_achievement_state_info();
+        multi_level_init_post_gametypes();
 
         if (!rf::is_dedicated_server) {
+            explosion_flash_lights_level_init();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();
             if (!rf::is_multi) {
@@ -197,7 +202,12 @@ FunHook<void(bool)> level_init_post_hook{
             }
             else {
                 toggle_chat_menu(ChatMenuType::None);
-                build_chat_menu_comms_messages();
+                player_multi_level_post_init();
+                multi_hud_level_init();
+                // listen server host spawns before this init, so we need to run on_local_spawn for them again
+                if (rf::is_server) {
+                    multi_hud_on_local_spawn();
+                }
             }
 
             if (g_alpine_game_config.try_disable_textures) {
@@ -211,9 +221,11 @@ FunHook<void(bool)> level_init_post_hook{
             }
         }
 
-        if (rf::is_server) {        
+        if (rf::is_dedicated_server || rf::is_server) {
             if (g_match_info.match_active) {
-                send_chat_line_packet("=========== MATCH LIVE ===========", nullptr);
+                af_broadcast_automated_chat_msg(
+                    "=========== MATCH LIVE ==========="
+                );
             }
             else if (g_match_info.pre_match_queued) {
                 start_pre_match();
@@ -294,6 +306,17 @@ static std::string& get_log_file_path_name()
                 LPWSTR next_arg = argv[i + 1];
                 dedicated_server_name.resize(std::wcslen(next_arg));
                 std::wcstombs(dedicated_server_name.data(), next_arg, dedicated_server_name.size());
+            }
+            else if (!std::wcscmp(argv[i], L"-ads") && i + 1 < argc) {
+                LPWSTR next_arg = argv[i + 1];
+                dedicated_server_name.resize(std::wcslen(next_arg));
+                std::wcstombs(dedicated_server_name.data(), next_arg, dedicated_server_name.size());
+                size_t slash_pos = dedicated_server_name.find_last_of("/\\");
+                if (slash_pos != std::string::npos)
+                    dedicated_server_name.erase(0, slash_pos + 1);
+                size_t dot_pos = dedicated_server_name.find_last_of('.');
+                if (dot_pos != std::string::npos)
+                    dedicated_server_name.erase(dot_pos);
             }
         }
         LocalFree(argv);
@@ -428,12 +451,14 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     hud_apply_patches();
     multi_do_patch();
     multi_scoreboard_apply_patch();
+    gametype_do_patch();
     vpackfile_apply_patches();
     multi_spectate_appy_patch();
     high_fps_init();
     object_do_patch();
     misc_init();
     server_init();
+    dedi_cfg_init();
     mouse_apply_patch();
     key_apply_patch();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)

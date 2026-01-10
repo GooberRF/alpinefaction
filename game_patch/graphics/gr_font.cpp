@@ -250,6 +250,7 @@ GrNewFont::GrNewFont(std::string_view name) :
     static std::pair<int, int> win_1252_char_ranges[]{
         {0x20, 0x7E},
         {0x8C, 0x8C},
+        {0x95, 0x95},
         {0x99, 0x99},
         {0x9C, 0x9C},
         {0x9F, 0x9F},
@@ -365,24 +366,22 @@ void GrNewFont::draw(int x, int y, std::string_view text, rf::gr::Mode state) co
     for (auto ch : text) {
         if (ch == '\n') {
             pen_x = x;
-            y += line_spacing_;
+            pen_y += line_spacing_;
         }
         else {
             auto glyph_idx = char_map_[static_cast<unsigned char>(ch)];
             if (glyph_idx != -1) {
                 const auto& glyph_info = glyphs_[glyph_idx];
                 if (glyph_info.bm_w) {
-                    //rf::gr::rect(pen_x + glyph_info.x, pen_y + glyph_info.y, glyph_info.bm_w, glyph_info.bm_h);
+                    // rf::gr::rect(pen_x + glyph_info.x, pen_y + glyph_info.y, glyph_info.bm_w, glyph_info.bm_h);
                     rf::gr::bitmap_ex(bitmap_, pen_x + glyph_info.x, pen_y + glyph_info.y, glyph_info.bm_w, glyph_info.bm_h, glyph_info.bm_x, glyph_info.bm_y, state);
                 }
                 pen_x += glyph_info.advance_x;
             }
         }
     }
-    int& current_string_x = addr_as_ref<int>(0x018871AC);
-    int& current_string_y = addr_as_ref<int>(0x018871B0);
-    current_string_x = pen_x;
-    current_string_y = y;
+    rf::gr::current_string_x = pen_x;
+    rf::gr::current_string_y = y;
 }
 
 void GrNewFont::draw_aligned(rf::gr::TextAlignment alignment, int x, int y, std::string_view text, rf::gr::Mode state) const
@@ -557,6 +556,32 @@ CodeInjection gr_create_font_increment_number_injection{
     []() {
         rf::gr::num_fonts++;
     },
+};
+
+int gr_fit_string(
+    std::string& text,
+    const int max_width,
+    const int font_id,
+    const std::string_view suffix
+) {
+    auto [text_w, text_h] = rf::gr::get_string_size(text, font_id);
+    if (text_w <= max_width) {
+        return text_w;
+    }
+
+    const auto [suffix_w, suffix_h] = rf::gr::get_string_size(suffix, font_id);
+    if (suffix_w > max_width) {
+        return text_w;
+    }
+
+    while (text_w + suffix_w > max_width && !text.empty()) {
+        const auto [last_w, last_h] = rf::gr::get_char_size(text.back(), font_id);
+        text_w -= last_w;
+        text.pop_back();
+    }
+
+    text.append(suffix);
+    return text_w + suffix_w;
 };
 
 void gr_font_apply_patch()

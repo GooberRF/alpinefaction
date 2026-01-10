@@ -57,7 +57,15 @@ enum class AlpineDedEventID : int
     Anchor_Marker_Orient,
     Light_State,
     World_HUD_Sprite,
-    Set_Light_Color
+    Set_Light_Color,
+    Capture_Point_Handler,
+    Respawn_Point_State,
+    Modify_Respawn_Point,
+    When_Captured,
+    Set_Capture_Point_Owner,
+    Owner_Gate,
+    Set_Gameplay_Rule,
+    When_Round_Ends
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept

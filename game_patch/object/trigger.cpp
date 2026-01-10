@@ -12,7 +12,7 @@
 constexpr char TRIGGER_PF_FLAGS_PREFIX = '\xAB';
 constexpr uint8_t TRIGGER_CLIENT_SIDE = 0x2;
 constexpr uint8_t TRIGGER_SOLO = 0x4;
-constexpr uint8_t TRIGGER_TELEPORT = 0x8;
+constexpr uint8_t TRIGGER_SOLO_IGNORE_RESET = 0x8; // same flag is used for TRIGGER_TELEPORT in Dash levels
 
 rf::Player* g_trigger_solo_player = nullptr;
 std::vector<int> g_triggers_uids_for_late_joiners;
@@ -54,25 +54,18 @@ FunHook<void(rf::Trigger*, int32_t, bool)> trigger_activate_hook{
             return;
         }
 
-        // Check if this is Solo or Teleport trigger (REDPF feature)
+        // Check if this is Solo trigger
         uint8_t ext_flags = trigger_name[0] == TRIGGER_PF_FLAGS_PREFIX ? trigger_name[1] : 0;
 
-        // in AF levels, teleport flag is ignored (unnecessary)
-        bool is_solo_trigger = false;
-        if (af_rfl_version(rf::level.version)) {
-            is_solo_trigger = (ext_flags & TRIGGER_SOLO) != 0;
-        }
-        else {
-            is_solo_trigger = (ext_flags & (TRIGGER_SOLO | TRIGGER_TELEPORT)) != 0;
-        }
+        bool is_solo_trigger = (ext_flags & (TRIGGER_SOLO | TRIGGER_SOLO_IGNORE_RESET)) != 0;
 
         // 0x8 = auto
         if (rf::is_multi && rf::is_server && is_solo_trigger && player && !(trigger->trigger_flags & 0x8)) {
             // rf::console::print("Solo/Teleport trigger activated {}", trigger_name);
             if (player != rf::local_player) {
 
-                // AF reuses the now deprecated TRIGGER_TELEPORT for "Ignore Resets"
-                if (af_rfl_version(rf::level.version) && (ext_flags & TRIGGER_TELEPORT) == 0) {
+                // AF only: trigger solo ignore resets flag
+                if (af_rfl_version(rf::level.version) && (ext_flags & TRIGGER_SOLO_IGNORE_RESET) == 0) {
                     if (trigger->max_count != -1 &&
                         (trigger->count + 1) >= trigger->max_count &&
                         !(trigger->trigger_flags & 0x8)) {

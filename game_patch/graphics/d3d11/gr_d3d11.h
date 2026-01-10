@@ -53,6 +53,7 @@ namespace df::gr::d3d11
         void texture_mark_dirty(int bm_handle);
         void texture_add_ref(int bm_handle);
         void texture_remove_ref(int bm_handle);
+        void reset_sampler_states();
         bool lock(int bm_handle, int section, rf::gr::LockInfo *lock);
         void unlock(rf::gr::LockInfo *lock);
         void get_texel(int bm_handle, float u, float v, rf::gr::Color *clr);
@@ -70,6 +71,7 @@ namespace df::gr::d3d11
         void render_sky_room(rf::GRoom *room);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
+        void reset_solid_cache_after_boolean();
         void render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params);
         void render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params);
         void clear_vif_cache(rf::VifLodMesh *lod_mesh);
@@ -79,6 +81,7 @@ namespace df::gr::d3d11
         void page_in_solid(rf::GSolid* solid);
         void page_in_movable_solid(rf::GSolid* solid);
         void flush_caches();
+        void reset_static_vertex_color_tracking();
         float z_far() const;
 
     private:

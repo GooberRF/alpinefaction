@@ -104,7 +104,7 @@ namespace rf
         int flags;
         int num_original_vecs;
         int unk_field_from_v3d_file;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         void *render_cache;
 #endif
     };
@@ -120,7 +120,7 @@ namespace rf
         float radius;
         Vector3 bbox_min;
         Vector3 bbox_max;
-#ifdef DASH_FACTION
+#ifdef ALPINE_FACTION
         void *render_cache;
 #endif
     };
@@ -134,7 +134,7 @@ namespace rf
         int *alt_tex;
         float field_14_unk_fire;
         gr::Color field_18;
-        ubyte *vertex_colors;
+        ubyte* vertex_colors;
         int powerup_bitmaps[2];
         gr::Color ambient_color;
         Matrix3 orient;
@@ -144,6 +144,8 @@ namespace rf
     {
         MRF_SCANNER_1 = 1,
         MRF_SCANNER_2 = 8,
-        MRF_AMBIENT_COLOR = 0x80,
+        MRF_CUSTOM_AMBIENT_COLOR = 0x80,
+        MRF_CLIP_VERTICES = 0x100,
+        MRF_FIRST_PERSON = 0x400,
     };
 }

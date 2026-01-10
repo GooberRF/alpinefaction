@@ -23,6 +23,35 @@
 #include "object.h"
 #include "object_private.h"
 
+std::string get_object_type_string(int type) {
+    switch (type) {
+    case rf::OT_ENTITY:
+        return "entity";
+    case rf::OT_ITEM:
+        return "item";
+    case rf::OT_WEAPON:
+        return "weapon";
+    case rf::OT_DEBRIS:
+        return "debris";
+    case rf::OT_CLUTTER:
+        return "clutter";
+    case rf::OT_TRIGGER:
+        return "trigger";
+    case rf::OT_EVENT:
+        return "event";
+    case rf::OT_CORPSE:
+        return "corpse";
+    case rf::OT_MOVER:
+        return "mover";
+    case rf::OT_MOVER_BRUSH:
+        return "mover_brush";
+    case rf::OT_GLARE:
+        return "glare";
+    default:
+        return "unknown";
+    }
+}
+
 FunHook<rf::Object*(int, int, int, rf::ObjectCreateInfo*, int, rf::GRoom*)> obj_create_hook{
     0x00486DA0,
     [](int type, int sub_type, int parent, rf::ObjectCreateInfo* create_info, int flags, rf::GRoom* room) {
@@ -30,7 +59,8 @@ FunHook<rf::Object*(int, int, int, rf::ObjectCreateInfo*, int, rf::GRoom*)> obj_
         //xlog::warn("Object create request: type={}, sub_type={}, owner_objh={}, flags={}", type, sub_type, parent, flags);
 
         if (!objp) {
-            xlog::info("Failed to create object (type {})", type);
+            std::string type_str = get_object_type_string(type);
+            xlog::info("Failed to create an object - {} ({} : {})", type_str, type, sub_type);
         }
         return objp;
     },
@@ -200,19 +230,17 @@ CodeInjection sort_clutter_patch{
 FunHook<rf::VMesh*(rf::Object*, const char*, rf::VMeshType)> obj_create_mesh_hook{
     0x00489FE0,
     [](rf::Object* objp, const char* name, rf::VMeshType type) {
+        const auto& mesh_map = g_alpine_level_info_config.mesh_replacements;
 
-        // handle per-map mesh replacements
-        auto level_it = g_alpine_level_info_config.mesh_replacements.find(rf::level.filename);
-        if (level_it != g_alpine_level_info_config.mesh_replacements.end()) {
-            const auto& mesh_map = level_it->second;
-
+        if (!mesh_map.empty()) {
+            const char* original_name = name;
             // convert original mesh name to lowercase
             std::string lower_name = string_to_lower(name);
 
             auto mesh_it = mesh_map.find(lower_name);
             if (mesh_it != mesh_map.end()) {
                 name = mesh_it->second.c_str(); // Use replacement name
-                xlog::debug("Replacing mesh {} with {}", name, mesh_it->second);
+                xlog::debug("Replacing mesh {} with {}", original_name, mesh_it->second);
             }
         }
 
@@ -222,6 +250,20 @@ FunHook<rf::VMesh*(rf::Object*, const char*, rf::VMeshType)> obj_create_mesh_hoo
         }
         
         return mesh;
+    },
+};
+
+CodeInjection obj_create_mesh_check_valid{
+    0x0048A070,
+    [](auto& regs) {
+
+        rf::VMesh* mesh = regs.eax;
+        const char* filename = regs.ebx;
+
+        if (!mesh) {
+            xlog::warn("Failed to load mesh '{}'", filename ? filename : "(null)");
+        }
+
     },
 };
 
@@ -435,9 +477,12 @@ void object_do_patch()
     // Sort objects by mesh name to improve rendering performance
     sort_clutter_patch.install();
 
-    // Calculate lighting when object mesh is changed
+    // Calculate lighting when object mesh is changed, handle per-map mesh replacements
     obj_create_mesh_hook.install();
     obj_delete_mesh_hook.install();
+
+    // Print a warning to console when an invalid mesh would have been loaded
+    obj_create_mesh_check_valid.install();
 
     // Optimize Object::find_room function
     object_find_room_optimization.install();
@@ -456,6 +501,7 @@ void object_do_patch()
     apply_weapon_patches();
     trigger_apply_patches();
     monitor_do_patch();
+    mover_do_patch();
     particle_do_patch();
     obj_light_apply_patch();
 }

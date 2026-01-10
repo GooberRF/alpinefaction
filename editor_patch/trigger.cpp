@@ -12,7 +12,7 @@
 constexpr char TRIGGER_PF_FLAGS_PREFIX = '\xAB';
 constexpr uint8_t TRIGGER_CLIENT_SIDE = 0x2;
 constexpr uint8_t TRIGGER_SOLO = 0x4;
-constexpr uint8_t TRIGGER_TELEPORT = 0x8;
+constexpr uint8_t TRIGGER_SOLO_IGNORE_RESET = 0x8; // same flag is used for TRIGGER_TELEPORT in Dash levels
 
 class TriggerCustomFlagsHelper {
     HWND hwnd_;
@@ -45,7 +45,7 @@ public:
             auto pf_flags = static_cast<uint8_t>(script_name[1]);
             is_solo_ = pf_flags & TRIGGER_SOLO;
             is_clientside_ = pf_flags & TRIGGER_CLIENT_SIDE;
-            is_teleport_ = pf_flags & TRIGGER_TELEPORT;
+            is_teleport_ = pf_flags & TRIGGER_SOLO_IGNORE_RESET;
             SetDlgItemTextA(hwnd_, IDC_TRIGGER_SCRIPT_NAME, script_name + 2);
         }
     }
@@ -66,7 +66,7 @@ public:
             uint8_t pf_flags = 0;
             pf_flags |= is_solo_ ? TRIGGER_SOLO : 0;
             pf_flags |= is_clientside_ ? TRIGGER_CLIENT_SIDE : 0;
-            pf_flags |= is_teleport_ ? TRIGGER_TELEPORT : 0;
+            pf_flags |= is_teleport_ ? TRIGGER_SOLO_IGNORE_RESET : 0;
             new_script_name += static_cast<char>(pf_flags);
             new_script_name += script_name;
             SetDlgItemTextA(hwnd_, IDC_TRIGGER_SCRIPT_NAME, new_script_name.c_str());
@@ -96,7 +96,6 @@ void __fastcall CTriggerPropsDialog_DoDataExchange_new(CWnd* this_, int, CDataEx
         flags_helper.UpdateCheckBoxesStates();
     }
 }
-
 
 const char* activated_by_names[] = {
     "Players Only",

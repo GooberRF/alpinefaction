@@ -6,6 +6,7 @@
 #include <patch_common/CodeInjection.h>
 #include <common/utils/list-utils.h>
 #include "../misc/misc.h"
+#include "../misc/level.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/object.h"
@@ -15,6 +16,7 @@
 #include "../rf/level.h"
 #include "../rf/clutter.h"
 #include "../rf/gr/gr.h"
+#include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../rf/multi.h"
 #include "../rf/crt.h"
 #include "../os/console.h"
@@ -29,16 +31,22 @@ bool server_side_restrict_disable_muzzle_flash = false;
 static float g_character_ambient_light_r = 1.0f;
 static float g_character_ambient_light_g = 1.0f;
 static float g_character_ambient_light_b = 1.0f;
+bool g_character_meshes_are_fullbright = false;
 
-void obj_mesh_lighting_alloc_one(rf::Object *objp)
+void obj_mesh_lighting_alloc_one(rf::Object* objp)
 {
-    // Note: ObjDeleteMesh frees mesh_lighting_data
+    if ((objp->type != rf::OT_ITEM && objp->type != rf::OT_CLUTTER) ||
+        !objp->vmesh ||
+        (objp->obj_flags & rf::OF_DELAYED_DELETE) ||
+        rf::vmesh_get_type(objp->vmesh) != rf::MESH_TYPE_STATIC) {
+        return;
+    }
     assert(objp->mesh_lighting_data == nullptr);
     auto size = rf::vmesh_calc_lighting_data_size(objp->vmesh);
     objp->mesh_lighting_data = rf::rf_malloc(size);
 }
 
-void obj_mesh_lighting_free_one(rf::Object *objp)
+void obj_mesh_lighting_free_one(rf::Object* objp)
 {
     if (objp->mesh_lighting_data) {
         rf::rf_free(objp->mesh_lighting_data);
@@ -46,28 +54,24 @@ void obj_mesh_lighting_free_one(rf::Object *objp)
     }
 }
 
-void obj_mesh_lighting_update_one(rf::Object *objp)
+void obj_mesh_lighting_update_one(rf::Object* objp)
 {
-    gr_light_use_static(true);
+    if (!objp->mesh_lighting_data)
+        return;
+
+    if (g_alpine_game_config.mesh_static_lighting) {
+        gr_light_use_static(true);
+    }
+
     rf::vmesh_update_lighting_data(objp->vmesh, objp->room, objp->pos, objp->orient, objp->mesh_lighting_data);
-    gr_light_use_static(false);
+
+    if (g_alpine_game_config.mesh_static_lighting)
+        gr_light_use_static(false);
 }
 
-static bool obj_should_be_lit(rf::Object *objp)
+void obj_mesh_lighting_maybe_update(rf::Object* objp)
 {
-    if (!g_alpine_game_config.mesh_static_lighting) {
-        return false;
-    }
-    if (!objp->vmesh || rf::vmesh_get_type(objp->vmesh) != rf::MESH_TYPE_STATIC) {
-        return false;
-    }
-    // Clutter object always use static lighting
-    return objp->type == rf::OT_CLUTTER || objp->type == rf::OT_ITEM;
-}
-
-void obj_mesh_lighting_maybe_update(rf::Object *objp)
-{
-    if (!objp->mesh_lighting_data && obj_should_be_lit(objp)) {
+    if (!objp->mesh_lighting_data) {
         obj_mesh_lighting_alloc_one(objp);
         obj_mesh_lighting_update_one(objp);
     }
@@ -85,31 +89,54 @@ void evaluate_fullbright_meshes()
     if (!rf::LEVEL_LOADED)
         return;
 
-    bool should_fullbright = false;
+    bool previous_fullbright_state = g_character_meshes_are_fullbright;
+    g_character_meshes_are_fullbright = false; // reset
 
     if (g_alpine_game_config.try_fullbright_characters) {
         bool server_side_restrict_fb_mesh =
-            rf::is_multi && !rf::is_server && get_df_server_info() && !get_df_server_info()->allow_fb_mesh;
+            rf::is_multi && !rf::is_server && get_af_server_info() && !get_af_server_info()->allow_fb_mesh;
 
         if (server_side_restrict_fb_mesh) {
             rf::console::print("This server does not allow you to force fullbright meshes!");
         }
         else {
-            should_fullbright = true;
+            g_character_meshes_are_fullbright = true;
         }
     }
 
-    // Use fullbright (1.0) for each channel if selected and allowed, otherwise use level ambient light
-    if (should_fullbright) {
-        g_character_ambient_light_r = 1.0f;
-        g_character_ambient_light_g = 1.0f;
-        g_character_ambient_light_b = 1.0f;
+    if (is_d3d11()) {
+        if (g_character_meshes_are_fullbright != previous_fullbright_state) {
+            df::gr::d3d11::on_character_fullbright_state_changed();
+        }
     }
-    else {
-        // sets all 3 g_character_ambient_light floats
-        std::memcpy(&g_character_ambient_light_r, reinterpret_cast<const void*>(0x005A38D4), sizeof(float) * 3);
+    else { // d3d9
+        // Use fullbright (1.0) for each channel if selected and allowed, otherwise use level ambient light
+        if (g_character_meshes_are_fullbright) {
+            g_character_ambient_light_r = 1.0f;
+            g_character_ambient_light_g = 1.0f;
+            g_character_ambient_light_b = 1.0f;
+        }
+        else {
+            // sets all 3 g_character_ambient_light floats
+            std::memcpy(&g_character_ambient_light_r, reinterpret_cast<const void*>(0x005A38D4), sizeof(float) * 3);
+        }
     }
 }
+
+CodeInjection vmesh_update_lighting_scale_patch{
+    0x00504290,
+    [](auto& regs) {
+        const auto& level_props = AlpineLevelProperties::instance();
+        if (!level_props.override_static_mesh_ambient_light_modifier) {
+            return;
+        }
+
+        const float scale = static_cast<float>(level_props.static_mesh_ambient_light_modifier);
+        auto esp_value = static_cast<std::uintptr_t>(regs.esp);
+        auto* scale_ptr = reinterpret_cast<float*>(esp_value);
+        *scale_ptr = scale;
+    }
+};
 
 FunHook<void()> obj_light_calculate_hook{
     0x0048B0E0,
@@ -121,16 +148,12 @@ FunHook<void()> obj_light_calculate_hook{
         rf::gr::light_matrix.make_identity();
         rf::gr::light_base.zero();
 
-        if (g_alpine_game_config.mesh_static_lighting) {
-            // Enable static lights
-            gr_light_use_static(true);
-            // Calculate lighting for meshes now
-            obj_light_calculate_hook.call_target();
-            // Switch back to dynamic lights
-            gr_light_use_static(false);
+        for (auto& it : DoublyLinkedList{rf::item_list}) {
+            obj_mesh_lighting_update_one(&it);
         }
-        else {
-            obj_light_calculate_hook.call_target();
+
+        for (auto& cl : DoublyLinkedList{rf::clutter_list}) {
+            obj_mesh_lighting_update_one(&cl);
         }
     },
 };
@@ -138,19 +161,12 @@ FunHook<void()> obj_light_calculate_hook{
 FunHook<void()> obj_light_alloc_hook{
     0x0048B1D0,
     []() {
-        for (auto& item: DoublyLinkedList{rf::item_list}) {
-            if (item.vmesh && !(item.obj_flags & rf::OF_DELAYED_DELETE)
-                && rf::vmesh_get_type(item.vmesh) == rf::MESH_TYPE_STATIC) {
-                auto size = rf::vmesh_calc_lighting_data_size(item.vmesh);
-                item.mesh_lighting_data = rf::rf_malloc(size);
-            }
+        for (auto& it : DoublyLinkedList{rf::item_list}) {
+            obj_mesh_lighting_alloc_one(&it);
         }
-        for (auto& clutter: DoublyLinkedList{rf::clutter_list}) {
-            if (clutter.vmesh && !(clutter.obj_flags & rf::OF_DELAYED_DELETE)
-                && rf::vmesh_get_type(clutter.vmesh) == rf::MESH_TYPE_STATIC) {
-                auto size = rf::vmesh_calc_lighting_data_size(clutter.vmesh);
-                clutter.mesh_lighting_data = rf::rf_malloc(size);
-            }
+
+        for (auto& cl : DoublyLinkedList{rf::clutter_list}) {
+            obj_mesh_lighting_alloc_one(&cl);
         }
     },
 };
@@ -158,13 +174,12 @@ FunHook<void()> obj_light_alloc_hook{
 FunHook<void()> obj_light_free_hook{
     0x0048B370,
     []() {
-        for (auto& item: DoublyLinkedList{rf::item_list}) {
-            rf::rf_free(item.mesh_lighting_data);
-            item.mesh_lighting_data = nullptr;
+        for (auto& it : DoublyLinkedList{rf::item_list}) {
+            obj_mesh_lighting_free_one(&it);
         }
-        for (auto& clutter: DoublyLinkedList{rf::clutter_list}) {
-            rf::rf_free(clutter.mesh_lighting_data);
-            clutter.mesh_lighting_data = nullptr;
+
+        for (auto& cl : DoublyLinkedList{rf::clutter_list}) {
+            obj_mesh_lighting_free_one(&cl);
         }
     },
 };
@@ -192,7 +207,7 @@ CallHook<void(rf::Entity&)> entity_update_muzzle_flash_light_hook{
 void evaluate_restrict_disable_muzzle_flash()
 {
     server_side_restrict_disable_muzzle_flash =
-        rf::is_multi && !rf::is_server && get_df_server_info() && !get_df_server_info()->allow_no_mf;
+        rf::is_multi && !rf::is_server && get_af_server_info() && !get_af_server_info()->allow_no_mf;
 
     if (server_side_restrict_disable_muzzle_flash) {
         if (g_alpine_game_config.try_disable_muzzle_flash_lights) {
@@ -248,6 +263,9 @@ void obj_light_apply_patch()
 
     // Allow dynamic lights in levels
     dynamic_light_load_patch.install(); // in LevelLight__load
+
+    // Allow level to override static mesh ambient light scale
+    vmesh_update_lighting_scale_patch.install();
 
     // Fix/improve items and clutters static lighting calculation: fix matrices being zero and use static lights
     obj_light_calculate_hook.install();

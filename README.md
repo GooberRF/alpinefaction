@@ -30,9 +30,11 @@ Key Features
 -----
 Most important:
 * Fixes for critical security vulnerabilities
+* Direct3D 11 renderer
+* Brand new `King of the Hill`, `Damage Control`, `Revolt`, `Escalation`, and `Run` multiplayer game types
 * Multiplayer level auto-downloader (using API at https://autodl.factionfiles.com)
 * Fix for infamous submarine explosion bug (and other FPS-related issues)
-* Checkpoint autosaves (at the start of each level)
+* Checkpoint autosaves at the start of each level
 * Fully integrated in-game achievements system
 * Optional account linking with `FactionFiles.com` to support achievement tracking and in-game level rating
 * Access to `Install with Alpine Faction` on `FactionFiles.com` to streamline custom level and mod installation
@@ -64,8 +66,8 @@ Multiplayer:
 * Many server fixes, performance improvements, and customizable features
 * `rf://` protocol handler for joining servers
 
-Level/mod development:
-* 30+ new event scripting objects for crafting advanced logic systems in maps
+Community development:
+* 40+ new event scripting objects for crafting advanced logic systems in maps
 * Support for dynamic lights in maps
 * Support for using dynamic lights, particle emitters, and push regions with movers
 * Enhanced and more immersive skyboxes

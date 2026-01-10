@@ -94,8 +94,10 @@ static rf::ui::Checkbox ao_bighud_cbox;
 static rf::ui::Label ao_bighud_label;
 static rf::ui::Checkbox ao_ctfwh_cbox;
 static rf::ui::Label ao_ctfwh_label;
-static rf::ui::Checkbox ao_overdrawwh_cbox;
-static rf::ui::Label ao_overdrawwh_label;
+static rf::ui::Checkbox ao_flag_overdrawwh_cbox;
+static rf::ui::Label ao_flag_overdrawwh_label;
+static rf::ui::Checkbox ao_hill_overdrawwh_cbox;
+static rf::ui::Label ao_hill_overdrawwh_label;
 static rf::ui::Checkbox ao_sbanim_cbox;
 static rf::ui::Label ao_sbanim_label;
 static rf::ui::Checkbox ao_teamlabels_cbox;
@@ -104,6 +106,8 @@ static rf::ui::Checkbox ao_minimaltimer_cbox;
 static rf::ui::Label ao_minimaltimer_label;
 static rf::ui::Checkbox ao_targetnames_cbox;
 static rf::ui::Label ao_targetnames_label;
+static rf::ui::Checkbox ao_always_show_spectators_cbox{};
+static rf::ui::Label ao_always_show_spectators_label{};
 static rf::ui::Checkbox ao_staticscope_cbox;
 static rf::ui::Label ao_staticscope_label;
 static rf::ui::Checkbox ao_hitsounds_cbox;
@@ -126,6 +130,8 @@ static rf::ui::Checkbox ao_showfps_cbox;
 static rf::ui::Label ao_showfps_label;
 static rf::ui::Checkbox ao_showping_cbox;
 static rf::ui::Label ao_showping_label;
+static rf::ui::Checkbox ao_locpings_cbox;
+static rf::ui::Label ao_locpings_label;
 static rf::ui::Checkbox ao_redflash_cbox;
 static rf::ui::Label ao_redflash_label;
 static rf::ui::Checkbox ao_deathbars_cbox;
@@ -166,6 +172,8 @@ static rf::ui::Checkbox ao_unclamplights_cbox;
 static rf::ui::Label ao_unclamplights_label;
 static rf::ui::Checkbox ao_bombrng_cbox;
 static rf::ui::Label ao_bombrng_label;
+static rf::ui::Checkbox ao_exposuredamage_cbox;
+static rf::ui::Label ao_exposuredamage_label;
 static rf::ui::Checkbox ao_painsounds_cbox;
 static rf::ui::Label ao_painsounds_label;
 
@@ -273,8 +281,7 @@ void __fastcall UiLabel_create(rf::ui::Label& this_, int, rf::ui::Gadget *parent
     this_.parent = parent;
     this_.x = x;
     this_.y = y;
-    int text_w, text_h;
-    rf::gr::get_string_size(&text_w, &text_h, text, -1, font);
+    const auto [text_w, text_h] = rf::gr::get_string_size(text, font);
     this_.w = static_cast<int>(text_w / rf::ui::scale_x);
     this_.h = static_cast<int>(text_h / rf::ui::scale_y);
     this_.text = strdup(text);
@@ -314,31 +321,27 @@ void __fastcall UiLabel_set_text(rf::ui::Label& this_, int, const char *text, in
 }
 FunHook UiLabel_set_text_hook{0x00456DC0, UiLabel_set_text};
 
-void __fastcall UiLabel_render(rf::ui::Label& this_)
-{
-    if (!this_.enabled) {
-        rf::gr::set_color(48, 48, 48, 128);
+void __fastcall UiLabel_render(rf::ui::Label& this_) {
+    if (this_.text) {
+        if (!this_.enabled) {
+            rf::gr::set_color(48, 48, 48, 128);
+        } else if (this_.highlighted) {
+            rf::gr::set_color(240, 240, 240, 255);
+        } else {
+            rf::gr::set_color(this_.clr);
+        }
+        int x = static_cast<int>(this_.get_absolute_x() * rf::ui::scale_x);
+        int y = static_cast<int>(this_.get_absolute_y() * rf::ui::scale_y);
+        const auto [text_w, text_h] = rf::gr::get_string_size(this_.text, this_.font);
+        if (this_.align == rf::gr::ALIGN_CENTER) {
+            x += static_cast<int>(this_.w * rf::ui::scale_x / 2);
+        } else if (this_.align == rf::gr::ALIGN_RIGHT) {
+            x += static_cast<int>(this_.w * rf::ui::scale_x);
+        } else {
+            x += static_cast<int>(1 * rf::ui::scale_x);
+        }
+        rf::gr::string_aligned(this_.align, x, y, this_.text, this_.font);
     }
-    else if (this_.highlighted) {
-        rf::gr::set_color(240, 240, 240, 255);
-    }
-    else {
-        rf::gr::set_color(this_.clr);
-    }
-    int x = static_cast<int>(this_.get_absolute_x() * rf::ui::scale_x);
-    int y = static_cast<int>(this_.get_absolute_y() * rf::ui::scale_y);
-    int text_w, text_h;
-    rf::gr::get_string_size(&text_w, &text_h, this_.text, -1, this_.font);
-    if (this_.align == rf::gr::ALIGN_CENTER) {
-        x += static_cast<int>(this_.w * rf::ui::scale_x / 2);
-    }
-    else if (this_.align == rf::gr::ALIGN_RIGHT) {
-        x += static_cast<int>(this_.w * rf::ui::scale_x);
-    }
-    else {
-        x += static_cast<int>(1 * rf::ui::scale_x);
-    }
-    rf::gr::string_aligned(this_.align, x, y, this_.text, this_.font);
 
     debug_ui_layout(this_);
 }
@@ -378,8 +381,7 @@ void __fastcall UiInputBox_render(rf::ui::InputBox& this_, void*)
     if (this_.enabled && this_.highlighted) {
         rf::ui::update_input_box_cursor();
         if (rf::ui::input_box_cursor_visible) {
-            int text_w, text_h;
-            rf::gr::get_string_size(&text_w, &text_h, this_.text, -1, this_.font);
+            const auto [text_w, text_h] = rf::gr::get_string_size(this_.text, this_.font);
             rf::gr::string(text_offset_x + text_w, 0, "_", this_.font);
         }
     }
@@ -562,7 +564,6 @@ void ao_fov_cbox_on_click_callback() {
 }
 void ao_fov_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new FOV value (0 for automatic scaling):", "", ao_fov_cbox_on_click_callback, 1);
-    //ao_play_tab_snd();
 }
 
 // fpgun fov
@@ -580,7 +581,6 @@ void ao_fpfov_cbox_on_click_callback() {
 }
 void ao_fpfov_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new FPGun FOV modifier value:", "", ao_fpfov_cbox_on_click_callback, 1);
-    //ao_play_tab_snd();
 }
 
 // ms
@@ -598,7 +598,6 @@ void ao_ms_cbox_on_click_callback() {
 }
 void ao_ms_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new mouse sensitivity value:", "", ao_ms_cbox_on_click_callback, 1);
-    //ao_play_tab_snd();
 }
 
 // scanner ms
@@ -608,7 +607,8 @@ void ao_scannersens_cbox_on_click_callback() {
     std::string str = str_buffer;
     try {
         float new_scale = std::stof(str);
-        g_alpine_game_config.scanner_sensitivity_modifier = new_scale;
+        g_alpine_game_config.set_scanner_sens_mod(new_scale);
+        update_scanner_sensitivity();
     }
     catch (const std::exception& e) {
         xlog::info("Invalid modifier input: '{}', reason: {}", str, e.what());
@@ -616,7 +616,6 @@ void ao_scannersens_cbox_on_click_callback() {
 }
 void ao_scannersens_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new scanner sensitivity modifier value:", "", ao_scannersens_cbox_on_click_callback, 1);
-    //ao_play_tab_snd();
 }
 
 // scope ms
@@ -626,7 +625,8 @@ void ao_scopesens_cbox_on_click_callback() {
     std::string str = str_buffer;
     try {
         float new_scale = std::stof(str);
-        g_alpine_game_config.scope_sensitivity_modifier = new_scale;
+        g_alpine_game_config.set_scope_sens_mod(new_scale);
+        update_scope_sensitivity();
     }
     catch (const std::exception& e) {
         xlog::info("Invalid modifier input: '{}', reason: {}", str, e.what());
@@ -634,7 +634,6 @@ void ao_scopesens_cbox_on_click_callback() {
 }
 void ao_scopesens_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new scope sensitivity modifier value:", "", ao_scopesens_cbox_on_click_callback, 1);
-    //ao_play_tab_snd();
 }
 
 // reticle scale
@@ -652,7 +651,6 @@ void ao_retscale_cbox_on_click_callback() {
 }
 void ao_retscale_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new reticle scale value:", "", ao_retscale_cbox_on_click_callback, 1);
-    //ao_play_tab_snd();
 }
 
 // max fps
@@ -672,7 +670,6 @@ void ao_maxfps_cbox_on_click_callback()
 void ao_maxfps_cbox_on_click(int x, int y)
 {
     rf::ui::popup_message("Enter new maximum FPS value:", "", ao_maxfps_cbox_on_click_callback, 1);
-    // ao_play_tab_snd();
 }
 
 // lod dist scale
@@ -692,7 +689,6 @@ void ao_loddist_cbox_on_click_callback()
 void ao_loddist_cbox_on_click(int x, int y)
 {
     rf::ui::popup_message("Enter new LOD distance scale value:", "", ao_loddist_cbox_on_click_callback, 1);
-    // ao_play_tab_snd();
 }
 
 // simulation distance
@@ -713,7 +709,6 @@ void ao_simdist_cbox_on_click_callback()
 void ao_simdist_cbox_on_click(int x, int y)
 {
     rf::ui::popup_message("Enter new simulation distance value:", "", ao_simdist_cbox_on_click_callback, 1);
-    // ao_play_tab_snd();
 }
 
 void ao_mpcharlod_cbox_on_click(int x, int y) {
@@ -750,6 +745,12 @@ void ao_bombrng_cbox_on_click(int x, int y) {
     g_alpine_game_config.static_bomb_code = !g_alpine_game_config.static_bomb_code;
     ao_bombrng_cbox.checked = !g_alpine_game_config.static_bomb_code;
     ao_play_button_snd(!g_alpine_game_config.static_bomb_code);
+}
+
+void ao_exposuredamage_cbox_on_click(int x, int y) {
+    g_alpine_game_config.apply_exposure_damage = !g_alpine_game_config.apply_exposure_damage;
+    ao_exposuredamage_cbox.checked = g_alpine_game_config.apply_exposure_damage;
+    ao_play_button_snd(g_alpine_game_config.apply_exposure_damage);
 }
 
 void ao_painsounds_cbox_on_click(int x, int y) {
@@ -820,6 +821,12 @@ void ao_showping_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.ping_display);
 }
 
+void ao_locpings_cbox_on_click(int x, int y) {
+    g_alpine_game_config.show_location_pings = !g_alpine_game_config.show_location_pings;
+    ao_locpings_cbox.checked = g_alpine_game_config.show_location_pings;
+    ao_play_button_snd(g_alpine_game_config.show_location_pings);
+}
+
 void ao_redflash_cbox_on_click(int x, int y) {
     g_alpine_game_config.damage_screen_flash = !g_alpine_game_config.damage_screen_flash;
     ao_redflash_cbox.checked = g_alpine_game_config.damage_screen_flash;
@@ -838,10 +845,16 @@ void ao_ctfwh_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.world_hud_ctf_icons);
 }
 
-void ao_overdrawwh_cbox_on_click(int x, int y) {
-    g_alpine_game_config.world_hud_overdraw = !g_alpine_game_config.world_hud_overdraw;
-    ao_overdrawwh_cbox.checked = g_alpine_game_config.world_hud_overdraw;
-    ao_play_button_snd(g_alpine_game_config.world_hud_overdraw);
+void ao_flag_overdrawwh_cbox_on_click(int x, int y) {
+    g_alpine_game_config.world_hud_flag_overdraw = !g_alpine_game_config.world_hud_flag_overdraw;
+    ao_flag_overdrawwh_cbox.checked = g_alpine_game_config.world_hud_flag_overdraw;
+    ao_play_button_snd(g_alpine_game_config.world_hud_flag_overdraw);
+}
+
+void ao_hill_overdrawwh_cbox_on_click(int x, int y) {
+    g_alpine_game_config.world_hud_hill_overdraw = !g_alpine_game_config.world_hud_hill_overdraw;
+    ao_hill_overdrawwh_cbox.checked = g_alpine_game_config.world_hud_hill_overdraw;
+    ao_play_button_snd(g_alpine_game_config.world_hud_hill_overdraw);
 }
 
 void ao_sbanim_cbox_on_click(int x, int y) {
@@ -867,6 +880,12 @@ void ao_targetnames_cbox_on_click(int x, int y) {
     g_alpine_game_config.display_target_player_names = !g_alpine_game_config.display_target_player_names;
     ao_targetnames_cbox.checked = g_alpine_game_config.display_target_player_names;
     ao_play_button_snd(g_alpine_game_config.display_target_player_names);
+}
+
+void ao_always_show_spectators_cbox_on_click(const int x, const int y) {
+    g_alpine_game_config.always_show_spectators = !g_alpine_game_config.always_show_spectators;
+    ao_always_show_spectators_cbox.checked = g_alpine_game_config.always_show_spectators;
+    ao_play_button_snd(g_alpine_game_config.always_show_spectators);
 }
 
 void ao_staticscope_cbox_on_click(int x, int y) {
@@ -1144,21 +1163,27 @@ void alpine_options_panel_init() {
         &ao_redflash_cbox, &ao_redflash_label, &alpine_options_panel1, ao_redflash_cbox_on_click, g_alpine_game_config.damage_screen_flash, 112, 174, "Damage flash");
     alpine_options_panel_checkbox_init(
         &ao_deathbars_cbox, &ao_deathbars_label, &alpine_options_panel1, ao_deathbars_cbox_on_click, g_alpine_game_config.death_bars, 112, 204, "Death bars");
+    alpine_options_panel_checkbox_init(
+        &ao_locpings_cbox, &ao_locpings_label, &alpine_options_panel1, ao_locpings_cbox_on_click, g_alpine_game_config.show_location_pings, 112, 234, "Location pings");
     alpine_options_panel_inputbox_init(
-        &ao_retscale_cbox, &ao_retscale_label, &ao_retscale_butlabel, &alpine_options_panel1, ao_retscale_cbox_on_click, 112, 234, "Reticle scale");
+        &ao_retscale_cbox, &ao_retscale_label, &ao_retscale_butlabel, &alpine_options_panel1, ao_retscale_cbox_on_click, 112, 262, "Reticle scale");
 
     alpine_options_panel_checkbox_init(
         &ao_ctfwh_cbox, &ao_ctfwh_label, &alpine_options_panel1, ao_ctfwh_cbox_on_click, g_alpine_game_config.world_hud_ctf_icons, 280, 54, "CTF icons");
     alpine_options_panel_checkbox_init(
-        &ao_overdrawwh_cbox, &ao_overdrawwh_label, &alpine_options_panel1, ao_overdrawwh_cbox_on_click, g_alpine_game_config.world_hud_overdraw, 280, 84, "Icon overdraw");
+        &ao_flag_overdrawwh_cbox, &ao_flag_overdrawwh_label, &alpine_options_panel1, ao_flag_overdrawwh_cbox_on_click, g_alpine_game_config.world_hud_flag_overdraw, 280, 84, "Overdraw flags");
     alpine_options_panel_checkbox_init(
-        &ao_sbanim_cbox, &ao_sbanim_label, &alpine_options_panel1, ao_sbanim_cbox_on_click, g_alpine_game_config.scoreboard_anim, 280, 114, "Scoreboard anim");
+        &ao_hill_overdrawwh_cbox, &ao_hill_overdrawwh_label, &alpine_options_panel1, ao_hill_overdrawwh_cbox_on_click, g_alpine_game_config.world_hud_hill_overdraw, 280, 114, "Overdraw CPs");
     alpine_options_panel_checkbox_init(
-        &ao_teamlabels_cbox, &ao_teamlabels_label, &alpine_options_panel1, ao_teamlabels_cbox_on_click, g_alpine_game_config.world_hud_team_player_labels, 280, 144, "Label teammates");
+        &ao_sbanim_cbox, &ao_sbanim_label, &alpine_options_panel1, ao_sbanim_cbox_on_click, g_alpine_game_config.scoreboard_anim, 280, 144, "Scoreboard anim");
     alpine_options_panel_checkbox_init(
-        &ao_minimaltimer_cbox, &ao_minimaltimer_label, &alpine_options_panel1, ao_minimaltimer_cbox_on_click, !g_alpine_game_config.verbose_time_left_display, 280, 174, "Minimal timer");
+        &ao_teamlabels_cbox, &ao_teamlabels_label, &alpine_options_panel1, ao_teamlabels_cbox_on_click, g_alpine_game_config.world_hud_team_player_labels, 280, 174, "Label teammates");
     alpine_options_panel_checkbox_init(
-        &ao_targetnames_cbox, &ao_targetnames_label, &alpine_options_panel1, ao_targetnames_cbox_on_click, g_alpine_game_config.display_target_player_names, 280, 204, "Target names");
+        &ao_minimaltimer_cbox, &ao_minimaltimer_label, &alpine_options_panel1, ao_minimaltimer_cbox_on_click, !g_alpine_game_config.verbose_time_left_display, 280, 204, "Minimal timer");
+    alpine_options_panel_checkbox_init(
+        &ao_targetnames_cbox, &ao_targetnames_label, &alpine_options_panel1, ao_targetnames_cbox_on_click, g_alpine_game_config.display_target_player_names, 280, 234, "Target names");
+    alpine_options_panel_checkbox_init(
+        &ao_always_show_spectators_cbox, &ao_always_show_spectators_label, &alpine_options_panel1, ao_always_show_spectators_cbox_on_click, g_alpine_game_config.always_show_spectators, 280, 264, "Show spectators");
 
     // panel 2
     alpine_options_panel_checkbox_init(
@@ -1203,6 +1228,8 @@ void alpine_options_panel_init() {
         &ao_gaussian_cbox, &ao_gaussian_label, &alpine_options_panel3, ao_gaussian_cbox_on_click, g_alpine_game_config.gaussian_spread, 280, 114, "Gaussian spread");
     alpine_options_panel_checkbox_init(
         &ao_bombrng_cbox, &ao_bombrng_label, &alpine_options_panel3, ao_bombrng_cbox_on_click, !g_alpine_game_config.static_bomb_code, 280, 144, "Randomize bomb");
+    alpine_options_panel_checkbox_init(
+        &ao_exposuredamage_cbox, &ao_exposuredamage_label, &alpine_options_panel3, ao_exposuredamage_cbox_on_click, g_alpine_game_config.apply_exposure_damage, 280, 174, "Exposure damage");
 
     // fflink text (panel3)
     std::string fflink_username = g_game_config.fflink_username.value();
@@ -1314,7 +1341,7 @@ void alpine_options_panel_do_frame(int x)
     ao_scopesens_butlabel.text = ao_scopesens_butlabel_text;
 
     // ret scale
-    snprintf(ao_retscale_butlabel_text, sizeof(ao_retscale_butlabel_text), "%6.2f", g_alpine_game_config.reticle_scale);
+    snprintf(ao_retscale_butlabel_text, sizeof(ao_retscale_butlabel_text), "%6.2f", g_alpine_game_config.get_reticle_scale());
     ao_retscale_butlabel.text = ao_retscale_butlabel_text;
 
     // max fps
@@ -1346,7 +1373,7 @@ static void options_alpine_on_click() {
     }
 
     rf::ui::options_menu_tab_move_anim_speed = -rf::ui::menu_move_anim_speed;
-    rf::ui::options_current_panel_id = alpine_options_panel_id;
+    rf::ui::options_incoming_panel = alpine_options_panel_id;
     rf::ui::options_set_panel_open(); // Transition to new panel
 }
 
@@ -1676,9 +1703,16 @@ void ui_apply_patch()
     UiInputBox_process_key_hook.install();
 }
 
-void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num)
-{
-    rf::gr::get_string_size(w, h, s, s_len, font_num);
+void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num) {
+    std::tie(*w, *h) = rf::gr::get_string_size(
+        std::string_view{
+            s,
+            s_len == -1
+                ? std::strlen(s)
+                : static_cast<size_t>(s_len)
+        },
+        font_num
+    );
 #if SHARP_UI_TEXT
     *w = static_cast<int>(*w / rf::ui::scale_x);
     *h = static_cast<int>(*h / rf::ui::scale_y);

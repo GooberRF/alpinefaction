@@ -4,8 +4,10 @@
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
 #include "hud.h"
-#include "multi_scoreboard.h"
 #include "hud_internal.h"
+#include "multi_scoreboard.h"
+#include "multi_spectate.h"
+#include "remote_server_cfg_ui.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 #include "../os/console.h"
@@ -17,7 +19,6 @@
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "../rf/gameseq.h"
-#include "multi_spectate.h"
 
 int g_target_player_name_font = -1;
 
@@ -281,13 +282,12 @@ void hud_rect_border(int x, int y, int w, int h, int border, rf::gr::Mode state)
 std::string hud_fit_string(std::string_view str, int max_w, int* str_w_out, int font_id)
 {
     std::string result{str};
-    int str_w, str_h;
     bool has_ellipsis = false;
-    rf::gr::get_string_size(&str_w, &str_h, result.c_str(), -1, font_id);
+    auto [str_w, str_h] = rf::gr::get_string_size(result, font_id);
     while (str_w > max_w) {
         result = result.substr(0, result.size() - (has_ellipsis ? 4 : 1)) + "...";
         has_ellipsis = true;
-        rf::gr::get_string_size(&str_w, &str_h, result.c_str(), -1, font_id);
+        std::tie(str_w, str_h) = rf::gr::get_string_size(result, font_id);
     }
     if (str_w_out) {
         *str_w_out = str_w;
@@ -406,7 +406,7 @@ void hud_render_00437BC0()
     bool limbo = rf::gameseq_get_state() == rf::GS_MULTI_LIMBO;
     bool show_scoreboard = scoreboard_control_pressed || (!multi_spectate_is_spectating() && is_player_dead) || limbo;
 
-    scoreboard_maybe_render(show_scoreboard);
+    scoreboard_maybe_render(show_scoreboard && !g_remote_server_cfg_popup.is_active());
 }
 
 void hud_apply_patches()
@@ -447,4 +447,6 @@ void hud_apply_patches()
     multi_hud_apply_patches();
     message_log_apply_patch();
     hud_world_apply_patch();
+    hud_colors_apply_patch();
+    hud_scale_apply_patch();
 }

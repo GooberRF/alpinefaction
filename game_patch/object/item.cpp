@@ -24,7 +24,7 @@ int item_lookup_type(const char* name)
     auto name_view = std::string_view(name);
     auto it =
         std::find_if(std::begin(rf::item_info), std::begin(rf::item_info) + rf::num_item_types, [name_view](const rf::ItemInfo& item) {
-            return string_equals_ignore_case(name_view, item.cls_name);
+            return string_iequals(name_view, item.cls_name);
         });
 
     return (it != std::begin(rf::item_info) + rf::num_item_types)
@@ -98,42 +98,46 @@ CodeInjection game_level_init_pre_patch{
 };
 
 CodeInjection item_pickup_patch {
-    0x004597BA, [](auto& regs) {
+    0x004597BA,
+    [](auto& regs) {
+        if (!rf::is_multi) {
+            bool picked_up = regs.eax != -1;
 
-        bool picked_up = regs.eax != -1;
+            if (picked_up)
+            {
+                rf::Item* item = regs.esi;
+                rf::Entity* entity = regs.edi;
+                if (item && entity && entity == rf::local_player_entity) {
+                    //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
+                    if (is_achievement_system_initialized()) {
+                        achievement_check_item_picked_up(item);
+                    }
 
-        if (picked_up && !rf::is_multi)
-        {
-            rf::Item* item = regs.esi;
-            rf::Entity* entity = regs.edi;
-            if (item && entity && entity == rf::local_player_entity) {
-                //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
-                if (is_achievement_system_initialized()) {
-                    achievement_check_item_picked_up(item);
+                    rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
                 }
-
-                rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
             }
         }
     }
 };
 
 CodeInjection item_pickup_patch2 {
-    0x004597D8, [](auto& regs) {
+    0x004597D8,
+    [](auto& regs) {
+        if (!rf::is_multi) {
+            bool picked_up = regs.eax != -1;
 
-        bool picked_up = regs.eax != -1;
+            if (picked_up)
+            {
+                rf::Item* item = regs.esi;
+                rf::Entity* entity = regs.edi;
+                if (item && entity && entity == rf::local_player_entity) {
+                    //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
+                    if (is_achievement_system_initialized()) {
+                        achievement_check_item_picked_up(item);
+                    }
 
-        if (picked_up && !rf::is_multi)
-        {
-            rf::Item* item = regs.esi;
-            rf::Entity* entity = regs.edi;
-            if (item && entity && entity == rf::local_player_entity) {
-                //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
-                if (is_achievement_system_initialized()) {
-                    achievement_check_item_picked_up(item);
+                    rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
                 }
-
-                rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
             }
         }
     }

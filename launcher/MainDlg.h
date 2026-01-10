@@ -19,6 +19,7 @@ protected:
     BOOL OnCommand(WPARAM wparam, LPARAM lparam) override;
     LRESULT OnNotify(WPARAM wparam, LPARAM lparam) override;
     LRESULT OnShowFFLinkReminder(WPARAM wparam, LPARAM lparam);
+    LRESULT OnShowWhatsNew(WPARAM wparam, LPARAM lparam);
     INT_PTR DialogProc(UINT msg, WPARAM wparam, LPARAM lparam) override;
 
 private:
@@ -34,6 +35,9 @@ private:
     void AfterLaunch();
     CEdit m_news_box;
     void FetchNews();
+    bool ShouldShowWhatsNew();
+    std::string FetchWhatsNewContent();
+    void ClearWhatsNewFlag();
     CEdit m_about_link;
     bool m_about_link_hover = false;
 

@@ -29,8 +29,7 @@ namespace df::gr::d3d11
         }
         auto [start_index, num_index] = index_ring_buffer_.submit();
 
-        xlog::trace("Drawing dynamic geometry num_vertex {} num_index {} texture {}",
-            num_vertex, num_index, rf::bm::get_filename(state_.textures[0]));
+        //xlog::trace("Drawing dynamic geometry num_vertex {} num_index {} texture {}", num_vertex, num_index, rf::bm::get_filename(state_.textures[0]));
 
         render_context_.set_vertex_buffer(vertex_ring_buffer_.get_buffer(), sizeof(GpuTransformedVertex));
         render_context_.set_index_buffer(index_ring_buffer_.get_buffer());
@@ -200,7 +199,7 @@ namespace df::gr::d3d11
 
     void DynamicGeometryRenderer::bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, gr::Mode mode)
     {
-        xlog::trace("Drawing bitmap");
+        //xlog::trace("Drawing bitmap");
         int bm_w, bm_h;
         bm::get_dimensions(bm_handle, &bm_w, &bm_h);
 

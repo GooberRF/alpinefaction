@@ -1,6 +1,8 @@
 #pragma once
 
+#include <cstddef>
 #include <unordered_map>
+#include <vector>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include "gr_d3d11_shader.h"
@@ -17,6 +19,9 @@ namespace df::gr::d3d11
 {
     class StateManager;
     class RenderContext;
+
+    void on_character_fullbright_state_changed();
+    void on_static_vertex_color_state_changed(rf::VifLodMesh* changed_lod_mesh = nullptr);
 
     class BaseMeshRenderCache
     {
@@ -36,6 +41,13 @@ namespace df::gr::d3d11
             bool double_sided = false;
         };
 
+        struct Mesh
+        {
+            std::vector<Batch> batches;
+            std::size_t vertex_offset = 0;
+            std::size_t vertex_count = 0;
+        };
+
         virtual ~BaseMeshRenderCache() {}
         BaseMeshRenderCache(rf::VifLodMesh* lod_mesh) :
             lod_mesh_(lod_mesh)
@@ -46,14 +58,20 @@ namespace df::gr::d3d11
             return meshes_[lod_level].batches;
         }
 
-    protected:
-        struct Mesh
+        const Mesh& get_mesh(int lod_level) const
         {
-            std::vector<Batch> batches;
+            return meshes_[lod_level];
         };
 
+        std::size_t base_vertex_offset() const
+        {
+            return base_vertex_offset_;
+        }
+
+    protected:
         rf::VifLodMesh* lod_mesh_;
         std::vector<Mesh> meshes_;
+        std::size_t base_vertex_offset_ = 0;
     };
 
 
@@ -100,9 +118,13 @@ namespace df::gr::d3d11
         void page_in_v3d_mesh(rf::VifLodMesh* lod_mesh);
         void page_in_character_mesh(rf::VifLodMesh* lod_mesh);
         void flush_caches();
+        void reset_static_vertex_color_tracking();
+
+        bool has_cache(const rf::VifLodMesh* lod_mesh) const;
+        void handle_static_vertex_color_state_change(rf::VifLodMesh* changed_lod_mesh, uint64_t generation);
 
     private:
-        void draw_cached_mesh(rf::VifLodMesh *lod_mesh, const BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index);
+        void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index);
 
         ComPtr<ID3D11Device> device_;
         RenderContext& render_context_;
@@ -112,5 +134,6 @@ namespace df::gr::d3d11
         ComPtr<ID3D11PixelShader> pixel_shader_;
         BufferWrapper v3d_vb_;
         BufferWrapper v3d_ib_;
+        uint64_t last_static_vertex_color_generation_ = 0;
     };
 }

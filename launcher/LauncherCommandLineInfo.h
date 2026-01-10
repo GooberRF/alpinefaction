@@ -34,10 +34,10 @@ public:
                 ParseAFLink(std::string_view(narrowArg));
             }
             else {
-                if (arg == "-level") {
+                if (arg == "-level" || arg == "-levelm") {
                     has_level_arg = true;
                 }
-                else if (arg == "-dedicated") {
+                else if (arg == "-dedicated" || arg == "-ads") {
                     has_dedicated_arg = true;
                 }
                 m_pass_through_args.emplace_back(arg);

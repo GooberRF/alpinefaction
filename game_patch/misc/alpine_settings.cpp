@@ -41,6 +41,132 @@ std::optional<std::string> afs_cmd_line_filename;
 
 AlpineGameSettings g_alpine_game_config;
 
+bool is_d3d11() {
+    return g_game_config.renderer == GameConfig::Renderer::d3d11;
+}
+
+std::optional<uint32_t> parse_hex_color_string(const std::string& value)
+{
+    auto value_view = std::string_view{value};
+
+    constexpr auto is_separator = [](unsigned char c) {
+        return c == ',' || std::isspace(c) != 0;
+    };
+
+    const bool has_decimal_separator = std::ranges::any_of(value_view, is_separator);
+
+    if (has_decimal_separator) {
+        std::array<uint32_t, 4> rgba{};
+        std::size_t component_count = 0;
+        std::size_t position = 0;
+
+        while (position < value_view.size()) {
+            while (position < value_view.size() && is_separator(static_cast<unsigned char>(value_view[position]))) {
+                ++position;
+            }
+
+            if (position == value_view.size()) {
+                break;
+            }
+
+            const auto start = position;
+            while (position < value_view.size() && !is_separator(static_cast<unsigned char>(value_view[position]))) {
+                ++position;
+            }
+
+            const auto component_view = value_view.substr(start, position - start);
+            int parsed_value = 0;
+            const auto result = std::from_chars(component_view.data(), component_view.data() + component_view.size(), parsed_value, 10);
+
+            if (result.ec != std::errc{} || parsed_value < 0 || parsed_value > 255) {
+                return std::nullopt;
+            }
+
+            if (component_count >= rgba.size()) {
+                return std::nullopt;
+            }
+
+            rgba[component_count++] = static_cast<uint32_t>(parsed_value);
+        }
+
+        if (component_count != 3 && component_count != 4) {
+            return std::nullopt;
+        }
+
+        if (component_count == 3) {
+            rgba[3] = 0xFF;
+        }
+
+        return (rgba[0] << 24) | (rgba[1] << 16) | (rgba[2] << 8) | rgba[3];
+    }
+
+    std::string hex_buffer;
+    hex_buffer.reserve(value_view.size());
+    std::ranges::copy_if(value_view, std::back_inserter(hex_buffer), [](unsigned char c) { return std::isspace(c) == 0; });
+
+    auto hex_view = std::string_view{hex_buffer};
+    if (hex_view.starts_with("0x") || hex_view.starts_with("0X")) {
+        hex_view.remove_prefix(2);
+    }
+
+    if (hex_view.size() != 6 && hex_view.size() != 8) {
+        return std::nullopt;
+    }
+
+    if (!std::ranges::all_of(hex_view, [](unsigned char c) { return std::isxdigit(c) != 0; })) {
+        return std::nullopt;
+    }
+
+    // Set color, assuming fully opaque if alpha value is not specified
+    uint32_t color = 0;
+    const auto result = std::from_chars(hex_view.data(), hex_view.data() + hex_view.size(), color, 16);
+    if (result.ec != std::errc{}) {
+        return std::nullopt;
+    }
+
+    if (hex_view.size() == 6) {
+        color = (color << 8) | 0xFF;
+    }
+
+    return color;
+}
+
+std::string format_hex_color_string(uint32_t color)
+{
+    const auto alpha = static_cast<uint8_t>(color & 0xFF);
+    const bool include_alpha = (alpha != 0xFF);
+    const uint32_t encoded_value = include_alpha ? color : (color >> 8);
+
+    if (include_alpha) {
+        return std::format("{:08X}", encoded_value);
+    }
+    else {
+        return std::format("{:06X}", encoded_value);
+    }
+}
+
+// parse colors to 0-255 ints
+std::tuple<int, int, int, int> extract_color_components(uint32_t color)
+{
+    return std::make_tuple(
+        (color >> 24) & 0xFF, // Red
+        (color >> 16) & 0xFF, // Green
+        (color >> 8) & 0xFF,  // Blue
+        color & 0xFF          // Alpha
+    );
+}
+
+// parse colors to 0.0-1.0 floats
+std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color)
+{
+    return std::make_tuple(
+        ((color >> 24) & 0xFF) / 255.0f, // Red   (0-1)
+        ((color >> 16) & 0xFF) / 255.0f, // Green (0-1)
+        ((color >> 8)  & 0xFF) / 255.0f, // Blue  (0-1)
+        (color & 0xFF) / 255.0f          // Alpha (0-1)
+    );
+}
+
 static rf::CmdLineParam& get_afs_cmd_line_param()
 {
     static rf::CmdLineParam afs_param{"-afs", "", true};
@@ -159,6 +285,14 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("AFSFileVersion");
     }
 
+    // Load deprecated settings
+    // handle WorldHUDOverdraw setting (deprecated in AFS v9), parse into world_hud_flag_overdraw
+    if (settings.count("WorldHUDOverdraw") && loaded_afs_version < 9) {
+        g_alpine_game_config.world_hud_flag_overdraw = std::stoi(settings["WorldHUDOverdraw"]);
+        processed_keys.insert("WorldHUDOverdraw");
+        xlog::info("Successfully parsed legacy setting 'WorldHUDOverdraw' from loaded pre-v9 AFS file.");
+    }
+
     // Load player settings
     if (settings.count("PlayerName")) {
         std::string player_name = settings["PlayerName"];
@@ -177,6 +311,18 @@ bool alpine_player_settings_load(rf::Player* player)
     }
     else {
         rf::game_set_gore_level(2); // if gore level not in ini file, default to 2
+    }
+    if (settings.count("GibChunkCount")) {
+        g_alpine_game_config.set_gib_chunk_count(std::stoi(settings["GibChunkCount"]));
+        processed_keys.insert("GibChunkCount");
+    }
+    if (settings.count("GibVelocityScale")) {
+        g_alpine_game_config.set_gib_velocity_scale(std::stof(settings["GibVelocityScale"]));
+        processed_keys.insert("GibVelocityScale");
+    }
+    if (settings.count("GibLifetimeMs")) {
+        g_alpine_game_config.set_gib_lifetime_ms(std::stoi(settings["GibLifetimeMs"]));
+        processed_keys.insert("GibLifetimeMs");
     }
 
     if (settings.count("ShowFPGun")) {
@@ -199,6 +345,18 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.damage_screen_flash = std::stoi(settings["DamageScreenFlash"]);
         processed_keys.insert("DamageScreenFlash");
     }
+    if (settings.count("ExplosionFlashLightsWeapons")) {
+        g_alpine_game_config.explosion_weapon_flash_lights = std::stoi(settings["ExplosionFlashLightsWeapons"]);
+        processed_keys.insert("ExplosionFlashLightsWeapons");
+    }
+    if (settings.count("ExplosionFlashLightsEnv")) {
+        g_alpine_game_config.explosion_env_flash_lights = std::stoi(settings["ExplosionFlashLightsEnv"]);
+        processed_keys.insert("ExplosionFlashLightsEnv");
+    }
+    if (settings.count("BurningEntityLights")) {
+        g_alpine_game_config.burning_entity_lights = std::stoi(settings["BurningEntityLights"]);
+        processed_keys.insert("BurningEntityLights");
+    }
     if (settings.count("SpectateMinimalUI")) {
         g_alpine_game_config.spectate_mode_minimal_ui = std::stoi(settings["SpectateMinimalUI"]);
         processed_keys.insert("SpectateMinimalUI");
@@ -206,6 +364,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("ShowFPS")) {
         g_alpine_game_config.fps_counter = std::stoi(settings["ShowFPS"]);
         processed_keys.insert("ShowFPS");
+    }
+    if (settings.count("FPSCounterAverageMs")) {
+        g_alpine_game_config.set_fps_counter_average_ms(std::stoi(settings["FPSCounterAverageMs"]));
+        processed_keys.insert("FPSCounterAverageMs");
     }
     if (settings.count("SaveConsoleHistory")) {
         g_alpine_game_config.save_console_history = std::stoi(settings["SaveConsoleHistory"]);
@@ -216,9 +378,21 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.af_branding = std::stoi(settings["AlpineBranding"]);
         processed_keys.insert("AlpineBranding");
     }
+    if (settings.count("SeasonalEffect")) {
+        g_alpine_game_config.seasonal_effect = std::stoi(settings["SeasonalEffect"]);
+        processed_keys.insert("SeasonalEffect");
+    }
     if (settings.count("RealArmorValues")) {
         g_alpine_game_config.real_armor_values = std::stoi(settings["RealArmorValues"]);
         processed_keys.insert("RealArmorValues");
+    }
+    if (settings.count("QuickExit")) {
+        g_alpine_game_config.quick_exit = std::stoi(settings["QuickExit"]);
+        processed_keys.insert("QuickExit");
+    }
+    if (settings.count("ColorblindMode")) {
+        g_alpine_game_config.set_colorblind_mode(std::stoi(settings["ColorblindMode"]));
+        processed_keys.insert("ColorblindMode");
     }
     if (settings.count("AutoswitchFireWait")) {
         g_alpine_game_config.suppress_autoswitch_fire_wait = std::stoi(settings["AutoswitchFireWait"]);
@@ -310,11 +484,6 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_fpgun_fov_scale(std::stof(settings["FPGunFOVScale"]));
         processed_keys.insert("FPGunFOVScale");
     }
-    if (settings.count("BigHUD")) {
-        g_alpine_game_config.big_hud = std::stoi(settings["BigHUD"]);
-        set_big_hud(g_alpine_game_config.big_hud);
-        processed_keys.insert("BigHUD");
-    }
     if (settings.count("DisableWeaponShake")) {
         g_alpine_game_config.try_disable_weapon_shake = std::stoi(settings["DisableWeaponShake"]);
         processed_keys.insert("DisableWeaponShake");
@@ -331,10 +500,6 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.try_disable_muzzle_flash_lights = std::stoi(settings["DisableMuzzleFlashLights"]);
         processed_keys.insert("DisableMuzzleFlashLights");
     }
-    if (settings.count("ReticleScale")) {
-        g_alpine_game_config.set_reticle_scale(std::stof(settings["ReticleScale"]));
-        processed_keys.insert("ReticleScale");
-    }
     if (settings.count("ShowGlares")) {
         g_alpine_game_config.show_glares = std::stoi(settings["ShowGlares"]);
         processed_keys.insert("ShowGlares");
@@ -343,6 +508,15 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.mesh_static_lighting = std::stoi(settings["MeshStaticLighting"]);
         recalc_mesh_static_lighting();
         processed_keys.insert("MeshStaticLighting");
+    }
+    if (settings.count("Picmip")) {
+        g_alpine_game_config.set_picmip(std::stoi(settings["Picmip"]));
+        gr_update_texture_filtering();
+        processed_keys.insert("Picmip");
+    }
+    if (settings.count("PrecacheRooms")) {
+        g_alpine_game_config.precache_rooms = std::stoi(settings["PrecacheRooms"]);
+        processed_keys.insert("PrecacheRooms");
     }
     if (settings.count("NearestTextureFiltering")) {
         g_alpine_game_config.nearest_texture_filtering = std::stoi(settings["NearestTextureFiltering"]);
@@ -380,6 +554,177 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("AlwaysClampOfficialLightmaps");
     }
 
+    // Load UI settings
+    if (settings.count("BigHUD")) {
+        g_alpine_game_config.big_hud = std::stoi(settings["BigHUD"]);
+        set_big_hud(g_alpine_game_config.big_hud);
+        processed_keys.insert("BigHUD");
+    }
+    if (settings.count("SniperScopeColor")) {
+        auto color_override = parse_hex_color_string(settings["SniperScopeColor"]);
+        if (color_override) {
+            g_alpine_game_config.sniper_scope_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid sniper scope color override: {}", settings["SniperScopeColor"]);
+        }
+        processed_keys.insert("SniperScopeColor");
+    }
+    if (settings.count("PrecisionScopeColor")) {
+        auto color_override = parse_hex_color_string(settings["PrecisionScopeColor"]);
+        if (color_override) {
+            g_alpine_game_config.precision_scope_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid precision scope color override: {}", settings["PrecisionScopeColor"]);
+        }
+        processed_keys.insert("PrecisionScopeColor");
+    }
+    if (settings.count("RailScopeColor")) {
+        auto color_override = parse_hex_color_string(settings["RailScopeColor"]);
+        if (color_override) {
+            g_alpine_game_config.rail_scope_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid rail scope color override: {}", settings["RailScopeColor"]);
+        }
+        processed_keys.insert("RailScopeColor");
+    }
+    if (settings.count("ArAmmoColor")) {
+        auto color_override = parse_hex_color_string(settings["ArAmmoColor"]);
+        if (color_override) {
+            g_alpine_game_config.ar_ammo_digit_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid AR ammo digit color override: {}", settings["ArAmmoColor"]);
+        }
+        processed_keys.insert("ArAmmoColor");
+    }
+    if (settings.count("DamageNotifyColor")) {
+        auto color_override = parse_hex_color_string(settings["DamageNotifyColor"]);
+        if (color_override) {
+            g_alpine_game_config.damage_notify_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid damage notification color override: {}", settings["DamageNotifyColor"]);
+        }
+        processed_keys.insert("DamageNotifyColor");
+    }
+    if (settings.count("LocationPingColor")) {
+        auto color_override = parse_hex_color_string(settings["LocationPingColor"]);
+        if (color_override) {
+            g_alpine_game_config.location_ping_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid location ping color override: {}", settings["LocationPingColor"]);
+        }
+        processed_keys.insert("LocationPingColor");
+    }
+    if (settings.count("MultiTimerColor")) {
+        auto color_override = parse_hex_color_string(settings["MultiTimerColor"]);
+        if (color_override) {
+            g_alpine_game_config.multi_timer_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid multiplayer timer color override: {}", settings["MultiTimerColor"]);
+        }
+        processed_keys.insert("MultiTimerColor");
+    }
+    if (settings.count("TeammateLabelColor")) {
+        auto color_override = parse_hex_color_string(settings["TeammateLabelColor"]);
+        if (color_override) {
+            g_alpine_game_config.teammate_label_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid teammate label color override: {}", settings["TeammateLabelColor"]);
+        }
+        processed_keys.insert("TeammateLabelColor");
+    }
+    if (settings.count("ReticleColor")) {
+        auto color_override = parse_hex_color_string(settings["ReticleColor"]);
+        if (color_override) {
+            g_alpine_game_config.reticle_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid reticle color override: {}", settings["ReticleColor"]);
+        }
+        processed_keys.insert("ReticleColor");
+    }
+    if (settings.count("ReticleLockedColor")) {
+        auto color_override = parse_hex_color_string(settings["ReticleLockedColor"]);
+        if (color_override) {
+            g_alpine_game_config.reticle_locked_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid reticle color override: {}", settings["ReticleLockedColor"]);
+        }
+        processed_keys.insert("ReticleLockedColor");
+    }
+    if (settings.count("ReticleScale")) {
+        const float scale = std::stof(settings["ReticleScale"]);
+        if (scale == 1.0f) {
+            g_alpine_game_config.clear_reticle_scale();
+        }
+        else {
+            g_alpine_game_config.set_reticle_scale(scale);
+        }
+        processed_keys.insert("ReticleScale");
+    }
+    if (settings.count("DamageNotifyTextScale")) {
+        const float scale = std::stof(settings["DamageNotifyTextScale"]);
+        if (scale == 1.0f) {
+            g_alpine_game_config.clear_world_hud_damage_text_scale();
+        }
+        else {
+            g_alpine_game_config.set_world_hud_damage_text_scale(scale);
+        }
+        processed_keys.insert("DamageNotifyTextScale");
+    }
+    if (settings.count("TeammateLabelTextScale")) {
+        const float scale = std::stof(settings["TeammateLabelTextScale"]);
+        if (scale == 1.0f) {
+            g_alpine_game_config.clear_world_hud_label_text_scale();
+        }
+        else {
+            g_alpine_game_config.set_world_hud_label_text_scale(scale);
+        }
+        processed_keys.insert("TeammateLabelTextScale");
+    }
+    if (settings.count("PingLabelTextScale")) {
+        const float scale = std::stof(settings["PingLabelTextScale"]);
+        if (scale == 1.0f) {
+            g_alpine_game_config.clear_world_hud_ping_label_text_scale();
+        }
+        else {
+            g_alpine_game_config.set_world_hud_ping_label_text_scale(scale);
+        }
+        processed_keys.insert("PingLabelTextScale");
+    }
+    if (settings.count("ColorizeCustomReticles")) {
+        g_alpine_game_config.colorize_custom_reticles = std::stoi(settings["ColorizeCustomReticles"]);
+        processed_keys.insert("ColorizeCustomReticles");
+    }
+    if (settings.count("ScoreboardSplitSpectators")) {
+        g_alpine_game_config.scoreboard_split_spectators = std::stoi(settings["ScoreboardSplitSpectators"]);
+        processed_keys.insert("ScoreboardSplitSpectators");
+    }
+    if (settings.count("ScoreboardSplitBots")) {
+        g_alpine_game_config.scoreboard_split_bots = std::stoi(settings["ScoreboardSplitBots"]);
+        processed_keys.insert("ScoreboardSplitBots");
+    }
+    if (settings.count("ScoreboardSplitBrowsers")) {
+        g_alpine_game_config.scoreboard_split_browsers = std::stoi(settings["ScoreboardSplitBrowsers"]);
+        processed_keys.insert("ScoreboardSplitBrowsers");
+    }
+    if (settings.count("ScoreboardSplitIdle")) {
+        g_alpine_game_config.scoreboard_split_idle = std::stoi(settings["ScoreboardSplitIdle"]);
+        processed_keys.insert("ScoreboardSplitIdle");
+    }
+    if (settings.count("SimpleScoreboardSplit")) {
+        g_alpine_game_config.scoreboard_split_simple = std::stoi(settings["SimpleScoreboardSplit"]);
+        processed_keys.insert("SimpleScoreboardSplit");
+    }
+
     // Load singleplayer settings
     if (settings.count("DifficultyLevel")) {
         rf::game_set_skill_level(static_cast<rf::GameDifficultyLevel>(std::stoi(settings["DifficultyLevel"])));
@@ -405,6 +750,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.static_bomb_code = std::stoi(settings["StaticBombCode"]);
         processed_keys.insert("StaticBombCode");
     }
+    if (settings.count("ExposureDamage")) {
+        g_alpine_game_config.apply_exposure_damage = std::stoi(settings["ExposureDamage"]);
+        processed_keys.insert("ExposureDamage");
+    }
     if (settings.count("UseAlpineSavegameFormat")) {
         g_alpine_game_config.use_new_savegame_format = std::stoi(settings["UseAlpineSavegameFormat"]);
         processed_keys.insert("UseAlpineSavegameFormat");
@@ -419,13 +768,13 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.world_hud_ctf_icons = std::stoi(settings["WorldHUDObjIcons"]);
         processed_keys.insert("WorldHUDObjIcons");
     }
-    if (settings.count("WorldHUDOverdraw")) {
-        g_alpine_game_config.world_hud_overdraw = std::stoi(settings["WorldHUDOverdraw"]);
-        processed_keys.insert("WorldHUDOverdraw");
+    if (settings.count("WorldHUDFlagOverdraw")) {
+        g_alpine_game_config.world_hud_flag_overdraw = std::stoi(settings["WorldHUDFlagOverdraw"]);
+        processed_keys.insert("WorldHUDFlagOverdraw");
     }
-    if (settings.count("WorldHUDBigText")) {
-        g_alpine_game_config.world_hud_big_text = std::stoi(settings["WorldHUDBigText"]);
-        processed_keys.insert("WorldHUDBigText");
+    if (settings.count("WorldHUDHillOverdraw")) {
+        g_alpine_game_config.world_hud_hill_overdraw = std::stoi(settings["WorldHUDHillOverdraw"]);
+        processed_keys.insert("WorldHUDHillOverdraw");
     }
     if (settings.count("WorldHUDDamageNumbers")) {
         g_alpine_game_config.world_hud_damage_numbers = std::stoi(settings["WorldHUDDamageNumbers"]);
@@ -439,13 +788,25 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.world_hud_team_player_labels = std::stoi(settings["WorldHUDTeamLabels"]);
         processed_keys.insert("WorldHUDTeamLabels");
     }
+    if (settings.count("ShowLocationPings")) {
+        g_alpine_game_config.show_location_pings = std::stoi(settings["ShowLocationPings"]);
+        processed_keys.insert("ShowLocationPings");
+    }
     if (settings.count("PlayHitsounds")) {
         g_alpine_game_config.play_hit_sounds = std::stoi(settings["PlayHitsounds"]);
         processed_keys.insert("PlayHitsounds");
     }
+    if (settings.count("HitSoundIntervalMs")) {
+        g_alpine_game_config.set_hit_sound_min_interval_ms(std::stoi(settings["HitSoundIntervalMs"]));
+        processed_keys.insert("HitSoundIntervalMs");
+    }
     if (settings.count("PlayTaunts")) {
         g_alpine_game_config.play_taunt_sounds = std::stoi(settings["PlayTaunts"]);
         processed_keys.insert("PlayTaunts");
+    }
+    if (settings.count("ShowRunTimer")) {
+        g_alpine_game_config.show_run_timer = std::stoi(settings["ShowRunTimer"]);
+        processed_keys.insert("ShowRunTimer");
     }
     if (settings.count("VisualRicochet")) {
         g_alpine_game_config.multi_ricochet = std::stoi(settings["VisualRicochet"]);
@@ -505,6 +866,41 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("DesiredHandicap")) {
         g_alpine_game_config.set_desired_handicap(std::stoi(settings["DesiredHandicap"]));
         processed_keys.insert("DesiredHandicap");
+    }
+    if (settings.count("CPOutlineHeightScale")) {
+        g_alpine_game_config.set_control_point_outline_height_scale(std::stof(settings["CPOutlineHeightScale"]));
+        processed_keys.insert("CPOutlineHeightScale");
+    }
+    if (settings.count("CPOutlineSegments")) {
+        g_alpine_game_config.set_control_point_outline_segments(std::stoi(settings["CPOutlineSegments"]));
+        processed_keys.insert("CPOutlineSegments");
+    }
+    if (settings.count("CPColumnSegments")) {
+        g_alpine_game_config.set_control_point_column_segments(std::stoi(settings["CPColumnSegments"]));
+        processed_keys.insert("CPColumnSegments");
+    }
+    if (settings.count("CPColumnHeightScale")) {
+        g_alpine_game_config.set_control_point_column_height_scale(std::stof(settings["CPColumnHeightScale"]));
+        processed_keys.insert("CPColumnHeightScale");
+    }
+    if (settings.count("AlwaysShowSpectators")) {
+        g_alpine_game_config.always_show_spectators = std::stoi(settings["AlwaysShowSpectators"]);
+        processed_keys.insert("AlwaysShowSpectators");
+    }
+    if (settings.count("SimpleServerChatMsgs")) {
+        g_alpine_game_config.simple_server_chat_msgs = std::stoi(settings["SimpleServerChatMsgs"]);
+        processed_keys.insert("SimpleServerChatMsgs");
+    }
+    if (settings.count("RemoteServerCfgDisplayMode")) {
+        g_alpine_game_config.remote_server_cfg_display_mode =
+            static_cast<RemoteServerCfgPopup::DisplayMode>(
+                std::stoi(settings["RemoteServerCfgDisplayMode"]) % RemoteServerCfgPopup::_DISPLAY_MODE_COUNT
+            );
+        processed_keys.insert("RemoteServerCfgDisplayMode");
+    }
+    if (settings.count("BotSharedSecret")) {
+        g_alpine_game_config.bot_shared_secret = std::stoul(settings["BotSharedSecret"]);
+        processed_keys.insert("BotSharedSecret");
     }
 
     // Load input settings
@@ -629,6 +1025,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "StaticScopeSensitivity=" << g_alpine_game_config.scope_static_sensitivity << "\n";
     file << "ScopeSensitivityModifier=" << g_alpine_game_config.scope_sensitivity_modifier << "\n";
     file << "ScannerSensitivityModifier=" << g_alpine_game_config.scanner_sensitivity_modifier << "\n";
+    file << "QuickExit=" << g_alpine_game_config.quick_exit << "\n";
 
     file << "\n[ActionBinds]\n";
     file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID}\n";
@@ -694,16 +1091,25 @@ void alpine_player_settings_save(rf::Player* player)
     file << "\n[PlayerSettings]\n";
     file << "PlayerName=" << player->name << "\n";
     file << "GoreLevel=" << rf::game_get_gore_level() << "\n";
+    file << "GibChunkCount=" << g_alpine_game_config.gib_chunk_count << "\n";
+    file << "GibVelocityScale=" << g_alpine_game_config.gib_velocity_scale << "\n";
+    file << "GibLifetimeMs=" << g_alpine_game_config.gib_lifetime_ms << "\n";
     file << "ShowFPGun=" << player->settings.render_fpgun << "\n";
     file << "AutoswitchWeapons=" << player->settings.autoswitch_weapons << "\n";
     file << "NeverAutoswitchExplosives=" << player->settings.dont_autoswitch_to_explosives << "\n";
     file << "ToggleCrouch=" << player->settings.toggle_crouch << "\n";
     file << "DamageScreenFlash=" << g_alpine_game_config.damage_screen_flash << "\n";
+    file << "ExplosionFlashLightsWeapons=" << g_alpine_game_config.explosion_weapon_flash_lights << "\n";
+    file << "ExplosionFlashLightsEnv=" << g_alpine_game_config.explosion_env_flash_lights << "\n";
+    file << "BurningEntityLights=" << g_alpine_game_config.burning_entity_lights << "\n";
     file << "SpectateMinimalUI=" << g_alpine_game_config.spectate_mode_minimal_ui << "\n";
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
+    file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";
     file << "SaveConsoleHistory=" << g_alpine_game_config.save_console_history << "\n";
     file << "AlpineBranding=" << g_alpine_game_config.af_branding << "\n";
+    file << "SeasonalEffect=" << g_alpine_game_config.seasonal_effect << "\n";
     file << "RealArmorValues=" << g_alpine_game_config.real_armor_values << "\n";
+    file << "ColorblindMode=" << g_alpine_game_config.colorblind_mode << "\n";
     file << "AutoswitchFireWait=" << g_alpine_game_config.suppress_autoswitch_fire_wait << "\n";
     file << "AlwaysAutoswitchEmpty=" << g_alpine_game_config.always_autoswitch_empty << "\n";
 
@@ -742,14 +1148,14 @@ void alpine_player_settings_save(rf::Player* player)
     file << "TextureDetailLevel=" << player->settings.textures_resolution_level << "\n";
     file << "HorizontalFOV=" << g_alpine_game_config.horz_fov << "\n";
     file << "FPGunFOVScale=" << g_alpine_game_config.fpgun_fov_scale << "\n";
-    file << "BigHUD=" << g_alpine_game_config.big_hud << "\n";
     file << "DisableWeaponShake=" << g_alpine_game_config.try_disable_weapon_shake << "\n";
     file << "FullbrightCharacters=" << g_alpine_game_config.try_fullbright_characters << "\n";
     file << "DisableTextures=" << g_alpine_game_config.try_disable_textures << "\n";
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
-    file << "ReticleScale=" << g_alpine_game_config.reticle_scale << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
+    file << "Picmip=" << g_alpine_game_config.picmip << "\n";
+    file << "PrecacheRooms=" << g_alpine_game_config.precache_rooms << "\n";
     file << "NearestTextureFiltering=" << g_alpine_game_config.nearest_texture_filtering << "\n";
     file << "FastAnimations=" << rf::g_fast_animations << "\n";
     file << "MonitorResolutionScale=" << g_alpine_game_config.monitor_resolution_scale << "\n";
@@ -759,6 +1165,58 @@ void alpine_player_settings_save(rf::Player* player)
     file << "FullRangeLighting=" << g_alpine_game_config.full_range_lighting << "\n";
     file << "AlwaysClampOfficialLightmaps=" << g_alpine_game_config.always_clamp_official_lightmaps << "\n";
 
+    // UI
+    file << "\n[UISettings]\n";
+    file << "BigHUD=" << g_alpine_game_config.big_hud << "\n";
+    if (g_alpine_game_config.sniper_scope_color_override) {
+        file << "SniperScopeColor=" << format_hex_color_string(*g_alpine_game_config.sniper_scope_color_override) << "\n";
+    }
+    if (g_alpine_game_config.precision_scope_color_override) {
+        file << "PrecisionScopeColor=" << format_hex_color_string(*g_alpine_game_config.precision_scope_color_override) << "\n";
+    }
+    if (g_alpine_game_config.rail_scope_color_override) {
+        file << "RailScopeColor=" << format_hex_color_string(*g_alpine_game_config.rail_scope_color_override) << "\n";
+    }
+    if (g_alpine_game_config.ar_ammo_digit_color_override) {
+        file << "ArAmmoColor=" << format_hex_color_string(*g_alpine_game_config.ar_ammo_digit_color_override) << "\n";
+    }
+    if (g_alpine_game_config.damage_notify_color_override) {
+        file << "DamageNotifyColor=" << format_hex_color_string(*g_alpine_game_config.damage_notify_color_override) << "\n";
+    }
+    if (g_alpine_game_config.location_ping_color_override) {
+        file << "LocationPingColor=" << format_hex_color_string(*g_alpine_game_config.location_ping_color_override) << "\n";
+    }
+    if (g_alpine_game_config.multi_timer_color_override) {
+        file << "MultiTimerColor=" << format_hex_color_string(*g_alpine_game_config.multi_timer_color_override) << "\n";
+    }
+    if (g_alpine_game_config.reticle_color_override) {
+        file << "ReticleColor=" << format_hex_color_string(*g_alpine_game_config.reticle_color_override) << "\n";
+    }
+    if (g_alpine_game_config.reticle_locked_color_override) {
+        file << "ReticleLockedColor=" << format_hex_color_string(*g_alpine_game_config.reticle_locked_color_override) << "\n";
+    }
+    if (g_alpine_game_config.teammate_label_color_override) {
+        file << "TeammateLabelColor=" << format_hex_color_string(*g_alpine_game_config.teammate_label_color_override) << "\n";
+    }
+    if (g_alpine_game_config.reticle_scale) {
+        file << "ReticleScale=" << *g_alpine_game_config.reticle_scale << "\n";
+    }
+    if (g_alpine_game_config.world_hud_damage_text_scale) {
+        file << "DamageNotifyTextScale=" << *g_alpine_game_config.world_hud_damage_text_scale << "\n";
+    }
+    if (g_alpine_game_config.world_hud_label_text_scale) {
+        file << "TeammateLabelTextScale=" << *g_alpine_game_config.world_hud_label_text_scale << "\n";
+    }
+    if (g_alpine_game_config.world_hud_ping_label_text_scale) {
+        file << "PingLabelTextScale=" << *g_alpine_game_config.world_hud_ping_label_text_scale << "\n";
+    }
+    file << "ColorizeCustomReticles=" << g_alpine_game_config.colorize_custom_reticles << "\n";
+    file << "ScoreboardSplitSpectators=" << g_alpine_game_config.scoreboard_split_spectators << "\n";
+    file << "ScoreboardSplitBots=" << g_alpine_game_config.scoreboard_split_bots << "\n";
+    file << "ScoreboardSplitBrowsers=" << g_alpine_game_config.scoreboard_split_browsers << "\n";
+    file << "ScoreboardSplitIdle=" << g_alpine_game_config.scoreboard_split_idle << "\n";
+    file << "SimpleScoreboardSplit=" << g_alpine_game_config.scoreboard_split_simple << "\n";
+
     // Singleplayer
     file << "\n[SingleplayerSettings]\n";
     file << "DifficultyLevel=" << static_cast<int>(rf::game_get_skill_level()) << "\n";
@@ -767,19 +1225,23 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableAllCameraShake=" << g_alpine_game_config.screen_shake_force_off << "\n";
     file << "Autosave=" << g_alpine_game_config.autosave << "\n";
     file << "StaticBombCode=" << g_alpine_game_config.static_bomb_code << "\n";
+    file << "ExposureDamage=" << g_alpine_game_config.apply_exposure_damage << "\n";
     file << "UseAlpineSavegameFormat=" << g_alpine_game_config.use_new_savegame_format << "\n";
 
     // Multiplayer
     file << "\n[MultiplayerSettings]\n";
     file << "MultiplayerCharacter=" << player->settings.multi_character << "\n";
     file << "WorldHUDObjIcons=" << g_alpine_game_config.world_hud_ctf_icons << "\n";
-    file << "WorldHUDOverdraw=" << g_alpine_game_config.world_hud_overdraw << "\n";
-    file << "WorldHUDBigText=" << g_alpine_game_config.world_hud_big_text << "\n";
+    file << "WorldHUDFlagOverdraw=" << g_alpine_game_config.world_hud_flag_overdraw << "\n";
+    file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
     file << "WorldHUDSpectateLabels=" << g_alpine_game_config.world_hud_spectate_player_labels << "\n";
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
+    file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
+    file << "HitSoundIntervalMs=" << g_alpine_game_config.hit_sound_min_interval_ms << "\n";
     file << "PlayTaunts=" << g_alpine_game_config.play_taunt_sounds << "\n";
+    file << "ShowRunTimer=" << g_alpine_game_config.show_run_timer << "\n";
     file << "VisualRicochet=" << g_alpine_game_config.multi_ricochet << "\n";
     file << "DeathBars=" << g_alpine_game_config.death_bars << "\n";
     file << "ShowEnemyBullets=" << g_alpine_game_config.show_enemy_bullets << "\n";
@@ -794,7 +1256,15 @@ void alpine_player_settings_save(rf::Player* player)
     file << "PlayerJoinBeep=" << g_alpine_game_config.player_join_beep << "\n";
     file << "WorldHUDAltDamageIndicators=" << g_alpine_game_config.world_hud_alt_damage_indicators << "\n";
     file << "DesiredHandicap=" << g_alpine_game_config.desired_handicap << "\n";
-    
+    file << "CPOutlineHeightScale=" << g_alpine_game_config.control_point_outline_height_scale << "\n";
+    file << "CPOutlineSegments=" << g_alpine_game_config.control_point_outline_segments << "\n";
+    file << "CPColumnSegments=" << g_alpine_game_config.control_point_column_segments << "\n";
+    file << "CPColumnHeightScale=" << g_alpine_game_config.control_point_column_height_scale << "\n";
+    file << "AlwaysShowSpectators=" << g_alpine_game_config.always_show_spectators << "\n";
+    file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
+    file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
+    file << "BotSharedSecret=" << g_alpine_game_config.bot_shared_secret << "\n";
+
     alpine_control_config_serialize(file, player->settings.controls);
 
     file.close();
