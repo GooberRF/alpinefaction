@@ -42,19 +42,23 @@ struct ClientVersionInfoProfile {
 };
 
 struct PlayerAdditionalData {
-    ClientVersionInfoProfile version_info{};
-    std::optional<pf_pure_status> received_pf_status{};
-    std::optional<std::chrono::high_resolution_clock::time_point> death_time{};
-
+    // Shared variables.
     bool is_bot = false;
     bool is_spawn_disabled = false;
     bool is_browser = false;
-    bool is_human_player = true;
     bool is_spectator = false;
+    bool is_human_player = true;
+
+    // Client-side variables.
+    std::optional<pf_pure_status> received_pf_status{};
     bool is_muted = false;
 
-    std::optional<int> last_hit_sound_sent_ms{};
-    std::optional<int> last_critical_sound_sent_ms{};
+    // Server-side variables.
+    ClientVersionInfoProfile version_info{};
+    std::optional<std::chrono::high_resolution_clock::time_point> death_time{};
+
+    std::optional<int> last_hit_sound_ms{};
+    std::optional<int> last_critical_sound_ms{};
 
     struct {
         std::map<std::string, PlayerNetGameSaveData> saves{};
@@ -68,10 +72,13 @@ struct PlayerAdditionalData {
     } idle{};
 
     std::optional<int> last_spawn_point_index{};
-    // only used when configured in ADS
+
+    // Requires `spawn_delay` to be enabled.
     rf::Timestamp respawn_timer{};
-    // percentile
+
+    // Percentile.
     uint8_t damage_handicap = 0;
+
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 };

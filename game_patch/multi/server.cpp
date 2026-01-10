@@ -1043,13 +1043,13 @@ void send_sound_packet(rf::Player* target, std::optional<int>& last_sent_time, i
 
 void send_legacy_hit_sound_packet(rf::Player* const target) {
     // fallback for legacy clients
-    send_sound_packet(target, target->last_hit_sound_sent_ms, 10, 29);
+    send_sound_packet(target, target->last_hit_sound_ms, 10, 29);
 }
 
 // todo optimization: move this to a new flag on af_damage_notify packet
 void send_critical_hit_packet(rf::Player* target)
 {
-    send_sound_packet(target, target->last_critical_sound_sent_ms, 10, 35); // rate limit 10/sec, sound id 35
+    send_sound_packet(target, target->last_critical_sound_ms, 10, 35); // rate limit 10/sec, sound id 35
 }
 
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{

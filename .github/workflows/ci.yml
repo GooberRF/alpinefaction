@@ -16,6 +16,7 @@ env:
 jobs:
   build-mingw:
     runs-on: ubuntu-24.04
+    # Ubuntu-24.04 contains an outdated MinGW.
     container:
       image: debian:trixie
 

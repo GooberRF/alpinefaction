@@ -613,11 +613,6 @@ inline AsmWriter& AsmWriter::push<int8_t>(const int8_t imm) {
 }
 
 template <>
-inline AsmWriter& AsmWriter::push<uint8_t>(const uint8_t imm) {
-    return push<int8_t>(imm);
-}
-
-template <>
 inline AsmWriter& AsmWriter::push<int32_t>(const int32_t imm) {
     if (std::abs(imm) < 128) {
         return push<int8_t>(imm);

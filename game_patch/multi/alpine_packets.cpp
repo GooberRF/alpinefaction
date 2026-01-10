@@ -1506,6 +1506,7 @@ void af_process_spectate_start_packet(
     }
 
     spectator->spectatee = then_some(in_spectate, new_target);
+    spectator->is_spectator = in_spectate;
 }
 
 void af_send_spectate_notify_packet(

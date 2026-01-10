@@ -1393,7 +1393,12 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     );
                 }
 
-                // reset for safety
+                valid_player->is_browser = g_joining_client_version
+                    == ClientSoftware::Browser;
+                valid_player->is_human_player = !valid_player->is_bot
+                    && !valid_player->is_browser;
+
+                // Reset for safety.
                 g_joining_player_info = {};
                 g_joining_client_version = ClientSoftware::Unknown;
             }
