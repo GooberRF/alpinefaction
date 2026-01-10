@@ -4,6 +4,7 @@
 #include "toml.hpp"
 #include "../rf/save_restore.h"
 #include "../rf/geometry.h"
+#include "../rf/mover.h"
 #include "../rf/player/player.h"
 #include "../rf/math/quaternion.h"
 
@@ -281,7 +282,7 @@ namespace asg
         float rot_cur_pos;
         int start_at_keyframe;
         int stop_at_keyframe;
-        int mover_flags;
+        rf::MoverFlags mover_flags;
         float travel_time_seconds;
         float rotation_travel_time_seconds;
         int wait_timestamp;
