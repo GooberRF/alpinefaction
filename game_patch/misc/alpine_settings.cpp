@@ -754,6 +754,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.apply_exposure_damage = std::stoi(settings["ExposureDamage"]);
         processed_keys.insert("ExposureDamage");
     }
+    if (settings.count("UseAlpineSavegameFormat")) {
+        g_alpine_game_config.use_new_savegame_format = std::stoi(settings["UseAlpineSavegameFormat"]);
+        processed_keys.insert("UseAlpineSavegameFormat");
+    }
 
     // Load multiplayer settings
     if (settings.count("MultiplayerCharacter")) {
@@ -1222,6 +1226,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "Autosave=" << g_alpine_game_config.autosave << "\n";
     file << "StaticBombCode=" << g_alpine_game_config.static_bomb_code << "\n";
     file << "ExposureDamage=" << g_alpine_game_config.apply_exposure_damage << "\n";
+    file << "UseAlpineSavegameFormat=" << g_alpine_game_config.use_new_savegame_format << "\n";
 
     // Multiplayer
     file << "\n[MultiplayerSettings]\n";
