@@ -167,9 +167,7 @@ namespace rf
         // in original code Event is aligned to 1 byte and size 0x2B5, but GenericEvent is aligned to 4 bytes
         char padding[3];
         char event_specific_data[24];
-        char padding[3];
     };
-#pragma pack(pop)
     static_assert(sizeof(GenericEvent) == 0x2D0);
 
     struct MakeInvulnerableEvent : Event
