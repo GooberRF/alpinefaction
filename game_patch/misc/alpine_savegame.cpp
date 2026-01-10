@@ -4343,7 +4343,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
         auto path = std::filesystem::path(fn);
 
         // 1) the in-memory “auto.” buffer
-        if (string_starts_with_ignore_case(fn, "auto.")) {
+        if (string_istarts_with(fn, "auto.")) {
             // find which slot matches the current level
             auto& hdr = g_save_data.header;
             std::string cur = string_to_lower(rf::level.filename);
@@ -4408,7 +4408,7 @@ FunHook<rf::PersistentGoalEvent*(const char* name)> event_lookup_persistent_goal
     [](const char* name) {
         if (g_alpine_game_config.use_new_savegame_format) {
             for (auto& ev : g_persistent_goals) {
-                if (string_equals_ignore_case(ev.name, name)) {
+                if (string_iequals(ev.name, name)) {
                     return &ev;
                 }
             }
@@ -4425,7 +4425,7 @@ FunHook<void(const char* name, int initial_count, int current_count)> event_add_
     [](const char* name, int initial_count, int current_count) {
         if (g_alpine_game_config.use_new_savegame_format) {
             for (auto& ev : g_persistent_goals) {
-                    if (string_equals_ignore_case(ev.name, name)) {
+                    if (string_iequals(ev.name, name)) {
                         // update counts
                         ev.initial_count = initial_count;
                         ev.count = current_count;
