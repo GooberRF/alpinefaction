@@ -3353,7 +3353,7 @@ bool parse_movers(const toml::array& arr, std::vector<asg::SavegameLevelKeyframe
         b.rot_cur_pos = tbl["rot_cur_pos"].value_or(0.0f);
         b.start_at_keyframe = tbl["start_at_keyframe"].value_or(0);
         b.stop_at_keyframe = tbl["stop_at_keyframe"].value_or(0);
-        b.mover_flags = tbl["mover_flags"].value_or(0);
+        b.mover_flags = static_cast<rf::MoverFlags>(tbl["mover_flags"].value_or(0));
         b.travel_time_seconds = tbl["travel_time_seconds"].value_or(0.0f);
         b.rotation_travel_time_seconds = tbl["rotation_travel_time_seconds"].value_or(0.0f);
         b.wait_timestamp = tbl["wait_timestamp"].value_or(-1);
