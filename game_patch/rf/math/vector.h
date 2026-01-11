@@ -156,6 +156,10 @@ namespace rf
             return {x * scale, y * scale, z * scale};
         }
 
+        [[nodiscard]] Vector3 operator/(const float scale) const {
+            return *this * (1.f / scale);
+        }
+
         void zero()
         {
             x = 0.0f;

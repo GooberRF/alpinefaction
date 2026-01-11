@@ -13,6 +13,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Improve output of object create failure log message
 
 ### Bug fixes
+[@is-this-c](https://github.com/is-this-c)
+- Fix faulty cull in fpgun infrared scanners
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------

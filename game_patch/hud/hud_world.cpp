@@ -122,7 +122,7 @@ void do_render_world_hud_sprite(rf::Vector3 pos, float base_scale, int bitmap_ha
 
     // draw sprite
     rf::gr::set_texture(bitmap_handle, -1);
-    rf::gr::gr_3d_bitmap_angle(&vec, 0.0f, scale, bitmap_mode);
+    rf::gr::bitmap_3d_angle(&vec, 0.0f, scale, bitmap_mode);
 }
 
 // draw CTF flag sprites
@@ -191,7 +191,7 @@ void build_mp_respawn_icons() {
 
         // draw an arrow in the direction of the spawn point
         rf::Vector3 arrow_end = point.position + (point.orientation.fvec * 1.5f);
-        rf::gr::gr_line_arrow(
+        rf::gr::line_arrow(
             point.position.x, point.position.y, point.position.z,
             arrow_end.x, arrow_end.y, arrow_end.z,
             r, g, b);
@@ -369,7 +369,7 @@ static NameLabelTex& ensure_hill_name_tex(const HillInfo& h, int font)
 
         // render name text
         rf::gr::set_color(255, 255, 255, 255);
-        rf::gr::gr_render_string_into_bitmap(pad, pad, slot.bm, h.name.c_str(), font);
+        rf::gr::string_render_into_bitmap(pad, pad, slot.bm, h.name.c_str(), font);
 
         slot.w_px = bw;
         slot.h_px = bh;
@@ -506,7 +506,7 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
             const int fill_bmp = (h.steal_dir == HillOwner::HO_Red) ? g_world_hud_assets.koth_fill_red : g_world_hud_assets.koth_fill_blue;
             rf::gr::set_texture(fill_bmp, -1);
 
-            rf::gr::gr_3d_bitmap_angle_wh(&bar_pos, 0.0f, cur_w, bar_h, bitmap_mode_from(rm));
+            rf::gr::bitmap_3d_angle_wh(&bar_pos, 0.0f, cur_w, bar_h, bitmap_mode_from(rm));
         }
     }
 
@@ -525,11 +525,11 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
 
     rf::gr::set_color(255, 255, 255, 255);
     rf::gr::set_texture(lbl.bm, -1);
-    rf::gr::gr_3d_bitmap_angle_wh(&const_cast<rf::Vector3&>(text_pos), 0.0f, text_w_world, text_h_world, bitmap_mode_from(rm));
+    rf::gr::bitmap_3d_angle_wh(&const_cast<rf::Vector3&>(text_pos), 0.0f, text_w_world, text_h_world, bitmap_mode_from(rm));
 
     // icon ring
     rf::gr::set_texture(ring_bmp, -1);
-    rf::gr::gr_3d_bitmap_angle(&const_cast<rf::Vector3&>(view.pos), 0.0f, ring_scale, bitmap_mode_from(rm));
+    rf::gr::bitmap_3d_angle(&const_cast<rf::Vector3&>(view.pos), 0.0f, ring_scale, bitmap_mode_from(rm));
 }
 
 static void build_koth_hill_icons()
