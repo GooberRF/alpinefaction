@@ -944,7 +944,7 @@ namespace asg
     inline void serialize_killed_rooms(std::vector<int>& out)
     {
         out.clear();
-        out.reserve(std::min(g_deleted_room_uids.size(), size_t(rf::sr::MAX_KILLED_ROOMS)));
+        out.reserve(g_deleted_room_uids.size());
 
         std::unordered_set<int> seen;
         seen.reserve(g_deleted_room_uids.size());
@@ -952,8 +952,6 @@ namespace asg
         for (int uid : g_deleted_room_uids) {
             if (seen.insert(uid).second) {
                 out.push_back(uid);
-                if (out.size() >= rf::sr::MAX_KILLED_ROOMS)
-                    break;
             }
         }
     }
@@ -3846,15 +3844,13 @@ bool parse_corpses(const toml::array& arr, std::vector<asg::SavegameLevelCorpseD
 bool parse_killed_rooms(const toml::array& arr, std::vector<int>& out)
 {
     out.clear();
-    out.reserve(std::min(arr.size(), size_t(rf::sr::MAX_KILLED_ROOMS)));
+    out.reserve(arr.size());
     std::unordered_set<int> seen;
     seen.reserve(arr.size());
     for (auto& v : arr) {
         if (auto uid = v.value<int>()) {
             if (seen.insert(*uid).second) {
                 out.push_back(*uid);
-                if (out.size() >= rf::sr::MAX_KILLED_ROOMS)
-                    break;
             }
         }
     }
@@ -4677,6 +4673,7 @@ CodeInjection glass_shard_level_init_injection{
     0x00491064,
     []() {
         g_deleted_rooms.clear();
+        g_deleted_room_uids.clear();
     },
 };
 
@@ -4703,10 +4700,8 @@ CodeInjection glass_delete_room_injection{
     0x00492306,
     [](auto& regs) {
         int uid = regs.edx;
-        if (g_deleted_room_uids.size() < rf::sr::MAX_KILLED_ROOMS) {
-            if (std::find(g_deleted_room_uids.begin(), g_deleted_room_uids.end(), uid) == g_deleted_room_uids.end()) {
-                g_deleted_room_uids.push_back(uid);
-            }
+        if (std::find(g_deleted_room_uids.begin(), g_deleted_room_uids.end(), uid) == g_deleted_room_uids.end()) {
+            g_deleted_room_uids.push_back(uid);
         }
     },
 };
