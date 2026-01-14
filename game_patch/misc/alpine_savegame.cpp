@@ -761,7 +761,7 @@ namespace asg
         b.sticky_host_uid = uid_from_handle(w->sticky_host_handle);
         b.sticky_host_pos_offset = w->sticky_host_pos_offset;
         b.sticky_host_orient = w->sticky_host_orient;
-        b.weap_friendliness = static_cast<uint8_t>(w->weap_friendliness);
+        b.weap_friendliness = static_cast<uint8_t>(w->friendliness);
         b.target_uid = uid_from_handle(w->target_handle);
         b.pierce_power_left = w->pierce_power_left;
         b.thrust_left = w->thrust_left;
@@ -944,7 +944,18 @@ namespace asg
     inline void serialize_killed_rooms(std::vector<int>& out)
     {
         out.clear();
-        out = g_deleted_room_uids;
+        out.reserve(std::min(g_deleted_room_uids.size(), size_t(rf::sr::MAX_KILLED_ROOMS)));
+
+        std::unordered_set<int> seen;
+        seen.reserve(g_deleted_room_uids.size());
+
+        for (int uid : g_deleted_room_uids) {
+            if (seen.insert(uid).second) {
+                out.push_back(uid);
+                if (out.size() >= rf::sr::MAX_KILLED_ROOMS)
+                    break;
+            }
+        }
     }
 
     inline void serialize_all_persistent_goals(std::vector<SavegameLevelPersistentGoalDataBlock>& out)
@@ -1315,9 +1326,6 @@ namespace asg
 
     inline void entity_deserialize_all_state(const std::vector<SavegameEntityDataBlock>& blocks, const std::vector<int>& dead_uids)
     {
-        // reset any old delayed‐handle entries
-        clear_delayed_handles();
-
         bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
         xlog::warn("in transition? {}", in_transition);
 
@@ -1399,8 +1407,6 @@ namespace asg
             }
         }
 
-        // 3) now patch up all the “UID→handle” placeholders we queued
-        resolve_delayed_handles();
     }
 
     static void apply_event_base_fields(rf::Event* e, const SavegameEventDataBlock& b)
@@ -1470,8 +1476,6 @@ namespace asg
 
     void event_deserialize_all_state(const SavegameLevelData& lvl)
     {
-        clear_delayed_handles();
-
         std::unordered_map<int, SavegameEventDataBlock> generic_map;
         std::unordered_map<int, SavegameEventMakeInvulnerableDataBlock> invuln_map;
         std::unordered_map<int, SavegameEventWhenDeadDataBlock> when_dead_map;
@@ -1549,8 +1553,6 @@ namespace asg
             }
         }
 
-        // resolve delayed handles
-        resolve_delayed_handles();
     }
 
     static void apply_trigger_fields(rf::Trigger* t, const SavegameTriggerDataBlock& b)
@@ -1575,8 +1577,6 @@ namespace asg
 
     static void trigger_deserialize_all_state(const std::vector<SavegameTriggerDataBlock>& blocks)
     {
-        clear_delayed_handles();
-
         // build UID→block map
         std::unordered_map<int, SavegameTriggerDataBlock> tbl;
         tbl.reserve(blocks.size());
@@ -1595,8 +1595,6 @@ namespace asg
             }
         }
 
-        // now fix up all queued handles
-        resolve_delayed_handles();
     }
 
     static void apply_clutter_fields(rf::Clutter* c, const SavegameClutterDataBlock& b)
@@ -1620,7 +1618,6 @@ namespace asg
 
     static void clutter_deserialize_all_state(const std::vector<SavegameClutterDataBlock>& blocks)
     {
-        clear_delayed_handles();
         xlog::warn("deserializing clutter...");
 
         // build a UID → block map
@@ -1648,8 +1645,6 @@ namespace asg
             }
         }
 
-        // finally resolve every delayed UID→handle you enqueued above
-        resolve_delayed_handles();
     }
 
     static void apply_item_fields(rf::Item* it, const SavegameItemDataBlock& b)
@@ -1667,8 +1662,6 @@ namespace asg
 
     static void item_deserialize_all_state(const std::vector<SavegameItemDataBlock>& blocks)
     {
-        clear_delayed_handles();
-
         // build UID → block map
         std::unordered_map<int, SavegameItemDataBlock> map;
         map.reserve(blocks.size());
@@ -1712,8 +1705,6 @@ namespace asg
             }
         }
 
-        // 3) finally, resolve all the UID→handle lookups we enqueued
-        resolve_delayed_handles();
     }
 
     static void deserialize_bolt_emitters(const std::vector<SavegameLevelBoltEmitterDataBlock>& blocks)
@@ -1768,8 +1759,6 @@ namespace asg
 
     static void mover_deserialize_all_state(const std::vector<SavegameLevelKeyframeDataBlock>& blocks)
     {
-        clear_delayed_handles();
-
         // build a UID → block map
         std::unordered_map<int, SavegameLevelKeyframeDataBlock> blkmap;
         blkmap.reserve(blocks.size());
@@ -1793,7 +1782,6 @@ namespace asg
             }
         }
 
-        resolve_delayed_handles();
     }
 
     static void apply_push_region_fields(rf::PushRegion* pr, const SavegameLevelPushRegionDataBlock& b)
@@ -1863,6 +1851,7 @@ namespace asg
         add_handle_for_delayed_resolution(b.sticky_host_uid, &w->sticky_host_handle);
         w->sticky_host_pos_offset = b.sticky_host_pos_offset;
         w->sticky_host_orient = b.sticky_host_orient;
+        w->friendliness = static_cast<rf::ObjFriendliness>(b.weap_friendliness);
         w->weap_friendliness = static_cast<rf::ObjFriendliness>(b.weap_friendliness);
         add_handle_for_delayed_resolution(b.target_uid, &w->target_handle);
         w->pierce_power_left = b.pierce_power_left;
@@ -1872,8 +1861,6 @@ namespace asg
 
     static void weapon_deserialize_all_state(const std::vector<SavegameLevelWeaponDataBlock>& blocks)
     {
-        clear_delayed_handles();
-
         for (auto const& b : blocks) {
             // decompress orientation & position from ObjectSavegameBlock
             rf::Quaternion q;
@@ -1892,7 +1879,6 @@ namespace asg
             apply_weapon_fields(w, b);
         }
 
-        resolve_delayed_handles();
     }
 
     // helper to unlink a pool from the free‐list
@@ -1986,8 +1972,6 @@ namespace asg
 
     static void corpse_deserialize_all_state(const std::vector<SavegameLevelCorpseDataBlock>& blocks)
     {
-        clear_delayed_handles();
-
         bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
 
         // Build a quick UID→block map
@@ -2053,8 +2037,6 @@ namespace asg
             }
         }
 
-        // 3) finally fix up any delayed handle‐lookups
-        resolve_delayed_handles();
     }
 
     static void apply_killed_glass_room(int room_uid)
@@ -2095,6 +2077,8 @@ namespace asg
         blood_pool_deserialize_all_state(lvl->blood_pools);
         corpse_deserialize_all_state(lvl->corpses);
         glass_deserialize_all_killed_state(lvl->killed_room_uids);
+
+        resolve_delayed_handles();
 
         xlog::warn("restoring current level time {} to buffer time {}", rf::level_time_flt, lvl->header.level_time);
         rf::level_time_flt = lvl->header.level_time;
@@ -2384,6 +2368,11 @@ namespace asg
 
     void resolve_delayed_handles()
     {
+        std::vector<int> unresolved_uids;
+        std::vector<int*> unresolved_ptrs;
+        unresolved_uids.reserve(g_sr_delayed_uids.size());
+        unresolved_ptrs.reserve(g_sr_delayed_ptrs.size());
+
         for (size_t i = 0; i < g_sr_delayed_uids.size(); ++i) {
             int uid = g_sr_delayed_uids[i];
             int* dst = g_sr_delayed_ptrs[i];
@@ -2393,10 +2382,13 @@ namespace asg
             }
             else {
                 *dst = -1;
+                unresolved_uids.push_back(uid);
+                unresolved_ptrs.push_back(dst);
             }
         }
-        // clear for the next transitional load
-        clear_delayed_handles();
+
+        g_sr_delayed_uids.swap(unresolved_uids);
+        g_sr_delayed_ptrs.swap(unresolved_ptrs);
     }
 } // namespace asg
 
@@ -3854,9 +3846,17 @@ bool parse_corpses(const toml::array& arr, std::vector<asg::SavegameLevelCorpseD
 bool parse_killed_rooms(const toml::array& arr, std::vector<int>& out)
 {
     out.clear();
+    out.reserve(std::min(arr.size(), size_t(rf::sr::MAX_KILLED_ROOMS)));
+    std::unordered_set<int> seen;
+    seen.reserve(arr.size());
     for (auto& v : arr) {
-        if (auto uid = v.value<int>())
-            out.push_back(*uid);
+        if (auto uid = v.value<int>()) {
+            if (seen.insert(*uid).second) {
+                out.push_back(*uid);
+                if (out.size() >= rf::sr::MAX_KILLED_ROOMS)
+                    break;
+            }
+        }
     }
     return true;
 }
@@ -4544,6 +4544,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
                     return false;
                 }
                 asg::resolve_delayed_handles();
+                asg::clear_delayed_handles();
 
                 if (auto o = obj_lookup_from_uid(-999); o && o->type == ObjectType::OT_ENTITY) {
                     physics_stick_to_ground(reinterpret_cast<Entity*>(o));
@@ -4702,7 +4703,11 @@ CodeInjection glass_delete_room_injection{
     0x00492306,
     [](auto& regs) {
         int uid = regs.edx;
-        g_deleted_room_uids.push_back(uid);
+        if (g_deleted_room_uids.size() < rf::sr::MAX_KILLED_ROOMS) {
+            if (std::find(g_deleted_room_uids.begin(), g_deleted_room_uids.end(), uid) == g_deleted_room_uids.end()) {
+                g_deleted_room_uids.push_back(uid);
+            }
+        }
     },
 };
 
