@@ -46,9 +46,8 @@ namespace asg
         int16_t clip_x, clip_y, clip_w, clip_h;
         float fov_h;
         //int32_t field_10;
-        //std::string name;
         int16_t player_flags;
-        //int16_t field_36;
+        int16_t field_11f8;
         int entity_uid;
         int entity_type;
         char spew_vector_index;

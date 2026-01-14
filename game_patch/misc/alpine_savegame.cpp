@@ -258,6 +258,7 @@ namespace asg
 
         // 3) flags & entity info
         data.player_flags = pp->flags;
+        data.field_11f8 = static_cast<int16_t>(pp->field_11F8);
         xlog::warn("[SP] player_flags = 0x{:X}", data.player_flags);
 
         if (auto ent = rf::local_player_entity) {
@@ -307,12 +308,8 @@ namespace asg
 
         // 8) first-person gun
         {
-            auto base = reinterpret_cast<const char*>(pp) + offsetof(rf::Player, shield_decals);
-            auto pos_ptr = reinterpret_cast<const rf::Vector3*>(base + 12);
-            auto ori_ptr = reinterpret_cast<const rf::Matrix3*>(base + 12 + sizeof(rf::Vector3));
-
-            data.fpgun_pos = *pos_ptr;
-            data.fpgun_orient = *ori_ptr;
+            data.fpgun_pos = pp->fpgun_data.fpgun_pos;
+            data.fpgun_orient = pp->fpgun_data.fpgun_orient;
             xlog::warn("[SP] fpgun_pos = ({:.3f},{:.3f},{:.3f})", data.fpgun_pos.x, data.fpgun_pos.y, data.fpgun_pos.z);
             xlog::warn("[SP] fpgun_orient.rvec = ({:.3f},{:.3f},{:.3f})", data.fpgun_orient.rvec.x,
                        data.fpgun_orient.rvec.y, data.fpgun_orient.rvec.z);
@@ -320,8 +317,7 @@ namespace asg
 
         // 9) grenade mode
         {
-            auto b = reinterpret_cast<const char*>(pp) + offsetof(rf::Player, shield_decals) + 22;
-            data.grenade_mode = *reinterpret_cast<const uint8_t*>(b);
+            data.grenade_mode = static_cast<uint8_t>(pp->fpgun_data.grenade_mode);
             xlog::warn("[SP] grenade_mode = {}", data.grenade_mode);
         }
 
@@ -356,8 +352,8 @@ namespace asg
             out |= (pp->fpgun_data.show_silencer ? 1u : 0u) << 0;
             out |= (pp->fpgun_data.remote_charge_in_hand ? 1u : 0u) << 1;
             auto ent = rf::entity_from_handle(pp->entity_handle);
-            out |= ((ent->ai.ai_flags >> 16) & 1u) << 2;
-            //out |= (g_player_cover_id & 1u) << 3;
+            out |= (((ent ? ent->ai.ai_flags : 0) >> 16) & 1u) << 2;
+            out |= (rf::g_player_cover_id & 1u) << 3;
 
             data.flags = out;
             xlog::warn("[SP] flags packing → result=0x{:02X}", data.flags);
@@ -528,7 +524,7 @@ namespace asg
         SavegameItemDataBlock b{};
         fill_object_block(it, b.obj);
         b.respawn_time_ms = it->respawn_time_ms;
-        b.respawn_next_timer = it->respawn_next.is_set() ? it->respawn_next.time_until() : -1;
+        rf::sr::serialize_timestamp(&it->respawn_next, &b.respawn_next_timer);
         b.alpha = it->alpha;
         b.create_time = it->create_time;
         b.flags = it->item_flags;
@@ -540,8 +536,8 @@ namespace asg
     {
         SavegameClutterDataBlock b{};
         fill_object_block(c, b.obj);
-        b.delayed_kill_timestamp = c->delayed_kill_timestamp.is_set() ? c->delayed_kill_timestamp.time_until() : -1;
-        b.corpse_create_timestamp = c->corpse_create_timestamp.is_set() ? c->corpse_create_timestamp.time_until() : -1;
+        rf::sr::serialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
+        rf::sr::serialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
 
         b.links.clear();
         for (auto handle_ptr : c->links) {
@@ -563,8 +559,8 @@ namespace asg
         b.time_last_activated = t->time_last_activated;
         b.trigger_flags = t->trigger_flags;
         b.activator_handle = uid_from_handle(t->activator_handle);
-        b.button_active_timestamp = t->button_active_timestamp.is_set() ? t->button_active_timestamp.time_until() : -1;
-        b.inside_timestamp = t->inside_timestamp.is_set() ? t->inside_timestamp.time_until() : -1;
+        rf::sr::serialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
+        rf::sr::serialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
 
         b.links.clear();
         for (auto handle_ptr : t->links) {
@@ -584,7 +580,7 @@ namespace asg
         b.delay = e->delay_seconds;
         xlog::warn("saved delay {} to {} for uid {}", e->delay_seconds, b.delay, e->uid);
         b.is_on_state = e->delayed_msg;
-        b.delay_timer = e->delay_timestamp.is_set() ? e->delay_timestamp.time_until() : -1;
+        rf::sr::serialize_timestamp(&e->delay_timestamp, &b.delay_timer);
         b.activated_by_entity_uid = uid_from_handle(e->triggered_by_handle);
         b.activated_by_trigger_uid = uid_from_handle(e->trigger_handle);
 
@@ -606,7 +602,7 @@ namespace asg
         auto* event = static_cast<rf::MakeInvulnerableEvent*>(e);
 
         if (event) {            
-            m.time_left = event->make_invuln_timestamp.is_set() ? event->make_invuln_timestamp.time_until() : -1;
+            rf::sr::serialize_timestamp(&event->make_invuln_timestamp, &m.time_left);
             xlog::warn("event {} is a valid Make_Invulnerable event with time_left {}", event->uid, m.time_left);
         }
         else {
@@ -678,7 +674,7 @@ namespace asg
         auto* event = static_cast<rf::CyclicTimerEvent*>(e);
 
         if (event) {
-            m.next_fire_timer = event->next_fire_timestamp.is_set() ? event->next_fire_timestamp.time_until() : -1;
+            rf::sr::serialize_timestamp(&event->next_fire_timestamp, &m.next_fire_timer);
             m.send_count = event->send_count;
 
             xlog::warn("event {} is a valid Cyclic_Timer event with next_fire_timer {}, send_count {}, send_seconds {}",
@@ -744,7 +740,7 @@ namespace asg
         b.mover_flags = m->mover_flags;
         b.travel_time_seconds = m->travel_time_seconds;
         b.rotation_travel_time_seconds = m->rotation_travel_time_seconds_unk;
-        b.wait_timestamp = m->wait_timestamp.time_until();
+        rf::sr::serialize_timestamp(&m->wait_timestamp, &b.wait_timestamp);
         b.trigger_uid = uid_from_handle(m->trigger_handle);
         b.dist_travelled = m->dist_travelled;
         b.cur_vel = m->cur_vel;
@@ -785,7 +781,7 @@ namespace asg
         b.corpse_flags = c->corpse_flags;
         b.entity_type = c->entity_type;
         b.pose_name = c->corpse_pose_name.c_str();
-        b.emitter_kill_timestamp = c->emitter_kill_timestamp.is_set() ? c->emitter_kill_timestamp.time_until() : -1;
+        rf::sr::serialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
         b.body_temp = c->body_temp;
         b.state_anim = c->corpse_state_vmesh_anim_index;
         b.action_anim = c->corpse_action_vmesh_anim_index;
@@ -1410,7 +1406,7 @@ namespace asg
     static void apply_event_base_fields(rf::Event* e, const SavegameEventDataBlock& b)
     {
         e->delay_seconds = b.delay;        
-        rf::sr::sr_deserialize_timestamp(&e->delay_timestamp, &b.delay_timer);
+        rf::sr::deserialize_timestamp(&e->delay_timestamp, &b.delay_timer);
         e->delayed_msg = b.is_on_state;
         add_handle_for_delayed_resolution(b.activated_by_entity_uid, &e->triggered_by_handle);
         add_handle_for_delayed_resolution(b.activated_by_trigger_uid, &e->trigger_handle);
@@ -1435,7 +1431,7 @@ namespace asg
     {
         apply_event_base_fields(e, blk.ev);
         auto* ev = static_cast<rf::MakeInvulnerableEvent*>(e);
-        rf::sr::sr_deserialize_timestamp(&ev->make_invuln_timestamp, &blk.time_left);
+        rf::sr::deserialize_timestamp(&ev->make_invuln_timestamp, &blk.time_left);
     }
 
     // When_Dead
@@ -1468,7 +1464,7 @@ namespace asg
     {
         apply_event_base_fields(e, blk.ev);
         auto* ev = static_cast<rf::CyclicTimerEvent*>(e);
-        rf::sr::sr_deserialize_timestamp(&ev->next_fire_timestamp, &blk.next_fire_timer);
+        rf::sr::deserialize_timestamp(&ev->next_fire_timestamp, &blk.next_fire_timer);
         ev->send_count = blk.send_count;
     }
 
@@ -1573,8 +1569,8 @@ namespace asg
         add_handle_for_delayed_resolution(b.activator_handle, &t->activator_handle);
 
         // timestamps
-        rf::sr::sr_deserialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
-        rf::sr::sr_deserialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
+        rf::sr::deserialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
+        rf::sr::deserialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
     }
 
     static void trigger_deserialize_all_state(const std::vector<SavegameTriggerDataBlock>& blocks)
@@ -1610,8 +1606,8 @@ namespace asg
         xlog::warn("attempting to deserialize clutter {}", b.obj.uid);
 
         // 2) rehydrate the two timestamps
-        rf::sr::sr_deserialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
-        rf::sr::sr_deserialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
+        rf::sr::deserialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
+        rf::sr::deserialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
 
         // 3) rebuild the link list, queuing each uid for delayed resolution
         c->links.clear();
@@ -1663,7 +1659,7 @@ namespace asg
 
         // 2) restore the two timestamps
         it->respawn_time_ms = b.respawn_time_ms;
-        rf::sr::sr_deserialize_timestamp(&it->respawn_next, &b.respawn_next_timer);
+        rf::sr::deserialize_timestamp(&it->respawn_next, &b.respawn_next_timer);
         it->alpha = b.alpha;
         it->create_time = b.create_time;
         it->item_flags = b.flags;
@@ -1761,7 +1757,7 @@ namespace asg
         mv->mover_flags = b.mover_flags;
         mv->travel_time_seconds = b.travel_time_seconds;
         mv->rotation_travel_time_seconds_unk = b.rotation_travel_time_seconds;
-        rf::sr::sr_deserialize_timestamp(&mv->wait_timestamp, &b.wait_timestamp);
+        rf::sr::deserialize_timestamp(&mv->wait_timestamp, &b.wait_timestamp);
 
         add_handle_for_delayed_resolution(b.trigger_uid, &mv->trigger_handle);
 
@@ -1967,7 +1963,7 @@ namespace asg
         c->corpse_flags = b.corpse_flags;
         c->entity_type = b.entity_type;
         c->corpse_pose_name = b.pose_name.c_str();
-        rf::sr::sr_deserialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
+        rf::sr::deserialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
         c->body_temp = b.body_temp;
         c->corpse_state_vmesh_anim_index = b.state_anim;
         c->corpse_action_vmesh_anim_index = b.action_anim;
@@ -2155,6 +2151,7 @@ namespace asg
 
         player->flags = pd->player_flags & 0xFFF7; // clear bit-3 out
         player->entity_type = static_cast<uint8_t>(pd->entity_type);
+        player->field_11F8 = pd->field_11f8;
 
         player->spew_vector_index = pd->spew_vector_index;
         //Vector3::assign(&player->spew_pos, &world_pos, &pd->spew_pos);
@@ -2175,21 +2172,18 @@ namespace asg
             player->view_from_handle = -1;
         }
 
-        //    g) weapon_prefs[32]
-        //for (int i = 0; i < 32; ++i) {
-        //    player[1].settings.controls.bindings[i].default_mouse_btn_id = pd->weapon_prefs[i];
-        //}
+        for (int i = 0; i < 32; ++i) {
+            player->weapon_prefs[i] = static_cast<int>(pd->weapon_prefs[i]);
+        }
 
-        Vector3* gun_pos = reinterpret_cast<Vector3*>(reinterpret_cast<char*>(&player->shield_decals) + 12);
-        Matrix3* gun_orient = reinterpret_cast<Matrix3*>(reinterpret_cast<char*>(&player->shield_decals) + 12 + sizeof(Vector3));
-        gun_pos->assign(&world_pos, &pd->fpgun_pos);
-        gun_orient->assign(&pd->fpgun_orient);
+        player->fpgun_data.fpgun_pos.assign(&world_pos, &pd->fpgun_pos);
+        player->fpgun_data.fpgun_orient.assign(&pd->fpgun_orient);
 
         bool dec21 = (pd->flags & 0x01) != 0;
         bool dec23 = (pd->flags & 0x02) != 0;
-        //player->shield_decals[21] = dec21;
-        //player->shield_decals[22] = pd->grenade_mode;
-        //player->shield_decals[23] = dec23;
+        player->fpgun_data.show_silencer = dec21;
+        player->fpgun_data.grenade_mode = static_cast<int>(pd->grenade_mode);
+        player->fpgun_data.remote_charge_in_hand = dec23;
 
         int cur = ent->ai.current_primary_weapon;
         if (cur == remote_charge_weapon_type && !dec23)
@@ -2466,6 +2460,7 @@ static toml::table make_common_player_table(const asg::SavegameCommonDataPlayer&
     cp.insert("clip_h", p.clip_h);
     cp.insert("fov_h", p.fov_h);
     cp.insert("player_flags", p.player_flags);
+    cp.insert("field_11f8", p.field_11f8);
     cp.insert("entity_uid", p.entity_uid);
     cp.insert("entity_type", int(p.entity_type));
 
@@ -3121,6 +3116,7 @@ bool parse_common_player(const toml::table& tbl, asg::SavegameCommonDataPlayer& 
     out.clip_h = tbl["clip_h"].value_or(0);
     out.fov_h = tbl["fov_h"].value_or(0.f);
     out.player_flags = tbl["player_flags"].value_or(0);
+    out.field_11f8 = static_cast<int16_t>(tbl["field_11f8"].value_or(tbl["field_36"].value_or(0)));
     out.entity_uid = tbl["entity_uid"].value_or(-1);
     xlog::warn("read entity_uid {}", out.entity_uid);
     out.entity_type = tbl["entity_type"].value_or(0);
