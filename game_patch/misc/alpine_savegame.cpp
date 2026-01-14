@@ -2630,6 +2630,7 @@ static toml::table make_item_table(const asg::SavegameItemDataBlock& it)
 {
     toml::table t = make_object_table(it.obj);
     t.insert("respawn_time_ms", it.respawn_time_ms);
+    t.insert("respawn_next_timer", it.respawn_next_timer);
     t.insert("alpha", it.alpha);
     t.insert("create_time", it.create_time);
     t.insert("flags", it.flags);
@@ -3122,7 +3123,7 @@ bool parse_common_player(const toml::table& tbl, asg::SavegameCommonDataPlayer& 
     out.player_flags = tbl["player_flags"].value_or(0);
     out.entity_uid = tbl["entity_uid"].value_or(-1);
     xlog::warn("read entity_uid {}", out.entity_uid);
-    out.entity_type = static_cast<uint8_t>(tbl["entity_type"].value_or(0));
+    out.entity_type = tbl["entity_type"].value_or(0);
     xlog::warn("read entity_type {}", out.entity_type);
 
     if (auto arr = tbl["weapon_prefs"].as_array()) {
@@ -3212,12 +3213,12 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
 
         // ammo arrays
         if (auto ca = tbl["weapons_clip_ammo"].as_array()) {
-            auto v = asg::parse_f32_array(*ca);
-            for (size_t i = 0; i < v.size() && i < 32; ++i) e.weapons_clip_ammo[i] = int(v[i]);
+            for (size_t i = 0; i < ca->size() && i < 32; ++i)
+                e.weapons_clip_ammo[i] = static_cast<int16_t>((*ca)[i].value_or<int>(0));
         }
         if (auto aa = tbl["weapons_ammo"].as_array()) {
-            auto v = asg::parse_f32_array(*aa);
-            for (size_t i = 0; i < v.size() && i < 32; ++i) e.weapons_ammo[i] = int(v[i]);
+            for (size_t i = 0; i < aa->size() && i < 32; ++i)
+                e.weapons_ammo[i] = static_cast<int16_t>((*aa)[i].value_or<int>(0));
         }
 
         e.possesed_weapons_bitfield = tbl["possesed_weapons_bitfield"].value_or(0);
@@ -3231,8 +3232,8 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
         }
 
         // more AI…
-        e.ai_mode = static_cast<uint8_t>(tbl["ai_mode"].value_or(0));
-        e.ai_submode = static_cast<uint8_t>(tbl["ai_submode"].value_or(0));
+        e.ai_mode = tbl["ai_mode"].value_or(0);
+        e.ai_submode = tbl["ai_submode"].value_or(0);
         e.move_mode = tbl["move_mode"].value_or(0);
         e.ai_mode_parm_0 = tbl["ai_mode_parm_0"].value_or(0);
         e.ai_mode_parm_1 = tbl["ai_mode_parm_1"].value_or(0);
@@ -3453,6 +3454,7 @@ bool parse_items(const toml::array& arr, std::vector<asg::SavegameItemDataBlock>
 
         // 2) item‐specific
         ib.respawn_time_ms = tbl["respawn_time_ms"].value_or(-1);
+        ib.respawn_next_timer = tbl["respawn_next_timer"].value_or(-1);
         ib.alpha = tbl["alpha"].value_or(0);
         ib.create_time = tbl["create_time"].value_or(0);
         ib.flags = tbl["flags"].value_or(0);
@@ -3570,7 +3572,7 @@ bool parse_movers(const toml::array& arr, std::vector<asg::SavegameLevelKeyframe
         b.trigger_uid = tbl["trigger_uid"].value_or(-1);
         b.dist_travelled = tbl["dist_travelled"].value_or(0.0f);
         b.cur_vel = tbl["cur_vel"].value_or(0.0f);
-        b.stop_completely_at_keyframe = tbl["stop_completely_at_keyframe"].value_or(false);
+        b.stop_completely_at_keyframe = tbl["stop_completely_at_keyframe"].value_or(0);
 
         out.push_back(std::move(b));
     }
@@ -3642,7 +3644,14 @@ bool parse_decals(const toml::array& arr, std::vector<asg::SavegameLevelDecalDat
 
         d.bitmap_filename = tbl["bitmap_filename"].value_or(std::string{});
         d.flags = tbl["flags"].value_or(0);
-        d.alpha = tbl["alpha"].value_or(1.0f);
+        {
+            int alpha = tbl["alpha"].value_or(255);
+            if (alpha < 0)
+                alpha = 0;
+            if (alpha > 255)
+                alpha = 255;
+            d.alpha = static_cast<uint8_t>(alpha);
+        }
         d.tiling_scale = tbl["tiling_scale"].value_or(1.0f);
 
         out.push_back(std::move(d));
