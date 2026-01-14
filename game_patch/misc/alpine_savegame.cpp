@@ -275,8 +275,8 @@ namespace asg
         // 4) spew
         data.spew_vector_index = pp->spew_vector_index;
         xlog::warn("[SP] spew_vector_index = {}", data.spew_vector_index);
-        //pp->spew_pos.assign(&data.spew_pos, &pp->spew_pos);
-        data.spew_pos = pp->spew_pos;
+        rf::Vector3 spew_tmp;
+        data.spew_pos.assign(&spew_tmp, &pp->spew_pos);
         xlog::warn("[SP] spew_pos = ({:.3f},{:.3f},{:.3f})", data.spew_pos.x, data.spew_pos.y, data.spew_pos.z);
 
         // 5) key items bitmask
@@ -308,8 +308,9 @@ namespace asg
 
         // 8) first-person gun
         {
-            data.fpgun_pos = pp->fpgun_data.fpgun_pos;
-            data.fpgun_orient = pp->fpgun_data.fpgun_orient;
+            rf::Vector3 gun_tmp;
+            data.fpgun_pos.assign(&gun_tmp, &pp->fpgun_data.fpgun_pos);
+            data.fpgun_orient.assign(&pp->fpgun_data.fpgun_orient);
             xlog::warn("[SP] fpgun_pos = ({:.3f},{:.3f},{:.3f})", data.fpgun_pos.x, data.fpgun_pos.y, data.fpgun_pos.z);
             xlog::warn("[SP] fpgun_orient.rvec = ({:.3f},{:.3f},{:.3f})", data.fpgun_orient.rvec.x,
                        data.fpgun_orient.rvec.y, data.fpgun_orient.rvec.z);
@@ -535,9 +536,16 @@ namespace asg
     inline SavegameClutterDataBlock make_clutter_block(rf::Clutter* c)
     {
         SavegameClutterDataBlock b{};
-        fill_object_block(c, b.obj);
+        b.uid = c->uid;
+        b.parent_uid = uid_from_handle(c->parent_handle);
+        rf::compress_vector3(rf::world_solid, &c->p_data.pos, &b.pos);
+        rf::Quaternion q;
+        q.from_matrix(&c->orient);
+        b.orient.from_quat(&q);
         rf::sr::serialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
         rf::sr::serialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
+        b.hidden = (c->obj_flags & rf::ObjectFlags::OF_HIDDEN) != 0;
+        b.skin_name = ""; //todo
 
         b.links.clear();
         for (auto handle_ptr : c->links) {
@@ -1597,9 +1605,37 @@ namespace asg
 
     static void apply_clutter_fields(rf::Clutter* c, const SavegameClutterDataBlock& b)
     {
-        // 1) restore the common Object fields (life, armor, pos/orient, physics, obj_flags, etc)
-        deserialize_object_state(c, b.obj);
-        xlog::warn("attempting to deserialize clutter {}", b.obj.uid);
+        rf::Matrix3 saved_orient = c->orient;
+        rf::Matrix3 saved_physics_orient = c->p_data.orient;
+
+        // 1) restore the minimal Object fields (pos/orient, uid, hidden, parent)
+        c->uid = b.uid;
+        rf::decompress_vector3(rf::world_solid, &b.pos, &c->p_data.pos);
+        c->pos = c->p_data.pos;
+        c->last_pos = c->p_data.pos;
+        c->p_data.next_pos = c->p_data.pos;
+
+        rf::Quaternion q;
+        q.unpack(&b.orient);
+        q.extract_matrix(&c->p_data.orient);
+        c->p_data.orient.orthogonalize();
+        c->orient = c->p_data.orient;
+
+        if (b.hidden) {
+            if (!(c->obj_flags & rf::ObjectFlags::OF_HIDDEN)) {
+                rf::obj_hide(c);
+            }
+        }
+        else if (c->obj_flags & rf::ObjectFlags::OF_HIDDEN) {
+            rf::obj_unhide(c);
+        }
+
+        add_handle_for_delayed_resolution(b.parent_uid, &c->parent_handle);
+        xlog::warn("attempting to deserialize clutter {}", b.uid);
+
+        c->orient = saved_orient;
+        c->p_data.orient = saved_physics_orient;
+        c->p_data.next_orient = saved_physics_orient;
 
         // 2) rehydrate the two timestamps
         rf::sr::deserialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
@@ -1621,7 +1657,7 @@ namespace asg
         // build a UID → block map
         std::unordered_map<int, SavegameClutterDataBlock> blkmap;
         blkmap.reserve(blocks.size());
-        for (auto const& b : blocks) blkmap[b.obj.uid] = b;
+        for (auto const& b : blocks) blkmap[b.uid] = b;
 
         // if you want to skip transition-only clutter exactly like stock:
         bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
@@ -1634,7 +1670,7 @@ namespace asg
             
             auto it = blkmap.find(c->uid);
             if (it != blkmap.end()) {
-                xlog::warn("checking clutter from asg uid {}, original uid {}", it->second.obj.uid, c->uid);
+                xlog::warn("checking clutter from asg uid {}, original uid {}", it->second.uid, c->uid);
                 apply_clutter_fields(c, it->second);
             }
             else {
@@ -2136,8 +2172,8 @@ namespace asg
         player->field_11F8 = pd->field_11f8;
 
         player->spew_vector_index = pd->spew_vector_index;
-        //Vector3::assign(&player->spew_pos, &world_pos, &pd->spew_pos);
-        player->spew_pos.assign(&world_pos, &pd->spew_pos);
+        rf::Vector3 spew_tmp;
+        player->spew_pos.assign(&spew_tmp, &pd->spew_pos);
 
         {
             uint32_t bits = *reinterpret_cast<const uint32_t*>(&pd->key_items);
@@ -2158,7 +2194,8 @@ namespace asg
             player->weapon_prefs[i] = static_cast<int>(pd->weapon_prefs[i]);
         }
 
-        player->fpgun_data.fpgun_pos.assign(&world_pos, &pd->fpgun_pos);
+        rf::Vector3 gun_tmp;
+        player->fpgun_data.fpgun_pos.assign(&gun_tmp, &pd->fpgun_pos);
         player->fpgun_data.fpgun_orient.assign(&pd->fpgun_orient);
 
         bool dec21 = (pd->flags & 0x01) != 0;
@@ -2625,9 +2662,17 @@ static toml::table make_item_table(const asg::SavegameItemDataBlock& it)
 
 static toml::table make_clutter_table(const asg::SavegameClutterDataBlock& c)
 {
-    toml::table t = make_object_table(c.obj);
+    toml::table t;
+    t.insert("uid", c.uid);
+    t.insert("parent_uid", c.parent_uid);
+    toml::array pos{c.pos.x, c.pos.y, c.pos.z};
+    t.insert("pos", std::move(pos));
+    toml::array quat{c.orient.x, c.orient.y, c.orient.z, c.orient.w};
+    t.insert("orient", std::move(quat));
     t.insert("delayed_kill_timestamp", c.delayed_kill_timestamp);
     t.insert("corpse_create_timestamp", c.corpse_create_timestamp);
+    t.insert("hidden", c.hidden);
+    t.insert("skin_name", c.skin_name);
     toml::array links;
     for (auto l : c.links) links.push_back(l);
     t.insert("links", std::move(links));
@@ -3413,10 +3458,15 @@ bool parse_clutter(const toml::array& arr, std::vector<asg::SavegameClutterDataB
         if (!node.is_table())
             continue;
         auto ct = *node.as_table();
-        asg::SavegameClutterDataBlock cb;
-        parse_object(ct, cb.obj);
+        asg::SavegameClutterDataBlock cb{};
+        cb.uid = ct["uid"].value_or(0);
+        cb.parent_uid = ct["parent_uid"].value_or(-1);
+        asg::parse_i16_vector(ct, "pos", cb.pos);
+        asg::parse_i16_quat(ct, "orient", cb.orient);
         cb.delayed_kill_timestamp = ct["delayed_kill_timestamp"].value_or(-1);
         cb.corpse_create_timestamp = ct["corpse_create_timestamp"].value_or(-1);
+        cb.hidden = ct["hidden"].value_or(false);
+        cb.skin_name = ct["skin_name"].value_or("");
         if (auto links = ct["links"].as_array())
             for (auto& v : *links)
                 if (auto uid = v.value<int>())
@@ -4010,332 +4060,6 @@ bool deserialize_savegame_from_asg_file(const std::string& filename, asg::Savega
         xlog::error("ASG malformed or missing levels section");
         return false;
     }
-    /*
-    // 4) Common
-    if (auto common_node = root["common"]; common_node && common_node.is_table()) {
-        auto common_tbl = *common_node.as_table();
-
-        // --- common.game ---
-        if (auto game_node = common_tbl["game"]; game_node && game_node.is_table()) {
-            auto game_tbl = *game_node.as_table();
-            auto& cg = out.common.game;
-
-            cg.difficulty = static_cast<rf::GameDifficultyLevel>(game_tbl["difficulty"].value_or(0));
-            cg.newest_message_index = game_tbl["newest_message_index"].value_or(0);
-            cg.num_logged_messages = game_tbl["num_logged_messages"].value_or(0);
-            cg.messages_total_height = game_tbl["messages_total_height"].value_or(0);
-
-            cg.messages.clear();
-            if (auto msgs = game_tbl["logged_messages"].as_array()) {
-                for (auto& m_node : *msgs) {
-                    if (!m_node.is_table())
-                        continue;
-                    auto m_tbl = *m_node.as_table();
-                    asg::AlpineLoggedHudMessage msg;
-                    msg.persona_index = m_tbl["speaker"].value_or(0);
-                    msg.time_string = m_tbl["time_string"].value_or(0);
-                    msg.display_height = m_tbl["display_height"].value_or(0);
-                    msg.message = m_tbl["message"].value_or(std::string{});
-                    cg.messages.push_back(std::move(msg));
-                }
-            }
-        }
-        else {
-            xlog::error("Missing or invalid [common.game]");
-            return false;
-        }
-
-        // --- common.player ---
-        if (auto player_node = common_tbl["player"]; player_node && player_node.is_table()) {
-            auto player_tbl = *player_node.as_table();
-            auto& cp = out.common.player;
-
-            cp.entity_host_uid = player_tbl["entity_host_uid"].value_or(-1);
-            cp.spew_vector_index = player_tbl["spew_vector_index"].value_or(0);
-
-            if (auto arr = player_tbl["spew_pos"].as_array()) {
-                auto v = asg::parse_f32_array(*arr);
-                if (v.size() == 3)
-                    cp.spew_pos = {v[0], v[1], v[2]};
-            }
-
-            cp.key_items = player_tbl["key_items"].value_or(0.f);
-            cp.view_obj_uid = player_tbl["view_obj_uid"].value_or(-1);
-            cp.grenade_mode = static_cast<uint8_t>(player_tbl["grenade_mode"].value_or(0));
-
-            // fpgun_orient is an array-of-arrays [ [rvec], [uvec], [fvec] ]
-            if (auto orient_arr = player_tbl["fpgun_orient"].as_array()) {
-                int idx = 0;
-                for (auto& row_node : *orient_arr) {
-                    if (auto row = row_node.as_array()) {
-                        auto v = asg::parse_f32_array(*row);
-                        if (v.size() == 3) {
-                            switch (idx) {
-                            case 0:
-                                cp.fpgun_orient.rvec = {v[0], v[1], v[2]};
-                                break;
-                            case 1:
-                                cp.fpgun_orient.uvec = {v[0], v[1], v[2]};
-                                break;
-                            case 2:
-                                cp.fpgun_orient.fvec = {v[0], v[1], v[2]};
-                                break;
-                            }
-                        }
-                    }
-                    ++idx;
-                }
-            }
-
-            // fpgun_pos [x,y,z]
-            if (auto fp = player_tbl["fpgun_pos"].as_array()) {
-                auto v = asg::parse_f32_array(*fp);
-                if (v.size() == 3)
-                    cp.fpgun_pos = {v[0], v[1], v[2]};
-            }
-        }
-        else {
-            xlog::error("Missing or invalid [common.player]");
-            return false;
-        }
-    }
-    else {
-        xlog::error("Missing [common]");
-        return false;
-    }
-
-
-    // 5) Levels
-    if (auto levels_node = root["levels"]; levels_node && levels_node.is_array()) {
-        auto& levels_arr = *levels_node.as_array();
-        out.levels.clear();
-
-        for (auto& lvl_node : levels_arr) {
-            if (!lvl_node.is_table())
-                continue;
-            auto lvl_tbl = *lvl_node.as_table();
-            asg::SavegameLevelData lvl;
-
-            // ——— Level header ———
-            lvl.header.filename = lvl_tbl["filename"].value_or(std::string{});
-            lvl.header.level_time = lvl_tbl["level_time"].value_or(0.0);
-
-            if (auto a = lvl_tbl["aabb_min"].as_array()) {
-                auto v = asg::parse_f32_array(*a);
-                if (v.size() == 3)
-                    lvl.header.aabb_min = {v[0], v[1], v[2]};
-            }
-            if (auto a = lvl_tbl["aabb_max"].as_array()) {
-                auto v = asg::parse_f32_array(*a);
-                if (v.size() == 3)
-                    lvl.header.aabb_max = {v[0], v[1], v[2]};
-            }
-
-            // ——— Entities ———
-            lvl.entities.clear();
-            if (auto ents = lvl_tbl["entities"].as_array()) {
-                for (auto& e_node : *ents) {
-                    if (!e_node.is_table())
-                        continue;
-                    auto et = *e_node.as_table();
-
-                    asg::SavegameEntityDataBlock e{};
-                    // object fields
-                    e.obj.uid = et["uid"].value_or(0);
-                    e.obj.parent_uid = et["parent_uid"].value_or(-1);
-                    e.obj.life = et["life"].value_or(0);
-                    e.obj.armor = et["armor"].value_or(0);
-
-                    if(auto pa = et["pos"].as_array())
-                    {
-                        auto v = asg::parse_f32_array(*pa);
-                        if (v.size() == 3) {
-                            // build a full-precision vector then compress it
-                            rf::Vector3 tmp{v[0], v[1], v[2]};
-                            rf::compress_vector3(rf::world_solid, &tmp, &e.obj.pos);
-                        }
-                    }
-
-                    if (auto va = et["vel"].as_array()) {
-                        auto v = asg::parse_f32_array(*va);
-                        if (v.size() == 3) {
-                            rf::Vector3 tmp{v[0], v[1], v[2]};
-                            // build a full-precision vector then compress it
-                            rf::compress_velocity(&tmp, &e.obj.vel);
-                        }
-                    }
-                    e.obj.friendliness = et["friendliness"].value_or(0);
-                    e.obj.host_tag_handle = et["host_tag_handle"].value_or(0);
-                    if (auto qa = et["orient"].as_array()) {
-                        auto v = asg::parse_f32_array(*qa);
-                        if (v.size() == 4) {
-                            rf::Quaternion q;
-                            q.x = v[0];
-                            q.y = v[1];
-                            q.z = v[2];
-                            q.w = v[3];
-                            e.obj.orient.from_quat(&q);
-                        }
-                    }
-                    e.obj.obj_flags = et["obj_flags"].value_or(0);
-                    e.obj.host_uid = et["host_uid"].value_or(-1);
-                    // …and any other object sub-fields you serialized…
-
-                    // AI + weapon state
-                    e.current_primary_weapon = static_cast<uint8_t>(et["current_primary_weapon"].value_or(0));
-                    e.current_secondary_weapon = static_cast<uint8_t>(et["current_secondary_weapon"].value_or(0));
-                    e.info_index = et["info_index"].value_or(0);
-
-                    if (auto ca = et["weapons_clip_ammo"].as_array()) {
-                        auto v = asg::parse_f32_array(*ca);
-                        for (size_t i = 0; i < v.size() && i < 32; ++i) e.weapons_clip_ammo[i] = static_cast<int>(v[i]);
-                    }
-                    if (auto aa = et["weapons_ammo"].as_array()) {
-                        auto v = asg::parse_f32_array(*aa);
-                        for (size_t i = 0; i < v.size() && i < 32; ++i) e.weapons_ammo[i] = static_cast<int>(v[i]);
-                    }
-                    e.possesed_weapons_bitfield = et["possesed_weapons_bitfield"].value_or(0);
-
-                    // hate list
-                    e.hate_list.clear();
-                    if (auto ha = et["hate_list"].as_array()) {
-                        for (auto& x : *ha)
-                            if (auto v = x.value<int>())
-                                e.hate_list.push_back(*v);
-                    }
-
-                    // AI modes, flags, etc.
-                    e.ai_mode = static_cast<uint8_t>(et["ai_mode"].value_or(0));
-                    e.ai_submode = static_cast<uint8_t>(et["ai_submode"].value_or(0));
-                    e.move_mode = et["move_mode"].value_or(0);
-                    e.ai_mode_parm_0 = et["ai_mode_parm_0"].value_or(0);
-                    e.ai_mode_parm_1 = et["ai_mode_parm_1"].value_or(0);
-                    e.target_uid = et["target_uid"].value_or(-1);
-                    e.look_at_uid = et["look_at_uid"].value_or(-1);
-                    e.shoot_at_uid = et["shoot_at_uid"].value_or(-1);
-                    // …and so on for ci_rot, ci_move, corpse_carry_uid, ai_flags,
-                    //     eye_pos/orient, entity_flags, control_data, etc.
-
-                    lvl.entities.push_back(std::move(e));
-                }
-            }
-
-            // ——— Items ———
-            lvl.items.clear();
-            if (auto items = lvl_tbl["items"].as_array()) {
-                for (auto& i_node : *items) {
-                    if (!i_node.is_table())
-                        continue;
-                    auto it = *i_node.as_table();
-                    asg::SavegameItemDataBlock ib{};
-                    ib.obj.uid = it["uid"].value_or(0);
-                    // …fill the rest of ib.obj like above…
-                    ib.respawn_timer = it["respawn_timer"].value_or(-1);
-                    ib.alpha = it["alpha"].value_or(0);
-                    ib.create_time = it["create_time"].value_or(0);
-                    ib.flags = it["flags"].value_or(0);
-                    ib.item_cls_id = it["item_cls_id"].value_or(0);
-                    lvl.items.push_back(std::move(ib));
-                }
-            }
-
-            // ——— Clutter ———
-            lvl.clutter.clear();
-            if (auto cls = lvl_tbl["clutter"].as_array()) {
-                for (auto& c_node : *cls) {
-                    if (!c_node.is_table())
-                        continue;
-                    auto ct = *c_node.as_table();
-                    asg::SavegameClutterDataBlock cb{};
-                    cb.obj.uid = ct["uid"].value_or(0);
-                    // …fill cb.obj…
-                    cb.delayed_kill_timestamp = ct["delayed_kill_timestamp"].value_or(-1);
-                    cb.corpse_create_timestamp = ct["corpse_create_timestamp"].value_or(-1);
-                    cb.links.clear();
-                    if (auto la = ct["links"].as_array()) {
-                        for (auto& x : *la)
-                            if (auto v = x.value<int>())
-                                cb.links.push_back(*v);
-                    }
-                    lvl.clutter.push_back(std::move(cb));
-                }
-            }
-
-            // ——— Triggers ———
-            lvl.triggers.clear();
-            if (auto trs = lvl_tbl["triggers"].as_array()) {
-                for (auto& t_node : *trs) {
-                    if (!t_node.is_table())
-                        continue;
-                    auto tt = *t_node.as_table();
-                    asg::SavegameTriggerDataBlock tb{};
-                    tb.uid = tt["uid"].value_or(0);
-                    if (auto pa = tt["pos"].as_array()) {
-                        auto v = asg::parse_f32_array(*pa);
-                        if (v.size() == 3) {
-                            // build a full-precision vector then compress it
-                            rf::Vector3 tmp{v[0], v[1], v[2]};
-                            rf::compress_vector3(rf::world_solid, &tmp, &tb.pos);
-                        }
-                    }
-                    tb.count = tt["count"].value_or(0);
-                    tb.time_last_activated = tt["time_last_activated"].value_or(0);
-                    tb.trigger_flags = tt["trigger_flags"].value_or(0);
-                    tb.activator_handle = tt["activator_handle"].value_or(-1);
-                    tb.button_active_timestamp = tt["button_active_timestamp"].value_or(-1);
-                    tb.inside_timestamp = tt["inside_timestamp"].value_or(-1);
-                    tb.links.clear();
-                    if (auto la = tt["links"].as_array()) {
-                        for (auto& x : *la)
-                            if (auto v = x.value<int>())
-                                tb.links.push_back(*v);
-                    }
-                    lvl.triggers.push_back(std::move(tb));
-                }
-            }
-
-            // ——— “Generic” events, invulnerable, when_dead, goal_create, alarm_siren, cyclic_timer ———
-            // use exactly the same pattern:
-            //   auto evs = lvl_tbl["events_generic"].as_array(); for each table → fill SavegameEventDataBlock etc…
-
-            // ——— Decals ———
-            lvl.decals.clear();
-            if (auto dcs = lvl_tbl["decals"].as_array()) {
-                for (auto& d_node : *dcs) {
-                    if (!d_node.is_table())
-                        continue;
-                    auto dt = *d_node.as_table();
-                    asg::SavegameLevelDecalDataBlock db{};
-                    if (auto pa = dt["pos"].as_array()) {
-                        auto v = asg::parse_f32_array(*pa);
-                        if (v.size() == 3)
-                            db.pos = {v[0], v[1], v[2]};
-                    }
-                    // …orient, width, flags, alpha, tiling_scale, bitmap_filename…
-                    lvl.decals.push_back(std::move(db));
-                }
-            }
-
-            // ——— Dead room UIDs ———
-            lvl.killed_room_uids.clear();
-            if (auto kro = lvl_tbl["dead_room_uids"].as_array()) {
-                for (auto& x : *kro)
-                    if (auto v = x.value<int>())
-                        lvl.killed_room_uids.push_back(*v);
-            }
-
-            // ——— Bolt‐emitters, particle‐emitters, push_regions, movers, weapons, corpses, blood_pools,
-            // deleted_event_uids, persistent_goals, geomod_craters ——— …same as above: grab each array via as_array(),
-            // loop, as_table(), fill your DataBlock…
-
-            out.levels.push_back(std::move(lvl));
-        }
-    }
-    else {
-        xlog::error("Missing or invalid [levels] array");
-        return false;
-    }*/
-
 
     return true;
 }
@@ -4487,7 +4211,7 @@ FunHook<void(const char* msg, int16_t persona_type)> hud_save_persona_msg_hook{
             xlog::warn("[ASG] saved HUD message to buffer: {}", msg);
 
             // maintain old code temporarily
-            hud_save_persona_msg_hook.call_target(msg, persona_type);
+            //hud_save_persona_msg_hook.call_target(msg, persona_type);
         }
         else {
             hud_save_persona_msg_hook.call_target(msg, persona_type);
@@ -4892,7 +4616,7 @@ FunHook<bool()> sr_parse_ponr_table_hook{
 FunHook<int()> sr_get_num_logged_messages_hook{
     0x004B57A0,
     []() {
-         if (g_alpine_game_config.use_new_savegame_format) {
+        if (g_alpine_game_config.use_new_savegame_format) {
             return g_save_data.common.game.num_logged_messages;
         }
         else {

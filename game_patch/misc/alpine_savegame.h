@@ -175,9 +175,16 @@ namespace asg
 
     struct SavegameClutterDataBlock
     {
-        SavegameObjectDataBlock obj;
+        int uid;
+        int parent_uid;
+        rf::ShortVector pos;
+        rf::Vector3* pos_ha;
+        rf::ShortQuat orient;
+        rf::Matrix3* orient_ha;
         int delayed_kill_timestamp;
         int corpse_create_timestamp;
+        bool hidden;
+        std::string skin_name;
         std::vector<int> links;
     };
 
