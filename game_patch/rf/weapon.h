@@ -249,7 +249,7 @@ namespace rf
         int sticky_host_handle;
         Vector3 sticky_host_pos_offset;
         Matrix3 sticky_host_orient;
-        ObjFriendliness friendliness;
+        ObjFriendliness weap_friendliness;
         int target_handle;
         Timestamp scan_time;
         float pierce_power_left;

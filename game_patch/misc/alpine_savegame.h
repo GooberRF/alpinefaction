@@ -166,9 +166,10 @@ namespace asg
     struct SavegameItemDataBlock
     {
         SavegameObjectDataBlock obj;
-        int respawn_timer;
-        int alpha;
-        int create_time;
+        int respawn_time_ms;
+        int respawn_next_timer;
+        float alpha;
+        float create_time;
         int flags;
         int item_cls_id;
     };
@@ -301,24 +302,16 @@ namespace asg
     struct SavegameLevelWeaponDataBlock
     {
         SavegameObjectDataBlock obj;
-        int next_weapon_uid;
-        int prev_weapon_uid;
         int info_index;
         float life_left_seconds;
-        int fly_sound_handle;
-        int light_handle;
         int weapon_flags;
-        float flicker_index;
         int sticky_host_uid;
         rf::Vector3 sticky_host_pos_offset;
         rf::Matrix3 sticky_host_orient;
-        int friendliness;
+        uint8_t weap_friendliness;
         int target_uid;
-        int scan_time;
         float pierce_power_left;
         float thrust_left;
-        int t_flags;
-        rf::Vector3 water_hit_point;
         rf::Vector3 firing_pos;
     };
 

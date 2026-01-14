@@ -300,7 +300,7 @@ namespace asg
 
         // 7) weapon_prefs
         for (int i = 0; i < 32; ++i) {
-            data.weapon_prefs[i] = pp[1].key_items[i];
+            data.weapon_prefs[i] = pp->weapon_prefs[i];
         }
         xlog::warn("[SP] weapon_prefs[0..3] = {},{},{},{}", data.weapon_prefs[0], data.weapon_prefs[1],
                    data.weapon_prefs[2], data.weapon_prefs[3]);
@@ -327,7 +327,7 @@ namespace asg
 
         // 10) flags bit-packing
         {
-            uint8_t low, high;
+            /* uint8_t low, high;
             bool bit0 = (*reinterpret_cast<const uint8_t*>(reinterpret_cast<const char*>(pp) +
                                                            offsetof(rf::Player, shield_decals) + 21) &
                          1) != 0;
@@ -349,7 +349,18 @@ namespace asg
 
             data.flags = low | high;
             xlog::warn("[SP] flags packing → bit0={} bit1={} cover={} ai_high={} result=0x{:02X}", bit0, bit1, cover,
-                       ai_high, data.flags);
+                       ai_high, data.flags);*/
+
+            uint8_t out = 0; // keep bits 4..7
+
+            out |= (pp->fpgun_data.show_silencer ? 1u : 0u) << 0;
+            out |= (pp->fpgun_data.remote_charge_in_hand ? 1u : 0u) << 1;
+            auto ent = rf::entity_from_handle(pp->entity_handle);
+            out |= ((ent->ai.ai_flags >> 16) & 1u) << 2;
+            //out |= (g_player_cover_id & 1u) << 3;
+
+            data.flags = out;
+            xlog::warn("[SP] flags packing → result=0x{:02X}", data.flags);
         }
 
         xlog::warn("[SP] exit serialize_player OK");
@@ -516,9 +527,10 @@ namespace asg
     {
         SavegameItemDataBlock b{};
         fill_object_block(it, b.obj);
-        b.respawn_timer = it->respawn_time_ms;
-        b.alpha = *reinterpret_cast<int*>(&it->alpha);
-        b.create_time = *reinterpret_cast<int*>(&it->create_time);
+        b.respawn_time_ms = it->respawn_time_ms;
+        b.respawn_next_timer = it->respawn_next.is_set() ? it->respawn_next.time_until() : -1;
+        b.alpha = it->alpha;
+        b.create_time = it->create_time;
         b.flags = it->item_flags;
         b.item_cls_id = it->info_index;
         return b;
@@ -569,8 +581,8 @@ namespace asg
         SavegameEventDataBlock b{};
         b.event_type = e->event_type;
         b.uid = e->uid;
-        xlog::warn("saved delay {} to {} for uid {}", e->delay_seconds, b.delay, e->uid);
         b.delay = e->delay_seconds;
+        xlog::warn("saved delay {} to {} for uid {}", e->delay_seconds, b.delay, e->uid);
         b.is_on_state = e->delayed_msg;
         b.delay_timer = e->delay_timestamp.is_set() ? e->delay_timestamp.time_until() : -1;
         b.activated_by_entity_uid = uid_from_handle(e->triggered_by_handle);
@@ -747,24 +759,16 @@ namespace asg
 
         fill_object_block(w, b.obj);
 
-        b.next_weapon_uid = uid_from_handle(reinterpret_cast<intptr_t>(w->next));
-        b.prev_weapon_uid = uid_from_handle(reinterpret_cast<intptr_t>(w->prev));
         b.info_index = w->info_index;
         b.life_left_seconds = w->lifeleft_seconds;
-        b.fly_sound_handle = w->fly_sound_handle;
-        b.light_handle = w->light_handle;
         b.weapon_flags = w->weapon_flags;
-        b.flicker_index = w->flicker_index;
         b.sticky_host_uid = uid_from_handle(w->sticky_host_handle);
         b.sticky_host_pos_offset = w->sticky_host_pos_offset;
         b.sticky_host_orient = w->sticky_host_orient;
-        b.friendliness = int(w->friendliness);
+        b.weap_friendliness = static_cast<uint8_t>(w->weap_friendliness);
         b.target_uid = uid_from_handle(w->target_handle);
-        b.scan_time = w->scan_time.is_set() ? w->scan_time.time_until() : -1;
         b.pierce_power_left = w->pierce_power_left;
         b.thrust_left = w->thrust_left;
-        b.t_flags = w->t_flags;
-        b.water_hit_point = w->water_hit_point;
         b.firing_pos = w->firing_pos;
 
         return b;
@@ -1029,9 +1033,9 @@ namespace asg
     {
         out.clear();
         for (rf::Weapon* t = rf::weapon_list.next; t != &rf::weapon_list; t = t->next) {
+            // 0x800 is IN_LEVEL_TRANSITION
+            // 0x20000000 is unknown
             if (t) {
-                // 0x800 is IN_LEVEL_TRANSITION
-                // 0x20000000 is unknown
                 if ((t->obj_flags & 0x20000800) == 0)
                     out.push_back(make_weapon_block(t));
             }
@@ -1187,7 +1191,7 @@ namespace asg
             return;
         }
         //xlog::warn("setting UID {} for previous UID {}", src.uid, o->uid);
-        //o->uid = src.uid;
+        o->uid = src.uid;
         
         // todo
         //o->life = rf::decompress_life_armor(static_cast<uint16_t>(src.life));
@@ -1217,6 +1221,7 @@ namespace asg
         o->obj_flags = static_cast<rf::ObjectFlags>(src.obj_flags);
 
         // parent_handle and host_handle are resolved later
+        //add_handle_for_delayed_resolution(src.uid, &o->uid);
         add_handle_for_delayed_resolution(src.parent_uid, &o->parent_handle);
         add_handle_for_delayed_resolution(src.host_uid, &o->host_handle);
 
@@ -1637,8 +1642,8 @@ namespace asg
             //    continue;
             
             auto it = blkmap.find(c->uid);
-            xlog::warn("checking clutter from asg uid {}, original uid {}", it->second.obj.uid, c->uid);
             if (it != blkmap.end()) {
+                xlog::warn("checking clutter from asg uid {}, original uid {}", it->second.obj.uid, c->uid);
                 apply_clutter_fields(c, it->second);
             }
             else {
@@ -1657,8 +1662,9 @@ namespace asg
         deserialize_object_state(it, b.obj);
 
         // 2) restore the two timestamps
-        rf::sr::sr_deserialize_timestamp(&it->respawn_next, &b.respawn_timer);
-        it->alpha = *reinterpret_cast<const float*>(&b.alpha);
+        it->respawn_time_ms = b.respawn_time_ms;
+        rf::sr::sr_deserialize_timestamp(&it->respawn_next, &b.respawn_next_timer);
+        it->alpha = b.alpha;
         it->create_time = b.create_time;
         it->item_flags = b.flags;
     }
@@ -1856,79 +1862,40 @@ namespace asg
         // 1) Restore common Object state
         deserialize_object_state(w, b.obj);
 
-        // 2) Restore weapon-specific fields
-        w->next = nullptr; // we'll resolve list links separately
-        w->prev = nullptr;
-        w->info_index = b.info_index;
         w->lifeleft_seconds = b.life_left_seconds;
-        w->fly_sound_handle = b.fly_sound_handle;
-        w->light_handle = b.light_handle;
         w->weapon_flags = b.weapon_flags;
-        w->flicker_index = b.flicker_index;
-
-        // sticky host
         add_handle_for_delayed_resolution(b.sticky_host_uid, &w->sticky_host_handle);
         w->sticky_host_pos_offset = b.sticky_host_pos_offset;
         w->sticky_host_orient = b.sticky_host_orient;
-
-        // friendliness, target
-        w->friendliness = static_cast<rf::ObjFriendliness>(b.friendliness);
+        w->weap_friendliness = static_cast<rf::ObjFriendliness>(b.weap_friendliness);
         add_handle_for_delayed_resolution(b.target_uid, &w->target_handle);
-
-        // scan, piercing, thrust
-        rf::sr::sr_deserialize_timestamp(&w->scan_time, &b.scan_time);
         w->pierce_power_left = b.pierce_power_left;
         w->thrust_left = b.thrust_left;
-
-        // firing position
         w->firing_pos = b.firing_pos;
     }
 
     static void weapon_deserialize_all_state(const std::vector<SavegameLevelWeaponDataBlock>& blocks)
     {
         clear_delayed_handles();
-        // build UID -> block map
-        std::unordered_map<int, SavegameLevelWeaponDataBlock> map;
-        map.reserve(blocks.size());
-        for (auto const& wb : blocks) map[wb.obj.uid] = wb;
 
-        bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
+        for (auto const& b : blocks) {
+            // decompress orientation & position from ObjectSavegameBlock
+            rf::Quaternion q;
+            q.unpack(&b.obj.orient);
 
-        // 1) Restore or kill existing weapons
-        for (rf::Weapon* w = rf::weapon_list.next; w != &rf::weapon_list; w = w->next) {
-            if ((w->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) && in_transition)
+            rf::Matrix3 m;
+            q.extract_matrix(&m);
+
+            rf::Vector3 p;
+            rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+
+            rf::Weapon* w = rf::weapon_create(b.info_index, -1, &p, &m, 0, 0);
+            if (!w)
                 continue;
 
-            auto it = map.find(w->uid);
-            if (it != map.end()) {
-                apply_weapon_fields(w, it->second);
-            }
-            else {
-                if (!(w->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION))
-                    rf::obj_flag_dead(w);
-            }
+            apply_weapon_fields(w, b);
         }
 
-        // 2) Spawn missing weapons
-        for (auto const& b : blocks) {
-            if (!rf::obj_lookup_from_uid(b.obj.uid)) {
-                // decompress orientation & position
-                rf::Quaternion q;
-                q.unpack(&b.obj.orient);
-                rf::Matrix3 m;
-                q.extract_matrix(&m);
-                rf::Vector3 p;
-                rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
-
-                // create
-                rf::Weapon* nw = rf::weapon_create(b.info_index, -1, &p, &m, 0, 0);
-                if (nw) {
-                    apply_weapon_fields(nw, b);
-                }
-            }
-        }
-
-        // 3) Resolve all delayed handle lookups
         resolve_delayed_handles();
     }
 
@@ -2405,7 +2372,7 @@ namespace asg
 
     int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr)
     {
-        if (uid >= 0) {
+        if (uid != -1) {
             g_sr_delayed_uids.push_back(uid);
             g_sr_delayed_ptrs.push_back(obj_handle_ptr);
         }
@@ -2662,7 +2629,7 @@ static toml::table make_entity_table(const asg::SavegameEntityDataBlock& e)
 static toml::table make_item_table(const asg::SavegameItemDataBlock& it)
 {
     toml::table t = make_object_table(it.obj);
-    t.insert("respawn_timer", it.respawn_timer);
+    t.insert("respawn_time_ms", it.respawn_time_ms);
     t.insert("alpha", it.alpha);
     t.insert("create_time", it.create_time);
     t.insert("flags", it.flags);
@@ -2850,16 +2817,12 @@ static toml::table make_weapon_table(const asg::SavegameLevelWeaponDataBlock& w)
 {
     toml::table t = make_object_table(w.obj);
 
-    t.insert("next_weapon_uid", w.next_weapon_uid);
-    t.insert("prev_weapon_uid", w.prev_weapon_uid);
     t.insert("info_index", w.info_index);
     t.insert("life_left_seconds", w.life_left_seconds);
-    t.insert("fly_sound_handle", w.fly_sound_handle);
-    t.insert("light_handle", w.light_handle);
     t.insert("weapon_flags", w.weapon_flags);
-    t.insert("flicker_index", w.flicker_index);
     t.insert("sticky_host_uid", w.sticky_host_uid);
-    t.insert("sticky_host_pos_offset", toml::array{w.sticky_host_pos_offset.x, w.sticky_host_pos_offset.y, w.sticky_host_pos_offset.z});
+    t.insert("sticky_host_pos_offset",
+        toml::array{w.sticky_host_pos_offset.x, w.sticky_host_pos_offset.y, w.sticky_host_pos_offset.z});
 
     toml::array sho;
     for (auto const& row : {w.sticky_host_orient.rvec, w.sticky_host_orient.uvec, w.sticky_host_orient.fvec}) {
@@ -2867,13 +2830,10 @@ static toml::table make_weapon_table(const asg::SavegameLevelWeaponDataBlock& w)
     }
     t.insert("sticky_host_orient", sho);
 
-    t.insert("friendliness", w.friendliness);
+    t.insert("weap_friendliness", static_cast<int64_t>(w.weap_friendliness));
     t.insert("target_uid", w.target_uid);
-    t.insert("scan_time", w.scan_time);
     t.insert("pierce_power_left", w.pierce_power_left);
     t.insert("thrust_left", w.thrust_left);
-    t.insert("t_flags", w.t_flags);
-    t.insert("water_hit_point", toml::array{w.water_hit_point.x, w.water_hit_point.y, w.water_hit_point.z});
     t.insert("firing_pos", toml::array{w.firing_pos.x, w.firing_pos.y, w.firing_pos.z});
 
     return t;
@@ -3492,7 +3452,7 @@ bool parse_items(const toml::array& arr, std::vector<asg::SavegameItemDataBlock>
         parse_object(tbl, ib.obj);
 
         // 2) item‐specific
-        ib.respawn_timer = tbl["respawn_timer"].value_or(-1);
+        ib.respawn_time_ms = tbl["respawn_time_ms"].value_or(-1);
         ib.alpha = tbl["alpha"].value_or(0);
         ib.create_time = tbl["create_time"].value_or(0);
         ib.flags = tbl["flags"].value_or(0);
@@ -3693,24 +3653,23 @@ bool parse_decals(const toml::array& arr, std::vector<asg::SavegameLevelDecalDat
 bool parse_weapons(const toml::array& arr, std::vector<asg::SavegameLevelWeaponDataBlock>& out)
 {
     out.clear();
+    out.reserve(arr.size());
+
     for (auto& node : arr) {
         if (!node.is_table())
             continue;
-        auto tbl = *node.as_table();
+
+        const auto& tbl = *node.as_table();
 
         asg::SavegameLevelWeaponDataBlock b{};
-        // 1) common Object fields
+
+        // 1) common ObjectSavegameBlock fields
         parse_object(tbl, b.obj);
 
-        // 2) weapon‐specific fields
-        b.next_weapon_uid = tbl["next_weapon_uid"].value_or(-1);
-        b.prev_weapon_uid = tbl["prev_weapon_uid"].value_or(-1);
+        // 2) WeaponSavegameBlock fields (stock)
         b.info_index = tbl["info_index"].value_or(0);
         b.life_left_seconds = tbl["life_left_seconds"].value_or(0.0f);
-        b.fly_sound_handle = tbl["fly_sound_handle"].value_or(0);
-        b.light_handle = tbl["light_handle"].value_or(0);
         b.weapon_flags = tbl["weapon_flags"].value_or(0);
-        b.flicker_index = tbl["flicker_index"].value_or(0);
         b.sticky_host_uid = tbl["sticky_host_uid"].value_or(-1);
 
         // sticky_host_pos_offset [x,y,z]
@@ -3737,26 +3696,30 @@ bool parse_weapons(const toml::array& arr, std::vector<asg::SavegameLevelWeaponD
                         case 2:
                             b.sticky_host_orient.fvec = {v[0], v[1], v[2]};
                             break;
+                        default:
+                            break;
                         }
                     }
                 }
                 ++i;
+                if (i >= 3)
+                    break;
             }
         }
 
-        b.friendliness = tbl["friendliness"].value_or(0);
-        b.target_uid = tbl["target_uid"].value_or(-1);
-        b.scan_time = tbl["scan_time"].value_or(-1);
-        b.pierce_power_left = tbl["pierce_power_left"].value_or(0);
-        b.thrust_left = tbl["thrust_left"].value_or(0);
-        b.t_flags = tbl["t_flags"].value_or(0);
-
-        // water_hit_point [x,y,z]
-        if (auto wh = tbl["water_hit_point"].as_array()) {
-            auto v = asg::parse_f32_array(*wh);
-            if (v.size() == 3)
-                b.water_hit_point = {v[0], v[1], v[2]};
+        // stored as integer, clamp to uint8 range
+        {
+            int f = tbl["weap_friendliness"].value_or(0);
+            if (f < 0)
+                f = 0;
+            if (f > 255)
+                f = 255;
+            b.weap_friendliness = static_cast<uint8_t>(f);
         }
+
+        b.target_uid = tbl["target_uid"].value_or(-1);
+        b.pierce_power_left = tbl["pierce_power_left"].value_or(0.0f);
+        b.thrust_left = tbl["thrust_left"].value_or(0.0f);
 
         // firing_pos [x,y,z]
         if (auto fp = tbl["firing_pos"].as_array()) {
@@ -3767,8 +3730,10 @@ bool parse_weapons(const toml::array& arr, std::vector<asg::SavegameLevelWeaponD
 
         out.push_back(std::move(b));
     }
+
     return true;
 }
+
 
 bool parse_blood_pools(const toml::array& arr, std::vector<asg::SavegameLevelBloodPoolDataBlock>& out)
 {
