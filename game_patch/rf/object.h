@@ -188,6 +188,7 @@ namespace rf
     static auto& obj_physics_activate = addr_as_ref<void(Object* objp)>(0x0040A420);
 
     static auto& obj_set_friendliness = addr_as_ref<void(Object* obj, int friendliness)>(0x00489F70);
+    static auto& obj_get_ambient_color = addr_as_ref<void(Color* clr_out, rf::Object* obj)>(0x004605D0);
 
     static auto& object_list = addr_as_ref<Object>(0x0073D880);
 

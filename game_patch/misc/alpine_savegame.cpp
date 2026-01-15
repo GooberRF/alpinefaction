@@ -899,7 +899,9 @@ namespace asg
         b.lifetime_seconds = c->lifetime_seconds;
         b.corpse_flags = c->corpse_flags;
         b.entity_type = c->entity_type;
-        b.pose_name = c->corpse_pose_name.c_str();
+        if (c->vmesh) {
+            b.mesh_name = rf::vmesh_get_name(c->vmesh);
+        }
         rf::sr::serialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
         b.body_temp = c->body_temp;
         b.state_anim = c->corpse_state_vmesh_anim_index;
@@ -949,6 +951,13 @@ namespace asg
             if (e->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) // IN_LEVEL_TRANSITION
             {
                 xlog::warn("skipping UID {} - transition flag is set", e->uid);
+                continue;
+            }
+
+            if (!rf::obj_is_player(e) &&
+                ((e->obj_flags & rf::ObjectFlags::OF_DELAYED_DELETE) || rf::entity_is_dying(e))) {
+                xlog::warn("UID {} dropped from save buffer - entity is dead/dying", e->uid);
+                dead_entity_uids.push_back(e->uid);
                 continue;
             }
 
@@ -2143,7 +2152,9 @@ namespace asg
         c->lifetime_seconds = b.lifetime_seconds;
         c->corpse_flags = b.corpse_flags;
         c->entity_type = b.entity_type;
-        c->corpse_pose_name = b.pose_name.c_str();
+        if (!b.mesh_name.empty()) {
+            rf::corpse_restore_mesh(c, b.mesh_name.c_str());
+        }
         rf::sr::deserialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
         c->body_temp = b.body_temp;
         c->corpse_state_vmesh_anim_index = b.state_anim;
@@ -2151,6 +2162,19 @@ namespace asg
         c->corpse_drop_vmesh_anim_index = b.drop_anim;
         c->corpse_carry_vmesh_anim_index = b.carry_anim;
         c->corpse_pose = b.corpse_pose;
+        if (!b.mesh_name.empty()) {
+            rf::corpse_restore_mesh(c, b.mesh_name.c_str());
+            if (c->vmesh && c->corpse_action_vmesh_anim_index >= 0) {
+                rf::vmesh_play_action(c->vmesh, c->corpse_action_vmesh_anim_index, 1.0f, true);
+                const double anim_length = rf::vmesh_anim_length(c->vmesh, c->corpse_action_vmesh_anim_index);
+                rf::vmesh_process(c->vmesh, static_cast<float>(anim_length), 0, nullptr, nullptr, 1);
+                rf::vmesh_process(c->vmesh, 0.3f, 0, nullptr, nullptr, 1);
+                rf::corpse_update_collision_spheres(c);
+            }
+        }
+        rf::Color ambient_color{};
+        rf::obj_get_ambient_color(&ambient_color, c);
+        c->ambient_color = ambient_color;
 
         // 3) re‐attach item handle
         add_handle_for_delayed_resolution(b.item_uid, &c->item_handle);
@@ -3077,7 +3101,7 @@ static toml::table make_corpse_table(const asg::SavegameLevelCorpseDataBlock& c)
     t.insert("lifetime_seconds", c.lifetime_seconds);
     t.insert("corpse_flags", c.corpse_flags);
     t.insert("entity_type", c.entity_type);
-    t.insert("pose_name", c.pose_name);
+    t.insert("mesh_name", c.mesh_name);
     t.insert("emitter_kill_timestamp", c.emitter_kill_timestamp);
     t.insert("body_temp", c.body_temp);
 
@@ -3396,7 +3420,7 @@ bool parse_object(const toml::table& tbl, asg::SavegameObjectDataBlock& o)
     // basic ints
     o.uid = tbl["uid"].value_or(0);
     o.parent_uid = tbl["parent_uid"].value_or(-1);
-    o.life = tbl["life"].value_or(100.0f);
+    o.life = tbl["life"].value_or(0.0f);
     o.armor = tbl["armor"].value_or(0.0f);
 
     asg::parse_i16_vector(tbl, "pos", o.pos);
@@ -4110,7 +4134,7 @@ bool parse_corpses(const toml::array& arr, std::vector<asg::SavegameLevelCorpseD
         b.lifetime_seconds = tbl["lifetime_seconds"].value_or(0.0f);
         b.corpse_flags = tbl["corpse_flags"].value_or(0);
         b.entity_type = tbl["entity_type"].value_or(0);
-        b.pose_name = tbl["pose_name"].value_or("");
+        b.mesh_name = tbl["mesh_name"].value_or("");
         b.emitter_kill_timestamp = tbl["emitter_kill_timestamp"].value_or(-1);
         b.body_temp = tbl["body_temp"].value_or(0.0f);
         b.state_anim = tbl["state_anim"].value_or(0);

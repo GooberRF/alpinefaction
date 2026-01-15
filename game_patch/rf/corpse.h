@@ -13,7 +13,7 @@ namespace rf
         float lifetime_seconds;
         int corpse_flags;
         int entity_type;
-        String corpse_pose_name;
+        String anim_tag_name;
         Timestamp emitter_kill_timestamp;
         float body_temp;
         int corpse_state_vmesh_anim_index;
@@ -48,6 +48,7 @@ namespace rf
 
     static auto& corpse_from_handle = addr_as_ref<Corpse*(int handle)>(0x004174C0);
     static auto& corpse_restore_mesh = addr_as_ref<void(Corpse *cp, const char *mesh_name)>(0x00417530);
+    static auto& corpse_update_collision_spheres = addr_as_ref<void(Corpse* cp)>(0x004164C0);
 
     static auto& corpse_list = addr_as_ref<Corpse>(0x005CABB8);
     static auto& default_corpse_pose = addr_as_ref<char>(0x006469F4);

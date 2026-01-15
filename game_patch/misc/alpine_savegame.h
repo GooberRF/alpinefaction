@@ -334,7 +334,7 @@ namespace asg
         float lifetime_seconds;
         int corpse_flags;
         int entity_type;
-        std::string pose_name;
+        std::string mesh_name;
         int emitter_kill_timestamp;
         float body_temp;
         int state_anim;
