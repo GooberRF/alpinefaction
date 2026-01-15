@@ -60,6 +60,8 @@ std::vector<asg::AlpinePonr> g_alpine_ponr;
 
 namespace asg
 {
+    static std::unordered_map<int, EntitySkinState> g_entity_skin_state;
+
     // Look up an object by handle and return its uid, or –1 if not found
     // prevent crashing from trying to fetch uid from invalid objects
     inline int uid_from_handle(int handle)
@@ -67,6 +69,49 @@ namespace asg
         if (auto o = rf::obj_from_handle(handle))
             return o->uid;
         return -1;
+    }
+
+    static void record_entity_skin(const rf::Entity* entity, std::string_view skin_name, int skin_index)
+    {
+        if (!entity || skin_name.empty()) {
+            return;
+        }
+
+        g_entity_skin_state[entity->uid] = EntitySkinState{std::string{skin_name}, skin_index};
+    }
+
+    static void apply_entity_skin(rf::Entity* entity, const std::string& skin_name, int skin_index)
+    {
+        if (!entity || !entity->info) {
+            return;
+        }
+
+        if (!skin_name.empty()) {
+            rf::entity_set_skin(entity, skin_name.c_str());
+            record_entity_skin(entity, skin_name, skin_index);
+            return;
+        }
+
+        if (skin_index < 0 || skin_index >= entity->info->num_alt_skins) {
+            return;
+        }
+
+        const auto& skin = entity->info->alt_skins[skin_index];
+        rf::entity_set_skin(entity, skin.name.c_str());
+        record_entity_skin(entity, skin.name.c_str(), skin_index);
+    }
+
+    static void apply_clutter_skin(rf::Clutter* clutter, int skin_index)
+    {
+        if (!clutter || !clutter->info) {
+            return;
+        }
+
+        if (skin_index < 0 || skin_index >= clutter->info->skins.size()) {
+            return;
+        }
+
+        clutter->current_skin_index = skin_index;
     }
 
     static std::vector<float> parse_f32_array(const toml::array& arr)
@@ -408,9 +453,6 @@ namespace asg
         // — Physics flags
         out.physics_flags = o->p_data.flags;
 
-        // — (skin_name etc)
-        out.skin_name = "";
-
         xlog::warn("made block for obj {}", o->uid);
 
         /* out.uid = o->uid;
@@ -441,6 +483,15 @@ namespace asg
     {
         SavegameEntityDataBlock b{};
         fill_object_block(e, b.obj);
+        b.skin_name.clear();
+        b.skin_index = -1;
+        if (e) {
+            auto it = g_entity_skin_state.find(e->uid);
+            if (it != g_entity_skin_state.end()) {
+                b.skin_name = it->second.name;
+                b.skin_index = it->second.index;
+            }
+        }
 
         // ——— Weapon & AI state ———
         b.current_primary_weapon = static_cast<uint8_t>(e->ai.current_primary_weapon);
@@ -545,7 +596,7 @@ namespace asg
         rf::sr::serialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
         rf::sr::serialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
         b.hidden = (c->obj_flags & rf::ObjectFlags::OF_HIDDEN) != 0;
-        b.skin_name = ""; //todo
+        b.skin_index = c->current_skin_index;
 
         b.links.clear();
         for (auto handle_ptr : c->links) {
@@ -1281,6 +1332,7 @@ namespace asg
     {
         xlog::warn("unpacking entity {}", src.obj.uid);
         deserialize_object_state(e, src.obj);
+        apply_entity_skin(e, src.skin_name, src.skin_index);
 
         e->ai.current_primary_weapon = src.current_primary_weapon;
         e->ai.current_secondary_weapon = src.current_secondary_weapon;
@@ -1636,6 +1688,8 @@ namespace asg
         c->orient = saved_orient;
         c->p_data.orient = saved_physics_orient;
         c->p_data.next_orient = saved_physics_orient;
+
+        apply_clutter_skin(c, b.skin_index);
 
         // 2) rehydrate the two timestamps
         rf::sr::deserialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
@@ -2575,7 +2629,6 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
     t.insert("ang_momentum", std::move(ang));
 
     t.insert("physics_flags", o.physics_flags);
-    t.insert("skin_name", o.skin_name);
 
     return t;
 }
@@ -2583,6 +2636,8 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
 static toml::table make_entity_table(const asg::SavegameEntityDataBlock& e)
 {
     toml::table t = make_object_table(e.obj);
+    t.insert("skin_name", e.skin_name);
+    t.insert("skin_index", e.skin_index);
 
     t.insert("current_primary_weapon", e.current_primary_weapon);
     t.insert("current_secondary_weapon", e.current_secondary_weapon);
@@ -2672,7 +2727,7 @@ static toml::table make_clutter_table(const asg::SavegameClutterDataBlock& c)
     t.insert("delayed_kill_timestamp", c.delayed_kill_timestamp);
     t.insert("corpse_create_timestamp", c.corpse_create_timestamp);
     t.insert("hidden", c.hidden);
-    t.insert("skin_name", c.skin_name);
+    t.insert("skin_index", c.skin_index);
     toml::array links;
     for (auto l : c.links) links.push_back(l);
     t.insert("links", std::move(links));
@@ -3220,7 +3275,6 @@ bool parse_object(const toml::table& tbl, asg::SavegameObjectDataBlock& o)
     }
 
     o.physics_flags = tbl["physics_flags"].value_or(0);
-    o.skin_name = tbl["skin_name"].value_or("");
 
     return true;
 }
@@ -3238,6 +3292,8 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
         parse_object(tbl, e.obj);
 
         // 2b) AI & weapon state
+        e.skin_name = tbl["skin_name"].value_or("");
+        e.skin_index = tbl["skin_index"].value_or(-1);
         e.current_primary_weapon = static_cast<uint8_t>(tbl["current_primary_weapon"].value_or(0));
         e.current_secondary_weapon = static_cast<uint8_t>(tbl["current_secondary_weapon"].value_or(0));
         e.info_index = tbl["info_index"].value_or(0);
@@ -3466,7 +3522,7 @@ bool parse_clutter(const toml::array& arr, std::vector<asg::SavegameClutterDataB
         cb.delayed_kill_timestamp = ct["delayed_kill_timestamp"].value_or(-1);
         cb.corpse_create_timestamp = ct["corpse_create_timestamp"].value_or(-1);
         cb.hidden = ct["hidden"].value_or(false);
-        cb.skin_name = ct["skin_name"].value_or("");
+        cb.skin_index = ct["skin_index"].value_or(-1);
         if (auto links = ct["links"].as_array())
             for (auto& v : *links)
                 if (auto uid = v.value<int>())
@@ -4145,7 +4201,7 @@ FunHook<void()> sr_reset_save_data_hook{
             
             // clear new save data global
             g_save_data = {};
-
+            asg::g_entity_skin_state.clear();
             // clear legacy save data global
             sr_reset_save_data_hook.call_target();
         }
@@ -4248,6 +4304,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
             world_solid->bbox_max = lvl.header.aabb_max;
 
             // restore everything else
+            asg::g_entity_skin_state.clear();
             deserialize_all_objects(&lvl);
 
             // if we're out of the “transition” state, create the player entity
@@ -4676,6 +4733,17 @@ FunHook<rf::sr::LoggedHudMessage*(int index)> sr_get_logged_message_hook{
     }
 };
 
+    FunHook<int(rf::Entity*, const char*)> entity_set_skin_hook{
+        0x00428FB0,
+        [](rf::Entity* entity, const char* skin_name) {
+            const int index = entity_set_skin_hook.call_target(entity, skin_name);
+            if (entity && skin_name && skin_name[0] != '\0') {
+                asg::record_entity_skin(entity, skin_name, index);
+            }
+            return index;
+        }
+    };
+
 ConsoleCommand2 parse_ponr_cmd{
     "dbg_ponrparse",
     []() {
@@ -4747,6 +4815,9 @@ void alpine_savegame_apply_patch()
 
     // handle new ponr system
     sr_parse_ponr_table_hook.install();
+
+    // handle tracking entity skins
+    entity_set_skin_hook.install();
 
     // console commands
     parse_ponr_cmd.register_cmd();

@@ -92,7 +92,6 @@ namespace asg
         int host_uid;
         rf::Vector3 ang_momentum;
         int physics_flags;
-        std::string skin_name;
     };
 
     struct SavegameEntityDataBlock
@@ -148,6 +147,8 @@ namespace asg
         rf::Vector3 control_data_phb;
         rf::Vector3 control_data_eye_phb;
         rf::Vector3 control_data_local_vel;
+        std::string skin_name;
+        int skin_index;
         //int16_t field_1FC;
         //int16_t field_1FE;
         //int16_t field_200;
@@ -160,6 +161,12 @@ namespace asg
         // uint8_t field_215;
         // uint8_t field_216;
         // uint8_t climbing_region_index;
+    };
+
+    struct EntitySkinState
+    {
+        std::string name;
+        int index = -1;
     };
 
     struct SavegameItemDataBlock
@@ -184,7 +191,7 @@ namespace asg
         int delayed_kill_timestamp;
         int corpse_create_timestamp;
         bool hidden;
-        std::string skin_name;
+        int skin_index;
         std::vector<int> links;
     };
 
