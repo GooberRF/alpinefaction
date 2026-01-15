@@ -494,8 +494,8 @@ namespace asg
         }
 
         // ——— Weapon & AI state ———
-        b.current_primary_weapon = static_cast<uint8_t>(e->ai.current_primary_weapon);
-        b.current_secondary_weapon = static_cast<uint8_t>(e->ai.current_secondary_weapon);
+        b.current_primary_weapon = static_cast<int8_t>(e->ai.current_primary_weapon);
+        b.current_secondary_weapon = static_cast<int8_t>(e->ai.current_secondary_weapon);
         b.info_index = e->info_index;
         // ammo arrays
         for (int i = 0; i < 32; ++i) {
@@ -548,25 +548,85 @@ namespace asg
         else
             b.shoot_at_uid = -1;
 
+        auto& path = e->ai.current_path;
+        for (int i = 0; i < 4; ++i)
+            b.path_node_indices[i] = -1;
+        b.path_previous_goal = static_cast<int16_t>(path.previous_goal);
+        b.path_current_goal = static_cast<int16_t>(path.current_goal);
+        b.path_end_pos = path.end_node.pos;
+        b.path_adjacent_node1_index = -1;
+        b.path_adjacent_node2_index = -1;
+        b.path_waypoint_list_index = static_cast<int16_t>(path.waypoint_list_index);
+        b.path_goal_waypoint_index = static_cast<int16_t>(path.goal_waypoint_index);
+        b.path_direction = static_cast<uint8_t>(path.direction);
+        b.path_flags = static_cast<uint8_t>(path.flags);
+        b.path_turn_towards_pos = path.turn_towards_pos;
+        b.path_follow_style = path.follow_style;
+        b.path_start_pos = path.start_pos;
+        b.path_goal_pos = path.goal_pos;
+
+        if (auto* geometry = rf::level.geometry) {
+            int node_count = geometry->nodes.nodes.size();
+            for (int idx = 0; idx < node_count; ++idx) {
+                auto* node = geometry->nodes.nodes[idx];
+                if (path.adjacent_node1 == node) {
+                    b.path_adjacent_node1_index = static_cast<int16_t>(idx);
+                } else if (path.adjacent_node2 == node) {
+                    b.path_adjacent_node2_index = static_cast<int16_t>(idx);
+                } else {
+                    for (int slot = 0; slot < 4; ++slot) {
+                        if (path.nodes[slot] == node)
+                            b.path_node_indices[slot] = static_cast<int16_t>(idx);
+                    }
+                }
+            }
+        }
+
         // compressed vectors & small fields
         b.ci_rot = e->ai.ci.rot;
         b.ci_move = e->ai.ci.move;
+        b.ci_time_relative_mouse_delta_disabled = e->ai.ci.field_18;
 
         if (auto c = rf::obj_from_handle(e->ai.corpse_carry_handle))
             b.corpse_carry_uid = c->uid;
         else
             b.corpse_carry_uid = -1;
     
+        b.ai_healing_left = e->ai.healing_left;
+        b.ai_steering_vector = e->ai.steering_vector;
         b.ai_flags = e->ai.ai_flags;
 
         // vision & control
         b.eye_pos = e->eye_pos;
         b.eye_orient = e->eye_orient;
-        b.entity_flags = e->entity_flags;
+        b.entity_flags = e->entity_flags & ~0x100; // not sure on this, but stock game does it so keeping for now
         b.entity_flags2 = e->entity_flags2;
         b.control_data_phb = e->control_data.phb;
         b.control_data_eye_phb = e->control_data.eye_phb;
         b.control_data_local_vel = e->control_data.local_vel;
+        b.current_state_anim = static_cast<int16_t>(e->current_state_anim);
+        b.next_state_anim = static_cast<int16_t>(e->next_state_anim);
+        b.last_custom_anim_index = static_cast<int16_t>(e->last_cust_anim_index_maybe_unused);
+        b.state_anim_22_index = static_cast<int16_t>(e->state_anims[22].vmesh_anim_index);
+        b.total_transition_time = e->total_transition_time;
+        b.elapsed_transition_time = e->elapsed_transition_time;
+        b.driller_rot_angle = e->driller_rot_angle;
+        b.driller_rot_speed = e->driller_rot_speed;
+        b.weapon_custom_mode_bitmap = e->weapon_custom_mode_bitmap;
+        b.weapon_silencer_bitfield = e->weapon_silencer_bitfield;
+        b.current_speed = static_cast<uint8_t>(e->current_speed);
+        b.entity_on_fire = (e->entity_fire_handle != nullptr);
+        b.driller_max_geomods = e->driller_max_geomods;
+        b.climb_region_index = -1;
+        if (e->current_climb_region) {
+            int ladder_count = rf::level.ladders.size();
+            for (int idx = 0; idx < ladder_count; ++idx) {
+                if (e->current_climb_region == rf::level.ladders[idx]) {
+                    b.climb_region_index = idx;
+                    break;
+                }
+            }
+        }
 
         return b;
     }
@@ -1359,18 +1419,50 @@ namespace asg
         e->ai.mode_parm_0 = src.ai_mode_parm_0;
         e->ai.mode_parm_1 = src.ai_mode_parm_1;
 
-            add_handle_for_delayed_resolution(src.target_uid, &e->ai.target_handle);
+        add_handle_for_delayed_resolution(src.target_uid, &e->ai.target_handle);
 
-            add_handle_for_delayed_resolution(src.look_at_uid, &e->ai.look_at_handle);
+        add_handle_for_delayed_resolution(src.look_at_uid, &e->ai.look_at_handle);
 
-            add_handle_for_delayed_resolution(src.shoot_at_uid, &e->ai.shoot_at_handle);
+        add_handle_for_delayed_resolution(src.shoot_at_uid, &e->ai.shoot_at_handle);
 
+        auto& path = e->ai.current_path;
+        path.previous_goal = src.path_previous_goal;
+        path.current_goal = src.path_current_goal;
+        path.end_node.pos = src.path_end_pos;
+        path.end_node.use_pos = src.path_end_pos;
+        path.adjacent_node1 = nullptr;
+        path.adjacent_node2 = nullptr;
+        path.num_nodes = 0;
+        for (auto& node : path.nodes)
+            node = nullptr;
+        if (auto* geometry = rf::level.geometry) {
+            if (src.path_adjacent_node1_index >= 0 && src.path_adjacent_node1_index < geometry->nodes.nodes.size())
+                path.adjacent_node1 = geometry->nodes.nodes[src.path_adjacent_node1_index];
+            if (src.path_adjacent_node2_index >= 0 && src.path_adjacent_node2_index < geometry->nodes.nodes.size())
+                path.adjacent_node2 = geometry->nodes.nodes[src.path_adjacent_node2_index];
+            for (int slot = 0; slot < 4; ++slot) {
+                int idx = src.path_node_indices[slot];
+                if (idx >= 0 && idx < geometry->nodes.nodes.size())
+                    path.nodes[slot] = geometry->nodes.nodes[idx];
+            }
+        }
+        path.waypoint_list_index = src.path_waypoint_list_index;
+        path.goal_waypoint_index = src.path_goal_waypoint_index;
+        path.direction = src.path_direction;
+        path.flags = src.path_flags;
+        path.turn_towards_pos = src.path_turn_towards_pos;
+        path.follow_style = src.path_follow_style;
+        path.start_pos = src.path_start_pos;
+        path.goal_pos = src.path_goal_pos;
 
         e->ai.ci.rot = src.ci_rot;
         e->ai.ci.move = src.ci_move;
+        e->ai.ci.field_18 = src.ci_time_relative_mouse_delta_disabled;
 
         add_handle_for_delayed_resolution(src.corpse_carry_uid, &e->ai.corpse_carry_handle);
 
+        e->ai.healing_left = src.ai_healing_left;
+        e->ai.steering_vector = src.ai_steering_vector;
         e->ai.ai_flags = src.ai_flags;
 
         e->eye_pos = src.eye_pos;
@@ -1380,6 +1472,21 @@ namespace asg
         e->control_data.phb = src.control_data_phb;
         e->control_data.eye_phb = src.control_data_eye_phb;
         e->control_data.local_vel = src.control_data_local_vel;
+        e->current_state_anim = src.current_state_anim;
+        e->next_state_anim = src.next_state_anim;
+        e->last_cust_anim_index_maybe_unused = src.last_custom_anim_index;
+        e->state_anims[22].vmesh_anim_index = src.state_anim_22_index;
+        e->total_transition_time = src.total_transition_time;
+        e->elapsed_transition_time = src.elapsed_transition_time;
+        e->driller_rot_angle = src.driller_rot_angle;
+        e->driller_rot_speed = src.driller_rot_speed;
+        e->weapon_custom_mode_bitmap = src.weapon_custom_mode_bitmap;
+        e->weapon_silencer_bitfield = src.weapon_silencer_bitfield;
+        e->current_speed = static_cast<rf::EntitySpeed>(src.current_speed);
+        e->driller_max_geomods = src.driller_max_geomods;
+        e->current_climb_region = nullptr;
+        if (src.climb_region_index >= 0 && src.climb_region_index < rf::level.ladders.size())
+            e->current_climb_region = rf::level.ladders[src.climb_region_index];
     }
 
     inline void entity_deserialize_all_state(const std::vector<SavegameEntityDataBlock>& blocks, const std::vector<int>& dead_uids)
@@ -2636,6 +2743,10 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
 static toml::table make_entity_table(const asg::SavegameEntityDataBlock& e)
 {
     toml::table t = make_object_table(e.obj);
+    auto pack_vec = [&](const rf::Vector3& v) {
+        toml::array a{v.x, v.y, v.z};
+        return a;
+    };
     t.insert("skin_name", e.skin_name);
     t.insert("skin_index", e.skin_index);
 
@@ -2669,12 +2780,33 @@ static toml::table make_entity_table(const asg::SavegameEntityDataBlock& e)
     t.insert("look_at_uid", e.look_at_uid);
     t.insert("shoot_at_uid", e.shoot_at_uid);
 
+    toml::array path_node_indices;
+    for (int i = 0; i < 4; ++i)
+        path_node_indices.push_back(e.path_node_indices[i]);
+    t.insert("path_node_indices", std::move(path_node_indices));
+    t.insert("path_previous_goal", e.path_previous_goal);
+    t.insert("path_current_goal", e.path_current_goal);
+    t.insert("path_end_pos", pack_vec(e.path_end_pos));
+    t.insert("path_adjacent_node1_index", e.path_adjacent_node1_index);
+    t.insert("path_adjacent_node2_index", e.path_adjacent_node2_index);
+    t.insert("path_waypoint_list_index", e.path_waypoint_list_index);
+    t.insert("path_goal_waypoint_index", e.path_goal_waypoint_index);
+    t.insert("path_direction", e.path_direction);
+    t.insert("path_flags", e.path_flags);
+    t.insert("path_turn_towards_pos", pack_vec(e.path_turn_towards_pos));
+    t.insert("path_follow_style", e.path_follow_style);
+    t.insert("path_start_pos", pack_vec(e.path_start_pos));
+    t.insert("path_goal_pos", pack_vec(e.path_goal_pos));
+
     // compressed vectors
     toml::array ci_rot{e.ci_rot.x, e.ci_rot.y, e.ci_rot.z}, ci_move{e.ci_move.x, e.ci_move.y, e.ci_move.z};
     t.insert("ci_rot", std::move(ci_rot));
     t.insert("ci_move", std::move(ci_move));
+    t.insert("ci_time_relative_mouse_delta_disabled", e.ci_time_relative_mouse_delta_disabled);
 
     t.insert("corpse_carry_uid", e.corpse_carry_uid);
+    t.insert("ai_healing_left", e.ai_healing_left);
+    t.insert("ai_steering_vector", pack_vec(e.ai_steering_vector));
     t.insert("ai_flags", e.ai_flags);
 
     // vision & control
@@ -2692,13 +2824,24 @@ static toml::table make_entity_table(const asg::SavegameEntityDataBlock& e)
     t.insert("entity_flags2", e.entity_flags2);
 
     // control
-    auto pack_vec = [&](const rf::Vector3& v) {
-        toml::array a{v.x, v.y, v.z};
-        return a;
-    };
     t.insert("control_data_phb", pack_vec(e.control_data_phb));
     t.insert("control_data_eye_phb", pack_vec(e.control_data_eye_phb));
     t.insert("control_data_local_vel", pack_vec(e.control_data_local_vel));
+
+    t.insert("current_state_anim", e.current_state_anim);
+    t.insert("next_state_anim", e.next_state_anim);
+    t.insert("last_custom_anim_index", e.last_custom_anim_index);
+    t.insert("state_anim_22_index", e.state_anim_22_index);
+    t.insert("total_transition_time", e.total_transition_time);
+    t.insert("elapsed_transition_time", e.elapsed_transition_time);
+    t.insert("driller_rot_angle", e.driller_rot_angle);
+    t.insert("driller_rot_speed", e.driller_rot_speed);
+    t.insert("weapon_custom_mode_bitmap", e.weapon_custom_mode_bitmap);
+    t.insert("weapon_silencer_bitfield", e.weapon_silencer_bitfield);
+    t.insert("current_speed", e.current_speed);
+    t.insert("entity_on_fire", e.entity_on_fire);
+    t.insert("climb_region_index", e.climb_region_index);
+    t.insert("driller_max_geomods", e.driller_max_geomods);
 
     return t;
 }
@@ -3294,8 +3437,8 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
         // 2b) AI & weapon state
         e.skin_name = tbl["skin_name"].value_or("");
         e.skin_index = tbl["skin_index"].value_or(-1);
-        e.current_primary_weapon = static_cast<uint8_t>(tbl["current_primary_weapon"].value_or(0));
-        e.current_secondary_weapon = static_cast<uint8_t>(tbl["current_secondary_weapon"].value_or(0));
+        e.current_primary_weapon = static_cast<int8_t>(tbl["current_primary_weapon"].value_or(-1));
+        e.current_secondary_weapon = static_cast<int8_t>(tbl["current_secondary_weapon"].value_or(-1));
         e.info_index = tbl["info_index"].value_or(0);
 
         // ammo arrays
@@ -3328,6 +3471,42 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
         e.look_at_uid = tbl["look_at_uid"].value_or(-1);
         e.shoot_at_uid = tbl["shoot_at_uid"].value_or(-1);
 
+        for (int i = 0; i < 4; ++i)
+            e.path_node_indices[i] = -1;
+        if (auto na = tbl["path_node_indices"].as_array()) {
+            for (size_t i = 0; i < na->size() && i < 4; ++i)
+                e.path_node_indices[i] = static_cast<int16_t>((*na)[i].value_or<int>(-1));
+        }
+        e.path_previous_goal = static_cast<int16_t>(tbl["path_previous_goal"].value_or(0));
+        e.path_current_goal = static_cast<int16_t>(tbl["path_current_goal"].value_or(0));
+        if (auto a = tbl["path_end_pos"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.path_end_pos = {v[0], v[1], v[2]};
+        }
+        e.path_adjacent_node1_index = static_cast<int16_t>(tbl["path_adjacent_node1_index"].value_or(-1));
+        e.path_adjacent_node2_index = static_cast<int16_t>(tbl["path_adjacent_node2_index"].value_or(-1));
+        e.path_waypoint_list_index = static_cast<int16_t>(tbl["path_waypoint_list_index"].value_or(0));
+        e.path_goal_waypoint_index = static_cast<int16_t>(tbl["path_goal_waypoint_index"].value_or(0));
+        e.path_direction = static_cast<uint8_t>(tbl["path_direction"].value_or(0));
+        e.path_flags = static_cast<uint8_t>(tbl["path_flags"].value_or(0));
+        if (auto a = tbl["path_turn_towards_pos"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.path_turn_towards_pos = {v[0], v[1], v[2]};
+        }
+        e.path_follow_style = tbl["path_follow_style"].value_or(0);
+        if (auto a = tbl["path_start_pos"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.path_start_pos = {v[0], v[1], v[2]};
+        }
+        if (auto a = tbl["path_goal_pos"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.path_goal_pos = {v[0], v[1], v[2]};
+        }
+
         // compressed-vector AI state
         if (auto a = tbl["ci_rot"].as_array()) {
             auto v = asg::parse_f32_array(*a);
@@ -3339,8 +3518,15 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
             if (v.size() == 3)
                 e.ci_move = {v[0], v[1], v[2]};
         }
+        e.ci_time_relative_mouse_delta_disabled = tbl["ci_time_relative_mouse_delta_disabled"].value_or(false);
 
         e.corpse_carry_uid = tbl["corpse_carry_uid"].value_or(-1);
+        e.ai_healing_left = tbl["ai_healing_left"].value_or(0.0f);
+        if (auto a = tbl["ai_steering_vector"].as_array()) {
+            auto v = asg::parse_f32_array(*a);
+            if (v.size() == 3)
+                e.ai_steering_vector = {v[0], v[1], v[2]};
+        }
         e.ai_flags = tbl["ai_flags"].value_or(0);
 
         // vision & control
@@ -3391,6 +3577,21 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
             if (v.size() == 3)
                 e.control_data_local_vel = {v[0], v[1], v[2]};
         }
+
+        e.current_state_anim = static_cast<int16_t>(tbl["current_state_anim"].value_or(0));
+        e.next_state_anim = static_cast<int16_t>(tbl["next_state_anim"].value_or(0));
+        e.last_custom_anim_index = static_cast<int16_t>(tbl["last_custom_anim_index"].value_or(-1));
+        e.state_anim_22_index = static_cast<int16_t>(tbl["state_anim_22_index"].value_or(-1));
+        e.total_transition_time = tbl["total_transition_time"].value_or(0.0f);
+        e.elapsed_transition_time = tbl["elapsed_transition_time"].value_or(0.0f);
+        e.driller_rot_angle = tbl["driller_rot_angle"].value_or(0);
+        e.driller_rot_speed = tbl["driller_rot_speed"].value_or(0.0f);
+        e.weapon_custom_mode_bitmap = tbl["weapon_custom_mode_bitmap"].value_or(0);
+        e.weapon_silencer_bitfield = tbl["weapon_silencer_bitfield"].value_or(0);
+        e.current_speed = static_cast<uint8_t>(tbl["current_speed"].value_or(0));
+        e.entity_on_fire = tbl["entity_on_fire"].value_or(false);
+        e.climb_region_index = tbl["climb_region_index"].value_or(-1);
+        e.driller_max_geomods = tbl["driller_max_geomods"].value_or(0);
 
         out.push_back(std::move(e));
     }
