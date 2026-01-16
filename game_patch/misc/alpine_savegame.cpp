@@ -1572,12 +1572,22 @@ namespace asg
                     continue;
 
                 rf::Quaternion q;
-                q.unpack(&blk.obj.orient);
                 rf::Matrix3 m;
-                q.extract_matrix(&m);
+                if (blk.obj.orient_ha) {
+                    m = *blk.obj.orient_ha;
+                }
+                else {
+                    q.unpack(&blk.obj.orient);
+                    q.extract_matrix(&m);
+                }
                 
                 rf::Vector3 p;
-                rf::decompress_vector3(rf::world_solid, &blk.obj.pos, &p);
+                if (blk.obj.pos_ha) {
+                    p = *blk.obj.pos_ha;
+                }
+                else {
+                    rf::decompress_vector3(rf::world_solid, &blk.obj.pos, &p);
+                }
 
                 // create and replay
                 rf::Entity* ne = rf::entity_create(static_cast<int>(blk.info_index), &rf::default_entity_name, -1, p, m, 0, -1);
@@ -1922,11 +1932,21 @@ namespace asg
             if (!rf::obj_lookup_from_uid(b.obj.uid)) {
                 // decompress orient & pos
                 rf::Quaternion q;
-                q.unpack(&b.obj.orient);
                 rf::Matrix3 m;
-                q.extract_matrix(&m);
                 rf::Vector3 p;
-                rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+                if (b.obj.orient_ha) {
+                    m = *b.obj.orient_ha;
+                }
+                else {
+                    q.unpack(&b.obj.orient);
+                    q.extract_matrix(&m);
+                }
+                if (b.obj.pos_ha) {
+                    p = *b.obj.pos_ha;
+                }
+                else {
+                    rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+                }
 
                 // stock signature: item_create(cls_id, default_name, info_mesh, -1, &p, &m, -1,0,0)
                 rf::Item* ni = rf::item_create(b.item_cls_id, "", rf::item_counts[20 * b.item_cls_id], -1, &p, &m, -1, 0, 0);
@@ -2094,13 +2114,23 @@ namespace asg
         for (auto const& b : blocks) {
             // decompress orientation & position from ObjectSavegameBlock
             rf::Quaternion q;
-            q.unpack(&b.obj.orient);
 
             rf::Matrix3 m;
-            q.extract_matrix(&m);
+            if (b.obj.orient_ha) {
+                m = *b.obj.orient_ha;
+            }
+            else {
+                q.unpack(&b.obj.orient);
+                q.extract_matrix(&m);
+            }
 
             rf::Vector3 p;
-            rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+            if (b.obj.pos_ha) {
+                p = *b.obj.pos_ha;
+            }
+            else {
+                rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+            }
 
             rf::Weapon* w = rf::weapon_create(b.info_index, -1, &p, &m, 0, 0);
             if (!w)
@@ -2244,11 +2274,21 @@ namespace asg
             if (auto obj_ep = rf::obj_lookup_from_uid(b.obj.uid)) {
                 // --- decompress orientation & position ---
                 rf::Quaternion q;
-                q.unpack(&b.obj.orient);
                 rf::Matrix3 m;
-                q.extract_matrix(&m);
                 rf::Vector3 p;
-                rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+                if (b.obj.orient_ha) {
+                    m = *b.obj.orient_ha;
+                }
+                else {
+                    q.unpack(&b.obj.orient);
+                    q.extract_matrix(&m);
+                }
+                if (b.obj.pos_ha) {
+                    p = *b.obj.pos_ha;
+                }
+                else {
+                    rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+                }
                 if (obj_ep->type == rf::ObjectType::OT_ENTITY) {
                     auto ep = reinterpret_cast<rf::Entity*>(obj_ep);
                     if (auto* newc = rf::corpse_create(ep, ep->info->corpse_anim_string, &p, &m, false, false)) {
@@ -2341,13 +2381,23 @@ namespace asg
 
         xlog::warn("2 unpacking player");
 
-        Quaternion q; // v25
-        q.unpack(&blk->obj.orient);
-        Matrix3 m; // a2
-        q.extract_matrix(&m);
+        Quaternion q;
+        Matrix3 m;
+        if (blk->obj.orient_ha) {
+            m = *blk->obj.orient_ha;
+        }
+        else {
+            q.unpack(&blk->obj.orient);
+            q.extract_matrix(&m);
+        }
 
-        Vector3 world_pos; // a3
-        decompress_vector3(world_solid, &blk->obj.pos, &world_pos);
+        Vector3 world_pos;
+        if (blk->obj.pos_ha) {
+            world_pos = *blk->obj.pos_ha;
+        }
+        else {
+            decompress_vector3(world_solid, &blk->obj.pos, &world_pos);
+        }
 
         Entity* ent = player_create_entity(player, static_cast<uint8_t>(pd->entity_type), &world_pos, &m, -1);
         if (!ent) {
@@ -2431,32 +2481,19 @@ namespace asg
             ent->host_tag_handle = -1;
 
             if (auto host = obj_from_handle(ent->host_handle); host && host->type == OT_ENTITY) {
-                //auto host_ent = reinterpret_cast<rf::Entity*>(host);
-                entity_headlamp_turn_off(ent);
-                ent->attach_leech(ent->handle, ht);
-                //Entity::attach_leech(host, ent->handle, ht);
-                //host_ent.leech_attach(ent->handle, ht); // todo
-                //ent->last_pos.x = (ent->last_pos.x & ~0x0030000) | 0x0010000;
-                uint32_t bits = std::bit_cast<uint32_t>(ent->last_pos.x);
+                auto host_ent = static_cast<rf::Entity*>(host);
+                entity_headlamp_turn_off(host_ent);
+                host_ent->attach_leech(ent->handle, ht);
+                uint32_t bits = std::bit_cast<uint32_t>(host_ent->last_pos.x);
                 bits = (bits & ~0x0030000u) | 0x0010000u;
-                ent->last_pos.x = std::bit_cast<float>(bits);
-                obj_set_friendliness(ent, 1);
-
-                auto src1 = reinterpret_cast<const rf::Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 108);
-                auto dst1 = reinterpret_cast<rf::Vector3*>(&host->start_orient.fvec.y);
-                rf::Vector3 tmp1;
-                dst1->assign(&tmp1, src1);
-
-                auto src2 = reinterpret_cast<const rf::Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 120);
-                auto dst2 = reinterpret_cast<rf::Vector3*>(&host->root_bone_index);
-                rf::Vector3 tmp2;
-                dst2->assign(&tmp2, src2);
+                host_ent->last_pos.x = std::bit_cast<float>(bits);
+                obj_set_friendliness(host, 1);
 
                 if (entity_is_jeep_gunner(ent)) {
                     ent->min_rel_eye_phb.assign(&world_pos, &jeep_gunner_min_phb);
                     ent->max_rel_eye_phb.assign(&world_pos, &jeep_gunner_max_phb);
                 }
-                if (entity_is_automobile(ent))
+                if (entity_is_automobile(host_ent))
                     obj_physics_activate(host);
             }
         }
