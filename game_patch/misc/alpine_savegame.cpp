@@ -61,6 +61,7 @@ std::vector<asg::AlpinePonr> g_alpine_ponr;
 
 namespace asg
 {
+    bool g_use_high_accuracy_savegame = false;
     static std::unordered_map<int, EntitySkinState> g_entity_skin_state;
 
     // Look up an object by handle and return its uid, or –1 if not found
@@ -156,6 +157,41 @@ namespace asg
                 out.w = static_cast<int16_t>(a[3].value_or<int>(0));
                 return true;
             }
+        }
+        return false;
+    }
+
+    bool parse_f32_vector3(const toml::table& tbl, std::string_view key, rf::Vector3& out)
+    {
+        if (auto arr = tbl[key].as_array()) {
+            auto v = parse_f32_array(*arr);
+            if (v.size() == 3) {
+                out = {v[0], v[1], v[2]};
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool parse_f32_matrix3(const toml::table& tbl, std::string_view key, rf::Matrix3& out)
+    {
+        if (auto orient = tbl[key].as_array()) {
+            int i = 0;
+            for (auto& row : *orient) {
+                if (auto a = row.as_array()) {
+                    auto v = parse_f32_array(*a);
+                    if (v.size() == 3) {
+                        if (i == 0)
+                            out.rvec = {v[0], v[1], v[2]};
+                        if (i == 1)
+                            out.uvec = {v[0], v[1], v[2]};
+                        if (i == 2)
+                            out.fvec = {v[0], v[1], v[2]};
+                    }
+                }
+                ++i;
+            }
+            return i >= 3;
         }
         return false;
     }
@@ -303,7 +339,7 @@ namespace asg
 
         // 3) flags & entity info
         data.player_flags = pp->flags;
-        data.field_11f8 = static_cast<int16_t>(pp->field_11F8);
+        data.field_11f8 = pp->field_11F8;
         xlog::warn("[SP] player_flags = 0x{:X}", data.player_flags);
 
         data.entity_uid = entity->uid;
@@ -389,14 +425,17 @@ namespace asg
         out.armor = o->armor;
 
         rf::compress_vector3(rf::world_solid, &o->p_data.pos, &out.pos);
+        
+        rf::Quaternion q;
+        q.from_matrix(&o->orient);
+        out.orient.from_quat(&q);
 
-        {
-            rf::Quaternion q;
-            // this is the stock Quaternion::__ct_matrix call
-            q.from_matrix(&o->orient);
-            // now assign into your compressed quat
-            //rf::ShortQuat::assign_0(&out.orient, &q);
-            out.orient.from_quat(&q);
+        out.pos_ha.reset();
+        out.orient_ha.reset();
+
+        if (g_use_high_accuracy_savegame) {
+            out.pos_ha = o->p_data.pos;
+            out.orient_ha = o->orient;
         }
 
         out.friendliness = o->friendliness;
@@ -419,29 +458,6 @@ namespace asg
         out.physics_flags = o->p_data.flags;
 
         xlog::warn("made block for obj {}", o->uid);
-
-        /* out.uid = o->uid;
-        out.parent_uid = o->parent_handle; // may need to make this uid
-        out.life = o->life;
-        out.armor = o->armor;
-        //out.pos = rf::ShortVector::compress(rf::world_solid, o->pos);
-        //out.vel = rf::ShortVector::compress(rf::world_solid, o->p_data.vel);
-        rf::compress_vector3(rf::world_solid, &o->pos, &out.pos);
-        rf::compress_vector3(rf::world_solid, &o->p_data.vel, &out.vel);
-        out.friendliness = o->friendliness;
-        out.host_tag_handle = o->host_tag_handle;
-        //out.orient = o->orient;
-        rf::Quaternion q;
-        q.extract_matrix(&o->orient);
-        out.orient.from_quat(&q);
-        out.obj_flags = o->obj_flags;
-        if (auto t = rf::obj_from_handle(o->host_handle))
-            out.host_uid = t->uid;
-        else
-            out.host_uid = -1;
-        out.ang_momentum = o->p_data.ang_momentum;
-        out.physics_flags = o->p_data.flags;
-        out.skin_name = "";*/
     }
 
     inline SavegameEntityDataBlock make_entity_block(rf::Entity* e)
@@ -618,6 +634,12 @@ namespace asg
         rf::Quaternion q;
         q.from_matrix(&c->orient);
         b.orient.from_quat(&q);
+        b.pos_ha.reset();
+        b.orient_ha.reset();
+        if (g_use_high_accuracy_savegame) {
+            b.pos_ha = c->p_data.pos;
+            b.orient_ha = c->orient;
+        }
         rf::sr::serialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
         rf::sr::serialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
         b.hidden = (c->obj_flags & rf::ObjectFlags::OF_HIDDEN) != 0;
@@ -637,8 +659,16 @@ namespace asg
     {
         SavegameTriggerDataBlock b{};
         b.uid = t->uid;
-        //b.pos = rf::ShortVector::compress(rf::world_solid, t->pos);
         rf::compress_vector3(rf::world_solid, &t->pos, &b.pos);
+        rf::Quaternion q;
+        q.from_matrix(&t->orient);
+        b.orient.from_quat(&q);
+        b.pos_ha.reset();
+        b.orient_ha.reset();
+        if (g_use_high_accuracy_savegame) {
+            b.pos_ha = t->pos;
+            b.orient_ha = t->orient;
+        }
         b.count = t->count;
         b.time_last_activated = t->time_last_activated;
         b.trigger_flags = t->trigger_flags;
@@ -1297,15 +1327,25 @@ namespace asg
         o->life = src.life;
         o->armor = src.armor;
 
-        rf::decompress_vector3(rf::world_solid, &src.pos, &o->p_data.pos);
+        if (src.pos_ha) {
+            o->p_data.pos = *src.pos_ha;
+        }
+        else {
+            rf::decompress_vector3(rf::world_solid, &src.pos, &o->p_data.pos);
+        }
         o->pos = o->p_data.pos;
         o->last_pos = o->p_data.pos;
         o->p_data.next_pos = o->p_data.pos;
 
-         rf::Quaternion q;
-        q.unpack(&src.orient);
-        q.extract_matrix(&o->p_data.orient);
-        //rf::Matrix3::orthogonalize(&o->p_data.orient);
+        if (src.orient_ha) {
+            o->p_data.orient = *src.orient_ha;
+        }
+        else {
+            rf::Quaternion q;
+            q.unpack(&src.orient);
+            q.extract_matrix(&o->p_data.orient);
+        }
+
         o->p_data.orient.orthogonalize();
         o->orient = o->p_data.orient;
 
@@ -1697,9 +1737,26 @@ namespace asg
     static void apply_trigger_fields(rf::Trigger* t, const SavegameTriggerDataBlock& b)
     {
         // position
-        rf::decompress_vector3(rf::world_solid, &b.pos, &t->p_data.pos);
+        if (b.pos_ha) {
+            t->p_data.pos = *b.pos_ha;
+        }
+        else {
+            rf::decompress_vector3(rf::world_solid, &b.pos, &t->p_data.pos);
+        }
         t->pos = t->p_data.pos;
         t->p_data.next_pos = t->p_data.pos;
+
+        if (b.orient_ha) {
+            t->p_data.orient = *b.orient_ha;
+        }
+        else {
+            rf::Quaternion q;
+            q.unpack(&b.orient);
+            q.extract_matrix(&t->p_data.orient);
+        }
+        t->p_data.orient.orthogonalize();
+        t->orient = t->p_data.orient;
+        t->p_data.next_orient = t->p_data.orient;
 
         // simple scalars
         t->count = b.count;
@@ -1738,21 +1795,29 @@ namespace asg
 
     static void apply_clutter_fields(rf::Clutter* c, const SavegameClutterDataBlock& b)
     {
-        rf::Matrix3 saved_orient = c->orient;
-        rf::Matrix3 saved_physics_orient = c->p_data.orient;
-
         // 1) restore the minimal Object fields (pos/orient, uid, hidden, parent)
         c->uid = b.uid;
-        rf::decompress_vector3(rf::world_solid, &b.pos, &c->p_data.pos);
+        if (b.pos_ha) {
+            c->p_data.pos = *b.pos_ha;
+        }
+        else {
+            rf::decompress_vector3(rf::world_solid, &b.pos, &c->p_data.pos);
+        }
         c->pos = c->p_data.pos;
         c->last_pos = c->p_data.pos;
         c->p_data.next_pos = c->p_data.pos;
 
-        rf::Quaternion q;
-        q.unpack(&b.orient);
-        q.extract_matrix(&c->p_data.orient);
+        if (b.orient_ha) {
+            c->p_data.orient = *b.orient_ha;
+        }
+        else {
+            rf::Quaternion q;
+            q.unpack(&b.orient);
+            q.extract_matrix(&c->p_data.orient);
+        }
         c->p_data.orient.orthogonalize();
         c->orient = c->p_data.orient;
+        c->p_data.next_orient = c->p_data.orient;
 
         if (b.hidden) {
             if (!(c->obj_flags & rf::ObjectFlags::OF_HIDDEN)) {
@@ -1765,10 +1830,6 @@ namespace asg
 
         add_handle_for_delayed_resolution(b.parent_uid, &c->parent_handle);
         xlog::warn("attempting to deserialize clutter {}", b.uid);
-
-        c->orient = saved_orient;
-        c->p_data.orient = saved_physics_orient;
-        c->p_data.next_orient = saved_physics_orient;
 
         apply_clutter_skin(c, b.skin_index);
 
@@ -2627,8 +2688,15 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
     t.insert("armor", o.armor);
 
     // pos
-    toml::array pos{o.pos.x, o.pos.y, o.pos.z};
-    t.insert("pos", std::move(pos));
+    if (asg::g_use_high_accuracy_savegame && o.pos_ha) {
+        const auto& pos = *o.pos_ha;
+        toml::array pos_ha{pos.x, pos.y, pos.z};
+        t.insert("pos_ha", std::move(pos_ha));
+    }
+    else {
+        toml::array pos{o.pos.x, o.pos.y, o.pos.z};
+        t.insert("pos", std::move(pos));
+    }
 
     // vel
     toml::array vel{o.vel.x, o.vel.y, o.vel.z};
@@ -2637,15 +2705,19 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
     t.insert("friendliness", o.friendliness);
     t.insert("host_tag_handle", o.host_tag_handle);
 
-    // orient as 3×3 array
-    toml::array orient;
-    /* for (auto const& row : {o.orient.rvec, o.orient.uvec, o.orient.fvec}) {
-        toml::array r{row.x, row.y, row.z};
-        orient.push_back(std::move(r));
+    // orient
+    if (asg::g_use_high_accuracy_savegame && o.orient_ha) {
+        toml::array orient_ha;
+        for (auto const& row : {o.orient_ha->rvec, o.orient_ha->uvec, o.orient_ha->fvec}) {
+            toml::array r{row.x, row.y, row.z};
+            orient_ha.push_back(std::move(r));
+        }
+        t.insert("orient_ha", std::move(orient_ha));
     }
-    t.insert("orient", std::move(orient));*/
-    toml::array quat{ o.orient.x, o.orient.y, o.orient.z, o.orient.w };
-    t.insert("orient", std::move(quat));
+    else {
+        toml::array quat{ o.orient.x, o.orient.y, o.orient.z, o.orient.w };
+        t.insert("orient", std::move(quat));
+    }
 
     t.insert("obj_flags", o.obj_flags);
     t.insert("host_uid", o.host_uid);
@@ -2781,10 +2853,26 @@ static toml::table make_clutter_table(const asg::SavegameClutterDataBlock& c)
     toml::table t;
     t.insert("uid", c.uid);
     t.insert("parent_uid", c.parent_uid);
-    toml::array pos{c.pos.x, c.pos.y, c.pos.z};
-    t.insert("pos", std::move(pos));
-    toml::array quat{c.orient.x, c.orient.y, c.orient.z, c.orient.w};
-    t.insert("orient", std::move(quat));
+    if (asg::g_use_high_accuracy_savegame && c.pos_ha) {
+        const auto& pos = *c.pos_ha;
+        t.insert("pos_ha", toml::array{pos.x, pos.y, pos.z});
+    }
+    else {
+        toml::array pos{c.pos.x, c.pos.y, c.pos.z};
+        t.insert("pos", std::move(pos));
+    }
+    if (asg::g_use_high_accuracy_savegame && c.orient_ha) {
+        toml::array orient_ha;
+        for (auto const& row : {c.orient_ha->rvec, c.orient_ha->uvec, c.orient_ha->fvec}) {
+            toml::array r{row.x, row.y, row.z};
+            orient_ha.push_back(std::move(r));
+        }
+        t.insert("orient_ha", std::move(orient_ha));
+    }
+    else {
+        toml::array quat{c.orient.x, c.orient.y, c.orient.z, c.orient.w};
+        t.insert("orient", std::move(quat));
+    }
     t.insert("delayed_kill_timestamp", c.delayed_kill_timestamp);
     t.insert("corpse_create_timestamp", c.corpse_create_timestamp);
     t.insert("hidden", c.hidden);
@@ -2799,7 +2887,25 @@ static toml::table make_trigger_table(const asg::SavegameTriggerDataBlock& b)
 {
     toml::table t;
     t.insert("uid", b.uid);
-    t.insert("pos", toml::array{b.pos.x, b.pos.y, b.pos.z});
+    if (asg::g_use_high_accuracy_savegame && b.pos_ha) {
+        const auto& pos = *b.pos_ha;
+        t.insert("pos_ha", toml::array{pos.x, pos.y, pos.z});
+    }
+    else {
+        t.insert("pos", toml::array{b.pos.x, b.pos.y, b.pos.z});
+    }
+    if (asg::g_use_high_accuracy_savegame && b.orient_ha) {
+        toml::array orient_ha;
+        for (auto const& row : {b.orient_ha->rvec, b.orient_ha->uvec, b.orient_ha->fvec}) {
+            toml::array r{row.x, row.y, row.z};
+            orient_ha.push_back(std::move(r));
+        }
+        t.insert("orient_ha", std::move(orient_ha));
+    }
+    else {
+        toml::array quat{b.orient.x, b.orient.y, b.orient.z, b.orient.w};
+        t.insert("orient", std::move(quat));
+    }
     t.insert("count", b.count);
     t.insert("time_last_activated", b.time_last_activated);
     t.insert("trigger_flags", b.trigger_flags);
@@ -3282,7 +3388,7 @@ bool parse_common_player(const toml::table& tbl, asg::SavegameCommonDataPlayer& 
     out.clip_h = tbl["clip_h"].value_or(0);
     out.fov_h = tbl["fov_h"].value_or(0.f);
     out.player_flags = tbl["player_flags"].value_or(0);
-    out.field_11f8 = static_cast<int16_t>(tbl["field_11f8"].value_or(tbl["field_36"].value_or(0)));
+    out.field_11f8 = tbl["field_11f8"].value_or(-1);
     out.entity_uid = tbl["entity_uid"].value_or(-1);
     xlog::warn("read entity_uid {}", out.entity_uid);
     out.entity_type = tbl["entity_type"].value_or(0);
@@ -3339,11 +3445,26 @@ bool parse_object(const toml::table& tbl, asg::SavegameObjectDataBlock& o)
 
     asg::parse_i16_vector(tbl, "pos", o.pos);
     asg::parse_i16_vector(tbl, "vel", o.vel);
+    rf::Vector3 pos_ha{};
+    if (asg::parse_f32_vector3(tbl, "pos_ha", pos_ha))
+        o.pos_ha = pos_ha;
+    else
+        o.pos_ha.reset();
+    rf::Vector3 vel_ha{};
+    if (asg::parse_f32_vector3(tbl, "vel_ha", vel_ha))
+        o.vel_ha = vel_ha;
+    else
+        o.vel_ha.reset();
 
     o.friendliness = tbl["friendliness"].value_or(0);
     o.host_tag_handle = tbl["host_tag_handle"].value_or(0);
 
     asg::parse_i16_quat(tbl, "orient", o.orient);
+    rf::Matrix3 orient_ha{};
+    if (asg::parse_f32_matrix3(tbl, "orient_ha", orient_ha))
+        o.orient_ha = orient_ha;
+    else
+        o.orient_ha.reset();
 
     o.obj_flags = tbl["obj_flags"].value_or(0);
     o.host_uid = tbl["host_uid"].value_or(-1);
@@ -3657,7 +3778,17 @@ bool parse_clutter(const toml::array& arr, std::vector<asg::SavegameClutterDataB
         cb.uid = ct["uid"].value_or(0);
         cb.parent_uid = ct["parent_uid"].value_or(-1);
         asg::parse_i16_vector(ct, "pos", cb.pos);
+        rf::Vector3 pos_ha{};
+        if (asg::parse_f32_vector3(ct, "pos_ha", pos_ha))
+            cb.pos_ha = pos_ha;
+        else
+            cb.pos_ha.reset();
         asg::parse_i16_quat(ct, "orient", cb.orient);
+        rf::Matrix3 orient_ha{};
+        if (asg::parse_f32_matrix3(ct, "orient_ha", orient_ha))
+            cb.orient_ha = orient_ha;
+        else
+            cb.orient_ha.reset();
         cb.delayed_kill_timestamp = ct["delayed_kill_timestamp"].value_or(-1);
         cb.corpse_create_timestamp = ct["corpse_create_timestamp"].value_or(-1);
         cb.hidden = ct["hidden"].value_or(false);
@@ -3707,6 +3838,17 @@ bool parse_triggers(const toml::array& arr, std::vector<asg::SavegameTriggerData
         asg::SavegameTriggerDataBlock tb{};
         tb.uid = tbl["uid"].value_or(0);
         asg::parse_i16_vector(tbl, "pos", tb.pos);
+        rf::Vector3 pos_ha{};
+        if (asg::parse_f32_vector3(tbl, "pos_ha", pos_ha))
+            tb.pos_ha = pos_ha;
+        else
+            tb.pos_ha.reset();
+        asg::parse_i16_quat(tbl, "orient", tb.orient);
+        rf::Matrix3 orient_ha{};
+        if (asg::parse_f32_matrix3(tbl, "orient_ha", orient_ha))
+            tb.orient_ha = orient_ha;
+        else
+            tb.orient_ha.reset();
         tb.count = tbl["count"].value_or(0);
         tb.time_last_activated = tbl["time_last_activated"].value_or(0);
         tb.trigger_flags = tbl["trigger_flags"].value_or(0);

@@ -5,6 +5,7 @@
 #include <common/utils/os-utils.h>
 #include "alpine_settings.h"
 #include "alpine_options.h"
+#include "alpine_savegame.h"
 #include <common/version/version.h>
 #include "../os/console.h"
 #include "../os/os.h"
@@ -758,6 +759,11 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.use_new_savegame_format = std::stoi(settings["UseAlpineSavegameFormat"]);
         processed_keys.insert("UseAlpineSavegameFormat");
     }
+    if (settings.count("SavegameHighAccuracy")) {
+        g_alpine_game_config.savegame_high_accuracy = std::stoi(settings["SavegameHighAccuracy"]);
+        processed_keys.insert("SavegameHighAccuracy");
+    }
+    asg::g_use_high_accuracy_savegame = g_alpine_game_config.savegame_high_accuracy;
 
     // Load multiplayer settings
     if (settings.count("MultiplayerCharacter")) {
@@ -1227,6 +1233,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "StaticBombCode=" << g_alpine_game_config.static_bomb_code << "\n";
     file << "ExposureDamage=" << g_alpine_game_config.apply_exposure_damage << "\n";
     file << "UseAlpineSavegameFormat=" << g_alpine_game_config.use_new_savegame_format << "\n";
+    file << "SavegameHighAccuracy=" << g_alpine_game_config.savegame_high_accuracy << "\n";
 
     // Multiplayer
     file << "\n[MultiplayerSettings]\n";
@@ -1292,6 +1299,7 @@ void set_alpine_config_defaults() {
     rf::game_set_gore_level(2);
     rf::g_fast_animations = false;
     g_alpine_game_config.save_console_history = true; // must be set here because evaluated before config loaded
+    asg::g_use_high_accuracy_savegame = g_alpine_game_config.savegame_high_accuracy;
     build_time_left_string_format();
     set_play_sound_events_volume_scale();
     apply_entity_sim_distance();

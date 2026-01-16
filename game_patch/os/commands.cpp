@@ -7,6 +7,7 @@
 #include <algorithm>
 #include "console.h"
 #include "../misc/alpine_options.h"
+#include "../misc/alpine_savegame.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/level.h"
 #include "../main/main.h"
@@ -362,6 +363,18 @@ ConsoleCommand2 new_savegame_format_cmd{
     "Toggle between writing savegame files using the modern (.asg) or legacy (.svl) format",
 };
 
+ConsoleCommand2 savegame_high_accuracy_cmd{
+    "sp_savehighaccuracy",
+    []() {
+        g_alpine_game_config.savegame_high_accuracy = !g_alpine_game_config.savegame_high_accuracy;
+        asg::g_use_high_accuracy_savegame = g_alpine_game_config.savegame_high_accuracy;
+        rf::console::print("Savegame high accuracy position/orientation is {}.",
+            g_alpine_game_config.savegame_high_accuracy ? "enabled" : "disabled");
+    },
+    "Toggle high accuracy position/orientation fields for .asg savegame files",
+    "sp_savehighaccuracy",
+};
+
 ConsoleCommand2 pcollide_cmd{
     "pcollide",
     []() {
@@ -577,6 +590,7 @@ void console_commands_init()
     verify_level_cmd_hook.install();
     autosave_cmd.register_cmd();
     new_savegame_format_cmd.register_cmd();
+    savegame_high_accuracy_cmd.register_cmd();
 
     // Hooks for builtin commands
     camera1_cmd_hook.install();

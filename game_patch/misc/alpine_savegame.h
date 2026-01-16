@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <optional>
 #include "toml.hpp"
 #include "../rf/save_restore.h"
 #include "../rf/geometry.h"
@@ -47,7 +48,7 @@ namespace asg
         float fov_h;
         //int32_t field_10;
         int16_t player_flags;
-        int16_t field_11f8;
+        int field_11f8;
         int entity_uid;
         int entity_type;
         uint8_t spew_vector_index;
@@ -83,16 +84,16 @@ namespace asg
         float life;
         float armor;
         rf::ShortVector pos;
-        rf::Vector3* pos_ha;
+        std::optional<rf::Vector3> pos_ha;
         rf::ShortVector vel;
-        rf::Vector3* vel_ha;
+        std::optional<rf::Vector3> vel_ha;
         //char friendliness;
         int friendliness;
         //char host_tag_handle;
         int host_tag_handle;
         //rf::Matrix3 orient;
         rf::ShortQuat orient;
-        rf::Matrix3* orient_ha;
+        std::optional<rf::Matrix3> orient_ha;
         int obj_flags;
         int host_uid;
         rf::Vector3 ang_momentum;
@@ -189,9 +190,9 @@ namespace asg
         int uid;
         int parent_uid;
         rf::ShortVector pos;
-        rf::Vector3* pos_ha;
+        std::optional<rf::Vector3> pos_ha;
         rf::ShortQuat orient;
-        rf::Matrix3* orient_ha;
+        std::optional<rf::Matrix3> orient_ha;
         int delayed_kill_timestamp;
         int corpse_create_timestamp;
         bool hidden;
@@ -203,7 +204,9 @@ namespace asg
     {
         int uid;
         rf::ShortVector pos;
-        rf::Vector3* pos_ha;
+        std::optional<rf::Vector3> pos_ha;
+        rf::ShortQuat orient;
+        std::optional<rf::Matrix3> orient_ha;
         int count;
         float time_last_activated;
         int trigger_flags;
@@ -408,5 +411,6 @@ namespace asg
     int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr);
     void clear_delayed_handles();
     void resolve_delayed_handles();
+    extern bool g_use_high_accuracy_savegame;
 
 }

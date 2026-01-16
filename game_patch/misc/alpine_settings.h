@@ -141,6 +141,7 @@ struct AlpineGameSettings
     bool scoreboard_split_idle = false;
     bool autosave = true;
     bool use_new_savegame_format = true;
+    bool savegame_high_accuracy = false;
     bool af_branding = true;
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
     bool player_join_beep = false;
