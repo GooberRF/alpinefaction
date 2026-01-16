@@ -631,9 +631,6 @@ namespace asg
         b.uid = c->uid;
         b.parent_uid = uid_from_handle(c->parent_handle);
         rf::compress_vector3(rf::world_solid, &c->p_data.pos, &b.pos);
-        rf::Quaternion q;
-        q.from_matrix(&c->orient);
-        b.orient.from_quat(&q);
         b.pos_ha.reset();
         b.orient_ha.reset();
         if (g_use_high_accuracy_savegame) {
@@ -660,9 +657,6 @@ namespace asg
         SavegameTriggerDataBlock b{};
         b.uid = t->uid;
         rf::compress_vector3(rf::world_solid, &t->pos, &b.pos);
-        rf::Quaternion q;
-        q.from_matrix(&t->orient);
-        b.orient.from_quat(&q);
         b.pos_ha.reset();
         b.orient_ha.reset();
         if (g_use_high_accuracy_savegame) {
@@ -1758,15 +1752,10 @@ namespace asg
 
         if (b.orient_ha) {
             t->p_data.orient = *b.orient_ha;
+            t->p_data.orient.orthogonalize();
+            t->orient = t->p_data.orient;
+            t->p_data.next_orient = t->p_data.orient;
         }
-        else {
-            rf::Quaternion q;
-            q.unpack(&b.orient);
-            q.extract_matrix(&t->p_data.orient);
-        }
-        t->p_data.orient.orthogonalize();
-        t->orient = t->p_data.orient;
-        t->p_data.next_orient = t->p_data.orient;
 
         // simple scalars
         t->count = b.count;
@@ -1819,15 +1808,10 @@ namespace asg
 
         if (b.orient_ha) {
             c->p_data.orient = *b.orient_ha;
+            c->p_data.orient.orthogonalize();
+            c->orient = c->p_data.orient;
+            c->p_data.next_orient = c->p_data.orient;
         }
-        else {
-            rf::Quaternion q;
-            q.unpack(&b.orient);
-            q.extract_matrix(&c->p_data.orient);
-        }
-        c->p_data.orient.orthogonalize();
-        c->orient = c->p_data.orient;
-        c->p_data.next_orient = c->p_data.orient;
 
         if (b.hidden) {
             if (!(c->obj_flags & rf::ObjectFlags::OF_HIDDEN)) {
@@ -2906,10 +2890,6 @@ static toml::table make_clutter_table(const asg::SavegameClutterDataBlock& c)
         }
         t.insert("orient_ha", std::move(orient_ha));
     }
-    else {
-        toml::array quat{c.orient.x, c.orient.y, c.orient.z, c.orient.w};
-        t.insert("orient", std::move(quat));
-    }
     t.insert("delayed_kill_timestamp", c.delayed_kill_timestamp);
     t.insert("corpse_create_timestamp", c.corpse_create_timestamp);
     t.insert("hidden", c.hidden);
@@ -2938,10 +2918,6 @@ static toml::table make_trigger_table(const asg::SavegameTriggerDataBlock& b)
             orient_ha.push_back(std::move(r));
         }
         t.insert("orient_ha", std::move(orient_ha));
-    }
-    else {
-        toml::array quat{b.orient.x, b.orient.y, b.orient.z, b.orient.w};
-        t.insert("orient", std::move(quat));
     }
     t.insert("count", b.count);
     t.insert("time_last_activated", b.time_last_activated);
@@ -3820,7 +3796,6 @@ bool parse_clutter(const toml::array& arr, std::vector<asg::SavegameClutterDataB
             cb.pos_ha = pos_ha;
         else
             cb.pos_ha.reset();
-        asg::parse_i16_quat(ct, "orient", cb.orient);
         rf::Matrix3 orient_ha{};
         if (asg::parse_f32_matrix3(ct, "orient_ha", orient_ha))
             cb.orient_ha = orient_ha;
@@ -3880,7 +3855,6 @@ bool parse_triggers(const toml::array& arr, std::vector<asg::SavegameTriggerData
             tb.pos_ha = pos_ha;
         else
             tb.pos_ha.reset();
-        asg::parse_i16_quat(tbl, "orient", tb.orient);
         rf::Matrix3 orient_ha{};
         if (asg::parse_f32_matrix3(tbl, "orient_ha", orient_ha))
             tb.orient_ha = orient_ha;

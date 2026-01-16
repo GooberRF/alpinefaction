@@ -191,7 +191,8 @@ namespace asg
         int parent_uid;
         rf::ShortVector pos;
         std::optional<rf::Vector3> pos_ha;
-        rf::ShortQuat orient;
+        // no low accuracy orient because it causes incremental rotatation
+        // stock game format doesn't save orient for clutter
         std::optional<rf::Matrix3> orient_ha;
         int delayed_kill_timestamp;
         int corpse_create_timestamp;
@@ -205,7 +206,8 @@ namespace asg
         int uid;
         rf::ShortVector pos;
         std::optional<rf::Vector3> pos_ha;
-        rf::ShortQuat orient;
+        // no low accuracy orient because it causes incremental rotatation
+        // stock game format doesn't save orient for triggers
         std::optional<rf::Matrix3> orient_ha;
         int count;
         float time_last_activated;
