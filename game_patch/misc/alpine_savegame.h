@@ -50,17 +50,22 @@ namespace asg
         int16_t field_11f8;
         int entity_uid;
         int entity_type;
-        char spew_vector_index;
+        uint8_t spew_vector_index;
         rf::Vector3 spew_pos;
-        float key_items;
+        uint32_t key_items[3];
         int32_t view_obj_uid;
-        char weapon_prefs[32];
+        int weapon_prefs[32];
         rf::Matrix3 fpgun_orient;
         rf::Vector3 fpgun_pos;
         uint8_t grenade_mode;
         //uint8_t game_difficulty;
         //int32_t field_A8;
-        uint8_t flags;
+        bool show_silencer;
+        bool remote_charge_in_hand;
+        bool undercover_active;
+        int undercover_team;
+        int player_cover_id;
+        bool ai_high_flag;
     };
 
     struct SavegameCommonData

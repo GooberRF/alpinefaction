@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iomanip>
 #include <chrono>
+#include <cmath>
 #include <ctime>
 #include <sstream>
 #include <unordered_set>
@@ -194,7 +195,7 @@ namespace asg
                 std::any_of(ponrEntry->levels_to_save.begin(), ponrEntry->levels_to_save.end(),
                             [&](auto const& want) { return _stricmp(want.c_str(), savedLevels[i].c_str()) == 0; });
 
-            xlog::warn("[PONR] slot[{}]='{}' → isKeep={}", i, savedLevels[i], isKeep);
+            xlog::warn("[PONR] slot[{}]='{}' -> isKeep={}", i, savedLevels[i], isKeep);
 
             if (isKeep) {
                 ++keptSoFar;
@@ -205,7 +206,7 @@ namespace asg
                 }
             }
             else {
-                // first slot *not* on the keep-list → evict it
+                // first slot *not* on the keep-list -> evict it
                 xlog::warn("[PONR] evicting slot {} ('{}') — first not in keep-list", i, savedLevels[i]);
                 return i;
             }
@@ -282,15 +283,14 @@ namespace asg
         }
 
         // 1) host UID
-        if (auto e = rf::entity_from_handle(pp->entity_handle)) {
-            auto host = rf::obj_from_handle(e->host_handle);
-            data.entity_host_uid = host ? host->uid : -1;
-            xlog::warn("[SP] entity_host_uid = {}", data.entity_host_uid);
+        auto entity = rf::entity_from_handle(pp->entity_handle);
+        if (!entity) {
+            xlog::warn("[SP] no entity, skipping player serialize");
+            return;
         }
-        else {
-            data.entity_host_uid = -1;
-            xlog::warn("[SP] no entity, entity_host_uid = -1");
-        }
+
+        data.entity_host_uid = uid_from_handle(entity->host_handle);
+        xlog::warn("[SP] entity_host_uid = {}", data.entity_host_uid);
 
         // 2) viewport
         data.clip_x = pp->viewport.clip_x;
@@ -306,50 +306,41 @@ namespace asg
         data.field_11f8 = static_cast<int16_t>(pp->field_11F8);
         xlog::warn("[SP] player_flags = 0x{:X}", data.player_flags);
 
-        if (auto ent = rf::local_player_entity) {
-            data.entity_uid = ent->uid;
-            data.entity_type = pp->entity_type;
-            xlog::warn("[SP] entity_uid = {} entity_type = {}", data.entity_uid, (int)data.entity_type);
-        }
-        else {
-            data.entity_uid = -1;
-            data.entity_type = 0;
-            xlog::warn("[SP] no entity, entity_uid = -1, entity_type = 0");
-        }
+        data.entity_uid = entity->uid;
+        data.entity_type = pp->entity_type;
+        xlog::warn("[SP] entity_uid = {} entity_type = {}", data.entity_uid, (int)data.entity_type);
 
         // 4) spew
-        data.spew_vector_index = pp->spew_vector_index;
-        xlog::warn("[SP] spew_vector_index = {}", data.spew_vector_index);
+        data.spew_vector_index = static_cast<uint8_t>(pp->spew_vector_index);
+        xlog::warn("[SP] spew_vector_index = {}", static_cast<int>(data.spew_vector_index));
         rf::Vector3 spew_tmp;
         data.spew_pos.assign(&spew_tmp, &pp->spew_pos);
         xlog::warn("[SP] spew_pos = ({:.3f},{:.3f},{:.3f})", data.spew_pos.x, data.spew_pos.y, data.spew_pos.z);
 
         // 5) key items bitmask
         {
-            uint32_t mask = 0;
-            for (int i = 0; i < 32; ++i)
-                if (pp->key_items[i])
-                    mask |= (1u << i);
-            data.key_items = *reinterpret_cast<float*>(&mask);
-            xlog::warn("[SP] key_items mask = 0x{:08X}", mask);
+            std::fill(std::begin(data.key_items), std::end(data.key_items), 0u);
+            for (int i = 0; i < 96; ++i) {
+                if (!pp->key_items[i])
+                    continue;
+                int group = i / 32;
+                int bit = i % 32;
+                data.key_items[group] |= (1u << bit);
+            }
+            xlog::warn("[SP] key_items mask = 0x{:08X} 0x{:08X} 0x{:08X}", data.key_items[0], data.key_items[1], data.key_items[2]);
         }
 
         // 6) view object
-        if (auto v = rf::obj_from_handle(pp->view_from_handle)) {
-            data.view_obj_uid = v->uid;
+        data.view_obj_uid = uid_from_handle(pp->view_from_handle);
+        if (data.view_obj_uid >= 0)
             xlog::warn("[SP] view_obj_uid = {}", data.view_obj_uid);
-        }
-        else {
-            data.view_obj_uid = -1;
+        else
             xlog::warn("[SP] no view_obj, view_obj_uid = -1");
-        }
 
         // 7) weapon_prefs
-        for (int i = 0; i < 32; ++i) {
+        for (int i = 0; i < 32; ++i)
             data.weapon_prefs[i] = pp->weapon_prefs[i];
-        }
-        xlog::warn("[SP] weapon_prefs[0..3] = {},{},{},{}", data.weapon_prefs[0], data.weapon_prefs[1],
-                   data.weapon_prefs[2], data.weapon_prefs[3]);
+        xlog::warn("[SP] weapon_prefs[0..3] = {},{},{},{}", data.weapon_prefs[0], data.weapon_prefs[1], data.weapon_prefs[2], data.weapon_prefs[3]);
 
         // 8) first-person gun
         {
@@ -357,8 +348,7 @@ namespace asg
             data.fpgun_pos.assign(&gun_tmp, &pp->fpgun_data.fpgun_pos);
             data.fpgun_orient.assign(&pp->fpgun_data.fpgun_orient);
             xlog::warn("[SP] fpgun_pos = ({:.3f},{:.3f},{:.3f})", data.fpgun_pos.x, data.fpgun_pos.y, data.fpgun_pos.z);
-            xlog::warn("[SP] fpgun_orient.rvec = ({:.3f},{:.3f},{:.3f})", data.fpgun_orient.rvec.x,
-                       data.fpgun_orient.rvec.y, data.fpgun_orient.rvec.z);
+            xlog::warn("[SP] fpgun_orient.rvec = ({:.3f},{:.3f},{:.3f})", data.fpgun_orient.rvec.x, data.fpgun_orient.rvec.y, data.fpgun_orient.rvec.z);
         }
 
         // 9) grenade mode
@@ -367,42 +357,17 @@ namespace asg
             xlog::warn("[SP] grenade_mode = {}", data.grenade_mode);
         }
 
-        // 10) flags bit-packing
+        // 10) flags/state
         {
-            /* uint8_t low, high;
-            bool bit0 = (*reinterpret_cast<const uint8_t*>(reinterpret_cast<const char*>(pp) +
-                                                           offsetof(rf::Player, shield_decals) + 21) &
-                         1) != 0;
-            bool bit1 = (*reinterpret_cast<const uint8_t*>(reinterpret_cast<const char*>(pp) +
-                                                           offsetof(rf::Player, shield_decals) + 23) &
-                         1) != 0;
-            int cover = (rf::g_player_cover_id & 1);
-            auto ent = rf::entity_from_handle(pp->entity_handle);
-            int ai_high = ent ? ((ent->ai.ai_flags >> 16) & 1) : 0;
-
-            low = static_cast<uint8_t>(data.flags);
-            uint8_t part = bit0 ? 1 : 0;
-            low = static_cast<uint8_t>((low ^ ((low ^ part) & 1)) & 0xF1);
-
-            int tmp = (2 * cover) | ai_high;
-            tmp = 2 * tmp;
-            tmp = bit1 ? (tmp | 1) : tmp;
-            high = static_cast<uint8_t>(2 * tmp);
-
-            data.flags = low | high;
-            xlog::warn("[SP] flags packing → bit0={} bit1={} cover={} ai_high={} result=0x{:02X}", bit0, bit1, cover,
-                       ai_high, data.flags);*/
-
-            uint8_t out = 0; // keep bits 4..7
-
-            out |= (pp->fpgun_data.show_silencer ? 1u : 0u) << 0;
-            out |= (pp->fpgun_data.remote_charge_in_hand ? 1u : 0u) << 1;
-            auto ent = rf::entity_from_handle(pp->entity_handle);
-            out |= (((ent ? ent->ai.ai_flags : 0) >> 16) & 1u) << 2;
-            out |= (rf::g_player_cover_id & 1u) << 3;
-
-            data.flags = out;
-            xlog::warn("[SP] flags packing → result=0x{:02X}", data.flags);
+            data.show_silencer = pp->fpgun_data.show_silencer;
+            data.remote_charge_in_hand = pp->fpgun_data.remote_charge_in_hand;
+            data.undercover_active = rf::player_is_undercover();
+            data.undercover_team = rf::g_player_cover_id & 1;
+            data.player_cover_id = rf::g_player_cover_id;
+            data.ai_high_flag = ((entity->ai.ai_flags >> 16) & 1) != 0;
+            xlog::warn("[SP] state show_silencer={} remote_charge_in_hand={} undercover_active={} undercover_team={} cover_id={} ai_high={}",
+                       data.show_silencer, data.remote_charge_in_hand, data.undercover_active, data.undercover_team,
+                       data.player_cover_id, data.ai_high_flag);
         }
 
         xlog::warn("[SP] exit serialize_player OK");
@@ -1751,7 +1716,7 @@ namespace asg
 
     static void trigger_deserialize_all_state(const std::vector<SavegameTriggerDataBlock>& blocks)
     {
-        // build UID→block map
+        // build UID->block map
         std::unordered_map<int, SavegameTriggerDataBlock> tbl;
         tbl.reserve(blocks.size());
         for (auto const& b : blocks) tbl[b.uid] = b;
@@ -1760,11 +1725,11 @@ namespace asg
         for (rf::Trigger* t = rf::trigger_list.next; t != &rf::trigger_list; t = t->next) {
             auto it = tbl.find(t->uid);
             if (it != tbl.end()) {
-                // found a savegame record → replay
+                // found a savegame record -> replay
                 apply_trigger_fields(t, it->second);
             }
             else {
-                // no record → kill/hide it
+                // no record -> kill/hide it
                 rf::obj_flag_dead(t);
             }
         }
@@ -1824,7 +1789,7 @@ namespace asg
     {
         xlog::warn("deserializing clutter...");
 
-        // build a UID → block map
+        // build a UID -> block map
         std::unordered_map<int, SavegameClutterDataBlock> blkmap;
         blkmap.reserve(blocks.size());
         for (auto const& b : blocks) blkmap[b.uid] = b;
@@ -1844,7 +1809,7 @@ namespace asg
                 apply_clutter_fields(c, it->second);
             }
             else {
-                // no saved block → kill it
+                // no saved block -> kill it
                 rf::obj_flag_dead(c);
             }
         }
@@ -1866,7 +1831,7 @@ namespace asg
 
     static void item_deserialize_all_state(const std::vector<SavegameItemDataBlock>& blocks)
     {
-        // build UID → block map
+        // build UID -> block map
         std::unordered_map<int, SavegameItemDataBlock> map;
         map.reserve(blocks.size());
         for (auto const& b : blocks) map[b.obj.uid] = b;
@@ -1884,7 +1849,7 @@ namespace asg
                 apply_item_fields(it, f->second);
             }
             else {
-                // not in save → kill
+                // not in save -> kill
                 if (!(it->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION))
                     rf::obj_flag_dead(it);
             }
@@ -1963,7 +1928,7 @@ namespace asg
 
     static void mover_deserialize_all_state(const std::vector<SavegameLevelKeyframeDataBlock>& blocks)
     {
-        // build a UID → block map
+        // build a UID -> block map
         std::unordered_map<int, SavegameLevelKeyframeDataBlock> blkmap;
         blkmap.reserve(blocks.size());
         for (auto const& b : blocks) blkmap[b.obj.uid] = b;
@@ -1981,7 +1946,7 @@ namespace asg
                 apply_mover_fields(mv, it->second);
             }
             else {
-                // no saved block → kill it
+                // no saved block -> kill it
                 rf::obj_flag_dead(mv);
             }
         }
@@ -1996,7 +1961,7 @@ namespace asg
 
     static void push_region_deserialize_all_state(const std::vector<SavegameLevelPushRegionDataBlock>& blocks)
     {
-        // build a quick UID→active map
+        // build a quick UID->active map
         std::unordered_map<int, bool> active_map;
         active_map.reserve(blocks.size());
         for (auto const& blk : blocks) {
@@ -2193,7 +2158,7 @@ namespace asg
     {
         bool in_transition = (rf::gameseq_get_state() == rf::GS_LEVEL_TRANSITION);
 
-        // Build a quick UID→block map
+        // Build a quick UID->block map
         std::unordered_map<int, SavegameLevelCorpseDataBlock> blkmap;
         blkmap.reserve(blocks.size());
         for (auto const& b : blocks) blkmap[b.obj.uid] = b;
@@ -2279,7 +2244,7 @@ namespace asg
 
     void deserialize_all_objects(SavegameLevelData* lvl)
     {
-        // reset our “UID → int*” mapping
+        // reset our “UID -> int*” mapping
         clear_delayed_handles();
 
         event_deserialize_all_state(*lvl);
@@ -2330,9 +2295,8 @@ namespace asg
         }
             
 
-        if ((pd->flags & 0x04) != 0) {
-            // bit-3 of flags -> team (0/1)
-            player_undercover_start((pd->flags >> 3) & 1);
+        if (pd->undercover_active) {
+            player_undercover_start(pd->undercover_team);
             ent = local_player_entity;
             int uw = undercover_weapon;
             ent->ai.current_primary_weapon = uw;
@@ -2361,8 +2325,11 @@ namespace asg
         player->spew_pos.assign(&spew_tmp, &pd->spew_pos);
 
         {
-            uint32_t bits = *reinterpret_cast<const uint32_t*>(&pd->key_items);
-            for (int i = 0; i < 32; ++i) player->key_items[i] = (bits >> i) & 1;
+            for (int i = 0; i < 96; ++i) {
+                int group = i / 32;
+                int bit = i % 32;
+                player->key_items[i] = (pd->key_items[group] >> bit) & 1;
+            }
         }
 
         if (pd->view_obj_uid >= 0) {
@@ -2375,16 +2342,15 @@ namespace asg
             player->view_from_handle = -1;
         }
 
-        for (int i = 0; i < 32; ++i) {
-            player->weapon_prefs[i] = static_cast<int>(pd->weapon_prefs[i]);
-        }
+        for (int i = 0; i < 32; ++i)
+            player->weapon_prefs[i] = pd->weapon_prefs[i];
 
         rf::Vector3 gun_tmp;
         player->fpgun_data.fpgun_pos.assign(&gun_tmp, &pd->fpgun_pos);
         player->fpgun_data.fpgun_orient.assign(&pd->fpgun_orient);
 
-        bool dec21 = (pd->flags & 0x01) != 0;
-        bool dec23 = (pd->flags & 0x02) != 0;
+        bool dec21 = pd->show_silencer;
+        bool dec23 = pd->remote_charge_in_hand;
         player->fpgun_data.show_silencer = dec21;
         player->fpgun_data.grenade_mode = static_cast<int>(pd->grenade_mode);
         player->fpgun_data.remote_charge_in_hand = dec23;
@@ -2393,12 +2359,17 @@ namespace asg
         if (cur == remote_charge_weapon_type && !dec23)
             ent->ai.current_primary_weapon = remote_charge_det_weapon_type;
 
+        rf::g_player_cover_id = pd->player_cover_id;
+        if (pd->ai_high_flag)
+            ent->ai.ai_flags |= (1 << 16);
+        else
+            ent->ai.ai_flags &= ~(1 << 16);
+
         if (ent->host_handle != -1) {
             int ht = ent->host_tag_handle;
             ent->host_tag_handle = -1;
 
             if (auto host = obj_from_handle(ent->host_handle); host && host->type == OT_ENTITY) {
-                //auto host_ent = reinterpret_cast<rf::Entity*>(host);
                 //auto host_ent = reinterpret_cast<rf::Entity*>(host);
                 entity_headlamp_turn_off(ent);
                 ent->attach_leech(ent->handle, ht);
@@ -2409,14 +2380,6 @@ namespace asg
                 bits = (bits & ~0x0030000u) | 0x0010000u;
                 ent->last_pos.x = std::bit_cast<float>(bits);
                 obj_set_friendliness(ent, 1);
-
-                // copy two vectors at offsets +108, +120
-                /* Vector3::assign(
-                    reinterpret_cast<Vector3*>(&host->start_orient.fvec.y), &world_pos,
-                    reinterpret_cast<const Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 108));
-                Vector3::assign(
-                    reinterpret_cast<Vector3*>(&host->root_bone_index), &world_pos,
-                    reinterpret_cast<const Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 120));*/
 
                 auto src1 = reinterpret_cast<const rf::Vector3*>(reinterpret_cast<const char*>(&host->correct_pos) + 108);
                 auto dst1 = reinterpret_cast<rf::Vector3*>(&host->start_orient.fvec.y);
@@ -2445,81 +2408,6 @@ namespace asg
         }
 
         return true;
-
-        /*
-        // Only spawn a new player-entity when we're *not* in the middle of a level transition:
-        if (1==1||gameseq_get_state() != GS_LEVEL_TRANSITION) {
-            xlog::warn("3 unpacking player");
-            Quaternion q;
-            q.unpack(&blk->obj.orient);
-            Matrix3 m;
-            q.extract_matrix(&m);
-
-            // 2) Unpack position
-            //Vector3 world_pos = ShortVector::decompress(world_solid, blk->obj.pos);
-            Vector3 world_pos;
-            rf::decompress_vector3(rf::world_solid, &blk->obj.pos, &world_pos);
-            xlog::warn("[ASG]   spawn position = x={:.3f}, y={:.3f}, z={:.3f}", world_pos.x, world_pos.y, world_pos.z);
-
-            // 3) Spawn the Entity and replay its saved state
-            Entity* ent = rf::player_create_entity(player, static_cast<int>(blk->info_index), &world_pos, &m, -1);
-            if (!ent)
-                return false;
-
-            // copy back everything the stock would have:
-            asg::deserialize_entity_state(ent, *blk);
-
-            // 2) Unpack position
-            // Vector3 world_pos = ShortVector::decompress(world_solid, blk->obj.pos);
-            Vector3 world_pos2;
-            rf::decompress_vector3(rf::world_solid, &blk->obj.pos, &world_pos2);
-            xlog::warn("[ASG]   spawn position = x={:.3f}, y={:.3f}, z={:.3f}", world_pos2.x, world_pos2.y, world_pos2.z);
-            ent->pos = world_pos2;
-
-            // 4) Re-attach host (if any)
-            if (pd->entity_host_uid >= 0) {
-                if (auto host_obj = obj_lookup_from_uid(pd->entity_host_uid))
-                    ent->host_handle = host_obj->handle;
-                else
-                    ent->host_handle = -1;
-            }
-
-            // 5) Restore Player-specific fields:
-
-            // — spew index & position
-            player->spew_vector_index = pd->spew_vector_index;
-            player->spew_pos = pd->spew_pos;
-
-            // — key-items bitfield
-            {
-                uint32_t mask = *reinterpret_cast<const uint32_t*>(&pd->key_items);
-                for (int i = 0; i < 32; ++i) player->key_items[i] = (mask >> i) & 1;
-            }
-
-            // — view_from handle
-            if (pd->view_obj_uid >= 0) {
-                if (auto v = obj_lookup_from_uid(pd->view_obj_uid))
-                    player->view_from_handle = v->handle;
-                else
-                    player->view_from_handle = -1;
-            }
-            else {
-                player->view_from_handle = -1;
-            }
-
-            // — first-person gun transform
-            //   we know shield_decals layout; offset 12 bytes is gun-pos, next 3×Vector3 is orient
-            Vector3* gun_pos = reinterpret_cast<Vector3*>(reinterpret_cast<char*>(&player->shield_decals) + 12);
-            Matrix3* gun_orient =
-                reinterpret_cast<Matrix3*>(reinterpret_cast<char*>(&player->shield_decals) + 12 + sizeof(Vector3));
-            *gun_pos = pd->fpgun_pos;
-            *gun_orient = pd->fpgun_orient;
-
-            // — grenade mode
-            //player->gren = pd->grenade_mode;
-        }
-
-        return true;*/
     }
 
     SavegameData build_savegame_data(rf::Player* pp)
@@ -2531,9 +2419,8 @@ namespace asg
         data.header.game_time = g_save_data.header.game_time;
         data.header.mod_name = g_save_data.header.mod_name;
         data.header.level_time_left = rf::level_time2;
-        //data.header.level_time2 = 
 
-        xlog::warn("[ASG]   header → time={} mod='{}'", data.header.game_time, data.header.mod_name);
+        xlog::warn("[ASG]   header -> time={} mod='{}'", data.header.game_time, data.header.mod_name);
 
         // ——— COMMON.GAME ———
         data.common.game.difficulty = g_save_data.common.game.difficulty;
@@ -2542,13 +2429,13 @@ namespace asg
         data.common.game.num_logged_messages = g_save_data.common.game.num_logged_messages;
         data.common.game.messages_total_height = g_save_data.common.game.messages_total_height;
 
-        xlog::warn("[ASG]   common.game → difficulty={} messages={}", int(data.common.game.difficulty),
+        xlog::warn("[ASG]   common.game -> difficulty={} messages={}", int(data.common.game.difficulty),
                    int(data.common.game.messages.size()));
 
         // ——— COMMON.PLAYER ———
         serialize_player(pp, data.common.player);
 
-        xlog::warn("[ASG]   common.player → entity_host_uid={} spew=({}, {}, …)", data.common.player.entity_host_uid,
+        xlog::warn("[ASG]   common.player -> entity_host_uid={} spew=({}, {}, …)", data.common.player.entity_host_uid,
                    data.common.player.spew_pos.x, data.common.player.spew_pos.y);
 
         // — now sync up level‐slots in data.header/ data.levels  —
@@ -2662,7 +2549,9 @@ static toml::table make_common_player_table(const asg::SavegameCommonDataPlayer&
     spew.push_back(p.spew_pos.z);
     cp.insert("spew_pos", std::move(spew));
 
-    cp.insert("key_items", p.key_items);
+    toml::array key_items;
+    for (auto mask : p.key_items) key_items.push_back(mask);
+    cp.insert("key_items", std::move(key_items));
     cp.insert("view_obj_uid", p.view_obj_uid);
     cp.insert("grenade_mode", int(p.grenade_mode));
 
@@ -2678,10 +2567,15 @@ static toml::table make_common_player_table(const asg::SavegameCommonDataPlayer&
 
     // weapon prefs:
     toml::array wp;
-    for (auto w : p.weapon_prefs) wp.push_back(int(w));
+    for (auto w : p.weapon_prefs) wp.push_back(w);
     cp.insert("weapon_prefs", std::move(wp));
 
-    cp.insert("flags", int(p.flags));
+    cp.insert("show_silencer", p.show_silencer);
+    cp.insert("remote_charge_in_hand", p.remote_charge_in_hand);
+    cp.insert("undercover_active", p.undercover_active);
+    cp.insert("undercover_team", p.undercover_team);
+    cp.insert("player_cover_id", p.player_cover_id);
+    cp.insert("ai_high_flag", p.ai_high_flag);
 
     // fpgun_orient
     toml::array orient;
@@ -3357,13 +3251,28 @@ bool parse_common_game(const toml::table& tbl, asg::SavegameCommonDataGame& out)
 bool parse_common_player(const toml::table& tbl, asg::SavegameCommonDataPlayer& out)
 {
     out.entity_host_uid = tbl["entity_host_uid"].value_or(-1);
-    out.spew_vector_index = tbl["spew_vector_index"].value_or(0);
+    out.spew_vector_index = static_cast<uint8_t>(tbl["spew_vector_index"].value_or(0));
     if (auto arr = tbl["spew_pos"].as_array()) {
         auto v = asg::parse_f32_array(*arr);
         if (v.size() == 3)
             out.spew_pos = {v[0], v[1], v[2]};
     }
-    out.key_items = tbl["key_items"].value_or(0.f);
+    std::fill(std::begin(out.key_items), std::end(out.key_items), 0u);
+    if (auto arr = tbl["key_items"].as_array()) {
+        if (arr->size() == 3) {
+            for (size_t i = 0; i < 3; ++i)
+                out.key_items[i] = static_cast<uint32_t>((*arr)[i].value_or(0));
+        }
+        else if (arr->size() >= 96) {
+            for (size_t i = 0; i < 96; ++i) {
+                if ((*arr)[i].value_or(false)) {
+                    size_t group = i / 32;
+                    size_t bit = i % 32;
+                    out.key_items[group] |= (1u << bit);
+                }
+            }
+        }
+    }
     out.view_obj_uid = tbl["view_obj_uid"].value_or(-1);
     out.grenade_mode = static_cast<uint8_t>(tbl["grenade_mode"].value_or(0));
 
@@ -3381,10 +3290,15 @@ bool parse_common_player(const toml::table& tbl, asg::SavegameCommonDataPlayer& 
 
     if (auto arr = tbl["weapon_prefs"].as_array()) {
         for (size_t i = 0; i < arr->size() && i < 32; ++i)
-            out.weapon_prefs[i] = static_cast<uint8_t>((*arr)[i].value_or(0));
+            out.weapon_prefs[i] = (*arr)[i].value_or(0);
     }
 
-    out.flags = static_cast<uint8_t>(tbl["flags"].value_or(0));
+    out.show_silencer = tbl["show_silencer"].value_or(false);
+    out.remote_charge_in_hand = tbl["remote_charge_in_hand"].value_or(false);
+    out.undercover_active = tbl["undercover_active"].value_or(false);
+    out.undercover_team = tbl["undercover_team"].value_or(0);
+    out.player_cover_id = tbl["player_cover_id"].value_or(0);
+    out.ai_high_flag = tbl["ai_high_flag"].value_or(false);
 
     // orient
     if (auto orient = tbl["fpgun_orient"].as_array()) {
@@ -3434,7 +3348,7 @@ bool parse_object(const toml::table& tbl, asg::SavegameObjectDataBlock& o)
     o.obj_flags = tbl["obj_flags"].value_or(0);
     o.host_uid = tbl["host_uid"].value_or(-1);
 
-    // ang_momentum [x,y,z] → Vector3
+    // ang_momentum [x,y,z] -> Vector3
     if (auto a = tbl["ang_momentum"].as_array()) {
         auto v = asg::parse_f32_array(*a);
         if (v.size() == 3)
