@@ -373,7 +373,6 @@ namespace asg
         SavegameLevelDataHeader header;
         std::vector<int> killed_room_uids;
         std::vector<int> dead_entity_uids;
-        std::vector<int> deleted_event_uids;
         std::vector<rf::GeomodCraterData> geomod_craters;
         std::vector<SavegameLevelPersistentGoalDataBlock> persistent_goals;
         std::vector<SavegameEntityDataBlock> entities;

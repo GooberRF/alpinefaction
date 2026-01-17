@@ -42,9 +42,6 @@
 static asg::SavegameData g_save_data;
 static rf::sr::LoggedHudMessage g_tmpLoggedMessages[80]; // temporary storage of logged messages in stock game format, used for message log UI calls
 
-// global buffer for deleted events, replacement for g_DeletedEventsUidArray and g_DeletedEventsUidArrayLen
-static std::vector<int> g_deleted_event_uids;
-
 // global buffer for persistent goals, replacement for g_persistent_goal_events and g_num_persistent_goal_events
 static std::vector<rf::PersistentGoalEvent> g_persistent_goals;
 
@@ -1056,10 +1053,8 @@ namespace asg
             case rf::EventType::Cyclic_Timer:
                 lvl->cyclic_timer_events.push_back(make_cyclic_timer_event_block(e));
                 break;
-            default: // other events saved when they have a queued message
-                if (e->delay_timestamp.valid()) {
-                    lvl->other_events.push_back(make_event_base_block(e));
-                }
+            default:
+                lvl->other_events.push_back(make_event_base_block(e));
                 break;
             }
         }
@@ -1069,12 +1064,6 @@ namespace asg
         xlog::warn("[ASG]       got {} Alarm_Siren events for level '{}'", int(lvl->alarm_siren_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Cyclic_Timer events for level '{}'", int(lvl->cyclic_timer_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Generic events for level '{}'", int(lvl->other_events.size()), lvl->header.filename);
-    }
-
-    inline void serialize_deleted_events(std::vector<int>& out)
-    {
-        out.clear();
-        out = g_deleted_event_uids;
     }
 
     inline void serialize_killed_rooms(std::vector<int>& out)
@@ -1239,11 +1228,6 @@ namespace asg
         xlog::warn("[ASG]     populating events for level '{}'", data->header.filename);
         // vectors cleared in serialize_all_events
         serialize_all_events(data);
-
-        // deleted events
-        xlog::warn("[ASG]   populating {} deleted_event_uids", g_deleted_event_uids.size());
-        data->deleted_event_uids.clear();
-        serialize_deleted_events(data->deleted_event_uids);
 
         // persistent goals
         data->persistent_goals.clear();
@@ -1614,9 +1598,9 @@ namespace asg
     static void apply_event_base_fields(rf::Event* e, const SavegameEventDataBlock& b)
     {
         e->delay_seconds = b.delay;
-        deserialize_timestamp(&e->delay_timestamp, &b.delay_timer);
         e->delayed_msg = b.is_on_state;
         e->event_flags = b.event_flags;
+        deserialize_timestamp(&e->delay_timestamp, &b.delay_timer);
         add_handle_for_delayed_resolution(b.activated_by_entity_uid, &e->triggered_by_handle);
         add_handle_for_delayed_resolution(b.activated_by_trigger_uid, &e->trigger_handle);
 
@@ -1698,7 +1682,19 @@ namespace asg
         cyclic_timer_map.reserve(lvl.cyclic_timer_events.size());
         for (auto const& ev : lvl.cyclic_timer_events) cyclic_timer_map[ev.ev.uid] = ev;
 
-        std::unordered_set<int> deleted_ids(lvl.deleted_event_uids.begin(), lvl.deleted_event_uids.end());
+        std::unordered_set<int> saved_ids;
+        saved_ids.reserve(lvl.other_events.size()
+            + lvl.make_invulnerable_events.size()
+            + lvl.when_dead_events.size()
+            + lvl.goal_create_events.size()
+            + lvl.alarm_siren_events.size()
+            + lvl.cyclic_timer_events.size());
+        for (auto const& ev : lvl.other_events) saved_ids.insert(ev.uid);
+        for (auto const& ev : lvl.make_invulnerable_events) saved_ids.insert(ev.ev.uid);
+        for (auto const& ev : lvl.when_dead_events) saved_ids.insert(ev.ev.uid);
+        for (auto const& ev : lvl.goal_create_events) saved_ids.insert(ev.ev.uid);
+        for (auto const& ev : lvl.alarm_siren_events) saved_ids.insert(ev.ev.uid);
+        for (auto const& ev : lvl.cyclic_timer_events) saved_ids.insert(ev.ev.uid);
 
         auto full = rf::event_list;
         for (int i = 0, n = full.size(); i < n; ++i) {
@@ -1707,9 +1703,8 @@ namespace asg
                 continue;
 
             int uid = e->uid;
-            // delete events marked for deletion
-            if (deleted_ids.count(uid)) {
-                xlog::warn("Found in deleted UIDs array, deleting event UID {}", uid);
+            if (!saved_ids.count(uid)) {
+                xlog::warn("Event UID {} missing from ASG, deleting", uid);
                 rf::event_delete(e);
                 continue;
             }
@@ -3286,12 +3281,6 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         for (auto const& bp : lvl.blood_pools) bp_arr.push_back(make_blood_pool_table(bp));
         lt.insert("blood_pools", std::move(bp_arr));
 
-        toml::array del_arr;
-        for (int uid : lvl.deleted_event_uids) {
-            del_arr.push_back(uid);
-        }
-        lt.insert("deleted_event_uids", std::move(del_arr));
-
         toml::array crater_arr;
         for (auto const& c : lvl.geomod_craters) crater_arr.push_back(make_geomod_crater_table(c));
         lt.insert("geomod_craters", std::move(crater_arr));
@@ -4273,22 +4262,6 @@ bool parse_killed_rooms(const toml::array& arr, std::vector<int>& out)
     return true;
 }
 
-bool parse_deleted_event_uids(const toml::array& arr, std::vector<int>& out)
-{
-    out.clear();
-    out.reserve(arr.size());
-    std::unordered_set<int> seen;
-    seen.reserve(arr.size());
-    for (auto& v : arr) {
-        if (auto uid = v.value<int>()) {
-            if (seen.insert(*uid).second) {
-                out.push_back(*uid);
-            }
-        }
-    }
-    return true;
-}
-
 bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& outLevels)
 {
     auto levels_node = root["levels"];
@@ -4383,10 +4356,6 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
 
         if (auto cs = tbl["corpses"].as_array()) {
             parse_corpses(*cs, lvl.corpses);
-        }
-
-        if (auto del = tbl["deleted_event_uids"].as_array()) {
-            parse_deleted_event_uids(*del, lvl.deleted_event_uids);
         }
 
         if (auto kro = tbl["dead_room_uids"].as_array()) {
@@ -4701,33 +4670,10 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
     }
 };
 
-CodeInjection event_delete_injection{
-    0x004B67EC,
-    [](auto& regs) {
-        int deleted_uid = regs.ecx;
-        g_deleted_event_uids.push_back(deleted_uid);
-    },
-};
-
-CodeInjection event_shutdown_injection{
-    0x004B65AA,
-    []() {
-        g_deleted_event_uids.clear();
-    },
-};
-
 CodeInjection event_init_injection{
     0x004B66E5,
     []() {
-        g_deleted_event_uids.clear();
         g_persistent_goals.clear();
-    },
-};
-
-CodeInjection event_level_init_injection{
-    0x004B6714,
-    []() {
-        g_deleted_event_uids.clear();
     },
 };
 
@@ -5126,13 +5072,8 @@ void alpine_savegame_apply_patch()
     // handle deserializing and loading asg files
     sr_load_level_state_hook.install();
 
-    // handle new array for event deletion
-    event_delete_injection.install();
-    event_shutdown_injection.install();
-    event_init_injection.install(); // handles both deleted events and persistent goals
-    event_level_init_injection.install();
-
     // handle new array for persistent goals
+    event_init_injection.install();
     event_lookup_persistent_goal_event_hook.install();
     event_add_persistent_goal_event_hook.install();
     event_clear_persistent_goal_events_injection.install();

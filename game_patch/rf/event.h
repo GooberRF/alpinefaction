@@ -170,6 +170,12 @@ namespace rf
     };
     static_assert(sizeof(GenericEvent) == 0x2D0);
 
+    struct SetLiquidDepthEvent : Event
+    {
+        float depth;
+        float duration;
+    };
+
     struct MakeInvulnerableEvent : Event
     {
         float duration;
