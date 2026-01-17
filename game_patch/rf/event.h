@@ -194,12 +194,12 @@ namespace rf
         int initial_count;
         int complete_count; // unused
         int count;
-        char is_persistent;
+        bool is_persistent;
     };
 
     struct AlarmSirenEvent : Event
     {
-        char alarm_siren_playing;
+        bool alarm_siren_playing;
         char padding1;
         char padding2;
         bool sound_instance;

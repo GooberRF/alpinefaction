@@ -731,12 +731,9 @@ namespace asg
 
         auto* event = static_cast<rf::MakeInvulnerableEvent*>(e);
 
-        if (event) {            
+        if (event) {
             serialize_timestamp(&event->make_invuln_timestamp, &m.time_left);
             xlog::warn("event {} is a valid Make_Invulnerable event with time_left {}", event->uid, m.time_left);
-        }
-        else {
-            m.time_left = -1;
         }
 
         return m;
@@ -764,10 +761,7 @@ namespace asg
         auto* event = static_cast<rf::GoalCreateEvent*>(e);
 
         if (event) {
-            m.count = event->count ? true : false;
-        }
-        else {
-            m.count = 0;
+            m.count = event->count;
         }
 
         return m;
@@ -781,10 +775,7 @@ namespace asg
         auto* event = static_cast<rf::AlarmSirenEvent*>(e);
 
         if (event) {
-            m.alarm_siren_playing = event->alarm_siren_playing ? true : false;
-        }
-        else {
-            m.alarm_siren_playing = false;
+            m.alarm_siren_playing = event->alarm_siren_playing;
         }
 
         return m;
@@ -803,10 +794,6 @@ namespace asg
 
             xlog::warn("event {} is a valid Cyclic_Timer event with next_fire_timer {}, send_count {}, send_seconds {}",
                        event->uid, m.next_fire_timer, m.send_count, event->send_interval_seconds);
-        }
-        else {
-            m.next_fire_timer = -1;
-            m.send_count = 0;
         }
 
         return m;
