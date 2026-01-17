@@ -178,9 +178,9 @@ namespace rf
 
     struct WhenDeadEvent : Event
     {
-        char message_sent;
-        char when_any_dead;
-        char padding1;
+        bool message_sent;
+        bool when_any_dead;
+        char padding;
     };
 
     struct GoalCreateEvent : Event

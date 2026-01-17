@@ -227,6 +227,7 @@ namespace asg
         int delay_timer;
         int activated_by_entity_uid;
         int activated_by_trigger_uid;
+        int event_flags;
         std::vector<int> links;
     };
 
@@ -240,7 +241,7 @@ namespace asg
     {
         SavegameEventDataBlock ev;
         bool message_sent;
-        bool when_any_dead;
+        //bool when_any_dead;
     };
 
     struct SavegameEventGoalCreateDataBlock

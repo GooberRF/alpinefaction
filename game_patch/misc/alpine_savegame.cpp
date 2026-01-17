@@ -73,6 +73,30 @@ namespace asg
         return -1;
     }
 
+    void serialize_timestamp(rf::Timestamp* timestamp, int* out_value)
+    {
+        if (timestamp && out_value) {
+            if (timestamp->valid()) {
+                *out_value = timestamp->time_until();
+            }
+            else {
+                *out_value = -1;
+            }
+        }
+    }
+
+    void deserialize_timestamp(rf::Timestamp* timestamp, const int* value)
+    {
+        if (timestamp && value) {
+            if (*value == -1) {
+                timestamp->invalidate();
+            }
+            else {
+                timestamp->set(*value);
+            }
+        }
+    }
+
     static void record_entity_skin(const rf::Entity* entity, std::string_view skin_name, int skin_index)
     {
         if (!entity || skin_name.empty()) {
@@ -617,7 +641,7 @@ namespace asg
         SavegameItemDataBlock b{};
         fill_object_block(it, b.obj);
         b.respawn_time_ms = it->respawn_time_ms;
-        rf::sr::serialize_timestamp(&it->respawn_next, &b.respawn_next_timer);
+        serialize_timestamp(&it->respawn_next, &b.respawn_next_timer);
         b.alpha = it->alpha;
         b.create_time = it->create_time;
         b.flags = it->item_flags;
@@ -637,8 +661,8 @@ namespace asg
             b.pos_ha = c->p_data.pos;
             b.orient_ha = c->orient;
         }
-        rf::sr::serialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
-        rf::sr::serialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
+        serialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
+        serialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
         b.hidden = (c->obj_flags & rf::ObjectFlags::OF_HIDDEN) != 0;
         b.skin_index = c->current_skin_index;
 
@@ -667,8 +691,8 @@ namespace asg
         b.time_last_activated = t->time_last_activated;
         b.trigger_flags = t->trigger_flags;
         b.activator_handle = uid_from_handle(t->activator_handle);
-        rf::sr::serialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
-        rf::sr::serialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
+        serialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
+        serialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
 
         b.links.clear();
         for (auto handle_ptr : t->links) {
@@ -688,9 +712,10 @@ namespace asg
         b.delay = e->delay_seconds;
         xlog::warn("saved delay {} to {} for uid {}", e->delay_seconds, b.delay, e->uid);
         b.is_on_state = e->delayed_msg;
-        rf::sr::serialize_timestamp(&e->delay_timestamp, &b.delay_timer);
+        serialize_timestamp(&e->delay_timestamp, &b.delay_timer);
         b.activated_by_entity_uid = uid_from_handle(e->triggered_by_handle);
         b.activated_by_trigger_uid = uid_from_handle(e->trigger_handle);
+        b.event_flags = e->event_flags;
 
         b.links.clear();
         for (auto handle_ptr : e->links) {
@@ -710,7 +735,7 @@ namespace asg
         auto* event = static_cast<rf::MakeInvulnerableEvent*>(e);
 
         if (event) {            
-            rf::sr::serialize_timestamp(&event->make_invuln_timestamp, &m.time_left);
+            serialize_timestamp(&event->make_invuln_timestamp, &m.time_left);
             xlog::warn("event {} is a valid Make_Invulnerable event with time_left {}", event->uid, m.time_left);
         }
         else {
@@ -723,18 +748,12 @@ namespace asg
     inline SavegameEventWhenDeadDataBlock make_when_dead_event_block(rf::Event* e)
     {
         SavegameEventWhenDeadDataBlock m;
-        // pull in all the common fields correctly
         m.ev = make_event_base_block(e);
 
         auto* event = static_cast<rf::WhenDeadEvent*>(e);
 
         if (event) {
-            m.message_sent = event->message_sent ? true : false;
-            m.when_any_dead = event->when_any_dead ? true : false;
-        }
-        else {
-            m.message_sent = false;
-            m.when_any_dead = false;
+            m.message_sent = event->message_sent;
         }
 
         return m;
@@ -782,7 +801,7 @@ namespace asg
         auto* event = static_cast<rf::CyclicTimerEvent*>(e);
 
         if (event) {
-            rf::sr::serialize_timestamp(&event->next_fire_timestamp, &m.next_fire_timer);
+            serialize_timestamp(&event->next_fire_timestamp, &m.next_fire_timer);
             m.send_count = event->send_count;
 
             xlog::warn("event {} is a valid Cyclic_Timer event with next_fire_timer {}, send_count {}, send_seconds {}",
@@ -848,7 +867,7 @@ namespace asg
         b.mover_flags = m->mover_flags;
         b.travel_time_seconds = m->travel_time_seconds;
         b.rotation_travel_time_seconds = m->rotation_travel_time_seconds_unk;
-        rf::sr::serialize_timestamp(&m->wait_timestamp, &b.wait_timestamp);
+        serialize_timestamp(&m->wait_timestamp, &b.wait_timestamp);
         b.trigger_uid = uid_from_handle(m->trigger_handle);
         b.dist_travelled = m->dist_travelled;
         b.cur_vel = m->cur_vel;
@@ -891,7 +910,7 @@ namespace asg
         if (c->vmesh) {
             b.mesh_name = rf::vmesh_get_name(c->vmesh);
         }
-        rf::sr::serialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
+        serialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
         b.body_temp = c->body_temp;
         b.state_anim = c->corpse_state_vmesh_anim_index;
         b.action_anim = c->corpse_action_vmesh_anim_index;
@@ -1038,7 +1057,7 @@ namespace asg
                 lvl->cyclic_timer_events.push_back(make_cyclic_timer_event_block(e));
                 break;
             default: // other events saved when they have a queued message
-                if (e->delay_timestamp.is_set()) { // todo: maybe include all events? or allow mapper to designate?
+                if (e->delay_timestamp.valid()) {
                     lvl->other_events.push_back(make_event_base_block(e));
                 }
                 break;
@@ -1594,9 +1613,10 @@ namespace asg
 
     static void apply_event_base_fields(rf::Event* e, const SavegameEventDataBlock& b)
     {
-        e->delay_seconds = b.delay;        
-        rf::sr::deserialize_timestamp(&e->delay_timestamp, &b.delay_timer);
+        e->delay_seconds = b.delay;
+        deserialize_timestamp(&e->delay_timestamp, &b.delay_timer);
         e->delayed_msg = b.is_on_state;
+        e->event_flags = b.event_flags;
         add_handle_for_delayed_resolution(b.activated_by_entity_uid, &e->triggered_by_handle);
         add_handle_for_delayed_resolution(b.activated_by_trigger_uid, &e->trigger_handle);
 
@@ -1620,7 +1640,7 @@ namespace asg
     {
         apply_event_base_fields(e, blk.ev);
         auto* ev = static_cast<rf::MakeInvulnerableEvent*>(e);
-        rf::sr::deserialize_timestamp(&ev->make_invuln_timestamp, &blk.time_left);
+        deserialize_timestamp(&ev->make_invuln_timestamp, &blk.time_left);
     }
 
     // When_Dead
@@ -1629,7 +1649,6 @@ namespace asg
         apply_event_base_fields(e, blk.ev);
         auto* ev = static_cast<rf::WhenDeadEvent*>(e);
         ev->message_sent = blk.message_sent;
-        ev->when_any_dead = blk.when_any_dead;
     }
 
     // Goal_Create
@@ -1653,7 +1672,7 @@ namespace asg
     {
         apply_event_base_fields(e, blk.ev);
         auto* ev = static_cast<rf::CyclicTimerEvent*>(e);
-        rf::sr::deserialize_timestamp(&ev->next_fire_timestamp, &blk.next_fire_timer);
+        deserialize_timestamp(&ev->next_fire_timestamp, &blk.next_fire_timer);
         ev->send_count = blk.send_count;
     }
 
@@ -1766,8 +1785,8 @@ namespace asg
         add_handle_for_delayed_resolution(b.activator_handle, &t->activator_handle);
 
         // timestamps
-        rf::sr::deserialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
-        rf::sr::deserialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
+        deserialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
+        deserialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
     }
 
     static void trigger_deserialize_all_state(const std::vector<SavegameTriggerDataBlock>& blocks)
@@ -1828,8 +1847,8 @@ namespace asg
         apply_clutter_skin(c, b.skin_index);
 
         // 2) rehydrate the two timestamps
-        rf::sr::deserialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
-        rf::sr::deserialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
+        deserialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
+        deserialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
 
         // 3) rebuild the link list, queuing each uid for delayed resolution
         c->links.clear();
@@ -1878,7 +1897,7 @@ namespace asg
 
         // 2) restore the two timestamps
         it->respawn_time_ms = b.respawn_time_ms;
-        rf::sr::deserialize_timestamp(&it->respawn_next, &b.respawn_next_timer);
+        deserialize_timestamp(&it->respawn_next, &b.respawn_next_timer);
         it->alpha = b.alpha;
         it->create_time = b.create_time;
         it->item_flags = b.flags;
@@ -1982,7 +2001,7 @@ namespace asg
         mv->mover_flags = b.mover_flags;
         mv->travel_time_seconds = b.travel_time_seconds;
         mv->rotation_travel_time_seconds_unk = b.rotation_travel_time_seconds;
-        rf::sr::deserialize_timestamp(&mv->wait_timestamp, &b.wait_timestamp);
+        deserialize_timestamp(&mv->wait_timestamp, &b.wait_timestamp);
 
         add_handle_for_delayed_resolution(b.trigger_uid, &mv->trigger_handle);
 
@@ -2195,7 +2214,7 @@ namespace asg
         if (!b.mesh_name.empty()) {
             rf::corpse_restore_mesh(c, b.mesh_name.c_str());
         }
-        rf::sr::deserialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
+        deserialize_timestamp(&c->emitter_kill_timestamp, &b.emitter_kill_timestamp);
         c->body_temp = b.body_temp;
         c->corpse_state_vmesh_anim_index = b.state_anim;
         c->corpse_action_vmesh_anim_index = b.action_anim;
@@ -2347,11 +2366,10 @@ namespace asg
         corpse_deserialize_all_state(lvl->corpses);
         glass_deserialize_all_killed_state(lvl->killed_room_uids);
 
-        resolve_delayed_handles();
-
         xlog::warn("restoring current level time {} to buffer time {}", rf::level_time_flt, lvl->header.level_time);
         rf::level_time_flt = lvl->header.level_time;
-        
+
+        resolve_delayed_handles();
     }
 
     // Replaces the stock sr_load_player; builds the in-world Entity and restores Player state
@@ -2965,6 +2983,7 @@ static toml::table make_event_table(const asg::SavegameEventDataBlock& ev)
     t.insert("delay_timer", ev.delay_timer);
     t.insert("activated_by_entity_uid", ev.activated_by_entity_uid);
     t.insert("activated_by_trigger_uid", ev.activated_by_trigger_uid);
+    t.insert("event_flags", ev.event_flags);
 
     toml::array links;
     for (auto link_uid : ev.links) {
@@ -2988,7 +3007,6 @@ static toml::table make_when_dead_event_table(const asg::SavegameEventWhenDeadDa
     toml::table t = make_event_table(ev.ev);
 
     t.insert("message_sent", ev.message_sent);
-    t.insert("when_any_dead", ev.when_any_dead);
     return t;
 }
 
@@ -3675,11 +3693,12 @@ static asg::SavegameEventDataBlock parse_event_base_fields(const toml::table& tb
     asg::SavegameEventDataBlock b;
     b.event_type = tbl["event_type"].value_or(-1);
     b.uid = tbl["uid"].value_or(-1);
-    b.delay = tbl["delay"].value_or(0.0f);
+    b.delay = tbl["delay"].value_or(-1.0f);
     b.is_on_state = tbl["is_on_state"].value_or(false);    
     b.delay_timer = tbl["delay_timer"].value_or(-1);
     b.activated_by_entity_uid = tbl["activated_by_entity_uid"].value_or(-1);
     b.activated_by_trigger_uid = tbl["activated_by_trigger_uid"].value_or(-1);
+    b.event_flags = tbl["event_flags"].value_or(0);
     if (auto arr = tbl["links"].as_array()) {
         for (auto& v : *arr) b.links.push_back(v.value_or(-1));
     }
@@ -3725,7 +3744,6 @@ static bool parse_when_dead_events(const toml::array& arr, std::vector<asg::Save
         asg::SavegameEventWhenDeadDataBlock ev;
         ev.ev = parse_event_base_fields(tbl);
         ev.message_sent = tbl["message_sent"].value_or(false);
-        ev.when_any_dead = tbl["when_any_dead"].value_or(false);
         out.push_back(std::move(ev));
     }
     return true;
@@ -3861,7 +3879,7 @@ bool parse_triggers(const toml::array& arr, std::vector<asg::SavegameTriggerData
         else
             tb.orient_ha.reset();
         tb.count = tbl["count"].value_or(0);
-        tb.time_last_activated = tbl["time_last_activated"].value_or(0);
+        tb.time_last_activated = tbl["time_last_activated"].value_or(-1.0f);
         tb.trigger_flags = tbl["trigger_flags"].value_or(0);
         tb.activator_handle = tbl["activator_handle"].value_or(-1);
         tb.button_active_timestamp = tbl["button_active_timestamp"].value_or(-1);
@@ -4255,6 +4273,22 @@ bool parse_killed_rooms(const toml::array& arr, std::vector<int>& out)
     return true;
 }
 
+bool parse_deleted_event_uids(const toml::array& arr, std::vector<int>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    std::unordered_set<int> seen;
+    seen.reserve(arr.size());
+    for (auto& v : arr) {
+        if (auto uid = v.value<int>()) {
+            if (seen.insert(*uid).second) {
+                out.push_back(*uid);
+            }
+        }
+    }
+    return true;
+}
+
 bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& outLevels)
 {
     auto levels_node = root["levels"];
@@ -4349,6 +4383,10 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
 
         if (auto cs = tbl["corpses"].as_array()) {
             parse_corpses(*cs, lvl.corpses);
+        }
+
+        if (auto del = tbl["deleted_event_uids"].as_array()) {
+            parse_deleted_event_uids(*del, lvl.deleted_event_uids);
         }
 
         if (auto kro = tbl["dead_room_uids"].as_array()) {

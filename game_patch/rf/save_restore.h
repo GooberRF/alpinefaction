@@ -81,9 +81,6 @@ namespace rf::sr {
     static bool& g_disable_saving_persistent_goals = *reinterpret_cast<bool*>(0x008548E0);
     static auto& reset_save_data = addr_as_ref<void()>(0x004B52C0);
 
-    static auto& serialize_timestamp = addr_as_ref<void(Timestamp* ts, int* save_val)>(0x004B55E0);
-    static auto& deserialize_timestamp = addr_as_ref<void(Timestamp* ts, const int* set_val)>(0x004B5610);
-
     static auto& savegame_path = addr_as_ref<char[260]>(0x007DB3EC);
     static auto& ponr = addr_as_ref<PonrTbl>(0x007DB4F0);
     static auto& num_ponr = addr_as_ref<int>(0x007DAFE8);
