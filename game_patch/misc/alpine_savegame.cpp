@@ -897,34 +897,6 @@ namespace asg
         return m;
     }
 
-    inline SavegameEventAnchorMarkerDataBlock make_anchor_marker_event_block(rf::Event* e)
-    {
-        SavegameEventAnchorMarkerDataBlock m;
-        m.ev = make_event_pos_block(e);
-        return m;
-    }
-
-    inline SavegameEventCloneEntityDataBlock make_clone_entity_event_block(rf::Event* e)
-    {
-        SavegameEventCloneEntityDataBlock m;
-        m.ev = make_event_pos_rot_block(e);
-        return m;
-    }
-
-    inline SavegameEventAFTeleportPlayerDataBlock make_af_teleport_player_event_block(rf::Event* e)
-    {
-        SavegameEventAFTeleportPlayerDataBlock m;
-        m.ev = make_event_pos_rot_block(e);
-        return m;
-    }
-
-    inline SavegameEventAnchorMarkerOrientDataBlock make_anchor_marker_orient_event_block(rf::Event* e)
-    {
-        SavegameEventAnchorMarkerOrientDataBlock m;
-        m.ev = make_event_pos_rot_block(e);
-        return m;
-    }
-
     static SavegameLevelDecalDataBlock make_decal_block(rf::GDecal* d)
     {
         SavegameLevelDecalDataBlock b;
@@ -1142,13 +1114,8 @@ namespace asg
         lvl->switch_random_events.clear();
         lvl->sequence_events.clear();
         lvl->world_hud_sprite_events.clear();
-        lvl->anchor_marker_events.clear();
-        lvl->clone_entity_events.clear();
-        lvl->af_teleport_player_events.clear();
-        lvl->anchor_marker_orient_events.clear();
-        lvl->teleport_events.clear();
-        lvl->teleport_player_events.clear();
-        lvl->play_vclip_events.clear();
+        lvl->directional_events.clear();
+        lvl->positional_events.clear();
         lvl->other_events.clear();
 
         // grab the full array once
@@ -1185,26 +1152,22 @@ namespace asg
             case rf::EventType::World_HUD_Sprite:
                 lvl->world_hud_sprite_events.push_back(make_world_hud_sprite_event_block(e));
                 break;
-            case rf::EventType::Anchor_Marker:
-                lvl->anchor_marker_events.push_back(make_anchor_marker_event_block(e));
-                break;
             case rf::EventType::Clone_Entity:
-                lvl->clone_entity_events.push_back(make_clone_entity_event_block(e));
-                break;
             case rf::EventType::AF_Teleport_Player:
-                lvl->af_teleport_player_events.push_back(make_af_teleport_player_event_block(e));
-                break;
             case rf::EventType::Anchor_Marker_Orient:
-                lvl->anchor_marker_orient_events.push_back(make_anchor_marker_orient_event_block(e));
-                break;
             case rf::EventType::Teleport:
-                lvl->teleport_events.push_back(make_event_pos_rot_block(e));
-                break;
             case rf::EventType::Teleport_Player:
-                lvl->teleport_player_events.push_back(make_event_pos_rot_block(e));
-                break;
             case rf::EventType::Play_Vclip:
-                lvl->play_vclip_events.push_back(make_event_pos_rot_block(e));
+                lvl->directional_events.push_back(make_event_pos_rot_block(e));
+                break;
+            case rf::EventType::Anchor_Marker:
+            case rf::EventType::Play_Sound:
+            case rf::EventType::Goto:
+            case rf::EventType::Shoot_At:
+            case rf::EventType::Shoot_Once:
+            case rf::EventType::Explode:
+            case rf::EventType::Spawn_Object:
+                lvl->positional_events.push_back(make_event_pos_block(e));
                 break;
             default:
                 lvl->other_events.push_back(make_event_base_block(e));
@@ -1216,9 +1179,8 @@ namespace asg
         xlog::warn("[ASG]       got {} Goal_Create events for level '{}'", int(lvl->goal_create_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Alarm_Siren events for level '{}'", int(lvl->alarm_siren_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Cyclic_Timer events for level '{}'", int(lvl->cyclic_timer_events.size()), lvl->header.filename);
-        xlog::warn("[ASG]       got {} Teleport events for level '{}'", int(lvl->teleport_events.size()), lvl->header.filename);
-        xlog::warn("[ASG]       got {} Teleport_Player events for level '{}'", int(lvl->teleport_player_events.size()), lvl->header.filename);
-        xlog::warn("[ASG]       got {} Play_Vclip events for level '{}'", int(lvl->play_vclip_events.size()), lvl->header.filename);
+        xlog::warn("[ASG]       got {} Directional events for level '{}'", int(lvl->directional_events.size()), lvl->header.filename);
+        xlog::warn("[ASG]       got {} Positional events for level '{}'", int(lvl->positional_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Generic events for level '{}'", int(lvl->other_events.size()), lvl->header.filename);
     }
 
@@ -1884,35 +1846,10 @@ namespace asg
         }
     }
 
-    // Anchor_Marker
-    static void apply_anchor_marker_event(rf::Event* e, const SavegameEventAnchorMarkerDataBlock& blk)
-    {
-        apply_event_pos_fields(e, blk.ev);
-    }
-
-    // Clone_Entity
-    static void apply_clone_entity_event(rf::Event* e, const SavegameEventCloneEntityDataBlock& blk)
-    {
-        apply_event_pos_rot_fields(e, blk.ev);
-    }
-
-    // AF_Teleport_Player
-    static void apply_af_teleport_player_event(rf::Event* e, const SavegameEventAFTeleportPlayerDataBlock& blk)
-    {
-        apply_event_pos_rot_fields(e, blk.ev);
-    }
-
-    // Anchor_Marker_Orient
-    static void apply_anchor_marker_orient_event(rf::Event* e, const SavegameEventAnchorMarkerOrientDataBlock& blk)
-    {
-        apply_event_pos_rot_fields(e, blk.ev);
-    }
-
     void event_deserialize_all_state(const SavegameLevelData& lvl)
     {
-        std::unordered_map<int, SavegameEventDataBlockPosRot> teleport_map;
-        std::unordered_map<int, SavegameEventDataBlockPosRot> teleport_player_map;
-        std::unordered_map<int, SavegameEventDataBlockPosRot> play_vclip_map;
+        std::unordered_map<int, SavegameEventDataBlockPosRot> directional_map;
+        std::unordered_map<int, SavegameEventDataBlockPos> positional_map;
         std::unordered_map<int, SavegameEventDataBlock> generic_map;
         std::unordered_map<int, SavegameEventMakeInvulnerableDataBlock> invuln_map;
         std::unordered_map<int, SavegameEventWhenDeadDataBlock> when_dead_map;
@@ -1922,17 +1859,11 @@ namespace asg
         std::unordered_map<int, SavegameEventSwitchRandomDataBlock> switch_random_map;
         std::unordered_map<int, SavegameEventSequenceDataBlock> sequence_map;
         std::unordered_map<int, SavegameEventWorldHudSpriteDataBlock> world_hud_sprite_map;
-        std::unordered_map<int, SavegameEventAnchorMarkerDataBlock> anchor_marker_map;
-        std::unordered_map<int, SavegameEventCloneEntityDataBlock> clone_entity_map;
-        std::unordered_map<int, SavegameEventAFTeleportPlayerDataBlock> af_teleport_player_map;
-        std::unordered_map<int, SavegameEventAnchorMarkerOrientDataBlock> anchor_marker_orient_map;
 
-        teleport_map.reserve(lvl.teleport_events.size());
-        for (auto const& ev : lvl.teleport_events) teleport_map[ev.ev.ev.uid] = ev;
-        teleport_player_map.reserve(lvl.teleport_player_events.size());
-        for (auto const& ev : lvl.teleport_player_events) teleport_player_map[ev.ev.ev.uid] = ev;
-        play_vclip_map.reserve(lvl.play_vclip_events.size());
-        for (auto const& ev : lvl.play_vclip_events) play_vclip_map[ev.ev.ev.uid] = ev;
+        directional_map.reserve(lvl.directional_events.size());
+        for (auto const& ev : lvl.directional_events) directional_map[ev.ev.ev.uid] = ev;
+        positional_map.reserve(lvl.positional_events.size());
+        for (auto const& ev : lvl.positional_events) positional_map[ev.ev.uid] = ev;
         generic_map.reserve(lvl.other_events.size());
         for (auto const& ev : lvl.other_events) generic_map[ev.uid] = ev;
         invuln_map.reserve(lvl.make_invulnerable_events.size());
@@ -1951,19 +1882,10 @@ namespace asg
         for (auto const& ev : lvl.sequence_events) sequence_map[ev.ev.uid] = ev;
         world_hud_sprite_map.reserve(lvl.world_hud_sprite_events.size());
         for (auto const& ev : lvl.world_hud_sprite_events) world_hud_sprite_map[ev.ev.ev.uid] = ev;
-        anchor_marker_map.reserve(lvl.anchor_marker_events.size());
-        for (auto const& ev : lvl.anchor_marker_events) anchor_marker_map[ev.ev.ev.uid] = ev;
-        clone_entity_map.reserve(lvl.clone_entity_events.size());
-        for (auto const& ev : lvl.clone_entity_events) clone_entity_map[ev.ev.ev.ev.uid] = ev;
-        af_teleport_player_map.reserve(lvl.af_teleport_player_events.size());
-        for (auto const& ev : lvl.af_teleport_player_events) af_teleport_player_map[ev.ev.ev.ev.uid] = ev;
-        anchor_marker_orient_map.reserve(lvl.anchor_marker_orient_events.size());
-        for (auto const& ev : lvl.anchor_marker_orient_events) anchor_marker_orient_map[ev.ev.ev.ev.uid] = ev;
 
         std::unordered_set<int> saved_ids;
-        saved_ids.reserve(lvl.teleport_events.size()
-            + lvl.teleport_player_events.size()
-            + lvl.play_vclip_events.size()
+        saved_ids.reserve(lvl.directional_events.size()
+            + lvl.positional_events.size()
             + lvl.other_events.size()
             + lvl.make_invulnerable_events.size()
             + lvl.when_dead_events.size()
@@ -1972,14 +1894,9 @@ namespace asg
             + lvl.cyclic_timer_events.size()
             + lvl.switch_random_events.size()
             + lvl.sequence_events.size()
-            + lvl.world_hud_sprite_events.size()
-            + lvl.anchor_marker_events.size()
-            + lvl.clone_entity_events.size()
-            + lvl.af_teleport_player_events.size()
-            + lvl.anchor_marker_orient_events.size());
-        for (auto const& ev : lvl.teleport_events) saved_ids.insert(ev.ev.ev.uid);
-        for (auto const& ev : lvl.teleport_player_events) saved_ids.insert(ev.ev.ev.uid);
-        for (auto const& ev : lvl.play_vclip_events) saved_ids.insert(ev.ev.ev.uid);
+            + lvl.world_hud_sprite_events.size());
+        for (auto const& ev : lvl.directional_events) saved_ids.insert(ev.ev.ev.uid);
+        for (auto const& ev : lvl.positional_events) saved_ids.insert(ev.ev.uid);
         for (auto const& ev : lvl.other_events) saved_ids.insert(ev.uid);
         for (auto const& ev : lvl.make_invulnerable_events) saved_ids.insert(ev.ev.uid);
         for (auto const& ev : lvl.when_dead_events) saved_ids.insert(ev.ev.uid);
@@ -1989,10 +1906,6 @@ namespace asg
         for (auto const& ev : lvl.switch_random_events) saved_ids.insert(ev.ev.uid);
         for (auto const& ev : lvl.sequence_events) saved_ids.insert(ev.ev.uid);
         for (auto const& ev : lvl.world_hud_sprite_events) saved_ids.insert(ev.ev.ev.uid);
-        for (auto const& ev : lvl.anchor_marker_events) saved_ids.insert(ev.ev.ev.uid);
-        for (auto const& ev : lvl.clone_entity_events) saved_ids.insert(ev.ev.ev.ev.uid);
-        for (auto const& ev : lvl.af_teleport_player_events) saved_ids.insert(ev.ev.ev.ev.uid);
-        for (auto const& ev : lvl.anchor_marker_orient_events) saved_ids.insert(ev.ev.ev.ev.uid);
 
         auto full = rf::event_list;
         for (int i = 0, n = full.size(); i < n; ++i) {
@@ -2057,45 +1970,26 @@ namespace asg
                         apply_world_hud_sprite_event(e, it->second);
                     break;
                 }
-                case rf::EventType::Anchor_Marker: {
-                    auto it = anchor_marker_map.find(uid);
-                    if (it != anchor_marker_map.end())
-                        apply_anchor_marker_event(e, it->second);
+                case rf::EventType::Anchor_Marker:
+                case rf::EventType::Play_Sound:
+                case rf::EventType::Goto:
+                case rf::EventType::Shoot_At:
+                case rf::EventType::Shoot_Once:
+                case rf::EventType::Explode:
+                case rf::EventType::Spawn_Object: {
+                    auto it = positional_map.find(uid);
+                    if (it != positional_map.end())
+                        apply_event_pos_fields(e, it->second);
                     break;
                 }
-                case rf::EventType::Clone_Entity: {
-                    auto it = clone_entity_map.find(uid);
-                    if (it != clone_entity_map.end())
-                        apply_clone_entity_event(e, it->second);
-                    break;
-                }
-                case rf::EventType::AF_Teleport_Player: {
-                    auto it = af_teleport_player_map.find(uid);
-                    if (it != af_teleport_player_map.end())
-                        apply_af_teleport_player_event(e, it->second);
-                    break;
-                }
-                case rf::EventType::Anchor_Marker_Orient: {
-                    auto it = anchor_marker_orient_map.find(uid);
-                    if (it != anchor_marker_orient_map.end())
-                        apply_anchor_marker_orient_event(e, it->second);
-                    break;
-                }
-                case rf::EventType::Teleport: {
-                    auto it = teleport_map.find(uid);
-                    if (it != teleport_map.end())
-                        apply_event_pos_rot_fields(e, it->second);
-                    break;
-                }
-                case rf::EventType::Teleport_Player: {
-                    auto it = teleport_player_map.find(uid);
-                    if (it != teleport_player_map.end())
-                        apply_event_pos_rot_fields(e, it->second);
-                    break;
-                }
+                case rf::EventType::Clone_Entity:
+                case rf::EventType::AF_Teleport_Player:
+                case rf::EventType::Anchor_Marker_Orient:
+                case rf::EventType::Teleport:
+                case rf::EventType::Teleport_Player:
                 case rf::EventType::Play_Vclip: {
-                    auto it = play_vclip_map.find(uid);
-                    if (it != play_vclip_map.end())
+                    auto it = directional_map.find(uid);
+                    if (it != directional_map.end())
                         apply_event_pos_rot_fields(e, it->second);
                     break;
                 }
@@ -3434,26 +3328,6 @@ static toml::table make_world_hud_sprite_event_table(const asg::SavegameEventWor
     return t;
 }
 
-static toml::table make_anchor_marker_event_table(const asg::SavegameEventAnchorMarkerDataBlock& ev)
-{
-    return make_event_pos_table(ev.ev);
-}
-
-static toml::table make_clone_entity_event_table(const asg::SavegameEventCloneEntityDataBlock& ev)
-{
-    return make_event_pos_rot_table(ev.ev);
-}
-
-static toml::table make_af_teleport_player_event_table(const asg::SavegameEventAFTeleportPlayerDataBlock& ev)
-{
-    return make_event_pos_rot_table(ev.ev);
-}
-
-static toml::table make_anchor_marker_orient_event_table(const asg::SavegameEventAnchorMarkerOrientDataBlock& ev)
-{
-    return make_event_pos_rot_table(ev.ev);
-}
-
 static toml::table make_alpine_level_props_table(const asg::SavegameLevelAlpinePropsDataBlock& props)
 {
     toml::table t;
@@ -3644,23 +3518,17 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         }
         lt.insert("events_generic", std::move(gen_ev_arr));
 
-        toml::array teleport_arr;
-        for (auto const& ev : lvl.teleport_events) {
-            teleport_arr.push_back(make_event_pos_rot_table(ev));
+        toml::array positional_ev_arr;
+        for (auto const& ev : lvl.positional_events) {
+            positional_ev_arr.push_back(make_event_pos_table(ev));
         }
-        lt.insert("events_teleport", std::move(teleport_arr));
+        lt.insert("events_positional", std::move(positional_ev_arr));
 
-        toml::array teleport_player_arr;
-        for (auto const& ev : lvl.teleport_player_events) {
-            teleport_player_arr.push_back(make_event_pos_rot_table(ev));
+        toml::array directional_ev_arr;
+        for (auto const& ev : lvl.directional_events) {
+            directional_ev_arr.push_back(make_event_pos_rot_table(ev));
         }
-        lt.insert("events_teleport_player", std::move(teleport_player_arr));
-
-        toml::array play_vclip_arr;
-        for (auto const& ev : lvl.play_vclip_events) {
-            play_vclip_arr.push_back(make_event_pos_rot_table(ev));
-        }
-        lt.insert("events_play_vclip", std::move(play_vclip_arr));
+        lt.insert("events_directional", std::move(directional_ev_arr));
 
         toml::array invuln_arr;
         for (auto const& miev : lvl.make_invulnerable_events) {
@@ -3710,29 +3578,6 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         }
         lt.insert("events_world_hud_sprite", std::move(whs_arr));
 
-        toml::array am_arr;
-        for (auto const& am : lvl.anchor_marker_events) {
-            am_arr.push_back(make_anchor_marker_event_table(am));
-        }
-        lt.insert("events_anchor_marker", std::move(am_arr));
-
-        toml::array ce_arr;
-        for (auto const& ce : lvl.clone_entity_events) {
-            ce_arr.push_back(make_clone_entity_event_table(ce));
-        }
-        lt.insert("events_clone_entity", std::move(ce_arr));
-
-        toml::array atp_arr;
-        for (auto const& atp : lvl.af_teleport_player_events) {
-            atp_arr.push_back(make_af_teleport_player_event_table(atp));
-        }
-        lt.insert("events_af_teleport_player", std::move(atp_arr));
-
-        toml::array amo_arr;
-        for (auto const& amo : lvl.anchor_marker_orient_events) {
-            amo_arr.push_back(make_anchor_marker_orient_event_table(amo));
-        }
-        lt.insert("events_anchor_marker_orient", std::move(amo_arr));
 
         toml::array decal_arr;
         for (auto const& dec : lvl.decals) {
@@ -4225,31 +4070,19 @@ static bool parse_generic_events(const toml::array& arr, std::vector<asg::Savega
     return true;
 }
 
-static bool parse_teleport_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlockPosRot>& out)
+static bool parse_positional_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlockPos>& out)
 {
     out.clear();
     out.reserve(arr.size());
     for (auto& node : arr) {
         if (!node.is_table())
             continue;
-        out.push_back(parse_event_pos_rot_fields(*node.as_table()));
+        out.push_back(parse_event_pos_fields(*node.as_table()));
     }
     return true;
 }
 
-static bool parse_teleport_player_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlockPosRot>& out)
-{
-    out.clear();
-    out.reserve(arr.size());
-    for (auto& node : arr) {
-        if (!node.is_table())
-            continue;
-        out.push_back(parse_event_pos_rot_fields(*node.as_table()));
-    }
-    return true;
-}
-
-static bool parse_play_vclip_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlockPosRot>& out)
+static bool parse_directional_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlockPosRot>& out)
 {
     out.clear();
     out.reserve(arr.size());
@@ -4390,68 +4223,6 @@ static bool parse_world_hud_sprite_events(const toml::array& arr, std::vector<as
         asg::SavegameEventWorldHudSpriteDataBlock ev;
         ev.ev = parse_event_pos_fields(tbl);
         ev.enabled = tbl["enabled"].value_or(false);
-        out.push_back(std::move(ev));
-    }
-    return true;
-}
-
-static bool parse_anchor_marker_events(const toml::array& arr, std::vector<asg::SavegameEventAnchorMarkerDataBlock>& out)
-{
-    out.clear();
-    out.reserve(arr.size());
-    for (auto& node : arr) {
-        if (!node.is_table())
-            continue;
-        auto tbl = *node.as_table();
-        asg::SavegameEventAnchorMarkerDataBlock ev;
-        ev.ev = parse_event_pos_fields(tbl);
-        out.push_back(std::move(ev));
-    }
-    return true;
-}
-
-static bool parse_clone_entity_events(const toml::array& arr, std::vector<asg::SavegameEventCloneEntityDataBlock>& out)
-{
-    out.clear();
-    out.reserve(arr.size());
-    for (auto& node : arr) {
-        if (!node.is_table())
-            continue;
-        auto tbl = *node.as_table();
-        asg::SavegameEventCloneEntityDataBlock ev;
-        ev.ev = parse_event_pos_rot_fields(tbl);
-        out.push_back(std::move(ev));
-    }
-    return true;
-}
-
-static bool parse_af_teleport_player_events(const toml::array& arr,
-    std::vector<asg::SavegameEventAFTeleportPlayerDataBlock>& out)
-{
-    out.clear();
-    out.reserve(arr.size());
-    for (auto& node : arr) {
-        if (!node.is_table())
-            continue;
-        auto tbl = *node.as_table();
-        asg::SavegameEventAFTeleportPlayerDataBlock ev;
-        ev.ev = parse_event_pos_rot_fields(tbl);
-        out.push_back(std::move(ev));
-    }
-    return true;
-}
-
-static bool parse_anchor_marker_orient_events(const toml::array& arr,
-    std::vector<asg::SavegameEventAnchorMarkerOrientDataBlock>& out)
-{
-    out.clear();
-    out.reserve(arr.size());
-    for (auto& node : arr) {
-        if (!node.is_table())
-            continue;
-        auto tbl = *node.as_table();
-        asg::SavegameEventAnchorMarkerOrientDataBlock ev;
-        ev.ev = parse_event_pos_rot_fields(tbl);
         out.push_back(std::move(ev));
     }
     return true;
@@ -4982,12 +4753,10 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
         // events
         if (auto ge = tbl["events_generic"].as_array())
             parse_generic_events(*ge, lvl.other_events);
-        if (auto tp = tbl["events_teleport"].as_array())
-            parse_teleport_events(*tp, lvl.teleport_events);
-        if (auto tp = tbl["events_teleport_player"].as_array())
-            parse_teleport_player_events(*tp, lvl.teleport_player_events);
-        if (auto pv = tbl["events_play_vclip"].as_array())
-            parse_play_vclip_events(*pv, lvl.play_vclip_events);
+        if (auto pe = tbl["events_positional"].as_array())
+            parse_positional_events(*pe, lvl.positional_events);
+        if (auto de = tbl["events_directional"].as_array())
+            parse_directional_events(*de, lvl.directional_events);
         if (auto ie = tbl["events_make_invulnerable"].as_array())
             parse_make_invuln_events(*ie, lvl.make_invulnerable_events);
         if (auto a = tbl["events_when_dead"].as_array())
@@ -5004,14 +4773,6 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
             parse_sequence_events(*a, lvl.sequence_events);
         if (auto a = tbl["events_world_hud_sprite"].as_array())
             parse_world_hud_sprite_events(*a, lvl.world_hud_sprite_events);
-        if (auto a = tbl["events_anchor_marker"].as_array())
-            parse_anchor_marker_events(*a, lvl.anchor_marker_events);
-        if (auto a = tbl["events_clone_entity"].as_array())
-            parse_clone_entity_events(*a, lvl.clone_entity_events);
-        if (auto a = tbl["events_af_teleport_player"].as_array())
-            parse_af_teleport_player_events(*a, lvl.af_teleport_player_events);
-        if (auto a = tbl["events_anchor_marker_orient"].as_array())
-            parse_anchor_marker_orient_events(*a, lvl.anchor_marker_orient_events);
 
         if (auto cls = tbl["clutter"].as_array()) {
             parse_clutter(*cls, lvl.clutter);

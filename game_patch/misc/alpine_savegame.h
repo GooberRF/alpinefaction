@@ -295,26 +295,6 @@ namespace asg
         bool enabled = false;
     };
 
-    struct SavegameEventAnchorMarkerDataBlock
-    {
-        SavegameEventDataBlockPos ev;
-    };
-
-    struct SavegameEventCloneEntityDataBlock
-    {
-        SavegameEventDataBlockPosRot ev;
-    };
-
-    struct SavegameEventAFTeleportPlayerDataBlock
-    {
-        SavegameEventDataBlockPosRot ev;
-    };
-
-    struct SavegameEventAnchorMarkerOrientDataBlock
-    {
-        SavegameEventDataBlockPosRot ev;
-    };
-
     struct SavegameLevelAlpinePropsDataBlock
     {
         bool player_has_headlamp = true;
@@ -438,9 +418,8 @@ namespace asg
         std::vector<SavegameClutterDataBlock> clutter;
         std::vector<SavegameTriggerDataBlock> triggers;
         std::vector<SavegameEventDataBlock> other_events;
-        std::vector<SavegameEventDataBlockPosRot> teleport_events;
-        std::vector<SavegameEventDataBlockPosRot> teleport_player_events;
-        std::vector<SavegameEventDataBlockPosRot> play_vclip_events;
+        std::vector<SavegameEventDataBlockPos> positional_events;
+        std::vector<SavegameEventDataBlockPosRot> directional_events;
         std::vector<SavegameEventMakeInvulnerableDataBlock> make_invulnerable_events;
         std::vector<SavegameEventWhenDeadDataBlock> when_dead_events;
         std::vector<SavegameEventGoalCreateDataBlock> goal_create_events;
@@ -449,10 +428,6 @@ namespace asg
         std::vector<SavegameEventSwitchRandomDataBlock> switch_random_events;
         std::vector<SavegameEventSequenceDataBlock> sequence_events;
         std::vector<SavegameEventWorldHudSpriteDataBlock> world_hud_sprite_events;
-        std::vector<SavegameEventAnchorMarkerDataBlock> anchor_marker_events;
-        std::vector<SavegameEventCloneEntityDataBlock> clone_entity_events;
-        std::vector<SavegameEventAFTeleportPlayerDataBlock> af_teleport_player_events;
-        std::vector<SavegameEventAnchorMarkerOrientDataBlock> anchor_marker_orient_events;
         std::vector<SavegameLevelDecalDataBlock> decals;
         std::vector<SavegameLevelBoltEmitterDataBlock> bolt_emitters;
         std::vector<SavegameLevelParticleEmitterDataBlock> particle_emitters;
