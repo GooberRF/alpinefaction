@@ -220,14 +220,12 @@ namespace asg
 
     struct SavegameEventDataBlock
     {
-        int event_type;
         int uid;
         float delay;
         bool is_on_state; // from delayed_message in event struct
         int delay_timer;
         int activated_by_entity_uid;
         int activated_by_trigger_uid;
-        int event_flags;
         std::vector<int> links;
     };
 

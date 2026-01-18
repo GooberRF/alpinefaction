@@ -735,7 +735,6 @@ namespace asg
     inline SavegameEventDataBlock make_event_base_block(rf::Event* e)
     {
         SavegameEventDataBlock b{};
-        b.event_type = e->event_type;
         b.uid = e->uid;
         b.delay = e->delay_seconds;
         xlog::warn("saved delay {} to {} for uid {}", e->delay_seconds, b.delay, e->uid);
@@ -743,7 +742,6 @@ namespace asg
         serialize_timestamp(&e->delay_timestamp, &b.delay_timer);
         b.activated_by_entity_uid = uid_from_handle(e->triggered_by_handle);
         b.activated_by_trigger_uid = uid_from_handle(e->trigger_handle);
-        b.event_flags = e->event_flags;
 
         b.links.clear();
         for (auto handle_ptr : e->links) {
@@ -1659,7 +1657,6 @@ namespace asg
     {
         e->delay_seconds = b.delay;
         e->delayed_msg = b.is_on_state;
-        e->event_flags = b.event_flags;
         deserialize_timestamp(&e->delay_timestamp, &b.delay_timer);
         add_handle_for_delayed_resolution(b.activated_by_entity_uid, &e->triggered_by_handle);
         add_handle_for_delayed_resolution(b.activated_by_trigger_uid, &e->trigger_handle);
@@ -3072,14 +3069,12 @@ static toml::table make_push_region_table(const asg::SavegameLevelPushRegionData
 static toml::table make_event_table(const asg::SavegameEventDataBlock& ev)
 {
     toml::table t;
-    t.insert("event_type", ev.event_type);
     t.insert("uid", ev.uid);
     t.insert("delay", ev.delay);
     t.insert("is_on_state", ev.is_on_state);
     t.insert("delay_timer", ev.delay_timer);
     t.insert("activated_by_entity_uid", ev.activated_by_entity_uid);
     t.insert("activated_by_trigger_uid", ev.activated_by_trigger_uid);
-    t.insert("event_flags", ev.event_flags);
 
     toml::array links;
     for (auto link_uid : ev.links) {
@@ -3833,14 +3828,12 @@ bool parse_entities(const toml::array& arr, std::vector<asg::SavegameEntityDataB
 static asg::SavegameEventDataBlock parse_event_base_fields(const toml::table& tbl)
 {
     asg::SavegameEventDataBlock b;
-    b.event_type = tbl["event_type"].value_or(-1);
     b.uid = tbl["uid"].value_or(-1);
     b.delay = tbl["delay"].value_or(-1.0f);
     b.is_on_state = tbl["is_on_state"].value_or(false);    
     b.delay_timer = tbl["delay_timer"].value_or(-1);
     b.activated_by_entity_uid = tbl["activated_by_entity_uid"].value_or(-1);
     b.activated_by_trigger_uid = tbl["activated_by_trigger_uid"].value_or(-1);
-    b.event_flags = tbl["event_flags"].value_or(0);
     if (auto arr = tbl["links"].as_array()) {
         for (auto& v : *arr) b.links.push_back(v.value_or(-1));
     }
