@@ -231,6 +231,22 @@ namespace asg
         std::vector<int> links;
     };
 
+    // events with relevant position
+    struct SavegameEventDataBlockPos
+    {
+        SavegameEventDataBlock ev;
+        rf::ShortVector pos;
+        std::optional<rf::Vector3> pos_ha;
+    };
+
+    // events with relevant position and orient
+    struct SavegameEventDataBlockPosRot
+    {
+        SavegameEventDataBlockPos ev;
+        rf::ShortQuat orient;
+        std::optional<rf::Matrix3> orient_ha;
+    };
+
     struct SavegameEventMakeInvulnerableDataBlock
     {
         SavegameEventDataBlock ev;
@@ -241,7 +257,6 @@ namespace asg
     {
         SavegameEventDataBlock ev;
         bool message_sent;
-        //bool when_any_dead;
     };
 
     struct SavegameEventGoalCreateDataBlock
@@ -261,6 +276,7 @@ namespace asg
         SavegameEventDataBlock ev;
         int next_fire_timer;
         int send_count;
+        bool active;
     };
 
     struct SavegameLevelDataHeader
@@ -380,6 +396,9 @@ namespace asg
         std::vector<SavegameClutterDataBlock> clutter;
         std::vector<SavegameTriggerDataBlock> triggers;
         std::vector<SavegameEventDataBlock> other_events;
+        std::vector<SavegameEventDataBlockPosRot> teleport_events;
+        std::vector<SavegameEventDataBlockPosRot> teleport_player_events;
+        std::vector<SavegameEventDataBlockPosRot> play_vclip_events;
         std::vector<SavegameEventMakeInvulnerableDataBlock> make_invulnerable_events;
         std::vector<SavegameEventWhenDeadDataBlock> when_dead_events;
         std::vector<SavegameEventGoalCreateDataBlock> goal_create_events;

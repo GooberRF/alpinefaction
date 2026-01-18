@@ -204,24 +204,24 @@ namespace rf
         char padding2;
         bool sound_instance;
     };
-#pragma pack(push, 1)
+
     struct CyclicTimerEvent : Event // wip
     {
-        char padding[2]; // no idea but always 0 so assuming padding
-        uint8_t unk0; // no idea, usually 0 but sometimes 0x80 or 0xFF (l17s1)
-        uint8_t unk1; // no idea, usually 0 but sometimes 0xFF
-        uint8_t unk2; // no idea, usually 0 but sometimes 0xFF
-        uint8_t unk3; // no idea, usually 0 but sometimes 0xFF
-        uint8_t unk4; // no idea
-        float send_interval_seconds; // correct
-        bool send_forever; // correct
-        char padding1[2]; // no idea, but always 0 so assuming padding
-        uint8_t unk5; // no idea, usually 0 but sometimes 0x80 or 0xFF (l17s1)
-        int max_sends; // correct
-        Timestamp next_fire_timestamp; // looks correct, but continues to count down even when timer isn't active? strange...
-        int send_count; // correct
+        char padding1[2]; // always 0
+        uint8_t unk0; // usually 0 but sometimes 0x80 or 0xFF (l17s1)
+        bool active;
+        uint8_t unk2; // usually 0 but sometimes 0xFF
+        uint8_t unk3; // usually 0 but sometimes 0xFF
+        uint8_t unk4;
+        float send_interval_seconds;
+        bool send_forever;
+        char padding2[2]; // always 0
+        uint8_t unk5; // usually 0 but sometimes 0x80 or 0xFF (l17s1)
+        int max_sends;
+        Timestamp next_fire_timestamp;
+        int send_count;
     };
-#pragma pack(pop)
+
     struct PersistentGoalEvent
     {
         rf::String name;

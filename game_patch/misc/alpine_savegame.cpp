@@ -723,6 +723,32 @@ namespace asg
         return b;
     }
 
+    inline SavegameEventDataBlockPos make_event_pos_block(rf::Event* e)
+    {
+        SavegameEventDataBlockPos b{};
+        b.ev = make_event_base_block(e);
+        rf::compress_vector3(rf::world_solid, &e->pos, &b.pos);
+        b.pos_ha.reset();
+        if (g_use_high_accuracy_savegame) {
+            b.pos_ha = e->pos;
+        }
+        return b;
+    }
+
+    inline SavegameEventDataBlockPosRot make_event_pos_rot_block(rf::Event* e)
+    {
+        SavegameEventDataBlockPosRot b{};
+        b.ev = make_event_pos_block(e);
+        rf::Quaternion q;
+        q.from_matrix(&e->orient);
+        b.orient.from_quat(&q);
+        b.orient_ha.reset();
+        if (g_use_high_accuracy_savegame) {
+            b.orient_ha = e->orient;
+        }
+        return b;
+    }
+
     inline SavegameEventMakeInvulnerableDataBlock make_invulnerable_event_block(rf::Event* e)
     {
         SavegameEventMakeInvulnerableDataBlock m;
@@ -791,6 +817,7 @@ namespace asg
         if (event) {
             serialize_timestamp(&event->next_fire_timestamp, &m.next_fire_timer);
             m.send_count = event->send_count;
+            m.active = event->active;
 
             xlog::warn("event {} is a valid Cyclic_Timer event with next_fire_timer {}, send_count {}, send_seconds {}",
                        event->uid, m.next_fire_timer, m.send_count, event->send_interval_seconds);
@@ -1013,6 +1040,9 @@ namespace asg
         lvl->goal_create_events.clear();
         lvl->alarm_siren_events.clear();
         lvl->cyclic_timer_events.clear();
+        lvl->teleport_events.clear();
+        lvl->teleport_player_events.clear();
+        lvl->play_vclip_events.clear();
         lvl->other_events.clear();
 
         // grab the full array once
@@ -1040,6 +1070,15 @@ namespace asg
             case rf::EventType::Cyclic_Timer:
                 lvl->cyclic_timer_events.push_back(make_cyclic_timer_event_block(e));
                 break;
+            case rf::EventType::Teleport:
+                lvl->teleport_events.push_back(make_event_pos_rot_block(e));
+                break;
+            case rf::EventType::Teleport_Player:
+                lvl->teleport_player_events.push_back(make_event_pos_rot_block(e));
+                break;
+            case rf::EventType::Play_Vclip:
+                lvl->play_vclip_events.push_back(make_event_pos_rot_block(e));
+                break;
             default:
                 lvl->other_events.push_back(make_event_base_block(e));
                 break;
@@ -1050,6 +1089,9 @@ namespace asg
         xlog::warn("[ASG]       got {} Goal_Create events for level '{}'", int(lvl->goal_create_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Alarm_Siren events for level '{}'", int(lvl->alarm_siren_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Cyclic_Timer events for level '{}'", int(lvl->cyclic_timer_events.size()), lvl->header.filename);
+        xlog::warn("[ASG]       got {} Teleport events for level '{}'", int(lvl->teleport_events.size()), lvl->header.filename);
+        xlog::warn("[ASG]       got {} Teleport_Player events for level '{}'", int(lvl->teleport_player_events.size()), lvl->header.filename);
+        xlog::warn("[ASG]       got {} Play_Vclip events for level '{}'", int(lvl->play_vclip_events.size()), lvl->header.filename);
         xlog::warn("[ASG]       got {} Generic events for level '{}'", int(lvl->other_events.size()), lvl->header.filename);
     }
 
@@ -1602,6 +1644,37 @@ namespace asg
         }
     }
 
+    static void apply_event_pos_fields(rf::Event* e, const SavegameEventDataBlockPos& b)
+    {
+        apply_event_base_fields(e, b.ev);
+        if (b.pos_ha) {
+            e->pos = *b.pos_ha;
+        }
+        else {
+            rf::decompress_vector3(rf::world_solid, &b.pos, &e->pos);
+        }
+        e->p_data.pos = e->pos;
+        e->p_data.next_pos = e->pos;
+    }
+
+    static void apply_event_pos_rot_fields(rf::Event* e, const SavegameEventDataBlockPosRot& b)
+    {
+        apply_event_pos_fields(e, b.ev);
+        rf::Matrix3 orient;
+        if (b.orient_ha) {
+            orient = *b.orient_ha;
+            orient.orthogonalize();
+        }
+        else {
+            rf::Quaternion q;
+            q.unpack(&b.orient);
+            q.extract_matrix(&orient);
+        }
+        e->orient = orient;
+        e->p_data.orient = orient;
+        e->p_data.next_orient = orient;
+    }
+
     static void apply_generic_event(rf::Event* e, const SavegameEventDataBlock& b)
     {
         apply_event_base_fields(e, b);
@@ -1645,10 +1718,14 @@ namespace asg
         auto* ev = static_cast<rf::CyclicTimerEvent*>(e);
         deserialize_timestamp(&ev->next_fire_timestamp, &blk.next_fire_timer);
         ev->send_count = blk.send_count;
+        ev->active = blk.active;
     }
 
     void event_deserialize_all_state(const SavegameLevelData& lvl)
     {
+        std::unordered_map<int, SavegameEventDataBlockPosRot> teleport_map;
+        std::unordered_map<int, SavegameEventDataBlockPosRot> teleport_player_map;
+        std::unordered_map<int, SavegameEventDataBlockPosRot> play_vclip_map;
         std::unordered_map<int, SavegameEventDataBlock> generic_map;
         std::unordered_map<int, SavegameEventMakeInvulnerableDataBlock> invuln_map;
         std::unordered_map<int, SavegameEventWhenDeadDataBlock> when_dead_map;
@@ -1656,6 +1733,12 @@ namespace asg
         std::unordered_map<int, SavegameEventAlarmSirenDataBlock> alarm_siren_map;
         std::unordered_map<int, SavegameEventCyclicTimerDataBlock> cyclic_timer_map;
 
+        teleport_map.reserve(lvl.teleport_events.size());
+        for (auto const& ev : lvl.teleport_events) teleport_map[ev.ev.ev.uid] = ev;
+        teleport_player_map.reserve(lvl.teleport_player_events.size());
+        for (auto const& ev : lvl.teleport_player_events) teleport_player_map[ev.ev.ev.uid] = ev;
+        play_vclip_map.reserve(lvl.play_vclip_events.size());
+        for (auto const& ev : lvl.play_vclip_events) play_vclip_map[ev.ev.ev.uid] = ev;
         generic_map.reserve(lvl.other_events.size());
         for (auto const& ev : lvl.other_events) generic_map[ev.uid] = ev;
         invuln_map.reserve(lvl.make_invulnerable_events.size());
@@ -1670,12 +1753,18 @@ namespace asg
         for (auto const& ev : lvl.cyclic_timer_events) cyclic_timer_map[ev.ev.uid] = ev;
 
         std::unordered_set<int> saved_ids;
-        saved_ids.reserve(lvl.other_events.size()
+        saved_ids.reserve(lvl.teleport_events.size()
+            + lvl.teleport_player_events.size()
+            + lvl.play_vclip_events.size()
+            + lvl.other_events.size()
             + lvl.make_invulnerable_events.size()
             + lvl.when_dead_events.size()
             + lvl.goal_create_events.size()
             + lvl.alarm_siren_events.size()
             + lvl.cyclic_timer_events.size());
+        for (auto const& ev : lvl.teleport_events) saved_ids.insert(ev.ev.ev.uid);
+        for (auto const& ev : lvl.teleport_player_events) saved_ids.insert(ev.ev.ev.uid);
+        for (auto const& ev : lvl.play_vclip_events) saved_ids.insert(ev.ev.ev.uid);
         for (auto const& ev : lvl.other_events) saved_ids.insert(ev.uid);
         for (auto const& ev : lvl.make_invulnerable_events) saved_ids.insert(ev.ev.uid);
         for (auto const& ev : lvl.when_dead_events) saved_ids.insert(ev.ev.uid);
@@ -1726,6 +1815,24 @@ namespace asg
                     auto it = cyclic_timer_map.find(uid);
                     if (it != cyclic_timer_map.end())
                         apply_cyclic_timer_event(e, it->second);
+                    break;
+                }
+                case rf::EventType::Teleport: {
+                    auto it = teleport_map.find(uid);
+                    if (it != teleport_map.end())
+                        apply_event_pos_rot_fields(e, it->second);
+                    break;
+                }
+                case rf::EventType::Teleport_Player: {
+                    auto it = teleport_player_map.find(uid);
+                    if (it != teleport_player_map.end())
+                        apply_event_pos_rot_fields(e, it->second);
+                    break;
+                }
+                case rf::EventType::Play_Vclip: {
+                    auto it = play_vclip_map.find(uid);
+                    if (it != play_vclip_map.end())
+                        apply_event_pos_rot_fields(e, it->second);
                     break;
                 }
                 default: {
@@ -2976,6 +3083,39 @@ static toml::table make_event_table(const asg::SavegameEventDataBlock& ev)
     return t;
 }
 
+static toml::table make_event_pos_table(const asg::SavegameEventDataBlockPos& ev)
+{
+    toml::table t = make_event_table(ev.ev);
+
+    if (asg::g_use_high_accuracy_savegame && ev.pos_ha) {
+        const auto& pos = *ev.pos_ha;
+        t.insert("pos_ha", toml::array{pos.x, pos.y, pos.z});
+    }
+    else {
+        t.insert("pos", toml::array{ev.pos.x, ev.pos.y, ev.pos.z});
+    }
+
+    return t;
+}
+
+static toml::table make_event_pos_rot_table(const asg::SavegameEventDataBlockPosRot& ev)
+{
+    toml::table t = make_event_pos_table(ev.ev);
+
+    if (asg::g_use_high_accuracy_savegame && ev.orient_ha) {
+        toml::array orient_ha;
+        for (auto const& row : {ev.orient_ha->rvec, ev.orient_ha->uvec, ev.orient_ha->fvec}) {
+            orient_ha.push_back(toml::array{row.x, row.y, row.z});
+        }
+        t.insert("orient_ha", std::move(orient_ha));
+    }
+    else {
+        t.insert("orient", toml::array{ev.orient.x, ev.orient.y, ev.orient.z, ev.orient.w});
+    }
+
+    return t;
+}
+
 static toml::table make_make_invuln_event_table(const asg::SavegameEventMakeInvulnerableDataBlock& ev)
 {
     toml::table t = make_event_table(ev.ev);
@@ -3014,6 +3154,7 @@ static toml::table make_cyclic_timer_table(asg::SavegameEventCyclicTimerDataBloc
 
     t.insert("next_fire_timer", ev.next_fire_timer);
     t.insert("send_count", ev.send_count);
+    t.insert("active", ev.active);
     return t;
 }
 
@@ -3195,6 +3336,24 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
             gen_ev_arr.push_back(make_event_table(ev));
         }
         lt.insert("events_generic", std::move(gen_ev_arr));
+
+        toml::array teleport_arr;
+        for (auto const& ev : lvl.teleport_events) {
+            teleport_arr.push_back(make_event_pos_rot_table(ev));
+        }
+        lt.insert("events_teleport", std::move(teleport_arr));
+
+        toml::array teleport_player_arr;
+        for (auto const& ev : lvl.teleport_player_events) {
+            teleport_player_arr.push_back(make_event_pos_rot_table(ev));
+        }
+        lt.insert("events_teleport_player", std::move(teleport_player_arr));
+
+        toml::array play_vclip_arr;
+        for (auto const& ev : lvl.play_vclip_events) {
+            play_vclip_arr.push_back(make_event_pos_rot_table(ev));
+        }
+        lt.insert("events_play_vclip", std::move(play_vclip_arr));
 
         toml::array invuln_arr;
         for (auto const& miev : lvl.make_invulnerable_events) {
@@ -3681,6 +3840,32 @@ static asg::SavegameEventDataBlock parse_event_base_fields(const toml::table& tb
     return b;
 }
 
+static asg::SavegameEventDataBlockPos parse_event_pos_fields(const toml::table& tbl)
+{
+    asg::SavegameEventDataBlockPos b{};
+    b.ev = parse_event_base_fields(tbl);
+    asg::parse_i16_vector(tbl, "pos", b.pos);
+    rf::Vector3 pos_ha{};
+    if (asg::parse_f32_vector3(tbl, "pos_ha", pos_ha))
+        b.pos_ha = pos_ha;
+    else
+        b.pos_ha.reset();
+    return b;
+}
+
+static asg::SavegameEventDataBlockPosRot parse_event_pos_rot_fields(const toml::table& tbl)
+{
+    asg::SavegameEventDataBlockPosRot b{};
+    b.ev = parse_event_pos_fields(tbl);
+    asg::parse_i16_quat(tbl, "orient", b.orient);
+    rf::Matrix3 orient_ha{};
+    if (asg::parse_f32_matrix3(tbl, "orient_ha", orient_ha))
+        b.orient_ha = orient_ha;
+    else
+        b.orient_ha.reset();
+    return b;
+}
+
 static bool parse_generic_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlock>& out)
 {
     out.clear();
@@ -3689,6 +3874,42 @@ static bool parse_generic_events(const toml::array& arr, std::vector<asg::Savega
         if (!node.is_table())
             continue;
         out.push_back(parse_event_base_fields(*node.as_table()));
+    }
+    return true;
+}
+
+static bool parse_teleport_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlockPosRot>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        out.push_back(parse_event_pos_rot_fields(*node.as_table()));
+    }
+    return true;
+}
+
+static bool parse_teleport_player_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlockPosRot>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        out.push_back(parse_event_pos_rot_fields(*node.as_table()));
+    }
+    return true;
+}
+
+static bool parse_play_vclip_events(const toml::array& arr, std::vector<asg::SavegameEventDataBlockPosRot>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        out.push_back(parse_event_pos_rot_fields(*node.as_table()));
     }
     return true;
 }
@@ -3769,6 +3990,7 @@ static bool parse_cyclic_timer_events(const toml::array& arr, std::vector<asg::S
         ev.ev = parse_event_base_fields(tbl);
         ev.next_fire_timer = tbl["next_fire_timer"].value_or(-1);
         ev.send_count = tbl["send_count"].value_or(0);
+        ev.active = tbl["active"].value_or(false);
         out.push_back(std::move(ev));
     }
     return true;
@@ -4286,6 +4508,12 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
         // events
         if (auto ge = tbl["events_generic"].as_array())
             parse_generic_events(*ge, lvl.other_events);
+        if (auto tp = tbl["events_teleport"].as_array())
+            parse_teleport_events(*tp, lvl.teleport_events);
+        if (auto tp = tbl["events_teleport_player"].as_array())
+            parse_teleport_player_events(*tp, lvl.teleport_player_events);
+        if (auto pv = tbl["events_play_vclip"].as_array())
+            parse_play_vclip_events(*pv, lvl.play_vclip_events);
         if (auto ie = tbl["events_make_invulnerable"].as_array())
             parse_make_invuln_events(*ie, lvl.make_invulnerable_events);
         if (auto a = tbl["events_when_dead"].as_array())
