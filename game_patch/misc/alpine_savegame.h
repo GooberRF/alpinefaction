@@ -269,12 +269,55 @@ namespace asg
         bool alarm_siren_playing;
     };
 
-    struct SavegameEventCyclicTimerDataBlock // not too concerned with what stock game saved (formatted very weird), saving what we know we need
+    struct SavegameEventCyclicTimerDataBlock
     {
         SavegameEventDataBlock ev;
         int next_fire_timer;
         int send_count;
         bool active;
+    };
+
+    struct SavegameEventSwitchRandomDataBlock
+    {
+        SavegameEventDataBlock ev;
+        std::vector<int> used_handles;
+    };
+
+    struct SavegameEventSequenceDataBlock
+    {
+        SavegameEventDataBlock ev;
+        int next_link_index = 0;
+    };
+
+    struct SavegameEventWorldHudSpriteDataBlock
+    {
+        SavegameEventDataBlockPos ev;
+        bool enabled = false;
+    };
+
+    struct SavegameEventAnchorMarkerDataBlock
+    {
+        SavegameEventDataBlockPos ev;
+    };
+
+    struct SavegameEventCloneEntityDataBlock
+    {
+        SavegameEventDataBlockPosRot ev;
+    };
+
+    struct SavegameEventAFTeleportPlayerDataBlock
+    {
+        SavegameEventDataBlockPosRot ev;
+    };
+
+    struct SavegameEventAnchorMarkerOrientDataBlock
+    {
+        SavegameEventDataBlockPosRot ev;
+    };
+
+    struct SavegameLevelAlpinePropsDataBlock
+    {
+        bool player_has_headlamp = true;
     };
 
     struct SavegameLevelDataHeader
@@ -385,6 +428,7 @@ namespace asg
     struct SavegameLevelData
     {
         SavegameLevelDataHeader header;
+        std::optional<SavegameLevelAlpinePropsDataBlock> alpine_level_props;
         std::vector<int> killed_room_uids;
         std::vector<int> dead_entity_uids;
         std::vector<rf::GeomodCraterData> geomod_craters;
@@ -402,6 +446,13 @@ namespace asg
         std::vector<SavegameEventGoalCreateDataBlock> goal_create_events;
         std::vector<SavegameEventAlarmSirenDataBlock> alarm_siren_events;
         std::vector<SavegameEventCyclicTimerDataBlock> cyclic_timer_events;
+        std::vector<SavegameEventSwitchRandomDataBlock> switch_random_events;
+        std::vector<SavegameEventSequenceDataBlock> sequence_events;
+        std::vector<SavegameEventWorldHudSpriteDataBlock> world_hud_sprite_events;
+        std::vector<SavegameEventAnchorMarkerDataBlock> anchor_marker_events;
+        std::vector<SavegameEventCloneEntityDataBlock> clone_entity_events;
+        std::vector<SavegameEventAFTeleportPlayerDataBlock> af_teleport_player_events;
+        std::vector<SavegameEventAnchorMarkerOrientDataBlock> anchor_marker_orient_events;
         std::vector<SavegameLevelDecalDataBlock> decals;
         std::vector<SavegameLevelBoltEmitterDataBlock> bolt_emitters;
         std::vector<SavegameLevelParticleEmitterDataBlock> particle_emitters;
