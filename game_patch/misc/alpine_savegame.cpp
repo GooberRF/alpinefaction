@@ -7,9 +7,11 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <limits>
 #include <sstream>
 #include <unordered_set>
 #include <xlog/xlog.h>
@@ -58,6 +60,7 @@ std::vector<asg::AlpinePonr> g_alpine_ponr;
 
 namespace asg
 {
+    constexpr size_t MAX_SAVED_LEVELS = 4;
     bool g_use_high_accuracy_savegame = false;
     static std::unordered_map<int, EntitySkinState> g_entity_skin_state;
 
@@ -141,11 +144,19 @@ namespace asg
     {
         std::vector<float> v;
         v.reserve(arr.size());
-        for (auto& e : arr) {
-            if (auto val = e.value<float>())
+        bool had_invalid = false;
+        for (size_t idx = 0; idx < arr.size(); ++idx) {
+            auto& e = arr[idx];
+            if (auto val = e.value<float>()) {
                 v.push_back(*val);
-            else
+            }
+            else {
+                had_invalid = true;
                 v.push_back(0.0f);
+            }
+        }
+        if (had_invalid) {
+            xlog::warn("[ASG] invalid float value in array; defaulted to 0.0");
         }
         return v;
     }
@@ -157,9 +168,19 @@ namespace asg
             auto& a = *arr;
             if (a.size() == 3) {
                 // value_or<int>() will safely convert integer-valued TOML entries
-                out.x = static_cast<int16_t>(a[0].value_or<int>(0));
-                out.y = static_cast<int16_t>(a[1].value_or<int>(0));
-                out.z = static_cast<int16_t>(a[2].value_or<int>(0));
+                auto clamp_i16 = [&](size_t idx) -> int16_t {
+                    int value = a[idx].value_or<int>(0);
+                    if (value < std::numeric_limits<int16_t>::min() ||
+                        value > std::numeric_limits<int16_t>::max()) {
+                        xlog::warn("[ASG] clamping '{}' value {} to int16 range", key, value);
+                        value = std::clamp(value, int(std::numeric_limits<int16_t>::min()),
+                                           int(std::numeric_limits<int16_t>::max()));
+                    }
+                    return static_cast<int16_t>(value);
+                };
+                out.x = clamp_i16(0);
+                out.y = clamp_i16(1);
+                out.z = clamp_i16(2);
                 return true;
             }
         }
@@ -172,10 +193,20 @@ namespace asg
         if (auto arr = tbl[key].as_array()) {
             auto& a = *arr;
             if (a.size() == 4) {
-                out.x = static_cast<int16_t>(a[0].value_or<int>(0));
-                out.y = static_cast<int16_t>(a[1].value_or<int>(0));
-                out.z = static_cast<int16_t>(a[2].value_or<int>(0));
-                out.w = static_cast<int16_t>(a[3].value_or<int>(0));
+                auto clamp_i16 = [&](size_t idx) -> int16_t {
+                    int value = a[idx].value_or<int>(0);
+                    if (value < std::numeric_limits<int16_t>::min() ||
+                        value > std::numeric_limits<int16_t>::max()) {
+                        xlog::warn("[ASG] clamping '{}' value {} to int16 range", key, value);
+                        value = std::clamp(value, int(std::numeric_limits<int16_t>::min()),
+                                           int(std::numeric_limits<int16_t>::max()));
+                    }
+                    return static_cast<int16_t>(value);
+                };
+                out.x = clamp_i16(0);
+                out.y = clamp_i16(1);
+                out.z = clamp_i16(2);
+                out.w = clamp_i16(3);
                 return true;
             }
         }
@@ -298,7 +329,7 @@ namespace asg
             }*/
 
             // drop using ponr - consider making the 4 configurable
-            if (hdr.saved_level_filenames.size() >= 4) {
+            if (hdr.saved_level_filenames.size() >= MAX_SAVED_LEVELS) {
                 size_t evict = pick_ponr_eviction_slot(hdr.saved_level_filenames, hdr.current_level_filename);
                 hdr.saved_level_filenames.erase(hdr.saved_level_filenames.begin() + evict);
                 levels.erase(levels.begin() + evict);
@@ -2601,38 +2632,14 @@ namespace asg
 
     SavegameData build_savegame_data(rf::Player* pp)
     {
-        SavegameData data;
+        // — sync up level‐slots in g_save_data.header/ g_save_data.levels —
+        ensure_current_level_slot();
 
-        // ——— HEADER ———
-        data.header.version = g_save_data.header.version;
-        data.header.game_time = g_save_data.header.game_time;
-        data.header.mod_name = g_save_data.header.mod_name;
+        SavegameData data = g_save_data;
         data.header.level_time_left = rf::level_time2;
-
-        xlog::warn("[ASG]   header -> time={} mod='{}'", data.header.game_time, data.header.mod_name);
-
-        // ——— COMMON.GAME ———
-        data.common.game.difficulty = g_save_data.common.game.difficulty;
-        data.common.game.newest_message_index = g_save_data.common.game.newest_message_index;
-        data.common.game.messages = g_save_data.common.game.messages;
-        data.common.game.num_logged_messages = g_save_data.common.game.num_logged_messages;
-        data.common.game.messages_total_height = g_save_data.common.game.messages_total_height;
-
-        xlog::warn("[ASG]   common.game -> difficulty={} messages={}", int(data.common.game.difficulty),
-                   int(data.common.game.messages.size()));
 
         // ——— COMMON.PLAYER ———
         serialize_player(pp, data.common.player);
-
-        xlog::warn("[ASG]   common.player -> entity_host_uid={} spew=({}, {}, …)", data.common.player.entity_host_uid,
-                   data.common.player.spew_pos.x, data.common.player.spew_pos.y);
-
-        // — now sync up level‐slots in data.header/ data.levels  —
-        ensure_current_level_slot();
-
-        // copy all of g_save_data over
-        data.header = g_save_data.header;
-        data.levels = g_save_data.levels;
 
         // — then snapshot the live entities into *each* level’s list  —
         for (auto& lvl : data.levels) {
