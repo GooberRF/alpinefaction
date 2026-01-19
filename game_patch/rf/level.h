@@ -12,7 +12,10 @@ namespace rf
     struct GSolid;
     struct ParticleEmitter;
     struct BoltEmitter;
-    struct LevelLight;
+    namespace gr
+    {
+        struct LevelLight;
+    }
     struct GeoRegion;
 
     struct ClimbRegion
@@ -93,7 +96,7 @@ namespace rf
         bool hard_level_break;
         VArray<ParticleEmitter*> pemitters;
         VArray<BoltEmitter*> bemitters;
-        VArray<LevelLight*> lights;
+        VArray<gr::LevelLight*> lights;
         VArray<GeoRegion*> regions;
         VArray<ClimbRegion*> ladders;
         VArray<PushRegion*> pushers;

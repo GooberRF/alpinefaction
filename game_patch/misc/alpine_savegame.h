@@ -405,6 +405,13 @@ namespace asg
         rf::Color pool_color;
     };
 
+    struct SavegameLevelDynamicLightDataBlock
+    {
+        int uid;
+        bool is_on;
+        rf::Vector3 color;
+    };
+
     struct SavegameLevelData
     {
         SavegameLevelDataHeader header;
@@ -434,10 +441,10 @@ namespace asg
         std::vector<SavegameLevelKeyframeDataBlock> movers;
         std::vector<SavegameLevelPushRegionDataBlock> push_regions;
         std::vector<SavegameLevelWeaponDataBlock> weapons;
+        std::vector<SavegameLevelDynamicLightDataBlock> dynamic_lights;
         std::vector<SavegameLevelCorpseDataBlock> corpses;
         std::vector<SavegameLevelBloodPoolDataBlock> blood_pools;
     };
-    // maybe: lights (on/off state), 
 
     struct SavegameData
     {

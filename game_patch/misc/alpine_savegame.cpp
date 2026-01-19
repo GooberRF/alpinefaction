@@ -21,6 +21,7 @@
 #include "../os/console.h"
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_font.h"
+#include "../rf/gr/gr_light.h"
 #include "../rf/hud.h"
 #include "../rf/misc.h"
 #include "../rf/event.h"
@@ -66,12 +67,40 @@ namespace asg
     bool g_use_high_accuracy_savegame = false;
     static std::unordered_map<int, EntitySkinState> g_entity_skin_state;
 
+    static bool event_links_can_be_raw_uids(const rf::Event* e)
+    {
+        if (!e) {
+            return false;
+        }
+
+        switch (static_cast<rf::EventType>(e->event_type)) {
+        case rf::EventType::Light_State:
+        case rf::EventType::Set_Light_Color:
+            return true;
+        default:
+            return false;
+        }
+    }
+
     // Look up an object by handle and return its uid, or –1 if not found
     // prevent crashing from trying to fetch uid from invalid objects
     inline int uid_from_handle(int handle)
     {
         if (auto o = rf::obj_from_handle(handle))
             return o->uid;
+        return -1;
+    }
+
+    static int link_uid_from_handle_or_uid(bool is_light_event, int handle_or_uid)
+    {
+        if (auto handle_uid = uid_from_handle(handle_or_uid); handle_uid != -1) {
+            return handle_uid;
+        }
+
+        if (is_light_event) {
+            return handle_or_uid;
+        }
+
         return -1;
     }
 
@@ -746,10 +775,9 @@ namespace asg
         b.activated_by_trigger_uid = uid_from_handle(e->trigger_handle);
 
         b.links.clear();
-        for (auto handle_ptr : e->links) {
-            // convert handle to uid
-            int handle_ptr_uid = uid_from_handle(handle_ptr);
-            b.links.push_back(handle_ptr_uid);
+        const bool is_light_event = event_links_can_be_raw_uids(e);
+        for (auto handle_or_uid : e->links) {
+            b.links.push_back(link_uid_from_handle_or_uid(is_light_event, handle_or_uid));
         }
         return b;
     }
@@ -1022,6 +1050,16 @@ namespace asg
         b.pos = p->pool_pos;
         b.orient = p->pool_orient;
         b.pool_color = p->pool_color;
+        return b;
+    }
+
+    static SavegameLevelDynamicLightDataBlock make_dynamic_light_block(const rf::gr::LevelLight* level_light,
+        const rf::gr::Light* light)
+    {
+        SavegameLevelDynamicLightDataBlock b{};
+        b.uid = level_light->uid;
+        b.is_on = light->on;
+        b.color = {light->r, light->g, light->b};
         return b;
     }
 
@@ -1316,6 +1354,32 @@ namespace asg
         } while (cur && cur != head);
     }
 
+    static void serialize_all_dynamic_lights(std::vector<SavegameLevelDynamicLightDataBlock>& out)
+    {
+        out.clear();
+        auto& lights = rf::level.lights;
+        if (lights.size() == 0)
+            return;
+
+        for (auto* level_light : lights) {
+            if (!level_light || !level_light->dynamic)
+                continue;
+
+            int handle = level_light->gr_light_handle;
+            if (handle < 0) {
+                handle = rf::gr::level_get_light_handle_from_uid(level_light->uid);
+            }
+            if (handle < 0)
+                continue;
+
+            auto* light = rf::gr::light_get_from_handle(handle);
+            if (!light)
+                continue;
+
+            out.push_back(make_dynamic_light_block(level_light, light));
+        }
+    }
+
     void serialize_all_objects(SavegameLevelData* data)
     {
         // Alpine level props
@@ -1414,6 +1478,12 @@ namespace asg
         data->blood_pools.clear();
         serialize_all_blood_pools(data->blood_pools);
         xlog::warn("[ASG]       got {} blood pools for level '{}'", int(data->blood_pools.size()), data->header.filename);
+
+        // dynamic lights
+        xlog::warn("[ASG]     populating dynamic lights for level '{}'", data->header.filename);
+        data->dynamic_lights.clear();
+        serialize_all_dynamic_lights(data->dynamic_lights);
+        xlog::warn("[ASG]       got {} dynamic lights for level '{}'", int(data->dynamic_lights.size()), data->header.filename);
 
         // geo craters
         int n = rf::num_geomods_this_level;
@@ -1726,13 +1796,29 @@ namespace asg
         add_handle_for_delayed_resolution(b.activated_by_trigger_uid, &e->trigger_handle);
 
         e->links.clear();
+        const bool is_light_event = event_links_can_be_raw_uids(e);
         for (int link_uid : b.links) {
-            // push a placeholder handle
-            e->links.add(-1);
-            // reference to slot
-            int& slot = e->links[e->links.size() - 1];
-            // queue the UID for resolution
-            add_handle_for_delayed_resolution(link_uid, &slot);
+            if (is_light_event) {
+                if (link_uid == -1) {
+                    e->links.add(-1);
+                    continue;
+                }
+
+                if (auto obj = rf::obj_lookup_from_uid(link_uid)) {
+                    e->links.add(obj->handle);
+                }
+                else {
+                    e->links.add(link_uid);
+                }
+            }
+            else {
+                // push a placeholder handle
+                e->links.add(-1);
+                // reference to slot
+                int& slot = e->links[e->links.size() - 1];
+                // queue the UID for resolution
+                add_handle_for_delayed_resolution(link_uid, &slot);
+            }
         }
     }
 
@@ -2448,6 +2534,34 @@ namespace asg
         }
     }
 
+    static void dynamic_light_deserialize_all_state(const std::vector<SavegameLevelDynamicLightDataBlock>& blocks)
+    {
+        for (auto const& b : blocks) {
+            auto* level_light = rf::gr::level_light_lookup_from_uid(b.uid);
+            if (!level_light)
+                continue;
+
+            int handle = level_light->gr_light_handle;
+            if (handle < 0) {
+                handle = rf::gr::level_get_light_handle_from_uid(b.uid);
+            }
+            if (handle < 0)
+                continue;
+
+            if (auto* light = rf::gr::light_get_from_handle(handle)) {
+                light->on = b.is_on;
+                light->r = b.color.x;
+                light->g = b.color.y;
+                light->b = b.color.z;
+            }
+
+            level_light->is_on = b.is_on;
+            level_light->hue_r = b.color.x;
+            level_light->hue_g = b.color.y;
+            level_light->hue_b = b.color.z;
+        }
+    }
+
     static void apply_corpse_fields(rf::Corpse* c, const SavegameLevelCorpseDataBlock& b)
     {
         // 1) common Object fields (position/orient/physics/flags/etc)
@@ -2522,7 +2636,6 @@ namespace asg
         // 2) Spawn any corpses that were in the save but aren't in the world yet
         for (auto const& b : blocks) {
             if (auto obj_ep = rf::obj_lookup_from_uid(b.obj.uid)) {
-                // --- decompress orientation & position ---
                 rf::Quaternion q;
                 rf::Matrix3 m;
                 rf::Vector3 p;
@@ -2546,32 +2659,8 @@ namespace asg
                         apply_corpse_fields(newc, b);
                     }
                 }
-                
-                /*
-                // --- stock uses ObjectCreateInfo to build a Corpse object ---
-                rf::ObjectCreateInfo ci{};
-                ci.mass = b.mass;
-                ci.radius = b.radius;
-                ci.solid = nullptr; // or rf::world_solid if they expect it
-                ci.orient = m;
-                ci.pos = p;
-                ci.material =  3;
-                ci.physics_flags =  51;
-                // copy over collision spheres
-                for (auto const& sph : b.cspheres) ci.spheres.add(sph);
-
-                // --- now actually create it ---
-                if (auto* newc = reinterpret_cast<rf::Corpse*>(rf::obj_create(rf::ObjectType::OT_CORPSE,
-                                                                               -1,  -1, &ci,
-                                                                               true))) {
-                    // give it the right UID back if needed:
-                    newc->baseclass_0.uid = b.obj.uid;
-
-                    apply_corpse_fields(newc, b);
-                }*/
             }
         }
-
     }
 
     static void apply_killed_glass_room(int room_uid)
@@ -2620,6 +2709,7 @@ namespace asg
         decal_deserialize_all_state(lvl->decals);
         weapon_deserialize_all_state(lvl->weapons);
         blood_pool_deserialize_all_state(lvl->blood_pools);
+        dynamic_light_deserialize_all_state(lvl->dynamic_lights);
         corpse_deserialize_all_state(lvl->corpses);
         glass_deserialize_all_killed_state(lvl->killed_room_uids);
 
@@ -3478,6 +3568,15 @@ static toml::table make_blood_pool_table(const asg::SavegameLevelBloodPoolDataBl
     return t;
 }
 
+static toml::table make_dynamic_light_table(const asg::SavegameLevelDynamicLightDataBlock& b)
+{
+    toml::table t;
+    t.insert("uid", b.uid);
+    t.insert("is_on", b.is_on);
+    t.insert("color", toml::array{b.color.x, b.color.y, b.color.z});
+    return t;
+}
+
 bool serialize_savegame_to_asg_file(const std::string& filename, const asg::SavegameData& d)
 {
     toml::table root;
@@ -3620,6 +3719,10 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         toml::array bp_arr;
         for (auto const& bp : lvl.blood_pools) bp_arr.push_back(make_blood_pool_table(bp));
         lt.insert("blood_pools", std::move(bp_arr));
+
+        toml::array dl_arr;
+        for (auto const& dl : lvl.dynamic_lights) dl_arr.push_back(make_dynamic_light_table(dl));
+        lt.insert("dynamic_lights", std::move(dl_arr));
 
         toml::array crater_arr;
         for (auto const& c : lvl.geomod_craters) crater_arr.push_back(make_geomod_crater_table(c));
@@ -4638,6 +4741,33 @@ bool parse_blood_pools(const toml::array& arr, std::vector<asg::SavegameLevelBlo
     return true;
 }
 
+bool parse_dynamic_lights(const toml::array& arr, std::vector<asg::SavegameLevelDynamicLightDataBlock>& out)
+{
+    out.clear();
+    out.reserve(arr.size());
+
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+
+        auto tbl = *node.as_table();
+        asg::SavegameLevelDynamicLightDataBlock b{};
+        b.uid = tbl["uid"].value_or(-1);
+        b.is_on = tbl["is_on"].value_or(false);
+
+        if (auto ca = tbl["color"].as_array()) {
+            auto v = asg::parse_f32_array(*ca);
+            if (v.size() == 3)
+                b.color = {v[0], v[1], v[2]};
+        }
+
+        if (b.uid >= 0) {
+            out.push_back(std::move(b));
+        }
+    }
+    return true;
+}
+
 bool parse_corpses(const toml::array& arr, std::vector<asg::SavegameLevelCorpseDataBlock>& out)
 {
     out.clear();
@@ -4816,6 +4946,10 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
 
         if (auto bp = tbl["blood_pools"].as_array()) {
             parse_blood_pools(*bp, lvl.blood_pools);
+        }
+
+        if (auto dl = tbl["dynamic_lights"].as_array()) {
+            parse_dynamic_lights(*dl, lvl.dynamic_lights);
         }
 
         if (auto cs = tbl["corpses"].as_array()) {

@@ -12,6 +12,7 @@ Version 1.3.0 (Bakeapple): Not yet released
     - Support tracking skins for clutter and entities
     - Support tracking all event links
     - Support tracking positions and rotations for relevant event types
+    - Support tracking dynamic lights
     - Support Alpine events `Switch_Random`, `Sequence`, and `World_HUD_Sprite`
     - Fix collision bugs resulting from compressed position/orientation values (subject to `sp_savehighaccuracy`)
 
