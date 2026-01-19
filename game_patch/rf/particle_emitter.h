@@ -195,4 +195,7 @@ static_assert(sizeof(BoltEmitter) == 0x18C);
 static auto& level_get_particle_emitter_from_uid = addr_as_ref<ParticleEmitter*(int uid)>(0x0045D630);
 static auto& level_get_bolt_emitter_from_uid = addr_as_ref<BoltEmitter*(int uid)>(0x0045D680);
 
+static auto& bolt_emitter_list = addr_as_ref<VArray<BoltEmitter*>>(0x0064608C);
+static auto& particle_emitter_list = addr_as_ref<VArray<ParticleEmitter*>>(0x00646080);
+
 }
