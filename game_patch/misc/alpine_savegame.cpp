@@ -752,6 +752,12 @@ namespace asg
         b.activator_handle = uid_from_handle(t->activator_handle);
         serialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
         serialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
+        b.reset_timer.reset();
+        if (g_use_high_accuracy_savegame) {
+            int reset_timer = -1;
+            serialize_timestamp(&t->next_check, &reset_timer);
+            b.reset_timer = reset_timer;
+        }
 
         b.links.clear();
         for (auto handle_ptr : t->links) {
@@ -2120,6 +2126,10 @@ namespace asg
         // timestamps
         deserialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
         deserialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
+        if (b.reset_timer) {
+            int reset_timer = *b.reset_timer;
+            deserialize_timestamp(&t->next_check, &reset_timer);
+        }
     }
 
     static void trigger_deserialize_all_state(const std::vector<SavegameTriggerDataBlock>& blocks)
@@ -3266,6 +3276,9 @@ static toml::table make_trigger_table(const asg::SavegameTriggerDataBlock& b)
     t.insert("activator_handle", b.activator_handle);
     t.insert("button_active_timestamp", b.button_active_timestamp);
     t.insert("inside_timestamp", b.inside_timestamp);
+    if (asg::g_use_high_accuracy_savegame && b.reset_timer) {
+        t.insert("reset_timer", *b.reset_timer);
+    }
     toml::array links;
     for (auto l : b.links) links.push_back(l);
     t.insert("links", std::move(links));
@@ -4423,6 +4436,12 @@ bool parse_triggers(const toml::array& arr, std::vector<asg::SavegameTriggerData
         tb.activator_handle = tbl["activator_handle"].value_or(-1);
         tb.button_active_timestamp = tbl["button_active_timestamp"].value_or(-1);
         tb.inside_timestamp = tbl["inside_timestamp"].value_or(-1);
+        if (auto reset_timer = tbl["reset_timer"].value<int>()) {
+            tb.reset_timer = *reset_timer;
+        }
+        else {
+            tb.reset_timer.reset();
+        }
 
         // links
         if (auto la = tbl["links"].as_array()) {

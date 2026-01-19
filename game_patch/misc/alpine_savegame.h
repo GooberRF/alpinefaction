@@ -215,6 +215,7 @@ namespace asg
         int activator_handle;
         int button_active_timestamp;
         int inside_timestamp;
+        std::optional<int> reset_timer;
         std::vector<int> links;
     };
 

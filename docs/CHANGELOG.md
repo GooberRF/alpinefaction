@@ -9,6 +9,7 @@ Version 1.3.0 (Bakeapple): Not yet released
     - Support all relevant player fields
     - Support (theoretically) any number of each saved object type, removing specific limits
     - Support tracking orientation for triggers and clutter (subject to `sp_savehighaccuracy`)
+    - Support tracking trigger reset timestamps (subject to `sp_savehighaccuracy`)
     - Support tracking skins for clutter and entities
     - Support tracking all event links
     - Support tracking positions and rotations for relevant event types
