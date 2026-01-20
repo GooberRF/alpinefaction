@@ -354,25 +354,25 @@ ConsoleCommand2 autosave_cmd{
 };
 
 ConsoleCommand2 new_savegame_format_cmd{
-    "sp_saveformatwrite",
+    "sp_save_format",
     []() {
         g_alpine_game_config.use_new_savegame_format = !g_alpine_game_config.use_new_savegame_format;
         rf::console::print("Savegame files will be written using the {} format",
             g_alpine_game_config.use_new_savegame_format ? "modern (.asg)" : "legacy (.svl)");
     },
     "Toggle between writing savegame files using the modern (.asg) or legacy (.svl) format",
+    "sp_save_format",
 };
 
-ConsoleCommand2 savegame_high_accuracy_cmd{
-    "sp_savehighaccuracy",
+ConsoleCommand2 speedrun_savegame_mode_cmd{
+    "sp_save_speedrun_mode",
     []() {
-        g_alpine_game_config.savegame_high_accuracy = !g_alpine_game_config.savegame_high_accuracy;
-        asg::g_use_high_accuracy_savegame = g_alpine_game_config.savegame_high_accuracy;
-        rf::console::print("Savegame high accuracy position/orientation is {}.",
-            g_alpine_game_config.savegame_high_accuracy ? "enabled" : "disabled");
+        g_alpine_game_config.speedrun_savegame_mode = !g_alpine_game_config.speedrun_savegame_mode;
+        rf::console::print("Speedrun compatibility savegame mode is {}.",
+            g_alpine_game_config.speedrun_savegame_mode ? "enabled" : "disabled");
     },
-    "Toggle high accuracy position/orientation fields for .asg savegame files",
-    "sp_savehighaccuracy",
+    "Toggle speedrun compatibility savegame mode for .asg files",
+    "sp_save_speedrun_mode",
 };
 
 ConsoleCommand2 pcollide_cmd{
@@ -590,7 +590,7 @@ void console_commands_init()
     verify_level_cmd_hook.install();
     autosave_cmd.register_cmd();
     new_savegame_format_cmd.register_cmd();
-    savegame_high_accuracy_cmd.register_cmd();
+    speedrun_savegame_mode_cmd.register_cmd();
 
     // Hooks for builtin commands
     camera1_cmd_hook.install();

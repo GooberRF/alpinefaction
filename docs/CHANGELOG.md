@@ -8,14 +8,14 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Implement TOML-based `ASG` savegame file format for single player
     - Support all relevant player fields
     - Support (theoretically) any number of each saved object type, removing specific limits
-    - Support tracking orientation for triggers and clutter (subject to `sp_savehighaccuracy`)
-    - Support tracking trigger reset timestamps (subject to `sp_savehighaccuracy`)
+    - Support tracking orientation for triggers and clutter (disabled when `sp_savespeedrunmode` is enabled)
+    - Support tracking trigger reset timestamps (disabled when `sp_savespeedrunmode` is enabled)
     - Support tracking skins for clutter and entities
     - Support tracking all event links
     - Support tracking positions and rotations for relevant event types
     - Support tracking dynamic lights
     - Support Alpine events `Switch_Random`, `Sequence`, and `World_HUD_Sprite`
-    - Fix collision bugs resulting from compressed position/orientation values (subject to `sp_savehighaccuracy`)
+    - Fix collision bugs resulting from compressed position/orientation values (disabled when `sp_savespeedrunmode` is enabled)
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)

@@ -464,6 +464,5 @@ namespace asg
     int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr);
     void clear_delayed_handles();
     void resolve_delayed_handles();
-    extern bool g_use_high_accuracy_savegame;
 
 }

@@ -64,8 +64,12 @@ std::vector<asg::AlpinePonr> g_alpine_ponr;
 namespace asg
 {
     constexpr size_t MAX_SAVED_LEVELS = 4;
-    bool g_use_high_accuracy_savegame = false;
     static std::unordered_map<int, EntitySkinState> g_entity_skin_state;
+
+    static bool use_high_accuracy_savegame()
+    {
+        return !g_alpine_game_config.speedrun_savegame_mode;
+    }
 
     static bool event_links_can_be_raw_uids(const rf::Event* e)
     {
@@ -516,7 +520,7 @@ namespace asg
         out.pos_ha.reset();
         out.orient_ha.reset();
 
-        if (g_use_high_accuracy_savegame) {
+        if (use_high_accuracy_savegame()) {
             out.pos_ha = o->p_data.pos;
             out.orient_ha = o->orient;
         }
@@ -716,7 +720,7 @@ namespace asg
         rf::compress_vector3(rf::world_solid, &c->p_data.pos, &b.pos);
         b.pos_ha.reset();
         b.orient_ha.reset();
-        if (g_use_high_accuracy_savegame) {
+        if (use_high_accuracy_savegame()) {
             b.pos_ha = c->p_data.pos;
             b.orient_ha = c->orient;
         }
@@ -742,7 +746,7 @@ namespace asg
         rf::compress_vector3(rf::world_solid, &t->pos, &b.pos);
         b.pos_ha.reset();
         b.orient_ha.reset();
-        if (g_use_high_accuracy_savegame) {
+        if (use_high_accuracy_savegame()) {
             b.pos_ha = t->pos;
             b.orient_ha = t->orient;
         }
@@ -753,7 +757,7 @@ namespace asg
         serialize_timestamp(&t->button_active_timestamp, &b.button_active_timestamp);
         serialize_timestamp(&t->inside_timestamp, &b.inside_timestamp);
         b.reset_timer.reset();
-        if (g_use_high_accuracy_savegame) {
+        if (use_high_accuracy_savegame()) {
             int reset_timer = -1;
             serialize_timestamp(&t->next_check, &reset_timer);
             b.reset_timer = reset_timer;
@@ -794,7 +798,7 @@ namespace asg
         b.ev = make_event_base_block(e);
         rf::compress_vector3(rf::world_solid, &e->pos, &b.pos);
         b.pos_ha.reset();
-        if (g_use_high_accuracy_savegame) {
+        if (use_high_accuracy_savegame()) {
             b.pos_ha = e->pos;
         }
         return b;
@@ -808,7 +812,7 @@ namespace asg
         q.from_matrix(&e->orient);
         b.orient.from_quat(&q);
         b.orient_ha.reset();
-        if (g_use_high_accuracy_savegame) {
+        if (use_high_accuracy_savegame()) {
             b.orient_ha = e->orient;
         }
         return b;
@@ -3060,7 +3064,7 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
     t.insert("armor", o.armor);
 
     // pos
-    if (asg::g_use_high_accuracy_savegame && o.pos_ha) {
+    if (asg::use_high_accuracy_savegame() && o.pos_ha) {
         const auto& pos = *o.pos_ha;
         toml::array pos_ha{pos.x, pos.y, pos.z};
         t.insert("pos_ha", std::move(pos_ha));
@@ -3078,7 +3082,7 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
     t.insert("host_tag_handle", o.host_tag_handle);
 
     // orient
-    if (asg::g_use_high_accuracy_savegame && o.orient_ha) {
+    if (asg::use_high_accuracy_savegame() && o.orient_ha) {
         toml::array orient_ha;
         for (auto const& row : {o.orient_ha->rvec, o.orient_ha->uvec, o.orient_ha->fvec}) {
             toml::array r{row.x, row.y, row.z};
@@ -3225,7 +3229,7 @@ static toml::table make_clutter_table(const asg::SavegameClutterDataBlock& c)
     toml::table t;
     t.insert("uid", c.uid);
     t.insert("parent_uid", c.parent_uid);
-    if (asg::g_use_high_accuracy_savegame && c.pos_ha) {
+    if (asg::use_high_accuracy_savegame() && c.pos_ha) {
         const auto& pos = *c.pos_ha;
         t.insert("pos_ha", toml::array{pos.x, pos.y, pos.z});
     }
@@ -3233,7 +3237,7 @@ static toml::table make_clutter_table(const asg::SavegameClutterDataBlock& c)
         toml::array pos{c.pos.x, c.pos.y, c.pos.z};
         t.insert("pos", std::move(pos));
     }
-    if (asg::g_use_high_accuracy_savegame && c.orient_ha) {
+    if (asg::use_high_accuracy_savegame() && c.orient_ha) {
         toml::array orient_ha;
         for (auto const& row : {c.orient_ha->rvec, c.orient_ha->uvec, c.orient_ha->fvec}) {
             toml::array r{row.x, row.y, row.z};
@@ -3255,14 +3259,14 @@ static toml::table make_trigger_table(const asg::SavegameTriggerDataBlock& b)
 {
     toml::table t;
     t.insert("uid", b.uid);
-    if (asg::g_use_high_accuracy_savegame && b.pos_ha) {
+    if (asg::use_high_accuracy_savegame() && b.pos_ha) {
         const auto& pos = *b.pos_ha;
         t.insert("pos_ha", toml::array{pos.x, pos.y, pos.z});
     }
     else {
         t.insert("pos", toml::array{b.pos.x, b.pos.y, b.pos.z});
     }
-    if (asg::g_use_high_accuracy_savegame && b.orient_ha) {
+    if (asg::use_high_accuracy_savegame() && b.orient_ha) {
         toml::array orient_ha;
         for (auto const& row : {b.orient_ha->rvec, b.orient_ha->uvec, b.orient_ha->fvec}) {
             toml::array r{row.x, row.y, row.z};
@@ -3276,7 +3280,7 @@ static toml::table make_trigger_table(const asg::SavegameTriggerDataBlock& b)
     t.insert("activator_handle", b.activator_handle);
     t.insert("button_active_timestamp", b.button_active_timestamp);
     t.insert("inside_timestamp", b.inside_timestamp);
-    if (asg::g_use_high_accuracy_savegame && b.reset_timer) {
+    if (asg::use_high_accuracy_savegame() && b.reset_timer) {
         t.insert("reset_timer", *b.reset_timer);
     }
     toml::array links;
@@ -3332,7 +3336,7 @@ static toml::table make_event_pos_table(const asg::SavegameEventDataBlockPos& ev
 {
     toml::table t = make_event_table(ev.ev);
 
-    if (asg::g_use_high_accuracy_savegame && ev.pos_ha) {
+    if (asg::use_high_accuracy_savegame() && ev.pos_ha) {
         const auto& pos = *ev.pos_ha;
         t.insert("pos_ha", toml::array{pos.x, pos.y, pos.z});
     }
@@ -3347,7 +3351,7 @@ static toml::table make_event_pos_rot_table(const asg::SavegameEventDataBlockPos
 {
     toml::table t = make_event_pos_table(ev.ev);
 
-    if (asg::g_use_high_accuracy_savegame && ev.orient_ha) {
+    if (asg::use_high_accuracy_savegame() && ev.orient_ha) {
         toml::array orient_ha;
         for (auto const& row : {ev.orient_ha->rvec, ev.orient_ha->uvec, ev.orient_ha->fvec}) {
             orient_ha.push_back(toml::array{row.x, row.y, row.z});
