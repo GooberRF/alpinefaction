@@ -1699,6 +1699,16 @@ namespace asg
         e->current_climb_region = nullptr;
         if (src.climb_region_index >= 0 && src.climb_region_index < rf::level.ladders.size())
             e->current_climb_region = rf::level.ladders[src.climb_region_index];
+
+        if ((e->ai.mode == rf::AI_MODE_WAITING || e->ai.mode == rf::AI_MODE_SET_ALARM) &&
+            e->ai.submode == rf::AI_SUBMODE_ON_PATH) {
+            rf::ai_path_create_to_pos(e->handle, &e->ai.current_path.goal_pos);
+        }
+
+        if (e->ai.mode == rf::AI_MODE_WAYPOINTS && e->ai.submode == rf::AI_SUBMODE_ON_PATH) {
+            rf::ai_path_create_from_waypoints(e->handle);
+            e->entity_flags2 |= 0x4000u;
+        }
     }
 
     inline void entity_deserialize_all_state(const std::vector<SavegameEntityDataBlock>& blocks, const std::vector<int>& dead_uids)
