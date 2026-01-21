@@ -3,6 +3,7 @@
 #include "OptionsDlg.h"
 #include "AboutDlg.h"
 #include "FFLinkReminderDlg.h"
+#include "FFLinkProgressDlg.h"
 #include <wxx_wincore.h>
 #include <xlog/xlog.h>
 #include <common/version/version.h>
@@ -10,6 +11,9 @@
 #include <common/utils/string-utils.h>
 #include <common/HttpRequest.h>
 #include <common/config/RegKey.h>
+#include <random>
+#include <chrono>
+#include <sstream>
 #include <launcher_common/PatchedAppLauncher.h>
 #include <launcher_common/UpdateChecker.h>
 #include "ImageButton.h"
@@ -21,6 +25,8 @@
 #define WM_UPDATE_CHECK (WM_USER + 10)
 #define WM_SHOW_FFLINK_REMINDER (WM_USER + 20)
 #define WM_SHOW_WHATS_NEW (WM_USER + 30)
+#define WM_FFLINK_COMPLETE (WM_USER + 41)
+#define WM_FFLINK_CANCELLED (WM_USER + 42)
 
 MainDlg::MainDlg() : CDialog(IDD_MAIN)
 {
@@ -70,6 +76,7 @@ BOOL MainDlg::OnInitDialog()
     m_sm2_button.AttachDlgItem(IDC_SM2_BTN, *this);
     m_sm3_button.AttachDlgItem(IDC_SM3_BTN, *this);
     m_sm4_button.AttachDlgItem(IDC_SM4_BTN, *this);
+    m_fflink_button.AttachDlgItem(IDC_FFLINK_BTN, *this);
 
     // Load button images
     m_play_button.LoadImages(IDB_PLAY_NORMAL, IDB_PLAY_HOVER, IDB_PLAY_PRESSED);
@@ -81,6 +88,7 @@ BOOL MainDlg::OnInitDialog()
     m_sm2_button.LoadImages(IDB_SM2_NORMAL, IDB_SM2_HOVER, IDB_SM2_PRESSED);
     m_sm3_button.LoadImages(IDB_SM3_NORMAL, IDB_SM3_HOVER, IDB_SM3_PRESSED);
     m_sm4_button.LoadImages(IDB_SM4_NORMAL, IDB_SM4_HOVER, IDB_SM4_PRESSED);
+    m_fflink_button.LoadImages(IDB_FFLINK_NORMAL, IDB_FFLINK_HOVER, IDB_FFLINK_PRESSED);
 
     // get news feed
     AttachItem(IDC_NEWS_BOX, m_news_box);
@@ -98,6 +106,12 @@ BOOL MainDlg::OnInitDialog()
     m_sm2_button.Invalidate();
     m_sm3_button.Invalidate();
     m_sm4_button.Invalidate();
+    m_fflink_button.Invalidate();
+
+    // Hide FFLink button if account is already linked
+    if (!username.empty()) {
+        m_fflink_button.ShowWindow(SW_HIDE);
+    }
 
     // Setup tooltips
     m_tool_tip.Create(*this);
@@ -112,6 +126,7 @@ BOOL MainDlg::OnInitDialog()
     m_tool_tip.AddTool(m_sm2_button, "Open your mods directory");
     m_tool_tip.AddTool(m_sm3_button, "Open your clientside mods directory");
     m_tool_tip.AddTool(m_sm4_button, "Open your user_maps directory for custom levels");
+    m_tool_tip.AddTool(m_fflink_button, "Link your FactionFiles account to access achievements and other features");
 
     // Set placeholder text for mod box when no selection
     SendMessage(m_mod_selector.GetHwnd(), CB_SETCUEBANNER, 0, (LPARAM)L"No mod selected...");
@@ -189,6 +204,9 @@ BOOL MainDlg::OnCommand(WPARAM wparam, LPARAM lparam)
     case IDC_SM4_BTN:
         OnOpenGameFolder(2);
         return TRUE;
+    case IDC_FFLINK_BTN:
+        OnBnClickedFFLinkBtn();
+        return TRUE;
     case IDC_ABOUT_LINK:
         OnAboutLinkClick();
         return TRUE;
@@ -241,7 +259,8 @@ INT_PTR MainDlg::DialogProc(UINT msg, WPARAM wparam, LPARAM lparam)
             lpDrawItem->CtlID == IDC_SM1_BTN ||
             lpDrawItem->CtlID == IDC_SM2_BTN ||
             lpDrawItem->CtlID == IDC_SM3_BTN ||
-            lpDrawItem->CtlID == IDC_SM4_BTN) {
+            lpDrawItem->CtlID == IDC_SM4_BTN ||
+            lpDrawItem->CtlID == IDC_FFLINK_BTN) {
 
             // Retrieve HWND of the control
             HWND hwndCtrl = GetDlgItem(lpDrawItem->CtlID).GetHwnd();
@@ -305,6 +324,14 @@ INT_PTR MainDlg::DialogProc(UINT msg, WPARAM wparam, LPARAM lparam)
 
     if (msg == WM_SHOW_WHATS_NEW) {
         return OnShowWhatsNew(wparam, lparam);
+    }
+
+    if (msg == WM_FFLINK_COMPLETE) {
+        return OnFFLinkComplete(wparam, lparam);
+    }
+
+    if (msg == WM_FFLINK_CANCELLED) {
+        return OnFFLinkCancelled(wparam, lparam);
     }
 
     return CDialog::DialogProc(msg, wparam, lparam);
@@ -456,6 +483,25 @@ void MainDlg::OnBnClickedOptionsBtn()
         if (nResponse == IDC_PLAY_BTN) {
             RefreshModSelector();
         }
+
+        // After closing options, refresh FFLink button visibility and window title
+        try {
+            GameConfig game_config;
+            game_config.load();
+            std::string username = game_config.fflink_username.value();
+
+            if (username.empty()) {
+                m_fflink_button.ShowWindow(SW_SHOW);
+                SetWindowText("Alpine Faction Launcher - Not Linked to a FactionFiles Account");
+            } else {
+                m_fflink_button.ShowWindow(SW_HIDE);
+                std::string window_title = "Alpine Faction Launcher - Linked as " + username;
+                SetWindowText(window_title.c_str());
+            }
+        }
+        catch (...) {
+            // If reloading config fails, just ignore
+        }
     }
     catch (std::exception& e) {
         std::string msg = generate_message_for_exception(e);
@@ -571,4 +617,204 @@ void MainDlg::AfterLaunch()
         xlog::info("Closing launcher after launch");
         CDialog::OnOK();
     }
+}
+
+// Helper function to generate random hex token
+static std::string GenerateLinkToken()
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 15);
+
+    std::string token;
+    token.reserve(32);
+    for (int i = 0; i < 32; ++i) {
+        char c = dis(gen);
+        token += (c < 10) ? ('0' + c) : ('a' + c - 10);
+    }
+    return token;
+}
+
+// Helper function to poll the FFLink API
+static std::string PollFFLinkAPI(const std::string& token)
+{
+    std::string url = "https://link.factionfiles.com/aflauncher/v1/link_poll.php?token=" + token;
+
+    HttpSession session("AF/" VERSION_STR);
+    session.set_connect_timeout(3000);
+    session.set_receive_timeout(3000);
+
+    HttpRequest req(url, "GET", session);
+    req.send();
+
+    std::string response;
+    char buf[256];
+    while (true) {
+        size_t bytes_read = req.read(buf, sizeof(buf) - 1);
+        if (bytes_read == 0) break;
+        buf[bytes_read] = '\0';
+        response += buf;
+    }
+
+    return response;
+}
+
+// Helper function to parse the FFLink response
+static bool ParseFFLinkResponse(const std::string& response, std::string& username, std::string& token)
+{
+    std::istringstream ss(response);
+    std::string line1;
+    std::getline(ss, line1);
+
+    if (line1 != "found") {
+        return false;
+    }
+
+    std::getline(ss, username);
+    std::getline(ss, token);
+    return !username.empty() && !token.empty();
+}
+
+void MainDlg::OnBnClickedFFLinkBtn()
+{
+    xlog::info("FactionFiles Link button clicked");
+
+    // Check if already linked
+    GameConfig config;
+    config.load();
+    if (!config.fflink_username.value().empty()) {
+        std::string message = "Your account is already linked as: " + config.fflink_username.value() + "\n\nTo unlink, please open the options panel.";
+        MessageBoxA(message.c_str(), "Already Linked", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    // Generate token
+    m_fflink_token = GenerateLinkToken();
+    xlog::info("Generated link token: {}", m_fflink_token);
+
+    // Open browser
+    std::string url = "https://link.factionfiles.com/aflauncher/v1/link_request.php?token=" + m_fflink_token;
+    HINSTANCE result = ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    auto result_int = reinterpret_cast<INT_PTR>(result);
+
+    if (result_int <= 32) {
+        xlog::error("Could not open browser to attempt FFLink. Error code: {}", result_int);
+        MessageBoxA("Could not open browser. Please visit FactionFiles.com manually to link your account.", "Error", MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    // Show progress dialog and start polling
+    FFLinkProgressDlg progressDlg;
+    HWND progressHwnd = nullptr;
+
+    // Start polling thread
+    m_fflink_polling_active = true;
+    m_fflink_poll_thread = std::make_unique<std::thread>([this, &progressDlg, &progressHwnd]() {
+        try {
+            HWND mainHwnd = GetHwnd();
+            int attempts = 0;
+            const int max_attempts = 60; // 5 minutes (60 * 5 seconds)
+
+            while (m_fflink_polling_active && attempts < max_attempts) {
+                // Sleep in 100ms increments to check cancellation flag frequently
+                for (int i = 0; i < 50 && m_fflink_polling_active; ++i) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+
+                if (!m_fflink_polling_active) {
+                    break;
+                }
+
+                attempts++;
+                xlog::info("Polling FactionFiles API (attempt {})", attempts);
+
+                try {
+                    std::string response = PollFFLinkAPI(m_fflink_token);
+
+                    if (ParseFFLinkResponse(response, m_fflink_result_username, m_fflink_result_token)) {
+                        xlog::info("Link found! Username: {}", m_fflink_result_username);
+                        PostMessage(mainHwnd, WM_FFLINK_COMPLETE, 0, 0);
+                        return;
+                    }
+                }
+                catch (const std::exception& e) {
+                    xlog::warn("Polling error (will retry): {}", e.what());
+                }
+            }
+
+            if (attempts >= max_attempts) {
+                xlog::warn("Polling timed out after {} attempts", max_attempts);
+            }
+
+            PostMessage(mainHwnd, WM_FFLINK_CANCELLED, 0, 0);
+        }
+        catch (const std::exception& e) {
+            xlog::error("FFLink polling thread error: {}", e.what());
+            PostMessage(GetHwnd(), WM_FFLINK_CANCELLED, 0, 0);
+        }
+    });
+
+    // Show modal dialog
+    progressDlg.DoModal(GetHwnd());
+
+    // Clean up thread
+    if (m_fflink_poll_thread && m_fflink_poll_thread->joinable()) {
+        m_fflink_polling_active = false;
+        m_fflink_poll_thread->join();
+    }
+}
+
+LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
+{
+    xlog::info("FFLink complete - Username: {}", m_fflink_result_username);
+
+    // Close progress dialog
+    HWND progressDlg = FindWindow(nullptr, "Linking FactionFiles Account...");
+    if (progressDlg) {
+        SendMessage(progressDlg, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+    }
+
+    // Save to config
+    GameConfig config;
+    config.load();
+    config.fflink_username = m_fflink_result_username;
+    config.fflink_token = m_fflink_result_token;
+    config.save();
+
+    // Update window title
+    std::string window_title = "Alpine Faction Launcher - Linked as " + m_fflink_result_username;
+    SetWindowText(window_title.c_str());
+
+    // Hide the FFLink button since account is now linked
+    m_fflink_button.ShowWindow(SW_HIDE);
+
+    // Show success message
+    MessageBoxA("Alpine Faction has successfully been linked to your FactionFiles account!\n\n"
+                "Features that depend on FF account linking such as achievements and map ranking are now available.",
+                "Success! FactionFiles Account Linked", MB_OK | MB_ICONINFORMATION);
+
+    // Clean up
+    m_fflink_result_username.clear();
+    m_fflink_result_token.clear();
+    m_fflink_token.clear();
+
+    return 0;
+}
+
+LRESULT MainDlg::OnFFLinkCancelled(WPARAM wparam, LPARAM lparam)
+{
+    xlog::info("FFLink request cancelled or timed out");
+
+    // Close progress dialog
+    HWND progressDlg = FindWindow(nullptr, "Linking FactionFiles Account...");
+    if (progressDlg) {
+        SendMessage(progressDlg, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+    }
+
+    // Clean up
+    m_fflink_result_username.clear();
+    m_fflink_result_token.clear();
+    m_fflink_token.clear();
+
+    return 0;
 }

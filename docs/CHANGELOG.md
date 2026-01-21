@@ -14,6 +14,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Players in linked triggers` application setting for `AF_Heal` events
 - Add speed meter to HUD, bind to `ui_show_speed` console command
 
+[@natarii](https://github.com/natarii)
+- Implement FFLink client functionality
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix `AF_Heal` event forwarding received messages

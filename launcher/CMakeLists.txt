@@ -9,6 +9,8 @@ set(SRCS
     faction_files.cpp
     FFLinkReminderDlg.cpp
     FFLinkReminderDlg.h
+    FFLinkProgressDlg.cpp
+    FFLinkProgressDlg.h
     ImageButton.h
     ImageButton.cpp
     LauncherApp.cpp
