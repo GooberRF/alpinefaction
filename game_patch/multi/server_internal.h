@@ -521,7 +521,9 @@ struct ClickLimiterConfig
 
 struct GibConfig
 {
-    bool enabled = true;
+    // Set `false` to match stock multiplayer.
+    bool enabled = false;
+
     bool all_damage = false;
     float damage_threshold = 100.0f;
 
