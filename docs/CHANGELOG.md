@@ -20,8 +20,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Allow `GibEnemy` achievement to be awarded regardless of whether gore level allows the entity to actually gib
 
 [@is-this-c](https://github.com/is-this-c)
-- Add `Server version:` to the printed server config
-- Default `gibbing` to disabled
+- Add `Server version:` to a server's printed config
+- Default `gibbing` to disabled for clients and dedicated servers separately
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
