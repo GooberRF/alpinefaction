@@ -20,8 +20,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Allow `GibEnemy` achievement to be awarded regardless of whether gore level allows the entity to actually gib
 
 [@is-this-c](https://github.com/is-this-c)
-- Default gore level to 1 instead of 2 when creating new `alpine_settings.ini` files
-- Default `gibbing` to disabled for dedicated servers
+- Add `Server version:` to printed server config
+- Default `gibbing` to disabled
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)

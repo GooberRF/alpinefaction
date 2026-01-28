@@ -1329,22 +1329,22 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Overtime:                              {}\n", rules.overtime.enabled);
         if (rules.overtime.enabled) {
             std::format_to(iter, "    Additional time:                     {} min\n", rules.overtime.additional_time);
-            std::format_to(iter, "    Tie when flag stolen (CTF):          {}\n", rules.overtime.consider_tie_if_flag_stolen);
-            std::format_to(iter, "    Tie when hill contested (KOTH):      {}\n", rules.overtime.consider_tie_if_hill_contested);
+            std::format_to(iter, "    CTF tie when flag stolen:            {}\n", rules.overtime.consider_tie_if_flag_stolen);
+            std::format_to(iter, "    KOTH tie when hill contested:        {}\n", rules.overtime.consider_tie_if_hill_contested);
         }
     }
 
     // score limits
     if (base || rules.individual_kill_limit != b.individual_kill_limit)
-        std::format_to(iter, "  Player score limit (DM):               {}\n", rules.individual_kill_limit);
+        std::format_to(iter, "  DM player score limit:                 {}\n", rules.individual_kill_limit);
     if (base || rules.team_kill_limit != b.team_kill_limit)
-        std::format_to(iter, "  Team score limit (TDM):                {}\n", rules.team_kill_limit);
+        std::format_to(iter, "  TDM team score limit:                  {}\n", rules.team_kill_limit);
     if (base || rules.cap_limit != b.cap_limit)
-        std::format_to(iter, "  Flag capture limit (CTF):              {}\n", rules.cap_limit);
+        std::format_to(iter, "  CTF flag capture limit:                {}\n", rules.cap_limit);
     if (base || rules.koth_score_limit != b.koth_score_limit)
-        std::format_to(iter, "  Team score limit (KOTH):               {}\n", rules.koth_score_limit);
+        std::format_to(iter, "  KOTH team score limit:                 {}\n", rules.koth_score_limit);
     if (base || rules.dc_score_limit != b.dc_score_limit)
-        std::format_to(iter, "  Team score limit (DC):                 {}\n", rules.dc_score_limit);
+        std::format_to(iter, "  DC team score limit:                   {}\n", rules.dc_score_limit);
 
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
@@ -1364,11 +1364,11 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     if (base || rules.saving_enabled != b.saving_enabled)
         std::format_to(iter, "  Position saving:                       {}\n", rules.saving_enabled);
     if (base || rules.flag_dropping != b.flag_dropping)
-        std::format_to(iter, "  Flag dropping (CTF):                   {}\n", rules.flag_dropping);
+        std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)
-        std::format_to(iter, "  Flag captures while stolen (CTF):      {}\n", rules.flag_captures_while_stolen);
+        std::format_to(iter, "  CTF flag captures while stolen:        {}\n", rules.flag_captures_while_stolen);
     if (base || rules.ctf_flag_return_time_ms != b.ctf_flag_return_time_ms)
-        std::format_to(iter, "  Flag return time (CTF):                {} sec\n", rules.ctf_flag_return_time_ms / 1000.0f);
+        std::format_to(iter, "  CTF flag return time:                  {} sec\n", rules.ctf_flag_return_time_ms / 1000.0f);
     if (base || rules.pvp_damage_modifier != b.pvp_damage_modifier)
         std::format_to(iter, "  PvP damage modifier:                   {}\n", rules.pvp_damage_modifier);
     if (base || rules.drop_amps != b.drop_amps)
@@ -1526,9 +1526,15 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     if (base || rewardDiff) {
         std::format_to(iter, "  Kill rewards:\n");
-        std::format_to(iter, "    Health:                              {}\n", rules.kill_rewards.kill_reward_health);
-        std::format_to(iter, "    Armor:                               {}\n", rules.kill_rewards.kill_reward_armor);
-        std::format_to(iter, "    Effective health:                    {}\n", rules.kill_rewards.kill_reward_effective_health);
+        if (rules.kill_rewards.kill_reward_health != .0f) {
+            std::format_to(iter, "    Health:                              {}\n", rules.kill_rewards.kill_reward_health);
+        }
+        if (rules.kill_rewards.kill_reward_armor != .0f) {
+            std::format_to(iter, "    Armor:                               {}\n", rules.kill_rewards.kill_reward_armor);
+        }
+        if (rules.kill_rewards.kill_reward_effective_health != .0f) {
+            std::format_to(iter, "    Effective health:                    {}\n", rules.kill_rewards.kill_reward_effective_health);
+        }
         std::format_to(iter, "    Health is super:                     {}\n", rules.kill_rewards.kill_reward_health_super);
         std::format_to(iter, "    Armor is super:                      {}\n", rules.kill_rewards.kill_reward_armor_super);
     }
@@ -1665,8 +1671,9 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
 
     const auto iter = std::back_inserter(output);
     std::format_to(iter, "\n---- Core configuration ----\n");
-    std::format_to(iter, "  Server port:                           {} (UDP)\n", netgame.server_addr.port);
+    std::format_to(iter, "  Server port:                           {} \x95 UDP\n", netgame.server_addr.port);
     std::format_to(iter, "  Server name:                           {}\n", netgame.name);
+    std::format_to(iter, "  Server version:                        {} \x95 {}\n", VERSION_STR, __DATE__);
     if (!sanitize) {
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
         std::format_to(iter, "  Rcon password:                         {}\n", rf::rcon_password);
