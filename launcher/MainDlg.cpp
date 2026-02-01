@@ -647,7 +647,7 @@ void MainDlg::OnBnClickedFFLinkBtn()
     }
 
     // Show progress dialog and start polling
-    FFLinkProgressDlg progressDlg;
+    FFLinkProgressDlg progressDlg(&m_fflink_progress_hwnd);
     HWND progressHwnd = nullptr;
 
     // Start polling thread
@@ -712,9 +712,9 @@ LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     xlog::info("FFLink complete - Username: {}", m_fflink_result_username);
 
     // Close progress dialog
-    HWND progressDlg = FindWindow(nullptr, "Linking FactionFiles Account...");
-    if (progressDlg) {
-        SendMessage(progressDlg, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+    if (m_fflink_progress_hwnd) {
+        SendMessage(m_fflink_progress_hwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+        m_fflink_progress_hwnd = nullptr;
     }
 
     // Save to config
@@ -757,9 +757,9 @@ LRESULT MainDlg::OnFFLinkCancelled(WPARAM wparam, LPARAM lparam)
     xlog::info("FFLink request cancelled or timed out");
 
     // Close progress dialog
-    HWND progressDlg = FindWindow(nullptr, "Linking FactionFiles Account...");
-    if (progressDlg) {
-        SendMessage(progressDlg, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+    if (m_fflink_progress_hwnd) {
+        SendMessage(m_fflink_progress_hwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+        m_fflink_progress_hwnd = nullptr;
     }
 
     // Clean up
