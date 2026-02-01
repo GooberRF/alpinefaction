@@ -241,9 +241,10 @@ LRESULT OptionsDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     xlog::info("FFLink complete - Username: {}", m_fflink_result_username);
 
     // Close progress dialog
-    if (m_fflink_progress_hwnd) {
-        SendMessage(m_fflink_progress_hwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
-        m_fflink_progress_hwnd = nullptr;
+    HWND progressHwnd = m_fflink_progress_hwnd.load();
+    if (progressHwnd) {
+        SendMessage(progressHwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+        m_fflink_progress_hwnd.store(nullptr);
     }
 
     // Save to config
@@ -279,9 +280,10 @@ LRESULT OptionsDlg::OnFFLinkCancelled(WPARAM wparam, LPARAM lparam)
     xlog::info("FFLink cancelled or timed out");
 
     // Close progress dialog
-    if (m_fflink_progress_hwnd) {
-        SendMessage(m_fflink_progress_hwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
-        m_fflink_progress_hwnd = nullptr;
+    HWND progressHwnd = m_fflink_progress_hwnd.load();
+    if (progressHwnd) {
+        SendMessage(progressHwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+        m_fflink_progress_hwnd.store(nullptr);
     }
 
     // Clean up

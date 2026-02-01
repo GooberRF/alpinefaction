@@ -2,7 +2,7 @@
 #include "resource.h"
 #include <commctrl.h>
 
-FFLinkProgressDlg::FFLinkProgressDlg(HWND* pHwndStorage)
+FFLinkProgressDlg::FFLinkProgressDlg(std::atomic<HWND>* pHwndStorage)
     : CDialog(IDD_FFLINK_PROGRESS), m_pHwndStorage(pHwndStorage)
 {
 }
@@ -14,7 +14,7 @@ BOOL FFLinkProgressDlg::OnInitDialog()
     
     // Store HWND if storage pointer was provided
     if (m_pHwndStorage) {
-        *m_pHwndStorage = GetHwnd();
+        m_pHwndStorage->store(GetHwnd());
     }
     
     return TRUE;
