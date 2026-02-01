@@ -11,6 +11,12 @@ BOOL FFLinkProgressDlg::OnInitDialog()
 {
     CDialog::OnInitDialog();
     SendDlgItemMessage(IDC_FFLINK_PROGRESS_BAR, PBM_SETMARQUEE, TRUE, 20);
+    
+    // Store dialog HWND in parent's storage if provided
+    if (m_hwnd_storage) {
+        *m_hwnd_storage = GetHwnd();
+    }
+    
     return TRUE;
 }
 
