@@ -132,6 +132,29 @@ struct StashedPacket
     uint8_t type;
 };
 
+struct AfGiReqSeen
+{
+    uint8_t ver = 0; // game_info_req version: 1 is current, pre-Alpine v1.2 never sends a version
+    int last_seen_ms = 0;
+};
+
+enum class RconCommandCheckResult
+{
+    Allowed,
+    NotHolder,
+    ProfileDenied
+};
+
+struct RconAccessEntry
+{
+    size_t profile_index = 0;
+};
+
+struct RconPasswordLookup
+{
+    std::optional<size_t> profile_index;
+};
+
 struct AlpineFactionJoinReqPacketExt // used for stashed data during join process
 {
     enum class Flags : uint32_t
@@ -156,3 +179,4 @@ void handle_vote_or_ready_up_msg(std::string_view msg);
 void handle_sound_msg(std::string_view name);
 void send_queues_rel_clear_packets(int socket_id);
 void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
+void clear_rcon_profile_sessions();

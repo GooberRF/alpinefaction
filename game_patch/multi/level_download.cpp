@@ -104,6 +104,72 @@ static std::vector<std::string> unzip(const char* path, const char* output_dir,
     return extracted_files;
 }
 
+static void load_packfiles(const std::vector<std::string>& packfiles)
+{
+    rf::vpackfile_set_loading_user_maps(true);
+    for (const auto& filename : packfiles) {
+        if (!rf::vpackfile_add(filename.c_str(), "user_maps\\multi\\")) {
+            xlog::error("vpackfile_add failed - {}", filename);
+        }
+    }
+    rf::vpackfile_set_loading_user_maps(false);
+}
+
+static bool level_file_exists(const std::string& filename)
+{
+    rf::File file;
+    return file.find(filename.c_str());
+}
+
+bool download_level_if_missing(std::string filename)
+{
+    if (filename.rfind('.') == std::string::npos) {
+        filename += ".rfl";
+    }
+
+    if (level_file_exists(filename)) {
+        return true;
+    }
+
+    rf::console::print("----> Level {} is not installed. Trying to download it from FactionFiles...\n", filename);
+
+    FactionFilesClient ff_client;
+    auto level_info = ff_client.find_map(filename.c_str());
+    if (!level_info) {
+        rf::console::print("--> Level {} was not found on FactionFiles.\n", filename);
+        return false;
+    }
+
+    auto temp_filename = get_temp_path_name("AF_Level_");
+    try {
+        rf::console::print("--> Starting level download: {}\n", filename);
+        ff_client.download_map(temp_filename.c_str(), level_info->ticket_id,
+            [](unsigned, std::chrono::milliseconds) { return true; });
+        rf::console::print("--> Level download completed: {}\n", filename);
+
+        auto output_dir = std::format("{}user_maps\\multi", rf::root_path);
+        std::vector<std::string> packfiles = unzip(temp_filename.c_str(), output_dir.c_str(), is_vpp_filename);
+        remove(temp_filename.c_str());
+
+        if (packfiles.empty()) {
+            xlog::error("--> No packfiles were found for level {}", filename);
+            rf::console::print("\n");
+            return false;
+        }
+
+        rf::console::print("--> Installing downloaded level: {}\n", filename);
+        load_packfiles(packfiles);
+        rf::console::print("--> Level install completed: {}\n", filename);
+        rf::console::print("\n");
+        return level_file_exists(filename);
+    }
+    catch (const std::exception& e) {
+        remove(temp_filename.c_str());
+        xlog::error("--> Level download failed for {}: {}", filename, e.what());
+        return false;
+    }
+}
+
 enum class LevelDownloadState
 {
     fetching_info,
@@ -285,17 +351,6 @@ private:
             xlog::error("Level download failed: {}", e.what());
             return {};
         }
-    }
-
-    static void load_packfiles(const std::vector<std::string>& packfiles)
-    {
-        rf::vpackfile_set_loading_user_maps(true);
-        for (const auto& filename : packfiles) {
-            if (!rf::vpackfile_add(filename.c_str(), "user_maps\\multi\\")) {
-                xlog::error("vpackfile_add failed - {}", filename);
-            }
-        }
-        rf::vpackfile_set_loading_user_maps(false);
     }
 
 public:

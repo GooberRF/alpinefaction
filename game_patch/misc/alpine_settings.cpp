@@ -310,7 +310,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GoreLevel");
     }
     else {
-        rf::game_set_gore_level(2); // if gore level not in ini file, default to 2
+        rf::game_set_gore_level(1); // if gore level not in ini file, match stock gameplay
     }
     if (settings.count("GibChunkCount")) {
         g_alpine_game_config.set_gib_chunk_count(std::stoi(settings["GibChunkCount"]));

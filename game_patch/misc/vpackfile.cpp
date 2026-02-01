@@ -185,24 +185,40 @@ static uint32_t vpackfile_process_header(rf::VPackfile* packfile, const void* ra
     return hdr.num_files;
 }
 
+static std::string build_packfile_full_path(const char* filename, const char* dir)
+{
+    if (dir && !PathIsRelativeA(dir)) {
+        return std::format("{}{}", dir, filename);
+    }
+
+    return std::format("{}{}{}", rf::root_path, dir ? dir : "", filename);
+}
+
+static bool is_packfile_loaded(const std::string& full_path)
+{
+    for (auto& packfile : g_packfiles) {
+        if (!stricmp(packfile->path, full_path.c_str())) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static int vpackfile_add_new(const char* filename, const char* dir)
 {
     xlog::trace("Load packfile {} {}", dir, filename);
 
-    std::string full_path;
-    if (dir && !PathIsRelativeA(dir))
-        full_path = std::format("{}{}", dir, filename); // absolute path
-    else
-        full_path = std::format("{}{}{}", rf::root_path, dir ? dir : "", filename);
+    std::string full_path = build_packfile_full_path(filename, dir);
 
     if (!filename || strlen(filename) > 0x1F || full_path.size() > 0x7F) {
         xlog::error("Packfile name or path too long: {}", full_path);
         return 0;
     }
 
-    for (auto& packfile : g_packfiles)
-        if (!stricmp(packfile->path, full_path.c_str()))
-            return 1;
+    if (is_packfile_loaded(full_path)) {
+        return 1;
+    }
 
 #if CHECK_PACKFILE_CHECKSUM
     if (!Dir) {
@@ -653,17 +669,25 @@ static void vpackfile_cleanup_new()
     g_packfiles.clear();
 }
 
-static void load_vpp_files_from_directory(const char* files, const char* directory)
+static int load_vpp_files_from_directory(const char* files, const char* directory)
 {
+    int loaded_count = 0;
     WIN32_FIND_DATA find_file_data;
     HANDLE hFind = FindFirstFile(files, &find_file_data);
 
      if (hFind != INVALID_HANDLE_VALUE) {
         do {
             if (!(find_file_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                std::string full_path = build_packfile_full_path(find_file_data.cFileName, directory);
+                if (is_packfile_loaded(full_path)) {
+                    continue;
+                }
+
                 // Call vpackfile_add_new function directly
                 if (vpackfile_add_new(find_file_data.cFileName, directory) == 0) {
                     xlog::warn("Failed to load additional VPP file: {}", find_file_data.cFileName);
+                } else {
+                    ++loaded_count;
                 }
             }
         } while (FindNextFile(hFind, &find_file_data) != 0);
@@ -672,6 +696,8 @@ static void load_vpp_files_from_directory(const char* files, const char* directo
     else {
         xlog::info("No VPP files found in {}.", directory);
     }
+
+    return loaded_count;
 }
 
 static void load_additional_packfiles_new()
@@ -761,4 +787,15 @@ void vpackfile_find_matching_files(const StringMatcher& query, std::function<voi
 void vpackfile_disable_overriding()
 {
     g_is_overriding_disabled = true;
+}
+
+int vpackfile_load_user_maps_packfiles()
+{
+    rf::vpackfile_set_loading_user_maps(true);
+    int loaded = 0;
+    loaded += load_vpp_files_from_directory("user_maps\\projects\\*.vpp", "user_maps\\projects\\");
+    loaded += load_vpp_files_from_directory("user_maps\\single\\*.vpp", "user_maps\\single\\");
+    loaded += load_vpp_files_from_directory("user_maps\\multi\\*.vpp", "user_maps\\multi\\");
+    rf::vpackfile_set_loading_user_maps(false);
+    return loaded;
 }

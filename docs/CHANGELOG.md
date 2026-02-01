@@ -12,7 +12,19 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Support `Alpha` field in `Decal` objects placed in version >= 304 levels (Direct3D 11 renderer only)
 - Improve output of object create failure log message
 - Add `Players in linked triggers` application setting for `AF_Heal` events
-- Add speed meter to HUD, bind to `ui_show_speed` console command
+- Add speedometer to HUD, bind to `ui_show_speed` console command
+- Make dedicated servers attempt to autodownload missing maps in their rotation from FactionFiles before launching
+- Add `-nodl` command line argument to make dedicated servers not attempt to autodownload missing maps
+- Add `exclude_bots_from_player_count` option to dedicated server config to exclude bots from player count reported to clients
+- Add `sv_loadpackfiles` console command to load packfiles newly added to `user_maps` after server was launched
+- Allow `GibEnemy` achievement to be awarded regardless of whether gore level allows the entity to actually gib
+- Support rcon profiles for dedicated servers
+- Support `info` command execution via rcon to display server information
+
+[@is-this-c](https://github.com/is-this-c)
+- Add `Server version:` to a server's printed config
+- Default gore level to 1
+- Default `gibbing` to disabled for dedicated servers
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality

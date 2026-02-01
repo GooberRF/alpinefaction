@@ -148,6 +148,17 @@ namespace rf
         NG_FLAG_BALANCE_TEAMS = 0x2000,
     };
 
+    enum NetPlayerFlags
+    {
+        NPF_IS_HOST = 0x1,
+        NPF_WAITING_FOR_RELIABLE_SOCKET = 0x4,
+        NPF_CLIENT_IS_LOADED = 0x8,
+        NPF_PLAYER_NAMES_ON_HUD = 0x10,
+        NPF_LIMBO = 0x20,
+        NPF_BLUE_TEAM = 0x80,
+        NPF_RCON_HOLDER = 0x100
+    };
+
     struct NetGameInfo
     {
         String name;

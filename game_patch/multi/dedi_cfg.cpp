@@ -23,6 +23,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "network.h"
 #include "multi.h"
 #include "../os/console.h"
 #include "../misc/player.h"
@@ -51,7 +52,30 @@ bool g_dedicated_launched_from_ads = false; // was the server launched from an a
 std::string g_ads_config_name = "";
 bool g_ads_minimal_server_info = false;     // print only minimal server info when launching
 bool g_ads_full_console_log = false;        // log full console output to file
+bool g_ads_skip_map_download = false;       // skip map auto-download when launching
 int g_ads_loaded_version = ADS_VERSION;
+
+// all rcon commands that can be executed when holding the legacy rcon profile
+const std::vector<std::string> g_legacy_rcon_allowed_commands = {
+    "gt",
+    "kick",
+    "level",
+    "sv_pass",
+    "map",
+    "ban",
+    "ban_ip",
+    "map_ext",
+    "map_rest",
+    "map_next",
+    "map_rand",
+    "map_prev",
+    "sv_caplimit",
+    "sv_fraglimit",
+    "sv_gametype",
+    "sv_geolimit",
+    "sv_timelimit",
+    "unban_last"
+};
 
 rf::CmdLineParam& get_ads_cmd_line_param()
 {
@@ -73,6 +97,12 @@ rf::CmdLineParam& get_log_cmd_line_param()
     return log_param;
 }
 
+rf::CmdLineParam& get_nodl_cmd_line_param()
+{
+    static rf::CmdLineParam nodl_param{"-nodl", "", false};
+    return nodl_param;
+}
+
 void handle_min_param()
 {
     g_ads_minimal_server_info = get_min_cmd_line_param().found();
@@ -81,6 +111,11 @@ void handle_min_param()
 void handle_log_param()
 {
     g_ads_full_console_log = get_log_cmd_line_param().found();
+}
+
+void handle_nodl_param()
+{
+    g_ads_skip_map_download = get_nodl_cmd_line_param().found();
 }
 
 static OvertimeConfig parse_overtime_config(const toml::table& t)
@@ -667,6 +702,62 @@ static ClickLimiterConfig parse_click_limiter_config(const toml::table& t)
     return o;
 }
 
+static std::optional<AlpineRconProfile> parse_rcon_profile(const toml::table& t)
+{
+    AlpineRconProfile profile;
+
+    if (auto name = t["name"].value<std::string>()) {
+        profile.name = *name;
+    } else {
+        xlog::warn("rcon profile entry is missing the 'name' field; skipping");
+        return std::nullopt;
+    }
+
+    if (auto password = t["password"].value<std::string>()) {
+        if (password->size() > 15) {
+            xlog::warn("password length for rcon profile '{}' exceeds 15 characters; trimming", profile.name);
+            profile.password.assign(password->substr(0, 15));
+        } else {
+            profile.password = *password;
+        }
+    } else {
+        xlog::warn("rcon profile '{}' is missing the 'password' field; skipping", profile.name);
+        return std::nullopt;
+    }
+
+    if (auto full_admin = t["full_admin"].value<bool>()) {
+        profile.full_admin = *full_admin;
+    }
+    if (auto allow_multiple = t["allow_multiple"].value<bool>()) {
+        profile.allow_multiple = *allow_multiple;
+    }
+
+    if (!profile.full_admin) {
+        if (auto arr = t["allowed_commands"].as_array()) {
+            std::unordered_set<std::string> seen;
+            for (auto&& entry : *arr) {
+                auto cmd = entry.value<std::string>();
+                if (!cmd) {
+                    continue;
+                }
+                std::string normalized = string_to_lower(*cmd);
+                if (!is_rcon_command_masterlisted(normalized)) {
+                    xlog::warn("command '{}' specified for rcon profile '{}' is not supported for rcon; skipping", *cmd, profile.name);
+                    continue;
+                }
+                if (seen.insert(normalized).second) {
+                    profile.allowed_commands.push_back(std::move(normalized));
+                }
+            }
+        }
+    }
+    else if (t.contains("allowed_commands")) {
+        xlog::warn("rcon profile '{}' is a full admin; ignoring allowed_commands", profile.name);
+    }
+
+    return profile;
+}
+
 static DamageNotificationConfig parse_damage_notification_config(const toml::table& t)
 {
     DamageNotificationConfig o;
@@ -838,7 +929,11 @@ std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view pres
     }
 }
 
-static void add_level_entry_from_table(AlpineServerConfig& cfg, const toml::table& lvl_tbl, const fs::path& base_dir)
+static void add_level_entry_from_table(
+    AlpineServerConfig& cfg,
+    const toml::table& lvl_tbl,
+    const fs::path& base_dir,
+    bool allow_missing_levels)
 {
     for (auto&& [k, v] : lvl_tbl) {
         const std::string key = std::string(k.str());
@@ -856,8 +951,11 @@ static void add_level_entry_from_table(AlpineServerConfig& cfg, const toml::tabl
 
     rf::File f;
     if (!f.find(tmp_filename.c_str())) {
-        rf::console::print("----> Level {} is not installed!\n\n", tmp_filename);
-        return;
+        if (!allow_missing_levels) {
+            rf::console::print("----> Level {} is not installed!\n", tmp_filename);
+            return;
+        }
+        rf::console::print("----> Level {} is not installed! Server will try to download it from FactionFiles before launch.\n", tmp_filename);
     }
 
     AlpineServerConfigLevelEntry entry;
@@ -983,10 +1081,19 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.use_sp_damage_calculation = *v;
     }
+    else if (key == "exclude_bots_from_player_count") {
+        if (auto v = node.value<bool>())
+            cfg.exclude_bots_from_player_count = *v;
+    }
 }
 
 // apply base config toml tables
-static void apply_known_table_in_order(AlpineServerConfig& cfg, const std::string& key, const toml::table& tbl, const fs::path& base_dir)
+static void apply_known_table_in_order(
+    AlpineServerConfig& cfg,
+    const std::string& key,
+    const toml::table& tbl,
+    const fs::path& base_dir,
+    bool allow_missing_levels)
 {
     if (key == "inactivity")
         cfg.inactivity_config = parse_inactivity_config(tbl);
@@ -1030,14 +1137,19 @@ static void apply_known_table_in_order(AlpineServerConfig& cfg, const std::strin
                 if (!elem.is_table())
                     continue;
                 auto& lvl_tbl = *elem.as_table();
-                add_level_entry_from_table(cfg, lvl_tbl, base_dir);
+                add_level_entry_from_table(cfg, lvl_tbl, base_dir, allow_missing_levels);
             }
         }
     }
 }
 
 // apply known array toml nodes
-static void apply_known_array_in_order(AlpineServerConfig& cfg, const std::string& key, const toml::array& arr, const fs::path& base_dir)
+static void apply_known_array_in_order(
+    AlpineServerConfig& cfg,
+    const std::string& key,
+    const toml::array& arr,
+    const fs::path& base_dir,
+    bool allow_missing_levels)
 {
     if (key == "levels") {
         for (auto& elem : arr) {
@@ -1046,14 +1158,29 @@ static void apply_known_array_in_order(AlpineServerConfig& cfg, const std::strin
 
             auto& lvl_tbl = *elem.as_table();
 
-            add_level_entry_from_table(cfg, lvl_tbl, base_dir);
+            add_level_entry_from_table(cfg, lvl_tbl, base_dir, allow_missing_levels);
+        }
+    }
+    else if (key == "rcon_profiles") {
+        for (auto& elem : arr) {
+            if (!elem.is_table())
+                continue;
+
+            auto& profile_tbl = *elem.as_table();
+            if (auto profile = parse_rcon_profile(profile_tbl)) {
+                cfg.rcon_profiles.push_back(std::move(*profile));
+            }
         }
     }
 }
 
 // unified parser for config files
 static void apply_config_table_in_order(
-    AlpineServerConfig& cfg, const toml::table& tbl, const fs::path& base_dir, ParsePass pass)
+    AlpineServerConfig& cfg,
+    const toml::table& tbl,
+    const fs::path& base_dir,
+    ParsePass pass,
+    bool allow_missing_levels)
 {
     struct Entry
     {
@@ -1097,7 +1224,11 @@ static void apply_config_table_in_order(
         if (auto* arr = v.as_array()) {
             if (key == "levels") {
                 if (pass == ParsePass::Levels)
-                    apply_known_array_in_order(cfg, key, *arr, base_dir);
+                    apply_known_array_in_order(cfg, key, *arr, base_dir, allow_missing_levels);
+            }
+            else if (key == "rcon_profiles") {
+                if (pass == ParsePass::Core)
+                    apply_known_array_in_order(cfg, key, *arr, base_dir, allow_missing_levels);
             }
             continue;
         }
@@ -1107,17 +1238,24 @@ static void apply_config_table_in_order(
             if (key == "levels") {
                 if (pass == ParsePass::Levels) {
                     if (auto nested = sub_tbl->as_array())
-                        apply_known_array_in_order(cfg, key, *nested, base_dir);
+                        apply_known_array_in_order(cfg, key, *nested, base_dir, allow_missing_levels);
+                }
+                continue;
+            }
+            if (key == "rcon_profiles") {
+                if (pass == ParsePass::Core) {
+                    if (auto nested = sub_tbl->as_array())
+                        apply_known_array_in_order(cfg, key, *nested, base_dir, allow_missing_levels);
                 }
                 continue;
             }
 
             // allow root table workaround to allow root config after subsections in parent toml
             if (key == "root") {
-                apply_config_table_in_order(cfg, *sub_tbl, base_dir, pass);
+                apply_config_table_in_order(cfg, *sub_tbl, base_dir, pass, allow_missing_levels);
             }
             else {
-                apply_known_table_in_order(cfg, key, *sub_tbl, base_dir);
+                apply_known_table_in_order(cfg, key, *sub_tbl, base_dir, allow_missing_levels);
             }
 
             continue;
@@ -1125,7 +1263,7 @@ static void apply_config_table_in_order(
     }
 }
 
-void load_ads_server_config(std::string ads_config_name)
+void load_ads_server_config(std::string ads_config_name, bool allow_missing_levels)
 {
     rf::console::print("Loading and applying server configuration from {}...\n\n", ads_config_name);
 
@@ -1143,13 +1281,71 @@ void load_ads_server_config(std::string ads_config_name)
     const fs::path root_path = fs::weakly_canonical(fs::path(ads_config_name));
 
     // config pass
-    apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Core);
+    apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Core, allow_missing_levels);
     // level pass
-    apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Levels);
+    apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Levels, allow_missing_levels);
+
+    // build a legacy rcon profile if rcon_password was specified
+    if (!cfg.rcon_password.empty()) {
+        const auto password = cfg.rcon_password;
+        const auto existing = std::find_if(
+            cfg.rcon_profiles.begin(),
+            cfg.rcon_profiles.end(),
+            [&password](const AlpineRconProfile& profile) {
+                return profile.password == password;
+            });
+        if (existing == cfg.rcon_profiles.end()) {
+            AlpineRconProfile legacy_profile;
+            legacy_profile.name = "legacy";
+            legacy_profile.password = password;
+            legacy_profile.full_admin = false;
+            legacy_profile.allow_multiple = false;
+            legacy_profile.allowed_commands.clear();
+            legacy_profile.allowed_commands.reserve(g_legacy_rcon_allowed_commands.size());
+
+            // add legacy rcon command allow list
+            for (const auto& cmd : g_legacy_rcon_allowed_commands) {
+                std::string normalized = string_to_lower(cmd);
+                if (!is_rcon_command_masterlisted(normalized)) {
+                    continue;
+                }
+                legacy_profile.allowed_commands.push_back(std::move(normalized));
+            }
+
+            cfg.rcon_profiles.push_back(std::move(legacy_profile));
+        }
+    }
 
     rf::console::print("\n");
 
     g_alpine_server_config = std::move(cfg);
+    clear_rcon_profile_sessions();
+}
+
+static void download_missing_server_levels()
+{
+    auto& cfg = g_alpine_server_config;
+    if (cfg.levels.empty()) {
+        return;
+    }
+
+    rf::console::print("\nChecking for missing maps on server rotation...\n");
+
+    std::vector<AlpineServerConfigLevelEntry> resolved_levels;
+    resolved_levels.reserve(cfg.levels.size());
+
+    for (auto& entry : cfg.levels) {
+        if (download_level_if_missing(entry.level_filename)) {
+            resolved_levels.push_back(std::move(entry));
+        }
+        else {
+            rf::console::print("--> Skipping level {} (download failed).\n", entry.level_filename);
+            rf::console::print("\n");
+        }
+    }
+
+    cfg.levels = std::move(resolved_levels);
+    rf::console::print("\n");
 }
 
 void print_gungame(std::string& output, const GunGameConfig& cur, const GunGameConfig& base_cfg, bool base = true)
@@ -1266,22 +1462,22 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Overtime:                              {}\n", rules.overtime.enabled);
         if (rules.overtime.enabled) {
             std::format_to(iter, "    Additional time:                     {} min\n", rules.overtime.additional_time);
-            std::format_to(iter, "    Tie when flag stolen (CTF):          {}\n", rules.overtime.consider_tie_if_flag_stolen);
-            std::format_to(iter, "    Tie when hill contested (KOTH):      {}\n", rules.overtime.consider_tie_if_hill_contested);
+            std::format_to(iter, "    CTF tie when flag stolen:            {}\n", rules.overtime.consider_tie_if_flag_stolen);
+            std::format_to(iter, "    KOTH tie when hill contested:        {}\n", rules.overtime.consider_tie_if_hill_contested);
         }
     }
 
     // score limits
     if (base || rules.individual_kill_limit != b.individual_kill_limit)
-        std::format_to(iter, "  Player score limit (DM):               {}\n", rules.individual_kill_limit);
+        std::format_to(iter, "  DM player score limit:                 {}\n", rules.individual_kill_limit);
     if (base || rules.team_kill_limit != b.team_kill_limit)
-        std::format_to(iter, "  Team score limit (TDM):                {}\n", rules.team_kill_limit);
+        std::format_to(iter, "  TDM team score limit:                  {}\n", rules.team_kill_limit);
     if (base || rules.cap_limit != b.cap_limit)
-        std::format_to(iter, "  Flag capture limit (CTF):              {}\n", rules.cap_limit);
+        std::format_to(iter, "  CTF flag capture limit:                {}\n", rules.cap_limit);
     if (base || rules.koth_score_limit != b.koth_score_limit)
-        std::format_to(iter, "  Team score limit (KOTH):               {}\n", rules.koth_score_limit);
+        std::format_to(iter, "  KOTH team score limit:                 {}\n", rules.koth_score_limit);
     if (base || rules.dc_score_limit != b.dc_score_limit)
-        std::format_to(iter, "  Team score limit (DC):                 {}\n", rules.dc_score_limit);
+        std::format_to(iter, "  DC team score limit:                   {}\n", rules.dc_score_limit);
 
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
@@ -1301,11 +1497,11 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     if (base || rules.saving_enabled != b.saving_enabled)
         std::format_to(iter, "  Position saving:                       {}\n", rules.saving_enabled);
     if (base || rules.flag_dropping != b.flag_dropping)
-        std::format_to(iter, "  Flag dropping (CTF):                   {}\n", rules.flag_dropping);
+        std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)
-        std::format_to(iter, "  Flag captures while stolen (CTF):      {}\n", rules.flag_captures_while_stolen);
+        std::format_to(iter, "  CTF flag captures while stolen:        {}\n", rules.flag_captures_while_stolen);
     if (base || rules.ctf_flag_return_time_ms != b.ctf_flag_return_time_ms)
-        std::format_to(iter, "  Flag return time (CTF):                {} sec\n", rules.ctf_flag_return_time_ms / 1000.0f);
+        std::format_to(iter, "  CTF flag return time:                  {} sec\n", rules.ctf_flag_return_time_ms / 1000.0f);
     if (base || rules.pvp_damage_modifier != b.pvp_damage_modifier)
         std::format_to(iter, "  PvP damage modifier:                   {}\n", rules.pvp_damage_modifier);
     if (base || rules.drop_amps != b.drop_amps)
@@ -1463,9 +1659,15 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     if (base || rewardDiff) {
         std::format_to(iter, "  Kill rewards:\n");
-        std::format_to(iter, "    Health:                              {}\n", rules.kill_rewards.kill_reward_health);
-        std::format_to(iter, "    Armor:                               {}\n", rules.kill_rewards.kill_reward_armor);
-        std::format_to(iter, "    Effective health:                    {}\n", rules.kill_rewards.kill_reward_effective_health);
+        if (rules.kill_rewards.kill_reward_health != .0f) {
+            std::format_to(iter, "    Health:                              {}\n", rules.kill_rewards.kill_reward_health);
+        }
+        if (rules.kill_rewards.kill_reward_armor != .0f) {
+            std::format_to(iter, "    Armor:                               {}\n", rules.kill_rewards.kill_reward_armor);
+        }
+        if (rules.kill_rewards.kill_reward_effective_health != .0f) {
+            std::format_to(iter, "    Effective health:                    {}\n", rules.kill_rewards.kill_reward_effective_health);
+        }
         std::format_to(iter, "    Health is super:                     {}\n", rules.kill_rewards.kill_reward_health_super);
         std::format_to(iter, "    Armor is super:                      {}\n", rules.kill_rewards.kill_reward_armor_super);
     }
@@ -1602,11 +1804,12 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
 
     const auto iter = std::back_inserter(output);
     std::format_to(iter, "\n---- Core configuration ----\n");
-    std::format_to(iter, "  Server port:                           {} (UDP)\n", netgame.server_addr.port);
+    std::format_to(iter, "  Server port:                           {} - UDP\n", netgame.server_addr.port);
     std::format_to(iter, "  Server name:                           {}\n", netgame.name);
+    std::format_to(iter, "  Server version:                        {} - {}\n", VERSION_STR, __DATE__);
     if (!sanitize) {
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
-        std::format_to(iter, "  Rcon password:                         {}\n", rf::rcon_password);
+        std::format_to(iter, "  Rcon password (legacy):                {}\n", cfg.rcon_password);
         std::format_to(iter, "  Bot shared secret:                     {}\n", cfg.bot_shared_secret);
     }
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
@@ -1624,6 +1827,30 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         return;
     }
 
+    if (!sanitize && !cfg.rcon_profiles.empty()) {
+        std::format_to(iter, "  Rcon profiles:\n");
+        for (const auto& profile : cfg.rcon_profiles) {
+            std::format_to(iter, "    Name:                                {}\n", profile.name);
+            std::format_to(iter, "      Password:                          {}\n", profile.password);
+            std::format_to(iter, "      Full admin:                        {}\n", profile.full_admin);
+            std::format_to(iter, "      Allow multiple:                    {}\n", profile.allow_multiple);
+            if (!profile.full_admin) {
+                std::string allowed;
+                if (profile.allowed_commands.empty()) {
+                    allowed = "<none>";
+                } else {
+                    for (size_t i = 0; i < profile.allowed_commands.size(); ++i) {
+                        if (i > 0) {
+                            allowed.append(", ");
+                        }
+                        allowed.append(profile.allowed_commands[i]);
+                    }
+                }
+                std::format_to(iter, "      Allowed commands:                  {}\n", allowed);
+            }
+        }
+    }
+
     std::format_to(iter, "  Gaussian bullet spread:                {}\n", cfg.gaussian_spread);
     std::format_to(iter, "  End of round stats message:            {}\n", cfg.stats_message_enabled);
     std::format_to(iter, "  Allow fullbright meshes:               {}\n", cfg.allow_fullbright_meshes);
@@ -1632,6 +1859,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow disable muzzle flash:            {}\n", cfg.allow_disable_muzzle_flash);
     std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
+    std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);
@@ -1792,7 +2020,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
     // parse toml file and update values
     // on launch does this before tracker registration
     if (!on_launch) {
-        load_ads_server_config(ads_config_name);
+        load_ads_server_config(ads_config_name, false);
         g_alpine_server_config.printed_cfg.clear();
         cfg.signal_cfg_changed = true;
     }
@@ -1949,7 +2177,8 @@ void launch_alpine_dedicated_server() {
 
     auto& netgame = rf::netgame;
 
-    load_ads_server_config(g_ads_config_name);
+    const bool should_download_maps = !g_ads_skip_map_download;
+    load_ads_server_config(g_ads_config_name, should_download_maps);
     const auto& cfg = g_alpine_server_config;
 
     if (!rf::lan_only_cmd_line_param.found()) {
@@ -1960,7 +2189,14 @@ void launch_alpine_dedicated_server() {
         rf::console::print("If it's not visible, visit alpinefaction.com/help for resources.\n\n");
     }
     else {
-        rf::console::print("Not attempting to register server with public game tracker.\n\n");
+        rf::console::print("Skipping registration with public game tracker because -lanonly switch was used.\n");
+    }
+
+    if (should_download_maps) {
+        download_missing_server_levels();
+    }
+    else {
+        rf::console::print("Skipping autodownload of missing levels because -nodl switch was used.\n");
     }
 
     load_and_print_alpine_dedicated_server_config(g_ads_config_name, true);

@@ -331,6 +331,26 @@ ConsoleCommand2 server_rcon_password_cmd{
     "sv_rconpass <password>",
 };
 
+ConsoleCommand2 server_load_user_maps_cmd{
+    "sv_loadpackfiles",
+    []() {
+        if (!rf::is_multi || !rf::is_dedicated_server) {
+            rf::console::print("This command can only be run on a dedicated server!");
+            return;
+        }
+
+        int loaded = vpackfile_load_user_maps_packfiles();
+        if (loaded == 0) {
+            rf::console::print("No new packfiles found in user_maps\\");
+            return;
+        }
+
+        rf::console::print("Loaded {} new packfile(s) from user_maps\\", loaded);
+    },
+    "Load any packfiles newly added to user_maps\\ since the server was launched",
+    "sv_loadpackfiles",
+};
+
 // only allow verify_level if a level is loaded (avoid a crash if command is run in menu)
 FunHook<void()> verify_level_cmd_hook{
     0x0045E1F0,
@@ -564,6 +584,7 @@ void console_commands_init()
     dbg_berserk_cmd.register_cmd();
     server_password_cmd.register_cmd();
     server_rcon_password_cmd.register_cmd();
+    server_load_user_maps_cmd.register_cmd();
     verify_level_cmd_hook.install();
     autosave_cmd.register_cmd();
 

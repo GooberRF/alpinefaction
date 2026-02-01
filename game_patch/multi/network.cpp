@@ -16,6 +16,7 @@
 #include <common/version/version.h>
 #include <common/utils/enum-bitwise-operators.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include <common/ComPtr.h>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
@@ -63,6 +64,8 @@ StashedPacket g_join_request_stashed;
 std::optional<int> g_conn_rate_stashed; // currently only used for detecting RFSB 5.1.6
 static const uint8_t* g_rx_base = nullptr;
 static size_t g_rx_len = 0;
+static std::unordered_map<uint64_t, AfGiReqSeen> g_af_gi_req_seen;
+static std::unordered_map<uint64_t, RconAccessEntry> g_rcon_access_by_addr;
 
 std::optional<int> g_desired_multiplayer_character; // caches local mp character when forced by server
 
@@ -334,6 +337,175 @@ CodeInjection process_game_packet_whitelist_filter{
         }
     },
 };
+
+static inline uint64_t addr_key(const rf::NetAddr& a)
+{
+    return (uint64_t(a.ip_addr) << 16) | (uint64_t(a.port) & 0xFFFF);
+}
+
+static rf::NetAddr addr_from_key(uint64_t key)
+{
+    return rf::NetAddr{static_cast<uint32_t>(key >> 16), static_cast<uint16_t>(key & 0xFFFF)};
+}
+
+static void set_rcon_holder_flag(const rf::NetAddr& addr, bool enabled)
+{
+    if (auto* player = rf::multi_find_player_by_addr(addr)) {
+        if (!player->net_data) {
+            return;
+        }
+        if (enabled) {
+            player->net_data->flags |= rf::NetPlayerFlags::NPF_RCON_HOLDER;
+        }
+        else {
+            player->net_data->flags &= ~rf::NetPlayerFlags::NPF_RCON_HOLDER;
+        }
+    }
+}
+
+static inline const char* rcon_player_name(const rf::NetAddr a)
+{
+    if (auto p = rf::multi_find_player_by_addr(a)) {
+        return p->name.empty() ? "<unnamed player>" : p->name.c_str();
+    }
+    return "<unknown player>";
+}
+
+static void send_rcon_feedback(const rf::NetAddr& addr, std::string_view msg)
+{
+    if (auto* player = rf::multi_find_player_by_addr(addr)) {
+        af_send_server_console_msg(msg, player);
+    }
+}
+
+static bool is_rcon_command_allowed_for_profile(const AlpineRconProfile& profile, std::string_view command)
+{
+    if (!is_rcon_command_masterlisted(command)) {
+        return false;
+    }
+
+    if (profile.full_admin) {
+        return true;
+    }
+
+    for (const auto& allowed : profile.allowed_commands) {
+        if (string_iequals(allowed, command)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static RconPasswordLookup lookup_rcon_password(std::string_view password)
+{
+    const auto& cfg = g_alpine_server_config;
+    for (size_t i = 0; i < cfg.rcon_profiles.size(); ++i) {
+        if (password == cfg.rcon_profiles[i].password) {
+            return RconPasswordLookup{std::optional<size_t>{i}};
+        }
+    }
+
+    return {};
+}
+
+void clear_rcon_profile_sessions()
+{
+    for (const auto& [key, entry] : g_rcon_access_by_addr) {
+        set_rcon_holder_flag(addr_from_key(key), false);
+    }
+    g_rcon_access_by_addr.clear();
+}
+
+static RconCommandCheckResult check_rcon_command_for_addr(const rf::NetAddr& addr, std::string_view command)
+{
+    const uint64_t key = addr_key(addr);
+    const auto it = g_rcon_access_by_addr.find(key);
+    if (it == g_rcon_access_by_addr.end()) {
+        return RconCommandCheckResult::NotHolder;
+    }
+
+    if (auto* player = rf::multi_find_player_by_addr(addr)) {
+        if (!player->net_data || (player->net_data->flags & rf::NetPlayerFlags::NPF_RCON_HOLDER) == 0) {
+            g_rcon_access_by_addr.erase(key);
+            return RconCommandCheckResult::NotHolder;
+        }
+    }
+    else {
+        g_rcon_access_by_addr.erase(key);
+        return RconCommandCheckResult::NotHolder;
+    }
+
+    const auto& entry = it->second;
+    const auto& profile = g_alpine_server_config.rcon_profiles[entry.profile_index];
+    return is_rcon_command_allowed_for_profile(profile, command) ? RconCommandCheckResult::Allowed
+                                                                 : RconCommandCheckResult::ProfileDenied;
+}
+
+static std::optional<std::string_view> extract_rcon_payload_from_packet(const char* data)
+{
+    if (!data) {
+        return std::nullopt;
+    }
+
+    return std::string_view{data, std::strlen(data)};
+}
+
+static void handle_rcon_request_packet(const uint8_t* pkt, size_t len, const rf::NetAddr& addr)
+{
+    const auto& cfg = g_alpine_server_config;
+    if (cfg.rcon_profiles.empty() && cfg.rcon_password.empty()) {
+        return;
+    }
+
+    if (!pkt || len == 0) {
+        return;
+    }
+
+    std::string_view password{
+        reinterpret_cast<const char*>(pkt),
+        strnlen(reinterpret_cast<const char*>(pkt), len)
+    };
+    if (password.empty()) {
+        return;
+    }
+
+    const auto lookup = lookup_rcon_password(password);
+    if (!lookup.profile_index) {
+        g_rcon_access_by_addr.erase(addr_key(addr));
+        set_rcon_holder_flag(addr, false);
+        rf::console::print("{} requested rcon with password '{}', DENIED because the password is not correct for any profile.", rcon_player_name(addr), password);
+        send_rcon_feedback(addr, "Rcon access denied: wrong password.");
+        return;
+    }
+
+    const uint64_t key = addr_key(addr);
+    // ensure a client can only hold a single rcon profile at a time
+    g_rcon_access_by_addr.erase(key);
+    set_rcon_holder_flag(addr, false);
+
+    if (lookup.profile_index) {
+        const auto& profile = cfg.rcon_profiles[*lookup.profile_index];
+
+        // ensure only a single holder for a given rcon profile (unless multiple allowed)
+        if (!profile.allow_multiple) {
+            for (auto it = g_rcon_access_by_addr.begin(); it != g_rcon_access_by_addr.end();) {
+                if (it->second.profile_index == *lookup.profile_index) {
+                    set_rcon_holder_flag(addr_from_key(it->first), false);
+                    it = g_rcon_access_by_addr.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+
+        g_rcon_access_by_addr[key] = RconAccessEntry{*lookup.profile_index};
+        set_rcon_holder_flag(addr, true);
+        send_rcon_feedback(addr, std::format("Rcon access granted with profile '{}'.", profile.name));
+        std::string broadcast_msg = std::format("{} was granted rcon with profile '{}'", rcon_player_name(addr), profile.name);
+        af_broadcast_automated_chat_msg(broadcast_msg);
+    }
+}
 
 FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
     0x0047B2A0,
@@ -627,6 +799,84 @@ FunHook<MultiIoPacketHandler> process_reload_request_packet_hook{
     },
 };
 
+CodeInjection process_rcon_req_packet_injection{
+    0x0046C536,
+    [](auto& regs) {
+        // skip rcon req logic
+        regs.eip = 0x0046C637;
+
+        if (g_alpine_server_config.rcon_profiles.empty()) {
+            return;
+        }
+
+        auto stack_frame = regs.esp;
+        const auto* addr = addr_as_ref<rf::NetAddr*>(stack_frame + 0x114);
+        const auto* data = addr_as_ref<const char*>(stack_frame + 0x110);
+
+        if (addr && data) {
+            if (const auto payload = extract_rcon_payload_from_packet(data)) {
+                handle_rcon_request_packet(reinterpret_cast<const uint8_t*>(payload->data()), payload->size() + 1, *addr);
+            }
+        }
+    },
+};
+
+CodeInjection process_rcon_packet_injection{
+    0x0046C6F7,
+    [](auto& regs) {
+        // skip rcon command logic
+        regs.eip = 0x0046C7F1;
+
+        if (g_alpine_server_config.rcon_profiles.empty()) {
+            return;
+        }
+
+        auto stack_frame = regs.esp;
+        const auto* addr = addr_as_ref<rf::NetAddr*>(stack_frame + 0x418);
+        const auto* data = addr_as_ref<const char*>(stack_frame + 0x414);
+
+        if (addr && data) {
+            const auto payload = extract_rcon_payload_from_packet(data);
+
+            if (payload) { // early return for failures todo
+                const auto [cmd, remainder] = split_once_whitespace(*payload);
+
+                if (!cmd.empty()) {
+                    std::string cmd_lower = string_to_lower(cmd);
+                    const auto check_result = check_rcon_command_for_addr(*addr, cmd_lower);
+
+                    if (check_result == RconCommandCheckResult::Allowed) {
+                        std::string payload_str{payload.value()};
+                        // special handling for "info" command, so rcon holder gets server output
+                        if (cmd_lower == "info") {
+                            send_rcon_feedback(*addr, build_info_command_output());
+                        }
+                        // otherwise just execute it on the server
+                        else {
+                            rf::console::do_command(payload_str.c_str());
+                        }
+                        rf::console::print("{} issued command '{}' via rcon, successfully executed", rcon_player_name(*addr), payload.value());
+                        send_rcon_feedback(*addr, std::format("Rcon command '{}' executed successfully.", payload.value()));
+                    }
+                    else {
+                        std::string_view reason = "not allowed";
+
+                        if (check_result == RconCommandCheckResult::NotHolder) {
+                            reason = "not an rcon holder";
+                        }
+                        else if (check_result == RconCommandCheckResult::ProfileDenied) {
+                            reason = "not allowed by rcon profile";
+                        }
+
+                        rf::console::print("{} issued command '{}' via rcon, DENIED because {}", rcon_player_name(*addr), cmd, reason);
+                        send_rcon_feedback(*addr, std::format("Rcon command '{}' denied: {}.", cmd, reason));
+                    }
+                }
+            }
+        }
+    },
+};
+
 CodeInjection process_obj_update_check_flags_injection{
         0x0047E058,
         [](auto& regs) {
@@ -811,19 +1061,6 @@ std::pair<std::unique_ptr<std::byte[]>, size_t> extend_packet_bytes(const std::b
     std::memcpy(out.get() + len, add, add_len);
 
     return {std::move(out), len + add_len};
-}
-
-struct AfGiReqSeen
-{
-    uint8_t ver = 0; // game_info_req version: 1 is current, pre-Alpine v1.2 never sends a version
-    int last_seen_ms = 0;
-};
-
-static std::unordered_map<uint64_t, AfGiReqSeen> g_af_gi_req_seen;
-
-static inline uint64_t addr_key(const rf::NetAddr& a)
-{
-    return (uint64_t(a.ip_addr) << 16) | (uint64_t(a.port) & 0xFFFF);
 }
 
 // find game_type field inside a game_info packet
@@ -1495,75 +1732,6 @@ CodeInjection process_join_accept_send_game_info_req_injection{
     },
 };
 
-static inline const char* rcon_player_name(const rf::NetAddr a)
-{
-    if (auto p = rf::multi_find_player_by_addr(a)) {
-        return p->name.empty() ? "<unnamed player>" : p->name.c_str();
-    }
-    return "<unknown player>";
-}
-
-CodeInjection process_rcon_packet_log1{
-    0x0046C7E4,
-    [](auto& regs) {
-        const char* cmd = reinterpret_cast<const char*>(regs.esp + 0x10);
-        auto& addr = *addr_as_ref<rf::NetAddr*>(regs.esp + 0x410 + 8);
-        const char* pname = rcon_player_name(addr);
-
-        rf::console::print(
-            "{} issued command '{}' via rcon, successfully executed",
-            rcon_player_name(addr), cmd ? cmd : "");
-    },
-};
-
-CodeInjection process_rcon_packet_log2{
-    0x0046C71D,
-    [](auto& regs) {
-        const uint32_t netplayer_flags = *reinterpret_cast<const uint32_t*>(regs.eax + 0x8);
-        const bool authorized = (netplayer_flags & 0x100u) != 0u;
-
-        if (!authorized) {
-            const char* cmd = addr_as_ref<const char*>(regs.esp + 0x410 + 4);
-            const auto& addr = *addr_as_ref<rf::NetAddr*>(regs.esp + 0x410 + 8);
-
-            rf::console::print(
-                "{} issued command '{}' via rcon, DENIED because not an rcon holder",
-                rcon_player_name(addr), cmd ? cmd : "");
-        }
-    },
-};
-
-CodeInjection process_rcon_packet_log3{
-    0x0046C7D9,
-    [](auto& regs) {
-        const char* cmd = reinterpret_cast<const char*>(regs.esp + 0x10);
-        const auto& addr = *addr_as_ref<rf::NetAddr*>(regs.esp + 0x410 + 8);
-
-        rf::console::print(
-            "{} issued command '{}' via rcon, DENIED because not an allowed rcon command",
-            rcon_player_name(addr), cmd ? cmd : "");
-    },
-};
-
-CodeInjection rcon_pw_denied_log{
-    0x0046C5A0,
-    [](auto& regs) {
-        const char* tried_pw = reinterpret_cast<const char*>(regs.esp + 0x10);
-        const auto& addr = *addr_as_ref<rf::NetAddr*>(regs.esp + 0x118);
-
-        if (!tried_pw || rf::rcon_password[0] == '\0')
-            return;
-
-        if (std::strcmp(tried_pw, rf::rcon_password) != 0) {
-            rf::console::print("{} requested rcon with password '{}', DENIED because the password is wrong",
-                rcon_player_name(addr), tried_pw ? tried_pw : "");
-        }
-        else {
-            rf::console::print("{} requested rcon with the correct rcon password", rcon_player_name(addr));
-        }
-    },
-};
-
 CodeInjection process_entity_create_packet_injection{
     0x0047559B,
     [](auto& regs) {
@@ -2051,6 +2219,7 @@ CallHook<int()> game_info_num_players_hook{
         auto player_list = SinglyLinkedList{rf::player_list};
         for (const auto& current_player : player_list) {
             if (current_player.version_info.software == ClientSoftware::Browser) continue;
+            if (g_alpine_server_config.exclude_bots_from_player_count && current_player.is_bot) continue;
             player_count++;
         }
         return player_count;
@@ -2203,6 +2372,10 @@ void network_init()
     process_entity_create_packet_injection.install(); // save char if server forces it
     process_entity_create_packet_injection2.install(); // reset char after server forced it
 
+    // Handle rcon profiles
+    process_rcon_req_packet_injection.install();
+    process_rcon_packet_injection.install();
+
     // Fix obj_update packet handling
     process_obj_update_check_flags_injection.install();
 
@@ -2264,12 +2437,6 @@ void network_init()
     multi_stop_hook.install();
 
     bot_shared_secret_cmd.register_cmd();
-
-    // print rcon commands
-    process_rcon_packet_log1.install();
-    process_rcon_packet_log2.install();
-    process_rcon_packet_log3.install();
-    rcon_pw_denied_log.install();
 
     // print join_req denial reasons
     check_access_for_new_player_hook.install();
