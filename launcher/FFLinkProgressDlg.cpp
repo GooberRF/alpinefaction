@@ -11,14 +11,14 @@ BOOL FFLinkProgressDlg::OnInitDialog()
 {
     CDialog::OnInitDialog();
     SendDlgItemMessage(IDC_FFLINK_PROGRESS_BAR, PBM_SETMARQUEE, TRUE, 20);
-    
+
     // Store HWND if storage pointer was provided
     // Note: This is called synchronously during DoModal() before the message loop starts,
     // so the HWND is guaranteed to be available before any messages are processed.
     if (m_pHwndStorage) {
         m_pHwndStorage->store(GetHwnd());
     }
-    
+
     return TRUE;
 }
 
