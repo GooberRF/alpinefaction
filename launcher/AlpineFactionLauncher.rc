@@ -114,7 +114,7 @@ IDB_SM4_PRESSED         BITMAP                  "res/smb4_normal.bmp"
 
 IDB_FFLINK_NORMAL       BITMAP                  "res/fflink_normal.bmp"
 IDB_FFLINK_HOVER        BITMAP                  "res/fflink_hover.bmp"
-IDB_FFLINK_PRESSED      BITMAP                  "res/fflink_normal.bmp"
+IDB_FFLINK_PRESSED      BITMAP                  "res/fflink_pressed.bmp"
 
 IDB_DIVIDER             BITMAP                  "res/divider.bmp"
 
