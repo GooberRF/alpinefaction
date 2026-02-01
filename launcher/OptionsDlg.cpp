@@ -2,14 +2,13 @@
 #include "OptionsDlg.h"
 #include "LauncherApp.h"
 #include "FFLinkProgressDlg.h"
+#include "FFLinkHelper.h"
 #include <xlog/xlog.h>
 #include <wxx_dialog.h>
 #include <wxx_commondlg.h>
 #include <common/HttpRequest.h>
 #include <common/version/version.h>
-#include <random>
 #include <chrono>
-#include <sstream>
 
 #define WM_FFLINK_COMPLETE_OPTIONS (WM_USER + 51)
 #define WM_FFLINK_CANCELLED_OPTIONS (WM_USER + 52)
@@ -118,62 +117,6 @@ void OptionsDlg::InitNestedDialog(CDialog& dlg, int placeholder_id)
     rc.top += border.top;
     placeholder.MapWindowPoints(GetHwnd(), rc);
     dlg.SetWindowPos(placeholder, rc.left, rc.top, -1, -1, SWP_NOSIZE | SWP_NOACTIVATE);
-}
-
-// Helper function to generate random hex token
-static std::string GenerateLinkToken()
-{
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, 15);
-
-    std::string token;
-    token.reserve(32);
-    for (int i = 0; i < 32; ++i) {
-        char c = dis(gen);
-        token += (c < 10) ? ('0' + c) : ('a' + c - 10);
-    }
-    return token;
-}
-
-// Helper function to poll the FactionFiles API
-static std::string PollFFLinkAPI(const std::string& token)
-{
-    std::string url = "https://link.factionfiles.com/aflauncher/v1/link_poll.php?token=" + token;
-
-    HttpSession session("AF/" VERSION_STR);
-    session.set_connect_timeout(3000);
-    session.set_receive_timeout(3000);
-
-    HttpRequest req(url, "GET", session);
-    req.send();
-
-    std::string response;
-    char buf[256];
-    while (true) {
-        size_t bytes_read = req.read(buf, sizeof(buf) - 1);
-        if (bytes_read == 0) break;
-        buf[bytes_read] = '\0';
-        response += buf;
-    }
-
-    return response;
-}
-
-// Helper function to parse the response
-static bool ParseFFLinkResponse(const std::string& response, std::string& username, std::string& token)
-{
-    std::istringstream ss(response);
-    std::string line1;
-    std::getline(ss, line1);
-
-    if (line1 != "found") {
-        return false;
-    }
-
-    std::getline(ss, username);
-    std::getline(ss, token);
-    return !username.empty() && !token.empty();
 }
 
 void OptionsDlg::UpdateFFLinkStatus()
