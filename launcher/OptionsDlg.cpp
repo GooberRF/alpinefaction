@@ -211,7 +211,7 @@ void OptionsDlg::OnBnClickedFFLinkAction()
         progressDlg.DoModal(GetHwnd());
 
         // Clear stored HWND
-        m_fflink_progress_hwnd = nullptr;
+        m_fflink_progress_hwnd.store(nullptr, std::memory_order_release);
 
         // Clean up thread
         if (m_fflink_poll_thread && m_fflink_poll_thread->joinable()) {
@@ -245,8 +245,9 @@ LRESULT OptionsDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     xlog::info("FFLink complete - Username: {}", m_fflink_result_username);
 
     // Close progress dialog
-    if (m_fflink_progress_hwnd) {
-        SendMessage(m_fflink_progress_hwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+    HWND hwnd = m_fflink_progress_hwnd.load(std::memory_order_acquire);
+    if (hwnd) {
+        SendMessage(hwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
     }
 
     // Save to config
@@ -282,8 +283,9 @@ LRESULT OptionsDlg::OnFFLinkCancelled(WPARAM wparam, LPARAM lparam)
     xlog::info("FFLink cancelled or timed out");
 
     // Close progress dialog
-    if (m_fflink_progress_hwnd) {
-        SendMessage(m_fflink_progress_hwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
+    HWND hwnd = m_fflink_progress_hwnd.load(std::memory_order_acquire);
+    if (hwnd) {
+        SendMessage(hwnd, WM_FFLINK_CLOSE_DIALOG, 0, 0);
     }
 
     // Clean up

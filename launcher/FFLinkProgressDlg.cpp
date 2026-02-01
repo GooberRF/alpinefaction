@@ -14,7 +14,7 @@ BOOL FFLinkProgressDlg::OnInitDialog()
     
     // Store dialog HWND in parent's storage if provided
     if (m_hwnd_storage) {
-        *m_hwnd_storage = GetHwnd();
+        m_hwnd_storage->store(GetHwnd(), std::memory_order_release);
     }
     
     return TRUE;

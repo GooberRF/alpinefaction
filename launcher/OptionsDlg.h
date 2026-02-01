@@ -45,5 +45,5 @@ private:
     std::atomic<bool> m_fflink_polling_active{false};
     std::string m_fflink_result_username;
     std::string m_fflink_result_token;
-    HWND m_fflink_progress_hwnd = nullptr;
+    std::atomic<HWND> m_fflink_progress_hwnd{nullptr};
 };
