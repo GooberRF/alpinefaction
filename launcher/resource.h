@@ -149,6 +149,7 @@
 #define IDC_STATIC_PROGRESS             3085
 #define IDC_PROGRESS_BAR                3082
 #define IDC_FFLINK_STATUS_TEXT          3086
+#define IDC_FFLINK_PROGRESS_BAR         3087
 
 // FFLink reminder prompt
 #define IDD_FFLINK_REMINDER             2001

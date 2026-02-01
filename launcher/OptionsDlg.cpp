@@ -326,7 +326,7 @@ LRESULT OptionsDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
         mainWindow = FindWindow(nullptr, "Alpine Faction Launcher");
     }
     if (mainWindow) {
-        std::string window_title = "Alpine Faction Launcher - Linked as " + m_fflink_result_username;
+        std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + m_fflink_result_username;
         ::SetWindowTextA(mainWindow, window_title.c_str());
     }
 

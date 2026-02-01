@@ -1,5 +1,6 @@
 #include "FFLinkProgressDlg.h"
 #include "resource.h"
+#include <commctrl.h>
 
 FFLinkProgressDlg::FFLinkProgressDlg()
     : CDialog(IDD_FFLINK_PROGRESS)
@@ -9,6 +10,7 @@ FFLinkProgressDlg::FFLinkProgressDlg()
 BOOL FFLinkProgressDlg::OnInitDialog()
 {
     CDialog::OnInitDialog();
+    SendDlgItemMessage(IDC_FFLINK_PROGRESS_BAR, PBM_SETMARQUEE, TRUE, 20);
     return TRUE;
 }
 

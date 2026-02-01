@@ -112,13 +112,9 @@ IDB_SM4_NORMAL          BITMAP                  "res/smb4_normal.bmp"
 IDB_SM4_HOVER           BITMAP                  "res/smb4_hover.bmp"
 IDB_SM4_PRESSED         BITMAP                  "res/smb4_normal.bmp"
 
-IDB_FFLINK_NORMAL       BITMAP                  "res/smb4_normal.bmp"
-IDB_FFLINK_HOVER        BITMAP                  "res/smb4_hover.bmp"
-IDB_FFLINK_PRESSED      BITMAP                  "res/smb4_normal.bmp"
-
-//IDB_FFLINK_NORMAL       BITMAP                  "res/fflink_normal.bmp"
-//IDB_FFLINK_HOVER        BITMAP                  "res/fflink_hover.bmp"
-//IDB_FFLINK_PRESSED      BITMAP                  "res/fflink_pressed.bmp"
+IDB_FFLINK_NORMAL       BITMAP                  "res/fflink_normal.bmp"
+IDB_FFLINK_HOVER        BITMAP                  "res/fflink_hover.bmp"
+IDB_FFLINK_PRESSED      BITMAP                  "res/fflink_normal.bmp"
 
 IDB_DIVIDER             BITMAP                  "res/divider.bmp"
 
@@ -139,7 +135,7 @@ BEGIN
     CONTROL "", IDC_OPTIONS_BTN, "BUTTON", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 106, 190, 19, 28
 
     // FactionFiles Link
-    CONTROL "", IDC_FFLINK_BTN, "BUTTON", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 242, 191, 117, 12
+    CONTROL "", IDC_FFLINK_BTN, "BUTTON", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 13, 154, 117, 50
 
     // Resources
     CONTROL "", IDC_SB2_BTN, "BUTTON", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 263, 204, 36, 30
@@ -284,13 +280,14 @@ BEGIN
 END
 
 // FactionFiles Link progress window
-IDD_FFLINK_PROGRESS DIALOGEX 0, 0, 300, 60
+IDD_FFLINK_PROGRESS DIALOGEX 0, 0, 300, 70
 STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION
 CAPTION "Linking FactionFiles Account..."
 FONT 8, "MS Shell Dlg"
 BEGIN
-    LTEXT "Waiting for browser authentication...", IDC_FFLINK_STATUS_TEXT, 10, 10, 280, 20
-    DEFPUSHBUTTON "Cancel", IDCANCEL, 125, 35, 50, 14
+    LTEXT "Initiated link process in browser, waiting for authentication...", IDC_FFLINK_STATUS_TEXT, 10, 10, 280, 20
+    CONTROL "", IDC_FFLINK_PROGRESS_BAR, "msctls_progress32", WS_BORDER | PBS_MARQUEE, 10, 30, 280, 12
+    DEFPUSHBUTTON "Cancel", IDCANCEL, 125, 48, 50, 14
 END
 
 /////////////////////////////////////////////////////////////////////////////
@@ -349,4 +346,3 @@ END
 
 /////////////////////////////////////////////////////////////////////////////
 #endif    // not APSTUDIO_INVOKED
-

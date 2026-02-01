@@ -45,7 +45,7 @@ BOOL MainDlg::OnInitDialog()
 
     // Determine window title
     std::string window_title = username.empty() ? "Alpine Faction Launcher - Not Linked to a FactionFiles Account"
-                                                : "Alpine Faction Launcher - Linked as " + username;
+                                                : "Alpine Faction Launcher - Linked to FactionFiles as " + username;
 
     // Set window title
     SetWindowText(window_title.c_str());
@@ -120,7 +120,7 @@ BOOL MainDlg::OnInitDialog()
     m_tool_tip.AddTool(m_play_button, "Launch Alpine Faction");
     m_tool_tip.AddTool(m_sm1_button, "Open the Alpine Faction level editor");
     m_tool_tip.AddTool(m_sb2_button, "Join the active Red Faction Community Discord");
-    m_tool_tip.AddTool(m_sb3_button, "Visit FactionFiles.com to find community-made mods and levels or to link your account");
+    m_tool_tip.AddTool(m_sb3_button, "Visit FactionFiles.com to find community-made mods and levels");
     m_tool_tip.AddTool(m_sb4_button, "Visit the Red Faction Wiki to access documentation and information about Red Faction");
     m_tool_tip.AddTool(m_about_link, "Current version, click to learn more about Alpine Faction");
     m_tool_tip.AddTool(m_sm2_button, "Open your mods directory");
@@ -495,7 +495,7 @@ void MainDlg::OnBnClickedOptionsBtn()
                 SetWindowText("Alpine Faction Launcher - Not Linked to a FactionFiles Account");
             } else {
                 m_fflink_button.ShowWindow(SW_HIDE);
-                std::string window_title = "Alpine Faction Launcher - Linked as " + username;
+                std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + username;
                 SetWindowText(window_title.c_str());
             }
         }
@@ -782,7 +782,7 @@ LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     config.save();
 
     // Update window title
-    std::string window_title = "Alpine Faction Launcher - Linked as " + m_fflink_result_username;
+    std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + m_fflink_result_username;
     SetWindowText(window_title.c_str());
 
     // Hide the FFLink button since account is now linked
