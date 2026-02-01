@@ -1671,9 +1671,9 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
 
     const auto iter = std::back_inserter(output);
     std::format_to(iter, "\n---- Core configuration ----\n");
-    std::format_to(iter, "  Server port:                           {} \x95 UDP\n", netgame.server_addr.port);
+    std::format_to(iter, "  Server port:                           {} - UDP\n", netgame.server_addr.port);
     std::format_to(iter, "  Server name:                           {}\n", netgame.name);
-    std::format_to(iter, "  Server version:                        {} \x95 {}\n", VERSION_STR, __DATE__);
+    std::format_to(iter, "  Server version:                        {} - {}\n", VERSION_STR, __DATE__);
     if (!sanitize) {
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
         std::format_to(iter, "  Rcon password:                         {}\n", rf::rcon_password);
