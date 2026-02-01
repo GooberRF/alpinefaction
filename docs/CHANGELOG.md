@@ -21,7 +21,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Server version:` to a server's printed config
-- Default `gibbing` to disabled for clients and dedicated servers separately
+- Default gore level to 1
+- Default `gibbing` to disabled for dedicated servers
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
