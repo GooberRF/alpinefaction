@@ -226,17 +226,9 @@ void OptionsDlg::OnBnClickedFFLinkAction()
             UpdateFFLinkStatus();
 
             // Update main window title
-            HWND mainWindow = FindWindow(nullptr, nullptr);
-            // Search for main launcher window
-            while (mainWindow != nullptr) {
-                char windowTitle[256];
-                ::GetWindowTextA(mainWindow, windowTitle, sizeof(windowTitle));
-                std::string title(windowTitle);
-                if (title.find("Alpine Faction Launcher") != std::string::npos) {
-                    ::SetWindowTextA(mainWindow, "Alpine Faction Launcher - Not Linked to a FactionFiles Account");
-                    break;
-                }
-                mainWindow = FindWindowEx(nullptr, mainWindow, nullptr, nullptr);
+            HWND mainWindow = GetParent();
+            if (mainWindow) {
+                ::SetWindowTextA(mainWindow, "Alpine Faction Launcher - Not Linked to a FactionFiles Account");
             }
 
             MessageBoxA("Your FactionFiles account has been unlinked.", "Account Unlinked", MB_OK | MB_ICONINFORMATION);
@@ -263,11 +255,7 @@ LRESULT OptionsDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     UpdateFFLinkStatus();
 
     // Update main window title
-    HWND mainWindow = FindWindow(nullptr, "Alpine Faction Launcher - Not Linked to a FactionFiles Account");
-    if (!mainWindow) {
-        // Try to find it with a different title (in case it was already linked)
-        mainWindow = FindWindow(nullptr, "Alpine Faction Launcher");
-    }
+    HWND mainWindow = GetParent();
     if (mainWindow) {
         std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + m_fflink_result_username;
         ::SetWindowTextA(mainWindow, window_title.c_str());
