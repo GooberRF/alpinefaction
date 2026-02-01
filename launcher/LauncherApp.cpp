@@ -55,7 +55,7 @@ int LauncherApp::Run()
         }
         if (!fflink_successful && fflink_token_is_invalid) {
             Message(nullptr,
-                    "Your FactionFiles account was unlinked."
+                    "Your FactionFiles account was unlinked.\n\n"
                     "Features such as achievement tracking and map ranking will be unavailable"
                     " until you link your account again.",
                     "FactionFiles Account Unlinked", MB_OK | MB_ICONINFORMATION);

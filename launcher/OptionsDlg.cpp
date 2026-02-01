@@ -6,8 +6,6 @@
 #include <xlog/xlog.h>
 #include <wxx_dialog.h>
 #include <wxx_commondlg.h>
-#include <common/HttpRequest.h>
-#include <common/version/version.h>
 #include <chrono>
 
 #define WM_FFLINK_COMPLETE_OPTIONS (WM_USER + 51)

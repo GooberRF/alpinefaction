@@ -648,11 +648,10 @@ void MainDlg::OnBnClickedFFLinkBtn()
 
     // Show progress dialog and start polling
     FFLinkProgressDlg progressDlg;
-    HWND progressHwnd = nullptr;
 
     // Start polling thread
     m_fflink_polling_active = true;
-    m_fflink_poll_thread = std::make_unique<std::thread>([this, &progressDlg, &progressHwnd]() {
+    m_fflink_poll_thread = std::make_unique<std::thread>([this]() {
         try {
             HWND mainHwnd = GetHwnd();
             int attempts = 0;
