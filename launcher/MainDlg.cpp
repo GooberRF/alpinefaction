@@ -775,23 +775,31 @@ LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     }
 
     // Save to config
-    GameConfig config;
-    config.load();
-    config.fflink_username = m_fflink_result_username;
-    config.fflink_token = m_fflink_result_token;
-    config.save();
+    try {
+        GameConfig config;
+        config.load();
+        config.fflink_username = m_fflink_result_username;
+        config.fflink_token = m_fflink_result_token;
+        config.save();
 
-    // Update window title
-    std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + m_fflink_result_username;
-    SetWindowText(window_title.c_str());
+        // Update window title
+        std::string window_title = "Alpine Faction Launcher - Linked to FactionFiles as " + m_fflink_result_username;
+        SetWindowText(window_title.c_str());
 
-    // Hide the FFLink button since account is now linked
-    m_fflink_button.ShowWindow(SW_HIDE);
+        // Hide the FFLink button since account is now linked
+        m_fflink_button.ShowWindow(SW_HIDE);
 
-    // Show success message
-    MessageBoxA("Alpine Faction has successfully been linked to your FactionFiles account!\n\n"
-                "Features that depend on FF account linking such as achievements and map ranking are now available.",
-                "Success! FactionFiles Account Linked", MB_OK | MB_ICONINFORMATION);
+        // Show success message
+        MessageBoxA("Alpine Faction has successfully been linked to your FactionFiles account!\n\n"
+                    "Features that depend on FF account linking such as achievements and map ranking are now available.",
+                    "Success! FactionFiles Account Linked", MB_OK | MB_ICONINFORMATION);
+    }
+    catch (const std::exception& e) {
+        xlog::error("Failed to save FFLink configuration: {}", e.what());
+        MessageBoxA("Failed to save your FactionFiles account link to the configuration.\n\n"
+                    "Please try linking your account again from the Options dialog.",
+                    "Configuration Error", MB_OK | MB_ICONERROR);
+    }
 
     // Clean up
     m_fflink_result_username.clear();
