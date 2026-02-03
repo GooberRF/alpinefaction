@@ -383,6 +383,32 @@ ConsoleCommand2 play_join_beep_cmd{
     "Toggle notification beeps being played when a player joins the server you are in when your game doesn't have focus",
 };
 
+ConsoleCommand2 mp_set_character_cmd{
+    "mp_character",
+    [](std::optional<int> character_index) {
+        rf::Player* player = rf::local_player;
+        if (!player) {
+            rf::console::print("Local player is invalid.");
+            return;
+        }
+
+        if (character_index.has_value()) {
+            auto index = character_index.value();
+            if (index < 0 || index >= rf::num_multi_characters) {
+                rf::console::print("Invalid character index {}. Valid range is 0-{}.",
+                    index, std::max(0, rf::num_multi_characters - 1));
+                return;
+            }
+
+            player->settings.multi_character = index;
+        }
+
+        rf::console::print("Multiplayer character index is {}.", player->settings.multi_character);
+    },
+    "Get multiplayer character index or set by index",
+    "mp_character <index>",
+};
+
 FunHook<void(rf::Player*, int)> player_make_weapon_current_selection_hook{
     0x004A4980,
     [](rf::Player* player, int weapon_type) {
@@ -908,6 +934,7 @@ void player_do_patch()
     swap_grenade_controls_cmd.register_cmd();
     swap_shotgun_controls_cmd.register_cmd();
     play_join_beep_cmd.register_cmd();
+    mp_set_character_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
     hit_sound_interval_cmd.register_cmd();
     tauntsound_cmd.register_cmd();

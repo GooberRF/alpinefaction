@@ -69,6 +69,7 @@ namespace rf::console
     static auto& num_commands = addr_as_ref<int>(0x0177567C);
 
     static auto& do_command = addr_as_ref<int(const char* text)>(0x00509B00);
+    static auto& run_script = addr_as_ref<int(const char* filename)>(0x0050B840);
     static auto& do_critical_error = addr_as_ref<void()>(0x0050AE80);
     static auto& run = addr_as_ref<int>(0x01775110);
     static auto& help = addr_as_ref<int>(0x01775224);

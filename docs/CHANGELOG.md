@@ -23,8 +23,39 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Bump RFL version to 304
 - Support `Alpha` field in `Decal` objects placed in version >= 304 levels (Direct3D 11 renderer only)
 - Improve output of object create failure log message
+- Add `Players in linked triggers` application setting for `AF_Heal` events
+- Add speedometer to HUD, bind to `ui_show_speed` console command
+- Make dedicated servers attempt to autodownload missing maps in their rotation from FactionFiles before launching
+- Add `-nodl` command line argument to make dedicated servers not attempt to autodownload missing maps
+- Add `exclude_bots_from_player_count` option to dedicated server config to exclude bots from player count reported to clients
+- Add `sv_loadpackfiles` console command to load packfiles newly added to `user_maps` after server was launched
+- Allow `GibEnemy` achievement to be awarded regardless of whether gore level allows the entity to actually gib
+- Support rcon profiles for dedicated servers
+- Support `info` command execution via rcon to display server information
+- Add `sv_checkmaps` console command to check all maps in server rotation against autodownloader database
+- Use unqiue user agents for clients vs. dedicated servers when communicating with FactionFiles autodownloader API
+- Add `dbg_togglerendering` and `dbg_togglesound` commands, persist in `alpine_settings.ini`
+- Add `BackgroundMouse` to `alpine_settings.ini` to control whether mouse is hooked when process is in the background
+- Add `mp_character` console command to set multiplayer character by index
+- Add `-script` command line argument to execute a startup script after the game launches
+- Add support for `script` console command to execute a script on-demand
+
+[@is-this-c](https://github.com/is-this-c)
+- Add `Server version:` to a server's printed config
+- Default gore level to 1
+- Default `gibbing` to disabled for dedicated servers
+
+[@natarii](https://github.com/natarii)
+- Implement FFLink client functionality in launcher
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix `AF_Heal` event forwarding received messages
+- Fix rare crash when shooting at alpha-masked surfaces in Direct3D 11 renderer
+- Fix overflow fix for `emitters.tbl` entries not being correctly applied
+
+[@is-this-c](https://github.com/is-this-c)
+- Fix faulty cull in fpgun infrared scanners
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------

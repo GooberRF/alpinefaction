@@ -411,6 +411,8 @@ namespace df::gr::d3d11
             }
             int x = std::lround(u * lock_info.w);
             int y = std::lround(v * lock_info.h);
+            x = std::clamp(x, 0, lock_info.w - 1);
+            y = std::clamp(y, 0, lock_info.h - 1);
             *clr = bm_get_pixel(lock_info.data, lock_info.format, lock_info.stride_in_bytes, x, y);
 
             unlock(&lock_info);

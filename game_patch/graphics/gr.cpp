@@ -217,6 +217,7 @@ ConsoleCommand2 precache_rooms_cmd{
         rf::console::print("D3D11 room precaching is {}", g_alpine_game_config.precache_rooms ? "enabled" : "disabled");
     },
     "Toggle room precaching in D3D11 renderer (increases initial level load time, reduces risk of hitches during gameplay)",
+    "r_precache_rooms",
 };
 
 void evaluate_lightmaps_only()
@@ -250,6 +251,39 @@ ConsoleCommand2 lightmaps_only_cmd{
             "enabled. In multiplayer, this will only apply if the server allows it." : "disabled.");
     },
     "Render only lightmaps for level geometry (no textures). In multiplayer, this is only available if the server allows it.",
+    "r_lightmaps",
+};
+
+ConsoleCommand2 disable_rendering_cmd{
+    "dbg_togglerendering",
+    []() {
+        g_alpine_game_config.rendering_enabled = !g_alpine_game_config.rendering_enabled;
+        rf::console::print("Rendering is now {}.", g_alpine_game_config.rendering_enabled ? "enabled" : "disabled");
+    },
+    "Toggle all game rendering.",
+    "dbg_togglerendering",
+};
+
+FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
+    0x00431A00,
+    [](rf::Player* pp, int flags) {
+        if (!g_alpine_game_config.rendering_enabled) {
+            return;
+        }
+
+        gameplay_render_frame_hook.call_target(pp, flags);
+    },
+};
+
+FunHook<void()> gameplay_render_frame_pre_hook{
+    0x00431820,
+    []() {
+        if (!g_alpine_game_config.rendering_enabled) {
+            return;
+        }
+
+        gameplay_render_frame_pre_hook.call_target();
+    },
 };
 
 FunHook<float(const rf::Vector3&)> gr_get_apparent_distance_from_camera_hook{
@@ -526,6 +560,10 @@ void gr_apply_patch()
     // Fix gr_rect_border not drawing left border
     AsmWriter{0x0050DF2D}.push(asm_regs::ebp).push(asm_regs::ebx);
 
+    // Allow client to disable rendering
+    gameplay_render_frame_hook.install();
+    gameplay_render_frame_pre_hook.install();
+
     // Commands
     fov_cmd.register_cmd();
     gamma_cmd.register_cmd();
@@ -537,6 +575,7 @@ void gr_apply_patch()
     picmip_cmd.register_cmd();
     colorblind_cmd.register_cmd();
     precache_rooms_cmd.register_cmd();
+    disable_rendering_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

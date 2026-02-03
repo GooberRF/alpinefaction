@@ -7,8 +7,12 @@ set(SRCS
     DownloadProgressDlg.h
     faction_files.h
     faction_files.cpp
+    FFLinkHelper.cpp
+    FFLinkHelper.h
     FFLinkReminderDlg.cpp
     FFLinkReminderDlg.h
+    FFLinkProgressDlg.cpp
+    FFLinkProgressDlg.h
     ImageButton.h
     ImageButton.cpp
     LauncherApp.cpp

@@ -235,16 +235,39 @@ CodeInjection entity_process_pre_hide_riot_shield_injection{
     },
 };
 
+// set gib flag function can trigger twice for the same entity during the death process,
+// only happens in a case where the entity is hit by a projectile and takes that damage + splash damage
+// although a bit ugly, this is lightweight and prevents the achievement triggering twice for the same entity
+static bool already_processed_gib_uid(int uid) {
+    static int recent[8]{};
+    static size_t pos = 0;
+
+    for (int v : recent) {
+        if (v == uid) return true;
+    }
+
+    recent[pos] = uid;
+    pos = (pos + 1) % std::size(recent);
+    return false;
+}
+
 void entity_set_gib_flag(rf::Entity* ep) {
+    if (!rf::is_multi) {
+        if (!already_processed_gib_uid(ep->uid)) {
+            grant_achievement_sp(AchievementName::GibEnemy);
+        }
+    }
+
     if (rf::game_get_gore_level() < 2) {
         return;
     }
 
-    ep->entity_flags |= 0x80;
+    ep->entity_flags |= rf::EntityFlags::EF_GIB_ON_DEATH;
 }
 
 FunHook<void(int)> entity_blood_throw_gibs_hook{
-    0x0042E3C0, [](int handle) {
+    0x0042E3C0,
+    [](int handle) {
         // don't spawn gibs on a dedicated server
         if (rf::is_dedicated_server) {
             return;
@@ -337,10 +360,6 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
             if (gib) {
                 gib->obj_flags |= rf::OF_INVULNERABLE;
             }
-        }
-
-        if (objp->type == rf::OT_ENTITY) {
-            grant_achievement_sp(AchievementName::GibEnemy);
         }
     }
 };

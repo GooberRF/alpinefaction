@@ -15,6 +15,7 @@
 #include "../rf/player/player.h"
 #include "../rf/sound/sound.h"
 #include "../rf/gr/gr.h"
+#include "../sound/sound.h"
 #include <shlwapi.h>
 #include <windows.h>
 #include <shellapi.h>
@@ -311,7 +312,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GoreLevel");
     }
     else {
-        rf::game_set_gore_level(2); // if gore level not in ini file, default to 2
+        rf::game_set_gore_level(1); // if gore level not in ini file, match stock gameplay
     }
     if (settings.count("GibChunkCount")) {
         g_alpine_game_config.set_gib_chunk_count(std::stoi(settings["GibChunkCount"]));
@@ -365,6 +366,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("ShowFPS")) {
         g_alpine_game_config.fps_counter = std::stoi(settings["ShowFPS"]);
         processed_keys.insert("ShowFPS");
+    }
+    if (settings.count("ShowSpeed")) {
+        g_alpine_game_config.speed_display = std::stoi(settings["ShowSpeed"]);
+        processed_keys.insert("ShowSpeed");
     }
     if (settings.count("FPSCounterAverageMs")) {
         g_alpine_game_config.set_fps_counter_average_ms(std::stoi(settings["FPSCounterAverageMs"]));
@@ -724,6 +729,21 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("SimpleScoreboardSplit")) {
         g_alpine_game_config.scoreboard_split_simple = std::stoi(settings["SimpleScoreboardSplit"]);
         processed_keys.insert("SimpleScoreboardSplit");
+    }
+
+    // Load debug settings
+    if (settings.count("EnableRendering")) {
+        g_alpine_game_config.rendering_enabled = std::stoi(settings["EnableRendering"]);
+        processed_keys.insert("EnableRendering");
+    }
+    if (settings.count("EnableSound")) {
+        g_alpine_game_config.sound_enabled = std::stoi(settings["EnableSound"]);
+        set_sound_enabled(g_alpine_game_config.sound_enabled);
+        processed_keys.insert("EnableSound");
+    }
+    if (settings.count("EnableBackgroundMouse")) {
+        g_alpine_game_config.background_mouse = std::stoi(settings["EnableBackgroundMouse"]);
+        processed_keys.insert("EnableBackgroundMouse");
     }
 
     // Load singleplayer settings
@@ -1109,6 +1129,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "BurningEntityLights=" << g_alpine_game_config.burning_entity_lights << "\n";
     file << "SpectateMinimalUI=" << g_alpine_game_config.spectate_mode_minimal_ui << "\n";
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
+    file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
     file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";
     file << "SaveConsoleHistory=" << g_alpine_game_config.save_console_history << "\n";
     file << "AlpineBranding=" << g_alpine_game_config.af_branding << "\n";
@@ -1221,6 +1242,12 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ScoreboardSplitBrowsers=" << g_alpine_game_config.scoreboard_split_browsers << "\n";
     file << "ScoreboardSplitIdle=" << g_alpine_game_config.scoreboard_split_idle << "\n";
     file << "SimpleScoreboardSplit=" << g_alpine_game_config.scoreboard_split_simple << "\n";
+
+    // Debug
+    file << "\n[DebugSettings]\n";
+    file << "EnableRendering=" << g_alpine_game_config.rendering_enabled << "\n";
+    file << "EnableSound=" << g_alpine_game_config.sound_enabled << "\n";
+    file << "EnableBackgroundMouse=" << g_alpine_game_config.background_mouse << "\n";
 
     // Singleplayer
     file << "\n[SingleplayerSettings]\n";

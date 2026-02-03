@@ -332,6 +332,26 @@ ConsoleCommand2 server_rcon_password_cmd{
     "sv_rconpass <password>",
 };
 
+ConsoleCommand2 server_load_user_maps_cmd{
+    "sv_loadpackfiles",
+    []() {
+        if (!rf::is_multi || !rf::is_dedicated_server) {
+            rf::console::print("This command can only be run on a dedicated server!");
+            return;
+        }
+
+        int loaded = vpackfile_load_user_maps_packfiles();
+        if (loaded == 0) {
+            rf::console::print("No new packfiles found in user_maps\\");
+            return;
+        }
+
+        rf::console::print("Loaded {} new packfile(s) from user_maps\\", loaded);
+    },
+    "Load any packfiles newly added to user_maps\\ since the server was launched",
+    "sv_loadpackfiles",
+};
+
 // only allow verify_level if a level is loaded (avoid a crash if command is run in menu)
 FunHook<void()> verify_level_cmd_hook{
     0x0045E1F0,
@@ -524,6 +544,7 @@ void console_commands_init()
     register_builtin_command("teleport", "Teleport player to specific coordinates (format: X Y Z)", 0x004A0FC0);
     register_builtin_command("sp_levelhardness", "Set default hardness for geomods", 0x004663E0);
     register_builtin_command("save_commands", "Print all console commands to a text file named console_commands.txt", 0x00509920);
+    register_builtin_command("script", "Run a console script file from the game root directory", 0x0050B7D0);
 
 #ifdef DEBUG
     register_builtin_command("drop_fixed_cam", "Drop a fixed camera", 0x0040D220);
@@ -564,7 +585,6 @@ void console_commands_init()
     register_builtin_command("loadgame", "Load a game", 0x004B34C0);
     register_builtin_command("show_obj_times", "Set the number of portal objects to show times for", 0x004D3250);
     // Some commands does not use console_exec variables and were not added e.g. 004D3290
-    register_builtin_command("script", "Runs a console script file (.vcs)", 0x0050B7D0);
     register_builtin_command("screen_res", nullptr, 0x0050E400);
     register_builtin_command("wfar", nullptr, 0x005183D0);
     register_builtin_command("play_bik", nullptr, 0x00520A70);
@@ -587,6 +607,7 @@ void console_commands_init()
     dbg_berserk_cmd.register_cmd();
     server_password_cmd.register_cmd();
     server_rcon_password_cmd.register_cmd();
+    server_load_user_maps_cmd.register_cmd();
     verify_level_cmd_hook.install();
     autosave_cmd.register_cmd();
     new_savegame_format_cmd.register_cmd();

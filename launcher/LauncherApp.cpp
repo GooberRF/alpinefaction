@@ -55,11 +55,10 @@ int LauncherApp::Run()
         }
         if (!fflink_successful && fflink_token_is_invalid) {
             Message(nullptr,
-                    "Your FactionFiles account link was reset. "
+                    "Your FactionFiles account was unlinked.\n\n"
                     "Features such as achievement tracking and map ranking will be unavailable"
-                    " until you re-link your account from the FactionFiles website.\n\n"
-                    "Visit https://alpinefaction.com/link for instructions on how to restore the link.\n",
-                    "FactionFiles Link Token Invalid", MB_OK | MB_ICONINFORMATION);
+                    " until you link your account again.",
+                    "FactionFiles Account Unlinked", MB_OK | MB_ICONINFORMATION);
         }
     }
 

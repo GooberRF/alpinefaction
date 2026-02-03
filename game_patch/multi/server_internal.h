@@ -521,7 +521,9 @@ struct ClickLimiterConfig
 
 struct GibConfig
 {
-    bool enabled = true;
+    // Set `false` to match stock multiplayer.
+    bool enabled = false;
+
     bool all_damage = false;
     float damage_threshold = 100.0f;
 
@@ -650,12 +652,22 @@ struct AlpineServerConfigLevelEntry
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
 };
 
+struct AlpineRconProfile
+{
+    std::string name;
+    std::string password;
+    bool full_admin = false;
+    bool allow_multiple = false;
+    std::vector<std::string> allowed_commands;
+};
+
 struct AlpineServerConfig
 {
     std::string server_name = "Alpine Faction Server";
     int max_players = 8;
     std::string password = "";
     std::string rcon_password = "";
+    std::vector<AlpineRconProfile> rcon_profiles;
     uint32_t bot_shared_secret = 0;
     bool upnp_enabled = false;
     bool require_client_mod = true;
@@ -668,6 +680,7 @@ struct AlpineServerConfig
     bool allow_disable_muzzle_flash = true;
     bool allow_unlimited_fps = false;
     bool use_sp_damage_calculation = false;
+    bool exclude_bots_from_player_count = false;
     AlpineRestrictConfig alpine_restricted_config;
     InactivityConfig inactivity_config;
     DamageNotificationConfig damage_notification_config;
@@ -772,6 +785,7 @@ enum class UpcomingGameTypeSelection {
 
 const rf::NetGameType get_upcoming_game_type();
 UpcomingGameTypeSelection get_upcoming_game_type_selection();
+bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
 void cleanup_win32_server_console();
@@ -810,11 +824,14 @@ const AlpineServerConfig& server_get_alpine_config();
 rf::CmdLineParam& get_ads_cmd_line_param();
 rf::CmdLineParam& get_min_cmd_line_param();
 rf::CmdLineParam& get_log_cmd_line_param();
+rf::CmdLineParam& get_nodl_cmd_line_param();
 void handle_min_param();
 void handle_log_param();
+void handle_nodl_param();
 const AFGameInfoFlags& server_get_game_info_flags();
 void initialize_game_info_server_flags();
 std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gametype_name);
 bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);
 void launch_alpine_dedicated_server();
+std::string build_info_command_output();

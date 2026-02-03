@@ -44,7 +44,7 @@ FunHook<void()> mouse_eval_deltas_hook{
     0x0051DC70,
     []() {
         // disable mouse when window is not active
-        if (rf::os_foreground()) {
+        if (rf::os_foreground() || g_alpine_game_config.background_mouse) {
             mouse_eval_deltas_hook.call_target();
         }
     },

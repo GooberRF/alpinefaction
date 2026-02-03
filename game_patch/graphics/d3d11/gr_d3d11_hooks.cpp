@@ -439,16 +439,16 @@ void gr_d3d11_apply_patch()
     AsmWriter{0x00546730}.jmp(read_back_buffer); // gr_d3d_read_backbuffer
     AsmWriter{0x005468C0}.jmp(fog_set); // gr_d3d_fog_set
     AsmWriter{0x00546A00}.mov(al, 1).ret(); // gr_d3d_is_mode_supported
-    //AsmWriter{0x00546A40}.ret(); // gr_d3d_setup_frustum
-    //AsmWriter{0x00546F60}.ret(); // gr_d3d_change_frustum
-    //AsmWriter{0x00547150}.ret(); // gr_d3d_setup_3d
-    //AsmWriter{0x005473F0}.ret(); // gr_d3d_start_instance
-    //AsmWriter{0x00547540}.ret(); // gr_d3d_stop_instance
+    // AsmWriter{0x00546A40}.ret(); // gr_d3d_setup_frustum
+    // AsmWriter{0x00546F60}.ret(); // gr_d3d_change_frustum
+    // AsmWriter{0x00547150}.ret(); // gr_d3d_setup_3d
+    // AsmWriter{0x005473F0}.ret(); // gr_d3d_start_instance
+    // AsmWriter{0x00547540}.ret(); // gr_d3d_stop_instance
     AsmWriter{0x005477A0}.jmp(project_vertex_new); // gr_d3d_project_vertex
-    //AsmWriter{0x005478F0}.ret(); // gr_d3d_is_normal_facing
-    //AsmWriter{0x00547960}.ret(); // gr_d3d_is_normal_facing_plane
-    //AsmWriter{0x005479B0}.ret(); // gr_d3d_get_apparent_distance_from_camera
-    //AsmWriter{0x005479D0}.ret(); // gr_d3d_screen_coords_from_world_coords
+    // AsmWriter{0x005478F0}.ret(); // gr_d3d_is_normal_facing
+    // AsmWriter{0x00547960}.ret(); // gr_d3d_is_normal_facing_plane
+    // AsmWriter{0x005479B0}.ret(); // gr_d3d_get_apparent_distance_from_camera
+    // AsmWriter{0x005479D0}.ret(); // gr_d3d_screen_coords_from_world_coords
     AsmWriter{0x00547A60}.ret(); // gr_d3d_update_gamma_ramp
     AsmWriter{0x00547AC0}.ret(); // gr_d3d_set_texture_mip_filter
     AsmWriter{0x00550820}.jmp(page_in); // gr_d3d_page_in
@@ -461,36 +461,36 @@ void gr_d3d11_apply_patch()
     AsmWriter{0x00551900}.jmp(tmapper); // gr_d3d_tmapper
     AsmWriter{0x005536C0}.jmp(render_sky_room);
     AsmWriter{0x00553C60}.jmp(render_movable_solid); // gr_d3d_render_movable_solid - uses gr_d3d_render_face_list
-    //AsmWriter{0x00553EE0}.ret(); // gr_d3d_vfx - uses gr_poly
-    //AsmWriter{0x00554BF0}.ret(); // gr_d3d_vfx_facing - uses gr_d3d_3d_bitmap_angle, gr_d3d_render_volumetric_light
-    //AsmWriter{0x00555080}.ret(); // gr_d3d_vfx_glow - uses gr_d3d_3d_bitmap_angle
-    //AsmWriter{0x00555100}.ret(); // gr_d3d_line_vertex
+    // AsmWriter{0x00553EE0}.ret(); // gr_d3d_vfx - uses gr_poly
+    // AsmWriter{0x00554BF0}.ret(); // gr_d3d_vfx_facing - uses gr_d3d_3d_bitmap_angle, gr_d3d_render_volumetric_light
+    // AsmWriter{0x00555080}.ret(); // gr_d3d_vfx_glow - uses gr_d3d_3d_bitmap_angle
+    // AsmWriter{0x00555100}.ret(); // gr_d3d_line_vertex
     AsmWriter{0x005516E0}.jmp(line_3d); // gr_d3d_line_vertex_internal
-    //AsmWriter{0x005551E0}.ret(); // gr_d3d_line_vec - uses gr_d3d_line_vertex
-    //AsmWriter{0x00555790}.ret(); // gr_d3d_3d_bitmap - uses gr_poly
-    //AsmWriter{0x00555AC0}.ret(); // gr_d3d_3d_bitmap_angle - uses gr_poly
-    //AsmWriter{0x00555B20}.ret(); // gr_d3d_3d_bitmap_angle_wh - uses gr_poly
-    //AsmWriter{0x00555B80}.ret(); // gr_d3d_render_volumetric_light - uses gr_poly
-    //AsmWriter{0x00555DC0}.ret(); // gr_d3d_laser - uses gr_tmapper
-    //AsmWriter{0x005563F0}.ret(); // gr_d3d_cylinder - uses gr_line
-    //AsmWriter{0x005565D0}.ret(); // gr_d3d_cone - uses gr_line
-    //AsmWriter{0x005566E0}.ret(); // gr_d3d_sphere - uses gr_line
-    //AsmWriter{0x00556AB0}.ret(); // gr_d3d_chain - uses gr_poly
-    //AsmWriter{0x00556F50}.ret(); // gr_d3d_line_directed - uses gr_line_vertex
-    //AsmWriter{0x005571F0}.ret(); // gr_d3d_line_arrow - uses gr_line_vertex
-    //AsmWriter{0x00557460}.ret(); // gr_d3d_render_particle_sys_particle - uses gr_poly, gr_3d_bitmap_angle
-    //AsmWriter{0x00557D40}.ret(); // gr_d3d_render_bolts - uses gr_poly, gr_line
-    //AsmWriter{0x00558320}.ret(); // gr_d3d_render_geomod_debris - uses gr_poly
-    //AsmWriter{0x00558450}.ret(); // gr_d3d_render_glass_shard - uses gr_poly
+    // AsmWriter{0x005551E0}.ret(); // gr_d3d_line_vec - uses gr_d3d_line_vertex
+    // AsmWriter{0x00555790}.ret(); // gr_d3d_3d_bitmap - uses gr_poly
+    // AsmWriter{0x00555AC0}.ret(); // gr_d3d_3d_bitmap_angle - uses gr_poly
+    // AsmWriter{0x00555B20}.ret(); // gr_d3d_3d_bitmap_angle_wh - uses gr_poly
+    // AsmWriter{0x00555B80}.ret(); // gr_d3d_render_volumetric_light - uses gr_poly
+    // AsmWriter{0x00555DC0}.ret(); // gr_d3d_laser - uses gr_tmapper
+    // AsmWriter{0x005563F0}.ret(); // gr_d3d_cylinder - uses gr_line
+    // AsmWriter{0x005565D0}.ret(); // gr_d3d_cone - uses gr_line
+    // AsmWriter{0x005566E0}.ret(); // gr_d3d_sphere - uses gr_line
+    // AsmWriter{0x00556AB0}.ret(); // gr_d3d_chain - uses gr_poly
+    // AsmWriter{0x00556F50}.ret(); // gr_d3d_line_directed - uses gr_line_vertex
+    // AsmWriter{0x005571F0}.ret(); // gr_d3d_line_arrow - uses gr_line_vertex
+    // AsmWriter{0x00557460}.ret(); // gr_d3d_render_particle_sys_particle - uses gr_poly, gr_3d_bitmap_angle
+    // AsmWriter{0x00557D40}.ret(); // gr_d3d_render_bolts - uses gr_poly, gr_line
+    // AsmWriter{0x00558320}.ret(); // gr_d3d_render_geomod_debris - uses gr_poly
+    // AsmWriter{0x00558450}.ret(); // gr_d3d_render_glass_shard - uses gr_poly
     AsmWriter{0x00558550}.ret(); // gr_d3d_render_face_wireframe
-    //AsmWriter{0x005585F0}.ret(); // gr_d3d_render_weapon_tracer - uses gr_poly
+    // AsmWriter{0x005585F0}.ret(); // gr_d3d_render_weapon_tracer - uses gr_poly
     AsmWriter{0x005587C0}.jmp(poly); // gr_d3d_poly
     AsmWriter{0x00558920}.ret(); // gr_d3d_render_geometry_wireframe
     AsmWriter{0x00558960}.ret(); // gr_d3d_render_geometry_in_editor
     AsmWriter{0x00558C40}.ret(); // gr_d3d_render_sel_face_in_editor
-    //AsmWriter{0x00558D40}.ret(); // gr_d3d_world_poly - uses gr_d3d_poly
-    //AsmWriter{0x00558E30}.ret(); // gr_d3d_3d_bitmap_stretched_square - uses gr_d3d_world_poly
-    //AsmWriter{0x005590F0}.ret(); // gr_d3d_rod - uses gr_d3d_world_poly
+    // AsmWriter{0x00558D40}.ret(); // gr_d3d_world_poly - uses gr_d3d_poly
+    // AsmWriter{0x00558E30}.ret(); // gr_d3d_3d_bitmap_stretched_square - uses gr_d3d_world_poly
+    // AsmWriter{0x005590F0}.ret(); // gr_d3d_rod - uses gr_d3d_world_poly
     AsmWriter{0x005596C0}.ret(); // gr_d3d_render_face_list_colored
     AsmWriter{0x0055B520}.jmp(texture_save_cache); // gr_d3d_texture_save_cache
     AsmWriter{0x0055B550}.jmp(texture_flush_cache); // gr_d3d_texture_flush_cache
@@ -502,10 +502,11 @@ void gr_d3d11_apply_patch()
     AsmWriter{0x0055D190}.jmp(texture_remove_ref); // gr_d3d_texture_remove_ref
     AsmWriter{0x0055F5E0}.jmp(render_solid); // gr_d3d_render_static_solid
     AsmWriter{0x00561650}.ret(); // gr_d3d_render_face_list
-    //AsmWriter{0x0052FA40}.jmp(render_lod_vif); // gr_d3d_render_vif_mesh
+    // AsmWriter{0x0052FA40}.jmp(render_lod_vif); // gr_d3d_render_vif_mesh
     AsmWriter{0x0052DE10}.jmp(render_v3d_vif); // gr_d3d_render_v3d_vif
     AsmWriter{0x0052E9E0}.jmp(render_character_vif); // gr_d3d_render_character_vif
     AsmWriter{0x004D34D0}.jmp(render_alpha_detail_room); // room_render_alpha_detail
+    AsmWriter{0x0054F160}.ret(); // gr_d3d_set_state
 
     // Change size of standard structures
     write_mem<int8_t>(0x00569884 + 1, sizeof(rf::VifMesh));

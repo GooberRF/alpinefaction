@@ -56,8 +56,7 @@ HMODULE g_hmodule;
 
 std::mt19937 g_rng;
 
-void initialize_random_generator()
-{
+void initialize_random_generator() {
     // seed rng with the current time
     auto seed = std::chrono::steady_clock::now().time_since_epoch().count();
     g_rng.seed(static_cast<unsigned long>(seed));
@@ -75,6 +74,22 @@ CallHook<void()> rf_init_hook{
     },
 };
 
+void execute_startup_scripts() {
+    for (int i = 0; i < rf::cmdline_num_args; ++i) {
+        const rf::CmdArg& cmd_arg = rf::cmdline_args[i];
+        if (!cmd_arg.arg || cmd_arg.is_done) {
+            continue;
+        }
+        if (!std::strcmp(cmd_arg.arg, "-script") && i + 1 < rf::cmdline_num_args) {
+            const rf::CmdArg& script_arg = rf::cmdline_args[i + 1];
+            if (script_arg.arg) {
+                console_run_script(script_arg.arg);
+            }
+            ++i;
+        }
+    }
+}
+
 CodeInjection after_full_game_init_hook{
     0x004B26C6,
     []() {
@@ -86,6 +101,7 @@ CodeInjection after_full_game_init_hook{
         multi_after_full_game_init();
         debug_init();
         load_world_hud_assets();
+        execute_startup_scripts();
 
         xlog::info("Game fully initialized");
         xlog::LoggerConfig::get().flush_appenders();

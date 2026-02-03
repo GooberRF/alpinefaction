@@ -1656,6 +1656,25 @@ af_server_msg_packet_buf build_automated_chat_msg_packet(
     return buf;
 }
 
+af_server_msg_packet_buf build_server_console_msg_packet(
+    const std::string_view msg
+) {
+    constexpr size_t max_len = rf::max_packet_size - sizeof(af_server_msg_packet);
+    const size_t len = std::clamp(msg.size(), 0uz, max_len);
+
+    af_server_msg_packet_buf buf{};
+    buf.packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    buf.packet.header.size = static_cast<uint16_t>(
+        sizeof(buf.packet)
+            - sizeof(buf.packet.header)
+            + len
+    );
+    buf.packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_CONSOLE);
+    std::memcpy(buf.packet.data, msg.data(), len);
+
+    return buf;
+}
+
 void af_broadcast_automated_chat_msg(const std::string_view msg) {
     if (!rf::is_server) {
         return;
@@ -1681,6 +1700,29 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
             send_chat_line_packet(std::format("\xA6 {}", msg), &player);
         }
     }
+}
+
+void af_send_server_console_msg(const std::string_view msg, rf::Player* player, bool tell_server) {
+    if (!rf::is_server || !player) {
+        return;
+    }
+
+    if (tell_server && rf::is_dedicated_server) {
+        rf::console::print("Console message to {}: {}", player->name, msg);
+    }
+
+    if (!is_player_minimum_af_client_version(player, 1, 3, 0)) {
+        return;
+    }
+
+    const af_server_msg_packet_buf buf = build_server_console_msg_packet(msg);
+
+    rf::multi_io_send_reliable(
+        player,
+        &buf.packet,
+        buf.packet.header.size + sizeof(buf.packet.header),
+        0
+    );
 }
 
 void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player, bool tell_server) {
@@ -1739,5 +1781,9 @@ void af_process_server_msg_packet(
         if (!g_alpine_game_config.simple_server_chat_msgs) {
             rf::snd_play(4, 0, 0.f, 1.f);
         }
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_CONSOLE)) {
+        const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
+        const std::string msg{ptr, len - sizeof(msg_packet)};
+        rf::console::print("{}", msg);
     }
 }

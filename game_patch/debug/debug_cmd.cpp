@@ -127,7 +127,7 @@ CodeInjection event_render_patch{
             for (int link : event->links) {
                 rf::Object* link_target = rf::obj_from_handle(link);
                 if (link_target) {
-                    rf::gr::gr_line_arrow(
+                    rf::gr::line_arrow(
                         event_pos.x, event_pos.y, event_pos.z,
                         link_target->pos.x, link_target->pos.y, link_target->pos.z,
                         128, 0, 255);
@@ -149,7 +149,7 @@ CodeInjection trigger_render_patch{
             for (int link : trigger->links) {
                 rf::Object* link_target = rf::obj_from_handle(link);
                 if (link_target) {
-                    rf::gr::gr_line_arrow(
+                    rf::gr::line_arrow(
                         trigger_pos.x, trigger_pos.y, trigger_pos.z,
                         link_target->pos.x, link_target->pos.y, link_target->pos.z,
                         0, 0, 255);

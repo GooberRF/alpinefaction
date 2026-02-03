@@ -31,6 +31,11 @@ rf::console::Command* g_commands_buffer[CMD_LIMIT];
 static std::ofstream g_console_log;
 static std::string g_console_log_path;
 
+void console_run_script(const char* filename)
+{
+    rf::console::run_script(filename);
+}
+
 static void console_log_write(std::string_view text)
 {
     if (!g_console_log.is_open())

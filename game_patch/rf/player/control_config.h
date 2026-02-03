@@ -60,11 +60,12 @@ namespace rf
     {
         int16_t default_scan_codes[2];
         int16_t default_mouse_btn_id;
-        int16_t field_6;
-        int is_repeat;
+        int16_t default_aux_btn_id;
+        uint32_t press_mode;
         String name;
         int16_t scan_codes[2];
         int16_t mouse_btn_id;
+        int16_t aux_btn_id;
     };
     static_assert(sizeof(ControlConfigItem) == 0x1C);
 

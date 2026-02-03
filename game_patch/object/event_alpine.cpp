@@ -283,6 +283,13 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::When_Round_Ends
     };
 
+    // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
+    // To ensure maximum compatibility with existing Alpine levels, only exempt for RFL v304 and later.
+    // Note that the likelihood of AF_Heal ever having been used in a way that makes this relevant is extremely low.
+    if (event_type == rf::EventType::AF_Heal && rfl_version_minimum(304)) {
+        return true;
+    }
+
     return forward_exempt_ids.find(event_type) != forward_exempt_ids.end();
 }
 

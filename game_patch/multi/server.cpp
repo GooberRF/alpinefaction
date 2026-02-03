@@ -49,14 +49,17 @@
 #include "../rf/collide.h"
 #include "../purefaction/pf.h"
 
-const char* g_rcon_cmd_whitelist[] = {
-    "gt",
+// all commands that can be used by any rcon profiles
+// full_admin gives access to this entire list
+const std::vector<std::string> g_rcon_cmd_masterlist = {
+    "info",
+    "say",
     "kick",
-    "level",
-    "sv_pass",
-    "map",
     "ban",
     "ban_ip",
+    "unban_last",
+    "level",
+    "map",
     "map_ext",
     "map_rest",
     "map_next",
@@ -65,9 +68,10 @@ const char* g_rcon_cmd_whitelist[] = {
     "sv_caplimit",
     "sv_fraglimit",
     "sv_gametype",
+    "gt",
     "sv_geolimit",
+    "sv_pass",
     "sv_timelimit",
-    "unban_last"
 };
 
 std::vector<rf::AlpineRespawnPoint> g_alpine_respawn_points;
@@ -139,6 +143,16 @@ void clear_manual_rules_override()
     g_manual_rules_override.reset();
 }
 
+bool is_rcon_command_masterlisted(std::string_view command)
+{
+    for (const auto& allowed : g_rcon_cmd_masterlist) {
+        if (string_iequals(command, allowed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Weapon stay exemption part 1: remove item when it is picked up and start respawn timer
 CodeInjection weapon_stay_remove_instance_injection{
     0x0045982E,
@@ -196,6 +210,7 @@ CodeInjection rf_process_command_line_dedicated_server_patch{
             g_ads_config_name = ads_filename;
             handle_min_param(); // check if -min switch was used
             handle_log_param(); // check if -log switch was used
+            handle_nodl_param(); // check if -nodl switch was used
         }
     },
 };
@@ -259,16 +274,14 @@ int get_level_file_version(const std::string& file_name)
     return static_cast<int>(version);
 }
 
-void print_player_info(rf::Player* player, bool new_join) {
+std::string build_player_info_line(rf::Player* player, bool new_join) {
     const bool is_bot = player->is_bot;
 
     if (player == rf::local_player) {
         if (is_bot) {
-            rf::console::print("- {} (local bot)", player->name);
-        } else {
-            rf::console::print("- {} (local player)", player->name);
+            return std::format("- {} (local bot)", player->name);
         }
-        return;
+        return std::format("- {} (local player)", player->name);
     }
 
     std::string name = player->name;
@@ -282,8 +295,7 @@ void print_player_info(rf::Player* player, bool new_join) {
 
     // clients have only limited info
     if (!rf::is_server) {
-        rf::console::print("- {} | Ping: {}", name, player->net_data->ping);
-        return;
+        return std::format("- {} | Ping: {}", name, player->net_data->ping);
     }
 
     std::string client_info;
@@ -307,77 +319,83 @@ void print_player_info(rf::Player* player, bool new_join) {
     auto player_addr = player->net_data->addr;
     addr.S_un.S_addr = ntohl(player_addr.ip_addr);
     if (new_join) {
-        rf::console::print("===| {}{} | IP: {}:{} | {} | Max RFL: {} |===",
+        return std::format("===| {}{} | IP: {}:{} | {} | Max RFL: {} |===",
             name, rf::strings::has_joined, inet_ntoa(addr), player->net_data->addr.port, client_info, player->version_info.max_rfl_ver);
     }
-    else {
-        rf::console::print("- {} | IP: {}:{} | {} | Max RFL: {} | Ping: {} | HC: {}%",
-            name, inet_ntoa(addr), player->net_data->addr.port, client_info, player->version_info.max_rfl_ver, player->net_data->ping, player->damage_handicap);
-    }
+    return std::format("- {} | IP: {}:{} | {} | Max RFL: {} | Ping: {} | HC: {}%",
+        name, inet_ntoa(addr), player->net_data->addr.port, client_info, player->version_info.max_rfl_ver, player->net_data->ping, player->damage_handicap);
 }
 
-void print_all_player_info() {
+std::string build_all_player_info_output() {
     if (!rf::player_list) {
-        rf::console::print("No players are currently connected!");
-        return;
+        return "No players are currently connected!\n";
     }
 
     auto player_list = SinglyLinkedList{rf::player_list};
-
-    rf::console::print("Connected players:");    
+    std::string output = "Connected players:\n";
 
     for (auto& player : player_list) {
-        print_player_info(&player, false);
+        output += build_player_info_line(&player, false);
+        output += "\n";
     }
+    return output;
+}
+
+std::string build_info_command_output() {
+    std::string output;
+    int64_t total_sec = static_cast<int64_t>(rf::level.time);
+    int days = int(total_sec / 86'400);
+    int hours = int((total_sec / 3'600) % 24);
+    int minutes = int((total_sec / 60) % 60);
+    int seconds = int(total_sec % 60);
+
+    output += "====================================================\n";
+    if (rf::level.flags & rf::LEVEL_LOADED) {
+        std::format_to(std::back_inserter(output), "{}: {} by {} ({})\n", rf::strings::level_name, rf::level.name, rf::level.author, rf::level.filename);
+        std::format_to(std::back_inserter(output), "{}:  {} {}, {}h {}m {}s\n", rf::strings::level_time, days, rf::strings::days, hours, minutes, seconds);
+        std::format_to(std::back_inserter(output), "{}: {}\n", "Game type", multi_game_type_name(rf::netgame.type));
+    }
+    else {
+        output += "No level loaded\n";
+    }
+
+    std::string framerate_line;
+    bool is_server = rf::is_multi && (rf::is_server || rf::is_dedicated_server);
+    if (is_server) {
+        framerate_line = std::format("Framerate: {:.3f} | FPS: {:.0f} ({} max) | NetFPS: {}\n",
+            rf::frametime,
+            rf::current_fps,
+            rf::is_dedicated_server ? g_alpine_game_config.server_max_fps : g_alpine_game_config.max_fps,
+            g_alpine_game_config.server_netfps
+        );
+    }
+    else {
+        if (rf::local_player) {
+            std::format_to(std::back_inserter(output), "Local player name: {}\n", rf::local_player->name);
+        }
+
+        framerate_line = std::format("Framerate: {:.3f} | FPS: {:.0f} ({} max)\n",
+            rf::frametime, rf::current_fps, g_alpine_game_config.max_fps);
+    }
+    output += framerate_line;
+
+    output += "====================================================\n";
+
+    if (rf::is_multi) {
+        output += "\n";
+        output += build_all_player_info_output();
+    }
+    return output;
+}
+
+void print_player_info(rf::Player* player, bool new_join) {
+    rf::console::print("{}", build_player_info_line(player, new_join));
 }
 
 FunHook<void ()> dcf_info_hook{
     0x00486050,
     []() {
-        int64_t total_sec = static_cast<int64_t>(rf::level.time);
-        int days = int(total_sec / 86'400);
-        int hours = int((total_sec / 3'600) % 24);
-        int minutes = int((total_sec / 60) % 60);
-        int seconds = int(total_sec % 60);
-
-        rf::console::print("====================================================");
-        if (rf::level.flags & rf::LEVEL_LOADED) {
-            rf::console::print("{}: {} by {} ({})\n", rf::strings::level_name, rf::level.name, rf::level.author, rf::level.filename);
-
-            auto time_line = std::format("{}:  {} {}, {}h {}m {}s\n", rf::strings::level_time, days, rf::strings::days, hours, minutes, seconds);
-            rf::console::print("{}", time_line);
-
-            rf::console::print("{}: {}\n", "Game type", multi_game_type_name(rf::netgame.type));
-        }
-        else {
-            rf::console::print("No level loaded\n");
-        }
-
-        std::string framerate_line = "";
-        bool is_server = rf::is_multi && (rf::is_server || rf::is_dedicated_server);
-        if (is_server) {
-            framerate_line = std::format("Framerate: {:.3f} | FPS: {:.0f} ({} max) | NetFPS: {}\n",
-                rf::frametime,
-                rf::current_fps,
-                rf::is_dedicated_server ? g_alpine_game_config.server_max_fps : g_alpine_game_config.max_fps,
-                g_alpine_game_config.server_netfps
-            );
-        }
-        else {
-            if (rf::local_player)
-                rf::console::print("Local player name: {}\n", rf::local_player->name);
-
-            framerate_line = std::format("Framerate: {:.3f} | FPS: {:.0f} ({} max)\n",
-                rf::frametime, rf::current_fps, g_alpine_game_config.max_fps);
-        }            
-        rf::console::print("{}", framerate_line);
-
-        rf::console::print("====================================================\n");
-
-        if (rf::is_multi) {
-            rf::console::print("\n");
-            print_all_player_info();
-        }
+        rf::console::print("{}", build_info_command_output());
     },
 };
 
@@ -899,6 +917,46 @@ ConsoleCommand2 alpine_restrict_status_cmd{
     },
     "Show the current Alpine restriction checks and expected join verdicts.",
     "sv_restrict_status",
+};
+
+ConsoleCommand2 checkmaps_cmd{
+    "sv_checkmaps",
+    []() {
+        if (!rf::is_dedicated_server) {
+            rf::console::print("This command is only available for dedicated servers.\n");
+            return;
+        }
+
+        const auto& levels = g_alpine_server_config.levels;
+        if (levels.empty()) {
+            rf::console::print("Server rotation is empty.\n");
+            return;
+        }
+
+        if (rotation_autodl_in_progress()) {
+            rf::console::print("FactionFiles autodownload check is already running.\n");
+            return;
+        }
+
+        rf::console::print("Checking FactionFiles for {} levels. This may take a moment...", levels.size());
+
+        std::vector<std::string> unique_levels;
+        std::unordered_map<std::string, size_t> unique_level_index;
+        unique_levels.reserve(levels.size());
+        unique_level_index.reserve(levels.size());
+
+        for (const auto& entry : levels) {
+            std::string filename = entry.level_filename;
+            std::string key = string_to_lower(filename);
+            if (unique_level_index.emplace(key, unique_levels.size()).second) {
+                unique_levels.push_back(std::move(filename));
+            }
+        }
+
+        rotation_autodl_start(levels.size(), std::move(unique_levels));
+    },
+    "Check whether any levels on the server rotation are unavailable for autodownload from FactionFiles.",
+    "sv_checkmaps",
 };
 
 void multi_change_level_alpine(const char* filename) {
@@ -2954,10 +3012,6 @@ void server_init()
     // new "info" command for ADS servers
     dcf_info_hook.install();
 
-    // Override rcon command whitelist
-    write_mem_ptr(0x0046C794 + 1, g_rcon_cmd_whitelist);
-    write_mem_ptr(0x0046C7D1 + 2, g_rcon_cmd_whitelist + std::size(g_rcon_cmd_whitelist));
-
     // Additional server config
     dedicated_server_load_config_hook.install(); // asd loading
     rf_process_command_line_dedicated_server_patch.install(); // set dedi server bool when launching via ads
@@ -3046,11 +3100,13 @@ void server_init()
     get_ads_cmd_line_param();
     get_min_cmd_line_param();
     get_log_cmd_line_param();
+    get_nodl_cmd_line_param();
 
     // console commands
     sv_game_type_cmd.register_cmd();
-    alpine_restrict_status_cmd.register_cmd();
     gt_cmd.register_cmd();
+    alpine_restrict_status_cmd.register_cmd();
+    checkmaps_cmd.register_cmd();
 }
 
 void server_do_frame()

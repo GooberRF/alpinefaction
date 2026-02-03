@@ -9,6 +9,7 @@
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/hud.h"
+#include "../rf/entity.h"
 #include "../rf/os/frametime.h"
 #include "../multi/multi.h"
 #include "../main/main.h"
@@ -20,6 +21,58 @@ static float g_frametime_history[1024];
 static int g_frametime_history_index = 0;
 static bool g_show_frametime_graph = false;
 static FpsCounterState g_fps_counter_state;
+
+static int frametime_hud_counter_base_y()
+{
+    int y = 10;
+    if (rf::gameseq_in_gameplay()) {
+        y = g_alpine_game_config.big_hud ? 110 : 60;
+        if (hud_weapons_is_double_ammo()) {
+            y += g_alpine_game_config.big_hud ? 80 : 40;
+        }
+    }
+    return y;
+}
+
+static int frametime_hud_counter_line_gap()
+{
+    return g_alpine_game_config.big_hud ? 25 : 15;
+}
+
+static void frametime_render_speed_meter()
+{
+    if (!g_alpine_game_config.speed_display || rf::hud_disabled || !rf::gameseq_in_gameplay()) {
+        return;
+    }
+
+    rf::Player* const player = rf::local_player;
+    if (!player) {
+        return;
+    }
+
+    rf::Entity* const entity = rf::entity_from_handle(player->entity_handle);
+    if (!entity) {
+        return;
+    }
+
+    const rf::Vector3& velocity = entity->p_data.vel;
+    float horizontal_speed = std::sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
+    float speed_mps = std::clamp(horizontal_speed, 0.0f, 9999.9f);
+    std::string text = std::format("{:.2f}", speed_mps);
+
+    int y = frametime_hud_counter_base_y();
+    if (g_alpine_game_config.fps_counter) {
+        y += frametime_hud_counter_line_gap();
+    }
+
+    rf::gr::set_color(0, 255, 0, 255);
+    const int value_anchor = rf::gr::screen_width() - 20;
+    const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
+    int font_id = hud_get_default_font();
+    const std::string_view speed_label = "Speed:";
+    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, y, speed_label.data(), font_id);
+    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
+}
 
 static void frametime_render_graph()
 {
@@ -96,13 +149,7 @@ static void frametime_render_fps_counter()
         rf::gr::set_color(0, 255, 0, 255);
         const int value_anchor = rf::gr::screen_width() - 20;
         const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
-        int y = 10;
-        if (rf::gameseq_in_gameplay()) {
-            y = g_alpine_game_config.big_hud ? 110 : 60;
-            if (hud_weapons_is_double_ammo()) {
-                y += g_alpine_game_config.big_hud ? 80 : 40;
-            }
-        }
+        int y = frametime_hud_counter_base_y();
 
         int font_id = hud_get_default_font();
         const std::string_view fps_label = "FPS:";
@@ -117,13 +164,13 @@ static void frametime_render_fps_counter()
         const int value_anchor = rf::gr::screen_width() - 20;
         const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
         const int gap = 6;
-        int y = g_alpine_game_config.big_hud ? 35 : 25;
-        if (rf::gameseq_in_gameplay()) {
-            y = g_alpine_game_config.big_hud ? 135 : 75;
-            if (hud_weapons_is_double_ammo()) {
-                y += g_alpine_game_config.big_hud ? 105 : 55;
-            }
+        int y = frametime_hud_counter_base_y();
+        int offset_lines = 0;
+        if (g_alpine_game_config.fps_counter) {
+            offset_lines++;
         }
+        offset_lines++;
+        y += frametime_hud_counter_line_gap() * offset_lines;
 
         int font_id = hud_get_default_font();
         const std::string_view ping_label = "Ping:";
@@ -135,6 +182,7 @@ static void frametime_render_fps_counter()
 void frametime_render_ui()
 {
     frametime_render_fps_counter();
+    frametime_render_speed_meter();
     frametime_render_graph();
 }
 
@@ -170,6 +218,16 @@ ConsoleCommand2 ping_display_cmd{
     },
     "Toggle ping counter",
     "ui_show_ping",
+};
+
+ConsoleCommand2 speed_display_cmd{
+    "ui_show_speed",
+    []() {
+        g_alpine_game_config.speed_display = !g_alpine_game_config.speed_display;
+        rf::console::print("Speed display is {}", g_alpine_game_config.speed_display ? "enabled" : "disabled");
+    },
+    "Toggle speed meter display",
+    "ui_show_speed",
 };
 
 CallHook<void(int)> frametime_calculate_sleep_hook{
@@ -263,4 +321,5 @@ void frametime_apply_patch()
     fps_counter_cmd.register_cmd();
     fps_counter_average_cmd.register_cmd();
     ping_display_cmd.register_cmd();
+    speed_display_cmd.register_cmd();
 }

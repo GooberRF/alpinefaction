@@ -114,16 +114,21 @@ void disable_sound_before_cutscene_skip()
 
     rf::snd_pause(true);
     rf::snd_stop_all_paused();
-    rf::sound_enabled = false;
+    set_sound_enabled(false);
 }
 
 void enable_sound_after_cutscene_skip()
 {
-    rf::sound_enabled = true;
+    set_sound_enabled(true);
 }
 
 void set_sound_enabled(bool enabled)
 {
+    if (!g_alpine_game_config.sound_enabled) {
+        rf::sound_enabled = false;
+        return;
+    }
+
     rf::sound_enabled = enabled;
 }
 
@@ -138,6 +143,17 @@ ConsoleCommand2 level_sounds_cmd{
     },
     "Sets level sounds volume scale",
     "levelsounds <volume>",
+};
+
+ConsoleCommand2 sound_enabled_cmd{
+    "dbg_togglesound",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.sound_enabled = !g_alpine_game_config.sound_enabled;
+        set_sound_enabled(g_alpine_game_config.sound_enabled);
+        rf::console::print("Game sound is now {}.", g_alpine_game_config.sound_enabled ? "enabled" : "disabled");
+    },
+    "Toggle all game sound.",
+    "dbg_togglesound",
 };
 
 FunHook<int(int, int, float, float)> snd_play_hook{
@@ -819,6 +835,7 @@ void apply_sound_patches()
 void register_sound_commands()
 {
     level_sounds_cmd.register_cmd();
+    sound_enabled_cmd.register_cmd();
 #ifdef DEBUG
     sound_stress_test_cmd.register_cmd();
 #endif

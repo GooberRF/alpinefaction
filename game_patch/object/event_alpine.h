@@ -140,7 +140,8 @@ namespace rf
         player_team,
         enemy_team,
         red_team,
-        blue_team
+        blue_team,
+        players_in_linked_triggers
     };
 
     enum class GameplayRule : int
@@ -1954,6 +1955,49 @@ namespace rf
                     }
                     break;
                 }
+
+                case AFHealTargetOption::players_in_linked_triggers: {
+                    if (!rf::is_multi) {
+                        break;
+                    }
+
+                    std::vector<Trigger*> triggers_to_check;
+                    triggers_to_check.reserve(this->links.size());
+
+                    for (int link_handle : this->links) {
+                        Object* obj = obj_from_handle(link_handle);
+                        if (obj && obj->type == OT_TRIGGER) {
+                            triggers_to_check.push_back(static_cast<Trigger*>(obj));
+                        }
+                    }
+
+                    if (triggers_to_check.empty()) {
+                        xlog::warn("AF_Heal UID {} has no linked triggers to check", this->uid);
+                        break;
+                    }
+
+                    for (auto& player : player_list) {
+                        Entity* ep = entity_from_handle(player.entity_handle);
+                        if (!ep) {
+                            continue;
+                        }
+
+                        bool is_inside = false;
+                        for (Trigger* trigger : triggers_to_check) {
+                            is_inside = (trigger->type == 0)
+                                ? trigger_inside_bounding_sphere(trigger, ep)
+                                : (trigger->type == 1 && trigger_inside_bounding_box(trigger, ep));
+                            if (is_inside) {
+                                break;
+                            }
+                        }
+
+                        if (is_inside) {
+                            apply_healing(ep);
+                        }
+                    }
+                    break;
+                }
             }
         }
     };
@@ -2415,4 +2459,3 @@ namespace rf
     };
 
 } // namespace rf
-

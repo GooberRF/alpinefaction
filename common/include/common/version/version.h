@@ -19,7 +19,7 @@
 #define VERSION_MINOR          3
 #define VERSION_PATCH          0
 #define VERSION_TYPE           VERSION_TYPE_DEV
-#define VERSION_TYPE_REVISION  0
+#define VERSION_TYPE_REVISION  2
 #define VERSION_CODE           "Bakeapple"
 
 // Version used for Alpine settings files

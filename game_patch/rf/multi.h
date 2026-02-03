@@ -148,6 +148,17 @@ namespace rf
         NG_FLAG_BALANCE_TEAMS = 0x2000,
     };
 
+    enum NetPlayerFlags
+    {
+        NPF_IS_HOST = 0x1,
+        NPF_WAITING_FOR_RELIABLE_SOCKET = 0x4,
+        NPF_CLIENT_IS_LOADED = 0x8,
+        NPF_PLAYER_NAMES_ON_HUD = 0x10,
+        NPF_LIMBO = 0x20,
+        NPF_BLUE_TEAM = 0x80,
+        NPF_RCON_HOLDER = 0x100
+    };
+
     struct NetGameInfo
     {
         String name;
@@ -297,8 +308,9 @@ namespace rf
 
     static auto& netgame = addr_as_ref<NetGameInfo>(0x0064EC28);
     static auto& is_multi = addr_as_ref<bool>(0x0064ECB9);
-    static auto& is_server = addr_as_ref<bool>(0x0064ECBA); // only refers to a listen server
+    static auto& is_server = addr_as_ref<bool>(0x0064ECBA);
     static auto& is_dedicated_server = addr_as_ref<bool>(0x0064ECBB);
+    static auto& num_multi_characters = addr_as_ref<int>(0x006C9C60);
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);
     static auto& rcon_password = addr_as_ref<char[20]>(0x0064ECD0);

@@ -7,13 +7,17 @@
 #include <stdexcept>
 #include <xlog/xlog.h>
 #include <common/version/version.h>
+#include <common/utils/string-utils.h>
 #include "../os/console.h"
+#include "../rf/multi.h"
 #include "faction_files.h"
 
-static const char level_download_agent_name[] = AF_USER_AGENT_SUFFIX("Autodl");
+static const char level_download_agent_name_client[] = AF_USER_AGENT_SUFFIX("Autodl");
+static const char level_download_agent_name_dedi[] = AF_USER_AGENT_SUFFIX("Dedi Autodl");
 static const char level_download_base_url[] = "https://autodl.factionfiles.com";
 
-FactionFilesClient::FactionFilesClient() : session_{level_download_agent_name}
+FactionFilesClient::FactionFilesClient() :
+    session_{rf::is_dedicated_server ? level_download_agent_name_dedi : level_download_agent_name_client}
 {
     session_.set_connect_timeout(2000);
     session_.set_receive_timeout(3000);
@@ -72,6 +76,51 @@ std::optional<FactionFilesClient::LevelInfo> FactionFilesClient::find_map(const 
     xlog::debug("FactionFiles response: {}", buf);
 
     return parse_level_info(buf);
+}
+
+std::vector<bool> FactionFilesClient::check_maps(const std::vector<std::string>& file_names)
+{
+    std::string body;
+    for (size_t i = 0; i < file_names.size(); ++i) {
+        if (i > 0) {
+            body += ';';
+        }
+        body += file_names[i];
+    }
+
+    auto url = std::format("{}/checkmaps.php", level_download_base_url);
+
+    xlog::trace("Checking map availability for {} entries", file_names.size());
+    HttpRequest req{url, "POST", session_};
+    req.set_content_type("text/plain");
+    req.send(body);
+
+    std::ostringstream response_stream;
+    char buf[1024];
+    while (size_t num_bytes_read = req.read(buf, sizeof(buf))) {
+        response_stream.write(buf, num_bytes_read);
+    }
+
+    auto response = response_stream.str();
+    std::vector<bool> results;
+    results.reserve(file_names.size());
+
+    std::istringstream response_reader(response);
+    std::string line;
+    while (std::getline(response_reader, line)) {
+        std::string_view trimmed = trim(line);
+        if (trimmed.empty()) {
+            continue;
+        }
+        results.push_back(trimmed == "found");
+    }
+
+    if (results.size() != file_names.size()) {
+        xlog::warn("FactionFiles checkmaps count mismatch: sent {}, received {}", file_names.size(), results.size());
+        results.resize(file_names.size(), false);
+    }
+
+    return results;
 }
 
 void FactionFilesClient::download_map(const char* tmp_filename, int ticket_id,

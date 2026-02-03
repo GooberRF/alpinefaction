@@ -92,6 +92,10 @@
 #define IDC_SM2_BTN                     3056
 #define IDC_SM3_BTN                     3057
 #define IDC_SM4_BTN                     3058
+#define IDC_FFLINK_BTN                  3059
+#define IDC_FFLINK_OPTIONS_BOX          3060
+#define IDC_FFLINK_STATUS_LABEL         3061
+#define IDC_FFLINK_ACTION_BTN           3062
 
 // Image buttons
 #define IDB_PLAY_NORMAL                 3001
@@ -136,9 +140,16 @@
 #define IDB_SM4_HOVER                   3033
 #define IDB_SM4_PRESSED                 3034
 
+#define IDB_FFLINK_NORMAL               3035
+#define IDB_FFLINK_HOVER                3036
+#define IDB_FFLINK_PRESSED              3037
+
 #define IDD_DOWNLOAD_PROGRESS           3081
+#define IDD_FFLINK_PROGRESS             3084
 #define IDC_STATIC_PROGRESS             3085
 #define IDC_PROGRESS_BAR                3082
+#define IDC_FFLINK_STATUS_TEXT          3086
+#define IDC_FFLINK_PROGRESS_BAR         3087
 
 // FFLink reminder prompt
 #define IDD_FFLINK_REMINDER             2001

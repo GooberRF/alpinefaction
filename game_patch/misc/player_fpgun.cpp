@@ -260,6 +260,36 @@ CodeInjection player_fpgun_render_main_player_entity_injection{
     },
 };
 
+CodeInjection player_fpgun_render_ir_cull_patch_1{
+    0x004AF137,
+    [] (auto& regs) {
+        const rf::Object& object = addr_as_ref<rf::Object>(regs.ebx);
+        rf::Vector3 root_bone_pos{};
+        rf::obj_find_root_bone_pos(object, root_bone_pos);
+        if (rf::gr::cull_sphere(root_bone_pos, object.p_data.radius)) {
+            regs.eip = 0x004AF427;
+        } else {
+            regs.eip = 0x004AF164;
+        }
+        regs.esp += 8;
+    },
+};
+
+CodeInjection player_fpgun_render_ir_cull_patch_2{
+    0x004AF47F,
+    [] (auto& regs) {
+        const rf::Object& object = addr_as_ref<rf::Object>(regs.edi);
+        rf::Vector3 root_bone_pos{};
+        rf::obj_find_root_bone_pos(object, root_bone_pos);
+        if (rf::gr::cull_sphere(root_bone_pos, object.p_data.radius)) {
+            regs.eip = 0x004AF762;
+        } else {
+            regs.eip = 0x004AF4AC;
+        }
+        regs.esp += 8;
+    },
+};
+
 CodeInjection players_cleanup_injection{
     0x004A259C,
     []() {
@@ -349,6 +379,10 @@ void player_fpgun_do_patch()
     // Allow customizing fpgun fov
     player_fpgun_render_gr_setup_3d_hook.install();
     fpgun_fov_scale_cmd.register_cmd();
+
+    // Do not cull entities too early.
+    player_fpgun_render_ir_cull_patch_1.install();
+    player_fpgun_render_ir_cull_patch_2.install();
 
 #ifndef NDEBUG
     reload_fpgun_cmd.register_cmd();

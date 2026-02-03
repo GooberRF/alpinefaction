@@ -192,7 +192,7 @@ ConsoleCommand2 key_quick_exit_cmd{
     "Toggle Shift+Esc to quit out of Red Faction",
 };
 
-void alpine_control_config_add_item(rf::ControlConfig* config, const char* name, bool is_repeat,
+void alpine_control_config_add_item(rf::ControlConfig* config, const char* name, bool press_mode,
     int16_t key1, int16_t key2, int16_t mouse_button, rf::AlpineControlConfigAction alpine_control)
 {
     if (config->num_bindings >= 128) {
@@ -208,7 +208,7 @@ void alpine_control_config_add_item(rf::ControlConfig* config, const char* name,
     binding.scan_codes[0] = key1;
     binding.scan_codes[1] = key2;
     binding.mouse_btn_id = mouse_button;
-    binding.is_repeat = is_repeat;
+    binding.press_mode = press_mode;
     binding.name = name;
 
     // set "Factory Default" binding values

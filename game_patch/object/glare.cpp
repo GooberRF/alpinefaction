@@ -35,18 +35,17 @@ static bool glare_collide_object(rf::Glare* glare, rf::Object* obj, const rf::Ve
         return false;
     }
 
-    rf::Vector3 hit_pt;
+    rf::Vector3 hit_pt{};
     if (rf::cutscene_is_playing() && obj->type == rf::OT_ENTITY) {
         // Fix glares/coronas being visible through characters during cutscenes
-        rf::Vector3 root_bone_pos;
-        rf::obj_find_root_bone_pos(static_cast<rf::Entity*>(obj), root_bone_pos);
+        rf::Vector3 root_bone_pos{};
+        rf::obj_find_root_bone_pos(*obj, root_bone_pos);
         rf::Vector3 aabb_min = root_bone_pos - obj->p_data.radius;
         rf::Vector3 aabb_max = root_bone_pos + obj->p_data.radius;
         if (!rf::ix_linesegment_boundingbox(aabb_min, aabb_max, glare->pos, eye_pos, &hit_pt)) {
             return false;
         }
-    }
-    else {
+    } else {
         if (!rf::ix_linesegment_boundingbox(obj->p_data.bbox_min, obj->p_data.bbox_max, glare->pos, eye_pos, &hit_pt)) {
             return false;
         }

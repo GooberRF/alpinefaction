@@ -17,7 +17,8 @@ namespace rf
 
     enum EntityFlags
     {
-        EF_JUMP_START_ANIM = 2,
+        EF_JUMP_START_ANIM = 0x2,
+        EF_GIB_ON_DEATH = 0x80,
     };
 
     struct EntityCollisionSphereOverride

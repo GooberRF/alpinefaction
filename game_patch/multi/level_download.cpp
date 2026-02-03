@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <unzip.h>
 #include <xlog/xlog.h>
+#include <unordered_set>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/FunHook.h>
@@ -27,6 +28,13 @@
 #include "../hud/hud.h"
 #include "multi.h"
 #include "faction_files.h"
+
+struct RotationAutodlReport
+{
+    size_t unique_levels = 0;
+    std::vector<std::string> missing_levels;
+    std::optional<std::string> error;
+};
 
 static bool is_vpp_filename(const char* filename)
 {
@@ -102,6 +110,72 @@ static std::vector<std::string> unzip(const char* path, const char* output_dir,
     unzClose(archive);
     xlog::debug("Unzipped");
     return extracted_files;
+}
+
+static void load_packfiles(const std::vector<std::string>& packfiles)
+{
+    rf::vpackfile_set_loading_user_maps(true);
+    for (const auto& filename : packfiles) {
+        if (!rf::vpackfile_add(filename.c_str(), "user_maps\\multi\\")) {
+            xlog::error("vpackfile_add failed - {}", filename);
+        }
+    }
+    rf::vpackfile_set_loading_user_maps(false);
+}
+
+static bool level_file_exists(const std::string& filename)
+{
+    rf::File file;
+    return file.find(filename.c_str());
+}
+
+bool download_level_if_missing(std::string filename)
+{
+    if (filename.rfind('.') == std::string::npos) {
+        filename += ".rfl";
+    }
+
+    if (level_file_exists(filename)) {
+        return true;
+    }
+
+    rf::console::print("----> Level {} is not installed. Trying to download it from FactionFiles...\n", filename);
+
+    FactionFilesClient ff_client;
+    auto level_info = ff_client.find_map(filename.c_str());
+    if (!level_info) {
+        rf::console::print("--> Level {} was not found on FactionFiles.\n", filename);
+        return false;
+    }
+
+    auto temp_filename = get_temp_path_name("AF_Level_");
+    try {
+        rf::console::print("--> Starting level download: {}\n", filename);
+        ff_client.download_map(temp_filename.c_str(), level_info->ticket_id,
+            [](unsigned, std::chrono::milliseconds) { return true; });
+        rf::console::print("--> Level download completed: {}\n", filename);
+
+        auto output_dir = std::format("{}user_maps\\multi", rf::root_path);
+        std::vector<std::string> packfiles = unzip(temp_filename.c_str(), output_dir.c_str(), is_vpp_filename);
+        remove(temp_filename.c_str());
+
+        if (packfiles.empty()) {
+            xlog::error("--> No packfiles were found for level {}", filename);
+            rf::console::print("\n");
+            return false;
+        }
+
+        rf::console::print("--> Installing downloaded level: {}\n", filename);
+        load_packfiles(packfiles);
+        rf::console::print("--> Level install completed: {}\n", filename);
+        rf::console::print("\n");
+        return level_file_exists(filename);
+    }
+    catch (const std::exception& e) {
+        remove(temp_filename.c_str());
+        xlog::error("--> Level download failed for {}: {}", filename, e.what());
+        return false;
+    }
 }
 
 enum class LevelDownloadState
@@ -287,17 +361,6 @@ private:
         }
     }
 
-    static void load_packfiles(const std::vector<std::string>& packfiles)
-    {
-        rf::vpackfile_set_loading_user_maps(true);
-        for (const auto& filename : packfiles) {
-            if (!rf::vpackfile_add(filename.c_str(), "user_maps\\multi\\")) {
-                xlog::error("vpackfile_add failed - {}", filename);
-            }
-        }
-        rf::vpackfile_set_loading_user_maps(false);
-    }
-
 public:
     bool process()
     {
@@ -328,6 +391,7 @@ public:
 class LevelDownloadManager
 {
     std::optional<LevelDownloadOperation> operation_;
+    std::future<RotationAutodlReport> rotation_autodl_future_;
 
 public:
     void abort()
@@ -354,12 +418,102 @@ public:
         if (operation_ && operation_.value().process()) {
             operation_.reset();
         }
+
+        process_rotation_autodl();
     }
 
     static LevelDownloadManager& instance()
     {
         static LevelDownloadManager inst;
         return inst;
+    }
+
+    bool rotation_autodl_in_progress() const
+    {
+        using namespace std::chrono_literals;
+        return rotation_autodl_future_.valid() && rotation_autodl_future_.wait_for(0ms) != std::future_status::ready;
+    }
+
+    void rotation_autodl_start(size_t levels_count, std::vector<std::string> unique_levels)
+    {
+        (void)levels_count;
+        if (rotation_autodl_future_.valid()) {
+            using namespace std::chrono_literals;
+            if (rotation_autodl_future_.wait_for(0ms) == std::future_status::ready) {
+                rotation_autodl_future_.get();
+            }
+        }
+
+        rotation_autodl_future_ = std::async(std::launch::async,
+            [levels_count, unique_levels = std::move(unique_levels)]() mutable -> RotationAutodlReport {
+                RotationAutodlReport report;
+                report.unique_levels = unique_levels.size();
+                try {
+                    FactionFilesClient ff_client;
+                    constexpr size_t MAX_LEVELS_SINGLE_BATCH = 50;
+                    std::vector<std::string> missing_levels;
+                    std::unordered_set<std::string> missing_level_keys;
+                    missing_levels.reserve(unique_levels.size());
+                    missing_level_keys.reserve(unique_levels.size());
+
+                    for (size_t start = 0; start < unique_levels.size(); start += MAX_LEVELS_SINGLE_BATCH) {
+                        const size_t end = std::min(start + MAX_LEVELS_SINGLE_BATCH, unique_levels.size());
+                        std::vector<std::string> batch(unique_levels.begin() + static_cast<std::ptrdiff_t>(start),
+                                                       unique_levels.begin() + static_cast<std::ptrdiff_t>(end));
+                        std::vector<bool> availability = ff_client.check_maps(batch);
+
+                        for (size_t i = 0; i < batch.size(); ++i) {
+                            if (i < availability.size() && availability[i]) {
+                                continue;
+                            }
+
+                            const auto& filename = batch[i];
+                            std::string key = string_to_lower(filename);
+                            if (missing_level_keys.insert(key).second) {
+                                missing_levels.push_back(filename);
+                            }
+                        }
+                    }
+
+                    report.missing_levels = std::move(missing_levels);
+                    return report;
+                }
+                catch (const std::exception& ex) {
+                    report.error = ex.what();
+                    return report;
+                }
+            });
+    }
+
+private:
+    void process_rotation_autodl()
+    {
+        if (!rotation_autodl_future_.valid()) {
+            return;
+        }
+
+        using namespace std::chrono_literals;
+        if (rotation_autodl_future_.wait_for(0ms) != std::future_status::ready) {
+            return;
+        }
+
+        RotationAutodlReport report = rotation_autodl_future_.get();
+        if (report.error) {
+            rf::console::print("Failed to check levels on FactionFiles: {}\n", report.error.value());
+            return;
+        }
+
+        if (report.missing_levels.empty()) {
+            rf::console::print("{} unique levels on server rotation. All are available for autodownload from FactionFiles.",
+                report.unique_levels);
+            return;
+        }
+
+        rf::console::print("{} unique levels on server rotation. {} are NOT available for autodownload from FactionFiles:",
+            report.unique_levels, report.missing_levels.size());
+        for (const auto& missing : report.missing_levels) {
+            rf::console::print("  {}", missing);
+        }
     }
 };
 
@@ -650,4 +804,14 @@ void multi_level_download_update()
 void multi_level_download_abort()
 {
     LevelDownloadManager::instance().abort();
+}
+
+bool rotation_autodl_in_progress()
+{
+    return LevelDownloadManager::instance().rotation_autodl_in_progress();
+}
+
+void rotation_autodl_start(size_t levels_count, std::vector<std::string> unique_levels)
+{
+    LevelDownloadManager::instance().rotation_autodl_start(levels_count, std::move(unique_levels));
 }

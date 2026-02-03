@@ -566,7 +566,8 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
             "Teammates",
             "Enemy team",
             "Players on red team",
-            "Players on blue team"}}
+            "Players on blue team",
+            "Players in linked triggers"}}
         },
         {
             {FIELD_INT2, true}

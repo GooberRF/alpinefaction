@@ -220,6 +220,7 @@ enum af_server_msg_type : uint8_t {
     AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG = 0x1,
     AF_SERVER_MSG_TYPE_AUTOMATED_CHAT = 0x2,
     AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG_EOF = 0x3,
+    AF_SERVER_MSG_TYPE_CONSOLE = 0x4,
 };
 
 struct af_server_msg_packet {
@@ -267,6 +268,7 @@ void af_send_server_cfg(rf::Player* player);
 void af_process_server_msg_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_broadcast_automated_chat_msg(std::string_view msg);
 void af_send_automated_chat_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
+void af_send_server_console_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
 
 // client requests
 void af_send_handicap_request(uint8_t amount);

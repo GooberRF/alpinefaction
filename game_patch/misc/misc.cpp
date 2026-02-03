@@ -327,7 +327,7 @@ CodeInjection emitters_tbl_buffer_overflow_fix{
     0x00496E76,
     [](auto& regs) {
         constexpr int max_emitter_types = 64;
-        auto num_emitter_types = addr_as_ref<int>(0x006C9C60);
+        auto num_emitter_types = addr_as_ref<int>(0x007BD99C);
         if (num_emitter_types == max_emitter_types) {
             xlog::warn("emitters.tbl limit of {} definitions has been reached!", max_emitter_types);
             regs.eip = 0x00496F1A;
