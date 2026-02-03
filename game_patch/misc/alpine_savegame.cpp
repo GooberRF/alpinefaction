@@ -15,6 +15,7 @@
 #include <sstream>
 #include <unordered_set>
 #include <xlog/xlog.h>
+#include "alpine_options.h"
 #include "alpine_savegame.h"
 #include "alpine_settings.h"
 #include "../rf/file/file.h"
@@ -65,6 +66,14 @@ namespace asg
 {
     constexpr size_t MAX_SAVED_LEVELS = 4;
     static std::unordered_map<int, EntitySkinState> g_entity_skin_state;
+
+    static bool is_new_savegame_format_enabled()
+    {
+        return g_alpine_game_config.use_new_savegame_format ||
+               (g_alpine_options_config.is_option_loaded(AlpineOptionID::RequireAlpineSavegameFormat) &&
+                std::get<bool>(g_alpine_options_config.options[AlpineOptionID::RequireAlpineSavegameFormat]));
+    }
+
 
     static bool use_high_accuracy_savegame()
     {
@@ -5055,7 +5064,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_save_game_hook{
     0x004B3B30,
     [](const char *filename, rf::Player *pp) {
 
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             // use .asg extension
             std::filesystem::path p{filename};
             p.replace_extension(".asg");
@@ -5076,7 +5085,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_save_game_hook{
 FunHook<void()> do_quick_load_hook{
     0x004B5EB0,
     []() {
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             std::filesystem::path save_dir{ rf::sr::savegame_path };
             auto asg_path = save_dir / "quicksav.asg";
             std::string asg_file = asg_path.string();
@@ -5106,7 +5115,7 @@ FunHook<void(rf::Player* pp)> sr_transitional_save_hook{
     0x004B52E0,
     [](rf::Player *pp) {
 
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             rf::sr::g_disable_saving_persistent_goals = true;
 
             size_t idx = asg::ensure_current_level_slot();
@@ -5127,7 +5136,7 @@ FunHook<void(rf::Player* pp)> sr_transitional_save_hook{
 FunHook<void()> sr_reset_save_data_hook{
     0x004B52C0,
     []() {
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             
             // clear new save data global
             g_save_data = {};
@@ -5147,7 +5156,7 @@ FunHook<void(const char* msg, int16_t persona_type)> hud_save_persona_msg_hook{
     0x00437FB0,
     [](const char* msg, int16_t persona_type) {
 
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
 
             char buf[256];
             std::strncpy(buf, msg, sizeof(buf) - 1);
@@ -5209,7 +5218,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
     0x004B47A0,
     [](const char* filename, rf::Player* pp) {
 
-        if (!g_alpine_game_config.use_new_savegame_format) {
+        if (!asg::is_new_savegame_format_enabled()) {
             // fall back to the stock format
             return sr_load_level_state_hook.call_target(filename, pp);
         }
@@ -5311,7 +5320,7 @@ CodeInjection event_init_injection{
 FunHook<rf::PersistentGoalEvent*(const char* name)> event_lookup_persistent_goal_event_hook{
     0x004B8680,
     [](const char* name) {
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             for (auto& ev : g_persistent_goals) {
                 if (string_iequals(ev.name, name)) {
                     return &ev;
@@ -5328,7 +5337,7 @@ FunHook<rf::PersistentGoalEvent*(const char* name)> event_lookup_persistent_goal
 FunHook<void(const char* name, int initial_count, int current_count)> event_add_persistent_goal_event_hook{
     0x004B8610,
     [](const char* name, int initial_count, int current_count) {
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             for (auto& ev : g_persistent_goals) {
                     if (string_iequals(ev.name, name)) {
                         // update counts
@@ -5369,7 +5378,7 @@ CodeInjection glass_shard_level_init_injection{
 FunHook<void()> glass_delete_rooms_hook{
     0x004921A0,
     []() {
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             if (!rf::g_boolean_is_in_progress()) {
                 for (auto room : g_deleted_rooms) {
                     //xlog::warn("killing room {}", room->uid);
@@ -5564,7 +5573,7 @@ bool alpine_parse_ponr(const std::string& path)
 FunHook<bool()> sr_parse_ponr_table_hook{
     0x004B36F0,
     []() {
-         if (g_alpine_game_config.use_new_savegame_format) {
+         if (asg::is_new_savegame_format_enabled()) {
             if (alpine_parse_ponr("ponr.tbl")) {
                  //xlog::warn("Parsed {} entries from ponr.tbl", g_alpine_ponr.size());
                  return true;
@@ -5580,7 +5589,7 @@ FunHook<bool()> sr_parse_ponr_table_hook{
 FunHook<int()> sr_get_num_logged_messages_hook{
     0x004B57A0,
     []() {
-        if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             return g_save_data.common.game.num_logged_messages;
         }
         else {
@@ -5592,7 +5601,7 @@ FunHook<int()> sr_get_num_logged_messages_hook{
 FunHook<int()> sr_get_logged_messages_total_height_hook{
     0x004B57E0,
     []() {
-         if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             return g_save_data.common.game.messages_total_height;
         }
         else {
@@ -5604,7 +5613,7 @@ FunHook<int()> sr_get_logged_messages_total_height_hook{
 FunHook<int()> sr_get_most_recent_logged_message_index_hook{
     0x004B57C0,
     []() {
-         if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             return g_save_data.common.game.newest_message_index;
         }
         else {
@@ -5616,7 +5625,7 @@ FunHook<int()> sr_get_most_recent_logged_message_index_hook{
 FunHook<rf::sr::LoggedHudMessage*(int index)> sr_get_logged_message_hook{
     0x004B5800,
     [](int index) {
-         if (g_alpine_game_config.use_new_savegame_format) {
+        if (asg::is_new_savegame_format_enabled()) {
             int count = (int)g_save_data.common.game.messages.size();
             if (index < 0 || index >= count) {
                 xlog::error("Failed to get logged message ID {}", index);

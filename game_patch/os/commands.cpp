@@ -376,6 +376,11 @@ ConsoleCommand2 autosave_cmd{
 ConsoleCommand2 new_savegame_format_cmd{
     "sp_save_format",
     []() {
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::RequireAlpineSavegameFormat) &&
+            std::get<bool>(g_alpine_options_config.options[AlpineOptionID::RequireAlpineSavegameFormat])) {
+            rf::console::print("Savegame files will be written using the modern (.asg) format. Cannot use the legacy savegame format because the currently loaded mod does not support it.");
+            return;
+        }
         g_alpine_game_config.use_new_savegame_format = !g_alpine_game_config.use_new_savegame_format;
         rf::console::print("Savegame files will be written using the {} format",
             g_alpine_game_config.use_new_savegame_format ? "modern (.asg)" : "legacy (.svl)");
