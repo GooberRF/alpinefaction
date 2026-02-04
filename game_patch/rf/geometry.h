@@ -481,6 +481,8 @@ namespace rf
 
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);
+    static auto& decompress_vector3 = addr_as_ref<GSolid*(GSolid* solid, const ShortVector* in_vec, Vector3* out_vec)>(0x004B5900);
+    static auto& compress_vector3 = addr_as_ref<int(GSolid* solid, Vector3* in_vec, ShortVector* out_vec)>(0x004B5820);
 
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
 

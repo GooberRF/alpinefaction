@@ -190,6 +190,8 @@ set(SRCS
     misc/ui.cpp
     misc/game.cpp
     misc/level.cpp
+    misc/waypoints.cpp
+    misc/waypoints.h
     misc/alpine_options.h
     misc/alpine_options.cpp
     misc/alpine_settings.h

@@ -38,6 +38,7 @@
 #include "../misc/vpackfile.h"
 #include "../misc/high_fps.h"
 #include "../misc/player.h"
+#include "../misc/waypoints.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -145,6 +146,7 @@ FunHook<int()> rf_do_frame_hook{
         maybe_autosave();
         debug_do_frame_post();
         multi_level_download_update();
+        waypoints_do_frame();
         return result;
     },
 };
@@ -156,6 +158,7 @@ CodeInjection after_level_render_hook{
         experimental_render_in_game();
 #endif
         debug_render();
+        waypoints_render_debug();
         hud_world_do_frame();
     },
 };
@@ -181,6 +184,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
     [](rf::String& level_filename, rf::String& save_filename, char* error) {
         xlog::info("Loading level: {}", level_filename);
         evaluate_pow2tex(level_filename);
+        waypoints_level_reset();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);
 
@@ -202,6 +206,7 @@ FunHook<void(bool)> level_init_post_hook{
     [](bool transition) {
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
+        waypoints_level_init();
 
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();

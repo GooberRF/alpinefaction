@@ -33,6 +33,7 @@
 #include "../rf/level.h"
 #include "../rf/file/file.h"
 #include "../object/object.h"
+#include "waypoints.h"
 
 void achievements_apply_patch();
 void apply_main_menu_patches();
@@ -578,6 +579,9 @@ void misc_init()
     rf_init_state_hook.install();
     rf_state_is_closed_hook.install();
     multi_after_players_packet_hook.install();
+
+    // Waypoint system commands
+    waypoints_init();
 
     // Hide main window when displaying critical error message box
     critical_error_hide_main_wnd_patch.install();
