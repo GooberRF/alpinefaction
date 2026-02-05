@@ -1835,6 +1835,34 @@ void bot_decommission_check() {
     }
 }
 
+void bot_spawn_check()
+{
+    if (!rf::is_server || rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
+        return;
+    }
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.is_bot || player.is_spawn_disabled) {
+            continue;
+        }
+
+        if (g_match_info.match_active && !is_player_in_match(&player)) {
+            continue;
+        }
+
+        const bool is_dead = rf::player_is_dead(&player) || rf::player_is_dying(&player);
+        if (!is_dead) {
+            continue;
+        }
+
+        if (player.respawn_timer.valid() && !player.respawn_timer.elapsed()) {
+            continue;
+        }
+
+        rf::multi_spawn_player_server_side(&player);
+    }
+}
+
 void update_player_active_status(rf::Player* const player) {
     if (rf::is_dedicated_server && g_alpine_server_config.inactivity_config.enabled) {
         player->idle.kick_timer.invalidate();
@@ -3115,6 +3143,7 @@ void server_do_frame()
     match_do_frame();
     process_delayed_kicks();
     bot_decommission_check();
+    bot_spawn_check();
 }
 
 void server_on_limbo_state_enter()
