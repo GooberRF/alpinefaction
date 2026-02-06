@@ -228,7 +228,13 @@ namespace rf
     static auto& ai_go_berserk = addr_as_ref<void(AiInfo* ai_info, float berserk_time_second, bool force)>(0x004089F0);
     static auto& ai_enter_attack_mode = addr_as_ref<void(AiInfo* ai_info)>(0x00408AC0);
     static auto& ai_acquire_new_target = addr_as_ref<void(AiInfo* ai_info)>(0x00403A80);
+    static auto& ai_update_animations = addr_as_ref<void(AiInfo* ai_info)>(0x004078E0);
+    static auto& ai_waiting_do_frame = addr_as_ref<void(AiInfo* ai_info)>(0x00403880);
+    static auto& ai_chase_do_frame = addr_as_ref<void(AiInfo* ai_info)>(0x00405AF0);
+    static auto& ai_waypoints_do_frame = addr_as_ref<void(AiInfo* ai_info)>(0x0040D180);
     static auto& ai_process = addr_as_ref<void(AiInfo* ai_info)>(0x004032E0);
+    static auto& ai_do_frame = addr_as_ref<void(AiInfo* ai_info)>(0x00403320);
+    static auto& ai_execute_behavior = addr_as_ref<void(AiInfo* ai_info)>(0x00403690);
     static auto& ai_path_locate_pos = addr_as_ref<void(Vector3* pos, float radius, float height, bool walk_only,
         GPathNode** first_node, GPathNode** second_node, bool a7)>(0x0040C2C0);
 

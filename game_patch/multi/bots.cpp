@@ -7,6 +7,7 @@
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
 #include "multi.h"
+#include <algorithm>
 #include <limits>
 #include <random>
 #include <unordered_set>
@@ -18,6 +19,54 @@ static std::unordered_map<rf::Player*, BotNavigationState> g_bot_navigation_stat
 static BotNavigationState& bot_navigation_for(rf::Player& player)
 {
     return g_bot_navigation_state[&player];
+}
+
+static void bot_ai_control_info_reset(rf::AiInfo& ai)
+{
+    ai.ci.rot = {};
+    ai.ci.move = {};
+    ai.ci.field_18 = false;
+    ai.ci.mouse_dh = 0.0f;
+    ai.ci.mouse_dp = 0.0f;
+}
+
+static void bot_ai_execute_behavior(rf::AiInfo& ai)
+{
+    //xlog::warn("executing behaviour for mode {}", static_cast<int>(ai.mode));
+    switch (ai.mode) {
+        case rf::AI_MODE_WAITING:
+            rf::ai_waiting_do_frame(&ai);
+            break;
+        case rf::AI_MODE_CHASE:
+            rf::ai_chase_do_frame(&ai);
+            break;
+        case rf::AI_MODE_WAYPOINTS:
+            rf::ai_waypoints_do_frame(&ai);
+            break;
+        default:
+            rf::ai_set_mode(&ai, rf::AI_MODE_CHASE, -1, -1);
+            rf::ai_chase_do_frame(&ai);
+            break;
+    }
+}
+
+static void bot_ai_do_frame(rf::AiInfo& ai)
+{
+    if (!ai.ep) {
+        return;
+    }
+
+    if ((ai.ep->obj_flags & rf::OF_DELAYED_DELETE) != rf::ObjectFlags{}) {
+        return;
+    }
+
+    bot_ai_control_info_reset(ai);
+    ai.steering_vector = {};
+    bot_ai_execute_behavior(ai);
+
+    ai.ci.move.x = std::clamp(ai.ci.move.x, -1.0f, 1.0f);
+    ai.ci.move.y = std::clamp(ai.ci.move.y, -1.0f, 1.0f);
+    ai.ci.move.z = std::clamp(ai.ci.move.z, -1.0f, 1.0f);
 }
 
 static rf::Entity* bot_ai_select_target(const rf::Player& bot_player, const rf::Entity& bot_entity)
@@ -218,7 +267,7 @@ void bot_ai_do_frame()
             }
         }
 
-        rf::ai_process(&entity->ai);
+        bot_ai_do_frame(entity->ai);
 
         if (entity->ai.target_handle >= 0 && entity->ai.current_primary_weapon >= 0) {
             if (rf::Entity* target = rf::entity_from_handle(entity->ai.target_handle)) {
