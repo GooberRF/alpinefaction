@@ -900,6 +900,24 @@ int waypoints_closest(const rf::Vector3& pos, float radius)
     return closest_waypoint(pos, radius);
 }
 
+int waypoints_count()
+{
+    return static_cast<int>(g_waypoints.size());
+}
+
+bool waypoints_get_pos(int index, rf::Vector3& out_pos)
+{
+    if (index <= 0 || index >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+    const auto& node = g_waypoints[index];
+    if (!node.valid) {
+        return false;
+    }
+    out_pos = node.pos;
+    return true;
+}
+
 bool waypoints_route(int from, int to, const std::unordered_set<int>& avoidset, std::vector<int>& out_path)
 {
     out_path.clear();

@@ -42,3 +42,5 @@ void waypoints_level_reset();
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
 bool waypoints_route(int from, int to, const std::unordered_set<int>& avoidset, std::vector<int>& out_path);
+int waypoints_count();
+bool waypoints_get_pos(int index, rf::Vector3& out_pos);

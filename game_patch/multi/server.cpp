@@ -48,6 +48,7 @@
 #include "../rf/level.h"
 #include "../rf/collide.h"
 #include "../purefaction/pf.h"
+#include "bots.h"
 
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
@@ -1865,116 +1866,6 @@ void bot_spawn_check()
     }
 }
 
-static rf::Entity* bot_ai_select_target(const rf::Player& bot_player, const rf::Entity& bot_entity)
-{
-    const bool team_mode = multi_is_team_game_type();
-    rf::Entity* best_target = nullptr;
-    float best_dist_sq = std::numeric_limits<float>::max();
-
-    for (const rf::Player& candidate : SinglyLinkedList{rf::player_list}) {
-        if (&candidate == &bot_player) {
-            continue;
-        }
-
-        if (candidate.is_spawn_disabled || candidate.is_spectator || candidate.is_browser) {
-            continue;
-        }
-
-        if (team_mode && candidate.team == bot_player.team) {
-            continue;
-        }
-
-        if (rf::player_is_dead(&candidate) || rf::player_is_dying(&candidate)) {
-            continue;
-        }
-
-        rf::Entity* target_entity = rf::entity_from_handle(candidate.entity_handle);
-        if (!target_entity) {
-            continue;
-        }
-
-        float dist_sq = rf::vec_dist_squared(&bot_entity.pos, &target_entity->pos);
-        if (dist_sq < best_dist_sq) {
-            best_dist_sq = dist_sq;
-            best_target = target_entity;
-        }
-    }
-
-    return best_target;
-}
-
-static void bot_ai_do_frame()
-{
-    if (!rf::is_server || rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
-        return;
-    }
-
-    const bool team_mode = multi_is_team_game_type();
-
-    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (!player.is_bot || player.is_spawn_disabled) {
-            continue;
-        }
-
-        if (rf::player_is_dead(&player) || rf::player_is_dying(&player)) {
-            continue;
-        }
-
-        rf::Entity* entity = rf::entity_from_handle(player.entity_handle);
-        if (!entity) {
-            continue;
-        }
-
-        if (entity->ai.mode == rf::AI_MODE_WAYPOINTS) {
-            entity->ai.current_path.num_nodes = 0;
-            entity->ai.current_path.waypoint_list_index = -1;
-            entity->ai.current_path.goal_waypoint_index = -1;
-            rf::ai_set_mode(&entity->ai, rf::AI_MODE_CHASE, -1, -1);
-            rf::ai_set_submode(&entity->ai, rf::AI_SUBMODE_NONE);
-        }
-
-        bool needs_target = entity->ai.target_handle < 0;
-        if (!needs_target) {
-            rf::Entity* current_target = rf::entity_from_handle(entity->ai.target_handle);
-            if (!current_target) {
-                needs_target = true;
-            } else if (team_mode && current_target->team == entity->team) {
-                needs_target = true;
-            }
-        }
-
-        if (needs_target) {
-            rf::ai_acquire_new_target(&entity->ai);
-            if (entity->ai.target_handle < 0) {
-                if (rf::Entity* target = bot_ai_select_target(player, *entity)) {
-                    rf::ai_set_target(&entity->ai, target->handle);
-                }
-            }
-            if (entity->ai.target_handle >= 0) {
-                rf::ai_enter_attack_mode(&entity->ai);
-                rf::ai_set_mode(&entity->ai, rf::AI_MODE_CHASE, -1, -1);
-                rf::ai_set_submode(&entity->ai, rf::AI_SUBMODE_ATTACK);
-            }
-        }
-
-        rf::ai_process(&entity->ai);
-
-        if (entity->ai.target_handle >= 0 && entity->ai.current_primary_weapon >= 0) {
-            if (rf::Entity* target = rf::entity_from_handle(entity->ai.target_handle)) {
-                float range = rf::ai_get_attack_range(entity->ai);
-                float dist_sq = rf::vec_dist_squared(&entity->pos, &target->pos);
-                if (range > 0.0f && dist_sq <= range * range) {
-                    const bool alt_fire = (entity->ai.ai_flags & rf::AIF_ALT_FIRE) != 0;
-                    rf::entity_turn_weapon_on(entity->handle, entity->ai.current_primary_weapon, alt_fire);
-                } else {
-                    rf::entity_turn_weapon_off(entity->handle, entity->ai.current_primary_weapon);
-                }
-            }
-        } else if (entity->ai.current_primary_weapon >= 0) {
-            rf::entity_turn_weapon_off(entity->handle, entity->ai.current_primary_weapon);
-        }
-    }
-}
 
 void update_player_active_status(rf::Player* const player) {
     if (rf::is_dedicated_server && g_alpine_server_config.inactivity_config.enabled) {
