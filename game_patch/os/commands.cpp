@@ -7,6 +7,7 @@
 #include <algorithm>
 #include "console.h"
 #include "../misc/alpine_options.h"
+#include "../misc/alpine_savegame.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/level.h"
 #include "../main/main.h"
@@ -372,6 +373,33 @@ ConsoleCommand2 autosave_cmd{
     "Toggle autosave",
 };
 
+ConsoleCommand2 new_savegame_format_cmd{
+    "sp_save_format",
+    []() {
+        if (g_alpine_options_config.is_option_loaded(AlpineOptionID::RequireAlpineSavegameFormat) &&
+            std::get<bool>(g_alpine_options_config.options[AlpineOptionID::RequireAlpineSavegameFormat])) {
+            rf::console::print("Savegame files will be written using the modern (.asg) format. Cannot use the legacy savegame format because the currently loaded mod does not support it.");
+            return;
+        }
+        g_alpine_game_config.use_new_savegame_format = !g_alpine_game_config.use_new_savegame_format;
+        rf::console::print("Savegame files will be written using the {} format",
+            g_alpine_game_config.use_new_savegame_format ? "modern (.asg)" : "legacy (.svl)");
+    },
+    "Toggle between writing savegame files using the modern (.asg) or legacy (.svl) format",
+    "sp_save_format",
+};
+
+ConsoleCommand2 speedrun_savegame_mode_cmd{
+    "sp_save_speedrun_mode",
+    []() {
+        g_alpine_game_config.speedrun_savegame_mode = !g_alpine_game_config.speedrun_savegame_mode;
+        rf::console::print("Speedrun compatibility savegame mode is {}.",
+            g_alpine_game_config.speedrun_savegame_mode ? "enabled" : "disabled");
+    },
+    "Toggle speedrun compatibility savegame mode for .asg files",
+    "sp_save_speedrun_mode",
+};
+
 ConsoleCommand2 pcollide_cmd{
     "pcollide",
     []() {
@@ -587,6 +615,8 @@ void console_commands_init()
     server_load_user_maps_cmd.register_cmd();
     verify_level_cmd_hook.install();
     autosave_cmd.register_cmd();
+    new_savegame_format_cmd.register_cmd();
+    speedrun_savegame_mode_cmd.register_cmd();
 
     // Hooks for builtin commands
     camera1_cmd_hook.install();

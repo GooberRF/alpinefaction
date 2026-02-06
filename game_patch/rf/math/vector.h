@@ -8,6 +8,9 @@
 
 namespace rf
 {
+    // forward declarations
+    struct GSolid;
+
     struct Vector3
     {
         float x = 0.0f;
@@ -29,6 +32,16 @@ namespace rf
             AddrCaller{0x0040A070}.this_call(this, out_result, scale);
         }
 
+        Vector3* get_divided(Vector3* out_vec, float scalar) const
+        {
+            return AddrCaller{0x0040A370}.this_call<Vector3*>(this, out_vec, scalar);
+        }
+
+        Vector3* assign(Vector3* tmp_vec, const Vector3* src_vec)
+        {
+            return AddrCaller{0x00409F40}.this_call<Vector3*>(this, tmp_vec, src_vec);
+        }
+      
         void get_substracted(Vector3* out_result, const Vector3* other)
         {
             AddrCaller{0x00409FA0}.this_call(this, out_result, other);
@@ -291,8 +304,51 @@ namespace rf
         bool operator==(const Vector2& other) const = default;
     };
 
+    struct ShortVector
+    {
+        int16_t x = 0;
+        int16_t y = 0;
+        int16_t z = 0;
+
+        ShortVector() = default;
+        ShortVector(int16_t x, int16_t y, int16_t z) : x(x), y(y), z(z) {}
+
+        static int16_t clamp16(float f)
+        {
+            int i = int(std::lroundf(f));
+            if (i > std::numeric_limits<int16_t>::max())
+                return std::numeric_limits<int16_t>::max();
+            if (i < std::numeric_limits<int16_t>::min())
+                return std::numeric_limits<int16_t>::min();
+            return int16_t(i);
+        }
+
+         // clamp a float->int16 conversion
+        static ShortVector from(const rf::Vector3& v)
+        {
+            auto clamp16 = [](float f) {
+                // round to nearest
+                int i = int(std::lroundf(f));
+                if (i > std::numeric_limits<int16_t>::max())
+                    return std::numeric_limits<int16_t>::max();
+                else if (i < std::numeric_limits<int16_t>::min())
+                    return std::numeric_limits<int16_t>::min();
+                else
+                    return int16_t(i);
+            };
+            return {clamp16(v.x), clamp16(v.y), clamp16(v.z)};
+        }
+
+        bool operator==(const ShortVector& other) const = default;
+    };
+    static_assert(sizeof(ShortVector) == 0x6);
+
     static auto& vec2_zero_vector = addr_as_ref<Vector2>(0x0173C370);
     static auto& vec_dist = addr_as_ref<float(const rf::Vector3*, const rf::Vector3*)>(0x004FAED0);
     static auto& vec_dist_squared = addr_as_ref<float(const rf::Vector3*, const rf::Vector3*)>(0x004FAF00);
     static auto& vec_dist_approx = addr_as_ref<float(const rf::Vector3*, const rf::Vector3*)>(0x004FAF30);
-    }
+
+    static auto& decompress_velocity_vector = addr_as_ref<void(const int16_t* a1, Vector3* a2)>(0x004B5D20);
+    static auto& compress_velocity = addr_as_ref<void(const Vector3* vec_in, ShortVector* vec_out)>(0x004B5CA0);
+
+}

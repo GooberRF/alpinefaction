@@ -24,4 +24,6 @@ namespace rf
 
     static auto& bomb_defuse_time_left = addr_as_ref<float>(0x006391B4);
 
+    static auto& endgame_launch = addr_as_ref<void(const char* endgame_name)>(0x0043E9B0);
+
 }

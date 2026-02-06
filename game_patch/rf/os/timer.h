@@ -6,6 +6,8 @@ namespace rf
 {
     static auto& timer_get = addr_as_ref<int(int frequency)>(0x00504AB0);
     static auto& timer_add_delta_time = addr_as_ref<int(int delta_ms)>(0x004FA2D0);
+    static auto& timer_inc_game_paused = addr_as_ref<void()>(0x004FA320);
+    static auto& timer_dec_game_paused = addr_as_ref<void()>(0x004FA330);
 
     static auto& timer_base = addr_as_ref<int64_t>(0x01751BF8);
     static auto& timer_last_value = addr_as_ref<int64_t>(0x01751BD0);
