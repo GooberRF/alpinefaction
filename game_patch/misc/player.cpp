@@ -259,6 +259,20 @@ FunHook<rf::Entity*(rf::Player*, int, const rf::Vector3*, const rf::Matrix3*, in
         rf::Entity* ep = player_create_entity_hook.call_target(pp, entity_type, pos, orient, multi_entity_index);
         if (ep) {
             multi_spectate_player_create_entity_post(pp, ep);
+            if (pp->is_bot) {
+                ep->ai.ep = ep;
+                ep->ai.current_path.waypoint_list_index = -1;
+                ep->ai.current_path.goal_waypoint_index = -1;
+                ep->ai.current_path.owner_handle = ep->handle;
+                ep->ai.default_waypoint_path = -1;
+                ep->ai.default_waypoint_path_flags = 0;
+                ep->ai.target_handle = -1;
+                ep->ai.look_at_handle = -1;
+                ep->ai.shoot_at_handle = -1;
+                ep->ai.danger_weapon_handle = -1;
+                rf::ai_set_mode(&ep->ai, rf::AI_MODE_CHASE, -1, -1);
+                rf::ai_set_submode(&ep->ai, rf::AI_SUBMODE_NONE);
+            }
         }
         if (pp == rf::local_player) {
             // Update sound listener position so respawn sound is not classified as too quiet to play
