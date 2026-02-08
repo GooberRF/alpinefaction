@@ -24,6 +24,24 @@ inline constexpr rf::gr::Mode overdraw_colorized_3d_bitmap{
         rf::gr::FOG_NOT_ALLOWED
     };
 
+inline constexpr rf::gr::Mode no_overdraw_2d_line{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_ALPHA,
+        rf::gr::ZBUFFER_TYPE_FULL,
+        rf::gr::FOG_NOT_ALLOWED
+    };
+
+inline constexpr rf::gr::Mode no_overdraw_2d_text{
+        rf::gr::TEXTURE_SOURCE_CLAMP_NO_FILTERING,
+        rf::gr::COLOR_SOURCE_VERTEX_TIMES_TEXTURE,
+        rf::gr::ALPHA_SOURCE_VERTEX_TIMES_TEXTURE,
+        rf::gr::ALPHA_BLEND_ALPHA,
+        rf::gr::ZBUFFER_TYPE_FULL_ALPHA_TEST,
+        rf::gr::FOG_NOT_ALLOWED
+    };
+
 template<typename F>
 void gr_font_run_with_default(int font_id, F fun)
 {

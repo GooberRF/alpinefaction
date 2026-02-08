@@ -48,6 +48,17 @@ namespace rf
     };
     static_assert(sizeof(PushRegion) == 0x6C); // original is 0x69 due to 1 byte bool
 
+    enum PushRegionFlags
+    {
+        PRF_MASS_INDEPENDENT = 0x1,
+        PRF_GROUNDED = 0x2,
+        PRF_GROWS_TOWARDS_CENTER = 0x4,
+        PRF_GROWS_TOWARDS_BOUNDARIES = 0x8,
+        PRF_RADIAL = 0x10,
+        PRF_DOESNT_AFFECT_PLAYER = 0x20,
+        PRF_JUMP_PAD = 0x40
+    };
+
     struct EmitterPair
     {
         ParticleEmitter *pemitter;

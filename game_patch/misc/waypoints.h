@@ -10,13 +10,37 @@ constexpr float kWaypointRadius = 4.0f / 3.0f;
 constexpr float kWaypointLinkRadius = kWaypointRadius * 3.0f;
 constexpr int kWptVersion = 1;
 
+enum class WaypointType : int
+{
+    dropped_legacy = 0,
+    dropped = 1,
+    item = 2,
+    respawn = 3,
+    jump_pad = 4,
+    jump_pad_landing = 5,
+    lift_entrance = 6,
+    lift_exit = 7,
+    ladder_entrance = 8,
+    ctf_flag = 9,
+    control_point = 10,
+};
+
+enum class WaypointDroppedSubtype : int
+{
+    normal = 0,
+    crouch_needed = 1,
+    swimming = 2,
+    falling = 3,
+};
+
 struct WaypointNode
 {
     rf::Vector3 pos{};
     std::array<int, kMaxWaypointLinks> links{};
     int num_links = 0;
-    int type = 0;
+    WaypointType type = WaypointType::dropped_legacy;
     int subtype = 0;
+    float link_radius = kWaypointLinkRadius;
     float cur_score = 0.0f;
     float est_score = 0.0f;
     int route = -1;

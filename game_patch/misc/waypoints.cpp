@@ -14,6 +14,7 @@
 #include "../rf/player/player.h"
 #include "../rf/trigger.h"
 #include "../object/object.h"
+#include "../graphics/gr.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -44,7 +45,7 @@ bool g_waypoints_compress = true;
 
 std::unordered_map<int, int> g_last_drop_waypoint_by_entity{};
 
-bool g_debug_waypoints = false;
+int g_debug_waypoints_mode = 0;
 bool g_drop_waypoints_prev = true;
 
 rf::Vector3 get_entity_feet_pos(const rf::Entity& entity)
@@ -57,6 +58,67 @@ void invalidate_cache()
     g_cache_root = nullptr;
     g_cache_nodes.clear();
     g_cache_dirty = true;
+}
+
+constexpr float kWaypointLinkRadiusEpsilon = 0.001f;
+
+float sanitize_waypoint_link_radius(float link_radius)
+{
+    if (!std::isfinite(link_radius) || link_radius <= 0.0f) {
+        return kWaypointLinkRadius;
+    }
+    return link_radius;
+}
+
+WaypointType waypoint_type_from_int(int raw_type)
+{
+    switch (raw_type) {
+        case static_cast<int>(WaypointType::dropped_legacy):
+            return WaypointType::dropped_legacy;
+        case static_cast<int>(WaypointType::dropped):
+            return WaypointType::dropped;
+        case static_cast<int>(WaypointType::item):
+            return WaypointType::item;
+        case static_cast<int>(WaypointType::respawn):
+            return WaypointType::respawn;
+        case static_cast<int>(WaypointType::jump_pad):
+            return WaypointType::jump_pad;
+        case static_cast<int>(WaypointType::jump_pad_landing):
+            return WaypointType::jump_pad_landing;
+        case static_cast<int>(WaypointType::lift_entrance):
+            return WaypointType::lift_entrance;
+        case static_cast<int>(WaypointType::lift_exit):
+            return WaypointType::lift_exit;
+        case static_cast<int>(WaypointType::ladder_entrance):
+            return WaypointType::ladder_entrance;
+        case static_cast<int>(WaypointType::ctf_flag):
+            return WaypointType::ctf_flag;
+        case static_cast<int>(WaypointType::control_point):
+            return WaypointType::control_point;
+        default:
+            return static_cast<WaypointType>(raw_type);
+    }
+}
+
+int waypoint_type_to_save_value(WaypointType type)
+{
+    // Preserve compatibility with older files where dropped waypoints are encoded as 0.
+    if (type == WaypointType::dropped) {
+        return static_cast<int>(WaypointType::dropped_legacy);
+    }
+    return static_cast<int>(type);
+}
+
+float waypoint_link_radius_from_push_region(const rf::PushRegion& push_region)
+{
+    if (push_region.shape == 0) { // sphere
+        return sanitize_waypoint_link_radius(push_region.radius_pow2);
+    }
+    if (push_region.shape == 1 || push_region.shape == 2) { // box
+        // vExtents appears to represent box diameter in this context; convert to radius.
+        return sanitize_waypoint_link_radius(push_region.vExtents.len() * 0.5f);
+    }
+    return kWaypointLinkRadius;
 }
 
 bool waypoint_link_exists(const WaypointNode& node, int link)
@@ -196,6 +258,31 @@ int find_nearest_waypoint(const rf::Vector3& pos, float radius, int exclude)
     return best_index;
 }
 
+int find_jump_pad_waypoint_in_radius(const rf::Vector3& pos)
+{
+    constexpr float kJumpPadAutoLinkRangeScale = 0.5f;
+    float best_dist_sq = std::numeric_limits<float>::max();
+    int best_index = 0;
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid || node.type != WaypointType::jump_pad) {
+            continue;
+        }
+
+        const float radius = sanitize_waypoint_link_radius(node.link_radius) * kJumpPadAutoLinkRangeScale;
+        const float dist_sq = distance_sq(pos, node.pos);
+        if (dist_sq > radius * radius) {
+            continue;
+        }
+
+        if (dist_sq < best_dist_sq) {
+            best_dist_sq = dist_sq;
+            best_index = i;
+        }
+    }
+    return best_index;
+}
+
 void link_waypoints_bidirectional(int a, int b)
 {
     link_waypoint(a, b);
@@ -284,7 +371,9 @@ void link_waypoint_to_nearest(int index, bool bidirectional)
     if (index <= 0 || index >= static_cast<int>(g_waypoints.size())) {
         return;
     }
-    int nearest = find_nearest_waypoint(g_waypoints[index].pos, kWaypointLinkRadius, index);
+    const auto& node = g_waypoints[index];
+    const float link_radius = sanitize_waypoint_link_radius(node.link_radius);
+    int nearest = find_nearest_waypoint(node.pos, link_radius, index);
     if (nearest > 0) {
         if (bidirectional) {
             link_waypoint_if_clear(index, nearest);
@@ -296,12 +385,14 @@ void link_waypoint_to_nearest(int index, bool bidirectional)
     }
 }
 
-int add_waypoint(const rf::Vector3& pos, int type, int subtype, bool link_to_nearest, bool bidirectional_link)
+int add_waypoint(const rf::Vector3& pos, WaypointType type, int subtype, bool link_to_nearest, bool bidirectional_link,
+                 float link_radius = kWaypointLinkRadius)
 {
     WaypointNode node{};
     node.pos = pos;
     node.type = type;
     node.subtype = subtype;
+    node.link_radius = sanitize_waypoint_link_radius(link_radius);
     g_waypoints.push_back(node);
     invalidate_cache();
     int index = static_cast<int>(g_waypoints.size()) - 1;
@@ -480,19 +571,11 @@ void seed_waypoints_from_objects()
     if (g_waypoints.size() > 1) {
         return;
     }
-    add_waypoint({}, 0, 0, false, true);
     rf::Object* obj = rf::object_list.next_obj;
     while (obj != &rf::object_list) {
-        bool should_add = false;
-        int type = 0;
-        int subtype = 0;
         if (obj->type == rf::OT_ITEM) {
-            should_add = true;
-            type = 2;
-            subtype = static_cast<rf::Item*>(obj)->info_index;
-        }
-        if (should_add) {
-            add_waypoint(obj->pos, type, subtype, false, true);
+            int subtype = static_cast<rf::Item*>(obj)->info_index;
+            add_waypoint(obj->pos, WaypointType::item, subtype, false, true);
         }
         obj = obj->next_obj;
     }
@@ -508,8 +591,19 @@ void seed_waypoints_from_objects()
             else if (rp.blue_team) {
                 subtype = 2;
             }
-            add_waypoint(rp.position, 3, subtype, false, true);
+            add_waypoint(rp.position, WaypointType::respawn, subtype, false, true);
         }
+    }
+    for (int i = 0; i < rf::level.pushers.size(); ++i) {
+        auto* push_region = rf::level.pushers[i];
+        if (!push_region) {
+            continue;
+        }
+        if ((push_region->flags_and_turbulence & rf::PushRegionFlags::PRF_JUMP_PAD) == 0) {
+            continue;
+        }
+        const float link_radius = waypoint_link_radius_from_push_region(*push_region) + 1.0f;
+        add_waypoint(push_region->pos, WaypointType::jump_pad, 0, false, true, link_radius);
     }
 }
 
@@ -572,13 +666,16 @@ bool save_waypoints()
         for (int link = 0; link < node.num_links; ++link) {
             links.push_back(node.links[link]);
         }
-        int saved_type = node.type == 1 ? 0 : node.type;
+        int saved_type = waypoint_type_to_save_value(node.type);
         toml::table entry{
             {"p", pos},
             {"t", saved_type},
             {"s", node.subtype},
             {"l", links},
         };
+        if (std::fabs(node.link_radius - kWaypointLinkRadius) > kWaypointLinkRadiusEpsilon) {
+            entry.insert("r", node.link_radius);
+        }
         nodes.push_back(entry);
     }
     toml::table root{
@@ -649,16 +746,17 @@ bool load_waypoints()
             continue;
         }
         rf::Vector3 wp_pos = wp_pos_opt.value();
-        int type = 0;
+        int raw_type = static_cast<int>(WaypointType::dropped_legacy);
         int subtype = 0;
+        float link_radius = kWaypointLinkRadius;
         if (const auto* type_node = node_tbl->get("t")) {
             if (type_node->is_number()) {
-                type = static_cast<int>(type_node->value_or(type));
+                raw_type = static_cast<int>(type_node->value_or(raw_type));
             }
         }
         else if (const auto* type_node = node_tbl->get("type")) {
             if (type_node->is_number()) {
-                type = static_cast<int>(type_node->value_or(type));
+                raw_type = static_cast<int>(type_node->value_or(raw_type));
             }
         }
         if (const auto* subtype_node = node_tbl->get("s")) {
@@ -671,7 +769,18 @@ bool load_waypoints()
                 subtype = static_cast<int>(subtype_node->value_or(subtype));
             }
         }
-        int index = add_waypoint(wp_pos, type, subtype, false, true);
+        if (const auto* radius_node = node_tbl->get("r")) {
+            if (radius_node->is_number()) {
+                link_radius = static_cast<float>(radius_node->value_or<double>(link_radius));
+            }
+        }
+        else if (const auto* radius_node = node_tbl->get("radius")) {
+            if (radius_node->is_number()) {
+                link_radius = static_cast<float>(radius_node->value_or<double>(link_radius));
+            }
+        }
+        WaypointType type = waypoint_type_from_int(raw_type);
+        int index = add_waypoint(wp_pos, type, subtype, false, true, link_radius);
         auto& node = g_waypoints[index];
         const auto* links = node_tbl->get_as<toml::array>("l");
         if (!links) {
@@ -793,21 +902,38 @@ void navigate_entity(int entity_handle, rf::Entity& entity, bool allow_drop)
     }
 
     rf::Vector3 pos = get_entity_feet_pos(entity);
-    const int closest = closest_waypoint(pos, kWaypointRadius);
+    const int closest_standard = closest_waypoint(pos, kWaypointRadius);
+    const int closest_jump_pad = find_jump_pad_waypoint_in_radius(pos);
+    const int closest = closest_jump_pad > 0 ? closest_jump_pad : closest_standard;
     bool should_drop_new = allow_drop && should_drop();
 
-    if (closest > 0) {
-        const float dist_sq = distance_sq(pos, g_waypoints[closest].pos);
+    if (closest_standard > 0) {
+        const float dist_sq = distance_sq(pos, g_waypoints[closest_standard].pos);
         if (dist_sq <= kWaypointRadius * kWaypointRadius) {
             should_drop_new = false;
         }
+    }
+    if (closest_jump_pad > 0) {
+        should_drop_new = false;
     }
 
     int& last_drop_waypoint = g_last_drop_waypoint_by_entity[entity_handle];
     if (should_drop_new) {
         const bool grounded = is_player_grounded(entity);
-        const int subtype = grounded ? 0 : 1;
-        const int new_index = add_waypoint(pos, 1, subtype, grounded, grounded);
+        const bool falling = rf::entity_is_falling(&entity);
+        const bool swimming = rf::entity_is_swimming(&entity);
+        const bool crouching = rf::entity_is_crouching(&entity);
+        int subtype = static_cast<int>(WaypointDroppedSubtype::normal);
+        if (falling) {
+            subtype = static_cast<int>(WaypointDroppedSubtype::falling);
+        }
+        else if (swimming) {
+            subtype = static_cast<int>(WaypointDroppedSubtype::swimming);
+        }
+        else if (crouching) {
+            subtype = static_cast<int>(WaypointDroppedSubtype::crouch_needed);
+        }
+        const int new_index = add_waypoint(pos, WaypointType::dropped, subtype, grounded, grounded);
         if (last_drop_waypoint > 0) {
             link_waypoint_if_clear(last_drop_waypoint, new_index);
             if (grounded) {
@@ -820,10 +946,17 @@ void navigate_entity(int entity_handle, rf::Entity& entity, bool allow_drop)
 
     if (closest > 0) {
         if (allow_drop && last_drop_waypoint > 0 && last_drop_waypoint != closest) {
-            const bool grounded = is_player_grounded(entity);
-            link_waypoint_if_clear(last_drop_waypoint, closest);
-            if (grounded) {
-                link_waypoint_if_clear(closest, last_drop_waypoint);
+            const auto& target_waypoint = g_waypoints[closest];
+            if (target_waypoint.type == WaypointType::jump_pad) {
+                // Entering a jump pad should create only an ingress link.
+                link_waypoint_if_clear(last_drop_waypoint, closest);
+            }
+            else {
+                const bool grounded = is_player_grounded(entity);
+                link_waypoint_if_clear(last_drop_waypoint, closest);
+                if (grounded) {
+                    link_waypoint_if_clear(closest, last_drop_waypoint);
+                }
             }
         }
         last_drop_waypoint = closest;
@@ -876,17 +1009,63 @@ void navigate()
     prune_drop_trackers(active_entity_handles);
 }
 
+rf::Color debug_waypoint_color(WaypointType type)
+{
+    switch (type) {
+        case WaypointType::dropped_legacy:
+            return {255, 255, 255, 150};
+        case WaypointType::dropped:
+            return {255, 255, 255, 75};
+        case WaypointType::item:
+            return {255, 220, 0, 150};
+        case WaypointType::respawn:
+            return {0, 220, 255, 150};
+        case WaypointType::jump_pad:
+            return {0, 255, 120, 150};
+        case WaypointType::jump_pad_landing:
+            return {180, 255, 120, 150};
+        case WaypointType::lift_entrance:
+            return {140, 180, 255, 150};
+        case WaypointType::lift_exit:
+            return {80, 120, 255, 150};
+        case WaypointType::ladder_entrance:
+            return {255, 170, 70, 150};
+        case WaypointType::ctf_flag:
+            return {255, 70, 70, 150};
+        case WaypointType::control_point:
+            return {200, 70, 255, 150};
+        default:
+            return {200, 200, 200, 150};
+    }
+}
+
+float debug_waypoint_sphere_scale(WaypointType type)
+{
+    if (type == WaypointType::dropped_legacy || type == WaypointType::dropped) {
+        return 0.125f;
+    }
+    return 0.25f;
+}
+
 void draw_debug_waypoints()
 {
-    if (!g_debug_waypoints) {
+    if (g_debug_waypoints_mode == 0) {
         return;
     }
+    const bool show_links = g_debug_waypoints_mode >= 1;
+    const bool show_spheres = g_debug_waypoints_mode >= 2;
+    const bool show_labels = g_debug_waypoints_mode >= 3;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         const auto& node = g_waypoints[i];
         if (!node.valid) {
             continue;
         }
-        {
+        if (show_spheres) {
+            rf::gr::set_color(debug_waypoint_color(node.type));
+            const float debug_radius = sanitize_waypoint_link_radius(node.link_radius) * debug_waypoint_sphere_scale(node.type);
+            rf::gr::sphere(node.pos, debug_radius, no_overdraw_2d_line);
+        }
+        if (show_labels) {
             rf::Vector3 label_pos = node.pos;
             label_pos.y += 0.3f;
             rf::gr::Vertex dest;
@@ -894,19 +1073,21 @@ void draw_debug_waypoints()
                 rf::gr::project_vertex(&dest);
                 if (dest.flags & 1) {
                     char buf[32];
-                    std::snprintf(buf, sizeof(buf), "%d (%d : %d)", i, node.type, node.subtype);
+                    std::snprintf(buf, sizeof(buf), "%d (%d : %d)", i, static_cast<int>(node.type), node.subtype);
                     rf::gr::set_color(255, 255, 255, 255);
-                    rf::gr::string(static_cast<int>(dest.sx), static_cast<int>(dest.sy), buf, -1);
+                    rf::gr::string(static_cast<int>(dest.sx), static_cast<int>(dest.sy), buf, -1, no_overdraw_2d_text);
                 }
             }
         }
-        for (int j = 0; j < node.num_links; ++j) {
-            int link = node.links[j];
-            if (link <= 0 || link >= static_cast<int>(g_waypoints.size())) {
-                continue;
+        if (show_links) {
+            for (int j = 0; j < node.num_links; ++j) {
+                int link = node.links[j];
+                if (link <= 0 || link >= static_cast<int>(g_waypoints.size())) {
+                    continue;
+                }
+                const auto& dest = g_waypoints[link];
+                rf::gr::line_arrow(node.pos.x, node.pos.y, node.pos.z, dest.pos.x, dest.pos.y, dest.pos.z, 0, 255, 0);
             }
-            const auto& dest = g_waypoints[link];
-            rf::gr::line_arrow(node.pos.x, node.pos.y, node.pos.z, dest.pos.x, dest.pos.y, dest.pos.z, 0, 255, 0);
         }
     }
 }
@@ -956,17 +1137,22 @@ ConsoleCommand2 waypoint_drop_cmd{
 
 ConsoleCommand2 waypoint_debug_cmd{
     "waypoints_debug",
-    [](std::optional<bool> enabled) {
-        if (enabled) {
-            g_debug_waypoints = enabled.value();
+    [](std::optional<int> mode) {
+        if (mode) {
+            if (mode.value() < 0 || mode.value() > 3) {
+                rf::console::print("Waypoint debug mode must be 0, 1, 2, or 3");
+                return;
+            }
+            g_debug_waypoints_mode = mode.value();
         }
         else {
-            g_debug_waypoints = !g_debug_waypoints;
+            g_debug_waypoints_mode = (g_debug_waypoints_mode + 1) % 4;
         }
-        rf::console::print("Waypoint debug {}", g_debug_waypoints ? "enabled" : "disabled");
+        rf::console::print("Waypoint debug mode {} (0=off, 1=links, 2=links+spheres, 3=links+spheres+labels)",
+                           g_debug_waypoints_mode);
     },
-    "Toggle waypoint debug drawing",
-    "waypoints_debug [true|false]",
+    "Set waypoint debug drawing mode",
+    "waypoints_debug [0|1|2|3]",
 };
 
 ConsoleCommand2 waypoint_compress_cmd{
@@ -1090,7 +1276,7 @@ bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype)
         return false;
     }
 
-    out_type = node.type;
+    out_type = static_cast<int>(node.type);
     out_subtype = node.subtype;
     return true;
 }
