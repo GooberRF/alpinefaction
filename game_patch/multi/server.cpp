@@ -48,7 +48,6 @@
 #include "../rf/level.h"
 #include "../rf/collide.h"
 #include "../purefaction/pf.h"
-#include "bots.h"
 
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
@@ -1722,150 +1721,6 @@ std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_inp
     return {is_valid, level_name};
 }
 
-static void bot_decommission(
-    const int active_bots,
-    const int desired_active_bots,
-    std::vector<rf::Player*>& active_candidates,
-    std::vector<rf::Player*>& disabled_candidates
-) {
-    if (active_bots < desired_active_bots) {
-        int need = desired_active_bots - active_bots;
-
-        std::ranges::sort(
-            disabled_candidates,
-            [] (const rf::Player* player_1, const rf::Player* player_2) {
-                return player_1->stats->score > player_2->stats->score;
-            }
-        );
-
-        for (rf::Player* player : disabled_candidates) {
-            if (need <= 0) {
-                break;
-            }
-            player->is_spawn_disabled = false;
-            --need;
-        }
-    } else if (active_bots > desired_active_bots) {
-        int excess = active_bots - desired_active_bots;
-
-        std::ranges::sort(
-            active_candidates,
-            [] (const rf::Player* player_1, const rf::Player* player_2) {
-                return player_1->stats->score < player_2->stats->score;
-            }
-        );
-
-        for (rf::Player* player : active_candidates) {
-            if (excess <= 0) {
-                break;
-            }
-            player->is_spawn_disabled = true;
-            --excess;
-        }
-    }
-}
-
-void bot_decommission_check() {
-    const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
-    if (!rf::is_server
-        || rf::gameseq_get_state() == rf::GS_MULTI_LIMBO
-        // Bots are disabled in `multi_level_init_hook`.
-        || rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC
-        || cfg_rules.ideal_player_count >= 32) {
-        return;
-    }
-
-    constexpr int MAX_TEAMS = 2;
-
-    static std::array<std::vector<rf::Player*>, MAX_TEAMS> active_candidates{};
-    static std::array<std::vector<rf::Player*>, MAX_TEAMS> disabled_candidates{};
-    for (int i = 0; i < MAX_TEAMS; ++i) {
-        active_candidates[i].clear();
-        disabled_candidates[i].clear();
-    }
-
-    std::array<int, MAX_TEAMS> active_persons_per_team{0, 0};
-
-    const bool is_team_mode = multi_is_team_game_type();
-    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser) {
-            continue;
-        }
-
-        const int team = is_team_mode ? player.team : rf::TEAM_RED;
-        if (team < 0 || team >= MAX_TEAMS) {
-            continue;
-        }
-
-        if (player.is_bot) {
-            if (player.is_spawn_disabled) {
-                disabled_candidates[team].push_back(&player);
-            } else {
-                active_candidates[team].push_back(&player);
-            }
-        } else {
-            const bool is_spawned = !rf::player_is_dead(&player)
-                && !rf::player_is_dying(&player);
-            const auto now = std::chrono::high_resolution_clock::now();
-            const bool was_just_unspawned = player.death_time
-                && now - *player.death_time
-                    < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
-
-            if (is_spawned || was_just_unspawned) {
-                ++active_persons_per_team[team];
-            }
-        }
-    }
-
-    const int ideal_per_team = is_team_mode
-        ? cfg_rules.ideal_player_count / MAX_TEAMS
-        : cfg_rules.ideal_player_count;
-    const int num_teams = is_team_mode ? MAX_TEAMS : 1;
-    for (int i = 0; i < num_teams; ++i) {
-        const int active_bots = static_cast<int>(active_candidates[i].size());
-        const int desired_active_bots = std::max(
-            0,
-            ideal_per_team - active_persons_per_team[i]
-        );
-        bot_decommission(
-            active_bots,
-            desired_active_bots,
-            active_candidates[i],
-            disabled_candidates[i]
-        );
-    }
-}
-
-void bot_spawn_check()
-{
-    if (!rf::is_server || rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
-        return;
-    }
-
-    const bool team_mode = multi_is_team_game_type();
-
-    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (!player.is_bot || player.is_spawn_disabled) {
-            continue;
-        }
-
-        if (g_match_info.match_active && !is_player_in_match(&player)) {
-            continue;
-        }
-
-        const bool is_dead = rf::player_is_dead(&player) || rf::player_is_dying(&player);
-        if (!is_dead) {
-            continue;
-        }
-
-        if (player.respawn_timer.valid() && !player.respawn_timer.elapsed()) {
-            continue;
-        }
-
-        rf::multi_spawn_player_server_side(&player);
-    }
-}
-
 
 void update_player_active_status(rf::Player* const player) {
     if (rf::is_dedicated_server && g_alpine_server_config.inactivity_config.enabled) {
@@ -3146,9 +3001,6 @@ void server_do_frame()
     server_vote_do_frame();
     match_do_frame();
     process_delayed_kicks();
-    bot_ai_do_frame();
-    bot_decommission_check();
-    bot_spawn_check();
 }
 
 void server_on_limbo_state_enter()

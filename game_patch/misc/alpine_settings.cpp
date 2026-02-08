@@ -918,6 +918,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.bot_shared_secret = std::stoul(settings["BotSharedSecret"]);
         processed_keys.insert("BotSharedSecret");
     }
+    if (settings.count("ClientBotMode")) {
+        g_alpine_game_config.client_bot_mode = std::stoi(settings["ClientBotMode"]);
+        processed_keys.insert("ClientBotMode");
+    }
+    if (settings.count("ClientBotSkill")) {
+        g_alpine_game_config.set_client_bot_skill(std::stoi(settings["ClientBotSkill"]));
+        processed_keys.insert("ClientBotSkill");
+    }
 
     // Load input settings
     if (settings.count("MouseSensitivity")) {
@@ -1286,6 +1294,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
     file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
     file << "BotSharedSecret=" << g_alpine_game_config.bot_shared_secret << "\n";
+    file << "ClientBotMode=" << g_alpine_game_config.client_bot_mode << "\n";
+    file << "ClientBotSkill=" << g_alpine_game_config.client_bot_skill << "\n";
 
     alpine_control_config_serialize(file, player->settings.controls);
 

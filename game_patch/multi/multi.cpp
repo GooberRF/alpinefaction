@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <charconv>
+#include <cstring>
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
@@ -48,6 +50,84 @@ static rf::CmdLineParam& get_levelm_cmd_line_param()
 {
     static rf::CmdLineParam levelm_param{"-levelm", "", true};
     return levelm_param;
+}
+
+static rf::CmdLineParam& get_bot_cmd_line_param()
+{
+    static rf::CmdLineParam bot_param{"-bot", "", false};
+    return bot_param;
+}
+
+static rf::CmdLineParam& get_botskill_cmd_line_param()
+{
+    static rf::CmdLineParam bot_skill_param{"-botskill", "", true};
+    return bot_skill_param;
+}
+
+static bool g_client_bot_launch_enabled = false;
+
+bool client_bot_launch_enabled()
+{
+    return g_client_bot_launch_enabled;
+}
+
+static std::optional<int> parse_cmdline_int_arg(const char* arg)
+{
+    if (!arg) {
+        return std::nullopt;
+    }
+
+    const size_t arg_len = std::strlen(arg);
+    if (arg_len == 0) {
+        return std::nullopt;
+    }
+
+    int value = 0;
+    const auto [ptr, ec] = std::from_chars(arg, arg + arg_len, value);
+    if (ec != std::errc{} || ptr != arg + arg_len) {
+        return std::nullopt;
+    }
+
+    return value;
+}
+
+static void handle_bot_cmd_line_params()
+{
+    if (rf::is_dedicated_server) {
+        g_client_bot_launch_enabled = false;
+        g_alpine_game_config.client_bot_mode = false;
+        return;
+    }
+
+    const bool has_bot_switch = get_bot_cmd_line_param().found();
+    const bool has_botskill_switch = get_botskill_cmd_line_param().found();
+    g_client_bot_launch_enabled = has_bot_switch;
+
+    if (has_botskill_switch) {
+        const char* skill_arg = get_botskill_cmd_line_param().get_arg();
+        if (std::optional<int> parsed_skill = parse_cmdline_int_arg(skill_arg)) {
+            g_alpine_game_config.set_client_bot_skill(*parsed_skill);
+        }
+        else {
+            xlog::warn("Invalid value for -botskill: '{}'", skill_arg ? skill_arg : "");
+        }
+    }
+
+    if (!has_bot_switch) {
+        if (g_alpine_game_config.client_bot_mode) {
+            rf::console::print(
+                "Client bot mode disabled. Launch with -bot to enable bot behavior."
+            );
+        }
+        g_alpine_game_config.client_bot_mode = false;
+        return;
+    }
+
+    g_alpine_game_config.client_bot_mode = true;
+    rf::console::print(
+        "Client bot mode enabled (skill {}).",
+        g_alpine_game_config.client_bot_skill
+    );
 }
 
 void handle_url_param()
@@ -822,6 +902,8 @@ void multi_do_patch()
     // Init cmd line param
     get_url_cmd_line_param();
     get_levelm_cmd_line_param();
+    get_bot_cmd_line_param();
+    get_botskill_cmd_line_param();
 
     // console commands
     levelm_cmd.register_cmd();
@@ -833,6 +915,7 @@ void multi_do_patch()
 void multi_after_full_game_init()
 {
     populate_gametype_table();
+    handle_bot_cmd_line_params();
     handle_url_param();
     handle_levelm_param();
 }

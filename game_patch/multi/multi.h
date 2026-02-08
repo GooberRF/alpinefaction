@@ -121,6 +121,7 @@ void multi_level_download_update();
 bool download_level_if_missing(std::string level_filename);
 void multi_do_patch();
 void multi_after_full_game_init();
+bool client_bot_launch_enabled();
 void multi_init_player(rf::Player* player);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();

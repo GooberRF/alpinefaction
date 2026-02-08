@@ -160,6 +160,7 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
     enum class Flags : uint32_t
     {
         none = 0,
+        client_bot = 1u << 0,
     };
 
     uint32_t af_signature = 0u;

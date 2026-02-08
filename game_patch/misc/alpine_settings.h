@@ -176,6 +176,12 @@ struct AlpineGameSettings
     bool simple_server_chat_msgs = true;
     bool quick_exit = false;
     uint32_t bot_shared_secret = 0;
+    bool client_bot_mode = false;
+    int client_bot_skill = 75;
+    void set_client_bot_skill(int value)
+    {
+        client_bot_skill = std::clamp(value, 0, 100);
+    }
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;

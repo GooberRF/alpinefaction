@@ -6,104 +6,15 @@
 #include "../rf/player/player.h"
 #include "../rf/crt.h"
 #include "../rf/os/string.h"
-#include "../rf/os/timer.h"
 #include "server.h"
 #include "multi.h"
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
-#include <common/version/version.h>
 #include <vector>
 #include <format>
 #include <optional>
-#include <winsock2.h>
 
 std::vector<int> g_players_to_kick;
-static int g_next_bot_index = 1;
-static uint16_t g_next_bot_port = 40000;
-
-static rf::NetAddr make_bot_addr()
-{
-    rf::NetAddr addr{};
-    addr.ip_addr = htonl(0x7F000001);
-    addr.port = htons(g_next_bot_port++);
-    return addr;
-}
-
-static bool is_name_in_use(std::string_view name)
-{
-    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (name == player.name.c_str()) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-static std::string make_default_bot_name()
-{
-    std::string name;
-    do {
-        name = std::format("Bot {}", g_next_bot_index++);
-    } while (is_name_in_use(name));
-
-    return name;
-}
-
-static rf::Player* add_server_bot(std::optional<std::string> name_opt)
-{
-    if (!rf::is_dedicated_server) {
-        return nullptr;
-    }
-
-    if (rf::multi_num_players() >= rf::multi_max_players) {
-        rf::console::output("Server is full", nullptr);
-        return nullptr;
-    }
-
-    const std::string name = name_opt && !name_opt->empty()
-        ? std::move(*name_opt)
-        : make_default_bot_name();
-
-    static auto& multi_on_new_player = addr_as_ref<void(
-        const rf::NetAddr*,
-        rf::String::Pod,
-        int,
-        int)>(0x0047AF30);
-
-    rf::NetAddr addr = make_bot_addr();
-    rf::String bot_name{name.c_str()};
-    multi_on_new_player(&addr, bot_name, 5, 10000);
-
-    rf::Player* player = rf::multi_find_player_by_addr(addr);
-    if (!player) {
-        rf::console::output("Failed to add bot", nullptr);
-        return nullptr;
-    }
-
-    player->net_data->reliable_socket = -1;
-    player->net_data->flags &= ~rf::NPF_WAITING_FOR_RELIABLE_SOCKET;
-    player->net_data->join_time_ms = rf::timer_get(1000);
-
-    player->is_bot = true;
-    player->is_spawn_disabled = false;
-    player->is_browser = false;
-    player->is_human_player = false;
-    player->version_info = ClientVersionInfoProfile{
-        .software = ClientSoftware::AlpineFaction,
-        .major = VERSION_MAJOR,
-        .minor = VERSION_MINOR,
-        .patch = VERSION_PATCH,
-        .type = VERSION_TYPE,
-        .max_rfl_ver = MAXIMUM_RFL_VERSION,
-    };
-
-    if (rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
-        rf::multi_spawn_player_server_side(player);
-    }
-
-    return player;
-}
 
 void extend_round_time(int minutes)
 {
@@ -307,19 +218,6 @@ ConsoleCommand2 unban_last_cmd{
     "Unbans last banned player",
 };
 
-ConsoleCommand2 bot_add_cmd{
-    "bot_add",
-    [](std::optional<std::string> name) {
-        if (rf::is_server) {
-            if (rf::Player* player = add_server_bot(std::move(name))) {
-                rf::console::print("Added bot '{}'", player->name);
-            }
-        }
-    },
-    "Add a bot",
-    "bot_add [name]",
-};
-
 void init_server_commands()
 {
     map_ext_cmd.register_cmd();
@@ -332,7 +230,6 @@ void init_server_commands()
     AsmWriter(0x0047B580).jmp(kick_cmd_handler_hook);
 
     unban_last_cmd.register_cmd();
-    bot_add_cmd.register_cmd();
 
     multi_kick_player_hook.install();
 }

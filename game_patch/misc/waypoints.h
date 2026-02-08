@@ -44,3 +44,7 @@ int waypoints_closest(const rf::Vector3& pos, float radius);
 bool waypoints_route(int from, int to, const std::unordered_set<int>& avoidset, std::vector<int>& out_path);
 int waypoints_count();
 bool waypoints_get_pos(int index, rf::Vector3& out_pos);
+bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
+int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links);
+bool waypoints_has_direct_link(int from, int to);
+bool waypoints_link_is_clear(int from, int to);

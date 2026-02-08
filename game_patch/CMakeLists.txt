@@ -1,5 +1,12 @@
 file(GLOB EXPERIMENTAL_SRCS experimental/*.cpp experimental/*.h)
 
+set(BOTS_SRCS)
+if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots")
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/bot_main.cpp")
+        file(GLOB BOTS_SRCS multi/bots/*.cpp multi/bots/*.h)
+    endif()
+endif()
+
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/purefaction/pf_secret.cpp")
     set(PF_AC_SRCS
         purefaction/pf_secret_packets.h
@@ -127,8 +134,6 @@ set(SRCS
     debug/unresponsive.cpp
     multi/alpine_packets.cpp
     multi/alpine_packets.h
-    multi/bots.cpp
-    multi/bots.h
     multi/dedi_cfg.cpp
     multi/multi.h
     multi/multi.cpp
@@ -208,6 +213,7 @@ set(SRCS
     purefaction/pf_packets.h
     ${PF_AC_SRCS}
     ${EXPERIMENTAL_SRCS}
+    ${BOTS_SRCS}
 )
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
@@ -242,6 +248,10 @@ target_compile_definitions(AlpineFaction PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX BU
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experimental/experimental.cpp")
     target_compile_definitions(AlpineFaction PRIVATE HAS_EXPERIMENTAL)
+endif()
+
+if(BOTS_SRCS)
+    target_compile_definitions(AlpineFaction PRIVATE HAS_BOTS)
 endif()
 
 target_link_libraries(AlpineFaction

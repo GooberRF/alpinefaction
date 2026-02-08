@@ -27,6 +27,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `mp_character` console command to set multiplayer character by index
 - Add `-script` command line argument to execute a startup script after the game launches
 - Add support for `script` console command to execute a script on-demand
+- Add `-bot` command line argument to run a client in bot mode
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Server version:` to a server's printed config

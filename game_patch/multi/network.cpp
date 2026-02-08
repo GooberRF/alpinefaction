@@ -1246,6 +1246,63 @@ ConsoleCommand2 bot_shared_secret_cmd{
     "Set a shared secret to signal your client as a bot",
 };
 
+ConsoleCommand2 bot_mode_cmd{
+    "bot_mode",
+    [] (const std::optional<int> mode) {
+        if (rf::is_dedicated_server) {
+            rf::console::print(
+                "This console variable is not available on dedicated servers"
+            );
+            return;
+        }
+
+        if (mode.has_value()) {
+            const bool requested_enabled = mode.value() != 0;
+            if (requested_enabled && !client_bot_launch_enabled()) {
+                g_alpine_game_config.client_bot_mode = false;
+                rf::console::print(
+                    "Client bot mode requires launching with -bot."
+                );
+            }
+            else {
+                g_alpine_game_config.client_bot_mode = requested_enabled;
+            }
+        }
+
+        if (!client_bot_launch_enabled()) {
+            g_alpine_game_config.client_bot_mode = false;
+        }
+
+        rf::console::print(
+            "Client bot mode is {}",
+            g_alpine_game_config.client_bot_mode ? "enabled" : "disabled"
+        );
+    },
+    "Enable or disable client bot mode for future multiplayer joins",
+};
+
+ConsoleCommand2 bot_skill_cmd{
+    "bot_skill",
+    [] (const std::optional<int> skill) {
+        if (rf::is_dedicated_server) {
+            rf::console::print(
+                "This console variable is not available on dedicated servers"
+            );
+            return;
+        }
+
+        if (skill.has_value()) {
+            g_alpine_game_config.set_client_bot_skill(skill.value());
+        }
+
+        rf::console::print(
+            "Client bot skill is {} (0-100)",
+            g_alpine_game_config.client_bot_skill
+        );
+    },
+    "Set client bot aiming skill from 0 to 100",
+};
+
 enum JoinReqTlv : uint8_t {
     JR_TLV_BOT_SHARED_SECRET = 0x1,
 };
@@ -1253,6 +1310,10 @@ enum JoinReqTlv : uint8_t {
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
     0x0047ABFB,
     [] (const rf::NetAddr* const addr, std::byte* const data, const size_t len) {
+        const bool session_client_bot_mode =
+            client_bot_launch_enabled()
+            && g_alpine_game_config.client_bot_mode;
+
         // Add Alpine Faction info to join_req packet
         AFJoinReq_v2 ext_data{
             .signature = ALPINE_FACTION_SIGNATURE,
@@ -1263,11 +1324,14 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
             .max_rfl_version = MAXIMUM_RFL_VERSION,
             .flags = 0u,
         };
+        if (session_client_bot_mode) {
+            ext_data.flags |= static_cast<uint32_t>(AlpineFactionJoinReqPacketExt::Flags::client_bot);
+        }
 
         std::vector<uint8_t> tlvs{};
         tlvs.reserve(32);
         TlvWriter<JoinReqTlv> writer{tlvs};
-        if (g_alpine_game_config.bot_shared_secret) {
+        if (session_client_bot_mode && g_alpine_game_config.bot_shared_secret) {
             writer.write_le(
                 JR_TLV_BOT_SHARED_SECRET,
                 g_alpine_game_config.bot_shared_secret
@@ -1615,17 +1679,51 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     .max_rfl_ver = g_joining_player_info.max_rfl_version
                 };
 
-                if (g_joining_player_info.bot_shared_secret
-                    == std::optional{g_alpine_server_config.bot_shared_secret}) {
+                const bool bot_mode_requested =
+                    (g_joining_player_info.flags
+                        & AlpineFactionJoinReqPacketExt::Flags::client_bot)
+                    != AlpineFactionJoinReqPacketExt::Flags::none;
+                const bool has_bot_secret =
+                    g_joining_player_info.bot_shared_secret.has_value();
+                const bool server_requires_bot_secret =
+                    g_alpine_server_config.bot_shared_secret != 0u;
+                const bool bot_secret_valid =
+                    has_bot_secret
+                    && (g_joining_player_info.bot_shared_secret
+                        == std::optional{g_alpine_server_config.bot_shared_secret});
+
+                bool should_mark_as_bot = false;
+                if (bot_mode_requested) {
+                    should_mark_as_bot = !server_requires_bot_secret || bot_secret_valid;
+                } else if (server_requires_bot_secret && bot_secret_valid) {
+                    // Backward compatibility for older clients that only send the secret.
+                    should_mark_as_bot = true;
+                }
+
+                if (should_mark_as_bot) {
                     valid_player->is_bot = true;
-                    valid_player->is_spawn_disabled = true;
-                    rf::console::print(
-                        "{}'s bot shared secret was valid",
-                        valid_player->name
-                    );
-                } else if (g_joining_player_info.bot_shared_secret.has_value()) {
+                    valid_player->bot_skill = 100u;
+                    valid_player->is_spawn_disabled = false;
+                    if (bot_secret_valid) {
+                        rf::console::print(
+                            "{}'s bot shared secret was valid",
+                            valid_player->name
+                        );
+                    }
+                    else {
+                        rf::console::print(
+                            "{} joined in client bot mode",
+                            valid_player->name
+                        );
+                    }
+                } else if (has_bot_secret) {
                     rf::console::print(
                         "{}'s bot shared secret was invalid",
+                        valid_player->name
+                    );
+                } else if (bot_mode_requested && server_requires_bot_secret) {
+                    rf::console::print(
+                        "{} requested client bot mode but did not provide a valid bot shared secret",
                         valid_player->name
                     );
                 }
@@ -2437,6 +2535,8 @@ void network_init()
     multi_stop_hook.install();
 
     bot_shared_secret_cmd.register_cmd();
+    bot_mode_cmd.register_cmd();
+    bot_skill_cmd.register_cmd();
 
     // print join_req denial reasons
     check_access_for_new_player_hook.install();

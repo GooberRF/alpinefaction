@@ -25,3 +25,6 @@ CMakeSettings.json
 
 # Experimental code
 /game_patch/experimental
+
+# Closed-source bots
+/game_patch/multi/bots

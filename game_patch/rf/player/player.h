@@ -44,6 +44,7 @@ struct ClientVersionInfoProfile {
 struct PlayerAdditionalData {
     // Shared variables.
     bool is_bot = false;
+    uint8_t bot_skill = 100;
     bool is_spawn_disabled = false;
     bool is_browser = false;
     bool is_spectator = false;
@@ -277,6 +278,8 @@ namespace rf
     static auto& player_render = addr_as_ref<void(Player*)>(0x004A2B30);
     static auto& player_render_held_corpse = addr_as_ref<void(Player* player)>(0x004A2B90);
     static auto& player_do_frame = addr_as_ref<void(Player*)>(0x004A2700);
+    static auto& player_execute_action = addr_as_ref<void(Player*, ControlConfigAction, bool)>(0x004A6210);
+    static auto& player_fire_primary_weapon = addr_as_ref<void(Player*, bool, bool)>(0x004A4E80);
     static auto& player_kill_self = addr_as_ref<void(Player*)>(0x004A4DD0);
     static auto& player_make_weapon_current_selection = addr_as_ref<void(Player *player, int weapon_type)>(0x004A4980);
     static auto& player_default_weapon = addr_as_ref<String>(0x007C7600);

@@ -1,4 +1,5 @@
 #include "waypoints.h"
+#include "alpine_settings.h"
 #include "../main/main.h"
 #include "../os/console.h"
 #include "../rf/collide.h"
@@ -27,6 +28,7 @@
 #include <queue>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <toml++/toml.hpp>
 #include <windows.h>
 #include <xlog/xlog.h>
@@ -40,7 +42,7 @@ bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
 bool g_waypoints_compress = true;
 
-int g_last_drop_waypoint = 0;
+std::unordered_map<int, int> g_last_drop_waypoint_by_entity{};
 
 bool g_debug_waypoints = false;
 bool g_drop_waypoints_prev = true;
@@ -208,6 +210,75 @@ bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b)
     return !rf::collide_linesegment_level_solid(p0, p1, 0, &collision);
 }
 
+bool can_link_waypoint_indices(int from, int to)
+{
+    if (from <= 0 || to <= 0
+        || from == to
+        || from >= static_cast<int>(g_waypoints.size())
+        || to >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+
+    const auto& from_node = g_waypoints[from];
+    const auto& to_node = g_waypoints[to];
+    if (!from_node.valid || !to_node.valid) {
+        return false;
+    }
+
+    return can_link_waypoints(from_node.pos, to_node.pos);
+}
+
+bool link_waypoint_if_clear(int from, int to)
+{
+    if (!can_link_waypoint_indices(from, to)) {
+        return false;
+    }
+
+    link_waypoint(from, to);
+    return true;
+}
+
+void sanitize_waypoint_links_against_geometry()
+{
+    int removed_links = 0;
+    const int waypoint_total = static_cast<int>(g_waypoints.size());
+    for (int index = 1; index < waypoint_total; ++index) {
+        auto& node = g_waypoints[index];
+        if (!node.valid) {
+            node.num_links = 0;
+            continue;
+        }
+
+        int write_index = 0;
+        for (int read_index = 0; read_index < node.num_links; ++read_index) {
+            const int link = node.links[read_index];
+            if (!can_link_waypoint_indices(index, link)) {
+                ++removed_links;
+                continue;
+            }
+
+            bool duplicate = false;
+            for (int i = 0; i < write_index; ++i) {
+                if (node.links[i] == link) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) {
+                ++removed_links;
+                continue;
+            }
+
+            node.links[write_index++] = link;
+        }
+        node.num_links = write_index;
+    }
+
+    if (removed_links > 0) {
+        xlog::info("Pruned {} blocked or invalid waypoint links", removed_links);
+    }
+}
+
 void link_waypoint_to_nearest(int index, bool bidirectional)
 {
     if (index <= 0 || index >= static_cast<int>(g_waypoints.size())) {
@@ -215,14 +286,12 @@ void link_waypoint_to_nearest(int index, bool bidirectional)
     }
     int nearest = find_nearest_waypoint(g_waypoints[index].pos, kWaypointLinkRadius, index);
     if (nearest > 0) {
-        if (!can_link_waypoints(g_waypoints[index].pos, g_waypoints[nearest].pos)) {
-            return;
-        }
         if (bidirectional) {
-            link_waypoints_bidirectional(index, nearest);
+            link_waypoint_if_clear(index, nearest);
+            link_waypoint_if_clear(nearest, index);
         }
         else {
-            link_waypoint(index, nearest);
+            link_waypoint_if_clear(index, nearest);
         }
     }
 }
@@ -607,6 +676,7 @@ bool load_waypoints()
             }
         }
     }
+    sanitize_waypoint_links_against_geometry();
     g_has_loaded_wpt = true;
     return true;
 }
@@ -672,6 +742,7 @@ void clean_waypoints()
 {
     mark_invalid_waypoints();
     remap_waypoints();
+    sanitize_waypoint_links_against_geometry();
 }
 
 bool should_navigate()
@@ -684,50 +755,116 @@ bool should_drop()
     return g_drop_waypoints || !g_has_loaded_wpt;
 }
 
+bool should_skip_local_bot_waypoint_drop()
+{
+    if (!rf::local_player) {
+        return false;
+    }
+
+    return rf::local_player->is_bot || g_alpine_game_config.client_bot_mode;
+}
+
+void prune_drop_trackers(const std::unordered_set<int>& active_entity_handles)
+{
+    for (auto it = g_last_drop_waypoint_by_entity.begin();
+         it != g_last_drop_waypoint_by_entity.end();) {
+        if (active_entity_handles.find(it->first) == active_entity_handles.end()) {
+            it = g_last_drop_waypoint_by_entity.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+}
+
+void navigate_entity(int entity_handle, rf::Entity& entity, bool allow_drop)
+{
+    if (entity_handle < 0) {
+        return;
+    }
+
+    rf::Vector3 pos = get_entity_feet_pos(entity);
+    const int closest = closest_waypoint(pos, kWaypointRadius);
+    bool should_drop_new = allow_drop && should_drop();
+
+    if (closest > 0) {
+        const float dist_sq = distance_sq(pos, g_waypoints[closest].pos);
+        if (dist_sq <= kWaypointRadius * kWaypointRadius) {
+            should_drop_new = false;
+        }
+    }
+
+    int& last_drop_waypoint = g_last_drop_waypoint_by_entity[entity_handle];
+    if (should_drop_new) {
+        const bool grounded = is_player_grounded(entity);
+        const int subtype = grounded ? 0 : 1;
+        const int new_index = add_waypoint(pos, 1, subtype, grounded, grounded);
+        if (last_drop_waypoint > 0) {
+            link_waypoint_if_clear(last_drop_waypoint, new_index);
+            if (grounded) {
+                link_waypoint_if_clear(new_index, last_drop_waypoint);
+            }
+        }
+        last_drop_waypoint = new_index;
+        return;
+    }
+
+    if (closest > 0) {
+        if (allow_drop && last_drop_waypoint > 0 && last_drop_waypoint != closest) {
+            const bool grounded = is_player_grounded(entity);
+            link_waypoint_if_clear(last_drop_waypoint, closest);
+            if (grounded) {
+                link_waypoint_if_clear(closest, last_drop_waypoint);
+            }
+        }
+        last_drop_waypoint = closest;
+    }
+}
+
 void navigate()
 {
     if (!rf::local_player) {
         return;
     }
-    auto* entity = rf::entity_from_handle(rf::local_player->entity_handle);
-    if (!entity) {
-        return;
-    }
     if (!should_navigate()) {
         return;
     }
-    rf::Vector3 pos = get_entity_feet_pos(*entity);
-    int closest = closest_waypoint(pos, kWaypointRadius);
-    bool should_drop_new = should_drop();
-    if (closest > 0) {
-        float dist_sq = distance_sq(pos, g_waypoints[closest].pos);
-        if (dist_sq <= kWaypointRadius * kWaypointRadius) {
-            should_drop_new = false;
+
+    std::unordered_set<int> active_entity_handles{};
+
+    if (!should_skip_local_bot_waypoint_drop()) {
+        auto* entity = rf::entity_from_handle(rf::local_player->entity_handle);
+        if (!entity) {
+            return;
         }
-    }
-    if (should_drop_new) {
-        bool grounded = is_player_grounded(*entity);
-        int subtype = grounded ? 0 : 1;
-        int new_index = add_waypoint(pos, 1, subtype, grounded, grounded);
-        if (g_last_drop_waypoint > 0) {
-            link_waypoint(g_last_drop_waypoint, new_index);
-            if (grounded) {
-                link_waypoint(new_index, g_last_drop_waypoint);
-            }
-        }
-        g_last_drop_waypoint = new_index;
+        active_entity_handles.insert(rf::local_player->entity_handle);
+        navigate_entity(rf::local_player->entity_handle, *entity, true);
+        prune_drop_trackers(active_entity_handles);
         return;
     }
-    if (closest > 0) {
-        if (g_last_drop_waypoint > 0 && g_last_drop_waypoint != closest) {
-            bool grounded = is_player_grounded(*entity);
-            link_waypoint(g_last_drop_waypoint, closest);
-            if (grounded) {
-                link_waypoint(closest, g_last_drop_waypoint);
-            }
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player
+            || player.entity_handle < 0
+            || player.is_bot
+            || player.is_browser
+            || player.is_spectator
+            || player.is_spawn_disabled
+            || rf::player_is_dead(&player)
+            || rf::player_is_dying(&player)) {
+            continue;
         }
-        g_last_drop_waypoint = closest;
+
+        auto* entity = rf::entity_from_handle(player.entity_handle);
+        if (!entity) {
+            continue;
+        }
+
+        active_entity_handles.insert(player.entity_handle);
+        navigate_entity(player.entity_handle, *entity, true);
     }
+
+    prune_drop_trackers(active_entity_handles);
 }
 
 void draw_debug_waypoints()
@@ -864,7 +1001,7 @@ void waypoints_level_init()
     if (!g_has_loaded_wpt) {
         seed_waypoints_from_objects();
     }
-    g_last_drop_waypoint = 0;
+    g_last_drop_waypoint_by_entity.clear();
     invalidate_cache();
 }
 
@@ -872,7 +1009,7 @@ void waypoints_level_reset()
 {
     clear_waypoints();
     g_has_loaded_wpt = false;
-    g_last_drop_waypoint = 0;
+    g_last_drop_waypoint_by_entity.clear();
 }
 
 void waypoints_do_frame()
@@ -881,7 +1018,7 @@ void waypoints_do_frame()
         return;
     }
     if (!g_drop_waypoints && g_drop_waypoints_prev) {
-        g_last_drop_waypoint = 0;
+        g_last_drop_waypoint_by_entity.clear();
     }
     g_drop_waypoints_prev = g_drop_waypoints;
     navigate();
@@ -916,6 +1053,80 @@ bool waypoints_get_pos(int index, rf::Vector3& out_pos)
     }
     out_pos = node.pos;
     return true;
+}
+
+bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype)
+{
+    if (index <= 0 || index >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+
+    const auto& node = g_waypoints[index];
+    if (!node.valid) {
+        return false;
+    }
+
+    out_type = node.type;
+    out_subtype = node.subtype;
+    return true;
+}
+
+int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links)
+{
+    out_links.fill(0);
+    if (index <= 0 || index >= static_cast<int>(g_waypoints.size())) {
+        return 0;
+    }
+
+    const auto& node = g_waypoints[index];
+    if (!node.valid) {
+        return 0;
+    }
+
+    int count = 0;
+    for (int i = 0; i < node.num_links; ++i) {
+        const int link = node.links[i];
+        if (link <= 0
+            || link >= static_cast<int>(g_waypoints.size())
+            || !g_waypoints[link].valid) {
+            continue;
+        }
+        out_links[count++] = link;
+    }
+    return count;
+}
+
+bool waypoints_has_direct_link(int from, int to)
+{
+    if (from <= 0 || to <= 0
+        || from >= static_cast<int>(g_waypoints.size())
+        || to >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+
+    const auto& node = g_waypoints[from];
+    if (!node.valid || !g_waypoints[to].valid) {
+        return false;
+    }
+
+    for (int i = 0; i < node.num_links; ++i) {
+        if (node.links[i] == to) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool waypoints_link_is_clear(int from, int to)
+{
+    if (!waypoints_has_direct_link(from, to)) {
+        return false;
+    }
+
+    const auto& from_node = g_waypoints[from];
+    const auto& to_node = g_waypoints[to];
+    return can_link_waypoints(from_node.pos, to_node.pos);
 }
 
 bool waypoints_route(int from, int to, const std::unordered_set<int>& avoidset, std::vector<int>& out_path)
@@ -956,9 +1167,15 @@ bool waypoints_route(int from, int to, const std::unordered_set<int>& avoidset, 
         }
         open.pop();
         auto& node = g_waypoints[current];
+        if (!node.valid) {
+            continue;
+        }
         for (int i = 0; i < node.num_links; ++i) {
             int neighbor = node.links[i];
             if (neighbor <= 0 || neighbor >= static_cast<int>(g_waypoints.size())) {
+                continue;
+            }
+            if (!g_waypoints[neighbor].valid) {
                 continue;
             }
             if (avoidset.find(neighbor) != avoidset.end()) {
