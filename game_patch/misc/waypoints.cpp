@@ -520,6 +520,15 @@ void clear_waypoints()
     invalidate_cache();
 }
 
+void reset_waypoints_to_default_grid()
+{
+    clear_waypoints();
+    seed_waypoints_from_objects();
+    g_has_loaded_wpt = false;
+    g_waypoint_revision = 0;
+    g_last_drop_waypoint_by_entity.clear();
+}
+
 bool save_waypoints()
 {
     if (g_waypoints.size() <= 1) {
@@ -985,6 +994,20 @@ ConsoleCommand2 waypoint_clean_cmd{
     "waypoints_clean",
 };
 
+ConsoleCommand2 waypoint_reset_cmd{
+    "waypoints_reset",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded");
+            return;
+        }
+        reset_waypoints_to_default_grid();
+        rf::console::print("Waypoints reset to default map grid");
+    },
+    "Reset waypoints to default map grid",
+    "waypoints_reset",
+};
+
 void waypoints_init()
 {
     waypoint_save_cmd.register_cmd();
@@ -993,6 +1016,7 @@ void waypoints_init()
     waypoint_debug_cmd.register_cmd();
     waypoint_compress_cmd.register_cmd();
     waypoint_clean_cmd.register_cmd();
+    waypoint_reset_cmd.register_cmd();
 }
 
 void waypoints_level_init()
