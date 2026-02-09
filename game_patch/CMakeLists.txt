@@ -4,6 +4,10 @@ set(BOTS_SRCS)
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/bot_main.cpp")
         file(GLOB BOTS_SRCS multi/bots/*.cpp multi/bots/*.h)
+        list(REMOVE_ITEM BOTS_SRCS
+            "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/bot_navigation_pathing.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/bot_navigation_routes.cpp"
+        )
     endif()
 endif()
 

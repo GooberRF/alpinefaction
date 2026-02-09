@@ -1,8 +1,4 @@
 #pragma once
-#include "../rf/math/vector.h"
-#include "../rf/math/matrix.h"
+#include "../rf/mover.h"
 
-namespace rf
-{
-    
-}
+rf::Mover* mover_find_by_mover_brush(const rf::MoverBrush* mover_brush);

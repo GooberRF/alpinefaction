@@ -580,9 +580,6 @@ void misc_init()
     rf_state_is_closed_hook.install();
     multi_after_players_packet_hook.install();
 
-    // Waypoint system commands
-    waypoints_init();
-
     // Hide main window when displaying critical error message box
     critical_error_hide_main_wnd_patch.install();
 
@@ -660,4 +657,5 @@ void misc_init()
     game_apply_patch();
     character_apply_patch();
     level_apply_patch();
+    waypoints_init();
 }

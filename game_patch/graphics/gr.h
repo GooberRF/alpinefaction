@@ -34,11 +34,11 @@ inline constexpr rf::gr::Mode no_overdraw_2d_line{
     };
 
 inline constexpr rf::gr::Mode no_overdraw_2d_text{
-        rf::gr::TEXTURE_SOURCE_CLAMP_NO_FILTERING,
-        rf::gr::COLOR_SOURCE_VERTEX_TIMES_TEXTURE,
-        rf::gr::ALPHA_SOURCE_VERTEX_TIMES_TEXTURE,
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
         rf::gr::ALPHA_BLEND_ALPHA,
-        rf::gr::ZBUFFER_TYPE_FULL_ALPHA_TEST,
+        rf::gr::ZBUFFER_TYPE_FULL,
         rf::gr::FOG_NOT_ALLOWED
     };
 

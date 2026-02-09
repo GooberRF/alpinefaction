@@ -19,4 +19,6 @@ namespace rf
         LevelCollisionOut *out, float collision_radius, bool use_mesh_collide, float bbox_size_factor)>(0x0049C690);
     static auto& collide_linesegment_level_solid = addr_as_ref<bool(
         rf::Vector3& p0, rf::Vector3& p1, int flags, rf::GCollisionOutput* collision)>(0x0049C5C0);
+    static auto& collide_linesegment_world = addr_as_ref<bool(
+        rf::Vector3& p0, rf::Vector3& p1, int flags, rf::PCollisionOut* collision)>(0x00498E80);
 }
