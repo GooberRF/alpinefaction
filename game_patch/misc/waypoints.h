@@ -2,7 +2,6 @@
 
 #include <vector>
 #include <array>
-#include <unordered_set>
 #include "../rf/math/vector.h"
 
 namespace rf
@@ -112,10 +111,6 @@ struct WaypointNode
     int identifier = -1;
     std::vector<int> zones{};
     float link_radius = kWaypointLinkRadius;
-    float cur_score = 0.0f;
-    float est_score = 0.0f;
-    int route = -1;
-    int prev = -1;
     bool valid = true;
 };
 
@@ -144,7 +139,6 @@ void waypoints_level_init();
 void waypoints_level_reset();
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
-bool waypoints_route(int from, int to, const std::unordered_set<int>& avoidset, std::vector<int>& out_path);
 int waypoints_count();
 bool waypoints_get_pos(int index, rf::Vector3& out_pos);
 bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
