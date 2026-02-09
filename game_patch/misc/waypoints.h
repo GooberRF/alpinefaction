@@ -87,6 +87,11 @@ enum class WaypointZoneSource : int
     box_extents = 2,
 };
 
+enum class WaypointTargetType : int
+{
+    explosion = 0,
+};
+
 struct WaypointZoneDefinition
 {
     WaypointZoneType type = WaypointZoneType::control_point;
@@ -112,6 +117,14 @@ struct WaypointNode
     int route = -1;
     int prev = -1;
     bool valid = true;
+};
+
+struct WaypointTargetDefinition
+{
+    int uid = -1;
+    rf::Vector3 pos{};
+    WaypointTargetType type = WaypointTargetType::explosion;
+    std::vector<int> waypoint_uids{};
 };
 
 struct WpCacheNode
@@ -146,4 +159,4 @@ int add_waypoint(
 bool link_waypoint_if_clear(int from, int to);
 bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b);
 int closest_waypoint(const rf::Vector3& pos, float radius);
-void on_geomod_crater_created(const rf::Vector3& crater_pos);
+void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius = 0.0f);
