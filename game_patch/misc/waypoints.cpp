@@ -61,6 +61,15 @@ std::unordered_map<int, int> g_last_lift_uid_by_entity{};
 int g_debug_waypoints_mode = 0;
 bool g_drop_waypoints_prev = true;
 
+constexpr float kWaypointGenerateProbeAngleStepDeg = 15.0f;
+constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
+constexpr float kWaypointGenerateGroundOffset = 1.0f;
+constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
+constexpr float kWaypointGenerateWallClearance = 0.5f;
+constexpr float kWaypointGenerateLinkPassThroughRadius = kWaypointRadius;
+constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
+constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
+
 FunHook<void(rf::Vector3*, float)> glass_remove_floating_shards_hook{
     0x00492400,
     [](rf::Vector3* pos, float radius) {
@@ -484,6 +493,89 @@ float distance_sq(const rf::Vector3& a, const rf::Vector3& b)
 {
     rf::Vector3 d = a - b;
     return d.dot_prod(d);
+}
+
+struct WaypointCellCoord
+{
+    int x = 0;
+    int y = 0;
+    int z = 0;
+
+    bool operator==(const WaypointCellCoord& other) const = default;
+};
+
+struct WaypointCellCoordHash
+{
+    std::size_t operator()(const WaypointCellCoord& coord) const
+    {
+        const std::size_t hx = std::hash<int>{}(coord.x);
+        const std::size_t hy = std::hash<int>{}(coord.y);
+        const std::size_t hz = std::hash<int>{}(coord.z);
+        return hx ^ (hy << 1) ^ (hz << 2);
+    }
+};
+
+using WaypointCellMap = std::unordered_map<WaypointCellCoord, std::vector<int>, WaypointCellCoordHash>;
+
+WaypointCellCoord waypoint_cell_coord_from_pos(const rf::Vector3& pos, float cell_size)
+{
+    const float inv_cell = (cell_size > kWaypointLinkRadiusEpsilon) ? (1.0f / cell_size) : 1.0f;
+    return WaypointCellCoord{
+        static_cast<int>(std::floor(pos.x * inv_cell)),
+        static_cast<int>(std::floor(pos.y * inv_cell)),
+        static_cast<int>(std::floor(pos.z * inv_cell)),
+    };
+}
+
+void build_waypoint_cell_map(WaypointCellMap& out_map, float cell_size)
+{
+    out_map.clear();
+    out_map.reserve(g_waypoints.size());
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid) {
+            continue;
+        }
+        out_map[waypoint_cell_coord_from_pos(node.pos, cell_size)].push_back(i);
+    }
+}
+
+bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr)
+{
+    if (max_downward_dist <= 0.0f) {
+        return false;
+    }
+
+    rf::Vector3 p0 = pos;
+    rf::Vector3 p1 = pos - rf::Vector3{0.0f, max_downward_dist, 0.0f};
+    rf::PCollisionOut collision{};
+    collision.obj_handle = -1;
+    if (!rf::collide_linesegment_world(p0, p1, 0, &collision)) {
+        return false;
+    }
+
+    if (out_hit_point) {
+        *out_hit_point = collision.hit_point;
+    }
+    return true;
+}
+
+float waypoint_incline_degrees(const rf::Vector3& from, const rf::Vector3& to)
+{
+    const float horizontal = std::sqrt(
+        (to.x - from.x) * (to.x - from.x) +
+        (to.z - from.z) * (to.z - from.z));
+    const float vertical = std::fabs(to.y - from.y);
+    if (horizontal <= kWaypointLinkRadiusEpsilon) {
+        return (vertical <= kWaypointLinkRadiusEpsilon) ? 0.0f : 90.0f;
+    }
+    constexpr float kRadToDeg = 57.295779513f;
+    return std::atan2(vertical, horizontal) * kRadToDeg;
+}
+
+bool waypoint_link_within_incline(const rf::Vector3& from, const rf::Vector3& to, float max_incline_deg)
+{
+    return waypoint_incline_degrees(from, to) <= max_incline_deg;
 }
 
 rf::ShortVector compress_waypoint_pos(const rf::Vector3& pos)
@@ -1289,11 +1381,7 @@ bool has_player_drop_spacing(const rf::Vector3& pos)
 
 bool bridge_waypoint_is_near_ground(const rf::Vector3& pos)
 {
-    rf::Vector3 p0 = pos;
-    rf::Vector3 p1 = pos - rf::Vector3{0.0f, kBridgeWaypointMaxGroundDistance, 0.0f};
-    rf::PCollisionOut collision{};
-    collision.obj_handle = -1;
-    return rf::collide_linesegment_world(p0, p1, 0, &collision);
+    return trace_ground_below_point(pos, kBridgeWaypointMaxGroundDistance);
 }
 
 std::vector<int> create_seed_bridge_waypoints(int from, int to, int intermediate_count)
@@ -1544,6 +1632,35 @@ bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b)
     rf::Vector3 p0 = a;
     rf::Vector3 p1 = b;
     return !rf::collide_linesegment_level_solid(p0, p1, 0, &collision);
+}
+
+bool waypoint_has_horizontal_geometry_clearance(const rf::Vector3& pos, float clearance)
+{
+    if (clearance <= 0.0f) {
+        return true;
+    }
+
+    constexpr float kInvSqrt2 = 0.70710678f;
+    static const std::array<rf::Vector3, 8> kTraceDirs{
+        rf::Vector3{1.0f, 0.0f, 0.0f},
+        rf::Vector3{kInvSqrt2, 0.0f, kInvSqrt2},
+        rf::Vector3{0.0f, 0.0f, 1.0f},
+        rf::Vector3{-kInvSqrt2, 0.0f, kInvSqrt2},
+        rf::Vector3{-1.0f, 0.0f, 0.0f},
+        rf::Vector3{-kInvSqrt2, 0.0f, -kInvSqrt2},
+        rf::Vector3{0.0f, 0.0f, -1.0f},
+        rf::Vector3{kInvSqrt2, 0.0f, -kInvSqrt2},
+    };
+
+    for (const auto& dir : kTraceDirs) {
+        rf::Vector3 p0 = pos;
+        rf::Vector3 p1 = pos + dir * clearance;
+        rf::GCollisionOutput collision{};
+        if (rf::collide_linesegment_level_solid(p0, p1, 0, &collision)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool can_link_waypoint_indices(int from, int to)
@@ -1934,6 +2051,482 @@ void reset_waypoints_to_default_grid()
     g_waypoint_revision = 0;
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
+}
+
+std::vector<int> collect_generation_seed_waypoint_indices()
+{
+    std::vector<int> seed_indices{};
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid) {
+            continue;
+        }
+        if (node.type != WaypointType::respawn && node.type != WaypointType::item) {
+            continue;
+        }
+        seed_indices.push_back(i);
+    }
+    return seed_indices;
+}
+
+int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
+{
+    if (seed_indices.empty()) {
+        return 0;
+    }
+
+    std::deque<int> probe_frontier{};
+    probe_frontier.insert(probe_frontier.end(), seed_indices.begin(), seed_indices.end());
+    std::unordered_set<int> expanded_indices{};
+    expanded_indices.reserve(seed_indices.size() * 2);
+
+    int created_waypoints = 0;
+    constexpr float kDegToRad = 0.01745329252f;
+    const int direction_count = std::max(
+        1,
+        static_cast<int>(std::round(360.0f / std::max(kWaypointGenerateProbeAngleStepDeg, 1.0f))));
+
+    while (!probe_frontier.empty() && created_waypoints < kWaypointGenerateMaxCreatedWaypoints) {
+        const int source_index = probe_frontier.front();
+        probe_frontier.pop_front();
+
+        if (source_index <= 0 || source_index >= static_cast<int>(g_waypoints.size())) {
+            continue;
+        }
+        if (!expanded_indices.insert(source_index).second) {
+            continue;
+        }
+
+        const auto& source_node = g_waypoints[source_index];
+        if (!source_node.valid) {
+            continue;
+        }
+        const rf::Vector3 source_pos = source_node.pos;
+
+        for (int direction_idx = 0; direction_idx < direction_count; ++direction_idx) {
+            const float angle_deg = static_cast<float>(direction_idx) * kWaypointGenerateProbeAngleStepDeg;
+            const float angle_rad = angle_deg * kDegToRad;
+            const rf::Vector3 dir{
+                std::cos(angle_rad),
+                0.0f,
+                std::sin(angle_rad),
+            };
+            const rf::Vector3 probe_pos = source_pos + dir * kWaypointGenerateProbeStepDistance;
+
+            rf::Vector3 floor_pos{};
+            if (!trace_ground_below_point(probe_pos, kBridgeWaypointMaxGroundDistance, &floor_pos)) {
+                continue;
+            }
+
+            rf::Vector3 candidate_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+            if (!waypoint_link_within_incline(source_pos, candidate_pos, kWaypointGenerateMaxInclineDeg)) {
+                continue;
+            }
+            if (!can_link_waypoints(source_pos, candidate_pos)) {
+                continue;
+            }
+            if (!waypoint_has_horizontal_geometry_clearance(candidate_pos, kWaypointGenerateWallClearance)) {
+                continue;
+            }
+            if (closest_waypoint(candidate_pos, kWaypointRadius) > 0) {
+                continue;
+            }
+
+            WaypointType generated_type = WaypointType::std_new;
+            int generated_identifier = -1;
+            if (const int lift_uid_below = find_lift_uid_below_waypoint(candidate_pos); lift_uid_below >= 0) {
+                generated_type = WaypointType::lift_entrance;
+                generated_identifier = lift_uid_below;
+            }
+
+            const int waypoint_index = add_waypoint(
+                candidate_pos,
+                generated_type,
+                static_cast<int>(WaypointDroppedSubtype::normal),
+                false,
+                true,
+                kWaypointLinkRadius,
+                generated_identifier,
+                nullptr,
+                true);
+            probe_frontier.push_back(waypoint_index);
+            ++created_waypoints;
+
+            if (created_waypoints >= kWaypointGenerateMaxCreatedWaypoints) {
+                break;
+            }
+        }
+    }
+
+    return created_waypoints;
+}
+
+bool link_waypoint_if_clear_no_replace(int from, int to)
+{
+    if (!can_link_waypoint_indices(from, to)) {
+        return false;
+    }
+
+    auto& node = g_waypoints[from];
+    if (waypoint_link_exists(node, to)) {
+        return false;
+    }
+    for (int link_idx = 0; link_idx < node.num_links; ++link_idx) {
+        const int intermediate = node.links[link_idx];
+        if (intermediate <= 0 || intermediate >= static_cast<int>(g_waypoints.size()) || intermediate == to) {
+            continue;
+        }
+        const auto& intermediate_node = g_waypoints[intermediate];
+        if (!intermediate_node.valid) {
+            continue;
+        }
+        if (waypoint_link_exists(intermediate_node, to)) {
+            return false;
+        }
+    }
+    if (node.num_links >= kMaxWaypointLinks) {
+        return false;
+    }
+
+    node.links[node.num_links++] = to;
+    return true;
+}
+
+bool add_waypoint_link_no_replace(int from, int to)
+{
+    if (!can_link_waypoint_indices(from, to)) {
+        return false;
+    }
+
+    auto& node = g_waypoints[from];
+    if (waypoint_link_exists(node, to)) {
+        return false;
+    }
+    if (node.num_links >= kMaxWaypointLinks) {
+        return false;
+    }
+
+    node.links[node.num_links++] = to;
+    return true;
+}
+
+std::optional<int> find_waypoint_intersecting_link_segment(
+    int from, int to, const WaypointCellMap& cell_map, float cell_size)
+{
+    if (from <= 0 || to <= 0 || from == to
+        || from >= static_cast<int>(g_waypoints.size())
+        || to >= static_cast<int>(g_waypoints.size())) {
+        return std::nullopt;
+    }
+
+    const auto& from_node = g_waypoints[from];
+    const auto& to_node = g_waypoints[to];
+    if (!from_node.valid || !to_node.valid) {
+        return std::nullopt;
+    }
+
+    const rf::Vector3 a = from_node.pos;
+    const rf::Vector3 c = to_node.pos;
+    const rf::Vector3 segment = c - a;
+    const float segment_len_sq = segment.dot_prod(segment);
+    if (segment_len_sq <= kWaypointLinkRadiusEpsilon * kWaypointLinkRadiusEpsilon) {
+        return std::nullopt;
+    }
+    const float segment_len = std::sqrt(segment_len_sq);
+    if (segment_len <= (2.0f * kWaypointGenerateLinkPassThroughRadius + kWaypointLinkRadiusEpsilon)) {
+        return std::nullopt;
+    }
+
+    const float pass_radius_sq = kWaypointGenerateLinkPassThroughRadius * kWaypointGenerateLinkPassThroughRadius;
+    const rf::Vector3 pass_padding{
+        kWaypointGenerateLinkPassThroughRadius,
+        kWaypointGenerateLinkPassThroughRadius,
+        kWaypointGenerateLinkPassThroughRadius,
+    };
+    const rf::Vector3 bounds_min = point_min(a, c) - pass_padding;
+    const rf::Vector3 bounds_max = point_max(a, c) + pass_padding;
+    int best_index = -1;
+    float best_dist_sq = std::numeric_limits<float>::max();
+
+    const auto min_cell = waypoint_cell_coord_from_pos(bounds_min, cell_size);
+    const auto max_cell = waypoint_cell_coord_from_pos(bounds_max, cell_size);
+
+    for (int x = min_cell.x; x <= max_cell.x; ++x) {
+        for (int y = min_cell.y; y <= max_cell.y; ++y) {
+            for (int z = min_cell.z; z <= max_cell.z; ++z) {
+                const WaypointCellCoord coord{x, y, z};
+                auto it = cell_map.find(coord);
+                if (it == cell_map.end()) {
+                    continue;
+                }
+                for (int i : it->second) {
+                    if (i == from || i == to) {
+                        continue;
+                    }
+
+                    const auto& candidate = g_waypoints[i];
+                    if (!candidate.valid) {
+                        continue;
+                    }
+                    if (candidate.pos.x < bounds_min.x || candidate.pos.x > bounds_max.x
+                        || candidate.pos.y < bounds_min.y || candidate.pos.y > bounds_max.y
+                        || candidate.pos.z < bounds_min.z || candidate.pos.z > bounds_max.z) {
+                        continue;
+                    }
+
+                    const rf::Vector3 ac_to_candidate = candidate.pos - a;
+                    const float t = ac_to_candidate.dot_prod(segment) / segment_len_sq;
+                    if (t <= kWaypointGeneratePassThroughEndpointEpsilon
+                        || t >= (1.0f - kWaypointGeneratePassThroughEndpointEpsilon)) {
+                        continue;
+                    }
+
+                    const rf::Vector3 closest_on_segment = a + segment * t;
+                    const float dist_sq_to_segment = distance_sq(candidate.pos, closest_on_segment);
+                    if (dist_sq_to_segment > pass_radius_sq) {
+                        continue;
+                    }
+
+                    if (dist_sq_to_segment < best_dist_sq) {
+                        best_dist_sq = dist_sq_to_segment;
+                        best_index = i;
+                    }
+                }
+            }
+        }
+    }
+
+    if (best_index <= 0) {
+        return std::nullopt;
+    }
+
+    return best_index;
+}
+
+bool remove_waypoint_link_no_replace(int from, int to)
+{
+    if (from <= 0 || from >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+    auto& node = g_waypoints[from];
+    if (!node.valid) {
+        return false;
+    }
+
+    for (int i = 0; i < node.num_links; ++i) {
+        if (node.links[i] != to) {
+            continue;
+        }
+        for (int j = i + 1; j < node.num_links; ++j) {
+            node.links[j - 1] = node.links[j];
+        }
+        --node.num_links;
+        if (node.num_links >= 0 && node.num_links < kMaxWaypointLinks) {
+            node.links[node.num_links] = 0;
+        }
+        return true;
+    }
+    return false;
+}
+
+int prune_redundant_generated_links()
+{
+    int removed_links = 0;
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+
+    for (int from = 1; from < waypoint_count; ++from) {
+        auto& from_node = g_waypoints[from];
+        if (!from_node.valid) {
+            continue;
+        }
+
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (int i = 0; i < from_node.num_links; ++i) {
+                const int to = from_node.links[i];
+                if (to <= 0 || to >= waypoint_count || !g_waypoints[to].valid) {
+                    continue;
+                }
+
+                bool redundant = false;
+                for (int j = 0; j < from_node.num_links; ++j) {
+                    const int intermediate = from_node.links[j];
+                    if (intermediate == to
+                        || intermediate <= 0
+                        || intermediate >= waypoint_count
+                        || !g_waypoints[intermediate].valid) {
+                        continue;
+                    }
+                    if (waypoint_has_link_to(intermediate, to)) {
+                        redundant = true;
+                        break;
+                    }
+                }
+
+                if (!redundant) {
+                    continue;
+                }
+
+                if (remove_waypoint_link_no_replace(from, to)) {
+                    ++removed_links;
+                    changed = true;
+                }
+                break;
+            }
+        }
+    }
+
+    return removed_links;
+}
+
+int reroute_links_through_intermediate_waypoints(const WaypointCellMap& cell_map, float cell_size)
+{
+    int rerouted_links = 0;
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+
+    for (int from = 1; from < waypoint_count; ++from) {
+        auto& from_node = g_waypoints[from];
+        if (!from_node.valid) {
+            continue;
+        }
+
+        const int original_link_count = from_node.num_links;
+        std::array<int, kMaxWaypointLinks> original_links{};
+        for (int idx = 0; idx < original_link_count; ++idx) {
+            original_links[idx] = from_node.links[idx];
+        }
+
+        for (int link_idx = 0; link_idx < original_link_count; ++link_idx) {
+            const int to = original_links[link_idx];
+            if (to <= 0 || to >= waypoint_count || !g_waypoints[to].valid) {
+                continue;
+            }
+            if (!waypoint_has_link_to(from, to)) {
+                continue;
+            }
+
+            auto through_opt = find_waypoint_intersecting_link_segment(from, to, cell_map, cell_size);
+            if (!through_opt) {
+                continue;
+            }
+
+            const int through = through_opt.value();
+            const bool need_from_to_through = !waypoint_has_link_to(from, through);
+            const bool need_through_to_to = !waypoint_has_link_to(through, to);
+
+            // Reroute only if it will truly break the direct pass-through edge.
+            if (!need_from_to_through && !need_through_to_to) {
+                if (remove_waypoint_link_no_replace(from, to)) {
+                    ++rerouted_links;
+                }
+                continue;
+            }
+
+            if (need_through_to_to && g_waypoints[through].num_links >= kMaxWaypointLinks) {
+                continue;
+            }
+
+            if (!remove_waypoint_link_no_replace(from, to)) {
+                continue;
+            }
+
+            bool reroute_ok = true;
+            if (need_from_to_through && !add_waypoint_link_no_replace(from, through)) {
+                reroute_ok = false;
+            }
+            if (reroute_ok && need_through_to_to && !add_waypoint_link_no_replace(through, to)) {
+                reroute_ok = false;
+            }
+
+            if (!reroute_ok) {
+                // Keep graph connected if reroute unexpectedly fails.
+                add_waypoint_link_no_replace(from, to);
+                continue;
+            }
+
+            ++rerouted_links;
+        }
+    }
+
+    return rerouted_links;
+}
+
+struct GeneratedWaypointLinkStats
+{
+    int bidirectional_links = 0;
+    int downward_links = 0;
+    int pass_through_links_rerouted = 0;
+    int redundant_links_pruned = 0;
+};
+
+GeneratedWaypointLinkStats link_generated_waypoint_grid()
+{
+    GeneratedWaypointLinkStats stats{};
+    const float link_radius_sq = kWaypointLinkRadius * kWaypointLinkRadius;
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+    WaypointCellMap cell_map{};
+    build_waypoint_cell_map(cell_map, kWaypointLinkRadius);
+
+    for (int i = 1; i < waypoint_count; ++i) {
+        const auto& node_a = g_waypoints[i];
+        if (!node_a.valid) {
+            continue;
+        }
+
+        const WaypointCellCoord cell = waypoint_cell_coord_from_pos(node_a.pos, kWaypointLinkRadius);
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    const WaypointCellCoord neighbor_cell{cell.x + dx, cell.y + dy, cell.z + dz};
+                    auto it = cell_map.find(neighbor_cell);
+                    if (it == cell_map.end()) {
+                        continue;
+                    }
+
+                    for (int j : it->second) {
+                        if (j <= i) {
+                            continue;
+                        }
+                        const auto& node_b = g_waypoints[j];
+                        if (!node_b.valid) {
+                            continue;
+                        }
+
+                        if (distance_sq(node_a.pos, node_b.pos) > link_radius_sq) {
+                            continue;
+                        }
+                        if (!can_link_waypoints(node_a.pos, node_b.pos)) {
+                            continue;
+                        }
+
+                        if (waypoint_link_within_incline(node_a.pos, node_b.pos, kWaypointGenerateMaxInclineDeg)) {
+                            if (link_waypoint_if_clear_no_replace(i, j)) {
+                                ++stats.bidirectional_links;
+                            }
+                            if (link_waypoint_if_clear_no_replace(j, i)) {
+                                ++stats.bidirectional_links;
+                            }
+                        }
+                        else if (node_a.pos.y > node_b.pos.y) {
+                            if (link_waypoint_if_clear_no_replace(i, j)) {
+                                ++stats.downward_links;
+                            }
+                        }
+                        else if (node_b.pos.y > node_a.pos.y) {
+                            if (link_waypoint_if_clear_no_replace(j, i)) {
+                                ++stats.downward_links;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    stats.pass_through_links_rerouted = reroute_links_through_intermediate_waypoints(cell_map, kWaypointLinkRadius);
+    stats.redundant_links_pruned = prune_redundant_generated_links();
+    return stats;
 }
 
 bool save_waypoints()
@@ -3126,6 +3719,55 @@ ConsoleCommand2 waypoint_reset_cmd{
     "waypoints_reset",
 };
 
+ConsoleCommand2 waypoint_generate_cmd{
+    "waypoints_generate",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            rf::console::print("No level loaded");
+            return;
+        }
+
+        if (g_waypoints.size() <= 1) {
+            seed_waypoints_from_objects();
+        }
+
+        const auto seed_indices = collect_generation_seed_waypoint_indices();
+        if (seed_indices.empty()) {
+            rf::console::print("No respawn/item waypoints found to seed generation");
+            return;
+        }
+
+        const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
+        const auto link_stats = link_generated_waypoint_grid();
+
+        if (generated_count >= kWaypointGenerateMaxCreatedWaypoints) {
+            rf::console::print(
+                "Waypoint generation hit creation cap of {} nodes",
+                kWaypointGenerateMaxCreatedWaypoints);
+        }
+        rf::console::print(
+            "Generated {} waypoints from {} respawn/item seeds",
+            generated_count,
+            static_cast<int>(seed_indices.size()));
+        rf::console::print(
+            "Link pass added {} bidirectional links and {} downward links",
+            link_stats.bidirectional_links,
+            link_stats.downward_links);
+        if (link_stats.pass_through_links_rerouted > 0) {
+            rf::console::print(
+                "Link pass rerouted {} links through intermediate waypoints",
+                link_stats.pass_through_links_rerouted);
+        }
+        if (link_stats.redundant_links_pruned > 0) {
+            rf::console::print(
+                "Link pass pruned {} redundant direct links",
+                link_stats.redundant_links_pruned);
+        }
+    },
+    "Generate a walk-probe waypoint grid from respawn/item waypoints",
+    "waypoints_generate",
+};
+
 ConsoleCommand2 waypoint_zone_add_cmd{
     "waypoints_zone_add",
     []() {
@@ -3450,6 +4092,7 @@ void waypoints_init()
     waypoint_seed_bridges_cmd.register_cmd();
     waypoint_clean_cmd.register_cmd();
     waypoint_reset_cmd.register_cmd();
+    waypoint_generate_cmd.register_cmd();
     waypoint_zone_add_cmd.register_cmd();
     waypoint_zone_list_cmd.register_cmd();
     waypoint_zone_delete_cmd.register_cmd();
