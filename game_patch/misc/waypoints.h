@@ -30,7 +30,7 @@ constexpr float kWaypointGenerateStandingHeadroom = 2.0f;
 constexpr int kWaypointGenerateEdgeProbeCount = 8;
 constexpr int kWaypointGenerateEdgeUnsupportedThreshold = 3;
 constexpr float kWaypointGenerateLadderEdgeClearance = 0.25f;
-constexpr float kWaypointGenerateLinkPassThroughRadius = kWaypointRadius;
+constexpr float kWaypointGenerateLinkPassThroughRadius = 1.0f;
 constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
 constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
 
@@ -174,6 +174,9 @@ void waypoints_on_trigger_activated(int trigger_uid);
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);
 bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid);
+int waypoints_target_count();
+bool waypoints_get_target_by_index(int index, WaypointTargetDefinition& out_target);
+bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_target);
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
 int waypoints_count();

@@ -3377,7 +3377,12 @@ int reroute_links_through_intermediate_waypoints(const WaypointCellMap& cell_map
                 continue;
             }
 
-            auto through_opt = find_waypoint_intersecting_link_segment(from, to, cell_map, cell_size);
+            auto through_opt = find_waypoint_intersecting_link_segment(
+                from,
+                to,
+                cell_map,
+                cell_size
+            );
             if (!through_opt) {
                 continue;
             }
@@ -3394,10 +3399,6 @@ int reroute_links_through_intermediate_waypoints(const WaypointCellMap& cell_map
                 continue;
             }
 
-            if (need_through_to_to && g_waypoints[through].num_links >= kMaxWaypointLinks) {
-                continue;
-            }
-
             if (!remove_waypoint_link_no_replace(from, to)) {
                 continue;
             }
@@ -3411,8 +3412,7 @@ int reroute_links_through_intermediate_waypoints(const WaypointCellMap& cell_map
             }
 
             if (!reroute_ok) {
-                // Keep graph connected if reroute unexpectedly fails.
-                add_waypoint_link_no_replace(from, to);
+                // Keep direct pass-through edges removed even if full reroute is not possible.
                 continue;
             }
 
@@ -3468,6 +3468,36 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
                             continue;
                         }
                         if (!can_link_waypoints(node_a.pos, node_b.pos)) {
+                            continue;
+                        }
+
+                        const auto through_opt =
+                            find_waypoint_intersecting_link_segment(i, j, cell_map, kWaypointLinkRadius);
+                        if (through_opt) {
+                            const int through = through_opt.value();
+                            auto link_split = [&](const int from, const int to, int& stat_counter) {
+                                bool split_added = false;
+                                if (link_waypoint_if_clear_no_replace(from, through)) {
+                                    split_added = true;
+                                }
+                                if (link_waypoint_if_clear_no_replace(through, to)) {
+                                    split_added = true;
+                                }
+                                if (split_added) {
+                                    ++stat_counter;
+                                }
+                            };
+
+                            if (waypoint_link_within_incline(node_a.pos, node_b.pos, kWaypointGenerateMaxInclineDeg)) {
+                                link_split(i, j, stats.bidirectional_links);
+                                link_split(j, i, stats.bidirectional_links);
+                            }
+                            else if (node_a.pos.y > node_b.pos.y) {
+                                link_split(i, j, stats.downward_links);
+                            }
+                            else if (node_b.pos.y > node_a.pos.y) {
+                                link_split(j, i, stats.downward_links);
+                            }
                             continue;
                         }
 
@@ -5904,6 +5934,30 @@ bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid)
         return false;
     }
     return std::find(node.zones.begin(), node.zones.end(), zone_uid) != node.zones.end();
+}
+
+int waypoints_target_count()
+{
+    return static_cast<int>(g_waypoint_targets.size());
+}
+
+bool waypoints_get_target_by_index(int index, WaypointTargetDefinition& out_target)
+{
+    if (index < 0 || index >= static_cast<int>(g_waypoint_targets.size())) {
+        return false;
+    }
+    out_target = g_waypoint_targets[index];
+    return true;
+}
+
+bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_target)
+{
+    const WaypointTargetDefinition* target = find_waypoint_target_by_uid(target_uid);
+    if (!target) {
+        return false;
+    }
+    out_target = *target;
+    return true;
 }
 
 int waypoints_closest(const rf::Vector3& pos, float radius)
