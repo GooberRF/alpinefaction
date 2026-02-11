@@ -3,6 +3,7 @@
 #include <vector>
 #include <array>
 #include "../rf/math/vector.h"
+#include "../rf/os/timestamp.h"
 
 namespace rf
 {
@@ -89,6 +90,8 @@ enum class WaypointZoneType : int
     damaging_liquid_room = 1,
     damage_zone = 2,
     instant_death_zone = 3,
+    bridge_use = 4,
+    bridge_prox = 5,
 };
 
 enum class WaypointZoneSource : int
@@ -109,6 +112,10 @@ struct WaypointZoneDefinition
     int trigger_uid = -1;
     int room_uid = -1;
     int identifier = -1;
+    std::vector<int> bridge_waypoint_uids{};
+    bool on = false;
+    float duration = 5.0f;
+    rf::Timestamp timer{};
     rf::Vector3 box_min{};
     rf::Vector3 box_max{};
 };
@@ -135,6 +142,17 @@ struct WaypointTargetDefinition
     std::vector<int> waypoint_uids{};
 };
 
+struct WaypointBridgeZoneState
+{
+    int zone_uid = -1;
+    int trigger_uid = -1;
+    rf::Vector3 trigger_pos{};
+    float activation_radius = 0.0f;
+    bool requires_use = false;
+    bool on = false;
+    bool available = false;
+};
+
 struct WpCacheNode
 {
     int index = -1;
@@ -151,6 +169,11 @@ void waypoints_render_debug();
 void waypoints_level_init();
 void waypoints_level_reset();
 void waypoints_on_limbo_enter();
+void waypoints_on_trigger_activated(int trigger_uid);
+
+bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
+bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);
+bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid);
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
 int waypoints_count();

@@ -4,6 +4,7 @@
 #include <xlog/xlog.h>
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
+#include "../misc/waypoints.h"
 #include "../rf/player/player.h"
 #include "../rf/level.h"
 #include "../rf/trigger.h"
@@ -94,6 +95,7 @@ FunHook<void(rf::Trigger*, int32_t, bool)> trigger_activate_hook{
         // Normal activation
         // rf::console::print("trigger normal activation {} {}", trigger_name, ext_flags);
         trigger_activate_hook.call_target(trigger, h_entity, skip_movers);
+        waypoints_on_trigger_activated(trigger->uid);
         g_trigger_solo_player = nullptr;
     },
 };

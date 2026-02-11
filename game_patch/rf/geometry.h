@@ -61,6 +61,36 @@ namespace rf
         FACE_INVISIBLE = 0x2000,
     };
 
+    enum CollideFlags
+    {
+        CF_ANY_HIT = 0x1,
+        CF_SKIP_SEE_THRU = 0x2,
+        CF_SKIP_SHOOT_THRU = 0x4,
+        CF_SEE_THRU_ALPHA_TEST = 0x8,
+        CF_SHOOT_THRU_ALPHA_TEST = 0x10,
+        CF_SKIP_DESTRUCTIBLE_GLASS = 0x20,
+        CF_PROCESS_LIQUID_FACES = 0x40,
+        CF_PROCESS_INVISIBLE_FACES = 0x80,
+    };
+
+    enum GCollisionFlags
+    {
+        GCF_ANY_HIT = 0x1, // stop at first detected hit
+        GCF_PROCESS_PORTALS = 0x2,
+        GCF_MESH_SPACE = 0x4, // coordinates in model space
+        GCF_PROCESS_SKYROOM = 0x8,
+        GCF_10 = 0x10,
+        GCF_SKIP_SEE_THRU = 0x20,
+        GCF_SKIP_SHOOT_THRU = 0x40,
+        GCF_SEE_THRU_ALPHA_TEST = 0x80,
+        GCF_SHOOT_THRU_ALPHA_TEST = 0x100,
+        GCF_200 = 0x200,
+        GCF_SKIP_DESTRUCTIBLE_GLASS = 0x400,
+        GCF_PROCESS_SHOW_SKY_FACES = 0x800,
+        GCF_PROCESS_LIQUID_FACES = 0x1000,
+        GCF_PROCESS_INVISIBLE_FACES = 0x2000,
+    };
+
     enum class GBooleanOperation
     {
         BOP_ALL = 0x0,

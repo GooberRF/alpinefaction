@@ -60,9 +60,13 @@ std::unordered_map<int, int> g_last_lift_uid_by_entity{};
 
 void remap_waypoints();
 bool link_waypoint_if_clear_autogen(int from, int to);
+rf::Mover* find_mover_by_uid(int mover_uid);
 
 int g_debug_waypoints_mode = 0;
 bool g_drop_waypoints_prev = true;
+
+constexpr int kWaypointSolidTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
+constexpr int kWaypointWorldTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 
 FunHook<void(rf::Vector3*, float)> glass_remove_floating_shards_hook{
     0x00492400,
@@ -268,9 +272,25 @@ WaypointZoneType waypoint_zone_type_from_int(int raw_type)
             return WaypointZoneType::damage_zone;
         case static_cast<int>(WaypointZoneType::instant_death_zone):
             return WaypointZoneType::instant_death_zone;
+        case static_cast<int>(WaypointZoneType::bridge_use):
+            return WaypointZoneType::bridge_use;
+        case static_cast<int>(WaypointZoneType::bridge_prox):
+            return WaypointZoneType::bridge_prox;
         default:
             return static_cast<WaypointZoneType>(raw_type);
     }
+}
+
+bool waypoint_zone_type_is_bridge(WaypointZoneType type)
+{
+    return type == WaypointZoneType::bridge_use
+        || type == WaypointZoneType::bridge_prox;
+}
+
+bool waypoint_zone_type_allows_auto_waypoint_membership(WaypointZoneType type)
+{
+    (void)type;
+    return true;
 }
 
 WaypointZoneSource waypoint_zone_source_from_int(int raw_source)
@@ -309,6 +329,10 @@ std::string_view waypoint_zone_type_name(WaypointZoneType type)
             return "damage_zone";
         case WaypointZoneType::instant_death_zone:
             return "instant_death_zone";
+        case WaypointZoneType::bridge_use:
+            return "bridge_use";
+        case WaypointZoneType::bridge_prox:
+            return "bridge_prox";
         default:
             return "unknown";
     }
@@ -354,6 +378,13 @@ std::optional<WaypointZoneType> parse_waypoint_zone_type_token(std::string_view 
     if (string_iequals(token, "instant_death") || string_iequals(token, "instant_death_zone")
         || string_iequals(token, "death")) {
         return WaypointZoneType::instant_death_zone;
+    }
+    if (string_iequals(token, "mover_bridge_use") || string_iequals(token, "bridge_use")) {
+        return WaypointZoneType::bridge_use;
+    }
+    if (string_iequals(token, "mover_bridge_prox") || string_iequals(token, "bridge_prox")
+        || string_iequals(token, "mover_bridge_proximity")) {
+        return WaypointZoneType::bridge_prox;
     }
 
     return std::nullopt;
@@ -483,6 +514,40 @@ float waypoint_link_radius_from_trigger(const rf::Trigger& trigger)
     return kWaypointLinkRadius;
 }
 
+bool try_build_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state)
+{
+    if (zone_uid < 0 || zone_uid >= static_cast<int>(g_waypoint_zones.size())) {
+        return false;
+    }
+
+    const auto& zone = g_waypoint_zones[zone_uid];
+    if (!waypoint_zone_type_is_bridge(zone.type)) {
+        return false;
+    }
+    if (resolve_waypoint_zone_source(zone) != WaypointZoneSource::trigger_uid) {
+        return false;
+    }
+
+    rf::Object* trigger_obj = rf::obj_lookup_from_uid(zone.trigger_uid);
+    if (!trigger_obj || trigger_obj->type != rf::OT_TRIGGER) {
+        return false;
+    }
+
+    const auto* trigger = static_cast<rf::Trigger*>(trigger_obj);
+    const bool trigger_available =
+        !(trigger->obj_flags & rf::OF_DELAYED_DELETE)
+        && (trigger->max_count < 0 || trigger->count < trigger->max_count)
+        && (!trigger->next_check.valid() || trigger->next_check.elapsed());
+    out_state.zone_uid = zone_uid;
+    out_state.trigger_uid = zone.trigger_uid;
+    out_state.trigger_pos = trigger->pos;
+    out_state.activation_radius = waypoint_link_radius_from_trigger(*trigger);
+    out_state.requires_use = (zone.type == WaypointZoneType::bridge_use);
+    out_state.on = zone.on;
+    out_state.available = trigger_available;
+    return true;
+}
+
 bool waypoint_link_exists(const WaypointNode& node, int link)
 {
     for (int i = 0; i < node.num_links; ++i) {
@@ -491,6 +556,22 @@ bool waypoint_link_exists(const WaypointNode& node, int link)
         }
     }
     return false;
+}
+
+void normalize_zone_bridge_waypoint_refs(std::vector<int>& waypoint_uids)
+{
+    waypoint_uids.erase(
+        std::remove_if(
+            waypoint_uids.begin(),
+            waypoint_uids.end(),
+            [](const int waypoint_uid) {
+                return waypoint_uid <= 0;
+            }),
+        waypoint_uids.end());
+    std::sort(waypoint_uids.begin(), waypoint_uids.end());
+    waypoint_uids.erase(
+        std::unique(waypoint_uids.begin(), waypoint_uids.end()),
+        waypoint_uids.end());
 }
 
 bool is_waypoint_uid_valid(int waypoint_uid)
@@ -587,6 +668,60 @@ bool waypoint_link_types_allowed(const WaypointNode& from_node, const WaypointNo
     return tele_entrance_outbound_link_allowed(from_node, to_node)
         && lift_entrance_outbound_link_allowed(from_node, to_node)
         && lift_exit_inbound_link_allowed(from_node, to_node);
+}
+
+bool waypoint_bridge_zone_is_active(const WaypointZoneDefinition& zone)
+{
+    if (!waypoint_zone_type_is_bridge(zone.type)) {
+        return false;
+    }
+    return zone.on;
+}
+
+bool waypoint_zone_has_bridge_waypoint(const WaypointZoneDefinition& zone, const int waypoint_uid)
+{
+    if (!waypoint_zone_type_is_bridge(zone.type)) {
+        return false;
+    }
+    return std::find(
+               zone.bridge_waypoint_uids.begin(),
+               zone.bridge_waypoint_uids.end(),
+               waypoint_uid)
+        != zone.bridge_waypoint_uids.end();
+}
+
+bool waypoint_uid_enabled_by_bridge_zone_state(const int waypoint_uid)
+{
+    if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+    if (!g_waypoints[waypoint_uid].valid) {
+        return false;
+    }
+
+    if (g_waypoint_zones.empty()) {
+        return true;
+    }
+
+    bool has_bridge_zone = false;
+    for (const auto& zone : g_waypoint_zones) {
+        if (!waypoint_zone_has_bridge_waypoint(zone, waypoint_uid)) {
+            continue;
+        }
+
+        has_bridge_zone = true;
+        if (waypoint_bridge_zone_is_active(zone)) {
+            return true;
+        }
+    }
+
+    return !has_bridge_zone;
+}
+
+bool waypoint_link_blocked_by_bridge_zone_state(const int from_waypoint_uid, const int to_waypoint_uid)
+{
+    return !waypoint_uid_enabled_by_bridge_zone_state(from_waypoint_uid)
+        || !waypoint_uid_enabled_by_bridge_zone_state(to_waypoint_uid);
 }
 
 void link_waypoint(int from, int to)
@@ -695,7 +830,11 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
     rf::Vector3 p1 = pos - rf::Vector3{0.0f, max_downward_dist, 0.0f};
     rf::PCollisionOut collision{};
     collision.obj_handle = -1;
-    if (!rf::collide_linesegment_world(p0, p1, 0, &collision)) {
+    if (!rf::collide_linesegment_world(
+            p0,
+            p1,
+            kWaypointWorldTraceFlags,
+            &collision)) {
         return false;
     }
 
@@ -717,7 +856,11 @@ float trace_upward_clearance_from_floor_hit(const rf::Vector3& floor_hit_pos, fl
     rf::Vector3 p1 = floor_hit_pos + rf::Vector3{0.0f, max_upward_dist, 0.0f};
     rf::PCollisionOut collision{};
     collision.obj_handle = -1;
-    if (!rf::collide_linesegment_world(p0, p1, 0, &collision)) {
+    if (!rf::collide_linesegment_world(
+            p0,
+            p1,
+            kWaypointWorldTraceFlags,
+            &collision)) {
         return max_upward_dist;
     }
 
@@ -873,6 +1016,19 @@ bool parse_waypoint_zone_definition(const toml::table& zone_tbl, WaypointZoneDef
         zone.identifier = static_cast<int>(identifier_node->value_or(-1));
     }
 
+    if (const auto* duration_node = zone_tbl.get("d"); duration_node && duration_node->is_number()) {
+        const float parsed_duration = static_cast<float>(duration_node->value_or<double>(zone.duration));
+        if (std::isfinite(parsed_duration) && parsed_duration >= 0.0f) {
+            zone.duration = parsed_duration;
+        }
+    }
+    else if (const auto* duration_node = zone_tbl.get("duration"); duration_node && duration_node->is_number()) {
+        const float parsed_duration = static_cast<float>(duration_node->value_or<double>(zone.duration));
+        if (std::isfinite(parsed_duration) && parsed_duration >= 0.0f) {
+            zone.duration = parsed_duration;
+        }
+    }
+
     bool has_trigger_uid = false;
     bool has_room_uid = false;
     bool has_box_extents = false;
@@ -893,9 +1049,41 @@ bool parse_waypoint_zone_definition(const toml::table& zone_tbl, WaypointZoneDef
         return false;
     }
 
+    if (waypoint_zone_type_is_bridge(zone.type) && !has_trigger_uid) {
+        return false;
+    }
+
+    if (waypoint_zone_type_is_bridge(zone.type)) {
+        const toml::array* bridge_waypoint_uids_node = zone_tbl.get_as<toml::array>("w");
+        if (!bridge_waypoint_uids_node) {
+            bridge_waypoint_uids_node = zone_tbl.get_as<toml::array>("bridge_waypoint_uids");
+        }
+        if (!bridge_waypoint_uids_node) {
+            bridge_waypoint_uids_node = zone_tbl.get_as<toml::array>("bridge_waypoints");
+        }
+        if (bridge_waypoint_uids_node) {
+            zone.bridge_waypoint_uids.reserve(bridge_waypoint_uids_node->size());
+            for (const auto& waypoint_uid_node : *bridge_waypoint_uids_node) {
+                if (waypoint_uid_node.is_number()) {
+                    zone.bridge_waypoint_uids.push_back(
+                        static_cast<int>(waypoint_uid_node.value_or(0)));
+                }
+            }
+            normalize_zone_bridge_waypoint_refs(zone.bridge_waypoint_uids);
+        }
+    }
+    else {
+        zone.bridge_waypoint_uids.clear();
+    }
+
     if (has_box_extents) {
         normalize_zone_box_bounds(zone);
     }
+
+    // Bridge zones are runtime-gated from trigger activation state and always
+    // start inactive when loaded/added.
+    zone.on = false;
+    zone.timer.invalidate();
 
     out_zone = zone;
     return true;
@@ -948,6 +1136,10 @@ bool point_inside_room_zone(int room_uid, const rf::Vector3& point, const rf::Ob
 
 bool waypoint_zone_contains_point(const WaypointZoneDefinition& zone, const rf::Vector3& point, const rf::Object* source_object)
 {
+    if (!waypoint_zone_type_allows_auto_waypoint_membership(zone.type)) {
+        return false;
+    }
+
     switch (resolve_waypoint_zone_source(zone)) {
         case WaypointZoneSource::trigger_uid: {
             rf::Object* trigger_obj = rf::obj_lookup_from_uid(zone.trigger_uid);
@@ -994,6 +1186,61 @@ std::vector<int> collect_waypoint_zone_refs(const rf::Vector3& point, const rf::
     return zone_refs;
 }
 
+int bridge_zone_duration_ms(const WaypointZoneDefinition& zone)
+{
+    float duration_seconds = zone.duration;
+    if (!std::isfinite(duration_seconds) || duration_seconds < 0.0f) {
+        duration_seconds = 5.0f;
+    }
+    const float duration_ms = duration_seconds * 1000.0f;
+    if (!std::isfinite(duration_ms) || duration_ms <= 0.0f) {
+        return 0;
+    }
+    if (duration_ms >= static_cast<float>(std::numeric_limits<int>::max())) {
+        return std::numeric_limits<int>::max();
+    }
+    return static_cast<int>(std::lround(duration_ms));
+}
+
+void update_bridge_zone_states()
+{
+    for (auto& zone : g_waypoint_zones) {
+        if (!waypoint_zone_type_is_bridge(zone.type) || !zone.on) {
+            continue;
+        }
+        if (!zone.timer.valid() || zone.timer.elapsed()) {
+            zone.on = false;
+            zone.timer.invalidate();
+        }
+    }
+}
+
+void activate_bridge_zones_for_trigger_uid(int trigger_uid)
+{
+    if (trigger_uid < 0) {
+        return;
+    }
+
+    for (auto& zone : g_waypoint_zones) {
+        if (!waypoint_zone_type_is_bridge(zone.type)) {
+            continue;
+        }
+        if (resolve_waypoint_zone_source(zone) != WaypointZoneSource::trigger_uid
+            || zone.trigger_uid != trigger_uid) {
+            continue;
+        }
+
+        zone.on = true;
+        const int duration_ms = bridge_zone_duration_ms(zone);
+        if (duration_ms > 0) {
+            zone.timer.set(duration_ms);
+        }
+        else {
+            zone.timer.invalidate();
+        }
+    }
+}
+
 void refresh_all_waypoint_zone_refs()
 {
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
@@ -1002,7 +1249,25 @@ void refresh_all_waypoint_zone_refs()
             node.zones.clear();
             continue;
         }
+
+        std::vector<int> preserved_manual_refs{};
+        preserved_manual_refs.reserve(node.zones.size());
+        for (int zone_index : node.zones) {
+            if (zone_index < 0 || zone_index >= static_cast<int>(g_waypoint_zones.size())) {
+                continue;
+            }
+            const auto& zone = g_waypoint_zones[zone_index];
+            if (!waypoint_zone_type_allows_auto_waypoint_membership(zone.type)) {
+                preserved_manual_refs.push_back(zone_index);
+            }
+        }
+
         node.zones = collect_waypoint_zone_refs(node.pos, nullptr);
+        node.zones.insert(
+            node.zones.end(),
+            preserved_manual_refs.begin(),
+            preserved_manual_refs.end());
+        normalize_waypoint_zone_refs(node.zones);
     }
 }
 
@@ -1010,6 +1275,17 @@ int add_waypoint_zone_definition(WaypointZoneDefinition zone)
 {
     if (resolve_waypoint_zone_source(zone) == WaypointZoneSource::box_extents) {
         normalize_zone_box_bounds(zone);
+    }
+    if (waypoint_zone_type_is_bridge(zone.type)) {
+        normalize_zone_bridge_waypoint_refs(zone.bridge_waypoint_uids);
+        if (!std::isfinite(zone.duration) || zone.duration < 0.0f) {
+            zone.duration = 5.0f;
+        }
+        zone.on = false;
+        zone.timer.invalidate();
+    }
+    else {
+        zone.bridge_waypoint_uids.clear();
     }
 
     g_waypoint_zones.push_back(zone);
@@ -1084,6 +1360,29 @@ void normalize_target_waypoint_uids(std::vector<int>& waypoint_uids)
         waypoint_uids.end());
     std::sort(waypoint_uids.begin(), waypoint_uids.end());
     waypoint_uids.erase(std::unique(waypoint_uids.begin(), waypoint_uids.end()), waypoint_uids.end());
+}
+
+void normalize_all_zone_bridge_waypoint_refs()
+{
+    for (auto& zone : g_waypoint_zones) {
+        if (!waypoint_zone_type_is_bridge(zone.type)) {
+            zone.bridge_waypoint_uids.clear();
+            continue;
+        }
+
+        zone.bridge_waypoint_uids.erase(
+            std::remove_if(
+                zone.bridge_waypoint_uids.begin(),
+                zone.bridge_waypoint_uids.end(),
+                [](const int waypoint_uid) {
+                    if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
+                        return true;
+                    }
+                    return !g_waypoints[waypoint_uid].valid;
+                }),
+            zone.bridge_waypoint_uids.end());
+        normalize_zone_bridge_waypoint_refs(zone.bridge_waypoint_uids);
+    }
 }
 
 std::vector<int> collect_target_waypoint_uids(const rf::Vector3& pos)
@@ -1300,7 +1599,11 @@ int find_lift_uid_below_waypoint(const rf::Vector3& pos)
     rf::Vector3 p1 = pos - rf::Vector3{0.0f, kLiftTraceDistance, 0.0f};
     rf::PCollisionOut collision{};
     collision.obj_handle = -1;
-    const bool hit = rf::collide_linesegment_world(p0, p1, 0, &collision);
+    const bool hit = rf::collide_linesegment_world(
+        p0,
+        p1,
+        kWaypointWorldTraceFlags,
+        &collision);
     if (!hit || collision.obj_handle < 0) {
         return -1;
     }
@@ -1745,7 +2048,11 @@ bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b)
     rf::GCollisionOutput collision{};
     rf::Vector3 p0 = a;
     rf::Vector3 p1 = b;
-    return !rf::collide_linesegment_level_solid(p0, p1, 0, &collision);
+    return !rf::collide_linesegment_level_solid(
+        p0,
+        p1,
+        kWaypointSolidTraceFlags,
+        &collision);
 }
 
 bool waypoint_has_horizontal_geometry_clearance(const rf::Vector3& pos, float clearance)
@@ -1770,7 +2077,11 @@ bool waypoint_has_horizontal_geometry_clearance(const rf::Vector3& pos, float cl
         rf::Vector3 p0 = pos;
         rf::Vector3 p1 = pos + dir * clearance;
         rf::GCollisionOutput collision{};
-        if (rf::collide_linesegment_level_solid(p0, p1, 0, &collision)) {
+        if (rf::collide_linesegment_level_solid(
+                p0,
+                p1,
+                kWaypointSolidTraceFlags,
+                &collision)) {
             return false;
         }
     }
@@ -3300,6 +3611,26 @@ bool save_waypoints()
             if (zone.identifier != -1) {
                 zone_entry.insert("i", zone.identifier);
             }
+            if (waypoint_zone_type_is_bridge(zone.type)
+                && std::fabs(zone.duration - 5.0f) > kWaypointLinkRadiusEpsilon) {
+                zone_entry.insert("d", zone.duration);
+            }
+            if (waypoint_zone_type_is_bridge(zone.type)
+                && !zone.bridge_waypoint_uids.empty()) {
+                toml::array bridge_waypoint_uids{};
+                for (const int waypoint_uid : zone.bridge_waypoint_uids) {
+                    if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
+                        continue;
+                    }
+                    if (!g_waypoints[waypoint_uid].valid) {
+                        continue;
+                    }
+                    bridge_waypoint_uids.push_back(waypoint_uid);
+                }
+                if (!bridge_waypoint_uids.empty()) {
+                    zone_entry.insert("w", bridge_waypoint_uids);
+                }
+            }
 
             zones.push_back(zone_entry);
         }
@@ -3631,6 +3962,7 @@ bool load_waypoints(bool include_std_new_waypoints = true)
     if (skipped_std_new_waypoints) {
         remap_waypoints();
     }
+    normalize_all_zone_bridge_waypoint_refs();
     sanitize_waypoint_links_against_geometry();
     g_has_loaded_wpt = true;
     return true;
@@ -3704,6 +4036,26 @@ void remap_waypoints()
         }
         normalize_target_waypoint_uids(remapped_waypoint_uids);
         target.waypoint_uids = std::move(remapped_waypoint_uids);
+    }
+    for (auto& zone : g_waypoint_zones) {
+        if (!waypoint_zone_type_is_bridge(zone.type)) {
+            zone.bridge_waypoint_uids.clear();
+            continue;
+        }
+
+        std::vector<int> remapped_bridge_waypoint_uids{};
+        remapped_bridge_waypoint_uids.reserve(zone.bridge_waypoint_uids.size());
+        for (int waypoint_uid : zone.bridge_waypoint_uids) {
+            if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(remap.size())) {
+                continue;
+            }
+            const int remapped_waypoint_uid = remap[waypoint_uid];
+            if (remapped_waypoint_uid > 0) {
+                remapped_bridge_waypoint_uids.push_back(remapped_waypoint_uid);
+            }
+        }
+        normalize_zone_bridge_waypoint_refs(remapped_bridge_waypoint_uids);
+        zone.bridge_waypoint_uids = std::move(remapped_bridge_waypoint_uids);
     }
     invalidate_cache();
 }
@@ -3979,6 +4331,10 @@ rf::Color debug_waypoint_zone_color(WaypointZoneType type)
             return {255, 150, 70, 150};
         case WaypointZoneType::instant_death_zone:
             return {255, 60, 60, 150};
+        case WaypointZoneType::bridge_use:
+            return {120, 255, 120, 150};
+        case WaypointZoneType::bridge_prox:
+            return {80, 220, 255, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -4185,6 +4541,33 @@ void draw_debug_waypoint_zones(bool show_membership_arrows, bool show_labels)
                     node.pos.x, node.pos.y, node.pos.z,
                     zone_info.center.x, zone_info.center.y, zone_info.center.z,
                     zone_info.color.red, zone_info.color.green, zone_info.color.blue);
+            }
+        }
+
+        for (int zone_index = 0; zone_index < static_cast<int>(g_waypoint_zones.size()); ++zone_index) {
+            const auto& zone = g_waypoint_zones[zone_index];
+            if (!waypoint_zone_type_is_bridge(zone.type)) {
+                continue;
+            }
+
+            const auto& zone_info = zone_infos[zone_index];
+            if (!zone_info.renderable) {
+                continue;
+            }
+
+            for (const int waypoint_uid : zone.bridge_waypoint_uids) {
+                if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
+                    continue;
+                }
+                const auto& waypoint = g_waypoints[waypoint_uid];
+                if (!waypoint.valid) {
+                    continue;
+                }
+
+                rf::gr::line_arrow(
+                    zone_info.center.x, zone_info.center.y, zone_info.center.z,
+                    waypoint.pos.x, waypoint.pos.y, waypoint.pos.z,
+                    255, 32, 32);
             }
         }
     }
@@ -4580,6 +4963,8 @@ ConsoleCommand2 waypoint_zone_add_cmd{
         if (tokens.size() < 3) {
             rf::console::print("Usage:");
             rf::console::print("  waypoints_zone_add <zone_type> trigger <trigger_uid>");
+            rf::console::print(
+                "  waypoints_zone_add <bridge_zone_type> trigger <trigger_uid> [bridge_waypoint_uid ...]");
             rf::console::print("  waypoints_zone_add <zone_type> room <room_uid>");
             rf::console::print("  waypoints_zone_add <zone_type> box <min_x> <min_y> <min_z> <max_x> <max_y> <max_z>");
             return;
@@ -4603,9 +4988,21 @@ ConsoleCommand2 waypoint_zone_add_cmd{
         WaypointZoneDefinition zone{};
         zone.type = zone_type.value();
 
+        if (waypoint_zone_type_is_bridge(zone.type)
+            && source.value() != WaypointZoneSource::trigger_uid) {
+            rf::console::print(
+                "Zone type {} only supports trigger source",
+                waypoint_zone_type_name(zone.type));
+            return;
+        }
+
         switch (source.value()) {
             case WaypointZoneSource::trigger_uid: {
-                if (tokens.size() != 4) {
+                if (tokens.size() < 4) {
+                    rf::console::print("Usage: waypoints_zone_add <zone_type> trigger <trigger_uid> [bridge_waypoint_uid ...]");
+                    return;
+                }
+                if (!waypoint_zone_type_is_bridge(zone.type) && tokens.size() != 4) {
                     rf::console::print("Usage: waypoints_zone_add <zone_type> trigger <trigger_uid>");
                     return;
                 }
@@ -4623,9 +5020,34 @@ ConsoleCommand2 waypoint_zone_add_cmd{
                 }
 
                 zone.trigger_uid = trigger_uid.value();
+                if (waypoint_zone_type_is_bridge(zone.type) && tokens.size() > 4) {
+                    for (size_t token_index = 4; token_index < tokens.size(); ++token_index) {
+                        auto bridge_waypoint_uid = parse_int_token(tokens[token_index]);
+                        if (!bridge_waypoint_uid) {
+                            rf::console::print(
+                                "Invalid bridge waypoint UID '{}'",
+                                tokens[token_index]);
+                            return;
+                        }
+                        zone.bridge_waypoint_uids.push_back(bridge_waypoint_uid.value());
+                    }
+                    normalize_zone_bridge_waypoint_refs(zone.bridge_waypoint_uids);
+                }
+                zone.on = false;
+                zone.timer.invalidate();
                 const int zone_index = add_waypoint_zone_definition(zone);
-                rf::console::print("Added zone {} as index {} (trigger uid {})",
-                                   waypoint_zone_type_name(zone.type), zone_index, zone.trigger_uid);
+                if (waypoint_zone_type_is_bridge(zone.type)) {
+                    rf::console::print(
+                        "Added zone {} as index {} (trigger uid {}, duration {:.2f}s, on false, gated waypoints {})",
+                                       waypoint_zone_type_name(zone.type), zone_index,
+                                       zone.trigger_uid, zone.duration,
+                                       static_cast<int>(zone.bridge_waypoint_uids.size()));
+                }
+                else {
+                    rf::console::print("Added zone {} as index {} (trigger uid {})",
+                                       waypoint_zone_type_name(zone.type), zone_index,
+                                       zone.trigger_uid);
+                }
                 return;
             }
             case WaypointZoneSource::room_uid: {
@@ -4702,25 +5124,73 @@ ConsoleCommand2 waypoint_zone_list_cmd{
         rf::console::print("Waypoint zones ({})", static_cast<int>(g_waypoint_zones.size()));
         for (int i = 0; i < static_cast<int>(g_waypoint_zones.size()); ++i) {
             const auto& zone = g_waypoint_zones[i];
+            const bool bridge_zone = waypoint_zone_type_is_bridge(zone.type);
+            std::string bridge_waypoint_uid_list{};
+            if (bridge_zone) {
+                for (size_t waypoint_index = 0; waypoint_index < zone.bridge_waypoint_uids.size(); ++waypoint_index) {
+                    if (!bridge_waypoint_uid_list.empty()) {
+                        bridge_waypoint_uid_list += ",";
+                    }
+                    bridge_waypoint_uid_list += std::to_string(zone.bridge_waypoint_uids[waypoint_index]);
+                }
+                if (bridge_waypoint_uid_list.empty()) {
+                    bridge_waypoint_uid_list = "-";
+                }
+            }
+            const int timer_remaining_ms = (zone.on && zone.timer.valid())
+                ? std::max(zone.timer.time_until(), 0)
+                : -1;
             switch (resolve_waypoint_zone_source(zone)) {
                 case WaypointZoneSource::trigger_uid:
-                    rf::console::print("  [{}] {} via {} uid {} (i {})",
-                                       i, waypoint_zone_type_name(zone.type),
-                                       waypoint_zone_source_name(WaypointZoneSource::trigger_uid),
-                                       zone.trigger_uid, zone.identifier);
+                    if (bridge_zone) {
+                        rf::console::print("  [{}] {} via {} uid {} (i {}, on {}, d {:.2f}s, t {}ms, w {})",
+                                           i, waypoint_zone_type_name(zone.type),
+                                           waypoint_zone_source_name(WaypointZoneSource::trigger_uid),
+                                           zone.trigger_uid, zone.identifier,
+                                           zone.on ? "true" : "false",
+                                           zone.duration, timer_remaining_ms, bridge_waypoint_uid_list);
+                    }
+                    else {
+                        rf::console::print("  [{}] {} via {} uid {} (i {})",
+                                           i, waypoint_zone_type_name(zone.type),
+                                           waypoint_zone_source_name(WaypointZoneSource::trigger_uid),
+                                           zone.trigger_uid, zone.identifier);
+                    }
                     break;
                 case WaypointZoneSource::room_uid:
-                    rf::console::print("  [{}] {} via {} uid {} (i {})",
-                                       i, waypoint_zone_type_name(zone.type),
-                                       waypoint_zone_source_name(WaypointZoneSource::room_uid),
-                                       zone.room_uid, zone.identifier);
+                    if (bridge_zone) {
+                        rf::console::print("  [{}] {} via {} uid {} (i {}, on {}, d {:.2f}s, t {}ms, w {})",
+                                           i, waypoint_zone_type_name(zone.type),
+                                           waypoint_zone_source_name(WaypointZoneSource::room_uid),
+                                           zone.room_uid, zone.identifier,
+                                           zone.on ? "true" : "false",
+                                           zone.duration, timer_remaining_ms, bridge_waypoint_uid_list);
+                    }
+                    else {
+                        rf::console::print("  [{}] {} via {} uid {} (i {})",
+                                           i, waypoint_zone_type_name(zone.type),
+                                           waypoint_zone_source_name(WaypointZoneSource::room_uid),
+                                           zone.room_uid, zone.identifier);
+                    }
                     break;
                 case WaypointZoneSource::box_extents:
-                    rf::console::print("  [{}] {} via {} min {:.2f},{:.2f},{:.2f} max {:.2f},{:.2f},{:.2f} (i {})",
-                                       i, waypoint_zone_type_name(zone.type),
-                                       waypoint_zone_source_name(WaypointZoneSource::box_extents),
-                                       zone.box_min.x, zone.box_min.y, zone.box_min.z,
-                                       zone.box_max.x, zone.box_max.y, zone.box_max.z, zone.identifier);
+                    if (bridge_zone) {
+                        rf::console::print(
+                            "  [{}] {} via {} min {:.2f},{:.2f},{:.2f} max {:.2f},{:.2f},{:.2f} (i {}, on {}, d {:.2f}s, t {}ms, w {})",
+                            i, waypoint_zone_type_name(zone.type),
+                            waypoint_zone_source_name(WaypointZoneSource::box_extents),
+                            zone.box_min.x, zone.box_min.y, zone.box_min.z,
+                            zone.box_max.x, zone.box_max.y, zone.box_max.z, zone.identifier,
+                            zone.on ? "true" : "false",
+                            zone.duration, timer_remaining_ms, bridge_waypoint_uid_list);
+                    }
+                    else {
+                        rf::console::print("  [{}] {} via {} min {:.2f},{:.2f},{:.2f} max {:.2f},{:.2f},{:.2f} (i {})",
+                                           i, waypoint_zone_type_name(zone.type),
+                                           waypoint_zone_source_name(WaypointZoneSource::box_extents),
+                                           zone.box_min.x, zone.box_min.y, zone.box_min.z,
+                                           zone.box_max.x, zone.box_max.y, zone.box_max.z, zone.identifier);
+                    }
                     break;
                 default:
                     break;
@@ -5026,6 +5496,14 @@ void waypoints_on_limbo_enter()
     }
 }
 
+void waypoints_on_trigger_activated(int trigger_uid)
+{
+    if (trigger_uid < 0 || g_waypoint_zones.empty()) {
+        return;
+    }
+    activate_bridge_zones_for_trigger_uid(trigger_uid);
+}
+
 void waypoints_do_frame()
 {
     if (!is_waypoint_bot_mode_active()
@@ -5040,6 +5518,9 @@ void waypoints_do_frame()
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {
         return;
     }
+
+    update_bridge_zone_states();
+
     if (!are_waypoint_commands_enabled_for_local_client()) {
         g_drop_waypoints_prev = g_drop_waypoints;
         return;
@@ -5061,6 +5542,52 @@ void waypoints_render_debug()
         return;
     }
     draw_debug_waypoints();
+}
+
+bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state)
+{
+    return try_build_bridge_zone_state(zone_uid, out_state);
+}
+
+bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state)
+{
+    float best_dist_sq = std::numeric_limits<float>::max();
+    bool found = false;
+    WaypointBridgeZoneState best_state{};
+
+    for (int zone_uid = 0; zone_uid < static_cast<int>(g_waypoint_zones.size()); ++zone_uid) {
+        WaypointBridgeZoneState state{};
+        if (!try_build_bridge_zone_state(zone_uid, state) || state.on || !state.available) {
+            continue;
+        }
+
+        const float dist_sq = distance_sq(from_pos, state.trigger_pos);
+        if (dist_sq < best_dist_sq) {
+            best_dist_sq = dist_sq;
+            best_state = state;
+            found = true;
+        }
+    }
+
+    if (!found) {
+        return false;
+    }
+
+    out_state = best_state;
+    return true;
+}
+
+bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid)
+{
+    if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())
+        || zone_uid < 0 || zone_uid >= static_cast<int>(g_waypoint_zones.size())) {
+        return false;
+    }
+    const auto& node = g_waypoints[waypoint_uid];
+    if (!node.valid) {
+        return false;
+    }
+    return std::find(node.zones.begin(), node.zones.end(), zone_uid) != node.zones.end();
 }
 
 int waypoints_closest(const rf::Vector3& pos, float radius)
@@ -5122,6 +5649,9 @@ int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links
             || !g_waypoints[link].valid) {
             continue;
         }
+        if (waypoint_link_blocked_by_bridge_zone_state(index, link)) {
+            continue;
+        }
         out_links[count++] = link;
     }
     return count;
@@ -5142,7 +5672,7 @@ bool waypoints_has_direct_link(int from, int to)
 
     for (int i = 0; i < node.num_links; ++i) {
         if (node.links[i] == to) {
-            return true;
+            return !waypoint_link_blocked_by_bridge_zone_state(from, to);
         }
     }
 
