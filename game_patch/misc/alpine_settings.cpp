@@ -744,6 +744,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.background_mouse = std::stoi(settings["EnableBackgroundMouse"]);
         processed_keys.insert("EnableBackgroundMouse");
     }
+    if (settings.count("WaypointsEditDefaultEnabled")) {
+        g_alpine_game_config.waypoints_edit_default_enabled = std::stoi(settings["WaypointsEditDefaultEnabled"]);
+        processed_keys.insert("WaypointsEditDefaultEnabled");
+    }
 
     // Load singleplayer settings
     if (settings.count("DifficultyLevel")) {
@@ -922,6 +926,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.client_bot_mode = std::stoi(settings["ClientBotMode"]);
         processed_keys.insert("ClientBotMode");
     }
+    if (settings.count("WaypointsEditMode")) {
+        // Legacy session-only key. Keep as processed so older files do not become orphaned.
+        processed_keys.insert("WaypointsEditMode");
+    }
     if (settings.count("ClientBotSkill")) {
         g_alpine_game_config.set_client_bot_skill(std::stoi(settings["ClientBotSkill"]));
         processed_keys.insert("ClientBotSkill");
@@ -1017,6 +1025,11 @@ bool alpine_player_settings_load(rf::Player* player)
     // Earlier bind takes priority when conflicts occur
     resolve_scan_code_conflicts(player->settings.controls);
     resolve_mouse_button_conflicts(player->settings.controls);
+
+    // Waypoint edit mode is session-only. Apply startup default from settings.
+    g_alpine_game_config.waypoints_edit_mode =
+        g_alpine_game_config.waypoints_edit_default_enabled
+        && !(rf::is_multi && !rf::is_server);
 
     // Store orphaned settings
     for (const auto& [key, value] : settings) {
@@ -1247,6 +1260,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "EnableRendering=" << g_alpine_game_config.rendering_enabled << "\n";
     file << "EnableSound=" << g_alpine_game_config.sound_enabled << "\n";
     file << "EnableBackgroundMouse=" << g_alpine_game_config.background_mouse << "\n";
+    file << "WaypointsEditDefaultEnabled=" << g_alpine_game_config.waypoints_edit_default_enabled << "\n";
 
     // Singleplayer
     file << "\n[SingleplayerSettings]\n";

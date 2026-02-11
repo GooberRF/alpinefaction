@@ -22,6 +22,7 @@
 #include "../os/console.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 #include "../rf/os/os.h"
 #include "../rf/event.h"
 #include "../rf/gameseq.h"
@@ -222,6 +223,7 @@ FunHook<void()> multi_limbo_init{
         }
 
         rf::multi_limbo_timer.set(limbo_time);
+        waypoints_on_limbo_enter();
 
         if (!rf::local_player)
             return;

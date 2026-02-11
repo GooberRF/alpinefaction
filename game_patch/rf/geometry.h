@@ -479,6 +479,7 @@ namespace rf
     static auto& g_cache_clear = addr_as_ref<void()>(0x004F0B90);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);
 
+    static auto& find_room = addr_as_ref<GRoom*(GSolid* solid, const Vector3* pos)>(0x004E1630);
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);
     static auto& decompress_vector3 = addr_as_ref<GSolid*(GSolid* solid, const ShortVector* in_vec, Vector3* out_vec)>(0x004B5900);

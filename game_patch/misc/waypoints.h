@@ -9,6 +9,7 @@ namespace rf
     struct Object;
 }
 
+constexpr int kWptVersion = 1;
 constexpr int kMaxWaypointLinks = 6;
 constexpr float kWaypointRadius = 4.0f / 3.0f;
 constexpr float kWaypointLinkRadius = kWaypointRadius * 3.0f;
@@ -17,9 +18,20 @@ constexpr float kWaypointRadiusCompressionScale = 100.0f;
 constexpr float kJumpPadAutoLinkRangeScale = 0.5f;
 constexpr float kTeleEntranceAutoLinkRangeScale = 1.0f;
 constexpr float kBridgeWaypointMaxGroundDistance = 1.5f;
-constexpr int kMaxAutoSeedBridgeDrops = 5;
-constexpr int kMaxAutoSeedBridgeWaypoints = 2048;
-constexpr int kWptVersion = 1;
+constexpr float kWaypointGenerateProbeAngleStepDeg = 15.0f;
+constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
+constexpr float kWaypointGenerateGroundOffset = 1.0f;
+constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
+constexpr float kWaypointGenerateWallClearance = 0.5f;
+constexpr float kWaypointGenerateEdgeClearance = 0.75f;
+constexpr float kWaypointGenerateMinHeadroom = 1.375f;
+constexpr float kWaypointGenerateStandingHeadroom = 2.0f;
+constexpr int kWaypointGenerateEdgeProbeCount = 8;
+constexpr int kWaypointGenerateEdgeUnsupportedThreshold = 3;
+constexpr float kWaypointGenerateLadderEdgeClearance = 0.25f;
+constexpr float kWaypointGenerateLinkPassThroughRadius = kWaypointRadius;
+constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
+constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
 
 enum class WaypointType : int
 {
@@ -119,6 +131,7 @@ struct WaypointTargetDefinition
     int uid = -1;
     rf::Vector3 pos{};
     WaypointTargetType type = WaypointTargetType::explosion;
+    int identifier = -1;
     std::vector<int> waypoint_uids{};
 };
 
@@ -137,6 +150,7 @@ void waypoints_do_frame();
 void waypoints_render_debug();
 void waypoints_level_init();
 void waypoints_level_reset();
+void waypoints_on_limbo_enter();
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
 int waypoints_count();
@@ -145,6 +159,7 @@ bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
 int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links);
 bool waypoints_has_direct_link(int from, int to);
 bool waypoints_link_is_clear(int from, int to);
+void sanitize_waypoint_links_against_geometry();
 
 int add_waypoint(
     const rf::Vector3& pos, WaypointType type, int subtype, bool link_to_nearest, bool bidirectional_link,

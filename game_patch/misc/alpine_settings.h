@@ -177,6 +177,8 @@ struct AlpineGameSettings
     bool quick_exit = false;
     uint32_t bot_shared_secret = 0;
     bool client_bot_mode = false;
+    bool waypoints_edit_mode = false;
+    bool waypoints_edit_default_enabled = false;
     int client_bot_skill = 75;
     void set_client_bot_skill(int value)
     {

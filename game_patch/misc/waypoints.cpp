@@ -51,24 +51,18 @@ bool g_cache_dirty = true;
 bool g_has_loaded_wpt = false;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
+std::vector<std::string> g_waypoint_authors{};
 bool g_waypoints_compress = true;
-bool g_waypoints_seed_bridges = true;
 int g_next_waypoint_target_uid = 1;
 
 std::unordered_map<int, int> g_last_drop_waypoint_by_entity{};
 std::unordered_map<int, int> g_last_lift_uid_by_entity{};
 
+void remap_waypoints();
+bool link_waypoint_if_clear_autogen(int from, int to);
+
 int g_debug_waypoints_mode = 0;
 bool g_drop_waypoints_prev = true;
-
-constexpr float kWaypointGenerateProbeAngleStepDeg = 15.0f;
-constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
-constexpr float kWaypointGenerateGroundOffset = 1.0f;
-constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
-constexpr float kWaypointGenerateWallClearance = 0.5f;
-constexpr float kWaypointGenerateLinkPassThroughRadius = kWaypointRadius;
-constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
-constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
 
 FunHook<void(rf::Vector3*, float)> glass_remove_floating_shards_hook{
     0x00492400,
@@ -90,6 +84,55 @@ void invalidate_cache()
     g_cache_root = nullptr;
     g_cache_nodes.clear();
     g_cache_dirty = true;
+}
+
+bool has_waypoint_author(std::string_view author_name)
+{
+    for (const auto& existing_author : g_waypoint_authors) {
+        if (string_iequals(existing_author, author_name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void add_waypoint_author_if_missing(std::string_view author_name)
+{
+    std::string sanitized_author{trim(author_name)};
+    if (sanitized_author.empty()) {
+        return;
+    }
+    if (has_waypoint_author(sanitized_author)) {
+        return;
+    }
+    g_waypoint_authors.push_back(std::move(sanitized_author));
+}
+
+bool is_waypoint_bot_mode_active()
+{
+    return g_alpine_game_config.client_bot_mode;
+}
+
+bool are_waypoint_commands_enabled_for_local_client()
+{
+    return is_waypoint_bot_mode_active() || g_alpine_game_config.waypoints_edit_mode;
+}
+
+bool ensure_waypoint_command_enabled(std::string_view command_name)
+{
+    if (are_waypoint_commands_enabled_for_local_client()) {
+        return true;
+    }
+    rf::console::print(
+        "{} ignored: waypoint editing is disabled. Run waypoints_edit first "
+        "(not available while connected as multiplayer client).",
+        command_name);
+    return false;
+}
+
+bool is_multiplayer_client()
+{
+    return rf::is_multi && !rf::is_server;
 }
 
 float sanitize_waypoint_link_radius(float link_radius)
@@ -151,10 +194,10 @@ WaypointType waypoint_type_from_int(int raw_type)
     }
 }
 
-int waypoint_type_to_save_value(WaypointType type)
+int waypoint_type_to_save_value(WaypointType type, bool preserve_std_new_types = false)
 {
     // Preserve compatibility with older files where dropped waypoints are encoded as 0.
-    if (type == WaypointType::std_new) {
+    if (!preserve_std_new_types && type == WaypointType::std_new) {
         return static_cast<int>(WaypointType::std);
     }
     return static_cast<int>(type);
@@ -450,6 +493,59 @@ bool waypoint_link_exists(const WaypointNode& node, int link)
     return false;
 }
 
+bool is_waypoint_uid_valid(int waypoint_uid)
+{
+    return waypoint_uid > 0
+        && waypoint_uid < static_cast<int>(g_waypoints.size())
+        && g_waypoints[waypoint_uid].valid;
+}
+
+int remove_waypoint_links_from_to(int from, int to)
+{
+    if (!is_waypoint_uid_valid(from)) {
+        return 0;
+    }
+
+    auto& node = g_waypoints[from];
+    int write_index = 0;
+    int removed = 0;
+    for (int read_index = 0; read_index < node.num_links; ++read_index) {
+        const int link = node.links[read_index];
+        if (link == to) {
+            ++removed;
+            continue;
+        }
+        node.links[write_index++] = link;
+    }
+    node.num_links = write_index;
+    for (int i = write_index; i < kMaxWaypointLinks; ++i) {
+        node.links[i] = 0;
+    }
+    return removed;
+}
+
+int remove_waypoint_links_from_all(int from)
+{
+    if (!is_waypoint_uid_valid(from)) {
+        return 0;
+    }
+
+    auto& node = g_waypoints[from];
+    const int removed = node.num_links;
+    node.num_links = 0;
+    node.links.fill(0);
+    return removed;
+}
+
+int remove_waypoint_links_to_from_all(int to)
+{
+    int removed = 0;
+    for (int from = 1; from < static_cast<int>(g_waypoints.size()); ++from) {
+        removed += remove_waypoint_links_from_to(from, to);
+    }
+    return removed;
+}
+
 bool tele_entrance_outbound_link_allowed(const WaypointNode& from_node, const WaypointNode& to_node)
 {
     if (from_node.type != WaypointType::tele_entrance) {
@@ -607,6 +703,25 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
         *out_hit_point = collision.hit_point;
     }
     return true;
+}
+
+float trace_upward_clearance_from_floor_hit(const rf::Vector3& floor_hit_pos, float max_upward_dist)
+{
+    if (max_upward_dist <= 0.0f) {
+        return 0.0f;
+    }
+
+    // Keep a tiny start offset so the upward trace does not immediately re-hit the floor.
+    constexpr float kTraceStartOffset = 0.01f;
+    rf::Vector3 p0 = floor_hit_pos + rf::Vector3{0.0f, kTraceStartOffset, 0.0f};
+    rf::Vector3 p1 = floor_hit_pos + rf::Vector3{0.0f, max_upward_dist, 0.0f};
+    rf::PCollisionOut collision{};
+    collision.obj_handle = -1;
+    if (!rf::collide_linesegment_world(p0, p1, 0, &collision)) {
+        return max_upward_dist;
+    }
+
+    return std::clamp(collision.hit_point.y - floor_hit_pos.y, 0.0f, max_upward_dist);
 }
 
 float waypoint_incline_degrees(const rf::Vector3& from, const rf::Vector3& to)
@@ -902,6 +1017,23 @@ int add_waypoint_zone_definition(WaypointZoneDefinition zone)
     return static_cast<int>(g_waypoint_zones.size()) - 1;
 }
 
+bool remove_waypoint_by_uid(int waypoint_uid)
+{
+    if (!is_waypoint_uid_valid(waypoint_uid)) {
+        return false;
+    }
+
+    auto& node = g_waypoints[waypoint_uid];
+    node.valid = false;
+    node.num_links = 0;
+    node.links.fill(0);
+    node.zones.clear();
+
+    remap_waypoints();
+    sanitize_waypoint_links_against_geometry();
+    return true;
+}
+
 bool remove_waypoint_zone_definition(int zone_uid)
 {
     if (zone_uid < 0 || zone_uid >= static_cast<int>(g_waypoint_zones.size())) {
@@ -911,6 +1043,16 @@ bool remove_waypoint_zone_definition(int zone_uid)
     g_waypoint_zones.erase(g_waypoint_zones.begin() + zone_uid);
     refresh_all_waypoint_zone_refs();
     return true;
+}
+
+int clear_waypoint_zone_definitions()
+{
+    const int removed = static_cast<int>(g_waypoint_zones.size());
+    g_waypoint_zones.clear();
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        g_waypoints[i].zones.clear();
+    }
+    return removed;
 }
 
 WaypointTargetDefinition* find_waypoint_target_by_uid(int target_uid)
@@ -988,6 +1130,7 @@ int add_waypoint_target(const rf::Vector3& pos, WaypointTargetType type, std::op
     target.uid = resolve_waypoint_target_uid(preferred_uid);
     target.pos = pos;
     target.type = type;
+    target.identifier = -1;
     target.waypoint_uids = collect_target_waypoint_uids(pos);
     g_waypoint_targets.push_back(std::move(target));
     return g_waypoint_targets.back().uid;
@@ -1004,6 +1147,14 @@ bool remove_waypoint_target_by_uid(int target_uid)
     }
     g_waypoint_targets.erase(it);
     return true;
+}
+
+int clear_waypoint_targets()
+{
+    const int removed = static_cast<int>(g_waypoint_targets.size());
+    g_waypoint_targets.clear();
+    g_next_waypoint_target_uid = 1;
+    return removed;
 }
 
 void remove_realized_waypoint_targets(const rf::Vector3& crater_pos, float crater_radius)
@@ -1443,14 +1594,6 @@ void seed_waypoints_from_teleport_events(
     }
 }
 
-uint64_t make_waypoint_pair_key(int a, int b)
-{
-    const int min_index = std::min(a, b);
-    const int max_index = std::max(a, b);
-    return (static_cast<uint64_t>(static_cast<uint32_t>(min_index)) << 32)
-        | static_cast<uint32_t>(max_index);
-}
-
 bool waypoint_has_link_to(int from, int to)
 {
     if (from <= 0 || to <= 0
@@ -1467,110 +1610,13 @@ bool waypoint_has_link_to(int from, int to)
     return waypoint_link_exists(node, to);
 }
 
-bool waypoints_are_bidirectionally_linked(int a, int b)
-{
-    return waypoint_has_link_to(a, b) && waypoint_has_link_to(b, a);
-}
-
-int compute_bridge_intermediate_count(const rf::Vector3& from, const rf::Vector3& to)
-{
-    const float dist = std::sqrt(distance_sq(from, to));
-    const float drop_spacing = std::max(kWaypointRadius, kWaypointLinkRadiusEpsilon);
-    const float normalized = (dist - kWaypointLinkRadiusEpsilon) / drop_spacing;
-    const int drop_count = static_cast<int>(std::floor(normalized)) - 1;
-    return std::max(0, drop_count);
-}
-
-bool has_player_drop_spacing(const rf::Vector3& pos)
-{
-    return closest_waypoint(pos, kWaypointRadius) <= 0;
-}
-
-bool bridge_waypoint_is_near_ground(const rf::Vector3& pos)
-{
-    return trace_ground_below_point(pos, kBridgeWaypointMaxGroundDistance);
-}
-
-bool can_link_waypoint_indices_autogen(int from, int to);
-bool link_waypoint_if_clear_autogen(int from, int to);
-
-std::vector<int> create_seed_bridge_waypoints(int from, int to, int intermediate_count)
-{
-    std::vector<int> bridge_indices{};
-    if (intermediate_count <= 0) {
-        return bridge_indices;
-    }
-    if (from <= 0 || to <= 0
-        || from >= static_cast<int>(g_waypoints.size())
-        || to >= static_cast<int>(g_waypoints.size())) {
-        return bridge_indices;
-    }
-    const auto& from_node = g_waypoints[from];
-    const auto& to_node = g_waypoints[to];
-    if (!from_node.valid || !to_node.valid) {
-        return bridge_indices;
-    }
-
-    const rf::Vector3 from_pos = from_node.pos;
-    const rf::Vector3 to_pos = to_node.pos;
-    std::vector<rf::Vector3> bridge_positions{};
-    bridge_positions.reserve(intermediate_count);
-
-    const float min_spacing_sq = kWaypointRadius * kWaypointRadius;
-    for (int step = 1; step <= intermediate_count; ++step) {
-        const float t = static_cast<float>(step) / static_cast<float>(intermediate_count + 1);
-        const rf::Vector3 bridge_pos{
-            from_pos.x + (to_pos.x - from_pos.x) * t,
-            from_pos.y + (to_pos.y - from_pos.y) * t,
-            from_pos.z + (to_pos.z - from_pos.z) * t,
-        };
-
-        if (!has_player_drop_spacing(bridge_pos)) {
-            return {};
-        }
-        if (!bridge_waypoint_is_near_ground(bridge_pos)) {
-            return {};
-        }
-        for (const auto& existing_pos : bridge_positions) {
-            if (distance_sq(existing_pos, bridge_pos) <= min_spacing_sq) {
-                return {};
-            }
-        }
-        bridge_positions.push_back(bridge_pos);
-    }
-
-    bridge_indices.reserve(intermediate_count);
-    int prev_index = from;
-
-    for (const auto& bridge_pos : bridge_positions) {
-        const int bridge_index = add_waypoint(
-            bridge_pos, WaypointType::std_new, static_cast<int>(WaypointDroppedSubtype::normal),
-            false, true, kWaypointLinkRadius, -1, nullptr, true);
-        bridge_indices.push_back(bridge_index);
-
-        link_waypoint_if_clear_autogen(prev_index, bridge_index);
-        link_waypoint_if_clear_autogen(bridge_index, prev_index);
-        prev_index = bridge_index;
-    }
-
-    link_waypoint_if_clear_autogen(prev_index, to);
-    link_waypoint_if_clear_autogen(to, prev_index);
-    return bridge_indices;
-}
-
 void auto_link_default_seeded_waypoints(std::vector<int>& seeded_indices, std::vector<int>& source_indices)
 {
     if (seeded_indices.empty() || source_indices.empty()) {
         return;
     }
 
-    std::vector<int> all_target_indices = seeded_indices;
-    std::unordered_set<uint64_t> bridged_pairs{};
-    int bridge_waypoints_created = 0;
-
-    size_t source_cursor = 0;
-    while (source_cursor < source_indices.size()) {
-        const int source_index = source_indices[source_cursor++];
+    for (int source_index : source_indices) {
         if (source_index <= 0 || source_index >= static_cast<int>(g_waypoints.size())) {
             continue;
         }
@@ -1584,7 +1630,7 @@ void auto_link_default_seeded_waypoints(std::vector<int>& seeded_indices, std::v
         const float auto_link_radius = waypoint_auto_link_detection_radius(source_node);
         const float auto_link_radius_sq = auto_link_radius * auto_link_radius;
 
-        for (int target_index : all_target_indices) {
+        for (int target_index : seeded_indices) {
             if (target_index <= 0
                 || target_index >= static_cast<int>(g_waypoints.size())
                 || target_index == source_index) {
@@ -1602,49 +1648,7 @@ void auto_link_default_seeded_waypoints(std::vector<int>& seeded_indices, std::v
                 link_waypoint_if_clear_autogen(source_index, target_index);
                 link_waypoint_if_clear_autogen(target_index, source_index);
             }
-
-            if (!g_waypoints_seed_bridges) {
-                continue;
-            }
-            if (bridge_waypoints_created >= kMaxAutoSeedBridgeWaypoints) {
-                continue;
-            }
-            if (waypoints_are_bidirectionally_linked(source_index, target_index)) {
-                continue;
-            }
-
-            const uint64_t pair_key = make_waypoint_pair_key(source_index, target_index);
-            if (!bridged_pairs.insert(pair_key).second) {
-                continue;
-            }
-
-            if (!can_link_waypoints(source_pos, target_pos)) {
-                continue;
-            }
-
-            const int intermediate_count = compute_bridge_intermediate_count(source_pos, target_pos);
-            if (intermediate_count <= 0 || intermediate_count > kMaxAutoSeedBridgeDrops) {
-                continue;
-            }
-            if (bridge_waypoints_created + intermediate_count > kMaxAutoSeedBridgeWaypoints) {
-                continue;
-            }
-
-            auto bridge_indices = create_seed_bridge_waypoints(source_index, target_index, intermediate_count);
-            if (bridge_indices.empty()) {
-                continue;
-            }
-
-            bridge_waypoints_created += static_cast<int>(bridge_indices.size());
-            for (int bridge_index : bridge_indices) {
-                all_target_indices.push_back(bridge_index);
-                source_indices.push_back(bridge_index);
-            }
         }
-    }
-
-    if (bridge_waypoints_created >= kMaxAutoSeedBridgeWaypoints) {
-        xlog::warn("Default grid auto-link bridge generation hit {} waypoint cap", kMaxAutoSeedBridgeWaypoints);
     }
 }
 
@@ -1768,6 +1772,36 @@ bool waypoint_has_horizontal_geometry_clearance(const rf::Vector3& pos, float cl
         rf::GCollisionOutput collision{};
         if (rf::collide_linesegment_level_solid(p0, p1, 0, &collision)) {
             return false;
+        }
+    }
+    return true;
+}
+
+bool waypoint_has_ground_edge_clearance(
+    const rf::Vector3& pos,
+    float clearance_radius,
+    int probe_count = kWaypointGenerateEdgeProbeCount,
+    int unsupported_threshold = kWaypointGenerateEdgeUnsupportedThreshold)
+{
+    if (clearance_radius <= 0.0f || probe_count <= 0 || unsupported_threshold <= 0) {
+        return true;
+    }
+
+    constexpr float kTwoPi = 6.283185307f;
+    int unsupported_probes = 0;
+    for (int probe_index = 0; probe_index < probe_count; ++probe_index) {
+        const float angle =
+            (kTwoPi * static_cast<float>(probe_index)) / static_cast<float>(probe_count);
+        const rf::Vector3 probe_pos{
+            pos.x + std::cos(angle) * clearance_radius,
+            pos.y,
+            pos.z + std::sin(angle) * clearance_radius,
+        };
+        if (!trace_ground_below_point(probe_pos, kBridgeWaypointMaxGroundDistance)) {
+            ++unsupported_probes;
+            if (unsupported_probes >= unsupported_threshold) {
+                return false;
+            }
         }
     }
     return true;
@@ -2209,6 +2243,7 @@ void clear_waypoints()
     g_waypoints.push_back({});
     g_waypoint_zones.clear();
     g_waypoint_targets.clear();
+    g_waypoint_authors.clear();
     g_next_waypoint_target_uid = 1;
     invalidate_cache();
 }
@@ -2303,6 +2338,43 @@ std::vector<rf::Vector3> build_ladder_seed_offsets_center_out(const rf::ClimbReg
     return offsets;
 }
 
+bool climb_region_point_has_edge_clearance(const rf::ClimbRegion& climb_region, const rf::Vector3& point, float margin)
+{
+    if (margin <= kWaypointLinkRadiusEpsilon) {
+        return true;
+    }
+
+    rf::Vector3 point_query = point;
+    if (rf::level_point_in_climb_region(&point_query) != &climb_region) {
+        return false;
+    }
+
+    std::array<rf::Vector3, 3> axes{
+        climb_region.orient.rvec,
+        climb_region.orient.uvec,
+        climb_region.orient.fvec,
+    };
+
+    for (auto axis : axes) {
+        if (axis.len_sq() <= kWaypointLinkRadiusEpsilon * kWaypointLinkRadiusEpsilon) {
+            continue;
+        }
+        axis.normalize_safe();
+
+        rf::Vector3 forward_probe = point + axis * margin;
+        if (rf::level_point_in_climb_region(&forward_probe) != &climb_region) {
+            return false;
+        }
+
+        rf::Vector3 backward_probe = point - axis * margin;
+        if (rf::level_point_in_climb_region(&backward_probe) != &climb_region) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 int seed_climb_region_waypoints_for_autogen(
     const rf::ClimbRegion& climb_region,
     int ladder_identifier,
@@ -2312,15 +2384,45 @@ int seed_climb_region_waypoints_for_autogen(
         return 0;
     }
 
-    const float step = std::max(kWaypointRadius * 0.75f, kWaypointLinkRadiusEpsilon);
+    const float step = std::max(kWaypointGenerateProbeStepDistance, kWaypointLinkRadiusEpsilon);
     const auto offsets = build_ladder_seed_offsets_center_out(climb_region, step);
     int created_waypoints = 0;
+
+    // Always seed the center of the climb region first, then expand outward.
+    if (created_waypoints < max_new_waypoints
+        && climb_region_point_has_edge_clearance(
+            climb_region, climb_region.pos, kWaypointGenerateLadderEdgeClearance)) {
+        rf::Vector3 center_query = climb_region.pos;
+        if (rf::level_point_in_climb_region(&center_query) == &climb_region
+            && find_nearest_waypoint(climb_region.pos, kWaypointLinkRadiusEpsilon, 0) <= 0) {
+            add_waypoint(
+                climb_region.pos,
+                WaypointType::ladder,
+                static_cast<int>(WaypointDroppedSubtype::normal),
+                false,
+                true,
+                kWaypointLinkRadius,
+                ladder_identifier,
+                nullptr,
+                true);
+            ++created_waypoints;
+        }
+    }
+
     for (const auto& local_offset : offsets) {
         if (created_waypoints >= max_new_waypoints) {
             break;
         }
 
+        if (local_offset.len_sq() <= (kWaypointLinkRadiusEpsilon * kWaypointLinkRadiusEpsilon)) {
+            continue;
+        }
+
         const rf::Vector3 candidate_pos = climb_region.pos + climb_region.orient.transform_vector(local_offset);
+        if (!climb_region_point_has_edge_clearance(
+                climb_region, candidate_pos, kWaypointGenerateLadderEdgeClearance)) {
+            continue;
+        }
 
         rf::Vector3 candidate_query = candidate_pos;
         if (rf::level_point_in_climb_region(&candidate_query) != &climb_region) {
@@ -2619,6 +2721,13 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
             if (!trace_ground_below_point(probe_pos, kBridgeWaypointMaxGroundDistance, &floor_pos)) {
                 continue;
             }
+            const float upward_clearance = trace_upward_clearance_from_floor_hit(
+                floor_pos,
+                kWaypointGenerateStandingHeadroom
+            );
+            if (upward_clearance <= kWaypointGenerateMinHeadroom) {
+                continue;
+            }
 
             rf::Vector3 candidate_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
             if (!waypoint_link_within_incline(source_pos, candidate_pos, kWaypointGenerateMaxInclineDeg)) {
@@ -2628,6 +2737,9 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 continue;
             }
             if (!waypoint_has_horizontal_geometry_clearance(candidate_pos, kWaypointGenerateWallClearance)) {
+                continue;
+            }
+            if (!waypoint_has_ground_edge_clearance(candidate_pos, kWaypointGenerateEdgeClearance)) {
                 continue;
             }
 
@@ -2642,20 +2754,25 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
             }
 
             WaypointType generated_type = WaypointType::std_new;
+            int generated_subtype = static_cast<int>(WaypointDroppedSubtype::normal);
             int generated_identifier = -1;
             rf::Vector3 candidate_climb_query = candidate_pos;
             if (rf::level_point_in_climb_region(&candidate_climb_query)) {
                 continue;
             }
+            if (upward_clearance < kWaypointGenerateStandingHeadroom) {
+                generated_subtype = static_cast<int>(WaypointDroppedSubtype::crouch_needed);
+            }
             if (const int lift_uid_below = find_lift_uid_below_waypoint(candidate_pos); lift_uid_below >= 0) {
                 generated_type = WaypointType::lift_entrance;
                 generated_identifier = lift_uid_below;
+                generated_subtype = static_cast<int>(WaypointDroppedSubtype::normal);
             }
 
             const int waypoint_index = add_waypoint(
                 candidate_pos,
                 generated_type,
-                static_cast<int>(WaypointDroppedSubtype::normal),
+                generated_subtype,
                 false,
                 true,
                 kWaypointLinkRadius,
@@ -3080,10 +3197,21 @@ bool save_waypoints()
 #endif
     char time_buf[32];
     std::strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", &time_info);
-    const char* author =
-        (rf::local_player && rf::local_player->name.c_str()) ? rf::local_player->name.c_str() : "unknown";
+    if (rf::local_player) {
+        add_waypoint_author_if_missing(rf::local_player->name.c_str());
+    }
+    if (g_waypoint_authors.empty()) {
+        add_waypoint_author_if_missing("unknown");
+    }
+
+    toml::array authors{};
+    for (const auto& author_name : g_waypoint_authors) {
+        authors.push_back(author_name);
+    }
+
     const int revision = g_waypoint_revision + 1;
     const bool save_compressed = g_waypoints_compress;
+    const bool preserve_std_new_types = is_waypoint_bot_mode_active();
     toml::table header{
         {"revision", revision},
         {"awp_ver", kWptVersion},
@@ -3091,7 +3219,7 @@ bool save_waypoints()
         {"level", std::string{rf::level.filename.c_str()}},
         {"level_checksum", static_cast<int64_t>(rf::level.checksum)},
         {"saved_at", std::string{time_buf}},
-        {"author", std::string{author}},
+        {"author", authors},
     };
     toml::array nodes;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
@@ -3108,7 +3236,7 @@ bool save_waypoints()
         for (int link = 0; link < node.num_links; ++link) {
             links.push_back(node.links[link]);
         }
-        int saved_type = waypoint_type_to_save_value(node.type);
+        int saved_type = waypoint_type_to_save_value(node.type, preserve_std_new_types);
         toml::table entry{
             {"p", pos},
             {"t", saved_type},
@@ -3205,6 +3333,9 @@ bool save_waypoints()
                 {"t", static_cast<int>(target.type)},
                 {"w", waypoint_uids},
             };
+            if (target.identifier != -1) {
+                target_entry.insert("i", target.identifier);
+            }
             targets.push_back(target_entry);
         }
         root.insert("t", targets);
@@ -3219,7 +3350,7 @@ bool save_waypoints()
     return true;
 }
 
-bool load_waypoints()
+bool load_waypoints(bool include_std_new_waypoints = true)
 {
     clear_waypoints();
     auto filename = get_waypoint_filename();
@@ -3247,6 +3378,26 @@ bool load_waypoints()
         }
         if (checksum_node && checksum_node->is_number()) {
             header_checksum = static_cast<uint32_t>(checksum_node->value_or(0));
+        }
+
+        if (const auto* author_node = header->get("author")) {
+            if (const auto author_value = author_node->value<std::string>(); author_value) {
+                add_waypoint_author_if_missing(author_value.value());
+            }
+            else if (const auto* author_array = author_node->as_array()) {
+                for (const auto& author_entry : *author_array) {
+                    if (const auto author_value = author_entry.value<std::string>(); author_value) {
+                        add_waypoint_author_if_missing(author_value.value());
+                    }
+                }
+            }
+        }
+        else if (const auto* author_array = header->get_as<toml::array>("authors")) {
+            for (const auto& author_entry : *author_array) {
+                if (const auto author_value = author_entry.value<std::string>(); author_value) {
+                    add_waypoint_author_if_missing(author_value.value());
+                }
+            }
         }
     }
     if (header_checksum && *header_checksum != rf::level.checksum) {
@@ -3281,6 +3432,7 @@ bool load_waypoints()
     if (!nodes) {
         return false;
     }
+    bool skipped_std_new_waypoints = false;
     for (const auto& node_entry : *nodes) {
         const auto* node_tbl = node_entry.as_table();
         if (!node_tbl) {
@@ -3369,6 +3521,12 @@ bool load_waypoints()
         WaypointType type = waypoint_type_from_int(raw_type);
         int index = add_waypoint(wp_pos, type, subtype, false, true, link_radius, identifier, nullptr, false);
         auto& node = g_waypoints[index];
+        if (!include_std_new_waypoints && type == WaypointType::std_new) {
+            node.valid = false;
+            node.num_links = 0;
+            skipped_std_new_waypoints = true;
+            continue;
+        }
         const auto* links = node_tbl->get_as<toml::array>("l");
         if (!links) {
             links = node_tbl->get_as<toml::array>("links");
@@ -3409,11 +3567,23 @@ bool load_waypoints()
             }
 
             int raw_type = static_cast<int>(WaypointTargetType::explosion);
+            int identifier = -1;
             if (const auto* type_node = target_tbl->get("t"); type_node && type_node->is_number()) {
                 raw_type = static_cast<int>(type_node->value_or(raw_type));
             }
             else if (const auto* type_node = target_tbl->get("type"); type_node && type_node->is_number()) {
                 raw_type = static_cast<int>(type_node->value_or(raw_type));
+            }
+            if (const auto* identifier_node = target_tbl->get("i"); identifier_node && identifier_node->is_number()) {
+                identifier = static_cast<int>(identifier_node->value_or(identifier));
+            }
+            else if (const auto* identifier_node = target_tbl->get("id");
+                     identifier_node && identifier_node->is_number()) {
+                identifier = static_cast<int>(identifier_node->value_or(identifier));
+            }
+            else if (const auto* identifier_node = target_tbl->get("identifier");
+                     identifier_node && identifier_node->is_number()) {
+                identifier = static_cast<int>(identifier_node->value_or(identifier));
             }
 
             std::vector<int> waypoint_uids{};
@@ -3447,6 +3617,7 @@ bool load_waypoints()
             target.uid = resolve_waypoint_target_uid();
             target.pos = target_pos_opt.value();
             target.type = waypoint_target_type_from_int(raw_type);
+            target.identifier = identifier;
             if (has_waypoint_uids) {
                 normalize_target_waypoint_uids(waypoint_uids);
                 target.waypoint_uids = std::move(waypoint_uids);
@@ -3456,6 +3627,9 @@ bool load_waypoints()
             }
             g_waypoint_targets.push_back(std::move(target));
         }
+    }
+    if (skipped_std_new_waypoints) {
+        remap_waypoints();
     }
     sanitize_waypoint_links_against_geometry();
     g_has_loaded_wpt = true;
@@ -3543,11 +3717,17 @@ void clean_waypoints()
 
 bool should_navigate()
 {
+    if (!are_waypoint_commands_enabled_for_local_client()) {
+        return false;
+    }
     return g_drop_waypoints || g_has_loaded_wpt;
 }
 
 bool should_drop()
 {
+    if (!are_waypoint_commands_enabled_for_local_client()) {
+        return false;
+    }
     return g_drop_waypoints || !g_has_loaded_wpt;
 }
 
@@ -3557,7 +3737,7 @@ bool should_skip_local_bot_waypoint_drop()
         return false;
     }
 
-    return rf::local_player->is_bot || g_alpine_game_config.client_bot_mode;
+    return rf::local_player->is_bot || is_waypoint_bot_mode_active();
 }
 
 void prune_drop_trackers(const std::unordered_set<int>& active_entity_handles)
@@ -3580,6 +3760,12 @@ void prune_drop_trackers(const std::unordered_set<int>& active_entity_handles)
             ++it;
         }
     }
+}
+
+void clear_drop_trackers_for_entity(int entity_handle)
+{
+    g_last_drop_waypoint_by_entity.erase(entity_handle);
+    g_last_lift_uid_by_entity.erase(entity_handle);
 }
 
 void navigate_entity(int entity_handle, rf::Entity& entity, bool allow_drop)
@@ -3691,12 +3877,23 @@ void navigate()
     std::unordered_set<int> active_entity_handles{};
 
     if (!should_skip_local_bot_waypoint_drop()) {
-        auto* entity = rf::entity_from_handle(rf::local_player->entity_handle);
-        if (!entity) {
+        const int local_entity_handle = rf::local_player->entity_handle;
+        if (local_entity_handle < 0) {
             return;
         }
-        active_entity_handles.insert(rf::local_player->entity_handle);
-        navigate_entity(rf::local_player->entity_handle, *entity, true);
+        if (rf::player_is_dead(rf::local_player) || rf::player_is_dying(rf::local_player)) {
+            clear_drop_trackers_for_entity(local_entity_handle);
+            prune_drop_trackers(active_entity_handles);
+            return;
+        }
+
+        auto* entity = rf::entity_from_handle(local_entity_handle);
+        if (!entity) {
+            clear_drop_trackers_for_entity(local_entity_handle);
+            return;
+        }
+        active_entity_handles.insert(local_entity_handle);
+        navigate_entity(local_entity_handle, *entity, true);
         prune_drop_trackers(active_entity_handles);
         return;
     }
@@ -3707,14 +3904,18 @@ void navigate()
             || player.is_bot
             || player.is_browser
             || player.is_spectator
-            || player.is_spawn_disabled
-            || rf::player_is_dead(&player)
-            || rf::player_is_dying(&player)) {
+            || player.is_spawn_disabled) {
+            continue;
+        }
+
+        if (rf::player_is_dead(&player) || rf::player_is_dying(&player)) {
+            clear_drop_trackers_for_entity(player.entity_handle);
             continue;
         }
 
         auto* entity = rf::entity_from_handle(player.entity_handle);
         if (!entity) {
+            clear_drop_trackers_for_entity(player.entity_handle);
             continue;
         }
 
@@ -3902,6 +4103,8 @@ struct WaypointZoneDebugRenderInfo
     bool renderable = false;
     rf::Vector3 center{};
     WaypointZoneType type = WaypointZoneType::control_point;
+    int uid = -1;
+    int identifier = -1;
     rf::Color color{};
 };
 
@@ -3910,9 +4113,20 @@ struct WaypointTargetDebugRenderInfo
     bool renderable = false;
     rf::Vector3 center{};
     WaypointTargetType type = WaypointTargetType::explosion;
+    int uid = -1;
+    int identifier = -1;
     rf::Color color{};
     std::vector<int> waypoint_uids{};
 };
+
+void draw_centered_debug_label(float sx, float sy, const char* text, const rf::Color& color)
+{
+    const auto [text_w, text_h] = rf::gr::get_string_size(text, -1);
+    const int x = static_cast<int>(sx) - (text_w / 2);
+    const int y = static_cast<int>(sy) - (text_h / 2);
+    rf::gr::set_color(color.red, color.green, color.blue, 255);
+    rf::gr::string(x, y, text, -1, no_overdraw_2d_text);
+}
 
 void draw_debug_waypoint_zones(bool show_membership_arrows, bool show_labels)
 {
@@ -3926,6 +4140,8 @@ void draw_debug_waypoint_zones(bool show_membership_arrows, bool show_labels)
         const auto& zone = g_waypoint_zones[zone_index];
         auto& zone_info = zone_infos[zone_index];
         zone_info.type = zone.type;
+        zone_info.uid = zone_index;
+        zone_info.identifier = zone.identifier;
         zone_info.color = debug_waypoint_zone_color(zone.type);
 
         switch (resolve_waypoint_zone_source(zone)) {
@@ -3986,10 +4202,12 @@ void draw_debug_waypoint_zones(bool show_membership_arrows, bool show_labels)
                 rf::gr::project_vertex(&dest);
                 if (dest.flags & 1) {
                     const auto label_sv = waypoint_zone_type_name(zone_info.type);
-                    char label[64]{};
-                    std::snprintf(label, sizeof(label), "%.*s", static_cast<int>(label_sv.size()), label_sv.data());
-                    rf::gr::set_color(zone_info.color.red, zone_info.color.green, zone_info.color.blue, 255);
-                    rf::gr::string(static_cast<int>(dest.sx), static_cast<int>(dest.sy), label, -1, no_overdraw_2d_text);
+                    char label[96]{};
+                    std::snprintf(
+                        label, sizeof(label), "%.*s (%d : %d)",
+                        static_cast<int>(label_sv.size()), label_sv.data(),
+                        zone_info.uid, zone_info.identifier);
+                    draw_centered_debug_label(dest.sx, dest.sy, label, zone_info.color);
                 }
             }
         }
@@ -4007,6 +4225,8 @@ void draw_debug_waypoint_targets(bool show_waypoint_arrows, bool show_labels)
     for (const auto& target : g_waypoint_targets) {
         WaypointTargetDebugRenderInfo info{};
         info.type = target.type;
+        info.uid = target.uid;
+        info.identifier = target.identifier;
         info.color = debug_waypoint_target_color(target.type);
         info.waypoint_uids = target.waypoint_uids;
         info.renderable = draw_debug_target_bounds(target, info.color, info.center);
@@ -4048,10 +4268,12 @@ void draw_debug_waypoint_targets(bool show_waypoint_arrows, bool show_labels)
                 rf::gr::project_vertex(&dest);
                 if (dest.flags & 1) {
                     const auto label_sv = waypoint_target_type_name(target_info.type);
-                    char label[64]{};
-                    std::snprintf(label, sizeof(label), "%.*s", static_cast<int>(label_sv.size()), label_sv.data());
-                    rf::gr::set_color(target_info.color.red, target_info.color.green, target_info.color.blue, 255);
-                    rf::gr::string(static_cast<int>(dest.sx), static_cast<int>(dest.sy), label, -1, no_overdraw_2d_text);
+                    char label[96]{};
+                    std::snprintf(
+                        label, sizeof(label), "%.*s (%d : %d)",
+                        static_cast<int>(label_sv.size()), label_sv.data(),
+                        target_info.uid, target_info.identifier);
+                    draw_centered_debug_label(dest.sx, dest.sy, label, target_info.color);
                 }
             }
         }
@@ -4103,8 +4325,7 @@ void draw_debug_waypoints()
                             static_cast<int>(type_name.size()), type_name.data(),
                             i, node.subtype);
                     }
-                    rf::gr::set_color(255, 255, 255, 255);
-                    rf::gr::string(static_cast<int>(dest.sx), static_cast<int>(dest.sy), buf, -1, no_overdraw_2d_text);
+                    draw_centered_debug_label(dest.sx, dest.sy, buf, rf::Color{255, 255, 255, 255});
                 }
             }
         }
@@ -4124,6 +4345,9 @@ void draw_debug_waypoints()
 ConsoleCommand2 waypoint_save_cmd{
     "waypoints_save",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_save")) {
+            return;
+        }
         if (save_waypoints()) {
             rf::console::print("Waypoints saved");
         }
@@ -4138,7 +4362,11 @@ ConsoleCommand2 waypoint_save_cmd{
 ConsoleCommand2 waypoint_load_cmd{
     "waypoints_load",
     []() {
-        if (load_waypoints()) {
+        if (!ensure_waypoint_command_enabled("waypoints_load")) {
+            return;
+        }
+        const bool include_std_new_waypoints = is_waypoint_bot_mode_active();
+        if (load_waypoints(include_std_new_waypoints)) {
             rf::console::print("Waypoints loaded");
         }
         else {
@@ -4149,9 +4377,60 @@ ConsoleCommand2 waypoint_load_cmd{
     "waypoints_load",
 };
 
+ConsoleCommand2 waypoint_load_all_cmd{
+    "waypoints_load_all",
+    []() {
+        if (!ensure_waypoint_command_enabled("waypoints_load_all")) {
+            return;
+        }
+        if (load_waypoints(true)) {
+            rf::console::print("Waypoints loaded");
+        }
+        else {
+            rf::console::print("No waypoint file found");
+        }
+    },
+    "Load waypoint graph from .awp (including std_new waypoints)",
+    "waypoints_load_all",
+};
+
+ConsoleCommand2 waypoint_edit_cmd{
+    "waypoints_edit",
+    [](std::optional<bool> enabled) {
+        if (is_waypoint_bot_mode_active()) {
+            rf::console::print("waypoints_edit is not used in -bot mode.");
+            return;
+        }
+
+        const bool request_enable = !enabled || enabled.value();
+        if (!request_enable) {
+            rf::console::print("waypoints_edit can only enable waypoint editing.");
+            return;
+        }
+
+        if (is_multiplayer_client()) {
+            rf::console::print("waypoints_edit cannot be enabled while connected as a multiplayer client.");
+            return;
+        }
+
+        if (!g_alpine_game_config.waypoints_edit_mode) {
+            g_alpine_game_config.waypoints_edit_mode = true;
+            rf::console::print("Waypoint editing enabled.");
+        }
+        else {
+            rf::console::print("Waypoint editing is already enabled.");
+        }
+    },
+    "Enable waypoint editing mode for non-bot clients",
+    "waypoints_edit [true]",
+};
+
 ConsoleCommand2 waypoint_drop_cmd{
     "waypoints_drop",
     [](std::optional<bool> enabled) {
+        if (!ensure_waypoint_command_enabled("waypoints_drop")) {
+            return;
+        }
         if (enabled) {
             g_drop_waypoints = enabled.value();
         }
@@ -4167,6 +4446,9 @@ ConsoleCommand2 waypoint_drop_cmd{
 ConsoleCommand2 waypoint_debug_cmd{
     "waypoints_debug",
     [](std::optional<int> mode) {
+        if (!ensure_waypoint_command_enabled("waypoints_debug")) {
+            return;
+        }
         if (mode) {
             if (mode.value() < 0 || mode.value() > 3) {
                 rf::console::print("Waypoint debug mode must be 0, 1, 2, or 3");
@@ -4190,6 +4472,9 @@ ConsoleCommand2 waypoint_debug_cmd{
 ConsoleCommand2 waypoint_compress_cmd{
     "waypoints_compress",
     [](std::optional<bool> enabled) {
+        if (!ensure_waypoint_command_enabled("waypoints_compress")) {
+            return;
+        }
         if (enabled) {
             g_waypoints_compress = enabled.value();
         }
@@ -4202,26 +4487,12 @@ ConsoleCommand2 waypoint_compress_cmd{
     "waypoints_compress [true|false]",
 };
 
-ConsoleCommand2 waypoint_seed_bridges_cmd{
-    "waypoints_seed_bridges",
-    [](std::optional<bool> enabled) {
-        if (enabled) {
-            g_waypoints_seed_bridges = enabled.value();
-        }
-        else {
-            g_waypoints_seed_bridges = !g_waypoints_seed_bridges;
-        }
-        rf::console::print(
-            "Waypoint default-grid bridge seeding {}",
-            g_waypoints_seed_bridges ? "enabled" : "disabled");
-    },
-    "Toggle bridge waypoint generation for default-grid seeded waypoints",
-    "waypoints_seed_bridges [true|false]",
-};
-
 ConsoleCommand2 waypoint_clean_cmd{
     "waypoints_clean",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_clean")) {
+            return;
+        }
         clean_waypoints();
         rf::console::print("Waypoints cleaned");
     },
@@ -4232,6 +4503,9 @@ ConsoleCommand2 waypoint_clean_cmd{
 ConsoleCommand2 waypoint_reset_cmd{
     "waypoints_reset",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_reset")) {
+            return;
+        }
         if (!(rf::level.flags & rf::LEVEL_LOADED)) {
             rf::console::print("No level loaded");
             return;
@@ -4246,6 +4520,9 @@ ConsoleCommand2 waypoint_reset_cmd{
 ConsoleCommand2 waypoint_generate_cmd{
     "waypoints_generate",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_generate")) {
+            return;
+        }
         if (!(rf::level.flags & rf::LEVEL_LOADED)) {
             rf::console::print("No level loaded");
             return;
@@ -4295,6 +4572,9 @@ ConsoleCommand2 waypoint_generate_cmd{
 ConsoleCommand2 waypoint_zone_add_cmd{
     "waypoints_zone_add",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_zone_add")) {
+            return;
+        }
         const std::string_view command_line = rf::console::cmd_line;
         const auto tokens = tokenize_console_command_line(command_line);
         if (tokens.size() < 3) {
@@ -4411,6 +4691,9 @@ ConsoleCommand2 waypoint_zone_add_cmd{
 ConsoleCommand2 waypoint_zone_list_cmd{
     "waypoints_zone_list",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_zone_list")) {
+            return;
+        }
         if (g_waypoint_zones.empty()) {
             rf::console::print("No waypoint zones defined");
             return;
@@ -4448,50 +4731,12 @@ ConsoleCommand2 waypoint_zone_list_cmd{
     "waypoints_zone_list",
 };
 
-ConsoleCommand2 waypoint_zone_delete_cmd{
-    "waypoints_zone_delete",
-    []() {
-        const std::string_view command_line = rf::console::cmd_line;
-        const auto tokens = tokenize_console_command_line(command_line);
-        if (tokens.size() != 2) {
-            rf::console::print("Usage: waypoints_zone_delete <zone_uid>");
-            return;
-        }
-
-        auto zone_uid = parse_int_token(tokens[1]);
-        if (!zone_uid) {
-            rf::console::print("Invalid zone UID '{}'", tokens[1]);
-            return;
-        }
-
-        if (!remove_waypoint_zone_definition(zone_uid.value())) {
-            rf::console::print("No waypoint zone found with UID {}", zone_uid.value());
-            return;
-        }
-
-        rf::console::print("Deleted waypoint zone {}", zone_uid.value());
-    },
-    "Delete a waypoint zone by UID/index",
-    "waypoints_zone_delete <zone_uid>",
-    true,
-};
-
-ConsoleCommand2 waypoint_zone_clear_cmd{
-    "waypoints_zone_clear",
-    []() {
-        g_waypoint_zones.clear();
-        for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
-            g_waypoints[i].zones.clear();
-        }
-        rf::console::print("Cleared waypoint zones");
-    },
-    "Remove all waypoint zones",
-    "waypoints_zone_clear",
-};
-
 ConsoleCommand2 waypoint_target_add_cmd{
     "waypoints_target_add",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_target_add")) {
+            return;
+        }
         if (!(rf::level.flags & rf::LEVEL_LOADED)) {
             rf::console::print("No level loaded");
             return;
@@ -4536,6 +4781,9 @@ ConsoleCommand2 waypoint_target_add_cmd{
 ConsoleCommand2 waypoint_target_list_cmd{
     "waypoints_target_list",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_target_list")) {
+            return;
+        }
         if (g_waypoint_targets.empty()) {
             rf::console::print("No waypoint targets defined");
             return;
@@ -4566,72 +4814,190 @@ ConsoleCommand2 waypoint_target_list_cmd{
     "waypoints_target_list",
 };
 
-ConsoleCommand2 waypoint_target_delete_cmd{
-    "waypoints_target_delete",
+ConsoleCommand2 waypoint_delete_cmd{
+    "waypoints_delete",
     []() {
+        if (!ensure_waypoint_command_enabled("waypoints_delete")) {
+            return;
+        }
+
+        const auto print_usage = []() {
+            rf::console::print("Usage:");
+            rf::console::print("  waypoints_delete w <waypoint_uid>");
+            rf::console::print("  waypoints_delete z <zone_uid|all>");
+            rf::console::print("  waypoints_delete t <target_uid|all>");
+            rf::console::print("  waypoints_delete l <from_waypoint_uid> <to_waypoint_uid|all> [both]");
+        };
+
         const std::string_view command_line = rf::console::cmd_line;
         const auto tokens = tokenize_console_command_line(command_line);
-        if (tokens.size() != 2) {
-            rf::console::print("Usage: waypoints_target_delete <target_uid>");
+        if (tokens.size() < 3) {
+            print_usage();
             return;
         }
 
-        auto target_uid = parse_int_token(tokens[1]);
-        if (!target_uid) {
-            rf::console::print("Invalid target UID '{}'", tokens[1]);
+        const std::string_view delete_type = tokens[1];
+        if (string_iequals(delete_type, "w") || string_iequals(delete_type, "waypoint")) {
+            if (tokens.size() != 3) {
+                print_usage();
+                return;
+            }
+
+            auto waypoint_uid = parse_int_token(tokens[2]);
+            if (!waypoint_uid) {
+                rf::console::print("Invalid waypoint UID '{}'", tokens[2]);
+                return;
+            }
+            if (!remove_waypoint_by_uid(waypoint_uid.value())) {
+                rf::console::print("No waypoint found with UID {}", waypoint_uid.value());
+                return;
+            }
+            rf::console::print("Deleted waypoint {}", waypoint_uid.value());
             return;
         }
 
-        if (!remove_waypoint_target_by_uid(target_uid.value())) {
-            rf::console::print("No waypoint target found with UID {}", target_uid.value());
+        if (string_iequals(delete_type, "z") || string_iequals(delete_type, "zone")) {
+            if (tokens.size() != 3) {
+                print_usage();
+                return;
+            }
+
+            if (string_iequals(tokens[2], "all")) {
+                const int removed = clear_waypoint_zone_definitions();
+                rf::console::print("Cleared {} zone(s).", removed);
+                return;
+            }
+
+            auto zone_uid = parse_int_token(tokens[2]);
+            if (!zone_uid) {
+                rf::console::print("Invalid zone UID '{}'", tokens[2]);
+                return;
+            }
+            if (!remove_waypoint_zone_definition(zone_uid.value())) {
+                rf::console::print("No waypoint zone found with UID {}", zone_uid.value());
+                return;
+            }
+            rf::console::print("Deleted zone {}", zone_uid.value());
             return;
         }
 
-        rf::console::print("Deleted waypoint target {}", target_uid.value());
+        if (string_iequals(delete_type, "t") || string_iequals(delete_type, "target")) {
+            if (tokens.size() != 3) {
+                print_usage();
+                return;
+            }
+
+            if (string_iequals(tokens[2], "all")) {
+                const int removed = clear_waypoint_targets();
+                rf::console::print("Cleared {} target(s).", removed);
+                return;
+            }
+
+            auto target_uid = parse_int_token(tokens[2]);
+            if (!target_uid) {
+                rf::console::print("Invalid target UID '{}'", tokens[2]);
+                return;
+            }
+            if (!remove_waypoint_target_by_uid(target_uid.value())) {
+                rf::console::print("No waypoint target found with UID {}", target_uid.value());
+                return;
+            }
+            rf::console::print("Deleted target {}", target_uid.value());
+            return;
+        }
+
+        if (string_iequals(delete_type, "l") || string_iequals(delete_type, "link")) {
+            if (tokens.size() < 4 || tokens.size() > 5) {
+                print_usage();
+                return;
+            }
+
+            auto from_waypoint_uid = parse_int_token(tokens[2]);
+            if (!from_waypoint_uid) {
+                rf::console::print("Invalid source waypoint UID '{}'", tokens[2]);
+                return;
+            }
+            const int from_uid = from_waypoint_uid.value();
+            if (!is_waypoint_uid_valid(from_uid)) {
+                rf::console::print("No waypoint found with UID {}", from_uid);
+                return;
+            }
+
+            bool remove_both_directions = false;
+            if (tokens.size() == 5) {
+                if (!string_iequals(tokens[4], "both")) {
+                    print_usage();
+                    return;
+                }
+                remove_both_directions = true;
+            }
+
+            int removed_links = 0;
+            if (string_iequals(tokens[3], "all")) {
+                removed_links += remove_waypoint_links_from_all(from_uid);
+                if (remove_both_directions) {
+                    removed_links += remove_waypoint_links_to_from_all(from_uid);
+                }
+            }
+            else {
+                auto to_waypoint_uid = parse_int_token(tokens[3]);
+                if (!to_waypoint_uid) {
+                    rf::console::print("Invalid destination waypoint UID '{}'", tokens[3]);
+                    return;
+                }
+                const int to_uid = to_waypoint_uid.value();
+                removed_links += remove_waypoint_links_from_to(from_uid, to_uid);
+                if (remove_both_directions) {
+                    removed_links += remove_waypoint_links_from_to(to_uid, from_uid);
+                }
+            }
+
+            if (removed_links <= 0) {
+                rf::console::print("No matching links were deleted.");
+                return;
+            }
+            rf::console::print("Deleted {} link(s).", removed_links);
+            return;
+        }
+
+        print_usage();
     },
-    "Delete a waypoint target by UID",
-    "waypoints_target_delete <target_uid>",
+    "Delete waypoints, zones, targets, or links",
+    "waypoints_delete <w|z|l|t> ...",
     true,
-};
-
-ConsoleCommand2 waypoint_target_clear_cmd{
-    "waypoints_target_clear",
-    []() {
-        g_waypoint_targets.clear();
-        g_next_waypoint_target_uid = 1;
-        rf::console::print("Cleared waypoint targets");
-    },
-    "Remove all waypoint targets",
-    "waypoints_target_clear",
 };
 
 void waypoints_init()
 {
     glass_remove_floating_shards_hook.install();
+    waypoint_edit_cmd.register_cmd();
     waypoint_save_cmd.register_cmd();
     waypoint_load_cmd.register_cmd();
+    waypoint_load_all_cmd.register_cmd();
     waypoint_drop_cmd.register_cmd();
     waypoint_debug_cmd.register_cmd();
     waypoint_compress_cmd.register_cmd();
-    waypoint_seed_bridges_cmd.register_cmd();
     waypoint_clean_cmd.register_cmd();
     waypoint_reset_cmd.register_cmd();
     waypoint_generate_cmd.register_cmd();
     waypoint_zone_add_cmd.register_cmd();
     waypoint_zone_list_cmd.register_cmd();
-    waypoint_zone_delete_cmd.register_cmd();
-    waypoint_zone_clear_cmd.register_cmd();
     waypoint_target_add_cmd.register_cmd();
     waypoint_target_list_cmd.register_cmd();
-    waypoint_target_delete_cmd.register_cmd();
-    waypoint_target_clear_cmd.register_cmd();
+    waypoint_delete_cmd.register_cmd();
 }
 
 void waypoints_level_init()
 {
-    g_has_loaded_wpt = load_waypoints();
-    if (!g_has_loaded_wpt) {
-        seed_waypoints_from_objects();
+    if (is_waypoint_bot_mode_active()) {
+        g_has_loaded_wpt = load_waypoints(true);
+        if (!g_has_loaded_wpt) {
+            seed_waypoints_from_objects();
+        }
+    }
+    else {
+        clear_waypoints();
+        g_has_loaded_wpt = false;
     }
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
@@ -4646,9 +5012,36 @@ void waypoints_level_reset()
     g_last_lift_uid_by_entity.clear();
 }
 
+void waypoints_on_limbo_enter()
+{
+    if (!is_waypoint_bot_mode_active()) {
+        return;
+    }
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        return;
+    }
+
+    if (save_waypoints()) {
+        xlog::info("Bot mode: saved waypoints on limbo entry");
+    }
+}
+
 void waypoints_do_frame()
 {
+    if (!is_waypoint_bot_mode_active()
+        && g_alpine_game_config.waypoints_edit_mode
+        && is_multiplayer_client()) {
+        g_alpine_game_config.waypoints_edit_mode = false;
+        g_last_drop_waypoint_by_entity.clear();
+        g_last_lift_uid_by_entity.clear();
+        rf::console::print("Waypoint editing disabled while connected as multiplayer client.");
+    }
+
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        return;
+    }
+    if (!are_waypoint_commands_enabled_for_local_client()) {
+        g_drop_waypoints_prev = g_drop_waypoints;
         return;
     }
     if (!g_has_loaded_wpt) {

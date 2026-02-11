@@ -2998,6 +2998,18 @@ void server_init()
 
 void server_do_frame()
 {
+    if (rf::is_server && rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
+        const bool level_start_delay_elapsed =
+            rf::level.time >= BOT_LEVEL_START_WAIT_TIME_SEC;
+        if (level_start_delay_elapsed) {
+            for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+                if (player.is_bot && player.is_spawn_disabled) {
+                    player.is_spawn_disabled = false;
+                }
+            }
+        }
+    }
+
     server_vote_do_frame();
     match_do_frame();
     process_delayed_kicks();

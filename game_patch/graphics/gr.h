@@ -38,7 +38,7 @@ inline constexpr rf::gr::Mode no_overdraw_2d_text{
         rf::gr::COLOR_SOURCE_VERTEX,
         rf::gr::ALPHA_SOURCE_VERTEX,
         rf::gr::ALPHA_BLEND_ALPHA,
-        rf::gr::ZBUFFER_TYPE_FULL,
+        rf::gr::ZBUFFER_TYPE_READ,
         rf::gr::FOG_NOT_ALLOWED
     };
 
