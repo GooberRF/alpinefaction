@@ -3657,6 +3657,23 @@ bool point_matches_autogen_explosion_target_hardness_rules(const rf::Vector3& po
     return allowed;
 }
 
+bool point_inside_shallow_geo_region(const rf::Vector3& point)
+{
+    for (int region_index = 0; region_index < rf::level.regions.size(); ++region_index) {
+        auto* region = rf::level.regions[region_index];
+        if (!region || !region->use_shallow_geomods) {
+            continue;
+        }
+
+        rf::Vector3 query_point = point;
+        if (rf::level_geo_region_contains(&query_point, region)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool waypoint_pair_can_link_if_geometry_removed(int from, int to)
 {
     if (from <= 0 || to <= 0
@@ -3774,15 +3791,26 @@ int generate_explosion_targets_for_autogen()
                         }
 
                         const rf::Vector3 base_target_pos = target_pos;
-                        const rf::Vector3 raised_target_pos = base_target_pos + rf::Vector3{0.0f, kTargetYOffset, 0.0f};
-                        const bool raised_target_valid =
-                            rf::find_room(rf::level.geometry, &raised_target_pos) == nullptr;
+                        const bool in_shallow_geo_region = point_inside_shallow_geo_region(base_target_pos);
                         const bool base_target_valid =
                             rf::find_room(rf::level.geometry, &base_target_pos) == nullptr;
-                        if (raised_target_valid) {
-                            target_pos = raised_target_pos;
+                        if (!in_shallow_geo_region) {
+                            const rf::Vector3 raised_target_pos =
+                                base_target_pos + rf::Vector3{0.0f, kTargetYOffset, 0.0f};
+                            const bool raised_target_valid =
+                                rf::find_room(rf::level.geometry, &raised_target_pos) == nullptr;
+                            if (raised_target_valid) {
+                                target_pos = raised_target_pos;
+                            }
+                            else if (base_target_valid) {
+                                target_pos = base_target_pos;
+                            }
+                            else {
+                                continue;
+                            }
                         }
                         else if (base_target_valid) {
+                            // Shallow geomod regions should use midpoint placement directly.
                             target_pos = base_target_pos;
                         }
                         else {
