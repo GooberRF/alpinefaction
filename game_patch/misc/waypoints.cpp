@@ -1435,6 +1435,26 @@ int add_waypoint_target(const rf::Vector3& pos, WaypointTargetType type, std::op
     return g_waypoint_targets.back().uid;
 }
 
+int add_waypoint_target_with_waypoint_uids(
+    const rf::Vector3& pos,
+    WaypointTargetType type,
+    std::vector<int> waypoint_uids,
+    std::optional<int> preferred_uid = std::nullopt)
+{
+    WaypointTargetDefinition target{};
+    target.uid = resolve_waypoint_target_uid(preferred_uid);
+    target.pos = pos;
+    target.type = type;
+    target.identifier = -1;
+    normalize_target_waypoint_uids(waypoint_uids);
+    if (waypoint_uids.empty()) {
+        waypoint_uids = collect_target_waypoint_uids(pos);
+    }
+    target.waypoint_uids = std::move(waypoint_uids);
+    g_waypoint_targets.push_back(std::move(target));
+    return g_waypoint_targets.back().uid;
+}
+
 bool remove_waypoint_target_by_uid(int target_uid)
 {
     auto it = std::find_if(
@@ -3492,6 +3512,296 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
     return stats;
 }
 
+bool trace_segment_hits_detail_brush(const rf::Vector3& from, const rf::Vector3& to)
+{
+    rf::Vector3 segment = to - from;
+    const float segment_length = segment.len();
+    if (segment_length <= kWaypointLinkRadiusEpsilon) {
+        return false;
+    }
+    segment.normalize_safe();
+
+    constexpr int kMaxTraceIterations = 64;
+    constexpr float kTraceAdvanceEpsilon = 0.05f;
+    constexpr float kMinAdvanceDelta = 0.001f;
+
+    rf::Vector3 trace_start = from;
+    float advanced_distance = 0.0f;
+    for (int iteration = 0;
+         iteration < kMaxTraceIterations
+         && advanced_distance + kTraceAdvanceEpsilon < segment_length;
+         ++iteration) {
+        rf::Vector3 p0 = trace_start;
+        rf::Vector3 p1 = to;
+        rf::GCollisionOutput collision{};
+        if (!rf::collide_linesegment_level_solid(
+                p0,
+                p1,
+                kWaypointSolidTraceFlags,
+                &collision)) {
+            return false;
+        }
+
+        if (collision.face && collision.face->which_room && collision.face->which_room->is_detail) {
+            return true;
+        }
+
+        const float hit_distance_from_start = (collision.hit_point - from).len();
+        const float next_advanced_distance = std::clamp(
+            hit_distance_from_start + kTraceAdvanceEpsilon,
+            0.0f,
+            segment_length);
+        if (next_advanced_distance <= advanced_distance + kMinAdvanceDelta) {
+            break;
+        }
+
+        advanced_distance = next_advanced_distance;
+        trace_start = from + segment * advanced_distance;
+    }
+
+    return false;
+}
+
+bool compute_blocked_link_wall_midpoint(
+    const rf::Vector3& from,
+    const rf::Vector3& to,
+    rf::Vector3& out_midpoint)
+{
+    rf::Vector3 p0 = from;
+    rf::Vector3 p1 = to;
+    rf::GCollisionOutput forward_collision{};
+    if (!rf::collide_linesegment_level_solid(
+            p0,
+            p1,
+            kWaypointSolidTraceFlags,
+            &forward_collision)) {
+        return false;
+    }
+
+    p0 = to;
+    p1 = from;
+    rf::GCollisionOutput backward_collision{};
+    if (!rf::collide_linesegment_level_solid(
+            p0,
+            p1,
+            kWaypointSolidTraceFlags,
+            &backward_collision)) {
+        return false;
+    }
+
+    out_midpoint = (forward_collision.hit_point + backward_collision.hit_point) * 0.5f;
+    return true;
+}
+
+bool point_matches_autogen_explosion_target_hardness_rules(const rf::Vector3& point)
+{
+    const int level_hardness = std::clamp(rf::level.default_rock_hardness, 0, 100);
+    bool has_region_hardness_gte_75 = false;
+    bool has_region_hardness_lte_50 = false;
+
+    for (int region_index = 0; region_index < rf::level.regions.size(); ++region_index) {
+        auto* region = rf::level.regions[region_index];
+        if (!region) {
+            continue;
+        }
+
+        rf::Vector3 query_point = point;
+        if (!rf::level_geo_region_contains(&query_point, region)) {
+            continue;
+        }
+
+        has_region_hardness_gte_75 = has_region_hardness_gte_75 || (region->hardness >= 75);
+        has_region_hardness_lte_50 = has_region_hardness_lte_50 || (region->hardness <= 50);
+        if (has_region_hardness_gte_75 && has_region_hardness_lte_50) {
+            break;
+        }
+    }
+
+    bool allowed = false;
+    if (level_hardness <= 50) {
+        allowed = allowed || !has_region_hardness_gte_75;
+    }
+    if (level_hardness >= 50) {
+        allowed = allowed || has_region_hardness_lte_50;
+    }
+    return allowed;
+}
+
+bool waypoint_pair_can_link_if_geometry_removed(int from, int to)
+{
+    if (from <= 0 || to <= 0
+        || from == to
+        || from >= static_cast<int>(g_waypoints.size())
+        || to >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+
+    const auto& from_node = g_waypoints[from];
+    const auto& to_node = g_waypoints[to];
+    if (!from_node.valid || !to_node.valid) {
+        return false;
+    }
+
+    const bool forward_type_allowed = waypoint_link_types_allowed(from_node, to_node);
+    const bool backward_type_allowed = waypoint_link_types_allowed(to_node, from_node);
+    if (!forward_type_allowed && !backward_type_allowed) {
+        return false;
+    }
+
+    const bool forward_incline_allowed = waypoint_upward_link_allowed(
+        from_node.pos,
+        to_node.pos,
+        kWaypointGenerateMaxInclineDeg);
+    const bool backward_incline_allowed = waypoint_upward_link_allowed(
+        to_node.pos,
+        from_node.pos,
+        kWaypointGenerateMaxInclineDeg);
+    if (!(forward_type_allowed && forward_incline_allowed)
+        && !(backward_type_allowed && backward_incline_allowed)) {
+        return false;
+    }
+
+    if (waypoint_has_link_to(from, to) || waypoint_has_link_to(to, from)) {
+        return false;
+    }
+
+    return !can_link_waypoints(from_node.pos, to_node.pos);
+}
+
+int generate_explosion_targets_for_autogen()
+{
+    constexpr float kMaxPairDistance = kWaypointLinkRadius * 2.0f;
+    constexpr float kMaxPairDistanceSq = kMaxPairDistance * kMaxPairDistance;
+    constexpr float kTargetSpacing = kWaypointLinkRadius * 2.0f;
+    constexpr float kTargetSpacingSq = kTargetSpacing * kTargetSpacing;
+    constexpr float kTargetYOffset = 1.0f;
+
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+    if (waypoint_count <= 2) {
+        return 0;
+    }
+
+    WaypointCellMap cell_map{};
+    build_waypoint_cell_map(cell_map, kMaxPairDistance);
+
+    std::vector<rf::Vector3> existing_target_positions{};
+    existing_target_positions.reserve(g_waypoint_targets.size() + 64);
+    for (const auto& target : g_waypoint_targets) {
+        if (target.type == WaypointTargetType::explosion) {
+            existing_target_positions.push_back(target.pos);
+        }
+    }
+
+    struct AutogenExplosionTargetCandidate
+    {
+        int from_waypoint = 0;
+        int to_waypoint = 0;
+        float pair_distance_sq = std::numeric_limits<float>::max();
+        rf::Vector3 target_pos{};
+    };
+
+    std::vector<AutogenExplosionTargetCandidate> candidates{};
+    candidates.reserve(1024);
+
+    for (int from = 1; from < waypoint_count; ++from) {
+        const auto& from_node = g_waypoints[from];
+        if (!from_node.valid) {
+            continue;
+        }
+
+        const WaypointCellCoord cell = waypoint_cell_coord_from_pos(from_node.pos, kMaxPairDistance);
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    const WaypointCellCoord neighbor_cell{cell.x + dx, cell.y + dy, cell.z + dz};
+                    auto it = cell_map.find(neighbor_cell);
+                    if (it == cell_map.end()) {
+                        continue;
+                    }
+
+                    for (int to : it->second) {
+                        if (to <= from) {
+                            continue;
+                        }
+
+                        const auto& to_node = g_waypoints[to];
+                        if (!to_node.valid) {
+                            continue;
+                        }
+                        if (distance_sq(from_node.pos, to_node.pos) > kMaxPairDistanceSq) {
+                            continue;
+                        }
+                        if (!waypoint_pair_can_link_if_geometry_removed(from, to)) {
+                            continue;
+                        }
+                        if (trace_segment_hits_detail_brush(from_node.pos, to_node.pos)) {
+                            continue;
+                        }
+
+                        rf::Vector3 target_pos{};
+                        if (!compute_blocked_link_wall_midpoint(from_node.pos, to_node.pos, target_pos)) {
+                            continue;
+                        }
+
+                        const rf::Vector3 base_target_pos = target_pos;
+                        const rf::Vector3 raised_target_pos = base_target_pos + rf::Vector3{0.0f, kTargetYOffset, 0.0f};
+                        const bool raised_target_valid =
+                            rf::find_room(rf::level.geometry, &raised_target_pos) == nullptr;
+                        const bool base_target_valid =
+                            rf::find_room(rf::level.geometry, &base_target_pos) == nullptr;
+                        if (raised_target_valid) {
+                            target_pos = raised_target_pos;
+                        }
+                        else if (base_target_valid) {
+                            target_pos = base_target_pos;
+                        }
+                        else {
+                            continue;
+                        }
+
+                        const rf::Vector3 hardness_query_pos =
+                            ((from_node.pos + to_node.pos) * 0.5f) + rf::Vector3{0.0f, kTargetYOffset, 0.0f};
+                        if (!point_matches_autogen_explosion_target_hardness_rules(hardness_query_pos)) {
+                            continue;
+                        }
+
+                        candidates.push_back(
+                            {from, to, distance_sq(from_node.pos, to_node.pos), target_pos}
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+        return a.pair_distance_sq < b.pair_distance_sq;
+    });
+
+    int created_targets = 0;
+    for (const auto& candidate : candidates) {
+        bool too_close_to_existing_target = false;
+        for (const auto& existing_pos : existing_target_positions) {
+            if (distance_sq(existing_pos, candidate.target_pos) <= kTargetSpacingSq) {
+                too_close_to_existing_target = true;
+                break;
+            }
+        }
+        if (too_close_to_existing_target) {
+            continue;
+        }
+
+        add_waypoint_target_with_waypoint_uids(
+            candidate.target_pos,
+            WaypointTargetType::explosion,
+            {candidate.from_waypoint, candidate.to_waypoint});
+        existing_target_positions.push_back(candidate.target_pos);
+        ++created_targets;
+    }
+
+    return created_targets;
+}
+
 bool save_waypoints()
 {
     if (g_waypoints.size() <= 1) {
@@ -4923,6 +5233,7 @@ ConsoleCommand2 waypoint_generate_cmd{
 
         const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
         const auto link_stats = link_generated_waypoint_grid();
+        const int generated_target_count = generate_explosion_targets_for_autogen();
 
         if (generated_count >= kWaypointGenerateMaxCreatedWaypoints) {
             rf::console::print(
@@ -4946,6 +5257,11 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print(
                 "Link pass pruned {} redundant direct links",
                 link_stats.redundant_links_pruned);
+        }
+        if (generated_target_count > 0) {
+            rf::console::print(
+                "Generated {} explosion targets from blocked waypoint pairs",
+                generated_target_count);
         }
     },
     "Generate a walk-probe waypoint grid from respawn/item waypoints",

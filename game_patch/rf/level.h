@@ -48,6 +48,21 @@ namespace rf
     };
     static_assert(sizeof(PushRegion) == 0x6C); // original is 0x69 due to 1 byte bool
 
+    struct GeoRegion
+    {
+        int shape;
+        int hardness;
+        bool use_shallow_geomods;
+        bool is_ice;
+        char padding[2];
+        float shallow_geomod_depth;
+        Vector3 pos;
+        Matrix3 orient;
+        float radius;
+        Vector3 extents;
+    };
+    static_assert(sizeof(GeoRegion) == 0x50);
+
     enum PushRegionFlags
     {
         PRF_MASS_INDEPENDENT = 0x1,
@@ -130,6 +145,7 @@ namespace rf
     static auto& level_filename_to_load = addr_as_ref<String>(0x00646140);
     static auto& level_get_push_region_from_uid = addr_as_ref<PushRegion*(int uid)>(0x0045D6D0);
     static auto& level_point_in_climb_region = addr_as_ref<ClimbRegion*(Vector3* pos)>(0x0045CCA0);
+    static auto& level_geo_region_contains = addr_as_ref<bool(Vector3* pos, GeoRegion* region)>(0x0045D520);
 
     static auto& level_set_level_to_load = addr_as_ref<void(String filename, String state_filename)>(0x0045E2E0);
     static auto& game_new_game = addr_as_ref<void()>(0x00436950);
