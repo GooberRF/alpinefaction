@@ -166,6 +166,9 @@ CodeInjection after_level_render_hook{
 #endif
         debug_render();
         waypoints_render_debug();
+#ifdef HAS_BOTS
+        client_bot_render_debug();
+#endif
         hud_world_do_frame();
     },
 };

@@ -25,7 +25,7 @@ constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
 constexpr float kWaypointGenerateGroundOffset = 1.0f;
 constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
 constexpr float kWaypointGenerateWallClearance = 0.5f;
-constexpr float kWaypointGenerateEdgeClearance = 0.75f;
+constexpr float kWaypointGenerateEdgeClearance = 1.0f;
 constexpr float kWaypointGenerateMinHeadroom = 1.375f;
 constexpr float kWaypointGenerateStandingHeadroom = 2.0f;
 constexpr int kWaypointGenerateEdgeProbeCount = 8;
@@ -58,6 +58,7 @@ enum class WaypointDroppedSubtype : int
     crouch_needed = 1,
     swimming = 2,
     falling = 3,
+    unsafe_terrain = 4,
 };
 
 enum class WaypointItemSubtype : int
@@ -129,9 +130,11 @@ struct WaypointNode
     int num_links = 0;
     WaypointType type = WaypointType::std;
     int subtype = 0;
+    int movement_subtype = static_cast<int>(WaypointDroppedSubtype::normal);
     int identifier = -1;
     std::vector<int> zones{};
     float link_radius = kWaypointLinkRadius;
+    bool temporary = false;
     bool valid = true;
 };
 
@@ -185,6 +188,9 @@ int waypoints_closest(const rf::Vector3& pos, float radius);
 int waypoints_count();
 bool waypoints_get_pos(int index, rf::Vector3& out_pos);
 bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
+bool waypoints_get_movement_subtype(int index, int& out_movement_subtype);
+bool waypoints_get_identifier(int index, int& out_identifier);
+bool waypoints_get_link_radius(int index, float& out_link_radius);
 int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links);
 bool waypoints_has_direct_link(int from, int to);
 bool waypoints_link_is_clear(int from, int to);
@@ -193,7 +199,9 @@ void sanitize_waypoint_links_against_geometry();
 int add_waypoint(
     const rf::Vector3& pos, WaypointType type, int subtype, bool link_to_nearest, bool bidirectional_link,
     float link_radius = kWaypointLinkRadius, int identifier = -1, const rf::Object* source_object = nullptr,
-    bool auto_assign_zones = true);
+    bool auto_assign_zones = true,
+    int movement_subtype = static_cast<int>(WaypointDroppedSubtype::normal),
+    bool temporary = false);
 bool link_waypoint_if_clear(int from, int to);
 bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b);
 int closest_waypoint(const rf::Vector3& pos, float radius);
