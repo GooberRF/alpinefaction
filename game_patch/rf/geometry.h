@@ -227,6 +227,11 @@ namespace rf
         float liquid_surface_pan_v;
         VArray<GrLight*> cached_lights;
         int light_state;
+
+        bool is_breakable_glass()
+        {
+            return AddrCaller{0x00465F00}.this_call<bool>(this);
+        }
     };
     static_assert(sizeof(GRoom) == 0x1CC);
 

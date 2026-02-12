@@ -23,6 +23,7 @@
 #include "achievements.h"
 #include "alpine_settings.h"
 #include "misc.h"
+#include "waypoints.h"
 
 bool achievement_system_initialized = false;
 bool synced_with_ff = false;
@@ -1344,6 +1345,11 @@ CodeInjection stuck_with_remote_charge_achievement_patch{
 CodeInjection glass_shatter_achievement_patch{
     0x00490C6B,
     [](auto& regs) {
+        rf::GFace* face = regs.esi;
+        if (face) {
+            waypoints_on_glass_shattered(face);
+        }
+
         if (!rf::is_multi) {
             rf::String rfl_filename = rf::level.filename;
 
@@ -1355,8 +1361,6 @@ CodeInjection glass_shatter_achievement_patch{
                     grant_achievement_sp(AchievementName::GlassHouseShatter);
                 }
             }
-
-            rf::GFace* face = regs.esi;
 
             if (face) {
                 //xlog::warn("shattered face {}", face->attributes.face_id);

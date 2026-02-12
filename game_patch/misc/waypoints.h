@@ -8,6 +8,7 @@
 namespace rf
 {
     struct Object;
+    struct GFace;
 }
 
 constexpr int kWptVersion = 1;
@@ -104,6 +105,7 @@ enum class WaypointZoneSource : int
 enum class WaypointTargetType : int
 {
     explosion = 0,
+    shatter = 1,
 };
 
 struct WaypointZoneDefinition
@@ -170,6 +172,7 @@ void waypoints_level_init();
 void waypoints_level_reset();
 void waypoints_on_limbo_enter();
 void waypoints_on_trigger_activated(int trigger_uid);
+void waypoints_on_glass_shattered(const rf::GFace* face);
 
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);

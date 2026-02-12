@@ -246,6 +246,8 @@ WaypointTargetType waypoint_target_type_from_int(int raw_type)
     switch (raw_type) {
         case static_cast<int>(WaypointTargetType::explosion):
             return WaypointTargetType::explosion;
+        case static_cast<int>(WaypointTargetType::shatter):
+            return WaypointTargetType::shatter;
         default:
             return static_cast<WaypointTargetType>(raw_type);
     }
@@ -256,6 +258,8 @@ std::string_view waypoint_target_type_name(WaypointTargetType type)
     switch (type) {
         case WaypointTargetType::explosion:
             return "explosion";
+        case WaypointTargetType::shatter:
+            return "shatter";
         default:
             return "unknown";
     }
@@ -481,11 +485,17 @@ std::optional<WaypointTargetType> parse_waypoint_target_type_token(std::string_v
         if (numeric_type == static_cast<int>(WaypointTargetType::explosion)) {
             return WaypointTargetType::explosion;
         }
+        if (numeric_type == static_cast<int>(WaypointTargetType::shatter)) {
+            return WaypointTargetType::shatter;
+        }
         return std::nullopt;
     }
 
     if (string_iequals(token, "explosion")) {
         return WaypointTargetType::explosion;
+    }
+    if (string_iequals(token, "shatter")) {
+        return WaypointTargetType::shatter;
     }
 
     return std::nullopt;
@@ -1489,7 +1499,8 @@ void remove_realized_waypoint_targets(const rf::Vector3& crater_pos, float crate
             g_waypoint_targets.begin(),
             g_waypoint_targets.end(),
             [&crater_pos, radius_sq](const WaypointTargetDefinition& target) {
-                if (target.type != WaypointTargetType::explosion) {
+                if (target.type != WaypointTargetType::explosion
+                    && target.type != WaypointTargetType::shatter) {
                     return false;
                 }
                 return distance_sq(crater_pos, target.pos) <= radius_sq;
@@ -3623,6 +3634,165 @@ bool compute_blocked_link_wall_midpoint(
     return true;
 }
 
+rf::GRoom* collision_breakable_glass_room(const rf::GCollisionOutput& collision)
+{
+    if (!collision.face || !collision.face->which_room) {
+        return nullptr;
+    }
+
+    auto* room = collision.face->which_room;
+    if (!room->is_breakable_glass()) {
+        return nullptr;
+    }
+    return room;
+}
+
+int breakable_glass_room_key(const rf::GRoom& room)
+{
+    if (room.uid >= 0) {
+        return room.uid;
+    }
+    return -(room.room_index + 1);
+}
+
+void waypoints_on_glass_shattered(const rf::GFace* face)
+{
+    if (!face || !face->which_room || g_waypoint_targets.empty()) {
+        return;
+    }
+
+    auto* room = face->which_room;
+    if (!room->is_breakable_glass()) {
+        return;
+    }
+
+    const int room_key = breakable_glass_room_key(*room);
+    const auto try_link_shatter_target_waypoints = [](const WaypointTargetDefinition& target) {
+        const auto try_link_direction = [](int from_uid, int to_uid) {
+            if (from_uid <= 0 || to_uid <= 0
+                || from_uid >= static_cast<int>(g_waypoints.size())
+                || to_uid >= static_cast<int>(g_waypoints.size())) {
+                return;
+            }
+            const auto& from_node = g_waypoints[from_uid];
+            const auto& to_node = g_waypoints[to_uid];
+            if (!from_node.valid || !to_node.valid) {
+                return;
+            }
+            if (!waypoint_upward_link_allowed(from_node.pos, to_node.pos, kWaypointGenerateMaxInclineDeg)) {
+                return;
+            }
+            // Do not require LOS here: target creation already validated this bridge candidate.
+            link_waypoint(from_uid, to_uid);
+        };
+
+        const auto& waypoint_uids = target.waypoint_uids;
+        if (waypoint_uids.size() < 2) {
+            return;
+        }
+
+        for (size_t i = 0; i < waypoint_uids.size(); ++i) {
+            for (size_t j = i + 1; j < waypoint_uids.size(); ++j) {
+                const int uid_a = waypoint_uids[i];
+                const int uid_b = waypoint_uids[j];
+                try_link_direction(uid_a, uid_b);
+                try_link_direction(uid_b, uid_a);
+            }
+        }
+    };
+
+    for (const auto& target : g_waypoint_targets) {
+        if (target.type != WaypointTargetType::shatter || target.identifier != room_key) {
+            continue;
+        }
+        try_link_shatter_target_waypoints(target);
+    }
+
+    g_waypoint_targets.erase(
+        std::remove_if(
+            g_waypoint_targets.begin(),
+            g_waypoint_targets.end(),
+            [room_key](const WaypointTargetDefinition& target) {
+                return target.type == WaypointTargetType::shatter
+                    && target.identifier == room_key;
+            }),
+        g_waypoint_targets.end());
+}
+
+bool compute_blocked_link_breakable_glass_midpoint(
+    const rf::Vector3& from,
+    const rf::Vector3& to,
+    rf::Vector3& out_midpoint,
+    int& out_room_key)
+{
+    rf::Vector3 p0 = from;
+    rf::Vector3 p1 = to;
+    rf::GCollisionOutput forward_collision{};
+    if (!rf::collide_linesegment_level_solid(
+            p0,
+            p1,
+            kWaypointSolidTraceFlags,
+            &forward_collision)) {
+        return false;
+    }
+    const auto* forward_room = collision_breakable_glass_room(forward_collision);
+    if (!forward_room) {
+        return false;
+    }
+
+    p0 = to;
+    p1 = from;
+    rf::GCollisionOutput backward_collision{};
+    if (!rf::collide_linesegment_level_solid(
+            p0,
+            p1,
+            kWaypointSolidTraceFlags,
+            &backward_collision)) {
+        return false;
+    }
+    const auto* backward_room = collision_breakable_glass_room(backward_collision);
+    if (!backward_room) {
+        return false;
+    }
+
+    const int forward_room_key = breakable_glass_room_key(*forward_room);
+    const int backward_room_key = breakable_glass_room_key(*backward_room);
+    if (forward_room_key != backward_room_key) {
+        return false;
+    }
+
+    out_midpoint = (forward_collision.hit_point + backward_collision.hit_point) * 0.5f;
+    out_room_key = forward_room_key;
+    return true;
+}
+
+bool point_still_inside_breakable_glass_brush(
+    const rf::Vector3& point,
+    const rf::Vector3& from,
+    const rf::Vector3& to,
+    int room_key)
+{
+    const auto hits_same_brush = [room_key, &point](const rf::Vector3& endpoint) {
+        rf::Vector3 p0 = point;
+        rf::Vector3 p1 = endpoint;
+        rf::GCollisionOutput collision{};
+        if (!rf::collide_linesegment_level_solid(
+                p0,
+                p1,
+                kWaypointSolidTraceFlags,
+                &collision)) {
+            return false;
+        }
+        const auto* room = collision_breakable_glass_room(collision);
+        if (!room) {
+            return false;
+        }
+        return room_key == breakable_glass_room_key(*room);
+    };
+
+    return hits_same_brush(from) && hits_same_brush(to);
+}
+
 bool point_matches_autogen_explosion_target_hardness_rules(const rf::Vector3& point)
 {
     const int level_hardness = std::clamp(rf::level.default_rock_hardness, 0, 100);
@@ -3854,6 +4024,130 @@ int generate_explosion_targets_for_autogen()
             WaypointTargetType::explosion,
             {candidate.from_waypoint, candidate.to_waypoint});
         existing_target_positions.push_back(candidate.target_pos);
+        ++created_targets;
+    }
+
+    return created_targets;
+}
+
+int generate_shatter_targets_for_autogen()
+{
+    constexpr float kMaxPairDistance = kWaypointLinkRadius * 2.0f;
+    constexpr float kMaxPairDistanceSq = kMaxPairDistance * kMaxPairDistance;
+    constexpr float kTargetYOffset = 1.0f;
+
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+    if (waypoint_count <= 2) {
+        return 0;
+    }
+
+    WaypointCellMap cell_map{};
+    build_waypoint_cell_map(cell_map, kMaxPairDistance);
+
+    std::unordered_set<int> existing_glass_room_keys{};
+    existing_glass_room_keys.reserve(g_waypoint_targets.size());
+    for (const auto& target : g_waypoint_targets) {
+        if (target.type == WaypointTargetType::shatter && target.identifier != -1) {
+            existing_glass_room_keys.insert(target.identifier);
+        }
+    }
+
+    struct AutogenShatterTargetCandidate
+    {
+        int from_waypoint = 0;
+        int to_waypoint = 0;
+        float pair_distance_sq = std::numeric_limits<float>::max();
+        rf::Vector3 target_pos{};
+        int glass_room_key = -1;
+    };
+
+    std::unordered_map<int, AutogenShatterTargetCandidate> candidate_by_glass_room{};
+    candidate_by_glass_room.reserve(128);
+
+    for (int from = 1; from < waypoint_count; ++from) {
+        const auto& from_node = g_waypoints[from];
+        if (!from_node.valid) {
+            continue;
+        }
+
+        const WaypointCellCoord cell = waypoint_cell_coord_from_pos(from_node.pos, kMaxPairDistance);
+        for (int dx = -1; dx <= 1; ++dx) {
+            for (int dy = -1; dy <= 1; ++dy) {
+                for (int dz = -1; dz <= 1; ++dz) {
+                    const WaypointCellCoord neighbor_cell{cell.x + dx, cell.y + dy, cell.z + dz};
+                    auto it = cell_map.find(neighbor_cell);
+                    if (it == cell_map.end()) {
+                        continue;
+                    }
+
+                    for (int to : it->second) {
+                        if (to <= from) {
+                            continue;
+                        }
+
+                        const auto& to_node = g_waypoints[to];
+                        if (!to_node.valid) {
+                            continue;
+                        }
+                        const float pair_distance_sq = distance_sq(from_node.pos, to_node.pos);
+                        if (pair_distance_sq > kMaxPairDistanceSq) {
+                            continue;
+                        }
+                        if (!waypoint_pair_can_link_if_geometry_removed(from, to)) {
+                            continue;
+                        }
+
+                        rf::Vector3 target_pos{};
+                        int glass_room_key = -1;
+                        if (!compute_blocked_link_breakable_glass_midpoint(
+                                from_node.pos,
+                                to_node.pos,
+                                target_pos,
+                                glass_room_key)) {
+                            continue;
+                        }
+
+                        const rf::Vector3 raised_target_pos =
+                            target_pos + rf::Vector3{0.0f, kTargetYOffset, 0.0f};
+                        if (point_still_inside_breakable_glass_brush(
+                                raised_target_pos,
+                                from_node.pos,
+                                to_node.pos,
+                                glass_room_key)) {
+                            target_pos = raised_target_pos;
+                        }
+
+                        auto candidate_it = candidate_by_glass_room.find(glass_room_key);
+                        if (candidate_it == candidate_by_glass_room.end()
+                            || pair_distance_sq < candidate_it->second.pair_distance_sq) {
+                            candidate_by_glass_room[glass_room_key] = AutogenShatterTargetCandidate{
+                                from,
+                                to,
+                                pair_distance_sq,
+                                target_pos,
+                                glass_room_key,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    int created_targets = 0;
+    for (const auto& [glass_room_key, candidate] : candidate_by_glass_room) {
+        if (existing_glass_room_keys.find(glass_room_key) != existing_glass_room_keys.end()) {
+            continue;
+        }
+
+        const int target_uid = add_waypoint_target_with_waypoint_uids(
+            candidate.target_pos,
+            WaypointTargetType::shatter,
+            {candidate.from_waypoint, candidate.to_waypoint});
+        if (auto* target = find_waypoint_target_by_uid(target_uid)) {
+            target->identifier = glass_room_key;
+        }
+        existing_glass_room_keys.insert(glass_room_key);
         ++created_targets;
     }
 
@@ -4713,6 +5007,8 @@ rf::Color debug_waypoint_target_color(WaypointTargetType type)
     switch (type) {
         case WaypointTargetType::explosion:
             return {255, 120, 40, 150};
+        case WaypointTargetType::shatter:
+            return {120, 220, 255, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -5291,7 +5587,8 @@ ConsoleCommand2 waypoint_generate_cmd{
 
         const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
         const auto link_stats = link_generated_waypoint_grid();
-        const int generated_target_count = generate_explosion_targets_for_autogen();
+        const int generated_explosion_target_count = generate_explosion_targets_for_autogen();
+        const int generated_shatter_target_count = generate_shatter_targets_for_autogen();
 
         if (generated_count >= kWaypointGenerateMaxCreatedWaypoints) {
             rf::console::print(
@@ -5316,10 +5613,15 @@ ConsoleCommand2 waypoint_generate_cmd{
                 "Link pass pruned {} redundant direct links",
                 link_stats.redundant_links_pruned);
         }
-        if (generated_target_count > 0) {
+        if (generated_explosion_target_count > 0) {
             rf::console::print(
                 "Generated {} explosion targets from blocked waypoint pairs",
-                generated_target_count);
+                generated_explosion_target_count);
+        }
+        if (generated_shatter_target_count > 0) {
+            rf::console::print(
+                "Generated {} shatter targets from breakable-glass blocked waypoint pairs",
+                generated_shatter_target_count);
         }
     },
     "Generate a walk-probe waypoint grid from respawn/item waypoints",
@@ -5590,14 +5892,14 @@ ConsoleCommand2 waypoint_target_add_cmd{
         const auto tokens = tokenize_console_command_line(command_line);
         if (tokens.size() != 2) {
             rf::console::print("Usage: waypoints_target_add <type>");
-            rf::console::print("Valid target types: explosion");
+            rf::console::print("Valid target types: explosion, shatter");
             return;
         }
 
         auto target_type = parse_waypoint_target_type_token(tokens[1]);
         if (!target_type) {
             rf::console::print("Invalid target type '{}'", tokens[1]);
-            rf::console::print("Valid target types: explosion");
+            rf::console::print("Valid target types: explosion, shatter");
             return;
         }
 
