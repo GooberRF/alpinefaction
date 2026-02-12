@@ -4,6 +4,18 @@
 Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Implement TOML-based `ASG` savegame file format for single player
+    - Support (theoretically) any number of each saved object type, removing specific limits
+    - Support tracking orientation for triggers and clutter (disabled when `sp_savespeedrunmode` is enabled)
+    - Support tracking trigger reset timestamps (disabled when `sp_savespeedrunmode` is enabled)
+    - Support tracking skins for clutter and entities
+    - Support tracking all event links
+    - Support tracking positions and rotations for relevant event types
+    - Support tracking dynamic lights
+    - Support Alpine events `Switch_Random`, `Sequence`, and `World_HUD_Sprite`
+    - Fix collision bugs resulting from compressed position/orientation values (disabled when `sp_savespeedrunmode` is enabled)
+    - Add support for `Require Alpine Savegame Format` in `af_game.tbl` for TC mods that want to force the modern format
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)

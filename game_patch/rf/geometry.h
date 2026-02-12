@@ -3,6 +3,7 @@
 #include "math/vector.h"
 #include "math/matrix.h"
 #include "math/plane.h"
+#include "math/quaternion.h"
 #include "os/array.h"
 #include "os/string.h"
 #include "os/linklist.h"
@@ -136,8 +137,30 @@ namespace rf
         {
             AddrCaller{0x004F8730}.this_call(this, ppm);
         }
+
+        GRoom* find_new_room(GRoom* org_room, Vector3* org_pos, Vector3* new_pos, const char* object_name)
+        {
+            return AddrCaller{0x004CD970}.this_call<GRoom*>(this, org_room, org_pos, new_pos, object_name);
+        }
+
+        GRoom* find_room_by_id(int id)
+        {
+            return AddrCaller{0x004D2FC0}.this_call<GRoom*>(this, id);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
+
+    struct GeomodCraterData
+    {
+        int16_t shape_index;
+        int16_t flags;
+        int32_t room_index;
+        ShortVector pos;
+        ShortVector hit_normal;
+        ShortQuat orient;
+        float scale;
+    };
+    static_assert(sizeof(GeomodCraterData) == 0x20);
 
     struct GRoom
     {
@@ -197,6 +220,16 @@ namespace rf
         float liquid_surface_pan_v;
         VArray<GrLight*> cached_lights;
         int light_state;
+
+        bool get_is_detail()
+        {
+            return AddrCaller{0x00494A50}.this_call<bool>(this);
+        }
+
+        bool is_killable_glass()
+        {
+            return AddrCaller{0x00465F00}.this_call<bool>(this);
+        }
     };
     static_assert(sizeof(GRoom) == 0x1CC);
 
@@ -252,6 +285,11 @@ namespace rf
         DecalPoly *decal_list;
         short unk_cache_index;
         GFace* next[FACE_LIST_NUM];
+
+        int num_verts()
+        {
+            return AddrCaller{0x004E03E0}.this_call<int>(this);
+        }
     };
     static_assert(sizeof(GFace) == 0x60);
 
@@ -340,6 +378,22 @@ namespace rf
     };
     static_assert(sizeof(GPathNode) == 0x7C);
 
+    struct GDecalCreateInfo
+    {
+        Vector3 pos;
+        Matrix3 orient;
+        Vector3 extents;
+        int texture;
+        GRoom* room;
+        uint8_t alpha;
+        char padding[3];
+        int flags;
+        int object_handle;
+        GSolid* solid;
+        float scale;
+    };
+    static_assert(sizeof(GDecalCreateInfo) == 0x58);
+
     struct GDecal
     {
         Vector3 pos;
@@ -350,6 +404,7 @@ namespace rf
         GRoom *room2;
         GSolid *solid;
         ubyte alpha;
+        char padding[3];
         int flags;
         int object_handle;
         float tiling_scale;
@@ -482,7 +537,24 @@ namespace rf
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);
 
+    static auto& g_decal_get_list = addr_as_ref<void(GDecal** decal_list, int *out_num)>(0x004D7640);
+    static auto& g_decal_add = addr_as_ref<GDecal*(GDecalCreateInfo* dci)>(0x004D52E0);
+
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
+
+    static auto& world_solid = addr_as_ref<GSolid*>(0x006460E8);
+    static auto& num_geomods_this_level = *reinterpret_cast<int*>(0x00647C9C);
+    //static auto* geomods_this_level = reinterpret_cast<GeomodCraterData*>(0x00648600);
+    static auto geomods_this_level = reinterpret_cast<GeomodCraterData*>(0x00648600);
+    static auto& g_boolean_is_in_progress = addr_as_ref<bool()>(0x004DBC40);
+
+    static auto& levelmod_load_state = addr_as_ref<void()>(0x004674B0);
+
+    static auto& glass_delete_room = addr_as_ref<void(GRoom* room)>(0x004921F0);
+    static auto& glass_shatter_face_with_weapon = addr_as_ref<void(GFace* face, Vector3* hit_point, Vector3* dir, bool from_packet)>(0x00491ED0);
+
+    static auto& decompress_vector3 = addr_as_ref<GSolid*(GSolid* solid, const ShortVector* in_vec, Vector3* out_vec)>(0x004B5900);
+    static auto& compress_vector3 = addr_as_ref<int(GSolid* solid, Vector3* in_vec, ShortVector* out_vec)>(0x004B5820);
 
     static auto& bbox_intersect = addr_as_ref<bool(const Vector3& bbox1_min, const Vector3& bbox1_max, const Vector3& bbox2_min, const Vector3& bbox2_max)>(0x0046C340);
 }

@@ -136,13 +136,7 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
     },
 };
 
-struct EventSetLiquidDepthHook : rf::Event
-{
-    float depth;
-    float duration;
-};
-
-void __fastcall EventSetLiquidDepth_turn_on_new(EventSetLiquidDepthHook* this_)
+void __fastcall EventSetLiquidDepth_turn_on_new(rf::SetLiquidDepthEvent* this_)
 {
     xlog::info("Processing Set_Liquid_Depth event: uid {} depth {:.2f} duration {:.2f}", this_->uid, this_->depth, this_->duration);
     if (this_->links.size() == 0) {
@@ -209,8 +203,8 @@ FunHook<void()> event_level_init_post_hook{
         if (string_iequals(rf::level.filename, "L5S2.rfl")) {
             // HACKFIX: make Set_Liquid_Depth events properties in lava control room more sensible
             xlog::trace("Changing Set_Liquid_Depth events in this level...");
-            auto* event1 = static_cast<EventSetLiquidDepthHook*>(rf::event_lookup_from_uid(3940));
-            auto* event2 = static_cast<EventSetLiquidDepthHook*>(rf::event_lookup_from_uid(4132));
+            auto* event1 = static_cast<rf::SetLiquidDepthEvent*>(rf::event_lookup_from_uid(3940));
+            auto* event2 = static_cast<rf::SetLiquidDepthEvent*>(rf::event_lookup_from_uid(4132));
             if (event1 && event2 && event1->duration == 0.15f && event2->duration == 0.15f) {
                 event1->duration = 1.5f;
                 event2->duration = 1.5f;

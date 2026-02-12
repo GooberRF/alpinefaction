@@ -69,8 +69,6 @@ namespace rf
         static std::unordered_map<const Event*, std::unordered_map<rf::SetVarOpts, std::function<void(Event*, const std::string&)>>>
             variable_handler_storage;
 
-
-
         // register variable handlers (AF new) plus default event initialization (does nothing)
         // safe to override, but include call to base struct initialize for var handler registration
         virtual void initialize()
@@ -161,8 +159,6 @@ namespace rf
                 xlog::warn("apply_var: No handlers registered for Event");
             }
         }
-
-
     };
     static_assert(sizeof(Event) == 0x2B5);
 
@@ -173,6 +169,58 @@ namespace rf
         char event_specific_data[24];
     };
     static_assert(sizeof(GenericEvent) == 0x2D0);
+
+    struct SetLiquidDepthEvent : Event
+    {
+        float depth;
+        float duration;
+    };
+
+    struct MakeInvulnerableEvent : Event
+    {
+        float duration;
+        Timestamp make_invuln_timestamp;
+    };
+
+    struct WhenDeadEvent : Event
+    {
+        bool message_sent;
+        bool when_any_dead;
+        char padding;
+    };
+
+    struct GoalCreateEvent : Event
+    {
+        int initial_count;
+        int complete_count; // unused
+        int count;
+        bool is_persistent;
+    };
+
+    struct AlarmSirenEvent : Event
+    {
+        bool alarm_siren_playing;
+        char padding1;
+        char padding2;
+        bool sound_instance;
+    };
+
+    struct CyclicTimerEvent : Event // wip
+    {
+        char padding1[2]; // always 0
+        uint8_t unk0; // usually 0 but sometimes 0x80 or 0xFF (l17s1)
+        bool active;
+        uint8_t unk2; // usually 0 but sometimes 0xFF
+        uint8_t unk3; // usually 0 but sometimes 0xFF
+        uint8_t unk4;
+        float send_interval_seconds;
+        bool send_forever;
+        char padding2[2]; // always 0
+        uint8_t unk5; // usually 0 but sometimes 0x80 or 0xFF (l17s1)
+        int max_sends;
+        Timestamp next_fire_timestamp;
+        int send_count;
+    };
 
     struct PersistentGoalEvent
     {
