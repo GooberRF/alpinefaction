@@ -184,6 +184,7 @@ void waypoints_on_ctf_flag_picked_up_packet(uint8_t picker_player_id);
 
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);
+bool waypoints_get_control_point_zone_uid(int handler_uid, int& out_zone_uid);
 bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid);
 bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, rf::Vector3& out_pos);
 int waypoints_target_count();

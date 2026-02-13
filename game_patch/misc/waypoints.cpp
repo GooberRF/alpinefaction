@@ -7234,6 +7234,28 @@ bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, Wa
     return true;
 }
 
+bool waypoints_get_control_point_zone_uid(const int handler_uid, int& out_zone_uid)
+{
+    out_zone_uid = -1;
+    if (handler_uid < 0) {
+        return false;
+    }
+
+    for (int zone_uid = 0; zone_uid < static_cast<int>(g_waypoint_zones.size()); ++zone_uid) {
+        const auto& zone = g_waypoint_zones[zone_uid];
+        if (zone.type != WaypointZoneType::control_point
+            || resolve_waypoint_zone_source(zone) != WaypointZoneSource::trigger_uid
+            || zone.identifier != handler_uid) {
+            continue;
+        }
+
+        out_zone_uid = zone_uid;
+        return true;
+    }
+
+    return false;
+}
+
 bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid)
 {
     if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())

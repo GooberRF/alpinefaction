@@ -153,6 +153,11 @@ void multi_koth_set_blue_team_score(int score) // KOTH and DC
     return;
 }
 
+int koth_get_hill_handler_uid(const HillInfo& hill)
+{
+    return hill.handler ? hill.handler->uid : -1;
+}
+
 void multi_koth_reset_scores() // KOTH and DC
 {
     g_koth_info.red_team_score = 0;
@@ -248,6 +253,21 @@ HillInfo* koth_find_hill_by_handler(const rf::EventCapturePointHandler* handler)
     for (auto& h : g_koth_info.hills) {
         if (h.handler == handler)
             return &h;
+    }
+
+    return nullptr;
+}
+
+HillInfo* koth_find_hill_by_handler_uid(const int handler_uid)
+{
+    if (handler_uid < 0) {
+        return nullptr;
+    }
+
+    for (auto& hill : g_koth_info.hills) {
+        if (hill.handler && hill.handler->uid == handler_uid) {
+            return &hill;
+        }
     }
 
     return nullptr;
