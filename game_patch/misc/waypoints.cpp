@@ -60,10 +60,26 @@ int g_next_waypoint_target_uid = 1;
 std::unordered_map<int, int> g_last_drop_waypoint_by_entity{};
 std::unordered_map<int, int> g_last_lift_uid_by_entity{};
 
+struct CtfDroppedFlagPacketHint
+{
+    bool active = false;
+    rf::Vector3 pos{};
+};
+
+std::array<CtfDroppedFlagPacketHint, 2> g_ctf_dropped_flag_packet_hints{};
+
 void remap_waypoints();
 bool link_waypoint_if_clear_autogen(int from, int to);
 rf::Mover* find_mover_by_uid(int mover_uid);
 void update_ctf_dropped_flag_temporary_waypoints();
+bool is_waypoint_bot_mode_active();
+bool is_ctf_mode_for_waypoints();
+int get_ctf_flag_object_uid(bool red_flag);
+int create_temporary_dropped_flag_waypoint(bool red_flag, const rf::Vector3& flag_pos, int flag_uid);
+int find_temporary_ctf_flag_waypoint(bool red_flag);
+void remove_temporary_ctf_flag_waypoints(bool red_flag);
+float distance_sq(const rf::Vector3& lhs, const rf::Vector3& rhs);
+bool remove_waypoint_by_uid(int uid);
 
 int g_debug_waypoints_mode = 0;
 bool g_drop_waypoints_prev = true;
@@ -96,6 +112,76 @@ FunHook<void(rf::Vector3*, float)> glass_remove_floating_shards_hook{
         glass_remove_floating_shards_hook.call_target(pos, radius);
     },
 };
+
+void on_ctf_flag_dropped_packet_received(bool red_flag, const rf::Vector3& flag_pos)
+{
+    if (!is_waypoint_bot_mode_active()) {
+        return;
+    }
+
+    auto& hint = g_ctf_dropped_flag_packet_hints[red_flag ? 0 : 1];
+    hint.active = true;
+    hint.pos = flag_pos;
+
+    if (!is_ctf_mode_for_waypoints() || !(rf::level.flags & rf::LEVEL_LOADED)) {
+        return;
+    }
+
+    const int flag_uid = get_ctf_flag_object_uid(red_flag);
+    const int existing_waypoint_uid = find_temporary_ctf_flag_waypoint(red_flag);
+    if (existing_waypoint_uid <= 0) {
+        create_temporary_dropped_flag_waypoint(red_flag, flag_pos, flag_uid);
+        return;
+    }
+
+    constexpr float kDroppedFlagWaypointMoveThreshold = 0.75f;
+    auto& waypoint = g_waypoints[existing_waypoint_uid];
+    waypoint.identifier = flag_uid;
+    if (distance_sq(waypoint.pos, flag_pos)
+        <= kDroppedFlagWaypointMoveThreshold * kDroppedFlagWaypointMoveThreshold) {
+        return;
+    }
+
+    remove_waypoint_by_uid(existing_waypoint_uid);
+    create_temporary_dropped_flag_waypoint(red_flag, flag_pos, flag_uid);
+}
+
+void on_ctf_flag_no_longer_dropped(bool red_flag)
+{
+    if (!is_waypoint_bot_mode_active()) {
+        return;
+    }
+    g_ctf_dropped_flag_packet_hints[red_flag ? 0 : 1].active = false;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        return;
+    }
+    remove_temporary_ctf_flag_waypoints(red_flag);
+}
+
+void waypoints_on_ctf_flag_dropped_packet(bool red_flag, const rf::Vector3& flag_pos)
+{
+    on_ctf_flag_dropped_packet_received(red_flag, flag_pos);
+}
+
+void waypoints_on_ctf_flag_returned_packet(bool red_flag)
+{
+    on_ctf_flag_no_longer_dropped(red_flag);
+}
+
+void waypoints_on_ctf_flag_captured_packet(bool red_flag)
+{
+    on_ctf_flag_no_longer_dropped(red_flag);
+}
+
+void waypoints_on_ctf_flag_picked_up_packet(uint8_t picker_player_id)
+{
+    rf::Player* picker = rf::multi_find_player_by_id(picker_player_id);
+    if (!picker) {
+        return;
+    }
+    const bool picked_red_flag = picker->team == rf::TEAM_BLUE;
+    on_ctf_flag_no_longer_dropped(picked_red_flag);
+}
 
 rf::Vector3 get_entity_feet_pos(const rf::Entity& entity)
 {
@@ -175,15 +261,70 @@ rf::Vector3 get_ctf_flag_pos_world(bool red_flag)
     return pos;
 }
 
+bool find_persistent_ctf_flag_waypoint_pos(bool red_flag, rf::Vector3& out_pos)
+{
+    const int target_subtype = red_flag
+        ? static_cast<int>(WaypointCtfFlagSubtype::red)
+        : static_cast<int>(WaypointCtfFlagSubtype::blue);
+    for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
+        const auto& node = g_waypoints[waypoint_uid];
+        if (!node.valid || node.temporary) {
+            continue;
+        }
+        if (node.type != WaypointType::ctf_flag || node.subtype != target_subtype) {
+            continue;
+        }
+        out_pos = node.pos;
+        return true;
+    }
+    return false;
+}
+
 bool is_ctf_flag_dropped(bool red_flag)
 {
     const bool in_base = red_flag
         ? rf::multi_ctf_is_red_flag_in_base()
         : rf::multi_ctf_is_blue_flag_in_base();
+    const rf::Vector3 flag_pos = get_ctf_flag_pos_world(red_flag);
+    rf::Vector3 base_pos{};
+    const bool has_base_pos = find_persistent_ctf_flag_waypoint_pos(red_flag, base_pos);
+    constexpr float kFlagBasePosTolerance = 1.25f;
+    const bool flag_far_from_base = has_base_pos
+        && distance_sq(flag_pos, base_pos)
+            > (kFlagBasePosTolerance * kFlagBasePosTolerance);
+
+    rf::Object* flag_obj = red_flag ? rf::ctf_red_flag_item : rf::ctf_blue_flag_item;
+    const bool flag_visible = flag_obj && ((flag_obj->obj_flags & rf::OF_HIDDEN) == 0);
+
     rf::Player* carrier = red_flag
         ? rf::multi_ctf_get_red_flag_player()
         : rf::multi_ctf_get_blue_flag_player();
-    return !in_base && carrier == nullptr;
+    if (in_base) {
+        // Handle occasional desync where in_base remains true while flag is visibly moved.
+        return flag_visible && flag_far_from_base && !carrier;
+    }
+    if (!carrier) {
+        return true;
+    }
+
+    if (rf::player_is_dead(carrier) || rf::player_is_dying(carrier)) {
+        return true;
+    }
+
+    rf::Entity* carrier_entity = rf::entity_from_handle(carrier->entity_handle);
+    if (!carrier_entity || rf::entity_is_dying(carrier_entity)) {
+        return true;
+    }
+
+    if (flag_visible) {
+        constexpr float kFlagCarrierAttachTolerance = 6.0f;
+        if (distance_sq(flag_pos, carrier_entity->pos)
+            > (kFlagCarrierAttachTolerance * kFlagCarrierAttachTolerance)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 int get_ctf_flag_object_uid(bool red_flag)
@@ -2908,7 +3049,9 @@ void remove_temporary_ctf_flag_waypoints(bool red_flag)
 
 void update_ctf_dropped_flag_temporary_waypoint_for_team(bool red_flag)
 {
-    const bool dropped = is_ctf_flag_dropped(red_flag);
+    const bool dropped_by_runtime_state = is_ctf_flag_dropped(red_flag);
+    const auto& hint = g_ctf_dropped_flag_packet_hints[red_flag ? 0 : 1];
+    const bool dropped = dropped_by_runtime_state || hint.active;
     const int existing_waypoint_uid = find_temporary_ctf_flag_waypoint(red_flag);
     if (!dropped) {
         if (existing_waypoint_uid > 0) {
@@ -2917,7 +3060,10 @@ void update_ctf_dropped_flag_temporary_waypoint_for_team(bool red_flag)
         return;
     }
 
-    const rf::Vector3 flag_pos = get_ctf_flag_pos_world(red_flag);
+    // Prefer dropped-packet location while the hint is active. Runtime flag pos can briefly lag.
+    const rf::Vector3 flag_pos = hint.active
+        ? hint.pos
+        : get_ctf_flag_pos_world(red_flag);
     const int flag_uid = get_ctf_flag_object_uid(red_flag);
     if (existing_waypoint_uid <= 0) {
         create_temporary_dropped_flag_waypoint(red_flag, flag_pos, flag_uid);
@@ -2939,12 +3085,16 @@ void update_ctf_dropped_flag_temporary_waypoint_for_team(bool red_flag)
 void update_ctf_dropped_flag_temporary_waypoints()
 {
     if (!is_waypoint_bot_mode_active()) {
+        g_ctf_dropped_flag_packet_hints[0].active = false;
+        g_ctf_dropped_flag_packet_hints[1].active = false;
         remove_temporary_ctf_flag_waypoints(true);
         remove_temporary_ctf_flag_waypoints(false);
         return;
     }
 
     if (!is_ctf_mode_for_waypoints()) {
+        g_ctf_dropped_flag_packet_hints[0].active = false;
+        g_ctf_dropped_flag_packet_hints[1].active = false;
         remove_temporary_ctf_flag_waypoints(true);
         remove_temporary_ctf_flag_waypoints(false);
         return;
@@ -3176,7 +3326,7 @@ std::optional<std::string> get_waypoint_dir()
     if (base_path.empty()) {
         return std::nullopt;
     }
-    auto user_maps_path = base_path + "\\user_maps";
+    auto user_maps_path = base_path + "user_maps";
     auto waypoints_path = user_maps_path + "\\waypoints";
     if (!CreateDirectoryA(user_maps_path.c_str(), nullptr)) {
         if (GetLastError() != ERROR_ALREADY_EXISTS) {
@@ -5094,6 +5244,7 @@ bool save_waypoints()
         return false;
     }
     file << root;
+
     g_waypoint_revision = revision;
     return true;
 }
@@ -6971,6 +7122,8 @@ void waypoints_level_init()
     }
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
+    g_ctf_dropped_flag_packet_hints[0].active = false;
+    g_ctf_dropped_flag_packet_hints[1].active = false;
     invalidate_cache();
 }
 
@@ -6991,9 +7144,9 @@ void waypoints_on_limbo_enter()
         return;
     }
 
-    if (save_waypoints()) {
-        xlog::info("Bot mode: saved waypoints on limbo entry");
-    }
+    // Multiple -bot clients can share the same working directory and race-write
+    // the same waypoint file on limbo transitions. Disable bot autosave here;
+    // manual waypoints_save remains available when needed.
 }
 
 void waypoints_on_trigger_activated(int trigger_uid)
@@ -7094,6 +7247,57 @@ bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid)
     return std::find(node.zones.begin(), node.zones.end(), zone_uid) != node.zones.end();
 }
 
+bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, rf::Vector3& out_pos)
+{
+    out_waypoint = 0;
+    out_pos = {};
+
+    const int waypoint_uid = find_temporary_ctf_flag_waypoint(red_flag);
+    if (waypoint_uid > 0 && waypoint_uid < static_cast<int>(g_waypoints.size())) {
+        const auto& node = g_waypoints[waypoint_uid];
+        if (node.valid
+            && node.temporary
+            && node.type == WaypointType::ctf_flag
+            && node.subtype == ctf_flag_subtype(red_flag)) {
+            out_waypoint = waypoint_uid;
+            out_pos = node.pos;
+            return true;
+        }
+    }
+
+    if (!is_waypoint_bot_mode_active()
+        || !is_ctf_mode_for_waypoints()
+        || !(rf::level.flags & rf::LEVEL_LOADED)) {
+        return false;
+    }
+
+    const bool dropped_by_runtime = is_ctf_flag_dropped(red_flag);
+    const auto& hint = g_ctf_dropped_flag_packet_hints[red_flag ? 0 : 1];
+    if (!dropped_by_runtime && !hint.active) {
+        return false;
+    }
+
+    const rf::Vector3 flag_pos = hint.active ? hint.pos : get_ctf_flag_pos_world(red_flag);
+    const int flag_uid = get_ctf_flag_object_uid(red_flag);
+    const int created_waypoint_uid = create_temporary_dropped_flag_waypoint(red_flag, flag_pos, flag_uid);
+    if (created_waypoint_uid <= 0
+        || created_waypoint_uid >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+
+    const auto& created_node = g_waypoints[created_waypoint_uid];
+    if (!created_node.valid
+        || !created_node.temporary
+        || created_node.type != WaypointType::ctf_flag
+        || created_node.subtype != ctf_flag_subtype(red_flag)) {
+        return false;
+    }
+
+    out_waypoint = created_waypoint_uid;
+    out_pos = created_node.pos;
+    return true;
+}
+
 int waypoints_target_count()
 {
     return static_cast<int>(g_waypoint_targets.size());
@@ -7184,6 +7388,21 @@ bool waypoints_get_identifier(int index, int& out_identifier)
     }
 
     out_identifier = node.identifier;
+    return true;
+}
+
+bool waypoints_get_temporary(int index, bool& out_temporary)
+{
+    if (index <= 0 || index >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+
+    const auto& node = g_waypoints[index];
+    if (!node.valid) {
+        return false;
+    }
+
+    out_temporary = node.temporary;
     return true;
 }
 

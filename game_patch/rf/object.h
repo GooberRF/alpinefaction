@@ -44,6 +44,8 @@ namespace rf
         OF_INVULNERABLE = 0x4,
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
+        OF_HIDDEN = 0x4000,
+        OF_START_HIDDEN = 0x8000,
         OF_IN_LIQUID = 0x80000,
         OF_HAS_ALPHA = 0x100000,
     };

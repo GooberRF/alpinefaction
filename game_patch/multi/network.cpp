@@ -44,6 +44,7 @@
 #include "../misc/misc.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "../os/console.h"
 #include "../purefaction/pf.h"
@@ -1343,6 +1344,75 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
     },
 };
 
+rf::Vector3 read_vec3_from_packet_payload(const char* data, size_t offset)
+{
+    rf::Vector3 out{};
+    if (!data) {
+        return out;
+    }
+    std::memcpy(&out.x, data + offset, sizeof(float));
+    std::memcpy(&out.y, data + offset + sizeof(float), sizeof(float));
+    std::memcpy(&out.z, data + offset + (sizeof(float) * 2), sizeof(float));
+    return out;
+}
+
+FunHook<MultiIoPacketHandler> process_ctf_flag_dropped_packet_hook{
+    0x00474D70,
+    [](char* data, const rf::NetAddr& addr) {
+        process_ctf_flag_dropped_packet_hook.call_target(data, addr);
+        if (!data) {
+            return;
+        }
+
+        // Packet payload:
+        // [0] is_red (1 = red, 0 = blue), [1] red_score, [2] blue_score, [3..14] dropped flag pos.
+        const bool red_flag = static_cast<uint8_t>(data[0]) == 1;
+        const rf::Vector3 flag_pos = read_vec3_from_packet_payload(data, 3);
+        waypoints_on_ctf_flag_dropped_packet(red_flag, flag_pos);
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_ctf_flag_returned_packet_hook{
+    0x00474420,
+    [](char* data, const rf::NetAddr& addr) {
+        process_ctf_flag_returned_packet_hook.call_target(data, addr);
+        if (!data) {
+            return;
+        }
+
+        // Packet payload [0] is_red (1 = red, 0 = blue).
+        const bool red_flag = static_cast<uint8_t>(data[0]) == 1;
+        waypoints_on_ctf_flag_returned_packet(red_flag);
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_ctf_flag_captured_packet_hook{
+    0x004742E0,
+    [](char* data, const rf::NetAddr& addr) {
+        process_ctf_flag_captured_packet_hook.call_target(data, addr);
+        if (!data) {
+            return;
+        }
+
+        // Packet payload [0] is_red (1 = red, 0 = blue).
+        const bool red_flag = static_cast<uint8_t>(data[0]) == 1;
+        waypoints_on_ctf_flag_captured_packet(red_flag);
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_ctf_flag_picked_up_packet_hook{
+    0x00474040,
+    [](char* data, const rf::NetAddr& addr) {
+        process_ctf_flag_picked_up_packet_hook.call_target(data, addr);
+        if (!data) {
+            return;
+        }
+
+        // Packet payload [0] picker player_id, [1] red_score, [2] blue_score.
+        waypoints_on_ctf_flag_picked_up_packet(static_cast<uint8_t>(data[0]));
+    },
+};
+
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_hook{
     0x0047A825,
     [](const rf::NetAddr* addr, std::byte* data, size_t len) {
@@ -2464,6 +2534,10 @@ void network_init()
     process_name_change_packet_hook.install();
     process_team_change_packet_hook.install();
     process_rate_change_packet_hook.install();
+    process_ctf_flag_picked_up_packet_hook.install();
+    process_ctf_flag_captured_packet_hook.install();
+    process_ctf_flag_returned_packet_hook.install();
+    process_ctf_flag_dropped_packet_hook.install();
     process_entity_create_packet_hook.install();
     process_reload_packet_hook.install();
     process_reload_request_packet_hook.install();

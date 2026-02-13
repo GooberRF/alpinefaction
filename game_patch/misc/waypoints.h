@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <array>
+#include <cstdint>
 #include "../rf/math/vector.h"
 #include "../rf/os/timestamp.h"
 
@@ -176,10 +177,15 @@ void waypoints_level_reset();
 void waypoints_on_limbo_enter();
 void waypoints_on_trigger_activated(int trigger_uid);
 void waypoints_on_glass_shattered(const rf::GFace* face);
+void waypoints_on_ctf_flag_dropped_packet(bool red_flag, const rf::Vector3& flag_pos);
+void waypoints_on_ctf_flag_returned_packet(bool red_flag);
+void waypoints_on_ctf_flag_captured_packet(bool red_flag);
+void waypoints_on_ctf_flag_picked_up_packet(uint8_t picker_player_id);
 
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);
 bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid);
+bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, rf::Vector3& out_pos);
 int waypoints_target_count();
 bool waypoints_get_target_by_index(int index, WaypointTargetDefinition& out_target);
 bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_target);
@@ -190,6 +196,7 @@ bool waypoints_get_pos(int index, rf::Vector3& out_pos);
 bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
 bool waypoints_get_movement_subtype(int index, int& out_movement_subtype);
 bool waypoints_get_identifier(int index, int& out_identifier);
+bool waypoints_get_temporary(int index, bool& out_temporary);
 bool waypoints_get_link_radius(int index, float& out_link_radius);
 int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links);
 bool waypoints_has_direct_link(int from, int to);
