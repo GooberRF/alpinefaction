@@ -1344,18 +1344,6 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
     },
 };
 
-rf::Vector3 read_vec3_from_packet_payload(const char* data, size_t offset)
-{
-    rf::Vector3 out{};
-    if (!data) {
-        return out;
-    }
-    std::memcpy(&out.x, data + offset, sizeof(float));
-    std::memcpy(&out.y, data + offset + sizeof(float), sizeof(float));
-    std::memcpy(&out.z, data + offset + (sizeof(float) * 2), sizeof(float));
-    return out;
-}
-
 FunHook<MultiIoPacketHandler> process_ctf_flag_dropped_packet_hook{
     0x00474D70,
     [](char* data, const rf::NetAddr& addr) {
@@ -1364,11 +1352,9 @@ FunHook<MultiIoPacketHandler> process_ctf_flag_dropped_packet_hook{
             return;
         }
 
-        // Packet payload:
-        // [0] is_red (1 = red, 0 = blue), [1] red_score, [2] blue_score, [3..14] dropped flag pos.
-        const bool red_flag = static_cast<uint8_t>(data[0]) == 1;
-        const rf::Vector3 flag_pos = read_vec3_from_packet_payload(data, 3);
-        waypoints_on_ctf_flag_dropped_packet(red_flag, flag_pos);
+        RFCtfFlagDroppedPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        waypoints_on_ctf_flag_dropped_packet(packet.is_red == 1, packet.get_flag_position());
     },
 };
 
@@ -1380,9 +1366,9 @@ FunHook<MultiIoPacketHandler> process_ctf_flag_returned_packet_hook{
             return;
         }
 
-        // Packet payload [0] is_red (1 = red, 0 = blue).
-        const bool red_flag = static_cast<uint8_t>(data[0]) == 1;
-        waypoints_on_ctf_flag_returned_packet(red_flag);
+        RFCtfFlagSingleTeamPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        waypoints_on_ctf_flag_returned_packet(packet.is_red == 1);
     },
 };
 
@@ -1394,9 +1380,9 @@ FunHook<MultiIoPacketHandler> process_ctf_flag_captured_packet_hook{
             return;
         }
 
-        // Packet payload [0] is_red (1 = red, 0 = blue).
-        const bool red_flag = static_cast<uint8_t>(data[0]) == 1;
-        waypoints_on_ctf_flag_captured_packet(red_flag);
+        RFCtfFlagSingleTeamPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        waypoints_on_ctf_flag_captured_packet(packet.is_red == 1);
     },
 };
 
@@ -1408,8 +1394,9 @@ FunHook<MultiIoPacketHandler> process_ctf_flag_picked_up_packet_hook{
             return;
         }
 
-        // Packet payload [0] picker player_id, [1] red_score, [2] blue_score.
-        waypoints_on_ctf_flag_picked_up_packet(static_cast<uint8_t>(data[0]));
+        RFCtfFlagPickedUpPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        waypoints_on_ctf_flag_picked_up_packet(packet.picker_player_id);
     },
 };
 

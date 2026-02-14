@@ -544,6 +544,8 @@ WaypointTargetType waypoint_target_type_from_int(int raw_type)
             return WaypointTargetType::explosion;
         case static_cast<int>(WaypointTargetType::shatter):
             return WaypointTargetType::shatter;
+        case static_cast<int>(WaypointTargetType::jump):
+            return WaypointTargetType::jump;
         default:
             return static_cast<WaypointTargetType>(raw_type);
     }
@@ -556,6 +558,8 @@ std::string_view waypoint_target_type_name(WaypointTargetType type)
             return "explosion";
         case WaypointTargetType::shatter:
             return "shatter";
+        case WaypointTargetType::jump:
+            return "jump";
         default:
             return "unknown";
     }
@@ -784,6 +788,9 @@ std::optional<WaypointTargetType> parse_waypoint_target_type_token(std::string_v
         if (numeric_type == static_cast<int>(WaypointTargetType::shatter)) {
             return WaypointTargetType::shatter;
         }
+        if (numeric_type == static_cast<int>(WaypointTargetType::jump)) {
+            return WaypointTargetType::jump;
+        }
         return std::nullopt;
     }
 
@@ -792,6 +799,9 @@ std::optional<WaypointTargetType> parse_waypoint_target_type_token(std::string_v
     }
     if (string_iequals(token, "shatter")) {
         return WaypointTargetType::shatter;
+    }
+    if (string_iequals(token, "jump")) {
+        return WaypointTargetType::jump;
     }
 
     return std::nullopt;
@@ -1426,6 +1436,46 @@ bool point_inside_trigger_zone(const rf::Trigger& trigger, const rf::Vector3& po
     return distance_sq(point, trigger.pos) <= radius * radius;
 }
 
+rf::Vector3 trigger_up_axis(const rf::Trigger& trigger)
+{
+    rf::Vector3 axis = trigger.orient.uvec;
+    axis.normalize_safe();
+    if (axis.len_sq() <= 1e-6f) {
+        axis = {0.0f, 1.0f, 0.0f};
+    }
+    return axis;
+}
+
+bool point_inside_trigger_zone_for_waypoint_zone(
+    const WaypointZoneDefinition& zone, const rf::Trigger& trigger, const rf::Vector3& point)
+{
+    const bool use_control_point_cylinder_shape =
+        zone.type == WaypointZoneType::control_point
+        && trigger.type == 1
+        && koth_capture_point_handler_uses_cylinder(zone.identifier, zone.trigger_uid);
+    if (!use_control_point_cylinder_shape) {
+        return point_inside_trigger_zone(trigger, point);
+    }
+
+    // For box+IsCylinder capture points, waypoint zone membership uses a
+    // top-half sphere from the trigger base so floor waypoints match capture
+    // behavior while avoiding lower-volume bleed.
+    const float radius = koth_box_cylinder_radius(&trigger);
+    if (!std::isfinite(radius) || radius <= 0.0f) {
+        return false;
+    }
+
+    const rf::Vector3 axis = trigger_up_axis(trigger);
+    const float half_height = std::fabs(trigger.box_size.y) * 0.5f;
+    const rf::Vector3 sphere_center = trigger.pos - axis * half_height;
+    const rf::Vector3 delta = point - sphere_center;
+    if (delta.dot_prod(axis) < 0.0f) {
+        return false;
+    }
+
+    return delta.len_sq() <= radius * radius;
+}
+
 bool point_inside_room_zone(int room_uid, const rf::Vector3& point, const rf::Object* source_object)
 {
     if (source_object && source_object->room && source_object->room->uid == room_uid) {
@@ -1453,7 +1503,7 @@ bool waypoint_zone_contains_point(const WaypointZoneDefinition& zone, const rf::
                 return false;
             }
             const auto* trigger = static_cast<rf::Trigger*>(trigger_obj);
-            return point_inside_trigger_zone(*trigger, point);
+            return point_inside_trigger_zone_for_waypoint_zone(zone, *trigger, point);
         }
         case WaypointZoneSource::room_uid:
             // Room zones intentionally never associate directly with waypoints.
@@ -1709,6 +1759,88 @@ std::vector<int> collect_target_waypoint_uids(const rf::Vector3& pos)
     return waypoint_uids;
 }
 
+uint64_t make_undirected_waypoint_link_key(const int waypoint_a, const int waypoint_b)
+{
+    const int min_waypoint = std::min(waypoint_a, waypoint_b);
+    const int max_waypoint = std::max(waypoint_a, waypoint_b);
+    return (static_cast<uint64_t>(static_cast<uint32_t>(min_waypoint)) << 32)
+        | static_cast<uint32_t>(max_waypoint);
+}
+
+float distance_sq_to_waypoint_link_segment(
+    const rf::Vector3& point,
+    const rf::Vector3& segment_start,
+    const rf::Vector3& segment_end)
+{
+    const rf::Vector3 segment = segment_end - segment_start;
+    const float segment_len_sq = segment.dot_prod(segment);
+    if (segment_len_sq <= kWaypointLinkRadiusEpsilon * kWaypointLinkRadiusEpsilon) {
+        return distance_sq(point, segment_start);
+    }
+
+    const float t = std::clamp(
+        (point - segment_start).dot_prod(segment) / segment_len_sq,
+        0.0f,
+        1.0f
+    );
+    const rf::Vector3 closest_on_segment = segment_start + segment * t;
+    return distance_sq(point, closest_on_segment);
+}
+
+std::vector<int> collect_target_link_waypoint_uids(const rf::Vector3& pos)
+{
+    int best_from_waypoint = 0;
+    int best_to_waypoint = 0;
+    float best_dist_sq = std::numeric_limits<float>::max();
+    std::unordered_set<uint64_t> visited_links{};
+
+    for (int from_waypoint = 1; from_waypoint < static_cast<int>(g_waypoints.size()); ++from_waypoint) {
+        const auto& from_node = g_waypoints[from_waypoint];
+        if (!from_node.valid) {
+            continue;
+        }
+
+        for (int link_index = 0; link_index < from_node.num_links; ++link_index) {
+            const int to_waypoint = from_node.links[link_index];
+            if (to_waypoint <= 0
+                || to_waypoint >= static_cast<int>(g_waypoints.size())
+                || to_waypoint == from_waypoint) {
+                continue;
+            }
+
+            const auto& to_node = g_waypoints[to_waypoint];
+            if (!to_node.valid) {
+                continue;
+            }
+
+            const uint64_t link_key =
+                make_undirected_waypoint_link_key(from_waypoint, to_waypoint);
+            if (!visited_links.insert(link_key).second) {
+                continue;
+            }
+
+            const float dist_sq = distance_sq_to_waypoint_link_segment(
+                pos,
+                from_node.pos,
+                to_node.pos
+            );
+            if (dist_sq < best_dist_sq) {
+                best_dist_sq = dist_sq;
+                best_from_waypoint = from_waypoint;
+                best_to_waypoint = to_waypoint;
+            }
+        }
+    }
+
+    if (best_from_waypoint <= 0 || best_to_waypoint <= 0) {
+        return {};
+    }
+
+    std::vector<int> waypoint_uids{best_from_waypoint, best_to_waypoint};
+    normalize_target_waypoint_uids(waypoint_uids);
+    return waypoint_uids;
+}
+
 int allocate_waypoint_target_uid()
 {
     if (g_next_waypoint_target_uid < 1) {
@@ -1736,7 +1868,13 @@ int add_waypoint_target(const rf::Vector3& pos, WaypointTargetType type, std::op
     target.pos = pos;
     target.type = type;
     target.identifier = -1;
-    target.waypoint_uids = collect_target_waypoint_uids(pos);
+    target.waypoint_uids =
+        (type == WaypointTargetType::jump)
+            ? collect_target_link_waypoint_uids(pos)
+            : collect_target_waypoint_uids(pos);
+    if (target.waypoint_uids.empty()) {
+        target.waypoint_uids = collect_target_waypoint_uids(pos);
+    }
     g_waypoint_targets.push_back(std::move(target));
     return g_waypoint_targets.back().uid;
 }
@@ -1753,6 +1891,12 @@ int add_waypoint_target_with_waypoint_uids(
     target.type = type;
     target.identifier = -1;
     normalize_target_waypoint_uids(waypoint_uids);
+    if (waypoint_uids.empty()) {
+        waypoint_uids =
+            (type == WaypointTargetType::jump)
+                ? collect_target_link_waypoint_uids(pos)
+                : collect_target_waypoint_uids(pos);
+    }
     if (waypoint_uids.empty()) {
         waypoint_uids = collect_target_waypoint_uids(pos);
     }
@@ -5547,6 +5691,12 @@ bool load_waypoints(bool include_std_new_waypoints = true)
                 target.waypoint_uids = std::move(waypoint_uids);
             }
             else {
+                target.waypoint_uids =
+                    (target.type == WaypointTargetType::jump)
+                        ? collect_target_link_waypoint_uids(target.pos)
+                        : collect_target_waypoint_uids(target.pos);
+            }
+            if (target.waypoint_uids.empty()) {
                 target.waypoint_uids = collect_target_waypoint_uids(target.pos);
             }
             g_waypoint_targets.push_back(std::move(target));
@@ -5950,6 +6100,8 @@ rf::Color debug_waypoint_target_color(WaypointTargetType type)
             return {255, 120, 40, 150};
         case WaypointTargetType::shatter:
             return {120, 220, 255, 150};
+        case WaypointTargetType::jump:
+            return {140, 255, 120, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -6867,14 +7019,14 @@ ConsoleCommand2 waypoint_target_add_cmd{
         const auto tokens = tokenize_console_command_line(command_line);
         if (tokens.size() != 2) {
             rf::console::print("Usage: waypoints_target_add <type>");
-            rf::console::print("Valid target types: explosion, shatter");
+            rf::console::print("Valid target types: explosion, shatter, jump");
             return;
         }
 
         auto target_type = parse_waypoint_target_type_token(tokens[1]);
         if (!target_type) {
             rf::console::print("Invalid target type '{}'", tokens[1]);
-            rf::console::print("Valid target types: explosion, shatter");
+            rf::console::print("Valid target types: explosion, shatter, jump");
             return;
         }
 
@@ -7342,6 +7494,44 @@ bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_t
     }
     out_target = *target;
     return true;
+}
+
+bool waypoints_link_has_target_type(
+    const int from_waypoint,
+    const int to_waypoint,
+    const WaypointTargetType type)
+{
+    if (from_waypoint <= 0
+        || to_waypoint <= 0
+        || from_waypoint == to_waypoint
+        || (!waypoints_has_direct_link(from_waypoint, to_waypoint)
+            && !waypoints_has_direct_link(to_waypoint, from_waypoint))) {
+        return false;
+    }
+
+    for (const auto& target : g_waypoint_targets) {
+        if (target.type != type || target.waypoint_uids.size() < 2) {
+            continue;
+        }
+        const bool has_from_waypoint = std::binary_search(
+            target.waypoint_uids.begin(),
+            target.waypoint_uids.end(),
+            from_waypoint
+        );
+        if (!has_from_waypoint) {
+            continue;
+        }
+        const bool has_to_waypoint = std::binary_search(
+            target.waypoint_uids.begin(),
+            target.waypoint_uids.end(),
+            to_waypoint
+        );
+        if (has_to_waypoint) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 int waypoints_closest(const rf::Vector3& pos, float radius)

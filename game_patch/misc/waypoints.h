@@ -108,6 +108,7 @@ enum class WaypointTargetType : int
 {
     explosion = 0,
     shatter = 1,
+    jump = 2,
 };
 
 struct WaypointZoneDefinition
@@ -190,6 +191,7 @@ bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, 
 int waypoints_target_count();
 bool waypoints_get_target_by_index(int index, WaypointTargetDefinition& out_target);
 bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_target);
+bool waypoints_link_has_target_type(int from_waypoint, int to_waypoint, WaypointTargetType type);
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
 int waypoints_count();

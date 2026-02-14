@@ -273,11 +273,42 @@ HillInfo* koth_find_hill_by_handler_uid(const int handler_uid)
     return nullptr;
 }
 
-float cylinder_radius_for_box_inscribed(const rf::Trigger* t)
+float koth_box_cylinder_radius(const rf::Trigger* t)
 {
+    if (!t) {
+        return 0.0f;
+    }
+
     const float hx = 0.5f * std::fabs(t->box_size.x);
     const float hz = 0.5f * std::fabs(t->box_size.z);
     return std::min(hx, hz);
+}
+
+bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid)
+{
+    if (handler_uid >= 0) {
+        if (HillInfo* hill = koth_find_hill_by_handler_uid(handler_uid);
+            hill && hill->handler) {
+            return hill->handler->sphere_to_cylinder;
+        }
+
+        if (rf::Event* event = rf::event_lookup_from_uid(handler_uid);
+            event
+            && event->event_type == rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+            auto* handler = static_cast<rf::EventCapturePointHandler*>(event);
+            return handler->sphere_to_cylinder;
+        }
+    }
+
+    if (trigger_uid >= 0) {
+        for (const auto& hill : g_koth_info.hills) {
+            if (hill.trigger_uid == trigger_uid && hill.handler) {
+                return hill.handler->sphere_to_cylinder;
+            }
+        }
+    }
+
+    return false;
 }
 
 static inline bool trigger_oriented_cylinder_check_if_activated(const rf::Trigger* tp, const rf::Object* objp, float radius,
@@ -358,7 +389,7 @@ bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p)
 
     if (h.trigger->type == 1 && h.handler->sphere_to_cylinder) {
         const rf::Trigger* t = h.trigger;
-        const float radius = cylinder_radius_for_box_inscribed(t);
+        const float radius = koth_box_cylinder_radius(t);
         const float half_h = 0.5f * std::fabs(t->box_size.y);
         const rf::Vector3 u = t->orient.uvec;
         const rf::Vector3 r = t->orient.rvec;
