@@ -8,6 +8,7 @@
 #include "../misc/player.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints_utils.h"
 #include "../multi/multi.h"
 #include "../multi/endgame_votes.h"
 #include "../rf/input.h"
@@ -416,11 +417,26 @@ CodeInjection controls_process_patch{
 CodeInjection controls_process_chat_menu_patch{
     0x00430E19,
     [](auto& regs) {
+        const bool chat_menu_numeric_capture_active =
+            get_chat_menu_is_active()
+            && !rf::console::console_is_visible()
+            && !rf::multi_chat_is_say_visible();
+        const bool waypoint_link_numeric_capture_active =
+            waypoints_utils_link_editor_text_input_active();
 
-        // only consume numline keys if a chat menu is active + chat box and console are hidden
-        if (get_chat_menu_is_active() && !rf::console::console_is_visible() && !rf::multi_chat_is_say_visible()) {
+        // Consume top-row number keys for active overlay input modes so they do
+        // not trigger gameplay bindings.
+        if (chat_menu_numeric_capture_active || waypoint_link_numeric_capture_active) {
             for (int key = rf::KEY_1; key <= rf::KEY_0; ++key) {
-                if (rf::key_get_and_reset_down_counter(static_cast<rf::Key>(key)) > 0) {
+                const int count =
+                    rf::key_get_and_reset_down_counter(static_cast<rf::Key>(key));
+                if (count <= 0) {
+                    continue;
+                }
+                if (waypoint_link_numeric_capture_active) {
+                    waypoints_utils_capture_numeric_key(key, count);
+                }
+                else {
                     chat_menu_action_handler(static_cast<rf::Key>(key));
                 }
             }

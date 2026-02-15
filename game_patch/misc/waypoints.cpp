@@ -1,4 +1,5 @@
 #include "waypoints.h"
+#include "waypoints_utils.h"
 #include "alpine_settings.h"
 #include "../main/main.h"
 #include "../multi/gametype.h"
@@ -35,12 +36,14 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <format>
 #include <limits>
 #include <optional>
 #include <random>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <toml++/toml.hpp>
 #include <windows.h>
 
@@ -51,6 +54,7 @@ std::vector<WpCacheNode> g_cache_nodes;
 WpCacheNode* g_cache_root = nullptr;
 bool g_cache_dirty = true;
 bool g_has_loaded_wpt = false;
+bool g_missing_awp_from_level_init = false;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
 std::vector<std::string> g_waypoint_authors{};
@@ -83,22 +87,6 @@ bool remove_waypoint_by_uid(int uid);
 
 int g_debug_waypoints_mode = 0;
 bool g_drop_waypoints_prev = true;
-
-enum class WaypointEditorSelectionKind : int
-{
-    none = 0,
-    waypoint = 1,
-    zone = 2,
-    target = 3,
-};
-
-struct WaypointEditorSelectionState
-{
-    WaypointEditorSelectionKind kind = WaypointEditorSelectionKind::none;
-    int uid = -1;
-};
-
-WaypointEditorSelectionState g_waypoint_editor_selection{};
 
 constexpr int kWaypointSolidTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 constexpr int kWaypointWorldTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
@@ -237,6 +225,25 @@ bool ensure_waypoint_command_enabled(std::string_view command_name)
         "(not available while connected as multiplayer client).",
         command_name);
     return false;
+}
+
+void waypoint_editor_log_if_active(std::string_view message)
+{
+    if (message.empty()
+        || is_waypoint_bot_mode_active()
+        || !g_alpine_game_config.waypoints_edit_mode) {
+        return;
+    }
+    waypoints_utils_log(message);
+}
+
+template<typename... Args>
+void waypoint_editor_logf(std::format_string<Args...> fmt, Args&&... args)
+{
+    if (is_waypoint_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
+        return;
+    }
+    waypoints_utils_log(std::format(fmt, std::forward<Args>(args)...));
 }
 
 bool is_multiplayer_client()
@@ -580,6 +587,8 @@ WaypointZoneType waypoint_zone_type_from_int(int raw_type)
             return WaypointZoneType::bridge_use;
         case static_cast<int>(WaypointZoneType::bridge_prox):
             return WaypointZoneType::bridge_prox;
+        case static_cast<int>(WaypointZoneType::high_power_zone):
+            return WaypointZoneType::high_power_zone;
         default:
             return static_cast<WaypointZoneType>(raw_type);
     }
@@ -637,6 +646,8 @@ std::string_view waypoint_zone_type_name(WaypointZoneType type)
             return "bridge_use";
         case WaypointZoneType::bridge_prox:
             return "bridge_prox";
+        case WaypointZoneType::high_power_zone:
+            return "high_power_zone";
         default:
             return "unknown";
     }
@@ -689,6 +700,11 @@ std::optional<WaypointZoneType> parse_waypoint_zone_type_token(std::string_view 
     if (string_iequals(token, "mover_bridge_prox") || string_iequals(token, "bridge_prox")
         || string_iequals(token, "mover_bridge_proximity")) {
         return WaypointZoneType::bridge_prox;
+    }
+    if (string_iequals(token, "high_power_zone")
+        || string_iequals(token, "high_power")
+        || string_iequals(token, "power_zone")) {
+        return WaypointZoneType::high_power_zone;
     }
 
     return std::nullopt;
@@ -1970,301 +1986,6 @@ std::optional<rf::Vector3> get_looked_at_target_point()
     return col_info.hit_point;
 }
 
-bool waypoint_editor_selection_mode_active()
-{
-    if (is_waypoint_bot_mode_active()
-        || !g_alpine_game_config.waypoints_edit_mode
-        || g_debug_waypoints_mode < 1) {
-        return false;
-    }
-
-    rf::Player* local_player = rf::local_player;
-    if (!local_player || !local_player->cam) {
-        return false;
-    }
-
-    return rf::camera_get_mode(*local_player->cam) == rf::CAMERA_FREELOOK;
-}
-
-void clear_waypoint_editor_selection()
-{
-    g_waypoint_editor_selection = {};
-}
-
-bool get_waypoint_editor_camera_ray(rf::Vector3& out_origin, rf::Vector3& out_dir, float& out_max_dist)
-{
-    rf::Player* local_player = rf::local_player;
-    if (!local_player || !local_player->cam) {
-        return false;
-    }
-
-    out_origin = rf::camera_get_pos(local_player->cam);
-    const rf::Matrix3 orient = rf::camera_get_orient(local_player->cam);
-    out_dir = orient.fvec;
-    if (out_dir.len_sq() <= 0.0001f) {
-        return false;
-    }
-    out_dir.normalize_safe();
-    out_max_dist = 10000.0f;
-
-    rf::Entity* entity = rf::entity_from_handle(local_player->entity_handle);
-    rf::LevelCollisionOut col_info{};
-    col_info.face = nullptr;
-    col_info.obj_handle = -1;
-    rf::Vector3 p0 = out_origin;
-    rf::Vector3 p1 = out_origin + out_dir * out_max_dist;
-    if (rf::collide_linesegment_level_for_multi(
-            p0,
-            p1,
-            entity,
-            nullptr,
-            &col_info,
-            0.1f,
-            false,
-            1.0f)) {
-        const rf::Vector3 to_hit = col_info.hit_point - out_origin;
-        out_max_dist = std::sqrt(to_hit.dot_prod(to_hit)) + 0.1f;
-    }
-    return true;
-}
-
-std::optional<float> ray_sphere_intersection_t(
-    const rf::Vector3& ray_origin,
-    const rf::Vector3& ray_dir,
-    const rf::Vector3& sphere_center,
-    float sphere_radius)
-{
-    if (!std::isfinite(sphere_radius) || sphere_radius <= 0.0f) {
-        return std::nullopt;
-    }
-
-    const rf::Vector3 oc = ray_origin - sphere_center;
-    const float b = oc.dot_prod(ray_dir);
-    const float c = oc.dot_prod(oc) - sphere_radius * sphere_radius;
-    const float discriminant = b * b - c;
-    if (discriminant < 0.0f) {
-        return std::nullopt;
-    }
-
-    const float sqrt_disc = std::sqrt(discriminant);
-    float t = -b - sqrt_disc;
-    if (t < 0.0f) {
-        t = -b + sqrt_disc;
-    }
-    if (t < 0.0f) {
-        return std::nullopt;
-    }
-    return t;
-}
-
-bool get_zone_selection_center_and_radius(
-    const WaypointZoneDefinition& zone,
-    rf::Vector3& out_center,
-    float& out_radius)
-{
-    switch (resolve_waypoint_zone_source(zone)) {
-        case WaypointZoneSource::trigger_uid: {
-            rf::Object* trigger_obj = rf::obj_lookup_from_uid(zone.trigger_uid);
-            if (!trigger_obj || trigger_obj->type != rf::OT_TRIGGER) {
-                return false;
-            }
-
-            const auto* trigger = static_cast<rf::Trigger*>(trigger_obj);
-            out_center = trigger->pos;
-            if (trigger->type == 1) {
-                const rf::Vector3 half_extents{
-                    std::fabs(trigger->box_size.x) * 0.5f,
-                    std::fabs(trigger->box_size.y) * 0.5f,
-                    std::fabs(trigger->box_size.z) * 0.5f,
-                };
-                out_radius = std::sqrt(half_extents.dot_prod(half_extents));
-                return out_radius > kWaypointLinkRadiusEpsilon;
-            }
-
-            out_radius = std::fabs(trigger->radius);
-            return out_radius > kWaypointLinkRadiusEpsilon;
-        }
-        case WaypointZoneSource::box_extents: {
-            const rf::Vector3 min_bound = point_min(zone.box_min, zone.box_max);
-            const rf::Vector3 max_bound = point_max(zone.box_min, zone.box_max);
-            out_center = (min_bound + max_bound) * 0.5f;
-            const rf::Vector3 half_extents = (max_bound - min_bound) * 0.5f;
-            out_radius = std::sqrt(half_extents.dot_prod(half_extents));
-            return out_radius > kWaypointLinkRadiusEpsilon;
-        }
-        case WaypointZoneSource::room_uid:
-        default:
-            return false;
-    }
-}
-
-bool is_waypoint_editor_selected_waypoint(int waypoint_uid)
-{
-    return g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::waypoint
-        && g_waypoint_editor_selection.uid == waypoint_uid;
-}
-
-bool is_waypoint_editor_selected_zone(int zone_uid)
-{
-    return g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::zone
-        && g_waypoint_editor_selection.uid == zone_uid;
-}
-
-bool is_waypoint_editor_selected_target(int target_uid)
-{
-    return g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::target
-        && g_waypoint_editor_selection.uid == target_uid;
-}
-
-void update_waypoint_editor_selection()
-{
-    if (!waypoint_editor_selection_mode_active()) {
-        clear_waypoint_editor_selection();
-        return;
-    }
-
-    rf::Vector3 ray_origin{};
-    rf::Vector3 ray_dir{};
-    float ray_max_dist = 0.0f;
-    if (!get_waypoint_editor_camera_ray(ray_origin, ray_dir, ray_max_dist)) {
-        clear_waypoint_editor_selection();
-        return;
-    }
-
-    WaypointEditorSelectionState best_selection{};
-    float best_t = ray_max_dist;
-
-    for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
-        const auto& node = g_waypoints[waypoint_uid];
-        if (!node.valid) {
-            continue;
-        }
-
-        const float selection_radius = std::max(
-            0.5f,
-            sanitize_waypoint_link_radius(node.link_radius) * 0.25f);
-        auto hit_t = ray_sphere_intersection_t(
-            ray_origin,
-            ray_dir,
-            node.pos,
-            selection_radius);
-        if (!hit_t || hit_t.value() > best_t) {
-            continue;
-        }
-        best_t = hit_t.value();
-        best_selection.kind = WaypointEditorSelectionKind::waypoint;
-        best_selection.uid = waypoint_uid;
-    }
-
-    for (int zone_uid = 0; zone_uid < static_cast<int>(g_waypoint_zones.size()); ++zone_uid) {
-        rf::Vector3 zone_center{};
-        float zone_radius = 0.0f;
-        if (!get_zone_selection_center_and_radius(g_waypoint_zones[zone_uid], zone_center, zone_radius)) {
-            continue;
-        }
-        auto hit_t = ray_sphere_intersection_t(
-            ray_origin,
-            ray_dir,
-            zone_center,
-            std::max(zone_radius, 0.5f));
-        if (!hit_t || hit_t.value() > best_t) {
-            continue;
-        }
-        best_t = hit_t.value();
-        best_selection.kind = WaypointEditorSelectionKind::zone;
-        best_selection.uid = zone_uid;
-    }
-
-    constexpr float kTargetSelectionRadius = 0.9f;
-    for (const auto& target : g_waypoint_targets) {
-        auto hit_t = ray_sphere_intersection_t(
-            ray_origin,
-            ray_dir,
-            target.pos,
-            kTargetSelectionRadius);
-        if (!hit_t || hit_t.value() > best_t) {
-            continue;
-        }
-        best_t = hit_t.value();
-        best_selection.kind = WaypointEditorSelectionKind::target;
-        best_selection.uid = target.uid;
-    }
-
-    g_waypoint_editor_selection = best_selection;
-}
-
-bool cycle_selected_waypoint_movement_subtype(int direction)
-{
-    if (g_waypoint_editor_selection.kind != WaypointEditorSelectionKind::waypoint
-        || g_waypoint_editor_selection.uid <= 0
-        || g_waypoint_editor_selection.uid >= static_cast<int>(g_waypoints.size())) {
-        return false;
-    }
-
-    auto& node = g_waypoints[g_waypoint_editor_selection.uid];
-    if (!node.valid) {
-        return false;
-    }
-
-    node.movement_subtype = cycle_waypoint_dropped_subtype(node.movement_subtype, direction);
-    rf::console::print(
-        "Waypoint {} movement subtype set to {}",
-        g_waypoint_editor_selection.uid,
-        waypoint_dropped_subtype_name(node.movement_subtype));
-    return true;
-}
-
-void delete_selected_waypoint_editor_object()
-{
-    if (g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::waypoint) {
-        const int waypoint_uid = g_waypoint_editor_selection.uid;
-        if (remove_waypoint_by_uid(waypoint_uid)) {
-            rf::console::print("Deleted waypoint {}", waypoint_uid);
-        }
-    }
-    else if (g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::zone) {
-        const int zone_uid = g_waypoint_editor_selection.uid;
-        if (remove_waypoint_zone_definition(zone_uid)) {
-            rf::console::print("Deleted zone {}", zone_uid);
-        }
-    }
-    else if (g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::target) {
-        const int target_uid = g_waypoint_editor_selection.uid;
-        if (remove_waypoint_target_by_uid(target_uid)) {
-            rf::console::print("Deleted target {}", target_uid);
-        }
-    }
-
-    clear_waypoint_editor_selection();
-}
-
-void handle_waypoint_editor_input()
-{
-    if (!waypoint_editor_selection_mode_active()
-        || g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::none) {
-        return;
-    }
-
-    if (rf::key_get_and_reset_down_counter(rf::KEY_DELETE) > 0) {
-        delete_selected_waypoint_editor_object();
-        return;
-    }
-
-    const int up_count = rf::key_get_and_reset_down_counter(rf::KEY_UP);
-    const int down_count = rf::key_get_and_reset_down_counter(rf::KEY_DOWN);
-    const int net_steps = up_count - down_count;
-    if (net_steps == 0) {
-        return;
-    }
-
-    const int direction = net_steps > 0 ? 1 : -1;
-    const int steps = std::abs(net_steps);
-    for (int i = 0; i < steps; ++i) {
-        if (!cycle_selected_waypoint_movement_subtype(direction)) {
-            break;
-        }
-    }
-}
 
 int find_nearest_waypoint(const rf::Vector3& pos, float radius, int exclude)
 {
@@ -6031,491 +5752,6 @@ void navigate()
     prune_drop_trackers(active_entity_handles);
 }
 
-rf::Color debug_waypoint_color(WaypointType type)
-{
-    switch (type) {
-        case WaypointType::std:
-            return {255, 255, 255, 150};
-        case WaypointType::std_new:
-            return {255, 255, 255, 75};
-        case WaypointType::item:
-            return {255, 220, 0, 150};
-        case WaypointType::respawn:
-            return {0, 220, 255, 150};
-        case WaypointType::jump_pad:
-            return {0, 255, 120, 150};
-        case WaypointType::lift_body:
-            return {110, 150, 255, 150};
-        case WaypointType::lift_entrance:
-            return {140, 180, 255, 150};
-        case WaypointType::lift_exit:
-            return {80, 120, 255, 150};
-        case WaypointType::ladder:
-            return {255, 170, 70, 150};
-        case WaypointType::ctf_flag:
-            return {255, 70, 70, 150};
-        case WaypointType::crater:
-            return {200, 70, 255, 150};
-        case WaypointType::tele_entrance:
-            return {255, 140, 60, 150};
-        case WaypointType::tele_exit:
-            return {255, 80, 220, 150};
-        default:
-            return {200, 200, 200, 150};
-    }
-}
-
-float debug_waypoint_sphere_scale(WaypointType type)
-{
-    if (type == WaypointType::std || type == WaypointType::std_new) {
-        return 0.125f;
-    }
-    return 0.25f;
-}
-
-rf::Color debug_waypoint_zone_color(WaypointZoneType type)
-{
-    switch (type) {
-        case WaypointZoneType::control_point:
-            return {200, 70, 255, 150};
-        case WaypointZoneType::damaging_liquid_room:
-            return {70, 160, 255, 150};
-        case WaypointZoneType::damage_zone:
-            return {255, 150, 70, 150};
-        case WaypointZoneType::instant_death_zone:
-            return {255, 60, 60, 150};
-        case WaypointZoneType::bridge_use:
-            return {120, 255, 120, 150};
-        case WaypointZoneType::bridge_prox:
-            return {80, 220, 255, 150};
-        default:
-            return {200, 200, 200, 150};
-    }
-}
-
-rf::Color debug_waypoint_target_color(WaypointTargetType type)
-{
-    switch (type) {
-        case WaypointTargetType::explosion:
-            return {255, 120, 40, 150};
-        case WaypointTargetType::shatter:
-            return {120, 220, 255, 150};
-        case WaypointTargetType::jump:
-            return {140, 255, 120, 150};
-        default:
-            return {200, 200, 200, 150};
-    }
-}
-
-void draw_debug_wire_box(const std::array<rf::Vector3, 8>& corners)
-{
-    static constexpr std::array<std::array<int, 2>, 12> kBoxEdges{{
-        {0, 1},
-        {0, 2},
-        {0, 4},
-        {1, 3},
-        {1, 5},
-        {2, 3},
-        {2, 6},
-        {3, 7},
-        {4, 5},
-        {4, 6},
-        {5, 7},
-        {6, 7},
-    }};
-
-    for (const auto& edge : kBoxEdges) {
-        rf::gr::line_vec(corners[edge[0]], corners[edge[1]], no_overdraw_2d_line);
-    }
-}
-
-bool draw_debug_trigger_zone_bounds(const rf::Trigger& trigger, const rf::Color& color, rf::Vector3& out_center)
-{
-    out_center = trigger.pos;
-    rf::gr::set_color(color);
-
-    if (trigger.type == 1) {
-        const rf::Vector3 half_extents{
-            std::fabs(trigger.box_size.x) * 0.5f,
-            std::fabs(trigger.box_size.y) * 0.5f,
-            std::fabs(trigger.box_size.z) * 0.5f,
-        };
-        const auto& orient = trigger.orient;
-        const rf::Vector3 center = trigger.pos;
-        const rf::Vector3 r = orient.rvec * half_extents.x;
-        const rf::Vector3 u = orient.uvec * half_extents.y;
-        const rf::Vector3 f = orient.fvec * half_extents.z;
-
-        const std::array<rf::Vector3, 8> corners{
-            center - r - u - f,
-            center - r - u + f,
-            center - r + u - f,
-            center - r + u + f,
-            center + r - u - f,
-            center + r - u + f,
-            center + r + u - f,
-            center + r + u + f,
-        };
-        draw_debug_wire_box(corners);
-        return true;
-    }
-
-    const float radius = std::fabs(trigger.radius);
-    if (radius <= 0.0f) {
-        return false;
-    }
-    rf::gr::sphere(trigger.pos, radius, no_overdraw_2d_line);
-    return true;
-}
-
-bool draw_debug_extent_zone_bounds(const WaypointZoneDefinition& zone, const rf::Color& color, rf::Vector3& out_center)
-{
-    const rf::Vector3 min_bound = point_min(zone.box_min, zone.box_max);
-    const rf::Vector3 max_bound = point_max(zone.box_min, zone.box_max);
-    out_center = (min_bound + max_bound) * 0.5f;
-
-    const std::array<rf::Vector3, 8> corners{
-        rf::Vector3{min_bound.x, min_bound.y, min_bound.z},
-        rf::Vector3{min_bound.x, min_bound.y, max_bound.z},
-        rf::Vector3{min_bound.x, max_bound.y, min_bound.z},
-        rf::Vector3{min_bound.x, max_bound.y, max_bound.z},
-        rf::Vector3{max_bound.x, min_bound.y, min_bound.z},
-        rf::Vector3{max_bound.x, min_bound.y, max_bound.z},
-        rf::Vector3{max_bound.x, max_bound.y, min_bound.z},
-        rf::Vector3{max_bound.x, max_bound.y, max_bound.z},
-    };
-
-    rf::gr::set_color(color);
-    draw_debug_wire_box(corners);
-    return true;
-}
-
-bool draw_debug_target_bounds(const WaypointTargetDefinition& target, const rf::Color& color, rf::Vector3& out_center)
-{
-    constexpr float kHalfExtent = 0.5f; // 1x1x1 debug box
-    out_center = target.pos;
-
-    const std::array<rf::Vector3, 8> corners{
-        rf::Vector3{target.pos.x - kHalfExtent, target.pos.y - kHalfExtent, target.pos.z - kHalfExtent},
-        rf::Vector3{target.pos.x - kHalfExtent, target.pos.y - kHalfExtent, target.pos.z + kHalfExtent},
-        rf::Vector3{target.pos.x - kHalfExtent, target.pos.y + kHalfExtent, target.pos.z - kHalfExtent},
-        rf::Vector3{target.pos.x - kHalfExtent, target.pos.y + kHalfExtent, target.pos.z + kHalfExtent},
-        rf::Vector3{target.pos.x + kHalfExtent, target.pos.y - kHalfExtent, target.pos.z - kHalfExtent},
-        rf::Vector3{target.pos.x + kHalfExtent, target.pos.y - kHalfExtent, target.pos.z + kHalfExtent},
-        rf::Vector3{target.pos.x + kHalfExtent, target.pos.y + kHalfExtent, target.pos.z - kHalfExtent},
-        rf::Vector3{target.pos.x + kHalfExtent, target.pos.y + kHalfExtent, target.pos.z + kHalfExtent},
-    };
-
-    rf::gr::set_color(color);
-    draw_debug_wire_box(corners);
-    return true;
-}
-
-struct WaypointZoneDebugRenderInfo
-{
-    bool renderable = false;
-    bool selected = false;
-    rf::Vector3 center{};
-    WaypointZoneType type = WaypointZoneType::control_point;
-    int uid = -1;
-    int identifier = -1;
-    rf::Color color{};
-};
-
-struct WaypointTargetDebugRenderInfo
-{
-    bool renderable = false;
-    bool selected = false;
-    rf::Vector3 center{};
-    WaypointTargetType type = WaypointTargetType::explosion;
-    int uid = -1;
-    int identifier = -1;
-    rf::Color color{};
-    std::vector<int> waypoint_uids{};
-};
-
-void draw_centered_debug_label(float sx, float sy, const char* text, const rf::Color& color)
-{
-    const auto [text_w, text_h] = rf::gr::get_string_size(text, -1);
-    const int x = static_cast<int>(sx) - (text_w / 2);
-    const int y = static_cast<int>(sy) - (text_h / 2);
-    rf::gr::set_color(color.red, color.green, color.blue, 255);
-    rf::gr::string(x, y, text, -1, no_overdraw_2d_text);
-}
-
-void draw_debug_waypoint_zones(bool show_membership_arrows, bool show_labels)
-{
-    if (g_waypoint_zones.empty()) {
-        return;
-    }
-
-    std::vector<WaypointZoneDebugRenderInfo> zone_infos(g_waypoint_zones.size());
-
-    for (int zone_index = 0; zone_index < static_cast<int>(g_waypoint_zones.size()); ++zone_index) {
-        const auto& zone = g_waypoint_zones[zone_index];
-        auto& zone_info = zone_infos[zone_index];
-        zone_info.type = zone.type;
-        zone_info.uid = zone_index;
-        zone_info.identifier = zone.identifier;
-        zone_info.selected = is_waypoint_editor_selected_zone(zone_index);
-        zone_info.color = debug_waypoint_zone_color(zone.type);
-        if (zone_info.selected) {
-            zone_info.color.alpha = 255;
-        }
-
-        switch (resolve_waypoint_zone_source(zone)) {
-            case WaypointZoneSource::trigger_uid: {
-                rf::Object* trigger_obj = rf::obj_lookup_from_uid(zone.trigger_uid);
-                if (!trigger_obj || trigger_obj->type != rf::OT_TRIGGER) {
-                    break;
-                }
-
-                const auto* trigger = static_cast<rf::Trigger*>(trigger_obj);
-                zone_info.renderable = draw_debug_trigger_zone_bounds(*trigger, zone_info.color, zone_info.center);
-                break;
-            }
-            case WaypointZoneSource::box_extents:
-                zone_info.renderable = draw_debug_extent_zone_bounds(zone, zone_info.color, zone_info.center);
-                break;
-            case WaypointZoneSource::room_uid:
-            default:
-                // Room zones are intentionally skipped for debug rendering.
-                break;
-        }
-    }
-
-    if (show_membership_arrows) {
-        for (int wp_index = 1; wp_index < static_cast<int>(g_waypoints.size()); ++wp_index) {
-            const auto& node = g_waypoints[wp_index];
-            if (!node.valid) {
-                continue;
-            }
-
-            for (int zone_index : node.zones) {
-                if (zone_index < 0 || zone_index >= static_cast<int>(zone_infos.size())) {
-                    continue;
-                }
-                const auto& zone_info = zone_infos[zone_index];
-                if (!zone_info.renderable) {
-                    continue;
-                }
-
-                rf::gr::line_arrow(
-                    node.pos.x, node.pos.y, node.pos.z,
-                    zone_info.center.x, zone_info.center.y, zone_info.center.z,
-                    zone_info.color.red, zone_info.color.green, zone_info.color.blue);
-            }
-        }
-
-        for (int zone_index = 0; zone_index < static_cast<int>(g_waypoint_zones.size()); ++zone_index) {
-            const auto& zone = g_waypoint_zones[zone_index];
-            if (!waypoint_zone_type_is_bridge(zone.type)) {
-                continue;
-            }
-
-            const auto& zone_info = zone_infos[zone_index];
-            if (!zone_info.renderable) {
-                continue;
-            }
-
-            for (const int waypoint_uid : zone.bridge_waypoint_uids) {
-                if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
-                    continue;
-                }
-                const auto& waypoint = g_waypoints[waypoint_uid];
-                if (!waypoint.valid) {
-                    continue;
-                }
-
-                rf::gr::line_arrow(
-                    zone_info.center.x, zone_info.center.y, zone_info.center.z,
-                    waypoint.pos.x, waypoint.pos.y, waypoint.pos.z,
-                    255, 32, 32);
-            }
-        }
-    }
-
-    for (const auto& zone_info : zone_infos) {
-        if ((!show_labels && !zone_info.selected) || !zone_info.renderable) {
-            continue;
-        }
-
-        rf::Vector3 label_pos = zone_info.center;
-        label_pos.y += 0.3f;
-        rf::gr::Vertex dest{};
-        if (!rf::gr::rotate_vertex(&dest, &label_pos)) {
-            rf::gr::project_vertex(&dest);
-            if (dest.flags & 1) {
-                const auto label_sv = waypoint_zone_type_name(zone_info.type);
-                char label[96]{};
-                std::snprintf(
-                    label, sizeof(label), "%.*s (%d : %d)",
-                    static_cast<int>(label_sv.size()), label_sv.data(),
-                    zone_info.uid, zone_info.identifier);
-                draw_centered_debug_label(dest.sx, dest.sy, label, zone_info.color);
-            }
-        }
-    }
-}
-
-void draw_debug_waypoint_targets(bool show_waypoint_arrows, bool show_labels)
-{
-    if (g_waypoint_targets.empty()) {
-        return;
-    }
-
-    std::vector<WaypointTargetDebugRenderInfo> target_infos{};
-    target_infos.reserve(g_waypoint_targets.size());
-    for (const auto& target : g_waypoint_targets) {
-        WaypointTargetDebugRenderInfo info{};
-        info.type = target.type;
-        info.uid = target.uid;
-        info.identifier = target.identifier;
-        info.selected = is_waypoint_editor_selected_target(target.uid);
-        info.color = debug_waypoint_target_color(target.type);
-        if (info.selected) {
-            info.color.alpha = 255;
-        }
-        info.waypoint_uids = target.waypoint_uids;
-        info.renderable = draw_debug_target_bounds(target, info.color, info.center);
-        target_infos.push_back(std::move(info));
-    }
-
-    if (show_waypoint_arrows) {
-        for (const auto& target_info : target_infos) {
-            if (!target_info.renderable) {
-                continue;
-            }
-            for (int waypoint_uid : target_info.waypoint_uids) {
-                if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
-                    continue;
-                }
-                const auto& waypoint = g_waypoints[waypoint_uid];
-                if (!waypoint.valid) {
-                    continue;
-                }
-
-                rf::gr::line_arrow(
-                    target_info.center.x, target_info.center.y, target_info.center.z,
-                    waypoint.pos.x, waypoint.pos.y, waypoint.pos.z,
-                    target_info.color.red, target_info.color.green, target_info.color.blue);
-            }
-        }
-    }
-
-    for (const auto& target_info : target_infos) {
-        if ((!show_labels && !target_info.selected) || !target_info.renderable) {
-            continue;
-        }
-
-        rf::Vector3 label_pos = target_info.center;
-        label_pos.y += 0.3f;
-        rf::gr::Vertex dest{};
-        if (!rf::gr::rotate_vertex(&dest, &label_pos)) {
-            rf::gr::project_vertex(&dest);
-            if (dest.flags & 1) {
-                const auto label_sv = waypoint_target_type_name(target_info.type);
-                char label[96]{};
-                std::snprintf(
-                    label, sizeof(label), "%.*s (%d : %d)",
-                    static_cast<int>(label_sv.size()), label_sv.data(),
-                    target_info.uid, target_info.identifier);
-                draw_centered_debug_label(dest.sx, dest.sy, label, target_info.color);
-            }
-        }
-    }
-}
-
-void draw_debug_waypoints()
-{
-    if (g_debug_waypoints_mode == 0) {
-        return;
-    }
-    const bool show_links = g_debug_waypoints_mode >= 1;
-    const bool show_spheres = g_debug_waypoints_mode >= 2;
-    const bool show_labels = g_debug_waypoints_mode >= 3;
-    const bool show_zone_membership_arrows = g_debug_waypoints_mode >= 2;
-    const bool show_zone_labels = g_debug_waypoints_mode >= 3;
-    const bool show_target_waypoint_arrows = g_debug_waypoints_mode >= 2;
-    const bool show_target_labels = g_debug_waypoints_mode >= 3;
-    draw_debug_waypoint_zones(show_zone_membership_arrows, show_zone_labels);
-    draw_debug_waypoint_targets(show_target_waypoint_arrows, show_target_labels);
-    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
-        const auto& node = g_waypoints[i];
-        if (!node.valid) {
-            continue;
-        }
-        const bool selected = is_waypoint_editor_selected_waypoint(i);
-        if (show_spheres || selected) {
-            auto color = debug_waypoint_color(node.type);
-            if (selected) {
-                color.alpha = 255;
-            }
-            rf::gr::set_color(color);
-            const float debug_radius = sanitize_waypoint_link_radius(node.link_radius) * debug_waypoint_sphere_scale(node.type);
-            rf::gr::sphere(node.pos, debug_radius, no_overdraw_2d_line);
-        }
-        if (show_labels || selected) {
-            rf::Vector3 label_pos = node.pos;
-            label_pos.y += 0.3f;
-            rf::gr::Vertex dest;
-            if (!rf::gr::rotate_vertex(&dest, &label_pos)) {
-                rf::gr::project_vertex(&dest);
-                if (dest.flags & 1) {
-                    const auto type_name = waypoint_type_name(node.type);
-                    const auto movement_subtype_name = waypoint_dropped_subtype_name(node.movement_subtype);
-                    char buf[128];
-                    if (waypoint_type_is_standard(node.type)) {
-                        if (node.identifier >= 0) {
-                            std::snprintf(
-                                buf, sizeof(buf), "%.*s (%d : %.*s : %d)",
-                                static_cast<int>(type_name.size()), type_name.data(),
-                                i,
-                                static_cast<int>(movement_subtype_name.size()), movement_subtype_name.data(),
-                                node.identifier);
-                        }
-                        else {
-                            std::snprintf(
-                                buf, sizeof(buf), "%.*s (%d : %.*s)",
-                                static_cast<int>(type_name.size()), type_name.data(),
-                                i,
-                                static_cast<int>(movement_subtype_name.size()), movement_subtype_name.data());
-                        }
-                    }
-                    else if (node.identifier >= 0) {
-                        std::snprintf(
-                            buf, sizeof(buf), "%.*s (%d : %d : %.*s : %d)",
-                            static_cast<int>(type_name.size()), type_name.data(),
-                            i,
-                            node.subtype,
-                            static_cast<int>(movement_subtype_name.size()), movement_subtype_name.data(),
-                            node.identifier);
-                    }
-                    else {
-                        std::snprintf(
-                            buf, sizeof(buf), "%.*s (%d : %d : %.*s)",
-                            static_cast<int>(type_name.size()), type_name.data(),
-                            i,
-                            node.subtype,
-                            static_cast<int>(movement_subtype_name.size()), movement_subtype_name.data());
-                    }
-                    draw_centered_debug_label(dest.sx, dest.sy, buf, rf::Color{255, 255, 255, 255});
-                }
-            }
-        }
-        if (show_links) {
-            for (int j = 0; j < node.num_links; ++j) {
-                int link = node.links[j];
-                if (link <= 0 || link >= static_cast<int>(g_waypoints.size())) {
-                    continue;
-                }
-                const auto& dest = g_waypoints[link];
-                rf::gr::line_arrow(node.pos.x, node.pos.y, node.pos.z, dest.pos.x, dest.pos.y, dest.pos.z, 0, 255, 0);
-            }
-        }
-    }
-}
-
 ConsoleCommand2 waypoint_save_cmd{
     "waypoints_save",
     []() {
@@ -6524,6 +5760,7 @@ ConsoleCommand2 waypoint_save_cmd{
         }
         if (save_waypoints()) {
             rf::console::print("Waypoints saved");
+            waypoint_editor_log_if_active("Waypoints saved");
         }
         else {
             rf::console::print("No waypoints to save");
@@ -6542,6 +5779,7 @@ ConsoleCommand2 waypoint_load_cmd{
         const bool include_std_new_waypoints = is_waypoint_bot_mode_active();
         if (load_waypoints(include_std_new_waypoints)) {
             rf::console::print("Waypoints loaded");
+            waypoint_editor_log_if_active("Waypoints loaded");
         }
         else {
             rf::console::print("No waypoint file found");
@@ -6559,6 +5797,7 @@ ConsoleCommand2 waypoint_load_all_cmd{
         }
         if (load_waypoints(true)) {
             rf::console::print("Waypoints loaded");
+            waypoint_editor_log_if_active("Waypoints loaded (including std_new)");
         }
         else {
             rf::console::print("No waypoint file found");
@@ -6590,6 +5829,7 @@ ConsoleCommand2 waypoint_edit_cmd{
         if (!g_alpine_game_config.waypoints_edit_mode) {
             g_alpine_game_config.waypoints_edit_mode = true;
             rf::console::print("Waypoint editing enabled.");
+            waypoint_editor_log_if_active("Waypoint editing enabled");
         }
         else {
             rf::console::print("Waypoint editing is already enabled.");
@@ -6669,6 +5909,7 @@ ConsoleCommand2 waypoint_clean_cmd{
         }
         clean_waypoints();
         rf::console::print("Waypoints cleaned");
+        waypoint_editor_log_if_active("Waypoints cleaned");
     },
     "Remove invalid waypoints",
     "waypoints_clean",
@@ -6686,6 +5927,7 @@ ConsoleCommand2 waypoint_reset_cmd{
         }
         reset_waypoints_to_default_grid();
         rf::console::print("Waypoints reset to default map grid");
+        waypoint_editor_log_if_active("Waypoints reset to default map grid");
     },
     "Reset waypoints to default map grid",
     "waypoints_reset",
@@ -6721,8 +5963,15 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print(
                 "Waypoint generation hit creation cap of {} nodes",
                 kWaypointGenerateMaxCreatedWaypoints);
+            waypoint_editor_logf(
+                "Waypoint generation hit creation cap of {} nodes",
+                kWaypointGenerateMaxCreatedWaypoints);
         }
         rf::console::print(
+            "Generated {} waypoints from {} ctf_flag/item/respawn seeds",
+            generated_count,
+            static_cast<int>(seed_indices.size()));
+        waypoint_editor_logf(
             "Generated {} waypoints from {} ctf_flag/item/respawn seeds",
             generated_count,
             static_cast<int>(seed_indices.size()));
@@ -6730,8 +5979,15 @@ ConsoleCommand2 waypoint_generate_cmd{
             "Link pass added {} bidirectional links and {} downward links",
             link_stats.bidirectional_links,
             link_stats.downward_links);
+        waypoint_editor_logf(
+            "Link pass added {} bidirectional links and {} downward links",
+            link_stats.bidirectional_links,
+            link_stats.downward_links);
         if (link_stats.pass_through_links_rerouted > 0) {
             rf::console::print(
+                "Link pass rerouted {} links through intermediate waypoints",
+                link_stats.pass_through_links_rerouted);
+            waypoint_editor_logf(
                 "Link pass rerouted {} links through intermediate waypoints",
                 link_stats.pass_through_links_rerouted);
         }
@@ -6739,14 +5995,23 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print(
                 "Link pass pruned {} redundant direct links",
                 link_stats.redundant_links_pruned);
+            waypoint_editor_logf(
+                "Link pass pruned {} redundant direct links",
+                link_stats.redundant_links_pruned);
         }
         if (generated_explosion_target_count > 0) {
             rf::console::print(
                 "Generated {} explosion targets from blocked waypoint pairs",
                 generated_explosion_target_count);
+            waypoint_editor_logf(
+                "Generated {} explosion targets from blocked waypoint pairs",
+                generated_explosion_target_count);
         }
         if (generated_shatter_target_count > 0) {
             rf::console::print(
+                "Generated {} shatter targets from breakable-glass blocked waypoint pairs",
+                generated_shatter_target_count);
+            waypoint_editor_logf(
                 "Generated {} shatter targets from breakable-glass blocked waypoint pairs",
                 generated_shatter_target_count);
         }
@@ -6845,11 +6110,19 @@ ConsoleCommand2 waypoint_zone_add_cmd{
                                        waypoint_zone_type_name(zone.type), zone_index,
                                        zone.trigger_uid, zone.duration,
                                        static_cast<int>(zone.bridge_waypoint_uids.size()));
+                    waypoint_editor_logf(
+                        "Added zone {} as index {} (trigger uid {}, duration {:.2f}s, on false, gated waypoints {})",
+                        waypoint_zone_type_name(zone.type), zone_index,
+                        zone.trigger_uid, zone.duration,
+                        static_cast<int>(zone.bridge_waypoint_uids.size()));
                 }
                 else {
                     rf::console::print("Added zone {} as index {} (trigger uid {})",
                                        waypoint_zone_type_name(zone.type), zone_index,
                                        zone.trigger_uid);
+                    waypoint_editor_logf(
+                        "Added zone {} as index {} (trigger uid {})",
+                        waypoint_zone_type_name(zone.type), zone_index, zone.trigger_uid);
                 }
                 return;
             }
@@ -6874,6 +6147,9 @@ ConsoleCommand2 waypoint_zone_add_cmd{
                 const int zone_index = add_waypoint_zone_definition(zone);
                 rf::console::print("Added zone {} as index {} (room uid {})",
                                    waypoint_zone_type_name(zone.type), zone_index, zone.room_uid);
+                waypoint_editor_logf(
+                    "Added zone {} as index {} (room uid {})",
+                    waypoint_zone_type_name(zone.type), zone_index, zone.room_uid);
                 return;
             }
             case WaypointZoneSource::box_extents: {
@@ -6901,6 +6177,11 @@ ConsoleCommand2 waypoint_zone_add_cmd{
                                    waypoint_zone_type_name(stored_zone.type), zone_index,
                                    stored_zone.box_min.x, stored_zone.box_min.y, stored_zone.box_min.z,
                                    stored_zone.box_max.x, stored_zone.box_max.y, stored_zone.box_max.z);
+                waypoint_editor_logf(
+                    "Added zone {} as index {} (box min {:.2f},{:.2f},{:.2f} max {:.2f},{:.2f},{:.2f})",
+                    waypoint_zone_type_name(stored_zone.type), zone_index,
+                    stored_zone.box_min.x, stored_zone.box_min.y, stored_zone.box_min.z,
+                    stored_zone.box_max.x, stored_zone.box_max.y, stored_zone.box_max.z);
                 return;
             }
             default:
@@ -7045,6 +6326,12 @@ ConsoleCommand2 waypoint_target_add_cmd{
             target_uid,
             target_pos->x, target_pos->y, target_pos->z,
             waypoint_ref_count);
+        waypoint_editor_logf(
+            "Added target {} uid {} at {:.2f},{:.2f},{:.2f} ({} waypoint refs)",
+            waypoint_target_type_name(target_type.value()),
+            target_uid,
+            target_pos->x, target_pos->y, target_pos->z,
+            waypoint_ref_count);
     },
     "Add a waypoint target at the looked-at world position",
     "waypoints_target_add <type>",
@@ -7126,6 +6413,7 @@ ConsoleCommand2 waypoint_delete_cmd{
                 return;
             }
             rf::console::print("Deleted waypoint {}", waypoint_uid.value());
+            waypoint_editor_logf("Deleted waypoint {}", waypoint_uid.value());
             return;
         }
 
@@ -7138,6 +6426,7 @@ ConsoleCommand2 waypoint_delete_cmd{
             if (string_iequals(tokens[2], "all")) {
                 const int removed = clear_waypoint_zone_definitions();
                 rf::console::print("Cleared {} zone(s).", removed);
+                waypoint_editor_logf("Cleared {} zone(s).", removed);
                 return;
             }
 
@@ -7151,6 +6440,7 @@ ConsoleCommand2 waypoint_delete_cmd{
                 return;
             }
             rf::console::print("Deleted zone {}", zone_uid.value());
+            waypoint_editor_logf("Deleted zone {}", zone_uid.value());
             return;
         }
 
@@ -7163,6 +6453,7 @@ ConsoleCommand2 waypoint_delete_cmd{
             if (string_iequals(tokens[2], "all")) {
                 const int removed = clear_waypoint_targets();
                 rf::console::print("Cleared {} target(s).", removed);
+                waypoint_editor_logf("Cleared {} target(s).", removed);
                 return;
             }
 
@@ -7176,6 +6467,7 @@ ConsoleCommand2 waypoint_delete_cmd{
                 return;
             }
             rf::console::print("Deleted target {}", target_uid.value());
+            waypoint_editor_logf("Deleted target {}", target_uid.value());
             return;
         }
 
@@ -7230,6 +6522,7 @@ ConsoleCommand2 waypoint_delete_cmd{
                 return;
             }
             rf::console::print("Deleted {} link(s).", removed_links);
+            waypoint_editor_logf("Deleted {} link(s).", removed_links);
             return;
         }
 
@@ -7262,8 +6555,10 @@ void waypoints_init()
 
 void waypoints_level_init()
 {
+    g_missing_awp_from_level_init = false;
     if (is_waypoint_bot_mode_active()) {
         g_has_loaded_wpt = load_waypoints(true);
+        g_missing_awp_from_level_init = !g_has_loaded_wpt;
         if (!g_has_loaded_wpt) {
             seed_waypoints_from_objects();
         }
@@ -7277,14 +6572,22 @@ void waypoints_level_init()
     g_ctf_dropped_flag_packet_hints[0].active = false;
     g_ctf_dropped_flag_packet_hints[1].active = false;
     invalidate_cache();
+    waypoints_utils_level_init();
 }
 
 void waypoints_level_reset()
 {
     clear_waypoints();
     g_has_loaded_wpt = false;
+    g_missing_awp_from_level_init = false;
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
+    waypoints_utils_level_reset();
+}
+
+bool waypoints_missing_awp_from_level_init()
+{
+    return g_missing_awp_from_level_init;
 }
 
 void waypoints_on_limbo_enter()
@@ -7321,14 +6624,13 @@ void waypoints_do_frame()
     }
 
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {
-        clear_waypoint_editor_selection();
+        waypoints_utils_on_level_unloaded();
         return;
     }
 
     update_bridge_zone_states();
     update_ctf_dropped_flag_temporary_waypoints();
-    update_waypoint_editor_selection();
-    handle_waypoint_editor_input();
+    waypoints_utils_do_frame();
 
     if (!are_waypoint_commands_enabled_for_local_client()) {
         g_drop_waypoints_prev = g_drop_waypoints;
@@ -7350,7 +6652,8 @@ void waypoints_render_debug()
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {
         return;
     }
-    draw_debug_waypoints();
+    waypoints_utils_render_debug();
+    waypoints_utils_render_overlay();
 }
 
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state)
@@ -7408,6 +6711,53 @@ bool waypoints_get_control_point_zone_uid(const int handler_uid, int& out_zone_u
     return false;
 }
 
+bool try_add_waypoint_link_if_new(const int from_waypoint_uid, const int to_waypoint_uid)
+{
+    if (!can_link_waypoint_indices(from_waypoint_uid, to_waypoint_uid)) {
+        return false;
+    }
+
+    auto& from_node = g_waypoints[from_waypoint_uid];
+    if (waypoint_link_exists(from_node, to_waypoint_uid)) {
+        return false;
+    }
+
+    link_waypoint(from_waypoint_uid, to_waypoint_uid);
+    return waypoint_link_exists(from_node, to_waypoint_uid);
+}
+
+bool waypoints_auto_link_nearby(const int waypoint_uid, WaypointAutoLinkStats& out_stats)
+{
+    out_stats = {};
+
+    if (!is_waypoint_uid_valid(waypoint_uid)) {
+        return false;
+    }
+
+    const rf::Vector3 source_pos = g_waypoints[waypoint_uid].pos;
+    const float link_radius_sq = kWaypointLinkRadius * kWaypointLinkRadius;
+    for (int candidate_uid = 1; candidate_uid < static_cast<int>(g_waypoints.size()); ++candidate_uid) {
+        if (candidate_uid == waypoint_uid || !is_waypoint_uid_valid(candidate_uid)) {
+            continue;
+        }
+
+        const auto& candidate_node = g_waypoints[candidate_uid];
+        if (distance_sq(source_pos, candidate_node.pos) > link_radius_sq) {
+            continue;
+        }
+
+        ++out_stats.candidate_waypoints;
+        if (try_add_waypoint_link_if_new(waypoint_uid, candidate_uid)) {
+            ++out_stats.links_added;
+        }
+        if (try_add_waypoint_link_if_new(candidate_uid, waypoint_uid)) {
+            ++out_stats.links_added;
+        }
+    }
+
+    return true;
+}
+
 bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid)
 {
     if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())
@@ -7419,6 +6769,28 @@ bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid)
         return false;
     }
     return std::find(node.zones.begin(), node.zones.end(), zone_uid) != node.zones.end();
+}
+
+bool waypoints_waypoint_has_zone_type(int waypoint_uid, WaypointZoneType zone_type)
+{
+    if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+    const auto& node = g_waypoints[waypoint_uid];
+    if (!node.valid || node.zones.empty()) {
+        return false;
+    }
+
+    for (const int zone_uid : node.zones) {
+        if (zone_uid < 0 || zone_uid >= static_cast<int>(g_waypoint_zones.size())) {
+            continue;
+        }
+        if (g_waypoint_zones[zone_uid].type == zone_type) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, rf::Vector3& out_pos)

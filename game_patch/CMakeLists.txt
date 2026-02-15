@@ -3,7 +3,10 @@ file(GLOB EXPERIMENTAL_SRCS experimental/*.cpp experimental/*.h)
 set(BOTS_SRCS)
 if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/bot_main.cpp")
-        file(GLOB BOTS_SRCS multi/bots/*.cpp multi/bots/*.h)
+        file(GLOB BOTS_SRCS CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/*.cpp"
+            "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/*.h"
+        )
     endif()
 endif()
 
@@ -199,6 +202,9 @@ set(SRCS
     misc/level.cpp
     misc/waypoints.cpp
     misc/waypoints.h
+    misc/waypoints_internal.h
+    misc/waypoints_utils.cpp
+    misc/waypoints_utils.h
     misc/alpine_options.h
     misc/alpine_options.cpp
     misc/alpine_settings.h

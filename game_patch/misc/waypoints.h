@@ -95,6 +95,7 @@ enum class WaypointZoneType : int
     instant_death_zone = 3,
     bridge_use = 4,
     bridge_prox = 5,
+    high_power_zone = 6,
 };
 
 enum class WaypointZoneSource : int
@@ -160,6 +161,12 @@ struct WaypointBridgeZoneState
     bool available = false;
 };
 
+struct WaypointAutoLinkStats
+{
+    int candidate_waypoints = 0;
+    int links_added = 0;
+};
+
 struct WpCacheNode
 {
     int index = -1;
@@ -175,6 +182,7 @@ void waypoints_do_frame();
 void waypoints_render_debug();
 void waypoints_level_init();
 void waypoints_level_reset();
+bool waypoints_missing_awp_from_level_init();
 void waypoints_on_limbo_enter();
 void waypoints_on_trigger_activated(int trigger_uid);
 void waypoints_on_glass_shattered(const rf::GFace* face);
@@ -187,7 +195,9 @@ bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);
 bool waypoints_get_control_point_zone_uid(int handler_uid, int& out_zone_uid);
 bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid);
+bool waypoints_waypoint_has_zone_type(int waypoint_uid, WaypointZoneType zone_type);
 bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, rf::Vector3& out_pos);
+bool waypoints_auto_link_nearby(int waypoint_uid, WaypointAutoLinkStats& out_stats);
 int waypoints_target_count();
 bool waypoints_get_target_by_index(int index, WaypointTargetDefinition& out_target);
 bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_target);

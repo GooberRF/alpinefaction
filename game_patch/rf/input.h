@@ -122,6 +122,8 @@ namespace rf
     static auto& mouse_was_button_pressed = addr_as_ref<int(int btn_idx)>(0x0051E5D0);
     static auto& mouse_button_is_down = addr_as_ref<bool(int btn_idx)>(0x0051E530);
     static auto& mouse_set_visible = addr_as_ref<void(bool visible)>(0x0051E680);
+    static auto& mouse_keep_centered_enable = addr_as_ref<void()>(0x0051E690);
+    static auto& mouse_keep_centered_disable = addr_as_ref<void()>(0x0051E6A0);
     static auto& key_process_event = addr_as_ref<void(int scan_code, int key_down, int delta_time)>(0x0051E6C0);
     static auto& key_is_down = addr_as_ref<bool(Key key)>(0x0051F220);
     static auto& key_get_and_reset_down_counter = addr_as_ref<int(Key key)>(0x0051F140);
