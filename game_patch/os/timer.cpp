@@ -16,6 +16,7 @@ void wait_for(const float ms) {
 
     if (!timer) {
         ERR_ONCE("CreateWaitableTimerExA in wait_for failed ({})", GetLastError());
+    SLEEP:
         static const MMRESULT res = timeBeginPeriod(1);
         if (res != TIMERR_NOERROR) {
             ERR_ONCE(
@@ -23,7 +24,6 @@ void wait_for(const float ms) {
                 res
             );
         }
-    SLEEP:
         Sleep(static_cast<DWORD>(ms));
     } else {
         // `SetWaitableTimer` requires 100-nanosecond intervals.
@@ -39,6 +39,7 @@ void wait_for(const float ms) {
 
         if (WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0) {
             ERR_ONCE("WaitForSingleObject in wait_for failed ({})", GetLastError());
+            goto SLEEP;
         }
     }
 }
