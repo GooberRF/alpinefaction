@@ -232,10 +232,11 @@ ConsoleCommand2 speed_display_cmd{
 
 CallHook<void(int)> frametime_calculate_sleep_hook{
     0x005095B4,
-    [](int ms) {
+    [] (int ms) {
         --ms;
         if (ms > 0) {
-            frametime_calculate_sleep_hook.call_target(ms);
+            // `wait_for` is higher resolution than `Sleep`.
+            wait_for(static_cast<float>(ms));
         }
     },
 };

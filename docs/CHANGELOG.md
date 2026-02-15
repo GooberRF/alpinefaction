@@ -30,6 +30,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `/coinflip` chat command
 
 [@is-this-c](https://github.com/is-this-c)
+- Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add `Server version:` to a server's printed config
 - Default gore level to 1
 - Default `gibbing` to disabled for dedicated servers
