@@ -433,6 +433,7 @@ struct ForwardTraceResult
     bool valid = false;
     bool hit = false;
     rf::Vector3 point{};
+    const rf::GFace* face = nullptr;
 };
 
 ForwardTraceResult trace_forward_from_camera(const float max_dist)
@@ -474,6 +475,7 @@ ForwardTraceResult trace_forward_from_camera(const float max_dist)
     result.valid = true;
     result.hit = hit;
     result.point = hit ? col_info.hit_point : end;
+    result.face = hit ? static_cast<const rf::GFace*>(col_info.face) : nullptr;
     return result;
 }
 
@@ -517,25 +519,68 @@ bool create_new_waypoint_std_from_view()
 bool create_new_target_from_view(const WaypointTargetType target_type)
 {
     constexpr float kTraceDist = 20.0f;
-    const auto trace = trace_forward_from_camera(kTraceDist);
-    if (!trace.valid) {
-        return false;
+    constexpr float kShatterTraceDist = 10000.0f;
+    rf::Vector3 target_pos{};
+    int shatter_room_key = -1;
+    if (target_type == WaypointTargetType::shatter) {
+        if (!waypoints_trace_breakable_glass_from_camera(
+                kShatterTraceDist,
+                target_pos,
+                shatter_room_key)) {
+            rf::console::print(
+                "Could not place shatter target: must look at a breakable glass surface");
+            push_waypoint_editor_log(
+                "Could not place shatter target: must look at a breakable glass surface");
+            return false;
+        }
+    }
+    else {
+        const auto trace = trace_forward_from_camera(kTraceDist);
+        if (!trace.valid) {
+            return false;
+        }
+        target_pos = trace.point;
     }
 
-    const int target_uid = add_waypoint_target(trace.point, target_type);
-    const WaypointTargetDefinition* target = find_waypoint_target_by_uid(target_uid);
+    if (target_type == WaypointTargetType::shatter) {
+        WaypointTargetDefinition shatter_constraint{};
+        shatter_constraint.type = WaypointTargetType::shatter;
+        shatter_constraint.identifier = shatter_room_key;
+        rf::Vector3 constrained_pos{};
+        if (!waypoints_constrain_shatter_target_position(
+                shatter_constraint,
+                target_pos,
+                constrained_pos)) {
+            push_waypoint_editor_log(
+                std::format(
+                    "Shatter constraint fallback: room {} could not reproject point ({:.2f},{:.2f},{:.2f}); using traced hit",
+                    shatter_room_key,
+                    target_pos.x,
+                    target_pos.y,
+                    target_pos.z));
+        }
+        else {
+            target_pos = constrained_pos;
+        }
+    }
+
+    const int target_uid = add_waypoint_target(target_pos, target_type);
+    WaypointTargetDefinition* target = find_waypoint_target_by_uid(target_uid);
+    if (target_type == WaypointTargetType::shatter && target) {
+        target->identifier = shatter_room_key;
+    }
     const int waypoint_ref_count = target ? static_cast<int>(target->waypoint_uids.size()) : 0;
     rf::console::print(
         "Added target {} uid {} at {:.2f},{:.2f},{:.2f} ({} waypoint refs)",
         waypoint_target_type_name(target_type),
         target_uid,
-        trace.point.x, trace.point.y, trace.point.z,
+        target_pos.x, target_pos.y, target_pos.z,
         waypoint_ref_count);
     push_waypoint_editor_log(std::format(
         "Added target {} uid {} at {:.2f},{:.2f},{:.2f} ({} waypoint refs)",
         waypoint_target_type_name(target_type),
         target_uid,
-        trace.point.x, trace.point.y, trace.point.z,
+        target_pos.x, target_pos.y, target_pos.z,
         waypoint_ref_count));
     return true;
 }
@@ -1025,6 +1070,39 @@ bool apply_selection_translation(
             if (!target) {
                 return false;
             }
+
+            if (target->type == WaypointTargetType::shatter) {
+                if (target->identifier == -1) {
+                    rf::Vector3 snapped_pos{};
+                    int snapped_room_key = -1;
+                    if (!waypoints_find_nearest_breakable_glass_face_point(
+                            target->pos,
+                            snapped_pos,
+                            snapped_room_key)) {
+                        return false;
+                    }
+                    target->identifier = snapped_room_key;
+                    target->pos = snapped_pos;
+                }
+
+                const rf::Vector3 desired_pos = target->pos + delta;
+                rf::Vector3 constrained_pos{};
+                if (!waypoints_constrain_shatter_target_position(
+                        *target,
+                        desired_pos,
+                        constrained_pos)) {
+                    return false;
+                }
+
+                if (distance_sq(target->pos, constrained_pos)
+                    <= (kWaypointLinkRadiusEpsilon * kWaypointLinkRadiusEpsilon)) {
+                    return false;
+                }
+
+                target->pos = constrained_pos;
+                return true;
+            }
+
             target->pos += delta;
             return true;
         }
@@ -1687,7 +1765,31 @@ bool apply_target_type_change(const WaypointTargetType new_type)
         return true;
     }
 
+    int new_shatter_room_key = -1;
+    rf::Vector3 new_shatter_pos{};
+    if (new_type == WaypointTargetType::shatter) {
+        if (!waypoints_find_nearest_breakable_glass_face_point(
+                target->pos,
+                new_shatter_pos,
+                new_shatter_room_key)) {
+            rf::console::print(
+                "Target {} type change to shatter failed: target is not on breakable glass",
+                target->uid);
+            push_waypoint_editor_log(std::format(
+                "Target {} type change to shatter failed: target is not on breakable glass",
+                target->uid));
+            return false;
+        }
+    }
+
     target->type = new_type;
+    if (new_type == WaypointTargetType::shatter) {
+        target->identifier = new_shatter_room_key;
+        target->pos = new_shatter_pos;
+    }
+    else if (old_type == WaypointTargetType::shatter) {
+        target->identifier = -1;
+    }
     rebuild_target_waypoint_refs(*target);
     rf::console::print(
         "Target {} type changed {} -> {}",

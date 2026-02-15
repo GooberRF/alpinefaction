@@ -43,3 +43,16 @@ std::vector<int> collect_target_waypoint_uids(const rf::Vector3& pos);
 std::vector<int> collect_target_link_waypoint_uids(const rf::Vector3& pos);
 void normalize_target_waypoint_uids(std::vector<int>& waypoint_uids);
 WaypointTargetDefinition* find_waypoint_target_by_uid(int target_uid);
+bool waypoints_get_breakable_glass_room_key_from_face(const rf::GFace* face, int& out_room_key);
+bool waypoints_find_nearest_breakable_glass_face_point(
+    const rf::Vector3& desired_pos,
+    rf::Vector3& out_pos,
+    int& out_room_key);
+bool waypoints_constrain_shatter_target_position(
+    const WaypointTargetDefinition& target,
+    const rf::Vector3& desired_pos,
+    rf::Vector3& out_pos);
+bool waypoints_trace_breakable_glass_from_camera(
+    float max_dist,
+    rf::Vector3& out_hit_pos,
+    int& out_room_key);

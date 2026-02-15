@@ -1964,7 +1964,13 @@ void remove_realized_waypoint_targets(const rf::Vector3& crater_pos, float crate
         g_waypoint_targets.end());
 }
 
-std::optional<rf::Vector3> get_looked_at_target_point()
+struct LookedAtTargetPoint
+{
+    rf::Vector3 pos{};
+    const rf::GFace* face = nullptr;
+};
+
+std::optional<LookedAtTargetPoint> get_looked_at_target_point()
 {
     rf::Player* player = rf::local_player;
     if (!player || !player->cam) {
@@ -1983,9 +1989,11 @@ std::optional<rf::Vector3> get_looked_at_target_point()
     if (!hit) {
         return std::nullopt;
     }
-    return col_info.hit_point;
+    LookedAtTargetPoint looked_at{};
+    looked_at.pos = col_info.hit_point;
+    looked_at.face = static_cast<const rf::GFace*>(col_info.face);
+    return looked_at;
 }
-
 
 int find_nearest_waypoint(const rf::Vector3& pos, float radius, int exclude)
 {
@@ -4381,6 +4389,288 @@ int breakable_glass_room_key(const rf::GRoom& room)
     return -(room.room_index + 1);
 }
 
+bool waypoints_get_breakable_glass_room_key_from_face(const rf::GFace* face, int& out_room_key)
+{
+    if (!face || !face->which_room || !face->which_room->is_breakable_glass()) {
+        return false;
+    }
+    out_room_key = breakable_glass_room_key(*face->which_room);
+    return true;
+}
+
+rf::GRoom* find_breakable_glass_room_from_key(const int room_key)
+{
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || !rf::level.geometry) {
+        return nullptr;
+    }
+
+    if (room_key >= 0) {
+        rf::GRoom* room = rf::level_room_from_uid(room_key);
+        if (!room || !room->is_breakable_glass()) {
+            return nullptr;
+        }
+        return room;
+    }
+
+    const int room_index = -(room_key + 1);
+    if (room_index < 0 || room_index >= rf::level.geometry->all_rooms.size()) {
+        return nullptr;
+    }
+
+    rf::GRoom* room = rf::level.geometry->all_rooms[room_index];
+    if (!room || !room->is_breakable_glass()) {
+        return nullptr;
+    }
+    return room;
+}
+
+bool point_inside_glass_face_polygon(const rf::GFace& face, const rf::Vector3& point)
+{
+    constexpr float kFaceSideEpsilon = 0.02f;
+    constexpr int kMaxFaceEdges = 256;
+
+    const rf::GFaceVertex* start = face.edge_loop;
+    if (!start || !start->vertex) {
+        return false;
+    }
+
+    bool has_positive = false;
+    bool has_negative = false;
+    int edge_count = 0;
+    const rf::GFaceVertex* current = start;
+    do {
+        const rf::GFaceVertex* next = current->next ? current->next : start;
+        if (!next || !next->vertex || !current->vertex) {
+            return false;
+        }
+
+        const rf::Vector3 edge = next->vertex->pos - current->vertex->pos;
+        const rf::Vector3 to_point = point - current->vertex->pos;
+        const float side = edge.cross_prod(to_point).dot_prod(face.plane.normal);
+        if (side > kFaceSideEpsilon) {
+            has_positive = true;
+        }
+        else if (side < -kFaceSideEpsilon) {
+            has_negative = true;
+        }
+        if (has_positive && has_negative) {
+            return false;
+        }
+
+        current = next;
+        ++edge_count;
+        if (edge_count > kMaxFaceEdges) {
+            return false;
+        }
+    } while (current && current != start);
+
+    return edge_count >= 3;
+}
+
+bool find_best_glass_face_point_in_room(
+    rf::GRoom& room,
+    const rf::Vector3& desired_pos,
+    rf::Vector3& out_pos,
+    float& out_dist_sq)
+{
+    constexpr float kFaceBoundsPadding = 0.1f;
+
+    bool found = false;
+    float best_dist_sq = std::numeric_limits<float>::max();
+    rf::Vector3 best_pos{};
+
+    for (rf::GFace& face : room.face_list) {
+        if (face.which_room != &room) {
+            continue;
+        }
+        if (!face.edge_loop || !face.edge_loop->vertex) {
+            continue;
+        }
+
+        const rf::Vector3 normal = face.plane.normal;
+        if (normal.len_sq() <= 1e-6f) {
+            continue;
+        }
+
+        const float plane_distance = face.plane.distance_to_point(desired_pos);
+        rf::Vector3 projected = desired_pos - normal * plane_distance;
+
+        const bool in_face_bounds =
+            projected.x >= (face.bounding_box_min.x - kFaceBoundsPadding)
+            && projected.x <= (face.bounding_box_max.x + kFaceBoundsPadding)
+            && projected.y >= (face.bounding_box_min.y - kFaceBoundsPadding)
+            && projected.y <= (face.bounding_box_max.y + kFaceBoundsPadding)
+            && projected.z >= (face.bounding_box_min.z - kFaceBoundsPadding)
+            && projected.z <= (face.bounding_box_max.z + kFaceBoundsPadding);
+        if (!in_face_bounds) {
+            continue;
+        }
+
+        if (!point_inside_glass_face_polygon(face, projected)) {
+            continue;
+        }
+
+        const float candidate_dist_sq = distance_sq(desired_pos, projected);
+        if (!found || candidate_dist_sq < best_dist_sq) {
+            found = true;
+            best_dist_sq = candidate_dist_sq;
+            best_pos = projected;
+        }
+    }
+
+    if (!found) {
+        return false;
+    }
+
+    out_pos = best_pos;
+    out_dist_sq = best_dist_sq;
+    return true;
+}
+
+bool waypoints_find_nearest_breakable_glass_face_point(
+    const rf::Vector3& desired_pos,
+    rf::Vector3& out_pos,
+    int& out_room_key)
+{
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || !rf::level.geometry) {
+        return false;
+    }
+
+    bool found = false;
+    float best_dist_sq = std::numeric_limits<float>::max();
+    rf::Vector3 best_pos{};
+    int best_room_key = -1;
+
+    for (int room_index = 0; room_index < rf::level.geometry->all_rooms.size(); ++room_index) {
+        rf::GRoom* room = rf::level.geometry->all_rooms[room_index];
+        if (!room || !room->is_breakable_glass()) {
+            continue;
+        }
+
+        rf::Vector3 candidate_pos{};
+        float candidate_dist_sq = 0.0f;
+        if (!find_best_glass_face_point_in_room(
+                *room,
+                desired_pos,
+                candidate_pos,
+                candidate_dist_sq)) {
+            continue;
+        }
+
+        if (!found || candidate_dist_sq < best_dist_sq) {
+            found = true;
+            best_dist_sq = candidate_dist_sq;
+            best_pos = candidate_pos;
+            best_room_key = breakable_glass_room_key(*room);
+        }
+    }
+
+    if (!found) {
+        return false;
+    }
+
+    out_pos = best_pos;
+    out_room_key = best_room_key;
+    return true;
+}
+
+bool waypoints_constrain_shatter_target_position(
+    const WaypointTargetDefinition& target,
+    const rf::Vector3& desired_pos,
+    rf::Vector3& out_pos)
+{
+    if (target.type != WaypointTargetType::shatter || target.identifier == -1) {
+        return false;
+    }
+
+    rf::GRoom* room = find_breakable_glass_room_from_key(target.identifier);
+    if (!room) {
+        return false;
+    }
+
+    float dist_sq = 0.0f;
+    if (!find_best_glass_face_point_in_room(*room, desired_pos, out_pos, dist_sq)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool trace_breakable_glass_with_level_solid(
+    const rf::Vector3& from,
+    const rf::Vector3& to,
+    const int trace_flags,
+    rf::Vector3& out_hit_pos,
+    int& out_room_key)
+{
+    rf::Vector3 p0 = from;
+    rf::Vector3 p1 = to;
+    rf::GCollisionOutput collision{};
+    if (!rf::collide_linesegment_level_solid(p0, p1, trace_flags, &collision)
+        || !collision.face
+        || !waypoints_get_breakable_glass_room_key_from_face(collision.face, out_room_key)) {
+        return false;
+    }
+
+    out_hit_pos = collision.hit_point;
+    return true;
+}
+
+bool waypoints_trace_breakable_glass_from_camera(
+    const float max_dist,
+    rf::Vector3& out_hit_pos,
+    int& out_room_key)
+{
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || !std::isfinite(max_dist) || max_dist <= 0.0f) {
+        return false;
+    }
+
+    rf::Player* const player = rf::local_player;
+    if (!player || !player->cam) {
+        return false;
+    }
+
+    const rf::Vector3 cam_pos = rf::camera_get_pos(player->cam);
+    rf::Vector3 dir = rf::camera_get_orient(player->cam).fvec;
+    if (dir.len_sq() <= 1e-6f) {
+        return false;
+    }
+    dir.normalize_safe();
+
+    // Avoid starting inside near-plane geometry.
+    const rf::Vector3 trace_start = cam_pos + dir * 0.05f;
+    const rf::Vector3 trace_end = trace_start + dir * max_dist;
+
+    // Trace flags to return a hit on breakable glass room.
+    constexpr int kShatterTraceFlags = 0;
+
+    const auto log_line_success = [&](int flags) {
+        waypoint_editor_logf(
+            "Shatter trace success: level_solid f={:#x} room={} hit=({:.2f},{:.2f},{:.2f})",
+            flags,
+            out_room_key,
+            out_hit_pos.x,
+            out_hit_pos.y,
+            out_hit_pos.z);
+    };
+
+    if (trace_breakable_glass_with_level_solid(
+            trace_start,
+            trace_end,
+            kShatterTraceFlags,
+            out_hit_pos,
+            out_room_key)) {
+        log_line_success(kShatterTraceFlags);
+        return true;
+    }
+
+    waypoint_editor_logf(
+        "Shatter trace failed: level_solid f={:#x} hit no breakable glass (max_dist={:.1f})",
+        kShatterTraceFlags,
+        max_dist);
+    return false;
+}
+
 void waypoints_on_glass_shattered(const rf::GFace* face)
 {
     if (!face || !face->which_room || g_waypoint_targets.empty()) {
@@ -6311,26 +6601,61 @@ ConsoleCommand2 waypoint_target_add_cmd{
             return;
         }
 
-        auto target_pos = get_looked_at_target_point();
-        if (!target_pos) {
-            rf::console::print("Could not place target: no valid looked-at world position");
-            return;
+        int shatter_room_key = -1;
+        rf::Vector3 target_pos{};
+        if (target_type.value() == WaypointTargetType::shatter) {
+            constexpr float kShatterTraceDist = 10000.0f;
+            if (!waypoints_trace_breakable_glass_from_camera(
+                    kShatterTraceDist,
+                    target_pos,
+                    shatter_room_key)) {
+                rf::console::print(
+                    "Could not place shatter target: looked-at surface is not breakable glass");
+                waypoint_editor_logf(
+                    "Could not place shatter target: looked-at surface is not breakable glass");
+                return;
+            }
+
+            WaypointTargetDefinition shatter_constraint{};
+            shatter_constraint.type = WaypointTargetType::shatter;
+            shatter_constraint.identifier = shatter_room_key;
+            rf::Vector3 constrained_pos{};
+            if (waypoints_constrain_shatter_target_position(
+                    shatter_constraint,
+                    target_pos,
+                    constrained_pos)) {
+                target_pos = constrained_pos;
+            }
+        }
+        else {
+            auto looked_at_target = get_looked_at_target_point();
+            if (!looked_at_target) {
+                rf::console::print("Could not place target: no valid looked-at world position");
+                waypoint_editor_logf("Could not place target: no valid looked-at world position");
+                return;
+            }
+            target_pos = looked_at_target->pos;
         }
 
-        const int target_uid = add_waypoint_target(target_pos.value(), target_type.value());
+        const int target_uid = add_waypoint_target(target_pos, target_type.value());
         const auto* target = find_waypoint_target_by_uid(target_uid);
+        if (target_type.value() == WaypointTargetType::shatter) {
+            if (auto* mutable_target = find_waypoint_target_by_uid(target_uid)) {
+                mutable_target->identifier = shatter_room_key;
+            }
+        }
         const int waypoint_ref_count = target ? static_cast<int>(target->waypoint_uids.size()) : 0;
         rf::console::print(
             "Added target {} uid {} at {:.2f},{:.2f},{:.2f} ({} waypoint refs)",
             waypoint_target_type_name(target_type.value()),
             target_uid,
-            target_pos->x, target_pos->y, target_pos->z,
+            target_pos.x, target_pos.y, target_pos.z,
             waypoint_ref_count);
         waypoint_editor_logf(
             "Added target {} uid {} at {:.2f},{:.2f},{:.2f} ({} waypoint refs)",
             waypoint_target_type_name(target_type.value()),
             target_uid,
-            target_pos->x, target_pos->y, target_pos->z,
+            target_pos.x, target_pos.y, target_pos.z,
             waypoint_ref_count);
     },
     "Add a waypoint target at the looked-at world position",
