@@ -23,7 +23,6 @@
 #include "alpine_packets.h"
 #include "multi.h"
 #include "../os/console.h"
-#include "../os/os.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
 #include "../misc/alpine_options.h"
@@ -227,7 +226,6 @@ void set_server_window_title() {
 void on_dedicated_server_launch_post() {
     initialize_game_info_server_flags(); // build global flags var used in game_info packets
     set_server_window_title();
-    set_dedicated_server_timer_frequency();
 }
 
 // should weapons drop on player death?
