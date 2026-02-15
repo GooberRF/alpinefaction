@@ -7,7 +7,7 @@
 
 void wait_for(const float ms) {
     // Should be a resolution of 500 us.
-    static thread_local HANDLE timer = CreateWaitableTimerExA(
+    thread_local const HANDLE timer = CreateWaitableTimerExA(
         nullptr,
         nullptr,
         CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
@@ -16,7 +16,7 @@ void wait_for(const float ms) {
 
     if (!timer) {
         ERR_ONCE("CreateWaitableTimerExA in wait_for failed ({})", GetLastError());
-        static MMRESULT res = timeBeginPeriod(1);
+        static const MMRESULT res = timeBeginPeriod(1);
         if (res != TIMERR_NOERROR) {
             ERR_ONCE(
                 "The frame rate may be unstable, because timeBeginPeriod failed ({})",
