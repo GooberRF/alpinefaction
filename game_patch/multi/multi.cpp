@@ -1,6 +1,4 @@
 #include <algorithm>
-#include <charconv>
-#include <cstring>
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
@@ -16,6 +14,9 @@
 #include "alpine_packets.h"
 #include "server_internal.h"
 #include "gametype.h"
+#ifdef HAS_BOTS
+#include "bots/bot_chat_manager.h"
+#endif
 #include "../hud/hud.h"
 #include "../rf/file/file.h"
 #include "../rf/level.h"
@@ -59,12 +60,6 @@ static rf::CmdLineParam& get_bot_cmd_line_param()
     return bot_param;
 }
 
-static rf::CmdLineParam& get_botskill_cmd_line_param()
-{
-    static rf::CmdLineParam bot_skill_param{"-botskill", "", true};
-    return bot_skill_param;
-}
-
 static bool g_client_bot_launch_enabled = false;
 
 bool client_bot_launch_enabled()
@@ -72,63 +67,19 @@ bool client_bot_launch_enabled()
     return g_client_bot_launch_enabled;
 }
 
-static std::optional<int> parse_cmdline_int_arg(const char* arg)
-{
-    if (!arg) {
-        return std::nullopt;
-    }
-
-    const size_t arg_len = std::strlen(arg);
-    if (arg_len == 0) {
-        return std::nullopt;
-    }
-
-    int value = 0;
-    const auto [ptr, ec] = std::from_chars(arg, arg + arg_len, value);
-    if (ec != std::errc{} || ptr != arg + arg_len) {
-        return std::nullopt;
-    }
-
-    return value;
-}
-
 static void handle_bot_cmd_line_params()
 {
     if (rf::is_dedicated_server) {
         g_client_bot_launch_enabled = false;
-        g_alpine_game_config.client_bot_mode = false;
         return;
     }
 
     const bool has_bot_switch = get_bot_cmd_line_param().found();
-    const bool has_botskill_switch = get_botskill_cmd_line_param().found();
     g_client_bot_launch_enabled = has_bot_switch;
 
-    if (has_botskill_switch) {
-        const char* skill_arg = get_botskill_cmd_line_param().get_arg();
-        if (std::optional<int> parsed_skill = parse_cmdline_int_arg(skill_arg)) {
-            g_alpine_game_config.set_client_bot_skill(*parsed_skill);
-        }
-        else {
-            xlog::warn("Invalid value for -botskill: '{}'", skill_arg ? skill_arg : "");
-        }
+    if (has_bot_switch) {
+        rf::console::print("Client bot mode enabled.");
     }
-
-    if (!has_bot_switch) {
-        if (g_alpine_game_config.client_bot_mode) {
-            rf::console::print(
-                "Client bot mode disabled. Launch with -bot to enable bot behavior."
-            );
-        }
-        g_alpine_game_config.client_bot_mode = false;
-        return;
-    }
-
-    g_alpine_game_config.client_bot_mode = true;
-    rf::console::print(
-        "Client bot mode enabled (skill {}).",
-        g_alpine_game_config.client_bot_skill
-    );
 }
 
 void handle_url_param()
@@ -227,6 +178,10 @@ FunHook<void()> multi_limbo_init{
 
         if (!rf::local_player)
             return;
+
+#ifdef HAS_BOTS
+        bot_chat_manager_on_limbo_enter(*rf::local_player);
+#endif
 
         rf::camera_enter_random_fixed_pos();
         rf::camera_enter_fixed(rf::local_player->cam);
@@ -905,7 +860,7 @@ void multi_do_patch()
     get_url_cmd_line_param();
     get_levelm_cmd_line_param();
     get_bot_cmd_line_param();
-    get_botskill_cmd_line_param();
+    g_client_bot_launch_enabled = !rf::is_dedicated_server && get_bot_cmd_line_param().found();
 
     // console commands
     levelm_cmd.register_cmd();

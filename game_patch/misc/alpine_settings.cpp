@@ -15,6 +15,7 @@
 #include "../rf/sound/sound.h"
 #include "../rf/gr/gr.h"
 #include "../sound/sound.h"
+#include "../multi/multi.h"
 #include <shlwapi.h>
 #include <windows.h>
 #include <shellapi.h>
@@ -239,10 +240,22 @@ std::string alpine_get_settings_filename()
         return afs_cmd_line_filename.value();
     }
 
+    const bool use_stock_players_config =
+        g_alpine_options_config.is_option_loaded(AlpineOptionID::UseStockPlayersConfig)
+        && std::get<bool>(g_alpine_options_config.options[AlpineOptionID::UseStockPlayersConfig]);
+    const bool is_tc_mod = rf::mod_param.found() && !use_stock_players_config;
+    const bool bot_launch = client_bot_launch_enabled();
+
+    if (bot_launch) {
+        if (is_tc_mod) {
+            std::string mod_name = rf::mod_param.get_arg();
+            return "alpine_settings-bot_" + mod_name + ".ini";
+        }
+        return "alpine_settings-bot.ini";
+    }
+
     // tc mod
-    if (rf::mod_param.found() &&
-        !(g_alpine_options_config.is_option_loaded(AlpineOptionID::UseStockPlayersConfig) &&
-        std::get<bool>(g_alpine_options_config.options[AlpineOptionID::UseStockPlayersConfig]))) {
+    if (is_tc_mod) {
         std::string mod_name = rf::mod_param.get_arg();
         return "alpine_settings_" + mod_name + ".ini";
     }
@@ -922,17 +935,9 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.bot_shared_secret = std::stoul(settings["BotSharedSecret"]);
         processed_keys.insert("BotSharedSecret");
     }
-    if (settings.count("ClientBotMode")) {
-        g_alpine_game_config.client_bot_mode = std::stoi(settings["ClientBotMode"]);
-        processed_keys.insert("ClientBotMode");
-    }
     if (settings.count("WaypointsEditMode")) {
         // Legacy session-only key. Keep as processed so older files do not become orphaned.
         processed_keys.insert("WaypointsEditMode");
-    }
-    if (settings.count("ClientBotSkill")) {
-        g_alpine_game_config.set_client_bot_skill(std::stoi(settings["ClientBotSkill"]));
-        processed_keys.insert("ClientBotSkill");
     }
 
     // Load input settings
@@ -1308,8 +1313,6 @@ void alpine_player_settings_save(rf::Player* player)
     file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
     file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
     file << "BotSharedSecret=" << g_alpine_game_config.bot_shared_secret << "\n";
-    file << "ClientBotMode=" << g_alpine_game_config.client_bot_mode << "\n";
-    file << "ClientBotSkill=" << g_alpine_game_config.client_bot_skill << "\n";
 
     alpine_control_config_serialize(file, player->settings.controls);
 

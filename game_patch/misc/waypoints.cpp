@@ -3,6 +3,7 @@
 #include "alpine_settings.h"
 #include "../main/main.h"
 #include "../multi/gametype.h"
+#include "../multi/multi.h"
 #include "../os/console.h"
 #include <xlog/xlog.h>
 #include "../rf/collide.h"
@@ -207,7 +208,7 @@ void add_waypoint_author_if_missing(std::string_view author_name)
 
 bool is_waypoint_bot_mode_active()
 {
-    return g_alpine_game_config.client_bot_mode;
+    return client_bot_launch_enabled();
 }
 
 bool are_waypoint_commands_enabled_for_local_client()

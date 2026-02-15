@@ -29,6 +29,9 @@
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
+#ifdef HAS_BOTS
+#include "bots/bot_chat_manager.h"
+#endif
 #include "../main/main.h"
 #include "../hud/hud.h"
 #include "../rf/multi.h"
@@ -693,6 +696,11 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             }
             else {
                 handle_sound_msg(msg);
+#ifdef HAS_BOTS
+                if (rf::Player* sender = rf::multi_find_player_by_id(static_cast<uint8_t>(data[0]))) {
+                    bot_chat_manager_on_remote_chat_message(*sender, msg);
+                }
+#endif
             }
         }
 
@@ -1247,63 +1255,6 @@ ConsoleCommand2 bot_shared_secret_cmd{
     "Set a shared secret to signal your client as a bot",
 };
 
-ConsoleCommand2 bot_mode_cmd{
-    "bot_mode",
-    [] (const std::optional<int> mode) {
-        if (rf::is_dedicated_server) {
-            rf::console::print(
-                "This console variable is not available on dedicated servers"
-            );
-            return;
-        }
-
-        if (mode.has_value()) {
-            const bool requested_enabled = mode.value() != 0;
-            if (requested_enabled && !client_bot_launch_enabled()) {
-                g_alpine_game_config.client_bot_mode = false;
-                rf::console::print(
-                    "Client bot mode requires launching with -bot."
-                );
-            }
-            else {
-                g_alpine_game_config.client_bot_mode = requested_enabled;
-            }
-        }
-
-        if (!client_bot_launch_enabled()) {
-            g_alpine_game_config.client_bot_mode = false;
-        }
-
-        rf::console::print(
-            "Client bot mode is {}",
-            g_alpine_game_config.client_bot_mode ? "enabled" : "disabled"
-        );
-    },
-    "Enable or disable client bot mode for future multiplayer joins",
-};
-
-ConsoleCommand2 bot_skill_cmd{
-    "bot_skill",
-    [] (const std::optional<int> skill) {
-        if (rf::is_dedicated_server) {
-            rf::console::print(
-                "This console variable is not available on dedicated servers"
-            );
-            return;
-        }
-
-        if (skill.has_value()) {
-            g_alpine_game_config.set_client_bot_skill(skill.value());
-        }
-
-        rf::console::print(
-            "Client bot skill is {} (0-100)",
-            g_alpine_game_config.client_bot_skill
-        );
-    },
-    "Set client bot aiming skill from 0 to 100",
-};
-
 enum JoinReqTlv : uint8_t {
     JR_TLV_BOT_SHARED_SECRET = 0x1,
 };
@@ -1311,9 +1262,7 @@ enum JoinReqTlv : uint8_t {
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
     0x0047ABFB,
     [] (const rf::NetAddr* const addr, std::byte* const data, const size_t len) {
-        const bool session_client_bot_mode =
-            client_bot_launch_enabled()
-            && g_alpine_game_config.client_bot_mode;
+        const bool session_client_bot_mode = client_bot_launch_enabled();
 
         // Add Alpine Faction info to join_req packet
         AFJoinReq_v2 ext_data{
@@ -2596,8 +2545,6 @@ void network_init()
     multi_stop_hook.install();
 
     bot_shared_secret_cmd.register_cmd();
-    bot_mode_cmd.register_cmd();
-    bot_skill_cmd.register_cmd();
 
     // print join_req denial reasons
     check_access_for_new_player_hook.install();
