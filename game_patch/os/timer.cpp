@@ -19,7 +19,7 @@ void wait_for(const float ms) {
         static MMRESULT res = timeBeginPeriod(1);
         if (res != TIMERR_NOERROR) {
             ERR_ONCE(
-                "The server frame rate may be unstable, because timeBeginPeriod failed ({})",
+                "The frame rate may be unstable, because timeBeginPeriod failed ({})",
                 res
             );
         }
