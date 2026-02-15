@@ -6,6 +6,10 @@
 #include "../rf/os/timer.h"
 
 void wait_for(const float ms) {
+    if (ms <= .0f) {
+        return;
+    }
+
     // Should be a resolution of 500 us.
     thread_local const HANDLE timer = CreateWaitableTimerExA(
         nullptr,
