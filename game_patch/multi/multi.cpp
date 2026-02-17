@@ -2,6 +2,7 @@
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
+#include <shellapi.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -20,6 +21,7 @@
 #include "../hud/hud.h"
 #include "../rf/file/file.h"
 #include "../rf/level.h"
+#include "../os/os.h"
 #include "../os/console.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
@@ -37,6 +39,7 @@
 #include "../rf/localize.h"
 #include "../rf/ai.h"
 #include "../rf/item.h"
+#include "../rf/sound/sound.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
 
@@ -60,25 +63,55 @@ static rf::CmdLineParam& get_bot_cmd_line_param()
     return bot_param;
 }
 
+static rf::CmdLineParam& get_debugbot_cmd_line_param()
+{
+    static rf::CmdLineParam debugbot_param{"-debugbot", "", false};
+    return debugbot_param;
+}
+
 static bool g_client_bot_launch_enabled = false;
+static bool g_client_bot_debug_render_enabled = false;
 
 bool client_bot_launch_enabled()
 {
-    return g_client_bot_launch_enabled;
+    return g_client_bot_launch_enabled || is_client_bot_requested_from_cmdline();
+}
+
+bool client_bot_headless_enabled()
+{
+    return client_bot_launch_enabled()
+        && !(g_client_bot_debug_render_enabled || is_client_debugbot_requested_from_cmdline());
 }
 
 static void handle_bot_cmd_line_params()
 {
     if (rf::is_dedicated_server) {
         g_client_bot_launch_enabled = false;
+        g_client_bot_debug_render_enabled = false;
         return;
     }
 
-    const bool has_bot_switch = get_bot_cmd_line_param().found();
+    const bool has_bot_switch = is_client_bot_requested_from_cmdline();
+    const bool has_debugbot_switch_raw =
+        raw_command_line_has_switch(L"-debugbot") || raw_command_line_has_switch(L"/debugbot");
+    const bool has_debugbot_switch = is_client_debugbot_requested_from_cmdline();
     g_client_bot_launch_enabled = has_bot_switch;
+    g_client_bot_debug_render_enabled = has_bot_switch && has_debugbot_switch;
+
+    if (has_debugbot_switch_raw && !has_bot_switch) {
+        rf::console::print("Ignoring -debugbot because -bot was not provided.");
+    }
 
     if (has_bot_switch) {
-        rf::console::print("Client bot mode enabled.");
+        const bool headless = client_bot_headless_enabled();
+        g_alpine_game_config.rendering_enabled = !headless;
+        if (headless) {
+            rf::sound_enabled = false;
+        }
+        rf::console::print(
+            "Client bot mode enabled ({}).",
+            headless ? "headless" : "debug render"
+        );
     }
 }
 
@@ -780,6 +813,21 @@ ConsoleCommand2 mapver_cmd{
     "dbg_mapver <filename>",
 };
 
+ConsoleCommand2 dbg_bot_cmd{
+    "dbg_bot",
+    [](std::optional<int> enabled) {
+        if (enabled.has_value()) {
+            g_alpine_game_config.dbg_bot = enabled.value() != 0;
+        }
+        rf::console::print(
+            "Bot debug console logging is {}.",
+            g_alpine_game_config.dbg_bot ? "enabled" : "disabled"
+        );
+    },
+    "Toggle bot debug console logging",
+    "dbg_bot [0|1]",
+};
+
 void mp_send_handicap_request(bool force) {
     if (force || g_alpine_game_config.desired_handicap > 0) {
         af_send_handicap_request(static_cast<uint8_t>(g_alpine_game_config.desired_handicap));
@@ -860,13 +908,22 @@ void multi_do_patch()
     get_url_cmd_line_param();
     get_levelm_cmd_line_param();
     get_bot_cmd_line_param();
-    g_client_bot_launch_enabled = !rf::is_dedicated_server && get_bot_cmd_line_param().found();
+    get_debugbot_cmd_line_param();
+    g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline();
+    g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
+    if (g_client_bot_launch_enabled) {
+        g_alpine_game_config.rendering_enabled = !client_bot_headless_enabled();
+        if (client_bot_headless_enabled()) {
+            rf::sound_enabled = false;
+        }
+    }
 
     // console commands
     levelm_cmd.register_cmd();
     mapver_cmd.register_cmd();
     mapm_cmd.register_cmd();
     set_handicap_cmd.register_cmd();
+    dbg_bot_cmd.register_cmd();
 }
 
 void multi_after_full_game_init()

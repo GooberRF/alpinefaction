@@ -44,7 +44,8 @@ std::optional<std::string> afs_cmd_line_filename;
 AlpineGameSettings g_alpine_game_config;
 
 bool is_d3d11() {
-    return g_game_config.renderer == GameConfig::Renderer::d3d11;
+    return g_game_config.renderer == GameConfig::Renderer::d3d11
+        && !client_bot_headless_enabled();
 }
 
 std::optional<uint32_t> parse_hex_color_string(const std::string& value)
@@ -761,6 +762,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.waypoints_edit_default_enabled = std::stoi(settings["WaypointsEditDefaultEnabled"]);
         processed_keys.insert("WaypointsEditDefaultEnabled");
     }
+    if (settings.count("DbgBot")) {
+        g_alpine_game_config.dbg_bot = std::stoi(settings["DbgBot"]);
+        processed_keys.insert("DbgBot");
+    }
 
     // Load singleplayer settings
     if (settings.count("DifficultyLevel")) {
@@ -1266,6 +1271,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "EnableSound=" << g_alpine_game_config.sound_enabled << "\n";
     file << "EnableBackgroundMouse=" << g_alpine_game_config.background_mouse << "\n";
     file << "WaypointsEditDefaultEnabled=" << g_alpine_game_config.waypoints_edit_default_enabled << "\n";
+    file << "DbgBot=" << g_alpine_game_config.dbg_bot << "\n";
 
     // Singleplayer
     file << "\n[SingleplayerSettings]\n";

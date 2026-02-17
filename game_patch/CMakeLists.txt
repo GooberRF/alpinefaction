@@ -189,6 +189,8 @@ set(SRCS
     misc/high_fps.h
     misc/misc.cpp
     misc/misc.h
+    misc/string.cpp
+    misc/string.h
     misc/vpackfile.cpp
     misc/vpackfile.h
     misc/save_restore.cpp
