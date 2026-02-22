@@ -1,6 +1,9 @@
 #include "waypoints.h"
 #include "waypoints_utils.h"
 #include "alpine_settings.h"
+#ifdef HAS_BOTS
+#include "../multi/bots/bot_waypoint_route.h"
+#endif
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
@@ -54,6 +57,8 @@ std::vector<WaypointTargetDefinition> g_waypoint_targets;
 std::vector<WpCacheNode> g_cache_nodes;
 WpCacheNode* g_cache_root = nullptr;
 bool g_cache_dirty = true;
+std::unordered_map<int, std::vector<int>> g_waypoints_by_type;
+int g_waypoints_by_type_total = 0;
 bool g_has_loaded_wpt = false;
 bool g_missing_awp_from_level_init = false;
 bool g_drop_waypoints = true;
@@ -182,6 +187,7 @@ void invalidate_cache()
     g_cache_root = nullptr;
     g_cache_nodes.clear();
     g_cache_dirty = true;
+    g_waypoints_by_type_total = 0;
 }
 
 bool has_waypoint_author(std::string_view author_name)
@@ -6936,6 +6942,9 @@ void waypoints_on_trigger_activated(int trigger_uid)
         return;
     }
     activate_bridge_zones_for_trigger_uid(trigger_uid);
+#ifdef HAS_BOTS
+    bot_waypoint_invalidate_components();
+#endif
 }
 
 void waypoints_do_frame()
@@ -7269,6 +7278,35 @@ bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype)
     out_type = static_cast<int>(node.type);
     out_subtype = node.subtype;
     return true;
+}
+
+static void rebuild_waypoints_by_type_if_needed()
+{
+    const int waypoint_total = static_cast<int>(g_waypoints.size());
+    if (g_waypoints_by_type_total == waypoint_total) {
+        return;
+    }
+    g_waypoints_by_type_total = waypoint_total;
+    g_waypoints_by_type.clear();
+    for (int i = 1; i < waypoint_total; ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid) {
+            continue;
+        }
+        g_waypoints_by_type[static_cast<int>(node.type)].push_back(i);
+    }
+}
+
+const std::vector<int>& waypoints_get_by_type(WaypointType type)
+{
+    rebuild_waypoints_by_type_if_needed();
+    static const std::vector<int> kEmpty{};
+    const int type_key = static_cast<int>(type);
+    auto it = g_waypoints_by_type.find(type_key);
+    if (it != g_waypoints_by_type.end()) {
+        return it->second;
+    }
+    return kEmpty;
 }
 
 bool waypoints_get_movement_subtype(int index, int& out_movement_subtype)

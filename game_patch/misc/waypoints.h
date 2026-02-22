@@ -207,6 +207,7 @@ int waypoints_closest(const rf::Vector3& pos, float radius);
 int waypoints_count();
 bool waypoints_get_pos(int index, rf::Vector3& out_pos);
 bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
+const std::vector<int>& waypoints_get_by_type(WaypointType type);
 bool waypoints_get_movement_subtype(int index, int& out_movement_subtype);
 bool waypoints_get_identifier(int index, int& out_identifier);
 bool waypoints_get_temporary(int index, bool& out_temporary);

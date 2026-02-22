@@ -176,6 +176,8 @@ struct AlpineGameSettings
     bool simple_server_chat_msgs = true;
     bool quick_exit = false;
     uint32_t bot_shared_secret = 0;
+    std::string bot_personality_preset = "balanced";
+    std::string bot_skill_preset = "average";
     bool waypoints_edit_mode = false;
     bool waypoints_edit_default_enabled = false;
     int suppress_autoswitch_alias = -1;
