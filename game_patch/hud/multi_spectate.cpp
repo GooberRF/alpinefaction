@@ -53,12 +53,30 @@ static bool is_force_respawn()
     return g_spawned_in_current_level && (rf::netgame.flags & rf::NG_FLAG_FORCE_RESPAWN);
 }
 
-// Animation state indices: 0=stand, 1=walk, 2=run, 8=crouch_stand, 9=crouch_walk, 10=crouch_run
-static constexpr int ANIM_STATE_CROUCH_OFFSET = 8;
-
-static bool is_crouch_anim_state(int state)
+static void spectate_entity_translate_stand_state_to_crouch_state(int* state_anim_index)
 {
-    return state >= 8 && state <= 10;
+    if (!state_anim_index) {
+        return;
+    }
+
+    switch (static_cast<rf::EntityState>(*state_anim_index)) {
+    case rf::ENTITY_STATE_STAND:
+        *state_anim_index = rf::ENTITY_STATE_CROUCH;
+        break;
+    case rf::ENTITY_STATE_ATTACK_STAND:
+        *state_anim_index = rf::ENTITY_STATE_ATTACK_CROUCH;
+        break;
+    case rf::ENTITY_STATE_WALK:
+        *state_anim_index = rf::ENTITY_STATE_ATTACK_CROUCH_WALK;
+        break;
+    default:
+        break;
+    }
+}
+
+static bool state_animation_is_crouch(int state)
+{
+    return state >= rf::ENTITY_STATE_CROUCH && state <= rf::ENTITY_STATE_ATTACK_CROUCH_WALK;
 }
 
 // Hook entity_set_next_state_anim to remap non-crouch animations to crouch
@@ -66,14 +84,14 @@ static bool is_crouch_anim_state(int state)
 // movement state machine from constantly overriding the crouch animation.
 FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     0x0042A580,
-    [](rf::Entity* entity, int state, float transition_time) {
+    [](rf::Entity* entity, int state_anim_index, float transition_time) {
         if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)) {
             rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
-            if (entity == target && !is_crouch_anim_state(state) && state <= 2) {
-                state += ANIM_STATE_CROUCH_OFFSET;
+            if (entity == target) {
+                spectate_entity_translate_stand_state_to_crouch_state(&state_anim_index);
             }
         }
-        spectate_entity_set_next_state_anim_hook.call_target(entity, state, transition_time);
+        spectate_entity_set_next_state_anim_hook.call_target(entity, state_anim_index, transition_time);
     },
 };
 
@@ -88,9 +106,13 @@ void multi_spectate_sync_crouch_anim()
     if (!entity)
         return;
 
-    if (rf::entity_is_crouching(entity) && !is_crouch_anim_state(entity->current_state_anim)) {
-        int base_state = entity->current_state_anim <= 2 ? entity->current_state_anim : 0;
-        rf::entity_set_next_state_anim(entity, base_state + ANIM_STATE_CROUCH_OFFSET, 0.15f);
+    if (rf::entity_is_crouching(entity) && !state_animation_is_crouch(entity->current_state_anim)) {
+        int next_state_anim = entity->current_state_anim;
+        spectate_entity_translate_stand_state_to_crouch_state(&next_state_anim);
+        if (next_state_anim == entity->current_state_anim) {
+            next_state_anim = rf::ENTITY_STATE_CROUCH;
+        }
+        rf::entity_set_next_state_anim(entity, next_state_anim, 0.15f);
     }
 }
 
