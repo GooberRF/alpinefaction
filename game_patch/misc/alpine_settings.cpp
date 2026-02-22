@@ -595,6 +595,16 @@ bool alpine_player_settings_load(rf::Player* player)
         }
         processed_keys.insert("RailScopeColor");
     }
+    if (settings.count("ThermalEntityColor")) {
+        auto color_override = parse_hex_color_string(settings["ThermalEntityColor"]);
+        if (color_override) {
+            g_alpine_game_config.thermal_entity_color_override = color_override;
+        }
+        else {
+            xlog::warn("Invalid thermal entity color override: {}", settings["ThermalEntityColor"]);
+        }
+        processed_keys.insert("ThermalEntityColor");
+    }
     if (settings.count("ArAmmoColor")) {
         auto color_override = parse_hex_color_string(settings["ArAmmoColor"]);
         if (color_override) {
@@ -1193,6 +1203,9 @@ void alpine_player_settings_save(rf::Player* player)
     }
     if (g_alpine_game_config.rail_scope_color_override) {
         file << "RailScopeColor=" << format_hex_color_string(*g_alpine_game_config.rail_scope_color_override) << "\n";
+    }
+    if (g_alpine_game_config.thermal_entity_color_override) {
+        file << "ThermalEntityColor=" << format_hex_color_string(*g_alpine_game_config.thermal_entity_color_override) << "\n";
     }
     if (g_alpine_game_config.ar_ammo_digit_color_override) {
         file << "ArAmmoColor=" << format_hex_color_string(*g_alpine_game_config.ar_ammo_digit_color_override) << "\n";
