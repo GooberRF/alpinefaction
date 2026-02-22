@@ -1253,6 +1253,10 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_LOCATION_PINGING;
     if (g_alpine_server_config_active_rules.spawn_delay.enabled)
         af |= af_server_info_flags::SIF_DELAYED_SPAWNS;
+    if (g_alpine_server_config.allow_outlines)
+        af |= af_server_info_flags::SIF_ALLOW_OUTLINES;
+    if (g_alpine_server_config.allow_outlines_xray)
+        af |= af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -1306,9 +1310,35 @@ void af_send_server_info_packet(rf::Player* player)
     af_server_info_packet pkt{};
     build_af_server_info_packet(pkt);
 
+    xlog::warn("af_server_info SENDING to player '{}': af_flags=0x{:08X}", player->name, pkt.af_flags);
+
     std::byte buf[sizeof(pkt)];
     std::memcpy(buf, &pkt, sizeof(pkt));
     af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
+}
+
+// Apply af_server_info_packet flags to the local server info (for listen server host)
+static void apply_server_info_packet_locally(const af_server_info_packet& pkt)
+{
+    auto& opt = get_af_server_info_mutable();
+    if (!opt.has_value())
+        return;
+
+    auto& server_info = opt.value();
+    server_info.saving_enabled = (pkt.af_flags & af_server_info_flags::SIF_POSITION_SAVING) != 0;
+    server_info.allow_fb_mesh = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FULLBRIGHT_MESHES) != 0;
+    server_info.allow_lmap = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_LIGHTMAPS_ONLY) != 0;
+    server_info.allow_no_ss = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_SCREENSHAKE) != 0;
+    server_info.no_player_collide = (pkt.af_flags & af_server_info_flags::SIF_NO_PLAYER_COLLIDE) != 0;
+    server_info.allow_no_mf = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT) != 0;
+    server_info.click_limit = (pkt.af_flags & af_server_info_flags::SIF_CLICK_LIMITER) != 0;
+    server_info.unlimited_fps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS) != 0;
+    server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
+    server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
+    server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
+    server_info.allow_outlines = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES) != 0;
+    server_info.allow_outlines_xray = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY) != 0;
+    server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
 }
 
 // todo: on join, level init, relevant svar change, sv_loadconfig
@@ -1330,10 +1360,16 @@ void af_send_server_info_packet_to_all()
             continue;
         af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
     }
+
+    // On a listen server, the local player has no net_data so the packet is never
+    // sent/received via the network. Apply the flags directly to keep local state in sync.
+    apply_server_info_packet_locally(pkt);
 }
 
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&)
 {
+    xlog::warn("af_server_info_packet RECEIVED: is_multi={}, is_server={}, len={}", rf::is_multi, rf::is_server, len);
+
     // Receive: client <- server
     if (!rf::is_multi || rf::is_server)
         return;
@@ -1356,6 +1392,8 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
         xlog::warn("af_server_info: missing initial server info from join");
         return; // server info is missing, how did you get this packet?
     }
+
+    xlog::warn("af_server_info: processing af_flags=0x{:08X}", pkt.af_flags);
 
     auto& server_info = get_af_server_info_mutable().value();
 
@@ -1423,6 +1461,8 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
     server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
     server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
     server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
+    server_info.allow_outlines = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES) != 0;
+    server_info.allow_outlines_xray = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY) != 0;
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();

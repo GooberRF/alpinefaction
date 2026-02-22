@@ -50,6 +50,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
+- Implement player outlines (D3D11 only)
+- Add `r_outlines`, `r_outlines_color_enemy`, `r_outlines_color_team`, `r_outlines_color_team_b`, `r_outlines_color_team_r` for customizing outline colors
+- Add `allow_outlines` and `allow_outlines_xray` dedicated server configuration options to permit or deny outline usage by clients.
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------

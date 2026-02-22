@@ -699,6 +699,54 @@ namespace df::gr::d3d11
         draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
     }
 
+    const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::prepare_character_for_draw(
+        rf::VifLodMesh* lod_mesh, int lod_index,
+        const rf::Vector3& pos, const rf::Matrix3& orient,
+        const rf::CharacterInstance* ci)
+    {
+        page_in_character_mesh(lod_mesh);
+        auto render_cache = reinterpret_cast<CharacterMeshRenderCache*>(lod_mesh->render_cache);
+        if (!render_cache) {
+            return nullptr;
+        }
+
+        render_context_.set_model_transform(pos, orient);
+
+        bool morphed = false;
+        if (lod_index == 0) {
+            for (int i = 0; i < ci->num_active_anims; ++i) {
+                const rf::CiAnimInfo& anim_info = ci->active_anims[i];
+                rf::Skeleton* skeleton = ci->base_character->animations[anim_info.anim_index];
+                if (skeleton->has_morph_vertices()) {
+                    morphed = true;
+                    render_cache->update_morphed_vertices_buffer(skeleton, anim_info.cur_time, render_context_);
+                    break;
+                }
+            }
+        }
+        render_cache->update_bone_transforms_buffer(ci, render_context_);
+        render_cache->bind_buffers(render_context_, morphed);
+
+        return &render_cache->get_batches(lod_index);
+    }
+
+    const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::prepare_v3d_for_draw(
+        rf::VifLodMesh* lod_mesh, int lod_index,
+        const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        page_in_v3d_mesh(lod_mesh);
+        auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
+        if (!render_cache) {
+            return nullptr;
+        }
+
+        render_context_.set_model_transform(pos, orient);
+        render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex));
+        render_context_.set_index_buffer(v3d_ib_.buffer());
+
+        return &render_cache->get_batches(lod_index);
+    }
+
     void MeshRenderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
     {
         render_caches_.erase(lod_mesh);

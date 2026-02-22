@@ -123,6 +123,19 @@ namespace df::gr::d3d11
         bool has_cache(const rf::VifLodMesh* lod_mesh) const;
         void handle_static_vertex_color_state_change(rf::VifLodMesh* changed_lod_mesh, uint64_t generation);
 
+        // Outline support: prepare character mesh for drawing without actually rendering.
+        // Sets up model transform, bone transforms, binds vertex/index buffers, and returns batches.
+        const std::vector<BaseMeshRenderCache::Batch>* prepare_character_for_draw(
+            rf::VifLodMesh* lod_mesh, int lod_index,
+            const rf::Vector3& pos, const rf::Matrix3& orient,
+            const rf::CharacterInstance* ci);
+
+        // Outline support: prepare static (v3d) mesh for drawing without actually rendering.
+        // Sets up model transform, binds vertex/index buffers, and returns batches.
+        const std::vector<BaseMeshRenderCache::Batch>* prepare_v3d_for_draw(
+            rf::VifLodMesh* lod_mesh, int lod_index,
+            const rf::Vector3& pos, const rf::Matrix3& orient);
+
     private:
         void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index);
 

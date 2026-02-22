@@ -1318,6 +1318,12 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_delayed_spawns()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::delayed_spawns;
         }
+        if (server_allow_outlines()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines;
+        }
+        if (server_allow_outlines_xray()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray;
+        }
         auto [buf, new_len] = extend_packet_bytes(data, len, &ext_data, sizeof(ext_data));
         //auto [new_data, new_len] = extend_packet_fixed(data, len, ext_data);
         return send_join_accept_packet_hook.call_target(addr, buf.get(), new_len);
@@ -1350,6 +1356,8 @@ CodeInjection process_join_accept_injection{
             server_info.gaussian_spread = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::gaussian_spread);
             server_info.location_pinging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::location_pinging);
             server_info.delayed_spawns = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::delayed_spawns);
+            server_info.allow_outlines = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines);
+            server_info.allow_outlines_xray = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray);
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {

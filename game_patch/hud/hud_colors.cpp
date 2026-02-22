@@ -231,6 +231,109 @@ ConsoleCommand2 reticle_color_custom_cmd{
     "ui_colorize_custom_reticles",
 };
 
+static void warn_outlines_if_not_d3d11()
+{
+    if (!is_d3d11()) {
+        rf::console::print("Warning: player outlines require the Direct3D 11 renderer.");
+    }
+}
+
+// helper for always-set (non-optional) color commands
+static void handle_required_color_command(
+    const std::optional<std::string>& input,
+    const std::string& label,
+    uint32_t& target,
+    std::optional<uint32_t> default_value = std::nullopt)
+{
+    if (!input) {
+        auto [r, g, b, a] = extract_color_components(target);
+        rf::console::print("{} is {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(target), r, g, b, a);
+        return;
+    }
+
+    auto normalized_input = string_to_lower(*input);
+    if (normalized_input == "clear" || normalized_input == "default" || normalized_input == "-1") {
+        if (default_value) {
+            target = *default_value;
+            auto [r, g, b, a] = extract_color_components(target);
+            rf::console::print("{} reset to default {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(target), r, g, b, a);
+            alpine_core_config_save();
+        }
+        else {
+            rf::console::print("This color cannot be cleared. Specify a hex color RRGGBB or RRGGBBAA.");
+        }
+        return;
+    }
+
+    auto parsed_color = parse_hex_color_string(*input);
+    if (!parsed_color) {
+        rf::console::print(
+            "Invalid input. Specify color as hex RRGGBB / RRGGBBAA or comma-separated RGB[A] values enclosed in quotes.");
+        return;
+    }
+
+    target = *parsed_color;
+    auto [r, g, b, a] = extract_color_components(*parsed_color);
+    rf::console::print("{} set to {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(*parsed_color), r, g, b, a);
+    alpine_core_config_save();
+}
+
+ConsoleCommand2 r_outlines_color_cmd{
+    "r_outlines_color",
+    [](std::optional<std::string> color_opt) {
+        handle_required_color_command(color_opt, "Outline color (non-team)", g_alpine_game_config.outlines_color, 0xFF3232FF);
+        warn_outlines_if_not_d3d11();
+    },
+    "Set outline color for non-team game modes (Direct3D 11 renderer only).",
+    "r_outlines_color <RRGGBB|RRGGBBAA|clear>",
+};
+
+ConsoleCommand2 r_outlines_color_team_r_cmd{
+    "r_outlines_color_team_r",
+    [](std::optional<std::string> color_opt) {
+        handle_required_color_command(color_opt, "Outline color (team red)", g_alpine_game_config.outlines_color_team_r, 0xFF3232FF);
+        warn_outlines_if_not_d3d11();
+    },
+    "Set outline color for red team players (Direct3D 11 renderer only).",
+    "r_outlines_color_team_r <RRGGBB|RRGGBBAA|clear>",
+};
+
+ConsoleCommand2 r_outlines_color_team_b_cmd{
+    "r_outlines_color_team_b",
+    [](std::optional<std::string> color_opt) {
+        handle_required_color_command(color_opt, "Outline color (team blue)", g_alpine_game_config.outlines_color_team_b, 0x0096FFFF);
+        warn_outlines_if_not_d3d11();
+    },
+    "Set outline color for blue team players (Direct3D 11 renderer only).",
+    "r_outlines_color_team_b <RRGGBB|RRGGBBAA|clear>",
+};
+
+ConsoleCommand2 r_outlines_color_enemy_cmd{
+    "r_outlines_color_enemy",
+    [](std::optional<std::string> color_opt) {
+        handle_hex_color_console_command(color_opt, "Enemy outline color override", g_alpine_game_config.outlines_color_enemy);
+        if (color_opt) {
+            alpine_core_config_save();
+        }
+        warn_outlines_if_not_d3d11();
+    },
+    "Override outline color for enemies (Direct3D 11 renderer only, clear to reset).",
+    "r_outlines_color_enemy <RRGGBB|RRGGBBAA|clear>",
+};
+
+ConsoleCommand2 r_outlines_color_team_cmd{
+    "r_outlines_color_team",
+    [](std::optional<std::string> color_opt) {
+        handle_hex_color_console_command(color_opt, "Teammate outline color override", g_alpine_game_config.outlines_color_team);
+        if (color_opt) {
+            alpine_core_config_save();
+        }
+        warn_outlines_if_not_d3d11();
+    },
+    "Override outline color for teammates (Direct3D 11 renderer only, clear to reset).",
+    "r_outlines_color_team <RRGGBB|RRGGBBAA|clear>",
+};
+
 void hud_colors_apply_patch()
 {
     sniper_scope_color_cmd.register_cmd();
@@ -244,4 +347,9 @@ void hud_colors_apply_patch()
     reticle_color_cmd.register_cmd();
     reticle_locked_color_cmd.register_cmd();
     reticle_color_custom_cmd.register_cmd();
+    r_outlines_color_cmd.register_cmd();
+    r_outlines_color_team_r_cmd.register_cmd();
+    r_outlines_color_team_b_cmd.register_cmd();
+    r_outlines_color_enemy_cmd.register_cmd();
+    r_outlines_color_team_cmd.register_cmd();
 }

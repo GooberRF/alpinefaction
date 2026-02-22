@@ -264,6 +264,17 @@ struct AlpineGameSettings
 
     bool precache_rooms = true; // d3d11 only
 
+    // outline rendering (d3d11 multiplayer)
+    bool try_outlines = false;
+    bool outlines_spectator_only = false;
+    bool try_outlines_team_xray = true;
+
+    uint32_t outlines_color = 0xFF3232FF;         // red, opaque (RRGGBBAA)
+    uint32_t outlines_color_team_r = 0xFF3232FF;   // 255, 50, 50, 255
+    uint32_t outlines_color_team_b = 0x0096FFFF;   // 0, 150, 255, 255
+    std::optional<uint32_t> outlines_color_enemy{};
+    std::optional<uint32_t> outlines_color_team{};
+
     int suppress_autoswitch_fire_wait = 0;
     void set_suppress_autoswitch_fire_wait(int value)
     {

@@ -3218,6 +3218,16 @@ bool server_allow_unlimited_fps()
     return g_alpine_server_config.allow_unlimited_fps;
 }
 
+bool server_allow_outlines()
+{
+    return g_alpine_server_config.allow_outlines;
+}
+
+bool server_allow_outlines_xray()
+{
+    return g_alpine_server_config.allow_outlines_xray;
+}
+
 bool server_gaussian_spread()
 {
     return g_alpine_server_config.gaussian_spread;

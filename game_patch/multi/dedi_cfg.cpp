@@ -1085,6 +1085,14 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.exclude_bots_from_player_count = *v;
     }
+    else if (key == "allow_outlines") {
+        if (auto v = node.value<bool>())
+            cfg.allow_outlines = *v;
+    }
+    else if (key == "allow_outlines_xray") {
+        if (auto v = node.value<bool>())
+            cfg.allow_outlines_xray = *v;
+    }
 }
 
 // apply base config toml tables
@@ -1860,6 +1868,8 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
+    std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
+    std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);

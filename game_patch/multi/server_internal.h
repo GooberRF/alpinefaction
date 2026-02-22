@@ -679,6 +679,8 @@ struct AlpineServerConfig
     bool allow_disable_screenshake = true;
     bool allow_disable_muzzle_flash = true;
     bool allow_unlimited_fps = false;
+    bool allow_outlines = true;
+    bool allow_outlines_xray = true;
     bool use_sp_damage_calculation = false;
     bool exclude_bots_from_player_count = false;
     AlpineRestrictConfig alpine_restricted_config;

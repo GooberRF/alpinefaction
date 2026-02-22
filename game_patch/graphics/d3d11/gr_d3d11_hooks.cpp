@@ -511,4 +511,5 @@ void gr_d3d11_apply_patch()
     // Change size of standard structures
     write_mem<int8_t>(0x00569884 + 1, sizeof(rf::VifMesh));
     write_mem<int8_t>(0x00569732 + 1, sizeof(rf::VifLodMesh));
+
 }

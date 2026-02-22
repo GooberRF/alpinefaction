@@ -16,6 +16,7 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_outline.h"
 
 using namespace rf;
 
@@ -41,6 +42,7 @@ namespace df::gr::d3d11
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
 
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         render_context_->set_cull_mode(D3D11_CULL_BACK);
@@ -307,6 +309,10 @@ namespace df::gr::d3d11
     void Renderer::zbuffer_clear()
     {
         dyn_geo_renderer_->flush();
+        // Flush queued outlines before clearing the depth buffer.
+        // The fpgun rendering clears zbuffer before its setup_3d call,
+        // so outlines must be rendered while scene depth data is still available.
+        outline_renderer_->flush(*mesh_renderer_);
         render_context_->zbuffer_clear();
     }
 
@@ -318,6 +324,7 @@ namespace df::gr::d3d11
 
     void Renderer::flip()
     {
+        outline_renderer_->flush_forced_xray(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         if (msaa_render_target_) {
             context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
@@ -465,6 +472,7 @@ namespace df::gr::d3d11
     void Renderer::setup_3d(Projection proj)
     {
         render_context_->update_view_proj_transform(proj);
+        outline_renderer_->begin_frame();
     }
 
     void Renderer::set_far_clip(bool enabled)
@@ -516,12 +524,45 @@ namespace df::gr::d3d11
     {
         dyn_geo_renderer_->flush();
         mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params);
+
+        // Queue outline for third-person weapon meshes.
+        // The game renders weapon meshes (MRF_CUSTOM_AMBIENT_COLOR) immediately after
+        // the owning character mesh, so current_character_outline tracks the association.
+        if ((params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) &&
+            !(params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON)) {
+            if (auto* info = outline_renderer_->current_character_outline()) {
+                QueuedV3dOutline entry{};
+                entry.lod_mesh = lod_mesh;
+                entry.lod_index = lod_index;
+                entry.pos = pos;
+                entry.orient = orient;
+                entry.info = *info;
+                outline_renderer_->queue_v3d(std::move(entry));
+            }
+        }
     }
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params)
     {
         dyn_geo_renderer_->flush();
         mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
+
+        // Queue outline if this character needs one, and track for weapon meshes
+        if (auto* info = outline_renderer_->lookup(ci)) {
+            outline_renderer_->set_current_character_outline(info);
+
+            QueuedOutline entry{};
+            entry.lod_mesh = lod_mesh;
+            entry.lod_index = lod_index;
+            entry.pos = pos;
+            entry.orient = orient;
+            entry.ci = ci;
+            entry.info = *info;
+            outline_renderer_->queue(std::move(entry));
+        }
+        else {
+            outline_renderer_->set_current_character_outline(nullptr);
+        }
     }
 
     void Renderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
