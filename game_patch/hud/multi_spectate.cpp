@@ -85,7 +85,8 @@ static bool state_animation_is_crouch(int state)
 FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     0x0042A580,
     [](rf::Entity* entity, int state_anim_index, float transition_time) {
-        if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)) {
+        if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)
+            && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
             rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
             if (entity == target) {
                 spectate_entity_translate_stand_state_to_crouch_state(&state_anim_index);
@@ -106,7 +107,8 @@ void multi_spectate_sync_crouch_anim()
     if (!entity)
         return;
 
-    if (rf::entity_is_crouching(entity) && !state_animation_is_crouch(entity->current_state_anim)) {
+    if (rf::entity_is_crouching(entity) && !state_animation_is_crouch(entity->current_state_anim)
+        && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
         int next_state_anim = entity->current_state_anim;
         spectate_entity_translate_stand_state_to_crouch_state(&next_state_anim);
         if (next_state_anim == entity->current_state_anim) {
