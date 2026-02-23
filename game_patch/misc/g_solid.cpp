@@ -1,3 +1,5 @@
+#include <vector>
+#include <algorithm>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -27,6 +29,513 @@ constexpr auto reference_frametime = 1.0f / reference_fps;
 static int g_max_decals = 512;
 static float g_crater_autotexture_ppm = 32.0f;
 static bool g_show_room_clip_wnd = false;
+
+// Geomod entry flags (stored at entry offset 0x38 / param_1[0xe] in geomod_init)
+enum GeomodFlags : uint32_t {
+    GEOMOD_LOCAL_CREATED    = 0x01,  // bit 0: set for locally-created geomods
+    GEOMOD_SKIP_CSG         = 0x02,  // bit 1: skip CSG boolean setup
+    GEOMOD_FROM_SERVER      = 0x04,  // bit 2: geomod received from server
+    GEOMOD_ORIENTED         = 0x08,  // bit 3: use directional orientation
+    GEOMOD_ICE_TEXTURE      = 0x10,  // bit 4: use ice crater texture
+    GEOMOD_RF2_STYLE        = 0x20,  // bit 5: RF2-style (detail brushes only)
+};
+
+// Set by geomod_init hook; checked by boolean engine injections.
+static bool g_rf2_style_boolean_active = false;
+
+// Per-room targeting: when RF2-style is active, the boolean engine only processes
+// faces from ONE specific detail room at a time. This prevents crashes and incorrect
+// face classification that occur when the boolean engine tries to process faces from
+// multiple disjoint detail rooms simultaneously.
+// When a crater overlaps multiple rooms, we run multiple boolean passes (one per room).
+static rf::GRoom* g_rf2_target_detail_room = nullptr;
+static std::vector<rf::GRoom*> g_rf2_pending_detail_rooms;
+
+// Saved original detail room face planes for convex hull containment test.
+// Saved once on the first RF2-style geomod, before any boolean modifies the geometry.
+// For a convex detail brush, all face normals point outward from the brush interior.
+// A point is inside the brush if distance_to_point() <= epsilon for ALL face planes.
+struct SavedDetailRoomPlanes {
+    rf::GRoom* room;
+    rf::Vector3 bbox_min;
+    rf::Vector3 bbox_max;
+    std::vector<rf::Plane> planes;
+};
+static std::vector<SavedDetailRoomPlanes> g_saved_detail_room_planes;
+static bool g_detail_planes_initialized = false;
+
+static void save_original_detail_room_planes()
+{
+    g_saved_detail_room_planes.clear();
+    auto* solid = rf::level.geometry;
+    if (!solid) return;
+
+    for (auto& room : solid->all_rooms) {
+        if (!room->is_detail) continue;
+
+        SavedDetailRoomPlanes saved;
+        saved.room = room;
+        saved.bbox_min = room->bbox_min;
+        saved.bbox_max = room->bbox_max;
+
+        for (rf::GFace& face : room->face_list) {
+            saved.planes.push_back(face.plane);
+        }
+
+        if (!saved.planes.empty()) {
+            xlog::warn("[RF2] Saved {} planes for detail room {} bbox=({:.1f},{:.1f},{:.1f})-({:.1f},{:.1f},{:.1f})",
+                saved.planes.size(), room->room_index,
+                saved.bbox_min.x, saved.bbox_min.y, saved.bbox_min.z,
+                saved.bbox_max.x, saved.bbox_max.y, saved.bbox_max.z);
+            g_saved_detail_room_planes.push_back(std::move(saved));
+        }
+    }
+}
+
+// Test if a point is inside a saved detail room's original convex volume.
+// Uses half-space intersection: a point is inside if it's on the negative side
+// (or within tolerance) of ALL face planes (outward-pointing normals convention).
+// If target_room is set, only checks that room. Otherwise checks all saved rooms.
+static bool is_point_in_saved_detail_room(const rf::Vector3& pt, rf::GRoom* target_room = nullptr)
+{
+    constexpr float epsilon = 0.1f;
+    for (const auto& saved : g_saved_detail_room_planes) {
+        if (target_room && saved.room != target_room) continue;
+
+        // Quick AABB pre-filter
+        if (pt.x < saved.bbox_min.x - epsilon || pt.x > saved.bbox_max.x + epsilon ||
+            pt.y < saved.bbox_min.y - epsilon || pt.y > saved.bbox_max.y + epsilon ||
+            pt.z < saved.bbox_min.z - epsilon || pt.z > saved.bbox_max.z + epsilon) {
+            continue;
+        }
+
+        bool inside = true;
+        for (const auto& plane : saved.planes) {
+            if (plane.distance_to_point(pt) > epsilon) {
+                inside = false;
+                break;
+            }
+        }
+        if (inside) return true;
+    }
+    return false;
+}
+
+// Test if a point is inside a room's current geometry using ray casting.
+// Works correctly for non-convex geometry (rooms modified by previous craters).
+// Casts a ray from the test point and counts face polygon intersections; odd = inside.
+// Uses the room's live face_list, which at State 5 reflects all previous craters
+// but not the current one (split results aren't applied until State 6/7).
+static bool is_point_inside_room_geometry(const rf::Vector3& pt, rf::GRoom* room)
+{
+    if (!room) return false;
+
+    // AABB pre-filter
+    constexpr float bbox_eps = 0.5f;
+    if (pt.x < room->bbox_min.x - bbox_eps || pt.x > room->bbox_max.x + bbox_eps ||
+        pt.y < room->bbox_min.y - bbox_eps || pt.y > room->bbox_max.y + bbox_eps ||
+        pt.z < room->bbox_min.z - bbox_eps || pt.z > room->bbox_max.z + bbox_eps) {
+        return false;
+    }
+
+    // Slightly tilted ray direction to avoid axis-aligned edge/vertex degeneracies
+    constexpr float ray_dx = 0.00137f;
+    constexpr float ray_dy = 0.00259f;
+    constexpr float ray_dz = 1.0f;
+
+    int crossing_count = 0;
+
+    for (rf::GFace& face : room->face_list) {
+        const rf::Plane& plane = face.plane;
+
+        // Ray-plane intersection: t = -(dot(pt, normal) + offset) / dot(ray_dir, normal)
+        float denom = ray_dx * plane.normal.x + ray_dy * plane.normal.y + ray_dz * plane.normal.z;
+        if (denom > -1e-8f && denom < 1e-8f)
+            continue; // ray nearly parallel to plane
+
+        float numer = -(pt.x * plane.normal.x + pt.y * plane.normal.y + pt.z * plane.normal.z + plane.offset);
+        float t = numer / denom;
+        if (t < 0.0f)
+            continue; // intersection behind ray origin
+
+        // Compute intersection point on the plane
+        float hit_x = pt.x + ray_dx * t;
+        float hit_y = pt.y + ray_dy * t;
+        float hit_z = pt.z + ray_dz * t;
+
+        // Project onto 2D by dropping the axis with the largest normal component.
+        // This gives the best-conditioned 2D polygon for the crossing test.
+        float abs_nx = plane.normal.x >= 0.0f ? plane.normal.x : -plane.normal.x;
+        float abs_ny = plane.normal.y >= 0.0f ? plane.normal.y : -plane.normal.y;
+        float abs_nz = plane.normal.z >= 0.0f ? plane.normal.z : -plane.normal.z;
+
+        bool drop_x = (abs_nx >= abs_ny && abs_nx >= abs_nz);
+        bool drop_y = (!drop_x && abs_ny >= abs_nz);
+        // drop_z implied when !drop_x && !drop_y
+
+        float test_u, test_v;
+        if (drop_x) {
+            test_u = hit_y; test_v = hit_z;
+        } else if (drop_y) {
+            test_u = hit_x; test_v = hit_z;
+        } else {
+            test_u = hit_x; test_v = hit_y;
+        }
+
+        // Even-odd crossing number test against the face polygon
+        rf::GFaceVertex* start = face.edge_loop;
+        if (!start) continue;
+
+        bool inside_polygon = false;
+        rf::GFaceVertex* fv = start;
+        do {
+            rf::GFaceVertex* fv_next = fv->next;
+            if (!fv_next) break;
+
+            const rf::Vector3& p0 = fv->vertex->pos;
+            const rf::Vector3& p1 = fv_next->vertex->pos;
+
+            float v0_u, v0_v, v1_u, v1_v;
+            if (drop_x) {
+                v0_u = p0.y; v0_v = p0.z;
+                v1_u = p1.y; v1_v = p1.z;
+            } else if (drop_y) {
+                v0_u = p0.x; v0_v = p0.z;
+                v1_u = p1.x; v1_v = p1.z;
+            } else {
+                v0_u = p0.x; v0_v = p0.y;
+                v1_u = p1.x; v1_v = p1.y;
+            }
+
+            // Does a horizontal ray from (test_u, test_v) in +u direction cross this edge?
+            if ((v0_v > test_v) != (v1_v > test_v)) {
+                float edge_u = v0_u + (test_v - v0_v) / (v1_v - v0_v) * (v1_u - v0_u);
+                if (test_u < edge_u) {
+                    inside_polygon = !inside_polygon;
+                }
+            }
+
+            fv = fv_next;
+        } while (fv != start);
+
+        if (inside_polygon) {
+            crossing_count++;
+        }
+    }
+
+    return (crossing_count & 1) != 0;
+}
+
+// Classification lookup table: DAT_005a38f4, indexed by (op_mode + face_type*8)*5 + classification.
+// For geomod (op_mode=3), TYPE 1 (crater) entries at offset (3 + 1*8)*5 = 55 ints from base:
+//   0x005a39D4: class 1 (INSIDE)       = 1 (mark for deletion)
+//   0x005a39D8: class 2 (OUTSIDE)      = 2 (keep + flip)
+//   0x005a39DC: class 3 (COPLANAR_SAME)= 1 (mark for deletion)
+//   0x005a39E0: class 4 (COPLANAR_OPP) = 1 (mark for deletion)
+//
+// For RF2-style geomod, the stock boolean classifiers (room BSP trees, face adjacency)
+// don't work correctly when only detail faces participate. Instead, we:
+//   - State 1: Only detail brush TYPE 0 faces participate (boolean_skip_non_detail_faces_for_rf2)
+//   - State 4: Skip all TYPE 1 faces (state4_skip_type1_for_rf2) to prevent the stock
+//     classification table from acting on potentially-incorrect State 3 classifications
+//   - State 5: Two hooks ensure ALL TYPE 1 faces are reclassified with our containment test:
+//     a) state5_force_clear_type1_for_rf2: forces classification clearing for TYPE 1 faces
+//        so they're always unclassified when the reclassification loop runs
+//     b) state5_reclassify_type1_for_rf2: hooks BEFORE the cached_normal_room_list check
+//        to apply convex hull containment test to ALL TYPE 1 faces, not just those where
+//        the list is non-empty
+//     Crater faces with centroids inside a detail brush → class 2 → keep (crater cap)
+//     Crater faces with centroids outside all brushes → class 1 → delete (floating face)
+
+// Geomod position global (set by FUN_00466b00)
+static auto& geomod_pos = addr_as_ref<rf::Vector3>(0x006485a0);
+
+
+static bool is_pos_in_any_geo_region(const rf::Vector3& pos)
+{
+    for (rf::GeoRegion* region : rf::level.regions) {
+        if (rf::geo_region_test_point(pos, region))
+            return true;
+    }
+    return false;
+}
+
+// FUN_004dc360 (boolean intersection detection, State 1) has two paths:
+// - Fast path: traverses the solid's bbox tree to find faces within crater bounds.
+//   Detail room faces are NOT in the main solid's bbox tree, so they're never found.
+// - Slow path: iterates ALL registered faces and tests each for intersection.
+//   This path is normally used only when DAT_01370f64 == 0 or for specific operations.
+//
+// For RF2-style geomod, we force the slow path so detail faces are found.
+// At 0x004dc386: MOV EAX, [0x01370f64] — we override EAX to 0 so the JZ at
+// 0x004dc39b takes the slow path branch.
+CodeInjection state1_force_slow_path_for_rf2{
+    0x004dc386,
+    [](auto& regs) {
+        if (g_rf2_style_boolean_active) {
+            regs.eax = 0; // forces JZ at 004dc39b → slow path at 004dc41b
+        } else {
+            regs.eax = addr_as_ref<int>(0x01370f64);
+        }
+    },
+};
+
+// FUN_004dd450 (State 3 classification dispatcher) also branches on DAT_01370f64:
+// - Fast path (FUN_004dd480): uses FUN_004e1430 to classify TYPE 1 faces against a
+//   BSP tree built from ALL registered TYPE 0 faces, including non-detail. This gives
+//   classification relative to the full level geometry, not just detail brushes.
+// - Slow path (FUN_004dd5d0): uses FUN_004e05c0 (face-adjacency-based, only sees faces
+//   from intersection candidate arrays which exclude non-detail) and falls back to
+//   FUN_004e0d00 (BSP using detail rooms via boolean_state5_allow_detail_for_rf2).
+//
+// For RF2-style geomod, we force the slow path so TYPE 1 face classification is
+// relative to detail brush geometry only.
+// At 0x004dd450: MOV EAX, [0x01370f64] — we override EAX to 0 so TEST+JZ takes
+// the slow path branch at 0x004dd46c.
+CodeInjection state3_force_slow_path_for_rf2{
+    0x004dd450,
+    [](auto& regs) {
+        if (g_rf2_style_boolean_active) {
+            regs.eax = 0; // forces JZ at 004dd457 → slow path at 004dd46c
+        } else {
+            regs.eax = addr_as_ref<int>(0x01370f64);
+        }
+    },
+};
+
+// FUN_004dd780 (State 4) iterates all registered faces and applies actions 2
+// (keep/flip) and 3 (duplicate for portals) based on State 3's classifications.
+// State 5 (FUN_004dd8c0) clears and re-does classification independently, so
+// State 4's work on TYPE 1 faces based on potentially-incorrect State 3
+// classifications could create incorrect face duplicates. For RF2-style geomod,
+// skip TYPE 1 faces in State 4 entirely — State 5 will handle them with our
+// custom convex hull containment test.
+//
+// At 004dd7f4: CALL 0x004de9d0 returns face type in EAX.
+// At 004dd7f9: we check if TYPE 1 → skip to next face at 004dd8a2.
+CodeInjection state4_skip_type1_for_rf2{
+    0x004dd7f9,
+    [](auto& regs) {
+        if (g_rf2_style_boolean_active && regs.eax == 1) {
+            regs.eip = 0x004dd8a2; // skip to next face in loop
+        }
+    },
+};
+
+// FUN_004dd8c0 (State 5) calls FUN_004dba30(solid, op_mode) at 004dd8d7 to check
+// whether reclassification is needed. If it returns false, JZ at 004dd8e1 skips to
+// 004dd99e, bypassing the ENTIRE clearing and reclassification loops. For RF2-style
+// geomod, FUN_004dba30 returns false because our filtered face set doesn't trigger
+// its criteria. We force it to return true so reclassification proceeds.
+//
+// Disassembly:
+//   004dd8d5: PUSH EAX              ; op_mode
+//   004dd8d6: PUSH EDI              ; solid
+//   004dd8d7: CALL 0x004dba30       ; <<< HOOKED (5 bytes)
+//   004dd8dc: ADD ESP, 0x8
+//   004dd8df: TEST AL, AL
+//   004dd8e1: JZ 0x004dd99e         ; skip reclassification if false
+CodeInjection state5_force_reclassify_for_rf2{
+    0x004dd8d7,
+    [](auto& regs) {
+        if (g_rf2_style_boolean_active) {
+            regs.eax = 1;            // force non-zero → reclassification proceeds
+            regs.eip = 0x004dd8dc;   // skip CALL, go to ADD ESP cleanup
+            xlog::warn("[RF2] state5: forced reclassification (bypassed FUN_004dba30)");
+        }
+    },
+};
+
+// FUN_004dd8c0 (State 5) has a first loop (004dd921-004dd944) that conditionally
+// clears face classifications. FUN_004dea00 is called per face and returns whether
+// the classification should be cleared. For some TYPE 1 faces, FUN_004dea00 returns
+// false, leaving their (incorrect) State 3 classification intact. The subsequent
+// reclassification loop then skips them because they're already classified.
+//
+// At 004dd926: CALL 0x004dea00 — the classification-clearing check.
+// Registers: EBX = &face->attributes (also in ECX for the call).
+// For RF2-style geomod, we force-clear TYPE 1 faces' classifications so they're
+// always unclassified when the reclassification loop runs.
+CodeInjection state5_force_clear_type1_for_rf2{
+    0x004dd926,
+    [](auto& regs) {
+        if (!g_rf2_style_boolean_active) return;
+
+        void* face_attrs = regs.ebx;
+        if (!face_attrs) return; // safety: null face attributes
+
+        // Check if this is a TYPE 1 face
+        int type = AddrCaller{0x004de9d0}.this_call<int>(face_attrs);
+        if (type == 1) {
+            // Force classification to 0 (unclassified)
+            AddrCaller{0x004de9e0}.this_call(face_attrs, 0);
+            xlog::warn("[RF2] state5_clear: forced TYPE1 face classification to 0");
+            regs.eip = 0x004dd938; // skip to next face in clearing loop
+        }
+    },
+};
+
+// FUN_004dd8c0 (State 5) reclassification loop (004dd946-004dd99c) reclassifies
+// unclassified faces. For TYPE 1 faces, it checks cached_normal_room_list size
+// at [solid + 0x90]:
+//   - If non-empty: calls FUN_004e0d00 (BSP room classifier)
+//   - If empty: falls through to FUN_004e0980 (TYPE 0 classifier) — WRONG for TYPE 1
+//
+// We hook at 004dd96d (start of the TYPE 1 path, after JNZ at 004dd96b confirms
+// the face is TYPE 1) to intercept ALL TYPE 1 faces BEFORE the cached_normal_room_list
+// check. This ensures our convex hull containment test handles every TYPE 1 face.
+//
+// Registers: ESI = GFace*, EBX = &face->attributes, EDI = solid (param_1).
+// We compute the face centroid, test it against saved detail room planes, and
+// set classification directly (class 2 = inside/keep, class 1 = outside/delete).
+CodeInjection state5_reclassify_type1_for_rf2{
+    0x004dd96d,
+    [](auto& regs) {
+        if (!g_rf2_style_boolean_active) return;
+
+        rf::GFace* face = regs.esi;
+        void* face_attrs = regs.ebx;
+
+        if (!face || !face_attrs) {
+            xlog::warn("[RF2] state5_reclass: null face or attrs, skipping");
+            regs.eip = 0x004dd990;
+            return;
+        }
+
+        // Compute face centroid from edge loop vertices
+        rf::Vector3 centroid{0.0f, 0.0f, 0.0f};
+        int vertex_count = 0;
+        rf::GFaceVertex* fv = face->edge_loop;
+        if (fv) {
+            do {
+                centroid.x += fv->vertex->pos.x;
+                centroid.y += fv->vertex->pos.y;
+                centroid.z += fv->vertex->pos.z;
+                vertex_count++;
+                fv = fv->next;
+            } while (fv && fv != face->edge_loop);
+        }
+
+        if (vertex_count > 0) {
+            float inv = 1.0f / static_cast<float>(vertex_count);
+            centroid.x *= inv;
+            centroid.y *= inv;
+            centroid.z *= inv;
+        }
+
+        // Classify against the target detail room's current geometry (ray casting).
+        // Uses live face_list which correctly reflects previous craters (non-convex).
+        int classification = is_point_inside_room_geometry(centroid, g_rf2_target_detail_room) ? 2 : 1;
+
+        xlog::warn("[RF2] TYPE1 reclassify: centroid=({:.1f},{:.1f},{:.1f}) -> class {} ({})",
+            centroid.x, centroid.y, centroid.z,
+            classification, classification == 2 ? "keep" : "delete");
+
+        // Set classification on face attributes via FUN_004de9e0
+        AddrCaller{0x004de9e0}.this_call(face_attrs, classification);
+        regs.eip = 0x004dd990; // skip stock classifiers, go to loop continuation
+    },
+};
+
+// In the slow path of FUN_004dc360, after a TYPE 0 face passes the intersection
+// test (its bbox overlaps the crater bounds), it's about to be classified and
+// potentially added to the output array for pairwise intersection testing.
+//
+// For RF2-style geomod, we skip non-detail TYPE 0 faces: set their side to 2
+// (outside/keep) so they're never carved. Only detail faces proceed normally.
+//
+// Injection at 0x004dc4aa: first instruction of the TYPE 0 path after the
+// intersection test succeeds. At this point EDI = face, ESI = &face->attributes.
+// We call FUN_004de9e0(2) to set side=2, then skip to next face (0x004dc521).
+CodeInjection boolean_skip_non_detail_faces_for_rf2{
+    0x004dc4aa,
+    [](auto& regs) {
+        if (!g_rf2_style_boolean_active) return;
+
+        rf::GFace* face = regs.edi;
+        // Only allow faces from the target detail room; skip everything else
+        if (!face->which_room || !face->which_room->is_detail ||
+            (g_rf2_target_detail_room && face->which_room != g_rf2_target_detail_room)) {
+            void* face_attrs = regs.esi;
+            AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
+            regs.eip = 0x004dc521; // skip to next face in loop
+        }
+    },
+};
+
+// FUN_004e0d00 (called from boolean States 3 & 5 for TYPE 1 / crater faces) uses
+// room BSP trees to reclassify unclassified TYPE 1 faces as INSIDE or OUTSIDE the
+// level solid. It explicitly filters out detail rooms via FUN_00494a50 at 004e0e24,
+// which reads the first byte of each room (is_detail). For RF2-style geomod, we
+// INVERT this filter: only process detail rooms, skip non-detail rooms. This ensures
+// the BSP reclassification determines whether crater faces are inside detail brush
+// volumes (keep as crater cap) or outside (delete as floating face).
+//
+// Disassembly context:
+//   004e0e20: MOV ESI, [EAX]       ; ESI = room pointer from array
+//   004e0e22: MOV ECX, ESI
+//   004e0e24: CALL 0x00494a50      ; is_detail(room) - returns byte [ECX]
+//   004e0e29: TEST AL, AL
+//   004e0e2b: JNZ 0x004e0e3e      ; if detail → skip (stock behavior)
+//   004e0e2d: ... (include room)   ; non-detail rooms proceed
+//   004e0e3e: ... (loop increment)
+CodeInjection boolean_state5_allow_detail_for_rf2{
+    0x004e0e24,
+    [](auto& regs) {
+        if (!g_rf2_style_boolean_active) return;
+
+        // ESI = room pointer (GRoom*); first byte is is_detail
+        auto* room = static_cast<rf::GRoom*>(regs.esi);
+        bool is_target = room->is_detail &&
+            (!g_rf2_target_detail_room || room == g_rf2_target_detail_room);
+        if (is_target) {
+            regs.eip = 0x004e0e2d; // allow target detail room
+        } else {
+            regs.eip = 0x004e0e3e; // skip non-target room
+        }
+    },
+};
+
+// During State 0 registration (FUN_004dbdf0), the boolean engine sets bit 3
+// (0x08) on face attribute flags for detail room faces. This bit is later
+// checked by FUN_004ce480 (flags & 0x0C == 0) to EXCLUDE detail faces from
+// intersection candidate arrays, preventing them from being carved.
+//
+// For RF2-style geomod, we need detail faces to participate in the boolean
+// pipeline like normal faces. The face attributes may ALREADY have bit 3 set
+// from the original level geometry data, so simply skipping the bit-3-setting
+// code is insufficient — we must explicitly CLEAR bit 3.
+//
+// At 0x004dbeff: CALL 0x004909b0 (5-byte instruction, safe for SubHook).
+// This is the "room IS detail" branch. ESI = &face->attributes (GFaceAttributes*).
+// The flags byte is at [ESI+0]. We clear bit 3 and skip to the next face.
+//
+// Disassembly context:
+//   004dbef4: CALL 0x00494a50        ; is_detail(room)
+//   004dbef9: TEST AL, AL
+//   004dbefd: JZ 0x004dbf0e          ; if NOT detail, go to non-detail path
+//   ; detail path:
+//   004dbeff: CALL 0x004909b0        ; <<< OUR INJECTION
+//   004dbf08: MOV EAX, [ESI]         ; get flags dword
+//   004dbf0a: OR AL, 0x8             ; set bit 3
+//   004dbf0c: JMP 0x004dbf1b
+//   ; non-detail path:
+//   004dbf0e: CALL 0x004909b0
+//   004dbf17: MOV EAX, [ESI]
+//   004dbf19: AND AL, 0xf7           ; clear bit 3
+//   004dbf1b: MOV [ESI], EAX         ; store flags
+//   004dbf1d: ... (next face)
+CodeInjection boolean_clear_detail_bit3_for_rf2{
+    0x004dbeff,
+    [](auto& regs) {
+        if (g_rf2_style_boolean_active) {
+            // Clear bit 3 from face attributes flags so detail faces pass ce480
+            auto* flags = reinterpret_cast<uint8_t*>(static_cast<void*>(regs.esi));
+            flags[0] &= ~0x08;
+            regs.eip = 0x004dbf1d; // skip to next face
+        }
+    },
+};
 std::optional<int> g_sky_room_uid_override;
 std::optional<rf::Object*> g_sky_room_eye_anchor;
 std::optional<float> g_sky_room_eye_offset_scale;
@@ -582,6 +1091,255 @@ void set_levelmod_autotexture_ppm() {
     }
 }
 
+// Find detail rooms whose bboxes overlap a sphere at the given position.
+// Uses a generous padding to account for crater radius variations.
+// Results are sorted by distance from pos to bbox center (closest first).
+static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& pos)
+{
+    constexpr float crater_padding = 3.0f; // generous padding for crater radius
+    std::vector<rf::GRoom*> result;
+    auto* solid = rf::level.geometry;
+    if (!solid) return result;
+
+    for (auto& room : solid->all_rooms) {
+        if (!room->is_detail) continue;
+        // Check if position is within room bbox + padding
+        if (pos.x >= room->bbox_min.x - crater_padding && pos.x <= room->bbox_max.x + crater_padding &&
+            pos.y >= room->bbox_min.y - crater_padding && pos.y <= room->bbox_max.y + crater_padding &&
+            pos.z >= room->bbox_min.z - crater_padding && pos.z <= room->bbox_max.z + crater_padding) {
+            result.push_back(room);
+        }
+    }
+
+    // Sort by distance from pos to bbox center (closest first)
+    std::sort(result.begin(), result.end(), [&pos](rf::GRoom* a, rf::GRoom* b) {
+        auto center_a = rf::Vector3{
+            (a->bbox_min.x + a->bbox_max.x) * 0.5f,
+            (a->bbox_min.y + a->bbox_max.y) * 0.5f,
+            (a->bbox_min.z + a->bbox_max.z) * 0.5f};
+        auto center_b = rf::Vector3{
+            (b->bbox_min.x + b->bbox_max.x) * 0.5f,
+            (b->bbox_min.y + b->bbox_max.y) * 0.5f,
+            (b->bbox_min.z + b->bbox_max.z) * 0.5f};
+        float dx_a = pos.x - center_a.x, dy_a = pos.y - center_a.y, dz_a = pos.z - center_a.z;
+        float dx_b = pos.x - center_b.x, dy_b = pos.y - center_b.y, dz_b = pos.z - center_b.z;
+        float dist_sq_a = dx_a * dx_a + dy_a * dy_a + dz_a * dz_a;
+        float dist_sq_b = dx_b * dx_b + dy_b * dy_b + dz_b * dz_b;
+        return dist_sq_a < dist_sq_b;
+    });
+
+    return result;
+}
+
+// Hook geomod_init (FUN_00466b00) to compute g_rf2_style_boolean_active.
+// Both server and client deterministically derive this from position + level properties,
+// so the pregame boolean packet (which omits the flags field) works correctly.
+FunHook<void(void*)> geomod_init_hook{
+    0x00466B00,
+    [](void* entry_data) {
+        geomod_init_hook.call_target(entry_data);
+        bool rf2_enabled = AlpineLevelProperties::instance().rf2_style_geomod;
+        bool in_geo_region = rf2_enabled && is_pos_in_any_geo_region(geomod_pos);
+        g_rf2_style_boolean_active = rf2_enabled && !in_geo_region;
+
+        if (g_rf2_style_boolean_active) {
+            xlog::warn("[RF2] geomod_init: active, pos=({:.1f},{:.1f},{:.1f})",
+                geomod_pos.x, geomod_pos.y, geomod_pos.z);
+
+            // Save original detail room planes on first RF2-style geomod.
+            if (!g_detail_planes_initialized) {
+                save_original_detail_room_planes();
+                g_detail_planes_initialized = true;
+            }
+
+            // Find detail rooms overlapping the crater and select the first target.
+            // Remaining rooms are queued for subsequent boolean passes.
+            auto overlapping = find_overlapping_detail_rooms(geomod_pos);
+            g_rf2_pending_detail_rooms.clear();
+            if (!overlapping.empty()) {
+                g_rf2_target_detail_room = overlapping[0];
+                for (size_t i = 1; i < overlapping.size(); i++) {
+                    g_rf2_pending_detail_rooms.push_back(overlapping[i]);
+                }
+                xlog::warn("[RF2] targeting detail room {} ({} more pending)",
+                    g_rf2_target_detail_room->room_index, g_rf2_pending_detail_rooms.size());
+            } else {
+                g_rf2_target_detail_room = nullptr;
+                xlog::warn("[RF2] no overlapping detail rooms found, disabling RF2 mode for this geomod");
+                g_rf2_style_boolean_active = false;
+                return;
+            }
+
+            // Log detail room face counts before boolean
+            auto* solid = rf::level.geometry;
+            if (solid) {
+                xlog::warn("[RF2] BEFORE: solid total faces={}", solid->face_list.size());
+                for (auto& room : solid->all_rooms) {
+                    if (room->is_detail) {
+                        xlog::warn("[RF2] BEFORE: detail room {} faces={} cache={} detail_rooms={}",
+                            room->room_index, room->face_list.size(),
+                            reinterpret_cast<uintptr_t>(room->geo_cache),
+                            room->detail_rooms.size());
+                    }
+                }
+            }
+        }
+    },
+};
+
+// Inner boolean state variable (DAT_005a3a34) — tracks states 0-7 in FUN_004dbc50.
+static auto& boolean_inner_state = addr_as_ref<int>(0x005a3a34);
+
+// Hook FUN_004dbc50 (boolean_iterate) to log inner state transitions.
+// This helps diagnose which boolean engine state causes hangs.
+// States: 0=face_register, 1=intersection_detect, 2=face_split_setup,
+//         3=face_split, 4=classify, 5=result_collect, 6=cleanup, 7=finalize
+FunHook<int()> boolean_iterate_hook{
+    0x004dbc50,
+    []() -> int {
+        if (g_rf2_style_boolean_active) {
+            xlog::warn("[RF2] boolean_iterate enter: inner_state={}", boolean_inner_state);
+        }
+        int result = boolean_iterate_hook.call_target();
+        if (g_rf2_style_boolean_active) {
+            xlog::warn("[RF2] boolean_iterate exit: inner_state={} done={}",
+                boolean_inner_state, (result & 0xFF) == 0);
+        }
+        return result;
+    },
+};
+
+
+// Invalidate render caches after RF2-style boolean modifies detail room faces.
+// D3D9: Call stock g_render_cache_clear — parent room caches include detail room
+//       faces via recursive geo_cache_prepare_room, so clearing forces a rebuild.
+// D3D11: Invalidate surgically — null detail room caches (lazily recreated) and
+//        mark normal room caches as invalid (state_ = 2 at offset 0x20 triggers
+//        rebuild on next render). We CANNOT call the full clear_cache() because
+//        destroying and recreating all RoomRenderCache objects causes a freeze.
+static void invalidate_rf2_render_caches()
+{
+    if (!is_d3d11()) {
+        xlog::warn("[RF2] clearing D3D9 render caches");
+        AddrCaller{0x004f0b90}.c_call();
+        return;
+    }
+
+    rf::GSolid* solid = rf::level.geometry;
+    if (!solid)
+        return;
+
+    // Log detail room metadata
+    for (int i = 0; i < solid->all_rooms.size(); i++) {
+        rf::GRoom* room = solid->all_rooms[i];
+        if (room && room->is_detail) {
+            xlog::warn("[RF2] AFTER: detail room {} faces={} detail_rooms={} cache={}",
+                room->room_index, room->face_list.size(),
+                room->detail_rooms.size(),
+                reinterpret_cast<uintptr_t>(room->geo_cache));
+        }
+    }
+
+    xlog::warn("[RF2] invalidating D3D11 render caches");
+    for (int i = 0; i < solid->all_rooms.size(); i++) {
+        rf::GRoom* room = solid->all_rooms[i];
+        if (!room || !room->geo_cache)
+            continue;
+        if (room->is_detail) {
+            xlog::warn("[RF2]   nulling detail room {} cache", room->room_index);
+            room->geo_cache = nullptr;
+        } else {
+            auto* state = reinterpret_cast<int*>(
+                reinterpret_cast<char*>(room->geo_cache) + 0x20);
+            *state = 2;
+            xlog::warn("[RF2]   marking normal room {} for rebuild", room->room_index);
+        }
+    }
+}
+
+// Outer geomod state variable (DAT_0059c9f4): States 0-3, then -1 = done.
+static auto& geomod_outer_state = addr_as_ref<int>(0x0059c9f4);
+
+// Hook at the START of outer State 3 (0x00466f4e) in the geomod state machine.
+// State 3 is entered after State 2 (result collection + stock cache clearing).
+//
+// For RF2-style geomod with multiple overlapping detail rooms, this hook
+// implements multi-room looping: after the boolean for one room completes
+// and results are collected, it checks for pending rooms. If any remain,
+// it re-initializes the boolean engine for the next room and redirects
+// back to State 1 (boolean_iterate), skipping State 3's debris/decals
+// (which should only run once, after the final room).
+//
+// Flow for multi-room:
+//   Room 1: State 0→1→2→3 (our hook intercepts, redirects to State 1)
+//   Room 2: State 1→2→3 (our hook intercepts again if more rooms, or proceeds)
+//   Room N: State 1→2→3 (no more rooms, State 3 proceeds normally)
+CodeInjection geomod_state3_clear_detail_caches_injection{
+    0x00466f4e,
+    [](auto& regs) {
+        if (!g_rf2_style_boolean_active)
+            return;
+
+        // Invalidate render caches for the just-completed room's boolean pass
+        invalidate_rf2_render_caches();
+
+        // Check for pending rooms
+        if (!g_rf2_pending_detail_rooms.empty()) {
+            g_rf2_target_detail_room = g_rf2_pending_detail_rooms.front();
+            g_rf2_pending_detail_rooms.erase(g_rf2_pending_detail_rooms.begin());
+
+            xlog::warn("[RF2] switching to next detail room {} ({} more pending)",
+                g_rf2_target_detail_room->room_index, g_rf2_pending_detail_rooms.size());
+
+            // Log face counts before this room's boolean
+            rf::GSolid* solid = rf::level.geometry;
+            if (solid) {
+                for (auto& room : solid->all_rooms) {
+                    if (room->is_detail) {
+                        xlog::warn("[RF2] BEFORE: detail room {} faces={}",
+                            room->room_index, room->face_list.size());
+                    }
+                }
+            }
+
+            // Re-call boolean_setup (FUN_004de530) with the same parameters.
+            // The level solid, crater solid, position, scale etc. are all globals
+            // that haven't changed since the original State 0 call.
+            // boolean_setup stores params, checks resource availability, and
+            // resets the inner boolean state (DAT_005a3a34) to 0.
+            using BooleanSetupFn = void(__cdecl*)(
+                uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
+                uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+            auto boolean_setup = reinterpret_cast<BooleanSetupFn>(0x004de530);
+            boolean_setup(
+                addr_as_ref<uint32_t>(0x006460e8),  // level solid
+                addr_as_ref<uint32_t>(0x00646a20),  // crater solid
+                3u,                                  // op_mode = geomod
+                0u,                                  // param4
+                0x006485a0u,                         // &position
+                0x00647ca8u,                         // &orientation
+                addr_as_ref<uint32_t>(0x00647c94),  // texture index
+                2u,                                  // param8
+                addr_as_ref<uint32_t>(0x00648598),  // scale (float bits as uint32)
+                0x00647ca0u,                         // &crater bbox
+                0u,                                  // param11
+                0x006485b0u,                         // &param12
+                0x006485c0u                          // &param13
+            );
+
+            // Set outer state back to 1 (boolean_iterate) so the state machine
+            // runs the boolean for the next room on subsequent frames
+            geomod_outer_state = 1;
+
+            // Skip rest of State 3 (no debris/decals for intermediate rooms)
+            regs.eip = 0x00466fb5;
+            return;
+        }
+
+        // No more pending rooms — State 3 proceeds normally (debris, decals, done)
+    },
+};
+
 // verify proposed new sky room UID is a sky room and if so, set it as the override
 void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale)
 {
@@ -681,11 +1439,68 @@ CodeInjection sky_room_eye_position_patch{
     },
 };
 
+// In FUN_004dd8c0 (boolean State 5, result collection), the stock code writes
+// state=1 to geo_cache + 0x20 for rooms whose faces were modified by the boolean.
+// This is safe for normal rooms (D3D11 uses RoomRenderCache with padding_[0x20]
+// before the state_ field). But for detail rooms, D3D11 uses GRenderCache which
+// has NO such padding — offset 0x20 falls inside the SolidBatches data (the
+// liquid_batches_ vector), corrupting it and causing a freeze/crash on render.
+//
+// Disassembly context (room cache state write loop):
+//   004dda75: MOV ECX, 0xc9f4dc         ; ECX = &affected_rooms_array
+//   004dda7a: MOV ESI, 0x1              ; ESI = 1 (state value)
+//   004dda7f: MOV EAX, [ECX]            ; EAX = room pointer        <<< INJECTION
+//   004dda81: MOV EAX, [EAX + 0x4]      ; EAX = room->geo_cache
+//   004dda84: TEST EAX, EAX
+//   004dda86: JZ 0x004dda8b             ; skip if null
+//   004dda88: MOV [EAX + 0x20], ESI     ; *(geo_cache + 0x20) = 1   <<< CORRUPTION
+//   004dda8b: ADD ECX, 0x4              ; next room
+//
+// We inject at 0x004dda7f to replicate the two MOV instructions but return
+// EAX=0 (pretending geo_cache is null) for detail rooms in RF2-style mode,
+// causing the stock JZ to skip the write.
+CodeInjection boolean_state5_protect_detail_cache_for_rf2{
+    0x004dda7f,
+    [](auto& regs) {
+        // Replicate original: EAX = [ECX] then EAX = [EAX+4]
+        rf::GRoom** room_ptr = regs.ecx;
+        rf::GRoom* room = *room_ptr;
+        rf::GCache* cache = room->geo_cache;
+
+        if (g_rf2_style_boolean_active && room->is_detail) {
+            // Return null so the stock code skips the write to geo_cache + 0x20
+            regs.eax = static_cast<int32_t>(0);
+        } else {
+            regs.eax = cache;
+        }
+    },
+};
+
+// RF2-style geomod: suppress crater decal effects on world geometry surfaces.
+// FUN_00492400 is called from geomod state machine state 3 to apply crater marks
+// at the explosion point. It has only one caller (the geomod state machine).
+// When RF2-style is active, we suppress it entirely since the crater geometry
+// changes in detail brushes should be the only visible effect.
+FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
+    0x00492400,
+    [](rf::Vector3* pos, float radius) {
+        if (g_rf2_style_boolean_active) {
+            return; // suppress crater decals on world geometry for RF2-style
+        }
+        geomod_crater_decals_hook.call_target(pos, radius);
+    },
+};
+
 // clean up sky room overrides when shutting down level
 CodeInjection level_release_sky_room_shutdown_patch{
     0x0045CAF9,
     [](auto& regs) {
         set_sky_room_uid_override(-1, -1, false, -1);
+        g_rf2_style_boolean_active = false;
+        g_rf2_target_detail_room = nullptr;
+        g_rf2_pending_detail_rooms.clear();
+        g_detail_planes_initialized = false;
+        g_saved_detail_room_planes.clear();
     },
 };
 
@@ -755,6 +1570,22 @@ void g_solid_do_patch()
 
     // Set PPM for geo crater texture based on its resolution instead of static value of 32.0
     levelmod_do_blast_autotexture_ppm_patch.install();
+
+    // RF2-style geomod: detail brush only mode
+    geomod_init_hook.install();
+    boolean_iterate_hook.install();
+    boolean_clear_detail_bit3_for_rf2.install();
+    state1_force_slow_path_for_rf2.install();
+    state3_force_slow_path_for_rf2.install();
+    state4_skip_type1_for_rf2.install();
+    state5_force_reclassify_for_rf2.install();
+    state5_force_clear_type1_for_rf2.install();
+    state5_reclassify_type1_for_rf2.install();
+    boolean_skip_non_detail_faces_for_rf2.install();
+    boolean_state5_allow_detail_for_rf2.install();
+    boolean_state5_protect_detail_cache_for_rf2.install();
+    geomod_state3_clear_detail_caches_injection.install();
+    geomod_crater_decals_hook.install();
 
     // Commands
     max_decals_cmd.register_cmd();

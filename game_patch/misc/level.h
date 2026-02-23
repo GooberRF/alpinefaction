@@ -19,6 +19,8 @@ struct AlpineLevelProperties
     // v3
     bool override_static_mesh_ambient_light_modifier = false;
     float static_mesh_ambient_light_modifier = 2.0f;
+    // v4
+    bool rf2_style_geomod = false;
 
     static AlpineLevelProperties& instance()
     {
@@ -100,6 +102,14 @@ struct AlpineLevelProperties
             if (!read_bytes(&static_mesh_ambient_light_modifier, sizeof(static_mesh_ambient_light_modifier)))
                 return;
             xlog::debug("[AlpineLevelProps] static_mesh_ambient_light_modifier {}", static_mesh_ambient_light_modifier);
+        }
+
+        if (version >= 4) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            rf2_style_geomod = (u8 != 0);
+            xlog::debug("[AlpineLevelProps] rf2_style_geomod {}", rf2_style_geomod);
         }
     }
 };

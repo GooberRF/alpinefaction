@@ -22,8 +22,10 @@ struct AlpineLevelProperties
     // v3
     bool override_static_mesh_ambient_light_modifier = false;
     float static_mesh_ambient_light_modifier = 2.0f;
+    // v4
+    bool rf2_style_geomod = false;
 
-    static constexpr std::uint32_t current_alpine_chunk_version = 3u;
+    static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
     // relevant for maps without alpine level props and maps with older alpine level props versions
@@ -35,6 +37,7 @@ struct AlpineLevelProperties
         starts_with_headlamp = true;
         override_static_mesh_ambient_light_modifier = false;
         static_mesh_ambient_light_modifier = 2.0f;
+        rf2_style_geomod = false;
     }
 
     void Serialize(rf::File& file) const
@@ -49,6 +52,8 @@ struct AlpineLevelProperties
         // v3
         file.write<std::uint8_t>(override_static_mesh_ambient_light_modifier ? 1u : 0u);
         file.write<float>(static_mesh_ambient_light_modifier);
+        // v4
+        file.write<std::uint8_t>(rf2_style_geomod ? 1u : 0u);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -124,6 +129,14 @@ struct AlpineLevelProperties
             if (!read_bytes(&static_mesh_ambient_light_modifier, sizeof(static_mesh_ambient_light_modifier)))
                 return;
             xlog::debug("[AlpineLevelProps] static_mesh_ambient_light_modifier {}", static_mesh_ambient_light_modifier);
+        }
+
+        if (version >= 4) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            rf2_style_geomod = (u8 != 0);
+            xlog::debug("[AlpineLevelProps] rf2_style_geomod {}", rf2_style_geomod);
         }
     }
 };

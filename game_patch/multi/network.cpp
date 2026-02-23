@@ -970,7 +970,7 @@ FunHook<void(int32_t, int32_t)> multi_set_obj_handle_mapping_hook{
 
 CodeInjection process_boolean_packet_validate_shape_index_patch{
     0x004765A3,
-    [](auto& regs) { regs.ecx = std::clamp<int>(regs.ecx, 0, 3); },
+    [](auto& regs) { regs.ecx = std::clamp<int>(static_cast<int>(regs.ecx) & 0x7F, 0, 3); },
 };
 
 CodeInjection process_boolean_packet_validate_room_uid_patch{
@@ -988,8 +988,8 @@ CodeInjection process_boolean_packet_validate_room_uid_patch{
 CodeInjection process_pregame_boolean_packet_validate_shape_index_patch{
     0x0047672F,
     [](auto& regs) {
-        // only meshes 0 - 3 are supported
-        regs.ecx = std::clamp<int>(regs.ecx, 0, 3);
+        // only meshes 0 - 3 are supported, mask off high bits for safety
+        regs.ecx = std::clamp<int>(static_cast<int>(regs.ecx) & 0x7F, 0, 3);
     },
 };
 
