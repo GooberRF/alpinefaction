@@ -1573,18 +1573,22 @@ FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
 };
 
 // RF2-style geomod: suppress impact effects on world geometry surfaces.
-// FUN_00490900 is called from geomod state machine state 3 to create visual
-// impact effects at the explosion point. When RF2-style is active, this function
+// FUN_00490900 is called from geomod state machine State 3 (at 0x00466f89) to create
+// visual impact effects at the explosion point. When RF2-style is active, this function
 // crashes with a null function pointer (ExceptionAddress=0x0) because the boolean
 // only modified detail brush faces, not the world geometry that impact_effects
 // expects to find. Suppress it entirely for RF2-style geomod.
-FunHook<void(rf::Vector3*, int)> geomod_impact_effects_hook{
-    0x00490900,
-    [](rf::Vector3* pos, int radius_bits) {
+//
+// Uses CallHook (hooks the CALL site) instead of FunHook (hooks function entry) because
+// SubHook cannot decode the x87 FPU instruction (opcode 0xd8) at 0x490904, making it
+// unable to create a trampoline for FUN_00490900. FUN_00490900 has only one caller.
+CallHook<void(rf::Vector3*, float)> geomod_impact_effects_hook{
+    0x00466f89,
+    [](rf::Vector3* pos, float radius) {
         if (g_rf2_style_boolean_active) {
             return; // suppress impact effects for RF2-style (crashes on null func ptr)
         }
-        geomod_impact_effects_hook.call_target(pos, radius_bits);
+        geomod_impact_effects_hook.call_target(pos, radius);
     },
 };
 
