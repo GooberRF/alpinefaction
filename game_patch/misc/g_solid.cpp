@@ -143,9 +143,20 @@ static bool is_point_inside_room_geometry(const rf::Vector3& pt, rf::GRoom* room
     constexpr float ray_dy = 0.00259f;
     constexpr float ray_dz = 1.0f;
 
+    // Safety limits to prevent infinite loops from corrupted linked lists
+    constexpr int max_faces = 5000;
+    constexpr int max_verts_per_face = 500;
+
     int crossing_count = 0;
+    int face_count = 0;
 
     for (rf::GFace& face : room->face_list) {
+        if (++face_count > max_faces) {
+            xlog::warn("[RF2] is_point_inside_room_geometry: face iteration limit hit ({}) for room {} - possible list corruption",
+                max_faces, room->room_index);
+            break;
+        }
+
         const rf::Plane& plane = face.plane;
 
         // Ray-plane intersection: t = -(dot(pt, normal) + offset) / dot(ray_dir, normal)
@@ -187,10 +198,18 @@ static bool is_point_inside_room_geometry(const rf::Vector3& pt, rf::GRoom* room
         if (!start) continue;
 
         bool inside_polygon = false;
+        int vert_count = 0;
         rf::GFaceVertex* fv = start;
         do {
+            if (++vert_count > max_verts_per_face) {
+                xlog::warn("[RF2] is_point_inside_room_geometry: vertex iteration limit hit ({}) - possible edge_loop corruption",
+                    max_verts_per_face);
+                break;
+            }
+
             rf::GFaceVertex* fv_next = fv->next;
             if (!fv_next) break;
+            if (!fv->vertex || !fv_next->vertex) break;
 
             const rf::Vector3& p0 = fv->vertex->pos;
             const rf::Vector3& p1 = fv_next->vertex->pos;
@@ -403,15 +422,24 @@ CodeInjection state5_reclassify_type1_for_rf2{
         }
 
         // Compute face centroid from edge loop vertices
+        constexpr int max_centroid_verts = 500;
         rf::Vector3 centroid{0.0f, 0.0f, 0.0f};
         int vertex_count = 0;
         rf::GFaceVertex* fv = face->edge_loop;
         if (fv) {
             do {
+                if (!fv->vertex) {
+                    xlog::warn("[RF2] state5_reclass: null vertex in edge_loop");
+                    break;
+                }
                 centroid.x += fv->vertex->pos.x;
                 centroid.y += fv->vertex->pos.y;
                 centroid.z += fv->vertex->pos.z;
                 vertex_count++;
+                if (vertex_count > max_centroid_verts) {
+                    xlog::warn("[RF2] state5_reclass: vertex limit hit, possible edge_loop corruption");
+                    break;
+                }
                 fv = fv->next;
             } while (fv && fv != face->edge_loop);
         }
@@ -453,9 +481,11 @@ CodeInjection boolean_skip_non_detail_faces_for_rf2{
         if (!g_rf2_style_boolean_active) return;
 
         rf::GFace* face = regs.edi;
-        // Only allow faces from the target detail room; skip everything else
-        if (!face->which_room || !face->which_room->is_detail ||
-            (g_rf2_target_detail_room && face->which_room != g_rf2_target_detail_room)) {
+        // Skip ALL faces when no target room (geomod suppression outside detail brushes).
+        // Otherwise, only allow faces from the target detail room; skip everything else.
+        if (!g_rf2_target_detail_room ||
+            !face->which_room || !face->which_room->is_detail ||
+            face->which_room != g_rf2_target_detail_room) {
             void* face_attrs = regs.esi;
             AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
             regs.eip = 0x004dc521; // skip to next face in loop
@@ -1134,6 +1164,8 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
 // Hook geomod_init (FUN_00466b00) to compute g_rf2_style_boolean_active.
 // Both server and client deterministically derive this from position + level properties,
 // so the pregame boolean packet (which omits the flags field) works correctly.
+static int g_rf2_geomod_counter = 0;
+
 FunHook<void(void*)> geomod_init_hook{
     0x00466B00,
     [](void* entry_data) {
@@ -1143,8 +1175,11 @@ FunHook<void(void*)> geomod_init_hook{
         g_rf2_style_boolean_active = rf2_enabled && !in_geo_region;
 
         if (g_rf2_style_boolean_active) {
-            xlog::warn("[RF2] geomod_init: active, pos=({:.1f},{:.1f},{:.1f})",
-                geomod_pos.x, geomod_pos.y, geomod_pos.z);
+            g_rf2_geomod_counter++;
+            xlog::warn("[RF2] geomod_init #{}: active, pos=({:.1f},{:.1f},{:.1f}), flags=0x{:x}",
+                g_rf2_geomod_counter,
+                geomod_pos.x, geomod_pos.y, geomod_pos.z,
+                addr_as_ref<uint32_t>(0x0064858c));
 
             // Save original detail room planes on first RF2-style geomod.
             if (!g_detail_planes_initialized) {
@@ -1165,9 +1200,12 @@ FunHook<void(void*)> geomod_init_hook{
                     g_rf2_target_detail_room->room_index, g_rf2_pending_detail_rooms.size());
             } else {
                 g_rf2_target_detail_room = nullptr;
-                xlog::warn("[RF2] no overlapping detail rooms found, disabling RF2 mode for this geomod");
-                g_rf2_style_boolean_active = false;
-                return;
+                xlog::warn("[RF2] no overlapping detail rooms found, geomod will be suppressed");
+                // Keep g_rf2_style_boolean_active = true so our hooks suppress the geomod:
+                // - Face filter skips all faces (no target room)
+                // - Crater decals suppressed by geomod_crater_decals_hook
+                // - Reclassification deletes all TYPE1 faces (target room null → outside)
+                // Result: boolean runs but produces no visible geometry change.
             }
 
             // Log detail room face counts before boolean
@@ -1190,10 +1228,40 @@ FunHook<void(void*)> geomod_init_hook{
 // Inner boolean state variable (DAT_005a3a34) — tracks states 0-7 in FUN_004dbc50.
 static auto& boolean_inner_state = addr_as_ref<int>(0x005a3a34);
 
-// Hook FUN_004dbc50 (boolean_iterate) to log inner state transitions.
-// This helps diagnose which boolean engine state causes hangs.
+// Clear corrupted detail_rooms on all detail rooms in the level solid.
+// The boolean engine's inner state 6 (result collection) adds entries to detail rooms'
+// detail_rooms VArray, creating room reference cycles. Detail rooms should NEVER have
+// sub-detail-rooms. Corrupted entries cause infinite loops in stock engine code paths
+// (portal traversal, visibility, collision, cache rebuild) that iterate detail_rooms.
+static void clear_corrupted_detail_rooms()
+{
+    rf::GSolid* solid = rf::level.geometry;
+    if (!solid)
+        return;
+
+    for (int i = 0; i < solid->all_rooms.size(); i++) {
+        rf::GRoom* room = solid->all_rooms[i];
+        if (room && room->is_detail && room->detail_rooms.size() > 0) {
+            xlog::warn("[RF2] clearing corrupted detail_rooms ({} entries) on detail room {}",
+                room->detail_rooms.size(), room->room_index);
+            room->detail_rooms.clear();
+        }
+    }
+}
+
+// Hook FUN_004dbc50 (boolean_iterate) to clear corrupted detail_rooms after every call.
 // States: 0=face_register, 1=intersection_detect, 2=face_split_setup,
-//         3=face_split, 4=classify, 5=result_collect, 6=cleanup, 7=finalize
+//         3=classify_dispatch, 4=classify_action, 5=reclassify_and_collect,
+//         6=cleanup, 7=finalize
+//
+// CRITICAL: Inner state 5 (FUN_004dd8c0) modifies room data structures and corrupts
+// detail_rooms on detail rooms. The boolean engine processes ONE inner state per call,
+// with a frame render between calls. If we only clear detail_rooms when the boolean is
+// done (after state 7), states 6 and 7 render with corrupted detail_rooms — the stock
+// renderer iterates detail_rooms without an is_detail guard, causing freezes/crashes.
+// The severity grows with accumulated geomods (more result faces → more corruption).
+// Fix: clear detail_rooms after EVERY boolean_iterate call so the renderer never sees
+// corrupted state. States 6 (cleanup) and 7 (finalize) don't re-corrupt detail_rooms.
 FunHook<int()> boolean_iterate_hook{
     0x004dbc50,
     []() -> int {
@@ -1202,8 +1270,13 @@ FunHook<int()> boolean_iterate_hook{
         }
         int result = boolean_iterate_hook.call_target();
         if (g_rf2_style_boolean_active) {
+            bool done = (result & 0xFF) == 0;
             xlog::warn("[RF2] boolean_iterate exit: inner_state={} done={}",
-                boolean_inner_state, (result & 0xFF) == 0);
+                boolean_inner_state, done);
+
+            // Clear corrupted detail_rooms after EVERY inner state, not just when done.
+            // This ensures the renderer never sees corrupted detail_rooms between frames.
+            clear_corrupted_detail_rooms();
         }
         return result;
     },
@@ -1219,25 +1292,19 @@ FunHook<int()> boolean_iterate_hook{
 //        destroying and recreating all RoomRenderCache objects causes a freeze.
 static void invalidate_rf2_render_caches()
 {
-    if (!is_d3d11()) {
-        xlog::warn("[RF2] clearing D3D9 render caches");
-        AddrCaller{0x004f0b90}.c_call();
-        return;
-    }
-
     rf::GSolid* solid = rf::level.geometry;
     if (!solid)
         return;
 
-    // Log detail room metadata
-    for (int i = 0; i < solid->all_rooms.size(); i++) {
-        rf::GRoom* room = solid->all_rooms[i];
-        if (room && room->is_detail) {
-            xlog::warn("[RF2] AFTER: detail room {} faces={} detail_rooms={} cache={}",
-                room->room_index, room->face_list.size(),
-                room->detail_rooms.size(),
-                reinterpret_cast<uintptr_t>(room->geo_cache));
-        }
+    // Safety net: clear any remaining corrupted detail_rooms. The primary clearing
+    // happens in boolean_iterate_hook when the boolean completes, but this catches
+    // any edge cases (e.g., multi-room redirect between boolean passes).
+    clear_corrupted_detail_rooms();
+
+    if (!is_d3d11()) {
+        xlog::warn("[RF2] clearing D3D9 render caches");
+        AddrCaller{0x004f0b90}.c_call();
+        return;
     }
 
     xlog::warn("[RF2] invalidating D3D11 render caches");
@@ -1327,6 +1394,19 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
                 0x006485c0u                          // &param13
             );
 
+            // Verify boolean_setup succeeded — it sets inner state to 0 when resources
+            // are available. If it silently failed (resources exhausted), inner state
+            // stays at -1 and we'd cycle 1→2→3→1→... endlessly. Abort remaining rooms.
+            if (boolean_inner_state != 0) {
+                xlog::warn("[RF2] boolean_setup failed for room {} (resource exhaustion, inner_state={}), "
+                    "skipping {} remaining rooms",
+                    g_rf2_target_detail_room->room_index, boolean_inner_state,
+                    g_rf2_pending_detail_rooms.size());
+                g_rf2_pending_detail_rooms.clear();
+                // Let State 3 proceed normally (debris/decals for the rooms we did process)
+                return;
+            }
+
             // Set outer state back to 1 (boolean_iterate) so the state machine
             // runs the boolean for the next room on subsequent frames
             geomod_outer_state = 1;
@@ -1337,6 +1417,7 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         }
 
         // No more pending rooms — State 3 proceeds normally (debris, decals, done)
+        xlog::warn("[RF2] geomod #{} complete: all rooms processed", g_rf2_geomod_counter);
     },
 };
 
@@ -1491,6 +1572,22 @@ FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
     },
 };
 
+// RF2-style geomod: suppress impact effects on world geometry surfaces.
+// FUN_00490900 is called from geomod state machine state 3 to create visual
+// impact effects at the explosion point. When RF2-style is active, this function
+// crashes with a null function pointer (ExceptionAddress=0x0) because the boolean
+// only modified detail brush faces, not the world geometry that impact_effects
+// expects to find. Suppress it entirely for RF2-style geomod.
+FunHook<void(rf::Vector3*, int)> geomod_impact_effects_hook{
+    0x00490900,
+    [](rf::Vector3* pos, int radius_bits) {
+        if (g_rf2_style_boolean_active) {
+            return; // suppress impact effects for RF2-style (crashes on null func ptr)
+        }
+        geomod_impact_effects_hook.call_target(pos, radius_bits);
+    },
+};
+
 // clean up sky room overrides when shutting down level
 CodeInjection level_release_sky_room_shutdown_patch{
     0x0045CAF9,
@@ -1501,6 +1598,7 @@ CodeInjection level_release_sky_room_shutdown_patch{
         g_rf2_pending_detail_rooms.clear();
         g_detail_planes_initialized = false;
         g_saved_detail_room_planes.clear();
+        g_rf2_geomod_counter = 0;
     },
 };
 
@@ -1586,6 +1684,7 @@ void g_solid_do_patch()
     boolean_state5_protect_detail_cache_for_rf2.install();
     geomod_state3_clear_detail_caches_injection.install();
     geomod_crater_decals_hook.install();
+    geomod_impact_effects_hook.install();
 
     // Commands
     max_decals_cmd.register_cmd();
