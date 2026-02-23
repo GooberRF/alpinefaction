@@ -114,6 +114,7 @@ struct AlpineFactionJoinAcceptPacketExt
         gaussian_spread     = 1u << 9,
         location_pinging    = 1u << 10,
         delayed_spawns      = 1u << 11,
+        allow_footsteps     = 1u << 12,
     } flags = Flags::none;
 
     float max_fov;

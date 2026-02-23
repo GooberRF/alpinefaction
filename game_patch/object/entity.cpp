@@ -2,6 +2,8 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
+#include <cstring>
+#include <unordered_set>
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
@@ -17,6 +19,11 @@
 #include "../rf/os/frametime.h"
 #include "../rf/os/os.h"
 #include "../rf/sound/sound.h"
+#include "../rf/object.h"
+#include "../rf/vmesh.h"
+#include "../rf/character.h"
+#include "../rf/math/vector.h"
+#include "../multi/multi.h"
 
 rf::Timestamp g_player_jump_timestamp;
 
@@ -437,6 +444,117 @@ void apply_entity_sim_distance() {
     rf::entity_sim_distance = g_alpine_game_config.entity_sim_distance;
 }
 
+// Fix for footstep audio bug in multiplayer where remote players' footsteps
+// only play when they have a pistol equipped. Only pistol walk/run animations
+// have footstep triggers defined in entity.tbl; other weapons lack them.
+// We hook the animation update function (0x0051bce3) to inject trigger values
+// into skeletons that have empty trigger names, using VMVF time range data.
+
+bool g_footsteps_active = false;
+
+// Footstep trigger positions as percentages of animation duration
+static constexpr float footstep_walk_left_pct = 0.15f;
+static constexpr float footstep_walk_right_pct = 0.55f;
+static constexpr float footstep_run_left_pct = 0.12f;
+static constexpr float footstep_run_right_pct = 0.52f;
+
+CodeInjection footstep_trigger_fixup_injection{
+    0x0051bce3,
+    [](auto& regs) {
+        if (!g_footsteps_active) return;
+
+        uint32_t* anims_array = reinterpret_cast<uint32_t*>(static_cast<int32_t>(regs.edx));
+        int anim_index = static_cast<int32_t>(regs.ebp);
+        rf::Skeleton* skeleton = reinterpret_cast<rf::Skeleton*>(anims_array[anim_index]);
+        if (!skeleton) return;
+
+        // Only inject if trigger names are empty (no existing footstep data)
+        if (skeleton->triggers[0].name[0] != '\0') return;
+
+        const char* name = skeleton->mvf_filename;
+        if (!name || name[0] == '\0') return;
+
+        bool is_walk = std::strstr(name, "walk") != nullptr;
+        bool is_run = !is_walk && std::strstr(name, "run") != nullptr;
+        if (!is_walk && !is_run) return;
+
+        if (!skeleton->animation_data) return;
+
+        uint8_t* data = static_cast<uint8_t*>(skeleton->animation_data);
+        if (data[0] != 'V' || data[1] != 'M' || data[2] != 'V' || data[3] != 'F') return;
+
+        int start_time = *reinterpret_cast<int*>(data + 0x10);
+        int end_time = *reinterpret_cast<int*>(data + 0x14);
+        int duration = end_time - start_time;
+        if (duration <= 0) return;
+
+        float left_pct = is_walk ? footstep_walk_left_pct : footstep_run_left_pct;
+        float right_pct = is_walk ? footstep_walk_right_pct : footstep_run_right_pct;
+
+        int left_trigger = start_time + static_cast<int>(duration * left_pct);
+        int right_trigger = start_time + static_cast<int>(duration * right_pct);
+
+        std::strncpy(skeleton->triggers[0].name, "footstep_left", 15);
+        skeleton->triggers[0].name[15] = '\0';
+        skeleton->triggers[0].value = left_trigger;
+
+        std::strncpy(skeleton->triggers[1].name, "footstep_right", 15);
+        skeleton->triggers[1].name[15] = '\0';
+        skeleton->triggers[1].value = right_trigger;
+
+        static std::unordered_set<std::string> logged_injected;
+        if (logged_injected.insert(name).second) {
+            xlog::info("Footstep fix: {} injected left={} right={} (start={} end={} dur={} type={})",
+                name, left_trigger, right_trigger, start_time, end_time, duration,
+                is_walk ? "walk" : "run");
+        }
+    }
+};
+
+void evaluate_footsteps()
+{
+    // Check both client preference and server permission
+    bool client_wants_fix = g_alpine_game_config.footsteps;
+    bool server_allows_fix = false;
+
+    // Determine server permission:
+    // - Single-player: always allowed
+    // - Server (hosting): always allowed
+    // - Client on Alpine Faction server: check server permission
+    // - Client on legacy server: NOT allowed (compatibility)
+    if (!rf::is_multi) {
+        server_allows_fix = true;
+    }
+    else if (rf::is_server) {
+        server_allows_fix = true;
+    }
+    else {
+        // Client: only allow if Alpine Faction server permits it
+        const auto& server_info = get_af_server_info();
+        if (server_info.has_value()) {
+            server_allows_fix = server_info->allow_footsteps;
+        }
+    }
+
+    g_footsteps_active = client_wants_fix && server_allows_fix;
+
+    xlog::info("Footstep fix: client_wants={}, server_allows={}, active={}",
+        client_wants_fix, server_allows_fix, g_footsteps_active);
+}
+
+ConsoleCommand2 cl_footsteps_cmd{
+    "cl_footsteps",
+    []() {
+        g_alpine_game_config.footsteps = !g_alpine_game_config.footsteps;
+        evaluate_footsteps();
+        rf::console::print("Footsteps: {} (active: {})",
+            g_alpine_game_config.footsteps ? "enabled" : "disabled",
+            g_footsteps_active ? "yes" : "no");
+    },
+    "Toggle footstep trigger injection for all weapons",
+    "cl_footsteps",
+};
+
 FunHook<void(rf::Entity*, float)> entity_maybe_play_pain_sound_hook{
     0x004196F0, [](rf::Entity* ep, float percent_damage) {
         if (g_alpine_game_config.entity_pain_sounds) {
@@ -512,6 +630,10 @@ void entity_do_patch()
 	// Restore cut stock game feature for entities and corpses exploding into chunks
 	entity_blood_throw_gibs_hook.install();
 
+    // Footstep fix: inject trigger frames on-the-fly when animations have empty triggers
+    evaluate_footsteps();
+    footstep_trigger_fixup_injection.install();
+
     // Commands
     sp_exposuredamage_cmd.register_cmd();
     cl_gorelevel_cmd.register_cmd();
@@ -519,4 +641,5 @@ void entity_do_patch()
     cl_gibvelocityscale_cmd.register_cmd();
     cl_giblifetimems_cmd.register_cmd();
     cl_painsounds_cmd.register_cmd();
+    cl_footsteps_cmd.register_cmd();
 }

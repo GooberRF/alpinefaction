@@ -148,6 +148,7 @@ struct AlpineGameSettings
     bool always_clamp_official_lightmaps = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
+    bool footsteps = true;
     static constexpr int min_gib_chunk_count = 7;
     static constexpr int max_gib_chunk_count = 100;
     int gib_chunk_count = 14;

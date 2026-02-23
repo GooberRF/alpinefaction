@@ -100,6 +100,7 @@ struct AlpineFactionServerInfo
     bool delayed_spawns = false;
     int koth_score_limit = 0;
     int dc_score_limit = 0;
+    bool allow_footsteps = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

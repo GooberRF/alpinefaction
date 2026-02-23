@@ -3223,6 +3223,11 @@ bool server_gaussian_spread()
     return g_alpine_server_config.gaussian_spread;
 }
 
+bool server_allow_footsteps()
+{
+    return g_alpine_server_config.allow_footsteps;
+}
+
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 {
     bool requires_alpine = false; // alpine required to spawn

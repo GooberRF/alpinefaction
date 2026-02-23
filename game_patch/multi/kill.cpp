@@ -18,6 +18,7 @@
 #include "server_internal.h"
 #include "alpine_packets.h"
 #include "../misc/player.h"
+#include "../object/object_private.h"
 
 bool kill_messages = true;
 
@@ -353,6 +354,9 @@ FunHook<void()> multi_level_init_hook{
             reset_gungame_notifications();
             weapon_manager.initialize_score_to_weapon_map();
         }
+
+        // Re-evaluate footstep state when level loads
+        evaluate_footsteps();
     },
 };
 

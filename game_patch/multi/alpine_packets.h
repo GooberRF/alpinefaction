@@ -183,6 +183,7 @@ enum af_server_info_flags : uint32_t {
     SIF_LOCATION_PINGING = 1u << 10,
     SIF_DELAYED_SPAWNS = 1u << 11,
     SIF_SERVER_CFG_CHANGED = 1u << 12,
+    SIF_ALLOW_FOOTSTEPS = 1u << 13,
 };
 
 // Subset of `rf::NetGameFlags`.

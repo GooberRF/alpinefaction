@@ -51,6 +51,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
 - Sync animation state for crouched players in first person spectate view
+- Implement enemy and teammate footstep audio for weapons other than pistol in multiplayer. Enabled by default with server permission, `cl_footsteps` to toggle.
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------
