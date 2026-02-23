@@ -13,6 +13,7 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/hud.h"
 #include "../rf/player/camera.h"
+#include "../rf/player/player_fpgun.h"
 #include "../main/main.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
@@ -29,6 +30,12 @@ static rf::Player* g_spectate_mode_target;
 static rf::Camera* g_old_target_camera = nullptr;
 static bool g_spectate_mode_enabled = false;
 static bool g_spectate_mode_follow_killer = false;
+
+// Edge-detection state for spectated player action animations
+static bool g_prev_weapon_is_on = false;
+static bool g_prev_is_reloading = false;
+static bool g_prev_alt_fire_is_on = false;
+static int g_prev_weapon_type = -1;
 
 void player_fpgun_set_player(rf::Player* pp);
 
@@ -155,6 +162,11 @@ void multi_spectate_set_target_player(rf::Player* player)
     if (g_spectate_mode_target != player) {
         af_send_spectate_start_packet(player);
         g_spectate_mode_target = player;
+        // Reset action animation edge-detection state for new target
+        g_prev_weapon_is_on = false;
+        g_prev_is_reloading = false;
+        g_prev_alt_fire_is_on = false;
+        g_prev_weapon_type = -1;
     }
 
     rf::multi_kill_local_player();
@@ -415,6 +427,29 @@ static ConsoleCommand2 spectate_mode_follow_killer_cmd{
 
 #if SPECTATE_MODE_SHOW_WEAPON
 
+// Hook player_fpgun_play_anim to send weapon fire events to spectators via the server.
+// Only WA_FIRE and WA_ALT_FIRE are sent - other animations (custom mode, reload, draw)
+// are handled by entity state detection in player_render_new.
+FunHook<void(rf::Player*, rf::WeaponAction)> player_fpgun_play_anim_hook{
+    0x004A9380,
+    [](rf::Player* pp, rf::WeaponAction action) {
+        player_fpgun_play_anim_hook.call_target(pp, action);
+
+        if (pp != rf::local_player || !rf::is_multi || rf::is_server)
+            return;
+
+        if (action != rf::WA_FIRE && action != rf::WA_ALT_FIRE)
+            return;
+
+        rf::Entity* entity = rf::entity_from_handle(pp->entity_handle);
+        if (!entity)
+            return;
+
+        int weapon_type = entity->ai.current_primary_weapon;
+        af_send_spectate_weapon_fire_event(weapon_type, action == rf::WA_ALT_FIRE);
+    },
+};
+
 static void player_render_new(rf::Player* player)
 {
     if (g_spectate_mode_enabled) {
@@ -425,12 +460,69 @@ static void player_render_new(rf::Player* player)
             (entity && entity->ai.current_primary_weapon == rf::remote_charge_weapon_type);
 
         if (g_spectate_mode_target != rf::local_player && entity) {
-            static rf::Vector3 old_vel;
-            rf::Vector3 vel_diff = entity->p_data.vel - old_vel;
-            old_vel = entity->p_data.vel;
+            // Clear jump/land flags so player_fpgun_process doesn't play WA_JUMP
+            // which cancels action anims (reload, fire, draw, etc.)
+            entity->entity_flags &= ~rf::EF_JUMP_START_ANIM;
+            g_spectate_mode_target->just_landed = false;
 
-            if (vel_diff.y > 0.1f)
-                entity->entity_flags |= rf::EF_JUMP_START_ANIM; // jump
+            int weapon_type = entity->ai.current_primary_weapon;
+
+            // Detect weapon switch and play draw animation for the new weapon
+            if (weapon_type != g_prev_weapon_type && g_prev_weapon_type != -1) {
+                if (rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_DRAW)) {
+                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_DRAW);
+                }
+            }
+            g_prev_weapon_type = weapon_type;
+
+            // Detect weapon fire rising/falling edge.
+            // AIF_ALT_FIRE distinguishes primary vs alt fire on the same weapon_is_on state.
+            // For continuous alt fire weapons (baton taser): skip WA_CUSTOM_START intro, go
+            // straight to WS_LOOP_FIRE on rising edge, play WA_CUSTOM_LEAVE on falling edge.
+            bool weapon_is_on = rf::entity_weapon_is_on(entity->handle, weapon_type);
+            bool is_alt_fire = (entity->ai.ai_flags & rf::AIF_ALT_FIRE) != 0;
+            bool is_continuous_alt_fire_weapon =
+                rf::weapon_is_on_off_weapon(weapon_type, true);
+
+            if (weapon_is_on && !g_prev_weapon_is_on) {
+                // Rising edge - weapon just started firing
+                if (is_alt_fire && is_continuous_alt_fire_weapon) {
+                    // Continuous alt fire (baton taser): skip intro, go straight to looping fire
+                    rf::player_fpgun_set_next_state_anim(g_spectate_mode_target, rf::WS_LOOP_FIRE);
+                }
+                else if (is_alt_fire &&
+                         rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_ALT_FIRE)) {
+                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_ALT_FIRE);
+                }
+                else if (!is_alt_fire &&
+                         rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_FIRE)) {
+                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_FIRE);
+                }
+                // Reset firing timer so muzzle flash renders (used by rail gun glow,
+                // shoulder cannon boom, and other time-based effects in player_fpgun_render)
+                g_spectate_mode_target->fpgun_data.time_elapsed_since_firing = 0.0f;
+            }
+            else if (!weapon_is_on && g_prev_weapon_is_on) {
+                // Falling edge - weapon stopped firing
+                if (g_prev_alt_fire_is_on && is_continuous_alt_fire_weapon &&
+                    rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_CUSTOM_LEAVE)) {
+                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_CUSTOM_LEAVE);
+                }
+            }
+            g_prev_weapon_is_on = weapon_is_on;
+            g_prev_alt_fire_is_on = is_alt_fire;
+
+            // Detect reload rising edge and play fpgun reload action animation
+            // Skip if the player has no reserve ammo (empty weapon causes continuous reload flag)
+            bool is_reloading = rf::entity_is_reloading(entity);
+            if (is_reloading && !g_prev_is_reloading) {
+                int ammo_type = rf::weapon_types[weapon_type].ammo_type;
+                bool has_reserve_ammo = ammo_type >= 0 && entity->ai.ammo[ammo_type] > 0;
+                if (has_reserve_ammo && rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_RELOAD)) {
+                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_RELOAD);
+                }
+            }
+            g_prev_is_reloading = is_reloading;
         }
 
         if (g_spectate_mode_target->fpgun_data.zooming_in)
@@ -439,6 +531,15 @@ static void player_render_new(rf::Player* player)
         rf::local_player->fpgun_data.zoom_factor = g_spectate_mode_target->fpgun_data.zoom_factor;
 
         rf::player_fpgun_process(g_spectate_mode_target);
+
+        // Force WS_LOOP_FIRE state after process so the render function sees it for muzzle flash.
+        // The state anim hook inside process should already set this, but the animation transition
+        // system may not complete in time for the render check. Directly writing the state fields
+        // guarantees player_fpgun_render's is_in_state_anim(WS_LOOP_FIRE) check passes.
+        if (entity && rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon)) {
+            g_spectate_mode_target->fpgun_current_state_anim = rf::WS_LOOP_FIRE;
+        }
+
         rf::player_render(g_spectate_mode_target);
     }
     else
@@ -457,6 +558,79 @@ CallHook<float(rf::Player*)> gameplay_render_frame_player_fpgun_get_zoom_hook{
 
 #endif // SPECTATE_MODE_SHOW_WEAPON
 
+void multi_spectate_on_remote_weapon_fire(rf::Entity* entity, int weapon_type, bool alt_fire)
+{
+#if SPECTATE_MODE_SHOW_WEAPON
+    if (!g_spectate_mode_enabled || !g_spectate_mode_target || !entity)
+        return;
+
+    // Check if the firing entity belongs to the spectated player
+    rf::Entity* target_entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+    if (entity != target_entity)
+        return;
+
+    // Don't handle local player
+    if (g_spectate_mode_target == rf::local_player)
+        return;
+
+    // Continuous alt fire weapons (baton taser): skip intro, go straight to looping fire
+    if (alt_fire && rf::weapon_is_on_off_weapon(weapon_type, true)) {
+        rf::player_fpgun_set_next_state_anim(g_spectate_mode_target, rf::WS_LOOP_FIRE);
+    }
+    else {
+        rf::WeaponAction action = alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE;
+        if (rf::player_fpgun_action_anim_exists(weapon_type, action)) {
+            // Don't restart the fire animation if it's already playing - this prevents
+            // weapons like the baton from having their swing animation constantly reset
+            // by rapid fire events. Semi-automatic weapons (pistol, precision rifle) are
+            // excluded because each click is a distinct shot that should restart the anim.
+            bool should_play = rf::weapon_is_semi_automatic(weapon_type)
+                || !rf::player_fpgun_action_anim_is_playing(g_spectate_mode_target, action);
+            if (should_play) {
+                rf::player_fpgun_play_anim(g_spectate_mode_target, action);
+            }
+        }
+    }
+
+    // Reset firing timer for muzzle flash effects
+    g_spectate_mode_target->fpgun_data.time_elapsed_since_firing = 0.0f;
+#endif // SPECTATE_MODE_SHOW_WEAPON
+}
+
+void multi_spectate_on_obj_update_fire(rf::Entity* entity, bool alt_fire)
+{
+#if SPECTATE_MODE_SHOW_WEAPON
+    if (!g_spectate_mode_enabled || !g_spectate_mode_target || !entity)
+        return;
+
+    rf::Entity* target_entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+    if (entity != target_entity)
+        return;
+
+    if (g_spectate_mode_target == rf::local_player)
+        return;
+
+    int weapon_type = entity->ai.current_primary_weapon;
+
+    // Continuous alt fire weapons (baton taser): skip intro, go straight to looping fire
+    if (alt_fire && rf::weapon_is_on_off_weapon(weapon_type, true)) {
+        rf::player_fpgun_set_next_state_anim(g_spectate_mode_target, rf::WS_LOOP_FIRE);
+    }
+    else {
+        rf::WeaponAction action = alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE;
+        if (rf::player_fpgun_action_anim_exists(weapon_type, action)) {
+            bool should_play = rf::weapon_is_semi_automatic(weapon_type)
+                || !rf::player_fpgun_action_anim_is_playing(g_spectate_mode_target, action);
+            if (should_play) {
+                rf::player_fpgun_play_anim(g_spectate_mode_target, action);
+            }
+        }
+    }
+
+    g_spectate_mode_target->fpgun_data.time_elapsed_since_firing = 0.0f;
+#endif
+}
+
 void multi_spectate_appy_patch()
 {
     render_reticle_hook.install();
@@ -472,6 +646,7 @@ void multi_spectate_appy_patch()
 
     AsmWriter(0x0043285D).call(player_render_new);
     gameplay_render_frame_player_fpgun_get_zoom_hook.install();
+    player_fpgun_play_anim_hook.install();
 
     write_mem_ptr(0x0048857E + 2, &g_spectate_mode_target); // obj_mark_all_for_room
     write_mem_ptr(0x00488598 + 1, &g_spectate_mode_target); // obj_mark_all_for_room

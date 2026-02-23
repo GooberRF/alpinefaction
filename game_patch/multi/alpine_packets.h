@@ -7,6 +7,7 @@
 #include "gametype.h"
 #include "../multi/server_internal.h"
 #include "../rf/multi.h"
+#include "../rf/player/player_fpgun.h"
 
 #pragma pack(push, 1)
 
@@ -36,6 +37,7 @@ enum class af_packet_type : uint8_t
     af_spectate_notify = 0x5C,          // Alpine 1.2
     af_server_msg = 0x5D,               // Alpine 1.2
     af_server_req = 0x5E,               // Alpine 1.2.1
+    af_spectate_event = 0x5F,          // Alpine 1.3
 };
 
 struct af_ping_location_req_packet
@@ -229,6 +231,17 @@ struct af_server_msg_packet {
     char data[];
 };
 
+enum class af_spectate_event_type : uint8_t {
+    weapon_fire = 0,
+};
+
+struct af_spectate_event_packet {
+    RF_GamePacketHeader header;
+    uint8_t player_id;
+    uint8_t event_type;
+    uint8_t data[2]; // subtype-specific payload
+};
+
 #pragma pack(pop)
 
 bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player);
@@ -269,6 +282,9 @@ void af_process_server_msg_packet(const void* data, size_t len, const rf::NetAdd
 void af_broadcast_automated_chat_msg(std::string_view msg);
 void af_send_automated_chat_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
 void af_send_server_console_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
+
+void af_send_spectate_weapon_fire_event(int weapon_type, bool alt_fire);
+void af_process_spectate_event_packet(const void* data, size_t len, const rf::NetAddr& addr);
 
 // client requests
 void af_send_handicap_request(uint8_t amount);

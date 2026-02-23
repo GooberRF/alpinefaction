@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../rf/player/control_config.h"
+#include "../rf/player/player_fpgun.h"
 
 namespace rf
 {
@@ -20,3 +21,5 @@ void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* en
 bool multi_spectate_is_spectating();
 bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pressed);
 void multi_spectate_sync_crouch_anim();
+void multi_spectate_on_remote_weapon_fire(rf::Entity* entity, int weapon_type, bool alt_fire);
+void multi_spectate_on_obj_update_fire(rf::Entity* entity, bool alt_fire);

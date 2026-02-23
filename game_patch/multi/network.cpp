@@ -221,7 +221,8 @@ enum packet_type : uint8_t {
     af_spectate_start      = 0x5B,
     af_spectate_notify     = 0x5C,
     af_server_msg          = 0x5D,
-    af_server_req          = 0x5E
+    af_server_req          = 0x5E,
+    af_spectate_event    = 0x5F
 };
 
 // client -> server
@@ -248,7 +249,8 @@ std::array g_server_side_packet_whitelist{
     rcon,
     af_ping_location_req,
     af_client_req,
-    af_spectate_start
+    af_spectate_start,
+    af_spectate_event
 };
 
 // server -> client
@@ -305,7 +307,8 @@ std::array g_client_side_packet_whitelist{
     af_server_info,
     af_spectate_notify,
     af_server_msg,
-    af_server_req
+    af_server_req,
+    af_spectate_event
 };
 // clang-format on
 

@@ -21,6 +21,7 @@
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
 #include "../object/object.h"
+#include "../hud/multi_spectate.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
@@ -123,6 +124,10 @@ bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::P
         }
         case af_packet_type::af_server_req: {
             af_process_server_req_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_spectate_event: {
+            af_process_spectate_event_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -1785,5 +1790,73 @@ void af_process_server_msg_packet(
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string msg{ptr, len - sizeof(msg_packet)};
         rf::console::print("{}", msg);
+    }
+}
+
+void af_send_spectate_weapon_fire_event(int weapon_type, bool alt_fire)
+{
+    // Send: client -> server
+    if (!rf::is_multi || rf::is_server)
+        return;
+
+    if (!rf::local_player || !rf::local_player->net_data)
+        return;
+
+    af_spectate_event_packet pkt{};
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_spectate_event);
+    pkt.header.size = static_cast<uint16_t>(sizeof(pkt) - sizeof(pkt.header));
+    pkt.player_id = rf::local_player->net_data->player_id;
+    pkt.event_type = static_cast<uint8_t>(af_spectate_event_type::weapon_fire);
+    pkt.data[0] = static_cast<uint8_t>(weapon_type);
+    pkt.data[1] = static_cast<uint8_t>(alt_fire ? 1 : 0);
+
+    af_send_packet(rf::local_player, &pkt, sizeof(pkt), false);
+}
+
+static void af_process_spectate_event_on_client(const af_spectate_event_packet& pkt)
+{
+    rf::Player* player = rf::multi_find_player_by_id(pkt.player_id);
+    if (!player)
+        return;
+
+    rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
+    if (!entity)
+        return;
+
+    switch (static_cast<af_spectate_event_type>(pkt.event_type)) {
+        case af_spectate_event_type::weapon_fire:
+            multi_spectate_on_remote_weapon_fire(entity, pkt.data[0],
+                pkt.data[1] != 0);
+            break;
+    }
+}
+
+void af_process_spectate_event_packet(const void* data, size_t len, const rf::NetAddr& addr)
+{
+    if (len < sizeof(af_spectate_event_packet))
+        return;
+
+    af_spectate_event_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    if (rf::is_server) {
+        // Server: relay to all other clients
+        rf::Player* sender = rf::multi_find_player_by_addr(addr);
+        if (!sender)
+            return;
+
+        // Overwrite player_id with the server's authoritative value
+        pkt.player_id = sender->net_data->player_id;
+
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            if (&player == sender || &player == rf::local_player)
+                continue;
+            if (!player.net_data)
+                continue;
+            af_send_packet(&player, &pkt, sizeof(pkt), false);
+        }
+    }
+    else {
+        af_process_spectate_event_on_client(pkt);
     }
 }
