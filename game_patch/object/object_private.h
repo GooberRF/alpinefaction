@@ -13,3 +13,7 @@ void entity_do_patch();
 void item_do_patch();
 void particle_do_patch();
 void obj_light_apply_patch();
+
+// Footstep fix state (controlled by client config AND server permission)
+extern bool g_footsteps_active;
+void evaluate_footsteps();
