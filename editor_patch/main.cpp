@@ -133,7 +133,6 @@ CodeInjection CEditorApp_InitInstance_open_level_injection{
 };
 
 // ===== Brush "Is Geoable" support =====
-// Brush linked list lives at CDedLevel + 0x118, each node: +0x04=uid, +0x48=state, +0x4c=next
 
 static int compute_geoable_state_from_selected()
 {
@@ -141,24 +140,21 @@ static int compute_geoable_state_from_selected()
     if (!level) return BST_UNCHECKED;
     auto& props = level->GetAlpineLevelProperties();
 
-    auto* head = *reinterpret_cast<std::byte**>(
-        reinterpret_cast<std::byte*>(level) + 0x118);
-    auto* node = head;
+    BrushNode* node = level->brush_list;
     int num_selected = 0;
     int num_geoable = 0;
     do {
         if (!node) break;
-        if (*reinterpret_cast<int*>(node + 0x48) == 3) {
-            int uid = *reinterpret_cast<int*>(node + 0x04);
+        if (node->state == BRUSH_STATE_SELECTED) {
             num_selected++;
             if (std::find(props.geoable_brush_uids.begin(),
-                          props.geoable_brush_uids.end(), uid)
+                          props.geoable_brush_uids.end(), node->uid)
                 != props.geoable_brush_uids.end()) {
                 num_geoable++;
             }
         }
-        node = *reinterpret_cast<std::byte**>(node + 0x4c);
-    } while (node != head);
+        node = node->next;
+    } while (node != level->brush_list);
 
     if (num_selected == 0 || num_geoable == 0) return BST_UNCHECKED;
     if (num_geoable == num_selected) return BST_CHECKED;
@@ -173,18 +169,15 @@ static void apply_geoable_to_selected_brushes(int new_state)
     if (!level) return;
     auto& props = level->GetAlpineLevelProperties();
 
-    auto* head = *reinterpret_cast<std::byte**>(
-        reinterpret_cast<std::byte*>(level) + 0x118);
-    auto* node = head;
+    BrushNode* node = level->brush_list;
     do {
         if (!node) break;
-        if (*reinterpret_cast<int*>(node + 0x48) == 3) {
-            int uid = *reinterpret_cast<int*>(node + 0x04);
+        if (node->state == BRUSH_STATE_SELECTED) {
             auto it = std::find(props.geoable_brush_uids.begin(),
-                                props.geoable_brush_uids.end(), uid);
+                                props.geoable_brush_uids.end(), node->uid);
             if (new_state == BST_CHECKED) {
                 if (it == props.geoable_brush_uids.end()) {
-                    props.geoable_brush_uids.push_back(uid);
+                    props.geoable_brush_uids.push_back(node->uid);
                 }
             } else {
                 if (it != props.geoable_brush_uids.end()) {
@@ -192,8 +185,8 @@ static void apply_geoable_to_selected_brushes(int new_state)
                 }
             }
         }
-        node = *reinterpret_cast<std::byte**>(node + 0x4c);
-    } while (node != head);
+        node = node->next;
+    } while (node != level->brush_list);
 }
 
 // Dialog 205 (brush panel) subclass for Is Geoable click handling
