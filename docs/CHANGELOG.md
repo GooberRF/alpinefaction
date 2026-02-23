@@ -129,6 +129,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
 - Fix Alt+Enter crash in Direct3D 11 renderer
 - Fix premature idle transition in first person weapon running animations
+- Sync animation state for crouched players in first person spectate view
+- Implement enemy and teammate footstep audio for weapons other than pistol in multiplayer. Enabled by default with server permission, `cl_footsteps` to toggle.
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------
