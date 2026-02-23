@@ -208,6 +208,7 @@ FunHook<void(bool)> level_init_post_hook{
         populate_world_hud_sprite_events();
         reset_achievement_state_info();
         multi_level_init_post_gametypes();
+        apply_geoable_flags();
 
         if (!rf::is_dedicated_server) {
             explosion_flash_lights_level_init();

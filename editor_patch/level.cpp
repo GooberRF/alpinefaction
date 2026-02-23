@@ -53,14 +53,101 @@ CodeInjection CDedLevel_LoadLevel_patch2{
     },
 };
 
+// At save time, match geoable brush UIDs to compiled room UIDs via position.
+// The compiled solid at CDedLevel + 0x4c contains GRoom objects with bboxes.
+// The brush linked list at CDedLevel + 0x118 contains brush nodes with positions at +0x08.
+// For each geoable brush, find the detail room whose bbox contains the brush position.
+static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& props)
+{
+    props.geoable_room_uids.clear();
+    props.geoable_room_uids.resize(props.geoable_brush_uids.size(), 0);
+
+    auto* level_ptr = reinterpret_cast<std::byte*>(&level);
+
+    // Access compiled solid at CDedLevel + 0x4c
+    auto* solid_ptr = *reinterpret_cast<std::byte**>(level_ptr + 0x4c);
+    if (!solid_ptr) {
+        xlog::warn("[Geoable] compute_room_uids: no compiled solid");
+        return;
+    }
+
+    // GSolid::all_rooms VArray at solid + 0x90: {int num, int capacity, GRoom** elements}
+    int rooms_count = *reinterpret_cast<int*>(solid_ptr + 0x90);
+    auto** rooms_data = *reinterpret_cast<std::byte***>(solid_ptr + 0x90 + 8);
+
+    xlog::debug("[Geoable] compute_room_uids: geoable_brush_uids={} rooms_count={} rooms_data={}", props.geoable_brush_uids.size(), rooms_count, (void*)rooms_data);
+
+    // Brush linked list head at CDedLevel + 0x118
+    auto* brush_head = *reinterpret_cast<std::byte**>(level_ptr + 0x118);
+
+    for (std::size_t i = 0; i < props.geoable_brush_uids.size(); i++) {
+        int32_t brush_uid = props.geoable_brush_uids[i];
+
+        // Find brush in linked list and get its position (+0x08 = Vec3)
+        auto* node = brush_head;
+        float bx = 0, by = 0, bz = 0;
+        bool found_brush = false;
+        if (node) {
+            do {
+                int uid = *reinterpret_cast<int*>(node + 0x04);
+                if (uid == brush_uid) {
+                    bx = *reinterpret_cast<float*>(node + 0x08);
+                    by = *reinterpret_cast<float*>(node + 0x0C);
+                    bz = *reinterpret_cast<float*>(node + 0x10);
+                    found_brush = true;
+                    break;
+                }
+                node = *reinterpret_cast<std::byte**>(node + 0x4c);
+            } while (node && node != brush_head);
+        }
+
+        if (!found_brush) {
+            xlog::warn("[Geoable] compute_room_uids: brush uid={} not found in list", brush_uid);
+            continue;
+        }
+
+        // Find detail room whose bbox contains the brush position
+        constexpr float tolerance = 2.0f;
+        for (int j = 0; j < rooms_count; j++) {
+            auto* room = rooms_data[j];
+            if (!room) continue;
+            // GRoom: +0x00=is_detail(bool), +0x08=bbox_min(Vec3), +0x14=bbox_max(Vec3), +0x24=uid(int)
+            bool is_detail = *reinterpret_cast<bool*>(room + 0x00);
+            if (!is_detail) continue;
+            float rx0 = *reinterpret_cast<float*>(room + 0x08);
+            float ry0 = *reinterpret_cast<float*>(room + 0x0C);
+            float rz0 = *reinterpret_cast<float*>(room + 0x10);
+            float rx1 = *reinterpret_cast<float*>(room + 0x14);
+            float ry1 = *reinterpret_cast<float*>(room + 0x18);
+            float rz1 = *reinterpret_cast<float*>(room + 0x1C);
+            if (bx >= rx0 - tolerance && bx <= rx1 + tolerance &&
+                by >= ry0 - tolerance && by <= ry1 + tolerance &&
+                bz >= rz0 - tolerance && bz <= rz1 + tolerance) {
+                int room_uid = *reinterpret_cast<int*>(room + 0x24);
+                props.geoable_room_uids[i] = room_uid;
+                xlog::debug("[Geoable] matched brush uid={} pos=({:.1f},{:.1f},{:.1f}) -> room uid={}", brush_uid, bx, by, bz, room_uid);
+                break;
+            }
+        }
+
+        if (props.geoable_room_uids[i] == 0) {
+            xlog::warn("[Geoable] compute_room_uids: no room match for brush uid={} at ({:.1f},{:.1f},{:.1f})", brush_uid, bx, by, bz);
+        }
+    }
+}
+
 // save AlpineLevelProperties when saving rfl file
 CodeInjection CDedLevel_SaveLevel_patch{
     0x00430CBD,
     [](auto& regs) {
         auto& level = *static_cast<CDedLevel*>(regs.edi);
         auto& file = *static_cast<rf::File*>(regs.esi);
-        auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
+
+        // Compute room UIDs from brush UIDs before serializing
         auto& alpine_level_props = level.GetAlpineLevelProperties();
+        compute_geoable_room_uids(level, alpine_level_props);
+
+        auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
         alpine_level_props.Serialize(file);
         level.EndRflSection(file, start_pos);
     },

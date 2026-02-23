@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include <xlog/xlog.h>
 #include "../rf/file/file.h"
 
@@ -21,6 +22,7 @@ struct AlpineLevelProperties
     float static_mesh_ambient_light_modifier = 2.0f;
     // v4
     bool rf2_style_geomod = false;
+    std::vector<int32_t> geoable_room_uids;
 
     static AlpineLevelProperties& instance()
     {
@@ -110,6 +112,24 @@ struct AlpineLevelProperties
                 return;
             rf2_style_geomod = (u8 != 0);
             xlog::debug("[AlpineLevelProps] rf2_style_geomod {}", rf2_style_geomod);
+
+            // Geoable entries as (brush_uid, room_uid) pairs
+            uint32_t count = 0;
+            if (!read_bytes(&count, sizeof(count)))
+                return;
+            if (count > 10000) count = 10000;
+            geoable_room_uids.resize(count);
+            for (uint32_t i = 0; i < count; i++) {
+                int32_t brush_uid = 0; // editor-only, skip
+                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                    return;
+                int32_t room_uid = 0;
+                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                    return;
+                geoable_room_uids[i] = room_uid;
+                xlog::debug("[AlpineLevelProps] geoable entry: brush_uid={} room_uid={}", brush_uid, room_uid);
+            }
+            xlog::debug("[AlpineLevelProps] geoable_room_uids count={}", count);
         }
     }
 };

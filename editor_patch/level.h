@@ -1,8 +1,10 @@
 #pragma once
 
+#include <cstdint>
 #include <map>
 #include <vector>
 #include <string>
+#include <algorithm>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -24,6 +26,8 @@ struct AlpineLevelProperties
     float static_mesh_ambient_light_modifier = 2.0f;
     // v4
     bool rf2_style_geomod = false;
+    std::vector<int32_t> geoable_brush_uids;
+    std::vector<int32_t> geoable_room_uids; // computed at save time, parallel to geoable_brush_uids
 
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
@@ -38,6 +42,8 @@ struct AlpineLevelProperties
         override_static_mesh_ambient_light_modifier = false;
         static_mesh_ambient_light_modifier = 2.0f;
         rf2_style_geomod = false;
+        geoable_brush_uids.clear();
+        geoable_room_uids.clear();
     }
 
     void Serialize(rf::File& file) const
@@ -54,6 +60,14 @@ struct AlpineLevelProperties
         file.write<float>(static_mesh_ambient_light_modifier);
         // v4
         file.write<std::uint8_t>(rf2_style_geomod ? 1u : 0u);
+        // Write geoable entries as (brush_uid, room_uid) pairs
+        std::uint32_t count = static_cast<std::uint32_t>(geoable_brush_uids.size());
+        file.write<std::uint32_t>(count);
+        for (std::uint32_t i = 0; i < count; i++) {
+            file.write<int32_t>(geoable_brush_uids[i]);
+            int32_t room_uid = (i < geoable_room_uids.size()) ? geoable_room_uids[i] : 0;
+            file.write<int32_t>(room_uid);
+        }
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -137,6 +151,25 @@ struct AlpineLevelProperties
                 return;
             rf2_style_geomod = (u8 != 0);
             xlog::debug("[AlpineLevelProps] rf2_style_geomod {}", rf2_style_geomod);
+
+            // Geoable entries as (brush_uid, room_uid) pairs
+            std::uint32_t count = 0;
+            if (!read_bytes(&count, sizeof(count)))
+                return;
+            if (count > 10000) count = 10000;
+            geoable_brush_uids.resize(count);
+            geoable_room_uids.resize(count);
+            for (std::uint32_t i = 0; i < count; i++) {
+                int32_t brush_uid = 0;
+                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                    return;
+                geoable_brush_uids[i] = brush_uid;
+                int32_t room_uid = 0;
+                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                    return;
+                geoable_room_uids[i] = room_uid;
+            }
+            xlog::debug("[AlpineLevelProps] geoable entries count={}", count);
         }
     }
 };

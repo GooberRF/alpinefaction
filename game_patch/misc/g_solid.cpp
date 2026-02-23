@@ -71,7 +71,7 @@ static void save_original_detail_room_planes()
     if (!solid) return;
 
     for (auto& room : solid->all_rooms) {
-        if (!room->is_detail) continue;
+        if (!room->is_detail || !room->is_geoable) continue;
 
         SavedDetailRoomPlanes saved;
         saved.room = room;
@@ -83,10 +83,6 @@ static void save_original_detail_room_planes()
         }
 
         if (!saved.planes.empty()) {
-            xlog::warn("[RF2] Saved {} planes for detail room {} bbox=({:.1f},{:.1f},{:.1f})-({:.1f},{:.1f},{:.1f})",
-                saved.planes.size(), room->room_index,
-                saved.bbox_min.x, saved.bbox_min.y, saved.bbox_min.z,
-                saved.bbox_max.x, saved.bbox_max.y, saved.bbox_max.z);
             g_saved_detail_room_planes.push_back(std::move(saved));
         }
     }
@@ -360,7 +356,6 @@ CodeInjection state5_force_reclassify_for_rf2{
         if (g_rf2_style_boolean_active) {
             regs.eax = 1;            // force non-zero → reclassification proceeds
             regs.eip = 0x004dd8dc;   // skip CALL, go to ADD ESP cleanup
-            xlog::warn("[RF2] state5: forced reclassification (bypassed FUN_004dba30)");
         }
     },
 };
@@ -388,7 +383,6 @@ CodeInjection state5_force_clear_type1_for_rf2{
         if (type == 1) {
             // Force classification to 0 (unclassified)
             AddrCaller{0x004de9e0}.this_call(face_attrs, 0);
-            xlog::warn("[RF2] state5_clear: forced TYPE1 face classification to 0");
             regs.eip = 0x004dd938; // skip to next face in clearing loop
         }
     },
@@ -455,10 +449,6 @@ CodeInjection state5_reclassify_type1_for_rf2{
         // Uses live face_list which correctly reflects previous craters (non-convex).
         int classification = is_point_inside_room_geometry(centroid, g_rf2_target_detail_room) ? 2 : 1;
 
-        xlog::warn("[RF2] TYPE1 reclassify: centroid=({:.1f},{:.1f},{:.1f}) -> class {} ({})",
-            centroid.x, centroid.y, centroid.z,
-            classification, classification == 2 ? "keep" : "delete");
-
         // Set classification on face attributes via FUN_004de9e0
         AddrCaller{0x004de9e0}.this_call(face_attrs, classification);
         regs.eip = 0x004dd990; // skip stock classifiers, go to loop continuation
@@ -485,6 +475,7 @@ CodeInjection boolean_skip_non_detail_faces_for_rf2{
         // Otherwise, only allow faces from the target detail room; skip everything else.
         if (!g_rf2_target_detail_room ||
             !face->which_room || !face->which_room->is_detail ||
+            !face->which_room->is_geoable ||
             face->which_room != g_rf2_target_detail_room) {
             void* face_attrs = regs.esi;
             AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
@@ -516,7 +507,7 @@ CodeInjection boolean_state5_allow_detail_for_rf2{
 
         // ESI = room pointer (GRoom*); first byte is is_detail
         auto* room = static_cast<rf::GRoom*>(regs.esi);
-        bool is_target = room->is_detail &&
+        bool is_target = room->is_detail && room->is_geoable &&
             (!g_rf2_target_detail_room || room == g_rf2_target_detail_room);
         if (is_target) {
             regs.eip = 0x004e0e2d; // allow target detail room
@@ -559,9 +550,13 @@ CodeInjection boolean_clear_detail_bit3_for_rf2{
     0x004dbeff,
     [](auto& regs) {
         if (g_rf2_style_boolean_active) {
-            // Clear bit 3 from face attributes flags so detail faces pass ce480
-            auto* flags = reinterpret_cast<uint8_t*>(static_cast<void*>(regs.esi));
-            flags[0] &= ~0x08;
+            // Only clear bit 3 for geoable detail rooms so their faces pass ce480.
+            // Non-geoable detail rooms keep bit 3 set (stock behavior: excluded from boolean).
+            auto* face = static_cast<rf::GFace*>(regs.edi);
+            if (face->which_room && face->which_room->is_geoable) {
+                auto* flags = reinterpret_cast<uint8_t*>(static_cast<void*>(regs.esi));
+                flags[0] &= ~0x08;
+            }
             regs.eip = 0x004dbf1d; // skip to next face
         }
     },
@@ -1121,6 +1116,39 @@ void set_levelmod_autotexture_ppm() {
     }
 }
 
+// Apply geoable flags from AlpineLevelProperties UIDs to GRoom objects.
+// Called from level_init_post_hook after both rooms and Alpine props are loaded.
+void apply_geoable_flags()
+{
+    auto* solid = rf::level.geometry;
+    if (!solid) return;
+
+    // Clear is_geoable on all rooms first (GRoom padding is not zero-initialized)
+    for (auto& room : solid->all_rooms) {
+        room->is_geoable = false;
+    }
+
+    auto& props = AlpineLevelProperties::instance();
+    xlog::debug("[Geoable] apply_geoable_flags: rf2_style_geomod={} geoable_room_uids.size={}", props.rf2_style_geomod, props.geoable_room_uids.size());
+    if (!props.rf2_style_geomod) return;
+
+    // Search solid->all_rooms directly (level_room_from_uid doesn't cover detail rooms)
+    for (int32_t uid : props.geoable_room_uids) {
+        bool found = false;
+        for (auto& room : solid->all_rooms) {
+            if (room->uid == uid && room->is_detail) {
+                room->is_geoable = true;
+                found = true;
+                xlog::debug("[Geoable] applied is_geoable to room uid={} index={}", uid, room->room_index);
+                break;
+            }
+        }
+        if (!found) {
+            xlog::warn("[Geoable] room uid={} not found in solid->all_rooms", uid);
+        }
+    }
+}
+
 // Find detail rooms whose bboxes overlap a sphere at the given position.
 // Uses a generous padding to account for crater radius variations.
 // Results are sorted by distance from pos to bbox center (closest first).
@@ -1132,7 +1160,7 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
     if (!solid) return result;
 
     for (auto& room : solid->all_rooms) {
-        if (!room->is_detail) continue;
+        if (!room->is_detail || !room->is_geoable) continue;
         // Check if position is within room bbox + padding
         if (pos.x >= room->bbox_min.x - crater_padding && pos.x <= room->bbox_max.x + crater_padding &&
             pos.y >= room->bbox_min.y - crater_padding && pos.y <= room->bbox_max.y + crater_padding &&
@@ -1176,10 +1204,6 @@ FunHook<void(void*)> geomod_init_hook{
 
         if (g_rf2_style_boolean_active) {
             g_rf2_geomod_counter++;
-            xlog::warn("[RF2] geomod_init #{}: active, pos=({:.1f},{:.1f},{:.1f}), flags=0x{:x}",
-                g_rf2_geomod_counter,
-                geomod_pos.x, geomod_pos.y, geomod_pos.z,
-                addr_as_ref<uint32_t>(0x0064858c));
 
             // Save original detail room planes on first RF2-style geomod.
             if (!g_detail_planes_initialized) {
@@ -1196,11 +1220,8 @@ FunHook<void(void*)> geomod_init_hook{
                 for (size_t i = 1; i < overlapping.size(); i++) {
                     g_rf2_pending_detail_rooms.push_back(overlapping[i]);
                 }
-                xlog::warn("[RF2] targeting detail room {} ({} more pending)",
-                    g_rf2_target_detail_room->room_index, g_rf2_pending_detail_rooms.size());
             } else {
                 g_rf2_target_detail_room = nullptr;
-                xlog::warn("[RF2] no overlapping detail rooms found, geomod will be suppressed");
                 // Keep g_rf2_style_boolean_active = true so our hooks suppress the geomod:
                 // - Face filter skips all faces (no target room)
                 // - Crater decals suppressed by geomod_crater_decals_hook
@@ -1208,19 +1229,6 @@ FunHook<void(void*)> geomod_init_hook{
                 // Result: boolean runs but produces no visible geometry change.
             }
 
-            // Log detail room face counts before boolean
-            auto* solid = rf::level.geometry;
-            if (solid) {
-                xlog::warn("[RF2] BEFORE: solid total faces={}", solid->face_list.size());
-                for (auto& room : solid->all_rooms) {
-                    if (room->is_detail) {
-                        xlog::warn("[RF2] BEFORE: detail room {} faces={} cache={} detail_rooms={}",
-                            room->room_index, room->face_list.size(),
-                            reinterpret_cast<uintptr_t>(room->geo_cache),
-                            room->detail_rooms.size());
-                    }
-                }
-            }
         }
     },
 };
@@ -1242,8 +1250,6 @@ static void clear_corrupted_detail_rooms()
     for (int i = 0; i < solid->all_rooms.size(); i++) {
         rf::GRoom* room = solid->all_rooms[i];
         if (room && room->is_detail && room->detail_rooms.size() > 0) {
-            xlog::warn("[RF2] clearing corrupted detail_rooms ({} entries) on detail room {}",
-                room->detail_rooms.size(), room->room_index);
             room->detail_rooms.clear();
         }
     }
@@ -1265,15 +1271,8 @@ static void clear_corrupted_detail_rooms()
 FunHook<int()> boolean_iterate_hook{
     0x004dbc50,
     []() -> int {
-        if (g_rf2_style_boolean_active) {
-            xlog::warn("[RF2] boolean_iterate enter: inner_state={}", boolean_inner_state);
-        }
         int result = boolean_iterate_hook.call_target();
         if (g_rf2_style_boolean_active) {
-            bool done = (result & 0xFF) == 0;
-            xlog::warn("[RF2] boolean_iterate exit: inner_state={} done={}",
-                boolean_inner_state, done);
-
             // Clear corrupted detail_rooms after EVERY inner state, not just when done.
             // This ensures the renderer never sees corrupted detail_rooms between frames.
             clear_corrupted_detail_rooms();
@@ -1302,24 +1301,20 @@ static void invalidate_rf2_render_caches()
     clear_corrupted_detail_rooms();
 
     if (!is_d3d11()) {
-        xlog::warn("[RF2] clearing D3D9 render caches");
         AddrCaller{0x004f0b90}.c_call();
         return;
     }
 
-    xlog::warn("[RF2] invalidating D3D11 render caches");
     for (int i = 0; i < solid->all_rooms.size(); i++) {
         rf::GRoom* room = solid->all_rooms[i];
         if (!room || !room->geo_cache)
             continue;
         if (room->is_detail) {
-            xlog::warn("[RF2]   nulling detail room {} cache", room->room_index);
             room->geo_cache = nullptr;
         } else {
             auto* state = reinterpret_cast<int*>(
                 reinterpret_cast<char*>(room->geo_cache) + 0x20);
             *state = 2;
-            xlog::warn("[RF2]   marking normal room {} for rebuild", room->room_index);
         }
     }
 }
@@ -1354,20 +1349,6 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         if (!g_rf2_pending_detail_rooms.empty()) {
             g_rf2_target_detail_room = g_rf2_pending_detail_rooms.front();
             g_rf2_pending_detail_rooms.erase(g_rf2_pending_detail_rooms.begin());
-
-            xlog::warn("[RF2] switching to next detail room {} ({} more pending)",
-                g_rf2_target_detail_room->room_index, g_rf2_pending_detail_rooms.size());
-
-            // Log face counts before this room's boolean
-            rf::GSolid* solid = rf::level.geometry;
-            if (solid) {
-                for (auto& room : solid->all_rooms) {
-                    if (room->is_detail) {
-                        xlog::warn("[RF2] BEFORE: detail room {} faces={}",
-                            room->room_index, room->face_list.size());
-                    }
-                }
-            }
 
             // Re-call boolean_setup (FUN_004de530) with the same parameters.
             // The level solid, crater solid, position, scale etc. are all globals
@@ -1417,7 +1398,6 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         }
 
         // No more pending rooms — State 3 proceeds normally (debris, decals, done)
-        xlog::warn("[RF2] geomod #{} complete: all rooms processed", g_rf2_geomod_counter);
     },
 };
 
@@ -1603,6 +1583,7 @@ CodeInjection level_release_sky_room_shutdown_patch{
         g_detail_planes_initialized = false;
         g_saved_detail_room_planes.clear();
         g_rf2_geomod_counter = 0;
+        AlpineLevelProperties::instance().geoable_room_uids.clear();
     },
 };
 

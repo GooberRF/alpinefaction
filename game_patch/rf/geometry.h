@@ -170,7 +170,9 @@ namespace rf
         bool is_invincible;
 #ifdef ALPINE_FACTION
         VArray<GDecal*> decals;
-        int padding[46];
+        bool is_geoable;
+        char _pad_geoable[3];
+        int padding[45];
 #else
         FArray<GDecal*, 48> decals;
 #endif

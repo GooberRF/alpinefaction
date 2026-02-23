@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <algorithm>
 #include <common/version/version.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/os-utils.h>
@@ -131,14 +132,142 @@ CodeInjection CEditorApp_InitInstance_open_level_injection{
     },
 };
 
+// ===== Brush "Is Geoable" support =====
+// Brush linked list lives at CDedLevel + 0x118, each node: +0x04=uid, +0x48=state, +0x4c=next
+
+static int compute_geoable_state_from_selected()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return BST_UNCHECKED;
+    auto& props = level->GetAlpineLevelProperties();
+
+    auto* head = *reinterpret_cast<std::byte**>(
+        reinterpret_cast<std::byte*>(level) + 0x118);
+    auto* node = head;
+    int num_selected = 0;
+    int num_geoable = 0;
+    do {
+        if (!node) break;
+        if (*reinterpret_cast<int*>(node + 0x48) == 3) {
+            int uid = *reinterpret_cast<int*>(node + 0x04);
+            num_selected++;
+            if (std::find(props.geoable_brush_uids.begin(),
+                          props.geoable_brush_uids.end(), uid)
+                != props.geoable_brush_uids.end()) {
+                num_geoable++;
+            }
+        }
+        node = *reinterpret_cast<std::byte**>(node + 0x4c);
+    } while (node != head);
+
+    if (num_selected == 0 || num_geoable == 0) return BST_UNCHECKED;
+    if (num_geoable == num_selected) return BST_CHECKED;
+    return BST_INDETERMINATE;
+}
+
+static void apply_geoable_to_selected_brushes(int new_state)
+{
+    if (new_state == BST_INDETERMINATE) return;
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    auto* head = *reinterpret_cast<std::byte**>(
+        reinterpret_cast<std::byte*>(level) + 0x118);
+    auto* node = head;
+    do {
+        if (!node) break;
+        if (*reinterpret_cast<int*>(node + 0x48) == 3) {
+            int uid = *reinterpret_cast<int*>(node + 0x04);
+            auto it = std::find(props.geoable_brush_uids.begin(),
+                                props.geoable_brush_uids.end(), uid);
+            if (new_state == BST_CHECKED) {
+                if (it == props.geoable_brush_uids.end()) {
+                    props.geoable_brush_uids.push_back(uid);
+                }
+            } else {
+                if (it != props.geoable_brush_uids.end()) {
+                    props.geoable_brush_uids.erase(it);
+                }
+            }
+        }
+        node = *reinterpret_cast<std::byte**>(node + 0x4c);
+    } while (node != head);
+}
+
+// Dialog 205 (brush panel) subclass for Is Geoable click handling
+static WNDPROC g_brush_panel_orig_wndproc = nullptr;
+static HWND g_brush_panel_hwnd = nullptr;
+
+static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
+        int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
+        apply_geoable_to_selected_brushes(state);
+    }
+    return CallWindowProcA(g_brush_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+// Dialog 270 (brush properties popup) hook and subclass
+static HHOOK g_brush_props_msg_hook = nullptr;
+static WNDPROC g_brush_props_orig_wndproc = nullptr;
+
+static LRESULT CALLBACK BrushPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
+        int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
+        apply_geoable_to_selected_brushes(state);
+    }
+    if (msg == WM_NCDESTROY) {
+        SetWindowLongPtrA(hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(g_brush_props_orig_wndproc));
+        auto result = CallWindowProcA(g_brush_props_orig_wndproc, hwnd, msg, wParam, lParam);
+        g_brush_props_orig_wndproc = nullptr;
+        return result;
+    }
+    return CallWindowProcA(g_brush_props_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK BrushPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION) {
+        auto* msg = reinterpret_cast<CWPRETSTRUCT*>(lParam);
+        if (msg->message == WM_INITDIALOG && GetDlgItem(msg->hwnd, IDC_IS_GEOABLE)) {
+            int state = compute_geoable_state_from_selected();
+            CheckDlgButton(msg->hwnd, IDC_IS_GEOABLE, state);
+            g_brush_props_orig_wndproc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(msg->hwnd, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(BrushPropsSubclassProc)));
+            UnhookWindowsHookEx(g_brush_props_msg_hook);
+            g_brush_props_msg_hook = nullptr;
+        }
+    }
+    return CallNextHookEx(g_brush_props_msg_hook, nCode, wParam, lParam);
+}
+
+// CWnd::CreateDlg path — used by CDialogBar::Create for toolbar-style dialog bars
 CodeInjection CWnd_CreateDlg_injection{
     0x0052F112,
     [](auto& regs) {
         auto& hCurrentResourceHandle = regs.esi;
         auto lpszTemplateName = addr_as_ref<LPCSTR>(regs.esp);
-        // Dialog resource customizations:
         // - 136: main window top bar (added tool buttons)
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_MAIN_FRAME_TOP_BAR)) {
+            hCurrentResourceHandle = reinterpret_cast<int>(g_module);
+        }
+    },
+};
+
+// CFormView::Create path — used for form view panels like the brush mode side panel
+// At 0x0052F08D: ESI = hModule, EBX = lpszTemplateName (MAKEINTRESOURCE)
+CodeInjection CFormView_Create_injection{
+    0x0052F08D,
+    [](auto& regs) {
+        auto& hCurrentResourceHandle = regs.esi;
+        auto lpszTemplateName = static_cast<LPCSTR>(reinterpret_cast<void*>(static_cast<uintptr_t>(regs.ebx)));
+        // - 205: brush mode side panel (added Is Geoable checkbox)
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MODE_PANEL)) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
         }
     },
@@ -151,11 +280,17 @@ CodeInjection CDialog_DoModal_injection{
         auto lpszTemplateName = addr_as_ref<LPCSTR>(regs.esp);
         // Customize:
         // - 148: trigger properties dialog
+        // - 270: brush properties dialog (added Is Geoable checkbox)
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_TRIGGER_PROPERTIES) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_LEVEL_PROPERTIES) ||
-            lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP)
+            lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES)
         ) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
+        }
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES)) {
+            g_brush_props_msg_hook = SetWindowsHookExA(
+                WH_CALLWNDPROCRET, BrushPropsMsgHookProc, nullptr, GetCurrentThreadId());
         }
     },
 };
@@ -222,9 +357,25 @@ void __fastcall brush_mode_handle_selection_new(void* self)
     g_skip_wnd_set_text = true;
     brush_mode_handle_selection_hook.call_target(self);
     g_skip_wnd_set_text = false;
-    // TODO: print
     LogDlg_Append(GetLogDlg(), "");
 
+    // Update Is Geoable checkbox in brush panel
+    HWND hdlg = WndToHandle(reinterpret_cast<CWnd*>(self));
+    if (hdlg && GetDlgItem(hdlg, IDC_IS_GEOABLE)) {
+        int state = compute_geoable_state_from_selected();
+        CheckDlgButton(hdlg, IDC_IS_GEOABLE, state);
+        // Subclass panel for Is Geoable click handling (once per HWND)
+        if (hdlg != g_brush_panel_hwnd) {
+            if (g_brush_panel_hwnd && g_brush_panel_orig_wndproc) {
+                SetWindowLongPtrA(g_brush_panel_hwnd, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(g_brush_panel_orig_wndproc));
+            }
+            g_brush_panel_orig_wndproc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(hdlg, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(BrushPanelSubclassProc)));
+            g_brush_panel_hwnd = hdlg;
+        }
+    }
 }
 FunHook<brush_mode_handle_selection_type> brush_mode_handle_selection_hook{0x0043F430, brush_mode_handle_selection_new};
 
@@ -768,6 +919,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Replace some editor resources
     CWnd_CreateDlg_injection.install();
+    CFormView_Create_injection.install();
     CDialog_DoModal_injection.install();
     write_mem_ptr(0x0055456C, &LoadMenuA_new);
     write_mem_ptr(0x005544FC, &LoadIconA_new);
