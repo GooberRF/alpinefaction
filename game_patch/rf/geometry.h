@@ -485,6 +485,15 @@ namespace rf
     };
     static_assert(sizeof(GPortalObject) == 0x30);
 
+    // Geomod state machine globals
+    static auto& g_geomod_pos = addr_as_ref<Vector3>(0x006485A0);
+    static auto& g_geomod_outer_state = addr_as_ref<int>(0x0059C9F4);        // states 0-3, -1=done
+    static auto& g_boolean_inner_state = addr_as_ref<int>(0x005A3A34);       // states 0-7 in FUN_004dbc50
+    static auto& g_boolean_fast_path_var = addr_as_ref<int>(0x01370F64);
+    static auto& g_level_solid = addr_as_ref<GSolid*>(0x006460E8);
+    static auto& g_geomod_crater_solid = addr_as_ref<GSolid*>(0x00646A20);
+    static auto& g_geomod_texture_index = addr_as_ref<int>(0x00647C94);
+    static auto& g_geomod_scale = addr_as_ref<float>(0x00648598);
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
     static auto& g_geomod_separate_solids = addr_as_ref<bool>(0x00647C28);
 

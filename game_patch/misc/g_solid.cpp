@@ -256,8 +256,6 @@ static bool is_point_inside_room_geometry(const rf::Vector3& pt, rf::GRoom* room
 //     Crater faces with centroids inside a detail brush → class 2 → keep (crater cap)
 //     Crater faces with centroids outside all brushes → class 1 → delete (floating face)
 
-// Geomod position global (set by FUN_00466b00)
-static auto& geomod_pos = addr_as_ref<rf::Vector3>(0x006485a0);
 
 
 static bool is_pos_in_any_geo_region(const rf::Vector3& pos)
@@ -284,7 +282,7 @@ CodeInjection state1_force_slow_path_for_rf2{
         if (g_rf2_style_boolean_active) {
             regs.eax = 0; // forces JZ at 004dc39b → slow path at 004dc41b
         } else {
-            regs.eax = addr_as_ref<int>(0x01370f64);
+            regs.eax = rf::g_boolean_fast_path_var;
         }
     },
 };
@@ -307,7 +305,7 @@ CodeInjection state3_force_slow_path_for_rf2{
         if (g_rf2_style_boolean_active) {
             regs.eax = 0; // forces JZ at 004dd457 → slow path at 004dd46c
         } else {
-            regs.eax = addr_as_ref<int>(0x01370f64);
+            regs.eax = rf::g_boolean_fast_path_var;
         }
     },
 };
@@ -1587,7 +1585,7 @@ FunHook<void(void*)> geomod_init_hook{
         }
 
         bool rf2_enabled = AlpineLevelProperties::instance().rf2_style_geomod;
-        bool in_geo_region = rf2_enabled && is_pos_in_any_geo_region(geomod_pos);
+        bool in_geo_region = rf2_enabled && is_pos_in_any_geo_region(rf::g_geomod_pos);
         g_rf2_style_boolean_active = rf2_enabled && !in_geo_region;
 
         if (g_rf2_style_boolean_active) {
@@ -1605,7 +1603,7 @@ FunHook<void(void*)> geomod_init_hook{
             }
 
             // Find detail rooms overlapping the crater and select the first target.
-            auto overlapping = find_overlapping_detail_rooms(geomod_pos);
+            auto overlapping = find_overlapping_detail_rooms(rf::g_geomod_pos);
             g_rf2_pending_detail_rooms.clear();
             if (!overlapping.empty()) {
                 g_rf2_target_detail_room = overlapping[0];
@@ -1623,8 +1621,7 @@ FunHook<void(void*)> geomod_init_hook{
     },
 };
 
-// Inner boolean state variable (DAT_005a3a34) — tracks states 0-7 in FUN_004dbc50.
-static auto& boolean_inner_state = addr_as_ref<int>(0x005a3a34);
+
 
 // Clear corrupted detail_rooms on all detail rooms in the level solid.
 // The boolean engine's inner state 6 (result collection) adds entries to detail rooms'
@@ -1709,8 +1706,7 @@ static void invalidate_rf2_render_caches()
     }
 }
 
-// Outer geomod state variable (DAT_0059c9f4): States 0-3, then -1 = done.
-static auto& geomod_outer_state = addr_as_ref<int>(0x0059c9f4);
+
 
 // Hook at the START of outer State 2 (0x00466dcd) in the geomod state machine.
 // State 2 runs after the boolean completes (State 1). It detects disconnected face
@@ -1734,7 +1730,7 @@ CodeInjection state2_rf2_separated_solids_injection{
         if (!g_rf2_style_boolean_active)
             return; // let stock code run normally
 
-        rf::GSolid* solid = addr_as_ref<rf::GSolid*>(0x006460e8);
+        rf::GSolid* solid = rf::g_level_solid;
         auto* room = g_rf2_target_detail_room;
 
         // Update anchor faces after the boolean modifies the face set
@@ -1802,28 +1798,28 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
                 uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
             auto boolean_setup = reinterpret_cast<BooleanSetupFn>(0x004de530);
             boolean_setup(
-                addr_as_ref<uint32_t>(0x006460e8),  // level solid
-                addr_as_ref<uint32_t>(0x00646a20),  // crater solid
-                3u,                                  // op_mode = geomod
-                0u,                                  // param4
-                0x006485a0u,                         // &position
-                0x00647ca8u,                         // &orientation
-                addr_as_ref<uint32_t>(0x00647c94),  // texture index
-                2u,                                  // param8
-                addr_as_ref<uint32_t>(0x00648598),  // scale (float bits as uint32)
-                0x00647ca0u,                         // &crater bbox
-                0u,                                  // param11
-                0x006485b0u,                         // &param12
-                0x006485c0u                          // &param13
+                reinterpret_cast<uint32_t>(rf::g_level_solid),          // level solid
+                reinterpret_cast<uint32_t>(rf::g_geomod_crater_solid),  // crater solid
+                3u,                                                      // op_mode = geomod
+                0u,                                                      // param4
+                reinterpret_cast<uint32_t>(&rf::g_geomod_pos),               // &position
+                0x00647ca8u,                                             // &orientation
+                static_cast<uint32_t>(rf::g_geomod_texture_index),      // texture index
+                2u,                                                      // param8
+                reinterpret_cast<uint32_t&>(rf::g_geomod_scale),          // scale
+                0x00647ca0u,                                             // &crater bbox
+                0u,                                                      // param11
+                0x006485b0u,                                             // &param12
+                0x006485c0u                                              // &param13
             );
 
             // Verify boolean_setup succeeded — it sets inner state to 0 when resources
             // are available. If it silently failed (resources exhausted), inner state
             // stays at -1 and we'd cycle 1→2→3→1→... endlessly. Abort remaining rooms.
-            if (boolean_inner_state != 0) {
+            if (rf::g_boolean_inner_state != 0) {
                 xlog::warn("[RF2] boolean_setup failed for room {} (resource exhaustion, inner_state={}), "
                     "skipping {} remaining rooms",
-                    g_rf2_target_detail_room->room_index, boolean_inner_state,
+                    g_rf2_target_detail_room->room_index, rf::g_boolean_inner_state,
                     g_rf2_pending_detail_rooms.size());
                 g_rf2_pending_detail_rooms.clear();
                 // Let State 3 proceed normally (debris/decals for the rooms we did process)
@@ -1832,7 +1828,7 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
 
             // Set outer state back to 1 (boolean_iterate) so the state machine
             // runs the boolean for the next room on subsequent frames
-            geomod_outer_state = 1;
+            rf::g_geomod_outer_state = 1;
 
             // Skip rest of State 3 (no debris/decals for intermediate rooms)
             regs.eip = 0x00466fb5;
@@ -1844,7 +1840,7 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         // the crater, so the boolean produced no visible geometry change. Skip ALL
         // State 3 effects (rock debris, decal updates, crater decals, foley sound).
         if (g_rf2_target_detail_room == nullptr) {
-            geomod_outer_state = -1; // mark geomod as done (no geoable room targeted)
+            rf::g_geomod_outer_state = -1; // mark geomod as done (no geoable room targeted)
             regs.eip = 0x00466fb5;   // jump to cleanup/exit
             return;
         }
