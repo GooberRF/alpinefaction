@@ -4,6 +4,11 @@
 Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Add capability for brush-based (RF2-style) geomod to be used in new maps
+    - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes
+    - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
+    - `Is Geoable` flag added to brush properties
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -28,6 +33,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-script` command line argument to execute a startup script after the game launches
 - Add support for `script` console command to execute a script on-demand
 - Add `/coinflip` chat command
+- Allow level hardness to be set to 0 in version >= 304 levels
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Server version:` to a server's printed config

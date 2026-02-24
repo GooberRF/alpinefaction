@@ -10,6 +10,7 @@
 #include "../rf/file/file.h"
 #include "../rf/mover.h"
 #include "level.h"
+#include "misc.h"
 #include "player.h"
 #include "../multi/server.h"
 
@@ -160,6 +161,18 @@ FunHook<void(rf::File* file)> level_read_mp_respawns_hook{
     },
 };
 
+CodeInjection level_load_hardness_zero_patch{
+    0x00461920,
+    [](auto& regs) {
+        // Injection point is only run if hardness loaded from file is 0
+        // Note: Cannot use rfl_version_minimum(304) here because LEVEL_LOADED flag is not yet set
+        if (rf::level.version >= 304) {
+            // Skip hardness being forced to 55
+            regs.eip = 0x0046192A;
+        }
+    },
+};
+
 void level_apply_patch()
 {
     // Add checking if restoring game state from save file failed during level loading
@@ -181,4 +194,7 @@ void level_apply_patch()
 
     // Load MP respawns
     level_read_mp_respawns_hook.install();
+
+    // Allow level hardness 0 for version 304+ levels
+    level_load_hardness_zero_patch.install();
 }
