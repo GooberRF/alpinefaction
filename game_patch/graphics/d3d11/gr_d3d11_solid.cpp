@@ -550,22 +550,22 @@ namespace df::gr::d3d11
 
     void RoomRenderCache::update(ID3D11Device* device)
     {
-        xlog::warn("RoomRenderCache::update room {} start (faces: {})",
+        xlog::debug("RoomRenderCache::update room {} start (faces: {})",
             room_->room_index, room_->face_list.size());
         GRenderCacheBuilder builder;
         builder.add_room(room_, solid_);
 
         if (builder.get_num_batches() == 0) {
             state_ = 0;
-            xlog::warn("Skipping empty room {}", room_->room_index);
+            xlog::debug("Skipping empty room {}", room_->room_index);
             return;
         }
 
-        xlog::warn("Building render cache for room {} - verts {} inds {} batches {}", room_->room_index,
+        xlog::debug("Building render cache for room {} - verts {} inds {} batches {}", room_->room_index,
             builder.get_num_verts(), builder.get_num_inds(), builder.get_num_batches());
 
         cache_ = std::optional{builder.build(device)};
-        xlog::warn("RoomRenderCache::update room {} complete", room_->room_index);
+        xlog::debug("RoomRenderCache::update room {} complete", room_->room_index);
 
         state_ = 0;
     }
@@ -573,7 +573,7 @@ namespace df::gr::d3d11
     void RoomRenderCache::render(FaceRenderType render_type, ID3D11Device* device, RenderContext& context)
     {
         if (invalid()) {
-            xlog::warn("Room {} render cache invalidated! state={}", room_->room_index, state_);
+            xlog::debug("Room {} render cache invalidated! state={}", room_->room_index, state_);
             cache_.reset();
             update(device);
         }
@@ -743,7 +743,7 @@ namespace df::gr::d3d11
 
     void SolidRenderer::clear_cache()
     {
-        xlog::warn("Room render cache clear (rooms={}, detail={}, movers={})",
+        xlog::debug("Room render cache clear (rooms={}, detail={}, movers={})",
             room_cache_.size(), detail_render_cache_.size(), mover_render_cache_.size());
 
         if (rf::level.geometry) {
@@ -757,12 +757,12 @@ namespace df::gr::d3d11
         mover_render_cache_.clear();
         geo_cache_rooms_.clear();
         geo_cache_num_rooms = 0;
-        xlog::warn("Room render cache clear complete");
+        xlog::debug("Room render cache clear complete");
     }
 
     void SolidRenderer::reset_cache_after_boolean()
     {
-        xlog::warn("reset_cache_after_boolean ({} rooms)", geo_cache_rooms_.size());
+        xlog::debug("reset_cache_after_boolean ({} rooms)", geo_cache_rooms_.size());
         for (rf::GRoom* room : geo_cache_rooms_) {
             auto cache = reinterpret_cast<RoomRenderCache*>(room->geo_cache);
             if (cache) {

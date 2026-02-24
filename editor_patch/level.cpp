@@ -3,10 +3,11 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
-#include <cmath>
+#include <algorithm>
 #include <cfloat>
 #include <cstdio>
 #include <cstdlib>
+#include <unordered_set>
 #include "level.h"
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -58,17 +59,32 @@ CodeInjection CDedLevel_LoadLevel_patch2{
 // For each geoable brush, find the detail room whose bbox contains the brush position.
 static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& props)
 {
+    // Prune stale UIDs: remove any geoable brush UIDs that no longer exist in the
+    // brush list (e.g., the brush was deleted). This must happen before room matching.
+    {
+        std::unordered_set<int32_t> live_uids;
+        BrushNode* node = level.brush_list;
+        if (node) {
+            do {
+                live_uids.insert(node->uid);
+                node = node->next;
+            } while (node && node != level.brush_list);
+        }
+        auto& uids = props.geoable_brush_uids;
+        uids.erase(std::remove_if(uids.begin(), uids.end(),
+            [&live_uids](int32_t uid) { return live_uids.find(uid) == live_uids.end(); }),
+            uids.end());
+    }
+
     props.geoable_room_uids.clear();
     props.geoable_room_uids.resize(props.geoable_brush_uids.size(), 0);
 
     if (!level.solid) {
-        xlog::warn("[Geoable Save] compute_room_uids: no compiled solid");
+        xlog::warn("[Geoable] compute_room_uids: no compiled solid");
         return;
     }
 
     auto& all_rooms = level.solid->all_rooms;
-    xlog::info("[Geoable Save] compute_room_uids: {} geoable brushes, {} compiled rooms",
-                props.geoable_brush_uids.size(), all_rooms.get_size());
 
     // The editor's build/compile process creates final rooms as copies that lack UIDs (uid=-1).
     // Room UIDs are normally assigned in the GRoom constructor via a global decrementing counter
@@ -76,32 +92,13 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
     // don't go through the constructor. Assign UIDs here so solid_write persists them to the .rfl
     // and our geoable mapping can reference them.
     int& uid_counter = *reinterpret_cast<int*>(0x0057c954);
-    int uids_assigned = 0;
     for (int j = 0; j < all_rooms.get_size(); j++) {
         GRoom* room = all_rooms.data_ptr[j];
         if (room && room->uid == -1) {
             room->uid = uid_counter;
             uid_counter--;
-            uids_assigned++;
         }
     }
-    if (uids_assigned > 0) {
-        xlog::info("[Geoable Save] assigned UIDs to {} rooms that had uid=-1", uids_assigned);
-    }
-
-    // Log all detail rooms for cross-reference
-    int detail_count = 0;
-    for (int j = 0; j < all_rooms.get_size(); j++) {
-        GRoom* room = all_rooms.data_ptr[j];
-        if (room && room->is_detail) {
-            detail_count++;
-            xlog::info("[Geoable Save]   detail room: uid={} index={} bbox=[({:.2f},{:.2f},{:.2f})-({:.2f},{:.2f},{:.2f})]",
-                room->uid, j,
-                room->bbox_min.x, room->bbox_min.y, room->bbox_min.z,
-                room->bbox_max.x, room->bbox_max.y, room->bbox_max.z);
-        }
-    }
-    xlog::info("[Geoable Save] total detail rooms: {}", detail_count);
 
     for (std::size_t i = 0; i < props.geoable_brush_uids.size(); i++) {
         int32_t brush_uid = props.geoable_brush_uids[i];
@@ -122,7 +119,7 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
         }
 
         if (!found_brush) {
-            xlog::warn("[Geoable Save] brush uid={} NOT FOUND in brush list — will have room_uid=0", brush_uid);
+            xlog::warn("[Geoable] brush uid={} not found in brush list", brush_uid);
             continue;
         }
 
@@ -154,56 +151,13 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
         }
         if (best_room) {
             props.geoable_room_uids[i] = best_room->uid;
-            xlog::info("[Geoable Save] brush uid={} pos=({:.2f},{:.2f},{:.2f}) -> room uid={} (dist={:.2f}) "
-                "bbox=[({:.2f},{:.2f},{:.2f})-({:.2f},{:.2f},{:.2f})]",
-                brush_uid, brush_pos.x, brush_pos.y, brush_pos.z, best_room->uid, std::sqrt(best_dist_sq),
-                best_room->bbox_min.x, best_room->bbox_min.y, best_room->bbox_min.z,
-                best_room->bbox_max.x, best_room->bbox_max.y, best_room->bbox_max.z);
-            matched = true;
         }
-
-        if (!matched) {
-            // Log near-misses: detail rooms that were closest but didn't match
-            xlog::warn("[Geoable Save] brush uid={} at ({:.2f},{:.2f},{:.2f}) NO ROOM MATCH! "
-                "Listing nearby detail rooms:",
+        else {
+            xlog::warn("[Geoable] brush uid={} at ({:.2f},{:.2f},{:.2f}) has no matching detail room",
                 brush_uid, brush_pos.x, brush_pos.y, brush_pos.z);
-            for (int j = 0; j < all_rooms.get_size(); j++) {
-                GRoom* room = all_rooms.data_ptr[j];
-                if (!room || !room->is_detail) continue;
-                float dx = 0, dy = 0, dz = 0;
-                if (brush_pos.x < room->bbox_min.x - tolerance)
-                    dx = room->bbox_min.x - tolerance - brush_pos.x;
-                else if (brush_pos.x > room->bbox_max.x + tolerance)
-                    dx = brush_pos.x - room->bbox_max.x - tolerance;
-                if (brush_pos.y < room->bbox_min.y - tolerance)
-                    dy = room->bbox_min.y - tolerance - brush_pos.y;
-                else if (brush_pos.y > room->bbox_max.y + tolerance)
-                    dy = brush_pos.y - room->bbox_max.y - tolerance;
-                if (brush_pos.z < room->bbox_min.z - tolerance)
-                    dz = room->bbox_min.z - tolerance - brush_pos.z;
-                else if (brush_pos.z > room->bbox_max.z + tolerance)
-                    dz = brush_pos.z - room->bbox_max.z - tolerance;
-                float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                if (dist < 20.0f) { // only log rooms within 20 units
-                    xlog::warn("[Geoable Save]   near-miss room uid={} dist={:.2f} "
-                        "bbox=[({:.2f},{:.2f},{:.2f})-({:.2f},{:.2f},{:.2f})] outside_by=({:.2f},{:.2f},{:.2f})",
-                        room->uid, dist,
-                        room->bbox_min.x, room->bbox_min.y, room->bbox_min.z,
-                        room->bbox_max.x, room->bbox_max.y, room->bbox_max.z,
-                        dx, dy, dz);
-                }
-            }
         }
     }
 
-    // Summary
-    int matched_count = 0;
-    for (size_t i = 0; i < props.geoable_room_uids.size(); i++) {
-        if (props.geoable_room_uids[i] != 0) matched_count++;
-    }
-    xlog::info("[Geoable Save] SUMMARY: {} geoable brushes, {} matched to rooms, {} UNMATCHED",
-        props.geoable_brush_uids.size(), matched_count,
-        props.geoable_brush_uids.size() - matched_count);
 }
 
 // save AlpineLevelProperties when saving rfl file
