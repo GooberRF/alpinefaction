@@ -20,8 +20,13 @@ namespace df::gr::d3d11
 {
     static std::optional<Renderer> renderer;
 
+    void update_window_mode();
+
     void msg_handler(UINT msg, WPARAM w_param, LPARAM l_param)
     {
+        if (!renderer) {
+            return;
+        }
         switch (msg) {
         case WM_ACTIVATEAPP:
             if (w_param) {
@@ -32,6 +37,20 @@ namespace df::gr::d3d11
                 xlog::trace("inactive {:x} {:x}", w_param, l_param);
                 renderer->window_inactive();
             }
+            break;
+        case WM_SYSKEYDOWN:
+            // Handle Alt+Enter to toggle between fullscreen and windowed mode.
+            // DXGI's built-in Alt+Enter handling is disabled (MakeWindowAssociation with
+            // DXGI_MWA_NO_ALT_ENTER) to prevent it from calling SetFullscreenState internally,
+            // which would put the swap chain in an inconsistent state and crash on the next Present().
+            if (w_param == VK_RETURN) {
+                auto new_mode = (rf::gr::screen.window_mode == rf::gr::FULLSCREEN)
+                    ? rf::gr::WINDOWED
+                    : rf::gr::FULLSCREEN;
+                rf::gr::screen.window_mode = new_mode;
+                update_window_mode();
+            }
+            break;
         }
     }
 

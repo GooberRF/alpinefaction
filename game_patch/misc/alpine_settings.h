@@ -110,6 +110,7 @@ struct AlpineGameSettings
     bool show_run_timer = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;
+    bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;
     bool explosion_env_flash_lights = true;
     bool burning_entity_lights = true;

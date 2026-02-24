@@ -346,6 +346,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.damage_screen_flash = std::stoi(settings["DamageScreenFlash"]);
         processed_keys.insert("DamageScreenFlash");
     }
+    if (settings.count("SpectateDamageScreenFlash")) {
+        g_alpine_game_config.spectate_damage_screen_flash = std::stoi(settings["SpectateDamageScreenFlash"]);
+        processed_keys.insert("SpectateDamageScreenFlash");
+    }
     if (settings.count("ExplosionFlashLightsWeapons")) {
         g_alpine_game_config.explosion_weapon_flash_lights = std::stoi(settings["ExplosionFlashLightsWeapons"]);
         processed_keys.insert("ExplosionFlashLightsWeapons");
@@ -1125,6 +1129,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "NeverAutoswitchExplosives=" << player->settings.dont_autoswitch_to_explosives << "\n";
     file << "ToggleCrouch=" << player->settings.toggle_crouch << "\n";
     file << "DamageScreenFlash=" << g_alpine_game_config.damage_screen_flash << "\n";
+    file << "SpectateDamageScreenFlash=" << g_alpine_game_config.spectate_damage_screen_flash << "\n";
     file << "ExplosionFlashLightsWeapons=" << g_alpine_game_config.explosion_weapon_flash_lights << "\n";
     file << "ExplosionFlashLightsEnv=" << g_alpine_game_config.explosion_env_flash_lights << "\n";
     file << "BurningEntityLights=" << g_alpine_game_config.burning_entity_lights << "\n";

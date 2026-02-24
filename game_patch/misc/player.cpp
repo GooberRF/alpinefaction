@@ -487,7 +487,8 @@ FunHook<void()> players_do_frame_hook{
     []() {
         players_do_frame_hook.call_target();
         if (multi_spectate_is_spectating()) {
-            rf::hud_do_frame(multi_spectate_get_target_player());
+            rf::Player* target = multi_spectate_get_target_player();
+            rf::hud_do_frame(target);
         }
         else {
             local_delayed_spawn_do_frame(); // try to spawn if a delayed spawn is queued
@@ -511,6 +512,15 @@ ConsoleCommand2 damage_screen_flash_cmd{
         rf::console::print("Damage screen flash effect is {}", g_alpine_game_config.damage_screen_flash ? "enabled" : "disabled");
     },
     "Toggle damage screen flash effect",
+};
+
+ConsoleCommand2 spectate_damage_screen_flash_cmd{
+    "cl_damageflash_spectator",
+    []() {
+        g_alpine_game_config.spectate_damage_screen_flash = !g_alpine_game_config.spectate_damage_screen_flash;
+        rf::console::print("Spectator damage screen flash effect is {}", g_alpine_game_config.spectate_damage_screen_flash ? "enabled" : "disabled");
+    },
+    "Toggle damage screen flash effect while spectating",
 };
 
 ConsoleCommand2 weapon_explosion_flash_lights_cmd{
@@ -926,6 +936,7 @@ void player_do_patch()
 
     // Commands
     damage_screen_flash_cmd.register_cmd();
+    spectate_damage_screen_flash_cmd.register_cmd();
     weapon_explosion_flash_lights_cmd.register_cmd();
     env_explosion_flash_lights_cmd.register_cmd();
     burning_entity_lights_cmd.register_cmd();
