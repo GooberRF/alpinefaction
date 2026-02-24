@@ -39,7 +39,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Sync rail scanner in first person spectate
 - Implement damage screen flash in first person spectate mode
 - Add `cl_damageflash_spectator` console command to toggle damage screen flash in first person spectate
-- Add `ui_color_thermal` console command to set thermal scanner entity color
+- Add `ui_color_thermal` console command to set thermal scanner entity color (Direct3D 11 renderer only)
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
