@@ -427,26 +427,22 @@ static ConsoleCommand2 spectate_mode_follow_killer_cmd{
 
 #if SPECTATE_MODE_SHOW_WEAPON
 
-// Hook player_fpgun_play_anim to send weapon fire events to spectators via the server.
-// Only WA_FIRE and WA_ALT_FIRE are sent - other animations (custom mode, reload, draw)
-// are handled by entity state detection in player_render_new.
-FunHook<void(rf::Player*, rf::WeaponAction)> player_fpgun_play_anim_hook{
-    0x004A9380,
-    [](rf::Player* pp, rf::WeaponAction action) {
-        player_fpgun_play_anim_hook.call_target(pp, action);
-
-        if (pp != rf::local_player || !rf::is_multi || rf::is_server)
+// Hook entity_play_attack_anim (0x0042C3C0) — called from the obj_update processing path
+// when a remote entity's attack animation bits change. This fires at the correct time for
+// thrown projectile weapons (grenade, C4, flamethrower canister), before the projectile
+// itself arrives. For non-thrown weapons the existing multi_process_remote_weapon_fire_hook
+// path also calls multi_spectate_on_obj_update_fire, but the !is_playing guard prevents
+// double-triggering.
+FunHook<void(rf::Entity*, bool)> entity_play_attack_anim_spectate_hook{
+    0x0042C3C0,
+    [](rf::Entity* entity, bool alt_fire) {
+        entity_play_attack_anim_spectate_hook.call_target(entity, alt_fire);
+        if (!g_spectate_mode_enabled || !g_spectate_mode_target || !entity || rf::is_server)
             return;
-
-        if (action != rf::WA_FIRE && action != rf::WA_ALT_FIRE)
+        rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+        if (entity != target || g_spectate_mode_target == rf::local_player)
             return;
-
-        rf::Entity* entity = rf::entity_from_handle(pp->entity_handle);
-        if (!entity)
-            return;
-
-        int weapon_type = entity->ai.current_primary_weapon;
-        af_send_spectate_weapon_fire_event(weapon_type, action == rf::WA_ALT_FIRE);
+        multi_spectate_on_obj_update_fire(entity, alt_fire);
     },
 };
 
@@ -558,45 +554,6 @@ CallHook<float(rf::Player*)> gameplay_render_frame_player_fpgun_get_zoom_hook{
 
 #endif // SPECTATE_MODE_SHOW_WEAPON
 
-void multi_spectate_on_remote_weapon_fire(rf::Entity* entity, int weapon_type, bool alt_fire)
-{
-#if SPECTATE_MODE_SHOW_WEAPON
-    if (!g_spectate_mode_enabled || !g_spectate_mode_target || !entity)
-        return;
-
-    // Check if the firing entity belongs to the spectated player
-    rf::Entity* target_entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
-    if (entity != target_entity)
-        return;
-
-    // Don't handle local player
-    if (g_spectate_mode_target == rf::local_player)
-        return;
-
-    // Continuous alt fire weapons (baton taser): skip intro, go straight to looping fire
-    if (alt_fire && rf::weapon_is_on_off_weapon(weapon_type, true)) {
-        rf::player_fpgun_set_next_state_anim(g_spectate_mode_target, rf::WS_LOOP_FIRE);
-    }
-    else {
-        rf::WeaponAction action = alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE;
-        if (rf::player_fpgun_action_anim_exists(weapon_type, action)) {
-            // Don't restart the fire animation if it's already playing - this prevents
-            // weapons like the baton from having their swing animation constantly reset
-            // by rapid fire events. Semi-automatic weapons (pistol, precision rifle) are
-            // excluded because each click is a distinct shot that should restart the anim.
-            bool should_play = rf::weapon_is_semi_automatic(weapon_type)
-                || !rf::player_fpgun_action_anim_is_playing(g_spectate_mode_target, action);
-            if (should_play) {
-                rf::player_fpgun_play_anim(g_spectate_mode_target, action);
-            }
-        }
-    }
-
-    // Reset firing timer for muzzle flash effects
-    g_spectate_mode_target->fpgun_data.time_elapsed_since_firing = 0.0f;
-#endif // SPECTATE_MODE_SHOW_WEAPON
-}
-
 void multi_spectate_on_obj_update_fire(rf::Entity* entity, bool alt_fire)
 {
 #if SPECTATE_MODE_SHOW_WEAPON
@@ -646,7 +603,7 @@ void multi_spectate_appy_patch()
 
     AsmWriter(0x0043285D).call(player_render_new);
     gameplay_render_frame_player_fpgun_get_zoom_hook.install();
-    player_fpgun_play_anim_hook.install();
+    entity_play_attack_anim_spectate_hook.install();
 
     write_mem_ptr(0x0048857E + 2, &g_spectate_mode_target); // obj_mark_all_for_room
     write_mem_ptr(0x00488598 + 1, &g_spectate_mode_target); // obj_mark_all_for_room
