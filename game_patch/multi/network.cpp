@@ -917,7 +917,7 @@ CodeInjection process_obj_update_health_armor_spectate_injection{
         if (!entity)
             return;
         rf::Player* spectated = multi_spectate_get_target_player();
-        if (!spectated || spectated == rf::local_player)
+        if (!spectated || spectated == rf::local_player || multi_spectate_is_freelook())
             return;
         if (entity == rf::entity_from_handle(spectated->entity_handle))
             rf::local_screen_flash(rf::local_player, 255, 0, 0, 128);
