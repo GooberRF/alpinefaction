@@ -393,6 +393,11 @@ CodeInjection state5_force_clear_type1_for_rf2{
 // Registers: ESI = GFace*, EBX = &face->attributes, EDI = solid (param_1).
 // We compute the face centroid, test it against saved detail room planes, and
 // set classification directly (class 2 = inside/keep, class 1 = outside/delete).
+// Diagnostic counters for TYPE 1 face reclassification
+static int g_rf2_diag_type1_inside = 0;   // classified as inside (keep as crater cap)
+static int g_rf2_diag_type1_outside = 0;  // classified as outside (delete)
+static int g_rf2_diag_type1_errors = 0;   // null face/attrs or edge loop issues
+
 CodeInjection state5_reclassify_type1_for_rf2{
     0x004dd96d,
     [](auto& regs) {
@@ -403,6 +408,7 @@ CodeInjection state5_reclassify_type1_for_rf2{
 
         if (!face || !face_attrs) {
             xlog::warn("[RF2] state5_reclass: null face or attrs, skipping");
+            g_rf2_diag_type1_errors++;
             regs.eip = 0x004dd990;
             return;
         }
@@ -416,6 +422,7 @@ CodeInjection state5_reclassify_type1_for_rf2{
             do {
                 if (!fv->vertex) {
                     xlog::warn("[RF2] state5_reclass: null vertex in edge_loop");
+                    g_rf2_diag_type1_errors++;
                     break;
                 }
                 centroid.x += fv->vertex->pos.x;
@@ -424,6 +431,7 @@ CodeInjection state5_reclassify_type1_for_rf2{
                 vertex_count++;
                 if (vertex_count > max_centroid_verts) {
                     xlog::warn("[RF2] state5_reclass: vertex limit hit, possible edge_loop corruption");
+                    g_rf2_diag_type1_errors++;
                     break;
                 }
                 fv = fv->next;
@@ -439,7 +447,14 @@ CodeInjection state5_reclassify_type1_for_rf2{
 
         // Classify against the target detail room's current geometry (ray casting).
         // Uses live face_list which correctly reflects previous craters (non-convex).
-        int classification = is_point_inside_room_geometry(centroid, g_rf2_target_detail_room) ? 2 : 1;
+        bool is_inside = is_point_inside_room_geometry(centroid, g_rf2_target_detail_room);
+        int classification = is_inside ? 2 : 1;
+
+        if (is_inside) {
+            g_rf2_diag_type1_inside++;
+        } else {
+            g_rf2_diag_type1_outside++;
+        }
 
         // Set classification on face attributes via FUN_004de9e0
         AddrCaller{0x004de9e0}.this_call(face_attrs, classification);
@@ -454,6 +469,14 @@ CodeInjection state5_reclassify_type1_for_rf2{
 // For RF2-style geomod, we skip non-detail TYPE 0 faces: set their side to 2
 // (outside/keep) so they're never carved. Only detail faces proceed normally.
 //
+// Diagnostic counters for boolean face filtering
+static int g_rf2_diag_faces_allowed = 0;
+static int g_rf2_diag_faces_skipped_no_target = 0;
+static int g_rf2_diag_faces_skipped_no_room = 0;
+static int g_rf2_diag_faces_skipped_not_detail = 0;
+static int g_rf2_diag_faces_skipped_not_geoable = 0;
+static int g_rf2_diag_faces_skipped_wrong_room = 0;
+
 // Injection at 0x004dc4aa: first instruction of the TYPE 0 path after the
 // intersection test succeeds. At this point EDI = face, ESI = &face->attributes.
 // We call FUN_004de9e0(2) to set side=2, then skip to next face (0x004dc521).
@@ -465,13 +488,38 @@ CodeInjection boolean_skip_non_detail_faces_for_rf2{
         rf::GFace* face = regs.edi;
         // Skip ALL faces when no target room (geomod suppression outside detail brushes).
         // Otherwise, only allow faces from the target detail room; skip everything else.
-        if (!g_rf2_target_detail_room ||
-            !face->which_room || !face->which_room->is_detail ||
-            !face->which_room->is_geoable ||
-            face->which_room != g_rf2_target_detail_room) {
+        if (!g_rf2_target_detail_room) {
+            g_rf2_diag_faces_skipped_no_target++;
             void* face_attrs = regs.esi;
             AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
-            regs.eip = 0x004dc521; // skip to next face in loop
+            regs.eip = 0x004dc521;
+        }
+        else if (!face->which_room) {
+            g_rf2_diag_faces_skipped_no_room++;
+            void* face_attrs = regs.esi;
+            AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
+            regs.eip = 0x004dc521;
+        }
+        else if (!face->which_room->is_detail) {
+            g_rf2_diag_faces_skipped_not_detail++;
+            void* face_attrs = regs.esi;
+            AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
+            regs.eip = 0x004dc521;
+        }
+        else if (!face->which_room->is_geoable) {
+            g_rf2_diag_faces_skipped_not_geoable++;
+            void* face_attrs = regs.esi;
+            AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
+            regs.eip = 0x004dc521;
+        }
+        else if (face->which_room != g_rf2_target_detail_room) {
+            g_rf2_diag_faces_skipped_wrong_room++;
+            void* face_attrs = regs.esi;
+            AddrCaller{0x004de9e0}.this_call(face_attrs, 2);
+            regs.eip = 0x004dc521;
+        }
+        else {
+            g_rf2_diag_faces_allowed++;
         }
     },
 };
@@ -1226,26 +1274,49 @@ void apply_geoable_flags()
     }
 
     auto& props = AlpineLevelProperties::instance();
-    xlog::debug("[Geoable] apply_geoable_flags: rf2_style_geomod={} geoable_room_uids.size={}", props.rf2_style_geomod, props.geoable_room_uids.size());
+    xlog::info("[RF2 Diag] apply_geoable_flags: rf2_style_geomod={} geoable_room_uids.size={} total_rooms={}",
+        props.rf2_style_geomod, props.geoable_room_uids.size(), solid->all_rooms.size());
     if (!props.rf2_style_geomod) return;
 
+    // Log all detail rooms in the level for cross-reference
+    int detail_count = 0;
+    for (auto& room : solid->all_rooms) {
+        if (room->is_detail) {
+            detail_count++;
+            xlog::info("[RF2 Diag]   detail room: uid={} index={} bbox=[({:.2f},{:.2f},{:.2f})-({:.2f},{:.2f},{:.2f})]",
+                room->uid, room->room_index,
+                room->bbox_min.x, room->bbox_min.y, room->bbox_min.z,
+                room->bbox_max.x, room->bbox_max.y, room->bbox_max.z);
+        }
+    }
+    xlog::info("[RF2 Diag]   total detail rooms in level: {}", detail_count);
+
     // Search solid->all_rooms directly (level_room_from_uid doesn't cover detail rooms)
-    for (int32_t uid : props.geoable_room_uids) {
+    for (size_t i = 0; i < props.geoable_room_uids.size(); i++) {
+        int32_t uid = props.geoable_room_uids[i];
         bool found = false;
         for (auto& room : solid->all_rooms) {
             if (room->uid == uid && room->is_detail) {
                 room->is_geoable = true;
                 found = true;
-                xlog::debug("[Geoable] applied is_geoable to room uid={} index={}", uid, room->room_index);
+                int face_count = 0;
+                for ([[maybe_unused]] rf::GFace& f : room->face_list) face_count++;
+                xlog::info("[RF2 Diag] applied is_geoable: room uid={} index={} faces={} "
+                    "bbox=[({:.2f},{:.2f},{:.2f})-({:.2f},{:.2f},{:.2f})]",
+                    uid, room->room_index, face_count,
+                    room->bbox_min.x, room->bbox_min.y, room->bbox_min.z,
+                    room->bbox_max.x, room->bbox_max.y, room->bbox_max.z);
                 break;
             }
         }
         if (!found) {
-            xlog::warn("[Geoable] room uid={} not found in solid->all_rooms", uid);
+            xlog::warn("[RF2 Diag] geoable room uid={} (index {}/{}) NOT FOUND in solid->all_rooms! "
+                "This brush will NOT be geoable at runtime.",
+                uid, i, props.geoable_room_uids.size());
         }
     }
 
-    // Pre-compute anchor vertices for separated solids detection
+    // Pre-compute anchor faces for separated solids detection
     compute_rf2_anchor_faces();
 }
 
@@ -1467,14 +1538,38 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
     auto* solid = rf::level.geometry;
     if (!solid) return result;
 
+    int geoable_count = 0;
     for (auto& room : solid->all_rooms) {
         if (!room->is_detail || !room->is_geoable) continue;
+        geoable_count++;
+
         // Check if position is within room bbox + hardness-scaled padding
-        if (pos.x >= room->bbox_min.x - padding && pos.x <= room->bbox_max.x + padding &&
-            pos.y >= room->bbox_min.y - padding && pos.y <= room->bbox_max.y + padding &&
-            pos.z >= room->bbox_min.z - padding && pos.z <= room->bbox_max.z + padding) {
+        bool in_x = pos.x >= room->bbox_min.x - padding && pos.x <= room->bbox_max.x + padding;
+        bool in_y = pos.y >= room->bbox_min.y - padding && pos.y <= room->bbox_max.y + padding;
+        bool in_z = pos.z >= room->bbox_min.z - padding && pos.z <= room->bbox_max.z + padding;
+
+        if (in_x && in_y && in_z) {
             result.push_back(room);
         }
+        else {
+            // Log near-misses: rooms that failed the bbox check
+            // Compute how far outside the padded bbox the position is per axis
+            float dx = 0, dy = 0, dz = 0;
+            if (!in_x) dx = std::max(room->bbox_min.x - padding - pos.x, pos.x - room->bbox_max.x - padding);
+            if (!in_y) dy = std::max(room->bbox_min.y - padding - pos.y, pos.y - room->bbox_max.y - padding);
+            if (!in_z) dz = std::max(room->bbox_min.z - padding - pos.z, pos.z - room->bbox_max.z - padding);
+            xlog::info("[RF2 Diag] find_rooms: room uid={} index={} MISSED bbox check "
+                "pos=({:.2f},{:.2f},{:.2f}) bbox=[({:.2f},{:.2f},{:.2f})-({:.2f},{:.2f},{:.2f})] "
+                "padding={:.2f} outside_by=({:.2f},{:.2f},{:.2f})",
+                room->uid, room->room_index, pos.x, pos.y, pos.z,
+                room->bbox_min.x, room->bbox_min.y, room->bbox_min.z,
+                room->bbox_max.x, room->bbox_max.y, room->bbox_max.z,
+                padding, dx, dy, dz);
+        }
+    }
+
+    if (geoable_count == 0) {
+        xlog::warn("[RF2 Diag] find_rooms: NO geoable detail rooms exist in level!");
     }
 
     // Sort by distance from pos to bbox center (closest first)
@@ -1517,9 +1612,13 @@ FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned i
 
                 // Check RF2 geo limit
                 if (g_rf2_geo_limit == 0) {
+                    xlog::info("[RF2 Diag] geomod_create: pos=({:.2f},{:.2f},{:.2f}) SKIP: rf2 geomods disabled (limit=0)",
+                        pos->x, pos->y, pos->z);
                     return 0; // RF2 geomods disabled
                 }
                 if (g_rf2_geo_limit > 0 && g_rf2_geo_count >= g_rf2_geo_limit) {
+                    xlog::info("[RF2 Diag] geomod_create: pos=({:.2f},{:.2f},{:.2f}) SKIP: rf2 limit reached ({}/{})",
+                        pos->x, pos->y, pos->z, g_rf2_geo_count, g_rf2_geo_limit);
                     return 0; // RF2 limit reached
                 }
 
@@ -1529,10 +1628,17 @@ FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned i
                 auto overlapping = find_overlapping_detail_rooms(*pos);
                 if (overlapping.empty()) {
                     g_rf2_geomod_counter++;
-                    xlog::info("[RF2] geomod_create #{}: pos=({:.1f},{:.1f},{:.1f}) not near any geoable room -> SKIPPING",
-                        g_rf2_geomod_counter, pos->x, pos->y, pos->z);
+                    xlog::info("[RF2 Diag] geomod_create #{}: pos=({:.2f},{:.2f},{:.2f}) SKIP: not near any geoable room (padding={:.2f})",
+                        g_rf2_geomod_counter, pos->x, pos->y, pos->z, get_hardness_scaled_padding());
                     return 0; // skip entire geomod (no effects, no boolean, no state machine)
                 }
+
+                xlog::info("[RF2 Diag] geomod_create: pos=({:.2f},{:.2f},{:.2f}) radius={:.2f} found {} overlapping room(s)",
+                    pos->x, pos->y, pos->z, radius, overlapping.size());
+            }
+            else {
+                xlog::info("[RF2 Diag] geomod_create: pos=({:.2f},{:.2f},{:.2f}) in geo_region -> stock geomod",
+                    pos->x, pos->y, pos->z);
             }
         }
 
@@ -1563,7 +1669,14 @@ FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned i
 
         if (is_rf2_geomod) {
             rf::g_num_geomods_this_level = saved_crater_count;
-            if (result) g_rf2_geo_count++;
+            if (result) {
+                g_rf2_geo_count++;
+                xlog::info("[RF2 Diag] geomod_create: stock function returned SUCCESS (result={})", result);
+            }
+            else {
+                xlog::warn("[RF2 Diag] geomod_create: stock function returned FAILURE (result=0) for pos=({:.2f},{:.2f},{:.2f}) radius={:.2f} crater_idx={} flags=0x{:x}",
+                    pos ? pos->x : 0.f, pos ? pos->y : 0.f, pos ? pos->z : 0.f, radius, crater_idx, flags);
+            }
         }
 
         return result;
@@ -1587,6 +1700,14 @@ FunHook<void(void*)> geomod_init_hook{
         if (g_rf2_style_boolean_active) {
             g_rf2_geomod_counter++;
 
+            // Reset diagnostic face counters for this boolean pass
+            g_rf2_diag_faces_allowed = 0;
+            g_rf2_diag_faces_skipped_no_target = 0;
+            g_rf2_diag_faces_skipped_no_room = 0;
+            g_rf2_diag_faces_skipped_not_detail = 0;
+            g_rf2_diag_faces_skipped_not_geoable = 0;
+            g_rf2_diag_faces_skipped_wrong_room = 0;
+
             // Enable stock separated solids for RF2-style geomods.
             // Stock code disables it for locally-created geomods (bit 0 of flags).
             // We override to enable it so the engine's chunk detection and physics work.
@@ -1606,13 +1727,21 @@ FunHook<void(void*)> geomod_init_hook{
                 for (size_t i = 1; i < overlapping.size(); i++) {
                     g_rf2_pending_detail_rooms.push_back(overlapping[i]);
                 }
-                xlog::info("[RF2] geomod_init #{}: pos=({:.1f},{:.1f},{:.1f}) target_room={} (index={}) pending={}",
+
+                // Log target room details
+                auto* tr = g_rf2_target_detail_room;
+                int face_count = 0;
+                for ([[maybe_unused]] rf::GFace& f : tr->face_list) face_count++;
+                xlog::info("[RF2 Diag] geomod_init #{}: pos=({:.2f},{:.2f},{:.2f}) target_room uid={} index={} "
+                    "bbox=[({:.2f},{:.2f},{:.2f})-({:.2f},{:.2f},{:.2f})] faces={} pending={}",
                     g_rf2_geomod_counter, geomod_pos.x, geomod_pos.y, geomod_pos.z,
-                    (void*)g_rf2_target_detail_room, g_rf2_target_detail_room->room_index,
-                    g_rf2_pending_detail_rooms.size());
+                    tr->uid, tr->room_index,
+                    tr->bbox_min.x, tr->bbox_min.y, tr->bbox_min.z,
+                    tr->bbox_max.x, tr->bbox_max.y, tr->bbox_max.z,
+                    face_count, g_rf2_pending_detail_rooms.size());
             } else {
                 g_rf2_target_detail_room = nullptr;
-                xlog::warn("[RF2] geomod_init #{}: no overlapping geoable rooms (unexpected — geomod_create should have filtered)",
+                xlog::warn("[RF2 Diag] geomod_init #{}: no overlapping geoable rooms (unexpected — geomod_create should have filtered)",
                     g_rf2_geomod_counter);
             }
         }
@@ -1733,11 +1862,26 @@ CodeInjection state2_rf2_separated_solids_injection{
         rf::GSolid* solid = addr_as_ref<rf::GSolid*>(0x006460e8);
         auto* room = g_rf2_target_detail_room;
 
-        // Update anchor status for new vertices created by the boolean.
-        // With vertex-to-vertex matching (not face-surface matching), crater intersection
-        // vertices won't false-positive — they're at arbitrary positions along the crater
-        // edge, not at normal room vertex positions. Only new vertices that genuinely
-        // coincide with a wall/floor/ceiling vertex become anchors.
+        // Log boolean face filter summary for this pass
+        xlog::info("[RF2 Diag] boolean face filter: allowed={} skipped: no_target={} no_room={} "
+            "not_detail={} not_geoable={} wrong_room={}",
+            g_rf2_diag_faces_allowed,
+            g_rf2_diag_faces_skipped_no_target,
+            g_rf2_diag_faces_skipped_no_room,
+            g_rf2_diag_faces_skipped_not_detail,
+            g_rf2_diag_faces_skipped_not_geoable,
+            g_rf2_diag_faces_skipped_wrong_room);
+
+        // Log TYPE 1 (crater) face reclassification summary
+        xlog::info("[RF2 Diag] type1 reclass: inside(keep)={} outside(delete)={} errors={}",
+            g_rf2_diag_type1_inside, g_rf2_diag_type1_outside, g_rf2_diag_type1_errors);
+
+        // Reset TYPE 1 counters for potential next boolean pass (multi-room)
+        g_rf2_diag_type1_inside = 0;
+        g_rf2_diag_type1_outside = 0;
+        g_rf2_diag_type1_errors = 0;
+
+        // Update anchor faces after the boolean modifies the face set
         update_anchors_after_boolean(room);
 
         // Room-scoped BFS: detect components only within the target detail room
@@ -1790,6 +1934,17 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         if (!g_rf2_pending_detail_rooms.empty()) {
             g_rf2_target_detail_room = g_rf2_pending_detail_rooms.front();
             g_rf2_pending_detail_rooms.erase(g_rf2_pending_detail_rooms.begin());
+
+            // Reset face filter counters for next boolean pass
+            g_rf2_diag_faces_allowed = 0;
+            g_rf2_diag_faces_skipped_no_target = 0;
+            g_rf2_diag_faces_skipped_no_room = 0;
+            g_rf2_diag_faces_skipped_not_detail = 0;
+            g_rf2_diag_faces_skipped_not_geoable = 0;
+            g_rf2_diag_faces_skipped_wrong_room = 0;
+
+            xlog::info("[RF2 Diag] multi-room: starting boolean for next room uid={} index={}",
+                g_rf2_target_detail_room->uid, g_rf2_target_detail_room->room_index);
 
             // Re-call boolean_setup (FUN_004de530) with the same parameters.
             // The level solid, crater solid, position, scale etc. are all globals
