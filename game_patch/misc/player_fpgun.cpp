@@ -52,6 +52,27 @@ static FunHook<void(rf::Player*)> player_fpgun_render_ir_hook{
     },
 };
 
+static FunHook<void(rf::Player*)> player_fpgun_render_for_rail_gun_hook{
+    0x004ADC60,
+    [](rf::Player* player) {
+        if (player->cam) {
+            rf::Player* target = player->cam->player;
+            // render_to_dynamic_textures sets drawing_entity_bmp on local_player,
+            // but the function stores param_1 in a global and entity render functions
+            // read drawing_entity_bmp from there. When spectating, we redirect to the
+            // spectate target, so we must propagate the flag.
+            bool propagate = (target != player);
+            if (propagate) {
+                target->fpgun_data.drawing_entity_bmp = player->fpgun_data.drawing_entity_bmp;
+            }
+            player_fpgun_render_for_rail_gun_hook.call_target(target);
+            if (propagate) {
+                target->fpgun_data.drawing_entity_bmp = false;
+            }
+        }
+    },
+};
+
 static CodeInjection player_fpgun_play_anim_injection{
     0x004A947B,
     [](auto& regs) {
@@ -208,8 +229,13 @@ void player_fpgun_on_player_death(rf::Player* pp)
 CodeInjection railgun_scanner_start_render_to_texture{
     0x004ADD0A,
     [](auto& regs) {
-        rf::Player* player = regs.ebx;
-        gr_set_render_target(player->ir_data.ir_bitmap_handle);
+        // Always render into local_player's bitmap. The HUD overlay in gameplay_render_frame
+        // reads from local_player->ir_data.ir_bitmap_handle, so that's where the content must go.
+        // In normal play EBX == local_player so this is equivalent. In spectate, EBX is the
+        // spectate target (redirected by player_fpgun_render_for_rail_gun_hook) but the HUD
+        // still reads from local_player.
+        rf::Player* target = rf::local_player ? rf::local_player : static_cast<rf::Player*>(regs.ebx);
+        gr_set_render_target(target->ir_data.ir_bitmap_handle);
     },
 };
 
@@ -327,6 +353,10 @@ void player_fpgun_do_patch()
 
     // Render IR for player that is currently being shown by camera - needed for spectate mode
     player_fpgun_render_ir_hook.install();
+
+    // Render rail gun scanner for spectated player
+    player_fpgun_render_for_rail_gun_hook.install();
+    AsmWriter(0x004ADCB5).nop(6); // player_fpgun_render_for_rail_gun - remove local_player check
 #endif // SPECTATE_MODE_SHOW_WEAPON
 
     // Update fpgun 3D sounds positions

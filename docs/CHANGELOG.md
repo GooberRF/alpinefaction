@@ -50,6 +50,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
+- Sync animation state for crouched players in first person spectate view
+- Sync rail scanner in first person spectate
 - Fix Alt+Enter crash in Direct3D 11 renderer
 
 Version 1.2.2 (Willow): Released Jan-04-2026

@@ -19,3 +19,4 @@ void multi_spectate_on_destroy_player(rf::Player* player);
 void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* entity);
 bool multi_spectate_is_spectating();
 bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pressed);
+void multi_spectate_sync_crouch_anim();
