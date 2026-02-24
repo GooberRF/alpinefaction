@@ -221,6 +221,8 @@ namespace df::gr::d3d11
             );
         }
 
+        // Alpine uses DXGI's flip presentation model, which requires ResizeBuffers
+        // after mode transitions
         // Disable DXGI's built-in Alt+Enter fullscreen toggle. DXGI's auto-handling
         // calls SetFullscreenState internally without the app's knowledge, which causes
         // the next Present() call to return DXGI_ERROR_INVALID_CALL and crash. We handle
