@@ -519,11 +519,23 @@ ConsoleCommand2 static_bomb_code_cmd{
     "Toggle bomb code between randomized (default) and static.",
 };
 
+ConsoleCommand2 geo_chunk_physics_cmd{
+    "sp_geochunkphysics",
+    []() {
+        g_alpine_game_config.geo_chunk_physics = !g_alpine_game_config.geo_chunk_physics;
+        rf::console::print("GeoMod chunk physics is {}", g_alpine_game_config.geo_chunk_physics ? "enabled" : "disabled");
+    },
+    "Toggle whether isolated geomod chunks fall as physics objects or disappear.",
+};
+
 void misc_init()
 {
     // Static bomb code
     static_bomb_code_patch.install();
     static_bomb_code_cmd.register_cmd();
+
+    // GeoMod chunk physics
+    geo_chunk_physics_cmd.register_cmd();
 
     //gr_set_far_clip_hook.install();
     //AsmWriter{0x0051806F}.jmp(0x00518083); // stops far clip from derendering geometry covered by fog, buggy

@@ -486,6 +486,7 @@ namespace rf
     static_assert(sizeof(GPortalObject) == 0x30);
 
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
+    static auto& g_geomod_separate_solids = addr_as_ref<bool>(0x00647C28);
 
     static auto& g_cache_clear = addr_as_ref<void()>(0x004F0B90);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);

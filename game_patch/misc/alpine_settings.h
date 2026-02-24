@@ -107,6 +107,7 @@ struct AlpineGameSettings
     bool play_team_rad_msg_sounds = true;
     bool unlimited_semi_auto = false;
     bool gaussian_spread = false;
+    bool geo_chunk_physics = true;
     bool show_run_timer = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;

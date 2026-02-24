@@ -10,6 +10,8 @@
 #include <xlog/xlog.h>
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/multi.h"
+#include "../multi/server_internal.h"
 #include "../main/main.h"
 #include "../misc/misc.h"
 #include "../rf/geometry.h"
@@ -1551,6 +1553,22 @@ FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned i
     },
 };
 
+// Check if separated solid chunks should become physics objects.
+// In SP: controlled by client setting. In MP: controlled by server setting.
+static bool should_enable_geo_chunk_physics()
+{
+    if (!rf::is_multi && g_alpine_game_config.geo_chunk_physics) {
+        return true;
+    }
+    else if ((rf::is_dedicated_server || rf::is_server) && g_alpine_server_config_active_rules.geo_chunk_physics) {
+        return true;
+    }
+    else if (rf::is_multi && get_af_server_info().has_value() && get_af_server_info()->geo_chunk_physics) {
+        return true;
+    }
+    return false;
+}
+
 // Hook geomod_init (FUN_00466b00) to activate RF2-style boolean targeting.
 // By this point, geomod_create_hook has already verified geoable rooms exist,
 // so overlapping should always be non-empty when RF2-style is active.
@@ -1561,15 +1579,24 @@ FunHook<void(void*)> geomod_init_hook{
     [](void* entry_data) {
         geomod_init_hook.call_target(entry_data);
 
+        // Override separated solids physics flag based on the geo chunk physics option.
+        // When disabled, isolated chunks disappear instead of falling as physics objects.
+        // This applies to both stock and RF2-style geomods.
+        if (!should_enable_geo_chunk_physics()) {
+            rf::g_geomod_separate_solids = false;
+        }
+
         bool rf2_enabled = AlpineLevelProperties::instance().rf2_style_geomod;
         bool in_geo_region = rf2_enabled && is_pos_in_any_geo_region(geomod_pos);
         g_rf2_style_boolean_active = rf2_enabled && !in_geo_region;
 
         if (g_rf2_style_boolean_active) {
-            // Enable stock separated solids for RF2-style geomods.
+            // Enable stock separated solids for RF2-style geomods when the option allows it.
             // Stock code disables it for locally-created geomods (bit 0 of flags).
             // We override to enable it so the engine's chunk detection and physics work.
-            addr_as_ref<char>(0x00647c28) = 1;
+            if (should_enable_geo_chunk_physics()) {
+                rf::g_geomod_separate_solids = true;
+            }
 
             // Save original detail room planes on first RF2-style geomod.
             if (!g_detail_planes_initialized) {

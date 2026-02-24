@@ -3223,6 +3223,11 @@ bool server_gaussian_spread()
     return g_alpine_server_config.gaussian_spread;
 }
 
+bool server_geo_chunk_physics()
+{
+    return g_alpine_server_config_active_rules.geo_chunk_physics;
+}
+
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 {
     bool requires_alpine = false; // alpine required to spawn
@@ -3255,6 +3260,12 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 2);
+    }
+
+    if (!g_alpine_server_config_active_rules.geo_chunk_physics) {
+        requires_alpine = true;
+        hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 3);
     }
 
     return {requires_alpine, min_minor_version, hard_reject, require_release_version};

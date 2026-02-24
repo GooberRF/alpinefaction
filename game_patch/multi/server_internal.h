@@ -581,6 +581,7 @@ struct AlpineServerConfigRules
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
     GunGameConfig gungame;
+    bool geo_chunk_physics = true;
 
     // =============================================
     void set_time_limit(float count)

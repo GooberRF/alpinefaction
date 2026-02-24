@@ -532,6 +532,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.no_player_collide = *v;
     if (auto v = t["location_pinging"].value<bool>())
         o.location_pinging = *v;
+    if (auto v = t["geo_chunk_physics"].value<bool>())
+        o.geo_chunk_physics = *v;
     if (auto v = t["weapon_pickups_give_full_ammo"].value<bool>())
         o.weapon_items_give_full_ammo = *v;
     if (auto v = t["infinite_reloads"].value<bool>())
@@ -1518,6 +1520,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  No player collide:                     {}\n", rules.no_player_collide);
     if (base || rules.location_pinging != b.location_pinging)
         std::format_to(iter, "  Location pinging:                      {}\n", rules.location_pinging);
+    if (base || rules.geo_chunk_physics != b.geo_chunk_physics)
+        std::format_to(iter, "  GeoMod chunk physics:                  {}\n", rules.geo_chunk_physics);
     if (base || rules.weapon_items_give_full_ammo != b.weapon_items_give_full_ammo)
         std::format_to(iter, "  Weapon pickups give full ammo:         {}\n", rules.weapon_items_give_full_ammo);
     if (base || rules.weapon_infinite_magazines != b.weapon_infinite_magazines)

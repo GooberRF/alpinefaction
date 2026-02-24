@@ -34,6 +34,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add support for `script` console command to execute a script on-demand
 - Add `/coinflip` chat command
 - Allow level hardness to be set to 0 in version >= 304 levels
+- Add `sp_geochunkphysics` console comand to toggle isolated geo chunks falling down in single player
+- Add `geo_chunk_physics` rule to ADS config to toggle isolated geo chunks falling down in multiplayer
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Server version:` to a server's printed config

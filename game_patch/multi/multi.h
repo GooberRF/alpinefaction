@@ -96,6 +96,7 @@ struct AlpineFactionServerInfo
     std::optional<int> semi_auto_cooldown;
     bool unlimited_fps = false;
     bool gaussian_spread = false;
+    bool geo_chunk_physics = false;
     bool location_pinging = false;
     bool delayed_spawns = false;
     int koth_score_limit = 0;
