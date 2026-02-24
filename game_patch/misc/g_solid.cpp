@@ -58,6 +58,18 @@ static std::vector<rf::GRoom*> g_rf2_pending_detail_rooms;
 static std::vector<SavedDetailRoomPlanes> g_saved_detail_room_planes;
 static bool g_detail_planes_initialized = false;
 
+// Anchor data per geoable room. "Anchor faces" are faces of the detail brush that
+// are coplanar with AND overlap faces of normal world geometry (walls/floor/ceiling).
+// When craters isolate a chunk of the detail brush, it falls only if that chunk
+// has NO anchor faces.
+static std::vector<RF2AnchorInfo> g_rf2_anchor_info;
+
+// Find geoable detail rooms whose bboxes overlap the given position with padding
+// scaled by level hardness. Base padding is 3 units at hardness 50 (baseline).
+// Hardness 0 = 2x padding (softer rock, larger craters), hardness 100 = 0.5x padding.
+// Formula: scale = 2^((50 - hardness) / 50), so 0→2.0, 50→1.0, 99→~0.507, 100→0.5.
+static constexpr float geoable_bbox_base_padding = 3.0f;
+
 static void save_original_detail_room_planes()
 {
     g_saved_detail_room_planes.clear();
@@ -1105,12 +1117,6 @@ void set_levelmod_autotexture_ppm() {
     }
 }
 
-// Anchor data per geoable room. "Anchor faces" are faces of the detail brush that
-// are coplanar with AND overlap faces of normal world geometry (walls/floor/ceiling).
-// When craters isolate a chunk of the detail brush, it falls only if that chunk
-// has NO anchor faces.
-static std::vector<RF2AnchorInfo> g_rf2_anchor_info;
-
 // Check if two planes are coplanar (same or opposite orientation, same plane).
 // Handles both same-direction and opposite-direction normals since detail brush
 // faces touching a wall will have opposite normals to the wall face.
@@ -1421,12 +1427,6 @@ static int remap_components_by_anchor_status(int total_components)
     return extract_idx;
 }
 
-// Find geoable detail rooms whose bboxes overlap the given position with padding
-// scaled by level hardness. Base padding is 3 units at hardness 50 (baseline).
-// Hardness 0 = 2x padding (softer rock, larger craters), hardness 100 = 0.5x padding.
-// Formula: scale = 2^((50 - hardness) / 50), so 0→2.0, 50→1.0, 99→~0.507, 100→0.5.
-static constexpr float geoable_bbox_base_padding = 3.0f;
-
 static float get_hardness_scaled_padding()
 {
     int hardness = std::clamp(rf::level.default_rock_hardness, 0, 100);
@@ -1621,8 +1621,6 @@ FunHook<void(void*)> geomod_init_hook{
     },
 };
 
-
-
 // Clear corrupted detail_rooms on all detail rooms in the level solid.
 // The boolean engine's inner state 6 (result collection) adds entries to detail rooms'
 // detail_rooms VArray, creating room reference cycles. Detail rooms should NEVER have
@@ -1705,8 +1703,6 @@ static void invalidate_rf2_render_caches()
         }
     }
 }
-
-
 
 // Hook at the START of outer State 2 (0x00466dcd) in the geomod state machine.
 // State 2 runs after the boolean completes (State 1). It detects disconnected face
@@ -2006,7 +2002,7 @@ FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
 // was carved, allow impact effects (they update decals on nearby world surfaces).
 // When no geoable room was targeted, suppress them.
 //
-// Uses CallHook (hooks the CALL site) instead of FunHook (hooks function entry) because
+// Uses CallHook instead of FunHook because
 // SubHook cannot decode the x87 FPU instruction (opcode 0xd8) at 0x490904, making it
 // unable to create a trampoline for FUN_00490900. FUN_00490900 has only one caller.
 CallHook<void(rf::Vector3*, float)> geomod_impact_effects_hook{
@@ -2112,7 +2108,7 @@ void g_solid_do_patch()
     // Set PPM for geo crater texture based on its resolution instead of static value of 32.0
     levelmod_do_blast_autotexture_ppm_patch.install();
 
-    // RF2-style geomod: detail brush only mode
+    // RF2-style geomod: geoable detail brush only mode
     geomod_create_hook.install();
     geomod_init_hook.install();
     boolean_iterate_hook.install();
