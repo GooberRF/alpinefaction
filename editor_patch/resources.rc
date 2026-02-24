@@ -139,7 +139,7 @@ FONT 8, "MS Sans Serif"
     LTEXT           "Level hardness:", -1, 7, 235, 50, 8
     EDITTEXT        1083, 63, 233, 40, 14, ES_AUTOHSCROLL
     CONTROL         "Spin3", 1157, UPDOWN_CLASS, UDS_ARROWKEYS, 103, 233, 11, 14
-    LTEXT           "0 (large GeoMod craters) - 100 (no GeoMod)", -1, 122, 235, 200, 8
+    LTEXT           "0 (large craters) - 100 (no craters)", -1, 122, 235, 200, 8
     AUTOCHECKBOX    "&Multiplayer level", 1670, 7, 252, 105, 10
     DEFPUSHBUTTON   "OK", IDOK, 241, 7, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 241, 24, 50, 14
@@ -151,7 +151,7 @@ FONT 8, "MS Sans Serif"
     AUTOCHECKBOX    "Override static mesh ambient light scale", IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER, 13, 316, 190, 10
     LTEXT           "New scale value:", -1, 30, 331, 120, 8
     EDITTEXT        IDC_MESH_AMBIENT_LIGHT_MODIFIER, 90, 328, 30, 14, ES_AUTOHSCROLL
-    AUTOCHECKBOX    "RF2-style geomod (detail brush destruction)", IDC_RF2_STYLE_GEOMOD, 13, 344, 200, 10
+    AUTOCHECKBOX    "Brush-based geomod (RF2-style)", IDC_RF2_STYLE_GEOMOD, 13, 344, 200, 10
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT

@@ -197,7 +197,27 @@ static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
 {
     if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
         int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
+        // Normalize: skip indeterminate state, treat as unchecked
+        if (state == BST_INDETERMINATE) {
+            state = BST_UNCHECKED;
+            CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
+        }
         apply_geoable_to_selected_brushes(state);
+        // Auto-check Is Detail when Is Geoable is checked
+        if (state == BST_CHECKED && IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
+            CheckDlgButton(hwnd, 1215, BST_CHECKED);
+            // Trigger stock handler to apply detail flag to selected brushes
+            CallWindowProcA(g_brush_panel_orig_wndproc, hwnd, WM_COMMAND,
+                           MAKEWPARAM(1215, BN_CLICKED),
+                           reinterpret_cast<LPARAM>(GetDlgItem(hwnd, 1215)));
+        }
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == 1215) {
+        // Auto-uncheck Is Geoable when Is Detail is no longer checked
+        if (IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
+            CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
+            apply_geoable_to_selected_brushes(BST_UNCHECKED);
+        }
     }
     return CallWindowProcA(g_brush_panel_orig_wndproc, hwnd, msg, wParam, lParam);
 }
@@ -211,6 +231,24 @@ static LRESULT CALLBACK BrushPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
     if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
         int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
         apply_geoable_to_selected_brushes(state);
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
+        int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
+        // Normalize: skip indeterminate state, treat as unchecked
+        if (state == BST_INDETERMINATE) {
+            state = BST_UNCHECKED;
+            CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
+        }
+        // Auto-check Is Detail when Is Geoable is checked
+        if (state == BST_CHECKED && IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
+            CheckDlgButton(hwnd, 1215, BST_CHECKED);
+        }
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == 1215) {
+        // Auto-uncheck Is Geoable when Is Detail is no longer checked
+        if (IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
+            CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
+        }
     }
     if (msg == WM_NCDESTROY) {
         SetWindowLongPtrA(hwnd, GWLP_WNDPROC,

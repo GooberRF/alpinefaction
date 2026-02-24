@@ -1,5 +1,6 @@
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -42,6 +43,11 @@ enum GeomodFlags : uint32_t {
 
 // Set by geomod_init hook; checked by boolean engine injections.
 static bool g_rf2_style_boolean_active = false;
+
+// RF2-style geomod limit — separate from the normal multiplayer geomod limit.
+// -1 = unlimited (default), 0 = disabled, >0 = specific limit.
+static int g_rf2_geo_limit = -1;
+static int g_rf2_geo_count = 0;
 
 // Per-room targeting: when RF2-style is active, the boolean engine only processes
 // faces from ONE specific detail room at a time. This prevents crashes and incorrect
@@ -1079,6 +1085,10 @@ ConsoleCommand2 dbg_num_geomods_cmd{
         int max_geos = rf::is_multi ? rf::netgame.geomod_limit : 128;
 
         rf::console::print("{} craters in the current level out of a maximum of {}", rf::g_num_geomods_this_level, max_geos);
+        if (AlpineLevelProperties::instance().rf2_style_geomod) {
+            std::string rf2_limit_str = (g_rf2_geo_limit < 0) ? "unlimited" : std::to_string(g_rf2_geo_limit);
+            rf::console::print("  RF2-style: {} (limit: {})", g_rf2_geo_count, rf2_limit_str);
+        }
     },
     "Count the number of geomod craters in the current level",
 };
@@ -1149,22 +1159,33 @@ void apply_geoable_flags()
     }
 }
 
-// Find detail rooms whose bboxes overlap a sphere at the given position.
-// Uses a generous padding to account for crater radius variations.
+// Find geoable detail rooms whose bboxes overlap the given position with padding
+// scaled by level hardness. Base padding is 3 units at hardness 50 (baseline).
+// Hardness 0 = 2x padding (softer rock, larger craters), hardness 100 = 0.5x padding.
+// Formula: scale = 2^((50 - hardness) / 50), so 0→2.0, 50→1.0, 99→~0.507, 100→0.5.
+static constexpr float geoable_bbox_base_padding = 3.0f;
+
+static float get_hardness_scaled_padding()
+{
+    int hardness = std::clamp(rf::level.default_rock_hardness, 0, 100);
+    float scale = std::pow(2.0f, (50.0f - hardness) / 50.0f);
+    return geoable_bbox_base_padding * scale;
+}
+
 // Results are sorted by distance from pos to bbox center (closest first).
 static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& pos)
 {
-    constexpr float crater_padding = 3.0f; // generous padding for crater radius
+    float padding = get_hardness_scaled_padding();
     std::vector<rf::GRoom*> result;
     auto* solid = rf::level.geometry;
     if (!solid) return result;
 
     for (auto& room : solid->all_rooms) {
         if (!room->is_detail || !room->is_geoable) continue;
-        // Check if position is within room bbox + padding
-        if (pos.x >= room->bbox_min.x - crater_padding && pos.x <= room->bbox_max.x + crater_padding &&
-            pos.y >= room->bbox_min.y - crater_padding && pos.y <= room->bbox_max.y + crater_padding &&
-            pos.z >= room->bbox_min.z - crater_padding && pos.z <= room->bbox_max.z + crater_padding) {
+        // Check if position is within room bbox + hardness-scaled padding
+        if (pos.x >= room->bbox_min.x - padding && pos.x <= room->bbox_max.x + padding &&
+            pos.y >= room->bbox_min.y - padding && pos.y <= room->bbox_max.y + padding &&
+            pos.z >= room->bbox_min.z - padding && pos.z <= room->bbox_max.z + padding) {
             result.push_back(room);
         }
     }
@@ -1189,15 +1210,89 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
     return result;
 }
 
-// Hook geomod_init (FUN_00466b00) to compute g_rf2_style_boolean_active.
-// Both server and client deterministically derive this from position + level properties,
-// so the pregame boolean packet (which omits the flags field) works correctly.
+// Hook FUN_00467020 — the master "create geomod" function called by the explosion system.
+// This is the earliest point where we can gate geomod: it creates visual effects (particle
+// emitters for rock debris, geomod explosion vclip, geomod sound) AND queues the boolean
+// request. Returning 0 from here prevents ALL geomod visuals and processing from starting.
+// param_4 (4th parameter) is the explosion position (rf::Vector3*).
 static int g_rf2_geomod_counter = 0;
 
+FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned int)> geomod_create_hook{
+    0x00467020,
+    [](float radius, void* param2, int param3, rf::Vector3* pos, void* param5, unsigned int crater_idx, unsigned int flags) -> uint8_t {
+        bool rf2_enabled = AlpineLevelProperties::instance().rf2_style_geomod;
+        bool is_rf2_geomod = false;
+
+        if (rf2_enabled && pos) {
+            bool in_geo_region = is_pos_in_any_geo_region(*pos);
+            if (!in_geo_region) {
+                is_rf2_geomod = true;
+
+                // Check RF2 geo limit
+                if (g_rf2_geo_limit == 0) {
+                    return 0; // RF2 geomods disabled
+                }
+                if (g_rf2_geo_limit > 0 && g_rf2_geo_count >= g_rf2_geo_limit) {
+                    return 0; // RF2 limit reached
+                }
+
+                // Effects gate: check if explosion is near any geoable detail room
+                // using bbox + padding. Reliable for all geometry shapes including
+                // concave brushes and touching detail brushes.
+                auto overlapping = find_overlapping_detail_rooms(*pos);
+                if (overlapping.empty()) {
+                    g_rf2_geomod_counter++;
+                    xlog::info("[RF2] geomod_create #{}: pos=({:.1f},{:.1f},{:.1f}) not near any geoable room -> SKIPPING",
+                        g_rf2_geomod_counter, pos->x, pos->y, pos->z);
+                    return 0; // skip entire geomod (no effects, no boolean, no state machine)
+                }
+            }
+        }
+
+        // For RF2-style geomods: bypass both the soft multiplayer limit and the hard
+        // 128 crater record limit by temporarily zeroing g_num_geomods_this_level and
+        // raising multi_geo_limit. The stock function writes a crater record at slot 0
+        // (which gets overwritten by future geomods — RF2 geomods don't need persistent
+        // crater records since the carved geometry IS the visual result).
+        //
+        // For normal geomods in RF2-enabled levels: compensate the soft limit for RF2
+        // entries in the persistent counter (DAT_0063715c) so RF2 geomods don't consume
+        // normal limit quota. If rf2_geo_count is 10 and geo_limit is 64, the effective
+        // limit becomes 74 — so 64 normal + 10 RF2 = 74 total triggers the block.
+        auto& stock_limit = rf::multi_geo_limit;
+        int saved_limit = stock_limit;
+        int saved_crater_count = rf::g_num_geomods_this_level;
+
+        if (is_rf2_geomod) {
+            if (stock_limit > 0) stock_limit = INT_MAX;
+            rf::g_num_geomods_this_level = 0;
+        }
+        else if (rf2_enabled && stock_limit > 0 && g_rf2_geo_count > 0) {
+            stock_limit += g_rf2_geo_count;
+        }
+
+        auto result = geomod_create_hook.call_target(radius, param2, param3, pos, param5, crater_idx, flags);
+        stock_limit = saved_limit;
+
+        if (is_rf2_geomod) {
+            rf::g_num_geomods_this_level = saved_crater_count;
+            if (result) g_rf2_geo_count++;
+        }
+
+        return result;
+    },
+};
+
+// Hook geomod_init (FUN_00466b00) to activate RF2-style boolean targeting.
+// By this point, geomod_create_hook has already verified geoable rooms exist,
+// so overlapping should always be non-empty when RF2-style is active.
+// Both server and client deterministically derive this from position + level properties,
+// so the pregame boolean packet (which omits the flags field) works correctly.
 FunHook<void(void*)> geomod_init_hook{
     0x00466B00,
     [](void* entry_data) {
         geomod_init_hook.call_target(entry_data);
+
         bool rf2_enabled = AlpineLevelProperties::instance().rf2_style_geomod;
         bool in_geo_region = rf2_enabled && is_pos_in_any_geo_region(geomod_pos);
         g_rf2_style_boolean_active = rf2_enabled && !in_geo_region;
@@ -1212,7 +1307,6 @@ FunHook<void(void*)> geomod_init_hook{
             }
 
             // Find detail rooms overlapping the crater and select the first target.
-            // Remaining rooms are queued for subsequent boolean passes.
             auto overlapping = find_overlapping_detail_rooms(geomod_pos);
             g_rf2_pending_detail_rooms.clear();
             if (!overlapping.empty()) {
@@ -1220,15 +1314,15 @@ FunHook<void(void*)> geomod_init_hook{
                 for (size_t i = 1; i < overlapping.size(); i++) {
                     g_rf2_pending_detail_rooms.push_back(overlapping[i]);
                 }
+                xlog::info("[RF2] geomod_init #{}: pos=({:.1f},{:.1f},{:.1f}) target_room={} (index={}) pending={}",
+                    g_rf2_geomod_counter, geomod_pos.x, geomod_pos.y, geomod_pos.z,
+                    (void*)g_rf2_target_detail_room, g_rf2_target_detail_room->room_index,
+                    g_rf2_pending_detail_rooms.size());
             } else {
                 g_rf2_target_detail_room = nullptr;
-                // Keep g_rf2_style_boolean_active = true so our hooks suppress the geomod:
-                // - Face filter skips all faces (no target room)
-                // - Crater decals suppressed by geomod_crater_decals_hook
-                // - Reclassification deletes all TYPE1 faces (target room null → outside)
-                // Result: boolean runs but produces no visible geometry change.
+                xlog::warn("[RF2] geomod_init #{}: no overlapping geoable rooms (unexpected — geomod_create should have filtered)",
+                    g_rf2_geomod_counter);
             }
-
         }
     },
 };
@@ -1397,7 +1491,19 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
             return;
         }
 
-        // No more pending rooms — State 3 proceeds normally (debris, decals, done)
+        // No more pending rooms — check if any geoable room was actually targeted.
+        // When g_rf2_target_detail_room is nullptr, no geoable detail rooms overlapped
+        // the crater, so the boolean produced no visible geometry change. Skip ALL
+        // State 3 effects (rock debris, decal updates, crater decals, foley sound).
+        if (g_rf2_target_detail_room == nullptr) {
+            xlog::info("[RF2] State 3: SUPPRESSING all effects (no geoable room targeted)");
+            geomod_outer_state = -1; // mark geomod as done (0x00466fab equivalent)
+            regs.eip = 0x00466fb5;   // jump to cleanup/exit
+            return;
+        }
+        xlog::info("[RF2] State 3: ALLOWING effects (target_room={}, index={})",
+            (void*)g_rf2_target_detail_room, g_rf2_target_detail_room->room_index);
+        // State 3 proceeds normally — all effects fire for the successfully carved room(s)
     },
 };
 
@@ -1537,27 +1643,27 @@ CodeInjection boolean_state5_protect_detail_cache_for_rf2{
     },
 };
 
-// RF2-style geomod: suppress crater decal effects on world geometry surfaces.
-// FUN_00492400 is called from geomod state machine state 3 to apply crater marks
+// RF2-style geomod: conditionally suppress crater decal effects.
+// FUN_00492400 is called from geomod state machine State 3 to apply crater marks
 // at the explosion point. It has only one caller (the geomod state machine).
-// When RF2-style is active, we suppress it entirely since the crater geometry
-// changes in detail brushes should be the only visible effect.
+// When RF2-style is active and a geoable room was carved, allow crater decals
+// (they mark nearby world surfaces around the detail brush crater).
+// When no geoable room was targeted, suppress them (no visible geometry change occurred).
 FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
     0x00492400,
     [](rf::Vector3* pos, float radius) {
-        if (g_rf2_style_boolean_active) {
-            return; // suppress crater decals on world geometry for RF2-style
+        if (g_rf2_style_boolean_active && g_rf2_target_detail_room == nullptr) {
+            return; // suppress crater decals when no geoable room was targeted
         }
         geomod_crater_decals_hook.call_target(pos, radius);
     },
 };
 
-// RF2-style geomod: suppress impact effects on world geometry surfaces.
-// FUN_00490900 is called from geomod state machine State 3 (at 0x00466f89) to create
-// visual impact effects at the explosion point. When RF2-style is active, this function
-// crashes with a null function pointer (ExceptionAddress=0x0) because the boolean
-// only modified detail brush faces, not the world geometry that impact_effects
-// expects to find. Suppress it entirely for RF2-style geomod.
+// RF2-style geomod: conditionally suppress impact effects.
+// FUN_00490900 is called from geomod state machine State 3 (at 0x00466f89) to update
+// decal states near the explosion point. When RF2-style is active and a geoable room
+// was carved, allow impact effects (they update decals on nearby world surfaces).
+// When no geoable room was targeted, suppress them.
 //
 // Uses CallHook (hooks the CALL site) instead of FunHook (hooks function entry) because
 // SubHook cannot decode the x87 FPU instruction (opcode 0xd8) at 0x490904, making it
@@ -1565,8 +1671,8 @@ FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
 CallHook<void(rf::Vector3*, float)> geomod_impact_effects_hook{
     0x00466f89,
     [](rf::Vector3* pos, float radius) {
-        if (g_rf2_style_boolean_active) {
-            return; // suppress impact effects for RF2-style (crashes on null func ptr)
+        if (g_rf2_style_boolean_active && g_rf2_target_detail_room == nullptr) {
+            return; // suppress impact effects when no geoable room was targeted
         }
         geomod_impact_effects_hook.call_target(pos, radius);
     },
@@ -1583,9 +1689,20 @@ CodeInjection level_release_sky_room_shutdown_patch{
         g_detail_planes_initialized = false;
         g_saved_detail_room_planes.clear();
         g_rf2_geomod_counter = 0;
+        g_rf2_geo_count = 0;
         AlpineLevelProperties::instance().geoable_room_uids.clear();
     },
 };
+
+void g_solid_set_rf2_geo_limit(int limit)
+{
+    g_rf2_geo_limit = limit;
+}
+
+int g_solid_get_rf2_geo_limit()
+{
+    return g_rf2_geo_limit;
+}
 
 void g_solid_do_patch()
 {
@@ -1655,6 +1772,7 @@ void g_solid_do_patch()
     levelmod_do_blast_autotexture_ppm_patch.install();
 
     // RF2-style geomod: detail brush only mode
+    geomod_create_hook.install();
     geomod_init_hook.install();
     boolean_iterate_hook.install();
     boolean_clear_detail_bit3_for_rf2.install();
