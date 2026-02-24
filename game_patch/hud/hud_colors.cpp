@@ -239,7 +239,7 @@ ConsoleCommand2 thermal_entity_color_cmd{
             "Thermal entity color override",
             g_alpine_game_config.thermal_entity_color_override);
     },
-    "Set thermal/IR entity color override for the Rail Driver scanner.",
+    "Set thermal/IR entity color override for the Rail Driver scanner. (Direct3D 11 renderer only)",
     "ui_color_thermal <RRGGBB|RRGGBBAA|clear>",
 };
 
