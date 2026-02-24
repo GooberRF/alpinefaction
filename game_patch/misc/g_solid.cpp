@@ -1,6 +1,8 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
+#include <unordered_map>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -31,16 +33,6 @@ static int g_max_decals = 512;
 static float g_crater_autotexture_ppm = 32.0f;
 static bool g_show_room_clip_wnd = false;
 
-// Geomod entry flags (stored at entry offset 0x38 / param_1[0xe] in geomod_init)
-enum GeomodFlags : uint32_t {
-    GEOMOD_LOCAL_CREATED    = 0x01,  // bit 0: set for locally-created geomods
-    GEOMOD_SKIP_CSG         = 0x02,  // bit 1: skip CSG boolean setup
-    GEOMOD_FROM_SERVER      = 0x04,  // bit 2: geomod received from server
-    GEOMOD_ORIENTED         = 0x08,  // bit 3: use directional orientation
-    GEOMOD_ICE_TEXTURE      = 0x10,  // bit 4: use ice crater texture
-    GEOMOD_RF2_STYLE        = 0x20,  // bit 5: RF2-style (detail brushes only)
-};
-
 // Set by geomod_init hook; checked by boolean engine injections.
 static bool g_rf2_style_boolean_active = false;
 
@@ -61,12 +53,6 @@ static std::vector<rf::GRoom*> g_rf2_pending_detail_rooms;
 // Saved once on the first RF2-style geomod, before any boolean modifies the geometry.
 // For a convex detail brush, all face normals point outward from the brush interior.
 // A point is inside the brush if distance_to_point() <= epsilon for ALL face planes.
-struct SavedDetailRoomPlanes {
-    rf::GRoom* room;
-    rf::Vector3 bbox_min;
-    rf::Vector3 bbox_max;
-    std::vector<rf::Plane> planes;
-};
 static std::vector<SavedDetailRoomPlanes> g_saved_detail_room_planes;
 static bool g_detail_planes_initialized = false;
 
@@ -1126,6 +1112,107 @@ void set_levelmod_autotexture_ppm() {
     }
 }
 
+// Anchor data per geoable room. "Anchor faces" are faces of the detail brush that
+// are coplanar with AND overlap faces of normal world geometry (walls/floor/ceiling).
+// When craters isolate a chunk of the detail brush, it falls only if that chunk
+// has NO anchor faces.
+static std::vector<RF2AnchorInfo> g_rf2_anchor_info;
+
+// Check if two planes are coplanar (same or opposite orientation, same plane).
+// Handles both same-direction and opposite-direction normals since detail brush
+// faces touching a wall will have opposite normals to the wall face.
+static bool planes_are_coplanar(const rf::Plane& a, const rf::Plane& b)
+{
+    constexpr float normal_eps = 0.02f;  // ~1 degree tolerance
+    constexpr float offset_eps = 0.15f;  // distance tolerance between planes
+
+    float dot = a.normal.x * b.normal.x + a.normal.y * b.normal.y + a.normal.z * b.normal.z;
+
+    // Same direction normals
+    if (dot > 1.0f - normal_eps) {
+        return std::abs(a.offset - b.offset) < offset_eps;
+    }
+    // Opposite direction normals (detail face touching wall face)
+    if (dot < -1.0f + normal_eps) {
+        return std::abs(a.offset + b.offset) < offset_eps;
+    }
+    return false;
+}
+
+// Check if two faces' bounding boxes overlap (with padding for floating point tolerance).
+static bool face_bboxes_overlap(const rf::GFace& a, const rf::GFace& b)
+{
+    constexpr float pad = 0.1f;
+    return a.bounding_box_max.x + pad >= b.bounding_box_min.x &&
+           a.bounding_box_min.x - pad <= b.bounding_box_max.x &&
+           a.bounding_box_max.y + pad >= b.bounding_box_min.y &&
+           a.bounding_box_min.y - pad <= b.bounding_box_max.y &&
+           a.bounding_box_max.z + pad >= b.bounding_box_min.z &&
+           a.bounding_box_min.z - pad <= b.bounding_box_max.z;
+}
+
+// Test whether a detail face is coplanar with and overlaps any normal room face.
+// This identifies faces that are flush against walls/floor/ceiling — the structural
+// contact points that anchor the detail brush in place.
+static bool is_face_on_normal_surface(const rf::GFace& detail_face)
+{
+    auto* solid = rf::level.geometry;
+    if (!solid) return false;
+
+    for (auto& room : solid->all_rooms) {
+        if (room->is_detail) continue;
+
+        // Quick AABB rejection: skip rooms whose bbox doesn't overlap the face's bbox
+        constexpr float room_pad = 0.5f;
+        if (detail_face.bounding_box_max.x + room_pad < room->bbox_min.x ||
+            detail_face.bounding_box_min.x - room_pad > room->bbox_max.x ||
+            detail_face.bounding_box_max.y + room_pad < room->bbox_min.y ||
+            detail_face.bounding_box_min.y - room_pad > room->bbox_max.y ||
+            detail_face.bounding_box_max.z + room_pad < room->bbox_min.z ||
+            detail_face.bounding_box_min.z - room_pad > room->bbox_max.z)
+            continue;
+
+        for (rf::GFace& normal_face : room->face_list) {
+            if (planes_are_coplanar(detail_face.plane, normal_face.plane) &&
+                face_bboxes_overlap(detail_face, normal_face)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Pre-compute anchor faces for all geoable detail rooms.
+// Called from apply_geoable_flags() after geoable flags are set.
+// A face is anchored if it's coplanar with and overlaps a normal room face.
+static void compute_rf2_anchor_faces()
+{
+    g_rf2_anchor_info.clear();
+    auto* solid = rf::level.geometry;
+    if (!solid) return;
+
+    for (auto& detail_room : solid->all_rooms) {
+        if (!detail_room->is_detail || !detail_room->is_geoable) continue;
+
+        RF2AnchorInfo info;
+        info.room = detail_room;
+
+        int total_faces = 0;
+        for (rf::GFace& face : detail_room->face_list) {
+            total_faces++;
+            if (is_face_on_normal_surface(face)) {
+                info.anchor_faces.insert(&face);
+            }
+        }
+
+        xlog::info("[RF2 Anchors] room uid={} index={}: {} faces, {} anchor faces",
+            detail_room->uid, detail_room->room_index,
+            total_faces, info.anchor_faces.size());
+
+        g_rf2_anchor_info.push_back(std::move(info));
+    }
+}
+
 // Apply geoable flags from AlpineLevelProperties UIDs to GRoom objects.
 // Called from level_init_post_hook after both rooms and Alpine props are loaded.
 void apply_geoable_flags()
@@ -1157,6 +1244,206 @@ void apply_geoable_flags()
             xlog::warn("[Geoable] room uid={} not found in solid->all_rooms", uid);
         }
     }
+
+    // Pre-compute anchor vertices for separated solids detection
+    compute_rf2_anchor_faces();
+}
+
+// Recompute anchor faces after a boolean operation changes the face set.
+// The boolean creates new faces (from crater intersection) and may remove old ones.
+// We clear the anchor set and re-check all current faces in the room.
+static void update_anchors_after_boolean(rf::GRoom* room)
+{
+    if (!room) return;
+
+    RF2AnchorInfo* info = nullptr;
+    for (auto& ai : g_rf2_anchor_info) {
+        if (ai.room == room) { info = &ai; break; }
+    }
+    if (!info) return;
+
+    // Clear and recompute — old faces may have been removed by the boolean
+    info->anchor_faces.clear();
+
+    int total_faces = 0;
+    int anchor_count = 0;
+    for (rf::GFace& face : room->face_list) {
+        total_faces++;
+        if (is_face_on_normal_surface(face)) {
+            info->anchor_faces.insert(&face);
+            anchor_count++;
+        }
+    }
+
+    xlog::info("[RF2 Anchors] after boolean: room index={}: {} faces, {} anchor faces",
+        room->room_index, total_faces, anchor_count);
+}
+
+// Room-scoped BFS: detect disconnected face components within a single room.
+// Unlike stock FUN_004d0990, this only traverses faces belonging to the target room,
+// preventing the BFS from leaking into normal world geometry through shared vertices.
+// Returns total number of components found. Sets face->attributes.group_id for room faces.
+static int detect_room_components(rf::GRoom* room, rf::GSolid* solid)
+{
+    if (!room || !solid) return 0;
+
+    // Initialize ALL faces in the solid to group_id = -1 (same as stock).
+    // This ensures FUN_004d0590 won't accidentally match non-room faces.
+    for (rf::GFace* face = solid->face_list.first(); face; face = solid->face_list.next(face)) {
+        face->attributes.group_id = -1;
+    }
+
+    // Build a set of faces belonging to this room for fast membership testing
+    std::unordered_set<rf::GFace*> room_faces;
+    for (rf::GFace& face : room->face_list) {
+        room_faces.insert(&face);
+    }
+
+    if (room_faces.empty()) return 0;
+
+    int component_count = 0;
+
+    for (rf::GFace& face : room->face_list) {
+        if (face.attributes.group_id != -1) continue; // already assigned
+
+        // Skip liquid and portal faces (same filter as stock FUN_004ce480)
+        if ((face.attributes.flags & 0xc) != 0) continue;
+        if (face.attributes.portal_id > 0) continue;
+
+        // BFS from this face
+        int component_id = component_count;
+        face.attributes.group_id = component_id;
+
+        std::vector<rf::GFace*> queue;
+        queue.push_back(&face);
+        size_t queue_idx = 0;
+
+        while (queue_idx < queue.size()) {
+            rf::GFace* current = queue[queue_idx++];
+
+            // Traverse edge loop vertices
+            rf::GFaceVertex* fv = current->edge_loop;
+            if (!fv) continue;
+            do {
+                if (fv->vertex) {
+                    // Check all adjacent faces of this vertex
+                    for (int i = 0; i < fv->vertex->adjacent_faces.size(); i++) {
+                        rf::GFace* adj = fv->vertex->adjacent_faces[i];
+                        if (!adj) continue;
+                        if (adj->attributes.group_id != -1) continue; // already assigned
+                        if (!room_faces.count(adj)) continue; // not in this room — KEY FILTER
+
+                        // Skip liquid and portal faces
+                        if ((adj->attributes.flags & 0xc) != 0) continue;
+                        if (adj->attributes.portal_id > 0) continue;
+
+                        adj->attributes.group_id = component_id;
+                        queue.push_back(adj);
+                    }
+                }
+                fv = fv->next;
+            } while (fv && fv != current->edge_loop);
+        }
+
+        component_count++;
+    }
+
+    return component_count;
+}
+
+// Remap component IDs from detect_room_components to use anchor-based selection.
+// Anchored components stay (group_id = -1), unanchored ones get extraction indices.
+static int remap_components_by_anchor_status(int total_components)
+{
+    auto* room = g_rf2_target_detail_room;
+    if (!room) return 0;
+
+    // Find anchor info for this room
+    RF2AnchorInfo* info = nullptr;
+    for (auto& ai : g_rf2_anchor_info) {
+        if (ai.room == room) { info = &ai; break; }
+    }
+    if (!info) {
+        xlog::warn("[RF2 SepSolids] no anchor info for room index={}", room->room_index);
+        return 0; // no anchor data, don't extract anything
+    }
+
+    // Collect faces per component ID (assigned by detect_room_components: 0, 1, 2, ...)
+    std::unordered_map<int, std::vector<rf::GFace*>> components;
+    for (rf::GFace& face : room->face_list) {
+        components[face.attributes.group_id].push_back(&face);
+    }
+
+    // Determine anchor status per component.
+    // A component is anchored if ANY face in it is an anchor face (coplanar with and
+    // overlapping a normal world geometry face). This represents genuine structural
+    // contact — the face is flush against a wall/floor/ceiling.
+    struct CompInfo {
+        int original_id;
+        bool is_anchored;
+        int face_count;
+    };
+    std::vector<CompInfo> comp_list;
+    for (auto& [id, faces] : components) {
+        bool anchored = false;
+        for (rf::GFace* face : faces) {
+            if (info->anchor_faces.count(face)) {
+                anchored = true;
+                break;
+            }
+        }
+        comp_list.push_back({id, anchored, static_cast<int>(faces.size())});
+        xlog::info("[RF2 SepSolids]   component {} (stock_id={}): {} faces, anchored={}",
+            comp_list.size() - 1, id, faces.size(), anchored);
+    }
+
+    xlog::info("[RF2 SepSolids] room has {} anchor faces total", info->anchor_faces.size());
+
+    // Count unanchored components
+    int num_unanchored = 0;
+    for (int i = 0; i < static_cast<int>(comp_list.size()); i++) {
+        if (!comp_list[i].is_anchored) {
+            num_unanchored++;
+        }
+    }
+
+    // Edge case: all anchored → nothing to extract
+    if (num_unanchored == 0) {
+        xlog::info("[RF2 SepSolids] all {} components anchored, no extraction", comp_list.size());
+        for (rf::GFace& face : room->face_list) {
+            face.attributes.group_id = -1;
+        }
+        return 0;
+    }
+
+    // Build face→new_id mapping
+    // Anchored → -1 (keep). Unanchored → extraction indices 0, 1, 2...
+    // When all components are unanchored, everything gets extracted (the entire
+    // brush has no structural support and should fall).
+    std::unordered_map<rf::GFace*, int> face_new_id;
+    int extract_idx = 0;
+    for (int i = 0; i < static_cast<int>(comp_list.size()); i++) {
+        auto& ci = comp_list[i];
+        int new_id;
+        if (ci.is_anchored) {
+            new_id = -1;
+        } else {
+            new_id = extract_idx++;
+        }
+        for (rf::GFace* face : components[ci.original_id]) {
+            face_new_id[face] = new_id;
+        }
+    }
+
+    // Apply remapped IDs
+    for (auto& [face, new_id] : face_new_id) {
+        face->attributes.group_id = new_id;
+    }
+
+    xlog::info("[RF2 SepSolids] remapped: {} total components, {} unanchored → {} to extract",
+        comp_list.size(), num_unanchored, extract_idx);
+
+    return extract_idx;
 }
 
 // Find geoable detail rooms whose bboxes overlap the given position with padding
@@ -1300,6 +1587,11 @@ FunHook<void(void*)> geomod_init_hook{
         if (g_rf2_style_boolean_active) {
             g_rf2_geomod_counter++;
 
+            // Enable stock separated solids for RF2-style geomods.
+            // Stock code disables it for locally-created geomods (bit 0 of flags).
+            // We override to enable it so the engine's chunk detection and physics work.
+            addr_as_ref<char>(0x00647c28) = 1;
+
             // Save original detail room planes on first RF2-style geomod.
             if (!g_detail_planes_initialized) {
                 save_original_detail_room_planes();
@@ -1415,6 +1707,61 @@ static void invalidate_rf2_render_caches()
 
 // Outer geomod state variable (DAT_0059c9f4): States 0-3, then -1 = done.
 static auto& geomod_outer_state = addr_as_ref<int>(0x0059c9f4);
+
+// Hook at the START of outer State 2 (0x00466dcd) in the geomod state machine.
+// State 2 runs after the boolean completes (State 1). It detects disconnected face
+// groups (separated solids) and extracts smaller chunks as physics debris.
+//
+// For RF2-style: the stock FUN_004d0990 can't be used because it does BFS across the
+// entire level solid's face graph (through vertex adjacency), so the detail room's
+// faces appear connected to normal world geometry as one giant component.
+// Instead, we run our own room-scoped BFS (detect_room_components) that only considers
+// faces within the target detail room, then apply anchor-based selection to determine
+// which components stay vs. fall.
+//
+// Disassembly at injection point:
+//   00466dcd: MOV ECX, dword ptr [0x006460e8]  ; ECX = level solid (6 bytes)
+//   00466dd3: CALL 0x004d0990                   ; count disconnected components (5 bytes)
+//   00466dd8: MOV ESI, EAX                      ; ESI = count (2 bytes)
+//   00466dda: LEA ECX, [ESP + 0x10]             ; (continues...)
+CodeInjection state2_rf2_separated_solids_injection{
+    0x00466dcd,
+    [](auto& regs) {
+        if (!g_rf2_style_boolean_active)
+            return; // let stock code run normally
+
+        rf::GSolid* solid = addr_as_ref<rf::GSolid*>(0x006460e8);
+        auto* room = g_rf2_target_detail_room;
+
+        // Update anchor status for new vertices created by the boolean.
+        // With vertex-to-vertex matching (not face-surface matching), crater intersection
+        // vertices won't false-positive — they're at arbitrary positions along the crater
+        // edge, not at normal room vertex positions. Only new vertices that genuinely
+        // coincide with a wall/floor/ceiling vertex become anchors.
+        update_anchors_after_boolean(room);
+
+        // Room-scoped BFS: detect components only within the target detail room
+        int total_components = detect_room_components(room, solid);
+
+        xlog::info("[RF2 SepSolids] State 2: detect_room_components found {} components in room index={}",
+            total_components, room ? room->room_index : -1);
+
+        int count = 0;
+        if (total_components > 1) {
+            // Multiple disconnected pieces detected — apply anchor logic.
+            count = remap_components_by_anchor_status(total_components);
+        }
+
+        xlog::info("[RF2 SepSolids] {} components to extract", count);
+
+        // Set EAX and ESI to the extraction count
+        regs.eax = count;
+        regs.esi = count;
+
+        // Skip the stock MOV ECX + CALL + MOV ESI,EAX (jump to LEA ECX, [ESP+0x10])
+        regs.eip = 0x00466dda;
+    },
+};
 
 // Hook at the START of outer State 3 (0x00466f4e) in the geomod state machine.
 // State 3 is entered after State 2 (result collection + stock cache clearing).
@@ -1690,6 +2037,7 @@ CodeInjection level_release_sky_room_shutdown_patch{
         g_saved_detail_room_planes.clear();
         g_rf2_geomod_counter = 0;
         g_rf2_geo_count = 0;
+        g_rf2_anchor_info.clear();
         AlpineLevelProperties::instance().geoable_room_uids.clear();
     },
 };
@@ -1785,6 +2133,7 @@ void g_solid_do_patch()
     boolean_skip_non_detail_faces_for_rf2.install();
     boolean_state5_allow_detail_for_rf2.install();
     boolean_state5_protect_detail_cache_for_rf2.install();
+    state2_rf2_separated_solids_injection.install();
     geomod_state3_clear_detail_caches_injection.install();
     geomod_crater_decals_hook.install();
     geomod_impact_effects_hook.install();

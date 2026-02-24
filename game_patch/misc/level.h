@@ -1,7 +1,9 @@
 #pragma once
 
 #include <vector>
+#include <unordered_set>
 #include <xlog/xlog.h>
+#include "../rf/geometry.h"
 #include "../rf/file/file.h"
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
@@ -152,4 +154,17 @@ struct DashLevelProps
         xlog::debug("[DashLevelProps] lightmaps_full_depth {}", lightmaps_full_depth);
         chunk_version = 1u; // latest supported version
     }
+};
+
+// structs used by RF2-style geomod
+struct SavedDetailRoomPlanes {
+    rf::GRoom* room;
+    rf::Vector3 bbox_min;
+    rf::Vector3 bbox_max;
+    std::vector<rf::Plane> planes;
+};
+
+struct RF2AnchorInfo {
+    rf::GRoom* room;
+    std::unordered_set<rf::GFace*> anchor_faces;
 };

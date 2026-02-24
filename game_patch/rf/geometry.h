@@ -90,6 +90,15 @@ namespace rf
         DF_DESTROY_NOW = 0x80000000,
     };
 
+    enum GeomodFlags : uint32_t {
+        GEOMOD_LOCAL_CREATED = 0x01,
+        GEOMOD_SKIP_CSG = 0x02,
+        GEOMOD_FROM_SERVER = 0x04,
+        GEOMOD_ORIENTED = 0x08, // directional orientation
+        GEOMOD_ICE_TEXTURE = 0x10,
+        GEOMOD_RF2_STYLE = 0x20, // Alpine 1.3
+    };
+
     struct GSolid
     {
         GBBox *bbox;
