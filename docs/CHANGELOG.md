@@ -5,7 +5,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
-- Add capability for brush-based (RF2-style) geomod to be used in new maps
+- Add brush-based (RF2-style) geomod capability
     - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes
     - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
     - `Is Geoable` flag added to brush properties
