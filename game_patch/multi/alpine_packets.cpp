@@ -21,7 +21,6 @@
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
 #include "../object/object.h"
-#include "../hud/multi_spectate.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
