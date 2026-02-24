@@ -1,7 +1,6 @@
 #pragma once
 
 #include "../rf/player/control_config.h"
-#include "../rf/player/player_fpgun.h"
 
 namespace rf
 {
