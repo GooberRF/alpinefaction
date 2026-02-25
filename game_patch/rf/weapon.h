@@ -291,6 +291,7 @@ namespace rf
     static auto& weapon_is_on_off_weapon = addr_as_ref<bool(int weapon_type, bool alt_fire)>(0x004C8350);
     static auto& weapon_is_semi_automatic = addr_as_ref<bool(int weapon_type)>(0x004C92C0);
     static auto& weapon_is_melee = addr_as_ref<bool(int weapon_type)>(0x004C91B0);
+    static auto& weapon_has_scanner = addr_as_ref<bool(int weapon_type)>(0x004C8AE0);
     static auto& weapon_uses_clip = addr_as_ref<bool(int weapon_type)>(0x004C86E0);
     static auto& weapon_get_fire_wait_ms = addr_as_ref<int __cdecl(int weapon_type, bool alt_fire)>(0x004C8710);
     static auto& weapon_restore_mesh = addr_as_ref<void(Weapon *wp, const char *mesh_filename)>(0x004C8140);
