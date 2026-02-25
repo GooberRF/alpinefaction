@@ -141,10 +141,10 @@ static int compute_geoable_state_from_selected()
     auto& props = level->GetAlpineLevelProperties();
 
     BrushNode* node = level->brush_list;
+    if (!node) return BST_UNCHECKED;
     int num_selected = 0;
     int num_geoable = 0;
     do {
-        if (!node) break;
         if (node->state == BRUSH_STATE_SELECTED) {
             num_selected++;
             if (std::find(props.geoable_brush_uids.begin(),
@@ -170,8 +170,8 @@ static void apply_geoable_to_selected_brushes(int new_state)
     auto& props = level->GetAlpineLevelProperties();
 
     BrushNode* node = level->brush_list;
+    if (!node) return;
     do {
-        if (!node) break;
         if (node->state == BRUSH_STATE_SELECTED) {
             auto it = std::find(props.geoable_brush_uids.begin(),
                                 props.geoable_brush_uids.end(), node->uid);
