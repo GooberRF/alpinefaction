@@ -462,63 +462,72 @@ static void player_render_new(rf::Player* player)
             g_spectate_mode_target->just_landed = false;
 
             int weapon_type = entity->ai.current_primary_weapon;
+            bool valid_weapon = weapon_type >= 0 && weapon_type < rf::num_weapon_types;
 
-            // Detect weapon switch and play draw animation for the new weapon
-            if (weapon_type != g_prev_weapon_type && g_prev_weapon_type != -1) {
-                if (rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_DRAW)) {
-                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_DRAW);
+            if (valid_weapon) {
+                // Detect weapon switch and play draw animation for the new weapon
+                if (weapon_type != g_prev_weapon_type && g_prev_weapon_type != -1) {
+                    if (rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_DRAW)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_DRAW);
+                    }
                 }
+
+                // Detect weapon fire rising/falling edge.
+                // AIF_ALT_FIRE distinguishes primary vs alt fire on the same weapon_is_on state.
+                // For continuous alt fire weapons (baton taser): skip WA_CUSTOM_START intro, go
+                // straight to WS_LOOP_FIRE on rising edge, play WA_CUSTOM_LEAVE on falling edge.
+                bool weapon_is_on = rf::entity_weapon_is_on(entity->handle, weapon_type);
+                bool is_alt_fire = (entity->ai.ai_flags & rf::AIF_ALT_FIRE) != 0;
+                bool is_continuous_alt_fire_weapon =
+                    rf::weapon_is_on_off_weapon(weapon_type, true);
+
+                if (weapon_is_on && !g_prev_weapon_is_on) {
+                    // Rising edge - weapon just started firing
+                    if (is_alt_fire && is_continuous_alt_fire_weapon) {
+                        // Continuous alt fire (baton taser): skip intro, go straight to looping fire
+                        rf::player_fpgun_set_next_state_anim(g_spectate_mode_target, rf::WS_LOOP_FIRE);
+                    }
+                    else if (is_alt_fire &&
+                             rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_ALT_FIRE)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_ALT_FIRE);
+                    }
+                    else if (!is_alt_fire &&
+                             rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_FIRE)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_FIRE);
+                    }
+                    // Reset firing timer so muzzle flash renders (used by rail gun glow,
+                    // shoulder cannon boom, and other time-based effects in player_fpgun_render)
+                    g_spectate_mode_target->fpgun_data.time_elapsed_since_firing = 0.0f;
+                }
+                else if (!weapon_is_on && g_prev_weapon_is_on) {
+                    // Falling edge - weapon stopped firing
+                    if (g_prev_alt_fire_is_on && is_continuous_alt_fire_weapon &&
+                        rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_CUSTOM_LEAVE)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_CUSTOM_LEAVE);
+                    }
+                }
+                g_prev_weapon_is_on = weapon_is_on;
+                g_prev_alt_fire_is_on = is_alt_fire;
+
+                // Detect reload rising edge and play fpgun reload action animation
+                // Skip if the player has no reserve ammo (empty weapon causes continuous reload flag)
+                bool is_reloading = rf::entity_is_reloading(entity);
+                if (is_reloading && !g_prev_is_reloading) {
+                    int ammo_type = rf::weapon_types[weapon_type].ammo_type;
+                    bool has_reserve_ammo = ammo_type >= 0 && entity->ai.ammo[ammo_type] > 0;
+                    if (has_reserve_ammo && rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_RELOAD)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_RELOAD);
+                    }
+                }
+                g_prev_is_reloading = is_reloading;
+            }
+            else {
+                // Invalid weapon (unarmed) - reset edge-detection state
+                g_prev_weapon_is_on = false;
+                g_prev_alt_fire_is_on = false;
+                g_prev_is_reloading = false;
             }
             g_prev_weapon_type = weapon_type;
-
-            // Detect weapon fire rising/falling edge.
-            // AIF_ALT_FIRE distinguishes primary vs alt fire on the same weapon_is_on state.
-            // For continuous alt fire weapons (baton taser): skip WA_CUSTOM_START intro, go
-            // straight to WS_LOOP_FIRE on rising edge, play WA_CUSTOM_LEAVE on falling edge.
-            bool weapon_is_on = rf::entity_weapon_is_on(entity->handle, weapon_type);
-            bool is_alt_fire = (entity->ai.ai_flags & rf::AIF_ALT_FIRE) != 0;
-            bool is_continuous_alt_fire_weapon =
-                rf::weapon_is_on_off_weapon(weapon_type, true);
-
-            if (weapon_is_on && !g_prev_weapon_is_on) {
-                // Rising edge - weapon just started firing
-                if (is_alt_fire && is_continuous_alt_fire_weapon) {
-                    // Continuous alt fire (baton taser): skip intro, go straight to looping fire
-                    rf::player_fpgun_set_next_state_anim(g_spectate_mode_target, rf::WS_LOOP_FIRE);
-                }
-                else if (is_alt_fire &&
-                         rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_ALT_FIRE)) {
-                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_ALT_FIRE);
-                }
-                else if (!is_alt_fire &&
-                         rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_FIRE)) {
-                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_FIRE);
-                }
-                // Reset firing timer so muzzle flash renders (used by rail gun glow,
-                // shoulder cannon boom, and other time-based effects in player_fpgun_render)
-                g_spectate_mode_target->fpgun_data.time_elapsed_since_firing = 0.0f;
-            }
-            else if (!weapon_is_on && g_prev_weapon_is_on) {
-                // Falling edge - weapon stopped firing
-                if (g_prev_alt_fire_is_on && is_continuous_alt_fire_weapon &&
-                    rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_CUSTOM_LEAVE)) {
-                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_CUSTOM_LEAVE);
-                }
-            }
-            g_prev_weapon_is_on = weapon_is_on;
-            g_prev_alt_fire_is_on = is_alt_fire;
-
-            // Detect reload rising edge and play fpgun reload action animation
-            // Skip if the player has no reserve ammo (empty weapon causes continuous reload flag)
-            bool is_reloading = rf::entity_is_reloading(entity);
-            if (is_reloading && !g_prev_is_reloading) {
-                int ammo_type = rf::weapon_types[weapon_type].ammo_type;
-                bool has_reserve_ammo = ammo_type >= 0 && entity->ai.ammo[ammo_type] > 0;
-                if (has_reserve_ammo && rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_RELOAD)) {
-                    rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_RELOAD);
-                }
-            }
-            g_prev_is_reloading = is_reloading;
         }
 
         if (g_spectate_mode_target->fpgun_data.zooming_in)
@@ -568,6 +577,8 @@ void multi_spectate_on_obj_update_fire(rf::Entity* entity, bool alt_fire)
         return;
 
     int weapon_type = entity->ai.current_primary_weapon;
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types)
+        return;
 
     // Continuous alt fire weapons (baton taser): skip intro, go straight to looping fire
     if (alt_fire && rf::weapon_is_on_off_weapon(weapon_type, true)) {
