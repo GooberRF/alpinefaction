@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <unordered_map>
 #include <unordered_set>
 #include "level.h"
 #include "vtypes.h"
@@ -155,6 +156,191 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
         }
     }
 
+}
+
+// ─── Geoable room isolation ───────────────────────────────────────────────────
+// During geometry building, the room builder (FUN_00485990) flood-fills adjacent
+// coplanar faces into the same GRoom. This merges geoable and non-geoable detail
+// brushes into one room, breaking in-game geomod. The hooks below ensure that
+// each geoable brush always gets its own self-contained room:
+//   1. adjacency_test_hook prevents merging via the geometric adjacency path
+//   2. isolate_geoable_rooms post-processes to split any remaining mixed rooms
+//      (the flood-fill also merges via edge-based adjacency which bypasses the
+//       adjacency test, so post-processing is the primary fix)
+
+// Map from face_id (GFaceAttributes+0x10) to geoable brush UID.
+// Populated before room building, cleared afterwards.
+static std::unordered_map<int, int> g_geoable_face_map;
+
+static void populate_geoable_face_map()
+{
+    g_geoable_face_map.clear();
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+    if (props.geoable_brush_uids.empty()) return;
+
+    std::unordered_set<int32_t> geoable_set(
+        props.geoable_brush_uids.begin(),
+        props.geoable_brush_uids.end()
+    );
+
+    BrushNode* head = level->brush_list;
+    if (!head) return;
+    BrushNode* node = head;
+    do {
+        if (node->is_detail && geoable_set.count(node->uid)) {
+            auto* geom = static_cast<GSolid*>(node->geometry);
+            if (geom) {
+                for (GFace* face = geom->face_list_head; face; face = face->next_solid) {
+                    g_geoable_face_map[face->face_id] = node->uid;
+                }
+            }
+        }
+        node = node->next;
+    } while (node && node != head);
+}
+
+// Split any rooms that contain faces from multiple geoable brushes or mixed
+// geoable/non-geoable faces.  Each geoable brush gets its own isolated room
+// so in-game geomod only affects the intended brush.
+//
+// Called from inside FUN_00485990 (room builder) via CodeInjection at 0x00485e88,
+// which is after the detail-marking loop (loop 1) but before the parent-room
+// association loop (loop 2).  This ensures:
+//   - new rooms are properly associated with parent non-detail rooms (loop 2)
+//   - spatial data is rebuilt for all rooms including new ones (final loop)
+static void isolate_geoable_rooms(void* solid_this)
+{
+    auto* solid = static_cast<GSolid*>(solid_this);
+
+    // Group faces by room, then by geoable brush UID (-1 = non-geoable)
+    struct FaceGroup {
+        std::unordered_map<int, std::vector<GFace*>> by_brush;
+    };
+    std::unordered_map<void*, FaceGroup> room_groups;
+
+    for (GFace* face = solid->face_list_head; face; face = face->next_solid) {
+        void* room = face->which_room;
+        if (!room) continue;
+        auto it = g_geoable_face_map.find(face->face_id);
+        int uid = (it != g_geoable_face_map.end()) ? it->second : -1;
+        room_groups[room].by_brush[uid].push_back(face);
+    }
+
+    int rooms_created = 0;
+
+    for (auto& [room, fg] : room_groups) {
+        int geoable_count = 0;
+        bool has_non_geoable = fg.by_brush.count(-1) > 0;
+        for (auto& [uid, faces] : fg.by_brush) {
+            if (uid != -1) geoable_count++;
+        }
+
+        if (geoable_count == 0) continue;                 // no geoable faces
+        if (!has_non_geoable && geoable_count <= 1) continue; // single geoable brush, no mixing
+
+        // Room has mixed content — split each geoable brush into its own room
+        bool first_geoable = true;
+        for (auto& [uid, faces] : fg.by_brush) {
+            if (uid == -1) continue;
+
+            // If room has only geoable faces (no non-geoable), keep the first
+            // geoable group in the original room to avoid creating an empty room
+            if (!has_non_geoable && first_geoable) {
+                first_geoable = false;
+                continue;
+            }
+            first_geoable = false;
+
+            // Use first face's bbox to initialize the new room
+            GFace* seed = faces[0];
+            void* bbox_min = reinterpret_cast<char*>(seed) + 0x10;
+            void* bbox_max = reinterpret_cast<char*>(seed) + 0x1C;
+
+            // Allocate and construct new GRoom (0x1CC bytes)
+            // FUN_004854e0 initializes all fields, assigns UID, registers in solid
+            void* new_room = AddrCaller{0x0052ee74}.c_call<void*>(0x1CC);
+            if (!new_room) continue;
+            AddrCaller{0x004854e0}.this_call(new_room, solid_this, bbox_min, bbox_max);
+
+            // Move faces from old room to new room
+            // FUN_004857c0 handles: remove from old room, add to new, update bbox
+            for (GFace* f : faces) {
+                AddrCaller{0x004857c0}.this_call(new_room, f);
+            }
+
+            // Mark as detail room — FUN_00486a10 sets is_detail and registers
+            AddrCaller{0x00486a10}.this_call(new_room, solid_this, 1);
+
+            rooms_created++;
+
+            xlog::info("[GeoIsolation] isolated brush uid={}: {} faces -> new room",
+                       uid, faces.size());
+        }
+    }
+
+    if (rooms_created > 0) {
+        xlog::info("[GeoIsolation] created {} isolated geoable rooms", rooms_created);
+    }
+}
+
+// CodeInjection inside FUN_00485990 at 0x00485e88: after the detail-marking
+// loop (loop 1), before the parent-room association loop (loop 2).
+// At this address EBP = solid (GSolid* this, set at 0x004859aa).
+// The subsequent loops naturally handle parent association, portal creation,
+// and spatial data rebuilding for any new rooms we create here.
+CodeInjection isolate_geoable_injection{
+    0x00485e88,
+    [](auto& regs) {
+        if (g_geoable_face_map.empty()) return;
+        std::byte* solid = regs.ebp;
+        isolate_geoable_rooms(static_cast<void*>(solid));
+    },
+};
+
+// Hook FUN_00485990 (room builder, thiscall on GSolid*) to populate/clear
+// the face_id → brush UID map around the room builder execution.
+void __fastcall build_rooms_hooked(void* solid_this, void* edx_unused);
+FunHook<decltype(build_rooms_hooked)> build_rooms_hook{
+    0x00485990,
+    build_rooms_hooked,
+};
+void __fastcall build_rooms_hooked(void* solid_this, void* edx_unused)
+{
+    populate_geoable_face_map();
+    build_rooms_hook.call_target(solid_this, edx_unused);
+    g_geoable_face_map.clear();
+}
+
+// Hook FUN_004861d0 (face adjacency test, cdecl) as secondary defense.
+// The primary fix is post-processing in isolate_geoable_rooms, but this hook
+// also prevents merging via the geometric adjacency path during flood-fill.
+bool __cdecl adjacency_test_hooked(void* face1, void* face2);
+FunHook<decltype(adjacency_test_hooked)> adjacency_test_hook{
+    0x004861d0,
+    adjacency_test_hooked,
+};
+
+bool __cdecl adjacency_test_hooked(void* face1, void* face2)
+{
+    bool result = adjacency_test_hook.call_target(face1, face2);
+    if (!result || g_geoable_face_map.empty()) return result;
+
+    auto* f1 = static_cast<GFace*>(face1);
+    auto* f2 = static_cast<GFace*>(face2);
+
+    auto it1 = g_geoable_face_map.find(f1->face_id);
+    auto it2 = g_geoable_face_map.find(f2->face_id);
+
+    bool geo1 = (it1 != g_geoable_face_map.end());
+    bool geo2 = (it2 != g_geoable_face_map.end());
+
+    if (!geo1 && !geo2) return true;   // both non-geoable: allow
+    if (geo1 != geo2) return false;    // mixed: block
+    if (it1->second != it2->second) return false; // different geoable brushes: block
+    return true;                        // same geoable brush: allow
 }
 
 // save AlpineLevelProperties when saving rfl file
@@ -359,6 +545,18 @@ void ApplyLevelPatches()
     CDedLevel_SaveLevel_patch.install();
     CLevelDialog_OnInitDialog_patch.install();
     CLevelDialog_OnOK_patch.install();
+
+    // Prevent geoable detail brushes from merging rooms with other brushes
+    build_rooms_hook.install();
+    adjacency_test_hook.install();
+    isolate_geoable_injection.install();
+
+    // Ensure the face_id assignment phase (Phase 1 of FUN_004399b0) always runs.
+    // Phase 1 assigns unique sequential face_ids to brush geometry faces, which our
+    // adjacency test hook uses to identify which brush each compiled face belongs to.
+    // The stock code skips Phase 1 on the first build after editor launch (flag at
+    // 0x005774a0 starts at 0). Setting it to 1 ensures face_ids are always assigned.
+    write_mem<uint8_t>(0x005774a0, 1);
 
     // Avoid clamping lightmaps when loading rfl files
     AsmWriter{0x004A5D6A}.jmp(0x004A5D6E);

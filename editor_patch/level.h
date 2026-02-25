@@ -83,6 +83,32 @@ static_assert(offsetof(GRoom, life) == 0x94);
 static_assert(offsetof(GRoom, liquid_type) == 0x180);
 static_assert(offsetof(GRoom, contains_liquid) == 0x184);
 
+// Editor-side GFace layout (0x60 bytes, matches stock RED.exe / RF.exe GFace)
+// Full game-side definition: game_patch/rf/geometry.h
+// Only fields needed by editor patch code are explicitly typed.
+struct GFace
+{
+    char _plane[16];             // +0x00  Plane (normal + dist)
+    char _bbox_min[12];          // +0x10  Vector3 bounding_box_min
+    char _bbox_max[12];          // +0x1C  Vector3 bounding_box_max
+    char _attrs_head[0x10];      // +0x28  GFaceAttributes: flags(4) + group_id(4) + bitmap_id(4) + portal_id(2) + surface_index(2)
+    int face_id;                 // +0x38  GFaceAttributes.face_id (used for brush-to-room mapping)
+    int smoothing_groups;        // +0x3C  GFaceAttributes.smoothing_groups
+    void* edge_loop;             // +0x40  GFaceVertex*
+    GRoom* which_room;           // +0x44  owning room (assigned by room builder)
+    void* which_bbox;            // +0x48  GBBox*
+    void* decal_list;            // +0x4C  DecalPoly*
+    short unk_cache_index;       // +0x50
+    char _pad_52[2];             // +0x52  alignment padding
+    GFace* next_solid;           // +0x54  next[FACE_LIST_SOLID] (GSolid face linked list)
+    GFace* next_bbox;            // +0x58  next[FACE_LIST_BBOX]
+    GFace* next_room;            // +0x5C  next[FACE_LIST_ROOM]
+};
+static_assert(sizeof(GFace) == 0x60);
+static_assert(offsetof(GFace, face_id) == 0x38);
+static_assert(offsetof(GFace, which_room) == 0x44);
+static_assert(offsetof(GFace, next_solid) == 0x54);
+
 // Editor-side GSolid partial layout (matches stock RED.exe / RF.exe GSolid)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
 struct GSolid
@@ -94,11 +120,13 @@ struct GSolid
     Vector3 bbox_max;            // +0x54
     float bounding_sphere_radius;// +0x60
     Vector3 bounding_sphere_center; // +0x64
-    char _face_list[8];          // +0x70 (VList<GFace>: head ptr + count)
+    GFace* face_list_head;       // +0x70  VList<GFace, FACE_LIST_SOLID>: head pointer
+    int face_list_count;         // +0x74  VList<GFace, FACE_LIST_SOLID>: element count
     VArray<void*> vertices;      // +0x78
     VArray<GRoom*> children;     // +0x84
     VArray<GRoom*> all_rooms;    // +0x90
 };
+static_assert(offsetof(GSolid, face_list_head) == 0x70);
 static_assert(offsetof(GSolid, all_rooms) == 0x90);
 
 // Brush state enum (BrushNode::state at +0x48)
