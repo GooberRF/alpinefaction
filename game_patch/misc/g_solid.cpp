@@ -1498,15 +1498,28 @@ FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned i
 // In SP: controlled by client setting. In MP: controlled by server setting.
 static bool should_enable_geo_chunk_physics()
 {
+    // Single-player: honor client setting.
     if (!rf::is_multi && g_alpine_game_config.geo_chunk_physics) {
         return true;
     }
-    else if ((rf::is_dedicated_server || rf::is_server) && g_alpine_server_config_active_rules.geo_chunk_physics) {
+
+    // Multiplayer server (including dedicated): honor active server rules.
+    if ((rf::is_dedicated_server || rf::is_server) && g_alpine_server_config_active_rules.geo_chunk_physics) {
         return true;
     }
-    else if (rf::is_multi && get_af_server_info().has_value() && get_af_server_info()->geo_chunk_physics) {
-        return true;
+
+    // Multiplayer clients: honor server setting when available.
+    // When server info is missing (e.g. vanilla/older servers), default to enabled
+    if (rf::is_multi && !rf::is_dedicated_server && !rf::is_server) {
+        auto server_info = get_af_server_info();
+        if (!server_info.has_value()) {
+            return true;
+        }
+        if (server_info->geo_chunk_physics) {
+            return true;
+        }
     }
+
     return false;
 }
 
