@@ -130,7 +130,6 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
         // brush center — this correctly maps pillar brushes to pillar rooms rather
         // than to adjacent rail/beam rooms that happen to overlap.
         constexpr float tolerance = 2.0f;
-        bool matched = false;
         GRoom* best_room = nullptr;
         float best_dist_sq = FLT_MAX;
         for (int j = 0; j < all_rooms.get_size(); j++) {

@@ -1,3 +1,4 @@
+#include <bit>
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -1294,10 +1295,12 @@ static int remap_components_by_anchor_status(int total_components)
         return 0; // no anchor data, don't extract anything
     }
 
-    // Collect faces per component ID (assigned by detect_room_components: 0, 1, 2, ...)
+    // Collect faces per component ID (assigned by detect_room_components: 0, 1, 2, ...).
+    // Skip faces with group_id < 0 — portal/liquid/special faces left unassigned by BFS.
     std::unordered_map<int, std::vector<rf::GFace*>> components;
     for (rf::GFace& face : room->face_list) {
-        components[face.attributes.group_id].push_back(&face);
+        if (face.attributes.group_id >= 0)
+            components[face.attributes.group_id].push_back(&face);
     }
 
     // Determine anchor status per component.
@@ -1736,7 +1739,7 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
                 0x00647ca8u,                                             // &orientation
                 static_cast<uint32_t>(rf::g_geomod_texture_index),      // texture index
                 2u,                                                      // param8
-                reinterpret_cast<uint32_t&>(rf::g_geomod_scale),          // scale
+                std::bit_cast<uint32_t>(rf::g_geomod_scale),              // scale
                 0x00647ca0u,                                             // &crater bbox
                 0u,                                                      // param11
                 0x006485b0u,                                             // &param12
@@ -1911,6 +1914,9 @@ CodeInjection boolean_state5_protect_detail_cache_for_rf2{
         } else {
             regs.eax = cache;
         }
+        // Skip trampoline re-execution of the overwritten MOVs — our EAX is already set.
+        // Resume at TEST EAX, EAX (0x004dda84), past the two replicated instructions.
+        regs.eip = 0x004dda84u;
     },
 };
 
