@@ -51,13 +51,6 @@ static int g_rf2_geo_count = 0;
 static rf::GRoom* g_rf2_target_detail_room = nullptr;
 static std::vector<rf::GRoom*> g_rf2_pending_detail_rooms;
 
-// Saved original detail room face planes for convex hull containment test.
-// Saved once on the first RF2-style geomod, before any boolean modifies the geometry.
-// For a convex detail brush, all face normals point outward from the brush interior.
-// A point is inside the brush if distance_to_point() <= epsilon for ALL face planes.
-static std::vector<SavedDetailRoomPlanes> g_saved_detail_room_planes;
-static bool g_detail_planes_initialized = false;
-
 // Anchor data per geoable room. "Anchor faces" are faces of the detail brush that
 // are coplanar with AND overlap faces of normal world geometry (walls/floor/ceiling).
 // When craters isolate a chunk of the detail brush, it falls only if that chunk
@@ -69,59 +62,6 @@ static std::vector<RF2AnchorInfo> g_rf2_anchor_info;
 // Hardness 0 = 2x padding (softer rock, larger craters), hardness 100 = 0.5x padding.
 // Formula: scale = 2^((50 - hardness) / 50), so 0→2.0, 50→1.0, 99→~0.507, 100→0.5.
 static constexpr float geoable_bbox_base_padding = 3.0f;
-
-static void save_original_detail_room_planes()
-{
-    g_saved_detail_room_planes.clear();
-    auto* solid = rf::level.geometry;
-    if (!solid) return;
-
-    for (auto& room : solid->all_rooms) {
-        if (!room->is_detail || !room->is_geoable) continue;
-
-        SavedDetailRoomPlanes saved;
-        saved.room = room;
-        saved.bbox_min = room->bbox_min;
-        saved.bbox_max = room->bbox_max;
-
-        for (rf::GFace& face : room->face_list) {
-            saved.planes.push_back(face.plane);
-        }
-
-        if (!saved.planes.empty()) {
-            g_saved_detail_room_planes.push_back(std::move(saved));
-        }
-    }
-}
-
-// Test if a point is inside a saved detail room's original convex volume.
-// Uses half-space intersection: a point is inside if it's on the negative side
-// (or within tolerance) of ALL face planes (outward-pointing normals convention).
-// If target_room is set, only checks that room. Otherwise checks all saved rooms.
-static bool is_point_in_saved_detail_room(const rf::Vector3& pt, rf::GRoom* target_room = nullptr)
-{
-    constexpr float epsilon = 0.1f;
-    for (const auto& saved : g_saved_detail_room_planes) {
-        if (target_room && saved.room != target_room) continue;
-
-        // Quick AABB pre-filter
-        if (pt.x < saved.bbox_min.x - epsilon || pt.x > saved.bbox_max.x + epsilon ||
-            pt.y < saved.bbox_min.y - epsilon || pt.y > saved.bbox_max.y + epsilon ||
-            pt.z < saved.bbox_min.z - epsilon || pt.z > saved.bbox_max.z + epsilon) {
-            continue;
-        }
-
-        bool inside = true;
-        for (const auto& plane : saved.planes) {
-            if (plane.distance_to_point(pt) > epsilon) {
-                inside = false;
-                break;
-            }
-        }
-        if (inside) return true;
-    }
-    return false;
-}
 
 // Test if a point is inside a room's current geometry using ray casting.
 // Works correctly for non-convex geometry (rooms modified by previous craters).
@@ -1596,12 +1536,6 @@ FunHook<void(void*)> geomod_init_hook{
                 rf::g_geomod_separate_solids = true;
             }
 
-            // Save original detail room planes on first RF2-style geomod.
-            if (!g_detail_planes_initialized) {
-                save_original_detail_room_planes();
-                g_detail_planes_initialized = true;
-            }
-
             // Find detail rooms overlapping the crater and select the first target.
             auto overlapping = find_overlapping_detail_rooms(rf::g_geomod_pos);
             g_rf2_pending_detail_rooms.clear();
@@ -2023,8 +1957,6 @@ CodeInjection level_release_sky_room_shutdown_patch{
         g_rf2_style_boolean_active = false;
         g_rf2_target_detail_room = nullptr;
         g_rf2_pending_detail_rooms.clear();
-        g_detail_planes_initialized = false;
-        g_saved_detail_room_planes.clear();
         g_rf2_geo_count = 0;
         g_rf2_anchor_info.clear();
         AlpineLevelProperties::instance().geoable_room_uids.clear();

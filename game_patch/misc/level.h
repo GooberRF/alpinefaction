@@ -157,13 +157,6 @@ struct DashLevelProps
 };
 
 // structs used by RF2-style geomod
-struct SavedDetailRoomPlanes {
-    rf::GRoom* room;
-    rf::Vector3 bbox_min;
-    rf::Vector3 bbox_max;
-    std::vector<rf::Plane> planes;
-};
-
 struct RF2AnchorInfo {
     rf::GRoom* room;
     std::unordered_set<rf::GFace*> anchor_faces;
