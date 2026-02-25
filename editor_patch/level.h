@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <patch_common/MemUtils.h>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -371,5 +372,10 @@ struct CDedLevel
     }
 };
 static_assert(sizeof(CDedLevel) == 0x608);
+
+// GRoom UID counter (RED.exe global, starts at 0x7FFFFFFF, decrements on each GRoom construction)
+// Final compiled rooms in all_rooms are clones that skip the constructor and get uid=-1;
+// they must be assigned from this counter manually before serialization.
+static auto& g_groom_uid_counter = addr_as_ref<int>(0x0057C954);
 
 void DedLevel_DoBackLink();

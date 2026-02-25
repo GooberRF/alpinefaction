@@ -88,16 +88,13 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
     auto& all_rooms = level.solid->all_rooms;
 
     // The editor's build/compile process creates final rooms as copies that lack UIDs (uid=-1).
-    // Room UIDs are normally assigned in the GRoom constructor via a global decrementing counter
-    // at 0x0057c954 (starts at 0x7FFFFFFF), but the final rooms in all_rooms are clones that
-    // don't go through the constructor. Assign UIDs here so solid_write persists them to the .rfl
-    // and our geoable mapping can reference them.
-    int& uid_counter = *reinterpret_cast<int*>(0x0057c954);
+    // Final rooms in all_rooms are clones that skip the GRoom constructor and therefore never get
+    // a UID. Assign UIDs here so solid_write persists them to the .rfl and our geoable mapping
+    // can reference them.
     for (int j = 0; j < all_rooms.get_size(); j++) {
         GRoom* room = all_rooms.data_ptr[j];
         if (room && room->uid == -1) {
-            room->uid = uid_counter;
-            uid_counter--;
+            room->uid = g_groom_uid_counter--;
         }
     }
 
