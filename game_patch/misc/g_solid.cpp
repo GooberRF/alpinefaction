@@ -1091,8 +1091,9 @@ static bool face_bboxes_overlap(const rf::GFace& a, const rf::GFace& b)
            a.bounding_box_min.z - pad <= b.bounding_box_max.z;
 }
 
-// Test whether a detail face is coplanar with and overlaps any normal room face.
-// This identifies faces that are flush against walls/floor/ceiling — the structural
+// Test whether a detail face is coplanar with and overlaps any face in normal rooms
+// or non-geoable detail rooms. This identifies faces that are flush against
+// walls/floor/ceiling or against non-geoable detail brushes — the structural
 // contact points that anchor the detail brush in place.
 static bool is_face_on_normal_surface(const rf::GFace& detail_face)
 {
@@ -1100,7 +1101,7 @@ static bool is_face_on_normal_surface(const rf::GFace& detail_face)
     if (!solid) return false;
 
     for (auto& room : solid->all_rooms) {
-        if (room->is_detail) continue;
+        if (room->is_detail && room->is_geoable) continue;
 
         // Quick AABB rejection: skip rooms whose bbox doesn't overlap the face's bbox
         constexpr float room_pad = 0.5f;
@@ -1124,7 +1125,8 @@ static bool is_face_on_normal_surface(const rf::GFace& detail_face)
 
 // Pre-compute anchor faces for all geoable detail rooms.
 // Called from apply_geoable_flags() after geoable flags are set.
-// A face is anchored if it's coplanar with and overlaps a normal room face.
+// A face is anchored if it's coplanar with and overlaps a face in a normal room
+// or a non-geoable detail room.
 static void compute_rf2_anchor_faces()
 {
     g_rf2_anchor_info.clear();

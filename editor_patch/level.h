@@ -13,6 +13,10 @@
 constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 
+// Forward declarations (GRoom methods reference these, defined below)
+struct GFace;
+struct GSolid;
+
 // Editor-side GRoom layout (matches stock RED.exe / RF.exe GRoom, 0x1CC bytes)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
 // Serialization verified via solid_write (RED.exe 0x004a3fc0) and solid_read (RF.exe 0x004ED520)
