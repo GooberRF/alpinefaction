@@ -13,9 +13,12 @@
 constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 
-// Forward declarations (GRoom methods reference these, defined below)
+// Forward declarations
 struct GFace;
 struct GSolid;
+struct GFaceVertex;
+struct GBBox;
+struct DecalPoly;
 
 // Editor-side GRoom layout (matches stock RED.exe / RF.exe GRoom, 0x1CC bytes)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
@@ -111,11 +114,6 @@ static_assert(offsetof(GRoom, life) == 0x94);
 static_assert(offsetof(GRoom, liquid_type) == 0x180);
 static_assert(offsetof(GRoom, contains_liquid) == 0x184);
 
-// Forward declarations for types referenced by GFace but not fully defined editor-side
-struct GFaceVertex;
-struct GBBox;
-struct DecalPoly;
-
 // Editor-side GFace layout (0x60 bytes, matches stock RED.exe / RF.exe GFace)
 // Full game-side definition: game_patch/rf/geometry.h
 // GFaceAttributes fields (game-side nested struct) are inlined here for direct access.
@@ -181,7 +179,6 @@ static_assert(offsetof(GSolid, all_rooms) == 0x90);
 //   state==2: cmp [reg+48h],2  (checked in FUN_0042c020, FUN_0042adb0, FUN_0042e560 - skipped during
 //                                picking/selection; assigned in hide-brush code at 0x00442073)
 //   state==3: cmp [reg+48h],3  (ubiquitous - tested in ~40 functions for "is selected" checks)
-//   state==4: no matches found (searched C7 ?? 48 04 00 00 00 and 83 ?? 48 04)
 enum BrushState : int
 {
     BRUSH_STATE_NORMAL   = 0,  // default / unselected
