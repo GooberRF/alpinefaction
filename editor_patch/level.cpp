@@ -211,18 +211,16 @@ static void populate_geoable_face_map()
 // association loop (loop 2).  This ensures:
 //   - new rooms are properly associated with parent non-detail rooms (loop 2)
 //   - spatial data is rebuilt for all rooms including new ones (final loop)
-static void isolate_geoable_rooms(void* solid_this)
+static void isolate_geoable_rooms(GSolid* solid)
 {
-    auto* solid = static_cast<GSolid*>(solid_this);
-
     // Group faces by room, then by geoable brush UID (-1 = non-geoable)
     struct FaceGroup {
         std::unordered_map<int, std::vector<GFace*>> by_brush;
     };
-    std::unordered_map<void*, FaceGroup> room_groups;
+    std::unordered_map<GRoom*, FaceGroup> room_groups;
 
     for (GFace* face = solid->face_list_head; face; face = face->next_solid) {
-        void* room = face->which_room;
+        GRoom* room = face->which_room;
         if (!room) continue;
         auto it = g_geoable_face_map.find(face->face_id);
         int uid = (it != g_geoable_face_map.end()) ? it->second : -1;
@@ -256,23 +254,16 @@ static void isolate_geoable_rooms(void* solid_this)
 
             // Use first face's bbox to initialize the new room
             GFace* seed = faces[0];
-            void* bbox_min = reinterpret_cast<char*>(seed) + 0x10;
-            void* bbox_max = reinterpret_cast<char*>(seed) + 0x1C;
 
-            // Allocate and construct new GRoom (0x1CC bytes)
-            // FUN_004854e0 initializes all fields, assigns UID, registers in solid
-            void* new_room = AddrCaller{0x0052ee74}.c_call<void*>(0x1CC);
+            GRoom* new_room = GRoom::alloc();
             if (!new_room) continue;
-            AddrCaller{0x004854e0}.this_call(new_room, solid_this, bbox_min, bbox_max);
+            new_room->init(solid, &seed->bounding_box_min, &seed->bounding_box_max);
 
-            // Move faces from old room to new room
-            // FUN_004857c0 handles: remove from old room, add to new, update bbox
             for (GFace* f : faces) {
-                AddrCaller{0x004857c0}.this_call(new_room, f);
+                new_room->add_face(f);
             }
 
-            // Mark as detail room — FUN_00486a10 sets is_detail and registers
-            AddrCaller{0x00486a10}.this_call(new_room, solid_this, 1);
+            new_room->set_detail(solid, 1);
 
             rooms_created++;
 
@@ -295,44 +286,41 @@ CodeInjection isolate_geoable_injection{
     0x00485e88,
     [](auto& regs) {
         if (g_geoable_face_map.empty()) return;
-        std::byte* solid = regs.ebp;
-        isolate_geoable_rooms(static_cast<void*>(solid));
+        auto* solid = reinterpret_cast<GSolid*>(static_cast<std::byte*>(regs.ebp));
+        isolate_geoable_rooms(solid);
     },
 };
 
 // Hook FUN_00485990 (room builder, thiscall on GSolid*) to populate/clear
 // the face_id → brush UID map around the room builder execution.
-void __fastcall build_rooms_hooked(void* solid_this, void* edx_unused);
+void __fastcall build_rooms_hooked(GSolid* solid, void* edx_unused);
 FunHook<decltype(build_rooms_hooked)> build_rooms_hook{
     0x00485990,
     build_rooms_hooked,
 };
-void __fastcall build_rooms_hooked(void* solid_this, void* edx_unused)
+void __fastcall build_rooms_hooked(GSolid* solid, void* edx_unused)
 {
     populate_geoable_face_map();
-    build_rooms_hook.call_target(solid_this, edx_unused);
+    build_rooms_hook.call_target(solid, edx_unused);
     g_geoable_face_map.clear();
 }
 
 // Hook FUN_004861d0 (face adjacency test, cdecl) as secondary defense.
 // The primary fix is post-processing in isolate_geoable_rooms, but this hook
 // also prevents merging via the geometric adjacency path during flood-fill.
-bool __cdecl adjacency_test_hooked(void* face1, void* face2);
+bool __cdecl adjacency_test_hooked(GFace* face1, GFace* face2);
 FunHook<decltype(adjacency_test_hooked)> adjacency_test_hook{
     0x004861d0,
     adjacency_test_hooked,
 };
 
-bool __cdecl adjacency_test_hooked(void* face1, void* face2)
+bool __cdecl adjacency_test_hooked(GFace* face1, GFace* face2)
 {
     bool result = adjacency_test_hook.call_target(face1, face2);
     if (!result || g_geoable_face_map.empty()) return result;
 
-    auto* f1 = static_cast<GFace*>(face1);
-    auto* f2 = static_cast<GFace*>(face2);
-
-    auto it1 = g_geoable_face_map.find(f1->face_id);
-    auto it2 = g_geoable_face_map.find(f2->face_id);
+    auto it1 = g_geoable_face_map.find(face1->face_id);
+    auto it2 = g_geoable_face_map.find(face2->face_id);
 
     bool geo1 = (it1 != g_geoable_face_map.end());
     bool geo2 = (it2 != g_geoable_face_map.end());

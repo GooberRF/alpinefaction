@@ -165,6 +165,16 @@ struct Matrix3
 };
 static_assert(sizeof(Matrix3) == 0x24, "Matrix3 size mismatch!");
 
+struct Plane
+{
+    Vector3 normal;
+    float dist = 0.0f;
+
+    Plane() = default;
+    Plane(const Vector3& n, float d) : normal(n), dist(d) {}
+};
+static_assert(sizeof(Plane) == 0x10, "Plane size mismatch!");
+
 template<typename T>
 struct VArray
 {

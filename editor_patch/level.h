@@ -67,6 +67,30 @@ struct GRoom
     float liquid_surface_pan_u;  // +0x1B4 serialized (conditional)
     float liquid_surface_pan_v;  // +0x1B8 serialized (conditional)
     char _pad_1bc[0x10];         // +0x1BC  cached_lights VArray (12) + light_state (4)
+
+    // Allocate uninitialized GRoom (0x1CC bytes); must call init() afterwards
+    static GRoom* alloc()
+    {
+        return static_cast<GRoom*>(AddrCaller{0x0052ee74}.c_call<void*>(sizeof(GRoom)));
+    }
+
+    // FUN_004854e0: initialize all fields, assign UID, register in solid
+    void init(GSolid* solid, const Vector3* bbox_min_ptr, const Vector3* bbox_max_ptr)
+    {
+        AddrCaller{0x004854e0}.this_call(this, solid, bbox_min_ptr, bbox_max_ptr);
+    }
+
+    // FUN_004857c0: move face from its current room into this room, update bbox
+    void add_face(GFace* face)
+    {
+        AddrCaller{0x004857c0}.this_call(this, face);
+    }
+
+    // FUN_00486a10: set is_detail flag and register with solid
+    void set_detail(GSolid* solid, int detail)
+    {
+        AddrCaller{0x00486a10}.this_call(this, solid, detail);
+    }
 };
 static_assert(sizeof(GRoom) == 0x1CC);
 static_assert(offsetof(GRoom, is_detail) == 0x00);
@@ -83,21 +107,31 @@ static_assert(offsetof(GRoom, life) == 0x94);
 static_assert(offsetof(GRoom, liquid_type) == 0x180);
 static_assert(offsetof(GRoom, contains_liquid) == 0x184);
 
+// Forward declarations for types referenced by GFace but not fully defined editor-side
+struct GFaceVertex;
+struct GBBox;
+struct DecalPoly;
+
 // Editor-side GFace layout (0x60 bytes, matches stock RED.exe / RF.exe GFace)
 // Full game-side definition: game_patch/rf/geometry.h
-// Only fields needed by editor patch code are explicitly typed.
+// GFaceAttributes fields (game-side nested struct) are inlined here for direct access.
 struct GFace
 {
-    char _plane[16];             // +0x00  Plane (normal + dist)
-    char _bbox_min[12];          // +0x10  Vector3 bounding_box_min
-    char _bbox_max[12];          // +0x1C  Vector3 bounding_box_max
-    char _attrs_head[0x10];      // +0x28  GFaceAttributes: flags(4) + group_id(4) + bitmap_id(4) + portal_id(2) + surface_index(2)
-    int face_id;                 // +0x38  GFaceAttributes.face_id (used for brush-to-room mapping)
-    int smoothing_groups;        // +0x3C  GFaceAttributes.smoothing_groups
-    void* edge_loop;             // +0x40  GFaceVertex*
+    Plane plane;                 // +0x00  face plane (normal + dist)
+    Vector3 bounding_box_min;    // +0x10  face AABB min
+    Vector3 bounding_box_max;    // +0x1C  face AABB max
+    // GFaceAttributes (inlined):
+    int flags;                   // +0x28  GFaceFlags bitfield
+    int group_id;                // +0x2C  face grouping (union with GTextureMover* at runtime)
+    int bitmap_id;               // +0x30  texture handle
+    short portal_id;             // +0x34  portal index + 2, or 0
+    short surface_index;         // +0x36  surface/lightmap index
+    int face_id;                 // +0x38  unique face identifier (used for brush-to-room mapping)
+    int smoothing_groups;        // +0x3C  smoothing group bitfield
+    GFaceVertex* edge_loop;      // +0x40  linked list of per-face vertices
     GRoom* which_room;           // +0x44  owning room (assigned by room builder)
-    void* which_bbox;            // +0x48  GBBox*
-    void* decal_list;            // +0x4C  DecalPoly*
+    GBBox* which_bbox;           // +0x48  owning bounding box node
+    DecalPoly* decal_list;       // +0x4C  linked list of decal polygons on this face
     short unk_cache_index;       // +0x50
     char _pad_52[2];             // +0x52  alignment padding
     GFace* next_solid;           // +0x54  next[FACE_LIST_SOLID] (GSolid face linked list)
@@ -105,7 +139,13 @@ struct GFace
     GFace* next_room;            // +0x5C  next[FACE_LIST_ROOM]
 };
 static_assert(sizeof(GFace) == 0x60);
+static_assert(offsetof(GFace, plane) == 0x00);
+static_assert(offsetof(GFace, bounding_box_min) == 0x10);
+static_assert(offsetof(GFace, bounding_box_max) == 0x1C);
+static_assert(offsetof(GFace, flags) == 0x28);
+static_assert(offsetof(GFace, bitmap_id) == 0x30);
 static_assert(offsetof(GFace, face_id) == 0x38);
+static_assert(offsetof(GFace, edge_loop) == 0x40);
 static_assert(offsetof(GFace, which_room) == 0x44);
 static_assert(offsetof(GFace, next_solid) == 0x54);
 
