@@ -15,6 +15,7 @@
 #include "server_internal.h"
 #include "gametype.h"
 #include "../hud/hud.h"
+#include "../hud/multi_spectate.h"
 #include "../rf/file/file.h"
 #include "../rf/level.h"
 #include "../os/console.h"
@@ -521,6 +522,18 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
             }
         }
         multi_process_remote_weapon_fire_hook.call_target(ep, weapon_type, pos, orient, alt_fire);
+
+        // Notify spectate system of weapon fire so the fpgun fire animation is triggered.
+        // Skip thrown projectile weapons (grenade, C4, flamethrower canister alt-fire) because
+        // their animation is driven earlier and at the correct time by entity_play_attack_anim_spectate_hook.
+        if (!rf::is_server) {
+            bool is_thrown = (weapon_type == rf::grenade_weapon_type)
+                || (weapon_type == rf::remote_charge_weapon_type)
+                || (rf::weapon_is_flamethrower(weapon_type) && alt_fire);
+            if (!is_thrown) {
+                multi_spectate_on_obj_update_fire(ep, alt_fire);
+            }
+        }
     },
 };
 

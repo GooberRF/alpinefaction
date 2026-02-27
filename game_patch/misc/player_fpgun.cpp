@@ -23,23 +23,29 @@ static rf::Player* g_fpgun_main_player = nullptr;
 static FunHook<void(rf::Player*)> player_fpgun_update_state_anim_hook{
     0x004AA3A0,
     [](rf::Player* player) {
-        player_fpgun_update_state_anim_hook.call_target(player);
-        if (player != rf::local_player) {
-            rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
-            if (entity) {
-                float horz_speed_pow2 = entity->p_data.vel.x * entity->p_data.vel.x +
-                                          entity->p_data.vel.z * entity->p_data.vel.z;
-                int state = rf::WS_IDLE;
-                if (rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon))
-                    state = rf::WS_LOOP_FIRE;
-                else if (rf::entity_is_swimming(entity) || rf::entity_is_falling(entity))
-                    state = rf::WS_IDLE;
-                else if (horz_speed_pow2 > 0.2f)
-                    state = rf::WS_RUN;
-                if (!rf::player_fpgun_is_in_state_anim(player, state))
-                    rf::player_fpgun_set_next_state_anim(player, state);
-            }
+        if (player == rf::local_player) {
+            // Only run the original state anim logic for the local player
+            player_fpgun_update_state_anim_hook.call_target(player);
+            return;
         }
+        rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
+        if (!entity)
+            return;
+        // When falling, keep the current fpgun state anim to avoid
+        // cancelling action anims (reload, fire, draw, etc.) during spectate
+        if (rf::entity_is_falling(entity))
+            return;
+        int state = rf::WS_IDLE;
+        if (rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon))
+            state = rf::WS_LOOP_FIRE;
+        else if (!rf::entity_is_swimming(entity)) {
+            float horz_speed_pow2 = entity->p_data.vel.x * entity->p_data.vel.x +
+                                      entity->p_data.vel.z * entity->p_data.vel.z;
+            if (horz_speed_pow2 > 0.2f)
+                state = rf::WS_RUN;
+        }
+        if (!rf::player_fpgun_is_in_state_anim(player, state))
+            rf::player_fpgun_set_next_state_anim(player, state);
     },
 };
 
@@ -336,6 +342,12 @@ void player_fpgun_do_patch()
     AsmWriter(0x004AA6E7).nop(6);               // player_fpgun_process
     AsmWriter(0x004AE384).nop(6);               // player_fpgun_page_in
     write_mem<u8>(0x004ACE2C, asm_opcodes::jmp_rel_short); // player_fpgun_get_zoom
+    write_mem<u8>(0x004AD6E0, asm_opcodes::jmp_rel_short); // player_fpgun_get_muzzle_tag_pos
+    AsmWriter(0x004ACC8E).nop(6);               // player_fpgun_get_non_bullet_muzzle_flash_info
+    AsmWriter(0x004AB03D).nop(2);                          // player_fpgun_is_firing_or_reloading: run checks for all players
+    write_mem<u8>(0x004AB0CC, asm_opcodes::jmp_rel_short); // player_fpgun_is_holstering_or_drawing: run checks for all players
+    write_mem<u8>(0x004ADB6C, asm_opcodes::jmp_rel_short); // player_fpgun_is_in_custom_anim: run checks for all players
+    AsmWriter(0x004AD8CE).nop(6);               // player_fpgun_action_anim_is_playing: run checks for all players
 
     write_mem_ptr(0x004AE569 + 2, &g_fpgun_main_player); // player_fpgun_load_meshes
     write_mem_ptr(0x004AE5E3 + 2, &g_fpgun_main_player); // player_fpgun_load_meshes

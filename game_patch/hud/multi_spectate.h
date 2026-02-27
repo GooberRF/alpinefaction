@@ -21,3 +21,4 @@ bool multi_spectate_is_spectating();
 bool multi_spectate_is_freelook();
 bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pressed);
 void multi_spectate_sync_crouch_anim();
+void multi_spectate_on_obj_update_fire(rf::Entity* entity, bool alt_fire);
