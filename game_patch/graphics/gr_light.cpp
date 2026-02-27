@@ -14,7 +14,7 @@ bool is_find_static_lights = false;
 
 // Scene light object pool expansion: replaces the stock 1100-entry pool at 0x00C4E7D8.
 // Must match the editor limit (editor_patch/lightmap.cpp) so levels created there can load.
-static constexpr int max_scene_lights = 8192;
+static constexpr int max_scene_lights = rf::gr::max_relevant_lights;
 static rf::gr::Light game_light_pool[max_scene_lights];
 
 // Dummy light entry for out-of-bounds handle access.
