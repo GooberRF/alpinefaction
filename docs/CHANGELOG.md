@@ -57,6 +57,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners
+- Fix stale weapon selection time stamps
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
