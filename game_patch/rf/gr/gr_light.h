@@ -118,5 +118,8 @@ namespace rf::gr
         int atten_algo, bool sq_fov_falloff)>(0x004D8F80);
 
     static auto& num_relevant_lights = addr_as_ref<int>(0x00C9687C);
-    static auto& relevant_lights = addr_as_ref<Light*[1100]>(0x00C4D588);
+
+    // static auto& relevant_lights = addr_as_ref<Light*[1100]>(0x00C4D588)
+    // Defined in graphics/gr_light.cpp. Replaces above from stock game.
+    extern Light* relevant_lights[];
 }

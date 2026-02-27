@@ -28,6 +28,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-script` command line argument to execute a startup script after the game launches
 - Add support for `script` console command to execute a script on-demand
 - Add `/coinflip` chat command
+- Raise limit on lights per level from 1100 to 8192
+- Raise level editor limit on lights projecting on a single face from 64 to 1024
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
