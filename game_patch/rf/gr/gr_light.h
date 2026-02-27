@@ -121,5 +121,7 @@ namespace rf::gr
 
     // static auto& relevant_lights = addr_as_ref<Light*[1100]>(0x00C4D588)
     // Defined in graphics/gr_light.cpp. Replaces above from stock game.
-    extern Light* relevant_lights[];
+    // max_relevant_lights should be the same value as max_scene_lights in graphics/gr_light.cpp.
+    inline constexpr int max_relevant_lights = 8192;
+    extern Light* relevant_lights[max_relevant_lights];
 }

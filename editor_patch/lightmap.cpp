@@ -11,6 +11,7 @@ static std::unique_ptr<uint8_t[]> shadow_mask_pool;
 
 // Scene light object pool: replaces the stock 1100-entry pool at 0x006FB248
 // Each entry is sizeof(rf::gr::Light) = 0x10C bytes (see game_patch/rf/gr/gr_light.h)
+// todo: shared header between editor and game for this and other common structs
 static constexpr int max_scene_lights = 8192;
 
 // Per-face light list: replaces the stock ~1100-entry array at 0x006F9FF8

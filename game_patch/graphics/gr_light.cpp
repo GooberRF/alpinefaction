@@ -25,7 +25,7 @@ static rf::gr::Light game_dummy_light = {};
 // Relevant lights array: replaces the stock 1100-entry array at 0x00C4D588.
 // Used by the renderer to gather lights affecting visible geometry.
 // Defined here; declared extern in rf/gr/gr_light.h so D3D11 code can read it directly.
-rf::gr::Light* rf::gr::relevant_lights[max_scene_lights];
+rf::gr::Light* rf::gr::relevant_lights[rf::gr::max_relevant_lights];
 
 // Replace light handle-to-pointer with bounds-checked version
 // Prevents corruption on handle=-1, which occurs when trying to add/edit lights after max_scene_lights
