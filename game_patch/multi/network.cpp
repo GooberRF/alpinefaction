@@ -31,6 +31,7 @@
 #include "server_internal.h"
 #include "../main/main.h"
 #include "../hud/hud.h"
+#include "../hud/multi_spectate.h"
 #include "../rf/multi.h"
 #include "../rf/misc.h"
 #include "../rf/player/player.h"
@@ -902,6 +903,26 @@ CodeInjection process_obj_update_check_flags_injection{
             }
         },
     };
+
+// Trigger spectator damage screen flash when the spectated player's health or armor decreases.
+// Injected at the point in process_obj_update_packet where a health/armor decrease has been
+// confirmed (OUF_HEALTH_ARMOR set, new value < entity value) but before the local-player check.
+// edi = entity pointer at this address.
+CodeInjection process_obj_update_health_armor_spectate_injection{
+    0x0047E4DA,
+    [](auto& regs) {
+        if (!g_alpine_game_config.spectate_damage_screen_flash || rf::is_server)
+            return;
+        rf::Entity* entity = regs.edi;
+        if (!entity)
+            return;
+        rf::Player* spectated = multi_spectate_get_target_player();
+        if (!spectated || spectated == rf::local_player || multi_spectate_is_freelook())
+            return;
+        if (entity == rf::entity_from_handle(spectated->entity_handle))
+            rf::local_screen_flash(rf::local_player, 255, 0, 0, 128);
+    },
+};
 
 CodeInjection process_obj_update_weapon_fire_injection{
     0x0047E2FF,
@@ -2377,6 +2398,9 @@ void network_init()
 
     // Fix obj_update packet handling
     process_obj_update_check_flags_injection.install();
+
+    // Spectator damage screen flash via obj_update health/armor
+    process_obj_update_health_armor_spectate_injection.install();
 
     // Verify on/off weapons handling
     process_obj_update_weapon_fire_injection.install();

@@ -20,6 +20,7 @@
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
+#include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include <shlwapi.h>
@@ -92,7 +93,8 @@ static bool state_animation_is_crouch(int state)
 FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     0x0042A580,
     [](rf::Entity* entity, int state_anim_index, float transition_time) {
-        if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)) {
+        if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)
+            && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
             rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
             if (entity == target) {
                 spectate_entity_translate_stand_state_to_crouch_state(&state_anim_index);
@@ -113,7 +115,8 @@ void multi_spectate_sync_crouch_anim()
     if (!entity)
         return;
 
-    if (rf::entity_is_crouching(entity) && !state_animation_is_crouch(entity->current_state_anim)) {
+    if (rf::entity_is_crouching(entity) && !state_animation_is_crouch(entity->current_state_anim)
+        && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
         int next_state_anim = entity->current_state_anim;
         spectate_entity_translate_stand_state_to_crouch_state(&next_state_anim);
         if (next_state_anim == entity->current_state_anim) {
@@ -156,6 +159,10 @@ void multi_spectate_set_target_player(rf::Player* player)
     if (entering_player_spectate) {
         g_local_queued_delayed_spawn = false;
         stop_draw_respawn_timer_notification();
+    }
+    else {
+        // Clear scanner state when leaving spectate
+        rf::local_player->fpgun_data.scanning_for_target = false;
     }
 
     g_spectate_mode_enabled = entering_player_spectate;
@@ -425,6 +432,93 @@ static ConsoleCommand2 spectate_mode_follow_killer_cmd{
     "When a player you're spectating dies, automatically spectate their killer",
 };
 
+// gameplay_render_frame checks scanning_for_target at 0x00431CCC for FOV and scanner overlay
+// rendering, BEFORE player_render_new (0x0043285D) runs. The game loop clears scanning_for_target
+// on local_player each frame (FUN_004ad410) because local_player isn't holding the rail driver.
+// This early injection derives scanner state from the spectate target before the first read.
+// The rail driver scanner toggle (FUN_004ad560) sets scanning_for_target but NOT zooming_in.
+// Entity state flags (FUN_00475930) only pack RF_ES_ZOOMING from zooming_in. This injection
+// also sets RF_ES_ZOOMING (bit 0x08) when scanning_for_target is true, so the scanner state
+// is synced to other clients via stock entity_update packets.
+// Wraps entity state flags sync (FUN_00475930) to handle scanner state on both sides:
+// SENDING: includes scanning_for_target as RF_ES_ZOOMING in the flags
+// RECEIVING: converts RF_ES_ZOOMING back to scanning_for_target for scanner weapons
+static FunHook<void(rf::Entity*, uint8_t*, bool)> entity_state_flags_sync_hook{
+    0x00475930,
+    [](rf::Entity* entity, uint8_t* flags, bool is_sending) {
+        // PRE-CALL (sending side): set scanning_for_target in entity state so it gets packed
+        // as RF_ES_ZOOMING by the original function
+        rf::Player* player = entity ? rf::player_from_entity_handle(entity->handle) : nullptr;
+        bool was_scanning = false;
+        if (is_sending && player && player->fpgun_data.scanning_for_target) {
+            // Temporarily set zooming_in so the stock code packs RF_ES_ZOOMING
+            was_scanning = true;
+            player->fpgun_data.zooming_in = true;
+        }
+
+        entity_state_flags_sync_hook.call_target(entity, flags, is_sending);
+
+        // POST-CALL (sending side): restore zooming_in
+        if (was_scanning && player) {
+            player->fpgun_data.zooming_in = false;
+        }
+
+        // POST-CALL (receiving side): convert zooming_in to scanning_for_target for scanners
+        if (!is_sending && player) {
+            if (player->fpgun_data.zooming_in &&
+                rf::weapon_has_scanner(entity->ai.current_primary_weapon)) {
+                player->fpgun_data.scanning_for_target = true;
+                player->fpgun_data.zooming_in = false;
+            } else if (!player->fpgun_data.zooming_in) {
+                player->fpgun_data.scanning_for_target = false;
+            }
+        }
+    },
+};
+
+// gameplay_render_frame checks scanning_for_target at 0x00431CCC for FOV and scanner overlay
+// rendering, BEFORE player_render_new (0x0043285D) runs. The game loop clears scanning_for_target
+// on local_player each frame (FUN_004ad410) because local_player isn't holding the rail driver.
+// This early injection derives scanner state from the spectate target before the first read.
+static CodeInjection gameplay_render_frame_early_scanner_sync{
+    0x00431CCC,
+    []() {
+        if (g_spectate_mode_enabled && rf::local_player && g_spectate_mode_target) {
+            // The receiving-side injection sets scanning_for_target directly on the target.
+            // Copy it to local_player so gameplay_render_frame's scanner overlay code sees it.
+            bool scanning = g_spectate_mode_target->fpgun_data.scanning_for_target;
+            rf::local_player->fpgun_data.scanning_for_target = scanning;
+        }
+    },
+};
+
+// The scope overlay block at 0x00431D1C-0x00431E4C renders based on EDI (camera scope object),
+// regardless of scanning state. When the rail scanner is active, we must suppress the scope
+// overlay so it doesn't render on top of (or instead of) the scanner. Force EDI=0 to skip it.
+static CodeInjection gameplay_render_frame_skip_scope_when_scanning{
+    0x00431D1C,
+    [](auto& regs) {
+        if (g_spectate_mode_enabled && rf::local_player &&
+            rf::local_player->fpgun_data.scanning_for_target) {
+            regs.edi = 0;
+        }
+    },
+};
+
+// gameplay_render_frame skips the HUD render (FUN_00437ba0) when scanning_for_target is true.
+// Since multi_spectate_render is called from inside that function, the spectate HUD never draws
+// when the rail scanner overlay is active. This injection runs right after the skip point and
+// draws the spectate HUD on top of the scanner overlay.
+static CodeInjection gameplay_render_frame_spectate_hud_over_scanner{
+    0x00432A20,
+    []() {
+        if (g_spectate_mode_enabled && rf::local_player &&
+            rf::local_player->fpgun_data.scanning_for_target) {
+            multi_spectate_render();
+        }
+    },
+};
+
 #if SPECTATE_MODE_SHOW_WEAPON
 
 // Hook entity_play_attack_anim (0x0042C3C0) — called from the obj_update processing path
@@ -535,6 +629,10 @@ static void player_render_new(rf::Player* player)
         rf::local_player->fpgun_data.zooming_in = g_spectate_mode_target->fpgun_data.zooming_in;
         rf::local_player->fpgun_data.zoom_factor = g_spectate_mode_target->fpgun_data.zoom_factor;
 
+        // Copy scanner state from target (set by receiving-side entity state flags injection)
+        rf::local_player->fpgun_data.scanning_for_target =
+            g_spectate_mode_target->fpgun_data.scanning_for_target;
+
         rf::player_fpgun_process(g_spectate_mode_target);
 
         // Force WS_LOOP_FIRE state after process so the render function sees it for muzzle flash.
@@ -555,9 +653,32 @@ CallHook<float(rf::Player*)> gameplay_render_frame_player_fpgun_get_zoom_hook{
     0x00431B6D,
     [](rf::Player* pp) {
         if (g_spectate_mode_enabled) {
+            // Rail driver scanner has its own FOV (set via the scanning_for_target path).
+            // Return 0 so the sniper scope overlay doesn't render.
+            if (g_spectate_mode_target->fpgun_data.scanning_for_target) {
+                return 0.0f;
+            }
             return gameplay_render_frame_player_fpgun_get_zoom_hook.call_target(g_spectate_mode_target);
         }
         return gameplay_render_frame_player_fpgun_get_zoom_hook.call_target(pp);
+    },
+};
+
+// render_to_dynamic_textures (0x00431820) iterates all players and calls player_fpgun_render_for_rail_gun
+// for each player with scanning_for_target=true. It runs BEFORE gameplay_render_frame, so our early
+// injection there is too late. This hook sets scanning_for_target on local_player before the iteration,
+// so the scanner texture gets rendered. Our existing hook on player_fpgun_render_for_rail_gun then
+// redirects the render to use the spectate target's viewpoint.
+static FunHook<void()> render_to_dynamic_textures_hook{
+    0x00431820,
+    []() {
+        if (g_spectate_mode_enabled && rf::local_player && g_spectate_mode_target) {
+            // The receiving-side injection sets scanning_for_target directly on the target.
+            // Copy it to local_player so render_to_dynamic_textures renders the scanner texture.
+            bool scanning = g_spectate_mode_target->fpgun_data.scanning_for_target;
+            rf::local_player->fpgun_data.scanning_for_target = scanning;
+        }
+        render_to_dynamic_textures_hook.call_target();
     },
 };
 
@@ -610,11 +731,24 @@ void multi_spectate_appy_patch()
     spectate_mode_minimal_ui_cmd.register_cmd();
     spectate_mode_follow_killer_cmd.register_cmd();
 
+    // Handle scanner state in entity state flags (both sending and receiving)
+    entity_state_flags_sync_hook.install();
+
+    // Sync scanner state early in gameplay_render_frame before the first scanning_for_target check
+    gameplay_render_frame_early_scanner_sync.install();
+
+    // Suppress scope overlay when rail scanner is active in spectate
+    gameplay_render_frame_skip_scope_when_scanning.install();
+
+    // Draw spectate HUD over rail scanner overlay (scanner skips the normal HUD render path)
+    gameplay_render_frame_spectate_hud_over_scanner.install();
+
 #if SPECTATE_MODE_SHOW_WEAPON
 
     AsmWriter(0x0043285D).call(player_render_new);
     gameplay_render_frame_player_fpgun_get_zoom_hook.install();
     entity_play_attack_anim_spectate_hook.install();
+    render_to_dynamic_textures_hook.install();
 
     write_mem_ptr(0x0048857E + 2, &g_spectate_mode_target); // obj_mark_all_for_room
     write_mem_ptr(0x00488598 + 1, &g_spectate_mode_target); // obj_mark_all_for_room

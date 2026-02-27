@@ -8,7 +8,7 @@ void os_apply_patch();
 void frametime_render_ui();
 float get_maximum_fps();
 void apply_maximum_fps();
-void set_dedicated_server_timer_frequency();
+void wait_for(float ms);
 
 class HighResTimer {
     using clock = std::chrono::high_resolution_clock;

@@ -220,6 +220,14 @@ namespace df::gr::d3d11
                 dxgi_factory->CreateSwapChain(device_, &sd, &swap_chain_)
             );
         }
+
+        // Alpine uses DXGI's flip presentation model, which requires ResizeBuffers
+        // after mode transitions
+        // Disable DXGI's built-in Alt+Enter fullscreen toggle. DXGI's auto-handling
+        // calls SetFullscreenState internally without the app's knowledge, which causes
+        // the next Present() call to return DXGI_ERROR_INVALID_CALL and crash. We handle
+        // Alt+Enter ourselves via WM_SYSKEYDOWN in the message handler.
+        dxgi_factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     }
 
     void Renderer::init_back_buffer()

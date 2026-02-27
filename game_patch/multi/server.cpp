@@ -23,7 +23,6 @@
 #include "alpine_packets.h"
 #include "multi.h"
 #include "../os/console.h"
-#include "../os/os.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
 #include "../misc/alpine_options.h"
@@ -227,7 +226,6 @@ void set_server_window_title() {
 void on_dedicated_server_launch_post() {
     initialize_game_info_server_flags(); // build global flags var used in game_info packets
     set_server_window_title();
-    set_dedicated_server_timer_frequency();
 }
 
 // should weapons drop on player death?
@@ -1226,6 +1224,23 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     else if (g_alpine_server_config.damage_notification_config.support_legacy_clients) {
                         //xlog::warn("sending legacy notify to {}", killer_player->name);
                         send_legacy_hit_sound_packet(killer_player); // fallback for old clients
+                    }
+
+                    // Send to first-person spectators of the killer
+                    for (auto& player : SinglyLinkedList{rf::player_list}) {
+                        // Skip if this player has no network data or is the killer themselves
+                        if (!player.net_data || &player == killer_player) {
+                            continue;
+                        }
+                        if (player.spectatee.value_or(nullptr) == killer_player) {
+                            if (is_player_minimum_af_client_version(&player, 1, 1, 0)) {
+                                af_send_damage_notify_packet(
+                                    damaged_player->net_data->player_id,
+                                    real_damage,
+                                    is_dead,
+                                    &player);
+                            }
+                        }
                     }
                 }
             }

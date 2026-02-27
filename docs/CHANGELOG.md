@@ -30,9 +30,18 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `/coinflip` chat command
 
 [@is-this-c](https://github.com/is-this-c)
+- Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add `Server version:` to a server's printed config
 - Default gore level to 1
 - Default `gibbing` to disabled for dedicated servers
+
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Sync animation state for crouched players in first person spectate view
+- Sync rail scanner in first person spectate
+- Implement damage screen flash in first person spectate mode
+- Add `cl_damageflash_spectator` console command to toggle damage screen flash in first person spectate
+- Add `ui_color_thermal` console command to set thermal scanner entity color (Direct3D 11 renderer only)
+- Add hitsounds, kill sounds, and damage numbers to first person spectate
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
@@ -50,7 +59,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
-- Sync animation state for crouched players in first person spectate view
+- Fix Alt+Enter crash in Direct3D 11 renderer
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------

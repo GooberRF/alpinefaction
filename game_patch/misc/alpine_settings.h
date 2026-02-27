@@ -110,6 +110,7 @@ struct AlpineGameSettings
     bool show_run_timer = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;
+    bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;
     bool explosion_env_flash_lights = true;
     bool burning_entity_lights = true;
@@ -191,6 +192,7 @@ struct AlpineGameSettings
     std::optional<uint32_t> teammate_label_color_override{};
     std::optional<uint32_t> reticle_color_override{};
     std::optional<uint32_t> reticle_locked_color_override{};
+    std::optional<uint32_t> thermal_entity_color_override{};
     bool colorize_custom_reticles = false;
 
     // hud scale overrides
