@@ -15,13 +15,12 @@ bool is_find_static_lights = false;
 // Scene light object pool expansion: replaces the stock 1100-entry pool at 0x00C4E7D8.
 // Must match the editor limit (editor_patch/lightmap.cpp) so levels created there can load.
 static constexpr int max_scene_lights = 8192;
-static constexpr int light_struct_size = sizeof(rf::gr::Light);
-alignas(16) static uint8_t game_light_pool[max_scene_lights * light_struct_size];
+static rf::gr::Light game_light_pool[max_scene_lights];
 
 // Dummy light entry for out-of-bounds handle access.
-// reads return all zeros (type=LT_NONE). Prevents memory corruption when the
+// Reads return all zeros (type=LT_NONE). Prevents memory corruption when the
 // stock code calls handle_to_ptr with handle=-1 (allocation failure).
-alignas(16) static uint8_t game_dummy_light[light_struct_size] = {};
+static rf::gr::Light game_dummy_light = {};
 
 // Relevant lights array: replaces the stock 1100-entry array at 0x00C4D588.
 // Used by the renderer to gather lights affecting visible geometry.
@@ -36,11 +35,10 @@ CodeInjection game_handle_to_pointer_injection{
     [](auto& regs) {
         int handle = *reinterpret_cast<int*>(regs.esp + 4);
         if (handle >= 0 && handle < max_scene_lights) {
-            regs.eax = reinterpret_cast<uintptr_t>(game_light_pool) +
-                        static_cast<unsigned>(handle) * light_struct_size;
+            regs.eax = reinterpret_cast<uintptr_t>(&game_light_pool[handle]);
         }
         else {
-            regs.eax = reinterpret_cast<uintptr_t>(game_dummy_light);
+            regs.eax = reinterpret_cast<uintptr_t>(&game_dummy_light);
         }
         regs.eip = 0x004d8e05; // jump to RET
     },
@@ -326,26 +324,24 @@ void gr_light_apply_patch()
     game_handle_to_pointer_injection.install();
 
     // Redirect pool base address references from old pool (0x00C4E7D8)
-    write_mem_ptr(0x004d8435, game_light_pool);
-    write_mem_ptr(0x004d8090, game_light_pool);
-    write_mem_ptr(0x004d8e75, game_light_pool);
-    write_mem_ptr(0x004d8eaa, game_light_pool);
-    // Redirect pool base+4 (prev pointer field) references
-    write_mem_ptr(0x004d8e6f, game_light_pool + 4);
-    write_mem_ptr(0x004d8ea4, game_light_pool + 4);
-    // Redirect pool base+8 (type field) reference
-    write_mem_ptr(0x004d8e14, game_light_pool + 8);
-    // Redirect pool base+0xC (data field) reference
-    write_mem_ptr(0x004db854, game_light_pool + 0xC);
+    write_mem_ptr(0x004d8435, game_light_pool);       // gr_light_init: zeroing dest
+    write_mem_ptr(0x004d8090, game_light_pool);       // gr_light_pool_init
+    write_mem_ptr(0x004d8e75, game_light_pool);       // gr_light_alloc
+    write_mem_ptr(0x004d8eaa, game_light_pool);       // gr_light_alloc
+    // Redirect pool field references (prev, type, vec)
+    write_mem_ptr(0x004d8e6f, &game_light_pool[0].prev);   // gr_light_alloc
+    write_mem_ptr(0x004d8ea4, &game_light_pool[0].prev);   // gr_light_alloc
+    write_mem_ptr(0x004d8e14, &game_light_pool[0].type);   // gr_light_alloc: scan start
+    write_mem_ptr(0x004db854, &game_light_pool[0].vec);    // gr_light_iter
 
     // Update scan end limit in gr_light_alloc
-    auto scan_end = reinterpret_cast<uintptr_t>(game_light_pool + 8) + max_scene_lights * light_struct_size;
+    auto scan_end = reinterpret_cast<uintptr_t>(&game_light_pool[0].type) + max_scene_lights * sizeof(rf::gr::Light);
     write_mem<uint32_t>(0x004d8e24, static_cast<uint32_t>(scan_end));
     // Update count limits
     write_mem<uint32_t>(0x004d8e31, max_scene_lights);
     write_mem<uint32_t>(0x004d8086, max_scene_lights);
-    // Update zeroing loop count in gr_light_init
-    write_mem<uint32_t>(0x004d8467, max_scene_lights * light_struct_size / 4);
+    // Update zeroing loop count in gr_light_init (REP STOSD = dwords)
+    write_mem<uint32_t>(0x004d8467, max_scene_lights * sizeof(rf::gr::Light) / 4);
 
     // Expand relevant_lights array from 1100 entries (0x00C4D588)
     write_mem_ptr(0x004d9bb9, rf::gr::relevant_lights);
