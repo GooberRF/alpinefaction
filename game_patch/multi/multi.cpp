@@ -428,8 +428,8 @@ bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
     int player_id = pp->net_data->player_id;
     int now = rf::timer_get(1000);
 
-    static std::vector<int> last_weapon_id{rf::multi_max_player_id, 0};
-    static std::vector<int> last_weapon_fire{rf::multi_max_player_id, 0};
+    static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
+    static std::vector<int> last_weapon_fire(rf::multi_max_player_id, 0);
 
     int fire_wait_ms = 0;
 
