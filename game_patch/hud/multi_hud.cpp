@@ -40,6 +40,7 @@
 #include "../misc/player.h"
 #include "../multi/alpine_packets.h"
 #include "../multi/network.h"
+#include "multi_spectate.h"
 
 static bool g_big_team_scores_hud = false;
 constexpr bool g_debug_team_scores_hud = false;
@@ -806,7 +807,8 @@ void multi_hud_render_team_scores()
             std::string fitting_name = hud_fit_string(name, max_miniflag_label_w, nullptr, font_id);
             rf::gr::string(miniflag_label_x, red_miniflag_label_y, fitting_name.c_str(), font_id);
 
-            if (red_flag_player == rf::local_player) {
+            if (red_flag_player == rf::local_player ||
+                (multi_spectate_is_spectating() && red_flag_player == multi_spectate_get_target_player())) {
                 rf::gr::set_color(255, 255, 255, static_cast<int>(hud_flag_alpha));
                 hud_scaled_bitmap(rf::hud_flag_red_bmh, flag_x, box_y, flag_scale, rf::hud_flag_gr_mode);
             }
@@ -824,7 +826,8 @@ void multi_hud_render_team_scores()
             std::string fitting_name = hud_fit_string(name, max_miniflag_label_w, nullptr, font_id);
             rf::gr::string(miniflag_label_x, blue_miniflag_label_y, fitting_name.c_str(), font_id);
 
-            if (blue_flag_player == rf::local_player) {
+            if (blue_flag_player == rf::local_player ||
+                (multi_spectate_is_spectating() && blue_flag_player == multi_spectate_get_target_player())) {
                 rf::gr::set_color(255, 255, 255, static_cast<int>(hud_flag_alpha));
                 hud_scaled_bitmap(rf::hud_flag_blue_bmh, flag_x, box_y, flag_scale, rf::hud_flag_gr_mode);
             }
