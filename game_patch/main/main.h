@@ -1,6 +1,7 @@
 #pragma once
 
 #include <random>
+#include <ctime>
 #include <common/config/GameConfig.h>
 #include <common/config/AlpineCoreConfig.h>
 
