@@ -45,6 +45,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `ui_color_thermal` console command to set thermal scanner entity color (Direct3D 11 renderer only)
 - Add hitsounds, kill sounds, and damage numbers to first person spectate
 - Add missing weapon animations and muzzle flashes in first person spectate
+- Add CTF flag icons to first person spectate
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
