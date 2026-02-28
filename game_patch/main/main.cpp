@@ -53,6 +53,7 @@
 GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
 HMODULE g_hmodule;
+std::time_t g_process_startup_time;
 
 std::mt19937 g_rng;
 
@@ -487,8 +488,12 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     return 1; // success
 }
 
-BOOL WINAPI DllMain(HINSTANCE instance_handle, [[maybe_unused]] DWORD fdw_reason, [[maybe_unused]] LPVOID lpv_reserved)
-{
+BOOL WINAPI DllMain(
+    const HINSTANCE instance_handle,
+    [[maybe_unused]] const DWORD fdw_reason,
+    [[maybe_unused]] const LPVOID lpv_reserved
+) {
+    g_process_startup_time = std::time(nullptr);
     g_hmodule = instance_handle;
     DisableThreadLibraryCalls(instance_handle);
     return TRUE;

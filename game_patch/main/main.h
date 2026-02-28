@@ -15,4 +15,6 @@ void initialize_random_generator();
 extern HMODULE g_hmodule;
 #endif
 
+extern std::time_t g_process_startup_time;
+
 void evaluate_fullbright_meshes();
