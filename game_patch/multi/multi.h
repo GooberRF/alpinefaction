@@ -9,7 +9,6 @@
 #include "../rf/multi.h"
 #include "../rf/entity.h"
 #include "../rf/os/timer.h"
-#include "../rf/os/timestamp.h"
 
 struct PlayerStatsNew : rf::PlayerLevelStats
 {
