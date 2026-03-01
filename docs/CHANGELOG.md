@@ -48,6 +48,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add CTF flag icons to first person spectate
 - Make jump control move freelook camera up
 - Add `cl_legacy_bob` to restore legacy first person weapon running animation behavior
+- Add `ui_gamefeed` toggle which separates game events (kills, flag steals, join/leave, etc) from the chat to a separate HUD element
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher

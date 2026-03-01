@@ -411,10 +411,6 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.always_autoswitch_empty = std::stoi(settings["AlwaysAutoswitchEmpty"]);
         processed_keys.insert("AlwaysAutoswitchEmpty");
     }
-    if (settings.count("LegacyBob")) {
-        g_alpine_game_config.legacy_bob = std::stoi(settings["LegacyBob"]);
-        processed_keys.insert("LegacyBob");
-    }
 
     // Load weapon autoswitch priority
     if (settings.count("WeaponAutoswitchPriority")) {
@@ -830,6 +826,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.play_hit_sounds = std::stoi(settings["PlayHitsounds"]);
         processed_keys.insert("PlayHitsounds");
     }
+    if (settings.count("KillfeedEnabled")) {
+        g_alpine_game_config.killfeed_enabled = std::stoi(settings["KillfeedEnabled"]);
+        processed_keys.insert("KillfeedEnabled");
+    }
     if (settings.count("HitSoundIntervalMs")) {
         g_alpine_game_config.set_hit_sound_min_interval_ms(std::stoi(settings["HitSoundIntervalMs"]));
         processed_keys.insert("HitSoundIntervalMs");
@@ -1148,7 +1148,6 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ColorblindMode=" << g_alpine_game_config.colorblind_mode << "\n";
     file << "AutoswitchFireWait=" << g_alpine_game_config.suppress_autoswitch_fire_wait << "\n";
     file << "AlwaysAutoswitchEmpty=" << g_alpine_game_config.always_autoswitch_empty << "\n";
-    file << "LegacyBob=" << g_alpine_game_config.legacy_bob << "\n";
 
     // Autoswitch priority
     file << "WeaponAutoswitchPriority=";
@@ -1284,6 +1283,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
+    file << "KillfeedEnabled=" << g_alpine_game_config.killfeed_enabled << "\n";
     file << "HitSoundIntervalMs=" << g_alpine_game_config.hit_sound_min_interval_ms << "\n";
     file << "PlayTaunts=" << g_alpine_game_config.play_taunt_sounds << "\n";
     file << "ShowRunTimer=" << g_alpine_game_config.show_run_timer << "\n";

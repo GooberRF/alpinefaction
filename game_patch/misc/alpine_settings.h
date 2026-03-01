@@ -136,7 +136,6 @@ struct AlpineGameSettings
     bool nearest_texture_filtering = false;
     bool direct_input = true;
     bool scoreboard_anim = true;
-    bool legacy_bob = false;
     bool scoreboard_split_simple = true;
     bool scoreboard_split_spectators = true;
     bool scoreboard_split_bots = false;
@@ -181,6 +180,7 @@ struct AlpineGameSettings
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
+    bool killfeed_enabled = false;
 
     // hud color overrides
     std::optional<uint32_t> sniper_scope_color_override{};
