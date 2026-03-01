@@ -23,11 +23,15 @@ static rf::Player* g_fpgun_main_player = nullptr;
 static FunHook<void(rf::Player*)> player_fpgun_update_state_anim_hook{
     0x004AA3A0,
     [](rf::Player* player) {
-        if (player == rf::local_player) {
-            // Only run the original state anim logic for the local player
+        // When legacy_bob is enabled for the local player, use the original (buggy) function
+        // which causes weapon bob to oscillate between IDLE and RUN states.
+        if (g_alpine_game_config.legacy_bob && player == rf::local_player) {
             player_fpgun_update_state_anim_hook.call_target(player);
             return;
         }
+        // Fixed logic: determine the desired state first, then apply it once.
+        // The original function would always start an IDLE transition before checking for RUN,
+        // causing the weapon bob to perpetually oscillate between IDLE and RUN states.
         rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
         if (!entity)
             return;
@@ -35,15 +39,17 @@ static FunHook<void(rf::Player*)> player_fpgun_update_state_anim_hook{
         if (rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon))
             state = rf::WS_LOOP_FIRE;
         else if (!rf::entity_is_falling(entity) && !rf::entity_is_swimming(entity)) {
-            // Only use the running animation when on the ground and moving.
-            // While falling, stay in idle to match normal first-person behavior.
             float horz_speed_pow2 = entity->p_data.vel.x * entity->p_data.vel.x +
                                       entity->p_data.vel.z * entity->p_data.vel.z;
             if (horz_speed_pow2 > 0.2f)
                 state = rf::WS_RUN;
         }
-        if (!rf::player_fpgun_is_in_state_anim(player, state))
+        if (!rf::player_fpgun_is_in_state_anim(player, state)) {
+            // Stop idle action animations when entering auto-fire state
+            if (state == rf::WS_LOOP_FIRE)
+                rf::player_fpgun_stop_idle_actions(player);
             rf::player_fpgun_set_next_state_anim(player, state);
+        }
     },
 };
 
@@ -184,22 +190,7 @@ void fpgun_play_random_idle_anim()
     rf::player_fpgun_reset_idle_timeout(pp);
 }
 
-CodeInjection player_fpgun_update_state_anim_stop_idle_injection{
-    0x004AA3FA,
-    [](auto& regs) {
-        rf::Player* pp = regs.esi;
-        if (pp) {
-            rf::player_fpgun_stop_idle_actions(pp);
-        }
-    },
-};
 
-CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
-    0x004AA4E4,
-    [](rf::Player* pp) {
-        return;
-    },
-};
 
 #ifndef NDEBUG
 
@@ -279,6 +270,15 @@ ConsoleCommand2 fpgun_fov_scale_cmd{
     },
     "Set scale value applied to FOV setting for first person weapon models.",
     "r_fpgunfov [scale]",
+};
+
+ConsoleCommand2 legacy_bob_cmd{
+    "cl_legacy_bob",
+    []() {
+        g_alpine_game_config.legacy_bob = !g_alpine_game_config.legacy_bob;
+        rf::console::print("Legacy weapon bob: {}", g_alpine_game_config.legacy_bob ? "enabled" : "disabled");
+    },
+    "Toggle legacy weapon bob animation (original has a pulsing artifact while running)",
 };
 
 CodeInjection player_fpgun_render_main_player_entity_injection{
@@ -410,15 +410,11 @@ void player_fpgun_do_patch()
     // Render rocket launcher scanner image every frame
     // addr_as_ref<bool>(0x5A1020) = 0;
 
-    // do not stop playing idle anim when fpgun state anim changes
-    player_fpgun_stop_idle_actions_hook.install();
-
-    // stop idle anims when starting auto fire (semi auto is already handled by stock game)
-    player_fpgun_update_state_anim_stop_idle_injection.install();
 
     // Allow customizing fpgun fov
     player_fpgun_render_gr_setup_3d_hook.install();
     fpgun_fov_scale_cmd.register_cmd();
+    legacy_bob_cmd.register_cmd();
 
     // Do not cull entities too early.
     player_fpgun_render_ir_cull_patch_1.install();
