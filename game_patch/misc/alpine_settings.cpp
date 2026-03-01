@@ -411,6 +411,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.always_autoswitch_empty = std::stoi(settings["AlwaysAutoswitchEmpty"]);
         processed_keys.insert("AlwaysAutoswitchEmpty");
     }
+    if (settings.count("LegacyBob")) {
+        g_alpine_game_config.legacy_bob = std::stoi(settings["LegacyBob"]);
+        processed_keys.insert("LegacyBob");
+    }
 
     // Load weapon autoswitch priority
     if (settings.count("WeaponAutoswitchPriority")) {
@@ -868,10 +872,6 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.scoreboard_anim = std::stoi(settings["ScoreboardAnimations"]);
         processed_keys.insert("ScoreboardAnimations");
     }
-    if (settings.count("LegacyBob")) {
-        g_alpine_game_config.legacy_bob = std::stoi(settings["LegacyBob"]);
-        processed_keys.insert("LegacyBob");
-    }
     if (settings.count("MultiplayerTracker")) {
         g_alpine_game_config.set_multiplayer_tracker(settings["MultiplayerTracker"]);
         processed_keys.insert("MultiplayerTracker");
@@ -1148,6 +1148,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ColorblindMode=" << g_alpine_game_config.colorblind_mode << "\n";
     file << "AutoswitchFireWait=" << g_alpine_game_config.suppress_autoswitch_fire_wait << "\n";
     file << "AlwaysAutoswitchEmpty=" << g_alpine_game_config.always_autoswitch_empty << "\n";
+    file << "LegacyBob=" << g_alpine_game_config.legacy_bob << "\n";
 
     // Autoswitch priority
     file << "WeaponAutoswitchPriority=";
@@ -1293,7 +1294,6 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowPlayerNames=" << g_alpine_game_config.display_target_player_names << "\n";
     file << "VerboseTimer=" << g_alpine_game_config.verbose_time_left_display << "\n";
     file << "ScoreboardAnimations=" << g_alpine_game_config.scoreboard_anim << "\n";
-    file << "LegacyBob=" << g_alpine_game_config.legacy_bob << "\n";
     file << "MultiplayerTracker=" << g_alpine_game_config.multiplayer_tracker << "\n";
     file << "ServerMaxFPS=" << g_alpine_game_config.server_max_fps << "\n";
     file << "ServerNetFPS=" << g_alpine_game_config.server_netfps << "\n";
