@@ -265,12 +265,14 @@ CodeInjection geo_cache_validate_in_render{
         }
 
         // Read geo_cache pointer from room struct
-        auto* room = reinterpret_cast<char*>(static_cast<int>(regs.esi));
+        auto* room = reinterpret_cast<char*>(static_cast<uintptr_t>(regs.esi));
         auto* geo_cache = *reinterpret_cast<char**>(room + 0x4);
 
         if (geo_cache) {
             auto& pool_base = addr_as_ref<char*>(0x010e8f60);
-            if (geo_cache < pool_base || geo_cache >= pool_cursor_snapshot) {
+            auto gc_addr = reinterpret_cast<uintptr_t>(geo_cache);
+            if (gc_addr < reinterpret_cast<uintptr_t>(pool_base) ||
+                gc_addr >= reinterpret_cast<uintptr_t>(pool_cursor_snapshot)) {
                 // Cache pointer is outside the valid pool range — it's stale
                 *reinterpret_cast<void**>(room + 0x4) = nullptr;
                 geo_cache = nullptr;
@@ -280,7 +282,7 @@ CodeInjection geo_cache_validate_in_render{
         // Replicate overwritten instructions:
         //   5021a6: MOV EAX, [ESI+0x04]  (3 bytes)
         //   5021a9: TEST EAX, EAX         (2 bytes)
-        regs.eax = reinterpret_cast<int>(geo_cache);
+        regs.eax = reinterpret_cast<uintptr_t>(geo_cache);
         regs.eflags.cmp(static_cast<int>(regs.eax), 0);
         regs.eip = 0x5021ab; // Resume at JZ instruction after overwritten bytes
     },
