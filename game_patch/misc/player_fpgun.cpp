@@ -201,6 +201,19 @@ CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
     },
 };
 
+ConsoleCommand2 legacy_bob_cmd{
+    "cl_legacy_bob",
+    []() {
+        g_alpine_game_config.legacy_bob = !g_alpine_game_config.legacy_bob;
+        write_mem<u8>(0x004aa416, g_alpine_game_config.legacy_bob
+            ? 0x75   // JNZ — original buggy behavior
+            : asm_opcodes::jmp_rel_short);  // JMP — fix
+        rf::console::print("Legacy weapon bob: {}",
+            g_alpine_game_config.legacy_bob ? "enabled" : "disabled");
+    },
+    "Toggle legacy weapon bob (original has a pulsing artifact while running)",
+};
+
 #ifndef NDEBUG
 
 ConsoleCommand2 reload_fpgun_cmd{
@@ -360,6 +373,12 @@ void player_fpgun_do_patch()
     player_fpgun_render_main_player_entity_injection.install();
 
     player_fpgun_update_state_anim_hook.install();
+
+    // Fix weapon bob oscillation: skip premature IDLE transition in update_state_anim
+    if (!g_alpine_game_config.legacy_bob) {
+        write_mem<u8>(0x004aa416, asm_opcodes::jmp_rel_short);
+    }
+    legacy_bob_cmd.register_cmd();
 
     // Render IR for player that is currently being shown by camera - needed for spectate mode
     player_fpgun_render_ir_hook.install();

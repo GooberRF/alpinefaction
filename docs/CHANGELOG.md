@@ -47,6 +47,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add missing weapon animations and muzzle flashes in first person spectate
 - Add CTF flag icons to first person spectate
 - Make jump control move freelook camera up
+- Add `cl_legacy_bob` to restore legacy first person weapon running animation behavior
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
@@ -66,6 +67,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
 - Fix Alt+Enter crash in Direct3D 11 renderer
+- Fix premature idle transition in first person weapon running animations
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------
