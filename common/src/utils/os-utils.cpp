@@ -206,3 +206,16 @@ std::string get_temp_path_name(const char* prefix)
 
     return result;
 }
+
+std::string get_uptime_from(const std::time_t origin) {
+    const int64_t total_seconds = std::time(nullptr) - origin;
+    const int64_t total_minutes = total_seconds / 60;
+    const int64_t total_hours = total_minutes / 60;
+    return std::format(
+        "{:02}:{:02}:{:02}:{:02}",
+        total_hours / 24,
+        total_hours % 24,
+        total_minutes % 60,
+        total_seconds % 60
+    );
+}

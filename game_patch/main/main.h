@@ -7,15 +7,9 @@
 
 extern GameConfig g_game_config;
 extern AlpineCoreConfig g_alpine_system_config;
-
-// random number generator
 extern std::mt19937 g_rng;
-void initialize_random_generator();
+extern std::time_t g_process_startup_time;
 
 #ifdef _WINDOWS_
 extern HMODULE g_hmodule;
 #endif
-
-extern std::time_t g_process_startup_time;
-
-void evaluate_fullbright_meshes();

@@ -10,6 +10,7 @@
 #include <common/utils/string-utils.h>
 #include <format>
 #include <utility>
+#include <common/utils/os-utils.h>
 
 static bool display_mode_is_compact() {
     return g_alpine_game_config.remote_server_cfg_display_mode
@@ -506,17 +507,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
             };
             if (key.ends_with("Uptime:")) {
                 try {
-                    const int64_t startup_time = std::stoll(value);
-                    const int64_t total_seconds = std::time(nullptr) - startup_time;
-                    const int64_t total_minutes = total_seconds / 60;
-                    const int64_t total_hours = total_minutes / 60;
-                    const std::string uptime = std::format(
-                        "{:02}:{:02}:{:02}:{:02}",
-                        total_hours / 24,
-                        total_hours % 24,
-                        total_minutes % 60,
-                        total_seconds % 60
-                    );
+                    const std::string uptime = get_uptime_from(std::stoll(value));
                     print_value(uptime);
                 } catch (const std::exception&) {
                     goto PRINT_VALUE;

@@ -434,7 +434,7 @@ extern "C" void subhook_unk_opcode_handler(uint8_t* opcode)
 
 extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 {
-    DWORD start_ticks = GetTickCount();
+    g_process_startup_time = std::time(nullptr);
 
     // Init logging and crash dump support first
     init_logging();
@@ -483,7 +483,10 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 #endif
     debug_apply_patches();
 
-    xlog::info("Installing hooks took {} ms", GetTickCount() - start_ticks);
+    xlog::info(
+        "Installing hooks took {} ms",
+        std::time(nullptr) - g_process_startup_time
+    );
 
     return 1; // success
 }
@@ -493,7 +496,6 @@ BOOL WINAPI DllMain(
     [[maybe_unused]] const DWORD fdw_reason,
     [[maybe_unused]] const LPVOID lpv_reserved
 ) {
-    g_process_startup_time = std::time(nullptr);
     g_hmodule = instance_handle;
     DisableThreadLibraryCalls(instance_handle);
     return TRUE;
