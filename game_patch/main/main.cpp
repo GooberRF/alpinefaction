@@ -435,6 +435,7 @@ extern "C" void subhook_unk_opcode_handler(uint8_t* opcode)
 extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 {
     g_process_startup_time = std::time(nullptr);
+    const DWORD startup_ticks = GetTickCount();
 
     // Init logging and crash dump support first
     init_logging();
@@ -483,10 +484,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 #endif
     debug_apply_patches();
 
-    xlog::info(
-        "Installing hooks took {} ms",
-        std::time(nullptr) - g_process_startup_time
-    );
+    xlog::info("Installing hooks took {} ms", GetTickCount() - startup_ticks);
 
     return 1; // success
 }
