@@ -211,7 +211,7 @@ ConsoleCommand2 legacy_bob_cmd{
         rf::console::print("Legacy weapon bob: {}",
             g_alpine_game_config.legacy_bob ? "enabled" : "disabled");
     },
-    "Toggle legacy weapon bob (original has a pulsing artifact while running)",
+    "Toggle legacy weapon bob (original stutters while running)",
 };
 
 #ifndef NDEBUG
