@@ -31,14 +31,12 @@ static FunHook<void(rf::Player*)> player_fpgun_update_state_anim_hook{
         rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
         if (!entity)
             return;
-        // When falling, keep the current fpgun state anim to avoid
-        // cancelling action anims (reload, fire, draw, etc.) during spectate
-        if (rf::entity_is_falling(entity))
-            return;
         int state = rf::WS_IDLE;
         if (rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon))
             state = rf::WS_LOOP_FIRE;
-        else if (!rf::entity_is_swimming(entity)) {
+        else if (!rf::entity_is_falling(entity) && !rf::entity_is_swimming(entity)) {
+            // Only use the running animation when on the ground and moving.
+            // While falling, stay in idle to match normal first-person behavior.
             float horz_speed_pow2 = entity->p_data.vel.x * entity->p_data.vel.x +
                                       entity->p_data.vel.z * entity->p_data.vel.z;
             if (horz_speed_pow2 > 0.2f)

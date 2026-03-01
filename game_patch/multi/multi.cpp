@@ -262,11 +262,11 @@ FunHook<void()> multi_ctf_level_init_hook{
     },
 };
 
-static rf::Timestamp select_weapon_done_timestamp[rf::multi_max_player_id];
+rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
 
 bool multi_is_selecting_weapon(rf::Player* pp)
 {
-    auto& done_timestamp = select_weapon_done_timestamp[pp->net_data->player_id];
+    auto& done_timestamp = g_select_weapon_done_timestamp[pp->net_data->player_id];
     return done_timestamp.valid() && !done_timestamp.elapsed();
 }
 
@@ -274,7 +274,7 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
 {
     rf::player_make_weapon_current_selection(pp, weapon_type);
     ep->ai.current_primary_weapon = weapon_type;
-    select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+    g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
 }
 
 FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hook{
@@ -310,7 +310,7 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
         else {
             rf::player_make_weapon_current_selection(pp, weapon_type);
             ep->ai.current_primary_weapon = weapon_type;
-            select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+            g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
         }
     },
 };
@@ -432,7 +432,7 @@ bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
     static std::vector<int> last_weapon_fire(rf::multi_max_player_id, 0);
 
     int fire_wait_ms = 0;
-        
+
     if (rf::weapon_is_semi_automatic(weapon_type)) {
 
         // if semi auto click limit is on
@@ -459,7 +459,7 @@ bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
     else {
         fire_wait_ms = std::min(rf::weapon_get_fire_wait_ms(weapon_type, 0),  // primary
             rf::weapon_get_fire_wait_ms(weapon_type, 1)); // alt
-    }    
+    }
 
     // reset if weapon changed
     if (last_weapon_id[player_id] != weapon_type) {
