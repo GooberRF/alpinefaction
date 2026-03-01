@@ -201,13 +201,23 @@ CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
     },
 };
 
+// Fix weapon bob oscillation: the original code at 0x004aa409 sets the weapon to IDLE before
+// checking if the player is running, causing constant IDLE<->RUN oscillation. This injection
+// skips that premature IDLE transition; the second IDLE check at 0x004aa474 handles all
+// legitimate idle cases.
+CodeInjection player_fpgun_skip_premature_idle_injection{
+    0x004aa409,
+    [](auto& regs) {
+        if (!g_alpine_game_config.legacy_bob) {
+            regs.eip = 0x004aa423;
+        }
+    },
+};
+
 ConsoleCommand2 legacy_bob_cmd{
     "cl_legacy_bob",
     []() {
         g_alpine_game_config.legacy_bob = !g_alpine_game_config.legacy_bob;
-        write_mem<u8>(0x004aa416, g_alpine_game_config.legacy_bob
-            ? 0x75   // JNZ — original buggy behavior
-            : asm_opcodes::jmp_rel_short);  // JMP — fix
         rf::console::print("Legacy weapon bob: {}",
             g_alpine_game_config.legacy_bob ? "enabled" : "disabled");
     },
@@ -375,9 +385,7 @@ void player_fpgun_do_patch()
     player_fpgun_update_state_anim_hook.install();
 
     // Fix weapon bob oscillation: skip premature IDLE transition in update_state_anim
-    if (!g_alpine_game_config.legacy_bob) {
-        write_mem<u8>(0x004aa416, asm_opcodes::jmp_rel_short);
-    }
+    player_fpgun_skip_premature_idle_injection.install();
     legacy_bob_cmd.register_cmd();
 
     // Render IR for player that is currently being shown by camera - needed for spectate mode
