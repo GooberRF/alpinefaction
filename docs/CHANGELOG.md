@@ -46,6 +46,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add hitsounds, kill sounds, and damage numbers to first person spectate
 - Add missing weapon animations and muzzle flashes in first person spectate
 - Add CTF flag icons to first person spectate
+- Make jump control move freelook camera up
 - Add `cl_legacy_bob` to toggle between legacy and velocity-based first person weapon animation bobbing
 
 [@natarii](https://github.com/natarii)
@@ -61,6 +62,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners
+- Fix stale weapon selection time stamps
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic

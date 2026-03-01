@@ -248,6 +248,9 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
+            if (player->net_data) {
+                g_select_weapon_done_timestamp[player->net_data->player_id].invalidate();
+            }
         }
         player_destroy_hook.call_target(player);
     },
