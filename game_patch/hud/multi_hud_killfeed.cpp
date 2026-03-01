@@ -67,7 +67,7 @@ static KillfeedColor color_for_color_id(int color_id)
         case 3: return killfeed_color_blue;   // blue_blue
         case 4: return killfeed_color_white;  // white_white (local player)
         case 6: return {255, 215, 0};         // gold_white
-        default: return killfeed_color_green; // default_ green
+        default: return killfeed_color_green; // default green
     }
 }
 
