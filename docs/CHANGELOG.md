@@ -30,6 +30,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `/coinflip` chat command
 - Raise limit on lights per level from 1100 to 8192
 - Raise level editor limit on lights projecting on a single face from 64 to 1024
+- Raise level editor geo_cache limits: face list 16384 to 65536, batch count 512 to 1024, memory pool 8 MB to 32 MB
+- Raise level editor detail rooms limit from 256 to 8192
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
@@ -56,6 +58,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix overflow fix for `emitters.tbl` entries not being correctly applied
 - Fix some string errors when compiled using mingw
 - Fix rare crash when loading skeletons
+- Fix level editor geometry rebuild sometimes reusing stale data from previous builds
+- Fix level editor geometry sometimes not properly rendering after rebuilding
+- Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners
