@@ -201,15 +201,15 @@ CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
     },
 };
 
-// Fix weapon bob oscillation: the original code at 0x004aa409 sets the weapon to IDLE before
+// Fix weapon bob oscillation: the original code at 0x004AA409 sets the weapon to IDLE before
 // checking if the player is running, causing constant IDLE<->RUN oscillation. This injection
-// skips that premature IDLE transition; the second IDLE check at 0x004aa474 handles all
+// skips that premature IDLE transition; the second IDLE check at 0x004AA474 handles all
 // legitimate idle cases.
 CodeInjection player_fpgun_skip_premature_idle_injection{
-    0x004aa409,
+    0x004AA409,
     [](auto& regs) {
         if (!g_alpine_game_config.legacy_bob) {
-            regs.eip = 0x004aa423;
+            regs.eip = 0x004AA423;
         }
     },
 };
