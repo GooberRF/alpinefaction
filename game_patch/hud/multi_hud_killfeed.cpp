@@ -1,6 +1,5 @@
 #include <array>
 #include <string>
-#include <vector>
 #include <patch_common/FunHook.h>
 #include "../rf/hud.h"
 #include "../rf/gr/gr.h"
