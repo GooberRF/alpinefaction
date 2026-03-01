@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <string>
 #include "../rf/multi.h"
+#include "destruction.h"
 
 extern bool g_character_meshes_are_fullbright;
 void misc_init();
@@ -19,9 +20,6 @@ void evaluate_restrict_disable_ss();
 void evaluate_restrict_disable_muzzle_flash();
 void initialize_achievement_manager();
 void set_levelmod_autotexture_ppm();
-void apply_geoable_flags();
-void g_solid_set_rf2_geo_limit(int limit);
-int g_solid_get_rf2_geo_limit();
 void clear_explicit_upcoming_game_type_request();
 bool file_loaded_from_alpinefaction_vpp(const char* filename);
 bool weapon_reticle_is_customized(int weapon_id, bool bighud);

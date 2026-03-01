@@ -189,6 +189,200 @@ static void apply_geoable_to_selected_brushes(int new_state)
     } while (node != level->brush_list);
 }
 
+// Returns true if at least one selected brush is a breakable detail brush (is_detail && life != -1)
+static bool selection_has_breakable_detail()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return false;
+    BrushNode* node = level->brush_list;
+    if (!node) return false;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1)
+            return true;
+        node = node->next;
+    } while (node != level->brush_list);
+    return false;
+}
+
+// Returns material index for selected breakable brushes, or -1 if mixed
+static int compute_material_from_selected()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return 0;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return 0;
+    int result = -2; // not set yet
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
+            uint8_t mat = 0; // default = Glass
+            auto it = std::find(props.breakable_brush_uids.begin(),
+                                props.breakable_brush_uids.end(), node->uid);
+            if (it != props.breakable_brush_uids.end()) {
+                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                mat = props.breakable_materials[idx] & 0x7F; // mask out flags (bit 7 = no_debris)
+            }
+            if (result == -2) {
+                result = mat;
+            } else if (result != mat) {
+                return -1; // mixed
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+    return (result == -2) ? 0 : result;
+}
+
+static void apply_material_to_selected_brushes(uint8_t mat)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
+            auto it = std::find(props.breakable_brush_uids.begin(),
+                                props.breakable_brush_uids.end(), node->uid);
+            if (mat == 0) {
+                // Glass = default, remove from list (also clears no_debris flag)
+                if (it != props.breakable_brush_uids.end()) {
+                    auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                    props.breakable_brush_uids.erase(it);
+                    props.breakable_room_uids.erase(props.breakable_room_uids.begin() + idx);
+                    props.breakable_materials.erase(props.breakable_materials.begin() + idx);
+                    xlog::info("[Material] brush uid={} set to Glass (removed from list)", node->uid);
+                }
+            } else {
+                // Non-glass: add or update (preserve flags in high bit)
+                if (it != props.breakable_brush_uids.end()) {
+                    auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                    uint8_t flags = props.breakable_materials[idx] & 0x80;
+                    props.breakable_materials[idx] = mat | flags;
+                    xlog::info("[Material] brush uid={} updated material to {}", node->uid, mat);
+                } else {
+                    props.breakable_brush_uids.push_back(node->uid);
+                    props.breakable_room_uids.push_back(0); // filled at save time
+                    props.breakable_materials.push_back(mat);
+                    xlog::info("[Material] brush uid={} added with material {} (total breakable={})",
+                        node->uid, mat, props.breakable_brush_uids.size());
+                }
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+}
+
+static void init_material_combo(HWND hdlg)
+{
+    HWND combo = GetDlgItem(hdlg, IDC_MATERIAL_COMBO);
+    HWND label = GetDlgItem(hdlg, IDC_MATERIAL_LABEL);
+    if (!combo) return;
+
+    // Reset content
+    SendMessageA(combo, CB_RESETCONTENT, 0, 0);
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Glass"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Rock"));
+
+    bool has_breakable = selection_has_breakable_detail();
+    EnableWindow(combo, has_breakable ? TRUE : FALSE);
+    if (label) EnableWindow(label, has_breakable ? TRUE : FALSE);
+
+    if (has_breakable) {
+        int mat = compute_material_from_selected();
+        if (mat >= 0) {
+            SendMessageA(combo, CB_SETCURSEL, mat, 0);
+        } else {
+            // Mixed — don't select anything
+            SendMessageA(combo, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+        }
+    } else {
+        SendMessageA(combo, CB_SETCURSEL, 0, 0); // show Glass as default
+    }
+}
+
+// ===== Brush "No Debris" support =====
+
+// Returns BST_CHECKED/UNCHECKED/INDETERMINATE for the no_debris flag on selected breakable brushes
+static int compute_no_debris_state_from_selected()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return BST_UNCHECKED;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return BST_UNCHECKED;
+    int num_checked = 0;
+    int num_applicable = 0;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
+            auto it = std::find(props.breakable_brush_uids.begin(),
+                                props.breakable_brush_uids.end(), node->uid);
+            if (it != props.breakable_brush_uids.end()) {
+                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                uint8_t mat = props.breakable_materials[idx] & 0x7F;
+                if (mat > 0) { // non-glass only
+                    num_applicable++;
+                    if (props.breakable_materials[idx] & 0x80)
+                        num_checked++;
+                }
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+
+    if (num_applicable == 0) return BST_UNCHECKED;
+    if (num_checked == num_applicable) return BST_CHECKED;
+    if (num_checked == 0) return BST_UNCHECKED;
+    return BST_INDETERMINATE;
+}
+
+static void apply_no_debris_to_selected_brushes(int new_state)
+{
+    if (new_state == BST_INDETERMINATE) return;
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
+            auto it = std::find(props.breakable_brush_uids.begin(),
+                                props.breakable_brush_uids.end(), node->uid);
+            if (it != props.breakable_brush_uids.end()) {
+                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                if (new_state == BST_CHECKED) {
+                    props.breakable_materials[idx] |= 0x80;
+                } else {
+                    props.breakable_materials[idx] &= 0x7F;
+                }
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+}
+
+static void init_no_debris_checkbox(HWND hdlg)
+{
+    HWND ctrl = GetDlgItem(hdlg, IDC_NO_DEBRIS);
+    if (!ctrl) return;
+
+    bool has_breakable = selection_has_breakable_detail();
+    int mat = has_breakable ? compute_material_from_selected() : 0;
+    bool enabled = has_breakable && mat > 0; // non-glass breakable only
+
+    EnableWindow(ctrl, enabled ? TRUE : FALSE);
+    if (enabled) {
+        CheckDlgButton(hdlg, IDC_NO_DEBRIS, compute_no_debris_state_from_selected());
+    } else {
+        CheckDlgButton(hdlg, IDC_NO_DEBRIS, BST_UNCHECKED);
+    }
+}
+
 // Dialog 205 (brush panel) subclass for Is Geoable click handling
 static WNDPROC g_brush_panel_orig_wndproc = nullptr;
 static HWND g_brush_panel_hwnd = nullptr;
@@ -212,12 +406,27 @@ static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
                            reinterpret_cast<LPARAM>(GetDlgItem(hwnd, 1215)));
         }
     }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_MATERIAL_COMBO && HIWORD(wParam) == CBN_SELCHANGE) {
+        int sel = static_cast<int>(SendDlgItemMessageA(hwnd, IDC_MATERIAL_COMBO, CB_GETCURSEL, 0, 0));
+        if (sel >= 0) {
+            apply_material_to_selected_brushes(static_cast<uint8_t>(sel));
+        }
+        // Refresh no_debris checkbox enable state when material changes
+        init_no_debris_checkbox(hwnd);
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_NO_DEBRIS) {
+        int state = IsDlgButtonChecked(hwnd, IDC_NO_DEBRIS);
+        apply_no_debris_to_selected_brushes(state);
+    }
     if (msg == WM_COMMAND && LOWORD(wParam) == 1215) {
         // Auto-uncheck Is Geoable when Is Detail is no longer checked
         if (IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
             CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
             apply_geoable_to_selected_brushes(BST_UNCHECKED);
         }
+        // Refresh material combo and no_debris enable state when detail flag changes
+        init_material_combo(hwnd);
+        init_no_debris_checkbox(hwnd);
     }
     return CallWindowProcA(g_brush_panel_orig_wndproc, hwnd, msg, wParam, lParam);
 }
@@ -231,6 +440,14 @@ static LRESULT CALLBACK BrushPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
     if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
         int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
         apply_geoable_to_selected_brushes(state);
+        // Apply material from combo
+        int sel = static_cast<int>(SendDlgItemMessageA(hwnd, IDC_MATERIAL_COMBO, CB_GETCURSEL, 0, 0));
+        if (sel >= 0) {
+            apply_material_to_selected_brushes(static_cast<uint8_t>(sel));
+        }
+        // Apply no_debris checkbox
+        int nd_state = IsDlgButtonChecked(hwnd, IDC_NO_DEBRIS);
+        apply_no_debris_to_selected_brushes(nd_state);
     }
     if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
         int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
@@ -244,11 +461,18 @@ static LRESULT CALLBACK BrushPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
             CheckDlgButton(hwnd, 1215, BST_CHECKED);
         }
     }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_MATERIAL_COMBO && HIWORD(wParam) == CBN_SELCHANGE) {
+        // Refresh no_debris checkbox when material changes
+        init_no_debris_checkbox(hwnd);
+    }
     if (msg == WM_COMMAND && LOWORD(wParam) == 1215) {
         // Auto-uncheck Is Geoable when Is Detail is no longer checked
         if (IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
             CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
         }
+        // Refresh material combo and no_debris enable state when detail flag changes
+        init_material_combo(hwnd);
+        init_no_debris_checkbox(hwnd);
     }
     if (msg == WM_NCDESTROY) {
         SetWindowLongPtrA(hwnd, GWLP_WNDPROC,
@@ -267,6 +491,8 @@ static LRESULT CALLBACK BrushPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM l
         if (msg->message == WM_INITDIALOG && GetDlgItem(msg->hwnd, IDC_IS_GEOABLE)) {
             int state = compute_geoable_state_from_selected();
             CheckDlgButton(msg->hwnd, IDC_IS_GEOABLE, state);
+            init_material_combo(msg->hwnd);
+            init_no_debris_checkbox(msg->hwnd);
             g_brush_props_orig_wndproc = reinterpret_cast<WNDPROC>(
                 SetWindowLongPtrA(msg->hwnd, GWLP_WNDPROC,
                                   reinterpret_cast<LONG_PTR>(BrushPropsSubclassProc)));
@@ -390,11 +616,13 @@ void __fastcall brush_mode_handle_selection_new(void* self)
     g_skip_wnd_set_text = false;
     LogDlg_Append(GetLogDlg(), "");
 
-    // Update Is Geoable checkbox in brush panel
+    // Update Is Geoable checkbox and material combo in brush panel
     HWND hdlg = WndToHandle(reinterpret_cast<CWnd*>(self));
     if (hdlg && GetDlgItem(hdlg, IDC_IS_GEOABLE)) {
         int state = compute_geoable_state_from_selected();
         CheckDlgButton(hdlg, IDC_IS_GEOABLE, state);
+        init_material_combo(hdlg);
+        init_no_debris_checkbox(hdlg);
         // Subclass panel for Is Geoable click handling (once per HWND)
         if (hdlg != g_brush_panel_hwnd) {
             if (g_brush_panel_hwnd && g_brush_panel_orig_wndproc) {
@@ -739,6 +967,86 @@ CodeInjection CDedLevel_CloneObject_injection{
     },
 };
 
+// Copy geoable and breakable material alpine properties from old_uid to new_uid.
+// Used when a brush is duplicated or pasted with a new UID.
+static void copy_alpine_brush_props(int old_uid, int new_uid)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    // Copy geoable property
+    if (std::find(props.geoable_brush_uids.begin(),
+                  props.geoable_brush_uids.end(), old_uid)
+        != props.geoable_brush_uids.end()) {
+        props.geoable_brush_uids.push_back(new_uid);
+    }
+
+    // Copy breakable material property
+    auto bit = std::find(props.breakable_brush_uids.begin(),
+                         props.breakable_brush_uids.end(), old_uid);
+    if (bit != props.breakable_brush_uids.end()) {
+        auto idx = std::distance(props.breakable_brush_uids.begin(), bit);
+        props.breakable_brush_uids.push_back(new_uid);
+        props.breakable_room_uids.push_back(0); // filled at save time
+        props.breakable_materials.push_back(props.breakable_materials[idx]);
+    }
+}
+
+// Hook in BrushList_clone_selected (0x00412c27) at 0x00412c91, right after the new UID
+// is stored in the clone. EDI = source BrushNode*, ESI = cloned BrushNode* (with new UID).
+CodeInjection brush_clone_copy_alpine_props_injection{
+    0x00412c91,
+    [](auto& regs) {
+        auto* source = reinterpret_cast<BrushNode*>(static_cast<void*>(regs.edi));
+        auto* clone  = reinterpret_cast<BrushNode*>(static_cast<void*>(regs.esi));
+        copy_alpine_brush_props(source->uid, clone->uid);
+    },
+};
+
+// Hook BrushNode_clone_from (0x0044d620) to propagate source UID through copy/paste.
+// BrushNode_clone_from copies is_detail, life, state etc. but intentionally does NOT copy uid.
+// In the copy-to-clipboard path (caller 0x0041301f): we store the source brush's uid in the
+// clipboard clone so it carries the original identity.
+// In the paste-from-clipboard path (caller 0x0041325c): we capture the clipboard clone's uid
+// (set during copy) so we can copy alpine properties after the new uid is assigned.
+static int g_paste_source_uid = -1;
+
+CodeInjection brush_clone_from_alpine_hook{
+    0x0044d620,
+    [](auto& regs) {
+        auto* stack = reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(regs.esp));
+        uint32_t ret_addr = stack[0];
+        auto* source = reinterpret_cast<BrushNode*>(stack[1]);
+        auto* clone = reinterpret_cast<BrushNode*>(static_cast<void*>(regs.ecx));
+
+        if (ret_addr == 0x0041301f) {
+            // Copy to clipboard: store source uid in clipboard clone.
+            // This runs BEFORE clone_from executes. clone_from won't touch uid, so our
+            // write persists. The clipboard clone will carry the original brush's uid.
+            clone->uid = source->uid;
+        }
+        else if (ret_addr == 0x0041325c) {
+            // Paste from clipboard: source is the clipboard clone (uid set above).
+            // Save it so the post-insert hook can copy alpine properties.
+            g_paste_source_uid = source->uid;
+        }
+    },
+};
+
+// After FUN_00414650 inserts the pasted brush and assigns a new UID (0x00413266).
+// ESI = paste clone with its new UID. Copy alpine properties from the original source.
+CodeInjection brush_paste_apply_alpine_props{
+    0x00413266,
+    [](auto& regs) {
+        if (g_paste_source_uid > 0) {
+            auto* paste_clone = reinterpret_cast<BrushNode*>(static_cast<void*>(regs.esi));
+            copy_alpine_brush_props(g_paste_source_uid, paste_clone->uid);
+            g_paste_source_uid = -1;
+        }
+    },
+};
+
 CodeInjection CDedEvent_Copy_injection{
     0x0045146D,
     [](auto& regs) {
@@ -1041,6 +1349,11 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Fix copying cutscene path node
     CDedLevel_CloneObject_injection.install();
+
+    // Copy geoable/breakable properties when duplicating or pasting brushes
+    brush_clone_copy_alpine_props_injection.install();
+    brush_clone_from_alpine_hook.install();
+    brush_paste_apply_alpine_props.install();
 
     // Fix copying bool2 field in events
     CDedEvent_Copy_injection.install();

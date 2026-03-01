@@ -264,6 +264,9 @@ struct AlpineLevelProperties
     bool rf2_style_geomod = false;
     std::vector<int32_t> geoable_brush_uids;
     std::vector<int32_t> geoable_room_uids; // computed at save time, parallel to geoable_brush_uids
+    std::vector<int32_t> breakable_brush_uids;
+    std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
+    std::vector<uint8_t> breakable_materials;  // material type per entry
 
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
@@ -280,6 +283,9 @@ struct AlpineLevelProperties
         rf2_style_geomod = false;
         geoable_brush_uids.clear();
         geoable_room_uids.clear();
+        breakable_brush_uids.clear();
+        breakable_room_uids.clear();
+        breakable_materials.clear();
     }
 
     void Serialize(rf::File& file) const
@@ -303,6 +309,16 @@ struct AlpineLevelProperties
             file.write<int32_t>(geoable_brush_uids[i]);
             int32_t room_uid = (i < geoable_room_uids.size()) ? geoable_room_uids[i] : 0;
             file.write<int32_t>(room_uid);
+        }
+        // Write breakable material entries as (brush_uid, room_uid, material) triples
+        std::uint32_t bcount = static_cast<std::uint32_t>(breakable_brush_uids.size());
+        file.write<std::uint32_t>(bcount);
+        for (std::uint32_t i = 0; i < bcount; i++) {
+            file.write<int32_t>(breakable_brush_uids[i]);
+            int32_t room_uid = (i < breakable_room_uids.size()) ? breakable_room_uids[i] : 0;
+            file.write<int32_t>(room_uid);
+            uint8_t mat = (i < breakable_materials.size()) ? breakable_materials[i] : 0;
+            file.write<uint8_t>(mat);
         }
     }
 
@@ -406,6 +422,29 @@ struct AlpineLevelProperties
                 geoable_room_uids[i] = room_uid;
             }
             xlog::debug("[AlpineLevelProps] geoable entries count={}", count);
+
+            // Breakable material entries as (brush_uid, room_uid, material) triples
+            std::uint32_t bcount = 0;
+            if (!read_bytes(&bcount, sizeof(bcount)))
+                return;
+            if (bcount > 10000) bcount = 10000;
+            breakable_brush_uids.resize(bcount);
+            breakable_room_uids.resize(bcount);
+            breakable_materials.resize(bcount);
+            for (std::uint32_t i = 0; i < bcount; i++) {
+                int32_t brush_uid = 0;
+                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                    return;
+                breakable_brush_uids[i] = brush_uid;
+                int32_t room_uid = 0;
+                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                    return;
+                breakable_room_uids[i] = room_uid;
+                uint8_t mat = 0;
+                if (!read_bytes(&mat, sizeof(mat)))
+                    return;
+                breakable_materials[i] = mat;
+            }
         }
     }
 };

@@ -123,4 +123,7 @@ namespace rf
     static auto snd_pc_calculate_pan = addr_as_ref<float(const Vector3& pos)>(0x00543EA0);
 
     static auto& level_get_ambient_sound_from_uid = addr_as_ref<AmbientSound*(int uid)>(0x0045AFE0);
+
+    static auto& foley_lookup_by_name = addr_as_ref<int(const char* name)>(0x00434CB0);
+    static auto& foley_get_sound_handle = addr_as_ref<int(int foley_id)>(0x00434DA0);
 }

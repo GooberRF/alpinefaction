@@ -42,6 +42,7 @@ void register_sound_commands();
 void player_do_patch();
 void player_fpgun_do_patch();
 void g_solid_do_patch();
+void destruction_do_patch();
 void camera_do_patch();
 void ui_apply_patch();
 void game_apply_patch();
@@ -662,6 +663,7 @@ void misc_init()
     player_do_patch();
     player_fpgun_do_patch();
     g_solid_do_patch();
+    destruction_do_patch();
     register_sound_commands();
     camera_do_patch();
     ui_apply_patch();

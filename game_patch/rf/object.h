@@ -38,12 +38,32 @@ namespace rf
         OT_GLARE = 0xA,
     };
 
+    enum DamageType
+    {
+        DT_BASH = 0,
+        DT_BULLET = 1,
+        DT_ARMOR_PIERCING_BULLET = 2,
+        DT_EXPLOSIVE = 3,
+        DT_FIRE = 4,
+        DT_ENERGY = 5,
+        DT_ELECTRICAL = 6,
+        DT_ACID = 7,
+        DT_SCALDING = 8,
+        DT_CRUSH = 9,
+        DT_NUM = 11,
+    };
+
     enum ObjectFlags : int
     {
         OF_DELAYED_DELETE = 0x2,
         OF_INVULNERABLE = 0x4,
+        OF_IS_PLAYER = 0x8,            // checked by obj_is_player (FUN_004895d0)
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
+        OF_NO_COLLIDE_SP = 0x4000,     // skip object-object collision in singleplayer
+        OF_NO_COLLIDE_REGISTER = 0x8000, // skip collision pair registration (FUN_0048c9a0)
+        OF_NO_PLAYER_COLLIDE = 0x20000,  // skip entity-player collision in collision_filter
+        OF_WEAPON_ONLY_COLLIDE = 0x40000, // only collide with weapons (type 2)
         OF_IN_LIQUID = 0x80000,
         OF_HAS_ALPHA = 0x100000,
     };
@@ -147,6 +167,15 @@ namespace rf
         String* custom_sound_set;
     };
     static_assert(sizeof(Debris) == 0x2B4);
+
+    // DebrisCreateStruct.debris_flags — controls debris-specific behavior in FUN_004130b0.
+    enum DebrisFlags : int
+    {
+        DF_BOUNCE             = 0x04,       // adds PF_BOUNCE (0x100) to physics_flags
+        DF_UNK_08             = 0x08,
+        DF_VERTEX_TRANSFORM   = 0x10,       // trigger vertex local-space transform (FUN_004d82f0)
+        DF_UNK_40000000       = 0x40000000,
+    };
 
     struct DebrisCreateStruct
     {

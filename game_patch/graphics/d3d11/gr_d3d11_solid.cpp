@@ -308,6 +308,9 @@ namespace df::gr::d3d11
         // recursion if we iterate it unconditionally.
         if (!room->is_detail) {
             for (GRoom* detail_room : room->detail_rooms) {
+                if (detail_room->face_list.empty()) {
+                    continue; // skip destroyed breakable detail rooms
+                }
                 add_room(detail_room, solid);
             }
         }
@@ -852,6 +855,10 @@ namespace df::gr::d3d11
             // Note: calling set_currently_rendered_room could improve culling here but it breaks some levels
             // if a detail brush is contained in multiple normal rooms
             for (GRoom* detail_room : room->detail_rooms) {
+                if (detail_room->face_list.empty()) {
+                    // Happens when a breakable detail brush is destroyed
+                    continue;
+                }
                 if (detail_room->room_to_render_with == room && !gr::cull_bounding_box(detail_room->bbox_min, detail_room->bbox_max)) {
                     render_detail(solid, detail_room, false);
                 }

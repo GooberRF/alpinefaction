@@ -99,6 +99,13 @@ namespace rf
         GEOMOD_RF2_STYLE = 0x20, // Alpine 1.3
     };
 
+    // Material type for breakable detail brushes (life != -1)
+    enum class DetailMaterial : uint8_t {
+        Glass = 0, // default — stock glass shatter behavior
+        Rock  = 1, // resistant to most damage; rock debris + Rockfall foley
+        Count
+    };
+
     struct GSolid
     {
         GBBox *bbox;
@@ -145,6 +152,13 @@ namespace rf
         {
             AddrCaller{0x004F8730}.this_call(this, ppm);
         }
+
+        // Extract all faces with matching group_id into a new GSolid.
+        // Removes originals from this solid (face_list, room face_list, vertices).
+        GSolid* extract_faces_by_group(int group_id)
+        {
+            return AddrCaller{0x004d0590}.this_call<GSolid*>(this, group_id);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
 
@@ -180,7 +194,9 @@ namespace rf
 #ifdef ALPINE_FACTION
         VArray<GDecal*> decals;
         bool is_geoable;
-        char _pad_geoable[3];
+        DetailMaterial material_type; // Alpine 1.3: breakable brush material
+        bool no_debris;              // Alpine 1.3: skip debris creation on destruction
+        char _pad_geoable[1];
         int padding[45];
 #else
         FArray<GDecal*, 48> decals;

@@ -367,7 +367,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
 // Brush mode side panel (replaces stock dialog 205 with added "Is Geoable" checkbox)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_BRUSH_MODE_PANEL DIALOGEX 0, 0, 129, 314
+IDD_BRUSH_MODE_PANEL DIALOGEX 0, 0, 129, 338
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
 EXSTYLE WS_EX_CLIENTEDGE | WS_EX_CONTROLPARENT
 FONT 8, "MS Sans Serif"
@@ -390,19 +390,22 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Clip", 1582, 9, 216, 50, 14
     PUSHBUTTON      "Carve", 1581, 67, 216, 50, 14
     GROUPBOX        "Brush Operators", -1, 4, 136, 121, 101
-    GROUPBOX        "Brush Properties", -1, 4, 242, 121, 68
+    GROUPBOX        "Brush Properties", -1, 4, 242, 121, 94
     AUTO3STATE      "Is Portal", 1214, 10, 253, 41, 10
     AUTO3STATE      "Is Detail", 1215, 10, 262, 41, 10
     AUTO3STATE      "Is Geoable", IDC_IS_GEOABLE, 10, 272, 54, 10
     AUTOCHECKBOX    "Emits Steam", 1608, 10, 282, 58, 8
-    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 9, 292, 52, 14, WS_EX_CLIENTEDGE
-    LTEXT           "life (-1 = infinite)", -1, 67, 295, 50, 8
+    AUTOCHECKBOX    "No Debris", IDC_NO_DEBRIS, 10, 292, 50, 8
+    LTEXT           "Life (-1 = infinite):", -1, 10, 306, 56, 8
+    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 67, 303, 52, 14, WS_EX_CLIENTEDGE
+    LTEXT           "Material:", IDC_MATERIAL_LABEL, 10, 322, 32, 8
+    COMBOBOX        IDC_MATERIAL_COMBO, 67, 319, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     PUSHBUTTON      "Update", 1523, 69, 253, 50, 14
 }
 
 // Brush properties popup (replaces stock dialog 270 with added "Is Geoable" checkbox)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_BRUSH_PROPERTIES DIALOGEX 0, 0, 183, 73
+IDD_BRUSH_PROPERTIES DIALOGEX 0, 0, 183, 99
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
 CAPTION "Brush Properties"
 FONT 8, "MS Sans Serif"
@@ -411,9 +414,12 @@ FONT 8, "MS Sans Serif"
     AUTO3STATE      "Is Detail", 1215, 7, 18, 41, 10
     AUTO3STATE      "Is Geoable", IDC_IS_GEOABLE, 7, 29, 54, 10
     AUTOCHECKBOX    "Emits Steam", 1608, 7, 40, 58, 8
-    LTEXT           "Life:", -1, 7, 55, 14, 8
-    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 27, 51, 52, 14, WS_EX_CLIENTEDGE
-    LTEXT           "(-1 means infinite life)", -1, 84, 54, 66, 8
+    AUTOCHECKBOX    "No Debris", IDC_NO_DEBRIS, 7, 50, 50, 8
+    LTEXT           "Life:", -1, 7, 67, 14, 8
+    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 40, 64, 52, 14, WS_EX_CLIENTEDGE
+    LTEXT           "(-1 = infinite)", -1, 96, 67, 52, 8
+    LTEXT           "Material:", IDC_MATERIAL_LABEL, 7, 83, 30, 8
+    COMBOBOX        IDC_MATERIAL_COMBO, 40, 80, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     DEFPUSHBUTTON   "OK", IDOK, 126, 7, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 126, 24, 50, 14
 }

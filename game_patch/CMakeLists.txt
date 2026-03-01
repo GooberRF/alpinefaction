@@ -186,6 +186,8 @@ set(SRCS
     misc/player.cpp
     misc/player_fpgun.cpp
     misc/g_solid.cpp
+    misc/destruction.cpp
+    misc/destruction.h
     misc/camera.cpp
     misc/ui.cpp
     misc/game.cpp

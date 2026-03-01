@@ -82,7 +82,7 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
     props.geoable_room_uids.resize(props.geoable_brush_uids.size(), 0);
 
     if (!level.solid) {
-        xlog::warn("[Geoable] compute_room_uids: no compiled solid");
+        xlog::debug("[Geoable] compute_room_uids: no compiled solid");
         return;
     }
 
@@ -118,7 +118,7 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
         }
 
         if (!found_brush) {
-            xlog::warn("[Geoable] brush uid={} not found in brush list", brush_uid);
+            xlog::debug("[Geoable] brush uid={} not found in brush list", brush_uid);
             continue;
         }
 
@@ -151,50 +151,137 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
             props.geoable_room_uids[i] = best_room->uid;
         }
         else {
-            xlog::warn("[Geoable] brush uid={} at ({:.2f},{:.2f},{:.2f}) has no matching detail room",
+            xlog::debug("[Geoable] brush uid={} at ({:.2f},{:.2f},{:.2f}) has no matching detail room",
                 brush_uid, brush_pos.x, brush_pos.y, brush_pos.z);
         }
     }
 
 }
 
+// At save time, match breakable brush UIDs to compiled room UIDs via position.
+// Same algorithm as geoable: find closest detail room by bbox center distance.
+static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties& props)
+{
+    // Prune stale UIDs
+    {
+        std::unordered_set<int32_t> live_uids;
+        BrushNode* node = level.brush_list;
+        if (node) {
+            do {
+                live_uids.insert(node->uid);
+                node = node->next;
+            } while (node && node != level.brush_list);
+        }
+        for (std::size_t i = 0; i < props.breakable_brush_uids.size(); ) {
+            if (live_uids.find(props.breakable_brush_uids[i]) == live_uids.end()) {
+                props.breakable_brush_uids.erase(props.breakable_brush_uids.begin() + i);
+                props.breakable_room_uids.erase(props.breakable_room_uids.begin() + i);
+                props.breakable_materials.erase(props.breakable_materials.begin() + i);
+            } else {
+                i++;
+            }
+        }
+    }
+
+    // Clear room UIDs — will be recomputed
+    for (auto& uid : props.breakable_room_uids) uid = 0;
+
+    if (!level.solid) {
+        xlog::debug("[Breakable] compute_room_uids: no compiled solid");
+        return;
+    }
+
+    auto& all_rooms = level.solid->all_rooms;
+
+    for (std::size_t i = 0; i < props.breakable_brush_uids.size(); i++) {
+        int32_t brush_uid = props.breakable_brush_uids[i];
+
+        BrushNode* node = level.brush_list;
+        Vector3 brush_pos;
+        bool found_brush = false;
+        if (node) {
+            do {
+                if (node->uid == brush_uid) {
+                    brush_pos = node->pos;
+                    found_brush = true;
+                    break;
+                }
+                node = node->next;
+            } while (node && node != level.brush_list);
+        }
+
+        if (!found_brush) {
+            xlog::debug("[Breakable] brush uid={} not found in brush list", brush_uid);
+            continue;
+        }
+
+        constexpr float tolerance = 2.0f;
+        GRoom* best_room = nullptr;
+        float best_dist_sq = FLT_MAX;
+        for (int j = 0; j < all_rooms.get_size(); j++) {
+            GRoom* room = all_rooms.data_ptr[j];
+            if (!room || !room->is_detail) continue;
+            if (brush_pos.x >= room->bbox_min.x - tolerance && brush_pos.x <= room->bbox_max.x + tolerance &&
+                brush_pos.y >= room->bbox_min.y - tolerance && brush_pos.y <= room->bbox_max.y + tolerance &&
+                brush_pos.z >= room->bbox_min.z - tolerance && brush_pos.z <= room->bbox_max.z + tolerance) {
+                float cx = (room->bbox_min.x + room->bbox_max.x) * 0.5f;
+                float cy = (room->bbox_min.y + room->bbox_max.y) * 0.5f;
+                float cz = (room->bbox_min.z + room->bbox_max.z) * 0.5f;
+                float dx = brush_pos.x - cx, dy = brush_pos.y - cy, dz = brush_pos.z - cz;
+                float dist_sq = dx * dx + dy * dy + dz * dz;
+                if (dist_sq < best_dist_sq) {
+                    best_dist_sq = dist_sq;
+                    best_room = room;
+                }
+            }
+        }
+        if (best_room) {
+            props.breakable_room_uids[i] = best_room->uid;
+        }
+        else {
+            xlog::debug("[Breakable] brush uid={} at ({:.2f},{:.2f},{:.2f}) has no matching detail room",
+                brush_uid, brush_pos.x, brush_pos.y, brush_pos.z);
+        }
+    }
+}
+
 // ─── Geoable room isolation ───────────────────────────────────────────────────
 // During geometry building, the room builder (FUN_00485990) flood-fills adjacent
 // coplanar faces into the same GRoom. This merges geoable and non-geoable detail
-// brushes into one room, breaking in-game geomod. The hooks below ensure that
-// each geoable brush always gets its own self-contained room:
+// brushes into one room, breaking in-game geomod. Similarly, breakable detail brushes
+// must each be in their own room for destruction to work correctly. The hooks below
+// ensure that each geoable/breakable brush always gets its own self-contained room:
 //   1. adjacency_test_hook prevents merging via the geometric adjacency path
-//   2. isolate_geoable_rooms post-processes to split any remaining mixed rooms
+//   2. isolate_marked_rooms post-processes to split any remaining mixed rooms
 //      (the flood-fill also merges via edge-based adjacency which bypasses the
 //       adjacency test, so post-processing is the primary fix)
 
-// Map from face_id (GFaceAttributes+0x10) to geoable brush UID.
-// Populated before room building, cleared afterwards.
-static std::unordered_map<int, int> g_geoable_face_map;
+// Map from face_id (GFaceAttributes+0x10) to brush UID for brushes that need isolation
+// (geoable and breakable detail brushes). Populated before room building, cleared afterwards.
+static std::unordered_map<int, int> g_isolated_face_map;
 
-static void populate_geoable_face_map()
+static void populate_isolated_face_map()
 {
-    g_geoable_face_map.clear();
+    g_isolated_face_map.clear();
 
     auto* level = CDedLevel::Get();
     if (!level) return;
     auto& props = level->GetAlpineLevelProperties();
-    if (props.geoable_brush_uids.empty()) return;
+    if (props.geoable_brush_uids.empty() && props.breakable_brush_uids.empty()) return;
 
-    std::unordered_set<int32_t> geoable_set(
-        props.geoable_brush_uids.begin(),
-        props.geoable_brush_uids.end()
-    );
+    std::unordered_set<int32_t> isolated_set;
+    isolated_set.insert(props.geoable_brush_uids.begin(), props.geoable_brush_uids.end());
+    isolated_set.insert(props.breakable_brush_uids.begin(), props.breakable_brush_uids.end());
 
     BrushNode* head = level->brush_list;
     if (!head) return;
     BrushNode* node = head;
     do {
-        if (node->is_detail && geoable_set.count(node->uid)) {
+        if (node->is_detail && isolated_set.count(node->uid)) {
             auto* geom = static_cast<GSolid*>(node->geometry);
             if (geom) {
                 for (GFace* face = geom->face_list_head; face; face = face->next_solid) {
-                    g_geoable_face_map[face->face_id] = node->uid;
+                    g_isolated_face_map[face->face_id] = node->uid;
                 }
             }
         }
@@ -202,18 +289,44 @@ static void populate_geoable_face_map()
     } while (node && node != head);
 }
 
-// Split any rooms that contain faces from multiple geoable brushes or mixed
-// geoable/non-geoable faces.  Each geoable brush gets its own isolated room
-// so in-game geomod only affects the intended brush.
+// Split any rooms that contain faces from multiple isolated brushes (geoable or
+// breakable) or mixed isolated/non-isolated faces.  Each isolated brush gets its
+// own room so in-game geomod and destruction only affect the intended brush.
 //
 // Called from inside FUN_00485990 (room builder) via CodeInjection at 0x00485e88,
 // which is after the detail-marking loop (loop 1) but before the parent-room
 // association loop (loop 2).  This ensures:
 //   - new rooms are properly associated with parent non-detail rooms (loop 2)
 //   - spatial data is rebuilt for all rooms including new ones (final loop)
-static void isolate_geoable_rooms(GSolid* solid)
+// Recompute a room's bbox_min/bbox_max from its current face list.
+// GRoom::add_face only expands the bbox and removing faces does not shrink it,
+// so after splitting faces out we must recompute from scratch.
+static void recompute_room_bbox(GRoom* room)
 {
-    // Group faces by room, then by geoable brush UID (-1 = non-geoable)
+    // Walk the room's face list (VList<GFace, FACE_LIST_ROOM> at +0x28)
+    // head is at +0x28, faces linked via next_room (+0x5C)
+    GFace* head = *reinterpret_cast<GFace**>(reinterpret_cast<char*>(room) + 0x28);
+    if (!head) return;
+
+    Vector3 vmin = head->bounding_box_min;
+    Vector3 vmax = head->bounding_box_max;
+
+    for (GFace* f = head->next_room; f; f = f->next_room) {
+        if (f->bounding_box_min.x < vmin.x) vmin.x = f->bounding_box_min.x;
+        if (f->bounding_box_min.y < vmin.y) vmin.y = f->bounding_box_min.y;
+        if (f->bounding_box_min.z < vmin.z) vmin.z = f->bounding_box_min.z;
+        if (f->bounding_box_max.x > vmax.x) vmax.x = f->bounding_box_max.x;
+        if (f->bounding_box_max.y > vmax.y) vmax.y = f->bounding_box_max.y;
+        if (f->bounding_box_max.z > vmax.z) vmax.z = f->bounding_box_max.z;
+    }
+
+    room->bbox_min = vmin;
+    room->bbox_max = vmax;
+}
+
+static void isolate_marked_rooms(GSolid* solid)
+{
+    // Group faces by room, then by isolated brush UID (-1 = not isolated)
     struct FaceGroup {
         std::unordered_map<int, std::vector<GFace*>> by_brush;
     };
@@ -222,35 +335,36 @@ static void isolate_geoable_rooms(GSolid* solid)
     for (GFace* face = solid->face_list_head; face; face = face->next_solid) {
         GRoom* room = face->which_room;
         if (!room) continue;
-        auto it = g_geoable_face_map.find(face->face_id);
-        int uid = (it != g_geoable_face_map.end()) ? it->second : -1;
+        auto it = g_isolated_face_map.find(face->face_id);
+        int uid = (it != g_isolated_face_map.end()) ? it->second : -1;
         room_groups[room].by_brush[uid].push_back(face);
     }
 
     int rooms_created = 0;
+    std::vector<GRoom*> modified_rooms; // original rooms that had faces removed
 
     for (auto& [room, fg] : room_groups) {
-        int geoable_count = 0;
-        bool has_non_geoable = fg.by_brush.count(-1) > 0;
+        int isolated_count = 0;
+        bool has_unmarked = fg.by_brush.count(-1) > 0;
         for (auto& [uid, faces] : fg.by_brush) {
-            if (uid != -1) geoable_count++;
+            if (uid != -1) isolated_count++;
         }
 
-        if (geoable_count == 0) continue;                 // no geoable faces
-        if (!has_non_geoable && geoable_count <= 1) continue; // single geoable brush, no mixing
+        if (isolated_count == 0) continue;                 // no isolated faces
+        if (!has_unmarked && isolated_count <= 1) continue; // single isolated brush, no mixing
 
-        // Room has mixed content — split each geoable brush into its own room
-        bool first_geoable = true;
+        // Room has mixed content — split each isolated brush into its own room
+        bool first_isolated = true;
         for (auto& [uid, faces] : fg.by_brush) {
             if (uid == -1) continue;
 
-            // If room has only geoable faces (no non-geoable), keep the first
-            // geoable group in the original room to avoid creating an empty room
-            if (!has_non_geoable && first_geoable) {
-                first_geoable = false;
+            // If room has only isolated faces (no unmarked), keep the first
+            // isolated group in the original room to avoid creating an empty room
+            if (!has_unmarked && first_isolated) {
+                first_isolated = false;
                 continue;
             }
-            first_geoable = false;
+            first_isolated = false;
 
             // Use first face's bbox to initialize the new room
             GFace* seed = faces[0];
@@ -267,13 +381,22 @@ static void isolate_geoable_rooms(GSolid* solid)
 
             rooms_created++;
 
-            xlog::info("[GeoIsolation] isolated brush uid={}: {} faces -> new room",
+            xlog::debug("[RoomIsolation] isolated brush uid={}: {} faces -> new room",
                        uid, faces.size());
         }
+
+        // Original room had faces removed — needs bbox recomputation
+        modified_rooms.push_back(room);
+    }
+
+    // Recompute bbox for original rooms that lost faces. add_face only expands
+    // the bbox when adding faces; it does not shrink when faces are removed.
+    for (GRoom* room : modified_rooms) {
+        recompute_room_bbox(room);
     }
 
     if (rooms_created > 0) {
-        xlog::info("[GeoIsolation] created {} isolated geoable rooms", rooms_created);
+        xlog::debug("[RoomIsolation] created {} isolated rooms", rooms_created);
     }
 }
 
@@ -282,12 +405,12 @@ static void isolate_geoable_rooms(GSolid* solid)
 // At this address EBP = solid (GSolid* this, set at 0x004859aa).
 // The subsequent loops naturally handle parent association, portal creation,
 // and spatial data rebuilding for any new rooms we create here.
-CodeInjection isolate_geoable_injection{
+CodeInjection isolate_rooms_injection{
     0x00485e88,
     [](auto& regs) {
-        if (g_geoable_face_map.empty()) return;
+        if (g_isolated_face_map.empty()) return;
         auto* solid = reinterpret_cast<GSolid*>(static_cast<std::byte*>(regs.ebp));
-        isolate_geoable_rooms(solid);
+        isolate_marked_rooms(solid);
     },
 };
 
@@ -300,13 +423,13 @@ FunHook<decltype(build_rooms_hooked)> build_rooms_hook{
 };
 void __fastcall build_rooms_hooked(GSolid* solid, void* edx_unused)
 {
-    populate_geoable_face_map();
+    populate_isolated_face_map();
     build_rooms_hook.call_target(solid, edx_unused);
-    g_geoable_face_map.clear();
+    g_isolated_face_map.clear();
 }
 
 // Hook FUN_004861d0 (face adjacency test, cdecl) as secondary defense.
-// The primary fix is post-processing in isolate_geoable_rooms, but this hook
+// The primary fix is post-processing in isolate_marked_rooms, but this hook
 // also prevents merging via the geometric adjacency path during flood-fill.
 bool __cdecl adjacency_test_hooked(GFace* face1, GFace* face2);
 FunHook<decltype(adjacency_test_hooked)> adjacency_test_hook{
@@ -317,18 +440,18 @@ FunHook<decltype(adjacency_test_hooked)> adjacency_test_hook{
 bool __cdecl adjacency_test_hooked(GFace* face1, GFace* face2)
 {
     bool result = adjacency_test_hook.call_target(face1, face2);
-    if (!result || g_geoable_face_map.empty()) return result;
+    if (!result || g_isolated_face_map.empty()) return result;
 
-    auto it1 = g_geoable_face_map.find(face1->face_id);
-    auto it2 = g_geoable_face_map.find(face2->face_id);
+    auto it1 = g_isolated_face_map.find(face1->face_id);
+    auto it2 = g_isolated_face_map.find(face2->face_id);
 
-    bool geo1 = (it1 != g_geoable_face_map.end());
-    bool geo2 = (it2 != g_geoable_face_map.end());
+    bool iso1 = (it1 != g_isolated_face_map.end());
+    bool iso2 = (it2 != g_isolated_face_map.end());
 
-    if (!geo1 && !geo2) return true;   // both non-geoable: allow
-    if (geo1 != geo2) return false;    // mixed: block
-    if (it1->second != it2->second) return false; // different geoable brushes: block
-    return true;                        // same geoable brush: allow
+    if (!iso1 && !iso2) return true;   // both unmarked: allow
+    if (iso1 != iso2) return false;    // mixed: block
+    if (it1->second != it2->second) return false; // different isolated brushes: block
+    return true;                        // same isolated brush: allow
 }
 
 // save AlpineLevelProperties when saving rfl file
@@ -341,6 +464,7 @@ CodeInjection CDedLevel_SaveLevel_patch{
         // Compute room UIDs from brush UIDs before serializing
         auto& alpine_level_props = level.GetAlpineLevelProperties();
         compute_geoable_room_uids(level, alpine_level_props);
+        compute_breakable_room_uids(level, alpine_level_props);
 
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
         alpine_level_props.Serialize(file);
@@ -534,10 +658,10 @@ void ApplyLevelPatches()
     CLevelDialog_OnInitDialog_patch.install();
     CLevelDialog_OnOK_patch.install();
 
-    // Prevent geoable detail brushes from merging rooms with other brushes
+    // Prevent geoable/breakable detail brushes from merging rooms with other brushes
     build_rooms_hook.install();
     adjacency_test_hook.install();
-    isolate_geoable_injection.install();
+    isolate_rooms_injection.install();
 
     // Ensure the face_id assignment phase (Phase 1 of FUN_004399b0) always runs.
     // Phase 1 assigns unique sequential face_ids to brush geometry faces, which our
