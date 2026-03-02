@@ -23,6 +23,7 @@ void obj_mesh_lighting_alloc_one(rf::Object *objp);
 void obj_mesh_lighting_free_one(rf::Object *objp);
 void obj_mesh_lighting_update_one(rf::Object *objp);
 void obj_mesh_lighting_maybe_update(rf::Object *objp);
+void evaluate_fullbright_meshes();
 void trigger_send_state_info(rf::Player* player);
 rf::AlpineRespawnPoint* get_alpine_respawn_point_by_uid(int uid);
 void set_alpine_respawn_point_enabled(rf::AlpineRespawnPoint* point, bool enabled);

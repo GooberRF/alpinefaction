@@ -10,6 +10,7 @@
 #include <common/utils/string-utils.h>
 #include <format>
 #include <utility>
+#include <common/utils/os-utils.h>
 
 static bool display_mode_is_compact() {
     return g_alpine_game_config.remote_server_cfg_display_mode
@@ -484,23 +485,36 @@ void RemoteServerCfgPopup::render(this Self& self) {
             } else {
                 rf::gr::set_color(100, 200, 255, 255);
             }
-            if (display_mode_is_left_aligned()) {
-                const auto [space_w, space_h] = rf::gr::get_char_size(' ', font_id);
-                rf::gr::string_aligned(
-                    rf::gr::ALIGN_LEFT,
-                    rf::gr::current_string_x + space_w,
-                    line_y + line_pad_h,
-                    value.c_str(),
-                    font_id
-                );
+            const auto print_value = [&] (const std::string& value) {
+                if (display_mode_is_left_aligned()) {
+                    const auto [space_w, space_h] = rf::gr::get_char_size(' ', font_id);
+                    rf::gr::string_aligned(
+                        rf::gr::ALIGN_LEFT,
+                        rf::gr::current_string_x + space_w,
+                        line_y + line_pad_h,
+                        value.c_str(),
+                        font_id
+                    );
+                } else {
+                    rf::gr::string_aligned(
+                        rf::gr::ALIGN_RIGHT,
+                        content_x + content_w - static_cast<int>(50.f * ui_scale),
+                        line_y + line_pad_h,
+                        value.c_str(),
+                        font_id
+                    );
+                }
+            };
+            if (key.ends_with("Uptime:")) {
+                try {
+                    const std::string uptime = get_uptime_from(std::stoll(value));
+                    print_value(uptime);
+                } catch (const std::exception&) {
+                    goto PRINT_VALUE;
+                }
             } else {
-                rf::gr::string_aligned(
-                    rf::gr::ALIGN_RIGHT,
-                    content_x + content_w - static_cast<int>(50.f * ui_scale),
-                    line_y + line_pad_h,
-                    value.c_str(),
-                    font_id
-                );
+            PRINT_VALUE:
+                print_value(value);
             }
         } else if (std::holds_alternative<std::string>(line)) {
             const std::string& text = std::get<std::string>(line);

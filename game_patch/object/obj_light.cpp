@@ -236,8 +236,8 @@ ConsoleCommand2 fullbright_models_cmd{
     []() {
         g_alpine_game_config.try_fullbright_characters = !g_alpine_game_config.try_fullbright_characters;
 
-        evaluate_fullbright_meshes();    
-                
+        evaluate_fullbright_meshes();
+
         rf::console::print("Fullbright character meshes are {}", g_alpine_game_config.try_fullbright_characters ?
 			"enabled. In multiplayer, this will only apply if the server allows it." : "disabled.");
     },

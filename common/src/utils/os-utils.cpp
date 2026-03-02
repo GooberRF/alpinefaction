@@ -206,3 +206,19 @@ std::string get_temp_path_name(const char* prefix)
 
     return result;
 }
+
+std::string get_uptime_from(const std::time_t origin) {
+    const int64_t delta = std::time(nullptr) - origin;
+    const int64_t total_seconds = std::abs(delta);
+    const int64_t total_minutes = total_seconds / 60;
+    const int64_t total_hours = total_minutes / 60;
+    const int64_t days = total_hours / 24;
+    const int64_t hours = total_hours % 24;
+    const int64_t minutes = total_minutes % 60;
+    const int64_t seconds = total_seconds % 60;
+    if (delta < 0) {
+        return std::format("-{:02}:{:02}:{:02}:{:02}", days, hours, minutes, seconds);
+    } else {
+        return std::format("{:02}:{:02}:{:02}:{:02}", days, hours, minutes, seconds);    
+    }
+}
