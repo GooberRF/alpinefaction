@@ -50,7 +50,8 @@ namespace rf
         DT_ACID = 7,
         DT_SCALDING = 8,
         DT_CRUSH = 9,
-        DT_NUM = 11,
+        DT_UNK10 = 10,
+        DT_UNK11 = 11,
     };
 
     enum ObjectFlags : int

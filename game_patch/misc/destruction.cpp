@@ -56,8 +56,8 @@ static std::vector<RF2AnchorInfo> g_rf2_anchor_info;
 // Formula: scale = 2^((50 - hardness) / 50), so 0→2.0, 50→1.0, 99→~0.507, 100→0.5.
 static constexpr float geoable_bbox_base_padding = 3.0f;
 
-// Damage type factors for rock material (DT_NUM entries, matching ClutterInfo::damage_type_factors)
-static constexpr float rock_damage_factors[rf::DT_NUM] = {
+// Damage type factors for rock material (DT_UNK11 entries, matching ClutterInfo::damage_type_factors)
+static constexpr float rock_damage_factors[rf::DT_UNK11] = {
     0.1f, 0.1f, 0.1f, 1.0f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 1.0f, 0.1f
 };
 
@@ -125,7 +125,7 @@ static constexpr DebrisConfig k_rock_debris_config{
 static CodeBuffer radius_damage_trampoline_code{64};
 
 static float get_material_damage_factor(rf::DetailMaterial mat, int damage_type) {
-    if (mat == rf::DetailMaterial::Rock && damage_type >= 0 && damage_type < rf::DT_NUM)
+    if (mat == rf::DetailMaterial::Rock && damage_type >= 0 && damage_type < rf::DT_UNK11)
         return rock_damage_factors[damage_type];
     return 1.0f; // Glass or unknown = stock behavior
 }
@@ -877,10 +877,6 @@ static void compute_solid_bounds(rf::GSolid* s)
     s->bounding_sphere_center.z = (vmin.z + vmax.z) * 0.5f;
     float dx = vmax.x - vmin.x, dy = vmax.y - vmin.y, dz = vmax.z - vmin.z;
     s->bounding_sphere_radius = std::sqrt(dx * dx + dy * dy + dz * dz) * 0.5f;
-    xlog::info("[compute_solid_bounds] faces={} verts={} VArray={} center=({:.1f},{:.1f},{:.1f}) radius={:.1f}",
-        face_count, vert_count, s->vertices.size(),
-        s->bounding_sphere_center.x, s->bounding_sphere_center.y, s->bounding_sphere_center.z,
-        s->bounding_sphere_radius);
 }
 
 // Split faces in a solid along a cutting plane.

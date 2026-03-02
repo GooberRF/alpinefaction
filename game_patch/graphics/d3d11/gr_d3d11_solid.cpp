@@ -362,7 +362,8 @@ namespace df::gr::d3d11
             ++num_fverts;
             if (num_fverts > max_fverts) {
                 xlog::error("add_face: edge_loop exceeds {} vertices, likely corrupted", max_fverts);
-                break;
+                batched_faces_[key].pop_back();
+                return;
             }
             fvert = fvert->next;
             if (fvert == face->edge_loop) {
