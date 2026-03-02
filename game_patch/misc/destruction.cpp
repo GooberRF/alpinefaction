@@ -119,6 +119,11 @@ static constexpr DebrisConfig k_rock_debris_config{
     3,      // min_faces_to_split: need at least 3 faces (same as stock)
 };
 
+// Executable code buffer for the radius damage trampoline (replaces naked asm function).
+// Built dynamically with AsmWriter in apply_destruction_patches() to avoid compiler-specific
+// inline assembly (__declspec(naked) + __asm{} is MSVC-only).
+static CodeBuffer radius_damage_trampoline_code{64};
+
 static float get_material_damage_factor(rf::DetailMaterial mat, int damage_type) {
     if (mat == rf::DetailMaterial::Rock && damage_type >= 0 && damage_type < rf::DT_NUM)
         return rock_damage_factors[damage_type];
@@ -1591,12 +1596,11 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
 // Original: FMUL [EBP+0x14]; FSUBR [ESI+0x94]; FSTP [ESI+0x94]; JMP 0x4920A3 (17 bytes).
 //
 // SubHook/CodeInjection CANNOT hook here because SubHook fails on FPU opcodes (0xD8-0xDF).
-// Instead, we use AsmWriter to overwrite the 17 bytes with a JMP to a naked trampoline that:
-//   1. Pops FPU ST(0) (distance fraction)
-//   2. Calls a C++ helper to compute material-scaled damage and apply it
+// Instead, we use AsmWriter to overwrite the 17 bytes with a JMP to a dynamically-built
+// trampoline (in radius_damage_trampoline_code) that:
+//   1. Pops FPU ST(0) (distance fraction) to the stack, then passes it as a cdecl arg
+//   2. Calls the C++ helper below to compute material-scaled damage and apply it
 //   3. Jumps to stock life check at 0x4920A3
-//
-// The C++ helper receives (room, damage, fraction) and returns void.
 // The stock code after 0x4920A3 handles break for ALL materials: glass_kill → validate_destroy
 // (queues room for destruction) → glass_sound (suppressed for non-glass) → glass_shards
 // (suppressed for non-glass). The destroy queue processor fully tears down the room.
@@ -1614,30 +1618,6 @@ static void __cdecl room_damage_material_helper(rf::GRoom* room, float damage, f
 
     xlog::trace("[Material] RADIUS DMG: uid={} mat={} life={:.1f} scaled={:.1f}",
         room->uid, static_cast<int>(room->material_type), room->life, scaled);
-}
-
-// Naked trampoline: entered via JMP from 0x492090. ESI=GRoom*, EBP=frame, ST(0)=fraction.
-static __declspec(naked) void room_damage_material_trampoline()
-{
-    __asm {
-        // Pop ST(0) (fraction) to a temp on the stack
-        sub esp, 4
-        fstp dword ptr [esp]        // [ESP] = fraction, FPU clean
-
-        // Push args for cdecl call: (room, damage, fraction)
-        push [esp]                  // arg3: fraction (copy from [ESP+0] before we pushed)
-        push [ebp + 0x14]          // arg2: damage
-        push esi                   // arg1: room (GRoom*)
-        call room_damage_material_helper
-        add esp, 12                // clean up 3 args
-
-        // Clean up the fraction temp
-        add esp, 4
-
-        // Jump to stock life check at 0x4920A3
-        push 0x004920A3
-        ret
-    }
 }
 
 // Direct hit damage hook at 0x004c4fe7 in FUN_004c4ec0 (projectile/weapon hit handler).
@@ -2682,7 +2662,24 @@ void destruction_do_patch()
     capture_damage_type_injection.install();
     // AsmWriter patch: overwrite 17 bytes of FPU damage code (0x492090-0x4920A0) with JMP
     // to our trampoline. SubHook/CodeInjection can't handle FPU opcodes at this address.
-    AsmWriter{0x00492090, 0x004920A1}.jmp(room_damage_material_trampoline);
+    // The trampoline is built dynamically with AsmWriter into executable memory (CodeBuffer)
+    // to avoid MSVC-only __declspec(naked) + __asm{} syntax.
+    {
+        using namespace asm_regs;
+        AsmWriter{radius_damage_trampoline_code}
+            .sub(esp, 4)                        // temp space for fraction
+            .fstp<float>(*(esp + 0))             // pop ST(0) → [esp]
+            .mov(eax, *(esp + 0))                // eax = fraction (float bits)
+            .add(esp, 4)                         // free temp space
+            .push(eax)                           // arg3: fraction
+            .mov(eax, *(ebp + 0x14))             // eax = damage (float bits)
+            .push(eax)                           // arg2: damage
+            .push(esi)                           // arg1: room (GRoom*)
+            .call(&room_damage_material_helper)
+            .add(esp, 12)                        // clean 3 cdecl args
+            .jmp_long(0x004920A3);               // stock life check
+    }
+    AsmWriter{0x00492090, 0x004920A1}.jmp(radius_damage_trampoline_code.get());
     direct_hit_material_injection.install();
     glass_kill_material_injection.install();
     glass_sound_entry_injection.install();
