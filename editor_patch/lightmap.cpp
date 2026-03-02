@@ -357,10 +357,7 @@ CodeInjection lightmap_per_texel_ambient_fill_injection{
         uintptr_t surface = regs.esi;
         int width = *reinterpret_cast<int*>(surface + 0x18);
         int height = *reinterpret_cast<int*>(surface + 0x1c);
-        if (width <= 0 || height <= 0) {
-            regs.eip = 0x004ac742;
-            return;
-        }
+        if (width <= 0 || height <= 0) return; // let original code handle degenerate case
 
         SurfaceUVParams p;
         if (!init_surface_uv_params(surface, p)) return; // can't compute, let original handle
@@ -398,10 +395,7 @@ CodeInjection lightmap_per_texel_ambient_nolights_injection{
         uintptr_t surface = regs.esi;
         int width = *reinterpret_cast<int*>(surface + 0x18);
         int height = *reinterpret_cast<int*>(surface + 0x1c);
-        if (width <= 0 || height <= 0) {
-            regs.eip = 0x004aca40;
-            return;
-        }
+        if (width <= 0 || height <= 0) return; // let original code handle degenerate case
 
         SurfaceUVParams p;
         if (!init_surface_uv_params(surface, p)) return;
