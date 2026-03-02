@@ -110,6 +110,8 @@ enum class AlpineRestrictVerdict : uint8_t
     need_update = 3
 };
 
+extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
+
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
 const bool was_level_loaded_manually();

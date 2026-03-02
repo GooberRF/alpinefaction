@@ -31,14 +31,12 @@ static FunHook<void(rf::Player*)> player_fpgun_update_state_anim_hook{
         rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
         if (!entity)
             return;
-        // When falling, keep the current fpgun state anim to avoid
-        // cancelling action anims (reload, fire, draw, etc.) during spectate
-        if (rf::entity_is_falling(entity))
-            return;
         int state = rf::WS_IDLE;
         if (rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon))
             state = rf::WS_LOOP_FIRE;
-        else if (!rf::entity_is_swimming(entity)) {
+        else if (!rf::entity_is_falling(entity) && !rf::entity_is_swimming(entity)) {
+            // Only use the running animation when on the ground and moving.
+            // While falling, stay in idle to match normal first-person behavior.
             float horz_speed_pow2 = entity->p_data.vel.x * entity->p_data.vel.x +
                                       entity->p_data.vel.z * entity->p_data.vel.z;
             if (horz_speed_pow2 > 0.2f)
@@ -203,6 +201,29 @@ CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
     },
 };
 
+// Fix weapon bob oscillation: the original code at 0x004AA409 sets the weapon to IDLE before
+// checking if the player is running, causing constant IDLE<->RUN oscillation. This injection
+// skips that premature IDLE transition; the second IDLE check at 0x004AA474 handles all
+// legitimate idle cases.
+CodeInjection player_fpgun_skip_premature_idle_injection{
+    0x004AA409,
+    [](auto& regs) {
+        if (!g_alpine_game_config.legacy_bob) {
+            regs.eip = 0x004AA423;
+        }
+    },
+};
+
+ConsoleCommand2 legacy_bob_cmd{
+    "cl_legacy_bob",
+    []() {
+        g_alpine_game_config.legacy_bob = !g_alpine_game_config.legacy_bob;
+        rf::console::print("Legacy weapon bob: {}",
+            g_alpine_game_config.legacy_bob ? "enabled" : "disabled");
+    },
+    "Toggle legacy weapon bob (original stutters while running)",
+};
+
 #ifndef NDEBUG
 
 ConsoleCommand2 reload_fpgun_cmd{
@@ -362,6 +383,10 @@ void player_fpgun_do_patch()
     player_fpgun_render_main_player_entity_injection.install();
 
     player_fpgun_update_state_anim_hook.install();
+
+    // Fix weapon bob oscillation: skip premature IDLE transition in update_state_anim
+    player_fpgun_skip_premature_idle_injection.install();
+    legacy_bob_cmd.register_cmd();
 
     // Render IR for player that is currently being shown by camera - needed for spectate mode
     player_fpgun_render_ir_hook.install();
