@@ -39,6 +39,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Allow level hardness to be set to 0 in version >= 304 levels
 - Add `sp_geochunkphysics` console command to toggle isolated geo chunks falling down in single player
 - Add `geo_chunk_physics` rule to ADS config to toggle isolated geo chunks falling down in multiplayer
+- Raise limit on lights per level from 1100 to 8192
+- Raise level editor limit on lights projecting on a single face from 64 to 1024
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
@@ -53,6 +55,10 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `cl_damageflash_spectator` console command to toggle damage screen flash in first person spectate
 - Add `ui_color_thermal` console command to set thermal scanner entity color (Direct3D 11 renderer only)
 - Add hitsounds, kill sounds, and damage numbers to first person spectate
+- Add missing weapon animations and muzzle flashes in first person spectate
+- Add CTF flag icons to first person spectate
+- Make jump control move freelook camera up
+- Add `cl_legacy_bob` to restore legacy first person weapon running animation behavior
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
@@ -67,10 +73,12 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners
+- Fix stale weapon selection time stamps
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
 - Fix Alt+Enter crash in Direct3D 11 renderer
+- Fix premature idle transition in first person weapon running animations
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------
