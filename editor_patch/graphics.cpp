@@ -315,7 +315,7 @@ CodeInjection detail_room_overflow_check{
         if (static_cast<int>(regs.eax) >= max_detail_rooms) {
             static bool warned = false;
             if (!warned) {
-                xlog::warn("Detail rooms limit reached ({}), additional detail rooms will not be rendered",
+                WARN_ONCE("Detail rooms limit reached ({}), additional detail rooms will not be rendered",
                            max_detail_rooms);
                 warned = true;
             }
