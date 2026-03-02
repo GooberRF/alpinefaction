@@ -56,8 +56,8 @@ static std::vector<RF2AnchorInfo> g_rf2_anchor_info;
 // Formula: scale = 2^((50 - hardness) / 50), so 0→2.0, 50→1.0, 99→~0.507, 100→0.5.
 static constexpr float geoable_bbox_base_padding = 3.0f;
 
-// Damage type factors for rock material (DT_UNK11 entries, matching ClutterInfo::damage_type_factors)
-static constexpr float rock_damage_factors[rf::DT_UNK11] = {
+// Damage type factors for rock material (DT_COUNT entries, matching ClutterInfo::damage_type_factors)
+static constexpr float rock_damage_factors[rf::DT_COUNT] = {
     0.1f, 0.1f, 0.1f, 1.0f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 1.0f, 0.1f
 };
 
@@ -125,7 +125,7 @@ static constexpr DebrisConfig k_rock_debris_config{
 static CodeBuffer radius_damage_trampoline_code{64};
 
 static float get_material_damage_factor(rf::DetailMaterial mat, int damage_type) {
-    if (mat == rf::DetailMaterial::Rock && damage_type >= 0 && damage_type < rf::DT_UNK11)
+    if (mat == rf::DetailMaterial::Rock && damage_type >= 0 && damage_type < rf::DT_COUNT)
         return rock_damage_factors[damage_type];
     return 1.0f; // Glass or unknown = stock behavior
 }
@@ -1165,7 +1165,7 @@ static std::vector<std::vector<rf::GVertex*>> find_boundary_loops(rf::GSolid* so
         }
     }
 
-    xlog::info("[Boundary] {} total half-edges, {} boundary half-edges",
+    xlog::trace("[Boundary] {} total half-edges, {} boundary half-edges",
         half_edges.size(), next_in_boundary.size());
 
     // Chain boundary half-edges into closed loops
@@ -1272,7 +1272,7 @@ static void add_cap_faces_from_loop(
     // Triangulate via ear clipping
     auto triangles = ear_clip_triangulate(px, py, n);
 
-    xlog::info("[CapLoop] n={} ear_clip produced {} triangles (expected {})",
+    xlog::trace("[CapLoop] n={} ear_clip produced {} triangles (expected {})",
         n, triangles.size(), n - 2);
 
     // Fallback: fan from vertex 0 (works for convex polygons)
@@ -1352,7 +1352,7 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
     room_center.y = (room->bbox_min.y + room->bbox_max.y) * 0.5f;
     room_center.z = (room->bbox_min.z + room->bbox_max.z) * 0.5f;
 
-    xlog::info("[RockShatter] room uid={} faces={} center=({:.2f},{:.2f},{:.2f})",
+    xlog::trace("[RockShatter] room uid={} faces={} center=({:.2f},{:.2f},{:.2f})",
         room->uid, face_count, room_center.x, room_center.y, room_center.z);
 
     // Tag all room faces and extract from level solid
@@ -1447,7 +1447,7 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
             final_pieces.push_back(c);
         }
 
-        xlog::info("[RockShatter] {} cuts produced {} pieces", total_cuts, final_pieces.size());
+        xlog::trace("[RockShatter] {} cuts produced {} pieces", total_cuts, final_pieces.size());
 
         // Add crater-textured cap faces to close the open boundaries of each piece.
         // Uses topological boundary detection: half-edges with no counterpart indicate
@@ -1463,11 +1463,11 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
             if (!piece || piece->face_list.empty()) continue;
 
             auto loops = find_boundary_loops(piece);
-            xlog::info("[RockShatter] piece faces={} boundary_loops={}",
+            xlog::trace("[RockShatter] piece faces={} boundary_loops={}",
                 piece->face_list.size(), loops.size());
 
             for (auto& loop : loops) {
-                xlog::info("[RockShatter]   loop vertices={}", loop.size());
+                xlog::trace("[RockShatter]   loop vertices={}", loop.size());
                 add_cap_faces_from_loop(piece, loop, crater_tex);
             }
 
@@ -1814,8 +1814,6 @@ CodeInjection detail_room_impact_vfx_injection{
                     rf::Vector3* hit_normal = reinterpret_cast<rf::Vector3*>(entity + 0x1c0);
                     int parent_handle = *reinterpret_cast<int*>(entity + 0x30);
 
-                    xlog::info("[ImpactVFX] vclip created: weapon_type={} hit=({:.1f},{:.1f},{:.1f})",
-                        weapon_type, hit_point->x, hit_point->y, hit_point->z);
                     rf::weapon_create_impact_vclip(weapon_type, entity_base, nullptr, hit_point, hit_normal, parent_handle);
                 }
             }

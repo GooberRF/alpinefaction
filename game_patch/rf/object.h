@@ -52,6 +52,7 @@ namespace rf
         DT_CRUSH = 9,
         DT_UNK10 = 10,
         DT_UNK11 = 11,
+        DT_COUNT = 12, // not a valid damage type
     };
 
     enum ObjectFlags : int

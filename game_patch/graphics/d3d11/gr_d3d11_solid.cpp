@@ -467,12 +467,14 @@ namespace df::gr::d3d11
                 auto face = dp->face;
                 auto fvert = face->edge_loop;
                 if (!fvert) continue;
+                int max_dp_verts = std::min(dp->nv, static_cast<int>(std::size(dp->uvs)));
                 auto face_start_index = static_cast<ushort>(vb_data.size() - base_vertex);
                 int fvert_index = 0;
-                constexpr int max_fverts = 10000;
                 while (fvert) {
-                    if (fvert_index >= max_fverts) {
-                        xlog::error("build decal: edge_loop exceeds {} vertices", max_fverts);
+                    if (fvert_index >= max_dp_verts) {
+                        if (fvert_index >= static_cast<int>(std::size(dp->uvs))) {
+                            xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
+                        }
                         break;
                     }
                     auto& gpu_vert = vb_data.emplace_back();
