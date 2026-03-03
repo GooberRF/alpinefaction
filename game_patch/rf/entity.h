@@ -21,6 +21,13 @@ namespace rf
         EF_GIB_ON_DEATH = 0x80,
     };
 
+    enum EntityFlags2
+    {
+        EF2_POWERUP_DAMAGE_AMP = 0x20000,
+        EF2_POWERUP_INVULNERABLE = 0x40000,
+        EF2_POWERUP_NANO_SHIELD = 0x80000,
+    };
+
     struct EntityCollisionSphereOverride
     {
         float radius;
