@@ -323,6 +323,23 @@ struct DedEvent : DedObject
 };
 static_assert(sizeof(DedEvent) == 0xC4, "DedEvent size mismatch");
 
+struct DedRoomEffect : DedObject
+{
+    int effect_type;                   // 0x94 — 2 = Liquid Room
+    char pad_98[0xA8 - 0x98];
+    VString liquid_bitmap;             // 0xA8 — liquid surface texture filename
+    char pad_B0[0xD4 - 0xB0];
+};
+static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
+
+struct DedBoltEmitter : DedObject
+{
+    char pad_94[0xC4 - 0x94];
+    VString bitmap;                    // 0xC4 — bolt texture filename
+    char pad_CC[0xD4 - 0xCC];
+};
+static_assert(sizeof(DedBoltEmitter) == 0xD4, "DedBoltEmitter size mismatch");
+
 
 struct CDialog_mbrs
 {
