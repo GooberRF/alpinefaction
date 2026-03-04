@@ -2129,8 +2129,12 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
                 if (!new_name.empty()) {
                     rf::local_player->name = new_name.c_str();
                 }
-                if (character_index >= 0) {
+                if (character_index >= 0 && character_index < rf::num_multi_characters) {
                     rf::local_player->settings.multi_character = character_index;
+                }
+                else if (character_index != -1) {
+                    xlog::warn("Bot control: character_index {} out of range (0-{})",
+                        character_index, rf::num_multi_characters - 1);
                 }
             }
             break;
