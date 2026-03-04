@@ -33,6 +33,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Raise level editor geo_cache limits: face list 16384 to 65536, batch count 512 to 1024, memory pool 8 MB to 32 MB
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
+- Add level editor support for custom texture subdirectories under `user_maps\textures`
 - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
@@ -69,6 +70,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
 - Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
+- Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
+- Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners
