@@ -33,6 +33,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Raise level editor geo_cache limits: face list 16384 to 65536, batch count 512 to 1024, memory pool 8 MB to 32 MB
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
+- Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
