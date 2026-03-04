@@ -16,6 +16,9 @@ cbuffer RenderModeBuffer : register(b0)
     float colorblind_mode;
     float disable_textures;
     float3 fog_color;
+    float use_dynamic_lighting;
+    float self_illumination;
+    float light_scale;
 };
 
 struct PointLight {
@@ -75,7 +78,15 @@ float4 main(VsOutput input) : SV_TARGET
 
     float3 light_color = tex1.Sample(samp1, input.uv1).rgb;
     if (disable_textures < 0.5f) {
-        light_color *= 2;
+        if (use_dynamic_lighting > 0.5f) {
+            // Dynamic-lit meshes (V3D items, characters): no lightmap.
+            // Scale ambient to visible brightness (default 2.0, configurable via AlpineLevelProps).
+            // Point lights are added after at their natural intensity.
+            light_color = ambient_light * light_scale;
+        } else {
+            // Static meshes: use baked lightmap
+            light_color *= 2;
+        }
         for (int i = 0; i < num_point_lights; ++i) {
             float3 light_vec = point_lights[i].pos - input.world_pos_and_depth.xyz;
             float3 light_dir = normalize(light_vec);
@@ -83,8 +94,23 @@ float4 main(VsOutput input) : SV_TARGET
             float atten = saturate(dist / point_lights[i].radius);
             atten = atten * atten * (3.0f - 2.0f * atten);
             float intensity = (1.0f - atten) * saturate(dot(input.norm, light_dir));
-            light_color += point_lights[i].color * intensity * 1.5;
+            float per_light_scale = use_dynamic_lighting > 0.5f ? 1.0f : 1.5f;
+            light_color += point_lights[i].color * intensity * per_light_scale;
         }
+        if (use_dynamic_lighting > 0.5f) {
+            // Soft-knee compression: identity below shoulder, smoothly compressed
+            // above. Prevents overbright near strong lights while preserving
+            // natural lighting variation. C1 smooth — no hard edges.
+            float shoulder = 1.2f;
+            float range = 0.8f;
+            float3 excess = max(light_color - shoulder, 0.0f);
+            light_color = min(light_color, shoulder) + excess * range / (excess + range);
+        }
+    }
+
+    // Self-illumination sets a minimum brightness floor (matches stock engine behavior)
+    if (self_illumination > 0.0f) {
+        light_color = max(light_color, self_illumination);
     }
 
     target.rgb *= light_color;

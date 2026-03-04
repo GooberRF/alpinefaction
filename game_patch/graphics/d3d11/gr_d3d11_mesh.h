@@ -9,6 +9,7 @@
 
 namespace rf
 {
+    struct V3d;
     struct VifLodMesh;
     struct VifMesh;
     struct MeshRenderParams;
@@ -22,6 +23,12 @@ namespace df::gr::d3d11
 
     void on_character_fullbright_state_changed();
     void on_static_vertex_color_state_changed(rf::VifLodMesh* changed_lod_mesh = nullptr);
+
+    // Per-material self-illumination data for GPU rendering
+    void register_mesh_self_illumination(rf::V3d* v3d);
+    void unregister_mesh_self_illumination(rf::VifLodMesh* lod_mesh);
+    void clear_mesh_self_illumination();
+    float get_mesh_self_illumination(rf::VifLodMesh* lod_mesh, int material_index);
 
     class BaseMeshRenderCache
     {

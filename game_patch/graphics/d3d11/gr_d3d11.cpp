@@ -573,6 +573,11 @@ namespace df::gr::d3d11
         mesh_renderer_->reset_static_vertex_color_tracking();
     }
 
+    void Renderer::clear_mesh_lights()
+    {
+        render_context_->update_lights();
+    }
+
     float Renderer::z_far() const
     {
         return render_context_->projection().z_far();

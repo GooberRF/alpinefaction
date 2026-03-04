@@ -21,6 +21,7 @@
 #include "../os/console.h"
 #include "../rf/v3d.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include "object.h"
 
 bool event_debug_enabled;
 
@@ -121,10 +122,21 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
             rf::physics_delete_object(&obj->p_data);
             rf::physics_create_object(&obj->p_data, &oci);
 
-            // D3D11 renderer: reset static mesh vertex colors for the swapped mesh
+            // Refresh mesh lighting data for the new mesh (old data was sized for previous mesh)
+            obj_mesh_lighting_free_one(obj);
+            obj_mesh_lighting_alloc_one(obj);
+            obj_mesh_lighting_update_one(obj);
+
+            // D3D11 renderer: update GPU state for the swapped mesh
             if (g_game_config.renderer == GameConfig::Renderer::d3d11 &&
                 obj->vmesh &&
                 rf::vmesh_get_type(obj->vmesh) == rf::MESH_TYPE_STATIC) {
+
+                // Register self-illumination data for the new mesh's materials
+                auto* v3d = static_cast<rf::V3d*>(obj->vmesh->mesh);
+                if (v3d) {
+                    df::gr::d3d11::register_mesh_self_illumination(v3d);
+                }
 
                 // The VIF LOD mesh instance points at the submesh that was swapped in
                 if (auto* lod_mesh = static_cast<rf::VifLodMesh*>(obj->vmesh->instance)) {
