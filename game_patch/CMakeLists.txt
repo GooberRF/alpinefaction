@@ -90,6 +90,8 @@ set(SRCS
     graphics/d3d11/gr_d3d11_solid.h
     graphics/d3d11/gr_d3d11_mesh.cpp
     graphics/d3d11/gr_d3d11_mesh.h
+    graphics/d3d11/gr_d3d11_entity_shadow.cpp
+    graphics/d3d11/gr_d3d11_entity_shadow.h
     graphics/d3d11/gr_d3d11_vertex.h
     graphics/d3d11/gr_d3d11_buffer.h
     graphics/d3d11/gr_d3d11_hooks.cpp

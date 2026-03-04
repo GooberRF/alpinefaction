@@ -123,6 +123,17 @@ namespace df::gr::d3d11
         bool has_cache(const rf::VifLodMesh* lod_mesh) const;
         void handle_static_vertex_color_state_change(rf::VifLodMesh* changed_lod_mesh, uint64_t generation);
 
+        ID3D11Buffer* v3d_vb_buffer() { return v3d_vb_.buffer(); }
+        ID3D11Buffer* v3d_ib_buffer() { return v3d_ib_.buffer(); }
+        const std::unordered_map<rf::VifLodMesh*, std::unique_ptr<BaseMeshRenderCache>>& render_caches() const { return render_caches_; }
+
+        // Shadow rendering: draws mesh geometry with externally-set shaders (depth-only pass)
+        void draw_shadow_v3d_mesh(rf::VifLodMesh* lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                                  const VertexShaderAndLayout& shadow_vs, ID3D11DeviceContext* context);
+        void draw_shadow_character_mesh(rf::VifLodMesh* lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                                        const rf::CharacterInstance* ci, const VertexShaderAndLayout& shadow_vs,
+                                        ID3D11DeviceContext* context);
+
     private:
         void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index);
 

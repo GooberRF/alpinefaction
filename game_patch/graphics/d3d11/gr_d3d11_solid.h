@@ -38,7 +38,6 @@ namespace df::gr::d3d11
         void clear_cache();
         void reset_cache_after_boolean();
         void page_in_solid(rf::GSolid* solid);
-
         void page_in_movable_solid(rf::GSolid* solid)
         {
             get_or_create_movable_solid_cache(solid);
