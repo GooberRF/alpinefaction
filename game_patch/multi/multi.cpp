@@ -112,6 +112,14 @@ static void handle_bot_cmd_line_params()
             "Client bot mode enabled ({}).",
             headless ? "headless" : "debug render"
         );
+
+        // Set a consistent initial name for bot clients.
+        // The server will assign the real identity after connection.
+        if (rf::local_player) {
+            std::strncpy(rf::local_player->settings.name, "af_bot", sizeof(rf::local_player->settings.name) - 1);
+            rf::local_player->settings.name[sizeof(rf::local_player->settings.name) - 1] = '\0';
+            rf::local_player->name = "af_bot";
+        }
     }
 }
 

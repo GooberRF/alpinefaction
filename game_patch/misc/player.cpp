@@ -248,6 +248,9 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
+            if (player->is_bot) {
+                g_bot_profile_slots.release_slot(player);
+            }
         }
         player_destroy_hook.call_target(player);
     },

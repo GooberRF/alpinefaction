@@ -35,6 +35,7 @@
 #include "../main/main.h"
 #include "../hud/hud.h"
 #include "../rf/multi.h"
+#include "../rf/gameseq.h"
 #include "../rf/misc.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
@@ -225,7 +226,8 @@ enum packet_type : uint8_t {
     af_spectate_start      = 0x5B,
     af_spectate_notify     = 0x5C,
     af_server_msg          = 0x5D,
-    af_server_req          = 0x5E
+    af_server_req          = 0x5E,
+    af_server_bot_control  = 0x5F
 };
 
 // client -> server
@@ -309,7 +311,8 @@ std::array g_client_side_packet_whitelist{
     af_server_info,
     af_spectate_notify,
     af_server_msg,
-    af_server_req
+    af_server_req,
+    af_server_bot_control
 };
 // clang-format on
 
@@ -536,8 +539,15 @@ CodeInjection process_game_info_packet_game_type_bounds_patch{
 FunHook<MultiIoPacketHandler> process_join_deny_packet_hook{
     0x0047A400,
     [](char* data, const rf::NetAddr& addr) {
-        if (rf::multi_is_connecting_to_server(addr)) // client-side
+        if (rf::multi_is_connecting_to_server(addr)) { // client-side
             process_join_deny_packet_hook.call_target(data, addr);
+
+            // Auto-quit for bots when join is denied (server full, wrong password, level changing, etc.)
+            if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
+                xlog::info("Bot join denied by server - auto-quitting (BotQuitWhenDisconnected=1)");
+                rf::gameseq_set_state(rf::GS_QUITING, false);
+            }
+        }
     },
 };
 
@@ -2054,7 +2064,36 @@ FunHook<void()> multi_stop_hook{
             *player_add_data = PlayerAdditionalData{};
         }
         multi_stop_hook.call_target();
+
+        // Auto-quit for bots when disconnected from server
+        if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
+            xlog::info("Bot disconnected from server - auto-quitting (BotQuitWhenDisconnected=1)");
+            rf::gameseq_set_state(rf::GS_QUITING, false);
+        }
     },
+};
+
+void multi_disconnect_from_server()
+{
+    if (!rf::is_multi) {
+        rf::console::print("Not connected to a server");
+        return;
+    }
+    if (rf::is_server) {
+        rf::console::print("Cannot disconnect: you are the server host");
+        return;
+    }
+    xlog::info("Disconnecting from server");
+    rf::multi_stop();
+    rf::gameseq_set_state(rf::GS_MAIN_MENU, false);
+}
+
+ConsoleCommand2 disconnect_cmd{
+    "disconnect",
+    [] {
+        multi_disconnect_from_server();
+    },
+    "Disconnect from the current server",
 };
 
 const std::optional<AlpineFactionServerInfo>& get_af_server_info()
@@ -2545,6 +2584,7 @@ void network_init()
     multi_stop_hook.install();
 
     bot_shared_secret_cmd.register_cmd();
+    disconnect_cmd.register_cmd();
 
     // print join_req denial reasons
     check_access_for_new_player_hook.install();

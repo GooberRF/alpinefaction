@@ -96,6 +96,46 @@ rf::NetGameType upcoming_game_type;
 UpcomingGameTypeSelection g_upcoming_game_type_selection = UpcomingGameTypeSelection::Rotation;
 static std::optional<rf::NetGameType> g_previous_level_game_type;
 
+BotProfileSlotTracker g_bot_profile_slots;
+
+int BotProfileSlotTracker::assign_slot(const rf::Player* player, int num_profiles)
+{
+    if (num_profiles <= 0) return -1;
+
+    std::vector<int> counts(num_profiles, 0);
+    for (const auto& [_, slot] : assignments) {
+        if (slot >= 0 && slot < num_profiles) {
+            counts[slot]++;
+        }
+    }
+
+    int best_slot = 0;
+    for (int i = 1; i < num_profiles; ++i) {
+        if (counts[i] < counts[best_slot]) {
+            best_slot = i;
+        }
+    }
+
+    assignments[player] = best_slot;
+    return best_slot;
+}
+
+void BotProfileSlotTracker::release_slot(const rf::Player* player)
+{
+    assignments.erase(player);
+}
+
+int BotProfileSlotTracker::get_slot(const rf::Player* player) const
+{
+    auto it = assignments.find(player);
+    return it != assignments.end() ? it->second : -1;
+}
+
+void BotProfileSlotTracker::clear()
+{
+    assignments.clear();
+}
+
 const rf::NetGameType get_upcoming_game_type()
 {
     return upcoming_game_type;
@@ -2071,8 +2111,180 @@ FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     },
 };
 
+struct DefaultBotIdentity {
+    const char* name;
+    const char* character;
+};
+
+static constexpr DefaultBotIdentity k_default_bot_identities[] = {
+    {"Parker",      "scientist_parker"},
+    {"Riot Guard",  "riot_guard"},
+    {"Hendrix",     "hendrix"},
+    {"Gryphon",     "gryphon"},
+    {"Davis",       "fat_admin"},
+    {"Masako",      "masako"},
+    {"Nurse",       "nurse"},
+    {"Eos",         "eos"},
+    {"Merc",        "merc_grunt"},
+    {"Elite",       "elite"},
+    {"Enviro Guard","env_guard"},
+    {"Scientist",   "scientist"},
+    {"Franklin",    "medic1"},
+};
+
+// Pick a random default identity not already used by another bot on the server.
+// If all identities are in use, allow duplicates.
+static const DefaultBotIdentity& pick_unused_default_identity()
+{
+    constexpr int num_identities = static_cast<int>(std::size(k_default_bot_identities));
+
+    // Collect names currently in use by bots
+    std::vector<std::string> used_names;
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (p.is_bot) {
+            used_names.emplace_back(p.name.c_str());
+        }
+    }
+
+    // Build list of unused identity indices
+    std::vector<int> available;
+    for (int i = 0; i < num_identities; ++i) {
+        bool in_use = false;
+        for (const auto& name : used_names) {
+            if (name == k_default_bot_identities[i].name) {
+                in_use = true;
+                break;
+            }
+        }
+        if (!in_use) {
+            available.push_back(i);
+        }
+    }
+
+    // If all are in use, pick from the full set
+    if (available.empty()) {
+        std::uniform_int_distribution<int> dist(0, num_identities - 1);
+        return k_default_bot_identities[dist(g_rng)];
+    }
+
+    std::uniform_int_distribution<int> dist(0, static_cast<int>(available.size()) - 1);
+    return k_default_bot_identities[available[dist(g_rng)]];
+}
+
+static void resolve_bot_identity(const ServerBotConfig& config, std::string& out_name, int32_t& out_character)
+{
+    // If both name and character are specified in the profile, use them directly
+    if (!config.player_name.empty() && !config.mp_character.empty()) {
+        out_name = config.player_name;
+        int idx = rf::multi_find_character(config.mp_character.c_str());
+        if (idx >= 0) {
+            out_character = idx;
+        }
+        else {
+            xlog::warn("Bot mp_character '{}' not found, using default", config.mp_character);
+            out_character = 0;
+        }
+        return;
+    }
+
+    // If neither is specified, pick a paired default identity
+    if (config.player_name.empty() && config.mp_character.empty()) {
+        const auto& identity = pick_unused_default_identity();
+        out_name = identity.name;
+        int idx = rf::multi_find_character(identity.character);
+        out_character = (idx >= 0) ? idx : 0;
+        return;
+    }
+
+    // One is specified, the other needs resolving
+    if (!config.player_name.empty()) {
+        out_name = config.player_name;
+    }
+    else {
+        const auto& identity = pick_unused_default_identity();
+        out_name = identity.name;
+    }
+
+    if (!config.mp_character.empty()) {
+        int idx = rf::multi_find_character(config.mp_character.c_str());
+        if (idx >= 0) {
+            out_character = idx;
+        }
+        else {
+            xlog::warn("Bot mp_character '{}' not found, randomizing", config.mp_character);
+            out_character = 0;
+        }
+    }
+    else {
+        if (rf::num_multi_characters > 0) {
+            std::uniform_int_distribution<int> dist(0, rf::num_multi_characters - 1);
+            out_character = dist(g_rng);
+        }
+        else {
+            out_character = 0;
+        }
+    }
+}
+
+static void broadcast_name_change(rf::Player* player)
+{
+    // Broadcast a stock name_change packet so all other clients see the updated name.
+    uint8_t buf[256];
+    size_t offset = 0;
+
+    RF_GamePacketHeader header{};
+    header.type = RF_GPT_NAME_CHANGE;
+    const char* name = player->name.c_str();
+    const size_t name_len = std::strlen(name);
+    header.size = static_cast<uint16_t>(1 + name_len + 1); // player_id + name + null
+    std::memcpy(buf + offset, &header, sizeof(header));
+    offset += sizeof(header);
+
+    buf[offset++] = player->net_data->player_id;
+    std::memcpy(buf + offset, name, name_len + 1);
+    offset += name_len + 1;
+
+    rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), 0);
+}
+
+static void send_bot_config_with_identity(rf::Player* player, const ServerBotConfig& config, int slot)
+{
+    std::string resolved_name;
+    int32_t resolved_character = 0;
+    resolve_bot_identity(config, resolved_name, resolved_character);
+
+    // Apply on the server's player struct
+    player->name = resolved_name.c_str();
+    player->settings.multi_character = resolved_character;
+
+    // Broadcast the name change to all other clients
+    broadcast_name_change(player);
+
+    // Send config (personality → skill → identity → go_active)
+    af_send_bot_config(player, config, resolved_name, resolved_character);
+
+    rf::console::print("  Sent bot profile '{}' (slot {}, skill '{}') to {} (character={})\n",
+        config.personality_preset, slot, config.skill_preset, player->name, resolved_character);
+}
+
 void server_reliable_socket_ready(rf::Player* player)
 {
+    // Send bot config once the reliable connection is ready.
+    if (player->is_bot) {
+        const auto& configs = g_alpine_server_config.bot_configs;
+        if (!configs.empty()) {
+            const int slot = g_bot_profile_slots.assign_slot(player, static_cast<int>(configs.size()));
+            if (slot >= 0) {
+                send_bot_config_with_identity(player, configs[slot], slot);
+            }
+        }
+        else {
+            // No bot profiles configured - send default config (balanced/average).
+            ServerBotConfig default_cfg;
+            send_bot_config_with_identity(player, default_cfg, -1);
+        }
+    }
+
     // welcome players, restricting to only welcoming alpine clients if configured
     if (g_alpine_server_config_active_rules.welcome_message.enabled) {
         if (!g_alpine_server_config.alpine_restricted_config.only_welcome_alpine || player->version_info.software == ClientSoftware::AlpineFaction) {

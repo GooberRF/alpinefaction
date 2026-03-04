@@ -42,7 +42,7 @@ FunHook<rf::String* __fastcall(rf::String*, void*, rf::String*, int, int)> strin
         }
         if (!this_ptr) {
             if (!logged_invalid_ptr) {
-                xlog::warn("String::substr safeguard: null source string pointer");
+                xlog::debug("String::substr safeguard: null source string pointer");
                 logged_invalid_ptr = true;
             }
             return string_substr_return_empty(str_out);
@@ -54,7 +54,7 @@ FunHook<rf::String* __fastcall(rf::String*, void*, rf::String*, int, int)> strin
         const int src_declared_len = src_pod->max_len;
         if (!src_buf || src_declared_len < 0) {
             if (!logged_invalid_ptr) {
-                xlog::warn("String::substr safeguard: invalid source string state (buf={}, len={})",
+                xlog::debug("String::substr safeguard: invalid source string state (buf={}, len={})",
                     static_cast<const void*>(src_buf), src_declared_len);
                 logged_invalid_ptr = true;
             }
@@ -72,7 +72,7 @@ FunHook<rf::String* __fastcall(rf::String*, void*, rf::String*, int, int)> strin
             src_len = k_max_reasonable_len;
         }
         if (src_len != src_declared_len && !logged_len_sanitized) {
-            xlog::warn("String::substr safeguard: sanitized suspicious source length declared={} content={}",
+            xlog::debug("String::substr safeguard: sanitized suspicious source length declared={} content={}",
                 src_declared_len, src_content_len);
             logged_len_sanitized = true;
         }
@@ -100,7 +100,7 @@ FunHook<rf::String* __fastcall(rf::String*, void*, rf::String*, int, int)> strin
 
         if (safe_end < safe_begin) {
             if (had_invalid_range && !logged_sanitized_range) {
-                xlog::warn("String::substr safeguard: dropped invalid range begin={} end={} len={}",
+                xlog::debug("String::substr safeguard: dropped invalid range begin={} end={} len={}",
                     begin, end_inclusive, src_len);
                 logged_sanitized_range = true;
             }
@@ -108,8 +108,8 @@ FunHook<rf::String* __fastcall(rf::String*, void*, rf::String*, int, int)> strin
         }
 
         if (had_invalid_range && !logged_sanitized_range) {
-            xlog::warn("String::substr safeguard: sanitized range begin={} end={} len={} -> begin={} end={}",
-                begin, end_inclusive, src_len, safe_begin, safe_end);
+            xlog::debug("String::substr safeguard: sanitized range begin={} end={} len={} -> begin={} end={} str=\"{}\"",
+                begin, end_inclusive, src_len, safe_begin, safe_end, src_buf);
             logged_sanitized_range = true;
         }
 

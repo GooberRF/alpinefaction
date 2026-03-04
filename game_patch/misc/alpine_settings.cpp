@@ -940,17 +940,9 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.bot_shared_secret = std::stoul(settings["BotSharedSecret"]);
         processed_keys.insert("BotSharedSecret");
     }
-    if (settings.count("BotPersonality")) {
-        g_alpine_game_config.bot_personality_preset = settings["BotPersonality"];
-        processed_keys.insert("BotPersonality");
-    }
-    if (settings.count("BotSkillLevel")) {
-        g_alpine_game_config.bot_skill_preset = settings["BotSkillLevel"];
-        processed_keys.insert("BotSkillLevel");
-    }
-    if (settings.count("WaypointsEditMode")) {
-        // Legacy session-only key. Keep as processed so older files do not become orphaned.
-        processed_keys.insert("WaypointsEditMode");
+    if (settings.count("BotQuitWhenDisconnected")) {
+        g_alpine_game_config.bot_quit_when_disconnected = std::stoi(settings["BotQuitWhenDisconnected"]) != 0;
+        processed_keys.insert("BotQuitWhenDisconnected");
     }
 
     // Load input settings
@@ -1327,8 +1319,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
     file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
     file << "BotSharedSecret=" << g_alpine_game_config.bot_shared_secret << "\n";
-    file << "BotPersonality=" << g_alpine_game_config.bot_personality_preset << "\n";
-    file << "BotSkillLevel=" << g_alpine_game_config.bot_skill_preset << "\n";
+    file << "BotQuitWhenDisconnected=" << g_alpine_game_config.bot_quit_when_disconnected << "\n";
 
     alpine_control_config_serialize(file, player->settings.controls);
 

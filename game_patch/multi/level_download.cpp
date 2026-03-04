@@ -28,6 +28,7 @@
 #include "../hud/hud.h"
 #include "multi.h"
 #include "faction_files.h"
+#include "../misc/alpine_settings.h"
 
 struct RotationAutodlReport
 {
@@ -742,6 +743,11 @@ CallHook<void(rf::GameState, bool)> game_new_game_gameseq_set_next_state_hook{
 CodeInjection join_failed_injection{
     0x0047C4EC,
     []() {
+        if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
+            xlog::info("Bot failed to join server - auto-quitting (BotQuitWhenDisconnected=1)");
+            rf::gameseq_set_state(rf::GS_QUITING, false);
+            return;
+        }
         set_jump_to_multi_server_list(true);
     },
 };
