@@ -492,7 +492,13 @@ namespace df::gr::d3d11
         entity_shadow_renderer_->generate_shadow_map(context_, *render_context_, rf::gr::eye_pos);
 
         // Restore render target and viewport after shadow pass
-        render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+        // Use the current render target (may be a security camera/mirror texture, not the backbuffer)
+        ID3D11RenderTargetView* current_rtv = default_render_target_view_;
+        if (render_target_bm_handle_ != -1) {
+            ID3D11RenderTargetView* rt = texture_manager_->lookup_render_target(render_target_bm_handle_);
+            if (rt) current_rtv = rt;
+        }
+        render_context_->set_render_target(current_rtv, depth_stencil_view_);
         render_context_->set_clip();
         render_context_->set_cull_mode(D3D11_CULL_BACK);
 
