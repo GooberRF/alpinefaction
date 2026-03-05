@@ -1012,13 +1012,10 @@ namespace df::gr::d3d11
         ID3D11Buffer* model_cb = render_context_.model_transform_cbuffer();
         context->VSSetConstantBuffers(0, 1, &model_cb);
 
-        // Bind shared V3D VB and IB
-        UINT stride = sizeof(GpuVertex);
-        UINT offset = 0;
-        ID3D11Buffer* vb = v3d_vb_.buffer();
-        ID3D11Buffer* ib = v3d_ib_.buffer();
-        context->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
-        context->IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
+        // Bind shared V3D VB and IB (through render_context_ to keep state cache in sync
+        // with character mesh draws that also use render_context_)
+        render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex), 0);
+        render_context_.set_index_buffer(v3d_ib_.buffer());
 
         // Draw LOD 0 batches
         int lod = 0;

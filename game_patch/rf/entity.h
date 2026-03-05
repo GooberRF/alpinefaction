@@ -21,6 +21,11 @@ namespace rf
         EF_GIB_ON_DEATH = 0x80,
     };
 
+    enum EntityFlags2
+    {
+        EF2_NO_SHADOW = 0x2,
+    };
+
     struct EntityCollisionSphereOverride
     {
         float radius;

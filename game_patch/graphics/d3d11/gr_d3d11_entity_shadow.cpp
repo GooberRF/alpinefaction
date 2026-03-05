@@ -236,7 +236,10 @@ namespace df::gr::d3d11
 
         int resolution = shadow_quality_presets[quality].resolution;
         if (resolution == 0) {
-            // Blob shadows — no shadow map needed
+            // Blob shadows — release shadow map to free GPU memory
+            shadow_map_texture_.release();
+            shadow_dsv_.release();
+            shadow_srv_.release();
             return;
         }
 
@@ -436,9 +439,13 @@ namespace df::gr::d3d11
             local_entity_handle = rf::local_player->entity_handle;
         }
 
+        int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
+        float fade_end = shadow_distance_presets[dp].fade_end;
+        float fade_end_sq = fade_end * fade_end;
+
         for (auto& entity : DoublyLinkedList{rf::entity_list}) {
             if (entity.handle == local_entity_handle) continue;
-            if (entity.entity_flags2 & 0x2) continue;
+            if (entity.entity_flags2 & rf::EF2_NO_SHADOW) continue;
             if (entity.obj_flags & OF_DELAYED_DELETE) continue;
             if (!entity.vmesh) continue;
 
@@ -446,9 +453,7 @@ namespace df::gr::d3d11
             float dy = entity.pos.y - current_camera_pos_.y;
             float dz = entity.pos.z - current_camera_pos_.z;
             float dist_sq = dx * dx + dy * dy + dz * dz;
-            int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
-            float fade_end = shadow_distance_presets[dp].fade_end;
-            if (dist_sq > fade_end * fade_end) continue;
+            if (dist_sq > fade_end_sq) continue;
 
             VMesh* vmesh = entity.vmesh;
             if (vmesh->type == MESH_TYPE_CHARACTER) {
@@ -459,9 +464,7 @@ namespace df::gr::d3d11
                 V3dMesh* v3d_mesh = ci->base_character->character_meshes[0].mesh;
                 if (!v3d_mesh || !v3d_mesh->vu) continue;
 
-                // Re-bind shadow VP after MeshRenderer's draw_shadow may bind render_context cbuffers
                 mesh_renderer_.draw_shadow_character_mesh(v3d_mesh->vu, entity.pos, entity.orient, ci, shadow_character_vs, context);
-                // Restore shadow VP at b1 (draw_shadow_character_mesh uses render_context which may rebind)
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
@@ -485,6 +488,10 @@ namespace df::gr::d3d11
         const auto& shadow_standard_vs = shader_manager_.get_vertex_shader(VertexShaderId::shadow_standard);
         const auto& shadow_character_vs = shader_manager_.get_vertex_shader(VertexShaderId::shadow_character);
 
+        int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
+        float fade_end = shadow_distance_presets[dp].fade_end;
+        float fade_end_sq = fade_end * fade_end;
+
         for (auto& corpse : DoublyLinkedList{rf::corpse_list}) {
             if (corpse.obj_flags & OF_DELAYED_DELETE) continue;
             if (!corpse.vmesh) continue;
@@ -493,9 +500,7 @@ namespace df::gr::d3d11
             float dy = corpse.pos.y - current_camera_pos_.y;
             float dz = corpse.pos.z - current_camera_pos_.z;
             float dist_sq = dx * dx + dy * dy + dz * dz;
-            int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
-            float fade_end = shadow_distance_presets[dp].fade_end;
-            if (dist_sq > fade_end * fade_end) continue;
+            if (dist_sq > fade_end_sq) continue;
 
             VMesh* vmesh = corpse.vmesh;
             if (vmesh->type == MESH_TYPE_CHARACTER) {
@@ -529,6 +534,10 @@ namespace df::gr::d3d11
     {
         const auto& shadow_standard_vs = shader_manager_.get_vertex_shader(VertexShaderId::shadow_standard);
 
+        int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
+        float fade_end = shadow_distance_presets[dp].fade_end;
+        float fade_end_sq = fade_end * fade_end;
+
         for (auto& item : DoublyLinkedList{rf::item_list}) {
             if (item.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
             if (!item.vmesh) continue;
@@ -549,9 +558,7 @@ namespace df::gr::d3d11
             float dy = item.pos.y - current_camera_pos_.y;
             float dz = item.pos.z - current_camera_pos_.z;
             float dist_sq = dx * dx + dy * dy + dz * dz;
-            int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
-            float fade_end = shadow_distance_presets[dp].fade_end;
-            if (dist_sq > fade_end * fade_end) continue;
+            if (dist_sq > fade_end_sq) continue;
 
             // Spinning items use a fresh orientation from spin_angle (matching stock renderer)
             Matrix3 orient;
