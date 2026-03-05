@@ -727,8 +727,16 @@ namespace df::gr::d3d11
         cache->render(render_type, render_context_);
     }
 
+    // Sentinel value stored in room->geo_cache to mark detail rooms that have been checked
+    // but have no renderable batches. Avoids rebuilding the cache builder every frame.
+    // clear_cache() resets all geo_cache to nullptr, which properly clears this sentinel.
+    static const auto k_empty_detail_sentinel = reinterpret_cast<rf::GCache*>(uintptr_t(1));
+
     GRenderCache* SolidRenderer::get_or_create_detail_room_cache(rf::GSolid* solid, rf::GRoom* room)
     {
+        if (room->geo_cache == k_empty_detail_sentinel) {
+            return nullptr;
+        }
         auto cache = reinterpret_cast<GRenderCache*>(room->geo_cache);
         if (!cache) {
             xlog::debug("Creating render cache for detail room {} (faces: {})",
@@ -741,6 +749,9 @@ namespace df::gr::d3d11
                 detail_render_cache_.push_back(std::make_unique<GRenderCache>(builder.build(device_)));
                 cache = detail_render_cache_.back().get();
                 room->geo_cache = reinterpret_cast<GCache*>(cache);
+            }
+            else {
+                room->geo_cache = k_empty_detail_sentinel;
             }
             xlog::debug("Detail room {} cache creation complete", room->room_index);
         }

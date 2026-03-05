@@ -456,21 +456,111 @@ enum class DedRoomEffectType : int
 
 struct CDedLevel
 {
-    char _pad_00[0x24];                           // +0x00
+    // --- vtable + string properties ---
+    void* vtable;                                 // +0x00
+    VString unk_str_04;                           // +0x04 (VString, 8 bytes)
+    VString unk_str_0C;                           // +0x0C (VString, 8 bytes)
+    VString unk_str_14;                           // +0x14 (VString, 8 bytes)
+    VString unk_str_1C;                           // +0x1C (VString, 8 bytes)
     VString geomod_texture;                       // +0x24 (crater texture filename)
-    char _pad_2C[0x4C - 0x2C];                   // +0x2C
-    GSolid* solid;                                // +0x4C (compiled geometry)
-    char _pad_50[0x118 - 0x50];                  // +0x50
+    char _pad_2C[0x30 - 0x2C];                   // +0x2C
+    int unk_30;                                   // +0x30 (small object, FUN_004b9380)
+    int unk_34;                                   // +0x34
+    int unk_38;                                   // +0x38
+    char _pad_3C[0x44 - 0x3C];                   // +0x3C
+    int unk_44;                                   // +0x44 (init 0)
+    char unk_48;                                  // +0x48 (init 0)
+    char _pad_49[0x4C - 0x49];                   // +0x49
+
+    // --- compiled geometry ---
+    GSolid* solid;                                // +0x4C (compiled geometry, 0x378-byte object)
+    char _pad_50[0x54 - 0x50];                   // +0x50
+    int uid_counters[8];                          // +0x54 (all init -1, 32 bytes)
+    char unk_74;                                  // +0x74 (init 0)
+    char _pad_75[0x78 - 0x75];                   // +0x75
+    float default_angles[32];                     // +0x78 (all init 89.9f, 128 bytes to +0xF8)
+    int unk_F8;                                   // +0xF8 (init 0)
+    int unk_FC;                                   // +0xFC (init 3)
+    int unk_100;                                  // +0x100 (init 0)
+    int unk_104;                                  // +0x104 (init 0)
+    float unk_108;                                // +0x108 (init 1.0f)
+    float unk_10C;                                // +0x10C (init 0.2625f)
+    int unk_110;                                  // +0x110 (init 16)
+    char unk_114;                                 // +0x114 (init 0)
+    char unk_115;                                 // +0x115 (init 0)
+    char _pad_116[0x118 - 0x116];                // +0x116
+
+    // --- brush linked list ---
     BrushNode* brush_list;                        // +0x118 (head of brush linked list)
-    char _pad_11C[0x298 - 0x11C];                // +0x11C
+
+    // --- editor strings + containers ---
+    char _pad_11C[0x1AC - 0x11C];                // +0x11C (3 CString+container pairs at +0x11C/+0x128, +0x14C/+0x158, +0x17C/+0x188)
+    void* unk_obj_1AC;                            // +0x1AC (0x14-byte allocated object)
+    char _pad_1B0[0x1C0 - 0x1B0];               // +0x1B0 (CString + int)
+    int unk_1C0;                                  // +0x1C0 (init 0, file filter related)
+    char _pad_1C4[0x1D0 - 0x1C4];               // +0x1C4 (VArray, 12 bytes + padding)
+
+    // --- icon texture handles ---
+    int icon_sp_start;                            // +0x1D0 (Icon_SinglePlayerStart.tga)
+    int icon_mp_start;                            // +0x1D4 (Icon_MultiPlayerStart.tga)
+    int icon_ambient;                             // +0x1D8 (Icon_Ambient.tga)
+    int icon_trigger;                             // +0x1DC (Icon_Trigger.tga)
+    int icon_event_c;                             // +0x1E0 (Icon_Event_C.tga)
+    int icon_event_e;                             // +0x1E4 (Icon_Event_E.tga)
+    int icon_event_l;                             // +0x1E8 (Icon_Event_L.tga)
+    int icon_light;                               // +0x1EC (Icon_Light.tga)
+    int icon_light_editor;                        // +0x1F0 (Icon_Light_Editor_only.tga)
+    int icon_geo_region;                          // +0x1F4 (Icon_GeoRegion.tga)
+    int icon_emitter;                             // +0x1F8 (Icon_ParticleEmitter.tga)
+    int icon_gas_region;                          // +0x1FC (Icon_GasRegion.tga)
+    int icon_decal;                               // +0x200 (Icon_Decal.tga)
+    int icon_room_fx;                             // +0x204 (Icon_RoomFX.tga)
+    int icon_eax;                                 // +0x208 (Icon_EAX.tga)
+    int icon_climb_region;                        // +0x20C (Icon_ClimbRegion.tga)
+    int icon_waypoint;                            // +0x210 (Icon_Waypoint.tga)
+    int icon_cutscene_path;                       // +0x214 (Icon_CutscenePathNode.tga)
+    int icon_bolt_emitter;                        // +0x218 (Icon_BoltEmitter.tga)
+    int icon_target;                              // +0x21C (Icon_Target.tga)
+    int icon_keyframe_gold;                       // +0x220 (Icon_Keyframe_Gold.tga)
+    int icon_keyframe_silver;                     // +0x224 (Icon_Keyframe_Silver.tga)
+    int icon_camera;                              // +0x228 (Icon_CameraPosition.tga)
+    int icon_push_region;                         // +0x22C (Icon_ClimbRegion.tga second)
+    char _pad_230[0x298 - 0x230];                // +0x230 (editor state: bytes, CStrings, containers, VArrays)
+
+    // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
-    char _pad_2A4[0x370 - 0x2A4];                // +0x2A4
+    char _pad_2A4[0x340 - 0x2A4];                // +0x2A4 (13 VArrays + 1 container, internal editor state)
+
+    // --- object VArrays (21 contiguous, 12 bytes each) ---
+    VArray<DedObject*> items;                     // +0x340
+    VArray<DedObject*> entities;                  // +0x34C
+    VArray<DedObject*> respawn_points;            // +0x358
+    VArray<DedObject*> triggers;                  // +0x364
     VArray<DedObject*> events;                    // +0x370
-    char _pad_37C[0x3E8 - 0x37C];                // +0x37C
+    VArray<DedObject*> ambient_sounds;            // +0x37C
+    VArray<DedObject*> clutter;                   // +0x388
+    VArray<DedObject*> lights;                    // +0x394
+    VArray<DedObject*> geo_regions;               // +0x3A0
+    VArray<DedObject*> nav_points;                // +0x3AC
+    VArray<DedObject*> cutscene_cameras;          // +0x3B8
+    VArray<DedObject*> cutscene_path_nodes;       // +0x3C4
+    VArray<DedObject*> emitters;                  // +0x3D0
+    VArray<DedObject*> gas_regions;               // +0x3DC
     VArray<DedObject*> room_effects;              // +0x3E8
-    char _pad_3F4[0x40C - 0x3F4];                // +0x3F4
+    VArray<DedObject*> eax_effects;               // +0x3F4
+    VArray<DedObject*> climb_regions;             // +0x400
     VArray<DedObject*> bolt_emitters;             // +0x40C
-    char _pad_418[0x608 - 0x418];                // +0x418
+    VArray<DedObject*> targets;                   // +0x418
+    VArray<DedObject*> decals;                    // +0x424
+    VArray<DedObject*> push_regions;              // +0x430
+    char _pad_43C[0x444 - 0x43C];                // +0x43C
+
+    // --- editor dialog panel pointers (28 MFC dialog objects) ---
+    void* dialog_panels[28];                      // +0x444 (28 pointers, ends at +0x4B4)
+
+    // --- moving groups (Keyframes) ---
+    VArray<DedObject*> moving_groups;             // +0x4B4 (each element has nested VArray at +0x1C)
+    char _pad_4C0[0x608 - 0x4C0];                // +0x4C0 (VArrays, containers, strings to end)
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)
     {

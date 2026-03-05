@@ -729,6 +729,7 @@ void reset_breakable_material_state()
     s_last_vfx_tick = 0;
     g_rock_break_foley_init = false;
     g_rock_break_foley_id = -1;
+    g_current_radius_damage_type = -1;
     g_rock_cap_bm_loaded = false;
     g_rock_cap_bm = -1;
 }
@@ -792,6 +793,16 @@ CodeInjection capture_damage_type_injection{
     0x00488ded,
     [](auto& regs) {
         g_current_radius_damage_type = *reinterpret_cast<int*>(regs.esp + 0x2C);
+    },
+};
+
+// Reset damage_type when apply_radius_damage returns (0x00488ffc, after last call to
+// room_apply_radius_damage). Prevents stale values from causing subsequent direct-hit
+// breaks to incorrectly set g_breaking_from_explosion = true.
+CodeInjection reset_damage_type_injection{
+    0x00488ffc,
+    [](auto& regs) {
+        g_current_radius_damage_type = -1;
     },
 };
 
@@ -2654,6 +2665,7 @@ void destruction_do_patch()
 
     // Breakable detail brush material system
     capture_damage_type_injection.install();
+    reset_damage_type_injection.install();
     // AsmWriter patch: overwrite 17 bytes of FPU damage code (0x492090-0x4920A0) with JMP
     // to our trampoline. SubHook/CodeInjection can't handle FPU opcodes at this address.
     // The trampoline is built dynamically with AsmWriter into executable memory (CodeBuffer)
