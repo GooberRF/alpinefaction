@@ -451,13 +451,21 @@ struct AlpineLevelProperties
 
 struct CDedLevel
 {
-    char _pad_00[0x4c];                          // +0x00
-    GSolid* solid;                                // +0x4c (compiled geometry)
+    char _pad_00[0x24];                           // +0x00
+    VString geomod_texture;                       // +0x24 (crater texture filename)
+    char _pad_2C[0x4C - 0x2C];                   // +0x2C
+    GSolid* solid;                                // +0x4C (compiled geometry)
     char _pad_50[0x118 - 0x50];                  // +0x50
     BrushNode* brush_list;                        // +0x118 (head of brush linked list)
-    char _pad_11c[0x298 - 0x11c];                // +0x11c
-    VArray<DedObject*> selection;                  // +0x298
-    char _pad_2a4[0x608 - 0x2a4];                // +0x2a4
+    char _pad_11C[0x298 - 0x11C];                // +0x11C
+    VArray<DedObject*> selection;                 // +0x298
+    char _pad_2A4[0x370 - 0x2A4];                // +0x2A4
+    VArray<DedObject*> events;                    // +0x370
+    char _pad_37C[0x3E8 - 0x37C];                // +0x37C
+    VArray<DedObject*> room_effects;              // +0x3E8
+    char _pad_3F4[0x40C - 0x3F4];                // +0x3F4
+    VArray<DedObject*> bolt_emitters;             // +0x40C
+    char _pad_418[0x608 - 0x418];                // +0x418
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)
     {
