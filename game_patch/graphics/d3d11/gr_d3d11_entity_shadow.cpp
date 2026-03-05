@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <xlog/xlog.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include "gr_d3d11.h"
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_context.h"
@@ -239,6 +240,14 @@ namespace df::gr::d3d11
             return;
         }
 
+        // If per-device resources (cbuffer, samplers, states) were never created
+        // (e.g. started at quality 0), do a full create_resources
+        if (!shadow_cbuffer_) {
+            current_resolution_ = resolution;
+            create_resources(current_resolution_);
+            return;
+        }
+
         if (resolution == current_resolution_ && shadow_map_texture_) {
             // Same resolution, resources already exist
             return;
@@ -275,7 +284,7 @@ namespace df::gr::d3d11
         xlog::info("Shadow map resized: {}x{}", current_resolution_, current_resolution_);
     }
 
-    void EntityShadowRenderer::build_shadow_view_proj(const rf::Vector3& camera_pos)
+    void EntityShadowRenderer::build_shadow_view_proj(ID3D11DeviceContext* context, const rf::Vector3& camera_pos)
     {
         current_camera_pos_ = camera_pos;
 
@@ -343,9 +352,6 @@ namespace df::gr::d3d11
         vp_data.view_mat = view_mat;
         vp_data.proj_mat = proj_mat;
 
-        ComPtr<ID3D11DeviceContext> context;
-        device_->GetImmediateContext(&context);
-
         D3D11_MAPPED_SUBRESOURCE mapped;
         DF_GR_D3D11_CHECK_HR(context->Map(shadow_vp_cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
         std::memcpy(mapped.pData, &vp_data, sizeof(vp_data));
@@ -373,7 +379,7 @@ namespace df::gr::d3d11
 
         current_camera_pos_ = camera_pos;
 
-        build_shadow_view_proj(camera_pos);
+        build_shadow_view_proj(context, camera_pos);
 
         // Unbind shadow SRV to avoid resource hazard
         ID3D11ShaderResourceView* null_srv = nullptr;
@@ -525,18 +531,17 @@ namespace df::gr::d3d11
 
         for (auto& item : DoublyLinkedList{rf::item_list}) {
             if (item.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
-            if (item.item_flags & 0x4) continue;
             if (!item.vmesh) continue;
 
             // Skip item classes that shouldn't cast shadows (banners, uniforms, effects, etc.)
             if (item.info) {
                 const char* cls = item.info->cls_name;
-                if (_stricmp(cls, "CTF Banner Red") == 0 ||
-                    _stricmp(cls, "CTF Banner Blue") == 0 ||
-                    _stricmp(cls, "Doctor Uniform") == 0 ||
-                    _stricmp(cls, "Brainstem") == 0 ||
-                    _stricmp(cls, "keycard") == 0 ||
-                    _stricmp(cls, "Demo_K000") == 0)
+                if (string_iequals(cls, "CTF Banner Red") ||
+                    string_iequals(cls, "CTF Banner Blue") ||
+                    string_iequals(cls, "Doctor Uniform") ||
+                    string_iequals(cls, "Brainstem") ||
+                    string_iequals(cls, "keycard") ||
+                    string_iequals(cls, "Demo_K000"))
                     continue;
             }
 
@@ -590,12 +595,12 @@ namespace df::gr::d3d11
                 }
                 if (total_verts == 0) continue;
 
-                // Ensure dynamic VB is large enough
+                // Ensure dynamic VB is large enough (grow with 2x factor to avoid frequent reallocation)
                 if (!vfx_shadow_vb_ || vfx_shadow_vb_capacity_ < total_verts) {
                     vfx_shadow_vb_.release();
-                    vfx_shadow_vb_capacity_ = total_verts;
+                    vfx_shadow_vb_capacity_ = std::max(total_verts, vfx_shadow_vb_capacity_ * 2);
                     D3D11_BUFFER_DESC vb_desc{};
-                    vb_desc.ByteWidth = total_verts * sizeof(GpuVertex);
+                    vb_desc.ByteWidth = vfx_shadow_vb_capacity_ * sizeof(GpuVertex);
                     vb_desc.Usage = D3D11_USAGE_DYNAMIC;
                     vb_desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
                     vb_desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
@@ -657,6 +662,9 @@ namespace df::gr::d3d11
 
     void EntityShadowRenderer::bind_shadow_resources(ID3D11DeviceContext* context)
     {
+        // No resources created (quality 0 from startup) — nothing to bind
+        if (!shadow_cbuffer_) return;
+
         int quality = std::clamp(g_alpine_game_config.shadow_quality, 0, num_shadow_quality_presets - 1);
         bool shadows_active = shadow_quality_presets[quality].resolution > 0;
 

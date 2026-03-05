@@ -101,7 +101,7 @@ namespace df::gr::d3d11
         };
         static_assert(sizeof(ShadowConstantBuffer) % 16 == 0);
 
-        void build_shadow_view_proj(const rf::Vector3& camera_pos);
+        void build_shadow_view_proj(ID3D11DeviceContext* context, const rf::Vector3& camera_pos);
         void render_entity_shadow(ID3D11DeviceContext* context, RenderContext& render_context);
         void render_corpse_shadow(ID3D11DeviceContext* context, RenderContext& render_context);
         void render_item_shadow(ID3D11DeviceContext* context, RenderContext& render_context);
