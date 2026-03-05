@@ -78,6 +78,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
 - Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
+- Fix bots not always spawning correctly when `ideal_player_count` is 32
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners

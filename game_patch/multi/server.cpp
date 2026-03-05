@@ -3276,8 +3276,18 @@ static void bot_decommission_check() {
     const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
     if (!rf::is_server
         || rf::gameseq_get_state() == rf::GS_MULTI_LIMBO
-        || rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC
-        || cfg_rules.ideal_player_count >= 32) {
+        || rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC) {
+        return;
+    }
+
+    // When ideal_player_count >= 32, decommissioning is disabled — just enable all disabled bots.
+    // This is needed because multi_level_init sets is_spawn_disabled = true for all bots on map change.
+    if (cfg_rules.ideal_player_count >= 32) {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            if (player.is_bot && player.is_spawn_disabled) {
+                player.is_spawn_disabled = false;
+            }
+        }
         return;
     }
 
