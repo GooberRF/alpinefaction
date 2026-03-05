@@ -30,6 +30,7 @@
 #include "../rf/clutter.h"
 #include "gr.h"
 #include "gr_internal.h"
+#include "../hud/multi_spectate.h"
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
 
@@ -333,6 +334,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
             return;
         }
 
+        multi_spectate_sync_crouch_anim();
         gameplay_render_frame_hook.call_target(pp, flags);
     },
 };

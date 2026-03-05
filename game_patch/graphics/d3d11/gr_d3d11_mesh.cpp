@@ -15,6 +15,7 @@
 #include "../../rf/v3d.h"
 #include "../../rf/character.h"
 #include "../../misc/misc.h"
+#include "../../misc/alpine_settings.h"
 #include "../../rf/level.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
@@ -764,13 +765,19 @@ namespace df::gr::d3d11
                     color = add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
                 }
             }
+            color.alpha = static_cast<ubyte>(params.alpha);
         } else {
             // IR render colours:
             // characters are rendered using self_illum (derived from dist + body temp in player_fpgun_render_ir)
             // vehicles are rendered white
-            color = is_character_mesh ? params.self_illum : rf::Color{255, 255, 255, 255};
+            if (is_character_mesh && g_alpine_game_config.thermal_entity_color_override) {
+                auto [r, g, b, a] = extract_color_components(*g_alpine_game_config.thermal_entity_color_override);
+                color = rf::Color{static_cast<ubyte>(r), static_cast<ubyte>(g), static_cast<ubyte>(b), static_cast<ubyte>(a)};
+            } else {
+                color = is_character_mesh ? params.self_illum : rf::Color{255, 255, 255, 255};
+                color.alpha = static_cast<ubyte>(params.alpha);
+            }
         }
-        color.alpha = static_cast<ubyte>(params.alpha);
 
         bool use_vertex_colors = params.vertex_colors != nullptr;
         render_context_.update_lights();

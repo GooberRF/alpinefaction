@@ -1,9 +1,52 @@
 #include <windows.h>
+#include <timeapi.h>
 #include <xlog/xlog.h>
-#include <mmsystem.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include "../rf/os/timer.h"
+
+void wait_for(const float ms) {
+    if (ms <= .0f) {
+        return;
+    }
+
+    // Should be a resolution of 500 us.
+    thread_local const HANDLE timer = CreateWaitableTimerExA(
+        nullptr,
+        nullptr,
+        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+        TIMER_MODIFY_STATE | SYNCHRONIZE
+    );
+
+    if (!timer) {
+        ERR_ONCE("CreateWaitableTimerExA in wait_for failed ({})", GetLastError());
+    SLEEP:
+        static const MMRESULT res = timeBeginPeriod(1);
+        if (res != TIMERR_NOERROR) {
+            ERR_ONCE(
+                "The frame rate may be unstable, because timeBeginPeriod failed ({})",
+                res
+            );
+        }
+        Sleep(static_cast<DWORD>(ms));
+    } else {
+        // `SetWaitableTimer` requires 100-nanosecond intervals.
+        // Negative values indicate relative time.
+        LARGE_INTEGER dur{
+            .QuadPart = -static_cast<LONGLONG>(static_cast<double>(ms) * 10'000.)
+        };
+
+        if (!SetWaitableTimer(timer, &dur, 0, nullptr, nullptr, FALSE)) {
+            ERR_ONCE("SetWaitableTimer in wait_for failed ({})", GetLastError());
+            goto SLEEP;
+        }
+
+        if (WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0) {
+            ERR_ONCE("WaitForSingleObject in wait_for failed ({})", GetLastError());
+            goto SLEEP;
+        }
+    }
+}
 
 static LARGE_INTEGER g_qpc_frequency;
 
@@ -27,13 +70,6 @@ FunHook<int(int)> timer_get_hook{
         return static_cast<int>(current_qpc_value.QuadPart / g_qpc_frequency.QuadPart);
     },
 };
-
-void set_dedicated_server_timer_frequency()
-{
-    if (timeBeginPeriod(1) != TIMERR_NOERROR) {
-        xlog::info("Failed to set 1ms timer resolution, server framerate may be unstable.");
-    }
-}
 
 void timer_apply_patch()
 {

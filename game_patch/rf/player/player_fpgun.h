@@ -80,6 +80,7 @@ namespace rf
     static auto& player_fpgun_render_ir = addr_as_ref<void(Player* player)>(0x004AEEF0);
     static auto& player_fpgun_set_next_state_anim  = addr_as_ref<void(Player* player, int anim_index)>(0x004AA560);
     static auto& player_fpgun_is_in_state_anim = addr_as_ref<bool(Player* player, int anim_index)>(0x004A9520);
+    static auto& player_fpgun_is_in_custom_anim = addr_as_ref<bool(Player* player)>(0x004ADB60);
     static auto& player_fpgun_clear_all_action_anim_sounds = addr_as_ref<void(Player* player)>(0x004A9490);
     static auto& player_fpgun_load_meshes = addr_as_ref<void()>(0x004AE530);
     static auto& player_fpgun_delete_meshes = addr_as_ref<void()>(0x004AEB40);

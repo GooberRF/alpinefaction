@@ -16,6 +16,7 @@ bool raw_command_line_has_switch(const wchar_t* switch_name);
 bool is_client_bot_requested_from_cmdline();
 bool is_client_debugbot_requested_from_cmdline();
 bool headless_bot_requested_from_raw_cmdline();
+void wait_for(float ms);
 
 class HighResTimer {
     using clock = std::chrono::high_resolution_clock;

@@ -1,5 +1,6 @@
 #include "multi_spectate.h"
 #include "hud.h"
+#include "hud_internal.h"
 #include "multi_scoreboard.h"
 #include "../input/input.h"
 #include "../os/console.h"
@@ -12,13 +13,16 @@
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/hud.h"
+#include "../rf/bmpman.h"
 #include "../rf/player/camera.h"
+#include "../rf/player/player_fpgun.h"
 #include "../main/main.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
+#include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include <shlwapi.h>
@@ -29,6 +33,12 @@ static rf::Player* g_spectate_mode_target;
 static rf::Camera* g_old_target_camera = nullptr;
 static bool g_spectate_mode_enabled = false;
 static bool g_spectate_mode_follow_killer = false;
+
+// Edge-detection state for spectated player action animations
+static bool g_prev_weapon_is_on = false;
+static bool g_prev_is_reloading = false;
+static bool g_prev_alt_fire_is_on = false;
+static int g_prev_weapon_type = -1;
 
 void player_fpgun_set_player(rf::Player* pp);
 
@@ -51,6 +61,71 @@ static void set_camera_target(rf::Player* player)
 static bool is_force_respawn()
 {
     return g_spawned_in_current_level && (rf::netgame.flags & rf::NG_FLAG_FORCE_RESPAWN);
+}
+
+static void spectate_entity_translate_stand_state_to_crouch_state(int* state_anim_index)
+{
+    if (!state_anim_index) {
+        return;
+    }
+
+    switch (static_cast<rf::EntityState>(*state_anim_index)) {
+    case rf::ENTITY_STATE_STAND:
+        *state_anim_index = rf::ENTITY_STATE_CROUCH;
+        break;
+    case rf::ENTITY_STATE_ATTACK_STAND:
+        *state_anim_index = rf::ENTITY_STATE_ATTACK_CROUCH;
+        break;
+    case rf::ENTITY_STATE_WALK:
+        *state_anim_index = rf::ENTITY_STATE_ATTACK_CROUCH_WALK;
+        break;
+    default:
+        break;
+    }
+}
+
+static bool state_animation_is_crouch(int state)
+{
+    return state >= rf::ENTITY_STATE_CROUCH && state <= rf::ENTITY_STATE_ATTACK_CROUCH_WALK;
+}
+
+// Hook entity_set_next_state_anim to remap non-crouch animations to crouch
+// variants for the spectated entity when it's crouching. This prevents the
+// movement state machine from constantly overriding the crouch animation.
+FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
+    0x0042A580,
+    [](rf::Entity* entity, int state_anim_index, float transition_time) {
+        if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)
+            && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
+            rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+            if (entity == target) {
+                spectate_entity_translate_stand_state_to_crouch_state(&state_anim_index);
+            }
+        }
+        spectate_entity_set_next_state_anim_hook.call_target(entity, state_anim_index, transition_time);
+    },
+};
+
+void multi_spectate_sync_crouch_anim()
+{
+    // The animation hook handles remapping automatically. We just need to
+    // kick-start the transition for entities already in a non-crouch anim.
+    if (!g_spectate_mode_enabled || !g_spectate_mode_target)
+        return;
+
+    rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+    if (!entity)
+        return;
+
+    if (rf::entity_is_crouching(entity) && !state_animation_is_crouch(entity->current_state_anim)
+        && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
+        int next_state_anim = entity->current_state_anim;
+        spectate_entity_translate_stand_state_to_crouch_state(&next_state_anim);
+        if (next_state_anim == entity->current_state_anim) {
+            next_state_anim = rf::ENTITY_STATE_CROUCH;
+        }
+        rf::entity_set_next_state_anim(entity, next_state_anim, 0.15f);
+    }
 }
 
 void multi_spectate_set_target_player(rf::Player* player)
@@ -87,11 +162,20 @@ void multi_spectate_set_target_player(rf::Player* player)
         g_local_queued_delayed_spawn = false;
         stop_draw_respawn_timer_notification();
     }
+    else {
+        // Clear scanner state when leaving spectate
+        rf::local_player->fpgun_data.scanning_for_target = false;
+    }
 
     g_spectate_mode_enabled = entering_player_spectate;
     if (g_spectate_mode_target != player) {
         af_send_spectate_start_packet(player);
         g_spectate_mode_target = player;
+        // Reset action animation edge-detection state for new target
+        g_prev_weapon_is_on = false;
+        g_prev_is_reloading = false;
+        g_prev_alt_fire_is_on = false;
+        g_prev_weapon_type = -1;
     }
 
     rf::multi_kill_local_player();
@@ -350,7 +434,113 @@ static ConsoleCommand2 spectate_mode_follow_killer_cmd{
     "When a player you're spectating dies, automatically spectate their killer",
 };
 
+// gameplay_render_frame checks scanning_for_target at 0x00431CCC for FOV and scanner overlay
+// rendering, BEFORE player_render_new (0x0043285D) runs. The game loop clears scanning_for_target
+// on local_player each frame (FUN_004ad410) because local_player isn't holding the rail driver.
+// This early injection derives scanner state from the spectate target before the first read.
+// The rail driver scanner toggle (FUN_004ad560) sets scanning_for_target but NOT zooming_in.
+// Entity state flags (FUN_00475930) only pack RF_ES_ZOOMING from zooming_in. This injection
+// also sets RF_ES_ZOOMING (bit 0x08) when scanning_for_target is true, so the scanner state
+// is synced to other clients via stock entity_update packets.
+// Wraps entity state flags sync (FUN_00475930) to handle scanner state on both sides:
+// SENDING: includes scanning_for_target as RF_ES_ZOOMING in the flags
+// RECEIVING: converts RF_ES_ZOOMING back to scanning_for_target for scanner weapons
+static FunHook<void(rf::Entity*, uint8_t*, bool)> entity_state_flags_sync_hook{
+    0x00475930,
+    [](rf::Entity* entity, uint8_t* flags, bool is_sending) {
+        // PRE-CALL (sending side): set scanning_for_target in entity state so it gets packed
+        // as RF_ES_ZOOMING by the original function
+        rf::Player* player = entity ? rf::player_from_entity_handle(entity->handle) : nullptr;
+        bool was_scanning = false;
+        if (is_sending && player && player->fpgun_data.scanning_for_target) {
+            // Temporarily set zooming_in so the stock code packs RF_ES_ZOOMING
+            was_scanning = true;
+            player->fpgun_data.zooming_in = true;
+        }
+
+        entity_state_flags_sync_hook.call_target(entity, flags, is_sending);
+
+        // POST-CALL (sending side): restore zooming_in
+        if (was_scanning && player) {
+            player->fpgun_data.zooming_in = false;
+        }
+
+        // POST-CALL (receiving side): convert zooming_in to scanning_for_target for scanners
+        if (!is_sending && player) {
+            if (player->fpgun_data.zooming_in &&
+                rf::weapon_has_scanner(entity->ai.current_primary_weapon)) {
+                player->fpgun_data.scanning_for_target = true;
+                player->fpgun_data.zooming_in = false;
+            } else if (!player->fpgun_data.zooming_in) {
+                player->fpgun_data.scanning_for_target = false;
+            }
+        }
+    },
+};
+
+// gameplay_render_frame checks scanning_for_target at 0x00431CCC for FOV and scanner overlay
+// rendering, BEFORE player_render_new (0x0043285D) runs. The game loop clears scanning_for_target
+// on local_player each frame (FUN_004ad410) because local_player isn't holding the rail driver.
+// This early injection derives scanner state from the spectate target before the first read.
+static CodeInjection gameplay_render_frame_early_scanner_sync{
+    0x00431CCC,
+    []() {
+        if (g_spectate_mode_enabled && rf::local_player && g_spectate_mode_target) {
+            // The receiving-side injection sets scanning_for_target directly on the target.
+            // Copy it to local_player so gameplay_render_frame's scanner overlay code sees it.
+            bool scanning = g_spectate_mode_target->fpgun_data.scanning_for_target;
+            rf::local_player->fpgun_data.scanning_for_target = scanning;
+        }
+    },
+};
+
+// The scope overlay block at 0x00431D1C-0x00431E4C renders based on EDI (camera scope object),
+// regardless of scanning state. When the rail scanner is active, we must suppress the scope
+// overlay so it doesn't render on top of (or instead of) the scanner. Force EDI=0 to skip it.
+static CodeInjection gameplay_render_frame_skip_scope_when_scanning{
+    0x00431D1C,
+    [](auto& regs) {
+        if (g_spectate_mode_enabled && rf::local_player &&
+            rf::local_player->fpgun_data.scanning_for_target) {
+            regs.edi = 0;
+        }
+    },
+};
+
+// gameplay_render_frame skips the HUD render (FUN_00437ba0) when scanning_for_target is true.
+// Since multi_spectate_render is called from inside that function, the spectate HUD never draws
+// when the rail scanner overlay is active. This injection runs right after the skip point and
+// draws the spectate HUD on top of the scanner overlay.
+static CodeInjection gameplay_render_frame_spectate_hud_over_scanner{
+    0x00432A20,
+    []() {
+        if (g_spectate_mode_enabled && rf::local_player &&
+            rf::local_player->fpgun_data.scanning_for_target) {
+            multi_spectate_render();
+        }
+    },
+};
+
 #if SPECTATE_MODE_SHOW_WEAPON
+
+// Hook entity_play_attack_anim (0x0042C3C0) — called from the obj_update processing path
+// when a remote entity's attack animation bits change. This fires at the correct time for
+// thrown projectile weapons (grenade, C4, flamethrower canister), before the projectile
+// itself arrives. For non-thrown weapons the existing multi_process_remote_weapon_fire_hook
+// path also calls multi_spectate_on_obj_update_fire, but the !is_playing guard prevents
+// double-triggering.
+FunHook<void(rf::Entity*, bool)> entity_play_attack_anim_spectate_hook{
+    0x0042C3C0,
+    [](rf::Entity* entity, bool alt_fire) {
+        entity_play_attack_anim_spectate_hook.call_target(entity, alt_fire);
+        if (!g_spectate_mode_enabled || !g_spectate_mode_target || !entity || rf::is_server)
+            return;
+        rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+        if (entity != target || g_spectate_mode_target == rf::local_player)
+            return;
+        multi_spectate_on_obj_update_fire(entity, alt_fire);
+    },
+};
 
 static void player_render_new(rf::Player* player)
 {
@@ -362,12 +552,78 @@ static void player_render_new(rf::Player* player)
             (entity && entity->ai.current_primary_weapon == rf::remote_charge_weapon_type);
 
         if (g_spectate_mode_target != rf::local_player && entity) {
-            static rf::Vector3 old_vel;
-            rf::Vector3 vel_diff = entity->p_data.vel - old_vel;
-            old_vel = entity->p_data.vel;
+            // Clear jump/land flags so player_fpgun_process doesn't play WA_JUMP
+            // which cancels action anims (reload, fire, draw, etc.)
+            entity->entity_flags &= ~rf::EF_JUMP_START_ANIM;
+            g_spectate_mode_target->just_landed = false;
 
-            if (vel_diff.y > 0.1f)
-                entity->entity_flags |= rf::EF_JUMP_START_ANIM; // jump
+            int weapon_type = entity->ai.current_primary_weapon;
+            bool valid_weapon = weapon_type >= 0 && weapon_type < rf::num_weapon_types;
+
+            if (valid_weapon) {
+                // Detect weapon switch and play draw animation for the new weapon
+                if (weapon_type != g_prev_weapon_type && g_prev_weapon_type != -1) {
+                    if (rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_DRAW)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_DRAW);
+                    }
+                }
+
+                // Detect weapon fire rising/falling edge.
+                // AIF_ALT_FIRE distinguishes primary vs alt fire on the same weapon_is_on state.
+                // For continuous alt fire weapons (baton taser): skip WA_CUSTOM_START intro, go
+                // straight to WS_LOOP_FIRE on rising edge, play WA_CUSTOM_LEAVE on falling edge.
+                bool weapon_is_on = rf::entity_weapon_is_on(entity->handle, weapon_type);
+                bool is_alt_fire = (entity->ai.ai_flags & rf::AIF_ALT_FIRE) != 0;
+                bool is_continuous_alt_fire_weapon =
+                    rf::weapon_is_on_off_weapon(weapon_type, true);
+
+                if (weapon_is_on && !g_prev_weapon_is_on) {
+                    // Rising edge - weapon just started firing
+                    if (is_alt_fire && is_continuous_alt_fire_weapon) {
+                        // Continuous alt fire (baton taser): skip intro, go straight to looping fire
+                        rf::player_fpgun_set_next_state_anim(g_spectate_mode_target, rf::WS_LOOP_FIRE);
+                    }
+                    else if (is_alt_fire &&
+                             rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_ALT_FIRE)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_ALT_FIRE);
+                    }
+                    else if (!is_alt_fire &&
+                             rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_FIRE)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_FIRE);
+                    }
+                    // Reset firing timer so muzzle flash renders (used by rail gun glow,
+                    // shoulder cannon boom, and other time-based effects in player_fpgun_render)
+                    g_spectate_mode_target->fpgun_data.time_elapsed_since_firing = 0.0f;
+                }
+                else if (!weapon_is_on && g_prev_weapon_is_on) {
+                    // Falling edge - weapon stopped firing
+                    if (g_prev_alt_fire_is_on && is_continuous_alt_fire_weapon &&
+                        rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_CUSTOM_LEAVE)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_CUSTOM_LEAVE);
+                    }
+                }
+                g_prev_weapon_is_on = weapon_is_on;
+                g_prev_alt_fire_is_on = is_alt_fire;
+
+                // Detect reload rising edge and play fpgun reload action animation
+                // Skip if the player has no reserve ammo (empty weapon causes continuous reload flag)
+                bool is_reloading = rf::entity_is_reloading(entity);
+                if (is_reloading && !g_prev_is_reloading) {
+                    int ammo_type = rf::weapon_types[weapon_type].ammo_type;
+                    bool has_reserve_ammo = ammo_type >= 0 && entity->ai.ammo[ammo_type] > 0;
+                    if (has_reserve_ammo && rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_RELOAD)) {
+                        rf::player_fpgun_play_anim(g_spectate_mode_target, rf::WA_RELOAD);
+                    }
+                }
+                g_prev_is_reloading = is_reloading;
+            }
+            else {
+                // Invalid weapon (unarmed) - reset edge-detection state
+                g_prev_weapon_is_on = false;
+                g_prev_alt_fire_is_on = false;
+                g_prev_is_reloading = false;
+            }
+            g_prev_weapon_type = weapon_type;
         }
 
         if (g_spectate_mode_target->fpgun_data.zooming_in)
@@ -375,7 +631,20 @@ static void player_render_new(rf::Player* player)
         rf::local_player->fpgun_data.zooming_in = g_spectate_mode_target->fpgun_data.zooming_in;
         rf::local_player->fpgun_data.zoom_factor = g_spectate_mode_target->fpgun_data.zoom_factor;
 
+        // Copy scanner state from target (set by receiving-side entity state flags injection)
+        rf::local_player->fpgun_data.scanning_for_target =
+            g_spectate_mode_target->fpgun_data.scanning_for_target;
+
         rf::player_fpgun_process(g_spectate_mode_target);
+
+        // Force WS_LOOP_FIRE state after process so the render function sees it for muzzle flash.
+        // The state anim hook inside process should already set this, but the animation transition
+        // system may not complete in time for the render check. Directly writing the state fields
+        // guarantees player_fpgun_render's is_in_state_anim(WS_LOOP_FIRE) check passes.
+        if (entity && rf::entity_weapon_is_on(entity->handle, entity->ai.current_primary_weapon)) {
+            g_spectate_mode_target->fpgun_current_state_anim = rf::WS_LOOP_FIRE;
+        }
+
         rf::player_render(g_spectate_mode_target);
     }
     else
@@ -386,28 +655,102 @@ CallHook<float(rf::Player*)> gameplay_render_frame_player_fpgun_get_zoom_hook{
     0x00431B6D,
     [](rf::Player* pp) {
         if (g_spectate_mode_enabled) {
+            // Rail driver scanner has its own FOV (set via the scanning_for_target path).
+            // Return 0 so the sniper scope overlay doesn't render.
+            if (g_spectate_mode_target->fpgun_data.scanning_for_target) {
+                return 0.0f;
+            }
             return gameplay_render_frame_player_fpgun_get_zoom_hook.call_target(g_spectate_mode_target);
         }
         return gameplay_render_frame_player_fpgun_get_zoom_hook.call_target(pp);
     },
 };
 
+// render_to_dynamic_textures (0x00431820) iterates all players and calls player_fpgun_render_for_rail_gun
+// for each player with scanning_for_target=true. It runs BEFORE gameplay_render_frame, so our early
+// injection there is too late. This hook sets scanning_for_target on local_player before the iteration,
+// so the scanner texture gets rendered. Our existing hook on player_fpgun_render_for_rail_gun then
+// redirects the render to use the spectate target's viewpoint.
+static FunHook<void()> render_to_dynamic_textures_hook{
+    0x00431820,
+    []() {
+        if (g_spectate_mode_enabled && rf::local_player && g_spectate_mode_target) {
+            // The receiving-side injection sets scanning_for_target directly on the target.
+            // Copy it to local_player so render_to_dynamic_textures renders the scanner texture.
+            bool scanning = g_spectate_mode_target->fpgun_data.scanning_for_target;
+            rf::local_player->fpgun_data.scanning_for_target = scanning;
+        }
+        render_to_dynamic_textures_hook.call_target();
+    },
+};
+
 #endif // SPECTATE_MODE_SHOW_WEAPON
+
+void multi_spectate_on_obj_update_fire(rf::Entity* entity, bool alt_fire)
+{
+#if SPECTATE_MODE_SHOW_WEAPON
+    if (!g_spectate_mode_enabled || !g_spectate_mode_target || !entity)
+        return;
+
+    rf::Entity* target_entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+    if (entity != target_entity)
+        return;
+
+    if (g_spectate_mode_target == rf::local_player)
+        return;
+
+    int weapon_type = entity->ai.current_primary_weapon;
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types)
+        return;
+
+    // Continuous alt fire weapons (baton taser): skip intro, go straight to looping fire
+    if (alt_fire && rf::weapon_is_on_off_weapon(weapon_type, true)) {
+        rf::player_fpgun_set_next_state_anim(g_spectate_mode_target, rf::WS_LOOP_FIRE);
+    }
+    else {
+        rf::WeaponAction action = alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE;
+        if (rf::player_fpgun_action_anim_exists(weapon_type, action)) {
+            bool should_play = rf::weapon_is_semi_automatic(weapon_type)
+                || !rf::player_fpgun_action_anim_is_playing(g_spectate_mode_target, action);
+            if (should_play) {
+                rf::player_fpgun_play_anim(g_spectate_mode_target, action);
+            }
+        }
+    }
+
+    g_spectate_mode_target->fpgun_data.time_elapsed_since_firing = 0.0f;
+#endif
+}
 
 void multi_spectate_appy_patch()
 {
     render_reticle_hook.install();
     hud_weapons_render_hook.install();
     hud_status_render_spectate_hook.install();
+    spectate_entity_set_next_state_anim_hook.install();
 
     spectate_cmd.register_cmd();
     spectate_mode_minimal_ui_cmd.register_cmd();
     spectate_mode_follow_killer_cmd.register_cmd();
 
+    // Handle scanner state in entity state flags (both sending and receiving)
+    entity_state_flags_sync_hook.install();
+
+    // Sync scanner state early in gameplay_render_frame before the first scanning_for_target check
+    gameplay_render_frame_early_scanner_sync.install();
+
+    // Suppress scope overlay when rail scanner is active in spectate
+    gameplay_render_frame_skip_scope_when_scanning.install();
+
+    // Draw spectate HUD over rail scanner overlay (scanner skips the normal HUD render path)
+    gameplay_render_frame_spectate_hud_over_scanner.install();
+
 #if SPECTATE_MODE_SHOW_WEAPON
 
     AsmWriter(0x0043285D).call(player_render_new);
     gameplay_render_frame_player_fpgun_get_zoom_hook.install();
+    entity_play_attack_anim_spectate_hook.install();
+    render_to_dynamic_textures_hook.install();
 
     write_mem_ptr(0x0048857E + 2, &g_spectate_mode_target); // obj_mark_all_for_room
     write_mem_ptr(0x00488598 + 1, &g_spectate_mode_target); // obj_mark_all_for_room
@@ -456,6 +799,54 @@ static void draw_with_shadow(int x, int y, int shadow_dx, int shadow_dy, rf::Col
     fun(x + shadow_dx, y + shadow_dy);
     rf::gr::set_color(clr);
     fun(x, y);
+}
+
+// Renders powerup icons to the left of the spectate nameplate bar.
+// Detects powerup state from entity_flags2 which are already synced by the stock netcode.
+static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar_y, int bar_h)
+{
+    if (!entity)
+        return;
+
+    // Load bitmaps once
+    static int bm_invuln = rf::bm::load("hud_pow_invuln.tga", -1, true);
+    static int bm_amp = rf::bm::load("hud_pow_damage.tga", -1, true);
+
+    // Collect active powerups right-to-left (rightmost icon is closest to bar)
+    int active_bms[2];
+    int count = 0;
+    if ((entity->entity_flags2 & rf::EF2_POWERUP_DAMAGE_AMP) != 0 && bm_amp >= 0)
+        active_bms[count++] = bm_amp;
+    if ((entity->entity_flags2 & rf::EF2_POWERUP_INVULNERABLE) != 0 && bm_invuln >= 0)
+        active_bms[count++] = bm_invuln;
+
+    if (count == 0)
+        return;
+
+    float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
+    int gap = static_cast<int>(4 * scale);
+
+    // Measure icon size (both bitmaps are the same dimensions)
+    int bm_w = 0, bm_h = 0;
+    rf::bm::get_dimensions(active_bms[0], &bm_w, &bm_h);
+    int icon_w = static_cast<int>(bm_w * scale);
+    int icon_h = static_cast<int>(bm_h * scale);
+
+    // Place icons to the left of the nameplate bar, right-aligned toward bar_x
+    int icon_x = bar_x - gap;
+
+    for (int i = 0; i < count; ++i) {
+        icon_x -= icon_w;
+
+        // Vertically center icon on the nameplate bar
+        int icon_y = bar_y + (bar_h - icon_h) / 2;
+
+        // Draw icon
+        rf::gr::set_color(255, 255, 255, 255);
+        hud_scaled_bitmap(active_bms[i], icon_x, icon_y, scale);
+
+        icon_x -= gap;
+    }
 }
 
 void multi_spectate_render() {
@@ -613,6 +1004,8 @@ void multi_spectate_render() {
     }
 
     rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+
+    render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
     if (!entity) {
         rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
         static int blood_bm = rf::bm::load("bloodsmear07_A.tga", -1, true);
