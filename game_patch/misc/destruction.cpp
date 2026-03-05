@@ -27,6 +27,7 @@
 #include "../os/console.h"
 #include "destruction.h"
 #include "level.h"
+#include "../sound/sound_foley.h"
 
 // Set by geomod_init hook; checked by boolean engine injections.
 static bool g_rf2_style_boolean_active = false;
@@ -71,24 +72,6 @@ static rf::DetailMaterial g_breaking_material = rf::DetailMaterial::Glass;
 static rf::GRoom* g_breaking_room = nullptr;
 static bool g_breaking_from_explosion = false;
 
-// Rock break foley sound
-static int g_rock_break_foley_id = -1;
-static bool g_rock_break_foley_init = false;
-
-// FUN_004130b0: low-level OT_DEBRIS creation from GSolid + DebrisCreateStruct. Returns object ptr or 0.
-static auto& geo_debris_obj_create =
-    addr_as_ref<int(int parent_handle, rf::GSolid* solid, rf::DebrisCreateStruct* dcs)>(0x004130b0);
-
-// FUN_0048E640: spawn particle explosion from explosion.tbl by name.
-// Params: (name, pos, dir, radius_scale, room, flags). "dir" = emission direction, flags 0 = normal.
-static auto& particle_explosion_create =
-    addr_as_ref<void(const char*, rf::Vector3*, rf::Vector3*, float, rf::GRoom*, unsigned int)>(0x0048e640);
-
-// FUN_00472250: send glass_kill packet to all clients.
-// Params: (room_uid, break_pos, explosion_pos, explosion_flag).
-// Only meaningful when is_multi && is_server.
-static auto& send_glass_kill_packet =
-    addr_as_ref<void(int, rf::Vector3*, rf::Vector3*, bool)>(0x00472250);
 
 // Texture used for cap faces that bridge the edge loop when rock chunks are split
 static constexpr const char* k_rock_cap_texture = "rock02.tga";
@@ -107,11 +90,6 @@ static int g_current_radius_damage_type = -1;
 
 // Sentinel group_id value for face tagging (>= 0x80000000, can't match valid texture_mover ptrs)
 static constexpr int k_debris_group_base = static_cast<int>(0x80000001);
-
-// FUN_004d1330: compute bounds for a GSolid after face extraction.
-// __thiscall on GSolid, 1 param: output buffer (global bbox data).
-// The geomod pipeline calls this after every extract_faces_by_group.
-static auto& g_geomod_bbox_temp = addr_as_ref<uint8_t[64]>(0x00647ce0);
 
 static constexpr DebrisConfig k_rock_debris_config{
     0.5f,  // min_bsphere_radius: pieces roughly 30cm across
@@ -727,8 +705,7 @@ void reset_breakable_material_state()
     g_breaking_from_explosion = false;
     s_last_vfx_room = nullptr;
     s_last_vfx_tick = 0;
-    g_rock_break_foley_init = false;
-    g_rock_break_foley_id = -1;
+    sound_foley_level_cleanup();
     g_current_radius_damage_type = -1;
     g_rock_cap_bm_loaded = false;
     g_rock_cap_bm = -1;
@@ -805,23 +782,6 @@ CodeInjection reset_damage_type_injection{
         g_current_radius_damage_type = -1;
     },
 };
-
-static void play_rock_break_sound(const rf::Vector3& pos)
-{
-    if (!g_rock_break_foley_init) {
-        g_rock_break_foley_init = true;
-        g_rock_break_foley_id = rf::foley_lookup_by_name("Geomod Debris Hit");
-        if (g_rock_break_foley_id < 0) {
-            g_rock_break_foley_id = rf::foley_lookup_by_name("Glass Smash");
-        }
-    }
-    if (g_rock_break_foley_id >= 0) {
-        int snd_handle = rf::foley_get_sound_handle(g_rock_break_foley_id);
-        if (snd_handle >= 0) {
-            rf::snd_play_3d(snd_handle, pos, 1.0f, rf::Vector3{0.0f, 0.0f, 0.0f}, rf::SOUND_GROUP_EFFECTS);
-        }
-    }
-}
 
 // Immediately invalidate room's rendering state after face extraction.
 // Must be called BEFORE the next render frame to prevent stale geo_cache access.
@@ -1382,7 +1342,7 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
         return;
     }
 
-    AddrCaller{0x004d1330}.this_call(extracted, &g_geomod_bbox_temp);
+    AddrCaller{0x004d1330}.this_call(extracted, &rf::g_geomod_bbox_temp);
     compute_solid_bounds(extracted);
 
     {
@@ -1543,7 +1503,7 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
 
             // Call FUN_004d1330 on the final piece-local geometry to set up
             // lightmap data and BSP tree info needed for rendering
-            AddrCaller{0x004d1330}.this_call(piece, &g_geomod_bbox_temp);
+            AddrCaller{0x004d1330}.this_call(piece, &rf::g_geomod_bbox_temp);
 
             rf::DebrisCreateStruct dcs{};
             dcs.pos = world_center;
@@ -1577,12 +1537,12 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
             dcs.lifetime_ms = 10000;
             dcs.material = 1;
             dcs.explosion_index = -1;
-            dcs.debris_flags = rf::DF_UNK_08 | rf::DF_VERTEX_TRANSFORM | rf::DF_UNK_40000000;
+            dcs.debris_flags = rf::DF_BOUNCE | rf::DF_VERTEX_TRANSFORM | rf::DF_OWNS_SOLID;
             dcs.obj_flags = rf::OF_NO_COLLIDE_REGISTER | rf::OF_WEAPON_ONLY_COLLIDE;
             dcs.room = nullptr;
-            dcs.iss = nullptr;
+            dcs.iss = get_rock_debris_iss();
 
-            geo_debris_obj_create(-1, piece, &dcs);
+            rf::geo_debris_obj_create(-1, piece, &dcs);
         }
     }
 
@@ -1592,7 +1552,7 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
     {
         rf::Vector3 explosion_pos = room_center;
         rf::Vector3 up_dir{0.0f, 1.0f, 0.0f};
-        particle_explosion_create("geomod", &explosion_pos, &up_dir, 1.0f, room, 0);
+        rf::particle_explosion_create("geomod", &explosion_pos, &up_dir, 1.0f, room, 0);
     }
 
     play_rock_break_sound(pos);
@@ -1700,7 +1660,7 @@ CodeInjection glass_sound_entry_injection{
                 if (rf::is_multi && rf::is_server) {
                     rf::Vector3 zero_vec{0.0f, 0.0f, 0.0f};
                     rf::Vector3 break_pos = *pos;
-                    send_glass_kill_packet(g_breaking_room->uid, &break_pos, &zero_vec, true);
+                    rf::send_glass_kill_packet(g_breaking_room->uid, &break_pos, &zero_vec, true);
                 }
                 if (g_breaking_room->no_debris) {
                     // VFX/sounds only, no geometry debris
@@ -2662,6 +2622,9 @@ void destruction_do_patch()
     geomod_state3_clear_detail_caches_injection.install();
     geomod_crater_decals_hook.install();
     geomod_impact_effects_hook.install();
+
+    // Rock debris impact sound set (init after foley.tbl loads)
+    sound_foley_apply_patches();
 
     // Breakable detail brush material system
     capture_damage_type_injection.install();

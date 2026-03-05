@@ -522,4 +522,7 @@ namespace rf
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
 
     static auto& bbox_intersect = addr_as_ref<bool(const Vector3& bbox1_min, const Vector3& bbox1_max, const Vector3& bbox2_min, const Vector3& bbox2_max)>(0x0046C340);
+
+    // Global temp buffer used by FUN_004d1330 (GSolid bbox computation after face extraction).
+    static auto& g_geomod_bbox_temp = addr_as_ref<uint8_t[64]>(0x00647ce0);
 }

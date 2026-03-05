@@ -199,4 +199,8 @@ static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo&
     GRoom* room, Vector3* a4, int parent_obj, Particle** result,
     ParticleEmitter* emitter)>(0x00496840);
 
+// spawn particle explosion from explosion.tbl by name.
+static auto& particle_explosion_create = addr_as_ref<void(
+    const char* name, Vector3* pos, Vector3* dir, float radius_scale, GRoom* room, unsigned int flags)>(0x0048e640);
+
 }

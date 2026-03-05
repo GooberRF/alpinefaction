@@ -174,9 +174,9 @@ namespace rf
     enum DebrisFlags : int
     {
         DF_BOUNCE             = 0x04,       // adds PF_BOUNCE (0x100) to physics_flags
-        DF_UNK_08             = 0x08,
+        DF_FIRST_BOUNCE_SOUND = 0x08,       // limit impact sound to first bounce only (FUN_00412c10)
         DF_VERTEX_TRANSFORM   = 0x10,       // trigger vertex local-space transform (FUN_004d82f0)
-        DF_UNK_40000000       = 0x40000000,
+        DF_OWNS_SOLID         = 0x40000000, // free GSolid on debris destroy (FUN_00413300)
     };
 
     struct DebrisCreateStruct
@@ -218,6 +218,10 @@ namespace rf
 
     static auto& debris_create = addr_as_ref<Debris*(int parent_handle, const char* vmesh_filename,
         float mass, DebrisCreateStruct* dcs, int mesh_num, float collision_radius)>(0x00412E70);
+
+    // FUN_004130b0: low-level OT_DEBRIS creation from GSolid + DebrisCreateStruct. Returns object ptr or 0.
+    static auto& geo_debris_obj_create =
+        addr_as_ref<int(int parent_handle, GSolid* solid, DebrisCreateStruct* dcs)>(0x004130b0);
 }
 
 template<>
