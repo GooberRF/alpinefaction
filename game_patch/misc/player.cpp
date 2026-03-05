@@ -250,6 +250,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
             server_vote_on_player_leave(player);
             if (player->is_bot) {
                 g_bot_profile_slots.release_slot(player);
+            }
             if (player->net_data) {
                 g_select_weapon_done_timestamp[player->net_data->player_id].invalidate();
             }
