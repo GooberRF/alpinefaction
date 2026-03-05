@@ -364,6 +364,39 @@ namespace df::gr::d3d11
             return projection_;
         }
 
+        void invalidate_cached_state()
+        {
+            for (auto& vb : current_vertex_buffers_) vb = nullptr;
+            current_index_buffer_ = nullptr;
+            current_input_layout_ = nullptr;
+            current_vertex_shader_ = nullptr;
+            current_pixel_shader_ = nullptr;
+            current_primitive_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+            current_tex_handles_ = {-2, -2};
+            current_cull_mode_ = D3D11_CULL_NONE;
+            current_mode_.reset();
+            current_sampler_states_ = {nullptr, nullptr};
+            current_blend_state_ = nullptr;
+            current_depth_stencil_state_ = nullptr;
+            current_rasterizer_state_ = nullptr;
+            zbias_ = 0;
+            zbias_changed_ = true;
+            depth_clip_enabled_ = true;
+            depth_clip_enabled_changed_ = true;
+            // Re-bind RenderContext's own constant buffers (restores b1 VP after shadow pass etc.)
+            bind_cbuffers();
+        }
+
+        ModelTransformBuffer& model_transform_cbuffer()
+        {
+            return model_transform_cbuffer_;
+        }
+
+        ViewProjTransformBuffer& view_proj_transform_cbuffer()
+        {
+            return view_proj_transform_cbuffer_;
+        }
+
     private:
         void bind_cbuffers();
 

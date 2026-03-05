@@ -994,4 +994,68 @@ namespace df::gr::d3d11
         D3D11_BOX box{0, 0, 0, size_ * el_size_, 1, 1};
         render_context.device_context()->CopySubresourceRegion(buffer_, 0, 0, 0, 0, old_buffer, 0, &box);
     }
+
+    void MeshRenderer::draw_shadow_v3d_mesh(rf::VifLodMesh* lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                                             const VertexShaderAndLayout& shadow_vs, ID3D11DeviceContext* context)
+    {
+        page_in_v3d_mesh(lod_mesh);
+        if (!lod_mesh->render_cache) return;
+
+        auto* cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
+
+        // Set shadow VS and input layout
+        context->IASetInputLayout(shadow_vs.input_layout);
+        context->VSSetShader(shadow_vs.vertex_shader, nullptr, 0);
+
+        // Update model transform
+        render_context_.model_transform_cbuffer().update(pos, orient, context);
+        ID3D11Buffer* model_cb = render_context_.model_transform_cbuffer();
+        context->VSSetConstantBuffers(0, 1, &model_cb);
+
+        // Bind shared V3D VB and IB (through render_context_ to keep state cache in sync
+        // with character mesh draws that also use render_context_)
+        render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex), 0);
+        render_context_.set_index_buffer(v3d_ib_.buffer());
+
+        // Draw LOD 0 batches
+        int lod = 0;
+        if (lod < lod_mesh->num_levels) {
+            const auto& batches = cache->get_batches(lod);
+            for (const auto& batch : batches) {
+                context->DrawIndexed(batch.num_indices, batch.start_index, batch.base_vertex);
+            }
+        }
+    }
+
+    void MeshRenderer::draw_shadow_character_mesh(rf::VifLodMesh* lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                                                   const rf::CharacterInstance* ci, const VertexShaderAndLayout& shadow_vs,
+                                                   ID3D11DeviceContext* context)
+    {
+        page_in_character_mesh(lod_mesh);
+        if (!lod_mesh->render_cache) return;
+
+        auto* cache = reinterpret_cast<CharacterMeshRenderCache*>(lod_mesh->render_cache);
+
+        // Set shadow VS and input layout
+        context->IASetInputLayout(shadow_vs.input_layout);
+        context->VSSetShader(shadow_vs.vertex_shader, nullptr, 0);
+
+        // Update model transform
+        render_context_.model_transform_cbuffer().update(pos, orient, context);
+        ID3D11Buffer* model_cb = render_context_.model_transform_cbuffer();
+        context->VSSetConstantBuffers(0, 1, &model_cb);
+
+        // Update bone transforms and bind character buffers
+        cache->update_bone_transforms_buffer(ci, render_context_);
+        cache->bind_buffers(render_context_, false);
+
+        // Draw LOD 0 batches
+        int lod = 0;
+        if (lod < lod_mesh->num_levels) {
+            const auto& batches = cache->get_batches(lod);
+            for (const auto& batch : batches) {
+                context->DrawIndexed(batch.num_indices, batch.start_index, batch.base_vertex);
+            }
+        }
+    }
 }

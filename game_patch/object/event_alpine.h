@@ -1615,7 +1615,7 @@ namespace rf
                         ep->entity_flags2 |= 0x1;
                         break;
                     case SetEntityFlagOption::no_shadow:
-                        ep->entity_flags2 |= 0x2;
+                        ep->entity_flags2 |= rf::EF2_NO_SHADOW;
                         break;
                     case SetEntityFlagOption::perfect_aim:
                         ep->entity_flags2 |= 0x4;
@@ -1668,7 +1668,7 @@ namespace rf
                         ep->entity_flags2 &= ~0x1;
                         break;
                     case SetEntityFlagOption::no_shadow:
-                        ep->entity_flags2 &= ~0x2;
+                        ep->entity_flags2 &= ~rf::EF2_NO_SHADOW;
                         break;
                     case SetEntityFlagOption::perfect_aim:
                         ep->entity_flags2 &= ~0x4;

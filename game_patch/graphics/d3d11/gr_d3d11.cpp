@@ -16,6 +16,7 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_entity_shadow.h"
 
 using namespace rf;
 
@@ -41,6 +42,7 @@ namespace df::gr::d3d11
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
 
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         render_context_->set_cull_mode(D3D11_CULL_BACK);
@@ -327,6 +329,8 @@ namespace df::gr::d3d11
     void Renderer::flip()
     {
         dyn_geo_renderer_->flush();
+        entity_shadow_renderer_->render_debug_overlay(context_);
+        entity_shadow_renderer_->unbind_shadow_resources(context_);
         if (msaa_render_target_) {
             context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
         }
@@ -483,6 +487,24 @@ namespace df::gr::d3d11
     void Renderer::render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
     {
         dyn_geo_renderer_->flush();
+
+        // Generate entity shadow map before rendering the scene
+        entity_shadow_renderer_->generate_shadow_map(context_, *render_context_, rf::gr::eye_pos);
+
+        // Restore render target and viewport after shadow pass
+        // Use the current render target (may be a security camera/mirror texture, not the backbuffer)
+        ID3D11RenderTargetView* current_rtv = default_render_target_view_;
+        if (render_target_bm_handle_ != -1) {
+            ID3D11RenderTargetView* rt = texture_manager_->lookup_render_target(render_target_bm_handle_);
+            if (rt) current_rtv = rt;
+        }
+        render_context_->set_render_target(current_rtv, depth_stencil_view_);
+        render_context_->set_clip();
+        render_context_->set_cull_mode(D3D11_CULL_BACK);
+
+        // Bind shadow resources for the scene pixel shader
+        entity_shadow_renderer_->bind_shadow_resources(context_);
+
         solid_renderer_->render_solid(solid, rooms, num_rooms);
     }
 
