@@ -827,6 +827,11 @@ void apply_breakable_materials()
         uint8_t raw = (i < props.breakable_materials.size()) ? props.breakable_materials[i] : 0;
         uint8_t mat = raw & 0x7F;
         bool no_debris = (raw & 0x80) != 0;
+        if (mat >= static_cast<uint8_t>(rf::DetailMaterial::Count)) {
+            xlog::warn("[Material] room uid={} has out-of-range material {}, treating as Glass", uid, mat);
+            mat = 0;
+            no_debris = false;
+        }
         bool found = false;
         for (auto& room : solid->all_rooms) {
             if (room->uid == uid && room->is_detail) {
