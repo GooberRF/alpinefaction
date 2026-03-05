@@ -18,9 +18,14 @@ struct AlpineEventDialog
     std::string str2_field;
 };
 
-// level editor alpine event IDs, separate from EventType in game
+// level editor event IDs, separate from EventType in game
 enum class AlpineDedEventID : int
 {
+    // Stock events referenced by Alpine patches
+    Swap_Textures = 38,
+    Display_Fullscreen_Image = 84,
+
+    // Alpine-specific events (89+)
     Set_Variable = 89,
     Clone_Entity,
     Set_Player_World_Collide,

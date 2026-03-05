@@ -16,6 +16,7 @@
 #include "../rf/player/player.h"
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
+#include "../object/object.h"
 
 #define DEBUG_UI_LAYOUT 0
 #define SHARP_UI_TEXT 1

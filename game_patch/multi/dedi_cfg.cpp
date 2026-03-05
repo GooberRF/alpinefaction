@@ -47,6 +47,7 @@
 #include "../rf/level.h"
 #include "../rf/collide.h"
 #include "../purefaction/pf.h"
+#include <common/utils/os-utils.h>
 
 bool g_dedicated_launched_from_ads = false; // was the server launched from an ads file?
 std::string g_ads_config_name = "";
@@ -1779,13 +1780,13 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     print_gungame(output, rules.gungame, b.gungame, base);
 }
 
-void print_rules_with_presets(std::string& output, const AlpineServerConfigRules& rules, const std::vector<std::pair<std::filesystem::path, std::optional<std::string>>>& preset_paths, bool base, const bool sanitize = false)
+void print_rules_with_presets(std::string& output, const AlpineServerConfigRules& rules, const std::vector<std::pair<std::filesystem::path, std::optional<std::string>>>& preset_paths, bool base, const bool remote = false)
 {
     const auto iter = std::back_inserter(output);
     if (!preset_paths.empty()) {
         std::format_to(iter, "  Rules presets applied:\n");
         for (const auto& [preset_path, preset_alias] : preset_paths) {
-            const std::string path = sanitize
+            const std::string path = remote
                 ? preset_path.filename().generic_string()
                 : preset_path.generic_string();
             if (preset_alias) {
@@ -1798,19 +1799,22 @@ void print_rules_with_presets(std::string& output, const AlpineServerConfigRules
     print_rules(output, rules, base);
 }
 
-void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool sanitize) {
+void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool remote) {
     auto& netgame = rf::netgame;
     const auto& cfg = g_alpine_server_config;
 
     const auto iter = std::back_inserter(output);
     std::format_to(iter, "\n---- Core configuration ----\n");
-    std::format_to(iter, "  Server port:                           {} - UDP\n", netgame.server_addr.port);
-    std::format_to(iter, "  Server name:                           {}\n", netgame.name);
-    std::format_to(iter, "  Server version:                        {} - {}\n", VERSION_STR, __DATE__);
-    if (!sanitize) {
+    std::format_to(iter, "  Port:                                  {} - UDP\n", netgame.server_addr.port);
+    std::format_to(iter, "  Name:                                  {}\n", netgame.name);
+    std::format_to(iter, "  Version:                               {} - {}\n", VERSION_STR, __DATE__);
+    if (!remote) {
+        std::format_to(iter, "  Uptime:                                {}\n", get_uptime_from(g_process_startup_time));
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
         std::format_to(iter, "  Rcon password (legacy):                {}\n", cfg.rcon_password);
         std::format_to(iter, "  Bot shared secret:                     {}\n", cfg.bot_shared_secret);
+    } else {
+        std::format_to(iter, "  Uptime:                                {}\n", g_process_startup_time);
     }
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
@@ -1827,7 +1831,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         return;
     }
 
-    if (!sanitize && !cfg.rcon_profiles.empty()) {
+    if (!remote && !cfg.rcon_profiles.empty()) {
         std::format_to(iter, "  Rcon profiles:\n");
         for (const auto& profile : cfg.rcon_profiles) {
             std::format_to(iter, "    Name:                                {}\n", profile.name);
@@ -1939,7 +1943,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     if (!cfg.rules_preset_aliases.empty()) {
         std::format_to(iter, "\n---- Rules preset alias mappings ----\n");
         for (const auto& [alias, path] : cfg.rules_preset_aliases) {
-            if (sanitize) {
+            if (remote) {
                 std::format_to(iter, "  {} -> {}\n", alias, path.filename().generic_string());
             } else {
                 std::format_to(iter, "  {} -> {}\n", alias, path.generic_string());
@@ -1948,13 +1952,13 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     }
 
     std::format_to(iter, "\n---- Base rules ----\n");
-    print_rules_with_presets(output, cfg.base_rules, cfg.base_rules_preset_paths, true, sanitize);
+    print_rules_with_presets(output, cfg.base_rules, cfg.base_rules_preset_paths, true, remote);
 
     std::format_to(iter, "\n---- Level rotation ----\n");
     for (size_t i = 0; i < cfg.levels.size(); ++i) {
         const auto& lvl = cfg.levels[i];
         std::format_to(iter, "{} ({})\n", lvl.level_filename, i);
-        print_rules_with_presets(output, lvl.rule_overrides, lvl.applied_rules_preset_paths, false, sanitize);
+        print_rules_with_presets(output, lvl.rule_overrides, lvl.applied_rules_preset_paths, false, remote);
     }
     std::format_to(iter, "\n");
 }

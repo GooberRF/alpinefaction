@@ -30,12 +30,16 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `/coinflip` chat command
 - Raise limit on lights per level from 1100 to 8192
 - Raise level editor limit on lights projecting on a single face from 64 to 1024
+- Raise level editor geo_cache limits: face list 16384 to 65536, batch count 512 to 1024, memory pool 8 MB to 32 MB
+- Raise level editor detail rooms limit from 256 to 8192
+- Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
+- Add level editor support for custom texture subdirectories under `user_maps\textures`
 - Add full mesh shadows for entities, corpses, and items (Direct3D 11 renderer only)
 - Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
-- Add `Server version:` to a server's printed config
+- Add version and uptime to a server's printed config
 - Default gore level to 1
 - Default `gibbing` to disabled for dedicated servers
 
@@ -50,6 +54,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add CTF flag icons to first person spectate
 - Make jump control move freelook camera up
 - Add `cl_legacy_bob` to restore legacy first person weapon running animation behavior
+- Show powerup icons in spectator mode
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
@@ -61,6 +66,13 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix overflow fix for `emitters.tbl` entries not being correctly applied
 - Fix some string errors when compiled using mingw
 - Fix rare crash when loading skeletons
+- Fix level editor geometry rebuild sometimes reusing stale data from previous builds
+- Fix level editor geometry sometimes not properly rendering after rebuilding
+- Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
+- Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
+- Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
+- Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
+- Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners
