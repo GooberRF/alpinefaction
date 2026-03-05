@@ -51,6 +51,37 @@ jobs:
         mkdir -p $WINEPREFIX
         cmake --build . -j $(nproc)
 
+    - name: Stage artifacts (dist)
+      shell: bash
+      run: |
+        set -euo pipefail
+        out="$GITHUB_WORKSPACE/dist/mingw"
+        mkdir -p "$out"
+
+        want=(AlpineFaction.dll AlpineEditor.dll AlpineFactionLauncher.exe CrashHandler.exe d3d8to9.dll alpinefaction.vpp)
+
+        for f in "${want[@]}"; do
+          src="$(find "$GITHUB_WORKSPACE/build" -type f -name "$f" -print -quit || true)"
+          if [ -z "$src" ]; then
+            echo "[ERROR] Missing $f (not found under build/)"
+            echo "Dumping likely output dirs:"
+            find "$GITHUB_WORKSPACE/build" -maxdepth 3 -type d -print
+            exit 1
+          fi
+          cp -f "$src" "$out/$f"
+        done
+
+        echo "Staged:"
+        ls -la "$out"
+
+    - name: Upload artifact (MinGW)
+      uses: actions/upload-artifact@v4
+      with:
+        name: alpinefaction-mingw
+        path: dist/mingw/**
+        if-no-files-found: error
+        retention-days: 14
+
   build-msvc:
     runs-on: windows-2025
 
@@ -84,3 +115,43 @@ jobs:
       run: |
         Launch-VsDevShell -HostArch amd64 -Arch x86 -SkipAutomaticLocation
         cmake --build . -j $env:NUMBER_OF_PROCESSORS
+
+    - name: Stage artifacts (dist)
+      shell: pwsh
+      run: |
+        $out = Join-Path $env:GITHUB_WORKSPACE "dist\msvc"
+        New-Item -ItemType Directory -Force -Path $out | Out-Null
+
+        $want = @(
+          "AlpineFaction.dll",
+          "AlpineEditor.dll",
+          "AlpineFactionLauncher.exe",
+          "CrashHandler.exe",
+          "d3d8to9.dll",
+          "alpinefaction.vpp"
+        )
+
+        foreach ($f in $want) {
+          $src = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "build") -Recurse -File -Filter $f -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+
+          if (-not $src) {
+            Write-Error "Missing $f (not found under build/)"
+            Write-Output "Top-level build dirs:"
+            Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE "build") -Directory | Format-Table -AutoSize
+            exit 1
+          }
+
+          Copy-Item -Force $src.FullName (Join-Path $out $f)
+        }
+
+        Write-Output "Staged:"
+        Get-ChildItem $out | Format-Table -AutoSize
+
+    - name: Upload artifact (MSVC)
+      uses: actions/upload-artifact@v4
+      with:
+        name: alpinefaction-msvc
+        path: dist/msvc/**
+        if-no-files-found: error
+        retention-days: 14

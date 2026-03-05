@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <ctime>
 #include <optional>
 #include <windows.h>
 
@@ -14,3 +15,4 @@ std::string get_cpu_brand();
 std::string get_module_pathname(HMODULE module);
 std::string get_module_dir(HMODULE module);
 std::string get_temp_path_name(const char* prefix);
+std::string get_uptime_from(std::time_t origin);

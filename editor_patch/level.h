@@ -128,11 +128,24 @@ struct AlpineLevelProperties
     }
 };
 
+enum class DedRoomEffectType : int
+{
+    Liquid = 2,
+};
+
 struct CDedLevel
 {
-    char padding_before_selection[0x298];
-    VArray<DedObject*> selection;
-    char padding_after_selection[0x608 - (0x298 + 0xC)];
+    char pad_0[0x24];
+    VString geomod_texture;                            // 0x24 — crater texture filename
+    char pad_2C[0x298 - 0x2C];
+    VArray<DedObject*> selection;                      // 0x298
+    char pad_2A4[0x370 - 0x2A4];
+    VArray<DedObject*> events;                         // 0x370
+    char pad_37C[0x3E8 - 0x37C];
+    VArray<DedObject*> room_effects;                   // 0x3E8
+    char pad_3F4[0x40C - 0x3F4];
+    VArray<DedObject*> bolt_emitters;                  // 0x40C
+    char pad_418[0x608 - 0x418];
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)
     {

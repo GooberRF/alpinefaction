@@ -23,7 +23,6 @@
 #include "alpine_packets.h"
 #include "multi.h"
 #include "../os/console.h"
-#include "../os/os.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
 #include "../misc/alpine_options.h"
@@ -72,6 +71,8 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_geolimit",
     "sv_pass",
     "sv_timelimit",
+    "download_level",
+    "sv_loadconfig",
 };
 
 std::vector<rf::AlpineRespawnPoint> g_alpine_respawn_points;
@@ -225,7 +226,6 @@ void set_server_window_title() {
 void on_dedicated_server_launch_post() {
     initialize_game_info_server_flags(); // build global flags var used in game_info packets
     set_server_window_title();
-    set_dedicated_server_timer_frequency();
 }
 
 // should weapons drop on player death?
@@ -1030,6 +1030,11 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
     else if (cmd_name == "dropflag") {
         handle_drop_flag_request(sender);
     }
+    else if (cmd_name == "coinflip") {
+        std::uniform_int_distribution<int> dist(0, 1);
+        const char* result = dist(g_rng) == 0 ? "HEADS" : "TAILS";
+        af_broadcast_automated_chat_msg(std::format("Server is flipping a coin... the result is {}", result));
+    }
     else {
         return false;
     }
@@ -1219,6 +1224,23 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     else if (g_alpine_server_config.damage_notification_config.support_legacy_clients) {
                         //xlog::warn("sending legacy notify to {}", killer_player->name);
                         send_legacy_hit_sound_packet(killer_player); // fallback for old clients
+                    }
+
+                    // Send to first-person spectators of the killer
+                    for (auto& player : SinglyLinkedList{rf::player_list}) {
+                        // Skip if this player has no network data or is the killer themselves
+                        if (!player.net_data || &player == killer_player) {
+                            continue;
+                        }
+                        if (player.spectatee.value_or(nullptr) == killer_player) {
+                            if (is_player_minimum_af_client_version(&player, 1, 1, 0)) {
+                                af_send_damage_notify_packet(
+                                    damaged_player->net_data->player_id,
+                                    real_damage,
+                                    is_dead,
+                                    &player);
+                            }
+                        }
                     }
                 }
             }
@@ -1786,6 +1808,7 @@ void bot_decommission_check() {
     std::array<int, MAX_TEAMS> active_persons_per_team{0, 0};
 
     const bool is_team_mode = multi_is_team_game_type();
+    const auto now = std::chrono::high_resolution_clock::now();
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (player.is_browser) {
             continue;
@@ -1805,7 +1828,6 @@ void bot_decommission_check() {
         } else {
             const bool is_spawned = !rf::player_is_dead(&player)
                 && !rf::player_is_dying(&player);
-            const auto now = std::chrono::high_resolution_clock::now();
             const bool was_just_unspawned = player.death_time
                 && now - *player.death_time
                     < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);

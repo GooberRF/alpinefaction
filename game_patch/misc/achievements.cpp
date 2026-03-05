@@ -40,7 +40,7 @@ void AchievementManager::initialize()
 {
     if (g_game_config.fflink_token.value().empty()) {
         std::string msg = "Achievements are unavailable because Alpine Faction is not linked to a FactionFiles account!";
-        rf::console::printf("%s", msg);
+        rf::console::printf("%s", msg.c_str());
         return;
     }
 

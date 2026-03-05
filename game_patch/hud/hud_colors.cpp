@@ -231,6 +231,18 @@ ConsoleCommand2 reticle_color_custom_cmd{
     "ui_colorize_custom_reticles",
 };
 
+ConsoleCommand2 thermal_entity_color_cmd{
+    "ui_color_thermal",
+    [](std::optional<std::string> color_opt) {
+        handle_hex_color_console_command(
+            color_opt,
+            "Thermal entity color override",
+            g_alpine_game_config.thermal_entity_color_override);
+    },
+    "Set thermal/IR entity color override for the Rail Driver scanner. (Direct3D 11 renderer only)",
+    "ui_color_thermal <RRGGBB|RRGGBBAA|clear>",
+};
+
 void hud_colors_apply_patch()
 {
     sniper_scope_color_cmd.register_cmd();
@@ -244,4 +256,5 @@ void hud_colors_apply_patch()
     reticle_color_cmd.register_cmd();
     reticle_locked_color_cmd.register_cmd();
     reticle_color_custom_cmd.register_cmd();
+    thermal_entity_color_cmd.register_cmd();
 }

@@ -242,7 +242,7 @@ void print_fflink_info() {
     else {
         msg = "Linked to FactionFiles as " + username;
     }
-    rf::console::printf("-- %s --", msg);
+    rf::console::printf("-- %s --", msg.c_str());
 }
 
 void apply_console_history_setting() {

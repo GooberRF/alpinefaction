@@ -110,6 +110,8 @@ enum class AlpineRestrictVerdict : uint8_t
     need_update = 3
 };
 
+extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
+
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
 const bool was_level_loaded_manually();
@@ -142,4 +144,4 @@ std::string_view multi_game_type_prefix(rf::NetGameType game_type);
 [[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);
-void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool sanitize = false);
+void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);

@@ -97,7 +97,7 @@ static void skeleton_flush()
             ++it;
         }
     }
-}
+};
 
 static int __fastcall character_load_animation(rf::Character *this_, int, const char *anim_filename, bool is_state, [[maybe_unused]] bool unused)
 {
@@ -108,7 +108,7 @@ static int __fastcall character_load_animation(rf::Character *this_, int, const 
     }
     for (int i = 0; i < this_->num_anims; ++i) {
         if (this_->animations[i] == sp && this_->anim_is_state[i] == is_state) {
-            // Unlink call is missing in oryginal code (RF bug)
+            // Unlink call is missing in original code (RF bug)
             rf::skeleton_unlink_base(sp, false);
             xlog::trace("Animation '{}' already used by character '{}' ({} base usages)", anim_filename, this_->name, sp->base_usage_count);
             return i;
@@ -121,11 +121,16 @@ static int __fastcall character_load_animation(rf::Character *this_, int, const 
         rf::skeleton_unlink_base(sp, false);
         return 0;
     }
+    rf::skeleton_page_in(anim_filename, nullptr);
+    if (!sp->animation_data) {
+        xlog::warn("Cannot add animation '{}' to character '{}' because skeleton data failed to load", anim_filename, this_->name);
+        rf::skeleton_unlink_base(sp, false);
+        return (this_->num_anims > 0 ? 0 : -1);
+    }
     // Add animation skeleton
     int anim_index = this_->num_anims++;
     this_->animations[anim_index] = sp;
     this_->anim_is_state[anim_index] = is_state;
-    rf::skeleton_page_in(anim_filename, 0);
     xlog::trace("Animation '{}' loaded for character '{}' ({} base usages) this {} sp {} anim_index {} is_state {}",
         anim_filename, this_->name, sp->base_usage_count, this_, sp, anim_index, is_state);
     return anim_index;

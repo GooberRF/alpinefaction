@@ -9,6 +9,7 @@ set(SRCS
     resources.rc
     resources.h
     level.cpp
+    lightmap.cpp
 )
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
 

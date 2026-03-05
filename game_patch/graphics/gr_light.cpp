@@ -1,5 +1,7 @@
+#include <cstdint>
 #include <xlog/xlog.h>
 #include <patch_common/CodeInjection.h>
+#include <patch_common/MemUtils.h>
 #include "../rf/multi.h"
 #include "../rf/entity.h"
 #include "../rf/gr/gr.h"
@@ -9,6 +11,39 @@
 #include "../misc/alpine_settings.h"
 
 bool is_find_static_lights = false;
+
+// Scene light object pool expansion: replaces the stock 1100-entry pool at 0x00C4E7D8.
+// Must match the editor limit (editor_patch/lightmap.cpp) so levels created there can load.
+static constexpr int max_scene_lights = rf::gr::max_relevant_lights;
+static rf::gr::Light game_light_pool[max_scene_lights];
+
+// Dummy light entry for out-of-bounds handle access.
+// Reads return all zeros (type=LT_NONE). Prevents memory corruption when the
+// stock code calls handle_to_ptr with handle=-1 (allocation failure).
+static rf::gr::Light game_dummy_light = {};
+
+// Relevant lights array: replaces the stock 1100-entry array at 0x00C4D588.
+// Used by the renderer to gather lights affecting visible geometry.
+// Defined here; declared extern in rf/gr/gr_light.h so D3D11 code can read it directly.
+rf::gr::Light* rf::gr::relevant_lights[rf::gr::max_relevant_lights];
+
+// Replace light handle-to-pointer with bounds-checked version
+// Prevents corruption on handle=-1, which occurs when trying to add/edit lights after max_scene_lights
+// Original: ptr = pool_base + handle * 0x10C (no validation)
+CodeInjection game_handle_to_pointer_injection{
+    0x004d8df0,
+    [](auto& regs) {
+        int handle = *reinterpret_cast<int*>(regs.esp + 4);
+        if (handle >= 0 && handle < max_scene_lights) {
+            regs.eax = reinterpret_cast<uintptr_t>(&game_light_pool[handle]);
+        }
+        else {
+            regs.eax = reinterpret_cast<uintptr_t>(&game_dummy_light);
+        }
+        regs.eip = 0x004d8e05; // jump to RET
+    },
+};
+
 std::vector<ExplosionFlashLight> g_active_explosion_flash_lights;
 std::vector<ExplosionFlashVclipEntry> g_explosion_flash_vclip_entries_weapon;
 std::vector<ExplosionFlashVclipEntry> g_explosion_flash_vclip_entries_env;
@@ -284,12 +319,52 @@ void gr_light_use_static(bool use_static)
 
 void gr_light_apply_patch()
 {
+    // Support new max_scene_lights
+    // Replace handle-to-pointer with bounds-checked version (prevents corruption on handle=-1)
+    game_handle_to_pointer_injection.install();
+
+    // Redirect pool base address references from old pool (0x00C4E7D8)
+    write_mem_ptr(0x004d8435, game_light_pool);       // gr_light_init: zeroing dest
+    write_mem_ptr(0x004d8090, game_light_pool);       // gr_light_pool_init
+    write_mem_ptr(0x004d8e75, game_light_pool);       // gr_light_alloc
+    write_mem_ptr(0x004d8eaa, game_light_pool);       // gr_light_alloc
+    // Redirect pool field references (prev, type, vec)
+    write_mem_ptr(0x004d8e6f, &game_light_pool[0].prev);   // gr_light_alloc
+    write_mem_ptr(0x004d8ea4, &game_light_pool[0].prev);   // gr_light_alloc
+    write_mem_ptr(0x004d8e14, &game_light_pool[0].type);   // gr_light_alloc: scan start
+    write_mem_ptr(0x004db854, &game_light_pool[0].vec);    // gr_light_iter
+
+    // Update scan end limit in gr_light_alloc
+    auto scan_end = reinterpret_cast<uintptr_t>(&game_light_pool[0].type) + max_scene_lights * sizeof(rf::gr::Light);
+    write_mem<uint32_t>(0x004d8e24, static_cast<uint32_t>(scan_end));
+    // Update count limits
+    write_mem<uint32_t>(0x004d8e31, max_scene_lights);
+    write_mem<uint32_t>(0x004d8086, max_scene_lights);
+    // Update zeroing loop count in gr_light_init (REP STOSD = dwords)
+    write_mem<uint32_t>(0x004d8467, max_scene_lights * sizeof(rf::gr::Light) / 4);
+
+    // Expand relevant_lights array from 1100 entries (0x00C4D588)
+    write_mem_ptr(0x004d9bb9, rf::gr::relevant_lights);
+    write_mem_ptr(0x004d9d8e, rf::gr::relevant_lights);
+    write_mem_ptr(0x004d9f5f, rf::gr::relevant_lights);
+    write_mem_ptr(0x004d9ff9, rf::gr::relevant_lights);
+    write_mem_ptr(0x004da042, rf::gr::relevant_lights);
+    write_mem_ptr(0x004da049, rf::gr::relevant_lights);
+    write_mem_ptr(0x004da0a7, rf::gr::relevant_lights);
+    write_mem_ptr(0x004da50d, rf::gr::relevant_lights);
+    write_mem_ptr(0x004da909, rf::gr::relevant_lights);
+    write_mem_ptr(0x004db249, rf::gr::relevant_lights);
+    write_mem_ptr(0x0052dcd6, rf::gr::relevant_lights);
+    write_mem_ptr(0x0055fb88, rf::gr::relevant_lights);
+    write_mem_ptr(0x00560beb, rf::gr::relevant_lights);
+    write_mem_ptr(0x00561b3c, rf::gr::relevant_lights);
+
     // Change the variable that is used to determine what light list is searched (by default is_editor
     // variable determines that). It is needed for static mesh lighting.
     write_mem_ptr(0x004D96CD + 1, &is_find_static_lights); // gr_light_find_all_in_room
     write_mem_ptr(0x004D9761 + 1, &is_find_static_lights); // gr_light_find_all_in_room
     write_mem_ptr(0x004D98B3 + 1, &is_find_static_lights); // gr_light_find_all_by_gsolid
-    
+
     // Add dynamic fire glow around burning entities
     entity_process_post_fire_injection.install();
     entity_fire_on_dead_light_injection.install();
