@@ -1,15 +1,5 @@
 file(GLOB EXPERIMENTAL_SRCS experimental/*.cpp experimental/*.h)
 
-set(BOTS_SRCS)
-if(IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots")
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/bot_main.cpp")
-        file(GLOB BOTS_SRCS CONFIGURE_DEPENDS
-            "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/*.cpp"
-            "${CMAKE_CURRENT_SOURCE_DIR}/multi/bots/*.h"
-        )
-    endif()
-endif()
-
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/purefaction/pf_secret.cpp")
     set(PF_AC_SRCS
         purefaction/pf_secret_packets.h
@@ -156,6 +146,57 @@ set(SRCS
     multi/faction_files.cpp
     multi/faction_files.h
     multi/multi_ban.cpp
+    multi/bots/bot_alerts.cpp
+    multi/bots/bot_alerts.h
+    multi/bots/bot_chat_manager.cpp
+    multi/bots/bot_chat_manager.h
+    multi/bots/bot_combat.cpp
+    multi/bots/bot_combat.h
+    multi/bots/bot_combat_manager.cpp
+    multi/bots/bot_combat_manager.h
+    multi/bots/bot_decision_eval.cpp
+    multi/bots/bot_decision_eval.h
+    multi/bots/bot_fsm.cpp
+    multi/bots/bot_fsm.h
+    multi/bots/bot_fsm_manager.cpp
+    multi/bots/bot_fsm_manager.h
+    multi/bots/bot_goal_manager.cpp
+    multi/bots/bot_goal_manager.h
+    multi/bots/bot_goal_memory.cpp
+    multi/bots/bot_goal_memory.h
+    multi/bots/bot_goal_runtime.cpp
+    multi/bots/bot_goal_runtime.h
+    multi/bots/bot_goals.cpp
+    multi/bots/bot_goals.h
+    multi/bots/bot_internal.h
+    multi/bots/bot_main.cpp
+    multi/bots/bot_main.h
+    multi/bots/bot_math.h
+    multi/bots/bot_memory_manager.cpp
+    multi/bots/bot_memory_manager.h
+    multi/bots/bot_movement.cpp
+    multi/bots/bot_movement.h
+    multi/bots/bot_navigation.cpp
+    multi/bots/bot_navigation.h
+    multi/bots/bot_navigation_manager.cpp
+    multi/bots/bot_navigation_manager.h
+    multi/bots/bot_navigation_pathing.cpp
+    multi/bots/bot_navigation_pathing.h
+    multi/bots/bot_navigation_routes.cpp
+    multi/bots/bot_navigation_routes.h
+    multi/bots/bot_perception_manager.cpp
+    multi/bots/bot_perception_manager.h
+    multi/bots/bot_personality.cpp
+    multi/bots/bot_personality.h
+    multi/bots/bot_personality_manager.cpp
+    multi/bots/bot_personality_manager.h
+    multi/bots/bot_state.cpp
+    multi/bots/bot_state.h
+    multi/bots/bot_utils.cpp
+    multi/bots/bot_utils.h
+    multi/bots/bot_waypoint_route.cpp
+    multi/bots/bot_waypoint_route.h
+    multi/bots/bot_weapon_profiles.h
     os/console.cpp
     os/console.h
     os/commands.cpp
@@ -221,7 +262,6 @@ set(SRCS
     purefaction/pf_packets.h
     ${PF_AC_SRCS}
     ${EXPERIMENTAL_SRCS}
-    ${BOTS_SRCS}
 )
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
@@ -258,9 +298,6 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experimental/experimental.cpp")
     target_compile_definitions(AlpineFaction PRIVATE HAS_EXPERIMENTAL)
 endif()
 
-if(BOTS_SRCS)
-    target_compile_definitions(AlpineFaction PRIVATE HAS_BOTS)
-endif()
 
 target_link_libraries(AlpineFaction
     psapi

@@ -1,9 +1,7 @@
 #include "waypoints.h"
 #include "waypoints_utils.h"
 #include "alpine_settings.h"
-#ifdef HAS_BOTS
 #include "../multi/bots/bot_waypoint_route.h"
-#endif
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
@@ -6942,9 +6940,7 @@ void waypoints_on_trigger_activated(int trigger_uid)
         return;
     }
     activate_bridge_zones_for_trigger_uid(trigger_uid);
-#ifdef HAS_BOTS
     bot_waypoint_invalidate_components();
-#endif
 }
 
 void waypoints_do_frame()

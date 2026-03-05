@@ -51,9 +51,7 @@
 #include "../experimental/experimental.h"
 #endif
 
-#ifdef HAS_BOTS
 #include "../multi/bots/bot_main.h"
-#endif
 
 GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
@@ -147,9 +145,7 @@ FunHook<int()> rf_do_frame_hook{
         rf::os_poll();
         high_fps_update();
         server_do_frame();
-#ifdef HAS_BOTS
         client_bot_do_frame();
-#endif
         koth_do_frame();
         int result = rf_do_frame_hook.call_target();
         maybe_autosave();
@@ -171,9 +167,7 @@ CodeInjection after_level_render_hook{
 #endif
         debug_render();
         waypoints_render_debug();
-#ifdef HAS_BOTS
         client_bot_render_debug();
-#endif
         hud_world_do_frame();
     },
 };

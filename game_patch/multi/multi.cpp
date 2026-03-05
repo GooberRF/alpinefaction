@@ -15,9 +15,7 @@
 #include "alpine_packets.h"
 #include "server_internal.h"
 #include "gametype.h"
-#ifdef HAS_BOTS
 #include "bots/bot_chat_manager.h"
-#endif
 #include "../hud/hud.h"
 #include "../rf/file/file.h"
 #include "../rf/level.h"
@@ -220,9 +218,7 @@ FunHook<void()> multi_limbo_init{
         if (!rf::local_player)
             return;
 
-#ifdef HAS_BOTS
         bot_chat_manager_on_limbo_enter(*rf::local_player);
-#endif
 
         rf::camera_enter_random_fixed_pos();
         rf::camera_enter_fixed(rf::local_player->cam);

@@ -29,9 +29,7 @@
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
-#ifdef HAS_BOTS
 #include "bots/bot_chat_manager.h"
-#endif
 #include "../main/main.h"
 #include "../hud/hud.h"
 #include "../rf/multi.h"
@@ -706,11 +704,9 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             }
             else {
                 handle_sound_msg(msg);
-#ifdef HAS_BOTS
                 if (rf::Player* sender = rf::multi_find_player_by_id(static_cast<uint8_t>(data[0]))) {
                     bot_chat_manager_on_remote_chat_message(*sender, msg);
                 }
-#endif
             }
         }
 
