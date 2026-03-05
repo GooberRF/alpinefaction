@@ -1386,6 +1386,25 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
     compute_solid_bounds(extracted);
 
     {
+        // Load crater cap texture before the cutting loop (needed for per-cut capping)
+        if (!g_rock_cap_bm_loaded) {
+            g_rock_cap_bm_loaded = true;
+            g_rock_cap_bm = rf::bm::load(k_rock_cap_texture, -1, true);
+            xlog::info("[RockShatter] loaded cap texture '{}' handle={}", k_rock_cap_texture, g_rock_cap_bm);
+        }
+        int crater_tex = (g_rock_cap_bm >= 0) ? g_rock_cap_bm : rf::g_geomod_texture_index;
+
+        // Cap open boundary loops on a solid with crater-textured triangulated faces.
+        // Each boundary loop (half-edges with no counterpart) is detected topologically
+        // and closed via ear-clipping triangulation.
+        auto cap_boundaries = [&](rf::GSolid* s) {
+            auto loops = find_boundary_loops(s);
+            for (auto& loop : loops) {
+                xlog::trace("[RockShatter]   cap loop vertices={}", loop.size());
+                add_cap_faces_from_loop(s, loop, crater_tex);
+            }
+        };
+
         // Work queue (FIFO): breadth-first bisection ensures all pieces at the same
         // subdivision level are split before going deeper, producing more uniform sizes.
         std::deque<rf::GSolid*> work_queue;
@@ -1440,7 +1459,13 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
             auto* piece = chunk->extract_faces_by_group(k_debris_group_base + 1);
             total_cuts++;
 
+            // Cap boundary loops on both halves IMMEDIATELY after this cut.
+            // This ensures each boundary loop comes from exactly one (planar) cut.
+            // Without this, later cuts can create vertices shared between boundaries
+            // from different cut planes, producing non-planar loops that fail
+            // ear-clipping triangulation (self-intersecting 2D projections).
             if (piece && !piece->face_list.empty()) {
+                cap_boundaries(piece);
                 compute_solid_bounds(piece);
                 work_queue.push_back(piece);
             }
@@ -1448,7 +1473,8 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
                 AddrCaller{0x004136e0}.this_call(piece, 1);
             }
 
-            // Positive-side faces remain in chunk — recompute bounds and continue
+            // Positive-side faces remain in chunk — cap and recompute bounds
+            cap_boundaries(chunk);
             compute_solid_bounds(chunk);
             work_queue.push_back(chunk);
         }
@@ -1459,32 +1485,6 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
         }
 
         xlog::trace("[RockShatter] {} cuts produced {} pieces", total_cuts, final_pieces.size());
-
-        // Add crater-textured cap faces to close the open boundaries of each piece.
-        // Uses topological boundary detection: half-edges with no counterpart indicate
-        // the open boundary where faces were separated. This correctly finds the actual
-        // gap edges rather than arbitrarily intersecting interior edges with cut planes.
-        if (!g_rock_cap_bm_loaded) {
-            g_rock_cap_bm_loaded = true;
-            g_rock_cap_bm = rf::bm::load(k_rock_cap_texture, -1, true);
-            xlog::info("[RockShatter] loaded cap texture '{}' handle={}", k_rock_cap_texture, g_rock_cap_bm);
-        }
-        int crater_tex = (g_rock_cap_bm >= 0) ? g_rock_cap_bm : rf::g_geomod_texture_index;
-        for (auto* piece : final_pieces) {
-            if (!piece || piece->face_list.empty()) continue;
-
-            auto loops = find_boundary_loops(piece);
-            xlog::trace("[RockShatter] piece faces={} boundary_loops={}",
-                piece->face_list.size(), loops.size());
-
-            for (auto& loop : loops) {
-                xlog::trace("[RockShatter]   loop vertices={}", loop.size());
-                add_cap_faces_from_loop(piece, loop, crater_tex);
-            }
-
-            // Recompute bounds after adding cap faces
-            compute_solid_bounds(piece);
-        }
 
         // Translate each piece's vertices from world space to local space (centered
         // on the piece's bounding sphere center). The D3D11 movable solid renderer
