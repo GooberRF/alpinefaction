@@ -40,6 +40,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add level editor support for custom texture subdirectories under `user_maps\textures`
 - Add `-bot` command line argument to run a client in bot mode
 - Add `disconnect` console command
+- Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
