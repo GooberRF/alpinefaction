@@ -57,14 +57,20 @@ static rf::CmdLineParam& get_levelm_cmd_line_param()
 
 static rf::CmdLineParam& get_bot_cmd_line_param()
 {
-    static rf::CmdLineParam bot_param{"-bot", "", false};
+    static rf::CmdLineParam bot_param{"-bot", "", true};
     return bot_param;
 }
 
 static rf::CmdLineParam& get_debugbot_cmd_line_param()
 {
-    static rf::CmdLineParam debugbot_param{"-debugbot", "", false};
+    static rf::CmdLineParam debugbot_param{"-debugbot", "", true};
     return debugbot_param;
+}
+
+static rf::CmdLineParam& get_noquit_cmd_line_param()
+{
+    static rf::CmdLineParam noquit_param{"-noquit", "", false};
+    return noquit_param;
 }
 
 static bool g_client_bot_launch_enabled = false;
@@ -72,7 +78,9 @@ static bool g_client_bot_debug_render_enabled = false;
 
 bool client_bot_launch_enabled()
 {
-    return g_client_bot_launch_enabled || is_client_bot_requested_from_cmdline();
+    return g_client_bot_launch_enabled
+        || is_client_bot_requested_from_cmdline()
+        || is_client_debugbot_requested_from_cmdline();
 }
 
 bool client_bot_headless_enabled()
@@ -81,26 +89,57 @@ bool client_bot_headless_enabled()
         && !(g_client_bot_debug_render_enabled || is_client_debugbot_requested_from_cmdline());
 }
 
-static void handle_bot_cmd_line_params()
+// Returns false if bot launch validation failed and the process should quit.
+static bool handle_bot_cmd_line_params()
 {
     if (rf::is_dedicated_server) {
         g_client_bot_launch_enabled = false;
         g_client_bot_debug_render_enabled = false;
-        return;
+        return true;
     }
 
     const bool has_bot_switch = is_client_bot_requested_from_cmdline();
-    const bool has_debugbot_switch_raw =
-        raw_command_line_has_switch(L"-debugbot") || raw_command_line_has_switch(L"/debugbot");
     const bool has_debugbot_switch = is_client_debugbot_requested_from_cmdline();
-    g_client_bot_launch_enabled = has_bot_switch;
-    g_client_bot_debug_render_enabled = has_bot_switch && has_debugbot_switch;
+    g_client_bot_launch_enabled = has_bot_switch || has_debugbot_switch;
+    g_client_bot_debug_render_enabled = has_debugbot_switch;
 
-    if (has_debugbot_switch_raw && !has_bot_switch) {
-        rf::console::print("Ignoring -debugbot because -bot was not provided.");
+    // Parse shared secret from -bot or -debugbot argument
+    auto parse_secret = [](rf::CmdLineParam& param) -> uint32_t {
+        if (!param.found()) return 0;
+        const char* arg = param.get_arg();
+        if (!arg || arg[0] == '\0') return 0;
+        try { return std::stoul(arg); }
+        catch (...) { return 0; }
+    };
+    if (has_bot_switch) {
+        g_alpine_game_config.bot_shared_secret = parse_secret(get_bot_cmd_line_param());
+    }
+    if (has_debugbot_switch && g_alpine_game_config.bot_shared_secret == 0) {
+        g_alpine_game_config.bot_shared_secret = parse_secret(get_debugbot_cmd_line_param());
     }
 
-    if (has_bot_switch) {
+    // Parse -noquit flag
+    if (get_noquit_cmd_line_param().found() && client_bot_launch_enabled()) {
+        g_alpine_game_config.bot_quit_when_disconnected = false;
+    }
+
+    // Validate bot launch requirements
+    if (g_client_bot_launch_enabled) {
+        const bool has_url = get_url_cmd_line_param().found();
+        const bool has_secret = g_alpine_game_config.bot_shared_secret != 0;
+        if (!has_url || !has_secret) {
+            rf::console::print(
+                "Bot launch requires a server (-url <rf://IP:PORT>) and the correct shared secret (-bot <secret> or -debugbot <secret>)."
+            );
+            g_client_bot_launch_enabled = false;
+            g_alpine_game_config.rendering_enabled = false;
+            rf::sound_enabled = false;
+            rf::gameseq_set_state(rf::GS_QUITING, false);
+            return false;
+        }
+    }
+
+    if (client_bot_launch_enabled()) {
         const bool headless = client_bot_headless_enabled();
         g_alpine_game_config.rendering_enabled = !headless;
         if (headless) {
@@ -119,6 +158,7 @@ static void handle_bot_cmd_line_params()
             rf::local_player->name = "af_bot";
         }
     }
+    return true;
 }
 
 void handle_url_param()
@@ -913,7 +953,8 @@ void multi_do_patch()
     get_levelm_cmd_line_param();
     get_bot_cmd_line_param();
     get_debugbot_cmd_line_param();
-    g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline();
+    get_noquit_cmd_line_param();
+    g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
     if (g_client_bot_launch_enabled) {
         g_alpine_game_config.rendering_enabled = !client_bot_headless_enabled();
@@ -933,7 +974,9 @@ void multi_do_patch()
 void multi_after_full_game_init()
 {
     populate_gametype_table();
-    handle_bot_cmd_line_params();
+    if (!handle_bot_cmd_line_params()) {
+        return; // bot launch validation failed, process is quitting
+    }
     handle_url_param();
     handle_levelm_param();
 }

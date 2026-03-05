@@ -1712,6 +1712,25 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     should_mark_as_bot = true;
                 }
 
+                // Reject bot clients that provide an invalid shared secret
+                if (bot_mode_requested && !should_mark_as_bot) {
+                    if (has_bot_secret) {
+                        rf::console::print(
+                            "Rejecting {}: invalid bot shared secret provided",
+                            valid_player->name
+                        );
+                    } else {
+                        rf::console::print(
+                            "Rejecting {}: no bot shared secret provided",
+                            valid_player->name
+                        );
+                    }
+                    rf::multi_kick_player(valid_player);
+                    g_joining_player_info = {};
+                    g_joining_client_version = ClientSoftware::Unknown;
+                    return;
+                }
+
                 if (should_mark_as_bot) {
                     valid_player->is_bot = true;
                     valid_player->bot_skill = 100u;
@@ -1731,11 +1750,6 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                 } else if (has_bot_secret) {
                     rf::console::print(
                         "{}'s bot shared secret was invalid",
-                        valid_player->name
-                    );
-                } else if (bot_mode_requested && server_requires_bot_secret) {
-                    rf::console::print(
-                        "{} requested client bot mode but did not provide a valid bot shared secret",
                         valid_player->name
                     );
                 }

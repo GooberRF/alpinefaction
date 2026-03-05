@@ -219,9 +219,6 @@ bool is_client_debugbot_requested_from_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    if (!is_client_bot_requested_from_cmdline()) {
-        return false;
-    }
     return raw_command_line_has_switch(L"-debugbot") || raw_command_line_has_switch(L"/debugbot");
 }
 

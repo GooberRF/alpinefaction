@@ -3,6 +3,7 @@
 #include "../misc/player.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/gameseq.h"
 #include "../rf/input.h"
@@ -317,7 +318,8 @@ void console_apply_patches()
 void console_init()
 {
     console_commands_init();
-    print_fflink_info();
-    initialize_achievement_manager();
-
+    if (!client_bot_launch_enabled()) {
+        print_fflink_info();
+        initialize_achievement_manager();
+    }
 }

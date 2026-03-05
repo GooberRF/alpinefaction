@@ -245,15 +245,6 @@ std::string alpine_get_settings_filename()
         g_alpine_options_config.is_option_loaded(AlpineOptionID::UseStockPlayersConfig)
         && std::get<bool>(g_alpine_options_config.options[AlpineOptionID::UseStockPlayersConfig]);
     const bool is_tc_mod = rf::mod_param.found() && !use_stock_players_config;
-    const bool bot_launch = client_bot_launch_enabled();
-
-    if (bot_launch) {
-        if (is_tc_mod) {
-            std::string mod_name = rf::mod_param.get_arg();
-            return "alpine_settings-bot_" + mod_name + ".ini";
-        }
-        return "alpine_settings-bot.ini";
-    }
 
     // tc mod
     if (is_tc_mod) {
@@ -936,14 +927,6 @@ bool alpine_player_settings_load(rf::Player* player)
             );
         processed_keys.insert("RemoteServerCfgDisplayMode");
     }
-    if (settings.count("BotSharedSecret")) {
-        g_alpine_game_config.bot_shared_secret = std::stoul(settings["BotSharedSecret"]);
-        processed_keys.insert("BotSharedSecret");
-    }
-    if (settings.count("BotQuitWhenDisconnected")) {
-        g_alpine_game_config.bot_quit_when_disconnected = std::stoi(settings["BotQuitWhenDisconnected"]) != 0;
-        processed_keys.insert("BotQuitWhenDisconnected");
-    }
 
     // Load input settings
     if (settings.count("MouseSensitivity")) {
@@ -1318,8 +1301,6 @@ void alpine_player_settings_save(rf::Player* player)
     file << "AlwaysShowSpectators=" << g_alpine_game_config.always_show_spectators << "\n";
     file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
     file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
-    file << "BotSharedSecret=" << g_alpine_game_config.bot_shared_secret << "\n";
-    file << "BotQuitWhenDisconnected=" << g_alpine_game_config.bot_quit_when_disconnected << "\n";
 
     alpine_control_config_serialize(file, player->settings.controls);
 
@@ -1353,9 +1334,33 @@ void set_alpine_config_defaults() {
     apply_entity_sim_distance();
 }
 
+static void set_headless_bot_defaults()
+{
+    // Apply general defaults first, then override with headless-specific values
+    set_alpine_config_defaults();
+    g_alpine_game_config.rendering_enabled = false;
+    g_alpine_game_config.sound_enabled = false;
+    rf::sound_enabled = false;
+    set_sound_enabled(false);
+    g_alpine_game_config.swap_ar_controls = false;
+    g_alpine_game_config.swap_gn_controls = false;
+    g_alpine_game_config.swap_sg_controls = false;
+    g_alpine_game_config.direct_input = false;
+    g_alpine_game_config.save_console_history = false;
+    g_alpine_game_config.set_max_fps(30);
+    g_alpine_game_config.dbg_bot = false;
+    g_loaded_alpine_settings_file = true;
+}
+
 CallHook<void(rf::Player*)> player_settings_load_hook{
     0x004B2726,
     [](rf::Player* player) {
+        // Headless bots skip all settings I/O
+        if (client_bot_headless_enabled()) {
+            set_headless_bot_defaults();
+            return;
+        }
+
         bool ff_link_prompt = true;
         if (!alpine_player_settings_load(player)) {
             xlog::warn("Alpine Faction settings file not found. Attempting to import legacy RF settings file.");
@@ -1383,8 +1388,8 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
             }
         }
 
-        // display popup recommending ff link
-        if (ff_link_prompt && !g_game_config.suppress_ff_link_prompt) {
+        // display popup recommending ff link (skip for bots)
+        if (ff_link_prompt && !g_game_config.suppress_ff_link_prompt && !client_bot_launch_enabled()) {
             g_game_config.suppress_ff_link_prompt = true; // only display popup once
             g_game_config.save();
 
@@ -1406,6 +1411,9 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
 FunHook<void(rf::Player*)> player_settings_save_hook{
     0x004A8F50,
     [](rf::Player* player) {
+        if (client_bot_launch_enabled()) {
+            return;
+        }
         g_alpine_system_config.save();
         alpine_player_settings_save(player);
     }
@@ -1415,6 +1423,10 @@ CallHook<void(rf::Player*)> player_settings_save_quit_hook{
     0x004B2D77,
     [](rf::Player* player) {
         player_settings_save_quit_hook.call_target(player);
+
+        if (client_bot_launch_enabled()) {
+            return;
+        }
 
         if (g_restart_on_close) {
             xlog::info("Restarting Alpine Faction to finish applying imported settings.");
