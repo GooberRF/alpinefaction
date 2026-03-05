@@ -449,6 +449,11 @@ struct AlpineLevelProperties
     }
 };
 
+enum class DedRoomEffectType : int
+{
+    Liquid = 2,
+};
+
 struct CDedLevel
 {
     char _pad_00[0x24];                           // +0x00
