@@ -1372,6 +1372,22 @@ CodeInjection send_ping_time_wrap_fix{
     },
 };
 
+// Fix: after timer wrap, last_ping_time is negative. The native code at 0x0047cb89
+// uses TEST EAX,EAX / JGE which treats ALL negative values as "uninitialized" (sentinel is -1).
+// This prevents ping from ever being calculated. Fix by checking for the exact sentinel value.
+// Inject at MOV EAX,[ESI+0x58c] (6 bytes) to avoid corrupting the adjacent PUSH instruction.
+CodeInjection ping_response_time_wrap_fix{
+    0x0047cb83,
+    [](auto& regs) {
+        int32_t last_ping_time = addr_as_ref<int32_t>(regs.esi + 0x58c);
+        if (last_ping_time == -1) {
+            regs.eip = 0x0047cb8d; // sentinel → reset and retry
+        } else {
+            regs.eip = 0x0047cba9; // valid → calculate ping
+        }
+    },
+};
+
 CodeInjection multi_on_new_player_injection{
     0x0047B013,
     [](auto& regs) {
@@ -1892,8 +1908,10 @@ void player_idle_check(rf::Player* const player) {
         return; // don't mark players as idle during a match or pre-match
     }
 
-    if (player->net_data->join_time_ms
-        > (rf::timer_get_milliseconds() - inactivity_cfg.new_player_grace_ms)) {
+    // Use unsigned delta to handle timer wrap correctly (~25 days)
+    unsigned int time_since_join = static_cast<unsigned int>(rf::timer_get_milliseconds())
+        - static_cast<unsigned int>(player->net_data->join_time_ms);
+    if (time_since_join < static_cast<unsigned int>(inactivity_cfg.new_player_grace_ms)) {
         return; // don't mark new players as idle
     }
 
@@ -3083,6 +3101,9 @@ void server_init()
 
     // Fix sending ping packets after time in ms wraps around (~25 days)
     send_ping_time_wrap_fix.install();
+
+    // Fix receiving ping responses after time in ms wraps around (~25 days)
+    ping_response_time_wrap_fix.install();
 
     // Ignore obj_update position for some time after teleportation
     process_obj_update_set_pos_injection.install();
