@@ -685,9 +685,10 @@ namespace df::gr::d3d11
         data.shadow_depth_range = current_depth_range_;
         data.shadow_projection_fade_start = shadow_projection_fade_start;
         data.shadow_projection_fade_end = shadow_projection_fade_end;
-        int pcf_taps = shadow_quality_presets[quality].pcf_taps;
-        data.shadow_pcf_taps = static_cast<float>(pcf_taps);
+        const auto& preset = shadow_quality_presets[quality];
+        data.shadow_pcf_taps = static_cast<float>(preset.pcf_taps);
         data.shadow_debug = debug_enabled ? 1.0f : 0.0f;
+        data.shadow_soft_edges = preset.soft_edges ? 1.0f : 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped;
         DF_GR_D3D11_CHECK_HR(context->Map(shadow_cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));

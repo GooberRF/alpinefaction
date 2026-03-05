@@ -30,6 +30,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `/coinflip` chat command
 - Raise limit on lights per level from 1100 to 8192
 - Raise level editor limit on lights projecting on a single face from 64 to 1024
+- Add full mesh shadows for entities, corpses, and items (Direct3D 11 renderer only)
+- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`

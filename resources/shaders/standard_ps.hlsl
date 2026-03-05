@@ -48,7 +48,8 @@ cbuffer ShadowBuffer : register(b2)
     float shadow_projection_fade_end;
     float shadow_pcf_taps;
     float shadow_debug;
-    float2 shadow_pad;
+    float shadow_soft_edges;
+    float shadow_pad;
 };
 
 Texture2D tex0;
@@ -174,18 +175,24 @@ float4 main(VsOutput input) : SV_TARGET
                 float center_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, shadow_uv, compare_depth);
                 float shadow_sum = lerp(1.0f, lerp(shadow_strength, 1.0f, center_cmp), center_pf);
 
-                // Extra taps (PCF with Poisson disk + per-tap projection fade)
-                for (int t = 0; t < extra_taps && t < 15; ++t) {
-                    float2 ofs = float2(pcf_offsets[t].x * pcf_cos - pcf_offsets[t].y * pcf_sin,
-                                        pcf_offsets[t].x * pcf_sin + pcf_offsets[t].y * pcf_cos);
-                    float2 tap_uv = shadow_uv + ofs * spread;
-                    float tap_depth = shadow_map.SampleLevel(shadow_depth_sampler, tap_uv, 0).r;
-                    float tap_pd = saturate(shadow_ndc.z - tap_depth) * shadow_depth_range;
-                    float tap_pf = 1.0f - saturate((tap_pd - shadow_projection_fade_start) / proj_fade_range);
-                    float tap_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, tap_uv, compare_depth);
-                    shadow_sum += lerp(1.0f, lerp(shadow_strength, 1.0f, tap_cmp), tap_pf);
+                // Early-out: skip extra taps if center is fully lit (no shadow nearby)
+                // Disabled when soft_edges is on (quality 5) for softer shadow boundaries
+                if (center_cmp >= 1.0f && extra_taps > 0 && shadow_soft_edges < 0.5f) {
+                    shadow_value = 1.0f;
+                } else {
+                    // Extra taps (PCF with Poisson disk + per-tap projection fade)
+                    for (int t = 0; t < extra_taps && t < 15; ++t) {
+                        float2 ofs = float2(pcf_offsets[t].x * pcf_cos - pcf_offsets[t].y * pcf_sin,
+                                            pcf_offsets[t].x * pcf_sin + pcf_offsets[t].y * pcf_cos);
+                        float2 tap_uv = shadow_uv + ofs * spread;
+                        float tap_depth = shadow_map.SampleLevel(shadow_depth_sampler, tap_uv, 0).r;
+                        float tap_pd = saturate(shadow_ndc.z - tap_depth) * shadow_depth_range;
+                        float tap_pf = 1.0f - saturate((tap_pd - shadow_projection_fade_start) / proj_fade_range);
+                        float tap_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, tap_uv, compare_depth);
+                        shadow_sum += lerp(1.0f, lerp(shadow_strength, 1.0f, tap_cmp), tap_pf);
+                    }
+                    shadow_value = shadow_sum / shadow_pcf_taps;
                 }
-                shadow_value = shadow_sum / shadow_pcf_taps;
             }
 
             float cam_dist = input.world_pos_and_depth.w;

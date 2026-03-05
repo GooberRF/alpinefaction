@@ -19,8 +19,9 @@ namespace df::gr::d3d11
     // Shadow quality presets: resolution=0 means blob shadows (no shadow map)
     struct ShadowQualityPreset
     {
-        int resolution;   // shadow map resolution (0 = blob shadows only)
-        int pcf_taps;     // PCF sample count (1, 5, 9, 12, or 16)
+        int resolution;        // shadow map resolution (0 = blob shadows only)
+        int pcf_taps;          // PCF sample count (5, 9, 12, or 16)
+        bool soft_edges;       // disable PCF early-out for softer shadow edges
     };
 
     class EntityShadowRenderer
@@ -40,12 +41,12 @@ namespace df::gr::d3d11
         // Shadow quality presets (resolution + PCF taps)
         // Quality 0 = stock blob shadows (no d3d11 shadow map)
         static constexpr ShadowQualityPreset shadow_quality_presets[] = {
-            {0,    0},     // 0: lowest (stock blob shadows)
-            {512,  1},     // 1: low
-            {1024, 5},     // 2: medium
-            {2048, 9},     // 3: high
-            {4096, 12},    // 4: very_high
-            {8192, 16},    // 5: maximum
+            {0,    0,  false},   // 0: lowest (stock blob shadows)
+            {1024, 5,  false},   // 1: low
+            {2048, 9,  false},   // 2: medium
+            {4096, 12, false},   // 3: high
+            {8192, 16, false},   // 4: very_high
+            {8192, 16, true},    // 5: maximum (soft edges - no PCF early-out)
         };
 
         static constexpr int num_shadow_distance_presets = sizeof(shadow_distance_presets) / sizeof(shadow_distance_presets[0]);
@@ -95,7 +96,8 @@ namespace df::gr::d3d11
             float shadow_projection_fade_end;
             float shadow_pcf_taps;
             float shadow_debug;
-            float pad[2];
+            float shadow_soft_edges;
+            float pad;
         };
         static_assert(sizeof(ShadowConstantBuffer) % 16 == 0);
 
