@@ -329,7 +329,7 @@ namespace df::gr::d3d11
             rf::MeshRenderParams params_no_cpu_lighting = params;
             params_no_cpu_lighting.vertex_colors = nullptr;
 
-            renderer->render_v3d_vif(lod_mesh, lod_index, pos, orient, params_no_cpu_lighting);
+            renderer->render_v3d_vif(lod_mesh, lod_index, pos, orient, params_no_cpu_lighting, true);
 
             if (lights_gathered) {
                 rf::gr::light_filter_reset();
@@ -397,7 +397,7 @@ namespace df::gr::d3d11
                 }
 
                 params_with_vertex_colors.vertex_colors = scratch_vertex_colors.data.data();
-                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors);
+                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors, true);
 
                 if (lights_gathered) {
                     rf::gr::light_filter_reset();

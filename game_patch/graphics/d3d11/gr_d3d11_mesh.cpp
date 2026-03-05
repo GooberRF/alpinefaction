@@ -36,12 +36,12 @@ namespace df::gr::d3d11
 
     // Per-VifLodMesh self-illumination values indexed by material index.
     // Values are stored normalized to 0-1 range (stock engine uses 0-255 floats).
-    static std::unordered_map<VifLodMesh*, std::vector<float>> s_mesh_self_illumination;
+    static std::unordered_map<VifLodMesh*, std::vector<float>> mesh_self_illumination;
 
     // Per-entity cache of the last valid blended ambient (keyed by MeshRenderParams address).
     // When an entity walks over geometry without lightmaps (ambient_color = white),
     // the cached value is used instead of falling back to global ambient.
-    static std::unordered_map<const MeshRenderParams*, std::array<float, 3>> s_entity_ambient_cache;
+    static std::unordered_map<const MeshRenderParams*, std::array<float, 3>> entity_ambient_cache;
 
     void register_mesh_self_illumination(V3d* v3d)
     {
@@ -51,7 +51,7 @@ namespace df::gr::d3d11
             auto& mesh = v3d->meshes[i];
             auto* lod_mesh = mesh.vu;
             if (!lod_mesh || !mesh.materials || mesh.num_materials <= 0) continue;
-            if (s_mesh_self_illumination.count(lod_mesh)) continue; // already registered
+            if (mesh_self_illumination.count(lod_mesh)) continue; // already registered
 
             auto* materials = reinterpret_cast<MeshMaterial*>(mesh.materials);
             std::vector<float> self_illum(mesh.num_materials, 0.0f);
@@ -61,25 +61,25 @@ namespace df::gr::d3d11
                     self_illum[j] = std::min(materials[j].self_illumination[0] / 255.0f, 1.0f);
                 }
             }
-            s_mesh_self_illumination[lod_mesh] = std::move(self_illum);
+            mesh_self_illumination[lod_mesh] = std::move(self_illum);
         }
     }
 
     void unregister_mesh_self_illumination(VifLodMesh* lod_mesh)
     {
-        s_mesh_self_illumination.erase(lod_mesh);
+        mesh_self_illumination.erase(lod_mesh);
     }
 
     void clear_mesh_self_illumination()
     {
-        s_mesh_self_illumination.clear();
-        s_entity_ambient_cache.clear();
+        mesh_self_illumination.clear();
+        entity_ambient_cache.clear();
     }
 
     float get_mesh_self_illumination(VifLodMesh* lod_mesh, int material_index)
     {
-        auto it = s_mesh_self_illumination.find(lod_mesh);
-        if (it != s_mesh_self_illumination.end() && material_index >= 0 &&
+        auto it = mesh_self_illumination.find(lod_mesh);
+        if (it != mesh_self_illumination.end() && material_index >= 0 &&
             material_index < static_cast<int>(it->second.size())) {
             return it->second[material_index];
         }
@@ -710,7 +710,7 @@ namespace df::gr::d3d11
         render_caches_.clear();
     }
 
-    void MeshRenderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params)
+    void MeshRenderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         page_in_v3d_mesh(lod_mesh);
 
@@ -722,10 +722,10 @@ namespace df::gr::d3d11
 
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
     }
 
-    void MeshRenderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params)
+    void MeshRenderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         page_in_character_mesh(lod_mesh);
         auto render_cache = reinterpret_cast<CharacterMeshRenderCache*>(lod_mesh->render_cache);
@@ -750,7 +750,7 @@ namespace df::gr::d3d11
         render_cache->update_bone_transforms_buffer(ci, render_context_);
         render_cache->bind_buffers(render_context_, morphed);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
     }
 
     void MeshRenderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
@@ -766,7 +766,7 @@ namespace df::gr::d3d11
         return lod_mesh->meshes[lod_index]->tex_handles;
     }
 
-    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index)
+    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
     {
         const int* tex_handles = get_tex_handles(lod_mesh, params, lod_index);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -850,13 +850,20 @@ namespace df::gr::d3d11
                         global_amb[2] * (1.0f - blend) + (params.ambient_color.blue / 255.0f) * blend,
                     };
                     // Cache this blended ambient keyed by the entity's MeshRenderParams address
-                    // (stable per entity since params is a reference to a field in the entity struct)
-                    s_entity_ambient_cache[&params] = {mesh_ambient[0], mesh_ambient[1], mesh_ambient[2]};
+                    // (stable per entity since params is a reference to a field in the entity struct).
+                    // Skip caching when params is a stack copy to avoid unbounded growth.
+                    if (!skip_ambient_cache) {
+                        entity_ambient_cache[&params] = {mesh_ambient[0], mesh_ambient[1], mesh_ambient[2]};
+                    }
                     render_context_.update_lights(false, mesh_ambient);
                 } else {
-                    auto it = s_entity_ambient_cache.find(&params);
-                    if (it != s_entity_ambient_cache.end()) {
-                        render_context_.update_lights(false, it->second.data());
+                    if (!skip_ambient_cache) {
+                        auto it = entity_ambient_cache.find(&params);
+                        if (it != entity_ambient_cache.end()) {
+                            render_context_.update_lights(false, it->second.data());
+                        } else {
+                            render_context_.update_lights();
+                        }
                     } else {
                         render_context_.update_lights();
                     }
