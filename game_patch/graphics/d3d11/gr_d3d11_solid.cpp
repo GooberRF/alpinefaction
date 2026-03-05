@@ -406,9 +406,28 @@ namespace df::gr::d3d11
             std::size_t start_index = ib_data.size();
             std::size_t base_vertex = vb_data.size();
 
+            // Emit the current batch and start a new one (same key).
+            // Needed when per-batch vertex count approaches the ushort index limit.
+            auto emit_batch = [&]() {
+                std::size_t num_indices = ib_data.size() - start_index;
+                if (num_indices > 0) {
+                    std::array<int, 2> textures = {texture_1, texture_2};
+                    gr::Mode mode = determine_face_mode(render_type, texture_2 != -1, is_sky_);
+                    batches.get_batches(render_type).emplace_back(
+                        start_index, num_indices, base_vertex, textures, mode
+                    );
+                }
+                start_index = ib_data.size();
+                base_vertex = vb_data.size();
+            };
+
+            constexpr std::size_t max_batch_verts = 0xF000; // leave headroom below UINT16_MAX
             for (GFace* face : faces) {
                 auto fvert = face->edge_loop;
                 if (!fvert) continue;
+                if (vb_data.size() - base_vertex > max_batch_verts) {
+                    emit_batch();
+                }
                 GTextureMover* texture_mover = face->attributes.texture_mover;
                 float u_pan_speed = texture_mover ? texture_mover->u_pan_speed : 0.0f;
                 float v_pan_speed = texture_mover ? texture_mover->v_pan_speed : 0.0f;
@@ -447,12 +466,7 @@ namespace df::gr::d3d11
                     }
                 }
             }
-            std::size_t num_indices = ib_data.size() - start_index;
-            std::array<int, 2> textures = {texture_1, texture_2};
-            gr::Mode mode = determine_face_mode(render_type, texture_2 != -1, is_sky_);
-            batches.get_batches(render_type).emplace_back(
-                start_index, num_indices, base_vertex, textures, mode
-            );
+            emit_batch();
         }
         for (auto& e : batched_decal_polys_) {
             const GRenderCacheBuilder::DecalPolyBatchKey& key = e.first;
@@ -460,6 +474,20 @@ namespace df::gr::d3d11
             auto [render_type, texture_1, texture_2, mode] = key;
             std::size_t start_index = ib_data.size();
             std::size_t base_vertex = vb_data.size();
+
+            auto emit_decal_batch = [&]() {
+                std::size_t num_indices = ib_data.size() - start_index;
+                if (num_indices > 0) {
+                    std::array<int, 2> textures = {texture_1, texture_2};
+                    batches.get_batches(render_type).emplace_back(
+                        start_index, num_indices, base_vertex, textures, mode
+                    );
+                }
+                start_index = ib_data.size();
+                base_vertex = vb_data.size();
+            };
+
+            constexpr std::size_t max_batch_verts = 0xF000;
             for (DecalPoly* dp : dps) {
                 GDecal* decal = dp->my_decal;
                 ubyte alpha = rfl_version_minimum(304) ? decal->alpha : 255;
@@ -467,6 +495,9 @@ namespace df::gr::d3d11
                 auto face = dp->face;
                 auto fvert = face->edge_loop;
                 if (!fvert) continue;
+                if (vb_data.size() - base_vertex > max_batch_verts) {
+                    emit_decal_batch();
+                }
                 int max_dp_verts = std::min(dp->nv, static_cast<int>(std::size(dp->uvs)));
                 auto face_start_index = static_cast<ushort>(vb_data.size() - base_vertex);
                 int fvert_index = 0;
@@ -504,11 +535,7 @@ namespace df::gr::d3d11
                     }
                 }
             }
-            int num_indices = ib_data.size() - start_index;
-            std::array<int, 2> textures = {texture_1, texture_2};
-            batches.get_batches(render_type).emplace_back(
-                start_index, num_indices, base_vertex, textures, mode
-            );
+            emit_decal_batch();
         }
 
         SolidGeometryBuffers geometry_buffers{vb_data, ib_data, device};
