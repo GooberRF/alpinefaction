@@ -1379,10 +1379,10 @@ CodeInjection ping_response_time_wrap_fix{
         // HACKFIX.  May be valid, but treat as sentinel.
         if (io_stats.last_ping_time == -1) {
             // Reset.
-            regs.eip = 0x0047cb8d;
+            regs.eip = 0x0047CB8D;
         } else {
             // Calculate ping.
-            regs.eip = 0x0047cba9;
+            regs.eip = 0x0047CBA9;
         }
     },
 };
