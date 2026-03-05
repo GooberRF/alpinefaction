@@ -1,63 +1,80 @@
 #include <patch_common/CodeInjection.h>
 #include "sound_foley.h"
+#include "../misc/destruction.h"
 #include "../rf/sound/sound.h"
+#include "../rf/geometry.h"
 
-// Impact sound set for rock debris chunks, matching "Geomod Debris Hit" from foley.tbl.
-// Built once after foley.tbl loads using the same Geodebris wav files.
-static rf::ImpactSoundSet* g_rock_debris_iss = nullptr;
+// Pre-built impact sound sets for materials that don't have stock Custom Sound Sets.
+// Built once after foley.tbl loads; persist for the game's lifetime.
+rf::ImpactSoundSet* g_rock_debris_iss = nullptr;
+rf::ImpactSoundSet* g_ice_debris_iss = nullptr;
 
-// Rock break foley sound
-static int g_rock_break_foley_id = -1;
-static bool g_rock_break_foley_init = false;
-
-rf::ImpactSoundSet* get_rock_debris_iss()
+static rf::ImpactSoundSet* build_custom_iss(const char* const* wavs, int count,
+                                             float min_range, float base_volume)
 {
-    return g_rock_debris_iss;
+    auto* iss = new rf::ImpactSoundSet{};
+    for (int i = 0; i < count; i++) {
+        iss->sounds[i] = rf::snd_get_handle(wavs[i], min_range, base_volume, 1.0f);
+    }
+    iss->num_material_sounds[0] = count;
+    iss->is_all_sounds = 1;
+    return iss;
 }
 
-void play_rock_break_sound(const rf::Vector3& pos)
+rf::ImpactSoundSet* resolve_material_iss(const BreakableMaterialConfig& cfg)
 {
-    if (!g_rock_break_foley_init) {
-        g_rock_break_foley_init = true;
-        g_rock_break_foley_id = rf::foley_lookup_by_name("Geomod Debris Hit");
-        if (g_rock_break_foley_id < 0) {
-            g_rock_break_foley_id = rf::foley_lookup_by_name("Glass Smash");
+    if (cfg.impact_iss_ptr)
+        return *cfg.impact_iss_ptr;
+    if (cfg.impact_iss_name)
+        return rf::material_find_impact_sound_set(cfg.impact_iss_name);
+    return nullptr;
+}
+
+void play_material_break_sound(const BreakableMaterialConfig& cfg, BreakableMaterialState& state,
+                               const rf::Vector3& pos)
+{
+    if (!state.break_foley_init) {
+        state.break_foley_init = true;
+        if (cfg.break_foley_name) {
+            state.break_foley_id = rf::foley_lookup_by_name(cfg.break_foley_name);
         }
     }
-    if (g_rock_break_foley_id >= 0) {
-        int snd_handle = rf::foley_get_sound_handle(g_rock_break_foley_id);
+    if (state.break_foley_id >= 0) {
+        int snd_handle = rf::foley_get_sound_handle(state.break_foley_id);
         if (snd_handle >= 0) {
             rf::snd_play_3d(snd_handle, pos, 1.0f, rf::Vector3{0.0f, 0.0f, 0.0f}, rf::SOUND_GROUP_EFFECTS);
         }
     }
 }
 
-void sound_foley_level_cleanup()
+void sound_foley_level_cleanup(BreakableMaterialState* states, int count)
 {
-    g_rock_break_foley_init = false;
-    g_rock_break_foley_id = -1;
+    for (int i = 0; i < count; i++) {
+        states[i].break_foley_init = false;
+        states[i].break_foley_id = -1;
+    }
 }
 
 // Injection at 0x00467c1c: right after FUN_00467d00 returns from parsing foley.tbl.
-// Builds a custom ImpactSoundSet with the Geodebris wav files for rock debris impact sounds.
-CodeInjection rock_debris_iss_init_injection{
+// Builds custom ImpactSoundSets for materials that don't have stock Custom Sound Sets.
+CodeInjection foley_iss_init_injection{
     0x00467c1c,
     [](auto& regs) {
-        static constexpr const char* k_geodebris_wavs[] = {
+        static constexpr const char* k_rock_wavs[] = {
             "Geodebris_01.wav", "Geodebris_02.wav",
             "Geodebris_03.wav", "Geodebris_04.wav",
         };
-        constexpr int num_sounds = std::size(k_geodebris_wavs);
-        g_rock_debris_iss = new rf::ImpactSoundSet{};
-        for (int i = 0; i < num_sounds; i++) {
-            g_rock_debris_iss->sounds[i] = rf::snd_get_handle(k_geodebris_wavs[i], 5.0f, 0.9f, 1.0f);
-        }
-        g_rock_debris_iss->num_material_sounds[0] = num_sounds;
-        g_rock_debris_iss->is_all_sounds = 1;
+        g_rock_debris_iss = build_custom_iss(k_rock_wavs, std::size(k_rock_wavs), 5.0f, 0.9f);
+
+        static constexpr const char* k_ice_wavs[] = {
+            "Ice_Break_02.wav", "Ice_Break_03.wav",
+            "Ice_Hit_Ice1.wav", "Ice_Hit_Ice2.wav",
+        };
+        g_ice_debris_iss = build_custom_iss(k_ice_wavs, std::size(k_ice_wavs), 5.0f, 0.9f);
     },
 };
 
 void sound_foley_apply_patches()
 {
-    rock_debris_iss_init_injection.install();
+    foley_iss_init_injection.install();
 }

@@ -101,8 +101,12 @@ namespace rf
 
     // Material type for breakable detail brushes (life != -1)
     enum class DetailMaterial : uint8_t {
-        Glass = 0, // default — stock glass shatter behavior
-        Rock  = 1, // resistant to most damage; rock debris + Rockfall foley
+        Glass  = 0, // default — stock glass shatter behavior
+        Rock   = 1,
+        Wood   = 2,
+        Metal  = 3,
+        Cement = 4,
+        Ice    = 5,
         Count
     };
 

@@ -57,27 +57,107 @@ static std::vector<RF2AnchorInfo> g_rf2_anchor_info;
 // Formula: scale = 2^((50 - hardness) / 50), so 0→2.0, 50→1.0, 99→~0.507, 100→0.5.
 static constexpr float geoable_bbox_base_padding = 3.0f;
 
-// Damage type factors for rock material (DT_COUNT entries, matching ClutterInfo::damage_type_factors)
-static constexpr float rock_damage_factors[rf::DT_COUNT] = {
-    0.1f, 0.1f, 0.1f, 1.0f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 1.0f, 0.1f
+// Per-material configuration table for non-glass breakable detail brushes.
+// Indexed by ((int)DetailMaterial - 1). Glass (0) uses stock behavior and has no entry.
+//                                      DT:  bash  bull  ap    expl  fire  enrg  elec  acid  scld  crsh  10    11
+static constexpr BreakableMaterialConfig k_material_configs[] = {
+    { // Rock
+        .damage_factors     = {0.1f, 0.1f, 0.1f, 1.0f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 1.0f, 0.1f, 0.1f},
+        .direct_hit_factor  = 0.1f,
+        .debris             = {0.5f, 8, 3},
+        .cap_texture        = "rock02.tga",
+        .cap_texels_per_meter = 0.25f,
+        .upward_velocity    = 3.0f,
+        .horizontal_scatter = 2.0f,
+        .explosion_push_speed = 8.0f,
+        .break_foley_name   = "Geomod Debris Hit",
+        .impact_iss_name    = nullptr,
+        .impact_iss_ptr     = &g_rock_debris_iss,
+        .explosion_name     = "geomod",
+    },
+    { // Wood
+        .damage_factors     = {0.2f, 0.2f, 0.2f, 1.0f, 1.0f, 0.2f, 0.2f, 0.2f, 0.2f, 1.0f, 0.2f, 0.2f},
+        .direct_hit_factor  = 0.15f,
+        .debris             = {0.5f, 8, 3},
+        .cap_texture        = "sld_wood_floor01.tga",
+        .cap_texels_per_meter = 0.5f,
+        .upward_velocity    = 4.0f,
+        .horizontal_scatter = 2.5f,
+        .explosion_push_speed = 10.0f,
+        .break_foley_name   = "Solid Break",
+        .impact_iss_name    = "wood break",
+        .impact_iss_ptr     = nullptr,
+        .explosion_name     = "geomod",
+    },
+    { // Metal
+        .damage_factors     = {0.05f, 0.05f, 0.05f, 1.0f, 0.05f, 0.05f, 0.05f, 0.05f, 0.05f, 1.0f, 0.05f, 0.05f},
+        .direct_hit_factor  = 0.1f,
+        .debris             = {0.5f, 8, 3},
+        .cap_texture        = "mtl_baserust04.tga",
+        .cap_texels_per_meter = 0.5f,
+        .upward_velocity    = 2.0f,
+        .horizontal_scatter = 1.5f,
+        .explosion_push_speed = 6.0f,
+        .break_foley_name   = "metal break",
+        .impact_iss_name    = "metal break",
+        .impact_iss_ptr     = nullptr,
+        .explosion_name     = "geomod",
+    },
+    { // Cement
+        .damage_factors     = {0.1f, 0.1f, 0.1f, 1.0f, 0.1f, 0.1f, 0.1f, 0.1f, 0.1f, 1.0f, 0.1f, 0.1f},
+        .direct_hit_factor  = 0.1f,
+        .debris             = {0.5f, 8, 3},
+        .cap_texture        = "cem_plainyel.tga",
+        .cap_texels_per_meter = 0.5f,
+        .upward_velocity    = 3.0f,
+        .horizontal_scatter = 2.0f,
+        .explosion_push_speed = 8.0f,
+        .break_foley_name   = "Solid Break",
+        .impact_iss_name    = "solid clatter",
+        .impact_iss_ptr     = nullptr,
+        .explosion_name     = "geomod",
+    },
+    { // Ice
+        .damage_factors     = {0.15f, 0.15f, 0.15f, 1.0f, 0.5f, 0.15f, 0.15f, 0.15f, 0.15f, 1.0f, 0.15f, 0.15f},
+        .direct_hit_factor  = 0.2f,
+        .debris             = {0.5f, 8, 3},
+        .cap_texture        = "ice_ice01.tga",
+        .cap_texels_per_meter = 0.5f,
+        .upward_velocity    = 3.5f,
+        .horizontal_scatter = 2.5f,
+        .explosion_push_speed = 9.0f,
+        .break_foley_name   = "Icicle Break",
+        .impact_iss_name    = nullptr,
+        .impact_iss_ptr     = &g_ice_debris_iss,
+        .explosion_name     = "geomod",
+    },
 };
+static_assert(std::size(k_material_configs) == static_cast<int>(rf::DetailMaterial::Count) - 1);
 
-// Default direct-hit damage factor for non-glass materials.
-// Direct hits don't carry a damage_type, so we use this fixed factor.
-static constexpr float rock_direct_hit_factor = 0.1f;
+// Per-material runtime state (indexed same as k_material_configs).
+static BreakableMaterialState g_material_states[std::size(k_material_configs)];
+
+const BreakableMaterialConfig* get_material_config(rf::DetailMaterial mat)
+{
+    int idx = static_cast<int>(mat) - 1;
+    if (idx < 0 || idx >= static_cast<int>(std::size(k_material_configs)))
+        return nullptr;
+    return &k_material_configs[idx];
+}
+
+BreakableMaterialState* get_material_state(rf::DetailMaterial mat)
+{
+    int idx = static_cast<int>(mat) - 1;
+    if (idx < 0 || idx >= static_cast<int>(std::size(g_material_states)))
+        return nullptr;
+    return &g_material_states[idx];
+}
 
 // Global flags: set in damage hooks before stock break code runs.
 // Read by glass_sound/glass_shards entry hooks to suppress glass VFX for non-glass materials.
 static rf::DetailMaterial g_breaking_material = rf::DetailMaterial::Glass;
 static rf::GRoom* g_breaking_room = nullptr;
 static bool g_breaking_from_explosion = false;
-
-
-// Texture used for cap faces that bridge the edge loop when rock chunks are split
-static constexpr const char* k_rock_cap_texture = "rock02.tga";
-static constexpr float k_rock_cap_texels_per_meter = 0.25f; // UV scale for cap faces (lower = less tiling)
-static int g_rock_cap_bm = -1;
-static bool g_rock_cap_bm_loaded = false;
 
 // Per-room dedup: prevents multiple projectiles from creating effects on the same room
 // in the same frame (e.g., pistol creating two weapon entities per shot).
@@ -91,20 +171,15 @@ static int g_current_radius_damage_type = -1;
 // Sentinel group_id value for face tagging (>= 0x80000000, can't match valid texture_mover ptrs)
 static constexpr int k_debris_group_base = static_cast<int>(0x80000001);
 
-static constexpr DebrisConfig k_rock_debris_config{
-    0.5f,  // min_bsphere_radius: pieces roughly 30cm across
-    8,      // max_subdivisions: up to 3 cuts (can produce up to 2^3=8 pieces)
-    3,      // min_faces_to_split: need at least 3 faces (same as stock)
-};
-
 // Executable code buffer for the radius damage trampoline (replaces naked asm function).
 // Built dynamically with AsmWriter in apply_destruction_patches() to avoid compiler-specific
 // inline assembly (__declspec(naked) + __asm{} is MSVC-only).
 static CodeBuffer radius_damage_trampoline_code{64};
 
 static float get_material_damage_factor(rf::DetailMaterial mat, int damage_type) {
-    if (mat == rf::DetailMaterial::Rock && damage_type >= 0 && damage_type < rf::DT_COUNT)
-        return rock_damage_factors[damage_type];
+    auto* cfg = get_material_config(mat);
+    if (cfg && damage_type >= 0 && damage_type < rf::DT_COUNT)
+        return cfg->damage_factors[damage_type];
     return 1.0f; // Glass or unknown = stock behavior
 }
 
@@ -705,10 +780,14 @@ void reset_breakable_material_state()
     g_breaking_from_explosion = false;
     s_last_vfx_room = nullptr;
     s_last_vfx_tick = 0;
-    sound_foley_level_cleanup();
     g_current_radius_damage_type = -1;
-    g_rock_cap_bm_loaded = false;
-    g_rock_cap_bm = -1;
+
+    // Reset per-material runtime state
+    for (auto& s : g_material_states) {
+        s.cap_bm_loaded = false;
+        s.cap_bm = -1;
+    }
+    sound_foley_level_cleanup(g_material_states, std::size(g_material_states));
 }
 
 // Apply breakable material types from AlpineLevelProperties to GRoom objects.
@@ -1175,7 +1254,8 @@ static std::vector<std::vector<rf::GVertex*>> find_boundary_loops(rf::GSolid* so
 static void add_cap_faces_from_loop(
     rf::GSolid* solid,
     const std::vector<rf::GVertex*>& loop,
-    int bitmap_id)
+    int bitmap_id,
+    float texels_per_meter)
 {
     int n = static_cast<int>(loop.size());
     if (n < 3) return;
@@ -1266,8 +1346,8 @@ static void add_cap_faces_from_loop(
     // UV mapping: project relative to loop centroid
     auto compute_uv = [&](rf::GVertex* v) -> std::pair<float, float> {
         rf::Vector3 d = v->pos - loop_center;
-        return {d.dot_prod(right) * k_rock_cap_texels_per_meter,
-                d.dot_prod(forward) * k_rock_cap_texels_per_meter};
+        return {d.dot_prod(right) * texels_per_meter,
+                d.dot_prod(forward) * texels_per_meter};
     };
 
     for (auto& tri : triangles) {
@@ -1306,7 +1386,8 @@ static void add_cap_faces_from_loop(
 // with interpolated texture coordinates — no face extends past the cut boundary.
 // Boundary loops (open edges from the split) are detected topologically and capped with
 // triangulated crater-texture faces. Each piece is spawned as a falling OT_DEBRIS object.
-static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
+static void do_material_debris_shatter(rf::GRoom* room, const rf::Vector3& pos,
+                                       const BreakableMaterialConfig& cfg, BreakableMaterialState& state)
 {
     if (!room) return;
     auto* solid = rf::g_level_solid;
@@ -1315,15 +1396,13 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
     int face_count = room->face_list.size();
     if (face_count <= 0) return;
 
-    const auto& cfg = k_rock_debris_config;
-
     // Save room center (world-space position for debris spawn)
     rf::Vector3 room_center;
     room_center.x = (room->bbox_min.x + room->bbox_max.x) * 0.5f;
     room_center.y = (room->bbox_min.y + room->bbox_max.y) * 0.5f;
     room_center.z = (room->bbox_min.z + room->bbox_max.z) * 0.5f;
 
-    xlog::trace("[RockShatter] room uid={} faces={} center=({:.2f},{:.2f},{:.2f})",
+    xlog::trace("[MaterialShatter] room uid={} faces={} center=({:.2f},{:.2f},{:.2f})",
         room->uid, face_count, room_center.x, room_center.y, room_center.z);
 
     // Tag all room faces and extract from level solid
@@ -1338,7 +1417,7 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
     if (!extracted || extracted->face_list.empty()) {
         if (extracted) AddrCaller{0x004136e0}.this_call(extracted, 1);
         rf::g_cache_clear();
-        play_rock_break_sound(pos);
+        play_material_break_sound(cfg, state, pos);
         return;
     }
 
@@ -1346,13 +1425,14 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
     compute_solid_bounds(extracted);
 
     {
-        // Load crater cap texture before the cutting loop (needed for per-cut capping)
-        if (!g_rock_cap_bm_loaded) {
-            g_rock_cap_bm_loaded = true;
-            g_rock_cap_bm = rf::bm::load(k_rock_cap_texture, -1, true);
-            xlog::info("[RockShatter] loaded cap texture '{}' handle={}", k_rock_cap_texture, g_rock_cap_bm);
+        // Load cap texture before the cutting loop (needed for per-cut capping)
+        if (!state.cap_bm_loaded) {
+            state.cap_bm_loaded = true;
+            state.cap_bm = rf::bm::load(cfg.cap_texture, -1, true);
+            xlog::info("[MaterialShatter] loaded cap texture '{}' handle={}", cfg.cap_texture, state.cap_bm);
         }
-        int crater_tex = (g_rock_cap_bm >= 0) ? g_rock_cap_bm : rf::g_geomod_texture_index;
+        int crater_tex = (state.cap_bm >= 0) ? state.cap_bm : rf::g_geomod_texture_index;
+        float tpm = cfg.cap_texels_per_meter;
 
         // Cap open boundary loops on a solid with crater-textured triangulated faces.
         // Each boundary loop (half-edges with no counterpart) is detected topologically
@@ -1360,8 +1440,8 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
         auto cap_boundaries = [&](rf::GSolid* s) {
             auto loops = find_boundary_loops(s);
             for (auto& loop : loops) {
-                xlog::trace("[RockShatter]   cap loop vertices={}", loop.size());
-                add_cap_faces_from_loop(s, loop, crater_tex);
+                xlog::trace("[MaterialShatter]   cap loop vertices={}", loop.size());
+                add_cap_faces_from_loop(s, loop, crater_tex, tpm);
             }
         };
 
@@ -1373,13 +1453,13 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
 
         int total_cuts = 0;
 
-        while (!work_queue.empty() && total_cuts < cfg.max_subdivisions) {
+        while (!work_queue.empty() && total_cuts < cfg.debris.max_subdivisions) {
             auto* chunk = work_queue.front();
             work_queue.pop_front();
 
             // Too small or too few faces to split further
-            if (chunk->bounding_sphere_radius <= cfg.min_bsphere_radius ||
-                chunk->face_list.size() < cfg.min_faces_to_split) {
+            if (chunk->bounding_sphere_radius <= cfg.debris.min_bsphere_radius ||
+                chunk->face_list.size() < cfg.debris.min_faces_to_split) {
                 final_pieces.push_back(chunk);
                 continue;
             }
@@ -1444,16 +1524,16 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
             final_pieces.push_back(c);
         }
 
-        xlog::trace("[RockShatter] {} cuts produced {} pieces", total_cuts, final_pieces.size());
+        xlog::trace("[MaterialShatter] {} cuts produced {} pieces", total_cuts, final_pieces.size());
 
         // Translate each piece's vertices from world space to local space (centered
         // on the piece's bounding sphere center). The D3D11 movable solid renderer
         // applies: world_pos = orient * vertex + obj->pos. For vertices to appear at
         // their correct world positions, they must be in local space so that
         // local_vertex + obj->pos = original_world_vertex.
-        constexpr float upward_velocity = 3.0f;
-        constexpr float horizontal_scatter = 2.0f;
-        constexpr float explosion_push_speed = 8.0f;
+        float upward_velocity = cfg.upward_velocity;
+        float horizontal_scatter = cfg.horizontal_scatter;
+        float explosion_push_speed = cfg.explosion_push_speed;
 
         bool from_explosion = g_breaking_from_explosion;
         g_breaking_from_explosion = false;
@@ -1540,7 +1620,7 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
             dcs.debris_flags = rf::DF_BOUNCE | rf::DF_VERTEX_TRANSFORM | rf::DF_OWNS_SOLID;
             dcs.obj_flags = rf::OF_NO_COLLIDE_REGISTER | rf::OF_WEAPON_ONLY_COLLIDE;
             dcs.room = nullptr;
-            dcs.iss = get_rock_debris_iss();
+            dcs.iss = resolve_material_iss(cfg);
 
             rf::geo_debris_obj_create(-1, piece, &dcs);
         }
@@ -1548,14 +1628,14 @@ static void do_rock_debris_shatter(rf::GRoom* room, const rf::Vector3& pos)
 
     rf::g_cache_clear();
 
-    // Spawn "geomod" particle explosion from explosion.tbl at break position
-    {
+    // Spawn particle explosion from explosion.tbl at break position
+    if (cfg.explosion_name) {
         rf::Vector3 explosion_pos = room_center;
         rf::Vector3 up_dir{0.0f, 1.0f, 0.0f};
-        rf::particle_explosion_create("geomod", &explosion_pos, &up_dir, 1.0f, room, 0);
+        rf::particle_explosion_create(cfg.explosion_name, &explosion_pos, &up_dir, 1.0f, room, 0);
     }
 
-    play_rock_break_sound(pos);
+    play_material_break_sound(cfg, state, pos);
 }
 
 // Radius damage hook at 0x00492090 in room_apply_radius_damage (FUN_00491f50).
@@ -1598,11 +1678,12 @@ CodeInjection direct_hit_material_injection{
     [](auto& regs) {
         auto* room = reinterpret_cast<rf::GRoom*>(static_cast<void*>(regs.edi));
 
-        if (room->material_type != rf::DetailMaterial::Glass) {
+        auto* mat_cfg = get_material_config(room->material_type);
+        if (mat_cfg) {
             // Scale damage by material factor
             float* damage_ptr = reinterpret_cast<float*>(regs.esp + 0x14);
             float orig = *damage_ptr;
-            *damage_ptr *= rock_direct_hit_factor;
+            *damage_ptr *= mat_cfg->direct_hit_factor;
             xlog::trace("[Material] DIRECT HIT: uid={} mat={} life={:.1f} dmg={:.1f}->{:.1f}",
                 room->uid, static_cast<int>(room->material_type), room->life, orig, *damage_ptr);
 
@@ -1645,7 +1726,7 @@ CodeInjection glass_kill_material_injection{
 // (radius damage path) and FUN_00491ed0 (direct hit path).
 // At entry: [ESP+4] = pos parameter (Vector3*). Skip to RET at 0x490c45 for non-glass.
 //
-// For rock material: do_rock_debris_shatter extracts faces from g_level_solid, freeing the
+// For non-glass materials: do_material_debris_shatter extracts faces from g_level_solid, freeing the
 // original face objects. Stock glass_kill tries to send the glass_kill packet AFTER glass_sound
 // returns, reading face->which_room->room_index — but the face is freed by then (dangling ptr).
 // Fix: if we're the server in multiplayer, send the packet HERE before extraction.
@@ -1653,27 +1734,24 @@ CodeInjection glass_kill_material_injection{
 CodeInjection glass_sound_entry_injection{
     0x00490c00,
     [](auto& regs) {
-        if (g_breaking_material != rf::DetailMaterial::Glass) {
+        auto* mat_cfg = get_material_config(g_breaking_material);
+        if (mat_cfg && g_breaking_room) {
+            auto* mat_state = get_material_state(g_breaking_material);
             auto* pos = *reinterpret_cast<rf::Vector3**>(regs.esp + 4);
-            if (g_breaking_material == rf::DetailMaterial::Rock && g_breaking_room) {
-                // Send glass_kill packet before face extraction frees the original faces
-                if (rf::is_multi && rf::is_server) {
-                    rf::Vector3 zero_vec{0.0f, 0.0f, 0.0f};
-                    rf::Vector3 break_pos = *pos;
-                    rf::send_glass_kill_packet(g_breaking_room->uid, &break_pos, &zero_vec, true);
-                }
-                if (g_breaking_room->no_debris) {
-                    // VFX/sounds only, no geometry debris
-                    play_rock_break_sound(*pos);
-                }
-                else {
-                    // Geometry debris shatter: split brush into falling pieces
-                    do_rock_debris_shatter(g_breaking_room, *pos);
-                }
+
+            // Send glass_kill packet before face extraction frees the original faces
+            if (rf::is_multi && rf::is_server) {
+                rf::Vector3 zero_vec{0.0f, 0.0f, 0.0f};
+                rf::Vector3 break_pos = *pos;
+                rf::send_glass_kill_packet(g_breaking_room->uid, &break_pos, &zero_vec, true);
+            }
+            if (g_breaking_room->no_debris) {
+                // VFX/sounds only, no geometry debris
+                play_material_break_sound(*mat_cfg, *mat_state, *pos);
             }
             else {
-                // Fallback: particle effects for other non-glass materials
-                play_rock_break_sound(*pos);
+                // Geometry debris shatter: split brush into falling pieces
+                do_material_debris_shatter(g_breaking_room, *pos, *mat_cfg, *mat_state);
             }
             regs.eip = 0x00490c45; // skip glass sound, jump to RET
         }

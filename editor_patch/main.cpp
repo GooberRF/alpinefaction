@@ -285,6 +285,10 @@ static void init_material_combo(HWND hdlg)
     SendMessageA(combo, CB_RESETCONTENT, 0, 0);
     SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Glass"));
     SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Rock"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Wood"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Metal"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Cement"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Ice"));
 
     bool has_breakable = selection_has_breakable_detail();
     EnableWindow(combo, has_breakable ? TRUE : FALSE);
