@@ -194,6 +194,8 @@ set(SRCS
     misc/alpine_options.cpp
     misc/alpine_settings.h
     misc/alpine_settings.cpp
+    misc/alpine_savegame.h
+    misc/alpine_savegame.cpp
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp

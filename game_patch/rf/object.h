@@ -44,8 +44,12 @@ namespace rf
         OF_INVULNERABLE = 0x4,
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
+        OF_IN_LEVEL_TRANSITION = 0x800,
+        OF_HIDDEN = 0x4000,
+        OF_START_HIDDEN = 0x8000,
         OF_IN_LIQUID = 0x80000,
         OF_HAS_ALPHA = 0x100000,
+        OF_UNK_SAVEGAME_ENT = 0x8000000,
     };
 
     struct ObjInterp
@@ -171,6 +175,7 @@ namespace rf
     static auto& obj_find_root_bone_pos = addr_as_ref<void(const Object&, Vector3&)>(0x0048AC70);
     static auto& obj_update_liquid_status = addr_as_ref<void(Object* obj)>(0x00486C30);
     static auto& obj_is_player = addr_as_ref<bool(Object* obj)>(0x004895D0);
+    static auto& obj_is_hidden = addr_as_ref<bool(Object* obj)>(0x0040A110);
     static auto& obj_hide = addr_as_ref<void(Object* obj)>(0x0048A570);
     static auto& obj_unhide = addr_as_ref<void(Object* obj)>(0x0048A660);
     static auto& obj_emit_sound2 = addr_as_ref<int(
@@ -180,8 +185,10 @@ namespace rf
     static auto& obj_light_alloc = addr_as_ref<void()>(0x0048B1D0);
     static auto& obj_light_calculate = addr_as_ref<void()>(0x0048B0E0);
     static auto& physics_force_to_ground = addr_as_ref<void(Object* obj)>(0x004A0770);
+    static auto& obj_physics_activate = addr_as_ref<void(Object* objp)>(0x0040A420);
 
     static auto& obj_set_friendliness = addr_as_ref<void(Object* obj, int friendliness)>(0x00489F70);
+    static auto& obj_get_ambient_color = addr_as_ref<void(Color* clr_out, rf::Object* obj)>(0x004605D0);
 
     static auto& object_list = addr_as_ref<Object>(0x0073D880);
 

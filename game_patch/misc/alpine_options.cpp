@@ -175,6 +175,7 @@ const std::unordered_map<std::string, OptionMetadata> option_metadata = {
     {"$Multi Timer Y Offset", {AlpineOptionID::MultiTimerYOffset, "af_client.tbl", parse_int}},
     {"$Multi Timer Color", {AlpineOptionID::MultiTimerColor, "af_client.tbl", parse_color}},
     {"$Default Third Person", {AlpineOptionID::DefaultThirdPerson, "af_game.tbl", parse_bool}},
+    {"$Require Alpine Savegame Format", {AlpineOptionID::RequireAlpineSavegameFormat, "af_game.tbl", parse_bool}},
 };
 
 // ===== Parsers for Alpine level info =====
