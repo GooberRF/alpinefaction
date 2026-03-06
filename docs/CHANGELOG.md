@@ -9,9 +9,9 @@ Version 1.3.0 (Bakeapple): Not yet released
     - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
     - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
     - `Is Geoable` flag added to brush properties
-    - Support for breakable detail brushes with materials other than glass
-    - Add dynamic debris generation from breakable brushes
-    - `No Debris` flag added to brush properties for breakable brushes
+    - Support for rock, wood, cement, metal, and ice breakable detail brushes
+    - Add dynamic debris generation from breakable detail brushes
+    - `No Debris` flag added to brush properties for breakable detail brushes
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
