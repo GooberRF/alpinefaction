@@ -197,9 +197,9 @@ namespace rf
         bool is_invincible;
 #ifdef ALPINE_FACTION
         VArray<GDecal*> decals;
-        bool is_geoable;
-        DetailMaterial material_type; // Alpine 1.3: breakable brush material
-        bool no_debris;              // Alpine 1.3: skip debris creation on destruction
+        bool is_geoable;                // Alpine 1.3: rf2-style brush-based geoable
+        DetailMaterial material_type;   // Alpine 1.3: breakable brush material
+        bool no_debris;                 // Alpine 1.3: skip debris creation on destruction
         char _pad_geoable[1];
         int padding[45];
 #else

@@ -2706,9 +2706,6 @@ void destruction_do_patch()
     geomod_crater_decals_hook.install();
     geomod_impact_effects_hook.install();
 
-    // Rock debris impact sound set (init after foley.tbl loads)
-    sound_foley_apply_patches();
-
     // Breakable detail brush material system
     capture_damage_type_injection.install();
     reset_damage_type_injection.install();

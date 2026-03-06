@@ -24,8 +24,9 @@ struct AlpineLevelProperties
     float static_mesh_ambient_light_modifier = 2.0f;
     // v4
     bool rf2_style_geomod = false;
+    // std::vector<int32_t> geoable_brush_uids; // unnecessary in game
     std::vector<int32_t> geoable_room_uids;
-    // v4 (appended) — breakable detail brush materials (only non-glass entries)
+    // std::vector<int32_t> breakable_brush_uids; // unnecessary in game
     std::vector<int32_t> breakable_room_uids;
     std::vector<uint8_t> breakable_materials;
 
@@ -185,7 +186,7 @@ struct DashLevelProps
     }
 };
 
-// structs used by RF2-style geomod
+// used by RF2-style geomod
 struct RF2AnchorInfo {
     rf::GRoom* room;
     std::unordered_set<rf::GFace*> anchor_faces;
