@@ -725,6 +725,7 @@ namespace asg
     {
         SavegameClutterDataBlock b{};
         b.uid = c->uid;
+        b.info_index = c->info_index;
         b.parent_uid = uid_from_handle(c->parent_handle);
         rf::compress_vector3(rf::world_solid, &c->p_data.pos, &b.pos);
         b.pos_ha.reset();
@@ -952,8 +953,7 @@ namespace asg
         b.width = d->width;
         b.flags = d->flags;
         b.alpha = d->alpha;
-        //b.tiling_scale = d->tiling_scale;
-        b.tiling_scale = 1.0f; //todo: come back to this, may be wrong
+        b.tiling_scale = d->tiling_scale;
         b.bitmap_filename = rf::bm::get_filename(d->bitmap_id);
 
         return b;
@@ -1036,6 +1036,23 @@ namespace asg
         b.lifetime_seconds = c->lifetime_seconds;
         b.corpse_flags = c->corpse_flags;
         b.entity_type = c->entity_type;
+
+        // find the source entity with matching entity_type, preferring dead/hidden ones
+        b.source_entity_uid = -1;
+        int fallback_uid = -1;
+        for (rf::Entity* e = rf::entity_list.next; e != &rf::entity_list; e = e->next) {
+            if (e->info_index == c->entity_type) {
+                if ((e->obj_flags & rf::ObjectFlags::OF_DELAYED_DELETE) || rf::entity_is_dying(e) || rf::obj_is_hidden(e)) {
+                    b.source_entity_uid = e->uid;
+                    break;
+                }
+                if (fallback_uid == -1)
+                    fallback_uid = e->uid;
+            }
+        }
+        if (b.source_entity_uid == -1)
+            b.source_entity_uid = fallback_uid;
+
         if (c->vmesh) {
             b.mesh_name = rf::vmesh_get_name(c->vmesh);
         }
@@ -1260,13 +1277,10 @@ namespace asg
     {
         out.clear();
         for (auto const& ev : g_persistent_goals) {
-            // only names <16 chars, like the stock code did
-            if (ev.name.size() < 16) {
-                SavegameLevelPersistentGoalDataBlock h;
-                h.goal_name = ev.name.c_str();
-                h.count = ev.count;
-                out.push_back(std::move(h));
-            }
+            SavegameLevelPersistentGoalDataBlock h;
+            h.goal_name = ev.name.c_str();
+            h.count = ev.count;
+            out.push_back(std::move(h));
         }
     }
 
@@ -1528,9 +1542,6 @@ namespace asg
         //xlog::warn("setting UID {} for previous UID {}", src.uid, o->uid);
         o->uid = src.uid;
         
-        // todo
-        //o->life = rf::decompress_life_armor(static_cast<uint16_t>(src.life));
-        //o->armor = rf::decompress_life_armor(static_cast<uint16_t>(src.armor));
         o->life = src.life;
         o->armor = src.armor;
 
@@ -1718,6 +1729,12 @@ namespace asg
             rf::ai_path_create_from_waypoints(e->handle);
             e->entity_flags2 |= 0x4000u;
         }
+
+        // restore fire state
+        if (src.entity_on_fire && !e->entity_fire_handle) {
+            static auto& entity_fire_create = addr_as_ref<rf::EntityFireInfo*(int entity_handle, int param)>(0x0042E910);
+            e->entity_fire_handle = entity_fire_create(e->handle, -1);
+        }
     }
 
     inline void entity_deserialize_all_state(const std::vector<SavegameEntityDataBlock>& blocks, const std::vector<int>& dead_uids)
@@ -1811,6 +1828,35 @@ namespace asg
                 if (ne)
                     deserialize_entity_state(ne, blk);
             }
+        }
+
+        // 3) spawn any entities that were in the save but aren't in the world
+        for (auto const& blk : blocks) {
+            if (blk.obj.obj_flags & 0x400)
+                continue; // already handled above
+            if (rf::obj_lookup_from_uid(blk.obj.uid))
+                continue; // already exists
+
+            rf::Matrix3 m;
+            rf::Vector3 p;
+            if (blk.obj.orient_ha) {
+                m = *blk.obj.orient_ha;
+            }
+            else {
+                rf::Quaternion q;
+                q.unpack(&blk.obj.orient);
+                q.extract_matrix(&m);
+            }
+            if (blk.obj.pos_ha) {
+                p = *blk.obj.pos_ha;
+            }
+            else {
+                rf::decompress_vector3(rf::world_solid, &blk.obj.pos, &p);
+            }
+
+            rf::Entity* ne = rf::entity_create(static_cast<int>(blk.info_index), &rf::default_entity_name, -1, p, m, 0, -1);
+            if (ne)
+                deserialize_entity_state(ne, blk);
         }
 
     }
@@ -2254,6 +2300,32 @@ namespace asg
             }
         }
 
+        // spawn clutter that was in the save but isn't in the world
+        for (auto const& b : blocks) {
+            if (b.info_index < 0)
+                continue; // no info index stored (legacy save)
+            if (rf::obj_lookup_from_uid(b.uid))
+                continue; // already exists
+
+            rf::Matrix3 m;
+            rf::Vector3 p;
+            if (b.orient_ha) {
+                m = *b.orient_ha;
+            }
+            else {
+                m.make_identity();
+            }
+            if (b.pos_ha) {
+                p = *b.pos_ha;
+            }
+            else {
+                rf::decompress_vector3(rf::world_solid, &b.pos, &p);
+            }
+
+            rf::Clutter* nc = rf::clutter_create(b.info_index, "", -1, &p, &m, 0);
+            if (nc)
+                apply_clutter_fields(nc, b);
+        }
     }
 
     static void apply_item_fields(rf::Item* it, const SavegameItemDataBlock& b)
@@ -2295,8 +2367,7 @@ namespace asg
             }
         }
 
-        // spawn items that were in the save but not in the world by default
-        // todo: same for entities and clutter
+        // spawn items that were in the save but not in the world
         for (auto const& b : blocks) {
             if (!rf::obj_lookup_from_uid(b.obj.uid)) {
                 // decompress orient & pos
@@ -2632,8 +2703,8 @@ namespace asg
         // 3) re‐attach item handle
         add_handle_for_delayed_resolution(b.item_uid, &c->item_handle);
 
-        // 4) any other handles
-        c->body_drop_sound_handle = b.body_drop_sound_handle;
+        // 4) sound handles are runtime-allocated; don't restore stale values
+        c->body_drop_sound_handle = -1;
 
         // 5) rebuild collision spheres
         c->p_data.mass = b.mass;
@@ -2666,33 +2737,62 @@ namespace asg
             }
         }
 
-        // 2) Spawn any corpses that were in the save but aren't in the world yet
+        // 2) Spawn corpses that were in the save but aren't in the world
         for (auto const& b : blocks) {
-            if (auto obj_ep = rf::obj_lookup_from_uid(b.obj.uid)) {
-                rf::Quaternion q;
-                rf::Matrix3 m;
-                rf::Vector3 p;
-                if (b.obj.orient_ha) {
-                    m = *b.obj.orient_ha;
-                }
-                else {
-                    q.unpack(&b.obj.orient);
-                    q.extract_matrix(&m);
-                }
-                if (b.obj.pos_ha) {
-                    p = *b.obj.pos_ha;
-                }
-                else {
-                    rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
-                }
-                if (obj_ep->type == rf::ObjectType::OT_ENTITY) {
-                    auto ep = reinterpret_cast<rf::Entity*>(obj_ep);
-                    if (auto* newc = rf::corpse_create(ep, ep->info->corpse_anim_string, &p, &m, false, false)) {
-                        newc->uid = b.obj.uid;
-                        apply_corpse_fields(newc, b);
-                    }
+            if (rf::obj_lookup_from_uid(b.obj.uid))
+                continue; // already exists
+
+            // find source entity: try saved UID first, then fall back to any entity with matching entity_type
+            rf::Entity* source_ep = nullptr;
+            if (b.source_entity_uid != -1) {
+                if (auto* obj = rf::obj_lookup_from_uid(b.source_entity_uid)) {
+                    if (obj->type == rf::ObjectType::OT_ENTITY)
+                        source_ep = reinterpret_cast<rf::Entity*>(obj);
                 }
             }
+            if (!source_ep) {
+                rf::Entity* fallback = nullptr;
+                for (rf::Entity* e = rf::entity_list.next; e != &rf::entity_list; e = e->next) {
+                    if (e->info_index == b.entity_type) {
+                        if ((e->obj_flags & rf::ObjectFlags::OF_DELAYED_DELETE) || rf::entity_is_dying(e) || rf::obj_is_hidden(e)) {
+                            source_ep = e;
+                            break;
+                        }
+                        if (!fallback)
+                            fallback = e;
+                    }
+                }
+                if (!source_ep)
+                    source_ep = fallback;
+            }
+            if (!source_ep)
+                continue; // no entity of this type available
+
+            rf::Matrix3 m;
+            rf::Vector3 p;
+            if (b.obj.orient_ha) {
+                m = *b.obj.orient_ha;
+            }
+            else {
+                rf::Quaternion q;
+                q.unpack(&b.obj.orient);
+                q.extract_matrix(&m);
+            }
+            if (b.obj.pos_ha) {
+                p = *b.obj.pos_ha;
+            }
+            else {
+                rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
+            }
+
+            // corpse_create sets OF_IN_LEVEL_TRANSITION on the source entity; preserve original flags
+            // corpse_create sets OF_IN_LEVEL_TRANSITION on the source entity; preserve original flags
+            auto saved_flags = source_ep->obj_flags;
+            if (auto* newc = rf::corpse_create(source_ep, source_ep->info->corpse_anim_string, &p, &m, false, false)) {
+                newc->uid = b.obj.uid;
+                apply_corpse_fields(newc, b);
+            }
+            source_ep->obj_flags = saved_flags;
         }
     }
 
@@ -2901,10 +3001,8 @@ namespace asg
         // ——— COMMON.PLAYER ———
         serialize_player(pp, data.common.player);
 
-        // — then snapshot the live entities into *each* level’s list  —
-        for (auto& lvl : data.levels) {
-            serialize_all_objects(&lvl);
-        }
+        // — snapshot the live entities into the current level’s list only —
+        serialize_all_objects(&data.levels[data.header.current_level_idx]);
 
         xlog::warn("[ASG] build_savegame_data returning levels={}", int(data.levels.size()));
 
@@ -3247,6 +3345,7 @@ static toml::table make_clutter_table(const asg::SavegameClutterDataBlock& c)
 {
     toml::table t;
     t.insert("uid", c.uid);
+    t.insert("info_index", c.info_index);
     t.insert("parent_uid", c.parent_uid);
     if (asg::use_high_accuracy_savegame() && c.pos_ha) {
         const auto& pos = *c.pos_ha;
@@ -3558,6 +3657,7 @@ static toml::table make_corpse_table(const asg::SavegameLevelCorpseDataBlock& c)
     t.insert("lifetime_seconds", c.lifetime_seconds);
     t.insert("corpse_flags", c.corpse_flags);
     t.insert("entity_type", c.entity_type);
+    t.insert("source_entity_uid", c.source_entity_uid);
     t.insert("mesh_name", c.mesh_name);
     t.insert("emitter_kill_timestamp", c.emitter_kill_timestamp);
     t.insert("body_temp", c.body_temp);
@@ -3725,6 +3825,12 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
             killed_arr.push_back(uid);
         }
         lt.insert("dead_room_uids", std::move(killed_arr));
+
+        toml::array dead_ent_arr;
+        for (int uid : lvl.dead_entity_uids) {
+            dead_ent_arr.push_back(uid);
+        }
+        lt.insert("dead_entity_uids", std::move(dead_ent_arr));
 
         toml::array be_arr;
         for (auto const& be : lvl.bolt_emitters) be_arr.push_back(make_bolt_emitters_table(be));
@@ -4382,6 +4488,7 @@ bool parse_clutter(const toml::array& arr, std::vector<asg::SavegameClutterDataB
         auto ct = *node.as_table();
         asg::SavegameClutterDataBlock cb{};
         cb.uid = ct["uid"].value_or(0);
+        cb.info_index = ct["info_index"].value_or(-1);
         cb.parent_uid = ct["parent_uid"].value_or(-1);
         asg::parse_i16_vector(ct, "pos", cb.pos);
         rf::Vector3 pos_ha{};
@@ -4827,6 +4934,7 @@ bool parse_corpses(const toml::array& arr, std::vector<asg::SavegameLevelCorpseD
         b.lifetime_seconds = tbl["lifetime_seconds"].value_or(0.0f);
         b.corpse_flags = tbl["corpse_flags"].value_or(0);
         b.entity_type = tbl["entity_type"].value_or(0);
+        b.source_entity_uid = tbl["source_entity_uid"].value_or(-1);
         b.mesh_name = tbl["mesh_name"].value_or("");
         b.emitter_kill_timestamp = tbl["emitter_kill_timestamp"].value_or(-1);
         b.body_temp = tbl["body_temp"].value_or(0.0f);
@@ -5000,6 +5108,10 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
 
         if (auto kro = tbl["dead_room_uids"].as_array()) {
             parse_killed_rooms(*kro, lvl.killed_room_uids);
+        }
+
+        if (auto deu = tbl["dead_entity_uids"].as_array()) {
+            parse_killed_rooms(*deu, lvl.dead_entity_uids);
         }
 
         outLevels.push_back(std::move(lvl));
@@ -5435,24 +5547,6 @@ CallHook<void(rf::Object* obj, rf::Vector3* pos, rf::Matrix3* orient)> game_rest
     }
 };
 
-// todo: consider refactor to consolidate these with the similar functions in alpine_options.cpp
-// helper: trim whitespace from both ends
-static inline std::string trim(const std::string& s)
-{
-    auto ws = [](char c) { return std::isspace(static_cast<unsigned char>(c)); };
-    auto b = s.begin(), e = s.end();
-    b = std::find_if_not(b, e, ws);
-    e = std::find_if_not(s.rbegin(), std::string::const_reverse_iterator(b), ws).base();
-    return (b < e ? std::string(b, e) : std::string());
-}
-
-// helper: strip surrounding quotes if present
-static inline std::string unquote(const std::string& s)
-{
-    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
-        return s.substr(1, s.size() - 2);
-    return s;
-}
 
 bool alpine_parse_ponr(const std::string& path)
 {
@@ -5482,7 +5576,7 @@ bool alpine_parse_ponr(const std::string& path)
     while (std::getline(in, line)) {
         ++line_no;
         std::string orig = line;
-        line = trim(line);
+        line = std::string{trim(line)};
         //xlog::warn("[PONR] Line {:3d}: '{}'", line_no, orig);
 
         // skip blank lines or comments
@@ -5502,15 +5596,14 @@ bool alpine_parse_ponr(const std::string& path)
                 xlog::warn("[PONR]     malformed $Level: line, no ':'");
                 continue;
             }
-            entry.current_level_filename = trim(line.substr(pos + 1));
-            entry.current_level_filename = unquote(entry.current_level_filename);
+            entry.current_level_filename = std::string{unquote(trim(line.substr(pos + 1)))};
             //xlog::warn("[PONR]     current_level_filename = '{}'", entry.current_level_filename);
 
             // expect next non-comment line: "$Levels to save:"
             while (std::getline(in, line)) {
                 ++line_no;
                 orig = line;
-                line = trim(line);
+                line = std::string{trim(line)};
                 //xlog::warn("[PONR] Line {:3d}: '{}'", line_no, orig);
 
                 if (line.empty() || line[0] == '#') {
@@ -5530,7 +5623,7 @@ bool alpine_parse_ponr(const std::string& path)
                         }
                         ++line_no;
                         orig = line;
-                        line = trim(line);
+                        line = std::string{trim(line)};
                         //xlog::warn("[PONR] Line {:3d}: '{}'", line_no, orig);
 
                         if (line.rfind("+Save:", 0) != 0) {
@@ -5539,8 +5632,7 @@ bool alpine_parse_ponr(const std::string& path)
                             continue;
                         }
                         auto qpos = line.find(':');
-                        std::string fn = trim(line.substr(qpos + 1));
-                        fn = unquote(fn);
+                        std::string fn{unquote(trim(line.substr(qpos + 1)))};
                         entry.levels_to_save.push_back(fn);
                         //xlog::warn("[PONR]     +Save entry[{}] = '{}'", i, fn);
                     }

@@ -30,6 +30,13 @@ inline std::string_view trim(std::string_view s)
     return rtrim(ltrim(s));
 }
 
+inline std::string_view unquote(std::string_view s)
+{
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"')
+        return s.substr(1, s.size() - 2);
+    return s;
+}
+
 inline std::pair<std::string_view, std::string_view> split_once_whitespace(std::string_view s)
 {
     s = trim(s);

@@ -188,6 +188,7 @@ namespace asg
     struct SavegameClutterDataBlock
     {
         int uid;
+        int info_index = -1;
         int parent_uid;
         rf::ShortVector pos;
         std::optional<rf::Vector3> pos_ha;
@@ -383,6 +384,7 @@ namespace asg
         float lifetime_seconds;
         int corpse_flags;
         int entity_type;
+        int source_entity_uid = -1; // UID of entity that created this corpse
         std::string mesh_name;
         int emitter_kill_timestamp;
         float body_temp;
