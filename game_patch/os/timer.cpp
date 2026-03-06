@@ -60,9 +60,9 @@ static int64_t g_timer_debug_offset_s = 0;
 
 FunHook<int(int)> timer_get_hook{
     0x00504AB0,
-    [](int scale) {
+    [] (const int scale) {
         // get QPC current value
-        LARGE_INTEGER current_qpc_value;
+        LARGE_INTEGER current_qpc_value{};
         QueryPerformanceCounter(&current_qpc_value);
         // make sure time never goes backward
         if (current_qpc_value.QuadPart < rf::timer_last_value) {
@@ -70,8 +70,8 @@ FunHook<int(int)> timer_get_hook{
         }
         rf::timer_last_value = current_qpc_value.QuadPart;
         // Make sure we count from game start
-        int64_t elapsed = current_qpc_value.QuadPart - rf::timer_base;
-        int64_t freq = g_qpc_frequency.QuadPart;
+        const int64_t elapsed = current_qpc_value.QuadPart - rf::timer_base;
+        const int64_t freq = g_qpc_frequency.QuadPart;
         // Avoid int64 overflow: (elapsed * scale) can overflow for large elapsed values
         // when scale is 1000000 (microseconds). Split into quotient and remainder.
         int64_t result = (elapsed / freq) * scale + (elapsed % freq) * scale / freq;

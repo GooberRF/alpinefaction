@@ -463,22 +463,21 @@ bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
 
     // reset if weapon changed
     if (last_weapon_id[player_id] != weapon_type) {
-        last_weapon_fire[player_id] = now; // initialize to current time instead of 0
+        last_weapon_fire[player_id] = now;
         last_weapon_id[player_id] = weapon_type;
-    }
+    } else {
+        // Use unsigned delta for correct behavior across timer wrap (~25 days)
+        const uint32_t time_since_last_shot = static_cast<uint32_t>(now)
+            - static_cast<uint32_t>(last_weapon_fire[player_id]);
 
-    // Use unsigned delta for correct behavior across timer wrap (~25 days)
-    unsigned int time_since_last_shot = static_cast<unsigned int>(now)
-        - static_cast<unsigned int>(last_weapon_fire[player_id]);
-
-    // calculate server-enforced cooldown from weapon fire wait, halfping, and 50ms jitter tolerance
-    int adjusted_ping = std::max(0, pp->net_data->ping); // ensure ping is positive
-    int cooldown_threshold = std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50); // halfping and jitter tolerance
-    if (time_since_last_shot < static_cast<unsigned int>(cooldown_threshold)) {
-        // send notification to player for firing too fast
-        //send_private_message_for_cancelled_shot(pp, "firing too fast!");
-
-        return true;
+        // calculate server-enforced cooldown from weapon fire wait, halfping, and 50ms jitter tolerance
+        const int adjusted_ping = std::max(0, pp->net_data->ping); // ensure ping is positive
+        const int cooldown_threshold = std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50); // halfping and jitter tolerance
+        if (time_since_last_shot < static_cast<uint32_t>(cooldown_threshold)) {
+            // send notification to player for firing too fast
+            send_private_message_for_cancelled_shot(pp, "You are firing too fast!");
+            return true;
+        }
     }
 
     // we fired
