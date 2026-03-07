@@ -367,7 +367,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
 // Brush mode side panel (replaces stock dialog 205 with added "Is Geoable" checkbox)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_BRUSH_MODE_PANEL DIALOGEX 0, 0, 129, 338
+IDD_BRUSH_MODE_PANEL DIALOGEX 0, 0, 129, 355
 STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
 EXSTYLE WS_EX_CLIENTEDGE | WS_EX_CONTROLPARENT
 FONT 8, "MS Sans Serif"
@@ -389,18 +389,19 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Build", 1544, 67, 199, 50, 14
     PUSHBUTTON      "Clip", 1582, 9, 216, 50, 14
     PUSHBUTTON      "Carve", 1581, 67, 216, 50, 14
-    GROUPBOX        "Brush Operators", -1, 4, 136, 121, 101
-    GROUPBOX        "Brush Properties", -1, 4, 242, 121, 94
-    AUTO3STATE      "Is Portal", 1214, 10, 253, 41, 10
-    AUTO3STATE      "Is Detail", 1215, 10, 262, 41, 10
-    AUTO3STATE      "Is Geoable", IDC_IS_GEOABLE, 10, 272, 54, 10
-    AUTOCHECKBOX    "Emits Steam", 1608, 10, 282, 58, 8
-    AUTOCHECKBOX    "No Debris", IDC_NO_DEBRIS, 10, 292, 50, 8
-    LTEXT           "Life (-1 = infinite):", -1, 10, 306, 56, 8
-    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 67, 303, 52, 14, WS_EX_CLIENTEDGE
-    LTEXT           "Material:", IDC_MATERIAL_LABEL, 10, 322, 32, 8
-    COMBOBOX        IDC_MATERIAL_COMBO, 67, 319, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    PUSHBUTTON      "Update", 1523, 69, 253, 50, 14
+    PUSHBUTTON      "Mirror", IDC_BRUSH_MIRROR, 9, 233, 50, 14
+    GROUPBOX        "Brush Operations", -1, 4, 136, 121, 118
+    GROUPBOX        "Brush Properties", -1, 4, 259, 121, 94
+    AUTO3STATE      "Is Portal", 1214, 10, 270, 41, 10
+    AUTO3STATE      "Is Detail", 1215, 10, 279, 41, 10
+    AUTO3STATE      "Is Geoable", IDC_IS_GEOABLE, 10, 289, 54, 10
+    AUTOCHECKBOX    "Emits Steam", 1608, 10, 299, 58, 8
+    AUTOCHECKBOX    "No Debris", IDC_NO_DEBRIS, 10, 309, 50, 8
+    LTEXT           "Life (-1 = infinite):", -1, 10, 323, 56, 8
+    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 67, 320, 52, 14, WS_EX_CLIENTEDGE
+    LTEXT           "Material:", IDC_MATERIAL_LABEL, 10, 339, 32, 8
+    COMBOBOX        IDC_MATERIAL_COMBO, 67, 336, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Update", 1523, 69, 270, 50, 14
 }
 
 // Brush properties popup (replaces stock dialog 270 with added "Is Geoable" checkbox)
@@ -422,6 +423,109 @@ FONT 8, "MS Sans Serif"
     COMBOBOX        IDC_MATERIAL_COMBO, 40, 80, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     DEFPUSHBUTTON   "OK", IDOK, 126, 7, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 126, 24, 50, 14
+}
+
+// Face mode side panel (replaces stock dialog 178 with added Delete/Delete Ext./Split buttons)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_FACE_MODE_PANEL DIALOGEX 0, 0, 129, 314
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
+EXSTYLE WS_EX_CLIENTEDGE
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Face Operations", -1, 4, 4, 121, 160
+    PUSHBUTTON      "Extrude", 1232, 12, 18, 50, 14
+    PUSHBUTTON      "Bevel", 1454, 69, 17, 50, 14
+    PUSHBUTTON      "Flip Edge", 1239, 12, 36, 50, 14
+    PUSHBUTTON      "Collapse", 1221, 69, 36, 50, 14
+    PUSHBUTTON      "Triangulate", 1238, 11, 54, 50, 14
+    PUSHBUTTON      "Pinwheel", 1363, 69, 54, 50, 14
+    PUSHBUTTON      "Mesh Smooth", 1298, 12, 72, 50, 14
+    PUSHBUTTON      "Bend", 1213, 69, 72, 50, 14
+    PUSHBUTTON      "Twist", 1216, 12, 90, 50, 14
+    PUSHBUTTON      "Combine", 1240, 69, 90, 50, 14
+    PUSHBUTTON      "Stretch", 1217, 12, 108, 50, 14
+    PUSHBUTTON      "Split", IDC_FACE_SPLIT, 69, 108, 50, 14
+    PUSHBUTTON      "Delete", IDC_FACE_DELETE, 12, 126, 50, 14
+    PUSHBUTTON      "Delete Ext.", IDC_FACE_DELETE_EXT, 69, 126, 50, 14
+    PUSHBUTTON      "Flip Normal", IDC_FACE_FLIP_NORMAL, 12, 144, 50, 14
+}
+
+// Vertex mode side panel (stock dialog 175 + custom buttons)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_VERTEX_MODE_PANEL DIALOGEX 0, 0, 130, 314
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
+EXSTYLE WS_EX_CLIENTEDGE
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Vertex Operations", -1, 4, 4, 122, 113
+    PUSHBUTTON      "Weld", 1241, 12, 21, 50, 14
+    PUSHBUTTON      "Collapse", 1221, 69, 21, 50, 14
+    PUSHBUTTON      "Bend", 1213, 12, 40, 50, 14
+    PUSHBUTTON      "Twist", 1216, 69, 40, 50, 14
+    PUSHBUTTON      "Jitter", 1214, 11, 59, 50, 14
+    PUSHBUTTON      "Stretch", 1217, 69, 59, 50, 14
+    PUSHBUTTON      "Align X", 1447, 11, 78, 33, 14
+    PUSHBUTTON      "Align Y", 1448, 49, 78, 32, 14
+    PUSHBUTTON      "Align Z", 1449, 86, 78, 33, 14
+    PUSHBUTTON      "Delete", IDC_VERTEX_DELETE, 12, 97, 50, 14
+    PUSHBUTTON      "Bridge", IDC_VERTEX_CAP, 69, 97, 50, 14
+}
+
+// Group mode side panel (stock dialog 231 + Mirror button)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_GROUP_MODE_PANEL DIALOGEX 0, 0, 130, 314
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
+EXSTYLE WS_EX_CLIENTEDGE
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Groups", -1, 4, 4, 121, 242
+    CONTROL         "Tree1", 1381, "SysTreeView32", TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 12, 17, 105, 120
+    PUSHBUTTON      "Create", 1385, 11, 141, 50, 14
+    PUSHBUTTON      "Dissolve", 1382, 67, 141, 50, 14
+    PUSHBUTTON      "Add To", 1395, 11, 158, 50, 14
+    PUSHBUTTON      "Remove", 1400, 67, 158, 50, 14
+    PUSHBUTTON      "Rename", 1401, 11, 175, 50, 14
+    PUSHBUTTON      "Duplicate", 1396, 67, 175, 50, 14
+    PUSHBUTTON      "Lock", 1402, 11, 192, 50, 14
+    PUSHBUTTON      "Unlock", 1403, 67, 192, 50, 14
+    PUSHBUTTON      "Keyframe", 1563, 39, 209, 50, 14
+    PUSHBUTTON      "Dissolve Temporary", 1397, 13, 226, 106, 14
+    PUSHBUTTON      "Reconnect", 1567, 30, 296, 50, 14, NOT WS_VISIBLE
+    GROUPBOX        "Group Operations", -1, 4, 250, 121, 51
+    PUSHBUTTON      "Save", 1387, 11, 264, 50, 14
+    PUSHBUTTON      "Load", 1388, 67, 264, 50, 14
+    PUSHBUTTON      "Mirror", IDC_GROUP_MIRROR, 11, 281, 50, 14
+}
+
+// Face split dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_FACE_SPLIT DIALOGEX 0, 0, 160, 80
+STYLE DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Split Faces"
+FONT 8, "MS Sans Serif"
+{
+    LTEXT           "Number of splits:", -1, 7, 10, 58, 8
+    EDITTEXT        IDC_SPLIT_AMOUNT, 68, 8, 30, 14, ES_AUTOHSCROLL | ES_NUMBER
+    GROUPBOX        "Direction", -1, 7, 28, 93, 32
+    AUTORADIOBUTTON "Along X", IDC_SPLIT_ALONG_U, 15, 40, 38, 10, WS_GROUP
+    AUTORADIOBUTTON "Along Y", IDC_SPLIT_ALONG_V, 56, 40, 38, 10
+    DEFPUSHBUTTON   "OK", IDOK, 106, 8, 48, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 106, 26, 48, 14
+}
+
+// Mirror axis dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_BRUSH_MIRROR DIALOGEX 0, 0, 120, 70
+STYLE DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Mirror"
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Axis", -1, 7, 4, 52, 48
+    AUTORADIOBUTTON "X", IDC_MIRROR_X, 15, 16, 30, 10, WS_GROUP
+    AUTORADIOBUTTON "Y", IDC_MIRROR_Y, 15, 28, 30, 10
+    AUTORADIOBUTTON "Z", IDC_MIRROR_Z, 15, 40, 30, 10
+    DEFPUSHBUTTON   "OK", IDOK, 66, 8, 48, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 66, 26, 48, 14
 }
 
 // VERSIONINFO

@@ -1,6 +1,7 @@
 set(SRCS
     exports.h
     event.cpp
+    geometry.cpp
     graphics.cpp
     main.cpp
     textures.cpp

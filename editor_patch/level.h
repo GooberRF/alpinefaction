@@ -16,9 +16,43 @@ constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 // Forward declarations
 struct GFace;
 struct GSolid;
-struct GFaceVertex;
 struct GBBox;
 struct DecalPoly;
+
+// Shared vertex position data. Multiple GFaceVertex entries reference the same GVertex.
+struct GVertex
+{
+    Vector3 pos;                   // +0x00
+    char _pad_0C[0x20 - 0x0C];    // +0x0C
+    VArray<void*> face_refs;       // +0x20 back-references to faces using this vertex
+};
+
+// Per-face vertex wrapper (0x1C bytes, pool-allocated at 0x00A12530)
+// Contains texture coords and pointer to shared GVertex; linked in circular doubly-linked list per face.
+// Pool: alloc FUN_0048e900, free FUN_0048e980 (base 0x00A12530), capacity 150,000
+struct GFaceVertex
+{
+    GVertex* vertex;      // +0x00 shared vertex position data
+    float u;              // +0x04 texture U coordinate
+    float v;              // +0x08 texture V coordinate
+    float lm_u;           // +0x0C lightmap U coordinate
+    float lm_v;           // +0x10 lightmap V coordinate
+    GFaceVertex* next;    // +0x14 next in circular doubly-linked list (edge_loop)
+    GFaceVertex* prev;    // +0x18 prev in circular doubly-linked list (edge_loop)
+
+    // FUN_0048e900: allocate from pool (thiscall on pool base 0x00A12530)
+    static GFaceVertex* alloc()
+    {
+        return AddrCaller{0x0048e900}.this_call<GFaceVertex*>(0x00A12530);
+    }
+
+    // FUN_0048a780: free to pool (wrapper sets ECX=pool base 0x00A12530, calls FUN_0048e980)
+    static void free(GFaceVertex* fv)
+    {
+        AddrCaller{0x0048a780}.c_call(fv);
+    }
+};
+static_assert(sizeof(GFaceVertex) == 0x1C);
 
 // Editor-side GRoom layout (matches stock RED.exe / RF.exe GRoom, 0x1CC bytes)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
@@ -139,6 +173,24 @@ struct GFace
     GFace* next_solid;           // +0x54  next[FACE_LIST_SOLID] (GSolid face linked list)
     GFace* next_bbox;            // +0x58  next[FACE_LIST_BBOX]
     GFace* next_room;            // +0x5C  next[FACE_LIST_ROOM]
+
+    // FUN_0048e770: allocate from pool (thiscall on pool base 0x00753310)
+    static GFace* alloc()
+    {
+        return AddrCaller{0x0048e770}.this_call<GFace*>(0x00753310);
+    }
+
+    // FUN_0048a700: cleanup face (frees edge loop GFaceVertices, then frees face to pool)
+    static void destroy(GFace* face)
+    {
+        AddrCaller{0x0048a700}.c_call(face);
+    }
+
+    // FUN_00484230: generate next unique face/brush UID
+    static int generate_uid()
+    {
+        return AddrCaller{0x00484230}.c_call<int>();
+    }
 };
 static_assert(sizeof(GFace) == 0x60);
 static_assert(offsetof(GFace, plane) == 0x00);
@@ -164,12 +216,29 @@ struct GSolid
     Vector3 bounding_sphere_center; // +0x64
     GFace* face_list_head;       // +0x70  VList<GFace, FACE_LIST_SOLID>: head pointer
     int face_list_count;         // +0x74  VList<GFace, FACE_LIST_SOLID>: element count
-    VArray<void*> vertices;      // +0x78
+    VArray<GVertex*> vertices;   // +0x78
     VArray<GRoom*> children;     // +0x84
     VArray<GRoom*> all_rooms;    // +0x90
+    char _pad_9C[0xCC - 0x9C];  // +0x9C  unknown fields
+    VArray<GVertex*> vertex_selection; // +0xCC  selected vertices in vertex mode
+    VArray<GFace*> face_selection;  // +0xD8  selected faces in face mode
+
+    // FUN_00486bd0: remove face from solid's face linked list (thiscall on face_list at +0x70)
+    void remove_face(GFace* face)
+    {
+        AddrCaller{0x00486bd0}.this_call(&face_list_head, face);
+    }
+
+    // FUN_0043df30: remove element by value from a VArray (thiscall on VArray)
+    void remove_vertex(GVertex* vertex)
+    {
+        AddrCaller{0x0043df30}.this_call(&vertices, vertex);
+    }
 };
 static_assert(offsetof(GSolid, face_list_head) == 0x70);
 static_assert(offsetof(GSolid, all_rooms) == 0x90);
+static_assert(offsetof(GSolid, vertex_selection) == 0xCC);
+static_assert(offsetof(GSolid, face_selection) == 0xD8);
 
 // Brush state enum (BrushNode::state at +0x48)
 // Determined via byte-pattern searches and cross-referencing comparison/assignment sites:
@@ -525,7 +594,9 @@ struct CDedLevel
     int icon_keyframe_silver;                     // +0x224 (Icon_Keyframe_Silver.tga)
     int icon_camera;                              // +0x228 (Icon_CameraPosition.tga)
     int icon_push_region;                         // +0x22C (Icon_ClimbRegion.tga second)
-    char _pad_230[0x298 - 0x230];                // +0x230 (editor state: bytes, CStrings, containers, VArrays)
+    char _pad_230[0x272 - 0x230];                // +0x230 (editor state)
+    bool geometry_needs_rebuild;                   // +0x272
+    char _pad_273[0x298 - 0x273];                // +0x273
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
@@ -577,6 +648,39 @@ struct CDedLevel
         return struct_field_ref<AlpineLevelProperties>(this, stock_cdedlevel_size);
     }
 
+    // FUN_0042d6b0: check if any brush has face selection (face mode)
+    bool has_face_selection()
+    {
+        return AddrCaller{0x0042d6b0}.this_call<bool>(this);
+    }
+
+    // Check if any brush has vertex selection at GSolid+0xCC (vertex mode).
+    // FUN_0042d6b0 only checks face selection (+0xD8), so this is custom.
+    bool has_vertex_selection()
+    {
+        BrushNode* head = brush_list;
+        if (!head) return false;
+        BrushNode* b = head;
+        do {
+            auto* solid = static_cast<GSolid*>(b->geometry);
+            if (solid && solid->vertex_selection.size > 0)
+                return true;
+            b = b->next;
+        } while (b != head);
+        return false;
+    }
+
+    // FUN_0043bbe0: create undo snapshot (type 10, clones selected brushes)
+    void create_undo_snapshot()
+    {
+        AddrCaller{0x0043bbe0}.this_call(this);
+    }
+
+    void mark_geometry_dirty()
+    {
+        geometry_needs_rebuild = true;
+    }
+
     static CDedLevel* Get()
     {
         return AddrCaller{0x004835F0}.c_call<CDedLevel*>();
@@ -588,5 +692,34 @@ static_assert(sizeof(CDedLevel) == 0x608);
 // Final compiled rooms in all_rooms are clones that skip the constructor and get uid=-1;
 // they must be assigned from this counter manually before serialization.
 static auto& g_groom_uid_counter = addr_as_ref<int>(0x0057C954);
+
+// FUN_00483560: redraw all editor viewports
+inline void redraw_all_viewports()
+{
+    AddrCaller{0x00483560}.c_call();
+}
+
+// FUN_00538fa4: show a message box in the editor
+inline void show_error_message(const char* msg)
+{
+    AddrCaller{0x00538fa4}.c_call(msg, 0, 0);
+}
+
+// FUN_0052ee74: allocate raw memory (editor's operator new)
+inline void* editor_alloc(size_t size)
+{
+    return AddrCaller{0x0052ee74}.c_call<void*>(size);
+}
+
+// FUN_00444980: append formatted text to the editor's log dialog
+static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...)>(0x00444980);
+
+// FUN_00453200: sync DedLight properties (pos, orient, color, etc.) to its internal level_light
+static auto& DedLight_UpdateLevelLight = addr_as_ref<void __fastcall(void* this_)>(0x00453200);
+
+// Editor app globals
+void* GetMainFrame();
+void* GetLogDlg();
+HWND GetMainFrameHandle();
 
 void DedLevel_DoBackLink();
