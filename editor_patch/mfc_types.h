@@ -596,7 +596,7 @@ struct VFile
 
     int get_version()
     {
-        AddrCaller{0x004CF680}.this_call(this);
+        return AddrCaller{0x004CF680}.this_call<int>(this);
     }
 };
 static_assert(sizeof(VFile) == 0x114);

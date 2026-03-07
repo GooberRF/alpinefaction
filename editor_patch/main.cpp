@@ -1022,22 +1022,27 @@ static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
 // Inject after the CALL to CDedLevel::SetEditMode in the mode combobox handler
 // (FUN_004496d0 at 0x004496f9). When face/vertex/group mode is entered, find and subclass
 // the panel CFormView to handle our custom button clicks.
+
+struct FindPanelsCtx { HWND face_panel; HWND vertex_panel; HWND group_panel; };
+
+static BOOL CALLBACK EnumChildFindPanelsProc(HWND hwnd, LPARAM lParam)
+{
+    auto* c = reinterpret_cast<FindPanelsCtx*>(lParam);
+    int id = GetDlgCtrlID(hwnd);
+    if (id == IDC_FACE_DELETE) c->face_panel = GetParent(hwnd);
+    if (id == IDC_VERTEX_DELETE) c->vertex_panel = GetParent(hwnd);
+    if (id == IDC_GROUP_MIRROR) c->group_panel = GetParent(hwnd);
+    return (c->face_panel && c->vertex_panel && c->group_panel) ? FALSE : TRUE;
+}
+
 CodeInjection face_panel_subclass_injection{
     0x004496f9,
     [](BaseCodeInjection::Regs& regs) {
         HWND main_hwnd = *reinterpret_cast<HWND*>(
             reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.esi)) + 0x1C);
         if (!main_hwnd) return;
-        struct FindCtx { HWND face_panel; HWND vertex_panel; HWND group_panel; };
-        FindCtx ctx{nullptr, nullptr, nullptr};
-        EnumChildWindows(main_hwnd, [](HWND hwnd, LPARAM lParam) -> BOOL {
-            auto* c = reinterpret_cast<FindCtx*>(lParam);
-            int id = GetDlgCtrlID(hwnd);
-            if (id == IDC_FACE_DELETE) c->face_panel = GetParent(hwnd);
-            if (id == IDC_VERTEX_DELETE) c->vertex_panel = GetParent(hwnd);
-            if (id == IDC_GROUP_MIRROR) c->group_panel = GetParent(hwnd);
-            return (c->face_panel && c->vertex_panel && c->group_panel) ? FALSE : TRUE;
-        }, reinterpret_cast<LPARAM>(&ctx));
+        FindPanelsCtx ctx{nullptr, nullptr, nullptr};
+        EnumChildWindows(main_hwnd, EnumChildFindPanelsProc, reinterpret_cast<LPARAM>(&ctx));
         if (ctx.face_panel) subclass_face_panel(ctx.face_panel);
         if (ctx.vertex_panel) subclass_vertex_panel(ctx.vertex_panel);
         if (ctx.group_panel) subclass_group_panel(ctx.group_panel);

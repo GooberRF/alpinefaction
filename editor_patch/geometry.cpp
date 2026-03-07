@@ -459,26 +459,25 @@ static GFace* create_split_face(GSolid* solid, GFace* original, std::vector<Spli
     face->bitmap_id = original->bitmap_id;
     face->portal_id = original->portal_id;
     face->surface_index = original->surface_index;
-    face->face_id = original->face_id;
+    face->face_id = GFace::generate_uid();
     face->smoothing_groups = original->smoothing_groups;
 
     // Build edge_loop as circular doubly-linked list
     GFaceVertex* first = nullptr;
     GFaceVertex* prev = nullptr;
+    bool alloc_failed = false;
 
     for (auto& sv : verts) {
         GFaceVertex* fv = GFaceVertex::alloc();
-        if (!fv) return nullptr;
+        if (!fv) { alloc_failed = true; break; }
         std::memset(fv, 0, sizeof(GFaceVertex));
 
         // Allocate a new GVertex for interpolated points (gvertex == nullptr)
         if (!sv.gvertex) {
             sv.gvertex = alloc_gvertex(sv.pos);
-            if (!sv.gvertex) return nullptr;
+            if (!sv.gvertex) { GFaceVertex::free(fv); alloc_failed = true; break; }
         }
         fv->vertex = sv.gvertex;
-        // Register vertex in the solid's vertex list
-        solid->vertices.add_if_not_exists_raw(sv.gvertex);
         fv->u = sv.u;
         fv->v = sv.v;
         fv->lm_u = sv.lm_u;
@@ -500,12 +499,27 @@ static GFace* create_split_face(GSolid* solid, GFace* original, std::vector<Spli
         face->bounding_box_max.z = std::max(face->bounding_box_max.z, sv.pos.z);
     }
 
+    // On alloc failure, free any face vertices built so far and the face itself
+    if (alloc_failed) {
+        GFaceVertex* fv = first;
+        while (fv) {
+            GFaceVertex* nxt = fv->next;
+            GFaceVertex::free(fv);
+            fv = nxt;
+        }
+        GFace::destroy(face);
+        return nullptr;
+    }
+
     // Close circular list
     prev->next = first;
     first->prev = prev;
     face->edge_loop = first;
 
-    // Prepend to solid's face list
+    // Register vertices in solid and prepend face to solid's face list
+    for (auto& sv : verts) {
+        solid->vertices.add_if_not_exists_raw(sv.gvertex);
+    }
     face->next_solid = solid->face_list_head;
     solid->face_list_head = face;
     solid->face_list_count++;
@@ -535,6 +549,13 @@ static int split_face(GSolid* solid, GFace* face, int num_splits, bool along_x)
     if (!along_x) {
         float dot = normal.y;
         split_axis = {-dot * normal.x, 1.0f - dot * normal.y, -dot * normal.z};
+        float sa_len_y = std::sqrt(split_axis.x * split_axis.x + split_axis.y * split_axis.y +
+                                   split_axis.z * split_axis.z);
+        if (sa_len_y < 1e-6f) {
+            // Normal is near-parallel to Y; fall back to projecting X onto the face plane
+            dot = normal.x;
+            split_axis = {1.0f - dot * normal.x, -dot * normal.y, -dot * normal.z};
+        }
     } else {
         split_axis = {normal.z, 0.0f, -normal.x};
         float sa_len = std::sqrt(split_axis.x * split_axis.x + split_axis.z * split_axis.z);
@@ -1082,9 +1103,11 @@ void handle_vertex_bridge()
     // Build edge loop from sorted vertices
     GFaceVertex* first_fv = nullptr;
     GFaceVertex* prev_fv = nullptr;
+    int fv_count = 0;
+    bool alloc_failed = false;
     for (auto& [angle, v] : angle_verts) {
         auto* fv = GFaceVertex::alloc();
-        if (!fv) continue;
+        if (!fv) { alloc_failed = true; break; }
         std::memset(fv, 0, sizeof(GFaceVertex));
         fv->vertex = v;
         fv->u = v->pos.x * 0.03125f;
@@ -1098,33 +1121,41 @@ void handle_vertex_bridge()
             fv->prev = prev_fv;
         }
         prev_fv = fv;
+        fv_count++;
+    }
 
-        solid->vertices.add_if_not_exists_raw(v);
+    // On failure or degenerate result, free allocated face vertices and the face
+    if (alloc_failed || fv_count < 3) {
+        GFaceVertex* fv = first_fv;
+        while (fv) {
+            GFaceVertex* nxt = fv->next;
+            GFaceVertex::free(fv);
+            fv = nxt;
+        }
+        GFace::destroy(new_face);
+        return;
     }
 
     // Close the circular list
-    if (first_fv && prev_fv) {
-        prev_fv->next = first_fv;
-        first_fv->prev = prev_fv;
-    }
+    prev_fv->next = first_fv;
+    first_fv->prev = prev_fv;
     new_face->edge_loop = first_fv;
 
-    // Compute face bounding box
-    if (first_fv) {
-        new_face->bounding_box_min = first_fv->vertex->pos;
-        new_face->bounding_box_max = first_fv->vertex->pos;
-        GFaceVertex* fv = first_fv->next;
-        while (fv != first_fv) {
-            auto& p = fv->vertex->pos;
-            new_face->bounding_box_min.x = std::min(new_face->bounding_box_min.x, p.x);
-            new_face->bounding_box_min.y = std::min(new_face->bounding_box_min.y, p.y);
-            new_face->bounding_box_min.z = std::min(new_face->bounding_box_min.z, p.z);
-            new_face->bounding_box_max.x = std::max(new_face->bounding_box_max.x, p.x);
-            new_face->bounding_box_max.y = std::max(new_face->bounding_box_max.y, p.y);
-            new_face->bounding_box_max.z = std::max(new_face->bounding_box_max.z, p.z);
-            fv = fv->next;
-        }
-    }
+    // Register vertices in the solid and compute bounding box
+    new_face->bounding_box_min = first_fv->vertex->pos;
+    new_face->bounding_box_max = first_fv->vertex->pos;
+    GFaceVertex* fv = first_fv;
+    do {
+        solid->vertices.add_if_not_exists_raw(fv->vertex);
+        auto& p = fv->vertex->pos;
+        new_face->bounding_box_min.x = std::min(new_face->bounding_box_min.x, p.x);
+        new_face->bounding_box_min.y = std::min(new_face->bounding_box_min.y, p.y);
+        new_face->bounding_box_min.z = std::min(new_face->bounding_box_min.z, p.z);
+        new_face->bounding_box_max.x = std::max(new_face->bounding_box_max.x, p.x);
+        new_face->bounding_box_max.y = std::max(new_face->bounding_box_max.y, p.y);
+        new_face->bounding_box_max.z = std::max(new_face->bounding_box_max.z, p.z);
+        fv = fv->next;
+    } while (fv != first_fv);
 
     // Add face to solid's face list (prepend)
     new_face->next_solid = solid->face_list_head;
