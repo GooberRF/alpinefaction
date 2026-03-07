@@ -307,12 +307,27 @@ void handle_face_delete()
             }
             sel.size = 0;
 
+            // Build set of vertices still referenced by remaining faces
+            std::set<GVertex*> referenced_verts;
+            GFace* f = solid->face_list_head;
+            while (f) {
+                GFaceVertex* fv = f->edge_loop;
+                if (fv) {
+                    GFaceVertex* start = fv;
+                    do {
+                        referenced_verts.insert(fv->vertex);
+                        fv = fv->next;
+                    } while (fv != start);
+                }
+                f = f->next_solid;
+            }
+
             // Remove orphaned vertices (no longer referenced by any remaining face)
             std::sort(face_verts.begin(), face_verts.end());
             face_verts.erase(std::unique(face_verts.begin(), face_verts.end()), face_verts.end());
 
             for (GVertex* vertex : face_verts) {
-                if (vertex->face_refs.size == 0) {
+                if (referenced_verts.find(vertex) == referenced_verts.end()) {
                     solid->remove_vertex(vertex);
                     total_verts_removed++;
                 }
