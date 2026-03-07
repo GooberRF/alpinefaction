@@ -12,6 +12,43 @@
 #include "resources.h"
 
 
+// Recompute a GSolid's bounding box from its face bounding boxes.
+static void recompute_solid_bbox(GSolid* solid)
+{
+    solid->bbox_min = {1e30f, 1e30f, 1e30f};
+    solid->bbox_max = {-1e30f, -1e30f, -1e30f};
+    GFace* f = solid->face_list_head;
+    while (f) {
+        solid->bbox_min.x = std::min(solid->bbox_min.x, f->bounding_box_min.x);
+        solid->bbox_min.y = std::min(solid->bbox_min.y, f->bounding_box_min.y);
+        solid->bbox_min.z = std::min(solid->bbox_min.z, f->bounding_box_min.z);
+        solid->bbox_max.x = std::max(solid->bbox_max.x, f->bounding_box_max.x);
+        solid->bbox_max.y = std::max(solid->bbox_max.y, f->bounding_box_max.y);
+        solid->bbox_max.z = std::max(solid->bbox_max.z, f->bounding_box_max.z);
+        f = f->next_solid;
+    }
+}
+
+// Recompute a GFace's bounding box from its edge loop vertices.
+static void recompute_face_bbox(GFace* face)
+{
+    GFaceVertex* fv = face->edge_loop;
+    if (!fv) return;
+    face->bounding_box_min = fv->vertex->pos;
+    face->bounding_box_max = fv->vertex->pos;
+    GFaceVertex* cur = fv->next;
+    while (cur != fv) {
+        auto& p = cur->vertex->pos;
+        face->bounding_box_min.x = std::min(face->bounding_box_min.x, p.x);
+        face->bounding_box_min.y = std::min(face->bounding_box_min.y, p.y);
+        face->bounding_box_min.z = std::min(face->bounding_box_min.z, p.z);
+        face->bounding_box_max.x = std::max(face->bounding_box_max.x, p.x);
+        face->bounding_box_max.y = std::max(face->bounding_box_max.y, p.y);
+        face->bounding_box_max.z = std::max(face->bounding_box_max.z, p.z);
+        cur = cur->next;
+    }
+}
+
 // ============================================================================
 // Brush mode: Mirror
 // ============================================================================
@@ -83,40 +120,12 @@ static void mirror_brush(BrushNode* brush, int axis, std::set<GVertex*>& mirrore
             face->plane.dist = -(n.x * p.x + n.y * p.y + n.z * p.z);
         }
 
-        // Update face bounding box
-        if (face->edge_loop) {
-            GFaceVertex* start_fv = face->edge_loop;
-            face->bounding_box_min = start_fv->vertex->pos;
-            face->bounding_box_max = start_fv->vertex->pos;
-            GFaceVertex* cur = start_fv->next;
-            while (cur != start_fv) {
-                auto& cp = cur->vertex->pos;
-                face->bounding_box_min.x = std::min(face->bounding_box_min.x, cp.x);
-                face->bounding_box_min.y = std::min(face->bounding_box_min.y, cp.y);
-                face->bounding_box_min.z = std::min(face->bounding_box_min.z, cp.z);
-                face->bounding_box_max.x = std::max(face->bounding_box_max.x, cp.x);
-                face->bounding_box_max.y = std::max(face->bounding_box_max.y, cp.y);
-                face->bounding_box_max.z = std::max(face->bounding_box_max.z, cp.z);
-                cur = cur->next;
-            }
-        }
+        recompute_face_bbox(face);
 
         face = face->next_solid;
     }
 
-    // Update solid bounding box
-    solid->bbox_min = {1e30f, 1e30f, 1e30f};
-    solid->bbox_max = {-1e30f, -1e30f, -1e30f};
-    GFace* f = solid->face_list_head;
-    while (f) {
-        solid->bbox_min.x = std::min(solid->bbox_min.x, f->bounding_box_min.x);
-        solid->bbox_min.y = std::min(solid->bbox_min.y, f->bounding_box_min.y);
-        solid->bbox_min.z = std::min(solid->bbox_min.z, f->bounding_box_min.z);
-        solid->bbox_max.x = std::max(solid->bbox_max.x, f->bounding_box_max.x);
-        solid->bbox_max.y = std::max(solid->bbox_max.y, f->bounding_box_max.y);
-        solid->bbox_max.z = std::max(solid->bbox_max.z, f->bounding_box_max.z);
-        f = f->next_solid;
-    }
+    recompute_solid_bbox(solid);
 
     // Mirror brush position and orientation across world origin
     reinterpret_cast<float*>(&brush->pos)[axis] = -reinterpret_cast<float*>(&brush->pos)[axis];
@@ -332,6 +341,8 @@ void handle_face_delete()
                     total_verts_removed++;
                 }
             }
+
+            recompute_solid_bbox(solid);
         }
         brush = brush->next;
     } while (brush != head);
@@ -426,6 +437,8 @@ void handle_face_delete_ext()
                 solid->remove_vertex(v);
                 total_verts_removed++;
             }
+
+            recompute_solid_bbox(solid);
         }
         brush = brush->next;
     } while (brush != head);
@@ -748,6 +761,7 @@ void handle_face_split()
         if (solid) {
             auto& sel = solid->face_selection;
 
+            bool modified = false;
             for (int i = sel.size - 1; i >= 0; i--) {
                 GFace* face = sel.data_ptr[i];
                 int created = split_face(solid, face, num_splits, along_x);
@@ -755,9 +769,11 @@ void handle_face_split()
                     total_created += created;
                     solid->remove_face(face);
                     GFace::destroy(face);
+                    modified = true;
                 }
             }
             sel.size = 0;
+            if (modified) recompute_solid_bbox(solid);
         }
         brush = brush->next;
     } while (brush != head);
@@ -908,6 +924,8 @@ void handle_vertex_delete()
                                 cur = nxt;
                             }
                         } while (cur->next != fv);
+
+                        recompute_face_bbox(face);
                     }
                 }
 
@@ -927,6 +945,7 @@ void handle_vertex_delete()
                 total_verts_deleted++;
             }
 
+            recompute_solid_bbox(solid);
             sel.size = 0;
         }
         brush = brush->next;
@@ -1176,6 +1195,7 @@ void handle_vertex_bridge()
     new_face->next_solid = solid->face_list_head;
     solid->face_list_head = new_face;
     solid->face_list_count++;
+    recompute_solid_bbox(solid);
 
     sel.size = 0;
     level->mark_geometry_dirty();

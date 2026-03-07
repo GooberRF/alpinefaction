@@ -920,7 +920,7 @@ static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void*
 {
     auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
     if (!sub_obj) {
-        xlog::warn("Skipping rotation update for object {:p} with null sub-object at +0xA4", self);
+        WARN_ONCE("Skipping rotation update for object with null sub-object at +0xA4");
         return;
     }
     object_rotation_update_hook.call_target(self, 0, param);
@@ -1011,8 +1011,6 @@ static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
         WORD id = LOWORD(wParam);
         if (id == IDC_GROUP_MIRROR) {
             handle_group_mirror();
-            // Re-subclass in case the modal dialog or undo snapshot reset our WndProc
-            subclass_group_panel(hwnd);
             return 0;
         }
     }
