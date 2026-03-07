@@ -38,6 +38,7 @@
 #include "../misc/vpackfile.h"
 #include "../misc/high_fps.h"
 #include "../misc/player.h"
+#include "../misc/level.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -211,6 +212,7 @@ FunHook<void(bool)> level_init_post_hook{
         multi_level_init_post_gametypes();
         apply_geoable_flags();
         apply_breakable_materials();
+        alpine_mesh_create_all();
 
         if (!rf::is_dedicated_server) {
             explosion_flash_lights_level_init();

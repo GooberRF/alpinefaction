@@ -12,6 +12,7 @@
 
 constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
+constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 
 // Forward declarations
 struct GFace;
@@ -268,6 +269,9 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
     std::vector<uint8_t> breakable_materials;  // material type per entry
 
+    // Alpine mesh objects (stored separately from stock object VArrays)
+    std::vector<DedMesh*> mesh_objects;
+
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
@@ -286,6 +290,16 @@ struct AlpineLevelProperties
         breakable_brush_uids.clear();
         breakable_room_uids.clear();
         breakable_materials.clear();
+        for (auto* m : mesh_objects) {
+            // Free VString buffers using stock allocator
+            AddrCaller{0x004b6710}.this_call(&m->field_4);
+            AddrCaller{0x004b6710}.this_call(&m->script_name);
+            AddrCaller{0x004b6710}.this_call(&m->class_name);
+            AddrCaller{0x004b6710}.this_call(&m->mesh_filename);
+            AddrCaller{0x004b6710}.this_call(&m->state_anim);
+            delete m;
+        }
+        mesh_objects.clear();
     }
 
     void Serialize(rf::File& file) const

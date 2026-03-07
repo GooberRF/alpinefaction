@@ -140,7 +140,8 @@ enum class DedObjectType : int
     DED_BOLT_EMITTER = 0x13,
     DED_TARGET = 0x14,
     DED_KEYFRAME = 0x15,
-    DED_PUSH_REGION = 0x16
+    DED_PUSH_REGION = 0x16,
+    DED_MESH = 0x17
 };
 
 struct Vector3
@@ -341,6 +342,16 @@ struct DedRoomEffect : DedObject
     char pad_B0[0xD4 - 0xB0];
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
+
+struct DedMesh : DedObject
+{
+    VString mesh_filename;          // .v3m / .v3c / .vfx path
+    VString state_anim;             // animation name (for .v3c skeletal meshes)
+    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
+    bool vmesh_load_failed;         // true if vmesh load was attempted and failed
+    char padding_mesh[2];
+};
+static_assert(sizeof(DedMesh) == 0xA8, "DedMesh size mismatch");
 
 struct DedBoltEmitter : DedObject
 {

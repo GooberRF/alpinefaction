@@ -31,6 +31,7 @@
 #include "vtypes.h"
 #include "level.h"
 #include "event.h"
+#include "mesh.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -870,6 +871,9 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_BACK_LINK:
                 handler = std::bind(CMainFrame_BackLink, this_);
                 break;
+            case ID_PLACE_MESH:
+                handler = PlaceNewMeshObject;
+                break;
         }
 
         if (handler) {
@@ -967,6 +971,17 @@ CodeInjection CDedLevel_CloneObject_injection{
         if (type == 0xC) {
             // clone cutscene path node
             regs.eax = AddrCaller{0x00413C70}.this_call<void*>(that, obj);
+            regs.eip = 0x004135CF;
+        }
+        else if (type == static_cast<int>(DedObjectType::DED_MESH)) {
+            // Safety net: if CloneObject is called for mesh (shouldn't normally happen
+            // since mesh_paste_skip_stock handles it), create clone WITHOUT adding to
+            // mesh_objects to avoid double-cloning.
+            auto* source = static_cast<DedMesh*>(reinterpret_cast<DedObject*>(obj));
+            xlog::info("[Mesh] CloneObject called (safety): source={:p} uid={} type=0x{:x}",
+                static_cast<void*>(source), source->uid, type);
+            auto* clone = CloneMeshObject(source, false);
+            regs.eax = reinterpret_cast<uintptr_t>(static_cast<DedObject*>(clone));
             regs.eip = 0x004135CF;
         }
     },
@@ -1277,6 +1292,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyTriggerPatches();
     ApplyLevelPatches();
     ApplyEventsPatches();
+    ApplyMeshPatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
 

@@ -14,6 +14,7 @@
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
+#include "mesh.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -26,6 +27,19 @@ CodeInjection CDedLevel_construct_patch{
         set_initial_level_rfl_version();
         std::byte* level = regs.esi;
         new (&level[stock_cdedlevel_size]) AlpineLevelProperties();
+    },
+};
+
+// Clear alpine properties when the level is reset (File > New or File > Open).
+// FUN_00418960 is CDedLevel::DeleteContents, called via the virtual DeleteContents
+// override at vtable[27] (FUN_0041CDF0). This fires for both New and Open.
+CodeInjection CDedLevel_DeleteContents_patch{
+    0x00418960,
+    []() {
+        auto* level = CDedLevel::Get();
+        if (level) {
+            level->GetAlpineLevelProperties().LoadDefaults();
+        }
     },
 };
 
@@ -51,6 +65,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
             if (chunk_id == alpine_props_chunk_id) {
                 auto& alpine_level_props = level.GetAlpineLevelProperties();
                 alpine_level_props.Deserialize(file, chunk_size);
+                regs.eip = 0x0043090C;
+            }
+            if (chunk_id == alpine_mesh_chunk_id) {
+                mesh_deserialize_chunk(level, file, chunk_size);
                 regs.eip = 0x0043090C;
             }
         }
@@ -469,6 +487,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
         alpine_level_props.Serialize(file);
         level.EndRflSection(file, start_pos);
+
+        // Write mesh objects chunk
+        mesh_serialize_chunk(level, file);
     },
 };
 
@@ -526,7 +547,9 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
         t0 == DedObjectType::DED_TRIGGER ||
         t0 == DedObjectType::DED_EVENT ||
         (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT) ||
-        (t0 == DedObjectType::DED_CLUTTER && t1 == DedObjectType::DED_LIGHT);
+        (t0 == DedObjectType::DED_CLUTTER && t1 == DedObjectType::DED_LIGHT) ||
+        (t0 == DedObjectType::DED_TRIGGER && t1 == DedObjectType::DED_MESH) ||
+        (t0 == DedObjectType::DED_EVENT && t1 == DedObjectType::DED_MESH);
 }
 
 void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
@@ -652,6 +675,7 @@ void ApplyLevelPatches()
 
     // handle AlpineLevelProperties chunk
     CDedLevel_construct_patch.install();
+    CDedLevel_DeleteContents_patch.install();
     CDedLevel_LoadLevel_patch1.install();
     CDedLevel_LoadLevel_patch2.install();
     CDedLevel_SaveLevel_patch.install();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include <unordered_set>
 #include <xlog/xlog.h>
@@ -8,6 +9,7 @@
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int dash_level_props_chunk_id = 0xDA58FA00;
+constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
@@ -185,6 +187,23 @@ struct DashLevelProps
         chunk_version = 1u; // latest supported version
     }
 };
+
+// Alpine mesh object info, loaded from RFL
+struct AlpineMeshInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    std::string script_name;
+    std::string mesh_filename;
+    std::string state_anim;
+    uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All
+    std::vector<int32_t> link_uids;
+};
+
+// Global list of alpine mesh infos (populated during level load, cleared on level init)
+std::vector<AlpineMeshInfo>& get_alpine_mesh_infos();
+void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);
+void alpine_mesh_create_all();
 
 // used by RF2-style geomod
 struct RF2AnchorInfo {

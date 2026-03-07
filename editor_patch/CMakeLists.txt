@@ -3,6 +3,8 @@ set(SRCS
     event.cpp
     graphics.cpp
     main.cpp
+    mesh.cpp
+    mesh.h
     textures.cpp
     trigger.cpp
     vtypes.h
