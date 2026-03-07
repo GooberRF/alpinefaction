@@ -61,16 +61,21 @@ static void mesh_load_vmesh(DedMesh* mesh)
 {
     if (!mesh) return;
 
+    xlog::info("[Mesh] mesh_load_vmesh: mesh={:p} old_vmesh={:p}", static_cast<void*>(mesh), mesh->vmesh);
+
     // Free existing vmesh if any
     if (mesh->vmesh) {
+        xlog::info("[Mesh] mesh_load_vmesh: freeing old vmesh {:p}", mesh->vmesh);
         vmesh_free(mesh->vmesh);
         mesh->vmesh = 0;
+        xlog::info("[Mesh] mesh_load_vmesh: old vmesh freed");
     }
 
     const char* filename = mesh->mesh_filename.c_str();
     if (!filename || filename[0] == '\0') return;
 
     const char* ext = get_file_extension(filename);
+    xlog::info("[Mesh] mesh_load_vmesh: loading '{}' ext='{}'", filename, ext);
 
     void* vmesh = nullptr;
     if (_stricmp(ext, ".v3m") == 0) {
@@ -85,9 +90,13 @@ static void mesh_load_vmesh(DedMesh* mesh)
         // Use RED's File class to check if the file exists (searches loose files + .vpp archives).
         uint8_t file_obj[0x114] = {};
         AddrCaller{0x004cf600}.this_call(file_obj); // File constructor (__thiscall)
+        xlog::info("[Mesh] mesh_load_vmesh: checking VFX file existence...");
         bool found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, filename);
+        xlog::info("[Mesh] mesh_load_vmesh: VFX file found={}", found);
         if (found) {
+            xlog::info("[Mesh] mesh_load_vmesh: calling vmesh_load_vfx...");
             vmesh = vmesh_load_vfx(filename, 0x98967f);
+            xlog::info("[Mesh] mesh_load_vmesh: vmesh_load_vfx returned {:p}", vmesh);
         }
         else {
             xlog::warn("[Mesh] VFX file not found: '{}'", filename);
@@ -99,8 +108,10 @@ static void mesh_load_vmesh(DedMesh* mesh)
     if (vmesh) {
         // Initialize VFX animation state (matches stock item setup in FUN_004151c0)
         if (vmesh_get_type(vmesh) == 3) {
+            xlog::info("[Mesh] mesh_load_vmesh: initializing VFX animation...");
             vmesh_anim_init(vmesh, 0, 1.0f);
             vmesh_process(vmesh, 0.0f, 0, nullptr, nullptr, 1);
+            xlog::info("[Mesh] mesh_load_vmesh: VFX animation initialized");
         }
         xlog::info("[Mesh] Loaded vmesh for '{}' -> {:p}", filename, vmesh);
     }
@@ -287,26 +298,68 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
 
 // ─── Property Dialog ────────────────────────────────────────────────────────
 
-static DedMesh* g_current_mesh = nullptr;
+static std::vector<DedMesh*> g_selected_meshes;
 static CDedLevel* g_current_level = nullptr;
+
+// Sentinel strings for multi-selection fields with differing values
+static const char* const MULTIPLE_STR = "<multiple>";
+static const int MULTIPLE_COLLISION = -1;
+
+// Track initial dialog values to detect user changes
+static std::string g_init_script_name;
+static std::string g_init_filename;
+static std::string g_init_state_anim;
+static int g_init_collision_mode;
+
+// Flag: set to true by IDOK if mesh filenames were changed, so caller can reload vmeshes
+static bool g_mesh_filename_changed = false;
 
 static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     switch (msg) {
     case WM_INITDIALOG:
     {
-        if (!g_current_mesh) return FALSE;
-        SetDlgItemTextA(hdlg, IDC_MESH_SCRIPT_NAME, g_current_mesh->script_name.c_str());
-        SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, g_current_mesh->mesh_filename.c_str());
-        SetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, g_current_mesh->state_anim.c_str());
-        // Populate collision mode dropdown
+        if (g_selected_meshes.empty()) return FALSE;
+
+        auto* first = g_selected_meshes[0];
+        bool all_same_script = true, all_same_filename = true;
+        bool all_same_anim = true, all_same_collision = true;
+
+        for (size_t i = 1; i < g_selected_meshes.size(); i++) {
+            auto* m = g_selected_meshes[i];
+            if (strcmp(m->script_name.c_str(), first->script_name.c_str()) != 0) all_same_script = false;
+            if (strcmp(m->mesh_filename.c_str(), first->mesh_filename.c_str()) != 0) all_same_filename = false;
+            if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
+            if (m->collision_mode != first->collision_mode) all_same_collision = false;
+        }
+
+        g_init_script_name = all_same_script ? first->script_name.c_str() : MULTIPLE_STR;
+        g_init_filename = all_same_filename ? first->mesh_filename.c_str() : MULTIPLE_STR;
+        g_init_state_anim = all_same_anim ? first->state_anim.c_str() : MULTIPLE_STR;
+        g_init_collision_mode = all_same_collision ? first->collision_mode : MULTIPLE_COLLISION;
+
+        SetDlgItemTextA(hdlg, IDC_MESH_SCRIPT_NAME, g_init_script_name.c_str());
+        SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, g_init_filename.c_str());
+        SetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, g_init_state_anim.c_str());
+
         {
             HWND combo = GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE);
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("None"));
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Only Weapons"));
             SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("All"));
-            SendMessageA(combo, CB_SETCURSEL, g_current_mesh->collision_mode, 0);
+            if (g_init_collision_mode == MULTIPLE_COLLISION) {
+                SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Undefined"));
+                SendMessageA(combo, CB_SETCURSEL, 3, 0); // "Undefined"
+            } else {
+                SendMessageA(combo, CB_SETCURSEL, g_init_collision_mode, 0);
+            }
         }
+
+        // Disable links button for multi-selection
+        if (g_selected_meshes.size() > 1) {
+            EnableWindow(GetDlgItem(hdlg, ID_LINKS), FALSE);
+        }
+
         return TRUE;
     }
 
@@ -323,7 +376,6 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             ofn.nMaxFile = MAX_PATH;
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
             if (GetOpenFileNameA(&ofn)) {
-                // Extract just the filename (no path) for portability
                 const char* base = strrchr(filename, '\\');
                 if (!base) base = strrchr(filename, '/');
                 if (base) base++; else base = filename;
@@ -334,11 +386,9 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
 
         case ID_LINKS:
         {
-            // Call the stock links dialog
-            if (g_current_level && g_current_mesh) {
-                // Stock links dialog function
+            if (g_current_level && g_selected_meshes.size() == 1) {
                 static auto& open_links_dialog = addr_as_ref<void(CDedLevel* level, DedObject* obj)>(0x00469780);
-                open_links_dialog(g_current_level, static_cast<DedObject*>(g_current_mesh));
+                open_links_dialog(g_current_level, static_cast<DedObject*>(g_selected_meshes[0]));
             }
             return TRUE;
         }
@@ -346,23 +396,41 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         case IDOK:
         {
             char buf[MAX_PATH] = {};
+
+            // Only apply fields that the user actually changed from the initial value
             GetDlgItemTextA(hdlg, IDC_MESH_SCRIPT_NAME, buf, sizeof(buf));
-            g_current_mesh->script_name.assign_0(buf);
+            bool script_changed = (strcmp(buf, g_init_script_name.c_str()) != 0);
 
-            GetDlgItemTextA(hdlg, IDC_MESH_FILENAME, buf, sizeof(buf));
-            g_current_mesh->mesh_filename.assign_0(buf);
+            char fname_buf[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_FILENAME, fname_buf, sizeof(fname_buf));
+            bool filename_changed = (strcmp(fname_buf, g_init_filename.c_str()) != 0);
 
-            GetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, buf, sizeof(buf));
-            g_current_mesh->state_anim.assign_0(buf);
+            char anim_buf[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, anim_buf, sizeof(anim_buf));
+            bool anim_changed = (strcmp(anim_buf, g_init_state_anim.c_str()) != 0);
 
-            {
-                HWND combo = GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE);
-                int sel = static_cast<int>(SendMessageA(combo, CB_GETCURSEL, 0, 0));
-                g_current_mesh->collision_mode = (sel >= 0 && sel <= 2) ? static_cast<uint8_t>(sel) : 2;
+            HWND combo = GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE);
+            int collision_sel = static_cast<int>(SendMessageA(combo, CB_GETCURSEL, 0, 0));
+            // "Undefined" is index 3 — only present in multi-select mode
+            bool collision_changed = false;
+            if (g_init_collision_mode == MULTIPLE_COLLISION) {
+                collision_changed = (collision_sel != 3); // changed from "Undefined"
+            } else {
+                collision_changed = (collision_sel != g_init_collision_mode);
             }
 
-            // Reload vmesh if filename changed
-            mesh_load_vmesh(g_current_mesh);
+            for (size_t idx = 0; idx < g_selected_meshes.size(); idx++) {
+                auto* mesh = g_selected_meshes[idx];
+                if (!mesh) continue;
+                if (script_changed) mesh->script_name.assign_0(buf);
+                if (filename_changed) mesh->mesh_filename.assign_0(fname_buf);
+                if (anim_changed) mesh->state_anim.assign_0(anim_buf);
+                if (collision_changed && collision_sel >= 0 && collision_sel <= 2) {
+                    mesh->collision_mode = static_cast<uint8_t>(collision_sel);
+                }
+            }
+            // Defer vmesh reload until after dialog closes to avoid message pump issues
+            g_mesh_filename_changed = filename_changed;
 
             EndDialog(hdlg, IDOK);
             return TRUE;
@@ -379,10 +447,13 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
 
 void ShowMeshPropertiesDialog(DedMesh* mesh)
 {
-    g_current_mesh = mesh;
+    // This overload exists for single-mesh callers
+    g_selected_meshes.clear();
+    g_selected_meshes.push_back(mesh);
     g_current_level = CDedLevel::Get();
+    g_mesh_filename_changed = false;
 
-    int result = DialogBoxParam(
+    DialogBoxParam(
         reinterpret_cast<HINSTANCE>(&__ImageBase),
         MAKEINTRESOURCE(IDD_ALPINE_MESH_PROPERTIES),
         GetActiveWindow(),
@@ -390,12 +461,16 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
         0
     );
 
-    if (result == -1) {
-        DWORD error = GetLastError();
-        xlog::error("[Mesh] DialogBox failed with error code: {}", error);
+    // Free old vmesh and let render hook lazy-load the new one
+    if (g_mesh_filename_changed && mesh) {
+        if (mesh->vmesh) {
+            vmesh_free(mesh->vmesh);
+            mesh->vmesh = nullptr;
+        }
+        mesh->vmesh_load_failed = false;
     }
 
-    g_current_mesh = nullptr;
+    g_selected_meshes.clear();
     g_current_level = nullptr;
 }
 
@@ -541,18 +616,54 @@ CodeInjection open_mesh_properties_patch{
     [](auto& regs) {
         if (regs.eax != static_cast<int>(DedObjectType::DED_MESH)) return;
 
-        // EBX is 0 at this point (XOR EBX,EBX at 0x401fff), get object from selection
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
         auto& sel = level->selection;
         if (sel.get_size() < 1) { regs.eip = 0x00402293; return; }
 
-        DedObject* obj = sel[0];
-        if (!obj || obj->type != DedObjectType::DED_MESH) { regs.eip = 0x00402293; return; }
+        // Collect all selected mesh objects
+        g_selected_meshes.clear();
+        g_current_level = level;
+        xlog::info("[Mesh] Properties: selection has {} items", sel.get_size());
+        for (int i = 0; i < sel.get_size(); i++) {
+            DedObject* obj = sel[i];
+            xlog::info("[Mesh] Properties: sel[{}] ptr={:p} type=0x{:x} uid={}",
+                i, static_cast<void*>(obj),
+                obj ? static_cast<int>(obj->type) : -1,
+                obj ? obj->uid : -1);
+            if (obj && obj->type == DedObjectType::DED_MESH) {
+                g_selected_meshes.push_back(static_cast<DedMesh*>(obj));
+            }
+        }
+        xlog::info("[Mesh] Properties: collected {} mesh objects, vector data={:p}",
+            g_selected_meshes.size(), static_cast<void*>(g_selected_meshes.data()));
 
-        ShowMeshPropertiesDialog(static_cast<DedMesh*>(obj));
+        if (!g_selected_meshes.empty()) {
+            g_mesh_filename_changed = false;
+            DialogBoxParam(
+                reinterpret_cast<HINSTANCE>(&__ImageBase),
+                MAKEINTRESOURCE(IDD_ALPINE_MESH_PROPERTIES),
+                GetActiveWindow(),
+                MeshDialogProc,
+                0
+            );
+            // If filename changed, free old vmeshes and reset flags so the render
+            // hook's lazy-load path reloads them on the next frame. We avoid calling
+            // mesh_load_vmesh here because VFX loading can trigger exceptions that
+            // get caught by CodeInjection's SEH handler, silently aborting this lambda.
+            if (g_mesh_filename_changed) {
+                for (auto* mesh : g_selected_meshes) {
+                    if (!mesh) continue;
+                    if (mesh->vmesh) {
+                        vmesh_free(mesh->vmesh);
+                        mesh->vmesh = nullptr;
+                    }
+                    mesh->vmesh_load_failed = false;
+                }
+            }
+        }
 
-        // Common return path: MOV [ESI+0x43c], EBX; CALL 0x483560; POP regs; RET
-        // EBX is already 0
+        g_selected_meshes.clear();
+        g_current_level = nullptr;
         regs.eip = 0x00402293;
     }
 };
@@ -636,18 +747,25 @@ CodeInjection mesh_render_patch{
 
         auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
         constexpr float s = 0.5f;
+        bool did_lazy_load = false;
         for (auto* mesh : meshes) {
             if (mesh->hidden_in_editor) continue;
             float x = mesh->pos.x, y = mesh->pos.y, z = mesh->pos.z;
             bool selected = is_mesh_selected(level, mesh);
 
-            // Lazy-load vmesh on first render (skip if previous load failed)
+            // Lazy-load vmesh on first render (one per frame to avoid VFX loader issues)
+            bool just_loaded = false;
             if (!mesh->vmesh && !mesh->vmesh_load_failed && mesh->mesh_filename.c_str()[0] != '\0') {
-                mesh_load_vmesh(mesh);
+                if (!did_lazy_load) {
+                    mesh_load_vmesh(mesh);
+                    did_lazy_load = true;
+                    just_loaded = true;
+                }
             }
 
-            // Render the actual vmesh if loaded
-            if (mesh->vmesh) {
+            // Render the actual vmesh if loaded (skip on the frame it was just loaded
+            // to avoid VFX render state conflicts from loading + rendering in same frame)
+            if (mesh->vmesh && !just_loaded) {
                 set_draw_color(0xff, 0xff, 0xff, 0xff);
 
                 // Render params struct (~80 bytes) initialized by FUN_004be330.
@@ -1017,7 +1135,7 @@ static void __fastcall mesh_paste_wrapper(void* ecx_level, void* /*edx_unused*/)
 static bool g_mesh_delete_mode = false;
 static bool g_mesh_cut_mode = false;
 
-// Hook FUN_0041bd00 to detect delete mode before FUN_0041bbb0 processes selection items.
+// Hook FUN_0041bd00 to detect delete/cut mode before FUN_0041bbb0 processes selection items.
 // FUN_0041bd00 signature: __thiscall(CDedLevel* this, int param_2)
 // param_2=0: cut finalization, param_2=1: delete (keyboard Delete key)
 CodeInjection mesh_delete_mode_patch{
@@ -1028,19 +1146,7 @@ CodeInjection mesh_delete_mode_patch{
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.ecx));
         auto mode = *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(level) + 0xf8);
         g_mesh_delete_mode = (mode == 4 && param_2 == 1);
-        // g_mesh_cut_mode was set by mesh_cut_mode_patch before this call (if Cut).
-        // For non-Cut callers, it may be stale — but that's harmless since those
-        // callers pass param_2=1 (delete) where removal is also wanted.
-    },
-};
-
-// Hook FUN_00412df0 (Cut handler, Ctrl+X) to set cut mode flag.
-// Cut calls FUN_00412e20 (copy) then FUN_0041bd00(0) (finalize).
-// During finalize, mesh objects should be removed from mesh_objects.
-CodeInjection mesh_cut_mode_patch{
-    0x00412df0,
-    [](auto& regs) {
-        g_mesh_cut_mode = true;
+        g_mesh_cut_mode = (mode == 4 && param_2 == 0);
     },
 };
 
@@ -1143,7 +1249,6 @@ void ApplyMeshPatches()
     mesh_click_pick_patch.install();
     mesh_copy_begin_hook.install();
     mesh_copy_hook.install();
-    mesh_cut_mode_patch.install();
     // Redirect paste thunk's JMP to our wrapper that handles mesh clipboard paste
     AsmWriter(0x00448659).jmp(mesh_paste_wrapper);
     mesh_delete_mode_patch.install();
