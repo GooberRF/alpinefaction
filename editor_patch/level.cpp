@@ -59,6 +59,100 @@ CodeInjection CDedLevel_LoadLevel_patch2{
 
 // At save time, match geoable brush UIDs to compiled room UIDs via position.
 // For each geoable brush, find the detail room whose bbox contains the brush position.
+// Find the compiled room that contains a brush's faces by matching face_ids.
+// This is the primary method for mapping brushes to rooms — it directly traces
+// brush geometry faces through the compiled solid to find which room they ended up in.
+// Returns nullptr if no matching face is found (e.g., brush geometry is null).
+static GRoom* find_room_by_face_ids(const CDedLevel& level, int32_t brush_uid)
+{
+    // Find the brush node
+    BrushNode* brush_node = nullptr;
+    BrushNode* node = level.brush_list;
+    if (node) {
+        do {
+            if (node->uid == brush_uid) {
+                brush_node = node;
+                break;
+            }
+            node = node->next;
+        } while (node && node != level.brush_list);
+    }
+    if (!brush_node) return nullptr;
+
+    // Collect face_ids from the brush's source geometry
+    auto* brush_geom = static_cast<GSolid*>(brush_node->geometry);
+    if (!brush_geom) return nullptr;
+
+    std::unordered_set<int> brush_face_ids;
+    for (GFace* face = brush_geom->face_list_head; face; face = face->next_solid) {
+        if (face->face_id >= 0) {
+            brush_face_ids.insert(face->face_id);
+        }
+    }
+    if (brush_face_ids.empty()) return nullptr;
+
+    // Search the compiled solid's faces for any matching face_id
+    for (GFace* face = level.solid->face_list_head; face; face = face->next_solid) {
+        if (face->which_room && face->which_room->is_detail &&
+            brush_face_ids.count(face->face_id)) {
+            return face->which_room;
+        }
+    }
+    return nullptr;
+}
+
+// Fallback: find the detail room whose bbox center is closest to the brush position.
+// Used when face_id matching fails (e.g., face_ids weren't assigned).
+static GRoom* find_room_by_position(const CDedLevel& level, int32_t brush_uid)
+{
+    BrushNode* node = level.brush_list;
+    Vector3 brush_pos;
+    bool found = false;
+    if (node) {
+        do {
+            if (node->uid == brush_uid) {
+                brush_pos = node->pos;
+                found = true;
+                break;
+            }
+            node = node->next;
+        } while (node && node != level.brush_list);
+    }
+    if (!found) return nullptr;
+
+    constexpr float tolerance = 2.0f;
+    GRoom* best_room = nullptr;
+    float best_dist_sq = FLT_MAX;
+    auto& all_rooms = level.solid->all_rooms;
+    for (int j = 0; j < all_rooms.get_size(); j++) {
+        GRoom* room = all_rooms.data_ptr[j];
+        if (!room || !room->is_detail) continue;
+        if (brush_pos.x >= room->bbox_min.x - tolerance && brush_pos.x <= room->bbox_max.x + tolerance &&
+            brush_pos.y >= room->bbox_min.y - tolerance && brush_pos.y <= room->bbox_max.y + tolerance &&
+            brush_pos.z >= room->bbox_min.z - tolerance && brush_pos.z <= room->bbox_max.z + tolerance) {
+            float cx = (room->bbox_min.x + room->bbox_max.x) * 0.5f;
+            float cy = (room->bbox_min.y + room->bbox_max.y) * 0.5f;
+            float cz = (room->bbox_min.z + room->bbox_max.z) * 0.5f;
+            float dx = brush_pos.x - cx, dy = brush_pos.y - cy, dz = brush_pos.z - cz;
+            float dist_sq = dx * dx + dy * dy + dz * dz;
+            if (dist_sq < best_dist_sq) {
+                best_dist_sq = dist_sq;
+                best_room = room;
+            }
+        }
+    }
+
+    if (best_room) {
+        xlog::debug("[Geoable] brush uid={} matched by position fallback to room uid={}",
+            brush_uid, best_room->uid);
+    }
+    else {
+        xlog::debug("[Geoable] brush uid={} at ({:.2f},{:.2f},{:.2f}) has no matching detail room",
+            brush_uid, brush_pos.x, brush_pos.y, brush_pos.z);
+    }
+    return best_room;
+}
+
 static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& props)
 {
     // Prune stale UIDs: remove any geoable brush UIDs that no longer exist in the
@@ -102,64 +196,28 @@ static void compute_geoable_room_uids(CDedLevel& level, AlpineLevelProperties& p
     for (std::size_t i = 0; i < props.geoable_brush_uids.size(); i++) {
         int32_t brush_uid = props.geoable_brush_uids[i];
 
-        // Find brush in linked list and get its position
-        BrushNode* node = level.brush_list;
-        Vector3 brush_pos;
-        bool found_brush = false;
-        if (node) {
-            do {
-                if (node->uid == brush_uid) {
-                    brush_pos = node->pos;
-                    found_brush = true;
-                    break;
-                }
-                node = node->next;
-            } while (node && node != level.brush_list);
-        }
-
-        if (!found_brush) {
-            xlog::debug("[Geoable] brush uid={} not found in brush list", brush_uid);
+        // Primary method: trace brush face_ids through compiled solid to find the exact room.
+        // This is reliable because the room isolation code ensures each geoable brush's faces
+        // end up in their own dedicated room, and face_ids are preserved during compilation.
+        GRoom* room = find_room_by_face_ids(level, brush_uid);
+        if (room) {
+            props.geoable_room_uids[i] = room->uid;
+            xlog::debug("[Geoable] brush uid={} matched by face_id to room uid={} index={}",
+                brush_uid, room->uid, room->room_index);
             continue;
         }
 
-        // Find detail room whose bbox center is closest to the brush position.
-        // Multiple rooms may contain the brush position (e.g., a pillar room and a
-        // rail room it touches). We pick the one whose bbox center is nearest the
-        // brush center — this correctly maps pillar brushes to pillar rooms rather
-        // than to adjacent rail/beam rooms that happen to overlap.
-        constexpr float tolerance = 2.0f;
-        GRoom* best_room = nullptr;
-        float best_dist_sq = FLT_MAX;
-        for (int j = 0; j < all_rooms.get_size(); j++) {
-            GRoom* room = all_rooms.data_ptr[j];
-            if (!room || !room->is_detail) continue;
-            if (brush_pos.x >= room->bbox_min.x - tolerance && brush_pos.x <= room->bbox_max.x + tolerance &&
-                brush_pos.y >= room->bbox_min.y - tolerance && brush_pos.y <= room->bbox_max.y + tolerance &&
-                brush_pos.z >= room->bbox_min.z - tolerance && brush_pos.z <= room->bbox_max.z + tolerance) {
-                float cx = (room->bbox_min.x + room->bbox_max.x) * 0.5f;
-                float cy = (room->bbox_min.y + room->bbox_max.y) * 0.5f;
-                float cz = (room->bbox_min.z + room->bbox_max.z) * 0.5f;
-                float dx = brush_pos.x - cx, dy = brush_pos.y - cy, dz = brush_pos.z - cz;
-                float dist_sq = dx * dx + dy * dy + dz * dz;
-                if (dist_sq < best_dist_sq) {
-                    best_dist_sq = dist_sq;
-                    best_room = room;
-                }
-            }
-        }
-        if (best_room) {
-            props.geoable_room_uids[i] = best_room->uid;
-        }
-        else {
-            xlog::debug("[Geoable] brush uid={} at ({:.2f},{:.2f},{:.2f}) has no matching detail room",
-                brush_uid, brush_pos.x, brush_pos.y, brush_pos.z);
+        // Fallback: position-based matching (for edge cases where face_ids aren't available)
+        room = find_room_by_position(level, brush_uid);
+        if (room) {
+            props.geoable_room_uids[i] = room->uid;
         }
     }
 
 }
 
-// At save time, match breakable brush UIDs to compiled room UIDs via position.
-// Same algorithm as geoable: find closest detail room by bbox center distance.
+// At save time, match breakable brush UIDs to compiled room UIDs.
+// Uses face_id matching (primary) with position-based fallback.
 static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties& props)
 {
     // Prune stale UIDs
@@ -191,56 +249,25 @@ static void compute_breakable_room_uids(CDedLevel& level, AlpineLevelProperties&
         return;
     }
 
-    auto& all_rooms = level.solid->all_rooms;
-
     for (std::size_t i = 0; i < props.breakable_brush_uids.size(); i++) {
         int32_t brush_uid = props.breakable_brush_uids[i];
 
-        BrushNode* node = level.brush_list;
-        Vector3 brush_pos;
-        bool found_brush = false;
-        if (node) {
-            do {
-                if (node->uid == brush_uid) {
-                    brush_pos = node->pos;
-                    found_brush = true;
-                    break;
-                }
-                node = node->next;
-            } while (node && node != level.brush_list);
-        }
-
-        if (!found_brush) {
-            xlog::debug("[Breakable] brush uid={} not found in brush list", brush_uid);
+        // Primary method: trace brush face_ids through compiled solid to find the exact room.
+        GRoom* room = find_room_by_face_ids(level, brush_uid);
+        if (room) {
+            props.breakable_room_uids[i] = room->uid;
+            xlog::debug("[Breakable] brush uid={} matched by face_id to room uid={} index={}",
+                brush_uid, room->uid, room->room_index);
             continue;
         }
 
-        constexpr float tolerance = 2.0f;
-        GRoom* best_room = nullptr;
-        float best_dist_sq = FLT_MAX;
-        for (int j = 0; j < all_rooms.get_size(); j++) {
-            GRoom* room = all_rooms.data_ptr[j];
-            if (!room || !room->is_detail) continue;
-            if (brush_pos.x >= room->bbox_min.x - tolerance && brush_pos.x <= room->bbox_max.x + tolerance &&
-                brush_pos.y >= room->bbox_min.y - tolerance && brush_pos.y <= room->bbox_max.y + tolerance &&
-                brush_pos.z >= room->bbox_min.z - tolerance && brush_pos.z <= room->bbox_max.z + tolerance) {
-                float cx = (room->bbox_min.x + room->bbox_max.x) * 0.5f;
-                float cy = (room->bbox_min.y + room->bbox_max.y) * 0.5f;
-                float cz = (room->bbox_min.z + room->bbox_max.z) * 0.5f;
-                float dx = brush_pos.x - cx, dy = brush_pos.y - cy, dz = brush_pos.z - cz;
-                float dist_sq = dx * dx + dy * dy + dz * dz;
-                if (dist_sq < best_dist_sq) {
-                    best_dist_sq = dist_sq;
-                    best_room = room;
-                }
-            }
-        }
-        if (best_room) {
-            props.breakable_room_uids[i] = best_room->uid;
+        // Fallback: position-based matching
+        room = find_room_by_position(level, brush_uid);
+        if (room) {
+            props.breakable_room_uids[i] = room->uid;
         }
         else {
-            xlog::debug("[Breakable] brush uid={} at ({:.2f},{:.2f},{:.2f}) has no matching detail room",
-                brush_uid, brush_pos.x, brush_pos.y, brush_pos.z);
+            xlog::debug("[Breakable] brush uid={} has no matching detail room", brush_uid);
         }
     }
 }

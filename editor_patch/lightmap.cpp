@@ -6,6 +6,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/MemUtils.h>
 #include <patch_common/ShortTypes.h>
+#include <xlog/xlog.h>
 
 
 // Max lights that can be processed per face (shadow mask buffer limit).
@@ -50,7 +51,19 @@ CodeInjection lightmap_light_limit_injection{
     0x004AC608,
     [](auto& regs) {
         int light_count = regs.edi;
-        if (light_count >= max_shadow_masks) {
+
+        // Also check that the surface texel count fits in the shadow mask buffer (0x1000 bytes).
+        // With -smoothlights, surface groups can merge across rooms and potentially exceed the
+        // 64x64 texel limit, which would overflow the shadow mask buffer and corrupt heap memory.
+        int width = *reinterpret_cast<int*>(regs.esi + 0x18);
+        int height = *reinterpret_cast<int*>(regs.esi + 0x1c);
+        if (width * height > 0x1000) {
+            xlog::error("Lightmap: surface texel count {}x{}={} exceeds shadow mask buffer size 4096! "
+                        "Falling back to pink fill for surface at 0x{:x}",
+                        width, height, width * height, static_cast<uintptr_t>(regs.esi));
+            regs.eip = 0x004AC9E4; // pink fill safety fallback
+        }
+        else if (light_count >= max_shadow_masks) {
             regs.eip = 0x004AC9E4; // pink fill safety fallback
         }
         else {
@@ -352,15 +365,15 @@ static void get_ambient_at(float wx, float wy, float wz,
 CodeInjection lightmap_per_texel_ambient_fill_injection{
     0x004ac68b, // MOV EAX,[ESI+0x1c] — start of ambient fill section
     [](auto& regs) {
-        if (s_ambient_room_count == 0) return; // no custom ambient rooms, use original fill
+        if (s_ambient_room_count == 0) return; // no custom ambient rooms, use original fill (trampoline OK here)
 
         uintptr_t surface = regs.esi;
         int width = *reinterpret_cast<int*>(surface + 0x18);
         int height = *reinterpret_cast<int*>(surface + 0x1c);
-        if (width <= 0 || height <= 0) return; // let original code handle degenerate case
+        if (width <= 0 || height <= 0) return; // trampoline OK at this address
 
         SurfaceUVParams p;
-        if (!init_surface_uv_params(surface, p)) return; // can't compute, let original handle
+        if (!init_surface_uv_params(surface, p)) return; // trampoline OK at this address
 
         auto* buf_r = reinterpret_cast<float*>(0x0138a620);
         auto* buf_g = reinterpret_cast<float*>(0x0140ac20);
@@ -390,15 +403,28 @@ CodeInjection lightmap_per_texel_ambient_fill_injection{
 CodeInjection lightmap_per_texel_ambient_nolights_injection{
     0x004ac563, // FLD [ESP+0x78] — start of ambient byte conversion
     [](auto& regs) {
-        if (s_ambient_room_count == 0) return; // no custom ambient rooms, use original fill
+        // NOTE: trampoline is null here (SubHook can't decode FPU opcode 0xD8 at 0x4ac567).
+        // Every code path MUST set regs.eip before returning.
 
         uintptr_t surface = regs.esi;
         int width = *reinterpret_cast<int*>(surface + 0x18);
         int height = *reinterpret_cast<int*>(surface + 0x1c);
-        if (width <= 0 || height <= 0) return; // let original code handle degenerate case
+        if (width <= 0 || height <= 0) {
+            regs.eip = 0x004aca40;
+            return;
+        }
 
         SurfaceUVParams p;
-        if (!init_surface_uv_params(surface, p)) return;
+        if (!init_surface_uv_params(surface, p)) {
+            regs.eip = 0x004aca40;
+            return;
+        }
+
+        if (s_ambient_room_count == 0) {
+            // No custom ambient rooms — let original uniform fill handle it
+            regs.eip = 0x004aca40;
+            return;
+        }
 
         uintptr_t lm = *reinterpret_cast<uintptr_t*>(surface + 0xC);
         auto* buf = reinterpret_cast<uint8_t*>(*reinterpret_cast<uintptr_t*>(lm + 0xC));
@@ -429,6 +455,32 @@ CodeInjection lightmap_per_texel_ambient_nolights_injection{
 };
 
 
+// Guard against invalid dropped-axis value in the baked lightmap rendering path.
+// FUN_004ac470 at 0x004acbc8 does: CALL dword ptr [EAX*4 + 0x57ce68]
+// where EAX = surface->dropped (0=X, 1=Y, 2=Z). The function pointer table only
+// has valid entries for indices 0-2. A corrupt dropped value would read a null or
+// garbage pointer and CALL to address 0, crashing with an all-zero context dump.
+// This injection runs right after MOV EAX,[ESI+0x5c] loads the dropped value.
+CodeInjection lightmap_dropped_axis_guard{
+    0x004acbbb, // LEA ECX,[ESP+0x44] — first instruction after MOV EAX,[ESI+0x5c]
+    [](auto& regs) {
+        auto dropped = static_cast<unsigned>(regs.eax);
+        if (dropped > 2) {
+            xlog::error("Lightmap crash prevented: invalid dropped axis {} for surface at 0x{:x} "
+                        "(flags=0x{:x}, width={}, height={}, room_index={}, surface_index={}, lm=0x{:x})",
+                        static_cast<int>(regs.eax),
+                        static_cast<uintptr_t>(regs.esi),
+                        static_cast<unsigned>(*reinterpret_cast<uint8_t*>(regs.esi + 0x8)),
+                        *reinterpret_cast<int*>(regs.esi + 0x18),
+                        *reinterpret_cast<int*>(regs.esi + 0x1c),
+                        *reinterpret_cast<int*>(regs.esi + 0x68),
+                        *reinterpret_cast<short*>(regs.esi + 0x00), // surface group id at start
+                        *reinterpret_cast<uintptr_t*>(regs.esi + 0xC));
+            regs.eax = 0; // clamp to valid index to prevent crash
+        }
+    },
+};
+
 void ApplyLightmapPatches()
 {
     // Fix pink lightmaps when a face is affected by >= 64 lights
@@ -442,6 +494,9 @@ void ApplyLightmapPatches()
     // Prevents corruption on handle=-1, which occurs when trying to add/edit lights after max_scene_lights
     // Original: ptr = pool_base + handle * 0x10C (no validation)
     light_handle_to_pointer_injection.install();
+
+    // Guard against invalid dropped-axis index in baked lightmap rendering
+    lightmap_dropped_axis_guard.install();
 
     // Replace the >= 64 limit check with new limit
     lightmap_light_limit_injection.install();
