@@ -101,7 +101,7 @@ CodeInjection level_load_init_patch{
     []() {
         AlpineLevelProperties::instance() = {};
         DashLevelProps::instance() = {};
-        get_alpine_mesh_infos().clear();
+        alpine_mesh_clear_state();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
     },
 };

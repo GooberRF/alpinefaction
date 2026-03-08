@@ -143,6 +143,7 @@ FunHook<int()> rf_do_frame_hook{
         high_fps_update();
         server_do_frame();
         koth_do_frame();
+        alpine_mesh_do_frame();
         int result = rf_do_frame_hook.call_target();
         maybe_autosave();
         debug_do_frame_post();

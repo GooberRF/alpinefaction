@@ -5,6 +5,7 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
 #include <patch_common/CodeInjection.h>
@@ -50,6 +51,75 @@ static const auto vmesh_anim_init = reinterpret_cast<VmeshAnimInitFn>(0x004c0740
 // VMesh type query: returns 1=v3m, 2=v3c, 3=vfx
 using VmeshGetTypeFn = int(__cdecl*)(void* vmesh_ptr);
 static const auto vmesh_get_type = reinterpret_cast<VmeshGetTypeFn>(0x004bfeb0);
+// vmesh_stop_all_actions: editor equivalent of game's 0x00503400
+using VmeshStopAllActionsFn = void(__cdecl*)(void* vmesh_ptr);
+static const auto vmesh_stop_all_actions = reinterpret_cast<VmeshStopAllActionsFn>(0x004c07b0);
+
+// Load an .rfa/.mvf animation file onto a v3c character mesh and play it.
+// VMesh layout: [+0x00] type (int), [+0x04] instance (void*), [+0x08] mesh_data (void*)
+//
+// character_mesh_load_action (editor 0x004c2150, game 0x0051cc10):
+//   __thiscall on mesh_data, loads .rfa file, returns action index
+// vmesh_play_action_by_index (editor 0x004c0760, game 0x005033b0):
+//   cdecl(vmesh, action_index, transition_time, hold_last_frame)
+
+// character_mesh_load_action: __thiscall, this=mesh_data, returns action index
+using CharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char flag);
+static const auto character_mesh_load_action = reinterpret_cast<CharMeshLoadActionFn>(0x004c2150);
+
+// vmesh_play_action_by_index: cdecl wrapper
+using VmeshPlayActionByIndexFn = void(__cdecl*)(void* vmesh, int action_index, float transition_time, int hold_last_frame);
+static const auto vmesh_play_action_by_index = reinterpret_cast<VmeshPlayActionByIndexFn>(0x004c0760);
+
+// Preview animation state
+static DedMesh* g_preview_mesh = nullptr;
+static float g_preview_timer = 0.0f;
+static constexpr float PREVIEW_DURATION = 10.0f; // max preview time in seconds
+
+// Cache action indices per vmesh to avoid calling character_mesh_load_action during rendering
+static std::unordered_map<void*, int> g_v3c_action_cache;
+
+static bool mesh_play_v3c_action(void* vmesh, const char* action_name, float transition_time = 1.0f)
+{
+    if (!vmesh || !action_name || action_name[0] == '\0') return false;
+
+    auto* vmesh_bytes = reinterpret_cast<uint8_t*>(vmesh);
+    int type = *reinterpret_cast<int*>(vmesh_bytes + 0x00);
+    if (type != 2) return false; // only for character meshes
+
+    auto* mesh_data = *reinterpret_cast<void**>(vmesh_bytes + 0x08);
+    if (!mesh_data) return false;
+
+    // Load the .rfa/.mvf animation file onto the character mesh_data
+    int action_index = character_mesh_load_action(mesh_data, action_name, 0);
+    if (action_index < 0) {
+        xlog::warn("[Mesh] Failed to load animation '{}' on vmesh {:p}", action_name, vmesh);
+        return false;
+    }
+
+    // Check instance exists
+    auto* instance = *reinterpret_cast<void**>(vmesh_bytes + 0x04);
+    if (!instance) {
+        xlog::warn("[Mesh] No instance on vmesh {:p}, cannot play animation", vmesh);
+        return false;
+    }
+
+    auto* inst_bytes = reinterpret_cast<uint8_t*>(instance);
+    int slots_before = *reinterpret_cast<int*>(inst_bytes + 0x12D0);
+
+    // Cache the action index for later use in the render loop
+    g_v3c_action_cache[vmesh] = action_index;
+
+    // Play the loaded action (transition_time must be > 0 or play_action is a no-op)
+    vmesh_play_action_by_index(vmesh, action_index, transition_time, 0);
+
+    int slots_after = *reinterpret_cast<int*>(inst_bytes + 0x12D0);
+    char freeze_flag = *reinterpret_cast<char*>(inst_bytes + 0x1D4C);
+    xlog::info("[Mesh] Playing animation '{}' (action_index={}, transition={:.3f}) on vmesh {:p} "
+        "slots: {}→{} freeze={}", action_name, action_index, transition_time, vmesh,
+        slots_before, slots_after, (int)freeze_flag);
+    return true;
+}
 
 static const char* get_file_extension(const char* filename)
 {
@@ -66,6 +136,7 @@ static void mesh_load_vmesh(DedMesh* mesh)
     // Free existing vmesh if any
     if (mesh->vmesh) {
         xlog::info("[Mesh] mesh_load_vmesh: freeing old vmesh {:p}", mesh->vmesh);
+        g_v3c_action_cache.erase(mesh->vmesh);
         vmesh_free(mesh->vmesh);
         mesh->vmesh = 0;
         xlog::info("[Mesh] mesh_load_vmesh: old vmesh freed");
@@ -106,12 +177,29 @@ static void mesh_load_vmesh(DedMesh* mesh)
     mesh->vmesh = vmesh;
     mesh->vmesh_load_failed = (vmesh == nullptr);
     if (vmesh) {
+        int vtype = vmesh_get_type(vmesh);
         // Initialize VFX animation state (matches stock item setup in FUN_004151c0)
-        if (vmesh_get_type(vmesh) == 3) {
-            xlog::info("[Mesh] mesh_load_vmesh: initializing VFX animation...");
+        if (vtype == 3) {
             vmesh_anim_init(vmesh, 0, 1.0f);
             vmesh_process(vmesh, 0.0f, 0, nullptr, nullptr, 1);
-            xlog::info("[Mesh] mesh_load_vmesh: VFX animation initialized");
+        }
+        // Play state animation for v3c skeletal meshes — jump to first frame
+        if (vtype == 2) {
+            const char* anim = mesh->state_anim.c_str();
+            if (anim && anim[0] != '\0') {
+                // Use tiny transition time so the blend completes almost instantly
+                mesh_play_v3c_action(vmesh, anim, 0.001f);
+                // Process enough dt to fully complete the blend transition
+                vmesh_process(vmesh, 0.01f, 0, &mesh->pos, &mesh->orient, 1);
+                // Log slot state after processing
+                auto* inst = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(vmesh) + 0x04);
+                if (inst) {
+                    auto* ib = reinterpret_cast<uint8_t*>(inst);
+                    int sc = *reinterpret_cast<int*>(ib + 0x12D0);
+                    char ff = *reinterpret_cast<char*>(ib + 0x1D4C);
+                    xlog::info("[Mesh] After initial process: slots={} freeze={}", sc, (int)ff);
+                }
+            }
         }
         xlog::info("[Mesh] Loaded vmesh for '{}' -> {:p}", filename, vmesh);
     }
@@ -126,6 +214,7 @@ static void destroy_ded_mesh(DedMesh* mesh)
     if (!mesh) return;
     // Free vmesh
     if (mesh->vmesh) {
+        g_v3c_action_cache.erase(mesh->vmesh);
         vmesh_free(mesh->vmesh);
         mesh->vmesh = 0;
     }
@@ -280,8 +369,11 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
             mesh->links.add_if_not_exists_int(link_uid);
         }
 
-        // Load vmesh for rendering
-        mesh_load_vmesh(mesh);
+        // Don't load vmesh here - the RFL file is still open and loading a v3c
+        // mesh during chunk parsing conflicts with the file I/O system.
+        // The render hook's lazy-load will handle it on the first frame.
+        mesh->vmesh = nullptr;
+        mesh->vmesh_load_failed = false;
 
         meshes.push_back(mesh);
         xlog::debug("[Mesh] Loaded mesh uid={} file='{}' pos=({},{},{})",
@@ -311,8 +403,9 @@ static std::string g_init_filename;
 static std::string g_init_state_anim;
 static int g_init_collision_mode;
 
-// Flag: set to true by IDOK if mesh filenames were changed, so caller can reload vmeshes
+// Flags: set to true by IDOK if mesh filenames/anims were changed, so caller can reload
 static bool g_mesh_filename_changed = false;
+static bool g_mesh_anim_changed = false;
 
 static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam)
 {
@@ -355,9 +448,10 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             }
         }
 
-        // Disable links button for multi-selection
+        // Disable links and preview buttons for multi-selection
         if (g_selected_meshes.size() > 1) {
             EnableWindow(GetDlgItem(hdlg, ID_LINKS), FALSE);
+            EnableWindow(GetDlgItem(hdlg, IDC_MESH_PREVIEW), FALSE);
         }
 
         return TRUE;
@@ -380,6 +474,40 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (!base) base = strrchr(filename, '/');
                 if (base) base++; else base = filename;
                 SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, base);
+            }
+            return TRUE;
+        }
+
+        case IDC_MESH_PREVIEW:
+        {
+            if (g_selected_meshes.size() != 1) return TRUE;
+            auto* mesh = g_selected_meshes[0];
+            if (!mesh) return TRUE;
+
+            // Get current values from dialog fields
+            char fname_buf[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_FILENAME, fname_buf, sizeof(fname_buf));
+            char anim_buf[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, anim_buf, sizeof(anim_buf));
+
+            // Reload vmesh if filename changed or not loaded yet
+            const char* cur_filename = mesh->mesh_filename.c_str();
+            if (!mesh->vmesh || _stricmp(cur_filename, fname_buf) != 0) {
+                // Apply filename to mesh so load uses it
+                mesh->mesh_filename.assign_0(fname_buf);
+                if (mesh->vmesh) {
+                    vmesh_free(mesh->vmesh);
+                    mesh->vmesh = nullptr;
+                }
+                mesh->vmesh_load_failed = false;
+                mesh_load_vmesh(mesh);
+            }
+
+            if (mesh->vmesh && anim_buf[0] != '\0') {
+                // Play the animation and start preview timer
+                mesh_play_v3c_action(mesh->vmesh, anim_buf);
+                g_preview_mesh = mesh;
+                g_preview_timer = PREVIEW_DURATION;
             }
             return TRUE;
         }
@@ -431,6 +559,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             }
             // Defer vmesh reload until after dialog closes to avoid message pump issues
             g_mesh_filename_changed = filename_changed;
+            g_mesh_anim_changed = anim_changed;
 
             EndDialog(hdlg, IDOK);
             return TRUE;
@@ -452,6 +581,7 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
     g_selected_meshes.push_back(mesh);
     g_current_level = CDedLevel::Get();
     g_mesh_filename_changed = false;
+    g_mesh_anim_changed = false;
 
     DialogBoxParam(
         reinterpret_cast<HINSTANCE>(&__ImageBase),
@@ -464,6 +594,17 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
     // Free old vmesh and let render hook lazy-load the new one
     if (g_mesh_filename_changed && mesh) {
         if (mesh->vmesh) {
+            g_v3c_action_cache.erase(mesh->vmesh);
+            vmesh_free(mesh->vmesh);
+            mesh->vmesh = nullptr;
+        }
+        mesh->vmesh_load_failed = false;
+    }
+    // If only anim changed (not filename), fully reload vmesh to cleanly switch.
+    // Freeing + clearing load flag lets the render loop lazy-load with the new anim.
+    else if (g_mesh_anim_changed && mesh) {
+        if (mesh->vmesh) {
+            g_v3c_action_cache.erase(mesh->vmesh);
             vmesh_free(mesh->vmesh);
             mesh->vmesh = nullptr;
         }
@@ -639,6 +780,7 @@ CodeInjection open_mesh_properties_patch{
 
         if (!g_selected_meshes.empty()) {
             g_mesh_filename_changed = false;
+            g_mesh_anim_changed = false;
             DialogBoxParam(
                 reinterpret_cast<HINSTANCE>(&__ImageBase),
                 MAKEINTRESOURCE(IDD_ALPINE_MESH_PROPERTIES),
@@ -654,6 +796,19 @@ CodeInjection open_mesh_properties_patch{
                 for (auto* mesh : g_selected_meshes) {
                     if (!mesh) continue;
                     if (mesh->vmesh) {
+                        g_v3c_action_cache.erase(mesh->vmesh);
+                        vmesh_free(mesh->vmesh);
+                        mesh->vmesh = nullptr;
+                    }
+                    mesh->vmesh_load_failed = false;
+                }
+            }
+            // If only anim changed, fully reload vmeshes to cleanly switch
+            else if (g_mesh_anim_changed) {
+                for (auto* mesh : g_selected_meshes) {
+                    if (!mesh) continue;
+                    if (mesh->vmesh) {
+                        g_v3c_action_cache.erase(mesh->vmesh);
                         vmesh_free(mesh->vmesh);
                         mesh->vmesh = nullptr;
                     }
@@ -807,12 +962,48 @@ CodeInjection mesh_render_patch{
                     render_params[0x1B] = 0xff;
                 }
 
-                // For VFX meshes, advance animation and set transparency flag
+                // Advance animation each frame for animated mesh types
                 int vmesh_type = vmesh_get_type(mesh->vmesh);
                 if (vmesh_type == 3) { // VFX
-                    // Process/advance VFX animation each frame (matches stock render in FUN_0041e4c0)
                     vmesh_process(mesh->vmesh, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
                     *reinterpret_cast<int*>(0x0059e21c) = 1;
+                }
+                else if (vmesh_type == 2) { // V3C character
+                    auto* instance = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(mesh->vmesh) + 0x04);
+                    // One-shot debug: log slot state on first render
+                    {
+                        static int v3c_log_count = 0;
+                        if (v3c_log_count < 5) {
+                            auto* ib = instance ? reinterpret_cast<uint8_t*>(instance) : nullptr;
+                            int sc = ib ? *reinterpret_cast<int*>(ib + 0x12D0) : -1;
+                            char ff = ib ? *reinterpret_cast<char*>(ib + 0x1D4C) : -1;
+                            xlog::info("[Mesh] Render v3c: instance={:p} slots={} freeze={} has_anim='{}'",
+                                instance, sc, (int)ff, mesh->state_anim.c_str());
+                            v3c_log_count++;
+                        }
+                    }
+                    if (instance) {
+                        if (g_preview_mesh == mesh && g_preview_timer > 0.0f) {
+                            // Preview is active - advance animation in real time
+                            vmesh_process(mesh->vmesh, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
+                            g_preview_timer -= 0.03f;
+                            if (g_preview_timer <= 0.0f) {
+                                g_preview_mesh = nullptr;
+                                g_preview_timer = 0.0f;
+                            }
+                        }
+                        else {
+                            // Non-preview: re-trigger play_action every frame to reset
+                            // the slot's start timestamp to "now". The animation system
+                            // uses real system time to evaluate pose, so this keeps the
+                            // pose perpetually at frame 0.
+                            auto it = g_v3c_action_cache.find(mesh->vmesh);
+                            if (it != g_v3c_action_cache.end() && it->second >= 0) {
+                                vmesh_play_action_by_index(mesh->vmesh, it->second, 0.001f, 0);
+                            }
+                            vmesh_process(mesh->vmesh, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
+                        }
+                    }
                 }
 
                 // Get bounding sphere radius for room visibility setup

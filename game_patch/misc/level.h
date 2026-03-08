@@ -204,6 +204,8 @@ struct AlpineMeshInfo {
 std::vector<AlpineMeshInfo>& get_alpine_mesh_infos();
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);
 void alpine_mesh_create_all();
+void alpine_mesh_do_frame();
+void alpine_mesh_clear_state();
 
 // used by RF2-style geomod
 struct RF2AnchorInfo {

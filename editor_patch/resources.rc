@@ -384,6 +384,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
     LTEXT           "State Anim:", -1, 7, 51, 44, 8
     EDITTEXT        IDC_MESH_STATE_ANIM, 60, 49, 150, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Preview", IDC_MESH_PREVIEW, 215, 49, 50, 14
 
     LTEXT           "Collision:", -1, 7, 71, 44, 8
     COMBOBOX        IDC_MESH_COLLISION_MODE, 60, 69, 80, 60, CBS_DROPDOWNLIST | WS_TABSTOP

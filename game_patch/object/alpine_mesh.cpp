@@ -9,12 +9,23 @@
 #include "../rf/level.h"
 #include "../rf/file/file.h"
 #include "../rf/geometry.h"
+#include "../rf/os/frametime.h"
 #include "../misc/level.h"
 
 // ─── Globals ────────────────────────────────────────────────────────────────
 
 static std::vector<AlpineMeshInfo> g_alpine_mesh_infos;
 static std::vector<int> g_alpine_mesh_handles; // object handles for cleanup
+
+// Per-mesh animation state for deferred startup and looping
+struct AlpineMeshAnimState {
+    int obj_handle;
+    std::string state_anim;
+    int action_index = -1;     // resolved action index, -1 = not yet loaded
+    bool anim_started = false;  // true once we've started playing
+    int startup_delay = 2;      // frames to wait before starting animation
+};
+static std::vector<AlpineMeshAnimState> g_mesh_anim_states;
 
 // Dummy ClutterInfo as raw bytes - avoids calling rf::String/VArray constructors during DLL init
 // All zeros is safe: String{0,nullptr} = empty, VArray{0,nullptr} = empty
@@ -138,8 +149,51 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
 static auto& obj_create = addr_as_ref<rf::Object*(int, int, int, rf::ObjectCreateInfo*, int, rf::GRoom*)>(0x00486DA0);
 
 
-// vmesh_play_action: play an animation action on a vmesh
-static auto& vmesh_play_action = addr_as_ref<int(rf::VMesh* vmesh, const char* action_name, float weight, bool looping)>(0x00503140);
+// Load an .rfa/.mvf animation file onto a v3c character mesh and play it.
+// character_mesh_load_action (game 0x0051cc10): __thiscall on mesh_data, loads .rfa, returns action index
+// vmesh_play_action_by_index (game 0x005033b0): cdecl(vmesh, action_index, transition_time, hold_last_frame)
+
+using CharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char flag);
+static const auto character_mesh_load_action = reinterpret_cast<CharMeshLoadActionFn>(0x0051cc10);
+
+using VmeshPlayActionByIndexFn = void(__cdecl*)(rf::VMesh* vmesh, int action_index, float transition_time, int hold_last_frame);
+static const auto vmesh_play_action_by_index = reinterpret_cast<VmeshPlayActionByIndexFn>(0x005033b0);
+
+// vmesh_reset_actions: zeros weights of all looping (flag=1) action slots
+using VmeshResetActionsFn = void(__cdecl*)(rf::VMesh* vmesh);
+static const auto vmesh_reset_actions = reinterpret_cast<VmeshResetActionsFn>(0x005033f0);
+
+// vmesh_set_action_weight: sets blend weight for an action slot (does NOT reset playback position)
+using VmeshSetActionWeightFn = void(__cdecl*)(rf::VMesh* vmesh, int action_index, float weight);
+static const auto vmesh_set_action_weight = reinterpret_cast<VmeshSetActionWeightFn>(0x00503390);
+
+static bool vmesh_play_v3c_action_by_name(rf::VMesh* vmesh, const char* action_name)
+{
+    if (!vmesh || !action_name || action_name[0] == '\0') return false;
+    if (vmesh->type != rf::MESH_TYPE_CHARACTER) return false;
+    if (!vmesh->mesh || !vmesh->instance) {
+        xlog::warn("[AlpineMesh] Cannot play animation '{}': mesh={:p} instance={:p}",
+            action_name, vmesh->mesh, vmesh->instance);
+        return false;
+    }
+
+    auto* mesh_data = reinterpret_cast<uint8_t*>(vmesh->mesh);
+    int existing_count = *reinterpret_cast<int*>(mesh_data + 0xF58);
+    xlog::info("[AlpineMesh] mesh_data={:p} existing_action_count={}", vmesh->mesh, existing_count);
+
+    // Load the .rfa/.mvf animation file onto the character mesh_data
+    int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0);
+    if (action_index < 0) {
+        xlog::warn("[AlpineMesh] Failed to load animation '{}' on vmesh", action_name);
+        return false;
+    }
+
+    xlog::info("[AlpineMesh] Playing animation '{}' (action_index={}) on vmesh", action_name, action_index);
+
+    // Play the loaded action (transition_time must be > 0 or play_action is a no-op)
+    vmesh_play_action_by_index(vmesh, action_index, 1.0f, 0);
+    return true;
+}
 
 // obj_collision_register: registers an object for collision detection (creates collision pairs)
 static auto& obj_collision_register = addr_as_ref<void(rf::Object* obj)>(0x0048C9A0);
@@ -201,6 +255,8 @@ void alpine_mesh_create_all()
         clutter->killable_index = 0xFFFF;
         // Field at +0x2D0 is freed as sound handle in cleanup if != -1
         *reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(clutter) + 0x2D0) = -1;
+        // Note: Do NOT set corpse_vmesh_handle (+0x2B8) to -1 — cleanup dereferences it as a VMesh*.
+        // It's set to nullptr above which is safe.
 
         // Register in clutter linked list (required for rendering and proper cleanup)
         clutter->prev = clutter_list_tail;
@@ -214,7 +270,9 @@ void alpine_mesh_create_all()
             obj->name = info.script_name.c_str();
         }
 
-        // Make invulnerable by default
+        // Make invulnerable by default and set life to positive value.
+        // Life MUST be >= 0 or the stock clutter process sets the dead flag (obj_flags |= 2).
+        obj->life = 100.0f;
         obj->obj_flags = static_cast<rf::ObjectFlags>(
             static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
         );
@@ -248,9 +306,12 @@ void alpine_mesh_create_all()
             obj_collision_register(obj);
         }
 
-        // Set state animation for skeletal meshes
+        // Defer state animation for skeletal meshes to first game frame
         if (vtype == rf::MESH_TYPE_CHARACTER && !info.state_anim.empty() && obj->vmesh) {
-            vmesh_play_action(obj->vmesh, info.state_anim.c_str(), 1.0f, true);
+            AlpineMeshAnimState anim_state;
+            anim_state.obj_handle = obj->handle;
+            anim_state.state_anim = info.state_anim;
+            g_mesh_anim_states.push_back(std::move(anim_state));
         }
 
         g_alpine_mesh_handles.push_back(obj->handle);
@@ -265,4 +326,62 @@ void alpine_mesh_create_all()
     }
 
     xlog::info("[AlpineMesh] Created {} mesh objects in game", g_alpine_mesh_handles.size());
+}
+
+// ─── Per-Frame Animation Processing ─────────────────────────────────────────
+
+void alpine_mesh_do_frame()
+{
+    for (auto& anim : g_mesh_anim_states) {
+        rf::Object* obj = rf::obj_from_handle(anim.obj_handle);
+        if (!obj || !obj->vmesh) continue;
+        if (obj->vmesh->type != rf::MESH_TYPE_CHARACTER) continue;
+        if (!obj->vmesh->mesh || !obj->vmesh->instance) continue;
+
+        // Wait a few frames after level load before starting animations
+        // This ensures all subsystems are fully initialized
+        if (anim.startup_delay > 0) {
+            anim.startup_delay--;
+            continue;
+        }
+
+        // Load the animation action with flag=1 (looping).
+        // Looping actions use modular time (fmod) — the playback position wraps
+        // automatically and the slot is never removed.
+        if (anim.action_index < 0) {
+            anim.action_index = character_mesh_load_action(obj->vmesh->mesh, anim.state_anim.c_str(), 1);
+            if (anim.action_index < 0) {
+                xlog::warn("[AlpineMesh] Failed to load animation '{}' for handle {}",
+                    anim.state_anim, anim.obj_handle);
+                anim.anim_started = true;
+                continue;
+            }
+            xlog::info("[AlpineMesh] Loaded animation '{}' action_index={} for handle {}",
+                anim.state_anim, anim.action_index, anim.obj_handle);
+        }
+
+        // Entity-style looping: each frame, zero all looping action weights then
+        // set the desired action back to weight 1.0. This never resets the playback
+        // position, so the animation loops seamlessly with no base pose flash.
+        // NOTE: The stock clutter process (FUN_0040fe10) does NOT call vmesh_process,
+        // so we must call it ourselves.
+        vmesh_reset_actions(obj->vmesh);
+        vmesh_set_action_weight(obj->vmesh, anim.action_index, 1.0f);
+
+        if (!anim.anim_started) {
+            anim.anim_started = true;
+            xlog::info("[AlpineMesh] Started animation '{}' (action_index={}) on handle {}",
+                anim.state_anim, anim.action_index, anim.obj_handle);
+        }
+
+        // Advance animation — stock clutter process does NOT call vmesh_process
+        rf::vmesh_process(obj->vmesh, rf::frametime, 0, &obj->pos, &obj->orient, 1);
+    }
+}
+
+void alpine_mesh_clear_state()
+{
+    g_alpine_mesh_infos.clear();
+    g_alpine_mesh_handles.clear();
+    g_mesh_anim_states.clear();
 }
