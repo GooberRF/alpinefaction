@@ -10,6 +10,7 @@
 #include "../rf/file/file.h"
 #include "../rf/geometry.h"
 #include "../rf/os/frametime.h"
+#include "../rf/bmpman.h"
 #include "../misc/level.h"
 
 // ─── Globals ────────────────────────────────────────────────────────────────
@@ -59,6 +60,9 @@ static rf::VMeshType determine_vmesh_type(const std::string& filename)
 
 // ─── Chunk Loading ──────────────────────────────────────────────────────────
 
+// Mesh chunk version marker (distinguishes v2+ from old format where first uint32 was count)
+static constexpr uint32_t MESH_CHUNK_VERSION_MARKER = 0xAF000002;
+
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
 {
     std::size_t remaining = chunk_len;
@@ -87,8 +91,18 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         return result;
     };
 
+    // Check for version marker vs old format
+    uint32_t first_word = 0;
+    if (!read_bytes(&first_word, sizeof(first_word))) return;
+
+    bool has_texture_overrides = false;
     uint32_t count = 0;
-    if (!read_bytes(&count, sizeof(count))) return;
+    if (first_word == MESH_CHUNK_VERSION_MARKER) {
+        has_texture_overrides = true;
+        if (!read_bytes(&count, sizeof(count))) return;
+    } else {
+        count = first_word; // old format: first word is count
+    }
     if (count > 10000) count = 10000;
 
     g_alpine_mesh_infos.reserve(count);
@@ -127,6 +141,12 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         for (int32_t j = 0; j < link_count; j++) {
             if (!read_bytes(&info.link_uids[j], sizeof(int32_t))) return;
         }
+        // v2: texture overrides
+        if (has_texture_overrides) {
+            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+                info.texture_overrides[ti] = read_string();
+            }
+        }
 
         xlog::debug("[AlpineMesh] Loaded mesh info uid={} file='{}' pos=({},{},{})",
             info.uid, info.mesh_filename, info.pos.x, info.pos.y, info.pos.z);
@@ -139,7 +159,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         file.seek(static_cast<int>(remaining), rf::File::seek_cur);
     }
 
-    xlog::info("[AlpineMesh] Loaded {} mesh infos from RFL", count);
+    xlog::info("[AlpineMesh] Loaded {} mesh infos from RFL (v{})", count, has_texture_overrides ? 2 : 1);
 }
 
 // ─── Object Creation ────────────────────────────────────────────────────────
@@ -304,6 +324,61 @@ void alpine_mesh_create_all()
 
             // Register for collision (stock code does this only when PF_COLLIDE_OBJECTS is set)
             obj_collision_register(obj);
+        }
+
+        // Apply texture overrides
+        if (obj->vmesh) {
+            bool has_tex_override = false;
+            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+                if (!info.texture_overrides[ti].empty()) { has_tex_override = true; break; }
+            }
+            if (has_tex_override) {
+                int num_materials = 0;
+                rf::MeshMaterial* materials = nullptr;
+                rf::vmesh_get_materials_array(obj->vmesh, &num_materials, &materials);
+                if ((!materials || num_materials <= 0) && obj->vmesh->type == rf::MESH_TYPE_STATIC) {
+                    // V3M with multiple LODs/sub-meshes: the engine's allocator bails early.
+                    // Temporarily fake single-LOD/single-submesh counts to force allocation.
+                    obj->vmesh->use_replacement_materials = 0;
+                    obj->vmesh->replacement_materials = nullptr;
+                    auto* instance = reinterpret_cast<uint8_t*>(obj->vmesh->instance);
+                    if (instance) {
+                        int* lod_count_ptr = reinterpret_cast<int*>(instance + 0x50);
+                        int** submesh_list_ptr = reinterpret_cast<int**>(instance + 0x54);
+                        int orig_lod = *lod_count_ptr;
+                        int orig_sub = (submesh_list_ptr && *submesh_list_ptr) ? **submesh_list_ptr : 1;
+                        *lod_count_ptr = 1;
+                        if (submesh_list_ptr && *submesh_list_ptr) **submesh_list_ptr = 1;
+                        rf::vmesh_get_materials_array(obj->vmesh, &num_materials, &materials);
+                        *lod_count_ptr = orig_lod;
+                        if (submesh_list_ptr && *submesh_list_ptr) **submesh_list_ptr = orig_sub;
+                        if (!materials || num_materials <= 0) {
+                            obj->vmesh->use_replacement_materials = 0;
+                            xlog::warn("[AlpineMesh] Failed to allocate replacement materials for multi-LOD V3M");
+                        } else {
+                            xlog::info("[AlpineMesh] Allocated replacement materials for multi-LOD V3M ({} mats)", num_materials);
+                        }
+                    }
+                }
+                if (materials && num_materials > 0) {
+                    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+                        if (info.texture_overrides[ti].empty()) continue;
+                        if (ti >= num_materials) {
+                            xlog::warn("[AlpineMesh] Texture override slot {} exceeds material count {}", ti, num_materials);
+                            break;
+                        }
+                        int bm_handle = rf::bm::load(info.texture_overrides[ti].c_str(), -1, true);
+                        if (bm_handle < 0) {
+                            xlog::warn("[AlpineMesh] Failed to load texture '{}' for slot {}",
+                                info.texture_overrides[ti], ti);
+                            continue;
+                        }
+                        materials[ti].texture_maps[0].tex_handle = bm_handle;
+                        xlog::info("[AlpineMesh] Applied texture override slot {}: '{}' (handle={})",
+                            ti, info.texture_overrides[ti], bm_handle);
+                    }
+                }
+            }
         }
 
         // Defer state animation for skeletal meshes to first game frame

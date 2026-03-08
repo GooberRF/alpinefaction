@@ -370,7 +370,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
 // Alpine Mesh Properties dialog
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_ALPINE_MESH_PROPERTIES DIALOGEX 0, 0, 280, 170
+IDD_ALPINE_MESH_PROPERTIES DIALOGEX 0, 0, 280, 290
 STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Mesh Properties"
 FONT 8, "MS Sans Serif", 0, 0, 0
@@ -382,16 +382,34 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     EDITTEXT        IDC_MESH_FILENAME, 60, 29, 150, 14, ES_AUTOHSCROLL
     PUSHBUTTON      "Browse...", IDC_MESH_BROWSE, 215, 29, 50, 14
 
-    LTEXT           "State Anim:", -1, 7, 51, 44, 8
-    EDITTEXT        IDC_MESH_STATE_ANIM, 60, 49, 150, 14, ES_AUTOHSCROLL
-    PUSHBUTTON      "Preview", IDC_MESH_PREVIEW, 215, 49, 50, 14
+    LTEXT           "", IDC_MESH_TYPE_LABEL, 60, 46, 200, 8
 
-    LTEXT           "Collision:", -1, 7, 71, 44, 8
-    COMBOBOX        IDC_MESH_COLLISION_MODE, 60, 69, 80, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "State Anim:", -1, 7, 61, 44, 8
+    EDITTEXT        IDC_MESH_STATE_ANIM, 60, 59, 150, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Preview", IDC_MESH_PREVIEW, 215, 59, 50, 14
 
-    PUSHBUTTON      "Links", ID_LINKS, 7, 140, 50, 14
-    DEFPUSHBUTTON   "OK", IDOK, 160, 140, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 215, 140, 50, 14
+    LTEXT           "Collision:", -1, 7, 81, 44, 8
+    COMBOBOX        IDC_MESH_COLLISION_MODE, 60, 79, 80, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    GROUPBOX        "Texture Overrides", -1, 7, 100, 260, 120
+    LTEXT           "Texture 0:", -1, 14, 115, 38, 8
+    EDITTEXT        IDC_MESH_TEX0, 60, 113, 200, 14, ES_AUTOHSCROLL
+    LTEXT           "Texture 1:", -1, 14, 130, 38, 8
+    EDITTEXT        IDC_MESH_TEX1, 60, 128, 200, 14, ES_AUTOHSCROLL
+    LTEXT           "Texture 2:", -1, 14, 145, 38, 8
+    EDITTEXT        IDC_MESH_TEX2, 60, 143, 200, 14, ES_AUTOHSCROLL
+    LTEXT           "Texture 3:", -1, 14, 160, 38, 8
+    EDITTEXT        IDC_MESH_TEX3, 60, 158, 200, 14, ES_AUTOHSCROLL
+    LTEXT           "Texture 4:", -1, 14, 175, 38, 8
+    EDITTEXT        IDC_MESH_TEX4, 60, 173, 200, 14, ES_AUTOHSCROLL
+    LTEXT           "Texture 5:", -1, 14, 190, 38, 8
+    EDITTEXT        IDC_MESH_TEX5, 60, 188, 200, 14, ES_AUTOHSCROLL
+    LTEXT           "Texture 6:", -1, 14, 205, 38, 8
+    EDITTEXT        IDC_MESH_TEX6, 60, 203, 200, 14, ES_AUTOHSCROLL
+
+    PUSHBUTTON      "Links", ID_LINKS, 7, 265, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 160, 265, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 215, 265, 50, 14
 }
 
 // Brush mode side panel (replaces stock dialog 205 with added "Is Geoable" checkbox)

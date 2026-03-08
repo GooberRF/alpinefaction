@@ -297,6 +297,9 @@ struct AlpineLevelProperties
             AddrCaller{0x004b6710}.this_call(&m->class_name);
             AddrCaller{0x004b6710}.this_call(&m->mesh_filename);
             AddrCaller{0x004b6710}.this_call(&m->state_anim);
+            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+                AddrCaller{0x004b6710}.this_call(&m->texture_overrides[ti]);
+            }
             delete m;
         }
         mesh_objects.clear();

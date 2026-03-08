@@ -188,6 +188,8 @@ struct DashLevelProps
     }
 };
 
+static constexpr int MAX_MESH_TEXTURES = 7;
+
 // Alpine mesh object info, loaded from RFL
 struct AlpineMeshInfo {
     int32_t uid = -1;
@@ -198,6 +200,7 @@ struct AlpineMeshInfo {
     std::string state_anim;
     uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All
     std::vector<int32_t> link_uids;
+    std::string texture_overrides[MAX_MESH_TEXTURES]; // per-slot texture replacements
 };
 
 // Global list of alpine mesh infos (populated during level load, cleared on level init)

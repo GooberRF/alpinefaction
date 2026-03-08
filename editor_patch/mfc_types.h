@@ -343,6 +343,8 @@ struct DedRoomEffect : DedObject
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
 
+static constexpr int MAX_MESH_TEXTURES = 7;
+
 struct DedMesh : DedObject
 {
     VString mesh_filename;          // .v3m / .v3c / .vfx path
@@ -350,8 +352,9 @@ struct DedMesh : DedObject
     uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
     bool vmesh_load_failed;         // true if vmesh load was attempted and failed
     char padding_mesh[2];
+    VString texture_overrides[MAX_MESH_TEXTURES]; // per-slot texture filename overrides
 };
-static_assert(sizeof(DedMesh) == 0xA8, "DedMesh size mismatch");
+static_assert(sizeof(DedMesh) == 0xE0, "DedMesh size mismatch");
 
 struct DedBoltEmitter : DedObject
 {

@@ -51,6 +51,39 @@ static const auto vmesh_anim_init = reinterpret_cast<VmeshAnimInitFn>(0x004c0740
 // VMesh type query: returns 1=v3m, 2=v3c, 3=vfx
 using VmeshGetTypeFn = int(__cdecl*)(void* vmesh_ptr);
 static const auto vmesh_get_type = reinterpret_cast<VmeshGetTypeFn>(0x004bfeb0);
+
+// Bitmap load: loads a texture file, returns handle (or -1 on failure)
+using BmLoadFn = int(__cdecl*)(const char* filename, int path_id, int generate_mipmaps);
+static const auto bm_load = reinterpret_cast<BmLoadFn>(0x004BBBF0);
+
+// VMesh material replacement: gets (or creates) per-instance replacement materials array
+// MeshMaterial is 0xC8 bytes. Returns count and pointer to replacement array.
+struct EditorMeshMaterial {
+    int material_type;
+    int flags;
+    bool use_additive_blending;
+    char _pad[3];
+    int diffuse_color;
+    struct { int tex_handle; char name[33]; int start_frame; float playback_rate; int anim_type; } texture_maps[2];
+    int framerate;
+    int num_mix_frames;
+    int* mix;
+    float specular_level;
+    float glossiness;
+    float reflection_amount;
+    char refl_tex_name[36];
+    int refl_tex_handle;
+    int num_self_illumination_frames;
+    float* self_illumination;
+    int num_opacity_frames;
+    int* opacity;
+};
+static_assert(sizeof(EditorMeshMaterial) == 0xC8);
+using VmeshGetMaterialsArrayFn = void(__cdecl*)(void* vmesh, int* num_out, EditorMeshMaterial** materials_out);
+static const auto editor_vmesh_get_materials_array = reinterpret_cast<VmeshGetMaterialsArrayFn>(0x004c0a00);
+
+// Forward declarations
+static void mesh_apply_texture_overrides(DedMesh* mesh);
 // vmesh_stop_all_actions: editor equivalent of game's 0x00503400
 using VmeshStopAllActionsFn = void(__cdecl*)(void* vmesh_ptr);
 static const auto vmesh_stop_all_actions = reinterpret_cast<VmeshStopAllActionsFn>(0x004c07b0);
@@ -89,6 +122,16 @@ static bool mesh_play_v3c_action(void* vmesh, const char* action_name, float tra
 
     auto* mesh_data = *reinterpret_cast<void**>(vmesh_bytes + 0x08);
     if (!mesh_data) return false;
+
+    // Verify the animation file exists before loading (character_mesh_load_action
+    // returns 0 rather than -1 for missing files, which leads to garbage animation data)
+    uint8_t file_obj[0x114] = {};
+    AddrCaller{0x004cf600}.this_call(file_obj);
+    bool file_found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, action_name);
+    if (!file_found) {
+        xlog::warn("[Mesh] Animation file '{}' not found, skipping", action_name);
+        return false;
+    }
 
     // Load the .rfa/.mvf animation file onto the character mesh_data
     int action_index = character_mesh_load_action(mesh_data, action_name, 0);
@@ -177,6 +220,12 @@ static void mesh_load_vmesh(DedMesh* mesh)
     mesh->vmesh = vmesh;
     mesh->vmesh_load_failed = (vmesh == nullptr);
     if (vmesh) {
+        // Clear replacement material state to prevent stale data from memory reuse
+        // (e.g. VFX vmesh freed then V3M allocated at same address with leftover flags)
+        auto* vbytes = reinterpret_cast<uint8_t*>(vmesh);
+        *reinterpret_cast<void**>(vbytes + 0x50) = nullptr;  // replacement_materials
+        *(vbytes + 0x54) = 0;                                // use_replacement_materials
+
         int vtype = vmesh_get_type(vmesh);
         // Initialize VFX animation state (matches stock item setup in FUN_004151c0)
         if (vtype == 3) {
@@ -188,23 +237,100 @@ static void mesh_load_vmesh(DedMesh* mesh)
             const char* anim = mesh->state_anim.c_str();
             if (anim && anim[0] != '\0') {
                 // Use tiny transition time so the blend completes almost instantly
-                mesh_play_v3c_action(vmesh, anim, 0.001f);
-                // Process enough dt to fully complete the blend transition
-                vmesh_process(vmesh, 0.01f, 0, &mesh->pos, &mesh->orient, 1);
-                // Log slot state after processing
-                auto* inst = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(vmesh) + 0x04);
-                if (inst) {
-                    auto* ib = reinterpret_cast<uint8_t*>(inst);
-                    int sc = *reinterpret_cast<int*>(ib + 0x12D0);
-                    char ff = *reinterpret_cast<char*>(ib + 0x1D4C);
-                    xlog::info("[Mesh] After initial process: slots={} freeze={}", sc, (int)ff);
+                if (mesh_play_v3c_action(vmesh, anim, 0.001f)) {
+                    // Process enough dt to fully complete the blend transition
+                    vmesh_process(vmesh, 0.01f, 0, &mesh->pos, &mesh->orient, 1);
                 }
             }
         }
+        // Apply texture overrides
+        mesh_apply_texture_overrides(mesh);
         xlog::info("[Mesh] Loaded vmesh for '{}' -> {:p}", filename, vmesh);
     }
     else {
         xlog::warn("[Mesh] Failed to load vmesh for '{}'", filename);
+    }
+}
+
+// Apply per-slot texture overrides to a mesh's vmesh
+static void mesh_apply_texture_overrides(DedMesh* mesh)
+{
+    if (!mesh || !mesh->vmesh) return;
+
+    bool has_any = false;
+    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+        const char* tex = mesh->texture_overrides[ti].c_str();
+        if (tex && tex[0] != '\0') { has_any = true; break; }
+    }
+    if (!has_any) return;
+
+    int num_materials = 0;
+    EditorMeshMaterial* materials = nullptr;
+    editor_vmesh_get_materials_array(mesh->vmesh, &num_materials, &materials);
+    if (!materials || num_materials <= 0) {
+        // editor_vmesh_get_materials_array unconditionally sets use_replacement_materials=1
+        // even when allocation fails (e.g. V3M with multiple LODs/sub-meshes).
+        // Clear the flag to prevent the render code from dereferencing a null pointer.
+        auto* vbytes = reinterpret_cast<uint8_t*>(mesh->vmesh);
+        *(vbytes + 0x54) = 0;
+        *reinterpret_cast<void**>(vbytes + 0x50) = nullptr;
+
+        // For V3M meshes with multiple LODs or sub-mesh groups, the engine's replacement
+        // materials allocator (FUN_004c0ae0) bails early. However the render code applies
+        // replacement materials to ALL LODs from a single set. Work around the limitation
+        // by temporarily faking single-LOD/single-submesh counts during allocation.
+        int vtype = vmesh_get_type(mesh->vmesh);
+        if (vtype == 1) { // V3M
+            auto* instance = *reinterpret_cast<uint8_t**>(vbytes + 0x04);
+            if (instance) {
+                int* lod_count_ptr = reinterpret_cast<int*>(instance + 0x50);
+                int** submesh_list_ptr = reinterpret_cast<int**>(instance + 0x54);
+                int orig_lod_count = *lod_count_ptr;
+                int orig_submesh_count = (submesh_list_ptr && *submesh_list_ptr) ? **submesh_list_ptr : 1;
+
+                // Temporarily set counts to 1 so the allocator proceeds
+                *lod_count_ptr = 1;
+                if (submesh_list_ptr && *submesh_list_ptr)
+                    **submesh_list_ptr = 1;
+
+                editor_vmesh_get_materials_array(mesh->vmesh, &num_materials, &materials);
+
+                // Restore original counts
+                *lod_count_ptr = orig_lod_count;
+                if (submesh_list_ptr && *submesh_list_ptr)
+                    **submesh_list_ptr = orig_submesh_count;
+
+                if (!materials || num_materials <= 0) {
+                    *(vbytes + 0x54) = 0;
+                    xlog::warn("[Mesh] Failed to allocate replacement materials for multi-LOD V3M");
+                    return;
+                }
+                xlog::info("[Mesh] Allocated replacement materials for multi-LOD V3M ({} materials)", num_materials);
+            }
+            else {
+                return;
+            }
+        }
+        else {
+            return;
+        }
+    }
+
+    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+        const char* tex = mesh->texture_overrides[ti].c_str();
+        if (!tex || tex[0] == '\0') continue;
+        if (ti >= num_materials) {
+            xlog::warn("[Mesh] Texture override slot {} exceeds material count {}", ti, num_materials);
+            break;
+        }
+
+        int bm_handle = bm_load(tex, -1, 1);
+        if (bm_handle < 0) {
+            xlog::warn("[Mesh] Failed to load texture override '{}' for slot {}", tex, ti);
+            continue;
+        }
+        materials[ti].texture_maps[0].tex_handle = bm_handle;
+        xlog::info("[Mesh] Applied texture override slot {}: '{}' (handle={})", ti, tex, bm_handle);
     }
 }
 
@@ -225,6 +351,9 @@ static void destroy_ded_mesh(DedMesh* mesh)
     // Free VString members from DedMesh
     vstring_free(mesh->mesh_filename);
     vstring_free(mesh->state_anim);
+    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+        vstring_free(mesh->texture_overrides[ti]);
+    }
     delete mesh;
 }
 
@@ -259,12 +388,18 @@ static std::string read_rfl_string(rf::File& file, std::size_t& remaining)
     return result;
 }
 
+// Mesh chunk version: 1 = original, 2 = adds texture overrides
+static constexpr uint32_t MESH_CHUNK_VERSION_MARKER = 0xAF000002;
+
 void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
 {
     auto& meshes = level.GetAlpineLevelProperties().mesh_objects;
     if (meshes.empty()) return;
 
     auto start_pos = level.BeginRflSection(file, alpine_mesh_chunk_id);
+
+    // Write version marker (distinguishes from old format where first uint32 was count)
+    file.write<uint32_t>(MESH_CHUNK_VERSION_MARKER);
 
     uint32_t count = static_cast<uint32_t>(meshes.size());
     file.write<uint32_t>(count);
@@ -300,10 +435,14 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
         for (int i = 0; i < link_count; i++) {
             file.write<int32_t>(mesh->links[i]);
         }
+        // v2: texture overrides
+        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+            write_rfl_string(file, mesh->texture_overrides[ti]);
+        }
     }
 
     level.EndRflSection(file, start_pos);
-    xlog::debug("[Mesh] Serialized {} mesh objects", count);
+    xlog::debug("[Mesh] Serialized {} mesh objects (v2)", count);
 }
 
 void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
@@ -319,14 +458,26 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         return true;
     };
 
+    // Check for version marker vs old format (first uint32 was count directly)
+    uint32_t first_word = 0;
+    if (!read_bytes(&first_word, sizeof(first_word))) return;
+
+    bool has_texture_overrides = false;
     uint32_t count = 0;
-    if (!read_bytes(&count, sizeof(count))) return;
+    if (first_word == MESH_CHUNK_VERSION_MARKER) {
+        has_texture_overrides = true;
+        if (!read_bytes(&count, sizeof(count))) return;
+    } else {
+        count = first_word; // old format: first word is count
+    }
     if (count > 10000) count = 10000;
 
     for (uint32_t i = 0; i < count; i++) {
         auto* mesh = new DedMesh();
         memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
-    mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
+        // Zero-init new fields (VStrings after DedObject base)
+        memset(&mesh->texture_overrides, 0, sizeof(mesh->texture_overrides));
+        mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
         mesh->type = DedObjectType::DED_MESH;
         mesh->collision_mode = 2; // All
 
@@ -368,6 +519,13 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
             if (!read_bytes(&link_uid, sizeof(link_uid))) { destroy_ded_mesh(mesh); return; }
             mesh->links.add_if_not_exists_int(link_uid);
         }
+        // v2: texture overrides
+        if (has_texture_overrides) {
+            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+                std::string tex = read_rfl_string(file, remaining);
+                mesh->texture_overrides[ti].assign_0(tex.c_str());
+            }
+        }
 
         // Don't load vmesh here - the RFL file is still open and loading a v3c
         // mesh during chunk parsing conflicts with the file I/O system.
@@ -385,7 +543,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         file.seek(static_cast<int>(remaining), rf::File::seek_cur);
     }
 
-    xlog::debug("[Mesh] Deserialized {} mesh objects", count);
+    xlog::debug("[Mesh] Deserialized {} mesh objects (v{})", count, has_texture_overrides ? 2 : 1);
 }
 
 // ─── Property Dialog ────────────────────────────────────────────────────────
@@ -402,10 +560,65 @@ static std::string g_init_script_name;
 static std::string g_init_filename;
 static std::string g_init_state_anim;
 static int g_init_collision_mode;
+static std::string g_init_textures[MAX_MESH_TEXTURES];
+
+static constexpr int TEXTURE_CTRL_IDS[MAX_MESH_TEXTURES] = {
+    IDC_MESH_TEX0, IDC_MESH_TEX1, IDC_MESH_TEX2, IDC_MESH_TEX3,
+    IDC_MESH_TEX4, IDC_MESH_TEX5, IDC_MESH_TEX6
+};
 
 // Flags: set to true by IDOK if mesh filenames/anims were changed, so caller can reload
 static bool g_mesh_filename_changed = false;
 static bool g_mesh_anim_changed = false;
+
+// Returns the file extension (lowercase, with dot) from a filename, or empty string
+static std::string get_mesh_extension(const char* filename)
+{
+    if (!filename || !filename[0]) return "";
+    const char* dot = strrchr(filename, '.');
+    if (!dot) return "";
+    std::string ext = dot;
+    for (auto& c : ext) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    return ext;
+}
+
+// Update dialog controls based on mesh type and material info
+static void mesh_dialog_update_state(HWND hdlg)
+{
+    char fname_buf[MAX_PATH] = {};
+    GetDlgItemTextA(hdlg, IDC_MESH_FILENAME, fname_buf, sizeof(fname_buf));
+    bool has_filename = (fname_buf[0] != '\0');
+
+    std::string ext = get_mesh_extension(fname_buf);
+
+    // Set mesh type label
+    const char* type_label = "";
+    if (has_filename) {
+        if (ext == ".v3m")
+            type_label = "Specified mesh is static (.v3m)";
+        else if (ext == ".v3c")
+            type_label = "Specified mesh is skeletal (.v3c)";
+        else if (ext == ".vfx")
+            type_label = "Specified mesh is animated (.vfx)";
+        else
+            type_label = "Unknown mesh type";
+    }
+    SetDlgItemTextA(hdlg, IDC_MESH_TYPE_LABEL, type_label);
+
+    // State anim: only applicable for V3C
+    bool enable_state_anim = has_filename && (ext == ".v3c");
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_STATE_ANIM), enable_state_anim);
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_PREVIEW), enable_state_anim && g_selected_meshes.size() == 1);
+
+    // Collision: not applicable for VFX
+    bool enable_collision = has_filename && (ext != ".vfx");
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), enable_collision);
+
+    // Texture overrides: grey out all slots if no filename specified
+    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+        EnableWindow(GetDlgItem(hdlg, TEXTURE_CTRL_IDS[ti]), has_filename);
+    }
+}
 
 static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam)
 {
@@ -418,22 +631,35 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         bool all_same_script = true, all_same_filename = true;
         bool all_same_anim = true, all_same_collision = true;
 
+        bool all_same_tex[MAX_MESH_TEXTURES];
+        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) all_same_tex[ti] = true;
+
         for (size_t i = 1; i < g_selected_meshes.size(); i++) {
             auto* m = g_selected_meshes[i];
             if (strcmp(m->script_name.c_str(), first->script_name.c_str()) != 0) all_same_script = false;
             if (strcmp(m->mesh_filename.c_str(), first->mesh_filename.c_str()) != 0) all_same_filename = false;
             if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
             if (m->collision_mode != first->collision_mode) all_same_collision = false;
+            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+                if (strcmp(m->texture_overrides[ti].c_str(), first->texture_overrides[ti].c_str()) != 0)
+                    all_same_tex[ti] = false;
+            }
         }
 
         g_init_script_name = all_same_script ? first->script_name.c_str() : MULTIPLE_STR;
         g_init_filename = all_same_filename ? first->mesh_filename.c_str() : MULTIPLE_STR;
         g_init_state_anim = all_same_anim ? first->state_anim.c_str() : MULTIPLE_STR;
         g_init_collision_mode = all_same_collision ? first->collision_mode : MULTIPLE_COLLISION;
+        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+            g_init_textures[ti] = all_same_tex[ti] ? first->texture_overrides[ti].c_str() : MULTIPLE_STR;
+        }
 
         SetDlgItemTextA(hdlg, IDC_MESH_SCRIPT_NAME, g_init_script_name.c_str());
         SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, g_init_filename.c_str());
         SetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, g_init_state_anim.c_str());
+        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+            SetDlgItemTextA(hdlg, TEXTURE_CTRL_IDS[ti], g_init_textures[ti].c_str());
+        }
 
         {
             HWND combo = GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE);
@@ -451,14 +677,20 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         // Disable links and preview buttons for multi-selection
         if (g_selected_meshes.size() > 1) {
             EnableWindow(GetDlgItem(hdlg, ID_LINKS), FALSE);
-            EnableWindow(GetDlgItem(hdlg, IDC_MESH_PREVIEW), FALSE);
         }
 
+        mesh_dialog_update_state(hdlg);
         return TRUE;
     }
 
     case WM_COMMAND:
         switch (LOWORD(wparam)) {
+        case IDC_MESH_FILENAME:
+            if (HIWORD(wparam) == EN_CHANGE) {
+                mesh_dialog_update_state(hdlg);
+            }
+            return TRUE;
+
         case IDC_MESH_BROWSE:
         {
             char filename[MAX_PATH] = {};
@@ -474,6 +706,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (!base) base = strrchr(filename, '/');
                 if (base) base++; else base = filename;
                 SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, base);
+                mesh_dialog_update_state(hdlg);
             }
             return TRUE;
         }
@@ -496,6 +729,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 // Apply filename to mesh so load uses it
                 mesh->mesh_filename.assign_0(fname_buf);
                 if (mesh->vmesh) {
+                    g_v3c_action_cache.erase(mesh->vmesh);
                     vmesh_free(mesh->vmesh);
                     mesh->vmesh = nullptr;
                 }
@@ -547,6 +781,16 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 collision_changed = (collision_sel != g_init_collision_mode);
             }
 
+            // Check texture override changes
+            char tex_bufs[MAX_MESH_TEXTURES][MAX_PATH] = {};
+            bool tex_changed[MAX_MESH_TEXTURES] = {};
+            bool any_tex_changed = false;
+            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+                GetDlgItemTextA(hdlg, TEXTURE_CTRL_IDS[ti], tex_bufs[ti], MAX_PATH);
+                tex_changed[ti] = (strcmp(tex_bufs[ti], g_init_textures[ti].c_str()) != 0);
+                if (tex_changed[ti]) any_tex_changed = true;
+            }
+
             for (size_t idx = 0; idx < g_selected_meshes.size(); idx++) {
                 auto* mesh = g_selected_meshes[idx];
                 if (!mesh) continue;
@@ -556,9 +800,12 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (collision_changed && collision_sel >= 0 && collision_sel <= 2) {
                     mesh->collision_mode = static_cast<uint8_t>(collision_sel);
                 }
+                for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+                    if (tex_changed[ti]) mesh->texture_overrides[ti].assign_0(tex_bufs[ti]);
+                }
             }
             // Defer vmesh reload until after dialog closes to avoid message pump issues
-            g_mesh_filename_changed = filename_changed;
+            g_mesh_filename_changed = filename_changed || any_tex_changed;
             g_mesh_anim_changed = anim_changed;
 
             EndDialog(hdlg, IDOK);
@@ -644,7 +891,7 @@ void PlaceNewMeshObject()
     if (!level) return;
 
     auto* mesh = new DedMesh();
-    memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
+    memset(mesh, 0, sizeof(DedMesh));
     mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
     mesh->type = DedObjectType::DED_MESH;
     mesh->collision_mode = 2; // All
@@ -695,7 +942,7 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     if (!source) return nullptr;
 
     auto* mesh = new DedMesh();
-    memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
+    memset(mesh, 0, sizeof(DedMesh));
     mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
     mesh->type = DedObjectType::DED_MESH;
 
@@ -708,6 +955,9 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->mesh_filename.assign_0(source->mesh_filename.c_str());
     mesh->state_anim.assign_0(source->state_anim.c_str());
     mesh->collision_mode = source->collision_mode;
+    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+        mesh->texture_overrides[ti].assign_0(source->texture_overrides[ti].c_str());
+    }
 
     // Generate new UID
     mesh->uid = generate_mesh_uid();
@@ -1000,8 +1250,8 @@ CodeInjection mesh_render_patch{
                             auto it = g_v3c_action_cache.find(mesh->vmesh);
                             if (it != g_v3c_action_cache.end() && it->second >= 0) {
                                 vmesh_play_action_by_index(mesh->vmesh, it->second, 0.001f, 0);
+                                vmesh_process(mesh->vmesh, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
                             }
-                            vmesh_process(mesh->vmesh, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
                         }
                     }
                 }
@@ -1255,6 +1505,9 @@ static void clear_mesh_clipboard()
         vstring_free(mesh->script_name);
         vstring_free(mesh->mesh_filename);
         vstring_free(mesh->state_anim);
+        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+            vstring_free(mesh->texture_overrides[ti]);
+        }
         delete mesh;
     }
     g_mesh_clipboard.clear();
