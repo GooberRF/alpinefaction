@@ -16,6 +16,7 @@
 #include "level.h"
 #include "resources.h"
 #include "vtypes.h"
+#include <common/utils/string-utils.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -75,12 +76,6 @@ static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name, fl
     return true;
 }
 
-static const char* get_file_extension(const char* filename)
-{
-    const char* dot = strrchr(filename, '.');
-    return dot ? dot : "";
-}
-
 static void mesh_load_vmesh(DedMesh* mesh)
 {
     if (!mesh) return;
@@ -95,18 +90,18 @@ static void mesh_load_vmesh(DedMesh* mesh)
     const char* filename = mesh->mesh_filename.c_str();
     if (!filename || filename[0] == '\0') return;
 
-    const char* ext = get_file_extension(filename);
+    auto ext = get_ext_from_filename(filename);
 
     EditorVMesh* vmesh = nullptr;
-    if (_stricmp(ext, ".v3m") == 0) {
+    if (string_iequals(ext, "v3m")) {
         vmesh = vmesh_load_v3m(filename, 1, -1);
     }
-    else if (_stricmp(ext, ".v3c") == 0 || _stricmp(ext, ".vfx") == 0) {
+    else if (string_iequals(ext, "v3c") || string_iequals(ext, "vfx")) {
         // Both v3c and vfx loaders can trigger fatal errors if the file is missing.
         // Use RED's File class to check if the file exists (searches loose files + .vpp archives).
         rf::File file;
         if (file.open(filename)) {
-            if (_stricmp(ext, ".v3c") == 0) {
+            if (string_iequals(ext, "v3c")) {
                 vmesh = vmesh_load_v3c(filename, 0, 0);
             }
             else {
@@ -441,16 +436,6 @@ static bool g_mesh_filename_changed = false;
 static bool g_mesh_anim_changed = false;
 
 // Returns the file extension (lowercase, with dot) from a filename, or empty string
-static std::string get_mesh_extension(const char* filename)
-{
-    if (!filename || !filename[0]) return "";
-    const char* dot = strrchr(filename, '.');
-    if (!dot) return "";
-    std::string ext = dot;
-    for (auto& c : ext) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-    return ext;
-}
-
 // Update dialog controls based on mesh type and material info
 static void mesh_dialog_update_state(HWND hdlg)
 {
@@ -458,16 +443,16 @@ static void mesh_dialog_update_state(HWND hdlg)
     GetDlgItemTextA(hdlg, IDC_MESH_FILENAME, fname_buf, sizeof(fname_buf));
     bool has_filename = (fname_buf[0] != '\0');
 
-    std::string ext = get_mesh_extension(fname_buf);
+    auto ext = get_ext_from_filename(fname_buf);
 
     // Set mesh type label
     const char* type_label = "";
     if (has_filename) {
-        if (ext == ".v3m")
+        if (string_iequals(ext, "v3m"))
             type_label = "Specified mesh is static (.v3m)";
-        else if (ext == ".v3c")
+        else if (string_iequals(ext, "v3c"))
             type_label = "Specified mesh is skeletal (.v3c)";
-        else if (ext == ".vfx")
+        else if (string_iequals(ext, "vfx"))
             type_label = "Specified mesh is animated (.vfx)";
         else
             type_label = "Unknown mesh type";
@@ -475,12 +460,12 @@ static void mesh_dialog_update_state(HWND hdlg)
     SetDlgItemTextA(hdlg, IDC_MESH_TYPE_LABEL, type_label);
 
     // State anim: only applicable for V3C
-    bool enable_state_anim = has_filename && (ext == ".v3c");
+    bool enable_state_anim = has_filename && string_iequals(ext, "v3c");
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_STATE_ANIM), enable_state_anim);
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_PREVIEW), enable_state_anim && g_selected_meshes.size() == 1);
 
     // Collision: not applicable for VFX
-    bool enable_collision = has_filename && (ext != ".vfx");
+    bool enable_collision = has_filename && !string_iequals(ext, "vfx");
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), enable_collision);
 
     // Texture overrides: grey out all slots if no filename specified
@@ -598,7 +583,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
 
             // Reload vmesh if filename changed or not loaded yet
             const char* cur_filename = mesh->mesh_filename.c_str();
-            if (!get_vmesh(mesh) || _stricmp(cur_filename, fname_buf) != 0) {
+            if (!get_vmesh(mesh) || !string_iequals(cur_filename, fname_buf)) {
                 // Apply filename to mesh so load uses it
                 mesh->mesh_filename.assign_0(fname_buf);
                 if (auto* v = get_vmesh(mesh)) {

@@ -15,6 +15,7 @@
 #include "../rf/bmpman.h"
 #include "../rf/event.h"
 #include "../misc/level.h"
+#include <common/utils/string-utils.h>
 
 // ─── Globals ────────────────────────────────────────────────────────────────
 
@@ -57,15 +58,9 @@ static bool g_dummy_clutter_info_initialized = false;
 
 static rf::VMeshType determine_vmesh_type(const std::string& filename)
 {
-    auto dot = filename.rfind('.');
-    if (dot == std::string::npos) return rf::MESH_TYPE_STATIC;
-
-    std::string ext = filename.substr(dot);
-    // lowercase compare
-    for (auto& c : ext) c = static_cast<char>(tolower(c));
-
-    if (ext == ".v3c") return rf::MESH_TYPE_CHARACTER;
-    if (ext == ".vfx") return rf::MESH_TYPE_ANIM_FX;
+    auto ext = get_ext_from_filename(filename);
+    if (string_iequals(ext, "v3c")) return rf::MESH_TYPE_CHARACTER;
+    if (string_iequals(ext, "vfx")) return rf::MESH_TYPE_ANIM_FX;
     return rf::MESH_TYPE_STATIC;
 }
 
