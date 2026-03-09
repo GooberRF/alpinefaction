@@ -74,9 +74,6 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info);
 
 // ─── Chunk Loading ──────────────────────────────────────────────────────────
 
-// Mesh chunk version marker
-static constexpr uint32_t MESH_CHUNK_VERSION_MARKER = 0xAF000003;
-
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
 {
     std::size_t remaining = chunk_len;
@@ -105,14 +102,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         return result;
     };
 
-    uint32_t first_word = 0;
-    if (!read_bytes(&first_word, sizeof(first_word))) return;
-
     uint32_t count = 0;
-    if (first_word != MESH_CHUNK_VERSION_MARKER) {
-        xlog::warn("[AlpineMesh] Unknown mesh chunk version marker: 0x{:08X}", first_word);
-        return;
-    }
     if (!read_bytes(&count, sizeof(count))) return;
     if (count > 10000) count = 10000;
 

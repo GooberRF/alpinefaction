@@ -286,9 +286,6 @@ static std::string read_rfl_string(rf::File& file, std::size_t& remaining)
     return result;
 }
 
-// Mesh chunk version marker
-static constexpr uint32_t MESH_CHUNK_VERSION_MARKER = 0xAF000003;
-
 // Stock RED DoLink (0x00415850) stores links at DedObject+0x7C for all types.
 static VArray<int>& get_obj_links(DedObject* obj)
 {
@@ -301,9 +298,6 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
     if (meshes.empty()) return;
 
     auto start_pos = level.BeginRflSection(file, alpine_mesh_chunk_id);
-
-    // Write version marker
-    file.write<uint32_t>(MESH_CHUNK_VERSION_MARKER);
 
     uint32_t count = static_cast<uint32_t>(meshes.size());
     file.write<uint32_t>(count);
@@ -355,15 +349,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         return true;
     };
 
-    // Check for version marker
-    uint32_t first_word = 0;
-    if (!read_bytes(&first_word, sizeof(first_word))) return;
-
     uint32_t count = 0;
-    if (first_word != MESH_CHUNK_VERSION_MARKER) {
-        xlog::warn("[Mesh] Unknown mesh chunk version marker: 0x{:08X}", first_word);
-        return;
-    }
     if (!read_bytes(&count, sizeof(count))) return;
     if (count > 10000) count = 10000;
 
