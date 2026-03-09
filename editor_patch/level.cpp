@@ -548,7 +548,6 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
     return
         t0 == DedObjectType::DED_TRIGGER ||
         t0 == DedObjectType::DED_EVENT ||
-        t0 == DedObjectType::DED_MESH ||
         (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT);
 }
 
