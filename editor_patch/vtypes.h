@@ -1,6 +1,7 @@
 #pragma once
 
 #include <patch_common/MemUtils.h>
+#include "mfc_types.h"
 
 namespace rf
 {
@@ -17,11 +18,31 @@ namespace rf
 
     struct File
     {
+        int dir_id;
+        char exists;
+        char filename[259];
+        void* packfile_entry;
+        int cd_file;
+        int open_file_index;
+
         enum SeekOrigin {
             seek_set = 0,
             seek_cur = 1,
             seek_end = 2,
         };
+
+        File()
+        {
+            AddrCaller{0x004CF600}.this_call(this);
+        }
+
+        // Opens a file by name, searching loose files and .vpp archives.
+        // path_id: search path identifier (0x98967f = default mesh/anim paths)
+        // Returns true if the file was found and opened.
+        bool open(const char* filename, int path_id = 0x98967f)
+        {
+            return AddrCaller{0x004CF9A0}.this_call<bool>(this, filename, path_id);
+        }
 
         [[nodiscard]] bool check_version(int min_ver) const
         {
@@ -67,32 +88,49 @@ namespace rf
             write(static_cast<void*>(&value), sizeof(value));
         }
     };
+    static_assert(sizeof(File) == 0x114, "File size mismatch");
 }
 
 // ─── Editor VMesh ────────────────────────────────────────────────────────────
 
+enum EditorVMeshType : int
+{
+    VMESH_TYPE_UNINITIALIZED = 0,
+    VMESH_TYPE_STATIC        = 1, // .v3m
+    VMESH_TYPE_CHARACTER     = 2, // .v3c
+    VMESH_TYPE_ANIM_FX       = 3, // .vfx
+};
+
 // Editor-side VMesh struct (same layout as game rf::VMesh at 0x58 bytes)
 struct EditorVMesh
 {
-    int type;                       // +0x00: 1=v3m, 2=v3c, 3=vfx
-    void* instance;                 // +0x04: mesh instance data
-    void* mesh;                     // +0x08: mesh definition data (mesh_data for v3c)
-    char filename[65];              // +0x0C
-    // 3 bytes padding             // +0x4D
-    void* replacement_materials;    // +0x50
-    char use_replacement_materials; // +0x54
+    EditorVMeshType type;
+    void* instance;
+    void* mesh; // mesh_data for v3c
+    char filename[65];
+    // 3 bytes padding
+    void* replacement_materials;
+    bool use_replacement_materials;
     // 3 bytes padding to 0x58
 };
 static_assert(sizeof(EditorVMesh) == 0x58, "EditorVMesh size mismatch");
 
-// Editor MeshMaterial (0xC8 bytes, same layout as game rf::MeshMaterial but with int diffuse_color)
+struct EditorTextureMap {
+    int tex_handle;
+    char name[33];
+    int start_frame;
+    float playback_rate;
+    int anim_type;
+};
+
+// Editor MeshMaterial (0xC8 bytes, same layout as game rf::MeshMaterial)
 struct EditorMeshMaterial {
     int material_type;
     int flags;
     bool use_additive_blending;
     char _pad[3];
-    int diffuse_color;
-    struct { int tex_handle; char name[33]; int start_frame; float playback_rate; int anim_type; } texture_maps[2];
+    Color diffuse_color;
+    EditorTextureMap texture_maps[2];
     int framerate;
     int num_mix_frames;
     int* mix;
@@ -108,29 +146,28 @@ struct EditorMeshMaterial {
 };
 static_assert(sizeof(EditorMeshMaterial) == 0xC8, "EditorMeshMaterial size mismatch");
 
-// VMesh factory functions (all __cdecl)
-static auto& vmesh_load_v3m = addr_as_ref<void*(const char* filename, int param2, int param3)>(0x004BFC30);
-static auto& vmesh_load_v3c = addr_as_ref<void*(const char* filename, int param2, int param3)>(0x004BFD70);
-static auto& vmesh_load_vfx = addr_as_ref<void*(const char* filename, int param2)>(0x004BFE10);
-static auto& vmesh_free = addr_as_ref<void(void* vmesh)>(0x004BFEC0);
-static auto& vmesh_render = addr_as_ref<void(void* vmesh, const void* pos, const void* orient, const void* flags)>(0x004C04B0);
-static auto& vmesh_get_bound_sphere = addr_as_ref<void(void* vmesh, void* center_out, void* radius_out)>(0x004C0680);
-static auto& vmesh_process = addr_as_ref<void(void* vmesh, float time, int param3, const void* pos, const void* orient, int param6)>(0x004C0710);
-static auto& vmesh_anim_init = addr_as_ref<void(void* vmesh, int start_frame, float speed)>(0x004C0740);
-static auto& vmesh_get_type = addr_as_ref<int(void* vmesh)>(0x004BFEB0);
-static auto& vmesh_stop_all_actions = addr_as_ref<void(void* vmesh)>(0x004C07B0);
-static auto& editor_vmesh_get_materials_array = addr_as_ref<void(void* vmesh, int* num_out, EditorMeshMaterial** materials_out)>(0x004C0A00);
+// VMesh factory functions
+static auto& vmesh_load_v3m = addr_as_ref<EditorVMesh*(const char* filename, int param2, int param3)>(0x004BFC30);
+static auto& vmesh_load_v3c = addr_as_ref<EditorVMesh*(const char* filename, int param2, int param3)>(0x004BFD70);
+static auto& vmesh_load_vfx = addr_as_ref<EditorVMesh*(const char* filename, int param2)>(0x004BFE10);
+static auto& vmesh_free = addr_as_ref<void(EditorVMesh* vmesh)>(0x004BFEC0);
+static auto& vmesh_render = addr_as_ref<void(EditorVMesh* vmesh, const void* pos, const void* orient, const EditorRenderParams* params)>(0x004C04B0);
+static auto& vmesh_get_bound_sphere = addr_as_ref<void(EditorVMesh* vmesh, void* center_out, void* radius_out)>(0x004C0680);
+static auto& vmesh_process = addr_as_ref<void(EditorVMesh* vmesh, float time, int param3, const void* pos, const void* orient, int param6)>(0x004C0710);
+static auto& vmesh_anim_init = addr_as_ref<void(EditorVMesh* vmesh, int start_frame, float speed)>(0x004C0740);
+static auto& vmesh_get_type = addr_as_ref<EditorVMeshType(EditorVMesh* vmesh)>(0x004BFEB0);
+static auto& vmesh_stop_all_actions = addr_as_ref<void(EditorVMesh* vmesh)>(0x004C07B0);
+static auto& editor_vmesh_get_materials_array = addr_as_ref<void(EditorVMesh* vmesh, int* num_out, EditorMeshMaterial** materials_out)>(0x004C0A00);
 
 // Bitmap load: loads a texture file, returns handle (or -1 on failure)
 static auto& bm_load = addr_as_ref<int(const char* filename, int path_id, int generate_mipmaps)>(0x004BBBF0);
 
 // character_mesh_load_action: __thiscall on mesh_data, loads .rfa file, returns action index
-// 3 stack args (RET 0xC): filename, is_state flag, unused
 using EditorCharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char is_state, char unused);
 static const auto character_mesh_load_action = reinterpret_cast<EditorCharMeshLoadActionFn>(0x004C2150);
 
 // vmesh_play_action_by_index: cdecl wrapper
-static auto& vmesh_play_action_by_index = addr_as_ref<void(void* vmesh, int action_index, float transition_time, int hold_last_frame)>(0x004C0760);
+static auto& vmesh_play_action_by_index = addr_as_ref<void(EditorVMesh* vmesh, int action_index, float transition_time, int hold_last_frame)>(0x004C0760);
 
 // Drawing primitives
 static auto& draw_3d_arrow = addr_as_ref<void(float, float, float, float, float, float, int, int, int)>(0x004CC2F0);
@@ -139,8 +176,57 @@ static auto& set_draw_color = addr_as_ref<void(uint32_t r, uint32_t g, uint32_t 
 static auto& draw_line_2d = addr_as_ref<uint32_t(const void* pt1, const void* pt2, uint32_t mode)>(0x004CB150);
 static auto& project_to_screen_2d = addr_as_ref<bool(const void* world_pos, float* out_x, float* out_y)>(0x004C6630);
 
+// ─── Render Params ───────────────────────────────────────────────────────────
+
+enum EditorRenderFlag : uint32_t
+{
+    ERF_TEXTURED            = 0x2,
+    ERF_SELECTION_HIGHLIGHT = 0x20,
+};
+
+// VMesh render parameters
+struct EditorRenderParams
+{
+    uint32_t flags;
+    uint32_t field_04;
+    uint32_t field_08;
+    Color diffuse_color;
+    uint32_t field_10;
+    float field_14;
+    Color selection_color;
+    uint32_t field_1C;
+    uint32_t field_20;
+    uint32_t field_24;
+    Color field_28;
+    Matrix3 orient;
+
+    EditorRenderParams()
+    {
+        AddrCaller{0x004BE330}.this_call(this);
+    }
+};
+static_assert(sizeof(EditorRenderParams) == 0x50);
+
+// ─── Tree Control ────────────────────────────────────────────────────────────
+
+// Editor tree control — CTreeCtrl inherits from CWnd (same layout, no additional data)
+struct EditorTreeCtrl : CWnd
+{
+    int insert_item(const char* label, int parent_handle, int sort_flags)
+    {
+        return AddrCaller{0x004422B0}.this_call<int>(this, label, parent_handle, sort_flags);
+    }
+
+    void set_item_data(int item_handle, int data)
+    {
+        AddrCaller{0x00442320}.this_call(this, item_handle, data);
+    }
+};
+static_assert(sizeof(EditorTreeCtrl) == sizeof(CWnd));
+
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
+static auto& generate_uid = addr_as_ref<int()>(0x00484230);
 static auto& file_add_path = addr_as_ref<int __cdecl(const char* path, const char* exts, bool cd)>(0x004C3950);
 static auto& rf_alloc = addr_as_ref<void* __cdecl(size_t size)>(0x0052ee74);
 static auto& log_dlg_append = addr_as_ref<int __cdecl(void*, const char*, ...)>(0x00444980);

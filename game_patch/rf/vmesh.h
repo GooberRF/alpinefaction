@@ -23,7 +23,7 @@ namespace rf
         char filename[65];
         //uint8_t padding[3];             // 0x4D - 3 bytes of padding
         void* replacement_materials;
-        char use_replacement_materials;
+        bool use_replacement_materials;
         //uint8_t _padding[3];            // 0x55 - Padding bytes to align to size 0x58
     };
     static_assert(sizeof(VMesh) == 0x58);   

@@ -284,6 +284,12 @@ struct VString
         return buf ? buf : "";
     }
 
+    // Free the buffer using the stock allocator
+    void free()
+    {
+        AddrCaller{0x004B6710}.this_call(this);
+    }
+
     // Check if the string is empty
     bool empty() const
     {

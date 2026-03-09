@@ -24,7 +24,7 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 // Free a VString buffer using the stock allocator
 static void vstring_free(VString& s)
 {
-    AddrCaller{0x004b6710}.this_call(&s);
+    s.free();
 }
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
@@ -37,42 +37,41 @@ static DedMesh* g_preview_mesh = nullptr;
 static float g_preview_timer = 0.0f;
 static constexpr float PREVIEW_DURATION = 10.0f; // max preview time in seconds
 
+// DedObject::vmesh is void* (stock struct), this helper provides typed access
+static EditorVMesh* get_vmesh(DedMesh* mesh) { return static_cast<EditorVMesh*>(mesh->vmesh); }
+
 // Cache action indices per vmesh to avoid calling character_mesh_load_action during rendering
-static std::unordered_map<void*, int> g_v3c_action_cache;
+static std::unordered_map<EditorVMesh*, int> g_v3c_action_cache;
 
 // ─── VMesh Loading ──────────────────────────────────────────────────────────
 
-static bool mesh_play_v3c_action(void* vmesh_ptr, const char* action_name, float transition_time = 1.0f)
+static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name, float transition_time = 1.0f)
 {
-    if (!vmesh_ptr || !action_name || action_name[0] == '\0') return false;
-
-    auto* vmesh = reinterpret_cast<EditorVMesh*>(vmesh_ptr);
-    if (vmesh->type != 2) return false; // only for character meshes
+    if (!vmesh || !action_name || action_name[0] == '\0') return false;
+    if (vmesh->type != VMESH_TYPE_CHARACTER) return false;
     if (!vmesh->mesh) return false;
 
     // Verify the animation file exists before loading (character_mesh_load_action
     // returns 0 rather than -1 for missing files, which leads to garbage animation data)
-    uint8_t file_obj[0x114] = {};
-    AddrCaller{0x004cf600}.this_call(file_obj);
-    bool file_found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, action_name, 0x98967f);
-    if (!file_found) {
+    rf::File file;
+    if (!file.open(action_name)) {
         xlog::warn("[Mesh] Animation file '{}' not found, skipping", action_name);
         return false;
     }
 
     int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0, 0);
     if (action_index < 0) {
-        xlog::warn("[Mesh] Failed to load animation '{}' on vmesh {:p}", action_name, vmesh_ptr);
+        xlog::warn("[Mesh] Failed to load animation '{}' on vmesh {:p}", action_name, static_cast<void*>(vmesh));
         return false;
     }
 
     if (!vmesh->instance) {
-        xlog::warn("[Mesh] No instance on vmesh {:p}, cannot play animation", vmesh_ptr);
+        xlog::warn("[Mesh] No instance on vmesh {:p}, cannot play animation", static_cast<void*>(vmesh));
         return false;
     }
 
-    g_v3c_action_cache[vmesh_ptr] = action_index;
-    vmesh_play_action_by_index(vmesh_ptr, action_index, transition_time, 0);
+    g_v3c_action_cache[vmesh] = action_index;
+    vmesh_play_action_by_index(vmesh, action_index, transition_time, 0);
     return true;
 }
 
@@ -87,10 +86,10 @@ static void mesh_load_vmesh(DedMesh* mesh)
     if (!mesh) return;
 
     // Free existing vmesh if any
-    if (mesh->vmesh) {
-        g_v3c_action_cache.erase(mesh->vmesh);
-        vmesh_free(mesh->vmesh);
-        mesh->vmesh = 0;
+    if (auto* v = get_vmesh(mesh)) {
+        g_v3c_action_cache.erase(v);
+        vmesh_free(v);
+        mesh->vmesh = nullptr;
     }
 
     const char* filename = mesh->mesh_filename.c_str();
@@ -98,17 +97,15 @@ static void mesh_load_vmesh(DedMesh* mesh)
 
     const char* ext = get_file_extension(filename);
 
-    void* vmesh = nullptr;
+    EditorVMesh* vmesh = nullptr;
     if (_stricmp(ext, ".v3m") == 0) {
         vmesh = vmesh_load_v3m(filename, 1, -1);
     }
     else if (_stricmp(ext, ".v3c") == 0 || _stricmp(ext, ".vfx") == 0) {
         // Both v3c and vfx loaders can trigger fatal errors if the file is missing.
         // Use RED's File class to check if the file exists (searches loose files + .vpp archives).
-        uint8_t file_obj[0x114] = {};
-        AddrCaller{0x004cf600}.this_call(file_obj); // File constructor (__thiscall)
-        bool found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, filename, 0x98967f);
-        if (found) {
+        rf::File file;
+        if (file.open(filename)) {
             if (_stricmp(ext, ".v3c") == 0) {
                 vmesh = vmesh_load_v3c(filename, 0, 0);
             }
@@ -126,18 +123,17 @@ static void mesh_load_vmesh(DedMesh* mesh)
     if (vmesh) {
         // Clear replacement material state to prevent stale data from memory reuse
         // (e.g. VFX vmesh freed then V3M allocated at same address with leftover flags)
-        auto* ev = reinterpret_cast<EditorVMesh*>(vmesh);
-        ev->replacement_materials = nullptr;
-        ev->use_replacement_materials = 0;
+        vmesh->replacement_materials = nullptr;
+        vmesh->use_replacement_materials = false;
 
-        int vtype = vmesh_get_type(vmesh);
+        auto vtype = vmesh_get_type(vmesh);
         // Initialize VFX animation state (matches stock item setup in FUN_004151c0)
-        if (vtype == 3) {
+        if (vtype == VMESH_TYPE_ANIM_FX) {
             vmesh_anim_init(vmesh, 0, 1.0f);
             vmesh_process(vmesh, 0.0f, 0, nullptr, nullptr, 1);
         }
         // Play state animation for v3c skeletal meshes — jump to first frame
-        if (vtype == 2) {
+        if (vtype == VMESH_TYPE_CHARACTER) {
             const char* anim = mesh->state_anim.c_str();
             if (anim && anim[0] != '\0') {
                 // Use tiny transition time so the blend completes almost instantly
@@ -159,7 +155,8 @@ static void mesh_load_vmesh(DedMesh* mesh)
 // Apply per-slot texture overrides to a mesh's vmesh
 static void mesh_apply_texture_overrides(DedMesh* mesh)
 {
-    if (!mesh || !mesh->vmesh) return;
+    auto* ev = get_vmesh(mesh);
+    if (!mesh || !ev) return;
 
     bool has_any = false;
     for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
@@ -168,15 +165,14 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
     }
     if (!has_any) return;
 
-    auto* ev = reinterpret_cast<EditorVMesh*>(mesh->vmesh);
     int num_materials = 0;
     EditorMeshMaterial* materials = nullptr;
-    editor_vmesh_get_materials_array(mesh->vmesh, &num_materials, &materials);
+    editor_vmesh_get_materials_array(ev, &num_materials, &materials);
     if (!materials || num_materials <= 0) {
         // editor_vmesh_get_materials_array unconditionally sets use_replacement_materials=1
         // even when allocation fails (e.g. V3M with multiple LODs/sub-meshes).
         // Clear the flag to prevent the render code from dereferencing a null pointer.
-        ev->use_replacement_materials = 0;
+        ev->use_replacement_materials = false;
         ev->replacement_materials = nullptr;
 
         // For V3M meshes with multiple LODs or sub-mesh groups, the engine's replacement
@@ -184,7 +180,7 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
         // replacement materials to ALL LODs from a single set. Work around the limitation
         // by temporarily faking single-LOD/single-submesh counts during allocation.
         // V3M instance offsets: +0x50 = lod_count (int), +0x54 = submesh_list (int**)
-        if (ev->type == 1) { // V3M
+        if (ev->type == VMESH_TYPE_STATIC) { // V3M
             auto* instance = reinterpret_cast<uint8_t*>(ev->instance);
             if (instance) {
                 int* lod_count_ptr = reinterpret_cast<int*>(instance + 0x50);
@@ -196,14 +192,14 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
                 if (submesh_list_ptr && *submesh_list_ptr)
                     **submesh_list_ptr = 1;
 
-                editor_vmesh_get_materials_array(mesh->vmesh, &num_materials, &materials);
+                editor_vmesh_get_materials_array(ev, &num_materials, &materials);
 
                 *lod_count_ptr = orig_lod_count;
                 if (submesh_list_ptr && *submesh_list_ptr)
                     **submesh_list_ptr = orig_submesh_count;
 
                 if (!materials || num_materials <= 0) {
-                    ev->use_replacement_materials = 0;
+                    ev->use_replacement_materials = false;
                     xlog::warn("[Mesh] Failed to allocate replacement materials for multi-LOD V3M");
                     return;
                 }
@@ -241,10 +237,10 @@ static void destroy_ded_mesh(DedMesh* mesh)
 {
     if (!mesh) return;
     // Free vmesh
-    if (mesh->vmesh) {
-        g_v3c_action_cache.erase(mesh->vmesh);
-        vmesh_free(mesh->vmesh);
-        mesh->vmesh = 0;
+    if (auto* v = get_vmesh(mesh)) {
+        g_v3c_action_cache.erase(v);
+        vmesh_free(v);
+        mesh->vmesh = nullptr;
     }
     // Free VString members from DedObject base
     vstring_free(mesh->field_4);
@@ -616,21 +612,21 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
 
             // Reload vmesh if filename changed or not loaded yet
             const char* cur_filename = mesh->mesh_filename.c_str();
-            if (!mesh->vmesh || _stricmp(cur_filename, fname_buf) != 0) {
+            if (!get_vmesh(mesh) || _stricmp(cur_filename, fname_buf) != 0) {
                 // Apply filename to mesh so load uses it
                 mesh->mesh_filename.assign_0(fname_buf);
-                if (mesh->vmesh) {
-                    g_v3c_action_cache.erase(mesh->vmesh);
-                    vmesh_free(mesh->vmesh);
+                if (auto* v = get_vmesh(mesh)) {
+                    g_v3c_action_cache.erase(v);
+                    vmesh_free(v);
                     mesh->vmesh = nullptr;
                 }
                 mesh->vmesh_load_failed = false;
                 mesh_load_vmesh(mesh);
             }
 
-            if (mesh->vmesh && anim_buf[0] != '\0') {
+            if (auto* v = get_vmesh(mesh); v && anim_buf[0] != '\0') {
                 // Play the animation and start preview timer
-                mesh_play_v3c_action(mesh->vmesh, anim_buf);
+                mesh_play_v3c_action(v, anim_buf);
                 g_preview_mesh = mesh;
                 g_preview_timer = PREVIEW_DURATION;
             }
@@ -722,9 +718,9 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
 
     // Free old vmesh and let render hook lazy-load the new one
     if (g_mesh_filename_changed && mesh) {
-        if (mesh->vmesh) {
-            g_v3c_action_cache.erase(mesh->vmesh);
-            vmesh_free(mesh->vmesh);
+        if (auto* v = get_vmesh(mesh)) {
+            g_v3c_action_cache.erase(v);
+            vmesh_free(v);
             mesh->vmesh = nullptr;
         }
         mesh->vmesh_load_failed = false;
@@ -732,9 +728,9 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
     // If only anim changed (not filename), fully reload vmesh to cleanly switch.
     // Freeing + clearing load flag lets the render loop lazy-load with the new anim.
     else if (g_mesh_anim_changed && mesh) {
-        if (mesh->vmesh) {
-            g_v3c_action_cache.erase(mesh->vmesh);
-            vmesh_free(mesh->vmesh);
+        if (auto* v = get_vmesh(mesh)) {
+            g_v3c_action_cache.erase(v);
+            vmesh_free(v);
             mesh->vmesh = nullptr;
         }
         mesh->vmesh_load_failed = false;
@@ -765,8 +761,7 @@ FunHook<int()> generate_uid_hook{
 
 static int generate_mesh_uid()
 {
-    // Call through the hooked address (which runs our hook)
-    return AddrCaller{0x00484230}.c_call<int>();
+    return generate_uid();
 }
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────
@@ -818,12 +813,11 @@ void PlaceNewMeshObject()
     level->master_objects.add(static_cast<DedObject*>(mesh));
 
     // Deselect all, then select the new mesh (matches stock FUN_004146b0 flow)
-    auto* sel = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(level) + 0x298);
-    AddrCaller{0x00419eb0}.this_call(sel);
-    AddrCaller{0x00491020}.this_call(sel, static_cast<DedObject*>(mesh));
+    level->clear_selection();
+    level->add_to_selection(static_cast<DedObject*>(mesh));
 
     // Update console display to show selected object info
-    AddrCaller{0x00423460}.this_call(level);
+    level->update_console_display();
 }
 
 DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
@@ -921,26 +915,26 @@ CodeInjection open_mesh_properties_patch{
             // mesh_load_vmesh here because VFX loading can trigger exceptions that
             // get caught by CodeInjection's SEH handler, silently aborting this lambda.
             if (g_mesh_filename_changed) {
-                for (auto* mesh : g_selected_meshes) {
-                    if (!mesh) continue;
-                    if (mesh->vmesh) {
-                        g_v3c_action_cache.erase(mesh->vmesh);
-                        vmesh_free(mesh->vmesh);
-                        mesh->vmesh = nullptr;
+                for (auto* m : g_selected_meshes) {
+                    if (!m) continue;
+                    if (auto* v = get_vmesh(m)) {
+                        g_v3c_action_cache.erase(v);
+                        vmesh_free(v);
+                        m->vmesh = nullptr;
                     }
-                    mesh->vmesh_load_failed = false;
+                    m->vmesh_load_failed = false;
                 }
             }
             // If only anim changed, fully reload vmeshes to cleanly switch
             else if (g_mesh_anim_changed) {
-                for (auto* mesh : g_selected_meshes) {
-                    if (!mesh) continue;
-                    if (mesh->vmesh) {
-                        g_v3c_action_cache.erase(mesh->vmesh);
-                        vmesh_free(mesh->vmesh);
-                        mesh->vmesh = nullptr;
+                for (auto* m : g_selected_meshes) {
+                    if (!m) continue;
+                    if (auto* v = get_vmesh(m)) {
+                        g_v3c_action_cache.erase(v);
+                        vmesh_free(v);
+                        m->vmesh = nullptr;
                     }
-                    mesh->vmesh_load_failed = false;
+                    m->vmesh_load_failed = false;
                 }
             }
         }
@@ -1050,7 +1044,7 @@ CodeInjection mesh_render_patch{
 
             // Lazy-load vmesh on first render (one per frame to avoid VFX loader issues)
             bool just_loaded = false;
-            if (!mesh->vmesh && !mesh->vmesh_load_failed && mesh->mesh_filename.c_str()[0] != '\0') {
+            if (!get_vmesh(mesh) && !mesh->vmesh_load_failed && mesh->mesh_filename.c_str()[0] != '\0') {
                 if (!did_lazy_load) {
                     mesh_load_vmesh(mesh);
                     did_lazy_load = true;
@@ -1060,60 +1054,35 @@ CodeInjection mesh_render_patch{
 
             // Render the actual vmesh if loaded (skip on the frame it was just loaded
             // to avoid VFX render state conflicts from loading + rendering in same frame)
-            if (mesh->vmesh && !just_loaded) {
+            auto* vm = get_vmesh(mesh);
+            if (vm && !just_loaded) {
                 set_draw_color(0xff, 0xff, 0xff, 0xff);
 
-                // Render params struct (~80 bytes) initialized by FUN_004be330.
-                // Layout (from FUN_004be360 + FUN_004b1fc0):
-                //   [+0x00] flags: bit 0x2 = textured, bit 0x20 = selection highlight
-                //   [+0x04] = 0xFFFFFFFF
-                //   [+0x08] = 0xFF
-                //   [+0x0C] diffuse color (4 bytes RGBA)
-                //   [+0x10] = 0
-                //   [+0x14] = -1.0f
-                //   [+0x18] selection color (4 bytes RGBA)
-                //   [+0x1C] = 0
-                //   [+0x20] = 0xFFFFFFFF
-                //   [+0x24] = 0xFFFFFFFF
-                //   [+0x2C] 3x3 identity matrix (36 bytes)
-                uint8_t render_params[96] = {};
-                // Initialize with stock defaults via FUN_004be330
-                AddrCaller{0x004be330}.this_call(render_params);
-
-                uint32_t& flags = *reinterpret_cast<uint32_t*>(&render_params[0]);
+                EditorRenderParams render_params;
 
                 // Check if textures are enabled (DAT_006c9aa8)
                 if (*reinterpret_cast<int*>(0x006c9aa8) != 0) {
-                    flags |= 0x2; // texture bit
-                    // Set diffuse color to white (RGBA) at offset 0x0C
-                    render_params[0x0C] = 0xff;
-                    render_params[0x0D] = 0xff;
-                    render_params[0x0E] = 0xff;
-                    render_params[0x0F] = 0xff;
+                    render_params.flags |= ERF_TEXTURED;
+                    render_params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
                 }
 
                 // Selection highlight
                 if (selected) {
-                    flags |= 0x20; // selection bit
-                    // Set selection color (red) at offset 0x18
-                    render_params[0x18] = 0xff;
-                    render_params[0x19] = 0x00;
-                    render_params[0x1A] = 0x00;
-                    render_params[0x1B] = 0xff;
+                    render_params.flags |= ERF_SELECTION_HIGHLIGHT;
+                    render_params.selection_color = {0xff, 0x00, 0x00, 0xff};
                 }
 
                 // Advance animation each frame for animated mesh types
-                int vmesh_type = vmesh_get_type(mesh->vmesh);
-                if (vmesh_type == 3) { // VFX
-                    vmesh_process(mesh->vmesh, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
+                auto vmesh_type = vmesh_get_type(vm);
+                if (vmesh_type == VMESH_TYPE_ANIM_FX) {
+                    vmesh_process(vm, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
                     *reinterpret_cast<int*>(0x0059e21c) = 1;
                 }
-                else if (vmesh_type == 2) { // V3C character
-                    auto* instance = reinterpret_cast<EditorVMesh*>(mesh->vmesh)->instance;
-                    if (instance) {
+                else if (vmesh_type == VMESH_TYPE_CHARACTER) {
+                    if (vm->instance) {
                         if (g_preview_mesh == mesh && g_preview_timer > 0.0f) {
                             // Preview is active - advance animation in real time
-                            vmesh_process(mesh->vmesh, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
+                            vmesh_process(vm, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
                             g_preview_timer -= 0.03f;
                             if (g_preview_timer <= 0.0f) {
                                 g_preview_mesh = nullptr;
@@ -1125,10 +1094,10 @@ CodeInjection mesh_render_patch{
                             // the slot's start timestamp to "now". The animation system
                             // uses real system time to evaluate pose, so this keeps the
                             // pose perpetually at frame 0.
-                            auto it = g_v3c_action_cache.find(mesh->vmesh);
+                            auto it = g_v3c_action_cache.find(vm);
                             if (it != g_v3c_action_cache.end() && it->second >= 0) {
-                                vmesh_play_action_by_index(mesh->vmesh, it->second, 0.001f, 0);
-                                vmesh_process(mesh->vmesh, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
+                                vmesh_play_action_by_index(vm, it->second, 0.001f, 0);
+                                vmesh_process(vm, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
                             }
                         }
                     }
@@ -1137,7 +1106,7 @@ CodeInjection mesh_render_patch{
                 // Get bounding sphere radius for room visibility setup
                 float bound_center[3] = {};
                 float bound_radius = 0.0f;
-                vmesh_get_bound_sphere(mesh->vmesh, bound_center, &bound_radius);
+                vmesh_get_bound_sphere(vm, bound_center, &bound_radius);
 
                 // Room visibility setup (required for mesh rendering)
                 using RoomSetupFn = int(__cdecl*)(int, const void*, float, int, int);
@@ -1146,7 +1115,7 @@ CodeInjection mesh_render_patch{
                 auto room_cleanup = reinterpret_cast<RoomCleanupFn>(0x00488bb0);
 
                 room_setup(0, &mesh->pos, bound_radius, 1, 1);
-                vmesh_render(mesh->vmesh, &mesh->pos, &mesh->orient, render_params);
+                vmesh_render(vm, &mesh->pos, &mesh->orient, &render_params);
                 room_cleanup();
 
                 // Reset VFX transparency flag
@@ -1208,14 +1177,14 @@ CodeInjection mesh_tree_patch{
         if (!level) return;
         auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
 
-        void* tree_ctrl = reinterpret_cast<void*>(static_cast<uintptr_t>(regs.esi));
+        auto* tree = reinterpret_cast<EditorTreeCtrl*>(static_cast<uintptr_t>(regs.esi));
         int master_groups = *reinterpret_cast<int*>(regs.edi + 0x98);
 
         char buf[64];
         snprintf(buf, sizeof(buf), "Meshes (%d)", static_cast<int>(meshes.size()));
 
         // Create "Meshes (%d)" parent node under Master_Groups
-        int parent = AddrCaller{0x004422b0}.this_call<int>(tree_ctrl, buf, master_groups, 0xffff0002);
+        int parent = tree->insert_item(buf, master_groups, 0xffff0002);
 
         for (auto* mesh : meshes) {
             const char* name = mesh->script_name.c_str();
@@ -1225,8 +1194,8 @@ CodeInjection mesh_tree_patch{
             if (!name || name[0] == '\0') {
                 name = "(unnamed)";
             }
-            int child = AddrCaller{0x004422b0}.this_call<int>(tree_ctrl, name, parent, 0xffff0002);
-            AddrCaller{0x00442320}.this_call(tree_ctrl, child, mesh->uid);
+            int child = tree->insert_item(name, parent, 0xffff0002);
+            tree->set_item_data(child, mesh->uid);
         }
     },
 };
@@ -1248,10 +1217,9 @@ CodeInjection mesh_pick_patch{
         auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
         for (auto* mesh : meshes) {
             if (mesh->hidden_in_editor) continue;
-            bool hit = AddrCaller{0x0042AC00}.this_call<bool>(level, param1, param2, &mesh->pos);
+            bool hit = level->hit_test_point(param1, param2, &mesh->pos);
             if (hit) {
-                auto* sel = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(level) + 0x298);
-                AddrCaller{0x00416BF0}.this_call(sel, static_cast<DedObject*>(mesh));
+                level->select_object(static_cast<DedObject*>(mesh));
                 xlog::debug("[Mesh] Pick: selected mesh uid={} at ({},{},{})",
                     mesh->uid, mesh->pos.x, mesh->pos.y, mesh->pos.z);
             }
@@ -1291,7 +1259,7 @@ CodeInjection mesh_click_pick_patch{
         uintptr_t p2 = *reinterpret_cast<uintptr_t*>(esp_val + 0x04); // arg2
 
         // Call stock ray-pick ourselves
-        void* picked = AddrCaller{0x0042b880}.this_call<void*>(level, p1, p2);
+        void* picked = level->pick_object(p1, p2);
 
         if (!picked) {
             // Stock found nothing - check mesh objects using bounding sphere
@@ -1308,8 +1276,8 @@ CodeInjection mesh_click_pick_patch{
 
                 // Get bounding sphere (world-space center + radius)
                 float bound_center[3] = {}, bound_radius = 0.5f;
-                if (mesh->vmesh) {
-                    vmesh_get_bound_sphere(mesh->vmesh, bound_center, &bound_radius);
+                if (auto* v = get_vmesh(mesh)) {
+                    vmesh_get_bound_sphere(v, bound_center, &bound_radius);
                     if (bound_radius < 0.25f) bound_radius = 0.25f;
                 }
 
@@ -1360,13 +1328,12 @@ CodeInjection mesh_click_pick_patch{
                 // Handle selection ourselves to avoid stock virtual method calls on DedMesh
                 uint8_t shift = *reinterpret_cast<uint8_t*>(esp_val + 0x18);
                 if (!shift) {
-                    AddrCaller{0x0042c7a0}.this_call(level); // deselect all
+                    level->deselect_all();
                 }
                 if (shift && is_mesh_selected(level, best_mesh)) {
                     remove_from_selection(level->selection, static_cast<DedObject*>(best_mesh));
                 } else {
-                    auto* sel = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(level) + 0x298);
-                    AddrCaller{0x00416BF0}.this_call(sel, static_cast<DedObject*>(best_mesh));
+                    level->select_object(static_cast<DedObject*>(best_mesh));
                 }
                 xlog::info("[Mesh] Click-pick: selected mesh uid={}", best_mesh->uid);
 
@@ -1393,8 +1360,8 @@ static std::vector<DedMesh*> g_mesh_clipboard;
 static void clear_mesh_clipboard()
 {
     for (auto* mesh : g_mesh_clipboard) {
-        if (mesh->vmesh) {
-            vmesh_free(mesh->vmesh);
+        if (auto* v = get_vmesh(mesh)) {
+            vmesh_free(v);
         }
         vstring_free(mesh->script_name);
         vstring_free(mesh->mesh_filename);
@@ -1449,18 +1416,16 @@ CodeInjection mesh_copy_hook{
 static void __fastcall mesh_paste_wrapper(void* ecx_level, void* /*edx_unused*/)
 {
     // Call original paste function (handles stock object types from 0x2EC)
-    AddrCaller{0x00413050}.this_call(ecx_level);
+    auto* level = reinterpret_cast<CDedLevel*>(ecx_level);
+    level->paste_objects();
 
     // Create mesh clones from clipboard and add to selection
     if (!g_mesh_clipboard.empty()) {
-        auto* level = CDedLevel::Get();
         if (level) {
-            auto* sel_ptr = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(level) + 0x298);
             for (auto* staged : g_mesh_clipboard) {
                 auto* clone = CloneMeshObject(staged, true);
                 if (clone) {
-                    // Add to selection (same function the stock paste loop uses: FUN_00491020)
-                    AddrCaller{0x00491020}.this_call(sel_ptr, static_cast<DedObject*>(clone));
+                    level->add_to_selection(static_cast<DedObject*>(clone));
                     xlog::info("[Mesh] Paste: created mesh uid={} from clipboard, selected", clone->uid);
                 }
             }
@@ -1556,8 +1521,8 @@ CodeInjection mesh_delete_patch{
 CodeInjection mesh_object_tree_patch{
     0x004442b7,
     [](auto& regs) {
-        void* tree_ctrl = reinterpret_cast<void*>(static_cast<uintptr_t>(regs.esi));
-        AddrCaller{0x004422b0}.this_call<int>(tree_ctrl, "Mesh", 0xffff0000, 0xffff0002);
+        auto* tree = reinterpret_cast<EditorTreeCtrl*>(static_cast<uintptr_t>(regs.esi));
+        tree->insert_item("Mesh", 0xffff0000, 0xffff0002);
     },
 };
 

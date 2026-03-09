@@ -599,6 +599,46 @@ struct CDedLevel
         return struct_field_ref<AlpineLevelProperties>(this, stock_cdedlevel_size);
     }
 
+    void deselect_all()
+    {
+        AddrCaller{0x0042C7A0}.this_call(this);
+    }
+
+    void clear_selection()
+    {
+        AddrCaller{0x00419EB0}.this_call(&selection);
+    }
+
+    void select_object(DedObject* obj)
+    {
+        AddrCaller{0x00416BF0}.this_call(&selection, obj);
+    }
+
+    void add_to_selection(DedObject* obj)
+    {
+        AddrCaller{0x00491020}.this_call(&selection, obj);
+    }
+
+    void update_console_display()
+    {
+        AddrCaller{0x00423460}.this_call(this);
+    }
+
+    bool hit_test_point(int screen_x, int screen_y, const Vector3* pos)
+    {
+        return AddrCaller{0x0042AC00}.this_call<bool>(this, screen_x, screen_y, pos);
+    }
+
+    void* pick_object(uintptr_t click_data, uintptr_t param2)
+    {
+        return AddrCaller{0x0042B880}.this_call<void*>(this, click_data, param2);
+    }
+
+    void paste_objects()
+    {
+        AddrCaller{0x00413050}.this_call(this);
+    }
+
     static CDedLevel* Get()
     {
         return AddrCaller{0x004835F0}.c_call<CDedLevel*>();
