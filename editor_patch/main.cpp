@@ -32,7 +32,7 @@
 #include "level.h"
 #include "event.h"
 #include "mesh.h"
-#include "note.h"
+#include "alpine_obj.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -1290,8 +1290,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyTriggerPatches();
     ApplyLevelPatches();
     ApplyEventsPatches();
-    ApplyMeshPatches();
-    ApplyNotePatches();
+    ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
 

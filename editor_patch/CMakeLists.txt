@@ -1,5 +1,7 @@
 set(SRCS
     exports.h
+    alpine_obj.cpp
+    alpine_obj.h
     event.cpp
     graphics.cpp
     main.cpp

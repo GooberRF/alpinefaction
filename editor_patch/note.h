@@ -4,8 +4,6 @@
 #include "mfc_types.h"
 #include "level.h"
 
-void ApplyNotePatches();
-
 // Note serialization (called from level.cpp injection points)
 void note_serialize_chunk(CDedLevel& level, rf::File& file);
 void note_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len);
@@ -18,7 +16,7 @@ void PlaceNewNoteObject();
 DedNote* CloneNoteObject(DedNote* source, bool add_to_level = true);
 void DeleteNoteObject(DedNote* note);
 
-// Handlers called from shared hook points in mesh.cpp
+// Handlers called from shared hook points in alpine_obj.cpp
 void note_render(CDedLevel* level);
 void note_pick(CDedLevel* level, int param1, int param2);
 DedNote* note_click_pick(CDedLevel* level, float click_x, float click_y);

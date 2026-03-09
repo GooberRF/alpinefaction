@@ -570,11 +570,3 @@ void note_ensure_uid(int& uid)
     }
 }
 
-// ─── Apply Patches ──────────────────────────────────────────────────────────
-
-void ApplyNotePatches()
-{
-    // All hooks are integrated into mesh.cpp's existing CodeInjection patches.
-    // This function is called for any note-specific standalone patches.
-    xlog::info("[Note] Note object patches applied");
-}

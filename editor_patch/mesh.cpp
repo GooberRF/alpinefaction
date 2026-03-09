@@ -9,16 +9,12 @@
 #include <unordered_map>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
-#include <patch_common/CodeInjection.h>
-#include <patch_common/FunHook.h>
-#include <patch_common/AsmWriter.h>
 #include "mesh.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "resources.h"
 #include "vtypes.h"
 #include <common/utils/string-utils.h>
-#include "note.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -799,27 +795,13 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
 
-// Hook stock UID generator so it also considers mesh UIDs.
-// Stock generate_uid scans brushes/objects for max UID and returns max+1,
-// but doesn't know about Alpine mesh objects.
-FunHook<int()> generate_uid_hook{
-    0x00484230,
-    []() {
-        int uid = generate_uid_hook.call_target();
-        auto* level = CDedLevel::Get();
-        if (level) {
-            for (auto* m : level->GetAlpineLevelProperties().mesh_objects) {
-                if (m->uid >= uid) uid = m->uid + 1;
-            }
-            note_ensure_uid(uid);
-        }
-        return uid;
-    },
-};
-
-static int generate_mesh_uid()
+void mesh_ensure_uid(int& uid)
 {
-    return generate_uid();
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    for (auto* m : level->GetAlpineLevelProperties().mesh_objects) {
+        if (m->uid >= uid) uid = m->uid + 1;
+    }
 }
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────
@@ -860,7 +842,7 @@ void PlaceNewMeshObject()
         mesh->orient.fvec = {0.0f, 0.0f, 1.0f};
     }
 
-    mesh->uid = generate_mesh_uid();
+    mesh->uid = generate_uid();
 
     // Add to level (vmesh will be loaded lazily on first render)
     level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
@@ -897,7 +879,7 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->simulate_in_editor = source->simulate_in_editor;
 
     // Generate new UID
-    mesh->uid = generate_mesh_uid();
+    mesh->uid = generate_uid();
 
     // Load vmesh for rendering
     mesh_load_vmesh(mesh);
@@ -931,91 +913,65 @@ void DeleteMeshObject(DedMesh* mesh)
 
 // ─── Editor Hooks ───────────────────────────────────────────────────────────
 
-// Hook into object properties dialog dispatcher at the type switch point.
-// At 0x0040200e: EAX = object type, EBX = first selected DedObject*,
-// ESI = CDedLevel*. Stack has saved EBX/EBP/ESI/EDI from function prologue.
-// For DED_MESH (0x17), show our dialog and jump to common return at 0x00402293.
-CodeInjection open_mesh_properties_patch{
-    0x0040200e,
-    [](auto& regs) {
-        // Handle Note properties
-        if (regs.eax == static_cast<int>(DedObjectType::DED_NOTE)) {
-            auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
-            ShowNotePropertiesDialog(level);
-            regs.eip = 0x00402293;
-            return;
+void ShowMeshPropertiesForSelection(CDedLevel* level)
+{
+    auto& sel = level->selection;
+    if (sel.get_size() < 1) return;
+
+    // Collect all selected mesh objects
+    g_selected_meshes.clear();
+    g_current_level = level;
+    for (int i = 0; i < sel.get_size(); i++) {
+        DedObject* obj = sel[i];
+        if (obj && obj->type == DedObjectType::DED_MESH) {
+            g_selected_meshes.push_back(static_cast<DedMesh*>(obj));
         }
-
-        if (regs.eax != static_cast<int>(DedObjectType::DED_MESH)) return;
-
-        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
-        auto& sel = level->selection;
-        if (sel.get_size() < 1) { regs.eip = 0x00402293; return; }
-
-        // Collect all selected mesh objects
-        g_selected_meshes.clear();
-        g_current_level = level;
-        for (int i = 0; i < sel.get_size(); i++) {
-            DedObject* obj = sel[i];
-            if (obj && obj->type == DedObjectType::DED_MESH) {
-                g_selected_meshes.push_back(static_cast<DedMesh*>(obj));
-            }
-        }
-
-        if (!g_selected_meshes.empty()) {
-            g_mesh_filename_changed = false;
-            g_mesh_anim_changed = false;
-            DialogBoxParam(
-                reinterpret_cast<HINSTANCE>(&__ImageBase),
-                MAKEINTRESOURCE(IDD_ALPINE_MESH_PROPERTIES),
-                GetActiveWindow(),
-                MeshDialogProc,
-                0
-            );
-            // If filename changed, free old vmeshes and reset flags so the render
-            // hook's lazy-load path reloads them on the next frame. We avoid calling
-            // mesh_load_vmesh here because VFX loading can trigger exceptions that
-            // get caught by CodeInjection's SEH handler, silently aborting this lambda.
-            if (g_mesh_filename_changed) {
-                for (auto* m : g_selected_meshes) {
-                    if (!m) continue;
-                    if (auto* v = get_vmesh(m)) {
-                        g_v3c_action_cache.erase(v);
-                        g_v3c_action_simulating.erase(v);
-                        g_v3c_action_elapsed.erase(v);
-                        vmesh_free(v);
-                        m->vmesh = nullptr;
-                    }
-                    m->vmesh_load_failed = false;
-                }
-            }
-            // If only anim changed, fully reload vmeshes to cleanly switch
-            else if (g_mesh_anim_changed) {
-                for (auto* m : g_selected_meshes) {
-                    if (!m) continue;
-                    if (auto* v = get_vmesh(m)) {
-                        g_v3c_action_cache.erase(v);
-                        g_v3c_action_simulating.erase(v);
-                        g_v3c_action_elapsed.erase(v);
-                        vmesh_free(v);
-                        m->vmesh = nullptr;
-                    }
-                    m->vmesh_load_failed = false;
-                }
-            }
-        }
-
-        g_selected_meshes.clear();
-        g_current_level = nullptr;
-        regs.eip = 0x00402293;
     }
-};
 
-// Note: mesh save/load hooks are integrated into CDedLevel_SaveLevel_patch and
-// CDedLevel_LoadLevel_patch2 in level.cpp to avoid CodeInjection address conflicts.
+    if (!g_selected_meshes.empty()) {
+        g_mesh_filename_changed = false;
+        g_mesh_anim_changed = false;
+        DialogBoxParam(
+            reinterpret_cast<HINSTANCE>(&__ImageBase),
+            MAKEINTRESOURCE(IDD_ALPINE_MESH_PROPERTIES),
+            GetActiveWindow(),
+            MeshDialogProc,
+            0
+        );
+        // If filename changed, free old vmeshes and reset flags so the render
+        // hook's lazy-load path reloads them on the next frame.
+        if (g_mesh_filename_changed) {
+            for (auto* m : g_selected_meshes) {
+                if (!m) continue;
+                if (auto* v = get_vmesh(m)) {
+                    g_v3c_action_cache.erase(v);
+                    g_v3c_action_simulating.erase(v);
+                    g_v3c_action_elapsed.erase(v);
+                    vmesh_free(v);
+                    m->vmesh = nullptr;
+                }
+                m->vmesh_load_failed = false;
+            }
+        }
+        // If only anim changed, fully reload vmeshes to cleanly switch
+        else if (g_mesh_anim_changed) {
+            for (auto* m : g_selected_meshes) {
+                if (!m) continue;
+                if (auto* v = get_vmesh(m)) {
+                    g_v3c_action_cache.erase(v);
+                    g_v3c_action_simulating.erase(v);
+                    g_v3c_action_elapsed.erase(v);
+                    vmesh_free(v);
+                    m->vmesh = nullptr;
+                }
+                m->vmesh_load_failed = false;
+            }
+        }
+    }
 
-// Hook into the editor's 3D render function to also render mesh objects.
-// Inject after the main object render loop in FUN_0041f6d0, before the icon pass.
+    g_selected_meshes.clear();
+    g_current_level = nullptr;
+}
 
 // Draw a plain 3D line (no arrowhead) by projecting endpoints and drawing a 2D line
 static void draw_3d_line(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)
@@ -1067,419 +1023,297 @@ static void draw_wireframe_sphere(float cx, float cy, float cz, float radius, in
     }
 }
 
-CodeInjection mesh_render_patch{
-    0x0041f9b2, // after main render loop, before icon/sprite pass
-    [](auto& regs) {
-        auto* level = CDedLevel::Get();
-        if (!level) return;
-
-        // Compute real frame delta time for animation playback
-        static ULONGLONG last_tick = 0;
-        ULONGLONG now = GetTickCount64();
-        float frame_dt = 0.0f;
-        if (last_tick != 0) {
-            ULONGLONG delta_ms = now - last_tick;
-            if (delta_ms > 200) delta_ms = 200; // clamp to avoid huge jumps
-            frame_dt = static_cast<float>(delta_ms) / 1000.0f;
-        }
-        last_tick = now;
-
-        auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
-
-        // Draw link lines from selected events/triggers to mesh objects
-        if (!meshes.empty()) {
-            std::unordered_map<int32_t, DedMesh*> mesh_uid_map;
-            for (auto* m : meshes) {
-                mesh_uid_map[m->uid] = m;
-            }
-
-            int sel_count = level->selection.get_size();
-            for (int si = 0; si < sel_count; si++) {
-                DedObject* sel_obj = level->selection[si];
-                if (!sel_obj) continue;
-                if (sel_obj->type != DedObjectType::DED_EVENT &&
-                    sel_obj->type != DedObjectType::DED_TRIGGER) continue;
-                int lc = sel_obj->links.get_size();
-                for (int li = 0; li < lc; li++) {
-                    auto it = mesh_uid_map.find(sel_obj->links[li]);
-                    if (it != mesh_uid_map.end()) {
-                        auto* target = it->second;
-                        draw_3d_line(sel_obj->pos.x, sel_obj->pos.y, sel_obj->pos.z,
-                                     target->pos.x, target->pos.y, target->pos.z,
-                                     0, 128, 255);
-                    }
-                }
-            }
-        }
-
-        constexpr float s = 0.5f;
-        bool did_lazy_load = false;
-        for (auto* mesh : meshes) {
-            if (mesh->hidden_in_editor) continue;
-            float x = mesh->pos.x, y = mesh->pos.y, z = mesh->pos.z;
-            bool selected = is_mesh_selected(level, mesh);
-
-            // Lazy-load vmesh on first render (one per frame to avoid VFX loader issues)
-            bool just_loaded = false;
-            if (!get_vmesh(mesh) && !mesh->vmesh_load_failed && mesh->mesh_filename.c_str()[0] != '\0') {
-                if (!did_lazy_load) {
-                    mesh_load_vmesh(mesh);
-                    did_lazy_load = true;
-                    just_loaded = true;
-                }
-            }
-
-            // Render the actual vmesh if loaded (skip on the frame it was just loaded
-            // to avoid VFX render state conflicts from loading + rendering in same frame)
-            auto* vm = get_vmesh(mesh);
-            if (vm && !just_loaded) {
-                set_draw_color(0xff, 0xff, 0xff, 0xff);
-
-                EditorRenderParams render_params;
-
-                // Check if textures are enabled (DAT_006c9aa8)
-                if (*reinterpret_cast<int*>(0x006c9aa8) != 0) {
-                    render_params.flags |= ERF_TEXTURED;
-                    render_params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
-                }
-
-                // Selection highlight
-                if (selected) {
-                    render_params.flags |= ERF_SELECTION_HIGHLIGHT;
-                    render_params.selection_color = {0xff, 0x00, 0x00, 0xff};
-                }
-
-                // Advance animation each frame for animated mesh types
-                auto vmesh_type = vmesh_get_type(vm);
-                if (vmesh_type == VMESH_TYPE_ANIM_FX) {
-                    vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
-                    *reinterpret_cast<int*>(0x0059e21c) = 1;
-                }
-                else if (vmesh_type == VMESH_TYPE_CHARACTER) {
-                    if (vm->instance) {
-                        auto it = g_v3c_action_cache.find(vm);
-                        if (it != g_v3c_action_cache.end() && it->second >= 0) {
-                            // Check if simulate mode changed; reload action if mismatched
-                            auto sim_it = g_v3c_action_simulating.find(vm);
-                            bool was_simulating = (sim_it != g_v3c_action_simulating.end()) && sim_it->second;
-                            if (mesh->simulate_in_editor != was_simulating) {
-                                const char* anim = mesh->state_anim.c_str();
-                                if (anim && anim[0] != '\0') {
-                                    mesh_play_v3c_action(vm, anim, mesh->simulate_in_editor);
-                                    vmesh_process(vm, 0.01f, 0, &mesh->pos, &mesh->orient, 1);
-                                }
-                            }
-
-                            if (mesh->simulate_in_editor) {
-                                // Simulate mode: advance animation each frame
-                                // Track elapsed time to detect when one-shot action expires
-                                auto& elapsed = g_v3c_action_elapsed[vm];
-                                elapsed += frame_dt;
-                                float duration = vmesh_get_action_duration(vm, it->second);
-                                if (duration > 0.0f && elapsed >= duration) {
-                                    // One-shot action expired — restart for looping
-                                    elapsed = 0.0f;
-                                    vmesh_stop_all_actions(vm);
-                                    vmesh_play_action_by_index(vm, it->second, 1.0f, 0);
-                                }
-                                vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
-                            }
-                            // Freeze mode: don't call vmesh_process, pose stays at frame 0
-                        }
-                    }
-                }
-
-                // Get bounding sphere radius for room visibility setup
-                float bound_center[3] = {};
-                float bound_radius = 0.0f;
-                vmesh_get_bound_sphere(vm, bound_center, &bound_radius);
-
-                // Room visibility setup (required for mesh rendering)
-                using RoomSetupFn = int(__cdecl*)(int, const void*, float, int, int);
-                using RoomCleanupFn = void(__cdecl*)();
-                auto room_setup = reinterpret_cast<RoomSetupFn>(0x004885d0);
-                auto room_cleanup = reinterpret_cast<RoomCleanupFn>(0x00488bb0);
-
-                room_setup(0, &mesh->pos, bound_radius, 1, 1);
-                vmesh_render(vm, &mesh->pos, &mesh->orient, &render_params);
-                room_cleanup();
-
-                // Reset VFX transparency flag
-                *reinterpret_cast<int*>(0x0059e21c) = 0;
-            }
-
-            // Draw 3D cross at mesh position (cyan normal, red if selected)
-            int r = selected ? 255 : 0;
-            int g = selected ? 0 : 255;
-            int b = selected ? 0 : 255;
-            draw_3d_line(x - s, y, z, x + s, y, z, r, g, b);
-            draw_3d_line(x, y - s, z, x, y + s, z, r, g, b);
-            draw_3d_line(x, y, z - s, x, y, z + s, r, g, b);
-
-            // Draw orientation axes (RGB = XYZ) - arrows make sense here
-            float al = selected ? 1.0f : 0.5f;
-            draw_3d_arrow(x, y, z, x + mesh->orient.rvec.x * al, y + mesh->orient.rvec.y * al, z + mesh->orient.rvec.z * al, 255, 0, 0);
-            draw_3d_arrow(x, y, z, x + mesh->orient.uvec.x * al, y + mesh->orient.uvec.y * al, z + mesh->orient.uvec.z * al, 0, 255, 0);
-            draw_3d_arrow(x, y, z, x + mesh->orient.fvec.x * al, y + mesh->orient.fvec.y * al, z + mesh->orient.fvec.z * al, 0, 0, 255);
-
-            // Draw wireframe sphere when selected (bounding indicator)
-            if (selected) {
-                draw_wireframe_sphere(x, y, z, 0.75f, 255, 255, 0);
-            }
-
-            // Draw inbound link arrows (blue lines) when selected
-            if (selected && level) {
-                // Links FROM other objects TO this mesh
-                // Scan all per-type VArrays (all_objects is only populated during save)
-                for (int va_off = 0x340; va_off <= 0x430; va_off += 0xC) {
-                    auto& va = struct_field_ref<VArray<DedObject*>>(level, va_off);
-                    int va_sz = va.get_size();
-                    for (int oi = 0; oi < va_sz; oi++) {
-                        DedObject* obj = va[oi];
-                        if (!obj) continue;
-                        auto& stock_links = get_obj_links(obj);
-                        int obj_links = stock_links.get_size();
-                        for (int li = 0; li < obj_links; li++) {
-                            if (stock_links[li] == mesh->uid) {
-                                draw_3d_line(obj->pos.x, obj->pos.y, obj->pos.z, x, y, z, 0, 128, 255);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Render note objects
-        note_render(level);
-    },
-};
-
-// Hook the tree view population function (FUN_00440590) to add "Meshes (%d)" section.
-// Inject just before the finalization call FUN_00442250.
-// At this point: ESI = tree control (this+0x5c), EDI = panel object.
-// FUN_004422b0(__thiscall): insert tree item (label, parent_handle, sort_flags) -> handle
-// FUN_00442320(__thiscall): set item data (item_handle, uid)
-CodeInjection mesh_tree_patch{
-    0x00441c89, // just before PUSH 1 / CALL FUN_00442250
-    [](auto& regs) {
-        auto* level = CDedLevel::Get();
-        if (!level) return;
-        auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
-
-        auto* tree = reinterpret_cast<EditorTreeCtrl*>(static_cast<uintptr_t>(regs.esi));
-        int master_groups = *reinterpret_cast<int*>(regs.edi + 0x98);
-
-        char buf[64];
-        snprintf(buf, sizeof(buf), "Meshes (%d)", static_cast<int>(meshes.size()));
-
-        // Create "Meshes (%d)" parent node under Master_Groups
-        int parent = tree->insert_item(buf, master_groups, 0xffff0002);
-
-        for (auto* mesh : meshes) {
-            const char* name = mesh->script_name.c_str();
-            if (!name || name[0] == '\0') {
-                name = mesh->mesh_filename.c_str();
-            }
-            if (!name || name[0] == '\0') {
-                name = "(unnamed)";
-            }
-            int child = tree->insert_item(name, parent, 0xffff0002);
-            tree->set_item_data(child, mesh->uid);
-        }
-
-        // Add note objects to tree view
-        note_tree_populate(tree, master_groups, level);
-    },
-};
-
-// Hook the object picking function FUN_0042ae80, just before it calls FUN_00423460
-// (console display). This ensures mesh objects are in the selection when the console
-// display runs. At 0x0042aeea: EBX = CDedLevel*, stack has pick params.
-// Stack layout (3 saved regs): [saved_EDI] [saved_EBP] [saved_EBX] [ret] [p1] [p2] [p3]
-//                                ESP+0x00    +0x04       +0x08      +0x0C +0x10 +0x14 +0x18
-CodeInjection mesh_pick_patch{
-    0x0042aeea,
-    [](auto& regs) {
-        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.ebx));
-        if (!level) return;
-
-        int param1 = *reinterpret_cast<int*>(regs.esp + 0x10);
-        int param2 = *reinterpret_cast<int*>(regs.esp + 0x14);
-
-        auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
-        for (auto* mesh : meshes) {
-            if (mesh->hidden_in_editor) continue;
-            bool hit = level->hit_test_point(param1, param2, &mesh->pos);
-            if (hit) {
-                level->select_object(static_cast<DedObject*>(mesh));
-                xlog::debug("[Mesh] Pick: selected mesh uid={} at ({},{},{})",
-                    mesh->uid, mesh->pos.x, mesh->pos.y, mesh->pos.z);
-            }
-        }
-
-        // Also pick note objects
-        note_pick(level, param1, param2);
-    },
-};
-
-// Remove a specific object from a VArray selection
-static void remove_from_selection(VArray<DedObject*>& sel, DedObject* obj)
+void mesh_render(CDedLevel* level)
 {
-    for (int i = 0; i < sel.size; i++) {
-        if (sel.data_ptr[i] == obj) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
+    // Compute real frame delta time for animation playback
+    static ULONGLONG last_tick = 0;
+    ULONGLONG now = GetTickCount64();
+    float frame_dt = 0.0f;
+    if (last_tick != 0) {
+        ULONGLONG delta_ms = now - last_tick;
+        if (delta_ms > 200) delta_ms = 200; // clamp to avoid huge jumps
+        frame_dt = static_cast<float>(delta_ms) / 1000.0f;
+    }
+    last_tick = now;
+
+    auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
+
+    // Draw link lines from selected events/triggers to mesh objects
+    if (!meshes.empty()) {
+        std::unordered_map<int32_t, DedMesh*> mesh_uid_map;
+        for (auto* m : meshes) {
+            mesh_uid_map[m->uid] = m;
+        }
+
+        int sel_count = level->selection.get_size();
+        for (int si = 0; si < sel_count; si++) {
+            DedObject* sel_obj = level->selection[si];
+            if (!sel_obj) continue;
+            if (sel_obj->type != DedObjectType::DED_EVENT &&
+                sel_obj->type != DedObjectType::DED_TRIGGER) continue;
+            int lc = sel_obj->links.get_size();
+            for (int li = 0; li < lc; li++) {
+                auto it = mesh_uid_map.find(sel_obj->links[li]);
+                if (it != mesh_uid_map.end()) {
+                    auto* target = it->second;
+                    draw_3d_line(sel_obj->pos.x, sel_obj->pos.y, sel_obj->pos.z,
+                                 target->pos.x, target->pos.y, target->pos.z,
+                                 0, 128, 255);
+                }
             }
-            sel.size--;
-            return;
+        }
+    }
+
+    constexpr float s = 0.5f;
+    bool did_lazy_load = false;
+    for (auto* mesh : meshes) {
+        if (mesh->hidden_in_editor) continue;
+        float x = mesh->pos.x, y = mesh->pos.y, z = mesh->pos.z;
+        bool selected = is_mesh_selected(level, mesh);
+
+        // Lazy-load vmesh on first render (one per frame to avoid VFX loader issues)
+        bool just_loaded = false;
+        if (!get_vmesh(mesh) && !mesh->vmesh_load_failed && mesh->mesh_filename.c_str()[0] != '\0') {
+            if (!did_lazy_load) {
+                mesh_load_vmesh(mesh);
+                did_lazy_load = true;
+                just_loaded = true;
+            }
+        }
+
+        // Render the actual vmesh if loaded (skip on the frame it was just loaded
+        // to avoid VFX render state conflicts from loading + rendering in same frame)
+        auto* vm = get_vmesh(mesh);
+        if (vm && !just_loaded) {
+            set_draw_color(0xff, 0xff, 0xff, 0xff);
+
+            EditorRenderParams render_params;
+
+            // Check if textures are enabled (DAT_006c9aa8)
+            if (*reinterpret_cast<int*>(0x006c9aa8) != 0) {
+                render_params.flags |= ERF_TEXTURED;
+                render_params.diffuse_color = {0xff, 0xff, 0xff, 0xff};
+            }
+
+            // Selection highlight
+            if (selected) {
+                render_params.flags |= ERF_SELECTION_HIGHLIGHT;
+                render_params.selection_color = {0xff, 0x00, 0x00, 0xff};
+            }
+
+            // Advance animation each frame for animated mesh types
+            auto vmesh_type = vmesh_get_type(vm);
+            if (vmesh_type == VMESH_TYPE_ANIM_FX) {
+                vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
+                *reinterpret_cast<int*>(0x0059e21c) = 1;
+            }
+            else if (vmesh_type == VMESH_TYPE_CHARACTER) {
+                if (vm->instance) {
+                    auto it = g_v3c_action_cache.find(vm);
+                    if (it != g_v3c_action_cache.end() && it->second >= 0) {
+                        // Check if simulate mode changed; reload action if mismatched
+                        auto sim_it = g_v3c_action_simulating.find(vm);
+                        bool was_simulating = (sim_it != g_v3c_action_simulating.end()) && sim_it->second;
+                        if (mesh->simulate_in_editor != was_simulating) {
+                            const char* anim = mesh->state_anim.c_str();
+                            if (anim && anim[0] != '\0') {
+                                mesh_play_v3c_action(vm, anim, mesh->simulate_in_editor);
+                                vmesh_process(vm, 0.01f, 0, &mesh->pos, &mesh->orient, 1);
+                            }
+                        }
+
+                        if (mesh->simulate_in_editor) {
+                            // Simulate mode: advance animation each frame
+                            // Track elapsed time to detect when one-shot action expires
+                            auto& elapsed = g_v3c_action_elapsed[vm];
+                            elapsed += frame_dt;
+                            float duration = vmesh_get_action_duration(vm, it->second);
+                            if (duration > 0.0f && elapsed >= duration) {
+                                // One-shot action expired — restart for looping
+                                elapsed = 0.0f;
+                                vmesh_stop_all_actions(vm);
+                                vmesh_play_action_by_index(vm, it->second, 1.0f, 0);
+                            }
+                            vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
+                        }
+                        // Freeze mode: don't call vmesh_process, pose stays at frame 0
+                    }
+                }
+            }
+
+            // Get bounding sphere radius for room visibility setup
+            float bound_center[3] = {};
+            float bound_radius = 0.0f;
+            vmesh_get_bound_sphere(vm, bound_center, &bound_radius);
+
+            // Room visibility setup (required for mesh rendering)
+            using RoomSetupFn = int(__cdecl*)(int, const void*, float, int, int);
+            using RoomCleanupFn = void(__cdecl*)();
+            auto room_setup = reinterpret_cast<RoomSetupFn>(0x004885d0);
+            auto room_cleanup = reinterpret_cast<RoomCleanupFn>(0x00488bb0);
+
+            room_setup(0, &mesh->pos, bound_radius, 1, 1);
+            vmesh_render(vm, &mesh->pos, &mesh->orient, &render_params);
+            room_cleanup();
+
+            // Reset VFX transparency flag
+            *reinterpret_cast<int*>(0x0059e21c) = 0;
+        }
+
+        // Draw 3D cross at mesh position (cyan normal, red if selected)
+        int r = selected ? 255 : 0;
+        int g = selected ? 0 : 255;
+        int b = selected ? 0 : 255;
+        draw_3d_line(x - s, y, z, x + s, y, z, r, g, b);
+        draw_3d_line(x, y - s, z, x, y + s, z, r, g, b);
+        draw_3d_line(x, y, z - s, x, y, z + s, r, g, b);
+
+        // Draw orientation axes (RGB = XYZ) - arrows make sense here
+        float al = selected ? 1.0f : 0.5f;
+        draw_3d_arrow(x, y, z, x + mesh->orient.rvec.x * al, y + mesh->orient.rvec.y * al, z + mesh->orient.rvec.z * al, 255, 0, 0);
+        draw_3d_arrow(x, y, z, x + mesh->orient.uvec.x * al, y + mesh->orient.uvec.y * al, z + mesh->orient.uvec.z * al, 0, 255, 0);
+        draw_3d_arrow(x, y, z, x + mesh->orient.fvec.x * al, y + mesh->orient.fvec.y * al, z + mesh->orient.fvec.z * al, 0, 0, 255);
+
+        // Draw wireframe sphere when selected (bounding indicator)
+        if (selected) {
+            draw_wireframe_sphere(x, y, z, 0.75f, 255, 255, 0);
+        }
+
+        // Draw inbound link arrows (blue lines) when selected
+        if (selected && level) {
+            // Links FROM other objects TO this mesh
+            // Scan all per-type VArrays (all_objects is only populated during save)
+            for (int va_off = 0x340; va_off <= 0x430; va_off += 0xC) {
+                auto& va = struct_field_ref<VArray<DedObject*>>(level, va_off);
+                int va_sz = va.get_size();
+                for (int oi = 0; oi < va_sz; oi++) {
+                    DedObject* obj = va[oi];
+                    if (!obj) continue;
+                    auto& stock_links = get_obj_links(obj);
+                    int obj_links = stock_links.get_size();
+                    for (int li = 0; li < obj_links; li++) {
+                        if (stock_links[li] == mesh->uid) {
+                            draw_3d_line(obj->pos.x, obj->pos.y, obj->pos.z, x, y, z, 0, 128, 255);
+                        }
+                    }
+                }
+            }
         }
     }
 }
 
-// Hook the click-pick handler FUN_0042bd10 at the CALL to FUN_0042b880 (ray-pick).
-// At 0x0042bd1f: 5-byte CALL instruction, safe for CodeInjection.
-// ECX = ESI = CDedLevel*. Stack: [pushed_arg1] [pushed_arg2] [saved_ESI] [ret] [arg1] [arg2] [arg3]
-// We call stock ray-pick ourselves, then check mesh objects if nothing found.
-// For mesh hits we handle selection directly to avoid stock code calling virtual
-// methods on DedMesh objects.
-CodeInjection mesh_click_pick_patch{
-    0x0042bd1f, // CALL FUN_0042b880 (5 bytes)
-    [](auto& regs) {
-        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
-        if (!level) return;
+// ─── Handler Functions (called from alpine_obj.cpp shared hooks) ────────────
 
-        // Read the two params pushed for FUN_0042b880
-        uintptr_t esp_val = static_cast<uintptr_t>(regs.esp);
-        uintptr_t p1 = *reinterpret_cast<uintptr_t*>(esp_val);       // arg1 (click coords ptr)
-        uintptr_t p2 = *reinterpret_cast<uintptr_t*>(esp_val + 0x04); // arg2
+void mesh_tree_populate(EditorTreeCtrl* tree, int master_groups, CDedLevel* level)
+{
+    auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
 
-        // Call stock ray-pick ourselves
-        void* picked = level->pick_object(p1, p2);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "Meshes (%d)", static_cast<int>(meshes.size()));
 
-        if (!picked) {
-            // Stock found nothing - check mesh objects using bounding sphere
-            auto* click_ptr = reinterpret_cast<float*>(p1);
-            float click_x = click_ptr[0];
-            float click_y = click_ptr[1];
+    int parent = tree->insert_item(buf, master_groups, 0xffff0002);
 
-            auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
-            float best_dist_sq = 1e30f;
-            DedMesh* best_mesh = nullptr;
+    for (auto* mesh : meshes) {
+        const char* name = mesh->script_name.c_str();
+        if (!name || name[0] == '\0') {
+            name = mesh->mesh_filename.c_str();
+        }
+        if (!name || name[0] == '\0') {
+            name = "(unnamed)";
+        }
+        int child = tree->insert_item(name, parent, 0xffff0002);
+        tree->set_item_data(child, mesh->uid);
+    }
+}
 
-            for (auto* mesh : meshes) {
-                if (mesh->hidden_in_editor) continue;
+void mesh_tree_add_object_type(EditorTreeCtrl* tree)
+{
+    tree->insert_item("Mesh", 0xffff0000, 0xffff0002);
+}
 
-                // Get bounding sphere (world-space center + radius)
-                float bound_center[3] = {}, bound_radius = 0.5f;
-                if (auto* v = get_vmesh(mesh)) {
-                    vmesh_get_bound_sphere(v, bound_center, &bound_radius);
-                    if (bound_radius < 0.25f) bound_radius = 0.25f;
-                }
+void mesh_pick(CDedLevel* level, int param1, int param2)
+{
+    auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
+    for (auto* mesh : meshes) {
+        if (mesh->hidden_in_editor) continue;
+        bool hit = level->hit_test_point(param1, param2, &mesh->pos);
+        if (hit) {
+            level->select_object(static_cast<DedObject*>(mesh));
+            xlog::debug("[Mesh] Pick: selected mesh uid={} at ({},{},{})",
+                mesh->uid, mesh->pos.x, mesh->pos.y, mesh->pos.z);
+        }
+    }
+}
 
-                // Transform bound center from local to world space
-                float world_cx = mesh->pos.x
-                    + mesh->orient.rvec.x * bound_center[0]
-                    + mesh->orient.uvec.x * bound_center[1]
-                    + mesh->orient.fvec.x * bound_center[2];
-                float world_cy = mesh->pos.y
-                    + mesh->orient.rvec.y * bound_center[0]
-                    + mesh->orient.uvec.y * bound_center[1]
-                    + mesh->orient.fvec.y * bound_center[2];
-                float world_cz = mesh->pos.z
-                    + mesh->orient.rvec.z * bound_center[0]
-                    + mesh->orient.uvec.z * bound_center[1]
-                    + mesh->orient.fvec.z * bound_center[2];
+DedMesh* mesh_click_pick(CDedLevel* level, float click_x, float click_y, float* out_dist_sq)
+{
+    auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
+    float best_dist_sq = 1e30f;
+    DedMesh* best_mesh = nullptr;
 
-                // Project world center to screen
-                float center_pos[3] = {world_cx, world_cy, world_cz};
-                float screen_cx = 0.0f, screen_cy = 0.0f;
-                if (!project_to_screen_2d(center_pos, &screen_cx, &screen_cy))
-                    continue;
+    for (auto* mesh : meshes) {
+        if (mesh->hidden_in_editor) continue;
 
-                // Project an offset point to estimate screen-space radius
-                float edge_pos[3] = {world_cx, world_cy + bound_radius, world_cz};
-                float screen_ex = 0.0f, screen_ey = 0.0f;
-                float screen_radius_sq;
-                if (project_to_screen_2d(edge_pos, &screen_ex, &screen_ey)) {
-                    float rdx = screen_ex - screen_cx;
-                    float rdy = screen_ey - screen_cy;
-                    screen_radius_sq = rdx * rdx + rdy * rdy;
-                } else {
-                    screen_radius_sq = 400.0f; // fallback 20px
-                }
-                // Minimum 10px screen radius for very small/distant meshes
-                if (screen_radius_sq < 100.0f) screen_radius_sq = 100.0f;
-
-                float dx = screen_cx - click_x;
-                float dy = screen_cy - click_y;
-                float dist_sq = dx * dx + dy * dy;
-                if (dist_sq <= screen_radius_sq && dist_sq < best_dist_sq) {
-                    best_dist_sq = dist_sq;
-                    best_mesh = mesh;
-                }
-            }
-
-            // Also check note objects
-            DedObject* best_alpine = nullptr;
-            float alpine_best_dist = best_dist_sq;
-            if (best_mesh) {
-                best_alpine = static_cast<DedObject*>(best_mesh);
-                alpine_best_dist = best_dist_sq;
-            }
-
-            auto* best_note = note_click_pick(level, click_x, click_y);
-            if (best_note) {
-                // Note uses fixed 20px radius, compare against mesh's best
-                float note_pos[3] = {best_note->pos.x, best_note->pos.y, best_note->pos.z};
-                float nsx = 0.0f, nsy = 0.0f;
-                if (project_to_screen_2d(note_pos, &nsx, &nsy)) {
-                    float ndx = nsx - click_x, ndy = nsy - click_y;
-                    float note_dist = ndx * ndx + ndy * ndy;
-                    if (!best_alpine || note_dist < alpine_best_dist) {
-                        best_alpine = static_cast<DedObject*>(best_note);
-                    }
-                }
-            }
-
-            if (best_alpine) {
-                uint8_t shift = *reinterpret_cast<uint8_t*>(esp_val + 0x18);
-                if (!shift) {
-                    level->deselect_all();
-                }
-                bool was_selected = false;
-                if (shift) {
-                    auto& sel = level->selection;
-                    for (int i = 0; i < sel.size; i++) {
-                        if (sel.data_ptr[i] == best_alpine) {
-                            remove_from_selection(sel, best_alpine);
-                            was_selected = true;
-                            break;
-                        }
-                    }
-                }
-                if (!was_selected) {
-                    level->select_object(best_alpine);
-                }
-
-                regs.esp = static_cast<int32_t>(esp_val + 8);
-                regs.eip = 0x0042bd4f;
-                return;
-            }
+        // Get bounding sphere (world-space center + radius)
+        float bound_center[3] = {}, bound_radius = 0.5f;
+        if (auto* v = get_vmesh(mesh)) {
+            vmesh_get_bound_sphere(v, bound_center, &bound_radius);
+            if (bound_radius < 0.25f) bound_radius = 0.25f;
         }
 
-        // Stock object found, or nothing found at all - let stock code handle it
-        regs.eax = reinterpret_cast<uintptr_t>(picked);
-        regs.esp = static_cast<int32_t>(esp_val + 8); // clean the 2 pushed params
-        regs.eip = 0x0042bd24; // TEST EAX,EAX
-    },
-};
+        // Transform bound center from local to world space
+        float world_cx = mesh->pos.x
+            + mesh->orient.rvec.x * bound_center[0]
+            + mesh->orient.uvec.x * bound_center[1]
+            + mesh->orient.fvec.x * bound_center[2];
+        float world_cy = mesh->pos.y
+            + mesh->orient.rvec.y * bound_center[0]
+            + mesh->orient.uvec.y * bound_center[1]
+            + mesh->orient.fvec.y * bound_center[2];
+        float world_cz = mesh->pos.z
+            + mesh->orient.rvec.z * bound_center[0]
+            + mesh->orient.uvec.z * bound_center[1]
+            + mesh->orient.fvec.z * bound_center[2];
+
+        // Project world center to screen
+        float center_pos[3] = {world_cx, world_cy, world_cz};
+        float screen_cx = 0.0f, screen_cy = 0.0f;
+        if (!project_to_screen_2d(center_pos, &screen_cx, &screen_cy))
+            continue;
+
+        // Project an offset point to estimate screen-space radius
+        float edge_pos[3] = {world_cx, world_cy + bound_radius, world_cz};
+        float screen_ex = 0.0f, screen_ey = 0.0f;
+        float screen_radius_sq;
+        if (project_to_screen_2d(edge_pos, &screen_ex, &screen_ey)) {
+            float rdx = screen_ex - screen_cx;
+            float rdy = screen_ey - screen_cy;
+            screen_radius_sq = rdx * rdx + rdy * rdy;
+        } else {
+            screen_radius_sq = 400.0f; // fallback 20px
+        }
+        // Minimum 10px screen radius for very small/distant meshes
+        if (screen_radius_sq < 100.0f) screen_radius_sq = 100.0f;
+
+        float dx = screen_cx - click_x;
+        float dy = screen_cy - click_y;
+        float dist_sq = dx * dx + dy * dy;
+        if (dist_sq <= screen_radius_sq && dist_sq < best_dist_sq) {
+            best_dist_sq = dist_sq;
+            best_mesh = mesh;
+        }
+    }
+
+    if (out_dist_sq) *out_dist_sq = best_dist_sq;
+    return best_mesh;
+}
+
+// ─── Clipboard ──────────────────────────────────────────────────────────────
 
 // Mesh clipboard: stores staged clones (with add_to_level=false) for Ctrl+V paste.
-// Populated during Ctrl+C (copy), consumed during Ctrl+V (paste).
 static std::vector<DedMesh*> g_mesh_clipboard;
 
-// Clear the mesh clipboard, freeing any staged clones.
-static void clear_mesh_clipboard()
+void mesh_clear_clipboard()
 {
     for (auto* mesh : g_mesh_clipboard) {
         if (auto* v = get_vmesh(mesh)) {
@@ -1488,240 +1322,61 @@ static void clear_mesh_clipboard()
         mesh->script_name.free();
         mesh->mesh_filename.free();
         mesh->state_anim.free();
-        // texture_overrides is std::vector, cleaned up automatically by delete
         delete mesh;
     }
     g_mesh_clipboard.clear();
 }
 
-// Hook the start of FUN_00412e20 to clear clipboard for new copy operation.
-// If mesh objects are in the selection, mesh_copy_hook will re-populate it.
-// If not, it stays empty so paste won't create stale mesh clones.
-CodeInjection mesh_copy_begin_hook{
-    0x00412e20,
-    [](auto& /*regs*/) {
-        clear_mesh_clipboard();
-        note_clear_clipboard();
-    },
-};
-
-// Hook the copy function FUN_00412e20 at 0x00412ea1 (MOV EBX,[EAX] + CMP = 6 bytes).
-// For DED_MESH objects, stage a clone to our clipboard instead of the stock clones VArray
-// (CDedLevel+0x2EC). The clone is NOT added to the level yet — that happens on paste.
-CodeInjection mesh_copy_hook{
-    0x00412ea1,
-    [](auto& regs) {
-        // Peek at the source object (equivalent of MOV EBX,[EAX])
-        auto* source = reinterpret_cast<DedObject*>(
-            *reinterpret_cast<uintptr_t*>(static_cast<uintptr_t>(regs.eax)));
-        if (source && source->type == DedObjectType::DED_MESH) {
-            regs.ebx = reinterpret_cast<uintptr_t>(source);
-            auto* staged = CloneMeshObject(static_cast<DedMesh*>(source), false);
-            if (staged) {
-                g_mesh_clipboard.push_back(staged);
-            }
-            regs.eip = 0x00412edb;
-        }
-        else if (source && source->type == DedObjectType::DED_NOTE) {
-            regs.ebx = reinterpret_cast<uintptr_t>(source);
-            note_copy_object(source);
-            regs.eip = 0x00412edb;
-        }
-        // Non-alpine: trampoline runs MOV EBX,[EAX] + CMP, returns to JZ at 0x00412ea7
-    },
-};
-
-// Wrapper for the paste function (FUN_00413050, called from Ctrl+V via thunk at 0x00448650).
-// After the stock paste function processes clones from CDedLevel+0x2EC, we create
-// mesh clones from our clipboard and add them to the selection.
-// Uses __fastcall to receive ECX (CDedLevel*) from the thunk's JMP.
-static void __fastcall mesh_paste_wrapper(void* ecx_level, void* /*edx_unused*/)
+bool mesh_copy_object(DedObject* source)
 {
-    // Call original paste function (handles stock object types from 0x2EC)
-    auto* level = reinterpret_cast<CDedLevel*>(ecx_level);
-    level->paste_objects();
-
-    // Create mesh clones from clipboard and add to selection
-    if (!g_mesh_clipboard.empty()) {
-        if (level) {
-            for (auto* staged : g_mesh_clipboard) {
-                auto* clone = CloneMeshObject(staged, true);
-                if (clone) {
-                    level->add_to_selection(static_cast<DedObject*>(clone));
-                }
-            }
-        }
+    if (!source || source->type != DedObjectType::DED_MESH) return false;
+    auto* staged = CloneMeshObject(static_cast<DedMesh*>(source), false);
+    if (staged) {
+        g_mesh_clipboard.push_back(staged);
+        return true;
     }
+    return false;
+}
 
-    // Create note clones from clipboard and add to selection
-    if (level) {
-        note_paste_objects(level);
+void mesh_paste_objects(CDedLevel* level)
+{
+    for (auto* staged : g_mesh_clipboard) {
+        auto* clone = CloneMeshObject(staged, true);
+        if (clone) {
+            level->add_to_selection(static_cast<DedObject*>(clone));
+        }
     }
 }
 
-// Flags to detect delete and cut operations in FUN_0041be70.
-static bool g_mesh_delete_mode = false;
-static bool g_mesh_cut_mode = false;
+// ─── Delete / Cut ───────────────────────────────────────────────────────────
 
-// Hook FUN_0041bd00 to detect delete/cut mode before FUN_0041bbb0 processes selection items.
-// FUN_0041bd00 signature: __thiscall(CDedLevel* this, int param_2)
-// param_2=0: cut finalization, param_2=1: delete (keyboard Delete key)
-CodeInjection mesh_delete_mode_patch{
-    0x0041bd00,
-    [](auto& regs) {
-        auto esp_val = static_cast<uintptr_t>(regs.esp);
-        auto param_2 = *reinterpret_cast<int*>(esp_val + 4);
-        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.ecx));
-        auto mode = *reinterpret_cast<int*>(reinterpret_cast<uintptr_t>(level) + 0xf8);
-        g_mesh_delete_mode = (mode == 4 && param_2 == 1);
-        g_mesh_cut_mode = (mode == 4 && param_2 == 0);
-    },
-};
+void mesh_handle_delete_or_cut(DedObject* obj)
+{
+    if (!obj || obj->type != DedObjectType::DED_MESH) return;
+    auto* level = CDedLevel::Get();
+    if (!level) return;
 
-// Hook FUN_0041be70 to handle mesh objects during cut finalization and delete.
-// For cut: remove mesh from mesh_objects (it's already staged in clipboard).
-// For delete: remove mesh from mesh_objects.
-// Stock code removes from 0x2E0 (no-op for mesh) and selection (0x298).
-CodeInjection mesh_paste_finalize_patch{
-    0x0041be70,
-    [](auto& regs) {
-        auto esp_val = static_cast<uintptr_t>(regs.esp);
-        auto* obj = reinterpret_cast<DedObject*>(
-            *reinterpret_cast<uintptr_t*>(esp_val + 4));
+    auto* mesh = static_cast<DedMesh*>(obj);
+    auto& mesh_objects = level->GetAlpineLevelProperties().mesh_objects;
+    auto it = std::find(mesh_objects.begin(), mesh_objects.end(), mesh);
+    if (it != mesh_objects.end()) {
+        mesh_objects.erase(it);
+    }
+}
+
+void mesh_handle_delete_selection(CDedLevel* level)
+{
+    auto& sel = level->selection;
+    for (int i = sel.size - 1; i >= 0; i--) {
+        DedObject* obj = sel.data_ptr[i];
         if (obj && obj->type == DedObjectType::DED_MESH) {
-            if (g_mesh_delete_mode || g_mesh_cut_mode) {
-                auto* level = CDedLevel::Get();
-                if (level) {
-                    auto* mesh = static_cast<DedMesh*>(obj);
-                    auto& mesh_objects = level->GetAlpineLevelProperties().mesh_objects;
-                    auto it = std::find(mesh_objects.begin(), mesh_objects.end(), mesh);
-                    if (it != mesh_objects.end()) {
-                        mesh_objects.erase(it);
-                    }
-                }
+            // Remove from selection
+            for (int j = i; j < sel.size - 1; j++) {
+                sel.data_ptr[j] = sel.data_ptr[j + 1];
             }
-        }
-        else if (obj && obj->type == DedObjectType::DED_NOTE) {
-            if (g_mesh_delete_mode || g_mesh_cut_mode) {
-                note_handle_delete_or_cut(obj);
-            }
-        }
-    },
-};
-
-// Hook the delete command handler (command ID 0x8018) at 0x00448690.
-// Before stock code runs, we remove any DedMesh objects from the selection,
-// call DeleteMeshObject for each, then let stock code handle remaining objects.
-CodeInjection mesh_delete_patch{
-    0x00448690,
-    [](auto& regs) {
-        auto* level = CDedLevel::Get();
-        if (!level) return;
-
-        auto& sel = level->selection;
-
-        // Delete note objects from selection first
-        note_handle_delete_selection(level);
-
-        // Delete mesh objects from selection
-        for (int i = sel.size - 1; i >= 0; i--) {
-            DedObject* obj = sel.data_ptr[i];
-            if (obj && obj->type == DedObjectType::DED_MESH) {
-                remove_from_selection(sel, obj);
-                DeleteMeshObject(static_cast<DedMesh*>(obj));
-            }
-        }
-        // Stock code will handle any remaining non-alpine objects in selection
-    },
-};
-
-// Hook the Object mode tree view (FUN_00443610) to add "Mesh" type entry.
-// Inject at 0x004442b7, right after "Trigger Door" is added and before FUN_00444550 (finalize).
-// ESI = tree control at this point.
-CodeInjection mesh_object_tree_patch{
-    0x004442b7,
-    [](auto& regs) {
-        auto* tree = reinterpret_cast<EditorTreeCtrl*>(static_cast<uintptr_t>(regs.esi));
-        tree->insert_item("Mesh", 0xffff0000, 0xffff0002);
-        note_tree_add_object_type(tree);
-    },
-};
-
-// Track which Alpine object type the tree view is creating.
-static int g_alpine_create_type = 0; // 0=unknown/Mesh, 2=Note
-
-// Hook factory FUN_00442a40 (__thiscall, ECX=panel, arg1=tree_item_handle).
-// The factory internally reads tree item text and creates the appropriate DedObject.
-// It returns NULL for unknown types. We hook it to detect "Note" vs "Mesh" by
-// reading the tree item text before calling the original.
-int __fastcall alpine_factory_hooked(void* ecx_panel, void* /*edx*/, void* tree_item);
-FunHook<decltype(alpine_factory_hooked)> alpine_factory_hook{
-    0x00442a40,
-    alpine_factory_hooked,
-};
-int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item)
-{
-    // Read the tree item text to detect our custom types
-    g_alpine_create_type = 0;
-
-    // The tree control is at panel+0x5c. It's a CTreeCtrl.
-    // Get the HWND of the tree control: CWnd::m_hWnd is at offset 0x1C in CTreeCtrl
-    HWND hTree = *reinterpret_cast<HWND*>(reinterpret_cast<uintptr_t>(ecx_panel) + 0x5c + 0x1c);
-    if (hTree && tree_item) {
-        char text[64] = {};
-        TVITEMA tvi = {};
-        tvi.mask = TVIF_TEXT;
-        tvi.hItem = static_cast<HTREEITEM>(tree_item);
-        tvi.pszText = text;
-        tvi.cchTextMax = sizeof(text);
-        TreeView_GetItem(hTree, &tvi);
-        if (strcmp(text, "Note") == 0) {
-            g_alpine_create_type = 2;
+            sel.size--;
+            DeleteMeshObject(static_cast<DedMesh*>(obj));
         }
     }
-
-    return alpine_factory_hook.call_target(ecx_panel, edx, tree_item);
 }
 
-// Hook the object creation call site in FUN_004431c0. The factory FUN_00442a40 returns
-// NULL for unknown types (including our "Mesh" and "Note"). The caller at 004432f5 does
-// MOV EBP,EAX and then dereferences EBP+0x50, crashing on NULL.
-// Hook at 004432f5 (right after the CALL returns). If EAX is NULL, check which Alpine
-// type was requested and create the appropriate object.
-CodeInjection mesh_create_object_patch{
-    0x004432f5,
-    [](auto& regs) {
-        if (regs.eax == 0) {
-            if (g_alpine_create_type == 2) {
-                PlaceNewNoteObject();
-            }
-            else {
-                PlaceNewMeshObject();
-            }
-            g_alpine_create_type = 0;
-            regs.eip = 0x004435be;
-        }
-    },
-};
-
-void ApplyMeshPatches()
-{
-    open_mesh_properties_patch.install();
-    mesh_render_patch.install();
-    mesh_pick_patch.install();
-    mesh_click_pick_patch.install();
-    mesh_copy_begin_hook.install();
-    mesh_copy_hook.install();
-    // Redirect paste thunk's JMP to our wrapper that handles mesh clipboard paste
-    AsmWriter(0x00448659).jmp(mesh_paste_wrapper);
-    mesh_delete_mode_patch.install();
-    mesh_paste_finalize_patch.install();
-    mesh_delete_patch.install();
-    mesh_tree_patch.install();
-    mesh_object_tree_patch.install();
-    mesh_create_object_patch.install();
-    alpine_factory_hook.install();
-    generate_uid_hook.install();
-
-    xlog::info("[Mesh] Mesh object patches applied");
-}
