@@ -2487,23 +2487,16 @@ namespace rf
 
         void turn_on() override
         {
-            xlog::info("[EventMeshAnimate] turn_on: event uid={} handle={} pos=({:.2f},{:.2f},{:.2f}) "
-                "{} links, type={}, anim='{}', weight={:.2f}",
-                this->uid, this->handle, this->pos.x, this->pos.y, this->pos.z,
-                this->links.size(), animate_type, anim_filename, blend_weight);
+            xlog::debug("[EventMeshAnimate] turn_on: uid={} type={} anim='{}' weight={:.2f} links={}",
+                this->uid, animate_type, anim_filename, blend_weight,
+                this->links.size());
             for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
                 int link_handle = this->links[i];
                 Object* obj = obj_from_handle(link_handle);
                 if (obj) {
-                    xlog::info("[EventMeshAnimate]   link[{}]: handle={} -> obj={:p} uid={} type={} "
-                        "name='{}' vmesh={:p} vmesh_type={}",
-                        i, link_handle, static_cast<void*>(obj), obj->uid,
-                        static_cast<int>(obj->type), obj->name.c_str(),
-                        static_cast<void*>(obj->vmesh),
-                        obj->vmesh ? static_cast<int>(obj->vmesh->type) : -1);
                     alpine_mesh_animate(obj, animate_type, anim_filename, blend_weight);
                 } else {
-                    xlog::warn("[EventMeshAnimate]   link[{}]: handle={} -> NULL (stale handle!)", i, link_handle);
+                    xlog::warn("[EventMeshAnimate] link[{}]: handle={} -> NULL (stale handle!)", i, link_handle);
                 }
             }
         }

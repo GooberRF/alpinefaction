@@ -68,11 +68,7 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 regs.eip = 0x0043090C;
             }
             if (chunk_id == alpine_mesh_chunk_id) {
-                xlog::info("[Level] Loading mesh chunk: size={} master_objects_before={}",
-                    chunk_size, level.master_objects.get_size());
                 mesh_deserialize_chunk(level, file, chunk_size);
-                xlog::info("[Level] Mesh chunk loaded: master_objects_after={}",
-                    level.master_objects.get_size());
                 regs.eip = 0x0043090C;
             }
         }
@@ -493,18 +489,6 @@ CodeInjection CDedLevel_SaveLevel_patch{
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
         alpine_level_props.Serialize(file);
         level.EndRflSection(file, start_pos);
-
-        // Log master_objects state before save for link validation diagnostics
-        {
-            int master_total = level.master_objects.get_size();
-            auto& mesh_objs = level.GetAlpineLevelProperties().mesh_objects;
-            int mesh_count = static_cast<int>(mesh_objs.size());
-            xlog::info("[Level] Pre-save: master_objects={} mesh_objects={}", master_total, mesh_count);
-            for (auto* m : mesh_objs) {
-                xlog::info("[Level]   mesh uid={} ptr={:p} type=0x{:x} links={}",
-                    m->uid, static_cast<void*>(m), static_cast<int>(m->type), m->links.get_size());
-            }
-        }
 
         // Write mesh objects chunk
         mesh_serialize_chunk(level, file);

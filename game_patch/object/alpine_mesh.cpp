@@ -154,20 +154,6 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
             info.texture_overrides[ti] = read_string();
         }
 
-        xlog::info("[AlpineMesh] Read mesh info[{}]: uid={} file='{}' pos=({:.2f},{:.2f},{:.2f}) "
-            "links={} collision={} state_anim='{}'",
-            i, info.uid, info.mesh_filename, info.pos.x, info.pos.y, info.pos.z,
-            static_cast<int>(info.link_uids.size()), info.collision_mode, info.state_anim);
-        for (size_t j = 0; j < info.link_uids.size(); j++) {
-            xlog::info("[AlpineMesh]   mesh uid={} link_uid[{}] = {}", info.uid, j, info.link_uids[j]);
-        }
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-            if (!info.texture_overrides[ti].empty()) {
-                xlog::info("[AlpineMesh]   mesh uid={} texture_override[{}] = '{}'",
-                    info.uid, ti, info.texture_overrides[ti]);
-            }
-        }
-
         // Create the game object immediately so it exists before the stock link
         // resolver runs. This lets the stock resolver convert event→mesh link UIDs
         // to handles automatically, just like any other object type.
@@ -179,17 +165,6 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         file.seek(static_cast<int>(remaining), rf::File::seek_cur);
     }
 
-    xlog::info("[AlpineMesh] Chunk complete: created {} mesh objects, g_alpine_mesh_handles has {} entries",
-        count, g_alpine_mesh_handles.size());
-    // Dump all created handles for cross-reference with link resolution
-    for (size_t i = 0; i < g_alpine_mesh_handles.size(); i++) {
-        rf::Object* obj = rf::obj_from_handle(g_alpine_mesh_handles[i]);
-        xlog::info("[AlpineMesh]   handle[{}] = {} -> obj={:p} uid={} name='{}'",
-            i, g_alpine_mesh_handles[i],
-            static_cast<void*>(obj),
-            obj ? obj->uid : -1,
-            obj ? obj->name.c_str() : "<null>");
-    }
 }
 
 // ─── Object Creation ────────────────────────────────────────────────────────
@@ -218,6 +193,10 @@ static const auto vmesh_reset_actions = reinterpret_cast<VmeshResetActionsFn>(0x
 using VmeshSetActionWeightFn = void(__cdecl*)(rf::VMesh* vmesh, int action_index, float weight);
 static const auto vmesh_set_action_weight = reinterpret_cast<VmeshSetActionWeightFn>(0x00503390);
 
+// vmesh_stop_all_actions: clears ALL action slots (looping AND one-shot/hold-last)
+using VmeshStopAllActionsFn = void(__cdecl*)(rf::VMesh* vmesh);
+static const auto vmesh_stop_all_actions = reinterpret_cast<VmeshStopAllActionsFn>(0x00503400);
+
 static bool vmesh_play_v3c_action_by_name(rf::VMesh* vmesh, const char* action_name)
 {
     if (!vmesh || !action_name || action_name[0] == '\0') return false;
@@ -228,10 +207,6 @@ static bool vmesh_play_v3c_action_by_name(rf::VMesh* vmesh, const char* action_n
         return false;
     }
 
-    auto* mesh_data = reinterpret_cast<uint8_t*>(vmesh->mesh);
-    int existing_count = *reinterpret_cast<int*>(mesh_data + 0xF58);
-    xlog::info("[AlpineMesh] mesh_data={:p} existing_action_count={}", vmesh->mesh, existing_count);
-
     // Load the .rfa/.mvf animation file onto the character mesh_data
     int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0, 0);
     if (action_index < 0) {
@@ -239,10 +214,8 @@ static bool vmesh_play_v3c_action_by_name(rf::VMesh* vmesh, const char* action_n
         return false;
     }
 
-    xlog::info("[AlpineMesh] Playing animation '{}' (action_index={}) on vmesh", action_name, action_index);
-
     // Play the loaded action (transition_time must be > 0 or play_action is a no-op)
-    vmesh_play_action_by_index(vmesh, action_index, 1.0f, 0);
+    vmesh_play_action_by_index(vmesh, action_index, 0.001f, 0);
     return true;
 }
 
@@ -371,7 +344,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
                         obj->vmesh->use_replacement_materials = 0;
                         xlog::warn("[AlpineMesh] Failed to allocate replacement materials for multi-LOD V3M");
                     } else {
-                        xlog::info("[AlpineMesh] Allocated replacement materials for multi-LOD V3M ({} mats)", num_materials);
+                        xlog::debug("[AlpineMesh] Allocated replacement materials for multi-LOD V3M ({} mats)", num_materials);
                     }
                 }
             }
@@ -389,7 +362,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
                         continue;
                     }
                     materials[ti].texture_maps[0].tex_handle = bm_handle;
-                    xlog::info("[AlpineMesh] Applied texture override slot {}: '{}' (handle={})",
+                    xlog::debug("[AlpineMesh] Applied texture override slot {}: '{}' (handle={})",
                         ti, info.texture_overrides[ti], bm_handle);
                 }
             }
@@ -405,47 +378,14 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
     }
 
     g_alpine_mesh_handles.push_back(obj->handle);
-    xlog::info("[AlpineMesh] Created object: uid={} handle={} obj={:p} type={} file='{}' "
-        "vmesh={:p} vmesh_type={} room={:p} name='{}' "
-        "obj_radius={:.3f} p_radius={:.3f} p_flags=0x{:x} cspheres={} "
-        "pos=({:.2f},{:.2f},{:.2f}) bbox=({:.1f},{:.1f},{:.1f})-({:.1f},{:.1f},{:.1f}) "
-        "obj_flags=0x{:x} life={:.1f}",
-        info.uid, obj->handle, static_cast<void*>(obj), static_cast<int>(obj->type),
-        info.mesh_filename,
-        static_cast<void*>(obj->vmesh),
-        obj->vmesh ? static_cast<int>(obj->vmesh->type) : -1,
-        static_cast<void*>(obj->room),
-        obj->name.c_str(),
-        obj->radius, obj->p_data.radius, obj->p_data.flags,
-        obj->p_data.cspheres.size(),
-        obj->pos.x, obj->pos.y, obj->pos.z,
-        obj->p_data.bbox_min.x, obj->p_data.bbox_min.y, obj->p_data.bbox_min.z,
-        obj->p_data.bbox_max.x, obj->p_data.bbox_max.y, obj->p_data.bbox_max.z,
-        static_cast<int>(obj->obj_flags), obj->life);
-
-    // Verify the clutter linked list integrity
-    auto* clutter_obj = reinterpret_cast<rf::Clutter*>(obj);
-    xlog::info("[AlpineMesh]   clutter: info={:p} info_index={} prev={:p} next={:p} "
-        "clutter_count={} killable_index={}",
-        static_cast<void*>(clutter_obj->info), clutter_obj->info_index,
-        static_cast<void*>(clutter_obj->prev), static_cast<void*>(clutter_obj->next),
-        clutter_count, clutter_obj->killable_index);
+    xlog::debug("[AlpineMesh] Created object: uid={} handle={} file='{}' pos=({:.2f},{:.2f},{:.2f})",
+        info.uid, obj->handle, info.mesh_filename, obj->pos.x, obj->pos.y, obj->pos.z);
 }
 
 // ─── Per-Frame Animation Processing ─────────────────────────────────────────
 
-static int g_do_frame_log_count = 0;
-
 void alpine_mesh_do_frame()
 {
-    bool should_log = (g_do_frame_log_count < 5);
-    if (should_log) {
-        g_do_frame_log_count++;
-        xlog::info("[AlpineMesh] do_frame #{}: {} anim_states, {} event_animated, {} handles",
-            g_do_frame_log_count, g_mesh_anim_states.size(),
-            g_event_animated_meshes.size(), g_alpine_mesh_handles.size());
-    }
-
     for (auto& anim : g_mesh_anim_states) {
         rf::Object* obj = rf::obj_from_handle(anim.obj_handle);
         if (!obj || !obj->vmesh) continue;
@@ -470,7 +410,7 @@ void alpine_mesh_do_frame()
                 anim.anim_started = true;
                 continue;
             }
-            xlog::info("[AlpineMesh] Loaded animation '{}' action_index={} for handle {}",
+            xlog::debug("[AlpineMesh] Loaded animation '{}' action_index={} for handle {}",
                 anim.state_anim, anim.action_index, anim.obj_handle);
         }
 
@@ -484,7 +424,7 @@ void alpine_mesh_do_frame()
 
         if (!anim.anim_started) {
             anim.anim_started = true;
-            xlog::info("[AlpineMesh] Started animation '{}' (action_index={}) on handle {}",
+            xlog::debug("[AlpineMesh] Started animation '{}' (action_index={}) on handle {}",
                 anim.state_anim, anim.action_index, anim.obj_handle);
         }
 
@@ -534,20 +474,10 @@ std::vector<int>& get_alpine_mesh_handles()
 
 void alpine_mesh_clear_state()
 {
-    xlog::info("[AlpineMesh] Clearing state: {} handles, {} anim_states, {} event_animated",
-        g_alpine_mesh_handles.size(), g_mesh_anim_states.size(), g_event_animated_meshes.size());
-    // Verify all handles still resolve before clearing
-    for (size_t i = 0; i < g_alpine_mesh_handles.size(); i++) {
-        rf::Object* obj = rf::obj_from_handle(g_alpine_mesh_handles[i]);
-        xlog::info("[AlpineMesh]   clearing handle[{}]={} -> obj={:p}{}",
-            i, g_alpine_mesh_handles[i], static_cast<void*>(obj),
-            obj ? "" : " (STALE!)");
-    }
     g_alpine_mesh_handles.clear();
     g_mesh_anim_states.clear();
     g_event_animated_meshes.clear();
     g_dummy_clutter_info_initialized = false;
-    g_do_frame_log_count = 0;
 }
 
 // ─── Event Helper Functions ─────────────────────────────────────────────────
@@ -585,6 +515,11 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         blend_weight = 1.0f;
     }
 
+    // Clear all existing action slots (looping AND one-shot/hold-last) so previous
+    // animations don't interfere. Without this, a held action's weight persists and
+    // blocks new animations from being visible.
+    vmesh_stop_all_actions(obj->vmesh);
+
     // type 0 = Action: play once, then return to state_anim
     // type 1 = Action Hold Last: play once, freeze on last frame
     // type 2 = State: loop, override state_anim
@@ -602,7 +537,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         }
 
         vmesh_set_action_weight(obj->vmesh, action_index, blend_weight);
-        vmesh_play_action_by_index(obj->vmesh, action_index, 1.0f, 0);
+        vmesh_play_action_by_index(obj->vmesh, action_index, 0.001f, 0);
 
         // If the mesh has no state_anim driving vmesh_process, we need to ensure
         // vmesh_process is called each frame so the one-shot actually advances.
@@ -619,7 +554,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
 
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
-        xlog::info("[AlpineMesh] Playing animation '{}' (type=Action, action_index={}, weight={:.2f}) on handle {}",
+        xlog::debug("[AlpineMesh] Playing animation '{}' (type=Action, action_index={}, weight={:.2f}) on handle {}",
             anim_filename, action_index, blend_weight, obj->handle);
     }
     else if (type == 1) {
@@ -632,7 +567,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         }
 
         vmesh_set_action_weight(obj->vmesh, action_index, blend_weight);
-        vmesh_play_action_by_index(obj->vmesh, action_index, 1.0f, 1);
+        vmesh_play_action_by_index(obj->vmesh, action_index, 0.001f, 1);
 
         // Remove from state_anim processing — hold-last overrides permanently.
         g_mesh_anim_states.erase(
@@ -649,7 +584,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
 
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
-        xlog::info("[AlpineMesh] Playing animation '{}' (type=Action Hold Last, action_index={}, weight={:.2f}) on handle {}",
+        xlog::debug("[AlpineMesh] Playing animation '{}' (type=Action Hold Last, action_index={}, weight={:.2f}) on handle {}",
             anim_filename, action_index, blend_weight, obj->handle);
     }
     else if (type == 2) {
@@ -679,7 +614,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
 
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
-        xlog::info("[AlpineMesh] Playing animation '{}' (type=State, action_index={}, weight={:.2f}) on handle {}",
+        xlog::debug("[AlpineMesh] Playing animation '{}' (type=State, action_index={}, weight={:.2f}) on handle {}",
             anim_filename, action_index, blend_weight, obj->handle);
     }
 }
@@ -740,7 +675,7 @@ void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& textu
     }
 
     materials[slot].texture_maps[0].tex_handle = bm_handle;
-    xlog::info("[AlpineMesh] Set texture slot {} to '{}' (handle={}) on obj handle {}",
+    xlog::debug("[AlpineMesh] Set texture slot {} to '{}' (handle={}) on obj handle {}",
         slot, texture_filename, bm_handle, obj->handle);
 }
 
@@ -770,5 +705,5 @@ void alpine_mesh_clear_texture(rf::Object* obj, int slot)
     // The base mesh materials are accessible via vmesh->mesh (V3M/V3C mesh data)
     // For simplicity, setting to -1 effectively clears the override
     materials[slot].texture_maps[0].tex_handle = -1;
-    xlog::info("[AlpineMesh] Cleared texture slot {} on obj handle {}", slot, obj->handle);
+    xlog::debug("[AlpineMesh] Cleared texture slot {} on obj handle {}", slot, obj->handle);
 }

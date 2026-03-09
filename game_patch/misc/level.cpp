@@ -122,9 +122,8 @@ CodeInjection level_load_chunk_patch{
 
         // handling for alpine mesh objects chunk
         if (chunk_id == alpine_mesh_chunk_id) {
-            xlog::info("[Level] Loading alpine mesh chunk: id=0x{:08X} len={}", chunk_id, chunk_len);
+            xlog::debug("[Level] Loading alpine mesh chunk: len={}", chunk_len);
             alpine_mesh_load_chunk(file, chunk_len);
-            xlog::info("[Level] Alpine mesh chunk loaded");
             regs.eip = 0x004608EF;
         }
 

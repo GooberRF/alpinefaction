@@ -147,20 +147,11 @@ static bool mesh_play_v3c_action(void* vmesh, const char* action_name, float tra
         return false;
     }
 
-    auto* inst_bytes = reinterpret_cast<uint8_t*>(instance);
-    int slots_before = *reinterpret_cast<int*>(inst_bytes + 0x12D0);
-
     // Cache the action index for later use in the render loop
     g_v3c_action_cache[vmesh] = action_index;
 
     // Play the loaded action (transition_time must be > 0 or play_action is a no-op)
     vmesh_play_action_by_index(vmesh, action_index, transition_time, 0);
-
-    int slots_after = *reinterpret_cast<int*>(inst_bytes + 0x12D0);
-    char freeze_flag = *reinterpret_cast<char*>(inst_bytes + 0x1D4C);
-    xlog::info("[Mesh] Playing animation '{}' (action_index={}, transition={:.3f}) on vmesh {:p} "
-        "slots: {}→{} freeze={}", action_name, action_index, transition_time, vmesh,
-        slots_before, slots_after, (int)freeze_flag);
     return true;
 }
 
@@ -174,22 +165,17 @@ static void mesh_load_vmesh(DedMesh* mesh)
 {
     if (!mesh) return;
 
-    xlog::info("[Mesh] mesh_load_vmesh: mesh={:p} old_vmesh={:p}", static_cast<void*>(mesh), mesh->vmesh);
-
     // Free existing vmesh if any
     if (mesh->vmesh) {
-        xlog::info("[Mesh] mesh_load_vmesh: freeing old vmesh {:p}", mesh->vmesh);
         g_v3c_action_cache.erase(mesh->vmesh);
         vmesh_free(mesh->vmesh);
         mesh->vmesh = 0;
-        xlog::info("[Mesh] mesh_load_vmesh: old vmesh freed");
     }
 
     const char* filename = mesh->mesh_filename.c_str();
     if (!filename || filename[0] == '\0') return;
 
     const char* ext = get_file_extension(filename);
-    xlog::info("[Mesh] mesh_load_vmesh: loading '{}' ext='{}'", filename, ext);
 
     void* vmesh = nullptr;
     if (_stricmp(ext, ".v3m") == 0) {
@@ -204,13 +190,9 @@ static void mesh_load_vmesh(DedMesh* mesh)
         // Use RED's File class to check if the file exists (searches loose files + .vpp archives).
         uint8_t file_obj[0x114] = {};
         AddrCaller{0x004cf600}.this_call(file_obj); // File constructor (__thiscall)
-        xlog::info("[Mesh] mesh_load_vmesh: checking VFX file existence...");
         bool found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, filename);
-        xlog::info("[Mesh] mesh_load_vmesh: VFX file found={}", found);
         if (found) {
-            xlog::info("[Mesh] mesh_load_vmesh: calling vmesh_load_vfx...");
             vmesh = vmesh_load_vfx(filename, 0x98967f);
-            xlog::info("[Mesh] mesh_load_vmesh: vmesh_load_vfx returned {:p}", vmesh);
         }
         else {
             xlog::warn("[Mesh] VFX file not found: '{}'", filename);
@@ -245,7 +227,7 @@ static void mesh_load_vmesh(DedMesh* mesh)
         }
         // Apply texture overrides
         mesh_apply_texture_overrides(mesh);
-        xlog::info("[Mesh] Loaded vmesh for '{}' -> {:p}", filename, vmesh);
+        xlog::debug("[Mesh] Loaded vmesh for '{}' -> {:p}", filename, vmesh);
     }
     else {
         xlog::warn("[Mesh] Failed to load vmesh for '{}'", filename);
@@ -305,7 +287,7 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
                     xlog::warn("[Mesh] Failed to allocate replacement materials for multi-LOD V3M");
                     return;
                 }
-                xlog::info("[Mesh] Allocated replacement materials for multi-LOD V3M ({} materials)", num_materials);
+                xlog::debug("[Mesh] Allocated replacement materials for multi-LOD V3M ({} materials)", num_materials);
             }
             else {
                 return;
@@ -330,7 +312,7 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
             continue;
         }
         materials[ti].texture_maps[0].tex_handle = bm_handle;
-        xlog::info("[Mesh] Applied texture override slot {}: '{}' (handle={})", ti, tex, bm_handle);
+        xlog::debug("[Mesh] Applied texture override slot {}: '{}' (handle={})", ti, tex, bm_handle);
     }
 }
 
@@ -410,17 +392,7 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
     uint32_t count = static_cast<uint32_t>(meshes.size());
     file.write<uint32_t>(count);
 
-    xlog::info("[Mesh] Serializing {} mesh objects", count);
     for (auto* mesh : meshes) {
-        xlog::info("[Mesh] Serializing mesh uid={} ptr={:p} type=0x{:x} file='{}' pos=({:.2f},{:.2f},{:.2f}) "
-            "links={} collision={}",
-            mesh->uid, static_cast<void*>(mesh), static_cast<int>(mesh->type),
-            mesh->mesh_filename.c_str(), mesh->pos.x, mesh->pos.y, mesh->pos.z,
-            mesh->links.get_size(), mesh->collision_mode);
-        // Log each link UID being saved
-        for (int li = 0; li < mesh->links.get_size(); li++) {
-            xlog::info("[Mesh]   saving link[{}] = uid {}", li, mesh->links[li]);
-        }
         // uid
         file.write<int32_t>(mesh->uid);
         // pos
@@ -458,26 +430,6 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
     }
 
     level.EndRflSection(file, start_pos);
-
-    // Verification: check all meshes are still in master_objects at save time
-    int master_total = level.master_objects.get_size();
-    int meshes_found_in_master = 0;
-    for (auto* mesh : meshes) {
-        bool found = false;
-        for (int mi = 0; mi < level.master_objects.get_size(); mi++) {
-            if (level.master_objects[mi] == static_cast<DedObject*>(mesh)) {
-                found = true;
-                break;
-            }
-        }
-        if (found) {
-            meshes_found_in_master++;
-        } else {
-            xlog::error("[Mesh] SAVE VERIFICATION FAILED: mesh uid={} NOT in master_objects!", mesh->uid);
-        }
-    }
-    xlog::info("[Mesh] Serialized {} mesh objects. master_objects total={}, meshes verified={}/{}",
-        count, master_total, meshes_found_in_master, count);
 }
 
 void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
@@ -566,26 +518,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
 
         meshes.push_back(mesh);
         // Add to master objects list so stock link validation (FUN_00483920) finds this mesh
-        int master_size_before = level.master_objects.get_size();
         level.master_objects.add(static_cast<DedObject*>(mesh));
-        int master_size_after = level.master_objects.get_size();
-        xlog::info("[Mesh] Deserialized mesh[{}]: uid={} type=0x{:x} ptr={:p} file='{}' pos=({:.2f},{:.2f},{:.2f}) "
-            "links={} collision={} master_objects: {}->{}",
-            i, mesh->uid, static_cast<int>(mesh->type), static_cast<void*>(mesh),
-            mfname, mesh->pos.x, mesh->pos.y, mesh->pos.z,
-            link_count, mesh->collision_mode,
-            master_size_before, master_size_after);
-        // Log each link UID
-        for (int32_t j = 0; j < mesh->links.get_size(); j++) {
-            xlog::info("[Mesh]   mesh uid={} link[{}] = uid {}", mesh->uid, j, mesh->links[j]);
-        }
-        // Log texture overrides
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-            const char* tex = mesh->texture_overrides[ti].c_str();
-            if (tex && tex[0] != '\0') {
-                xlog::info("[Mesh]   mesh uid={} texture_override[{}] = '{}'", mesh->uid, ti, tex);
-            }
-        }
     }
 
     // skip any remaining data
@@ -593,21 +526,6 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         file.seek(static_cast<int>(remaining), rf::File::seek_cur);
     }
 
-    // Post-load verification: confirm all meshes are in master_objects
-    int total_master = level.master_objects.get_size();
-    xlog::info("[Mesh] Deserialized {} mesh objects. master_objects total={}", count, total_master);
-    for (uint32_t i = 0; i < count && i < meshes.size(); i++) {
-        bool found_in_master = false;
-        for (int mi = 0; mi < level.master_objects.get_size(); mi++) {
-            if (level.master_objects[mi] == static_cast<DedObject*>(meshes[i])) {
-                found_in_master = true;
-                break;
-            }
-        }
-        if (!found_in_master) {
-            xlog::error("[Mesh] VERIFICATION FAILED: mesh uid={} NOT in master_objects!", meshes[i]->uid);
-        }
-    }
 }
 
 // ─── Property Dialog ────────────────────────────────────────────────────────
@@ -997,9 +915,7 @@ void PlaceNewMeshObject()
     // Add to level (vmesh will be loaded lazily on first render)
     level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
     // Add to master objects list so stock link validation (FUN_00483920) finds this mesh
-    int master_before = level->master_objects.get_size();
     level->master_objects.add(static_cast<DedObject*>(mesh));
-    int master_after = level->master_objects.get_size();
 
     // Deselect all, then select the new mesh (matches stock FUN_004146b0 flow)
     auto* sel = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(level) + 0x298);
@@ -1008,13 +924,6 @@ void PlaceNewMeshObject()
 
     // Update console display to show selected object info
     AddrCaller{0x00423460}.this_call(level);
-
-    xlog::info("[Mesh] Placed new mesh uid={} ptr={:p} type=0x{:x} at ({:.2f},{:.2f},{:.2f}) "
-        "mesh_objects count={} master_objects: {}->{}",
-        mesh->uid, static_cast<void*>(mesh), static_cast<int>(mesh->type),
-        mesh->pos.x, mesh->pos.y, mesh->pos.z,
-        static_cast<int>(level->GetAlpineLevelProperties().mesh_objects.size()),
-        master_before, master_after);
 }
 
 DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
@@ -1050,18 +959,8 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
         auto* level = CDedLevel::Get();
         if (level) {
             level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
-            int master_before = level->master_objects.get_size();
             level->master_objects.add(static_cast<DedObject*>(mesh));
-            int master_after = level->master_objects.get_size();
-            xlog::info("[Mesh] Cloned mesh uid={} from uid={} ptr={:p} add_to_level=true "
-                "mesh_objects count={} master_objects: {}->{}",
-                mesh->uid, source->uid, static_cast<void*>(mesh),
-                static_cast<int>(level->GetAlpineLevelProperties().mesh_objects.size()),
-                master_before, master_after);
         }
-    } else {
-        xlog::info("[Mesh] Cloned mesh uid={} from uid={} ptr={:p} add_to_level=false (staging)",
-            mesh->uid, source->uid, static_cast<void*>(mesh));
     }
     return mesh;
 }
@@ -1074,22 +973,11 @@ void DeleteMeshObject(DedMesh* mesh)
 
     auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
     auto it = std::find(meshes.begin(), meshes.end(), mesh);
-    int master_before = level->master_objects.get_size();
     if (it != meshes.end()) {
         meshes.erase(it);
     }
-    else {
-        xlog::error("[Mesh] DeleteMeshObject: mesh uid={} NOT found in mesh_objects!", mesh->uid);
-    }
     // Remove from master objects list
     level->master_objects.remove_by_value(static_cast<DedObject*>(mesh));
-    int master_after = level->master_objects.get_size();
-    xlog::info("[Mesh] Deleted mesh uid={} ptr={:p} mesh_objects count={} master_objects: {}->{}",
-        mesh->uid, static_cast<void*>(mesh), meshes.size(), master_before, master_after);
-    if (master_before == master_after) {
-        xlog::error("[Mesh] DELETE VERIFICATION FAILED: master_objects size unchanged! "
-            "Mesh uid={} was NOT in master_objects at delete time.", mesh->uid);
-    }
     destroy_ded_mesh(mesh);
 }
 
@@ -1111,19 +999,12 @@ CodeInjection open_mesh_properties_patch{
         // Collect all selected mesh objects
         g_selected_meshes.clear();
         g_current_level = level;
-        xlog::info("[Mesh] Properties: selection has {} items", sel.get_size());
         for (int i = 0; i < sel.get_size(); i++) {
             DedObject* obj = sel[i];
-            xlog::info("[Mesh] Properties: sel[{}] ptr={:p} type=0x{:x} uid={}",
-                i, static_cast<void*>(obj),
-                obj ? static_cast<int>(obj->type) : -1,
-                obj ? obj->uid : -1);
             if (obj && obj->type == DedObjectType::DED_MESH) {
                 g_selected_meshes.push_back(static_cast<DedMesh*>(obj));
             }
         }
-        xlog::info("[Mesh] Properties: collected {} mesh objects, vector data={:p}",
-            g_selected_meshes.size(), static_cast<void*>(g_selected_meshes.data()));
 
         if (!g_selected_meshes.empty()) {
             g_mesh_filename_changed = false;
@@ -1344,18 +1225,6 @@ CodeInjection mesh_render_patch{
                 }
                 else if (vmesh_type == 2) { // V3C character
                     auto* instance = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(mesh->vmesh) + 0x04);
-                    // One-shot debug: log slot state on first render
-                    {
-                        static int v3c_log_count = 0;
-                        if (v3c_log_count < 5) {
-                            auto* ib = instance ? reinterpret_cast<uint8_t*>(instance) : nullptr;
-                            int sc = ib ? *reinterpret_cast<int*>(ib + 0x12D0) : -1;
-                            char ff = ib ? *reinterpret_cast<char*>(ib + 0x1D4C) : -1;
-                            xlog::info("[Mesh] Render v3c: instance={:p} slots={} freeze={} has_anim='{}'",
-                                instance, sc, (int)ff, mesh->state_anim.c_str());
-                            v3c_log_count++;
-                        }
-                    }
                     if (instance) {
                         if (g_preview_mesh == mesh && g_preview_timer > 0.0f) {
                             // Preview is active - advance animation in real time
@@ -1515,7 +1384,7 @@ CodeInjection mesh_pick_patch{
             if (hit) {
                 auto* sel = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(level) + 0x298);
                 AddrCaller{0x00416BF0}.this_call(sel, static_cast<DedObject*>(mesh));
-                xlog::info("[Mesh] Pick: selected mesh uid={} at ({},{},{})",
+                xlog::debug("[Mesh] Pick: selected mesh uid={} at ({},{},{})",
                     mesh->uid, mesh->pos.x, mesh->pos.y, mesh->pos.z);
             }
         }
