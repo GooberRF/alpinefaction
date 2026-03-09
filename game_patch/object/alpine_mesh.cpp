@@ -127,9 +127,16 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) return;
         info.collision_mode = (collision_mode <= 2) ? collision_mode : 2;
-        // texture overrides
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-            info.texture_overrides[ti] = read_string();
+        // texture overrides: count + (slot_id, filename) pairs
+        uint8_t num_overrides = 0;
+        if (!read_bytes(&num_overrides, sizeof(num_overrides))) return;
+        for (uint8_t oi = 0; oi < num_overrides; oi++) {
+            uint8_t slot_id = 0;
+            if (!read_bytes(&slot_id, sizeof(slot_id))) return;
+            std::string tex = read_string();
+            if (!tex.empty()) {
+                info.texture_overrides.push_back({slot_id, std::move(tex)});
+            }
         }
 
         // Create the game object immediately so it exists before the stock link
@@ -299,34 +306,27 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
     }
 
     // Apply texture overrides
-    if (obj->vmesh) {
-        bool has_tex_override = false;
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-            if (!info.texture_overrides[ti].empty()) { has_tex_override = true; break; }
-        }
-        if (has_tex_override) {
-            int num_materials = 0;
-            rf::MeshMaterial* materials = nullptr;
-            if (get_replacement_materials(obj->vmesh, num_materials, materials)) {
-                for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-                    if (info.texture_overrides[ti].empty()) continue;
-                    if (ti >= num_materials) {
-                        xlog::warn("[AlpineMesh] Texture override slot {} exceeds material count {}", ti, num_materials);
-                        break;
-                    }
-                    int bm_handle = rf::bm::load(info.texture_overrides[ti].c_str(), -1, true);
-                    if (bm_handle < 0) {
-                        xlog::warn("[AlpineMesh] Failed to load texture '{}' for slot {}",
-                            info.texture_overrides[ti], ti);
-                        continue;
-                    }
-                    materials[ti].texture_maps[0].tex_handle = bm_handle;
-                    xlog::debug("[AlpineMesh] Applied texture override slot {}: '{}' (handle={})",
-                        ti, info.texture_overrides[ti], bm_handle);
+    if (obj->vmesh && !info.texture_overrides.empty()) {
+        int num_materials = 0;
+        rf::MeshMaterial* materials = nullptr;
+        if (get_replacement_materials(obj->vmesh, num_materials, materials)) {
+            for (const auto& ovr : info.texture_overrides) {
+                if (ovr.slot >= num_materials) {
+                    xlog::warn("[AlpineMesh] Texture override slot {} exceeds material count {}", ovr.slot, num_materials);
+                    continue;
                 }
-            } else {
-                xlog::warn("[AlpineMesh] Failed to allocate replacement materials for uid={}", info.uid);
+                int bm_handle = rf::bm::load(ovr.filename.c_str(), -1, true);
+                if (bm_handle < 0) {
+                    xlog::warn("[AlpineMesh] Failed to load texture '{}' for slot {}",
+                        ovr.filename, ovr.slot);
+                    continue;
+                }
+                materials[ovr.slot].texture_maps[0].tex_handle = bm_handle;
+                xlog::debug("[AlpineMesh] Applied texture override slot {}: '{}' (handle={})",
+                    ovr.slot, ovr.filename, bm_handle);
             }
+        } else {
+            xlog::warn("[AlpineMesh] Failed to allocate replacement materials for uid={}", info.uid);
         }
     }
 

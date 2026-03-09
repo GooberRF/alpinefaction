@@ -146,6 +146,8 @@ struct EditorMeshMaterial {
 };
 static_assert(sizeof(EditorMeshMaterial) == 0xC8, "EditorMeshMaterial size mismatch");
 
+struct EditorRenderParams; // forward declaration for vmesh_render
+
 // VMesh factory functions
 static auto& vmesh_load_v3m = addr_as_ref<EditorVMesh*(const char* filename, int param2, int param3)>(0x004BFC30);
 static auto& vmesh_load_v3c = addr_as_ref<EditorVMesh*(const char* filename, int param2, int param3)>(0x004BFD70);

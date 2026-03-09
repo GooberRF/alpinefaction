@@ -188,7 +188,11 @@ struct DashLevelProps
     }
 };
 
-static constexpr int MAX_MESH_TEXTURES = 7;
+// Per-slot texture override for mesh objects
+struct MeshTextureOverride {
+    uint8_t slot;
+    std::string filename;
+};
 
 // Alpine mesh object info, loaded from RFL
 struct AlpineMeshInfo {
@@ -199,7 +203,7 @@ struct AlpineMeshInfo {
     std::string mesh_filename;
     std::string state_anim;
     uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All
-    std::string texture_overrides[MAX_MESH_TEXTURES]; // per-slot texture replacements
+    std::vector<MeshTextureOverride> texture_overrides;
 };
 
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);

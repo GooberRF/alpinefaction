@@ -375,7 +375,11 @@ struct DedRoomEffect : DedObject
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
 
-static constexpr int MAX_MESH_TEXTURES = 7;
+// Per-slot texture override for editor mesh objects
+struct EditorTextureOverride {
+    uint8_t slot;
+    std::string filename;
+};
 
 struct DedMesh : DedObject
 {
@@ -384,9 +388,8 @@ struct DedMesh : DedObject
     uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
     bool vmesh_load_failed;         // true if vmesh load was attempted and failed
     char padding_mesh[2];
-    VString texture_overrides[MAX_MESH_TEXTURES]; // per-slot texture filename overrides
+    std::vector<EditorTextureOverride> texture_overrides;
 };
-static_assert(sizeof(DedMesh) == 0xE0, "DedMesh size mismatch");
 
 struct DedBoltEmitter : DedObject
 {

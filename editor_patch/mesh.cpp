@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <commctrl.h>
 #include <commdlg.h>
 #include <cstdio>
 #include <cstring>
@@ -140,7 +141,7 @@ static void mesh_load_vmesh(DedMesh* mesh)
         }
         // Apply texture overrides
         mesh_apply_texture_overrides(mesh);
-        xlog::debug("[Mesh] Loaded vmesh for '{}' -> {:p}", filename, vmesh);
+        xlog::debug("[Mesh] Loaded vmesh for '{}' -> {:p}", filename, static_cast<void*>(vmesh));
     }
     else {
         xlog::warn("[Mesh] Failed to load vmesh for '{}'", filename);
@@ -153,12 +154,7 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
     auto* ev = get_vmesh(mesh);
     if (!mesh || !ev) return;
 
-    bool has_any = false;
-    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-        const char* tex = mesh->texture_overrides[ti].c_str();
-        if (tex && tex[0] != '\0') { has_any = true; break; }
-    }
-    if (!has_any) return;
+    if (mesh->texture_overrides.empty()) return;
 
     int num_materials = 0;
     EditorMeshMaterial* materials = nullptr;
@@ -209,21 +205,20 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
         }
     }
 
-    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-        const char* tex = mesh->texture_overrides[ti].c_str();
-        if (!tex || tex[0] == '\0') continue;
-        if (ti >= num_materials) {
-            xlog::warn("[Mesh] Texture override slot {} exceeds material count {}", ti, num_materials);
-            break;
-        }
-
-        int bm_handle = bm_load(tex, -1, 1);
-        if (bm_handle < 0) {
-            xlog::warn("[Mesh] Failed to load texture override '{}' for slot {}", tex, ti);
+    for (const auto& ovr : mesh->texture_overrides) {
+        if (ovr.filename.empty()) continue;
+        if (ovr.slot >= num_materials) {
+            xlog::warn("[Mesh] Texture override slot {} exceeds material count {}", ovr.slot, num_materials);
             continue;
         }
-        materials[ti].texture_maps[0].tex_handle = bm_handle;
-        xlog::debug("[Mesh] Applied texture override slot {}: '{}' (handle={})", ti, tex, bm_handle);
+
+        int bm_handle = bm_load(ovr.filename.c_str(), -1, 1);
+        if (bm_handle < 0) {
+            xlog::warn("[Mesh] Failed to load texture override '{}' for slot {}", ovr.filename, ovr.slot);
+            continue;
+        }
+        materials[ovr.slot].texture_maps[0].tex_handle = bm_handle;
+        xlog::debug("[Mesh] Applied texture override slot {}: '{}' (handle={})", ovr.slot, ovr.filename, bm_handle);
     }
 }
 
@@ -244,9 +239,7 @@ static void destroy_ded_mesh(DedMesh* mesh)
     // Free VString members from DedMesh
     vstring_free(mesh->mesh_filename);
     vstring_free(mesh->state_anim);
-    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-        vstring_free(mesh->texture_overrides[ti]);
-    }
+    // texture_overrides is std::vector, cleaned up automatically by delete
     delete mesh;
 }
 
@@ -259,6 +252,15 @@ static void write_rfl_string(rf::File& file, const VString& str)
     file.write<uint16_t>(len);
     if (len > 0) {
         file.write(s, len);
+    }
+}
+
+static void write_rfl_string(rf::File& file, const std::string& str)
+{
+    uint16_t len = static_cast<uint16_t>(str.size());
+    file.write<uint16_t>(len);
+    if (len > 0) {
+        file.write(str.c_str(), len);
     }
 }
 
@@ -322,9 +324,12 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
         write_rfl_string(file, mesh->state_anim);
         // collision mode
         file.write<uint8_t>(mesh->collision_mode);
-        // texture overrides
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-            write_rfl_string(file, mesh->texture_overrides[ti]);
+        // texture overrides: count + (slot_id, filename) pairs
+        uint8_t num_overrides = static_cast<uint8_t>(mesh->texture_overrides.size());
+        file.write<uint8_t>(num_overrides);
+        for (const auto& ovr : mesh->texture_overrides) {
+            file.write<uint8_t>(ovr.slot);
+            write_rfl_string(file, ovr.filename);
         }
     }
 
@@ -351,8 +356,6 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
     for (uint32_t i = 0; i < count; i++) {
         auto* mesh = new DedMesh();
         memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
-        // Zero-init new fields (VStrings after DedObject base)
-        memset(&mesh->texture_overrides, 0, sizeof(mesh->texture_overrides));
         mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
         mesh->type = DedObjectType::DED_MESH;
         mesh->collision_mode = 2; // All
@@ -386,10 +389,16 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) { destroy_ded_mesh(mesh); return; }
         mesh->collision_mode = (collision_mode <= 2) ? collision_mode : 2;
-        // texture overrides
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+        // texture overrides: count + (slot_id, filename) pairs
+        uint8_t num_overrides = 0;
+        if (!read_bytes(&num_overrides, sizeof(num_overrides))) { destroy_ded_mesh(mesh); return; }
+        for (uint8_t oi = 0; oi < num_overrides; oi++) {
+            uint8_t slot_id = 0;
+            if (!read_bytes(&slot_id, sizeof(slot_id))) { destroy_ded_mesh(mesh); return; }
             std::string tex = read_rfl_string(file, remaining);
-            mesh->texture_overrides[ti].assign_0(tex.c_str());
+            if (!tex.empty()) {
+                mesh->texture_overrides.push_back({slot_id, std::move(tex)});
+            }
         }
 
         // Don't load vmesh here - the RFL file is still open and loading a v3c
@@ -424,18 +433,49 @@ static std::string g_init_script_name;
 static std::string g_init_filename;
 static std::string g_init_state_anim;
 static int g_init_collision_mode;
-static std::string g_init_textures[MAX_MESH_TEXTURES];
-
-static constexpr int TEXTURE_CTRL_IDS[MAX_MESH_TEXTURES] = {
-    IDC_MESH_TEX0, IDC_MESH_TEX1, IDC_MESH_TEX2, IDC_MESH_TEX3,
-    IDC_MESH_TEX4, IDC_MESH_TEX5, IDC_MESH_TEX6
-};
+static std::vector<EditorTextureOverride> g_init_overrides;
+static bool g_init_overrides_multiple = false; // true if selected meshes have differing overrides
 
 // Flags: set to true by IDOK if mesh filenames/anims were changed, so caller can reload
 static bool g_mesh_filename_changed = false;
 static bool g_mesh_anim_changed = false;
 
-// Returns the file extension (lowercase, with dot) from a filename, or empty string
+// Helper: populate the override ListView from a vector
+static void mesh_dialog_populate_overrides(HWND hdlg, const std::vector<EditorTextureOverride>& overrides)
+{
+    HWND list = GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST);
+    ListView_DeleteAllItems(list);
+    for (int i = 0; i < static_cast<int>(overrides.size()); i++) {
+        char slot_str[8];
+        snprintf(slot_str, sizeof(slot_str), "%d", overrides[i].slot);
+        LVITEMA lvi = {};
+        lvi.mask = LVIF_TEXT;
+        lvi.iItem = i;
+        lvi.iSubItem = 0;
+        lvi.pszText = slot_str;
+        ListView_InsertItem(list, &lvi);
+        ListView_SetItemText(list, i, 1, const_cast<char*>(overrides[i].filename.c_str()));
+    }
+}
+
+// Helper: read overrides from the ListView into a vector
+static std::vector<EditorTextureOverride> mesh_dialog_read_overrides(HWND hdlg)
+{
+    std::vector<EditorTextureOverride> result;
+    HWND list = GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST);
+    int count = ListView_GetItemCount(list);
+    for (int i = 0; i < count; i++) {
+        char slot_str[8] = {};
+        char tex_str[MAX_PATH] = {};
+        ListView_GetItemText(list, i, 0, slot_str, sizeof(slot_str));
+        ListView_GetItemText(list, i, 1, tex_str, sizeof(tex_str));
+        if (tex_str[0] != '\0') {
+            result.push_back({static_cast<uint8_t>(atoi(slot_str)), tex_str});
+        }
+    }
+    return result;
+}
+
 // Update dialog controls based on mesh type and material info
 static void mesh_dialog_update_state(HWND hdlg)
 {
@@ -468,10 +508,12 @@ static void mesh_dialog_update_state(HWND hdlg)
     bool enable_collision = has_filename && !string_iequals(ext, "vfx");
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE), enable_collision);
 
-    // Texture overrides: grey out all slots if no filename specified
-    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-        EnableWindow(GetDlgItem(hdlg, TEXTURE_CTRL_IDS[ti]), has_filename);
-    }
+    // Material overrides: enable/disable controls based on filename
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST), has_filename);
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_SLOT), has_filename);
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_FILENAME), has_filename);
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_ADD), has_filename);
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_REMOVE), has_filename);
 }
 
 static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -484,9 +526,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         auto* first = g_selected_meshes[0];
         bool all_same_script = true, all_same_filename = true;
         bool all_same_anim = true, all_same_collision = true;
-
-        bool all_same_tex[MAX_MESH_TEXTURES];
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) all_same_tex[ti] = true;
+        bool all_same_overrides = true;
 
         for (size_t i = 1; i < g_selected_meshes.size(); i++) {
             auto* m = g_selected_meshes[i];
@@ -494,9 +534,16 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             if (strcmp(m->mesh_filename.c_str(), first->mesh_filename.c_str()) != 0) all_same_filename = false;
             if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
             if (m->collision_mode != first->collision_mode) all_same_collision = false;
-            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-                if (strcmp(m->texture_overrides[ti].c_str(), first->texture_overrides[ti].c_str()) != 0)
-                    all_same_tex[ti] = false;
+            if (m->texture_overrides.size() != first->texture_overrides.size()) {
+                all_same_overrides = false;
+            } else {
+                for (size_t ti = 0; ti < first->texture_overrides.size(); ti++) {
+                    if (m->texture_overrides[ti].slot != first->texture_overrides[ti].slot ||
+                        m->texture_overrides[ti].filename != first->texture_overrides[ti].filename) {
+                        all_same_overrides = false;
+                        break;
+                    }
+                }
             }
         }
 
@@ -504,15 +551,26 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         g_init_filename = all_same_filename ? first->mesh_filename.c_str() : MULTIPLE_STR;
         g_init_state_anim = all_same_anim ? first->state_anim.c_str() : MULTIPLE_STR;
         g_init_collision_mode = all_same_collision ? first->collision_mode : MULTIPLE_COLLISION;
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-            g_init_textures[ti] = all_same_tex[ti] ? first->texture_overrides[ti].c_str() : MULTIPLE_STR;
-        }
+        g_init_overrides_multiple = !all_same_overrides;
+        g_init_overrides = all_same_overrides ? first->texture_overrides : std::vector<EditorTextureOverride>{};
 
         SetDlgItemTextA(hdlg, IDC_MESH_SCRIPT_NAME, g_init_script_name.c_str());
         SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, g_init_filename.c_str());
         SetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, g_init_state_anim.c_str());
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-            SetDlgItemTextA(hdlg, TEXTURE_CTRL_IDS[ti], g_init_textures[ti].c_str());
+
+        // Set up the material overrides ListView columns
+        {
+            HWND list = GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST);
+            ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+            LVCOLUMNA col = {};
+            col.mask = LVCF_TEXT | LVCF_WIDTH;
+            col.cx = 36;
+            col.pszText = const_cast<char*>("Slot");
+            ListView_InsertColumn(list, 0, &col);
+            col.cx = 200;
+            col.pszText = const_cast<char*>("Texture");
+            ListView_InsertColumn(list, 1, &col);
+            mesh_dialog_populate_overrides(hdlg, g_init_overrides);
         }
 
         {
@@ -569,6 +627,59 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             return TRUE;
         }
 
+        case IDC_MESH_OVERRIDE_ADD:
+        {
+            char slot_str[8] = {};
+            char tex_str[MAX_PATH] = {};
+            GetDlgItemTextA(hdlg, IDC_MESH_OVERRIDE_SLOT, slot_str, sizeof(slot_str));
+            GetDlgItemTextA(hdlg, IDC_MESH_OVERRIDE_FILENAME, tex_str, sizeof(tex_str));
+            if (tex_str[0] == '\0') return TRUE;
+
+            HWND list = GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST);
+            int slot_val = atoi(slot_str);
+
+            // Check if this slot already exists and replace it
+            int count = ListView_GetItemCount(list);
+            int existing_idx = -1;
+            for (int i = 0; i < count; i++) {
+                char existing_slot[8] = {};
+                ListView_GetItemText(list, i, 0, existing_slot, sizeof(existing_slot));
+                if (atoi(existing_slot) == slot_val) {
+                    existing_idx = i;
+                    break;
+                }
+            }
+
+            if (existing_idx >= 0) {
+                // Update existing entry
+                ListView_SetItemText(list, existing_idx, 1, tex_str);
+            } else {
+                // Add new entry
+                LVITEMA lvi = {};
+                lvi.mask = LVIF_TEXT;
+                lvi.iItem = count;
+                lvi.iSubItem = 0;
+                lvi.pszText = slot_str;
+                ListView_InsertItem(list, &lvi);
+                ListView_SetItemText(list, count, 1, tex_str);
+            }
+
+            // Clear input fields
+            SetDlgItemTextA(hdlg, IDC_MESH_OVERRIDE_SLOT, "");
+            SetDlgItemTextA(hdlg, IDC_MESH_OVERRIDE_FILENAME, "");
+            return TRUE;
+        }
+
+        case IDC_MESH_OVERRIDE_REMOVE:
+        {
+            HWND list = GetDlgItem(hdlg, IDC_MESH_OVERRIDE_LIST);
+            int sel = ListView_GetNextItem(list, -1, LVNI_SELECTED);
+            if (sel >= 0) {
+                ListView_DeleteItem(list, sel);
+            }
+            return TRUE;
+        }
+
         case IDC_MESH_PREVIEW:
         {
             if (g_selected_meshes.size() != 1) return TRUE;
@@ -617,27 +728,56 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             bool filename_changed = (strcmp(fname_buf, g_init_filename.c_str()) != 0);
 
             char anim_buf[MAX_PATH] = {};
-            GetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, anim_buf, sizeof(anim_buf));
-            bool anim_changed = (strcmp(anim_buf, g_init_state_anim.c_str()) != 0);
+            bool state_anim_enabled = IsWindowEnabled(GetDlgItem(hdlg, IDC_MESH_STATE_ANIM));
+            // Only force-clear disabled fields if the user changed the filename
+            // (all meshes now share a type). If filename is "<multiple>" and unchanged,
+            // some meshes may legitimately use these values for their own type.
+            bool force_clear_disabled = !state_anim_enabled && filename_changed;
+            if (state_anim_enabled) {
+                GetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, anim_buf, sizeof(anim_buf));
+            }
+            bool anim_changed = state_anim_enabled
+                ? (strcmp(anim_buf, g_init_state_anim.c_str()) != 0)
+                : force_clear_disabled;
 
             HWND combo = GetDlgItem(hdlg, IDC_MESH_COLLISION_MODE);
-            int collision_sel = static_cast<int>(SendMessageA(combo, CB_GETCURSEL, 0, 0));
+            bool collision_enabled = IsWindowEnabled(combo);
+            bool force_clear_collision = !collision_enabled && filename_changed;
+            int collision_sel = collision_enabled
+                ? static_cast<int>(SendMessageA(combo, CB_GETCURSEL, 0, 0))
+                : 2; // default: All
             // "Undefined" is index 3 — only present in multi-select mode
             bool collision_changed = false;
-            if (g_init_collision_mode == MULTIPLE_COLLISION) {
+            if (force_clear_collision) {
+                collision_changed = true;
+            } else if (!collision_enabled) {
+                // Disabled but filename unchanged — don't touch
+                collision_changed = false;
+            } else if (g_init_collision_mode == MULTIPLE_COLLISION) {
                 collision_changed = (collision_sel != 3); // changed from "Undefined"
             } else {
                 collision_changed = (collision_sel != g_init_collision_mode);
             }
 
-            // Check texture override changes
-            char tex_bufs[MAX_MESH_TEXTURES][MAX_PATH] = {};
-            bool tex_changed[MAX_MESH_TEXTURES] = {};
-            bool any_tex_changed = false;
-            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-                GetDlgItemTextA(hdlg, TEXTURE_CTRL_IDS[ti], tex_bufs[ti], MAX_PATH);
-                tex_changed[ti] = (strcmp(tex_bufs[ti], g_init_textures[ti].c_str()) != 0);
-                if (tex_changed[ti]) any_tex_changed = true;
+            // Check material override changes
+            auto current_overrides = mesh_dialog_read_overrides(hdlg);
+            bool overrides_changed = false;
+            if (g_init_overrides_multiple) {
+                // Overrides differed across selection — any non-empty list is a change
+                overrides_changed = !current_overrides.empty();
+            } else {
+                // Compare with initial overrides
+                if (current_overrides.size() != g_init_overrides.size()) {
+                    overrides_changed = true;
+                } else {
+                    for (size_t i = 0; i < current_overrides.size(); i++) {
+                        if (current_overrides[i].slot != g_init_overrides[i].slot ||
+                            current_overrides[i].filename != g_init_overrides[i].filename) {
+                            overrides_changed = true;
+                            break;
+                        }
+                    }
+                }
             }
 
             for (size_t idx = 0; idx < g_selected_meshes.size(); idx++) {
@@ -649,12 +789,12 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (collision_changed && collision_sel >= 0 && collision_sel <= 2) {
                     mesh->collision_mode = static_cast<uint8_t>(collision_sel);
                 }
-                for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-                    if (tex_changed[ti]) mesh->texture_overrides[ti].assign_0(tex_bufs[ti]);
+                if (overrides_changed) {
+                    mesh->texture_overrides = current_overrides;
                 }
             }
             // Defer vmesh reload until after dialog closes to avoid message pump issues
-            g_mesh_filename_changed = filename_changed || any_tex_changed;
+            g_mesh_filename_changed = filename_changed || overrides_changed;
             g_mesh_anim_changed = anim_changed;
 
             EndDialog(hdlg, IDOK);
@@ -746,7 +886,7 @@ void PlaceNewMeshObject()
     if (!level) return;
 
     auto* mesh = new DedMesh();
-    memset(mesh, 0, sizeof(DedMesh));
+    memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
     mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
     mesh->type = DedObjectType::DED_MESH;
     mesh->collision_mode = 2; // All
@@ -796,7 +936,7 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     if (!source) return nullptr;
 
     auto* mesh = new DedMesh();
-    memset(mesh, 0, sizeof(DedMesh));
+    memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
     mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
     mesh->type = DedObjectType::DED_MESH;
 
@@ -809,9 +949,7 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->mesh_filename.assign_0(source->mesh_filename.c_str());
     mesh->state_anim.assign_0(source->state_anim.c_str());
     mesh->collision_mode = source->collision_mode;
-    for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-        mesh->texture_overrides[ti].assign_0(source->texture_overrides[ti].c_str());
-    }
+    mesh->texture_overrides = source->texture_overrides;
 
     // Generate new UID
     mesh->uid = generate_mesh_uid();
@@ -1337,9 +1475,7 @@ static void clear_mesh_clipboard()
         vstring_free(mesh->script_name);
         vstring_free(mesh->mesh_filename);
         vstring_free(mesh->state_anim);
-        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-            vstring_free(mesh->texture_overrides[ti]);
-        }
+        // texture_overrides is std::vector, cleaned up automatically by delete
         delete mesh;
     }
     g_mesh_clipboard.clear();
