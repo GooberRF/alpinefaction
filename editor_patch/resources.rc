@@ -244,9 +244,6 @@ IDR_MAIN_FRAME MENU
         MENUITEM SEPARATOR
         MENUITEM "Properties...\tCtrl+P", 32793
         MENUITEM "Level Properties...", 32801
-        MENUITEM SEPARATOR
-        MENUITEM "Place &Mesh Object\tCtrl+Shift+M", ID_PLACE_MESH
-        MENUITEM "Place &Note\tCtrl+Shift+N", ID_PLACE_NOTE
     }
     POPUP "&Level"
     {
@@ -343,8 +340,6 @@ IDR_MAIN_FRAME ACCELERATORS
     // New accelerators
     "S",        ID_CREATE_LEVEL_PACKFILE, VIRTKEY, CONTROL, SHIFT
     "L",        ID_CALCULATE_MAPS_AND_LIGHT, VIRTKEY, CONTROL, SHIFT
-    "M",        ID_PLACE_MESH, VIRTKEY, CONTROL, SHIFT
-    "N",        ID_PLACE_NOTE, VIRTKEY, CONTROL, SHIFT
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT

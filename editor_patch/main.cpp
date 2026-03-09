@@ -872,12 +872,6 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_BACK_LINK:
                 handler = std::bind(CMainFrame_BackLink, this_);
                 break;
-            case ID_PLACE_MESH:
-                handler = PlaceNewMeshObject;
-                break;
-            case ID_PLACE_NOTE:
-                handler = PlaceNewNoteObject;
-                break;
         }
 
         if (handler) {
