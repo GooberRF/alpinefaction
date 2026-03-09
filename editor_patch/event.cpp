@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 48; // must be 1 higher than actual count
+constexpr int new_event_count = 49; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -88,6 +88,7 @@ const char* additional_event_names[new_event_count] = {
     "When_Round_Ends",
     "Mesh_Animate",
     "Mesh_Set_Texture",
+    "Mesh_Set_Collision",
     "_dummy"
 };
 
@@ -684,8 +685,16 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
             {FIELD_INT1, "Texture slot (int1):"},
             {FIELD_STR1, "Texture filename (str1):"}
         },
+        {},
+        {}
+    }},
+    {AlpineDedEventID::Mesh_Set_Collision, {
+        {FIELD_INT1},
         {
-            {FIELD_INT1, {"0", "1", "2", "3", "4", "5", "6", "7"}}
+            {FIELD_INT1, "Collision type (int1):"}
+        },
+        {
+            {FIELD_INT1, {"None", "Only Weapons", "All"}}
         },
         {
             {FIELD_INT1, true}

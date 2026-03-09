@@ -637,3 +637,50 @@ void alpine_mesh_clear_texture(rf::Object* obj, int slot)
     materials[slot].texture_maps[0].tex_handle = -1;
     xlog::debug("[AlpineMesh] Cleared texture slot {} on obj handle {}", slot, obj->handle);
 }
+
+void alpine_mesh_set_collision(rf::Object* obj, int collision_type)
+{
+    if (!obj || obj->type != rf::OT_CLUTTER) {
+        return;
+    }
+
+    // Clamp to valid range
+    if (collision_type < 0 || collision_type > 2) {
+        xlog::warn("[AlpineMesh] set_collision: invalid type {} (expected 0-2)", collision_type);
+        return;
+    }
+
+    // Clear existing collision flags
+    obj->obj_flags = static_cast<rf::ObjectFlags>(
+        static_cast<int>(obj->obj_flags) & ~static_cast<int>(rf::OF_WEAPON_ONLY_COLLIDE)
+    );
+    obj->p_data.flags &= ~rf::PF_COLLIDE_OBJECTS;
+
+    if (collision_type > 0) {
+        // Enable collision
+        obj->p_data.flags |= rf::PF_COLLIDE_OBJECTS;
+
+        // Set up collision sphere if not already present
+        if (obj->p_data.cspheres.size() == 0) {
+            float r = obj->radius;
+            obj->p_data.radius = r;
+            obj->p_data.mass = 10000.0f;
+            rf::PCollisionSphere sphere{};
+            sphere.center = {0.0f, 0.0f, 0.0f};
+            sphere.radius = r;
+            obj->p_data.cspheres.add(sphere);
+            obj->p_data.bbox_min = {obj->pos.x - r, obj->pos.y - r, obj->pos.z - r};
+            obj->p_data.bbox_max = {obj->pos.x + r, obj->pos.y + r, obj->pos.z + r};
+        }
+
+        if (collision_type == 1) {
+            obj->obj_flags = static_cast<rf::ObjectFlags>(
+                static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_WEAPON_ONLY_COLLIDE)
+            );
+        }
+
+        rf::obj_collision_register(obj);
+    }
+
+    xlog::debug("[AlpineMesh] Set collision type {} on obj handle {}", collision_type, obj->handle);
+}

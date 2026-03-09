@@ -215,6 +215,7 @@ namespace rf { struct Object; }
 void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);
+void alpine_mesh_set_collision(rf::Object* obj, int collision_type);
 
 // used by RF2-style geomod
 struct RF2AnchorInfo {

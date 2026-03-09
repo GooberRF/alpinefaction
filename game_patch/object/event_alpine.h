@@ -2550,4 +2550,36 @@ namespace rf
         }
     };
 
+    // id 147
+    struct EventMeshSetCollision : Event
+    {
+        char padding_align[3];
+        int collision_type = 0; // 0=None, 1=Only Weapons, 2=All
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshSetCollision*>(event);
+                e->collision_type = std::stoi(value);
+            };
+        }
+
+        void turn_on() override
+        {
+            xlog::debug("[EventMeshSetCollision] turn_on: uid={} collision_type={} links={}",
+                this->uid, collision_type, this->links.size());
+            for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+                int link_handle = this->links[i];
+                Object* obj = obj_from_handle(link_handle);
+                if (obj) {
+                    alpine_mesh_set_collision(obj, collision_type);
+                } else {
+                    xlog::warn("[EventMeshSetCollision] link[{}]: handle={} -> NULL", i, link_handle);
+                }
+            }
+        }
+    };
+
 } // namespace rf

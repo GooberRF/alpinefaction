@@ -93,6 +93,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"When_Round_Ends", 144},
                 {"Mesh_Animate", 145},
                 {"Mesh_Set_Texture", 146},
+                {"Mesh_Set_Collision", 147},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -165,6 +166,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {144, []() { return new rf::EventWhenRoundEnds(); }},
                 {145, []() { return new rf::EventMeshAnimate(); }},
                 {146, []() { return new rf::EventMeshSetTexture(); }},
+                {147, []() { return new rf::EventMeshSetCollision(); }},
             };
 
             // find type and allocate
@@ -241,6 +243,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {144, [](rf::Event* e) { delete static_cast<rf::EventWhenRoundEnds*>(e); }},
                 {145, [](rf::Event* e) { delete static_cast<rf::EventMeshAnimate*>(e); }},
                 {146, [](rf::Event* e) { delete static_cast<rf::EventMeshSetTexture*>(e); }},
+                {147, [](rf::Event* e) { delete static_cast<rf::EventMeshSetCollision*>(e); }},
             };
 
             // find type and deallocate
@@ -288,7 +291,8 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Owner_Gate,
         rf::EventType::When_Round_Ends,
         rf::EventType::Mesh_Animate,
-        rf::EventType::Mesh_Set_Texture
+        rf::EventType::Mesh_Set_Texture,
+        rf::EventType::Mesh_Set_Collision
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
