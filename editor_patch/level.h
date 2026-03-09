@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <utility>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -546,30 +547,34 @@ struct CDedLevel
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
-    char _pad_2A4[0x340 - 0x2A4];                // +0x2A4 (13 VArrays + 1 container, internal editor state)
+    char _pad_2A4[0x2E0 - 0x2A4];                // +0x2A4
+    VArray<DedObject*> master_objects;            // +0x2E0 (all DedObjects, searched by FUN_00483920 for link validation)
+    char _pad_2EC[0x340 - 0x2EC];                // +0x2EC
 
     // --- object VArrays (21 contiguous, 12 bytes each) ---
-    VArray<DedObject*> items;                     // +0x340
-    VArray<DedObject*> entities;                  // +0x34C
-    VArray<DedObject*> respawn_points;            // +0x358
-    VArray<DedObject*> triggers;                  // +0x364
-    VArray<DedObject*> events;                    // +0x370
-    VArray<DedObject*> ambient_sounds;            // +0x37C
-    VArray<DedObject*> clutter;                   // +0x388
-    VArray<DedObject*> lights;                    // +0x394
-    VArray<DedObject*> geo_regions;               // +0x3A0
-    VArray<DedObject*> nav_points;                // +0x3AC
-    VArray<DedObject*> cutscene_cameras;          // +0x3B8
-    VArray<DedObject*> cutscene_path_nodes;       // +0x3C4
-    VArray<DedObject*> emitters;                  // +0x3D0
-    VArray<DedObject*> gas_regions;               // +0x3DC
-    VArray<DedObject*> room_effects;              // +0x3E8
-    VArray<DedObject*> eax_effects;               // +0x3F4
-    VArray<DedObject*> climb_regions;             // +0x400
-    VArray<DedObject*> bolt_emitters;             // +0x40C
-    VArray<DedObject*> targets;                   // +0x418
-    VArray<DedObject*> decals;                    // +0x424
-    VArray<DedObject*> push_regions;              // +0x430
+    // Offsets verified against save function FUN_00430bf0 chunk IDs
+    // FUN_004839a0 searches +0x3AC (type 9), FUN_00483920 searches +0x2E0 (master list).
+    VArray<DedObject*> obj_arr_340;               // +0x340 (chunk 0x40000)
+    VArray<DedObject*> obj_arr_34C;               // +0x34C (chunk 0x30000)
+    VArray<DedObject*> nav_points;                // +0x358 (chunk 0x700)
+    VArray<DedObject*> obj_arr_364;               // +0x364 (chunk 0x60000)
+    VArray<DedObject*> clutter;                   // +0x370 (chunk 0x600)
+    VArray<DedObject*> triggers;                  // +0x37C (chunk 0x500)
+    VArray<DedObject*> obj_arr_388;               // +0x388 (chunk 0x50000)
+    VArray<DedObject*> entities;                  // +0x394 (chunk 0x300)
+    VArray<DedObject*> lights;                    // +0x3A0 (chunk 0x200)
+    VArray<DedObject*> obj_arr_3AC;               // +0x3AC (type 9 objects, chunk 0x20000, searched by FUN_004839a0)
+    VArray<DedObject*> ambient_sounds;            // +0x3B8 (chunk 0x400)
+    VArray<DedObject*> events;                    // +0x3C4 (chunk 0x5000)
+    VArray<DedObject*> emitters;                  // +0x3D0 (chunk 0xA00)
+    VArray<DedObject*> gas_regions;               // +0x3DC (chunk 0xB00)
+    VArray<DedObject*> room_effects;              // +0x3E8 (chunk 0xC00)
+    VArray<DedObject*> eax_effects;               // +0x3F4 (chunk 0x8000)
+    VArray<DedObject*> climb_regions;             // +0x400 (chunk 0xD00)
+    VArray<DedObject*> bolt_emitters;             // +0x40C (chunk 0xE00)
+    VArray<DedObject*> targets;                   // +0x418 (chunk 0xF00)
+    VArray<DedObject*> decals;                    // +0x424 (chunk 0x1000)
+    VArray<DedObject*> push_regions;              // +0x430 (chunk 0x1100)
     char _pad_43C[0x444 - 0x43C];                // +0x43C
 
     // --- editor dialog panel pointers (28 MFC dialog objects) ---

@@ -68,7 +68,11 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 regs.eip = 0x0043090C;
             }
             if (chunk_id == alpine_mesh_chunk_id) {
+                xlog::info("[Level] Loading mesh chunk: size={} master_objects_before={}",
+                    chunk_size, level.master_objects.get_size());
                 mesh_deserialize_chunk(level, file, chunk_size);
+                xlog::info("[Level] Mesh chunk loaded: master_objects_after={}",
+                    level.master_objects.get_size());
                 regs.eip = 0x0043090C;
             }
         }
@@ -473,6 +477,8 @@ bool __cdecl adjacency_test_hooked(GFace* face1, GFace* face2)
 }
 
 // save AlpineLevelProperties when saving rfl file
+// At 0x00430CBD, all_objects is already populated but link UIDs haven't been
+// converted to indices yet (that happens later in 0x10000/0x20000 chunks).
 CodeInjection CDedLevel_SaveLevel_patch{
     0x00430CBD,
     [](auto& regs) {
@@ -487,6 +493,18 @@ CodeInjection CDedLevel_SaveLevel_patch{
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
         alpine_level_props.Serialize(file);
         level.EndRflSection(file, start_pos);
+
+        // Log master_objects state before save for link validation diagnostics
+        {
+            int master_total = level.master_objects.get_size();
+            auto& mesh_objs = level.GetAlpineLevelProperties().mesh_objects;
+            int mesh_count = static_cast<int>(mesh_objs.size());
+            xlog::info("[Level] Pre-save: master_objects={} mesh_objects={}", master_total, mesh_count);
+            for (auto* m : mesh_objs) {
+                xlog::info("[Level]   mesh uid={} ptr={:p} type=0x{:x} links={}",
+                    m->uid, static_cast<void*>(m), static_cast<int>(m->type), m->links.get_size());
+            }
+        }
 
         // Write mesh objects chunk
         mesh_serialize_chunk(level, file);
@@ -546,10 +564,14 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
     return
         t0 == DedObjectType::DED_TRIGGER ||
         t0 == DedObjectType::DED_EVENT ||
-        (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT) ||
-        (t0 == DedObjectType::DED_CLUTTER && t1 == DedObjectType::DED_LIGHT) ||
-        (t0 == DedObjectType::DED_TRIGGER && t1 == DedObjectType::DED_MESH) ||
-        (t0 == DedObjectType::DED_EVENT && t1 == DedObjectType::DED_MESH);
+        t0 == DedObjectType::DED_MESH ||
+        (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT);
+}
+
+// Stock RED DoLink (0x00415850) stores links at DedObject+0x7C for all types.
+static VArray<int>& get_link_array(DedObject* obj)
+{
+    return obj->links;  // +0x7C for all object types
 }
 
 void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
@@ -597,8 +619,9 @@ void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
 
         attempted_uids.push_back(reverse_link_direction ? src->uid : dst->uid);
 
-        int old_size = src->links.get_size();
-        int idx = src->links.add_if_not_exists_int(dst->uid);
+        auto& src_links = get_link_array(src);
+        int old_size = src_links.get_size();
+        int idx = src_links.add_if_not_exists_int(dst->uid);
 
         if (idx < 0) {
             xlog::warn("DoLink: Failed to add link src_uid={} dst_uid={}", src->uid, dst->uid);

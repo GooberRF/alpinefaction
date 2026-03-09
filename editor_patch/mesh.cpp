@@ -388,8 +388,14 @@ static std::string read_rfl_string(rf::File& file, std::size_t& remaining)
     return result;
 }
 
-// Mesh chunk version: 1 = original, 2 = adds texture overrides
-static constexpr uint32_t MESH_CHUNK_VERSION_MARKER = 0xAF000002;
+// Mesh chunk version marker
+static constexpr uint32_t MESH_CHUNK_VERSION_MARKER = 0xAF000003;
+
+// Stock RED DoLink (0x00415850) stores links at DedObject+0x7C for all types.
+static VArray<int>& get_obj_links(DedObject* obj)
+{
+    return obj->links;  // +0x7C
+}
 
 void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
 {
@@ -404,7 +410,17 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
     uint32_t count = static_cast<uint32_t>(meshes.size());
     file.write<uint32_t>(count);
 
+    xlog::info("[Mesh] Serializing {} mesh objects", count);
     for (auto* mesh : meshes) {
+        xlog::info("[Mesh] Serializing mesh uid={} ptr={:p} type=0x{:x} file='{}' pos=({:.2f},{:.2f},{:.2f}) "
+            "links={} collision={}",
+            mesh->uid, static_cast<void*>(mesh), static_cast<int>(mesh->type),
+            mesh->mesh_filename.c_str(), mesh->pos.x, mesh->pos.y, mesh->pos.z,
+            mesh->links.get_size(), mesh->collision_mode);
+        // Log each link UID being saved
+        for (int li = 0; li < mesh->links.get_size(); li++) {
+            xlog::info("[Mesh]   saving link[{}] = uid {}", li, mesh->links[li]);
+        }
         // uid
         file.write<int32_t>(mesh->uid);
         // pos
@@ -442,7 +458,26 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
     }
 
     level.EndRflSection(file, start_pos);
-    xlog::debug("[Mesh] Serialized {} mesh objects (v2)", count);
+
+    // Verification: check all meshes are still in master_objects at save time
+    int master_total = level.master_objects.get_size();
+    int meshes_found_in_master = 0;
+    for (auto* mesh : meshes) {
+        bool found = false;
+        for (int mi = 0; mi < level.master_objects.get_size(); mi++) {
+            if (level.master_objects[mi] == static_cast<DedObject*>(mesh)) {
+                found = true;
+                break;
+            }
+        }
+        if (found) {
+            meshes_found_in_master++;
+        } else {
+            xlog::error("[Mesh] SAVE VERIFICATION FAILED: mesh uid={} NOT in master_objects!", mesh->uid);
+        }
+    }
+    xlog::info("[Mesh] Serialized {} mesh objects. master_objects total={}, meshes verified={}/{}",
+        count, master_total, meshes_found_in_master, count);
 }
 
 void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_len)
@@ -458,18 +493,16 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         return true;
     };
 
-    // Check for version marker vs old format (first uint32 was count directly)
+    // Check for version marker
     uint32_t first_word = 0;
     if (!read_bytes(&first_word, sizeof(first_word))) return;
 
-    bool has_texture_overrides = false;
     uint32_t count = 0;
-    if (first_word == MESH_CHUNK_VERSION_MARKER) {
-        has_texture_overrides = true;
-        if (!read_bytes(&count, sizeof(count))) return;
-    } else {
-        count = first_word; // old format: first word is count
+    if (first_word != MESH_CHUNK_VERSION_MARKER) {
+        xlog::warn("[Mesh] Unknown mesh chunk version marker: 0x{:08X}", first_word);
+        return;
     }
+    if (!read_bytes(&count, sizeof(count))) return;
     if (count > 10000) count = 10000;
 
     for (uint32_t i = 0; i < count; i++) {
@@ -519,12 +552,10 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
             if (!read_bytes(&link_uid, sizeof(link_uid))) { destroy_ded_mesh(mesh); return; }
             mesh->links.add_if_not_exists_int(link_uid);
         }
-        // v2: texture overrides
-        if (has_texture_overrides) {
-            for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
-                std::string tex = read_rfl_string(file, remaining);
-                mesh->texture_overrides[ti].assign_0(tex.c_str());
-            }
+        // texture overrides
+        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+            std::string tex = read_rfl_string(file, remaining);
+            mesh->texture_overrides[ti].assign_0(tex.c_str());
         }
 
         // Don't load vmesh here - the RFL file is still open and loading a v3c
@@ -534,8 +565,27 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         mesh->vmesh_load_failed = false;
 
         meshes.push_back(mesh);
-        xlog::debug("[Mesh] Loaded mesh uid={} file='{}' pos=({},{},{})",
-            mesh->uid, mfname, mesh->pos.x, mesh->pos.y, mesh->pos.z);
+        // Add to master objects list so stock link validation (FUN_00483920) finds this mesh
+        int master_size_before = level.master_objects.get_size();
+        level.master_objects.add(static_cast<DedObject*>(mesh));
+        int master_size_after = level.master_objects.get_size();
+        xlog::info("[Mesh] Deserialized mesh[{}]: uid={} type=0x{:x} ptr={:p} file='{}' pos=({:.2f},{:.2f},{:.2f}) "
+            "links={} collision={} master_objects: {}->{}",
+            i, mesh->uid, static_cast<int>(mesh->type), static_cast<void*>(mesh),
+            mfname, mesh->pos.x, mesh->pos.y, mesh->pos.z,
+            link_count, mesh->collision_mode,
+            master_size_before, master_size_after);
+        // Log each link UID
+        for (int32_t j = 0; j < mesh->links.get_size(); j++) {
+            xlog::info("[Mesh]   mesh uid={} link[{}] = uid {}", mesh->uid, j, mesh->links[j]);
+        }
+        // Log texture overrides
+        for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
+            const char* tex = mesh->texture_overrides[ti].c_str();
+            if (tex && tex[0] != '\0') {
+                xlog::info("[Mesh]   mesh uid={} texture_override[{}] = '{}'", mesh->uid, ti, tex);
+            }
+        }
     }
 
     // skip any remaining data
@@ -543,7 +593,21 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         file.seek(static_cast<int>(remaining), rf::File::seek_cur);
     }
 
-    xlog::debug("[Mesh] Deserialized {} mesh objects (v{})", count, has_texture_overrides ? 2 : 1);
+    // Post-load verification: confirm all meshes are in master_objects
+    int total_master = level.master_objects.get_size();
+    xlog::info("[Mesh] Deserialized {} mesh objects. master_objects total={}", count, total_master);
+    for (uint32_t i = 0; i < count && i < meshes.size(); i++) {
+        bool found_in_master = false;
+        for (int mi = 0; mi < level.master_objects.get_size(); mi++) {
+            if (level.master_objects[mi] == static_cast<DedObject*>(meshes[i])) {
+                found_in_master = true;
+                break;
+            }
+        }
+        if (!found_in_master) {
+            xlog::error("[Mesh] VERIFICATION FAILED: mesh uid={} NOT in master_objects!", meshes[i]->uid);
+        }
+    }
 }
 
 // ─── Property Dialog ────────────────────────────────────────────────────────
@@ -864,20 +928,27 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
 
-// Stock UID generator scans all brushes and objects for max UID, returns max+1
-static auto& generate_uid = addr_as_ref<int __cdecl()>(0x00484230);
+// Hook stock UID generator so it also considers mesh UIDs.
+// Stock generate_uid scans brushes/objects for max UID and returns max+1,
+// but doesn't know about Alpine mesh objects.
+FunHook<int()> generate_uid_hook{
+    0x00484230,
+    []() {
+        int uid = generate_uid_hook.call_target();
+        auto* level = CDedLevel::Get();
+        if (level) {
+            for (auto* m : level->GetAlpineLevelProperties().mesh_objects) {
+                if (m->uid >= uid) uid = m->uid + 1;
+            }
+        }
+        return uid;
+    },
+};
 
 static int generate_mesh_uid()
 {
-    int uid = generate_uid();
-    // Also check mesh objects to avoid collisions
-    auto* level = CDedLevel::Get();
-    if (level) {
-        for (auto* m : level->GetAlpineLevelProperties().mesh_objects) {
-            if (m->uid >= uid) uid = m->uid + 1;
-        }
-    }
-    return uid;
+    // Call through the hooked address (which runs our hook)
+    return AddrCaller{0x00484230}.c_call<int>();
 }
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────
@@ -925,16 +996,25 @@ void PlaceNewMeshObject()
 
     // Add to level (vmesh will be loaded lazily on first render)
     level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
+    // Add to master objects list so stock link validation (FUN_00483920) finds this mesh
+    int master_before = level->master_objects.get_size();
+    level->master_objects.add(static_cast<DedObject*>(mesh));
+    int master_after = level->master_objects.get_size();
 
-    // Deselect all, then select the new mesh
-    AddrCaller{0x00419eb0}.this_call(level);
+    // Deselect all, then select the new mesh (matches stock FUN_004146b0 flow)
     auto* sel = reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(level) + 0x298);
-    AddrCaller{0x00416BF0}.this_call(sel, static_cast<DedObject*>(mesh));
+    AddrCaller{0x00419eb0}.this_call(sel);
+    AddrCaller{0x00491020}.this_call(sel, static_cast<DedObject*>(mesh));
 
     // Update console display to show selected object info
     AddrCaller{0x00423460}.this_call(level);
 
-    xlog::info("[Mesh] Placed new mesh uid={} at ({},{},{})", mesh->uid, mesh->pos.x, mesh->pos.y, mesh->pos.z);
+    xlog::info("[Mesh] Placed new mesh uid={} ptr={:p} type=0x{:x} at ({:.2f},{:.2f},{:.2f}) "
+        "mesh_objects count={} master_objects: {}->{}",
+        mesh->uid, static_cast<void*>(mesh), static_cast<int>(mesh->type),
+        mesh->pos.x, mesh->pos.y, mesh->pos.z,
+        static_cast<int>(level->GetAlpineLevelProperties().mesh_objects.size()),
+        master_before, master_after);
 }
 
 DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
@@ -970,11 +1050,19 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
         auto* level = CDedLevel::Get();
         if (level) {
             level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
+            int master_before = level->master_objects.get_size();
+            level->master_objects.add(static_cast<DedObject*>(mesh));
+            int master_after = level->master_objects.get_size();
+            xlog::info("[Mesh] Cloned mesh uid={} from uid={} ptr={:p} add_to_level=true "
+                "mesh_objects count={} master_objects: {}->{}",
+                mesh->uid, source->uid, static_cast<void*>(mesh),
+                static_cast<int>(level->GetAlpineLevelProperties().mesh_objects.size()),
+                master_before, master_after);
         }
+    } else {
+        xlog::info("[Mesh] Cloned mesh uid={} from uid={} ptr={:p} add_to_level=false (staging)",
+            mesh->uid, source->uid, static_cast<void*>(mesh));
     }
-
-    xlog::info("[Mesh] Cloned mesh uid={} from uid={} add_to_level={}",
-        mesh->uid, source->uid, add_to_level);
     return mesh;
 }
 
@@ -986,12 +1074,21 @@ void DeleteMeshObject(DedMesh* mesh)
 
     auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
     auto it = std::find(meshes.begin(), meshes.end(), mesh);
+    int master_before = level->master_objects.get_size();
     if (it != meshes.end()) {
         meshes.erase(it);
-        xlog::info("[Mesh] Deleted mesh uid={} (mesh_objects count={})", mesh->uid, meshes.size());
     }
     else {
-        xlog::warn("[Mesh] DeleteMeshObject: mesh uid={} not found in mesh_objects!", mesh->uid);
+        xlog::error("[Mesh] DeleteMeshObject: mesh uid={} NOT found in mesh_objects!", mesh->uid);
+    }
+    // Remove from master objects list
+    level->master_objects.remove_by_value(static_cast<DedObject*>(mesh));
+    int master_after = level->master_objects.get_size();
+    xlog::info("[Mesh] Deleted mesh uid={} ptr={:p} mesh_objects count={} master_objects: {}->{}",
+        mesh->uid, static_cast<void*>(mesh), meshes.size(), master_before, master_after);
+    if (master_before == master_after) {
+        xlog::error("[Mesh] DELETE VERIFICATION FAILED: master_objects size unchanged! "
+            "Mesh uid={} was NOT in master_objects at delete time.", mesh->uid);
     }
     destroy_ded_mesh(mesh);
 }
@@ -1151,6 +1248,33 @@ CodeInjection mesh_render_patch{
         if (!level) return;
 
         auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
+
+        // Draw link lines from selected events/triggers to mesh objects
+        if (!meshes.empty()) {
+            std::unordered_map<int32_t, DedMesh*> mesh_uid_map;
+            for (auto* m : meshes) {
+                mesh_uid_map[m->uid] = m;
+            }
+
+            int sel_count = level->selection.get_size();
+            for (int si = 0; si < sel_count; si++) {
+                DedObject* sel_obj = level->selection[si];
+                if (!sel_obj) continue;
+                if (sel_obj->type != DedObjectType::DED_EVENT &&
+                    sel_obj->type != DedObjectType::DED_TRIGGER) continue;
+                int lc = sel_obj->links.get_size();
+                for (int li = 0; li < lc; li++) {
+                    auto it = mesh_uid_map.find(sel_obj->links[li]);
+                    if (it != mesh_uid_map.end()) {
+                        auto* target = it->second;
+                        draw_3d_line(sel_obj->pos.x, sel_obj->pos.y, sel_obj->pos.z,
+                                     target->pos.x, target->pos.y, target->pos.z,
+                                     0, 128, 255);
+                    }
+                }
+            }
+        }
+
         constexpr float s = 0.5f;
         bool did_lazy_load = false;
         for (auto* mesh : meshes) {
@@ -1292,6 +1416,44 @@ CodeInjection mesh_render_patch{
             // Draw wireframe sphere when selected (bounding indicator)
             if (selected) {
                 draw_wireframe_sphere(x, y, z, 0.75f, 255, 255, 0);
+            }
+
+            // Draw link arrows (blue lines) when selected
+            if (selected && level) {
+                // Links FROM this mesh to other objects
+                int link_count = mesh->links.get_size();
+                for (int li = 0; li < link_count; li++) {
+                    int32_t link_uid = mesh->links[li];
+                    // Search stock object VArrays for target position
+                    DedObject* target = AddrCaller{0x004839a0}.c_call<DedObject*>(link_uid);
+                    if (target) {
+                        draw_3d_line(x, y, z, target->pos.x, target->pos.y, target->pos.z, 0, 128, 255);
+                    }
+                    // Also check mesh objects
+                    for (auto* other_mesh : meshes) {
+                        if (other_mesh->uid == link_uid) {
+                            draw_3d_line(x, y, z, other_mesh->pos.x, other_mesh->pos.y, other_mesh->pos.z, 0, 128, 255);
+                        }
+                    }
+                }
+
+                // Links FROM other objects TO this mesh
+                // Scan all per-type VArrays (all_objects is only populated during save)
+                for (int va_off = 0x340; va_off <= 0x430; va_off += 0xC) {
+                    auto& va = struct_field_ref<VArray<DedObject*>>(level, va_off);
+                    int va_sz = va.get_size();
+                    for (int oi = 0; oi < va_sz; oi++) {
+                        DedObject* obj = va[oi];
+                        if (!obj) continue;
+                        auto& stock_links = get_obj_links(obj);
+                        int obj_links = stock_links.get_size();
+                        for (int li = 0; li < obj_links; li++) {
+                            if (stock_links[li] == mesh->uid) {
+                                draw_3d_line(obj->pos.x, obj->pos.y, obj->pos.z, x, y, z, 0, 128, 255);
+                            }
+                        }
+                    }
+                }
             }
         }
     },
@@ -1701,6 +1863,7 @@ void ApplyMeshPatches()
     mesh_tree_patch.install();
     mesh_object_tree_patch.install();
     mesh_create_object_patch.install();
+    generate_uid_hook.install();
 
     xlog::info("[Mesh] Mesh object patches applied");
 }

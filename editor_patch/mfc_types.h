@@ -218,6 +218,32 @@ struct VArray
     {
         return add_if_not_exists_raw(reinterpret_cast<void*>(value));
     }
+
+    void remove_at(int index)
+    {
+        if (index < 0 || index >= size) return;
+        for (int i = index; i < size - 1; i++) {
+            data_ptr[i] = data_ptr[i + 1];
+        }
+        size--;
+    }
+
+    // Add element (delegates to stock add-if-not-exists, works for pointers and ints)
+    void add(T value)
+    {
+        add_if_not_exists_raw(reinterpret_cast<void*>(value));
+    }
+
+    // Remove first occurrence of value
+    void remove_by_value(T value)
+    {
+        for (int i = 0; i < size; i++) {
+            if (data_ptr[i] == value) {
+                remove_at(i);
+                return;
+            }
+        }
+    }
 };
 static_assert(sizeof(VArray<int>) == 0xC, "VArray size mismatch!");
 

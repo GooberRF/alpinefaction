@@ -1,4 +1,5 @@
 #include <ctime>
+#include <vector>
 #include <windows.h>
 #include <shellapi.h>
 #include <common/config/GameConfig.h>
@@ -206,6 +207,26 @@ FunHook<void(bool)> level_init_post_hook{
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
 
+        // Post-load verification: check alpine mesh objects are alive and link-resolvable
+        {
+            extern std::vector<int>& get_alpine_mesh_handles();
+            auto& handles = get_alpine_mesh_handles();
+            xlog::info("[PostLoad] Alpine mesh verification: {} mesh handles", handles.size());
+            for (size_t i = 0; i < handles.size(); i++) {
+                rf::Object* obj = rf::obj_from_handle(handles[i]);
+                if (obj) {
+                    xlog::info("[PostLoad]   mesh[{}]: handle={} uid={} obj={:p} type={} name='{}' "
+                        "vmesh={:p} pos=({:.2f},{:.2f},{:.2f})",
+                        i, handles[i], obj->uid, static_cast<void*>(obj),
+                        static_cast<int>(obj->type), obj->name.c_str(),
+                        static_cast<void*>(obj->vmesh),
+                        obj->pos.x, obj->pos.y, obj->pos.z);
+                } else {
+                    xlog::error("[PostLoad]   mesh[{}]: handle={} -> NULL! Object was destroyed!", i, handles[i]);
+                }
+            }
+        }
+
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
         populate_world_hud_sprite_events();
@@ -213,7 +234,6 @@ FunHook<void(bool)> level_init_post_hook{
         multi_level_init_post_gametypes();
         apply_geoable_flags();
         apply_breakable_materials();
-        alpine_mesh_create_all();
 
         if (!rf::is_dedicated_server) {
             explosion_flash_lights_level_init();

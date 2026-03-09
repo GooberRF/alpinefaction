@@ -203,12 +203,15 @@ struct AlpineMeshInfo {
     std::string texture_overrides[MAX_MESH_TEXTURES]; // per-slot texture replacements
 };
 
-// Global list of alpine mesh infos (populated during level load, cleared on level init)
-std::vector<AlpineMeshInfo>& get_alpine_mesh_infos();
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);
-void alpine_mesh_create_all();
 void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();
+
+// Mesh event helpers
+namespace rf { struct Object; }
+void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
+void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
+void alpine_mesh_clear_texture(rf::Object* obj, int slot);
 
 // used by RF2-style geomod
 struct RF2AnchorInfo {
