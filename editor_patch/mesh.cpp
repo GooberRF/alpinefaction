@@ -102,21 +102,22 @@ static void mesh_load_vmesh(DedMesh* mesh)
     if (_stricmp(ext, ".v3m") == 0) {
         vmesh = vmesh_load_v3m(filename, 1, -1);
     }
-    else if (_stricmp(ext, ".v3c") == 0) {
-        vmesh = vmesh_load_v3c(filename, 0, 0);
-    }
-    else if (_stricmp(ext, ".vfx") == 0) {
-        // The VFX loader triggers a fatal error dialog if the file is missing,
-        // unlike v3m/v3c which return null gracefully.
+    else if (_stricmp(ext, ".v3c") == 0 || _stricmp(ext, ".vfx") == 0) {
+        // Both v3c and vfx loaders can trigger fatal errors if the file is missing.
         // Use RED's File class to check if the file exists (searches loose files + .vpp archives).
         uint8_t file_obj[0x114] = {};
         AddrCaller{0x004cf600}.this_call(file_obj); // File constructor (__thiscall)
         bool found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, filename);
         if (found) {
-            vmesh = vmesh_load_vfx(filename, 0x98967f);
+            if (_stricmp(ext, ".v3c") == 0) {
+                vmesh = vmesh_load_v3c(filename, 0, 0);
+            }
+            else {
+                vmesh = vmesh_load_vfx(filename, 0x98967f);
+            }
         }
         else {
-            xlog::warn("[Mesh] VFX file not found: '{}'", filename);
+            xlog::warn("[Mesh] File not found: '{}'", filename);
         }
     }
 
