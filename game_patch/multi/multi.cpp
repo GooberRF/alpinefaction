@@ -475,7 +475,7 @@ bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
         const int cooldown_threshold = std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50); // halfping and jitter tolerance
         if (time_since_last_shot < static_cast<uint32_t>(cooldown_threshold)) {
             // send notification to player for firing too fast
-            send_private_message_for_cancelled_shot(pp, "You are firing too fast!");
+            //send_private_message_for_cancelled_shot(pp, "You are firing too fast!");
             return true;
         }
     }
