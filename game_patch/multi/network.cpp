@@ -991,7 +991,7 @@ FunHook<void(int32_t, int32_t)> multi_set_obj_handle_mapping_hook{
 
 CodeInjection process_boolean_packet_validate_shape_index_patch{
     0x004765A3,
-    [](auto& regs) { regs.ecx = std::clamp<int>(regs.ecx, 0, 3); },
+    [](auto& regs) { regs.ecx = std::clamp<int>(static_cast<int>(regs.ecx), 0, 3); },
 };
 
 CodeInjection process_boolean_packet_validate_room_uid_patch{
@@ -1010,7 +1010,7 @@ CodeInjection process_pregame_boolean_packet_validate_shape_index_patch{
     0x0047672F,
     [](auto& regs) {
         // only meshes 0 - 3 are supported
-        regs.ecx = std::clamp<int>(regs.ecx, 0, 3);
+        regs.ecx = std::clamp<int>(static_cast<int>(regs.ecx), 0, 3);
     },
 };
 
@@ -1339,6 +1339,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_delayed_spawns()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::delayed_spawns;
         }
+        if (server_geo_chunk_physics()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::geo_chunk_physics;
+        }
         auto [buf, new_len] = extend_packet_bytes(data, len, &ext_data, sizeof(ext_data));
         //auto [new_data, new_len] = extend_packet_fixed(data, len, ext_data);
         return send_join_accept_packet_hook.call_target(addr, buf.get(), new_len);
@@ -1371,6 +1374,7 @@ CodeInjection process_join_accept_injection{
             server_info.gaussian_spread = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::gaussian_spread);
             server_info.location_pinging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::location_pinging);
             server_info.delayed_spawns = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::delayed_spawns);
+            server_info.geo_chunk_physics = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::geo_chunk_physics);
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {

@@ -776,6 +776,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gaussian_spread = std::stoi(settings["GaussianSpread"]);
         processed_keys.insert("GaussianSpread");
     }
+    if (settings.count("GeoChunkPhysics")) {
+        g_alpine_game_config.geo_chunk_physics = std::stoi(settings["GeoChunkPhysics"]);
+        processed_keys.insert("GeoChunkPhysics");
+    }
     if (settings.count("DisableAllCameraShake")) {
         g_alpine_game_config.screen_shake_force_off = std::stoi(settings["DisableAllCameraShake"]);
         processed_keys.insert("DisableAllCameraShake");
@@ -1268,6 +1272,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DifficultyLevel=" << static_cast<int>(rf::game_get_skill_level()) << "\n";
     file << "UnlimitedSemiAuto=" << g_alpine_game_config.unlimited_semi_auto << "\n";
     file << "GaussianSpread=" << g_alpine_game_config.gaussian_spread << "\n";
+    file << "GeoChunkPhysics=" << g_alpine_game_config.geo_chunk_physics << "\n";
     file << "DisableAllCameraShake=" << g_alpine_game_config.screen_shake_force_off << "\n";
     file << "Autosave=" << g_alpine_game_config.autosave << "\n";
     file << "StaticBombCode=" << g_alpine_game_config.static_bomb_code << "\n";

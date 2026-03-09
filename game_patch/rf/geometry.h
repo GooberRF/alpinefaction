@@ -90,6 +90,26 @@ namespace rf
         DF_DESTROY_NOW = 0x80000000,
     };
 
+    enum GeomodFlags : uint32_t {
+        GEOMOD_LOCAL_CREATED = 0x01,
+        GEOMOD_SKIP_CSG = 0x02,
+        GEOMOD_FROM_SERVER = 0x04,
+        GEOMOD_ORIENTED = 0x08, // directional orientation
+        GEOMOD_ICE_TEXTURE = 0x10,
+        GEOMOD_RF2_STYLE = 0x20, // Alpine 1.3
+    };
+
+    // Material type for breakable detail brushes (life != -1)
+    enum class DetailMaterial : uint8_t {
+        Glass  = 0, // default — stock glass shatter behavior
+        Rock   = 1,
+        Wood   = 2,
+        Metal  = 3,
+        Cement = 4,
+        Ice    = 5,
+        Count
+    };
+
     struct GSolid
     {
         GBBox *bbox;
@@ -136,6 +156,13 @@ namespace rf
         {
             AddrCaller{0x004F8730}.this_call(this, ppm);
         }
+
+        // Extract all faces with matching group_id into a new GSolid.
+        // Removes originals from this solid (face_list, room face_list, vertices).
+        GSolid* extract_faces_by_group(int group_id)
+        {
+            return AddrCaller{0x004d0590}.this_call<GSolid*>(this, group_id);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
 
@@ -170,7 +197,11 @@ namespace rf
         bool is_invincible;
 #ifdef ALPINE_FACTION
         VArray<GDecal*> decals;
-        int padding[46];
+        bool is_geoable;                // Alpine 1.3: rf2-style brush-based geoable
+        DetailMaterial material_type;   // Alpine 1.3: breakable brush material
+        bool no_debris;                 // Alpine 1.3: skip debris creation on destruction
+        char _pad_geoable[1];
+        int padding[45];
 #else
         FArray<GDecal*, 48> decals;
 #endif
@@ -474,7 +505,17 @@ namespace rf
     };
     static_assert(sizeof(GPortalObject) == 0x30);
 
+    // Geomod state machine globals
+    static auto& g_geomod_pos = addr_as_ref<Vector3>(0x006485A0);
+    static auto& g_geomod_outer_state = addr_as_ref<int>(0x0059C9F4);        // states 0-3, -1=done
+    static auto& g_boolean_inner_state = addr_as_ref<int>(0x005A3A34);       // states 0-7 in FUN_004dbc50
+    static auto& g_boolean_fast_path_var = addr_as_ref<int>(0x01370F64);
+    static auto& g_level_solid = addr_as_ref<GSolid*>(0x006460E8);
+    static auto& g_geomod_crater_solid = addr_as_ref<GSolid*>(0x00646A20);
+    static auto& g_geomod_texture_index = addr_as_ref<int>(0x00647C94);
+    static auto& g_geomod_scale = addr_as_ref<float>(0x00648598);
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
+    static auto& g_geomod_separate_solids = addr_as_ref<bool>(0x00647C28);
 
     static auto& g_cache_clear = addr_as_ref<void()>(0x004F0B90);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);
@@ -485,4 +526,7 @@ namespace rf
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
 
     static auto& bbox_intersect = addr_as_ref<bool(const Vector3& bbox1_min, const Vector3& bbox1_max, const Vector3& bbox2_min, const Vector3& bbox2_max)>(0x0046C340);
+
+    // Global temp buffer used by FUN_004d1330 (GSolid bbox computation after face extraction).
+    static auto& g_geomod_bbox_temp = addr_as_ref<uint8_t[64]>(0x00647ce0);
 }

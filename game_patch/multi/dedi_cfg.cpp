@@ -28,6 +28,7 @@
 #include "../os/console.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/misc.h"
 #include "../main/main.h"
 #include "../misc/achievements.h"
 #include "../rf/file/file.h"
@@ -501,6 +502,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.set_dc_score_limit(*v);
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
+    if (auto v = t["rf2_geo_limit"].value<int>())
+        o.set_rf2_geo_limit(*v);
 
     if (auto v = t["team_damage"].value<bool>())
         o.team_damage   = *v;
@@ -530,6 +533,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.no_player_collide = *v;
     if (auto v = t["location_pinging"].value<bool>())
         o.location_pinging = *v;
+    if (auto v = t["geo_chunk_physics"].value<bool>())
+        o.geo_chunk_physics = *v;
     if (auto v = t["weapon_pickups_give_full_ammo"].value<bool>())
         o.weapon_items_give_full_ammo = *v;
     if (auto v = t["infinite_reloads"].value<bool>())
@@ -1483,6 +1488,9 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
         std::format_to(iter, "  Geomod crater limit:                   {}\n", rules.geo_limit);
+    if (base || rules.rf2_geo_limit != b.rf2_geo_limit)
+        std::format_to(iter, "  RF2-style geomod limit:                {}\n",
+            rules.rf2_geo_limit < 0 ? std::string("unlimited") : std::to_string(rules.rf2_geo_limit));
     if (base || rules.team_damage != b.team_damage)
         std::format_to(iter, "  Team damage:                           {}\n", rules.team_damage);
     if (base || rules.fall_damage != b.fall_damage)
@@ -1513,6 +1521,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  No player collide:                     {}\n", rules.no_player_collide);
     if (base || rules.location_pinging != b.location_pinging)
         std::format_to(iter, "  Location pinging:                      {}\n", rules.location_pinging);
+    if (base || rules.geo_chunk_physics != b.geo_chunk_physics)
+        std::format_to(iter, "  GeoMod chunk physics:                  {}\n", rules.geo_chunk_physics);
     if (base || rules.weapon_items_give_full_ammo != b.weapon_items_give_full_ammo)
         std::format_to(iter, "  Weapon pickups give full ammo:         {}\n", rules.weapon_items_give_full_ammo);
     if (base || rules.weapon_infinite_magazines != b.weapon_infinite_magazines)
@@ -1993,6 +2003,7 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
     }
 
     netgame.geomod_limit = r.geo_limit;
+    g_solid_set_rf2_geo_limit(r.rf2_geo_limit);
 
     netgame.flags &= ~(rf::NG_FLAG_TEAM_DAMAGE
                      | rf::NG_FLAG_FALL_DAMAGE

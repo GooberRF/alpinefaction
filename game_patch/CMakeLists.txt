@@ -186,6 +186,8 @@ set(SRCS
     misc/player.cpp
     misc/player_fpgun.cpp
     misc/g_solid.cpp
+    misc/destruction.cpp
+    misc/destruction.h
     misc/camera.cpp
     misc/ui.cpp
     misc/game.cpp
@@ -197,6 +199,8 @@ set(SRCS
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp
+    sound/sound_foley.cpp
+    sound/sound_foley.h
     res/resources.rc
     purefaction/pf.cpp
     purefaction/pf.h

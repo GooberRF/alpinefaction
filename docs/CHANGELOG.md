@@ -4,6 +4,14 @@
 Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Expanded destruction capabilities available to developers
+    - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
+    - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
+    - `Is Geoable` flag added to brush properties
+    - Support for rock, wood, cement, metal, and ice breakable detail brushes
+    - Add dynamic debris generation from breakable detail brushes
+    - `No Debris` flag added to brush properties for breakable detail brushes
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -28,12 +36,18 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-script` command line argument to execute a startup script after the game launches
 - Add support for `script` console command to execute a script on-demand
 - Add `/coinflip` chat command
+- Allow level hardness to be set to 0 in version >= 304 levels
+- Add `sp_geochunkphysics` console command to toggle isolated geo chunks falling down in single player
+- Add `geo_chunk_physics` rule to ADS config to toggle isolated geo chunks falling down in multiplayer
 - Raise limit on lights per level from 1100 to 8192
 - Raise level editor limit on lights projecting on a single face from 64 to 1024
 - Raise level editor geo_cache limits: face list 16384 to 65536, batch count 512 to 1024, memory pool 8 MB to 32 MB
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
 - Add level editor support for custom texture subdirectories under `user_maps\textures`
+- Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
+- Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
+- Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
@@ -65,12 +79,13 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix some string errors when compiled using mingw
 - Fix rare crash when loading skeletons
 - Fix level editor geometry rebuild sometimes reusing stale data from previous builds
-- Fix level editor geometry sometimes not properly rendering after rebuilding
 - Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
 - Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
 - Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
+- Fix rare level editor crash when transforming decal objects in a level with a large number of decals
+- Fix level editor clip tool silently failing on certain brush orientations
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners

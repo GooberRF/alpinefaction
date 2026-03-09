@@ -123,6 +123,8 @@ static rf::ui::Checkbox ao_clicklimit_cbox;
 static rf::ui::Label ao_clicklimit_label;
 static rf::ui::Checkbox ao_gaussian_cbox;
 static rf::ui::Label ao_gaussian_label;
+static rf::ui::Checkbox ao_geochunk_cbox;
+static rf::ui::Label ao_geochunk_label;
 static rf::ui::Checkbox ao_autosave_cbox;
 static rf::ui::Label ao_autosave_label;
 static rf::ui::Checkbox ao_damagenum_cbox;
@@ -804,6 +806,12 @@ void ao_gaussian_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.gaussian_spread);
 }
 
+void ao_geochunk_cbox_on_click(int x, int y) {
+    g_alpine_game_config.geo_chunk_physics = !g_alpine_game_config.geo_chunk_physics;
+    ao_geochunk_cbox.checked = g_alpine_game_config.geo_chunk_physics;
+    ao_play_button_snd(g_alpine_game_config.geo_chunk_physics);
+}
+
 void ao_autosave_cbox_on_click(int x, int y) {
     g_alpine_game_config.autosave = !g_alpine_game_config.autosave;
     ao_autosave_cbox.checked = g_alpine_game_config.autosave;
@@ -1220,6 +1228,8 @@ void alpine_options_panel_init() {
         &ao_joinbeep_cbox, &ao_joinbeep_label, &alpine_options_panel3, ao_joinbeep_cbox_on_click, g_alpine_game_config.player_join_beep, 112, 144, "Join beep");
     alpine_options_panel_checkbox_init(
         &ao_painsounds_cbox, &ao_painsounds_label, &alpine_options_panel3, ao_painsounds_cbox_on_click, g_alpine_game_config.entity_pain_sounds, 112, 174, "Pain sounds");
+    alpine_options_panel_checkbox_init(
+        &ao_geochunk_cbox, &ao_geochunk_label, &alpine_options_panel3, ao_geochunk_cbox_on_click, g_alpine_game_config.geo_chunk_physics, 112, 204, "Geo chunks");
 
     alpine_options_panel_checkbox_init(
         &ao_teamrad_cbox, &ao_teamrad_label, &alpine_options_panel3, ao_teamrad_cbox_on_click, g_alpine_game_config.play_team_rad_msg_sounds, 280, 54, "Team radio msgs");
