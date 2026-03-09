@@ -179,6 +179,8 @@ static auto& vmesh_reset_actions = addr_as_ref<void(EditorVMesh* vmesh)>(0x004C0
 static auto& draw_3d_arrow = addr_as_ref<void(float, float, float, float, float, float, int, int, int)>(0x004CC2F0);
 static auto& project_to_screen = addr_as_ref<uint32_t(void* screen_out, const void* world_pos)>(0x004C5E30);
 static auto& set_draw_color = addr_as_ref<void(uint32_t r, uint32_t g, uint32_t b, uint32_t a)>(0x004B9700);
+static auto& gr_set_bitmap = addr_as_ref<void(int bm_handle, int unk)>(0x004B97E0);
+static auto& gr_render_billboard = addr_as_ref<void(void* pos, int unk, float scale, float param)>(0x004CB360);
 static auto& draw_line_2d = addr_as_ref<uint32_t(const void* pt1, const void* pt2, uint32_t mode)>(0x004CB150);
 static auto& project_to_screen_2d = addr_as_ref<bool(const void* world_pos, float* out_x, float* out_y)>(0x004C6630);
 
@@ -230,6 +232,10 @@ struct EditorTreeCtrl : CWnd
 };
 static_assert(sizeof(EditorTreeCtrl) == sizeof(CWnd));
 
+// ─── Viewport ────────────────────────────────────────────────────────────────
+
+static auto& get_active_viewport = addr_as_ref<void* __cdecl()>(0x004835B0);
+
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
 static auto& generate_uid = addr_as_ref<int()>(0x00484230);
@@ -237,3 +243,42 @@ static auto& file_add_path = addr_as_ref<int __cdecl(const char* path, const cha
 static auto& rf_alloc = addr_as_ref<void* __cdecl(size_t size)>(0x0052ee74);
 static auto& log_dlg_append = addr_as_ref<int __cdecl(void*, const char*, ...)>(0x00444980);
 static auto& log_dlg_clear = addr_as_ref<void __fastcall(void* self)>(0x00444940);
+
+// ─── RFL String I/O ──────────────────────────────────────────────────────────
+
+inline void write_rfl_string(rf::File& file, const VString& str)
+{
+    const char* s = str.c_str();
+    uint16_t len = static_cast<uint16_t>(strlen(s));
+    file.write<uint16_t>(len);
+    if (len > 0) {
+        file.write(s, len);
+    }
+}
+
+inline void write_rfl_string(rf::File& file, const std::string& str)
+{
+    uint16_t len = static_cast<uint16_t>(str.size());
+    file.write<uint16_t>(len);
+    if (len > 0) {
+        file.write(str.c_str(), len);
+    }
+}
+
+inline std::string read_rfl_string(rf::File& file, std::size_t& remaining)
+{
+    if (remaining < 2) return "";
+    uint16_t len = file.read<uint16_t>();
+    remaining -= 2;
+    if (len == 0 || remaining < len) {
+        if (len > 0 && remaining < len) {
+            file.seek(static_cast<int>(remaining), rf::File::seek_cur);
+            remaining = 0;
+        }
+        return "";
+    }
+    std::string result(len, '\0');
+    file.read(result.data(), len);
+    remaining -= len;
+    return result;
+}

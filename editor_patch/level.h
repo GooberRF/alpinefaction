@@ -14,6 +14,7 @@
 constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
+constexpr int alpine_note_chunk_id = 0x0AFBAE02;
 
 // Forward declarations
 struct GFace;
@@ -273,6 +274,9 @@ struct AlpineLevelProperties
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
 
+    // Alpine note objects (editor-only, not loaded by game)
+    std::vector<DedNote*> note_objects;
+
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
@@ -292,16 +296,22 @@ struct AlpineLevelProperties
         breakable_room_uids.clear();
         breakable_materials.clear();
         for (auto* m : mesh_objects) {
-            // Free VString buffers using stock allocator
-            AddrCaller{0x004b6710}.this_call(&m->field_4);
-            AddrCaller{0x004b6710}.this_call(&m->script_name);
-            AddrCaller{0x004b6710}.this_call(&m->class_name);
-            AddrCaller{0x004b6710}.this_call(&m->mesh_filename);
-            AddrCaller{0x004b6710}.this_call(&m->state_anim);
-            // texture_overrides is std::vector, cleaned up automatically
+            m->field_4.free();
+            m->script_name.free();
+            m->class_name.free();
+            m->mesh_filename.free();
+            m->state_anim.free();
             delete m;
         }
         mesh_objects.clear();
+
+        for (auto* n : note_objects) {
+            n->field_4.free();
+            n->script_name.free();
+            n->class_name.free();
+            delete n;
+        }
+        note_objects.clear();
     }
 
     void Serialize(rf::File& file) const

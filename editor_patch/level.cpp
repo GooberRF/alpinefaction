@@ -15,6 +15,7 @@
 #include "mfc_types.h"
 #include "resources.h"
 #include "mesh.h"
+#include "note.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -67,9 +68,16 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 alpine_level_props.Deserialize(file, chunk_size);
                 regs.eip = 0x0043090C;
             }
-            if (chunk_id == alpine_mesh_chunk_id) {
-                mesh_deserialize_chunk(level, file, chunk_size);
-                regs.eip = 0x0043090C;
+            // Mesh and note chunks were introduced in rfl v304
+            if (file.check_version(304)) {
+                if (chunk_id == alpine_mesh_chunk_id) {
+                    mesh_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_note_chunk_id) {
+                    note_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
             }
         }
     },
@@ -472,6 +480,22 @@ bool __cdecl adjacency_test_hooked(GFace* face1, GFace* face2)
     return true;                        // same isolated brush: allow
 }
 
+// Skip "objects outside of level" bounds check for Alpine object types (DED_MESH, DED_NOTE).
+// The stock save validator (FUN_0041d4c0) iterates master_objects and checks if each object
+// is inside a room. Alpine objects won't be in any room since they're not stock types, so
+// they'd always trigger a false warning. At 0x0041d7c0, EDX = DedObject*, and the code reads
+// obj->type at offset 0x5c. We intercept before the switch and skip to the next iteration
+// (0x0041dcfa) for our custom types.
+CodeInjection skip_alpine_objects_bounds_check{
+    0x0041d7c0,
+    [](auto& regs) {
+        auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.edx));
+        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE) {
+            regs.eip = 0x0041dcfa;
+        }
+    },
+};
+
 // save AlpineLevelProperties when saving rfl file
 // At 0x00430CBD, all_objects is already populated but link UIDs haven't been
 // converted to indices yet (that happens later in 0x10000/0x20000 chunks).
@@ -492,6 +516,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write mesh objects chunk
         mesh_serialize_chunk(level, file);
+
+        // Write note objects chunk
+        note_serialize_chunk(level, file);
     },
 };
 
@@ -711,4 +738,7 @@ void ApplyLevelPatches()
 
     // Allow creating multiple links in a single operation
     CDedLevel_DoLink_hook.install();
+
+    // Skip "objects outside of level" bounds check for alpine object types
+    skip_alpine_objects_bounds_check.install();
 }

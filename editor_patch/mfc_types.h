@@ -141,7 +141,8 @@ enum class DedObjectType : int
     DED_TARGET = 0x14,
     DED_KEYFRAME = 0x15,
     DED_PUSH_REGION = 0x16,
-    DED_MESH = 0x17 // Alpine 1.3
+    DED_MESH = 0x17, // Alpine 1.3
+    DED_NOTE = 0x18  // Alpine 1.3
 };
 
 struct Vector3
@@ -324,6 +325,9 @@ struct Color
 };
 static_assert(sizeof(Color) == 0x4, "Color size mismatch!");
 
+// Stock DedObject vtable (used by all object types in the editor)
+static constexpr uintptr_t ded_object_vtbl_addr = 0x55712C;
+
 struct DedObject
 {
     void* vtbl;
@@ -390,6 +394,11 @@ struct DedMesh : DedObject
     char padding_mesh[2];
     std::vector<EditorTextureOverride> texture_overrides;
     bool simulate_in_editor = false;   // v3c only: play animation continuously instead of freezing frame 0
+};
+
+struct DedNote : DedObject
+{
+    std::vector<std::string> notes;
 };
 
 struct DedBoltEmitter : DedObject

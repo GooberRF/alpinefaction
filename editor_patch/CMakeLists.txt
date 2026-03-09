@@ -5,6 +5,8 @@ set(SRCS
     main.cpp
     mesh.cpp
     mesh.h
+    note.cpp
+    note.h
     textures.cpp
     trigger.cpp
     vtypes.h

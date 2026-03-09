@@ -32,6 +32,7 @@
 #include "level.h"
 #include "event.h"
 #include "mesh.h"
+#include "note.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -874,6 +875,9 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_PLACE_MESH:
                 handler = PlaceNewMeshObject;
                 break;
+            case ID_PLACE_NOTE:
+                handler = PlaceNewNoteObject;
+                break;
         }
 
         if (handler) {
@@ -1293,6 +1297,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyLevelPatches();
     ApplyEventsPatches();
     ApplyMeshPatches();
+    ApplyNotePatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
 

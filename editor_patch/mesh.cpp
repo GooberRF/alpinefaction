@@ -18,16 +18,9 @@
 #include "resources.h"
 #include "vtypes.h"
 #include <common/utils/string-utils.h>
+#include "note.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-// Free a VString buffer using the stock allocator
-static void vstring_free(VString& s)
-{
-    s.free();
-}
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
 
@@ -243,55 +236,17 @@ static void destroy_ded_mesh(DedMesh* mesh)
         mesh->vmesh = nullptr;
     }
     // Free VString members from DedObject base
-    vstring_free(mesh->field_4);
-    vstring_free(mesh->script_name);
-    vstring_free(mesh->class_name);
+    mesh->field_4.free();
+    mesh->script_name.free();
+    mesh->class_name.free();
     // Free VString members from DedMesh
-    vstring_free(mesh->mesh_filename);
-    vstring_free(mesh->state_anim);
+    mesh->mesh_filename.free();
+    mesh->state_anim.free();
     // texture_overrides is std::vector, cleaned up automatically by delete
     delete mesh;
 }
 
 // ─── RFL Serialization ──────────────────────────────────────────────────────
-
-static void write_rfl_string(rf::File& file, const VString& str)
-{
-    const char* s = str.c_str();
-    uint16_t len = static_cast<uint16_t>(strlen(s));
-    file.write<uint16_t>(len);
-    if (len > 0) {
-        file.write(s, len);
-    }
-}
-
-static void write_rfl_string(rf::File& file, const std::string& str)
-{
-    uint16_t len = static_cast<uint16_t>(str.size());
-    file.write<uint16_t>(len);
-    if (len > 0) {
-        file.write(str.c_str(), len);
-    }
-}
-
-static std::string read_rfl_string(rf::File& file, std::size_t& remaining)
-{
-    if (remaining < 2) return "";
-    uint16_t len = file.read<uint16_t>();
-    remaining -= 2;
-    if (len == 0 || remaining < len) {
-        if (len > 0 && remaining < len) {
-            // skip remaining
-            file.seek(static_cast<int>(remaining), rf::File::seek_cur);
-            remaining = 0;
-        }
-        return "";
-    }
-    std::string result(len, '\0');
-    file.read(result.data(), len);
-    remaining -= len;
-    return result;
-}
 
 // Stock RED DoLink (0x00415850) stores links at DedObject+0x7C for all types.
 static VArray<int>& get_obj_links(DedObject* obj)
@@ -366,7 +321,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
     for (uint32_t i = 0; i < count; i++) {
         auto* mesh = new DedMesh();
         memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
-        mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
+        mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr); // base DedObject vtable
         mesh->type = DedObjectType::DED_MESH;
         mesh->collision_mode = 2; // All
 
@@ -856,6 +811,7 @@ FunHook<int()> generate_uid_hook{
             for (auto* m : level->GetAlpineLevelProperties().mesh_objects) {
                 if (m->uid >= uid) uid = m->uid + 1;
             }
+            note_ensure_uid(uid);
         }
         return uid;
     },
@@ -868,9 +824,6 @@ static int generate_mesh_uid()
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────
 
-// FUN_004835b0: get active 3D viewport
-static auto& get_active_viewport = addr_as_ref<void* __cdecl()>(0x004835b0);
-
 void PlaceNewMeshObject()
 {
     auto* level = CDedLevel::Get();
@@ -878,7 +831,7 @@ void PlaceNewMeshObject()
 
     auto* mesh = new DedMesh();
     memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
-    mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
+    mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr); // base DedObject vtable
     mesh->type = DedObjectType::DED_MESH;
     mesh->collision_mode = 2; // All
 
@@ -928,7 +881,7 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
 
     auto* mesh = new DedMesh();
     memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
-    mesh->vtbl = reinterpret_cast<void*>(0x55712c); // base DedObject vtable
+    mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr); // base DedObject vtable
     mesh->type = DedObjectType::DED_MESH;
 
     // Copy position and orientation
@@ -985,6 +938,14 @@ void DeleteMeshObject(DedMesh* mesh)
 CodeInjection open_mesh_properties_patch{
     0x0040200e,
     [](auto& regs) {
+        // Handle Note properties
+        if (regs.eax == static_cast<int>(DedObjectType::DED_NOTE)) {
+            auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+            ShowNotePropertiesDialog(level);
+            regs.eip = 0x00402293;
+            return;
+        }
+
         if (regs.eax != static_cast<int>(DedObjectType::DED_MESH)) return;
 
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
@@ -1287,6 +1248,9 @@ CodeInjection mesh_render_patch{
                 }
             }
         }
+
+        // Render note objects
+        note_render(level);
     },
 };
 
@@ -1322,6 +1286,9 @@ CodeInjection mesh_tree_patch{
             int child = tree->insert_item(name, parent, 0xffff0002);
             tree->set_item_data(child, mesh->uid);
         }
+
+        // Add note objects to tree view
+        note_tree_populate(tree, master_groups, level);
     },
 };
 
@@ -1349,6 +1316,9 @@ CodeInjection mesh_pick_patch{
                     mesh->uid, mesh->pos.x, mesh->pos.y, mesh->pos.z);
             }
         }
+
+        // Also pick note objects
+        note_pick(level, param1, param2);
     },
 };
 
@@ -1449,21 +1419,48 @@ CodeInjection mesh_click_pick_patch{
                 }
             }
 
+            // Also check note objects
+            DedObject* best_alpine = nullptr;
+            float alpine_best_dist = best_dist_sq;
             if (best_mesh) {
-                // Handle selection ourselves to avoid stock virtual method calls on DedMesh
+                best_alpine = static_cast<DedObject*>(best_mesh);
+                alpine_best_dist = best_dist_sq;
+            }
+
+            auto* best_note = note_click_pick(level, click_x, click_y);
+            if (best_note) {
+                // Note uses fixed 20px radius, compare against mesh's best
+                float note_pos[3] = {best_note->pos.x, best_note->pos.y, best_note->pos.z};
+                float nsx = 0.0f, nsy = 0.0f;
+                if (project_to_screen_2d(note_pos, &nsx, &nsy)) {
+                    float ndx = nsx - click_x, ndy = nsy - click_y;
+                    float note_dist = ndx * ndx + ndy * ndy;
+                    if (!best_alpine || note_dist < alpine_best_dist) {
+                        best_alpine = static_cast<DedObject*>(best_note);
+                    }
+                }
+            }
+
+            if (best_alpine) {
                 uint8_t shift = *reinterpret_cast<uint8_t*>(esp_val + 0x18);
                 if (!shift) {
                     level->deselect_all();
                 }
-                if (shift && is_mesh_selected(level, best_mesh)) {
-                    remove_from_selection(level->selection, static_cast<DedObject*>(best_mesh));
-                } else {
-                    level->select_object(static_cast<DedObject*>(best_mesh));
+                bool was_selected = false;
+                if (shift) {
+                    auto& sel = level->selection;
+                    for (int i = 0; i < sel.size; i++) {
+                        if (sel.data_ptr[i] == best_alpine) {
+                            remove_from_selection(sel, best_alpine);
+                            was_selected = true;
+                            break;
+                        }
+                    }
                 }
-                xlog::info("[Mesh] Click-pick: selected mesh uid={}", best_mesh->uid);
+                if (!was_selected) {
+                    level->select_object(best_alpine);
+                }
 
-                // Clean up the 2 pushed params (callee-cleaned by FUN_0042b880's RET 8)
-                // and skip to console update + return
                 regs.esp = static_cast<int32_t>(esp_val + 8);
                 regs.eip = 0x0042bd4f;
                 return;
@@ -1488,9 +1485,9 @@ static void clear_mesh_clipboard()
         if (auto* v = get_vmesh(mesh)) {
             vmesh_free(v);
         }
-        vstring_free(mesh->script_name);
-        vstring_free(mesh->mesh_filename);
-        vstring_free(mesh->state_anim);
+        mesh->script_name.free();
+        mesh->mesh_filename.free();
+        mesh->state_anim.free();
         // texture_overrides is std::vector, cleaned up automatically by delete
         delete mesh;
     }
@@ -1504,6 +1501,7 @@ CodeInjection mesh_copy_begin_hook{
     0x00412e20,
     [](auto& /*regs*/) {
         clear_mesh_clipboard();
+        note_clear_clipboard();
     },
 };
 
@@ -1518,17 +1516,18 @@ CodeInjection mesh_copy_hook{
             *reinterpret_cast<uintptr_t*>(static_cast<uintptr_t>(regs.eax)));
         if (source && source->type == DedObjectType::DED_MESH) {
             regs.ebx = reinterpret_cast<uintptr_t>(source);
-            // Stage a clone to clipboard (NOT added to level)
             auto* staged = CloneMeshObject(static_cast<DedMesh*>(source), false);
             if (staged) {
                 g_mesh_clipboard.push_back(staged);
-                xlog::info("[Mesh] Copy: staged mesh uid={} to clipboard (clipboard size={})",
-                    staged->uid, g_mesh_clipboard.size());
             }
-            // Skip stock CloneObject call and UID=0 assignment, jump to loop increment
             regs.eip = 0x00412edb;
         }
-        // Non-mesh: trampoline runs MOV EBX,[EAX] + CMP, returns to JZ at 0x00412ea7
+        else if (source && source->type == DedObjectType::DED_NOTE) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            note_copy_object(source);
+            regs.eip = 0x00412edb;
+        }
+        // Non-alpine: trampoline runs MOV EBX,[EAX] + CMP, returns to JZ at 0x00412ea7
     },
 };
 
@@ -1549,11 +1548,14 @@ static void __fastcall mesh_paste_wrapper(void* ecx_level, void* /*edx_unused*/)
                 auto* clone = CloneMeshObject(staged, true);
                 if (clone) {
                     level->add_to_selection(static_cast<DedObject*>(clone));
-                    xlog::info("[Mesh] Paste: created mesh uid={} from clipboard, selected", clone->uid);
                 }
             }
-            // Don't clear clipboard — allow multiple pastes from same copy
         }
+    }
+
+    // Create note clones from clipboard and add to selection
+    if (level) {
+        note_paste_objects(level);
     }
 }
 
@@ -1595,14 +1597,14 @@ CodeInjection mesh_paste_finalize_patch{
                     auto it = std::find(mesh_objects.begin(), mesh_objects.end(), mesh);
                     if (it != mesh_objects.end()) {
                         mesh_objects.erase(it);
-                        xlog::info("[Mesh] {}: removed mesh uid={} from mesh_objects (count={})",
-                            g_mesh_cut_mode ? "Cut" : "Delete", mesh->uid, mesh_objects.size());
                     }
                 }
             }
-            // Let stock FUN_0041be70 continue - for mesh type (0x17 > 0x16), the switch
-            // falls through and the post-switch code removes from 0x2E0 (no-op since mesh
-            // isn't there) and from selection (0x298). This is harmless and handles cleanup.
+        }
+        else if (obj && obj->type == DedObjectType::DED_NOTE) {
+            if (g_mesh_delete_mode || g_mesh_cut_mode) {
+                note_handle_delete_or_cut(obj);
+            }
         }
     },
 };
@@ -1617,16 +1619,11 @@ CodeInjection mesh_delete_patch{
         if (!level) return;
 
         auto& sel = level->selection;
-        xlog::info("[Mesh] Delete handler: selection has {} items", sel.size);
-        for (int i = 0; i < sel.size; i++) {
-            DedObject* obj = sel.data_ptr[i];
-            xlog::info("[Mesh]   sel[{}]: ptr={:p} type=0x{:x} uid={}",
-                i, static_cast<void*>(obj),
-                obj ? static_cast<int>(obj->type) : -1,
-                obj ? obj->uid : -1);
-        }
 
-        // Iterate backwards to safely remove while iterating
+        // Delete note objects from selection first
+        note_handle_delete_selection(level);
+
+        // Delete mesh objects from selection
         for (int i = sel.size - 1; i >= 0; i--) {
             DedObject* obj = sel.data_ptr[i];
             if (obj && obj->type == DedObjectType::DED_MESH) {
@@ -1634,7 +1631,7 @@ CodeInjection mesh_delete_patch{
                 DeleteMeshObject(static_cast<DedMesh*>(obj));
             }
         }
-        // Stock code will handle any remaining non-mesh objects in selection
+        // Stock code will handle any remaining non-alpine objects in selection
     },
 };
 
@@ -1646,22 +1643,62 @@ CodeInjection mesh_object_tree_patch{
     [](auto& regs) {
         auto* tree = reinterpret_cast<EditorTreeCtrl*>(static_cast<uintptr_t>(regs.esi));
         tree->insert_item("Mesh", 0xffff0000, 0xffff0002);
+        note_tree_add_object_type(tree);
     },
 };
 
+// Track which Alpine object type the tree view is creating.
+static int g_alpine_create_type = 0; // 0=unknown/Mesh, 2=Note
+
+// Hook factory FUN_00442a40 (__thiscall, ECX=panel, arg1=tree_item_handle).
+// The factory internally reads tree item text and creates the appropriate DedObject.
+// It returns NULL for unknown types. We hook it to detect "Note" vs "Mesh" by
+// reading the tree item text before calling the original.
+int __fastcall alpine_factory_hooked(void* ecx_panel, void* /*edx*/, void* tree_item);
+FunHook<decltype(alpine_factory_hooked)> alpine_factory_hook{
+    0x00442a40,
+    alpine_factory_hooked,
+};
+int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item)
+{
+    // Read the tree item text to detect our custom types
+    g_alpine_create_type = 0;
+
+    // The tree control is at panel+0x5c. It's a CTreeCtrl.
+    // Get the HWND of the tree control: CWnd::m_hWnd is at offset 0x1C in CTreeCtrl
+    HWND hTree = *reinterpret_cast<HWND*>(reinterpret_cast<uintptr_t>(ecx_panel) + 0x5c + 0x1c);
+    if (hTree && tree_item) {
+        char text[64] = {};
+        TVITEMA tvi = {};
+        tvi.mask = TVIF_TEXT;
+        tvi.hItem = static_cast<HTREEITEM>(tree_item);
+        tvi.pszText = text;
+        tvi.cchTextMax = sizeof(text);
+        TreeView_GetItem(hTree, &tvi);
+        if (strcmp(text, "Note") == 0) {
+            g_alpine_create_type = 2;
+        }
+    }
+
+    return alpine_factory_hook.call_target(ecx_panel, edx, tree_item);
+}
+
 // Hook the object creation call site in FUN_004431c0. The factory FUN_00442a40 returns
-// NULL for unknown types (including our "Mesh"). The caller at 004432f5 does
+// NULL for unknown types (including our "Mesh" and "Note"). The caller at 004432f5 does
 // MOV EBP,EAX and then dereferences EBP+0x50, crashing on NULL.
-// Hook at 004432f5 (right after the CALL returns). If EAX is NULL, the type was
-// unrecognized - this only happens for "Mesh" since we control the tree entries.
-// Call PlaceNewMeshObject() and skip to cleanup.
+// Hook at 004432f5 (right after the CALL returns). If EAX is NULL, check which Alpine
+// type was requested and create the appropriate object.
 CodeInjection mesh_create_object_patch{
     0x004432f5,
     [](auto& regs) {
         if (regs.eax == 0) {
-            PlaceNewMeshObject();
-            // Skip the stock object setup code (which would deref NULL).
-            // Jump to cleanup path at 0x004435be (mark dirty + epilogue).
+            if (g_alpine_create_type == 2) {
+                PlaceNewNoteObject();
+            }
+            else {
+                PlaceNewMeshObject();
+            }
+            g_alpine_create_type = 0;
             regs.eip = 0x004435be;
         }
     },
@@ -1683,6 +1720,7 @@ void ApplyMeshPatches()
     mesh_tree_patch.install();
     mesh_object_tree_patch.install();
     mesh_create_object_patch.install();
+    alpine_factory_hook.install();
     generate_uid_hook.install();
 
     xlog::info("[Mesh] Mesh object patches applied");
