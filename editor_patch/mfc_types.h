@@ -141,7 +141,7 @@ enum class DedObjectType : int
     DED_TARGET = 0x14,
     DED_KEYFRAME = 0x15,
     DED_PUSH_REGION = 0x16,
-    DED_MESH = 0x17
+    DED_MESH = 0x17 // Alpine 1.3
 };
 
 struct Vector3
@@ -389,6 +389,7 @@ struct DedMesh : DedObject
     bool vmesh_load_failed;         // true if vmesh load was attempted and failed
     char padding_mesh[2];
     std::vector<EditorTextureOverride> texture_overrides;
+    bool simulate_in_editor = false;   // v3c only: play animation continuously instead of freezing frame 0
 };
 
 struct DedBoltEmitter : DedObject

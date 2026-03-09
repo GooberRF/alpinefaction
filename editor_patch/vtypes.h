@@ -170,6 +170,10 @@ static const auto character_mesh_load_action = reinterpret_cast<EditorCharMeshLo
 
 // vmesh_play_action_by_index: cdecl wrapper
 static auto& vmesh_play_action_by_index = addr_as_ref<void(EditorVMesh* vmesh, int action_index, float transition_time, int hold_last_frame)>(0x004C0760);
+// vmesh_get_action_duration: returns duration in seconds for given action index
+static auto& vmesh_get_action_duration = addr_as_ref<float(EditorVMesh* vmesh, int action_index)>(0x004C0790);
+// vmesh_reset_actions: clears all active action slots
+static auto& vmesh_reset_actions = addr_as_ref<void(EditorVMesh* vmesh)>(0x004C07A0);
 
 // Drawing primitives
 static auto& draw_3d_arrow = addr_as_ref<void(float, float, float, float, float, float, int, int, int)>(0x004CC2F0);

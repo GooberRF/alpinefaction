@@ -34,20 +34,20 @@ static void vstring_free(VString& s)
 // Forward declarations
 static void mesh_apply_texture_overrides(DedMesh* mesh);
 
-// Preview animation state
-static DedMesh* g_preview_mesh = nullptr;
-static float g_preview_timer = 0.0f;
-static constexpr float PREVIEW_DURATION = 10.0f; // max preview time in seconds
-
 // DedObject::vmesh is void* (stock struct), this helper provides typed access
 static EditorVMesh* get_vmesh(DedMesh* mesh) { return static_cast<EditorVMesh*>(mesh->vmesh); }
 
 // Cache action indices per vmesh to avoid calling character_mesh_load_action during rendering
 static std::unordered_map<EditorVMesh*, int> g_v3c_action_cache;
+// Track whether simulate_in_editor was active when the action was last set up
+static std::unordered_map<EditorVMesh*, bool> g_v3c_action_simulating;
+// Track elapsed time for manually looping one-shot actions in simulate mode
+static std::unordered_map<EditorVMesh*, float> g_v3c_action_elapsed;
 
 // ─── VMesh Loading ──────────────────────────────────────────────────────────
 
-static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name, float transition_time = 1.0f)
+static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name,
+                                 bool simulate = false)
 {
     if (!vmesh || !action_name || action_name[0] == '\0') return false;
     if (vmesh->type != VMESH_TYPE_CHARACTER) return false;
@@ -61,6 +61,9 @@ static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name, fl
         return false;
     }
 
+    // Always load as one-shot (is_state=0). vmesh_play_action_by_index silently
+    // ignores state actions (is_state=1), so we must use one-shot and manually
+    // handle looping by restarting the action when it expires.
     int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0, 0);
     if (action_index < 0) {
         xlog::warn("[Mesh] Failed to load animation '{}' on vmesh {:p}", action_name, static_cast<void*>(vmesh));
@@ -73,7 +76,11 @@ static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name, fl
     }
 
     g_v3c_action_cache[vmesh] = action_index;
-    vmesh_play_action_by_index(vmesh, action_index, transition_time, 0);
+    g_v3c_action_simulating[vmesh] = simulate;
+    g_v3c_action_elapsed[vmesh] = 0.0f;
+
+    vmesh_stop_all_actions(vmesh);
+    vmesh_play_action_by_index(vmesh, action_index, 1.0f, 0);
     return true;
 }
 
@@ -84,6 +91,8 @@ static void mesh_load_vmesh(DedMesh* mesh)
     // Free existing vmesh if any
     if (auto* v = get_vmesh(mesh)) {
         g_v3c_action_cache.erase(v);
+        g_v3c_action_simulating.erase(v);
+        g_v3c_action_elapsed.erase(v);
         vmesh_free(v);
         mesh->vmesh = nullptr;
     }
@@ -128,13 +137,12 @@ static void mesh_load_vmesh(DedMesh* mesh)
             vmesh_anim_init(vmesh, 0, 1.0f);
             vmesh_process(vmesh, 0.0f, 0, nullptr, nullptr, 1);
         }
-        // Play state animation for v3c skeletal meshes — jump to first frame
+        // Play state animation for v3c skeletal meshes
         if (vtype == VMESH_TYPE_CHARACTER) {
             const char* anim = mesh->state_anim.c_str();
             if (anim && anim[0] != '\0') {
-                // Use tiny transition time so the blend completes almost instantly
-                if (mesh_play_v3c_action(vmesh, anim, 0.001f)) {
-                    // Process enough dt to fully complete the blend transition
+                if (mesh_play_v3c_action(vmesh, anim, mesh->simulate_in_editor)) {
+                    // Process a small dt to evaluate the initial pose (frame 0)
                     vmesh_process(vmesh, 0.01f, 0, &mesh->pos, &mesh->orient, 1);
                 }
             }
@@ -229,6 +237,8 @@ static void destroy_ded_mesh(DedMesh* mesh)
     // Free vmesh
     if (auto* v = get_vmesh(mesh)) {
         g_v3c_action_cache.erase(v);
+        g_v3c_action_simulating.erase(v);
+        g_v3c_action_elapsed.erase(v);
         vmesh_free(v);
         mesh->vmesh = nullptr;
     }
@@ -435,6 +445,7 @@ static std::string g_init_state_anim;
 static int g_init_collision_mode;
 static std::vector<EditorTextureOverride> g_init_overrides;
 static bool g_init_overrides_multiple = false; // true if selected meshes have differing overrides
+static int g_init_simulate = 0; // 0=unchecked, 1=checked, -1=indeterminate (mixed)
 
 // Flags: set to true by IDOK if mesh filenames/anims were changed, so caller can reload
 static bool g_mesh_filename_changed = false;
@@ -499,10 +510,10 @@ static void mesh_dialog_update_state(HWND hdlg)
     }
     SetDlgItemTextA(hdlg, IDC_MESH_TYPE_LABEL, type_label);
 
-    // State anim: only applicable for V3C
+    // State anim and simulate: only applicable for V3C
     bool enable_state_anim = has_filename && string_iequals(ext, "v3c");
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_STATE_ANIM), enable_state_anim);
-    EnableWindow(GetDlgItem(hdlg, IDC_MESH_PREVIEW), enable_state_anim && g_selected_meshes.size() == 1);
+    EnableWindow(GetDlgItem(hdlg, IDC_MESH_SIMULATE), enable_state_anim);
 
     // Collision: not applicable for VFX
     bool enable_collision = has_filename && !string_iequals(ext, "vfx");
@@ -527,6 +538,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         bool all_same_script = true, all_same_filename = true;
         bool all_same_anim = true, all_same_collision = true;
         bool all_same_overrides = true;
+        bool all_same_simulate = true;
 
         for (size_t i = 1; i < g_selected_meshes.size(); i++) {
             auto* m = g_selected_meshes[i];
@@ -534,6 +546,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             if (strcmp(m->mesh_filename.c_str(), first->mesh_filename.c_str()) != 0) all_same_filename = false;
             if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
             if (m->collision_mode != first->collision_mode) all_same_collision = false;
+            if (m->simulate_in_editor != first->simulate_in_editor) all_same_simulate = false;
             if (m->texture_overrides.size() != first->texture_overrides.size()) {
                 all_same_overrides = false;
             } else {
@@ -553,10 +566,16 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         g_init_collision_mode = all_same_collision ? first->collision_mode : MULTIPLE_COLLISION;
         g_init_overrides_multiple = !all_same_overrides;
         g_init_overrides = all_same_overrides ? first->texture_overrides : std::vector<EditorTextureOverride>{};
+        g_init_simulate = all_same_simulate ? (first->simulate_in_editor ? 1 : 0) : -1;
 
         SetDlgItemTextA(hdlg, IDC_MESH_SCRIPT_NAME, g_init_script_name.c_str());
         SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, g_init_filename.c_str());
         SetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, g_init_state_anim.c_str());
+        if (g_init_simulate < 0) {
+            SendDlgItemMessage(hdlg, IDC_MESH_SIMULATE, BM_SETCHECK, BST_INDETERMINATE, 0);
+        } else {
+            CheckDlgButton(hdlg, IDC_MESH_SIMULATE, g_init_simulate ? BST_CHECKED : BST_UNCHECKED);
+        }
 
         // Set up the material overrides ListView columns
         {
@@ -589,11 +608,6 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         // Mesh objects are link targets only (from events), not link sources.
         // Hide the Links button entirely.
         ShowWindow(GetDlgItem(hdlg, ID_LINKS), SW_HIDE);
-
-        // Disable preview button for multi-selection
-        if (g_selected_meshes.size() > 1) {
-            EnableWindow(GetDlgItem(hdlg, IDC_MESH_PREVIEW), FALSE);
-        }
 
         mesh_dialog_update_state(hdlg);
         return TRUE;
@@ -680,41 +694,6 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             return TRUE;
         }
 
-        case IDC_MESH_PREVIEW:
-        {
-            if (g_selected_meshes.size() != 1) return TRUE;
-            auto* mesh = g_selected_meshes[0];
-            if (!mesh) return TRUE;
-
-            // Get current values from dialog fields
-            char fname_buf[MAX_PATH] = {};
-            GetDlgItemTextA(hdlg, IDC_MESH_FILENAME, fname_buf, sizeof(fname_buf));
-            char anim_buf[MAX_PATH] = {};
-            GetDlgItemTextA(hdlg, IDC_MESH_STATE_ANIM, anim_buf, sizeof(anim_buf));
-
-            // Reload vmesh if filename changed or not loaded yet
-            const char* cur_filename = mesh->mesh_filename.c_str();
-            if (!get_vmesh(mesh) || !string_iequals(cur_filename, fname_buf)) {
-                // Apply filename to mesh so load uses it
-                mesh->mesh_filename.assign_0(fname_buf);
-                if (auto* v = get_vmesh(mesh)) {
-                    g_v3c_action_cache.erase(v);
-                    vmesh_free(v);
-                    mesh->vmesh = nullptr;
-                }
-                mesh->vmesh_load_failed = false;
-                mesh_load_vmesh(mesh);
-            }
-
-            if (auto* v = get_vmesh(mesh); v && anim_buf[0] != '\0') {
-                // Play the animation and start preview timer
-                mesh_play_v3c_action(v, anim_buf);
-                g_preview_mesh = mesh;
-                g_preview_timer = PREVIEW_DURATION;
-            }
-            return TRUE;
-        }
-
         case IDOK:
         {
             char buf[MAX_PATH] = {};
@@ -780,6 +759,11 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 }
             }
 
+            // Check simulate checkbox (only apply if not indeterminate)
+            int simulate_check = static_cast<int>(IsDlgButtonChecked(hdlg, IDC_MESH_SIMULATE));
+            bool simulate_changed = (simulate_check != BST_INDETERMINATE) &&
+                ((g_init_simulate < 0) || (simulate_check != g_init_simulate));
+
             for (size_t idx = 0; idx < g_selected_meshes.size(); idx++) {
                 auto* mesh = g_selected_meshes[idx];
                 if (!mesh) continue;
@@ -791,6 +775,9 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 }
                 if (overrides_changed) {
                     mesh->texture_overrides = current_overrides;
+                }
+                if (simulate_changed) {
+                    mesh->simulate_in_editor = (simulate_check == BST_CHECKED);
                 }
             }
             // Defer vmesh reload until after dialog closes to avoid message pump issues
@@ -831,6 +818,8 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
     if (g_mesh_filename_changed && mesh) {
         if (auto* v = get_vmesh(mesh)) {
             g_v3c_action_cache.erase(v);
+            g_v3c_action_simulating.erase(v);
+            g_v3c_action_elapsed.erase(v);
             vmesh_free(v);
             mesh->vmesh = nullptr;
         }
@@ -841,6 +830,8 @@ void ShowMeshPropertiesDialog(DedMesh* mesh)
     else if (g_mesh_anim_changed && mesh) {
         if (auto* v = get_vmesh(mesh)) {
             g_v3c_action_cache.erase(v);
+            g_v3c_action_simulating.erase(v);
+            g_v3c_action_elapsed.erase(v);
             vmesh_free(v);
             mesh->vmesh = nullptr;
         }
@@ -950,6 +941,7 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->state_anim.assign_0(source->state_anim.c_str());
     mesh->collision_mode = source->collision_mode;
     mesh->texture_overrides = source->texture_overrides;
+    mesh->simulate_in_editor = source->simulate_in_editor;
 
     // Generate new UID
     mesh->uid = generate_mesh_uid();
@@ -1028,6 +1020,8 @@ CodeInjection open_mesh_properties_patch{
                     if (!m) continue;
                     if (auto* v = get_vmesh(m)) {
                         g_v3c_action_cache.erase(v);
+                        g_v3c_action_simulating.erase(v);
+                        g_v3c_action_elapsed.erase(v);
                         vmesh_free(v);
                         m->vmesh = nullptr;
                     }
@@ -1040,6 +1034,8 @@ CodeInjection open_mesh_properties_patch{
                     if (!m) continue;
                     if (auto* v = get_vmesh(m)) {
                         g_v3c_action_cache.erase(v);
+                        g_v3c_action_simulating.erase(v);
+                        g_v3c_action_elapsed.erase(v);
                         vmesh_free(v);
                         m->vmesh = nullptr;
                     }
@@ -1116,6 +1112,17 @@ CodeInjection mesh_render_patch{
         auto* level = CDedLevel::Get();
         if (!level) return;
 
+        // Compute real frame delta time for animation playback
+        static ULONGLONG last_tick = 0;
+        ULONGLONG now = GetTickCount64();
+        float frame_dt = 0.0f;
+        if (last_tick != 0) {
+            ULONGLONG delta_ms = now - last_tick;
+            if (delta_ms > 200) delta_ms = 200; // clamp to avoid huge jumps
+            frame_dt = static_cast<float>(delta_ms) / 1000.0f;
+        }
+        last_tick = now;
+
         auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
 
         // Draw link lines from selected events/triggers to mesh objects
@@ -1184,30 +1191,39 @@ CodeInjection mesh_render_patch{
                 // Advance animation each frame for animated mesh types
                 auto vmesh_type = vmesh_get_type(vm);
                 if (vmesh_type == VMESH_TYPE_ANIM_FX) {
-                    vmesh_process(vm, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
+                    vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
                     *reinterpret_cast<int*>(0x0059e21c) = 1;
                 }
                 else if (vmesh_type == VMESH_TYPE_CHARACTER) {
                     if (vm->instance) {
-                        if (g_preview_mesh == mesh && g_preview_timer > 0.0f) {
-                            // Preview is active - advance animation in real time
-                            vmesh_process(vm, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
-                            g_preview_timer -= 0.03f;
-                            if (g_preview_timer <= 0.0f) {
-                                g_preview_mesh = nullptr;
-                                g_preview_timer = 0.0f;
+                        auto it = g_v3c_action_cache.find(vm);
+                        if (it != g_v3c_action_cache.end() && it->second >= 0) {
+                            // Check if simulate mode changed; reload action if mismatched
+                            auto sim_it = g_v3c_action_simulating.find(vm);
+                            bool was_simulating = (sim_it != g_v3c_action_simulating.end()) && sim_it->second;
+                            if (mesh->simulate_in_editor != was_simulating) {
+                                const char* anim = mesh->state_anim.c_str();
+                                if (anim && anim[0] != '\0') {
+                                    mesh_play_v3c_action(vm, anim, mesh->simulate_in_editor);
+                                    vmesh_process(vm, 0.01f, 0, &mesh->pos, &mesh->orient, 1);
+                                }
                             }
-                        }
-                        else {
-                            // Non-preview: re-trigger play_action every frame to reset
-                            // the slot's start timestamp to "now". The animation system
-                            // uses real system time to evaluate pose, so this keeps the
-                            // pose perpetually at frame 0.
-                            auto it = g_v3c_action_cache.find(vm);
-                            if (it != g_v3c_action_cache.end() && it->second >= 0) {
-                                vmesh_play_action_by_index(vm, it->second, 0.001f, 0);
-                                vmesh_process(vm, 0.03f, 0, &mesh->pos, &mesh->orient, 1);
+
+                            if (mesh->simulate_in_editor) {
+                                // Simulate mode: advance animation each frame
+                                // Track elapsed time to detect when one-shot action expires
+                                auto& elapsed = g_v3c_action_elapsed[vm];
+                                elapsed += frame_dt;
+                                float duration = vmesh_get_action_duration(vm, it->second);
+                                if (duration > 0.0f && elapsed >= duration) {
+                                    // One-shot action expired — restart for looping
+                                    elapsed = 0.0f;
+                                    vmesh_stop_all_actions(vm);
+                                    vmesh_play_action_by_index(vm, it->second, 1.0f, 0);
+                                }
+                                vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
                             }
+                            // Freeze mode: don't call vmesh_process, pose stays at frame 0
                         }
                     }
                 }
