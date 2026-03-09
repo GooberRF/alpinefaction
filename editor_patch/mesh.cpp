@@ -54,13 +54,13 @@ static bool mesh_play_v3c_action(void* vmesh_ptr, const char* action_name, float
     // returns 0 rather than -1 for missing files, which leads to garbage animation data)
     uint8_t file_obj[0x114] = {};
     AddrCaller{0x004cf600}.this_call(file_obj);
-    bool file_found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, action_name);
+    bool file_found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, action_name, 0x98967f);
     if (!file_found) {
         xlog::warn("[Mesh] Animation file '{}' not found, skipping", action_name);
         return false;
     }
 
-    int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0);
+    int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0, 0);
     if (action_index < 0) {
         xlog::warn("[Mesh] Failed to load animation '{}' on vmesh {:p}", action_name, vmesh_ptr);
         return false;
@@ -107,7 +107,7 @@ static void mesh_load_vmesh(DedMesh* mesh)
         // Use RED's File class to check if the file exists (searches loose files + .vpp archives).
         uint8_t file_obj[0x114] = {};
         AddrCaller{0x004cf600}.this_call(file_obj); // File constructor (__thiscall)
-        bool found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, filename);
+        bool found = AddrCaller{0x004cf9a0}.this_call<bool>(file_obj, filename, 0x98967f);
         if (found) {
             if (_stricmp(ext, ".v3c") == 0) {
                 vmesh = vmesh_load_v3c(filename, 0, 0);
@@ -306,7 +306,7 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
 
     auto start_pos = level.BeginRflSection(file, alpine_mesh_chunk_id);
 
-    // Write version marker (distinguishes from old format where first uint32 was count)
+    // Write version marker
     file.write<uint32_t>(MESH_CHUNK_VERSION_MARKER);
 
     uint32_t count = static_cast<uint32_t>(meshes.size());
@@ -337,13 +337,7 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
         write_rfl_string(file, mesh->state_anim);
         // collision mode
         file.write<uint8_t>(mesh->collision_mode);
-        // links
-        int32_t link_count = mesh->links.get_size();
-        file.write<int32_t>(link_count);
-        for (int i = 0; i < link_count; i++) {
-            file.write<int32_t>(mesh->links[i]);
-        }
-        // v2: texture overrides
+        // texture overrides
         for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
             write_rfl_string(file, mesh->texture_overrides[ti]);
         }
@@ -415,15 +409,6 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) { destroy_ded_mesh(mesh); return; }
         mesh->collision_mode = (collision_mode <= 2) ? collision_mode : 2;
-        // links
-        int32_t link_count = 0;
-        if (!read_bytes(&link_count, sizeof(link_count))) { destroy_ded_mesh(mesh); return; }
-        if (link_count > 1000) link_count = 1000;
-        for (int32_t j = 0; j < link_count; j++) {
-            int32_t link_uid = 0;
-            if (!read_bytes(&link_uid, sizeof(link_uid))) { destroy_ded_mesh(mesh); return; }
-            mesh->links.add_if_not_exists_int(link_uid);
-        }
         // texture overrides
         for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
             std::string tex = read_rfl_string(file, remaining);
@@ -576,9 +561,13 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             }
         }
 
-        // Disable links and preview buttons for multi-selection
+        // Mesh objects are link targets only (from events), not link sources.
+        // Hide the Links button entirely.
+        ShowWindow(GetDlgItem(hdlg, ID_LINKS), SW_HIDE);
+
+        // Disable preview button for multi-selection
         if (g_selected_meshes.size() > 1) {
-            EnableWindow(GetDlgItem(hdlg, ID_LINKS), FALSE);
+            EnableWindow(GetDlgItem(hdlg, IDC_MESH_PREVIEW), FALSE);
         }
 
         mesh_dialog_update_state(hdlg);
@@ -644,15 +633,6 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 mesh_play_v3c_action(mesh->vmesh, anim_buf);
                 g_preview_mesh = mesh;
                 g_preview_timer = PREVIEW_DURATION;
-            }
-            return TRUE;
-        }
-
-        case ID_LINKS:
-        {
-            if (g_current_level && g_selected_meshes.size() == 1) {
-                static auto& open_links_dialog = addr_as_ref<void(CDedLevel* level, DedObject* obj)>(0x00469780);
-                open_links_dialog(g_current_level, static_cast<DedObject*>(g_selected_meshes[0]));
             }
             return TRUE;
         }
@@ -1192,25 +1172,8 @@ CodeInjection mesh_render_patch{
                 draw_wireframe_sphere(x, y, z, 0.75f, 255, 255, 0);
             }
 
-            // Draw link arrows (blue lines) when selected
+            // Draw inbound link arrows (blue lines) when selected
             if (selected && level) {
-                // Links FROM this mesh to other objects
-                int link_count = mesh->links.get_size();
-                for (int li = 0; li < link_count; li++) {
-                    int32_t link_uid = mesh->links[li];
-                    // Search stock object VArrays for target position
-                    DedObject* target = AddrCaller{0x004839a0}.c_call<DedObject*>(link_uid);
-                    if (target) {
-                        draw_3d_line(x, y, z, target->pos.x, target->pos.y, target->pos.z, 0, 128, 255);
-                    }
-                    // Also check mesh objects
-                    for (auto* other_mesh : meshes) {
-                        if (other_mesh->uid == link_uid) {
-                            draw_3d_line(x, y, z, other_mesh->pos.x, other_mesh->pos.y, other_mesh->pos.z, 0, 128, 255);
-                        }
-                    }
-                }
-
                 // Links FROM other objects TO this mesh
                 // Scan all per-type VArrays (all_objects is only populated during save)
                 for (int va_off = 0x340; va_off <= 0x430; va_off += 0xC) {

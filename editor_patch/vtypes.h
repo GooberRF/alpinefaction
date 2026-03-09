@@ -125,7 +125,8 @@ static auto& editor_vmesh_get_materials_array = addr_as_ref<void(void* vmesh, in
 static auto& bm_load = addr_as_ref<int(const char* filename, int path_id, int generate_mipmaps)>(0x004BBBF0);
 
 // character_mesh_load_action: __thiscall on mesh_data, loads .rfa file, returns action index
-using EditorCharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char flag);
+// 3 stack args (RET 0xC): filename, is_state flag, unused
+using EditorCharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char is_state, char unused);
 static const auto character_mesh_load_action = reinterpret_cast<EditorCharMeshLoadActionFn>(0x004C2150);
 
 // vmesh_play_action_by_index: cdecl wrapper

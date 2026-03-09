@@ -105,7 +105,6 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         return result;
     };
 
-    // Check for version marker vs old format
     uint32_t first_word = 0;
     if (!read_bytes(&first_word, sizeof(first_word))) return;
 
@@ -143,14 +142,6 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) return;
         info.collision_mode = (collision_mode <= 2) ? collision_mode : 2;
-        // links (mesh→object links, stored but not used for event resolution)
-        int32_t link_count = 0;
-        if (!read_bytes(&link_count, sizeof(link_count))) return;
-        if (link_count > 1000) link_count = 1000;
-        info.link_uids.resize(link_count);
-        for (int32_t j = 0; j < link_count; j++) {
-            if (!read_bytes(&info.link_uids[j], sizeof(int32_t))) return;
-        }
         // texture overrides
         for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
             info.texture_overrides[ti] = read_string();

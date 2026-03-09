@@ -199,7 +199,6 @@ struct AlpineMeshInfo {
     std::string mesh_filename;
     std::string state_anim;
     uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All
-    std::vector<int32_t> link_uids;
     std::string texture_overrides[MAX_MESH_TEXTURES]; // per-slot texture replacements
 };
 
