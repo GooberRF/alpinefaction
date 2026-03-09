@@ -27,82 +27,10 @@ static void vstring_free(VString& s)
     AddrCaller{0x004b6710}.this_call(&s);
 }
 
-// ─── VMesh Loading ──────────────────────────────────────────────────────────
-
-// VMesh factory functions (all __cdecl, return vmesh pointer or 0 on failure)
-using VmeshLoadV3mFn = void*(__cdecl*)(const char* filename, int param2, int param3);
-using VmeshLoadV3cFn = void*(__cdecl*)(const char* filename, int param2, int param3);
-using VmeshLoadVfxFn = void*(__cdecl*)(const char* filename, int param2);
-using VmeshFreeFn = void(__cdecl*)(void* vmesh_ptr);
-using VmeshRenderFn = void(__cdecl*)(void* vmesh_ptr, const void* pos, const void* orient, const void* flags);
-using VmeshGetBoundSphereFn = void(__cdecl*)(void* vmesh_ptr, void* center_out, void* radius_out);
-using VmeshProcessFn = void(__cdecl*)(void* vmesh_ptr, float time, int param3, const void* pos, const void* orient, int param6);
-
-static const auto vmesh_load_v3m = reinterpret_cast<VmeshLoadV3mFn>(0x004bfc30);
-static const auto vmesh_load_v3c = reinterpret_cast<VmeshLoadV3cFn>(0x004bfd70);
-static const auto vmesh_load_vfx = reinterpret_cast<VmeshLoadVfxFn>(0x004bfe10);
-static const auto vmesh_free = reinterpret_cast<VmeshFreeFn>(0x004bfec0);
-static const auto vmesh_render = reinterpret_cast<VmeshRenderFn>(0x004c04b0);
-static const auto vmesh_get_bound_sphere = reinterpret_cast<VmeshGetBoundSphereFn>(0x004c0680);
-static const auto vmesh_process = reinterpret_cast<VmeshProcessFn>(0x004c0710);
-// VFX animation init: FUN_004c0740(vmesh, start_frame, speed) - sets initial VFX state
-using VmeshAnimInitFn = void(__cdecl*)(void* vmesh_ptr, int start_frame, float speed);
-static const auto vmesh_anim_init = reinterpret_cast<VmeshAnimInitFn>(0x004c0740);
-// VMesh type query: returns 1=v3m, 2=v3c, 3=vfx
-using VmeshGetTypeFn = int(__cdecl*)(void* vmesh_ptr);
-static const auto vmesh_get_type = reinterpret_cast<VmeshGetTypeFn>(0x004bfeb0);
-
-// Bitmap load: loads a texture file, returns handle (or -1 on failure)
-using BmLoadFn = int(__cdecl*)(const char* filename, int path_id, int generate_mipmaps);
-static const auto bm_load = reinterpret_cast<BmLoadFn>(0x004BBBF0);
-
-// VMesh material replacement: gets (or creates) per-instance replacement materials array
-// MeshMaterial is 0xC8 bytes. Returns count and pointer to replacement array.
-struct EditorMeshMaterial {
-    int material_type;
-    int flags;
-    bool use_additive_blending;
-    char _pad[3];
-    int diffuse_color;
-    struct { int tex_handle; char name[33]; int start_frame; float playback_rate; int anim_type; } texture_maps[2];
-    int framerate;
-    int num_mix_frames;
-    int* mix;
-    float specular_level;
-    float glossiness;
-    float reflection_amount;
-    char refl_tex_name[36];
-    int refl_tex_handle;
-    int num_self_illumination_frames;
-    float* self_illumination;
-    int num_opacity_frames;
-    int* opacity;
-};
-static_assert(sizeof(EditorMeshMaterial) == 0xC8);
-using VmeshGetMaterialsArrayFn = void(__cdecl*)(void* vmesh, int* num_out, EditorMeshMaterial** materials_out);
-static const auto editor_vmesh_get_materials_array = reinterpret_cast<VmeshGetMaterialsArrayFn>(0x004c0a00);
+// ─── Globals ─────────────────────────────────────────────────────────────────
 
 // Forward declarations
 static void mesh_apply_texture_overrides(DedMesh* mesh);
-// vmesh_stop_all_actions: editor equivalent of game's 0x00503400
-using VmeshStopAllActionsFn = void(__cdecl*)(void* vmesh_ptr);
-static const auto vmesh_stop_all_actions = reinterpret_cast<VmeshStopAllActionsFn>(0x004c07b0);
-
-// Load an .rfa/.mvf animation file onto a v3c character mesh and play it.
-// VMesh layout: [+0x00] type (int), [+0x04] instance (void*), [+0x08] mesh_data (void*)
-//
-// character_mesh_load_action (editor 0x004c2150, game 0x0051cc10):
-//   __thiscall on mesh_data, loads .rfa file, returns action index
-// vmesh_play_action_by_index (editor 0x004c0760, game 0x005033b0):
-//   cdecl(vmesh, action_index, transition_time, hold_last_frame)
-
-// character_mesh_load_action: __thiscall, this=mesh_data, returns action index
-using CharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char flag);
-static const auto character_mesh_load_action = reinterpret_cast<CharMeshLoadActionFn>(0x004c2150);
-
-// vmesh_play_action_by_index: cdecl wrapper
-using VmeshPlayActionByIndexFn = void(__cdecl*)(void* vmesh, int action_index, float transition_time, int hold_last_frame);
-static const auto vmesh_play_action_by_index = reinterpret_cast<VmeshPlayActionByIndexFn>(0x004c0760);
 
 // Preview animation state
 static DedMesh* g_preview_mesh = nullptr;
@@ -112,16 +40,15 @@ static constexpr float PREVIEW_DURATION = 10.0f; // max preview time in seconds
 // Cache action indices per vmesh to avoid calling character_mesh_load_action during rendering
 static std::unordered_map<void*, int> g_v3c_action_cache;
 
-static bool mesh_play_v3c_action(void* vmesh, const char* action_name, float transition_time = 1.0f)
+// ─── VMesh Loading ──────────────────────────────────────────────────────────
+
+static bool mesh_play_v3c_action(void* vmesh_ptr, const char* action_name, float transition_time = 1.0f)
 {
-    if (!vmesh || !action_name || action_name[0] == '\0') return false;
+    if (!vmesh_ptr || !action_name || action_name[0] == '\0') return false;
 
-    auto* vmesh_bytes = reinterpret_cast<uint8_t*>(vmesh);
-    int type = *reinterpret_cast<int*>(vmesh_bytes + 0x00);
-    if (type != 2) return false; // only for character meshes
-
-    auto* mesh_data = *reinterpret_cast<void**>(vmesh_bytes + 0x08);
-    if (!mesh_data) return false;
+    auto* vmesh = reinterpret_cast<EditorVMesh*>(vmesh_ptr);
+    if (vmesh->type != 2) return false; // only for character meshes
+    if (!vmesh->mesh) return false;
 
     // Verify the animation file exists before loading (character_mesh_load_action
     // returns 0 rather than -1 for missing files, which leads to garbage animation data)
@@ -133,25 +60,19 @@ static bool mesh_play_v3c_action(void* vmesh, const char* action_name, float tra
         return false;
     }
 
-    // Load the .rfa/.mvf animation file onto the character mesh_data
-    int action_index = character_mesh_load_action(mesh_data, action_name, 0);
+    int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0);
     if (action_index < 0) {
-        xlog::warn("[Mesh] Failed to load animation '{}' on vmesh {:p}", action_name, vmesh);
+        xlog::warn("[Mesh] Failed to load animation '{}' on vmesh {:p}", action_name, vmesh_ptr);
         return false;
     }
 
-    // Check instance exists
-    auto* instance = *reinterpret_cast<void**>(vmesh_bytes + 0x04);
-    if (!instance) {
-        xlog::warn("[Mesh] No instance on vmesh {:p}, cannot play animation", vmesh);
+    if (!vmesh->instance) {
+        xlog::warn("[Mesh] No instance on vmesh {:p}, cannot play animation", vmesh_ptr);
         return false;
     }
 
-    // Cache the action index for later use in the render loop
-    g_v3c_action_cache[vmesh] = action_index;
-
-    // Play the loaded action (transition_time must be > 0 or play_action is a no-op)
-    vmesh_play_action_by_index(vmesh, action_index, transition_time, 0);
+    g_v3c_action_cache[vmesh_ptr] = action_index;
+    vmesh_play_action_by_index(vmesh_ptr, action_index, transition_time, 0);
     return true;
 }
 
@@ -204,9 +125,9 @@ static void mesh_load_vmesh(DedMesh* mesh)
     if (vmesh) {
         // Clear replacement material state to prevent stale data from memory reuse
         // (e.g. VFX vmesh freed then V3M allocated at same address with leftover flags)
-        auto* vbytes = reinterpret_cast<uint8_t*>(vmesh);
-        *reinterpret_cast<void**>(vbytes + 0x50) = nullptr;  // replacement_materials
-        *(vbytes + 0x54) = 0;                                // use_replacement_materials
+        auto* ev = reinterpret_cast<EditorVMesh*>(vmesh);
+        ev->replacement_materials = nullptr;
+        ev->use_replacement_materials = 0;
 
         int vtype = vmesh_get_type(vmesh);
         // Initialize VFX animation state (matches stock item setup in FUN_004151c0)
@@ -246,6 +167,7 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
     }
     if (!has_any) return;
 
+    auto* ev = reinterpret_cast<EditorVMesh*>(mesh->vmesh);
     int num_materials = 0;
     EditorMeshMaterial* materials = nullptr;
     editor_vmesh_get_materials_array(mesh->vmesh, &num_materials, &materials);
@@ -253,37 +175,34 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
         // editor_vmesh_get_materials_array unconditionally sets use_replacement_materials=1
         // even when allocation fails (e.g. V3M with multiple LODs/sub-meshes).
         // Clear the flag to prevent the render code from dereferencing a null pointer.
-        auto* vbytes = reinterpret_cast<uint8_t*>(mesh->vmesh);
-        *(vbytes + 0x54) = 0;
-        *reinterpret_cast<void**>(vbytes + 0x50) = nullptr;
+        ev->use_replacement_materials = 0;
+        ev->replacement_materials = nullptr;
 
         // For V3M meshes with multiple LODs or sub-mesh groups, the engine's replacement
         // materials allocator (FUN_004c0ae0) bails early. However the render code applies
         // replacement materials to ALL LODs from a single set. Work around the limitation
         // by temporarily faking single-LOD/single-submesh counts during allocation.
-        int vtype = vmesh_get_type(mesh->vmesh);
-        if (vtype == 1) { // V3M
-            auto* instance = *reinterpret_cast<uint8_t**>(vbytes + 0x04);
+        // V3M instance offsets: +0x50 = lod_count (int), +0x54 = submesh_list (int**)
+        if (ev->type == 1) { // V3M
+            auto* instance = reinterpret_cast<uint8_t*>(ev->instance);
             if (instance) {
                 int* lod_count_ptr = reinterpret_cast<int*>(instance + 0x50);
                 int** submesh_list_ptr = reinterpret_cast<int**>(instance + 0x54);
                 int orig_lod_count = *lod_count_ptr;
                 int orig_submesh_count = (submesh_list_ptr && *submesh_list_ptr) ? **submesh_list_ptr : 1;
 
-                // Temporarily set counts to 1 so the allocator proceeds
                 *lod_count_ptr = 1;
                 if (submesh_list_ptr && *submesh_list_ptr)
                     **submesh_list_ptr = 1;
 
                 editor_vmesh_get_materials_array(mesh->vmesh, &num_materials, &materials);
 
-                // Restore original counts
                 *lod_count_ptr = orig_lod_count;
                 if (submesh_list_ptr && *submesh_list_ptr)
                     **submesh_list_ptr = orig_submesh_count;
 
                 if (!materials || num_materials <= 0) {
-                    *(vbytes + 0x54) = 0;
+                    ev->use_replacement_materials = 0;
                     xlog::warn("[Mesh] Failed to allocate replacement materials for multi-LOD V3M");
                     return;
                 }
@@ -1057,21 +976,6 @@ CodeInjection open_mesh_properties_patch{
 // Hook into the editor's 3D render function to also render mesh objects.
 // Inject after the main object render loop in FUN_0041f6d0, before the icon pass.
 
-// FUN_004cc2f0 draws a 3D arrow (line with arrowhead) - used for orientation axes
-using DrawArrowFn = void(__cdecl*)(float, float, float, float, float, float, int, int, int);
-static const auto draw_3d_arrow = reinterpret_cast<DrawArrowFn>(0x004cc2f0);
-
-// Low-level rendering primitives for drawing plain lines without arrowheads:
-// FUN_004c5e30: project 3D point to screen (48-byte output buffer, Vector3* input)
-// FUN_004b9700: set drawing color (r, g, b, a)
-// FUN_004cb150: draw 2D line between two projected points
-using ProjectFn = uint32_t(__cdecl*)(void* screen_out, const void* world_pos);
-using SetColorFn = void(__cdecl*)(uint32_t r, uint32_t g, uint32_t b, uint32_t a);
-using DrawLine2DFn = uint32_t(__cdecl*)(const void* pt1, const void* pt2, uint32_t mode);
-static const auto project_to_screen = reinterpret_cast<ProjectFn>(0x004c5e30);
-static const auto set_draw_color = reinterpret_cast<SetColorFn>(0x004b9700);
-static const auto draw_line_2d = reinterpret_cast<DrawLine2DFn>(0x004cb150);
-
 // Draw a plain 3D line (no arrowhead) by projecting endpoints and drawing a 2D line
 static void draw_3d_line(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)
 {
@@ -1224,7 +1128,7 @@ CodeInjection mesh_render_patch{
                     *reinterpret_cast<int*>(0x0059e21c) = 1;
                 }
                 else if (vmesh_type == 2) { // V3C character
-                    auto* instance = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(mesh->vmesh) + 0x04);
+                    auto* instance = reinterpret_cast<EditorVMesh*>(mesh->vmesh)->instance;
                     if (instance) {
                         if (g_preview_mesh == mesh && g_preview_timer > 0.0f) {
                             // Preview is active - advance animation in real time
@@ -1390,11 +1294,6 @@ CodeInjection mesh_pick_patch{
         }
     },
 };
-
-// Project a 3D position to screen coordinates.
-// Returns true if visible, outputs screen x,y as floats.
-using ProjectToScreen2DFn = bool(__cdecl*)(const void* world_pos, float* out_x, float* out_y);
-static const auto project_to_screen_2d = reinterpret_cast<ProjectToScreen2DFn>(0x004c6630);
 
 // Remove a specific object from a VArray selection
 static void remove_from_selection(VArray<DedObject*>& sel, DedObject* obj)

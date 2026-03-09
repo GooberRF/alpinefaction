@@ -51,6 +51,8 @@ static auto& clutter_list_tail = addr_as_ref<rf::Clutter*>(0x005C95F0);
 // Clutter count
 static auto& clutter_count = addr_as_ref<int>(0x005C9358);
 
+static bool g_dummy_clutter_info_initialized = false;
+
 // ─── VMesh Type Detection ───────────────────────────────────────────────────
 
 static rf::VMeshType determine_vmesh_type(const std::string& filename)
@@ -167,35 +169,44 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
 
 }
 
+// ─── Material Helpers ────────────────────────────────────────────────────────
+
+// Helper to get replacement materials array with multi-LOD V3M workaround.
+// V3M meshes with multiple LODs/sub-mesh groups cause the engine's replacement
+// materials allocator to bail early. The render code applies replacement materials
+// to ALL LODs from a single set, so we temporarily fake single-LOD/single-submesh
+// counts during allocation.
+// V3M instance offsets: +0x50 = lod_count (int), +0x54 = submesh_list (int**)
+static bool get_replacement_materials(rf::VMesh* vmesh, int& num_materials, rf::MeshMaterial*& materials)
+{
+    num_materials = 0;
+    materials = nullptr;
+    rf::vmesh_get_materials_array(vmesh, &num_materials, &materials);
+
+    if ((!materials || num_materials <= 0) && vmesh->type == rf::MESH_TYPE_STATIC) {
+        vmesh->use_replacement_materials = 0;
+        vmesh->replacement_materials = nullptr;
+        auto* instance = reinterpret_cast<uint8_t*>(vmesh->instance);
+        if (instance) {
+            int* lod_count_ptr = reinterpret_cast<int*>(instance + 0x50);
+            int** submesh_list_ptr = reinterpret_cast<int**>(instance + 0x54);
+            int orig_lod = *lod_count_ptr;
+            int orig_sub = (submesh_list_ptr && *submesh_list_ptr) ? **submesh_list_ptr : 1;
+            *lod_count_ptr = 1;
+            if (submesh_list_ptr && *submesh_list_ptr) **submesh_list_ptr = 1;
+            rf::vmesh_get_materials_array(vmesh, &num_materials, &materials);
+            *lod_count_ptr = orig_lod;
+            if (submesh_list_ptr && *submesh_list_ptr) **submesh_list_ptr = orig_sub;
+            if (!materials || num_materials <= 0) {
+                vmesh->use_replacement_materials = 0;
+                return false;
+            }
+        }
+    }
+    return materials && num_materials > 0;
+}
+
 // ─── Object Creation ────────────────────────────────────────────────────────
-
-// obj_create: creates an object in the game world
-// Signature: Object*(int type, int sub_type, int parent, ObjectCreateInfo*, int flags, GRoom*)
-static auto& obj_create = addr_as_ref<rf::Object*(int, int, int, rf::ObjectCreateInfo*, int, rf::GRoom*)>(0x00486DA0);
-
-
-// Load an .rfa/.mvf animation file onto a v3c character mesh and play it.
-// character_mesh_load_action (game 0x0051cc10): __thiscall on mesh_data, loads .rfa, returns action index
-// vmesh_play_action_by_index (game 0x005033b0): cdecl(vmesh, action_index, transition_time, hold_last_frame)
-
-// 3 stack args: filename, is_state flag, unused — original function does RET 0xC (12 bytes)
-using CharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char is_state, char unused);
-static const auto character_mesh_load_action = reinterpret_cast<CharMeshLoadActionFn>(0x0051cc10);
-
-using VmeshPlayActionByIndexFn = void(__cdecl*)(rf::VMesh* vmesh, int action_index, float transition_time, int hold_last_frame);
-static const auto vmesh_play_action_by_index = reinterpret_cast<VmeshPlayActionByIndexFn>(0x005033b0);
-
-// vmesh_reset_actions: zeros weights of all looping (flag=1) action slots
-using VmeshResetActionsFn = void(__cdecl*)(rf::VMesh* vmesh);
-static const auto vmesh_reset_actions = reinterpret_cast<VmeshResetActionsFn>(0x005033f0);
-
-// vmesh_set_action_weight: sets blend weight for an action slot (does NOT reset playback position)
-using VmeshSetActionWeightFn = void(__cdecl*)(rf::VMesh* vmesh, int action_index, float weight);
-static const auto vmesh_set_action_weight = reinterpret_cast<VmeshSetActionWeightFn>(0x00503390);
-
-// vmesh_stop_all_actions: clears ALL action slots (looping AND one-shot/hold-last)
-using VmeshStopAllActionsFn = void(__cdecl*)(rf::VMesh* vmesh);
-static const auto vmesh_stop_all_actions = reinterpret_cast<VmeshStopAllActionsFn>(0x00503400);
 
 static bool vmesh_play_v3c_action_by_name(rf::VMesh* vmesh, const char* action_name)
 {
@@ -208,21 +219,16 @@ static bool vmesh_play_v3c_action_by_name(rf::VMesh* vmesh, const char* action_n
     }
 
     // Load the .rfa/.mvf animation file onto the character mesh_data
-    int action_index = character_mesh_load_action(vmesh->mesh, action_name, 0, 0);
+    int action_index = rf::character_mesh_load_action(vmesh->mesh, action_name, 0, 0);
     if (action_index < 0) {
         xlog::warn("[AlpineMesh] Failed to load animation '{}' on vmesh", action_name);
         return false;
     }
 
     // Play the loaded action (transition_time must be > 0 or play_action is a no-op)
-    vmesh_play_action_by_index(vmesh, action_index, 0.001f, 0);
+    rf::vmesh_play_action_by_index(vmesh, action_index, 0.001f, 0);
     return true;
 }
-
-// obj_collision_register: registers an object for collision detection (creates collision pairs)
-static auto& obj_collision_register = addr_as_ref<void(rf::Object* obj)>(0x0048C9A0);
-
-static bool g_dummy_clutter_info_initialized = false;
 
 // Create a single mesh object from loaded info. Called during chunk reading so mesh
 // objects exist before the stock link resolver runs (just like stock clutter/entities).
@@ -258,7 +264,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         oci.physics_flags = rf::PF_COLLIDE_OBJECTS;
     }
 
-    rf::Object* obj = obj_create(rf::OT_CLUTTER, -1, 0, &oci, 0, nullptr);
+    rf::Object* obj = rf::obj_create(rf::OT_CLUTTER, -1, 0, &oci, 0, nullptr);
     if (!obj) {
         xlog::warn("[AlpineMesh] Failed to create object for mesh uid={} file='{}'", info.uid, info.mesh_filename);
         return;
@@ -313,7 +319,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
             );
         }
 
-        obj_collision_register(obj);
+        rf::obj_collision_register(obj);
     }
 
     // Apply texture overrides
@@ -325,30 +331,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         if (has_tex_override) {
             int num_materials = 0;
             rf::MeshMaterial* materials = nullptr;
-            rf::vmesh_get_materials_array(obj->vmesh, &num_materials, &materials);
-            if ((!materials || num_materials <= 0) && obj->vmesh->type == rf::MESH_TYPE_STATIC) {
-                obj->vmesh->use_replacement_materials = 0;
-                obj->vmesh->replacement_materials = nullptr;
-                auto* instance = reinterpret_cast<uint8_t*>(obj->vmesh->instance);
-                if (instance) {
-                    int* lod_count_ptr = reinterpret_cast<int*>(instance + 0x50);
-                    int** submesh_list_ptr = reinterpret_cast<int**>(instance + 0x54);
-                    int orig_lod = *lod_count_ptr;
-                    int orig_sub = (submesh_list_ptr && *submesh_list_ptr) ? **submesh_list_ptr : 1;
-                    *lod_count_ptr = 1;
-                    if (submesh_list_ptr && *submesh_list_ptr) **submesh_list_ptr = 1;
-                    rf::vmesh_get_materials_array(obj->vmesh, &num_materials, &materials);
-                    *lod_count_ptr = orig_lod;
-                    if (submesh_list_ptr && *submesh_list_ptr) **submesh_list_ptr = orig_sub;
-                    if (!materials || num_materials <= 0) {
-                        obj->vmesh->use_replacement_materials = 0;
-                        xlog::warn("[AlpineMesh] Failed to allocate replacement materials for multi-LOD V3M");
-                    } else {
-                        xlog::debug("[AlpineMesh] Allocated replacement materials for multi-LOD V3M ({} mats)", num_materials);
-                    }
-                }
-            }
-            if (materials && num_materials > 0) {
+            if (get_replacement_materials(obj->vmesh, num_materials, materials)) {
                 for (int ti = 0; ti < MAX_MESH_TEXTURES; ti++) {
                     if (info.texture_overrides[ti].empty()) continue;
                     if (ti >= num_materials) {
@@ -365,6 +348,8 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
                     xlog::debug("[AlpineMesh] Applied texture override slot {}: '{}' (handle={})",
                         ti, info.texture_overrides[ti], bm_handle);
                 }
+            } else {
+                xlog::warn("[AlpineMesh] Failed to allocate replacement materials for uid={}", info.uid);
             }
         }
     }
@@ -403,7 +388,7 @@ void alpine_mesh_do_frame()
         // Looping actions use modular time (fmod) — the playback position wraps
         // automatically and the slot is never removed.
         if (anim.action_index < 0) {
-            anim.action_index = character_mesh_load_action(obj->vmesh->mesh, anim.state_anim.c_str(), 1, 0);
+            anim.action_index = rf::character_mesh_load_action(obj->vmesh->mesh, anim.state_anim.c_str(), 1, 0);
             if (anim.action_index < 0) {
                 xlog::warn("[AlpineMesh] Failed to load animation '{}' for handle {}",
                     anim.state_anim, anim.obj_handle);
@@ -419,8 +404,8 @@ void alpine_mesh_do_frame()
         // position, so the animation loops seamlessly with no base pose flash.
         // NOTE: The stock clutter process (FUN_0040fe10) does NOT call vmesh_process,
         // so we must call it ourselves.
-        vmesh_reset_actions(obj->vmesh);
-        vmesh_set_action_weight(obj->vmesh, anim.action_index, 1.0f);
+        rf::vmesh_reset_actions(obj->vmesh);
+        rf::vmesh_set_action_weight(obj->vmesh, anim.action_index, 1.0f);
 
         if (!anim.anim_started) {
             anim.anim_started = true;
@@ -457,8 +442,8 @@ void alpine_mesh_do_frame()
 
         if (it->animate_type == 2) {
             // State (looping): reset all weights then set our action, like state_anim
-            vmesh_reset_actions(obj->vmesh);
-            vmesh_set_action_weight(obj->vmesh, it->action_index, it->blend_weight);
+            rf::vmesh_reset_actions(obj->vmesh);
+            rf::vmesh_set_action_weight(obj->vmesh, it->action_index, it->blend_weight);
         }
 
         // Advance animation
@@ -518,7 +503,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
     // Clear all existing action slots (looping AND one-shot/hold-last) so previous
     // animations don't interfere. Without this, a held action's weight persists and
     // blocks new animations from being visible.
-    vmesh_stop_all_actions(obj->vmesh);
+    rf::vmesh_stop_all_actions(obj->vmesh);
 
     // type 0 = Action: play once, then return to state_anim
     // type 1 = Action Hold Last: play once, freeze on last frame
@@ -530,14 +515,14 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         // auto-removes the action when it finishes. The state_anim continues
         // running underneath via g_mesh_anim_states, so vmesh_process is already
         // being called each frame — no need to add to g_event_animated_meshes.
-        int action_index = character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 0, 0);
+        int action_index = rf::character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 0, 0);
         if (action_index < 0) {
             xlog::warn("[AlpineMesh] Failed to load animation '{}' on handle {}", anim_filename, obj->handle);
             return;
         }
 
-        vmesh_set_action_weight(obj->vmesh, action_index, blend_weight);
-        vmesh_play_action_by_index(obj->vmesh, action_index, 0.001f, 0);
+        rf::vmesh_set_action_weight(obj->vmesh, action_index, blend_weight);
+        rf::vmesh_play_action_by_index(obj->vmesh, action_index, 0.001f, 0);
 
         // If the mesh has no state_anim driving vmesh_process, we need to ensure
         // vmesh_process is called each frame so the one-shot actually advances.
@@ -560,14 +545,14 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
     else if (type == 1) {
         // Action Hold Last: one-shot that freezes on the last frame permanently.
         // Load as one-shot (flag=0), play with hold_last_frame=1.
-        int action_index = character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 0, 0);
+        int action_index = rf::character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 0, 0);
         if (action_index < 0) {
             xlog::warn("[AlpineMesh] Failed to load animation '{}' on handle {}", anim_filename, obj->handle);
             return;
         }
 
-        vmesh_set_action_weight(obj->vmesh, action_index, blend_weight);
-        vmesh_play_action_by_index(obj->vmesh, action_index, 0.001f, 1);
+        rf::vmesh_set_action_weight(obj->vmesh, action_index, blend_weight);
+        rf::vmesh_play_action_by_index(obj->vmesh, action_index, 0.001f, 1);
 
         // Remove from state_anim processing — hold-last overrides permanently.
         g_mesh_anim_states.erase(
@@ -590,14 +575,14 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
     else if (type == 2) {
         // State: looping animation that overrides the state_anim.
         // Load as looping (flag=1), manage weight per-frame.
-        int action_index = character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 1, 0);
+        int action_index = rf::character_mesh_load_action(obj->vmesh->mesh, anim_filename.c_str(), 1, 0);
         if (action_index < 0) {
             xlog::warn("[AlpineMesh] Failed to load animation '{}' on handle {}", anim_filename, obj->handle);
             return;
         }
 
-        vmesh_reset_actions(obj->vmesh);
-        vmesh_set_action_weight(obj->vmesh, action_index, blend_weight);
+        rf::vmesh_reset_actions(obj->vmesh);
+        rf::vmesh_set_action_weight(obj->vmesh, action_index, blend_weight);
 
         // Remove from state_anim processing — this overrides it.
         g_mesh_anim_states.erase(
@@ -617,37 +602,6 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
         xlog::debug("[AlpineMesh] Playing animation '{}' (type=State, action_index={}, weight={:.2f}) on handle {}",
             anim_filename, action_index, blend_weight, obj->handle);
     }
-}
-
-// Helper to get replacement materials array with multi-LOD V3M workaround
-static bool get_replacement_materials(rf::VMesh* vmesh, int& num_materials, rf::MeshMaterial*& materials)
-{
-    num_materials = 0;
-    materials = nullptr;
-    rf::vmesh_get_materials_array(vmesh, &num_materials, &materials);
-
-    if ((!materials || num_materials <= 0) && vmesh->type == rf::MESH_TYPE_STATIC) {
-        // Multi-LOD V3M workaround: temporarily fake single-LOD/single-submesh
-        vmesh->use_replacement_materials = 0;
-        vmesh->replacement_materials = nullptr;
-        auto* instance = reinterpret_cast<uint8_t*>(vmesh->instance);
-        if (instance) {
-            int* lod_count_ptr = reinterpret_cast<int*>(instance + 0x50);
-            int** submesh_list_ptr = reinterpret_cast<int**>(instance + 0x54);
-            int orig_lod = *lod_count_ptr;
-            int orig_sub = (submesh_list_ptr && *submesh_list_ptr) ? **submesh_list_ptr : 1;
-            *lod_count_ptr = 1;
-            if (submesh_list_ptr && *submesh_list_ptr) **submesh_list_ptr = 1;
-            rf::vmesh_get_materials_array(vmesh, &num_materials, &materials);
-            *lod_count_ptr = orig_lod;
-            if (submesh_list_ptr && *submesh_list_ptr) **submesh_list_ptr = orig_sub;
-            if (!materials || num_materials <= 0) {
-                vmesh->use_replacement_materials = 0;
-                return false;
-            }
-        }
-    }
-    return materials && num_materials > 0;
 }
 
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename)
