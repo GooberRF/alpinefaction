@@ -45,6 +45,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
 - Add level editor support for custom texture subdirectories under `user_maps\textures`
+- Add `Mesh` and `Note` object types
+- Add `Mesh_Animate`, `Mesh_Set_Texture`, and `Mesh_Set_Collision` events
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
