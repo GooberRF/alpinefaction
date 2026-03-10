@@ -6,12 +6,15 @@ Version 1.3.0 (Bakeapple): Not yet released
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
 - Expanded destruction capabilities available to developers
-    - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
-    - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
-    - `Is Geoable` flag added to brush properties
-    - Support for rock, wood, cement, metal, and ice breakable detail brushes
-    - Add dynamic debris generation from breakable detail brushes
-    - `No Debris` flag added to brush properties for breakable detail brushes
+  - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
+  - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
+  - `Is Geoable` flag added to brush properties
+  - Support for rock, wood, cement, metal, and ice breakable detail brushes
+  - Add dynamic debris generation from breakable detail brushes
+  - `No Debris` flag added to brush properties for breakable detail brushes
+- Added new object types
+  - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
+  - `Note` for leaving important information in levels (editor only)
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -48,7 +51,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
 - Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
 - Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
-- Add `Mesh` and `Note` object types
 - Add `Mesh_Animate`, `Mesh_Set_Texture`, and `Mesh_Set_Collision` events
 
 [@is-this-c](https://github.com/is-this-c)

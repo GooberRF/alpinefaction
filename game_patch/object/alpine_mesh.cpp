@@ -565,12 +565,11 @@ void alpine_mesh_clear_state()
     g_dummy_clutter_info_initialized = false;
     // Free per-mesh ClutterInfo objects
     for (auto* ci : g_mesh_clutter_infos) {
-        // Manually destruct rf::String members to avoid leaks
-        ci->cls_name.~String();
-        ci->v3d_filename.~String();
-        ci->corpse_class_name.~String();
-        ci->debris_filename.~String();
-        ci->debris_sound_set.~String();
+        std::destroy_at(&ci->cls_name);
+        std::destroy_at(&ci->v3d_filename);
+        std::destroy_at(&ci->corpse_class_name);
+        std::destroy_at(&ci->debris_filename);
+        std::destroy_at(&ci->debris_sound_set);
         std::free(ci);
     }
     g_mesh_clutter_infos.clear();
