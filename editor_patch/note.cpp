@@ -225,6 +225,15 @@ static INT_PTR CALLBACK NoteDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp
         return FALSE;
     }
     case WM_COMMAND:
+        // Auto-commit script name as the user types
+        if (HIWORD(wp) == EN_CHANGE && LOWORD(wp) == IDC_NOTE_SCRIPT_NAME) {
+            char buf[256] = {};
+            GetDlgItemTextA(hdlg, IDC_NOTE_SCRIPT_NAME, buf, sizeof(buf));
+            for (auto* n : g_selected_notes) {
+                n->script_name.assign_0(buf);
+            }
+            return TRUE;
+        }
         // Auto-commit text edits to the selected note entry as the user types
         if (HIWORD(wp) == EN_CHANGE && LOWORD(wp) == IDC_NOTE_TEXT && s_note) {
             HWND hlist = GetDlgItem(hdlg, IDC_NOTE_LIST);
@@ -282,17 +291,9 @@ static INT_PTR CALLBACK NoteDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp
             }
             return TRUE;
         }
-        case IDOK: {
-            char buf[256] = {};
-            GetDlgItemTextA(hdlg, IDC_NOTE_SCRIPT_NAME, buf, sizeof(buf));
-            for (auto* n : g_selected_notes) {
-                n->script_name.assign_0(buf);
-            }
-            EndDialog(hdlg, IDOK);
-            return TRUE;
-        }
+        case IDOK:
         case IDCANCEL:
-            EndDialog(hdlg, IDCANCEL);
+            EndDialog(hdlg, IDOK);
             return TRUE;
         }
         break;
