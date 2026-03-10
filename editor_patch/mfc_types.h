@@ -393,6 +393,10 @@ struct MeshClutterProps {
     std::string explosion_vclip;   // explosion vclip name
     float explosion_radius = 1.0f; // explosion visual radius
     float debris_velocity = 10.0f; // debris fragment velocity
+    std::string corpse_filename;       // mesh to swap to on death (empty = remove on death)
+    std::string corpse_state_anim;     // state anim for corpse mesh (v3c only)
+    uint8_t corpse_collision = 2;      // corpse collision mode: 0=None, 1=Only Weapons, 2=All
+    int8_t corpse_material = -1;       // corpse material: -1=Automatic (inherit from base), 0-9=specific material
     float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1}; // per-damage-type multipliers
 };
 

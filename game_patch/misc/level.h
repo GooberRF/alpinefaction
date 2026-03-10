@@ -202,6 +202,10 @@ struct MeshClutterInfo {
     std::string explosion_vclip;
     float explosion_radius = 1.0f;
     float debris_velocity = 10.0f;
+    std::string corpse_filename;
+    std::string corpse_state_anim;
+    uint8_t corpse_collision = 2;      // 0=None, 1=Only Weapons, 2=All
+    int8_t corpse_material = -1;       // -1=Automatic (inherit from base), 0-9=specific material
     float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1};
 };
 
@@ -225,6 +229,9 @@ void alpine_mesh_clear_state();
 
 // Mesh event helpers
 namespace rf { struct Object; }
+const std::string* alpine_mesh_get_corpse_filename(int handle);
+bool alpine_mesh_is_corpse(int handle);
+void alpine_mesh_apply_corpse(rf::Object* obj, const std::string& corpse_filename);
 void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);

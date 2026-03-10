@@ -308,6 +308,10 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
             for (int di = 0; di < 11; di++) {
                 file.write<float>(cp.damage_type_factors[di]);
             }
+            write_rfl_string(file, cp.corpse_filename);
+            write_rfl_string(file, cp.corpse_state_anim);
+            file.write<uint8_t>(cp.corpse_collision);
+            file.write<int8_t>(cp.corpse_material);
         }
     }
 
@@ -397,6 +401,19 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
                     if (!read_bytes(&cp.debris_velocity, sizeof(float))) { DestroyDedMesh(mesh); return; }
                     for (int di = 0; di < 11; di++) {
                         if (!read_bytes(&cp.damage_type_factors[di], sizeof(float))) { DestroyDedMesh(mesh); return; }
+                    }
+                    // Corpse fields
+                    if (remaining > 0) {
+                        cp.corpse_filename = read_rfl_string(file, remaining);
+                    }
+                    if (remaining > 0) {
+                        cp.corpse_state_anim = read_rfl_string(file, remaining);
+                    }
+                    if (remaining >= 1) {
+                        read_bytes(&cp.corpse_collision, sizeof(uint8_t));
+                    }
+                    if (remaining >= 1) {
+                        read_bytes(&cp.corpse_material, sizeof(int8_t));
                     }
                 }
             }
@@ -547,6 +564,9 @@ static void mesh_dialog_update_state(HWND hdlg)
         IDC_MESH_CLUTTER_DEBRIS, IDC_MESH_CLUTTER_DEBRIS_BROWSE,
         IDC_MESH_CLUTTER_VCLIP, IDC_MESH_CLUTTER_EXPLODE_RADIUS,
         IDC_MESH_CLUTTER_DEBRIS_VEL,
+        IDC_MESH_CLUTTER_CORPSE, IDC_MESH_CLUTTER_CORPSE_BROWSE,
+        IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, IDC_MESH_CLUTTER_CORPSE_COLLISION,
+        IDC_MESH_CLUTTER_CORPSE_MATERIAL,
         IDC_MESH_CLUTTER_DMG_BASH, IDC_MESH_CLUTTER_DMG_BULLET,
         IDC_MESH_CLUTTER_DMG_AP_BULLET, IDC_MESH_CLUTTER_DMG_EXPLOSIVE,
         IDC_MESH_CLUTTER_DMG_FIRE, IDC_MESH_CLUTTER_DMG_ENERGY,
@@ -555,6 +575,40 @@ static void mesh_dialog_update_state(HWND hdlg)
     };
     for (int id : clutter_controls) {
         EnableWindow(GetDlgItem(hdlg, id), is_clutter);
+    }
+
+    // Corpse mesh type label and conditional enable/disable of corpse state anim + collision
+    if (is_clutter) {
+        char corpse_buf[MAX_PATH] = {};
+        GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE, corpse_buf, sizeof(corpse_buf));
+        bool has_corpse = (corpse_buf[0] != '\0');
+        auto corpse_ext = get_ext_from_filename(corpse_buf);
+
+        const char* corpse_type = "";
+        if (has_corpse) {
+            if (string_iequals(corpse_ext, "v3m"))
+                corpse_type = "Corpse mesh is static (.v3m)";
+            else if (string_iequals(corpse_ext, "v3c"))
+                corpse_type = "Corpse mesh is skeletal (.v3c)";
+            else if (string_iequals(corpse_ext, "vfx"))
+                corpse_type = "Corpse mesh is animated (.vfx)";
+            else
+                corpse_type = "Unknown corpse mesh type";
+        }
+        SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE_TYPE_LABEL, corpse_type);
+
+        // State anim: only for v3c corpse meshes
+        bool corpse_is_v3c = has_corpse && string_iequals(corpse_ext, "v3c");
+        EnableWindow(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_STATE_ANIM), corpse_is_v3c);
+
+        // Collision: not for vfx corpse meshes
+        bool corpse_has_collision = has_corpse && !string_iequals(corpse_ext, "vfx");
+        EnableWindow(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION), corpse_has_collision);
+
+        // Material: enabled whenever a corpse mesh is specified
+        EnableWindow(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_MATERIAL), has_corpse);
+    } else {
+        SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE_TYPE_LABEL, "");
     }
 }
 
@@ -600,7 +654,11 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 auto& b = m->clutter_props;
                 if (a.life != b.life ||
                     a.debris_filename != b.debris_filename || a.explosion_vclip != b.explosion_vclip ||
-                    a.explosion_radius != b.explosion_radius || a.debris_velocity != b.debris_velocity) {
+                    a.explosion_radius != b.explosion_radius || a.debris_velocity != b.debris_velocity ||
+                    a.corpse_filename != b.corpse_filename ||
+                    a.corpse_state_anim != b.corpse_state_anim ||
+                    a.corpse_collision != b.corpse_collision ||
+                    a.corpse_material != b.corpse_material) {
                     all_same_clutter = false;
                 } else {
                     for (int di = 0; di < 10; di++) {
@@ -677,6 +735,35 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
 
             snprintf(buf2, sizeof(buf2), "%.1f", cp.debris_velocity);
             SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS_VEL, buf2);
+
+            SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE, cp.corpse_filename.c_str());
+            SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, cp.corpse_state_anim.c_str());
+
+            // Corpse collision combo
+            {
+                HWND corpse_col = GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION);
+                SendMessageA(corpse_col, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("None"));
+                SendMessageA(corpse_col, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Only Weapons"));
+                SendMessageA(corpse_col, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("All"));
+                int sel = (cp.corpse_collision <= 2) ? cp.corpse_collision : 0;
+                SendMessageA(corpse_col, CB_SETCURSEL, sel, 0);
+            }
+
+            // Corpse material combo — index 0 = Automatic, 1-10 = specific materials
+            {
+                HWND corpse_mat = GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_MATERIAL);
+                static const char* corpse_material_names[] = {
+                    "Automatic", "Default", "Rock", "Metal", "Flesh", "Water",
+                    "Lava", "Solid", "Glass", "Sand", "Ice"
+                };
+                for (auto* name : corpse_material_names) {
+                    SendMessageA(corpse_mat, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
+                }
+                // -1 = Automatic (index 0), 0-9 = specific material (index 1-10)
+                int mat_sel = (cp.corpse_material >= 0 && cp.corpse_material <= 9)
+                    ? (cp.corpse_material + 1) : 0;
+                SendMessageA(corpse_mat, CB_SETCURSEL, mat_sel, 0);
+            }
 
             // Damage type factor edit fields
             static const int dmg_ids[] = {
@@ -766,6 +853,26 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             return TRUE;
         }
 
+        case IDC_MESH_CLUTTER_CORPSE:
+            if (HIWORD(wparam) == EN_CHANGE) {
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_CLUTTER_CORPSE, "v3d", "v3m");
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_CLUTTER_CORPSE, "vcm", "v3c");
+                mesh_dialog_update_state(hdlg);
+            }
+            return TRUE;
+
+        case IDC_MESH_CLUTTER_CORPSE_STATE_ANIM:
+            if (HIWORD(wparam) == EN_CHANGE) {
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, "mvf", "rfa");
+            }
+            return TRUE;
+
+        case IDC_MESH_CLUTTER_DEBRIS:
+            if (HIWORD(wparam) == EN_CHANGE) {
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_CLUTTER_DEBRIS, "v3d", "v3m");
+            }
+            return TRUE;
+
         case IDC_MESH_IS_CLUTTER:
             mesh_dialog_update_state(hdlg);
             return TRUE;
@@ -785,6 +892,26 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (!base) base = strrchr(filename, '/');
                 if (base) base++; else base = filename;
                 SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS, base);
+            }
+            return TRUE;
+        }
+
+        case IDC_MESH_CLUTTER_CORPSE_BROWSE:
+        {
+            char filename[MAX_PATH] = {};
+            OPENFILENAMEA ofn = {};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hdlg;
+            ofn.lpstrFilter = "Mesh Files (*.v3m;*.v3c;*.vfx)\0*.v3m;*.v3c;*.vfx\0All Files (*.*)\0*.*\0";
+            ofn.lpstrFile = filename;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+            if (GetOpenFileNameA(&ofn)) {
+                const char* base = strrchr(filename, '\\');
+                if (!base) base = strrchr(filename, '/');
+                if (base) base++; else base = filename;
+                SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE, base);
+                mesh_dialog_update_state(hdlg);
             }
             return TRUE;
         }
@@ -947,6 +1074,28 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
 
                 GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS_VEL, tmp, sizeof(tmp));
                 new_clutter.debris_velocity = static_cast<float>(atof(tmp));
+
+                GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE, tmp, sizeof(tmp));
+                new_clutter.corpse_filename = tmp;
+
+                if (IsWindowEnabled(GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_STATE_ANIM))) {
+                    GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, tmp, sizeof(tmp));
+                    new_clutter.corpse_state_anim = tmp;
+                }
+
+                {
+                    HWND corpse_col = GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_COLLISION);
+                    int sel = static_cast<int>(SendMessageA(corpse_col, CB_GETCURSEL, 0, 0));
+                    new_clutter.corpse_collision = (sel >= 0 && sel <= 2) ? static_cast<uint8_t>(sel) : 0;
+                }
+
+                {
+                    HWND corpse_mat = GetDlgItem(hdlg, IDC_MESH_CLUTTER_CORPSE_MATERIAL);
+                    int sel = static_cast<int>(SendMessageA(corpse_mat, CB_GETCURSEL, 0, 0));
+                    // Index 0 = Automatic (-1), Index 1-10 = material 0-9
+                    new_clutter.corpse_material = (sel >= 1 && sel <= 10)
+                        ? static_cast<int8_t>(sel - 1) : static_cast<int8_t>(-1);
+                }
 
                 static const int dmg_ids[] = {
                     IDC_MESH_CLUTTER_DMG_BASH, IDC_MESH_CLUTTER_DMG_BULLET,
