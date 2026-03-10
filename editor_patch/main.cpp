@@ -11,6 +11,8 @@
 #include <sstream>
 #include <string>
 #include <algorithm>
+#include <set>
+#include <cmath>
 #include <common/version/version.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/os-utils.h>
@@ -33,6 +35,7 @@
 #include "event.h"
 #include "mesh.h"
 #include "alpine_obj.h"
+#include "geometry.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -49,8 +52,6 @@ static bool g_skip_legacy_level_warning = false;
 static int g_current_level_version = -1;
 
 static const auto g_editor_app = reinterpret_cast<std::byte*>(0x006F9DA0);
-
-static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...)>(0x00444980);
 
 
 void *GetMainFrame()
@@ -395,6 +396,10 @@ static HWND g_brush_panel_hwnd = nullptr;
 
 static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_BRUSH_MIRROR) {
+        handle_brush_mirror();
+        return 0;
+    }
     if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
         int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
         // Normalize: skip indeterminate state, treat as unchecked
@@ -529,9 +534,31 @@ CodeInjection CFormView_Create_injection{
     [](auto& regs) {
         auto& hCurrentResourceHandle = regs.esi;
         auto lpszTemplateName = static_cast<LPCSTR>(reinterpret_cast<void*>(static_cast<uintptr_t>(regs.ebx)));
-        // - 205: brush mode side panel (added Is Geoable checkbox)
-        if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MODE_PANEL)) {
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MODE_PANEL)
+            || lpszTemplateName == MAKEINTRESOURCE(IDD_FACE_MODE_PANEL)
+            || lpszTemplateName == MAKEINTRESOURCE(IDD_VERTEX_MODE_PANEL)
+            || lpszTemplateName == MAKEINTRESOURCE(IDD_GROUP_MODE_PANEL)) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
+        }
+    },
+};
+
+// Post-creation hook for CFormView panels. At 0x0052F0A9 (after CreateDlgIndirect),
+// EDI = CWnd*, EBX = template name. CWnd::m_hWnd is at CWnd+0x1C.
+// Subclasses group panel immediately after creation.
+static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static void subclass_group_panel_post_create(HWND hwnd);
+
+CodeInjection CFormView_PostCreate_injection{
+    0x0052F0A9,
+    [](auto& regs) {
+        auto lpszTemplateName = static_cast<LPCSTR>(reinterpret_cast<void*>(static_cast<uintptr_t>(regs.ebx)));
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_GROUP_MODE_PANEL)) {
+            HWND hwnd = *reinterpret_cast<HWND*>(
+                reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.edi)) + 0x1C);
+            if (hwnd) {
+                subclass_group_panel_post_create(hwnd);
+            }
         }
     },
 };
@@ -541,13 +568,12 @@ CodeInjection CDialog_DoModal_injection{
     [](auto& regs) {
         auto& hCurrentResourceHandle = regs.ebx;
         auto lpszTemplateName = addr_as_ref<LPCSTR>(regs.esp);
-        // Customize:
-        // - 148: trigger properties dialog
-        // - 270: brush properties dialog (added Is Geoable checkbox)
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_TRIGGER_PROPERTIES) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_LEVEL_PROPERTIES) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP) ||
-            lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES)
+            lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_FACE_SPLIT) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MIRROR)
         ) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
         }
@@ -644,12 +670,12 @@ void __fastcall brush_mode_handle_selection_new(void* self)
 }
 FunHook<brush_mode_handle_selection_type> brush_mode_handle_selection_hook{0x0043F430, brush_mode_handle_selection_new};
 
-void __fastcall DedLight_UpdateLevelLight(void *this_);
+void __fastcall DedLight_UpdateLevelLight_new(void *this_);
 FunHook DedLight_UpdateLevelLight_hook{
     0x00453200,
-    DedLight_UpdateLevelLight,
+    DedLight_UpdateLevelLight_new,
 };
-void __fastcall DedLight_UpdateLevelLight(void *this_)
+void __fastcall DedLight_UpdateLevelLight_new(void *this_)
 {
     auto& this_is_enabled = struct_field_ref<bool>(this_, 0xD5);
     auto& level_light = struct_field_ref<void*>(this_, 0xD8);
@@ -832,6 +858,199 @@ void CMainFrame_BackLink([[maybe_unused]] CWnd* this_)
     RedrawEditorAfterModification();
 }
 
+// Clip tool fix: replace buggy single-pass Cohen-Sutherland with proper slab intersection
+// ====================
+// Stock FUN_004c9af0 fails on diagonal clip lines because it only clips one endpoint
+// against one boundary per axis without iterating. This causes the clip tool to silently
+// skip brushes when the clip plane is sufficiently diagonal.
+
+static bool __cdecl line_aabb_intersect(
+    const Vector3* bbox_min, const Vector3* bbox_max,
+    const Vector3* p0, const Vector3* p1,
+    Vector3* intersection_out)
+{
+    // Slab (Liang-Barsky) line-AABB intersection
+    float dir[3] = {p1->x - p0->x, p1->y - p0->y, p1->z - p0->z};
+    const float* origin = &p0->x;
+    const float* bmin = &bbox_min->x;
+    const float* bmax = &bbox_max->x;
+
+    float t_enter = 0.0f;
+    float t_exit = 1.0f;
+
+    for (int i = 0; i < 3; i++) {
+        if (std::abs(dir[i]) < 1e-12f) {
+            // Line is parallel to this slab — check if origin is inside
+            if (origin[i] < bmin[i] || origin[i] > bmax[i])
+                return false;
+        }
+        else {
+            float inv_dir = 1.0f / dir[i];
+            float t0 = (bmin[i] - origin[i]) * inv_dir;
+            float t1 = (bmax[i] - origin[i]) * inv_dir;
+            if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+            if (t0 > t_enter) t_enter = t0;
+            if (t1 < t_exit) t_exit = t1;
+            if (t_enter > t_exit)
+                return false;
+        }
+    }
+
+    // Clamp to line segment [0, 1]
+    if (t_enter > 1.0f || t_exit < 0.0f)
+        return false;
+
+    float t = (t_enter >= 0.0f) ? t_enter : 0.0f;
+    intersection_out->x = p0->x + dir[0] * t;
+    intersection_out->y = p0->y + dir[1] * t;
+    intersection_out->z = p0->z + dir[2] * t;
+    return true;
+}
+
+FunHook<bool __cdecl(const Vector3*, const Vector3*, const Vector3*, const Vector3*, Vector3*)>
+    line_aabb_intersect_hook{0x004c9af0, line_aabb_intersect};
+
+// Fix crash when moving/rotating/undoing decal objects (DED_DECAL, type 0x12).
+// FUN_0042a460 case 0x12 calls FUN_0044e9a0 which dereferences the sub-object pointer at +0xA4
+// without a null check. The sub-object is created by FUN_00494390, which returns NULL if the
+// decal count exceeds 127 or allocation fails. Moving/rotating/undoing such a decal crashes
+// in FUN_00494400 when it dereferences NULL+0x34 etc.
+static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void* param);
+FunHook<decltype(object_rotation_update_new)> object_rotation_update_hook{
+    0x0044e9a0, object_rotation_update_new};
+static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void* param)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping rotation update for object with null sub-object at +0xA4");
+        return;
+    }
+    object_rotation_update_hook.call_target(self, 0, param);
+}
+
+// Face mode panel (dialog 178) subclass
+static WNDPROC g_face_panel_orig_wndproc = nullptr;
+static HWND g_face_panel_hwnd = nullptr;
+
+static LRESULT CALLBACK FacePanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND) {
+        WORD id = LOWORD(wParam);
+        if (id == IDC_FACE_DELETE) { handle_face_delete(); return 0; }
+        if (id == IDC_FACE_DELETE_EXT) { handle_face_delete_ext(); return 0; }
+        if (id == IDC_FACE_SPLIT) { handle_face_split(); return 0; }
+        if (id == IDC_FACE_FLIP_NORMAL) { handle_face_flip_normal(); return 0; }
+    }
+    return CallWindowProcA(g_face_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+// Subclass the face mode panel when it becomes active.
+// Called from CWnd_CreateDlg_injection when dialog 178 is created.
+static void subclass_face_panel(HWND hdlg)
+{
+    if (hdlg == g_face_panel_hwnd) return; // already subclassed
+    if (g_face_panel_hwnd && g_face_panel_orig_wndproc) {
+        SetWindowLongPtrA(g_face_panel_hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(g_face_panel_orig_wndproc));
+    }
+    g_face_panel_orig_wndproc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrA(hdlg, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(FacePanelSubclassProc)));
+    g_face_panel_hwnd = hdlg;
+}
+
+// Vertex mode panel subclass — handles Delete and Bridge button clicks.
+static WNDPROC g_vertex_panel_orig_wndproc = nullptr;
+static HWND g_vertex_panel_hwnd = nullptr;
+
+static LRESULT CALLBACK VertexPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND) {
+        WORD id = LOWORD(wParam);
+        if (id == IDC_VERTEX_DELETE) { handle_vertex_delete(); return 0; }
+        if (id == IDC_VERTEX_CAP) { handle_vertex_bridge(); return 0; }
+    }
+    return CallWindowProcA(g_vertex_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+static void subclass_vertex_panel(HWND hdlg)
+{
+    if (hdlg == g_vertex_panel_hwnd) return;
+    if (g_vertex_panel_hwnd && g_vertex_panel_orig_wndproc) {
+        SetWindowLongPtrA(g_vertex_panel_hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(g_vertex_panel_orig_wndproc));
+    }
+    g_vertex_panel_orig_wndproc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrA(hdlg, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(VertexPanelSubclassProc)));
+    g_vertex_panel_hwnd = hdlg;
+}
+
+// Group mode panel subclass — handles Mirror button click.
+static WNDPROC g_group_panel_orig_wndproc = nullptr;
+static HWND g_group_panel_hwnd = nullptr;
+
+static void subclass_group_panel(HWND hdlg)
+{
+    // Check if already subclassed (current WndProc is ours)
+    auto current = reinterpret_cast<WNDPROC>(GetWindowLongPtrA(hdlg, GWLP_WNDPROC));
+    if (current == GroupPanelSubclassProc) return;
+    g_group_panel_orig_wndproc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrA(hdlg, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(GroupPanelSubclassProc)));
+    g_group_panel_hwnd = hdlg;
+}
+
+// Called from CFormView_PostCreate_injection when dialog 231 is created
+static void subclass_group_panel_post_create(HWND hwnd)
+{
+    subclass_group_panel(hwnd);
+}
+
+static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND) {
+        WORD id = LOWORD(wParam);
+        if (id == IDC_GROUP_MIRROR) {
+            handle_group_mirror();
+            return 0;
+        }
+    }
+    return CallWindowProcA(g_group_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+// Inject after the CALL to CDedLevel::SetEditMode in the mode combobox handler
+// (FUN_004496d0 at 0x004496f9). When face/vertex/group mode is entered, find and subclass
+// the panel CFormView to handle our custom button clicks.
+
+struct FindPanelsCtx { HWND face_panel; HWND vertex_panel; HWND group_panel; };
+
+static BOOL CALLBACK EnumChildFindPanelsProc(HWND hwnd, LPARAM lParam)
+{
+    auto* c = reinterpret_cast<FindPanelsCtx*>(lParam);
+    int id = GetDlgCtrlID(hwnd);
+    if (id == IDC_FACE_DELETE) c->face_panel = GetParent(hwnd);
+    if (id == IDC_VERTEX_DELETE) c->vertex_panel = GetParent(hwnd);
+    if (id == IDC_GROUP_MIRROR) c->group_panel = GetParent(hwnd);
+    return (c->face_panel && c->vertex_panel && c->group_panel) ? FALSE : TRUE;
+}
+
+CodeInjection face_panel_subclass_injection{
+    0x004496f9,
+    [](BaseCodeInjection::Regs& regs) {
+        HWND main_hwnd = *reinterpret_cast<HWND*>(
+            reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.esi)) + 0x1C);
+        if (!main_hwnd) return;
+        FindPanelsCtx ctx{nullptr, nullptr, nullptr};
+        EnumChildWindows(main_hwnd, EnumChildFindPanelsProc, reinterpret_cast<LPARAM>(&ctx));
+        if (ctx.face_panel) subclass_face_panel(ctx.face_panel);
+        if (ctx.vertex_panel) subclass_vertex_panel(ctx.vertex_panel);
+        if (ctx.group_panel) subclass_group_panel(ctx.group_panel);
+    },
+    true, // needs_trampoline
+};
+
+
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
 {
     constexpr int CN_COMMAND = 0;
@@ -871,6 +1090,30 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case ID_BACK_LINK:
                 handler = std::bind(CMainFrame_BackLink, this_);
+                break;
+            case IDC_FACE_DELETE:
+                handler = handle_face_delete;
+                break;
+            case IDC_FACE_DELETE_EXT:
+                handler = handle_face_delete_ext;
+                break;
+            case IDC_FACE_SPLIT:
+                handler = handle_face_split;
+                break;
+            case IDC_FACE_FLIP_NORMAL:
+                handler = handle_face_flip_normal;
+                break;
+            case IDC_BRUSH_MIRROR:
+                handler = handle_brush_mirror;
+                break;
+            case IDC_VERTEX_DELETE:
+                handler = handle_vertex_delete;
+                break;
+            case IDC_VERTEX_CAP:
+                handler = handle_vertex_bridge;
+                break;
+            case IDC_GROUP_MIRROR:
+                handler = handle_group_mirror;
                 break;
         }
 
@@ -1274,6 +1517,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Replace some editor resources
     CWnd_CreateDlg_injection.install();
     CFormView_Create_injection.install();
+    CFormView_PostCreate_injection.install();
     CDialog_DoModal_injection.install();
     write_mem_ptr(0x0055456C, &LoadMenuA_new);
     write_mem_ptr(0x005544FC, &LoadIconA_new);
@@ -1400,6 +1644,15 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Disable red background if geometry limits are crossed
     AsmWriter{0x0043A528, 0x0043A546}.nop();
+
+    // Fix clip tool sometimes doing nothing on diagonal clip lines
+    line_aabb_intersect_hook.install();
+
+    // Fix crash when rotating objects with null sub-object pointer at +0xA4
+    object_rotation_update_hook.install();
+
+    // Subclass face mode panel for Delete/Delete Ext./Split button handling
+    face_panel_subclass_injection.install();
 
     return 1; // success
 }

@@ -45,6 +45,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
 - Add level editor support for custom texture subdirectories under `user_maps\textures`
+- Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
+- Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
+- Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
 - Add `Mesh` and `Note` object types
 - Add `Mesh_Animate`, `Mesh_Set_Texture`, and `Mesh_Set_Collision` events
 
@@ -78,12 +81,13 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix some string errors when compiled using mingw
 - Fix rare crash when loading skeletons
 - Fix level editor geometry rebuild sometimes reusing stale data from previous builds
-- Fix level editor geometry sometimes not properly rendering after rebuilding
 - Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
 - Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
 - Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
+- Fix rare level editor crash when transforming decal objects in a level with a large number of decals
+- Fix level editor clip tool silently failing on certain brush orientations
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix faulty cull in fpgun infrared scanners

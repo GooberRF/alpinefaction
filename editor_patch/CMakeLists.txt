@@ -3,6 +3,7 @@ set(SRCS
     alpine_obj.cpp
     alpine_obj.h
     event.cpp
+    geometry.cpp
     graphics.cpp
     main.cpp
     mesh.cpp

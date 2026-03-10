@@ -758,7 +758,10 @@ void apply_geoable_flags()
             if (room->uid == uid && room->is_detail) {
                 room->is_geoable = true;
                 found = true;
-                xlog::debug("[Geoable] applied is_geoable to room uid={} index={}", uid, room->room_index);
+                xlog::debug("[Geoable] applied is_geoable to room uid={} index={} bbox=({:.1f},{:.1f},{:.1f})-({:.1f},{:.1f},{:.1f})",
+                    uid, room->room_index,
+                    room->bbox_min.x, room->bbox_min.y, room->bbox_min.z,
+                    room->bbox_max.x, room->bbox_max.y, room->bbox_max.z);
                 break;
             }
         }

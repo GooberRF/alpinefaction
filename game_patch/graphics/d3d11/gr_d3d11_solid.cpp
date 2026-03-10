@@ -498,14 +498,11 @@ namespace df::gr::d3d11
                 if (vb_data.size() - base_vertex > max_batch_verts) {
                     emit_decal_batch();
                 }
-                int max_dp_verts = std::min(dp->nv, static_cast<int>(std::size(dp->uvs)));
                 auto face_start_index = static_cast<ushort>(vb_data.size() - base_vertex);
                 int fvert_index = 0;
                 while (fvert) {
-                    if (fvert_index >= max_dp_verts) {
-                        if (fvert_index >= static_cast<int>(std::size(dp->uvs))) {
-                            xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
-                        }
+                    if (fvert_index >= static_cast<int>(std::size(dp->uvs))) {
+                        xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
                         break;
                     }
                     auto& gpu_vert = vb_data.emplace_back();
