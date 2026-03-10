@@ -673,7 +673,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                     a.corpse_material != b.corpse_material) {
                     all_same_clutter = false;
                 } else {
-                    for (int di = 0; di < 10; di++) {
+                    for (int di = 0; di < 11; di++) {
                         if (a.damage_type_factors[di] != b.damage_type_factors[di]) {
                             all_same_clutter = false;
                             break;
