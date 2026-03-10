@@ -84,13 +84,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
     auto read_string = [&]() -> std::string {
         uint16_t len = 0;
         if (!read_bytes(&len, sizeof(len))) return "";
-        if (len == 0 || remaining < len) {
-            if (len > 0 && remaining >= len) {
-                file.seek(len, rf::File::seek_cur);
-                remaining -= len;
-            }
-            return "";
-        }
+        if (len == 0 || remaining < len) return "";
         std::string result(len, '\0');
         file.read(result.data(), len);
         remaining -= len;
