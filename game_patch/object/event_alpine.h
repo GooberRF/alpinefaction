@@ -2525,18 +2525,12 @@ namespace rf
 
         void turn_on() override
         {
-            xlog::info("[EventMeshSetTexture] turn_on: event uid={} handle={} "
-                "{} links, slot={}, texture='{}'",
-                this->uid, this->handle, this->links.size(), texture_slot, texture_filename);
+            xlog::debug("[EventMeshSetTexture] turn_on: uid={} slot={} texture='{}'",
+                this->uid, texture_slot, texture_filename);
             for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
                 int link_handle = this->links[i];
                 Object* obj = obj_from_handle(link_handle);
                 if (obj) {
-                    xlog::info("[EventMeshSetTexture]   link[{}]: handle={} -> obj={:p} uid={} type={} "
-                        "name='{}' vmesh={:p}",
-                        i, link_handle, static_cast<void*>(obj), obj->uid,
-                        static_cast<int>(obj->type), obj->name.c_str(),
-                        static_cast<void*>(obj->vmesh));
                     if (texture_filename.empty()) {
                         alpine_mesh_clear_texture(obj, texture_slot);
                     }
