@@ -97,6 +97,8 @@ set(SRCS
     input/input.h
     input/mouse.cpp
     input/key.cpp
+    input/gamepad.cpp
+    input/gamepad.h
     hud/hud_colors.cpp
     hud/hud_scale.cpp
     hud/hud_personas.cpp
@@ -231,6 +233,7 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
     ${CMAKE_SOURCE_DIR}/vendor/dds
     ${CMAKE_SOURCE_DIR}/vendor/toml++
+    ${CMAKE_SOURCE_DIR}/vendor/gamepadmotionhelpers
 )
 
 if(NOT MSVC)
@@ -263,6 +266,7 @@ target_link_libraries(AlpineFaction
     freetype
     stb_vorbis
     SDL3::SDL3-static
+    GamepadMotionHelpers
     setupapi
     imm32
     cfgmgr32

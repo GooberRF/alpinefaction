@@ -13,6 +13,7 @@
 #include "../rf/entity.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
+#include "gamepad.h"
 
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
@@ -280,36 +281,46 @@ void linear_pitch_test()
 }
 #endif // DEBUG
 
+static void apply_linear_pitch(float current_yaw, float current_pitch_non_lin, float& pitch_delta, float yaw_delta)
+{
+    // Convert to linear space (see RotMatixFromEuler function at 004A0D70)
+    auto fvec = fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
+    float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
+    // Calculate new pitch in linear space
+    float new_pitch_lin = current_pitch_lin + pitch_delta;
+    float new_yaw = current_yaw + yaw_delta;
+    // Clamp to [-pi/2, pi/2]
+    constexpr float half_pi = 1.5707964f;
+    new_pitch_lin = std::clamp(new_pitch_lin, -half_pi, half_pi);
+    // Convert back to non-linear space
+    auto fvec_new = fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
+    float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
+    // Update non-linear pitch delta
+    float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
+    xlog::trace("non-lin {} lin {} delta {} new {}", current_pitch_non_lin, current_pitch_lin, pitch_delta,
+          new_pitch_delta);
+    pitch_delta = new_pitch_delta;
+}
+
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
-        if (!g_alpine_game_config.mouse_linear_pitch)
-            return;
-        // Non-linear pitch value and delta from RF
         rf::Entity* entity = regs.esi;
-        float current_yaw = entity->control_data.phb.y;
-        float current_pitch_non_lin = entity->control_data.eye_phb.x;
         float& pitch_delta = *reinterpret_cast<float*>(regs.esp + 0x44 - 0x34);
         float& yaw_delta = *reinterpret_cast<float*>(regs.esp + 0x44 + 0x4);
-        if (pitch_delta == 0)
-            return;
-        // Convert to linear space (see RotMatixFromEuler function at 004A0D70)
-        auto fvec = fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
-        float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
-        // Calculate new pitch in linear space
-        float new_pitch_lin = current_pitch_lin + pitch_delta;
-        float new_yaw = current_yaw + yaw_delta;
-        // Clamp to [-pi, pi]
-        constexpr float half_pi = 1.5707964f;
-        new_pitch_lin = std::clamp(new_pitch_lin, -half_pi, half_pi);
-        // Convert back to non-linear space
-        auto fvec_new = fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
-        float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
-        // Update non-linear pitch delta
-        float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
-        xlog::trace("non-lin {} lin {} delta {} new {}", current_pitch_non_lin, current_pitch_lin, pitch_delta,
-              new_pitch_delta);
-        pitch_delta = new_pitch_delta;
+
+        // Add gamepad rotation deltas to the game's computed deltas
+        float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
+        gamepad_get_camera(gamepad_pitch, gamepad_yaw);
+        pitch_delta += gamepad_pitch;
+        yaw_delta += gamepad_yaw;
+
+        // Apply linear pitch correction to combined mouse+gamepad delta
+        if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0) {
+            float current_yaw = entity->control_data.phb.y;
+            float current_pitch_non_lin = entity->control_data.eye_phb.x;
+            apply_linear_pitch(current_yaw, current_pitch_non_lin, pitch_delta, yaw_delta);
+        }
     },
 };
 
@@ -319,7 +330,6 @@ ConsoleCommand2 linear_pitch_cmd{
 #ifdef DEBUG
         linear_pitch_test();
 #endif
-
         g_alpine_game_config.mouse_linear_pitch = !g_alpine_game_config.mouse_linear_pitch;
         rf::console::print("Linear pitch is {}", g_alpine_game_config.mouse_linear_pitch ? "enabled" : "disabled");
     },
@@ -350,7 +360,7 @@ void mouse_apply_patch()
     // Use exclusive DirectInput mode so cursor cannot exit game window
     //write_mem<u8>(0x0051E14B + 1, 5); // DISCL_EXCLUSIVE|DISCL_FOREGROUND
 
-    // Linear vertical rotation (pitch)
+  // Linear vertical rotation for mouse and gamepad
     linear_pitch_patch.install();
 
     // Commands
