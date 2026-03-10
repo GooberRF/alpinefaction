@@ -11,6 +11,8 @@
 #include "mfc_types.h"
 #include "resources.h"
 
+void DestroyDedMesh(DedMesh* mesh);
+
 constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
@@ -365,12 +367,7 @@ struct AlpineLevelProperties
         breakable_room_uids.clear();
         breakable_materials.clear();
         for (auto* m : mesh_objects) {
-            m->field_4.free();
-            m->script_name.free();
-            m->class_name.free();
-            m->mesh_filename.free();
-            m->state_anim.free();
-            delete m;
+            DestroyDedMesh(m);
         }
         mesh_objects.clear();
 

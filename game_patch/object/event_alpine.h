@@ -2463,7 +2463,7 @@ namespace rf
     struct EventMeshAnimate : Event
     {
         char padding_align[3];
-        int animate_type = 0;        // 0=Action, 1=State, 2=Clear
+        int animate_type = 0;        // 0=Action, 1=Action Hold Last, 2=State
         std::string anim_filename;
         float blend_weight = 1.0f;
 

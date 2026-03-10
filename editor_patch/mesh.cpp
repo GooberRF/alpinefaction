@@ -220,7 +220,7 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
 }
 
 // Free all VString members before deleting a DedMesh
-static void destroy_ded_mesh(DedMesh* mesh)
+void DestroyDedMesh(DedMesh* mesh)
 {
     if (!mesh) return;
     // Free vmesh
@@ -322,21 +322,21 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         mesh->collision_mode = 2; // All
 
         // uid
-        if (!read_bytes(&mesh->uid, sizeof(mesh->uid))) { destroy_ded_mesh(mesh); return; }
+        if (!read_bytes(&mesh->uid, sizeof(mesh->uid))) { DestroyDedMesh(mesh); return; }
         // pos
-        if (!read_bytes(&mesh->pos.x, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->pos.y, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->pos.z, sizeof(float))) { destroy_ded_mesh(mesh); return; }
+        if (!read_bytes(&mesh->pos.x, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->pos.y, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->pos.z, sizeof(float))) { DestroyDedMesh(mesh); return; }
         // orient
-        if (!read_bytes(&mesh->orient.rvec.x, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->orient.rvec.y, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->orient.rvec.z, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->orient.uvec.x, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->orient.uvec.y, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->orient.uvec.z, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->orient.fvec.x, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->orient.fvec.y, sizeof(float))) { destroy_ded_mesh(mesh); return; }
-        if (!read_bytes(&mesh->orient.fvec.z, sizeof(float))) { destroy_ded_mesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.rvec.x, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.rvec.y, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.rvec.z, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.uvec.x, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.uvec.y, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.uvec.z, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.fvec.x, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.fvec.y, sizeof(float))) { DestroyDedMesh(mesh); return; }
+        if (!read_bytes(&mesh->orient.fvec.z, sizeof(float))) { DestroyDedMesh(mesh); return; }
         // script_name
         std::string sname = read_rfl_string(file, remaining);
         mesh->script_name.assign_0(sname.c_str());
@@ -348,14 +348,14 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         mesh->state_anim.assign_0(sanim.c_str());
         // collision mode
         uint8_t collision_mode = 2;
-        if (!read_bytes(&collision_mode, sizeof(collision_mode))) { destroy_ded_mesh(mesh); return; }
+        if (!read_bytes(&collision_mode, sizeof(collision_mode))) { DestroyDedMesh(mesh); return; }
         mesh->collision_mode = (collision_mode <= 2) ? collision_mode : 2;
         // texture overrides: count + (slot_id, filename) pairs
         uint8_t num_overrides = 0;
-        if (!read_bytes(&num_overrides, sizeof(num_overrides))) { destroy_ded_mesh(mesh); return; }
+        if (!read_bytes(&num_overrides, sizeof(num_overrides))) { DestroyDedMesh(mesh); return; }
         for (uint8_t oi = 0; oi < num_overrides; oi++) {
             uint8_t slot_id = 0;
-            if (!read_bytes(&slot_id, sizeof(slot_id))) { destroy_ded_mesh(mesh); return; }
+            if (!read_bytes(&slot_id, sizeof(slot_id))) { DestroyDedMesh(mesh); return; }
             std::string tex = read_rfl_string(file, remaining);
             if (!tex.empty()) {
                 mesh->texture_overrides.push_back({slot_id, std::move(tex)});
@@ -908,7 +908,7 @@ void DeleteMeshObject(DedMesh* mesh)
     }
     // Remove from master objects list
     level->master_objects.remove_by_value(static_cast<DedObject*>(mesh));
-    destroy_ded_mesh(mesh);
+    DestroyDedMesh(mesh);
 }
 
 // ─── Editor Hooks ───────────────────────────────────────────────────────────
