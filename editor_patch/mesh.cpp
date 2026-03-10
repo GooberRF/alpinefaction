@@ -305,7 +305,7 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
             write_rfl_string(file, cp.explosion_vclip);
             file.write<float>(cp.explosion_radius);
             file.write<float>(cp.debris_velocity);
-            for (int di = 0; di < 10; di++) {
+            for (int di = 0; di < 11; di++) {
                 file.write<float>(cp.damage_type_factors[di]);
             }
         }
@@ -395,7 +395,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
                     cp.explosion_vclip = read_rfl_string(file, remaining);
                     if (!read_bytes(&cp.explosion_radius, sizeof(float))) { DestroyDedMesh(mesh); return; }
                     if (!read_bytes(&cp.debris_velocity, sizeof(float))) { DestroyDedMesh(mesh); return; }
-                    for (int di = 0; di < 10; di++) {
+                    for (int di = 0; di < 11; di++) {
                         if (!read_bytes(&cp.damage_type_factors[di], sizeof(float))) { DestroyDedMesh(mesh); return; }
                     }
                 }

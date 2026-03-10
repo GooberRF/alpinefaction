@@ -151,7 +151,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
                     cp.explosion_vclip = read_string();
                     if (!read_bytes(&cp.explosion_radius, sizeof(float))) return;
                     if (!read_bytes(&cp.debris_velocity, sizeof(float))) return;
-                    for (int di = 0; di < 10; di++) {
+                    for (int di = 0; di < 11; di++) {
                         if (!read_bytes(&cp.damage_type_factors[di], sizeof(float))) return;
                     }
                 }
