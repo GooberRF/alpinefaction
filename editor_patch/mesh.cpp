@@ -483,6 +483,24 @@ static std::vector<EditorTextureOverride> mesh_dialog_read_overrides(HWND hdlg)
     return result;
 }
 
+// Auto-correct legacy file extensions in an edit control.
+static void mesh_dialog_fix_extension(HWND hdlg, int ctrl_id,
+    const char* old_ext, const char* new_ext)
+{
+    char buf[MAX_PATH] = {};
+    GetDlgItemTextA(hdlg, ctrl_id, buf, sizeof(buf));
+    auto ext = get_ext_from_filename(buf);
+    if (string_iequals(ext, old_ext)) {
+        char* dot = strrchr(buf, '.');
+        if (dot) {
+            strcpy(dot + 1, new_ext);
+            SetDlgItemTextA(hdlg, ctrl_id, buf);
+            // Place caret at end so typing isn't disrupted
+            SendDlgItemMessage(hdlg, ctrl_id, EM_SETSEL, strlen(buf), strlen(buf));
+        }
+    }
+}
+
 // Update dialog controls based on mesh type and material info
 static void mesh_dialog_update_state(HWND hdlg)
 {
@@ -714,7 +732,17 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         switch (LOWORD(wparam)) {
         case IDC_MESH_FILENAME:
             if (HIWORD(wparam) == EN_CHANGE) {
+                // Auto-correct legacy extensions
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_FILENAME, "v3d", "v3m");
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_FILENAME, "vcm", "v3c");
                 mesh_dialog_update_state(hdlg);
+            }
+            return TRUE;
+
+        case IDC_MESH_STATE_ANIM:
+            if (HIWORD(wparam) == EN_CHANGE) {
+                // Auto-correct legacy extension
+                mesh_dialog_fix_extension(hdlg, IDC_MESH_STATE_ANIM, "mvf", "rfa");
             }
             return TRUE;
 
