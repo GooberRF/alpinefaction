@@ -367,7 +367,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
 // Alpine Mesh Properties dialog
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_ALPINE_MESH_PROPERTIES DIALOGEX 0, 0, 280, 310
+IDD_ALPINE_MESH_PROPERTIES DIALOGEX 0, 0, 280, 406
 STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Mesh Properties"
 FONT 8, "MS Sans Serif", 0, 0, 0
@@ -382,26 +382,73 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     LTEXT           "", IDC_MESH_TYPE_LABEL, 60, 46, 200, 8
 
     LTEXT           "State Anim:", -1, 7, 61, 44, 8
-    EDITTEXT        IDC_MESH_STATE_ANIM, 60, 59, 205, 14, ES_AUTOHSCROLL
+    EDITTEXT        IDC_MESH_STATE_ANIM, 60, 59, 140, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Simulate in editor", IDC_MESH_SIMULATE, 206, 61, 70, 10
 
     LTEXT           "Collision:", -1, 7, 81, 44, 8
     COMBOBOX        IDC_MESH_COLLISION_MODE, 60, 79, 80, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Material:", -1, 148, 81, 30, 8
+    COMBOBOX        IDC_MESH_MATERIAL, 180, 79, 84, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
 
-    AUTOCHECKBOX    "Simulate in editor", IDC_MESH_SIMULATE, 150, 81, 80, 10
+    GROUPBOX        "Texture Overrides", -1, 7, 98, 260, 108
+    CONTROL         "", IDC_MESH_OVERRIDE_LIST, WC_LISTVIEW, WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 14, 110, 246, 62
+    LTEXT           "Slot:", -1, 14, 178, 18, 8
+    EDITTEXT        IDC_MESH_OVERRIDE_SLOT, 34, 176, 24, 14, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Texture:", -1, 64, 178, 28, 8
+    EDITTEXT        IDC_MESH_OVERRIDE_FILENAME, 94, 176, 120, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "+", IDC_MESH_OVERRIDE_ADD, 220, 176, 18, 14
+    PUSHBUTTON      "-", IDC_MESH_OVERRIDE_REMOVE, 242, 176, 18, 14
+    LTEXT           "Use + to add, - to remove selected.", -1, 14, 194, 246, 8
 
-    GROUPBOX        "Material Overrides", -1, 7, 100, 260, 140
-    CONTROL         "", IDC_MESH_OVERRIDE_LIST, WC_LISTVIEW, WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 14, 112, 246, 80
-    LTEXT           "Slot:", -1, 14, 198, 18, 8
-    EDITTEXT        IDC_MESH_OVERRIDE_SLOT, 34, 196, 24, 14, ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "Texture:", -1, 64, 198, 28, 8
-    EDITTEXT        IDC_MESH_OVERRIDE_FILENAME, 94, 196, 120, 14, ES_AUTOHSCROLL
-    PUSHBUTTON      "+", IDC_MESH_OVERRIDE_ADD, 220, 196, 18, 14
-    PUSHBUTTON      "-", IDC_MESH_OVERRIDE_REMOVE, 242, 196, 18, 14
-    LTEXT           "Overrides applied above. Use + to add, - to remove selected.", -1, 14, 215, 246, 16
+    AUTOCHECKBOX    "Destructible", IDC_MESH_IS_CLUTTER, 7, 212, 60, 10
 
-    PUSHBUTTON      "Links", ID_LINKS, 7, 285, 50, 14
-    DEFPUSHBUTTON   "OK", IDOK, 160, 285, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 215, 285, 50, 14
+    GROUPBOX        "Destructible Properties", IDC_MESH_CLUTTER_GROUP, 7, 224, 260, 159
+
+    // Left column: destructible mesh options
+    LTEXT           "Life:", -1, 14, 238, 18, 8
+    EDITTEXT        IDC_MESH_CLUTTER_LIFE, 34, 236, 40, 14, ES_AUTOHSCROLL
+    LTEXT           "(-1.0 = invulnerable)", -1, 78, 238, 70, 8
+
+    LTEXT           "Debris Mesh:", -1, 14, 256, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DEBRIS, 14, 267, 118, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_MESH_CLUTTER_DEBRIS_BROWSE, 134, 267, 14, 14
+
+    LTEXT           "Explosion Vclip:", -1, 14, 286, 54, 8
+    EDITTEXT        IDC_MESH_CLUTTER_VCLIP, 14, 297, 118, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Expl. Radius:", -1, 14, 316, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_EXPLODE_RADIUS, 62, 314, 36, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Debris Vel:", -1, 14, 334, 40, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DEBRIS_VEL, 62, 332, 36, 14, ES_AUTOHSCROLL
+
+    // Right column: damage type factors (stacked vertically)
+    LTEXT           "Damage Factors: (0.0 - 1.0)", -1, 156, 238, 100, 8
+
+    LTEXT           "Bash:", -1, 156, 251, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_BASH, 228, 249, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Bullet:", -1, 156, 264, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_BULLET, 228, 262, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "AP Bullet:", -1, 156, 277, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_AP_BULLET, 228, 275, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Explosive:", -1, 156, 290, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_EXPLOSIVE, 228, 288, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Fire:", -1, 156, 303, 18, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_FIRE, 228, 301, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Energy:", -1, 156, 316, 28, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ENERGY, 228, 314, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Electrical:", -1, 156, 329, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ELECTRICAL, 228, 327, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Acid:", -1, 156, 342, 20, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ACID, 228, 340, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Scalding:", -1, 156, 355, 34, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_SCALDING, 228, 353, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Crush:", -1, 156, 368, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_CRUSH, 228, 366, 32, 12, ES_AUTOHSCROLL
+
+    PUSHBUTTON      "Links", ID_LINKS, 7, 388, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 160, 388, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 215, 388, 50, 14
 }
 
 // Brush mode side panel (replaces stock dialog 205 with added "Is Geoable" checkbox)

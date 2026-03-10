@@ -292,6 +292,23 @@ void mesh_serialize_chunk(CDedLevel& level, rf::File& file)
             file.write<uint8_t>(ovr.slot);
             write_rfl_string(file, ovr.filename);
         }
+
+        // material (independent of clutter)
+        file.write<int32_t>(mesh->material);
+
+        // clutter properties
+        auto& cp = mesh->clutter_props;
+        file.write<uint8_t>(cp.is_clutter ? 1 : 0);
+        if (cp.is_clutter) {
+            file.write<float>(cp.life);
+            write_rfl_string(file, cp.debris_filename);
+            write_rfl_string(file, cp.explosion_vclip);
+            file.write<float>(cp.explosion_radius);
+            file.write<float>(cp.debris_velocity);
+            for (int di = 0; di < 10; di++) {
+                file.write<float>(cp.damage_type_factors[di]);
+            }
+        }
     }
 
     level.EndRflSection(file, start_pos);
@@ -362,6 +379,29 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
             }
         }
 
+        int32_t mat = 0;
+
+        // clutter properties
+        if (remaining >= sizeof(int32_t) && read_bytes(&mat, sizeof(mat))) {
+            mesh->material = (mat >= 0 && mat <= 9) ? mat : 0;
+
+            uint8_t is_clutter_flag = 0;
+            if (remaining >= 1 && read_bytes(&is_clutter_flag, sizeof(is_clutter_flag))) {
+                mesh->clutter_props.is_clutter = (is_clutter_flag != 0);
+                if (mesh->clutter_props.is_clutter) {
+                    auto& cp = mesh->clutter_props;
+                    if (!read_bytes(&cp.life, sizeof(float))) { DestroyDedMesh(mesh); return; }
+                    cp.debris_filename = read_rfl_string(file, remaining);
+                    cp.explosion_vclip = read_rfl_string(file, remaining);
+                    if (!read_bytes(&cp.explosion_radius, sizeof(float))) { DestroyDedMesh(mesh); return; }
+                    if (!read_bytes(&cp.debris_velocity, sizeof(float))) { DestroyDedMesh(mesh); return; }
+                    for (int di = 0; di < 10; di++) {
+                        if (!read_bytes(&cp.damage_type_factors[di], sizeof(float))) { DestroyDedMesh(mesh); return; }
+                    }
+                }
+            }
+        }
+
         // Don't load vmesh here - the RFL file is still open and loading a v3c
         // mesh during chunk parsing conflicts with the file I/O system.
         // The render hook's lazy-load will handle it on the first frame.
@@ -397,6 +437,11 @@ static int g_init_collision_mode;
 static std::vector<EditorTextureOverride> g_init_overrides;
 static bool g_init_overrides_multiple = false; // true if selected meshes have differing overrides
 static int g_init_simulate = 0; // 0=unchecked, 1=checked, -1=indeterminate (mixed)
+static int g_init_material = 0;
+static bool g_init_material_multiple = false;
+static int g_init_is_clutter = 0; // 0=unchecked, 1=checked, -1=indeterminate
+static MeshClutterProps g_init_clutter_props;
+static bool g_init_clutter_multiple = false; // true if selected meshes have differing clutter props
 
 // Flags: set to true by IDOK if mesh filenames/anims were changed, so caller can reload
 static bool g_mesh_filename_changed = false;
@@ -476,6 +521,23 @@ static void mesh_dialog_update_state(HWND hdlg)
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_FILENAME), has_filename);
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_ADD), has_filename);
     EnableWindow(GetDlgItem(hdlg, IDC_MESH_OVERRIDE_REMOVE), has_filename);
+
+    // Clutter properties: enable/disable based on "Is Clutter" checkbox
+    bool is_clutter = (IsDlgButtonChecked(hdlg, IDC_MESH_IS_CLUTTER) == BST_CHECKED);
+    static const int clutter_controls[] = {
+        IDC_MESH_CLUTTER_LIFE,
+        IDC_MESH_CLUTTER_DEBRIS, IDC_MESH_CLUTTER_DEBRIS_BROWSE,
+        IDC_MESH_CLUTTER_VCLIP, IDC_MESH_CLUTTER_EXPLODE_RADIUS,
+        IDC_MESH_CLUTTER_DEBRIS_VEL,
+        IDC_MESH_CLUTTER_DMG_BASH, IDC_MESH_CLUTTER_DMG_BULLET,
+        IDC_MESH_CLUTTER_DMG_AP_BULLET, IDC_MESH_CLUTTER_DMG_EXPLOSIVE,
+        IDC_MESH_CLUTTER_DMG_FIRE, IDC_MESH_CLUTTER_DMG_ENERGY,
+        IDC_MESH_CLUTTER_DMG_ELECTRICAL, IDC_MESH_CLUTTER_DMG_ACID,
+        IDC_MESH_CLUTTER_DMG_SCALDING, IDC_MESH_CLUTTER_DMG_CRUSH,
+    };
+    for (int id : clutter_controls) {
+        EnableWindow(GetDlgItem(hdlg, id), is_clutter);
+    }
 }
 
 static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -490,6 +552,9 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         bool all_same_anim = true, all_same_collision = true;
         bool all_same_overrides = true;
         bool all_same_simulate = true;
+        bool all_same_material = true;
+        bool all_same_is_clutter = true;
+        bool all_same_clutter = true;
 
         for (size_t i = 1; i < g_selected_meshes.size(); i++) {
             auto* m = g_selected_meshes[i];
@@ -498,6 +563,8 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             if (strcmp(m->state_anim.c_str(), first->state_anim.c_str()) != 0) all_same_anim = false;
             if (m->collision_mode != first->collision_mode) all_same_collision = false;
             if (m->simulate_in_editor != first->simulate_in_editor) all_same_simulate = false;
+            if (m->material != first->material) all_same_material = false;
+            if (m->clutter_props.is_clutter != first->clutter_props.is_clutter) all_same_is_clutter = false;
             if (m->texture_overrides.size() != first->texture_overrides.size()) {
                 all_same_overrides = false;
             } else {
@@ -506,6 +573,23 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                         m->texture_overrides[ti].filename != first->texture_overrides[ti].filename) {
                         all_same_overrides = false;
                         break;
+                    }
+                }
+            }
+            // Check if clutter props differ
+            if (all_same_clutter) {
+                auto& a = first->clutter_props;
+                auto& b = m->clutter_props;
+                if (a.life != b.life ||
+                    a.debris_filename != b.debris_filename || a.explosion_vclip != b.explosion_vclip ||
+                    a.explosion_radius != b.explosion_radius || a.debris_velocity != b.debris_velocity) {
+                    all_same_clutter = false;
+                } else {
+                    for (int di = 0; di < 10; di++) {
+                        if (a.damage_type_factors[di] != b.damage_type_factors[di]) {
+                            all_same_clutter = false;
+                            break;
+                        }
                     }
                 }
             }
@@ -518,6 +602,11 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
         g_init_overrides_multiple = !all_same_overrides;
         g_init_overrides = all_same_overrides ? first->texture_overrides : std::vector<EditorTextureOverride>{};
         g_init_simulate = all_same_simulate ? (first->simulate_in_editor ? 1 : 0) : -1;
+        g_init_material = all_same_material ? first->material : -1;
+        g_init_material_multiple = !all_same_material;
+        g_init_is_clutter = all_same_is_clutter ? (first->clutter_props.is_clutter ? 1 : 0) : -1;
+        g_init_clutter_multiple = !all_same_clutter;
+        g_init_clutter_props = all_same_clutter ? first->clutter_props : MeshClutterProps{};
 
         SetDlgItemTextA(hdlg, IDC_MESH_SCRIPT_NAME, g_init_script_name.c_str());
         SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, g_init_filename.c_str());
@@ -526,6 +615,63 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             SendDlgItemMessage(hdlg, IDC_MESH_SIMULATE, BM_SETCHECK, BST_INDETERMINATE, 0);
         } else {
             CheckDlgButton(hdlg, IDC_MESH_SIMULATE, g_init_simulate ? BST_CHECKED : BST_UNCHECKED);
+        }
+
+        // Material combo box (independent of clutter)
+        {
+            HWND mat_combo = GetDlgItem(hdlg, IDC_MESH_MATERIAL);
+            static const char* material_names[] = {
+                "Default", "Rock", "Metal", "Flesh", "Water",
+                "Lava", "Solid", "Glass", "Sand", "Ice"
+            };
+            for (auto* name : material_names) {
+                SendMessageA(mat_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
+            }
+            if (g_init_material_multiple) {
+                SendMessageA(mat_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Undefined"));
+                SendMessageA(mat_combo, CB_SETCURSEL, 10, 0); // "Undefined"
+            } else if (g_init_material >= 0 && g_init_material < 10) {
+                SendMessageA(mat_combo, CB_SETCURSEL, g_init_material, 0);
+            } else {
+                SendMessageA(mat_combo, CB_SETCURSEL, 0, 0);
+            }
+        }
+
+        // Is Clutter checkbox
+        if (g_init_is_clutter < 0) {
+            SendDlgItemMessage(hdlg, IDC_MESH_IS_CLUTTER, BM_SETCHECK, BST_INDETERMINATE, 0);
+        } else {
+            CheckDlgButton(hdlg, IDC_MESH_IS_CLUTTER, g_init_is_clutter ? BST_CHECKED : BST_UNCHECKED);
+        }
+
+        // Clutter properties
+        {
+            auto& cp = g_init_clutter_props;
+            char buf2[64];
+            snprintf(buf2, sizeof(buf2), "%.1f", cp.life);
+            SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_LIFE, buf2);
+
+            SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS, cp.debris_filename.c_str());
+            SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_VCLIP, cp.explosion_vclip.c_str());
+
+            snprintf(buf2, sizeof(buf2), "%.1f", cp.explosion_radius);
+            SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_EXPLODE_RADIUS, buf2);
+
+            snprintf(buf2, sizeof(buf2), "%.1f", cp.debris_velocity);
+            SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS_VEL, buf2);
+
+            // Damage type factor edit fields
+            static const int dmg_ids[] = {
+                IDC_MESH_CLUTTER_DMG_BASH, IDC_MESH_CLUTTER_DMG_BULLET,
+                IDC_MESH_CLUTTER_DMG_AP_BULLET, IDC_MESH_CLUTTER_DMG_EXPLOSIVE,
+                IDC_MESH_CLUTTER_DMG_FIRE, IDC_MESH_CLUTTER_DMG_ENERGY,
+                IDC_MESH_CLUTTER_DMG_ELECTRICAL, IDC_MESH_CLUTTER_DMG_ACID,
+                IDC_MESH_CLUTTER_DMG_SCALDING, IDC_MESH_CLUTTER_DMG_CRUSH,
+            };
+            for (int di = 0; di < 10; di++) {
+                snprintf(buf2, sizeof(buf2), "%.1f", cp.damage_type_factors[di]);
+                SetDlgItemTextA(hdlg, dmg_ids[di], buf2);
+            }
         }
 
         // Set up the material overrides ListView columns
@@ -588,6 +734,29 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 if (base) base++; else base = filename;
                 SetDlgItemTextA(hdlg, IDC_MESH_FILENAME, base);
                 mesh_dialog_update_state(hdlg);
+            }
+            return TRUE;
+        }
+
+        case IDC_MESH_IS_CLUTTER:
+            mesh_dialog_update_state(hdlg);
+            return TRUE;
+
+        case IDC_MESH_CLUTTER_DEBRIS_BROWSE:
+        {
+            char filename[MAX_PATH] = {};
+            OPENFILENAMEA ofn = {};
+            ofn.lStructSize = sizeof(ofn);
+            ofn.hwndOwner = hdlg;
+            ofn.lpstrFilter = "Static Mesh (*.v3m)\0*.v3m\0All Files (*.*)\0*.*\0";
+            ofn.lpstrFile = filename;
+            ofn.nMaxFile = MAX_PATH;
+            ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+            if (GetOpenFileNameA(&ofn)) {
+                const char* base = strrchr(filename, '\\');
+                if (!base) base = strrchr(filename, '/');
+                if (base) base++; else base = filename;
+                SetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS, base);
             }
             return TRUE;
         }
@@ -715,6 +884,60 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             bool simulate_changed = (simulate_check != BST_INDETERMINATE) &&
                 ((g_init_simulate < 0) || (simulate_check != g_init_simulate));
 
+            // Check material combo
+            int material_sel = static_cast<int>(SendDlgItemMessage(hdlg, IDC_MESH_MATERIAL, CB_GETCURSEL, 0, 0));
+            bool material_changed = false;
+            if (g_init_material_multiple) {
+                material_changed = (material_sel != 10); // changed from "Undefined"
+            } else {
+                material_changed = (material_sel != g_init_material);
+            }
+
+            // Check is_clutter checkbox
+            int is_clutter_check = static_cast<int>(IsDlgButtonChecked(hdlg, IDC_MESH_IS_CLUTTER));
+            bool is_clutter_changed = (is_clutter_check != BST_INDETERMINATE) &&
+                ((g_init_is_clutter < 0) || (is_clutter_check != g_init_is_clutter));
+
+            // Read clutter properties from dialog
+            MeshClutterProps new_clutter;
+            bool clutter_props_changed = false;
+            if (is_clutter_check == BST_CHECKED) {
+                new_clutter.is_clutter = true;
+                char tmp[MAX_PATH];
+
+                GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_LIFE, tmp, sizeof(tmp));
+                new_clutter.life = static_cast<float>(atof(tmp));
+
+                GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS, tmp, sizeof(tmp));
+                new_clutter.debris_filename = tmp;
+
+                GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_VCLIP, tmp, sizeof(tmp));
+                new_clutter.explosion_vclip = tmp;
+
+                GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_EXPLODE_RADIUS, tmp, sizeof(tmp));
+                new_clutter.explosion_radius = static_cast<float>(atof(tmp));
+
+                GetDlgItemTextA(hdlg, IDC_MESH_CLUTTER_DEBRIS_VEL, tmp, sizeof(tmp));
+                new_clutter.debris_velocity = static_cast<float>(atof(tmp));
+
+                static const int dmg_ids[] = {
+                    IDC_MESH_CLUTTER_DMG_BASH, IDC_MESH_CLUTTER_DMG_BULLET,
+                    IDC_MESH_CLUTTER_DMG_AP_BULLET, IDC_MESH_CLUTTER_DMG_EXPLOSIVE,
+                    IDC_MESH_CLUTTER_DMG_FIRE, IDC_MESH_CLUTTER_DMG_ENERGY,
+                    IDC_MESH_CLUTTER_DMG_ELECTRICAL, IDC_MESH_CLUTTER_DMG_ACID,
+                    IDC_MESH_CLUTTER_DMG_SCALDING, IDC_MESH_CLUTTER_DMG_CRUSH,
+                };
+                for (int di = 0; di < 10; di++) {
+                    GetDlgItemTextA(hdlg, dmg_ids[di], tmp, sizeof(tmp));
+                    new_clutter.damage_type_factors[di] = static_cast<float>(atof(tmp));
+                }
+
+                clutter_props_changed = true; // always apply when checked
+            } else if (is_clutter_changed && is_clutter_check == BST_UNCHECKED) {
+                new_clutter.is_clutter = false;
+                clutter_props_changed = true;
+            }
+
             for (size_t idx = 0; idx < g_selected_meshes.size(); idx++) {
                 auto* mesh = g_selected_meshes[idx];
                 if (!mesh) continue;
@@ -729,6 +952,12 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
                 }
                 if (simulate_changed) {
                     mesh->simulate_in_editor = (simulate_check == BST_CHECKED);
+                }
+                if (material_changed && material_sel >= 0 && material_sel <= 9) {
+                    mesh->material = material_sel;
+                }
+                if (clutter_props_changed) {
+                    mesh->clutter_props = new_clutter;
                 }
             }
             // Defer vmesh reload until after dialog closes to avoid message pump issues
@@ -877,6 +1106,8 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
     mesh->collision_mode = source->collision_mode;
     mesh->texture_overrides = source->texture_overrides;
     mesh->simulate_in_editor = source->simulate_in_editor;
+    mesh->material = source->material;
+    mesh->clutter_props = source->clutter_props;
 
     // Generate new UID
     mesh->uid = generate_uid();

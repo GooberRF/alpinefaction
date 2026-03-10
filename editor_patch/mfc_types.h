@@ -385,6 +385,17 @@ struct EditorTextureOverride {
     std::string filename;
 };
 
+// Clutter behavior properties for mesh objects (applied when is_clutter is true)
+struct MeshClutterProps {
+    bool is_clutter = false;
+    float life = -1.0f;            // hit points (-1 = invulnerable)
+    std::string debris_filename;   // debris mesh (.v3m) spawned on destruction
+    std::string explosion_vclip;   // explosion vclip name
+    float explosion_radius = 1.0f; // explosion visual radius
+    float debris_velocity = 10.0f; // debris fragment velocity
+    float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1}; // per-damage-type multipliers
+};
+
 struct DedMesh : DedObject
 {
     VString mesh_filename;          // .v3m / .v3c / .vfx path
@@ -394,6 +405,8 @@ struct DedMesh : DedObject
     char padding_mesh[2];
     std::vector<EditorTextureOverride> texture_overrides;
     bool simulate_in_editor = false;   // v3c only: play animation continuously instead of freezing frame 0
+    int material = 0;                  // material type for impact sounds (0=default, applies to all meshes)
+    MeshClutterProps clutter_props;
 };
 
 struct DedNote : DedObject

@@ -194,6 +194,17 @@ struct MeshTextureOverride {
     std::string filename;
 };
 
+// Clutter behavior properties for mesh objects
+struct MeshClutterInfo {
+    bool is_clutter = false;
+    float life = -1.0f;
+    std::string debris_filename;
+    std::string explosion_vclip;
+    float explosion_radius = 1.0f;
+    float debris_velocity = 10.0f;
+    float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1};
+};
+
 // Alpine mesh object info, loaded from RFL
 struct AlpineMeshInfo {
     int32_t uid = -1;
@@ -204,6 +215,8 @@ struct AlpineMeshInfo {
     std::string state_anim;
     uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All
     std::vector<MeshTextureOverride> texture_overrides;
+    int material = 0;               // material type for impact sounds
+    MeshClutterInfo clutter;
 };
 
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);

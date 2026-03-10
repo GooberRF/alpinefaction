@@ -54,6 +54,9 @@ static auto& clutter_count = addr_as_ref<int>(0x005C9358);
 
 static bool g_dummy_clutter_info_initialized = false;
 
+// Per-mesh ClutterInfo objects allocated for "is clutter" meshes (need cleanup)
+static std::vector<rf::ClutterInfo*> g_mesh_clutter_infos;
+
 // ─── VMesh Type Detection ───────────────────────────────────────────────────
 
 static rf::VMeshType determine_vmesh_type(const std::string& filename)
@@ -84,10 +87,9 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
     auto read_string = [&]() -> std::string {
         uint16_t len = 0;
         if (!read_bytes(&len, sizeof(len))) return "";
-        if (len == 0 || remaining < len) return "";
+        if (len == 0) return "";
         std::string result(len, '\0');
-        file.read(result.data(), len);
-        remaining -= len;
+        if (!read_bytes(result.data(), len)) return "";
         return result;
     };
 
@@ -130,6 +132,29 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
             std::string tex = read_string();
             if (!tex.empty()) {
                 info.texture_overrides.push_back({slot_id, std::move(tex)});
+            }
+        }
+
+        int32_t mat = 0;
+
+        // clutter properties
+        if (remaining >= sizeof(int32_t) && read_bytes(&mat, sizeof(mat))) {
+            info.material = (mat >= 0 && mat <= 9) ? mat : 0;
+
+            uint8_t is_clutter_flag = 0;
+            if (remaining >= 1 && read_bytes(&is_clutter_flag, sizeof(is_clutter_flag))) {
+                info.clutter.is_clutter = (is_clutter_flag != 0);
+                if (info.clutter.is_clutter) {
+                    auto& cp = info.clutter;
+                    if (!read_bytes(&cp.life, sizeof(float))) return;
+                    cp.debris_filename = read_string();
+                    cp.explosion_vclip = read_string();
+                    if (!read_bytes(&cp.explosion_radius, sizeof(float))) return;
+                    if (!read_bytes(&cp.debris_velocity, sizeof(float))) return;
+                    for (int di = 0; di < 10; di++) {
+                        if (!read_bytes(&cp.damage_type_factors[di], sizeof(float))) return;
+                    }
+                }
             }
         }
 
@@ -247,9 +272,55 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         return;
     }
 
-    auto* dummy_info = reinterpret_cast<rf::ClutterInfo*>(g_dummy_clutter_info_buf);
     auto* clutter = reinterpret_cast<rf::Clutter*>(obj);
-    clutter->info = dummy_info;
+
+    // Set up ClutterInfo — allocate per-mesh if clutter or non-default material,
+    // otherwise use the shared dummy
+    bool needs_own_info = info.clutter.is_clutter || info.material != 0;
+    if (needs_own_info) {
+        // Allocate a dedicated ClutterInfo for this mesh
+        auto* ci = static_cast<rf::ClutterInfo*>(std::calloc(1, sizeof(rf::ClutterInfo)));
+        // Placement-construct rf::String members (calloc gives zeros = valid empty strings for POD-like String)
+        new (&ci->cls_name) rf::String();
+        new (&ci->v3d_filename) rf::String();
+        new (&ci->corpse_class_name) rf::String();
+        new (&ci->debris_filename) rf::String();
+        new (&ci->debris_sound_set) rf::String();
+
+        ci->material = info.material;
+        ci->sound = -1;
+        ci->use_sound = -1;
+        ci->glare = -1;
+        ci->rod_glare = -1;
+        ci->light_prop = -1;
+
+        if (info.clutter.is_clutter) {
+            ci->life = info.clutter.life;
+            if (!info.clutter.debris_filename.empty()) {
+                ci->debris_filename = info.clutter.debris_filename.c_str();
+            }
+            if (!info.clutter.explosion_vclip.empty()) {
+                ci->explode_anim_vclip = rf::vclip_lookup(info.clutter.explosion_vclip.c_str());
+            } else {
+                ci->explode_anim_vclip = -1;
+            }
+            ci->explode_anim_radius = info.clutter.explosion_radius;
+            ci->debris_velocity = info.clutter.debris_velocity;
+            for (int di = 0; di < 11; di++) {
+                ci->damage_type_factors[di] = info.clutter.damage_type_factors[di];
+            }
+        } else {
+            ci->life = -1.0f;
+            ci->explode_anim_vclip = -1;
+        }
+
+        clutter->info = ci;
+        g_mesh_clutter_infos.push_back(ci);
+    } else {
+        auto* dummy_info = reinterpret_cast<rf::ClutterInfo*>(g_dummy_clutter_info_buf);
+        clutter->info = dummy_info;
+    }
+
     clutter->info_index = -1;
     clutter->corpse_index = -1;
     clutter->sound_handle = -1;
@@ -273,10 +344,22 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         obj->name = info.script_name.c_str();
     }
 
-    obj->life = 100.0f;
-    obj->obj_flags = static_cast<rf::ObjectFlags>(
-        static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
-    );
+    if (info.clutter.is_clutter) {
+        // Destructible mesh: use life from clutter properties, not invulnerable
+        obj->life = info.clutter.life;
+        if (info.clutter.life < 0.0f) {
+            // Negative life = invulnerable (matches stock clutter behavior)
+            obj->obj_flags = static_cast<rf::ObjectFlags>(
+                static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
+            );
+        }
+    } else {
+        // Non-clutter mesh: invulnerable with default life
+        obj->life = 100.0f;
+        obj->obj_flags = static_cast<rf::ObjectFlags>(
+            static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
+        );
+    }
 
     if (info.collision_mode > 0) {
         float r = obj->radius;
@@ -433,6 +516,17 @@ void alpine_mesh_clear_state()
     g_mesh_anim_states.clear();
     g_event_animated_meshes.clear();
     g_dummy_clutter_info_initialized = false;
+    // Free per-mesh ClutterInfo objects
+    for (auto* ci : g_mesh_clutter_infos) {
+        // Manually destruct rf::String members to avoid leaks
+        ci->cls_name.~String();
+        ci->v3d_filename.~String();
+        ci->corpse_class_name.~String();
+        ci->debris_filename.~String();
+        ci->debris_sound_set.~String();
+        std::free(ci);
+    }
+    g_mesh_clutter_infos.clear();
 }
 
 // ─── Event Helper Functions ─────────────────────────────────────────────────
