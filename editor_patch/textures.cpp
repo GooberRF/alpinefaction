@@ -15,6 +15,8 @@
 
 // Subdirectory names registered during init, used by VPP packing fix
 static std::vector<std::string> custom_texture_subdirs;
+// Texture manager pointer, stored at init for reload support
+static void* g_texture_manager = nullptr;
 
 static void register_custom_texture_subdirectories(void* texture_manager)
 {
@@ -122,6 +124,7 @@ void __fastcall texture_config_init_new(void* self, int edx)
     // FUN_0046ac30's this is a parent object; the texture manager sub-object is dereferenced
     // through FUN_0046ad00 -> FUN_00478320([this+0x9C]) -> FUN_004778e0 (init_texture_categories).
     void* texture_manager = *reinterpret_cast<void**>(static_cast<char*>(self) + 0x9C);
+    g_texture_manager = texture_manager;
     register_custom_texture_subdirectories(texture_manager);
 }
 
@@ -170,16 +173,76 @@ CodeInjection config_save_skip_custom_subdirs{
 CodeInjection sidebar_custom_texture_path_injection{
     0x0044540f,
     [](auto& regs) {
-        int esi = regs.esi;
-        int cat_index = *reinterpret_cast<int*>(esi + 0x94);
-        int tex_mgr = *reinterpret_cast<int*>(esi + 0xa4);
-        // VArray<TextureCategory*> at tex_mgr + 0x7C: {size, capacity, data_ptr}
-        auto** data_ptr = *reinterpret_cast<TextureCategory***>(tex_mgr + 0x7C + 8);
-        regs.edx = data_ptr[cat_index]->path_handle;
+        auto* panel = reinterpret_cast<TextureModePanel*>(static_cast<uintptr_t>(regs.esi));
+        auto* cat_array = reinterpret_cast<VArray<TextureCategory*>*>(
+            static_cast<char*>(panel->texture_manager) + 0x7C);
+        regs.edx = (*cat_array)[panel->category_index]->path_handle;
         // Original MOV EDX,[ESI+0x98] is 6 bytes; continue at next instruction
         regs.eip = 0x00445415;
     },
     false // skip original instruction
+};
+
+// FUN_00445910 (texture→category reverse lookup) is called when the texture browser returns.
+// It searches loaded texture groups for the selected texture filename. Custom category textures
+// are not in any loaded group, so the lookup falls through to a fallback that calls FUN_004cf9a0
+// which searches ALL VFS paths. The function succeeds but the code then uses [panel+0x98] (base
+// "Custom" path) for file enumeration, so subcategory textures aren't found → "Missing".
+// Fix: inject at 0x445a3f (AFTER file_search succeeds). Read the found VFS path slot from
+// search_ctx[0], find which category owns it, and update [panel+0x98] to the correct path.
+static int g_custom_lookup_cat_index = -1;
+static const char* g_custom_lookup_cat_name = nullptr;
+
+CodeInjection texture_reverse_lookup_fix{
+    0x445a3f,
+    [](auto& regs) {
+        g_custom_lookup_cat_index = -1;
+        g_custom_lookup_cat_name = nullptr;
+
+        if (!g_texture_manager) return;
+
+        auto stack = static_cast<uintptr_t>(regs.esp);
+
+        // search_ctx lives at [ESP + 0x1c]. FUN_004cf9a0 stores the found VFS path
+        // slot index at [search_ctx + 0] (verified at 0x4cfbc3: MOV [EBP], EDI).
+        int found_path = *reinterpret_cast<int*>(stack + 0x1c);
+
+        auto* cat_array = reinterpret_cast<VArray<TextureCategory*>*>(
+            static_cast<char*>(g_texture_manager) + 0x7C);
+
+        for (int i = 0; i < cat_array->get_size(); i++) {
+            TextureCategory* cat = (*cat_array)[i];
+            if (cat->path_handle == found_path) {
+                // Update panel's path_handle so file enumeration at 0x445a92 uses
+                // the correct subdirectory
+                auto* panel = reinterpret_cast<TextureModePanel*>(static_cast<uintptr_t>(regs.esi));
+                panel->custom_path_handle = found_path;
+                g_custom_lookup_cat_index = i;
+                g_custom_lookup_cat_name = cat->name.c_str();
+                return;
+            }
+        }
+    }
+};
+
+// At 0x445a4a in FUN_00445910: the stock code does MOV [ESI+0x94], ECX where ECX = path_handle
+// (from [ESI+0x98]) and the stack has a pushed "Custom" string for the combo.
+// Fix both: set ECX to the correct category array index, and replace the combo text on stack.
+CodeInjection texture_reverse_lookup_index_fix{
+    0x445a4a,
+    [](auto& regs) {
+        if (g_custom_lookup_cat_index >= 0) {
+            // Fix category index: ECX is about to be stored into [ESI+0x94]
+            regs.ecx = g_custom_lookup_cat_index;
+
+            // Fix combo text: [ESP] = "Custom" pointer, replace with actual category name
+            auto stack = static_cast<uintptr_t>(regs.esp);
+            *reinterpret_cast<const char**>(stack) = g_custom_lookup_cat_name;
+
+            g_custom_lookup_cat_index = -1;
+            g_custom_lookup_cat_name = nullptr;
+        }
+    }
 };
 
 // VPP packfile creation (FUN_004482c0) constructs custom texture paths by combining a
@@ -337,10 +400,35 @@ CodeInjection vpp_extra_textures_injection{
     }
 };
 
+void reload_custom_textures()
+{
+    if (!g_texture_manager) return;
+
+    auto file_scan_path = addr_as_ref<void(int slot_index)>(0x004CF800);
+    auto* category_array = reinterpret_cast<VArray<TextureCategory*>*>(
+        static_cast<char*>(g_texture_manager) + 0x7C);
+
+    for (int i = 0; i < category_array->get_size(); i++) {
+        const char* name = (*category_array)[i]->name.c_str();
+        if (strncmp(name, "Custom", 6) == 0) {
+            int handle = (*category_array)[i]->path_handle;
+            if (handle >= 0) {
+                file_scan_path(handle);
+            }
+        }
+    }
+
+    // No UI refresh here — FUN_0046fd10 crashes when texture mode controls
+    // don't exist (e.g., user is in a different editor mode). The VFS rescan
+    // above is sufficient; the sidebar refreshes when the user switches categories.
+}
+
 void ApplyTexturesPatches() {
     texture_config_init_hook.install();
     custom_category_check_hook.install();
     sidebar_custom_texture_path_injection.install();
+    texture_reverse_lookup_fix.install();
+    texture_reverse_lookup_index_fix.install();
     vpp_texture_path_fix.install();
     vpp_extra_textures_injection.install();
     vpp_skip_missing_file_injection.install();

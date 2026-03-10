@@ -23,6 +23,18 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 // Forward declarations
 static void mesh_apply_texture_overrides(DedMesh* mesh);
 
+static const char* get_meshes_dir()
+{
+    static char path[MAX_PATH] = {};
+    if (!path[0]) {
+        GetModuleFileNameA(NULL, path, MAX_PATH);
+        char* last_sep = strrchr(path, '\\');
+        if (last_sep) *(last_sep + 1) = '\0';
+        strcat_s(path, "user_maps\\meshes");
+    }
+    return path;
+}
+
 // DedObject::vmesh is void* (stock struct), this helper provides typed access
 static EditorVMesh* get_vmesh(DedMesh* mesh) { return static_cast<EditorVMesh*>(mesh->vmesh); }
 
@@ -840,6 +852,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hdlg;
             ofn.lpstrFilter = "Mesh Files (*.v3m;*.v3c;*.vfx)\0*.v3m;*.v3c;*.vfx\0All Files (*.*)\0*.*\0";
+            ofn.lpstrInitialDir = get_meshes_dir();
             ofn.lpstrFile = filename;
             ofn.nMaxFile = MAX_PATH;
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
@@ -884,6 +897,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hdlg;
             ofn.lpstrFilter = "Static Mesh (*.v3m)\0*.v3m\0All Files (*.*)\0*.*\0";
+            ofn.lpstrInitialDir = get_meshes_dir();
             ofn.lpstrFile = filename;
             ofn.nMaxFile = MAX_PATH;
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
@@ -903,6 +917,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             ofn.lStructSize = sizeof(ofn);
             ofn.hwndOwner = hdlg;
             ofn.lpstrFilter = "Mesh Files (*.v3m;*.v3c;*.vfx)\0*.v3m;*.v3c;*.vfx\0All Files (*.*)\0*.*\0";
+            ofn.lpstrInitialDir = get_meshes_dir();
             ofn.lpstrFile = filename;
             ofn.nMaxFile = MAX_PATH;
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;

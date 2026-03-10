@@ -11,6 +11,8 @@ set(SRCS
     note.cpp
     note.h
     textures.cpp
+    meshes.cpp
+    meshes.h
     trigger.cpp
     vtypes.h
     resources.rc

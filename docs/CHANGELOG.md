@@ -52,6 +52,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
 - Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
 - Add `Mesh_Animate`, `Mesh_Set_Texture`, and `Mesh_Set_Collision` events
+- Add `Reload Meshes` and `Reload Textures` options to level editor `Tools` menu, to scan for new assets in `\user_maps\`
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`

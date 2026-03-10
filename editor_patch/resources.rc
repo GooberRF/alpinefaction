@@ -298,6 +298,9 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Hide Selected\tH", ID_HIDE_SELECTED
 
         MENUITEM SEPARATOR
+        MENUITEM "&Reload Meshes", ID_RELOAD_MESHES
+        MENUITEM "Reload &Textures", ID_RELOAD_TEXTURES
+        MENUITEM SEPARATOR
         MENUITEM "&Generate Report...", 0x8077
         MENUITEM SEPARATOR
         MENUITEM "&Preferences...", 0x801B

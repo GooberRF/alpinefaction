@@ -36,6 +36,8 @@
 #include "mesh.h"
 #include "alpine_obj.h"
 #include "geometry.h"
+#include "textures.h"
+#include "meshes.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -106,10 +108,7 @@ CodeInjection CMainFrame_PreCreateWindow_injection{
 CodeInjection CEditorApp_InitInstance_additional_file_paths_injection{
     0x0048290D,
     []() {
-        // Load v3m files from more localizations instead of only VPP packfiles
-        auto file_add_path = addr_as_ref<int(const char *path, const char *exts, bool cd)>(0x004C3950);
-        file_add_path("red\\meshes", ".v3m .vfx", false);
-        file_add_path("user_maps\\meshes", ".v3m .vfx", false);
+        meshes_init_paths();
     },
 };
 
@@ -1114,6 +1113,12 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case IDC_GROUP_MIRROR:
                 handler = handle_group_mirror;
+                break;
+            case ID_RELOAD_MESHES:
+                handler = reload_custom_meshes;
+                break;
+            case ID_RELOAD_TEXTURES:
+                handler = reload_custom_textures;
                 break;
         }
 
