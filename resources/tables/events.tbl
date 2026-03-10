@@ -394,6 +394,9 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Mesh_Set_Texture"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "Mesh_Set_Collision"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------

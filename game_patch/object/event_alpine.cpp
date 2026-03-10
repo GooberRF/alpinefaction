@@ -776,6 +776,17 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
             return event;
         }
     },
+    // Mesh_Set_Collision
+    {
+        rf::EventType::Mesh_Set_Collision, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Set_Collision));
+            auto* event = dynamic_cast<rf::EventMeshSetCollision*>(base_event);
+            if (event) {
+                event->collision_type = params.int1;
+            }
+            return event;
+        }
+    },
 };
 
 rf::Event* construct_alpine_event(int event_type, const rf::EventCreateParams& params)
