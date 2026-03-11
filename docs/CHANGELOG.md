@@ -72,6 +72,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Make jump control move freelook camera up
 - Add `cl_legacy_bob` to restore legacy first person weapon running animation behavior
 - Show powerup icons in spectator mode
+- Improve presented damage calculations for stats and damage numbers
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher

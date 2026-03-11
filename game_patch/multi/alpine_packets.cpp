@@ -305,7 +305,10 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf
     damage_notify_packet.header.size = sizeof(damage_notify_packet) - sizeof(damage_notify_packet.header);
     damage_notify_packet.player_id = player_id;
     int rounded_damage = static_cast<int>(std::round(damage));
-    damage_notify_packet.damage = static_cast<uint16_t>(std::max(1, rounded_damage)); // round damage with minimum 1
+    if (rounded_damage <= 0) {
+        return; // skip negligible damage
+    }
+    damage_notify_packet.damage = static_cast<uint16_t>(rounded_damage);
 
     damage_notify_packet.flags =
         (static_cast<uint8_t>(died)       << 0);
