@@ -280,6 +280,27 @@ void linear_pitch_test()
 }
 #endif // DEBUG
 
+static void apply_linear_pitch(float current_yaw, float current_pitch_non_lin, float& pitch_delta, float yaw_delta)
+{
+    // Convert to linear space (see RotMatixFromEuler function at 004A0D70)
+    auto fvec = fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
+    float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
+    // Calculate new pitch in linear space
+    float new_pitch_lin = current_pitch_lin + pitch_delta;
+    float new_yaw = current_yaw + yaw_delta;
+    // Clamp to [-pi/2, pi/2]
+    constexpr float half_pi = 1.5707964f;
+    new_pitch_lin = std::clamp(new_pitch_lin, -half_pi, half_pi);
+    // Convert back to non-linear space
+    auto fvec_new = fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
+    float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
+    // Update non-linear pitch delta
+    float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
+    xlog::trace("non-lin {} lin {} delta {} new {}", current_pitch_non_lin, current_pitch_lin, pitch_delta,
+          new_pitch_delta);
+    pitch_delta = new_pitch_delta;
+}
+
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
@@ -293,23 +314,7 @@ CodeInjection linear_pitch_patch{
         float& yaw_delta = *reinterpret_cast<float*>(regs.esp + 0x44 + 0x4);
         if (pitch_delta == 0)
             return;
-        // Convert to linear space (see RotMatixFromEuler function at 004A0D70)
-        auto fvec = fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
-        float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
-        // Calculate new pitch in linear space
-        float new_pitch_lin = current_pitch_lin + pitch_delta;
-        float new_yaw = current_yaw + yaw_delta;
-        // Clamp to [-pi, pi]
-        constexpr float half_pi = 1.5707964f;
-        new_pitch_lin = std::clamp(new_pitch_lin, -half_pi, half_pi);
-        // Convert back to non-linear space
-        auto fvec_new = fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
-        float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
-        // Update non-linear pitch delta
-        float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
-        xlog::trace("non-lin {} lin {} delta {} new {}", current_pitch_non_lin, current_pitch_lin, pitch_delta,
-              new_pitch_delta);
-        pitch_delta = new_pitch_delta;
+        apply_linear_pitch(current_yaw, current_pitch_non_lin, pitch_delta, yaw_delta);
     },
 };
 
