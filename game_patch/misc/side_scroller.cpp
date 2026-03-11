@@ -46,6 +46,11 @@ static auto& g_mouse_dy = addr_as_ref<int>(0x01885468);
 // True when reticle is behind the player (left of screen center), flips body to face -Z
 static bool g_ss_aiming_backward = false;
 
+// Debug: aim line from eye position along aim direction
+static rf::Vector3 g_dbg_aim_start = {0, 0, 0};
+static rf::Vector3 g_dbg_aim_end = {0, 0, 0};
+static bool g_dbg_aim_valid = false;
+
 bool is_side_scroller_mode()
 {
     return AlpineLevelProperties::instance().game_style == 1;
@@ -152,10 +157,10 @@ static void apply_side_scroller_aim(rf::Player* player)
     float norm_y = (g_reticle_y - half_h) / half_h;
 
     // Unproject reticle to world-space aim point at the player's X plane.
-    // Camera is at (player.x + 30, player.y, player.z) looking in -X.
-    // At the player's X plane (30m along view), the aim point offset from camera center is:
-    float dz = std::tan(norm_x * fov_h * 0.5f) * camera_offset_x;   // screen right = +Z
-    float dy = -std::tan(norm_y * fov_v * 0.5f) * camera_offset_x;  // screen up = +Y
+    // Camera is at (player.x + offset, player.y, player.z) looking in -X.
+    // Standard perspective unproject: scale normalized coords by tan(half-fov) * distance.
+    float dz = norm_x * std::tan(fov_h * 0.5f) * camera_offset_x;   // screen right = +Z
+    float dy = -norm_y * std::tan(fov_v * 0.5f) * camera_offset_x;  // screen up = +Y
 
     // Camera is now at eye height, so dy is already relative to the eye/weapon origin.
     // Direction from eye to aim target is simply (0, dy, dz).
@@ -193,6 +198,19 @@ static void apply_side_scroller_aim(rf::Player* player)
     // Set eye_orient directly (controls weapon aim and visual direction).
     // Do NOT touch entity->orient (body orientation stays facing +Z).
     entity->eye_orient = aim_orient;
+
+    // Store debug aim line: from eye position, 50m along aim direction
+    float eye_offset_y = 0.0f;
+    if (entity->info) {
+        eye_offset_y = entity->info->local_eye_offset.y;
+    }
+    g_dbg_aim_start.x = entity->pos.x;
+    g_dbg_aim_start.y = entity->pos.y + eye_offset_y;
+    g_dbg_aim_start.z = entity->pos.z;
+    g_dbg_aim_end.x = g_dbg_aim_start.x + dir.x * 50.0f;
+    g_dbg_aim_end.y = g_dbg_aim_start.y + dir.y * 50.0f;
+    g_dbg_aim_end.z = g_dbg_aim_start.z + dir.z * 50.0f;
+    g_dbg_aim_valid = true;
 
     // Zero all phb so the body stays facing +Z for movement.
     entity->control_data.phb = {0.0f, 0.0f, 0.0f};
@@ -307,6 +325,14 @@ CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> side_scroller_gr_s
             viewer_orient = g_side_scroller_orient;
         }
         side_scroller_gr_setup_3d_hook.call_target(viewer_orient, viewer_pos, horizontal_fov, zbuffer_flag, z_scale);
+
+        // Draw debug aim line (red)
+        if (g_dbg_aim_valid && is_side_scroller_mode()) {
+            rf::gr::line_arrow(
+                g_dbg_aim_start.x, g_dbg_aim_start.y, g_dbg_aim_start.z,
+                g_dbg_aim_end.x, g_dbg_aim_end.y, g_dbg_aim_end.z,
+                255, 0, 0);
+        }
     },
 };
 
