@@ -16,6 +16,7 @@
 #include "../rf/os/frametime.h"
 #include "player.h"
 #include "../hud/multi_spectate.h"
+#include "side_scroller.h"
 
 constexpr auto screen_shake_fps = 150.0f;
 static float g_camera_shake_factor = 0.6f;
@@ -85,6 +86,12 @@ CallHook<void(rf::Camera*)> camera_enter_first_person_level_post{
         0x004A43AB
     },
     [](rf::Camera* camera) {
+        // Side-scroller mode always uses third-person camera
+        if (is_side_scroller_mode()) {
+            rf::camera_enter_third_person(camera);
+            return;
+        }
+
         const bool default_third_person =
             g_alpine_options_config.is_option_loaded(AlpineOptionID::DefaultThirdPerson) &&
             std::get<bool>(g_alpine_options_config.options.at(AlpineOptionID::DefaultThirdPerson));

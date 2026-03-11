@@ -44,6 +44,7 @@ void player_fpgun_do_patch();
 void g_solid_do_patch();
 void destruction_do_patch();
 void camera_do_patch();
+void side_scroller_do_patch();
 void ui_apply_patch();
 void game_apply_patch();
 void character_apply_patch();
@@ -666,6 +667,7 @@ void misc_init()
     destruction_do_patch();
     register_sound_commands();
     camera_do_patch();
+    side_scroller_do_patch();
     ui_apply_patch();
     game_apply_patch();
     character_apply_patch();

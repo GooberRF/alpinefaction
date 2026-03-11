@@ -189,6 +189,8 @@ set(SRCS
     misc/destruction.cpp
     misc/destruction.h
     misc/camera.cpp
+    misc/side_scroller.cpp
+    misc/side_scroller.h
     misc/ui.cpp
     misc/game.cpp
     misc/level.cpp
