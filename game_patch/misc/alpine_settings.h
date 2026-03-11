@@ -141,6 +141,9 @@ struct AlpineGameSettings
     float gamepad_look_deadzone = 0.15f;
     float gamepad_gyro_sensitivity = 1.0f;
     bool gamepad_gyro_enabled = false;
+    bool gamepad_gyro_autocalibration = true;
+    int gamepad_gyro_space = 3; // GyroSpace: 0=Yaw 1=Roll 2=Local 3=Player 4=World
+    bool gamepad_gyro_invert_y = false;
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool scoreboard_split_simple = true;

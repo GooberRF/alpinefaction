@@ -99,6 +99,8 @@ set(SRCS
     input/key.cpp
     input/gamepad.cpp
     input/gamepad.h
+    input/gyro.cpp
+    input/gyro.h
     hud/hud_colors.cpp
     hud/hud_scale.cpp
     hud/hud_personas.cpp

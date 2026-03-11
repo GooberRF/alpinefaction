@@ -17,6 +17,8 @@
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
 #include "../object/object.h"
+#include "../input/gyro.h"
+#include "../input/gamepad.h"
 
 #define DEBUG_UI_LAYOUT 0
 #define SHARP_UI_TEXT 1
@@ -179,6 +181,34 @@ static rf::ui::Checkbox ao_exposuredamage_cbox;
 static rf::ui::Label ao_exposuredamage_label;
 static rf::ui::Checkbox ao_painsounds_cbox;
 static rf::ui::Label ao_painsounds_label;
+
+// gamepad settings
+static rf::ui::Checkbox ao_gyro_enabled_cbox;
+static rf::ui::Label ao_gyro_enabled_label;
+static rf::ui::Checkbox ao_joy_sensitivity_cbox;
+static rf::ui::Label ao_joy_sensitivity_label;
+static rf::ui::Label ao_joy_sensitivity_butlabel;
+static char ao_joy_sensitivity_butlabel_text[9];
+static rf::ui::Checkbox ao_move_deadzone_cbox;
+static rf::ui::Label ao_move_deadzone_label;
+static rf::ui::Label ao_move_deadzone_butlabel;
+static char ao_move_deadzone_butlabel_text[9];
+static rf::ui::Checkbox ao_look_deadzone_cbox;
+static rf::ui::Label ao_look_deadzone_label;
+static rf::ui::Label ao_look_deadzone_butlabel;
+static char ao_look_deadzone_butlabel_text[9];
+static rf::ui::Checkbox ao_gyro_sensitivity_cbox;
+static rf::ui::Label ao_gyro_sensitivity_label;
+static rf::ui::Label ao_gyro_sensitivity_butlabel;
+static char ao_gyro_sensitivity_butlabel_text[9];
+static rf::ui::Checkbox ao_gyro_autocalibration_cbox;
+static rf::ui::Label ao_gyro_autocalibration_label;
+static rf::ui::Checkbox ao_gyro_space_cbox;
+static rf::ui::Label ao_gyro_space_label;
+static rf::ui::Label ao_gyro_space_butlabel;
+static char ao_gyro_space_butlabel_text[12];
+static rf::ui::Checkbox ao_gyro_invert_y_cbox;
+static rf::ui::Label ao_gyro_invert_y_label;
 
 // levelsounds audio options slider
 std::vector<rf::ui::Gadget*> alpine_audio_panel_settings;
@@ -768,6 +798,95 @@ void ao_togglecrouch_cbox_on_click(int x, int y) {
     ao_play_button_snd(rf::local_player->settings.toggle_crouch);
 }
 
+// gamepad settings
+void ao_gyro_enabled_cbox_on_click(int x, int y) {
+    if (!gamepad_is_motionsensors_supported()) return;
+    g_alpine_game_config.gamepad_gyro_enabled = !g_alpine_game_config.gamepad_gyro_enabled;
+    ao_gyro_enabled_cbox.checked = g_alpine_game_config.gamepad_gyro_enabled;
+    ao_play_button_snd(g_alpine_game_config.gamepad_gyro_enabled);
+}
+
+void ao_joy_sensitivity_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        float val = std::stof(str);
+        g_alpine_game_config.gamepad_joy_sensitivity = std::max(0.0f, val);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid gamepad sensitivity input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_joy_sensitivity_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter new gamepad stick sensitivity:", "", ao_joy_sensitivity_cbox_on_click_callback, 1);
+}
+
+void ao_move_deadzone_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        float val = std::stof(str);
+        g_alpine_game_config.gamepad_move_deadzone = std::clamp(val, 0.0f, 0.9f);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid move deadzone input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_move_deadzone_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter new move deadzone (0.0 - 0.9):", "", ao_move_deadzone_cbox_on_click_callback, 1);
+}
+
+void ao_look_deadzone_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        float val = std::stof(str);
+        g_alpine_game_config.gamepad_look_deadzone = std::clamp(val, 0.0f, 0.9f);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid look deadzone input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_look_deadzone_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter new look deadzone (0.0 - 0.9):", "", ao_look_deadzone_cbox_on_click_callback, 1);
+}
+
+void ao_gyro_sensitivity_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        float val = std::stof(str);
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, val);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid gyro sensitivity input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_gyro_sensitivity_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter new gyro sensitivity:", "", ao_gyro_sensitivity_cbox_on_click_callback, 1);
+}
+
+void ao_gyro_autocalibration_cbox_on_click(int x, int y) {
+    gyro_set_autocalibration(!g_alpine_game_config.gamepad_gyro_autocalibration);
+    ao_gyro_autocalibration_cbox.checked = g_alpine_game_config.gamepad_gyro_autocalibration;
+    ao_play_button_snd(g_alpine_game_config.gamepad_gyro_autocalibration);
+}
+
+void ao_gyro_space_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+    g_alpine_game_config.gamepad_gyro_space = (g_alpine_game_config.gamepad_gyro_space + 1) % 5;
+    ao_play_button_snd(true);
+}
+
+void ao_gyro_invert_y_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_gyro_invert_y = !g_alpine_game_config.gamepad_gyro_invert_y;
+    ao_gyro_invert_y_cbox.checked = g_alpine_game_config.gamepad_gyro_invert_y;
+    ao_play_button_snd(g_alpine_game_config.gamepad_gyro_invert_y);
+}
+
 void ao_joinbeep_cbox_on_click(int x, int y) {
     g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
     ao_joinbeep_cbox.checked = g_alpine_game_config.player_join_beep;
@@ -1216,6 +1335,27 @@ void alpine_options_panel_init() {
         &ao_staticscope_cbox, &ao_staticscope_label, &alpine_options_panel2, ao_staticscope_cbox_on_click, g_alpine_game_config.scope_static_sensitivity, 280, 144, "Linear scope");
     alpine_options_panel_checkbox_init(
         &ao_togglecrouch_cbox, &ao_togglecrouch_label, &alpine_options_panel2, ao_togglecrouch_cbox_on_click, rf::local_player->settings.toggle_crouch, 280, 174, "Toggle crouch");
+    alpine_options_panel_inputbox_init(
+        &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 204, "Stick sensitivity");
+    alpine_options_panel_inputbox_init(
+        &ao_move_deadzone_cbox, &ao_move_deadzone_label, &ao_move_deadzone_butlabel, &alpine_options_panel2, ao_move_deadzone_cbox_on_click, 112, 234, "Move deadzone");
+    alpine_options_panel_inputbox_init(
+        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Look deadzone");
+    alpine_options_panel_checkbox_init(
+        &ao_gyro_enabled_cbox, &ao_gyro_enabled_label, &alpine_options_panel2, ao_gyro_enabled_cbox_on_click, g_alpine_game_config.gamepad_gyro_enabled, 280, 204, "Gyro Aiming");
+    alpine_options_panel_inputbox_init(
+        &ao_gyro_sensitivity_cbox, &ao_gyro_sensitivity_label, &ao_gyro_sensitivity_butlabel, &alpine_options_panel2, ao_gyro_sensitivity_cbox_on_click, 280, 234, "Gyro sensitivity");
+    alpine_options_panel_checkbox_init(
+        &ao_gyro_invert_y_cbox, &ao_gyro_invert_y_label,
+        &alpine_options_panel2, ao_gyro_invert_y_cbox_on_click,
+        g_alpine_game_config.gamepad_gyro_invert_y, 280, 264, "Gyro Invert Y");
+    alpine_options_panel_inputbox_init(
+        &ao_gyro_space_cbox, &ao_gyro_space_label, &ao_gyro_space_butlabel,
+        &alpine_options_panel2, ao_gyro_space_cbox_on_click, 280, 294, "Gyro Space");
+    alpine_options_panel_checkbox_init(
+        &ao_gyro_autocalibration_cbox, &ao_gyro_autocalibration_label,
+        &alpine_options_panel2, ao_gyro_autocalibration_cbox_on_click,
+        g_alpine_game_config.gamepad_gyro_autocalibration, 280, 324, "Gyro AutoCalib");
 
     // panel 3
     alpine_options_panel_checkbox_init(
@@ -1312,7 +1452,7 @@ void alpine_options_panel_do_frame(int x)
     for (auto* ui_element : alpine_options_panel_settings) {
         if (ui_element) {
             auto checkbox = static_cast<rf::ui::Checkbox*>(ui_element);
-            if (checkbox) {
+            if (checkbox && checkbox->enabled) {
                 checkbox->render();
             }
         }
@@ -1367,9 +1507,40 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_simdist_butlabel_text, sizeof(ao_simdist_butlabel_text), "%6.2f", g_alpine_game_config.entity_sim_distance);
     ao_simdist_butlabel.text = ao_simdist_butlabel_text;
 
+    // gamepad settings
+    snprintf(ao_joy_sensitivity_butlabel_text, sizeof(ao_joy_sensitivity_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_joy_sensitivity);
+    ao_joy_sensitivity_butlabel.text = ao_joy_sensitivity_butlabel_text;
+
+    snprintf(ao_move_deadzone_butlabel_text, sizeof(ao_move_deadzone_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_move_deadzone);
+    ao_move_deadzone_butlabel.text = ao_move_deadzone_butlabel_text;
+
+    snprintf(ao_look_deadzone_butlabel_text, sizeof(ao_look_deadzone_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_look_deadzone);
+    ao_look_deadzone_butlabel.text = ao_look_deadzone_butlabel_text;
+
+    snprintf(ao_gyro_sensitivity_butlabel_text, sizeof(ao_gyro_sensitivity_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_gyro_sensitivity);
+    ao_gyro_sensitivity_butlabel.text = ao_gyro_sensitivity_butlabel_text;
+
+    snprintf(ao_gyro_space_butlabel_text, sizeof(ao_gyro_space_butlabel_text), "%s", gyro_get_space_name(g_alpine_game_config.gamepad_gyro_space));
+    ao_gyro_space_butlabel.text = ao_gyro_space_butlabel_text;
+
+    // show/hide gyro ui if gamepad supports motion sensors
+    bool gyro_hw = gamepad_is_motionsensors_supported();
+    ao_gyro_enabled_cbox.enabled         = gyro_hw;
+    ao_gyro_enabled_label.enabled        = gyro_hw;
+    ao_gyro_sensitivity_cbox.enabled     = gyro_hw;
+    ao_gyro_sensitivity_label.enabled    = gyro_hw;
+    ao_gyro_sensitivity_butlabel.enabled = gyro_hw;
+    ao_gyro_autocalibration_cbox.enabled   = gyro_hw;
+    ao_gyro_autocalibration_label.enabled  = gyro_hw;
+    ao_gyro_invert_y_cbox.enabled        = gyro_hw;
+    ao_gyro_invert_y_label.enabled       = gyro_hw;
+    ao_gyro_space_cbox.enabled           = gyro_hw;
+    ao_gyro_space_label.enabled          = gyro_hw;
+    ao_gyro_space_butlabel.enabled       = gyro_hw;
+
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {
-        if (ui_label) {
+        if (ui_label && ui_label->enabled) {
             ui_label->render();
         }
     }
