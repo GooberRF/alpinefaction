@@ -958,6 +958,30 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
         processed_keys.insert("MouseLinearPitch");
     }
+    if (settings.count("GamepadJoySensitivity")) {
+        g_alpine_game_config.gamepad_joy_sensitivity = std::max(0.0f, std::stof(settings["GamepadJoySensitivity"]));
+        processed_keys.insert("GamepadJoySensitivity");
+    }
+    if (settings.count("GamepadMoveDeadzone")) {
+        g_alpine_game_config.gamepad_move_deadzone = std::clamp(std::stof(settings["GamepadMoveDeadzone"]), 0.0f, 0.9f);
+        processed_keys.insert("GamepadMoveDeadzone");
+    }
+    else if (settings.count("GamepadDeadzone")) { // legacy key
+        g_alpine_game_config.gamepad_move_deadzone = std::clamp(std::stof(settings["GamepadDeadzone"]), 0.0f, 0.9f);
+        processed_keys.insert("GamepadDeadzone");
+    }
+    if (settings.count("GamepadLookDeadzone")) {
+        g_alpine_game_config.gamepad_look_deadzone = std::clamp(std::stof(settings["GamepadLookDeadzone"]), 0.0f, 0.9f);
+        processed_keys.insert("GamepadLookDeadzone");
+    }
+    if (settings.count("GamepadGyroSensitivity")) {
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, std::stof(settings["GamepadGyroSensitivity"]));
+        processed_keys.insert("GamepadGyroSensitivity");
+    }
+    if (settings.count("GamepadGyroEnabled")) {
+        g_alpine_game_config.gamepad_gyro_enabled = std::stoi(settings["GamepadGyroEnabled"]) != 0;
+        processed_keys.insert("GamepadGyroEnabled");
+    }
     if (settings.count("SwapARBinds")) {
         g_alpine_game_config.swap_ar_controls = std::stoi(settings["SwapARBinds"]);
         processed_keys.insert("SwapARBinds");
@@ -1064,6 +1088,11 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "ScopeSensitivityModifier=" << g_alpine_game_config.scope_sensitivity_modifier << "\n";
     file << "ScannerSensitivityModifier=" << g_alpine_game_config.scanner_sensitivity_modifier << "\n";
     file << "QuickExit=" << g_alpine_game_config.quick_exit << "\n";
+    file << "GamepadJoySensitivity=" << g_alpine_game_config.gamepad_joy_sensitivity << "\n";
+    file << "GamepadMoveDeadzone=" << g_alpine_game_config.gamepad_move_deadzone << "\n";
+    file << "GamepadLookDeadzone=" << g_alpine_game_config.gamepad_look_deadzone << "\n";
+    file << "GamepadGyroSensitivity=" << g_alpine_game_config.gamepad_gyro_sensitivity << "\n";
+    file << "GamepadGyroEnabled=" << g_alpine_game_config.gamepad_gyro_enabled << "\n";
 
     file << "\n[ActionBinds]\n";
     file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID}\n";

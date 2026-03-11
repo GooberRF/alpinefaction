@@ -136,6 +136,11 @@ struct AlpineGameSettings
     bool verbose_time_left_display = true;
     bool nearest_texture_filtering = false;
     bool direct_input = true;
+    float gamepad_joy_sensitivity = 2.5f;
+    float gamepad_move_deadzone = 0.25f;
+    float gamepad_look_deadzone = 0.15f;
+    float gamepad_gyro_sensitivity = 1.0f;
+    bool gamepad_gyro_enabled = false;
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool scoreboard_split_simple = true;

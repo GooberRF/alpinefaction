@@ -11,6 +11,7 @@
 #include "../rf/player/control_config.h"
 #include "../rf/entity.h"
 #include "../rf/os/frametime.h"
+#include "../misc/alpine_settings.h"
 #include <SDL3/SDL.h>
 #include <GamepadMotion.hpp>
 
@@ -18,11 +19,6 @@ static SDL_Gamepad* g_gamepad = nullptr;
 
 // GamepadMotionHelpers instance for sensor fusion and calibration
 static GamepadMotion g_gamepad_motion;
-
-static float g_deadzone = 0.25f;
-static float g_gamepad_joy_sensitivity = 2.5f;
-static float g_gamepad_gyro_sensitivity = 1.0f;
-static bool g_gamepad_gyro_user_enabled = true;  // User toggle for gyro camera
 
 static bool g_gyro_enabled = false;
 static bool g_accel_enabled = false;
@@ -43,13 +39,13 @@ static constexpr int k_action_count = static_cast<int>(rf::CC_ACTION_QUICK_LOAD)
 static bool g_action_prev[k_action_count] = {};
 static bool g_action_curr[k_action_count] = {};
 
-// Normalize an axis value and strip the deadzone band.
-static float get_axis(SDL_GamepadAxis axis)
+// Normalize an axis value, strip the deadzone band, and rescale the remainder to [0, 1].
+static float get_axis(SDL_GamepadAxis axis, float deadzone)
 {
     if (!g_gamepad) return 0.0f;
     float v = SDL_GetGamepadAxis(g_gamepad, axis) / (float)SDL_MAX_SINT16;
-    if (v >  g_deadzone) return (v - g_deadzone) / (1.0f - g_deadzone);
-    if (v < -g_deadzone) return (v + g_deadzone) / (1.0f - g_deadzone);
+    if (v >  deadzone) return (v - deadzone) / (1.0f - deadzone);
+    if (v < -deadzone) return (v + deadzone) / (1.0f - deadzone);
     return 0.0f;
 }
 
@@ -89,7 +85,7 @@ static void try_open_gamepad(SDL_JoystickID id)
     }
 }
 
-static void gamepad_update()
+void gamepad_do_frame()
 {
     memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
     SDL_UpdateGamepads();
@@ -151,22 +147,54 @@ static void gamepad_update()
         g_action_curr[rf::CC_ACTION_SECONDARY_ATTACK] = rt > 0.5f;
         g_action_curr[rf::CC_ACTION_CROUCH]           = lt > 0.5f;
 
-        // Left stick movement 
-        float ly = get_axis(SDL_GAMEPAD_AXIS_LEFTY);
-        float lx = get_axis(SDL_GAMEPAD_AXIS_LEFTX);
-        const float stick_threshold = 0.3f;
-        
-        // Set movement actions based on stick position (don't reset - OR logic in hook handles this)
-        g_action_curr[static_cast<int>(rf::CC_ACTION_FORWARD)]     = ly < -stick_threshold;  // stick up = forward (W key)
-        g_action_curr[static_cast<int>(rf::CC_ACTION_BACKWARD)]    = ly >  stick_threshold;  // stick down = backward (S key)
-        g_action_curr[static_cast<int>(rf::CC_ACTION_SLIDE_LEFT)]  = lx < -stick_threshold;  // stick left = slide left (A key)
-        g_action_curr[static_cast<int>(rf::CC_ACTION_SLIDE_RIGHT)] = lx >  stick_threshold;  // stick right = slide right (D key)
+        // Left stick movement: RF's control loop checks key_is_down() directly, so we
+        // synthesize key events through RF's own key state system using the scan codes
+        // the player has bound to each movement action.
+        float ly = get_axis(SDL_GAMEPAD_AXIS_LEFTY, g_alpine_game_config.gamepad_move_deadzone);
+        float lx = get_axis(SDL_GAMEPAD_AXIS_LEFTX, g_alpine_game_config.gamepad_move_deadzone);
+
+        if (rf::local_player) {
+            auto& bindings = rf::local_player->settings.controls.bindings;
+            // 8-way directional overlay: each cardinal direction spans a 135° arc so
+            // diagonals (NE/NW/SE/SW) activate both adjacent cardinal keys simultaneously.
+            // tan(67.5°) ≈ 2.414 is the axis-ratio threshold between pure and diagonal sectors.
+            static constexpr float k_8way = 2.414f;
+            bool go_fwd   = ly < 0.0f && std::abs(lx) < std::abs(ly) * k_8way;
+            bool go_back  = ly > 0.0f && std::abs(lx) < std::abs(ly) * k_8way;
+            bool go_right = lx > 0.0f && std::abs(ly) < std::abs(lx) * k_8way;
+            bool go_left  = lx < 0.0f && std::abs(ly) < std::abs(lx) * k_8way;
+            struct { rf::ControlConfigAction action; bool now; } moves[] = {
+                { rf::CC_ACTION_FORWARD,     go_fwd   },
+                { rf::CC_ACTION_BACKWARD,    go_back  },
+                { rf::CC_ACTION_SLIDE_LEFT,  go_left  },
+                { rf::CC_ACTION_SLIDE_RIGHT, go_right },
+            };
+            for (auto& m : moves) {
+                int idx = static_cast<int>(m.action);
+                bool was = g_action_curr[idx];
+                if (m.now != was) {
+                    int16_t sc = bindings[idx].scan_codes[0];
+                    if (sc >= 0)
+                        rf::key_process_event(sc, m.now ? 1 : 0, 0);
+                    g_action_curr[idx] = m.now;
+                }
+            }
+        }
     } else {
-        // No gamepad - ensure movement actions are not set
-        g_action_curr[static_cast<int>(rf::CC_ACTION_FORWARD)]     = false;
-        g_action_curr[static_cast<int>(rf::CC_ACTION_BACKWARD)]    = false;
-        g_action_curr[static_cast<int>(rf::CC_ACTION_SLIDE_LEFT)]  = false;
-        g_action_curr[static_cast<int>(rf::CC_ACTION_SLIDE_RIGHT)] = false;
+        // No gamepad - release any movement keys that were held via stick
+        if (rf::local_player) {
+            auto& bindings = rf::local_player->settings.controls.bindings;
+            for (auto action : { rf::CC_ACTION_FORWARD, rf::CC_ACTION_BACKWARD,
+                                  rf::CC_ACTION_SLIDE_LEFT, rf::CC_ACTION_SLIDE_RIGHT }) {
+                int idx = static_cast<int>(action);
+                if (g_action_curr[idx]) {
+                    int16_t sc = bindings[idx].scan_codes[0];
+                    if (sc >= 0)
+                        rf::key_process_event(sc, 0, 0);
+                    g_action_curr[idx] = false;
+                }
+            }
+        }
     }
 }
 
@@ -178,15 +206,15 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     if (!g_gamepad || !rf::keep_mouse_centered)
         return;
 
-    float rx = get_axis(SDL_GAMEPAD_AXIS_RIGHTX);
-    float ry = get_axis(SDL_GAMEPAD_AXIS_RIGHTY);
+    float rx = get_axis(SDL_GAMEPAD_AXIS_RIGHTX, g_alpine_game_config.gamepad_look_deadzone);
+    float ry = get_axis(SDL_GAMEPAD_AXIS_RIGHTY, g_alpine_game_config.gamepad_look_deadzone);
 
     // Quake-style: frametime * sensitivity * input
-    yaw_delta = rf::frametime * g_gamepad_joy_sensitivity * rx;
-    pitch_delta = -rf::frametime * g_gamepad_joy_sensitivity * ry;
+    yaw_delta = rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx;
+    pitch_delta = -rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry;
     
     // Add gyro rotation if enabled
-    if (g_gyro_enabled && g_gamepad_gyro_user_enabled && g_gamepad_gyro_sensitivity > 0.0f) {
+    if (g_gyro_enabled && g_alpine_game_config.gamepad_gyro_enabled && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f) {
         // Process accumulated sensor data once per frame
         g_gamepad_motion.ProcessMotion(g_gyro_x, g_gyro_y, g_gyro_z,
                                        g_accel_x, g_accel_y, g_accel_z, rf::frametime);
@@ -196,19 +224,11 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
         g_gamepad_motion.GetCalibratedGyro(gyro_x, gyro_y, gyro_z);
         
         // Convert from degrees/sec to radians/sec and apply
-        yaw_delta -= (gyro_y * (3.14159265f / 180.0f)) * g_gamepad_gyro_sensitivity * rf::frametime;
-        pitch_delta += (gyro_x * (3.14159265f / 180.0f)) * g_gamepad_gyro_sensitivity * rf::frametime;
+        yaw_delta -= (gyro_y * (3.14159265f / 180.0f)) * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime;
+        pitch_delta += (gyro_x * (3.14159265f / 180.0f)) * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime;
     }
 }
 
-FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
-    0x0051E630,
-    [](int& dx, int& dy, int& dz) {
-        mouse_get_delta_hook.call_target(dx, dy, dz);
-        gamepad_update();
-        // Gamepad rotation is now applied via injection in mouse.cpp at 0x0049DEC9
-    },
-};
 
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_down_hook{
     0x00430F40,
@@ -220,40 +240,63 @@ FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_do
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_hook{
     0x0043D4F0,
     [](rf::ControlConfig* ccp, rf::ControlConfigAction action, bool* just_pressed) -> bool {
+        // Let keyboard/native input handle first.
         bool result = control_config_check_pressed_hook.call_target(ccp, action, just_pressed);
-        if (!result && action_just_pressed(action)) {
-            if (just_pressed) *just_pressed = true;
+        if (result) return true;
+
+        // Gamepad path: mirrors what the controls processor does for keyboard, so that
+        // player_execute_action fires at the same point in player_do_frame as it would
+        // for a keyboard press. This keeps timing consistent for sound, animation, etc.
+        int idx = static_cast<int>(action);
+        if (idx < 0 || idx >= k_action_count || !g_action_curr[idx])
+            return false;
+
+        bool is_just_pressed = !g_action_prev[idx];
+        // Repeat actions (press_mode != 0, e.g. firing) fire every held frame.
+        // Edge actions (press_mode == 0, e.g. reload) fire only on the transition frame.
+        if (ccp->bindings[idx].press_mode != 0 || is_just_pressed) {
+            if (just_pressed) *just_pressed = is_just_pressed;
             return true;
         }
-        return result;
+        return false;
     },
 };
 
 ConsoleCommand2 joy_sens_cmd{
     "joy_sens",
     [](std::optional<float> val) {
-        if (val) g_gamepad_joy_sensitivity = std::max(0.0f, val.value());
-        rf::console::print("Gamepad sensitivity: {:.4f}", g_gamepad_joy_sensitivity);
+        if (val) g_alpine_game_config.gamepad_joy_sensitivity = std::max(0.0f, val.value());
+        rf::console::print("Gamepad sensitivity: {:.4f}", g_alpine_game_config.gamepad_joy_sensitivity);
     },
     "Set gamepad look sensitivity (default 5.0)",
     "joy_sens [value]",
 };
 
-ConsoleCommand2 joy_deadzone_cmd{
-    "joy_deadzone",
+ConsoleCommand2 joy_move_deadzone_cmd{
+    "joy_move_deadzone",
     [](std::optional<float> val) {
-        if (val) g_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
-        rf::console::print("Gamepad stick deadzone: {:.2f}", g_deadzone);
+        if (val) g_alpine_game_config.gamepad_move_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
+        rf::console::print("Gamepad move (left stick) deadzone: {:.2f}", g_alpine_game_config.gamepad_move_deadzone);
     },
-    "Set gamepad stick deadzone 0.0-0.9 (default 0.25)",
-    "joy_deadzone [value]",
+    "Set left stick deadzone 0.0-0.9 (default 0.25)",
+    "joy_move_deadzone [value]",
+};
+
+ConsoleCommand2 joy_look_deadzone_cmd{
+    "joy_look_deadzone",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.gamepad_look_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
+        rf::console::print("Gamepad look (right stick) deadzone: {:.2f}", g_alpine_game_config.gamepad_look_deadzone);
+    },
+    "Set right stick deadzone 0.0-0.9 (default 0.15)",
+    "joy_look_deadzone [value]",
 };
 
 ConsoleCommand2 gyro_sens_cmd{
     "gyro_sens",
     [](std::optional<float> val) {
-        if (val) g_gamepad_gyro_sensitivity = std::max(0.0f, val.value());
-        rf::console::print("Gyro sensitivity: {:.4f}", g_gamepad_gyro_sensitivity);
+        if (val) g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, val.value());
+        rf::console::print("Gyro sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_sensitivity);
     },
     "Set gyro look sensitivity (default 1.0, 0 to disable)",
     "gyro_sens [value]",
@@ -262,8 +305,8 @@ ConsoleCommand2 gyro_sens_cmd{
 ConsoleCommand2 gyro_camera_cmd{
     "gyro_camera",
     [](std::optional<int> val) {
-        if (val) g_gamepad_gyro_user_enabled = val.value() != 0;
-        rf::console::print("Gyro camera: {}", g_gamepad_gyro_user_enabled ? "enabled" : "disabled");
+        if (val) g_alpine_game_config.gamepad_gyro_enabled = val.value() != 0;
+        rf::console::print("Gyro camera: {}", g_alpine_game_config.gamepad_gyro_enabled ? "enabled" : "disabled");
     },
     "Enable/disable gyro camera (default 1)",
     "gyro_camera [0|1]",
@@ -303,11 +346,11 @@ void gamepad_apply_patch()
         }
     }
 
-    mouse_get_delta_hook.install();
     control_is_control_down_hook.install();
     control_config_check_pressed_hook.install();
     joy_sens_cmd.register_cmd();
-    joy_deadzone_cmd.register_cmd();
+    joy_move_deadzone_cmd.register_cmd();
+    joy_look_deadzone_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     xlog::info("Gamepad support initialized");
