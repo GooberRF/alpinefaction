@@ -14,7 +14,7 @@
 #include "../rf/os/frametime.h"
 
 // Side-scroller camera orientation (fixed):
-// Camera is at player.x + 30, looking in -X direction
+// Camera is at player.x + offset, looking in -X direction
 // rvec = (0, 0, 1)  -> screen right is world +Z
 // uvec = (0, 1, 0)  -> screen up is world +Y
 // fvec = (-1, 0, 0) -> camera looks in world -X
@@ -45,6 +45,9 @@ static auto& g_mouse_dy = addr_as_ref<int>(0x01885468);
 
 // True when reticle is behind the player (left of screen center), flips body to face -Z
 static bool g_ss_aiming_backward = false;
+
+// X-axis lock: player is always locked to X=0 in side-scroller maps
+static constexpr float g_ss_locked_x = 0.0f;
 
 // Debug: aim line from eye position along aim direction
 static rf::Vector3 g_dbg_aim_start = {0, 0, 0};
@@ -114,6 +117,42 @@ static void update_reticle_from_stolen_mouse()
     g_reticle_y = std::clamp(g_reticle_y, 0.0f, static_cast<float>(screen_h - 1));
 }
 
+// Pre-physics: zero X dynamics so input doesn't drive X movement,
+// but leave positions alone so collision detection can work naturally.
+static void pre_lock_entity_x(rf::Entity* entity)
+{
+    entity->p_data.vel.x = 0.0f;
+    entity->p_data.force.x = 0.0f;
+}
+
+// Post-physics: measure X displacement from collision response,
+// convert it to a Z impulse (pushing player back out of angled surfaces),
+// then snap everything to X=0.
+static void post_lock_entity_x(rf::Entity* entity)
+{
+    // Capture how much collision pushed us in X
+    float dx = entity->pos.x - g_ss_locked_x;
+
+    // Apply as Z correction: collision wanted to push us out in X,
+    // convert that to pushing back in Z (opposite movement direction)
+    float abs_dx = std::abs(dx);
+    if (abs_dx > 0.0001f) {
+        float sign = (entity->p_data.vel.z >= 0.0f) ? -1.0f : 1.0f;
+        entity->pos.z += sign * abs_dx;
+        entity->p_data.pos.z += sign * abs_dx;
+        entity->p_data.next_pos.z += sign * abs_dx;
+    }
+
+    // Snap all X state to locked value
+    entity->pos.x = g_ss_locked_x;
+    entity->last_pos.x = g_ss_locked_x;
+    entity->correct_pos.x = g_ss_locked_x;
+    entity->p_data.pos.x = g_ss_locked_x;
+    entity->p_data.next_pos.x = g_ss_locked_x;
+    entity->p_data.vel.x = 0.0f;
+    entity->p_data.force.x = 0.0f;
+}
+
 static void update_side_scroller_camera_pos(rf::Player* player)
 {
     rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
@@ -122,7 +161,7 @@ static void update_side_scroller_camera_pos(rf::Player* player)
         return;
     }
 
-    // Compute desired camera position: 30m to the right (+X) of the player, at eye height.
+    // Compute desired camera position: offset to the right (+X) of the player, at eye height.
     // Using eye height ensures screen center aligns with the weapon fire origin.
     float eye_y = 0.0f;
     if (entity->info) {
@@ -271,6 +310,10 @@ FunHook<void(rf::Player*)> side_scroller_player_do_frame_hook{
             // Facing -Z: fvec=(0,0,-1), rvec=(-1,0,0), uvec=(0,1,0)
             rf::Entity* pre_entity = rf::entity_from_handle(player->entity_handle);
             if (pre_entity) {
+                // Zero X dynamics so input doesn't drive X movement,
+                // but let collision response happen naturally
+                pre_lock_entity_x(pre_entity);
+
                 if (g_ss_aiming_backward) {
                     pre_entity->orient.fvec = {0.0f, 0.0f, -1.0f};
                     pre_entity->orient.rvec = {-1.0f, 0.0f, 0.0f};
@@ -295,8 +338,10 @@ FunHook<void(rf::Player*)> side_scroller_player_do_frame_hook{
             return;
         }
 
-        // AFTER stock processing: set orient directly for aim direction,
-        // zero all phb/deltas so movement stays correct
+        // AFTER stock processing: convert X collision displacement to Z,
+        // then lock X to 0
+        post_lock_entity_x(entity);
+
         update_side_scroller_camera_pos(player);
         apply_side_scroller_aim(player);
 
