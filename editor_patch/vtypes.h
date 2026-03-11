@@ -240,6 +240,7 @@ static auto& get_active_viewport = addr_as_ref<void* __cdecl()>(0x004835B0);
 
 static auto& generate_uid = addr_as_ref<int()>(0x00484230);
 static auto& file_add_path = addr_as_ref<int __cdecl(const char* path, const char* exts, bool cd)>(0x004C3950);
+static auto& file_scan_path = addr_as_ref<void(int slot_index)>(0x004CF800);
 static auto& rf_alloc = addr_as_ref<void* __cdecl(size_t size)>(0x0052ee74);
 static auto& log_dlg_append = addr_as_ref<int __cdecl(void*, const char*, ...)>(0x00444980);
 static auto& log_dlg_clear = addr_as_ref<void __fastcall(void* self)>(0x00444940);
