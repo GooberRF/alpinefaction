@@ -280,10 +280,10 @@ void linear_pitch_test()
 }
 #endif // DEBUG
 
-static void convert_pitch_delta_to_non_linear_space(
+static float convert_pitch_delta_to_non_linear_space(
     const float current_yaw,
     const float current_pitch_non_lin,
-    float& pitch_delta,
+    const float pitch_delta,
     const float yaw_delta
 ) {
     // Convert to linear space.  See `physics_make_orient`.
@@ -292,10 +292,10 @@ static void convert_pitch_delta_to_non_linear_space(
     const float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
 
     // Calculate in linear space.
-    float new_pitch_lin = current_pitch_lin + pitch_delta;
-    const float new_yaw = current_yaw + yaw_delta;
     constexpr float HALF_PI = 1.5707964f;
-    new_pitch_lin = std::clamp(new_pitch_lin, -HALF_PI, HALF_PI);
+    const float new_pitch_lin
+        = std::clamp(current_pitch_lin + pitch_delta, -HALF_PI, HALF_PI);
+    const float new_yaw = current_yaw + yaw_delta;
 
     // Convert back to non-linear space.
     const rf::Vector3 fvec_new
@@ -311,7 +311,8 @@ static void convert_pitch_delta_to_non_linear_space(
         pitch_delta,
         new_pitch_delta
     );
-    pitch_delta = new_pitch_delta;
+
+    return new_pitch_delta;
 }
 
 CodeInjection linear_pitch_patch{
@@ -327,8 +328,8 @@ CodeInjection linear_pitch_patch{
         const rf::Entity* const entity = regs.esi;
         const float current_yaw = entity->control_data.phb.y;
         const float current_pitch_non_lin = entity->control_data.eye_phb.x;
-        const float& yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
-        convert_pitch_delta_to_non_linear_space(
+        const float yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
+        pitch_delta = convert_pitch_delta_to_non_linear_space(
             current_yaw,
             current_pitch_non_lin,
             pitch_delta,
