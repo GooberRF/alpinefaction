@@ -290,15 +290,18 @@ static void convert_pitch_delta_to_non_linear_space(
     const rf::Vector3 fvec
         = fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
     const float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
+
     // Calculate in linear space.
     float new_pitch_lin = current_pitch_lin + pitch_delta;
     const float new_yaw = current_yaw + yaw_delta;
     constexpr float HALF_PI = 1.5707964f;
     new_pitch_lin = std::clamp(new_pitch_lin, -HALF_PI, HALF_PI);
+
     // Convert back to non-linear space.
     const rf::Vector3 fvec_new
         = fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
     const float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
+
     // Update non-linear pitch delta.
     const float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
     xlog::trace(
