@@ -72,6 +72,11 @@ static std::unordered_map<int, CorpseData> g_alpine_corpse_data;
 // obj_flag_dead calls in the same death processing function from killing the corpse object.
 static std::unordered_set<int> g_alpine_corpse_applied;
 
+// Original texture handles saved before overrides are applied.
+// Key: (obj_handle << 32 | slot), Value: original tex_handle.
+// Used by alpine_mesh_clear_texture to restore the base mesh texture.
+static std::unordered_map<uint64_t, int> g_original_tex_handles;
+
 // ─── VMesh Type Detection ───────────────────────────────────────────────────
 
 static rf::VMeshType determine_vmesh_type(const std::string& filename)
@@ -429,6 +434,10 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
                         ovr.filename, ovr.slot);
                     continue;
                 }
+                auto key = (static_cast<uint64_t>(obj->handle) << 32) | ovr.slot;
+                if (g_original_tex_handles.find(key) == g_original_tex_handles.end()) {
+                    g_original_tex_handles[key] = materials[ovr.slot].texture_maps[0].tex_handle;
+                }
                 materials[ovr.slot].texture_maps[0].tex_handle = bm_handle;
                 xlog::debug("[AlpineMesh] Applied texture override slot {}: '{}' (handle={})",
                     ovr.slot, ovr.filename, bm_handle);
@@ -558,6 +567,7 @@ void alpine_mesh_clear_state()
     g_event_animated_meshes.clear();
     g_alpine_corpse_data.clear();
     g_alpine_corpse_applied.clear();
+    g_original_tex_handles.clear();
     g_dummy_clutter_info_initialized = false;
     // Free per-mesh ClutterInfo objects
     for (auto* ci : g_mesh_clutter_infos) {
@@ -820,6 +830,10 @@ void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& textu
         return;
     }
 
+    auto key = (static_cast<uint64_t>(obj->handle) << 32) | slot;
+    if (g_original_tex_handles.find(key) == g_original_tex_handles.end()) {
+        g_original_tex_handles[key] = materials[slot].texture_maps[0].tex_handle;
+    }
     materials[slot].texture_maps[0].tex_handle = bm_handle;
     xlog::debug("[AlpineMesh] Set texture slot {} to '{}' (handle={}) on obj handle {}",
         slot, texture_filename, bm_handle, obj->handle);
@@ -847,10 +861,14 @@ void alpine_mesh_clear_texture(rf::Object* obj, int slot)
         return;
     }
 
-    // Reload original texture from the base mesh data
-    // The base mesh materials are accessible via vmesh->mesh (V3M/V3C mesh data)
-    // For simplicity, setting to -1 effectively clears the override
-    materials[slot].texture_maps[0].tex_handle = -1;
+    auto key = (static_cast<uint64_t>(obj->handle) << 32) | slot;
+    auto it = g_original_tex_handles.find(key);
+    if (it != g_original_tex_handles.end()) {
+        materials[slot].texture_maps[0].tex_handle = it->second;
+        g_original_tex_handles.erase(it);
+    } else {
+        materials[slot].texture_maps[0].tex_handle = -1;
+    }
     xlog::debug("[AlpineMesh] Cleared texture slot {} on obj handle {}", slot, obj->handle);
 }
 
