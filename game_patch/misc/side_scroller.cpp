@@ -12,6 +12,8 @@
 #include "../rf/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/os/frametime.h"
+#include "../rf/vmesh.h"
+#include "../rf/weapon.h"
 
 // Side-scroller camera orientation (fixed):
 // Camera is at player.x + offset, looking in -X direction
@@ -49,14 +51,43 @@ static bool g_ss_aiming_backward = false;
 // X-axis lock: player is always locked to X=0 in side-scroller maps
 static constexpr float g_ss_locked_x = 0.0f;
 
-// Debug: aim line from eye position along aim direction
+// Debug: aim line from fire position along aim direction (red = apply_side_scroller_aim)
 static rf::Vector3 g_dbg_aim_start = {0, 0, 0};
 static rf::Vector3 g_dbg_aim_end = {0, 0, 0};
 static bool g_dbg_aim_valid = false;
 
+// Debug: fire line from actual fire pos hook output (green = entity_calc_fire_pos_hook)
+static rf::Vector3 g_dbg_fire_start = {0, 0, 0};
+static rf::Vector3 g_dbg_fire_end = {0, 0, 0};
+static bool g_dbg_fire_valid = false;
+
+// Cached hand position for debug line (updated in fire pos hook, read in aim function)
+static rf::Vector3 g_ss_hand_pos = {0, 0, 0};
+static bool g_ss_hand_pos_valid = false;
+
+// Cached aim orient: computed from reticle each frame, used by fire pos hook.
+// Stored separately because stock player_do_frame may overwrite entity->eye_orient
+// between our pre-hook (where we set it) and weapon firing (where the hook reads it).
+static rf::Matrix3 g_ss_aim_orient = {};
+static bool g_ss_aim_orient_valid = false;
+
+// Actual rendering FOV in degrees, captured from gr_setup_3d each frame.
+// The rendering pipeline applies Hor+ scaling and user FOV settings, so this may differ
+// from player->viewport.fov_h. We must use the same FOV for reticle unprojection.
+static float g_ss_render_fov_h_deg = 90.0f;
+
+// Side-scroller occlusion: dithered transparency for geometry between camera and player
+static SsOcclusionParams g_ss_occlusion = {};
+static float g_ss_occlusion_fade_current = 0.0f; // smoothly ramps toward target
+
 bool is_side_scroller_mode()
 {
     return AlpineLevelProperties::instance().game_style == 1;
+}
+
+const SsOcclusionParams& get_ss_occlusion_params()
+{
+    return g_ss_occlusion;
 }
 
 void side_scroller_on_level_load()
@@ -68,6 +99,10 @@ void side_scroller_on_level_load()
     g_stolen_mouse_dy = 0;
     g_ss_camera_active = false;
     g_ss_aiming_backward = false;
+    g_ss_hand_pos_valid = false;
+    g_ss_aim_orient_valid = false;
+    g_ss_occlusion = {};
+    g_ss_occlusion_fade_current = 0.0f;
 }
 
 bool side_scroller_get_reticle_offset(int& offset_x, int& offset_y)
@@ -162,7 +197,7 @@ static void update_side_scroller_camera_pos(rf::Player* player)
     }
 
     // Compute desired camera position: offset to the right (+X) of the player, at eye height.
-    // Using eye height ensures screen center aligns with the weapon fire origin.
+    // Camera Y at eye height is used as the reference for reticle unprojection.
     float eye_y = 0.0f;
     if (entity->info) {
         eye_y = entity->info->local_eye_offset.y;
@@ -172,6 +207,95 @@ static void update_side_scroller_camera_pos(rf::Player* player)
     g_ss_camera_pos.z = entity->pos.z;
     g_ss_camera_active = true;
 }
+
+// Get the world position of the weapon muzzle in third-person.
+// Two-step tag lookup: character hand tag → weapon muzzle tag (same as stock NPC code).
+// Falls back to hand position if the weapon lacks a muzzle tag.
+static bool get_muzzle_world_pos(rf::Entity* entity, rf::Vector3& out_pos)
+{
+    if (!entity->info || !entity->vmesh) return false;
+    int hand_tag = entity->info->hand_tags[1]; // right hand
+    if (hand_tag == -1) return false;
+
+    // Step 1: character model hand tag → hand world pos/orient
+    rf::Matrix3 hand_orient;
+    rf::Vector3 hand_pos;
+    rf::vmesh_get_tag_world_pos(entity->vmesh, hand_tag, entity->orient, entity->pos,
+                                hand_orient, hand_pos);
+
+    // Step 2: weapon third-person model muzzle tag → muzzle world pos
+    int weapon_type = entity->ai.current_primary_weapon;
+    if (weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
+        rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
+        if (wi.third_person_vmesh_handle && wi.third_person_muzzle_tag != -1) {
+            rf::Matrix3 muzzle_orient;
+            rf::vmesh_get_tag_world_pos(wi.third_person_vmesh_handle, wi.third_person_muzzle_tag,
+                                        hand_orient, hand_pos, muzzle_orient, out_pos);
+            return true;
+        }
+    }
+
+    // Fallback: use hand position if weapon has no muzzle tag
+    out_pos = hand_pos;
+    return true;
+}
+
+// Hook entity_calc_fire_pos (0x0041b040) to override fire origin with hand tag position.
+// Stock code falls back to eye_pos for player characters since they lack primary_fire_points.
+// In side-scroller mode we want projectiles to spawn from the visible weapon position.
+FunHook<void(rf::Entity*, int, rf::Vector3*, rf::Matrix3*, int, int)> entity_calc_fire_pos_hook{
+    0x0041b040,
+    [](rf::Entity* entity, int weapon_type, rf::Vector3* out_pos, rf::Matrix3* out_orient,
+       int fire_slot, int is_primary) {
+        // In side-scroller mode, stock code may have reset entity orient to +Z.
+        // Temporarily restore the correct body orient so that both stock fire pos
+        // calculation and get_muzzle_world_pos compute the muzzle on the correct side.
+        bool is_local_ss = false;
+        rf::Matrix3 saved_orient;
+        if (is_side_scroller_mode() && rf::local_player) {
+            rf::Entity* local_entity = rf::entity_from_handle(rf::local_player->entity_handle);
+            if (entity == local_entity) {
+                is_local_ss = true;
+                saved_orient = entity->orient;
+                if (g_ss_aiming_backward) {
+                    entity->orient.fvec = {0.0f, 0.0f, -1.0f};
+                    entity->orient.rvec = {-1.0f, 0.0f, 0.0f};
+                    entity->orient.uvec = {0.0f, 1.0f, 0.0f};
+                } else {
+                    entity->orient.fvec = {0.0f, 0.0f, 1.0f};
+                    entity->orient.rvec = {1.0f, 0.0f, 0.0f};
+                    entity->orient.uvec = {0.0f, 1.0f, 0.0f};
+                }
+            }
+        }
+
+        entity_calc_fire_pos_hook.call_target(entity, weapon_type, out_pos, out_orient,
+                                              fire_slot, is_primary);
+
+        if (!is_local_ss) return;
+
+        rf::Vector3 hand_pos;
+        if (get_muzzle_world_pos(entity, hand_pos)) {
+            *out_pos = hand_pos;
+            g_ss_hand_pos = hand_pos;
+            g_ss_hand_pos_valid = true;
+        }
+
+        // Restore original orient (stock code may need it intact)
+        entity->orient = saved_orient;
+
+        if (g_ss_aim_orient_valid) {
+            *out_orient = g_ss_aim_orient;
+        }
+
+        // Debug: record actual fire pos hook output for green debug line
+        g_dbg_fire_start = *out_pos;
+        g_dbg_fire_end.x = out_pos->x + out_orient->fvec.x * 50.0f;
+        g_dbg_fire_end.y = out_pos->y + out_orient->fvec.y * 50.0f;
+        g_dbg_fire_end.z = out_pos->z + out_orient->fvec.z * 50.0f;
+        g_dbg_fire_valid = true;
+    },
+};
 
 static void apply_side_scroller_aim(rf::Player* player)
 {
@@ -183,9 +307,10 @@ static void apply_side_scroller_aim(rf::Player* player)
     int screen_w = rf::gr::clip_width();
     int screen_h = rf::gr::clip_height();
 
-    // fov_h is in degrees — convert to radians for trig functions
+    // Use the actual rendering FOV (captured from gr_setup_3d), not player->viewport.fov_h,
+    // because the rendering pipeline applies Hor+ scaling and user FOV settings.
     constexpr float deg2rad = 3.14159265f / 180.0f;
-    float fov_h = player->viewport.fov_h * deg2rad;
+    float fov_h = g_ss_render_fov_h_deg * deg2rad;
     float aspect = static_cast<float>(screen_w) / static_cast<float>(screen_h);
     float fov_v = 2.0f * std::atan(std::tan(fov_h * 0.5f) / aspect);
 
@@ -195,25 +320,61 @@ static void apply_side_scroller_aim(rf::Player* player)
     float norm_x = (g_reticle_x - half_w) / half_w;
     float norm_y = (g_reticle_y - half_h) / half_h;
 
-    // Unproject reticle to world-space aim point at the player's X plane.
-    // Camera is at (player.x + offset, player.y, player.z) looking in -X.
-    // Standard perspective unproject: scale normalized coords by tan(half-fov) * distance.
+    // Unproject reticle to world-space point on the X=0 plane.
+    // Camera is at (player.x + offset, camera_y, player.z) looking in -X.
     float dz = norm_x * std::tan(fov_h * 0.5f) * camera_offset_x;   // screen right = +Z
     float dy = -norm_y * std::tan(fov_v * 0.5f) * camera_offset_x;  // screen up = +Y
 
-    // Camera is now at eye height, so dy is already relative to the eye/weapon origin.
-    // Direction from eye to aim target is simply (0, dy, dz).
-    rf::Vector3 dir;
-    dir.x = 0.0f;  // force zero — aim is always in the YZ plane
-    dir.y = dy;
-    dir.z = dz;
+    float reticle_world_y = g_ss_camera_pos.y + dy;
+    float reticle_world_z = g_ss_camera_pos.z + dz;
 
-    float dist = std::sqrt(dir.y * dir.y + dir.z * dir.z);
-    if (dist < 0.001f) {
+    // Get muzzle position (where projectiles actually spawn from)
+    rf::Vector3 muzzle_pos;
+    if (!get_muzzle_world_pos(entity, muzzle_pos)) {
+        muzzle_pos = entity->eye_pos;
+    }
+
+    // Aim direction from muzzle to reticle world point.
+    // This ensures the debug line, bullets, and projectiles all pass through the reticle.
+    float muzzle_dir_y = reticle_world_y - muzzle_pos.y;
+    float muzzle_dir_z = reticle_world_z - muzzle_pos.z;
+    float muzzle_dist = std::sqrt(muzzle_dir_y * muzzle_dir_y + muzzle_dir_z * muzzle_dir_z);
+
+    // Camera-center direction (always points outward from the player, never flips)
+    float cam_dir_y = dy;
+    float cam_dir_z = dz;
+    float cam_dist = std::sqrt(cam_dir_y * cam_dir_y + cam_dir_z * cam_dir_z);
+
+    if (cam_dist < 0.001f) {
         return;
     }
-    dir.y /= dist;
-    dir.z /= dist;
+
+    // Normalize both directions
+    float mn_y = 0.0f, mn_z = 0.0f;
+    if (muzzle_dist > 0.001f) {
+        mn_y = muzzle_dir_y / muzzle_dist;
+        mn_z = muzzle_dir_z / muzzle_dist;
+    }
+    float cn_y = cam_dir_y / cam_dist;
+    float cn_z = cam_dir_z / cam_dist;
+
+    // Blend: when the reticle is close to the muzzle, smoothly transition from
+    // muzzle→reticle direction to camera-center direction to avoid abrupt jumps.
+    constexpr float blend_min = 1.0f;  // full camera-center direction
+    constexpr float blend_max = 3.0f;  // full muzzle→reticle direction
+    float t = std::clamp((muzzle_dist - blend_min) / (blend_max - blend_min), 0.0f, 1.0f);
+
+    rf::Vector3 dir;
+    dir.x = 0.0f;
+    dir.y = mn_y * t + cn_y * (1.0f - t);
+    dir.z = mn_z * t + cn_z * (1.0f - t);
+
+    float dir_len = std::sqrt(dir.y * dir.y + dir.z * dir.z);
+    if (dir_len < 0.001f) {
+        return;
+    }
+    dir.y /= dir_len;
+    dir.z /= dir_len;
 
     // Build eye_orient matrix from aim direction.
     // fvec = aim direction in YZ plane
@@ -234,21 +395,18 @@ static void apply_side_scroller_aim(rf::Player* player)
     aim_orient.uvec.y = aim_orient.fvec.z * aim_orient.rvec.x - aim_orient.fvec.x * aim_orient.rvec.z;
     aim_orient.uvec.z = aim_orient.fvec.x * aim_orient.rvec.y - aim_orient.fvec.y * aim_orient.rvec.x;
 
-    // Set eye_orient directly (controls weapon aim and visual direction).
-    // Do NOT touch entity->orient (body orientation stays facing +Z).
+    // Set eye_orient directly (controls weapon aim direction).
+    // Also cache in g_ss_aim_orient so the fire pos hook has a reliable copy
+    // even if stock code overwrites eye_orient mid-frame.
     entity->eye_orient = aim_orient;
+    g_ss_aim_orient = aim_orient;
+    g_ss_aim_orient_valid = true;
 
-    // Store debug aim line: from eye position, 50m along aim direction
-    float eye_offset_y = 0.0f;
-    if (entity->info) {
-        eye_offset_y = entity->info->local_eye_offset.y;
-    }
-    g_dbg_aim_start.x = entity->pos.x;
-    g_dbg_aim_start.y = entity->pos.y + eye_offset_y;
-    g_dbg_aim_start.z = entity->pos.z;
-    g_dbg_aim_end.x = g_dbg_aim_start.x + dir.x * 50.0f;
-    g_dbg_aim_end.y = g_dbg_aim_start.y + dir.y * 50.0f;
-    g_dbg_aim_end.z = g_dbg_aim_start.z + dir.z * 50.0f;
+    // Debug aim line: from muzzle along aim direction (through reticle world point)
+    g_dbg_aim_start = muzzle_pos;
+    g_dbg_aim_end.x = muzzle_pos.x + dir.x * 50.0f;
+    g_dbg_aim_end.y = muzzle_pos.y + dir.y * 50.0f;
+    g_dbg_aim_end.z = muzzle_pos.z + dir.z * 50.0f;
     g_dbg_aim_valid = true;
 
     // Zero all phb so the body stays facing +Z for movement.
@@ -324,6 +482,11 @@ FunHook<void(rf::Player*)> side_scroller_player_do_frame_hook{
                     pre_entity->orient.rvec = {1.0f, 0.0f, 0.0f};
                     pre_entity->orient.uvec = {0.0f, 1.0f, 0.0f};
                 }
+
+                // Compute fresh aim orient from current reticle BEFORE stock processing,
+                // so weapons firing mid-frame use the correct direction.
+                update_side_scroller_camera_pos(player);
+                apply_side_scroller_aim(player);
             }
         }
 
@@ -342,10 +505,8 @@ FunHook<void(rf::Player*)> side_scroller_player_do_frame_hook{
         // then lock X to 0
         post_lock_entity_x(entity);
 
-        update_side_scroller_camera_pos(player);
-        apply_side_scroller_aim(player);
-
-        // Re-set body orient in case stock code modified it via phb
+        // Re-set body orient BEFORE apply_side_scroller_aim so that
+        // get_muzzle_world_pos() computes the muzzle on the correct side
         if (g_ss_aiming_backward) {
             entity->orient.fvec = {0.0f, 0.0f, -1.0f};
             entity->orient.rvec = {-1.0f, 0.0f, 0.0f};
@@ -356,6 +517,9 @@ FunHook<void(rf::Player*)> side_scroller_player_do_frame_hook{
             entity->orient.rvec = {1.0f, 0.0f, 0.0f};
             entity->orient.uvec = {0.0f, 1.0f, 0.0f};
         }
+
+        update_side_scroller_camera_pos(player);
+        apply_side_scroller_aim(player);
     },
 };
 
@@ -368,15 +532,56 @@ CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> side_scroller_gr_s
         if (g_ss_camera_active && is_side_scroller_mode()) {
             viewer_pos = g_ss_camera_pos;
             viewer_orient = g_side_scroller_orient;
+            // Capture the actual rendering FOV for reticle unprojection.
+            // This includes Hor+ scaling and user FOV settings applied by the render pipeline.
+            g_ss_render_fov_h_deg = horizontal_fov;
+
+            // Update occlusion state for dithered transparency.
+            // Ramp fade strength over 200ms (5.0 per second to reach 0.5 target in 100ms,
+            // or decay at same rate).
+            constexpr float fade_target = 0.5f;
+            constexpr float fade_speed = fade_target / 0.2f; // reach target in 200ms
+            float dt = rf::frametime;
+            if (g_ss_occlusion_fade_current < fade_target) {
+                g_ss_occlusion_fade_current = std::min(g_ss_occlusion_fade_current + fade_speed * dt, fade_target);
+            }
+
+            // Player position is camera pos with X offset removed
+            g_ss_occlusion.active = true;
+            g_ss_occlusion.player_x = g_ss_camera_pos.x - camera_offset_x;
+            g_ss_occlusion.player_y = g_ss_camera_pos.y;
+            g_ss_occlusion.player_z = g_ss_camera_pos.z;
+            g_ss_occlusion.camera_x = g_ss_camera_pos.x;
+            g_ss_occlusion.fade_strength = g_ss_occlusion_fade_current;
+            g_ss_occlusion.radius = 2.5f;
+        }
+        else {
+            // Fade out when leaving side-scroller mode
+            if (g_ss_occlusion_fade_current > 0.0f) {
+                constexpr float fade_speed = 0.5f / 0.2f;
+                float dt = rf::frametime;
+                g_ss_occlusion_fade_current = std::max(g_ss_occlusion_fade_current - fade_speed * dt, 0.0f);
+                g_ss_occlusion.fade_strength = g_ss_occlusion_fade_current;
+            }
+            if (g_ss_occlusion_fade_current <= 0.0f) {
+                g_ss_occlusion.active = false;
+            }
         }
         side_scroller_gr_setup_3d_hook.call_target(viewer_orient, viewer_pos, horizontal_fov, zbuffer_flag, z_scale);
 
-        // Draw debug aim line (red)
+        // Draw debug aim line (red = apply_side_scroller_aim direction)
         if (g_dbg_aim_valid && is_side_scroller_mode()) {
             rf::gr::line_arrow(
                 g_dbg_aim_start.x, g_dbg_aim_start.y, g_dbg_aim_start.z,
                 g_dbg_aim_end.x, g_dbg_aim_end.y, g_dbg_aim_end.z,
                 255, 0, 0);
+        }
+        // Draw debug fire line (green = entity_calc_fire_pos_hook actual output)
+        if (g_dbg_fire_valid && is_side_scroller_mode()) {
+            rf::gr::line_arrow(
+                g_dbg_fire_start.x, g_dbg_fire_start.y, g_dbg_fire_start.z,
+                g_dbg_fire_end.x, g_dbg_fire_end.y, g_dbg_fire_end.z,
+                0, 255, 0);
         }
     },
 };
@@ -386,4 +591,5 @@ void side_scroller_do_patch()
     side_scroller_player_do_frame_hook.install();
     side_scroller_control_read_hook.install();
     side_scroller_gr_setup_3d_hook.install();
+    entity_calc_fire_pos_hook.install();
 }

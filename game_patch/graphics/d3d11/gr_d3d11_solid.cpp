@@ -2,6 +2,7 @@
 #undef NDEBUG
 
 #include <windows.h>
+#include <algorithm>
 #include <vector>
 #include <unordered_map>
 #include <map>
@@ -251,6 +252,8 @@ namespace df::gr::d3d11
         void add_face(GFace* face, GSolid* solid);
         GRenderCache build(ID3D11Device* device);
 
+        void set_is_sky(bool is_sky) { is_sky_ = is_sky; }
+
         int get_num_verts() const
         {
             return num_verts_;
@@ -302,18 +305,10 @@ namespace df::gr::d3d11
         for (GFace& face : room->face_list) {
             add_face(&face, solid);
         }
-        // Only iterate detail_rooms for non-detail rooms. Detail rooms should never
-        // have sub-detail rooms in Red Faction. After RF2-style geomod, the boolean
-        // engine may corrupt the detail_rooms VArray on detail rooms, causing infinite
-        // recursion if we iterate it unconditionally.
-        if (!room->is_detail) {
-            for (GRoom* detail_room : room->detail_rooms) {
-                if (detail_room->face_list.empty()) {
-                    continue; // skip destroyed breakable detail rooms
-                }
-                add_room(detail_room, solid);
-            }
-        }
+        // Detail rooms are rendered separately via render_detail() which sets the
+        // ss_is_detail flag for side-scroller dithered transparency. Including them
+        // here would cause double-rendering and break that effect. Sky rooms also
+        // render their detail rooms explicitly in render_sky_room().
     }
 
     static inline FaceRenderType determine_face_render_type(GFace* face)
@@ -743,12 +738,14 @@ namespace df::gr::d3d11
         return cache;
     }
 
-    void SolidRenderer::render_detail(rf::GSolid* solid, GRoom* room, bool alpha)
+    void SolidRenderer::render_detail(rf::GSolid* solid, GRoom* room, bool alpha, bool is_sky)
     {
-        GRenderCache* cache = get_or_create_detail_room_cache(solid, room);
+        GRenderCache* cache = get_or_create_detail_room_cache(solid, room, is_sky);
         if (!cache) return;
         FaceRenderType render_type = alpha ? FaceRenderType::alpha : FaceRenderType::opaque;
+        render_context_.set_ss_is_detail(true);
         cache->render(render_type, render_context_);
+        render_context_.set_ss_is_detail(false);
     }
 
     // Sentinel value stored in room->geo_cache to mark detail rooms that have been checked
@@ -756,16 +753,41 @@ namespace df::gr::d3d11
     // clear_cache() resets all geo_cache to nullptr, which properly clears this sentinel.
     static const auto k_empty_detail_sentinel = reinterpret_cast<rf::GCache*>(uintptr_t(1));
 
-    GRenderCache* SolidRenderer::get_or_create_detail_room_cache(rf::GSolid* solid, rf::GRoom* room)
+    GRenderCache* SolidRenderer::get_or_create_detail_room_cache(rf::GSolid* solid, rf::GRoom* room, bool is_sky)
     {
+        auto cache = reinterpret_cast<GRenderCache*>(room->geo_cache);
+
+        // Check if existing cache needs invalidation due to sky mode mismatch
+        // (e.g. pre-cached as normal but now needed for a dynamic sky room set via Set_Skybox)
+        bool cached_as_sky = sky_detail_rooms_.count(room) > 0;
+        if (is_sky != cached_as_sky && (cache || room->geo_cache == k_empty_detail_sentinel)) {
+            if (cache) {
+                // Remove the old cache object from detail_render_cache_
+                auto it = std::find_if(detail_render_cache_.begin(), detail_render_cache_.end(),
+                    [cache](const auto& ptr) { return ptr.get() == cache; });
+                if (it != detail_render_cache_.end()) {
+                    detail_render_cache_.erase(it);
+                }
+            }
+            room->geo_cache = nullptr;
+            cache = nullptr;
+        }
+
         if (room->geo_cache == k_empty_detail_sentinel) {
             return nullptr;
         }
-        auto cache = reinterpret_cast<GRenderCache*>(room->geo_cache);
+
         if (!cache) {
-            xlog::debug("Creating render cache for detail room {} (faces: {})",
-                room->room_index, room->face_list.size());
+            xlog::debug("Creating render cache for detail room {} (faces: {} sky: {})",
+                room->room_index, room->face_list.size(), is_sky);
             GRenderCacheBuilder builder;
+            if (is_sky) {
+                builder.set_is_sky(true);
+                sky_detail_rooms_.insert(room);
+            }
+            else {
+                sky_detail_rooms_.erase(room);
+            }
             builder.add_room(room, solid);
             xlog::debug("Detail room {} builder: verts={} inds={} batches={}",
                 room->room_index, builder.get_num_verts(), builder.get_num_inds(), builder.get_num_batches());
@@ -797,6 +819,7 @@ namespace df::gr::d3d11
         detail_render_cache_.clear();
         mover_render_cache_.clear();
         geo_cache_rooms_.clear();
+        sky_detail_rooms_.clear();
         geo_cache_num_rooms = 0;
         xlog::debug("Room render cache clear complete");
     }
@@ -827,7 +850,24 @@ namespace df::gr::d3d11
             before_render(sky_room_offset, rf::identity_matrix);
         }
         render_room_faces(rf::level.geometry, room, FaceRenderType::opaque);
+
+        // Render detail rooms without frustum culling — skybox geometry is rendered
+        // with an offset/rotation so camera-based bounding box checks don't apply.
+        // All opaque detail faces must be drawn before any alpha detail faces to
+        // ensure correct blending when detail rooms overlap.
+        for (GRoom* detail_room : room->detail_rooms) {
+            if (!detail_room->face_list.empty()) {
+                render_detail(rf::level.geometry, detail_room, false, true);
+            }
+        }
+
         render_room_faces(rf::level.geometry, room, FaceRenderType::alpha);
+
+        for (GRoom* detail_room : room->detail_rooms) {
+            if (!detail_room->face_list.empty()) {
+                render_detail(rf::level.geometry, detail_room, true, true);
+            }
+        }
         render_context_.update_lights();
     }
 
@@ -836,8 +876,10 @@ namespace df::gr::d3d11
         xlog::trace("Rendering movable solid {}", solid);
         GRenderCache* cache = get_or_create_movable_solid_cache(solid);
         before_render(pos, orient);
+        render_context_.set_ss_is_detail(true);
         cache->render(FaceRenderType::opaque, render_context_);
         cache->render(FaceRenderType::alpha, render_context_);
+        render_context_.set_ss_is_detail(false);
         if (decals_enabled) {
             render_movable_solid_dynamic_decals(solid, pos, orient);
         }
@@ -928,6 +970,8 @@ namespace df::gr::d3d11
             }
         }
         for (rf::GRoom* room: solid->cached_detail_room_list) {
+            // Pre-cache as non-sky; if later rendered in a sky room context,
+            // get_or_create_detail_room_cache will detect the mismatch and rebuild.
             get_or_create_detail_room_cache(solid, room);
         }
     }

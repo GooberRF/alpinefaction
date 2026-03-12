@@ -105,6 +105,8 @@ namespace rf
     static auto& vmesh_get_materials_array = addr_as_ref<void(VMesh *vmesh, int *num_materials_out, MeshMaterial **materials_array_out)>(0x00503650);
     static auto& vmesh_process = addr_as_ref<void(VMesh* vmesh, float frametime, int increment_only, Vector3* pos, Matrix3* orient, int lod_level)>(0x00503360);
     static auto& vmesh_create_anim_fx = addr_as_ref<VMesh*(const char *filename, int path_id)>(0x00502A60);
+    static auto& vmesh_get_tag_world_pos = addr_as_ref<void(VMesh* vmesh, int tag_index,
+        const Matrix3& orient, const Vector3& pos, Matrix3& out_orient, Vector3& out_pos)>(0x005034F0);
     static auto& vclip_lookup = addr_as_ref<int(const char* name)>(0x004C1D00);
     static auto& vclip_play_3d =
         addr_as_ref<void(int index, GRoom* src_room, Vector3* src_pos, Vector3* pos, float radius,

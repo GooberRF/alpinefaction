@@ -2,6 +2,7 @@
 #include <cstring>
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/frametime.h"
+#include "../../misc/side_scroller.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_texture.h"
@@ -249,6 +250,13 @@ namespace df::gr::d3d11
         float disable_textures;
         std::array<float, 3> fog_color;
         float pad0;
+        // Side-scroller occlusion (dithered transparency)
+        std::array<float, 3> ss_player_pos;
+        float ss_fade_strength;
+        float ss_camera_x;
+        float ss_radius;
+        float ss_is_detail;
+        float ss_pad2;
     };
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
@@ -288,6 +296,22 @@ namespace df::gr::d3d11
         data.colorblind_mode = static_cast<float>(current_colorblind_mode_);
         data.disable_textures = current_lightmap_only_ ? 1.0f : 0.0f;
         data.pad0 = 0.0f;
+
+        const auto& ss = get_ss_occlusion_params();
+        if (ss.active) {
+            data.ss_player_pos = {ss.player_x, ss.player_y, ss.player_z};
+            data.ss_fade_strength = ss.fade_strength;
+            data.ss_camera_x = ss.camera_x;
+            data.ss_radius = ss.radius;
+        }
+        else {
+            data.ss_player_pos = {0.0f, 0.0f, 0.0f};
+            data.ss_fade_strength = 0.0f;
+            data.ss_camera_x = 0.0f;
+            data.ss_radius = 0.0f;
+        }
+        data.ss_is_detail = current_ss_is_detail_ ? 1.0f : 0.0f;
+        data.ss_pad2 = 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
