@@ -477,32 +477,35 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
 
 void alpine_mesh_do_frame()
 {
-    for (auto& anim : g_mesh_anim_states) {
-        rf::Object* obj = rf::obj_from_handle(anim.obj_handle);
-        if (!obj || !obj->vmesh) continue;
-        if (obj->vmesh->type != rf::MESH_TYPE_CHARACTER) continue;
-        if (!obj->vmesh->mesh || !obj->vmesh->instance) continue;
+    for (auto it = g_mesh_anim_states.begin(); it != g_mesh_anim_states.end(); ) {
+        rf::Object* obj = rf::obj_from_handle(it->obj_handle);
+        if (!obj || !obj->vmesh || obj->vmesh->type != rf::MESH_TYPE_CHARACTER
+            || !obj->vmesh->mesh || !obj->vmesh->instance) {
+            it = g_mesh_anim_states.erase(it);
+            continue;
+        }
 
         // Wait a few frames after level load before starting animations
         // This ensures all subsystems are fully initialized
-        if (anim.startup_delay > 0) {
-            anim.startup_delay--;
+        if (it->startup_delay > 0) {
+            it->startup_delay--;
+            ++it;
             continue;
         }
 
         // Load the animation action with flag=1 (looping).
         // Looping actions use modular time (fmod) — the playback position wraps
         // automatically and the slot is never removed.
-        if (anim.action_index < 0) {
-            anim.action_index = rf::character_mesh_load_action(obj->vmesh->mesh, anim.state_anim.c_str(), 1, 0);
-            if (anim.action_index < 0) {
+        if (it->action_index < 0) {
+            it->action_index = rf::character_mesh_load_action(obj->vmesh->mesh, it->state_anim.c_str(), 1, 0);
+            if (it->action_index < 0) {
                 xlog::warn("[AlpineMesh] Failed to load animation '{}' for handle {}",
-                    anim.state_anim, anim.obj_handle);
-                anim.anim_started = true;
+                    it->state_anim, it->obj_handle);
+                it = g_mesh_anim_states.erase(it);
                 continue;
             }
             xlog::debug("[AlpineMesh] Loaded animation '{}' action_index={} for handle {}",
-                anim.state_anim, anim.action_index, anim.obj_handle);
+                it->state_anim, it->action_index, it->obj_handle);
         }
 
         // Entity-style looping: each frame, zero all looping action weights then
@@ -511,16 +514,17 @@ void alpine_mesh_do_frame()
         // NOTE: The stock clutter process (FUN_0040fe10) does NOT call vmesh_process,
         // so we must call it ourselves.
         rf::vmesh_reset_actions(obj->vmesh);
-        rf::vmesh_set_action_weight(obj->vmesh, anim.action_index, 1.0f);
+        rf::vmesh_set_action_weight(obj->vmesh, it->action_index, 1.0f);
 
-        if (!anim.anim_started) {
-            anim.anim_started = true;
+        if (!it->anim_started) {
+            it->anim_started = true;
             xlog::debug("[AlpineMesh] Started animation '{}' (action_index={}) on handle {}",
-                anim.state_anim, anim.action_index, anim.obj_handle);
+                it->state_anim, it->action_index, it->obj_handle);
         }
 
         // Advance animation — stock clutter process does NOT call vmesh_process
         rf::vmesh_process(obj->vmesh, rf::frametime, 0, &obj->pos, &obj->orient, 1);
+        ++it;
     }
 
     // Process event-animated meshes: call vmesh_process so animations actually advance
