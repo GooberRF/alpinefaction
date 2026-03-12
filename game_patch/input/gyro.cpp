@@ -7,25 +7,24 @@
 
 static GamepadMotion g_motion;
 
-static void apply_calibration_mode()
+void gyro_update_calibration_mode()
 {
     using CM = GamepadMotionHelpers::CalibrationMode;
-    if (g_alpine_game_config.gamepad_gyro_autocalibration)
-        g_motion.SetCalibrationMode(CM::Stillness | CM::SensorFusion);
-    else
-        g_motion.SetCalibrationMode(CM::Manual);
+    g_motion.SetCalibrationMode(g_alpine_game_config.gamepad_gyro_autocalibration
+        ? CM::Stillness | CM::SensorFusion
+        : CM::Manual);
 }
 
 void gyro_reset()
 {
     g_motion.Reset();
-    apply_calibration_mode();
+    gyro_update_calibration_mode();
 }
 
 void gyro_set_autocalibration(bool enable)
 {
     g_alpine_game_config.gamepad_gyro_autocalibration = enable;
-    apply_calibration_mode();
+    gyro_update_calibration_mode();
 }
 
 float gyro_get_autocalibration_confidence()
@@ -57,45 +56,32 @@ const char* gyro_get_space_name(int space)
     return gyro_space_names[0];
 }
 
-void gyro_get_camera_axes(float& out_pitch_dps, float& out_yaw_dps)
+void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
 {
-    switch (static_cast<GyroSpace>(g_alpine_game_config.gamepad_gyro_space)) {
-    default:
-    case GyroSpace::Yaw: {
-        float gx, gy, gz;
-        g_motion.GetCalibratedGyro(gx, gy, gz);
-        out_pitch_dps = gx;
-        out_yaw_dps   = gy;
-        break;
-    }
-    case GyroSpace::Roll: {
-        float gx, gy, gz;
-        g_motion.GetCalibratedGyro(gx, gy, gz);
-        out_pitch_dps = gx;
-        out_yaw_dps   = -gz;
-        break;
-    }
-    case GyroSpace::LocalSpace: {
-        float gx, gy, gz;
-        g_motion.GetCalibratedGyro(gx, gy, gz);
-        out_pitch_dps = gx;
-        out_yaw_dps   = gy - gz;
-        break;
-    }
-    case GyroSpace::PlayerSpace: {
+    auto space = static_cast<GyroSpace>(g_alpine_game_config.gamepad_gyro_space);
+
+    if (space == GyroSpace::PlayerSpace) {
         float px, py;
         g_motion.GetPlayerSpaceGyro(px, py);
         out_pitch_dps = px;
         out_yaw_dps   = py;
-        break;
+        return;
     }
-    case GyroSpace::WorldSpace: {
+    if (space == GyroSpace::WorldSpace) {
         float wx, wy;
         g_motion.GetWorldSpaceGyro(wx, wy);
         out_pitch_dps = wx;
         out_yaw_dps   = wy;
-        break;
+        return;
     }
+
+    float gx, gy, gz;
+    g_motion.GetCalibratedGyro(gx, gy, gz);
+    out_pitch_dps = gx;
+    switch (space) {
+    case GyroSpace::Roll:       out_yaw_dps = -gz;     break;
+    case GyroSpace::LocalSpace: out_yaw_dps = gy - gz; break;
+    default:                    out_yaw_dps = gy;       break; // Yaw
     }
 }
 
@@ -115,20 +101,22 @@ ConsoleCommand2 gyro_autocalibration_cmd{
     "gyro_autocalibration [0|1]",
 };
 
-ConsoleCommand2 gyro_recalibrate_cmd{
-    "gyro_recalibrate",
+ConsoleCommand2 gyro_reset_autocalibration_cmd{
+    "gyro_reset_autocalibration",
     [](std::optional<int>) {
-        g_motion.SetCalibrationOffset(0.0f, 0.0f, 0.0f, 0);
         g_motion.SetAutoCalibrationConfidence(0.0f);
-        rf::console::print("Gyro calibration reset");
+        rf::console::print("Gyro auto-calibration reset");
     },
-    "Restarting Gyro auto-calibration",
+    "Reset gyro auto-calibration",
 };
 
 ConsoleCommand2 gyro_space_cmd{
     "gyro_space",
     [](std::optional<int> val) {
-        if (val) g_alpine_game_config.gamepad_gyro_space = std::clamp(val.value(), 0, 4);
+        if (val) {
+            g_alpine_game_config.gamepad_gyro_space = std::clamp(val.value(), 0, 4);
+            g_motion.ResetMotion();
+        }
         int s = g_alpine_game_config.gamepad_gyro_space;
         rf::console::print("Gyro space: {} ({})", s, gyro_space_names[s]);
     },
@@ -148,9 +136,13 @@ ConsoleCommand2 gyro_invert_y_cmd{
 
 void gyro_apply_patch()
 {
-    apply_calibration_mode();
+    g_motion.Settings.MinStillnessCorrectionTime      = 1.0f; // default 2.0
+    g_motion.Settings.StillnessCalibrationEaseInTime  = 1.5f; // default 3.0
+    g_motion.Settings.SensorFusionCalibrationEaseInTime = 1.5f; // default 3.0
+
+    gyro_update_calibration_mode();
     gyro_autocalibration_cmd.register_cmd();
-    gyro_recalibrate_cmd.register_cmd();
+    gyro_reset_autocalibration_cmd.register_cmd();
     gyro_space_cmd.register_cmd();
     gyro_invert_y_cmd.register_cmd();
     xlog::info("Gyro processing initialized");

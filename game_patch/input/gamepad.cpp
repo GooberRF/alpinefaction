@@ -1,5 +1,6 @@
 #include "gamepad.h"
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -21,7 +22,7 @@ static bool g_motion_sensors_active = false; // true only when the connected gam
 // Latest sensor samples — latched from SDL events, consumed once per frame.
 static float g_gyro_x = 0.0f, g_gyro_y = 0.0f, g_gyro_z = 0.0f;   // deg/s
 static float g_accel_x = 0.0f, g_accel_y = 0.0f, g_accel_z = 0.0f; // g-force
-static bool g_gyro_fresh = false; // true only when a new gyro sample arrived this frame
+static bool g_gyro_fresh = false;
 
 // Button → action mapping: indexed by SDL_GamepadButton, value is rf::ControlConfigAction, -1 = unbound.
 static int g_button_map[SDL_GAMEPAD_BUTTON_COUNT];
@@ -41,6 +42,10 @@ static float get_axis(SDL_GamepadAxis axis, float deadzone)
     if (v < -deadzone) return (v + deadzone) / (1.0f - deadzone);
     return 0.0f;
 }
+
+// Analog left-stick axes (post-deadzone, [-1,1]) cached each frame so the
+// physics hook can scale movement velocity proportionally.
+static float g_move_lx = 0.0f, g_move_ly = 0.0f;
 
 static bool action_is_down(rf::ControlConfigAction action)
 {
@@ -76,8 +81,6 @@ static void try_open_gamepad(SDL_JoystickID id)
     gyro_reset();
 }
 
-
-// Map right/left trigger axes to their bound actions.
 static void update_trigger_actions()
 {
     float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / (float)SDL_MAX_SINT16;
@@ -86,52 +89,42 @@ static void update_trigger_actions()
     g_action_curr[rf::CC_ACTION_CROUCH]           = lt > 0.5f;
 }
 
+static void set_movement_key(rf::ControlConfigAction action, bool down)
+{
+    int idx = static_cast<int>(action);
+    if (g_action_curr[idx] == down) return;
+    if (rf::local_player) {
+        int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
+        if (sc >= 0)
+            rf::key_process_event(sc, down ? 1 : 0, 0);
+    }
+    g_action_curr[idx] = down;
+}
+
 static void update_stick_movement()
 {
     if (!rf::local_player)
         return;
 
-    float ly = get_axis(SDL_GAMEPAD_AXIS_LEFTY, g_alpine_game_config.gamepad_move_deadzone);
     float lx = get_axis(SDL_GAMEPAD_AXIS_LEFTX, g_alpine_game_config.gamepad_move_deadzone);
+    float ly = get_axis(SDL_GAMEPAD_AXIS_LEFTY, g_alpine_game_config.gamepad_move_deadzone);
 
-    // 8-way directional overlay
-    static constexpr float k_8way = 2.414f;
-    struct { rf::ControlConfigAction action; bool now; } moves[] = {
-        { rf::CC_ACTION_FORWARD,     ly < 0.0f && std::abs(lx) < std::abs(ly) * k_8way },
-        { rf::CC_ACTION_BACKWARD,    ly > 0.0f && std::abs(lx) < std::abs(ly) * k_8way },
-        { rf::CC_ACTION_SLIDE_LEFT,  lx < 0.0f && std::abs(ly) < std::abs(lx) * k_8way },
-        { rf::CC_ACTION_SLIDE_RIGHT, lx > 0.0f && std::abs(ly) < std::abs(lx) * k_8way },
-    };
+    g_move_lx = lx;
+    g_move_ly = ly;
 
-    auto& bindings = rf::local_player->settings.controls.bindings;
-    for (auto& m : moves) {
-        int idx = static_cast<int>(m.action);
-        bool was = g_action_curr[idx];
-        if (m.now != was) {
-            int16_t sc = bindings[idx].scan_codes[0];
-            if (sc >= 0)
-                rf::key_process_event(sc, m.now ? 1 : 0, 0);
-            g_action_curr[idx] = m.now;
-        }
-    }
+    set_movement_key(rf::CC_ACTION_FORWARD,     ly < 0.0f);
+    set_movement_key(rf::CC_ACTION_BACKWARD,    ly > 0.0f);
+    set_movement_key(rf::CC_ACTION_SLIDE_LEFT,  lx < 0.0f);
+    set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, lx > 0.0f);
 }
 
 static void release_movement_keys()
 {
-    if (!rf::local_player)
-        return;
-
-    auto& bindings = rf::local_player->settings.controls.bindings;
-    for (auto action : { rf::CC_ACTION_FORWARD, rf::CC_ACTION_BACKWARD,
-                         rf::CC_ACTION_SLIDE_LEFT, rf::CC_ACTION_SLIDE_RIGHT }) {
-        int idx = static_cast<int>(action);
-        if (g_action_curr[idx]) {
-            int16_t sc = bindings[idx].scan_codes[0];
-            if (sc >= 0)
-                rf::key_process_event(sc, 0, 0);
-            g_action_curr[idx] = false;
-        }
-    }
+    g_move_lx = g_move_ly = 0.0f;
+    set_movement_key(rf::CC_ACTION_FORWARD,     false);
+    set_movement_key(rf::CC_ACTION_BACKWARD,    false);
+    set_movement_key(rf::CC_ACTION_SLIDE_LEFT,  false);
+    set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, false);
 }
 
 
@@ -149,6 +142,7 @@ void gamepad_do_frame()
         case SDL_EVENT_GAMEPAD_REMOVED:
             if (g_gamepad && SDL_GetGamepadID(g_gamepad) == ev.gdevice.which) {
                 xlog::info("Gamepad disconnected");
+                release_movement_keys(); // send key-up events before clearing state
                 SDL_CloseGamepad(g_gamepad);
                 g_gamepad             = nullptr;
                 g_motion_sensors_active = false;
@@ -200,8 +194,6 @@ void gamepad_do_frame()
                                 g_accel_x, g_accel_y, g_accel_z, rf::frametime);
             g_gyro_fresh = false;
         }
-    } else {
-        release_movement_keys();
     }
 }
 
@@ -222,7 +214,7 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled
                                 && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f) {
         float gyro_pitch, gyro_yaw;
-        gyro_get_camera_axes(gyro_pitch, gyro_yaw);
+        gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
 
         constexpr float deg2rad = 3.14159265f / 180.0f;
         float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
@@ -254,6 +246,52 @@ FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config
             return true;
         }
         return false;
+    },
+};
+
+FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
+    0x0049F3C0,
+    [](rf::Entity* entity) {
+        bool is_moving = g_gamepad && entity == rf::local_player_entity
+            && (action_is_down(rf::CC_ACTION_FORWARD)    || action_is_down(rf::CC_ACTION_BACKWARD)
+             || action_is_down(rf::CC_ACTION_SLIDE_LEFT) || action_is_down(rf::CC_ACTION_SLIDE_RIGHT));
+
+        float pre_vx = entity->p_data.vel.x;
+        float pre_vz = entity->p_data.vel.z;
+
+        physics_simulate_entity_hook.call_target(entity);
+
+        if (!is_moving) return;
+
+        float mag = std::sqrt(g_move_lx * g_move_lx + g_move_ly * g_move_ly);
+        if (mag < 0.001f) return;
+        mag = std::min(1.0f, mag);
+
+        float delta_vx = entity->p_data.vel.x - pre_vx;
+        float delta_vz = entity->p_data.vel.z - pre_vz;
+        float delta_speed = std::sqrt(delta_vx * delta_vx + delta_vz * delta_vz);
+        if (delta_speed < 0.001f) return;
+
+        float world_yaw = entity->control_data.phb.y;
+        float cos_y = std::cos(world_yaw);
+        float sin_y = std::sin(world_yaw);
+        float wx = (g_move_lx * cos_y - g_move_ly * sin_y) / mag;
+        float wz = -(g_move_ly * cos_y + g_move_lx * sin_y) / mag;
+
+        float new_vx = pre_vx + wx * delta_speed * mag;
+        float new_vz = pre_vz + wz * delta_speed * mag;
+
+        if (entity->max_vel > 0.001f) {
+            float new_speed = std::sqrt(new_vx * new_vx + new_vz * new_vz);
+            if (new_speed > entity->max_vel * mag) {
+                float scale = entity->max_vel * mag / new_speed;
+                new_vx *= scale;
+                new_vz *= scale;
+            }
+        }
+
+        entity->p_data.vel.x = new_vx;
+        entity->p_data.vel.z = new_vz;
     },
 };
 
@@ -293,7 +331,7 @@ ConsoleCommand2 gyro_sens_cmd{
         if (val) g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, val.value());
         rf::console::print("Gyro sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_sensitivity);
     },
-    "Set gyro look sensitivity (default 1.0, 0 to disable)",
+    "Set gyro sensitivity (default 2.5)",
     "gyro_sens [value]",
 };
 
@@ -349,6 +387,7 @@ void gamepad_apply_patch()
 
     control_is_control_down_hook.install();
     control_config_check_pressed_hook.install();
+    physics_simulate_entity_hook.install();
     joy_sens_cmd.register_cmd();
     joy_move_deadzone_cmd.register_cmd();
     joy_look_deadzone_cmd.register_cmd();

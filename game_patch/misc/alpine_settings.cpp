@@ -15,6 +15,7 @@
 #include "../rf/sound/sound.h"
 #include "../rf/gr/gr.h"
 #include "../sound/sound.h"
+#include "../input/gyro.h"
 #include <shlwapi.h>
 #include <windows.h>
 #include <shellapi.h>
@@ -1420,6 +1421,9 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
                 xlog::warn("Legacy RF settings file not found. Applying default settings.");
             }
         }
+
+        // Re-apply gyro calibration system
+        gyro_update_calibration_mode();
 
         // display popup recommending ff link
         if (ff_link_prompt && !g_game_config.suppress_ff_link_prompt) {
