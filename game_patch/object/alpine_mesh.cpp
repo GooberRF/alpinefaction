@@ -629,6 +629,14 @@ void alpine_mesh_apply_corpse(rf::Object* obj, const std::string& corpse_filenam
             [&](const EventAnimatedMesh& e) { return e.obj_handle == obj->handle; }),
         g_event_animated_meshes.end());
 
+    // Clear stale original-texture entries for this object before destroying the old vmesh
+    for (auto it = g_original_tex_handles.begin(); it != g_original_tex_handles.end(); ) {
+        if ((it->first >> 32) == static_cast<uint64_t>(obj->handle))
+            it = g_original_tex_handles.erase(it);
+        else
+            ++it;
+    }
+
     // Delete old vmesh
     rf::obj_delete_mesh(obj);
 

@@ -1741,7 +1741,9 @@ void mesh_clear_clipboard()
         if (auto* v = get_vmesh(mesh)) {
             vmesh_free(v);
         }
+        mesh->field_4.free();
         mesh->script_name.free();
+        mesh->class_name.free();
         mesh->mesh_filename.free();
         mesh->state_anim.free();
         delete mesh;
