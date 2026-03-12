@@ -89,6 +89,8 @@ void note_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
     auto& notes = level.GetAlpineLevelProperties().note_objects;
     std::size_t remaining = chunk_len;
 
+    rf::File::ChunkGuard chunk_guard{file, remaining};
+
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
         if (remaining < n) return false;
         int got = file.read(dst, n);
@@ -134,10 +136,6 @@ void note_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
 
         notes.push_back(note);
         level.master_objects.add(static_cast<DedObject*>(note));
-    }
-
-    if (remaining > 0) {
-        file.seek(static_cast<int>(remaining), rf::File::seek_cur);
     }
 
     xlog::info("[Note] Loaded {} note objects", notes.size());

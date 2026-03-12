@@ -87,6 +87,15 @@ namespace rf
         {
             write(static_cast<void*>(&value), sizeof(value));
         }
+
+        // RAII guard that seeks past unread chunk data on scope exit.
+        // Use at the top of chunk deserialize functions to ensure the file
+        // position advances past the full chunk even on early return.
+        struct ChunkGuard {
+            File& file;
+            std::size_t& remaining;
+            ~ChunkGuard() { if (remaining > 0) file.seek(static_cast<int>(remaining), seek_cur); }
+        };
     };
     static_assert(sizeof(File) == 0x114, "File size mismatch");
 }

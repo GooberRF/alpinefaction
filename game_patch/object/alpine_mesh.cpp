@@ -91,6 +91,8 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
 {
     std::size_t remaining = chunk_len;
 
+    rf::File::ChunkGuard chunk_guard{file, remaining};
+
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
         if (remaining < n) return false;
         int got = file.read(dst, n);
@@ -197,12 +199,6 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         // to handles automatically, just like any other object type.
         alpine_mesh_create_object(info);
     }
-
-    // skip remaining
-    if (remaining > 0) {
-        file.seek(static_cast<int>(remaining), rf::File::seek_cur);
-    }
-
 }
 
 // ─── Material Helpers ────────────────────────────────────────────────────────

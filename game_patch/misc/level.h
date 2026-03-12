@@ -42,23 +42,7 @@ struct AlpineLevelProperties
     {
         std::size_t remaining = chunk_len;
 
-        // scope-exit: always skip any unread tail (forward compatibility for unknown newer fields)
-        struct Tail
-        {
-            rf::File& f;
-            std::size_t& rem;
-            bool active = true;
-            ~Tail()
-            {
-                if (active && rem) {
-                    f.seek(static_cast<int>(rem), rf::File::seek_cur);
-                }
-            }
-            void dismiss()
-            {
-                active = false;
-            }
-        } tail{file, remaining};
+        rf::File::ChunkGuard chunk_guard{file, remaining};
 
         auto read_bytes = [&](void* dst, std::size_t n) -> bool {
             if (remaining < n)

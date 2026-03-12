@@ -335,6 +335,8 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
     auto& meshes = level.GetAlpineLevelProperties().mesh_objects;
     std::size_t remaining = chunk_len;
 
+    rf::File::ChunkGuard chunk_guard{file, remaining};
+
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
         if (remaining < n) return false;
         int got = file.read(dst, n);
@@ -441,12 +443,6 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
         // Add to master objects list so stock link validation (FUN_00483920) finds this mesh
         level.master_objects.add(static_cast<DedObject*>(mesh));
     }
-
-    // skip any remaining data
-    if (remaining > 0) {
-        file.seek(static_cast<int>(remaining), rf::File::seek_cur);
-    }
-
 }
 
 // ─── Property Dialog ────────────────────────────────────────────────────────
