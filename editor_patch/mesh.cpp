@@ -505,7 +505,8 @@ static std::vector<EditorTextureOverride> mesh_dialog_read_overrides(HWND hdlg)
         ListView_GetItemText(list, i, 0, slot_str, sizeof(slot_str));
         ListView_GetItemText(list, i, 1, tex_str, sizeof(tex_str));
         if (tex_str[0] != '\0') {
-            result.push_back({static_cast<uint8_t>(atoi(slot_str)), tex_str});
+            int slot = std::clamp(atoi(slot_str), 0, 255);
+            result.push_back({static_cast<uint8_t>(slot), tex_str});
         }
     }
     return result;

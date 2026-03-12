@@ -44,8 +44,9 @@ struct EventAnimatedMesh {
 };
 static std::vector<EventAnimatedMesh> g_event_animated_meshes;
 
-// Dummy ClutterInfo as raw bytes - avoids calling rf::String/VArray constructors during DLL init
-// All zeros is safe: String{0,nullptr} = empty, VArray{0,nullptr} = empty
+// Dummy ClutterInfo as raw bytes - avoids calling rf::String/VArray constructors.
+// All zeros is safe: String{0,nullptr} = empty, VArray{0,nullptr} = empty.
+// Only scalar sentinel fields are written; String members are never used.
 alignas(rf::ClutterInfo) static uint8_t g_dummy_clutter_info_buf[sizeof(rf::ClutterInfo)];
 
 // Clutter linked list tail pointer (sentinel.prev)
@@ -297,7 +298,8 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         return;
     }
 
-    // Initialize dummy ClutterInfo once (deferred to first use rather than DLL init)
+    // Initialize dummy ClutterInfo once (memset + sentinel writes only —
+    // String members stay as {0,nullptr} which is valid empty state)
     if (!g_dummy_clutter_info_initialized) {
         auto* dummy_info = reinterpret_cast<rf::ClutterInfo*>(g_dummy_clutter_info_buf);
         std::memset(dummy_info, 0, sizeof(rf::ClutterInfo));
@@ -335,14 +337,8 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
     // otherwise use the shared dummy
     bool needs_own_info = info.clutter.is_clutter || info.material != 0;
     if (needs_own_info) {
-        // Allocate a dedicated ClutterInfo for this mesh
-        auto* ci = static_cast<rf::ClutterInfo*>(std::calloc(1, sizeof(rf::ClutterInfo)));
-        // Placement-construct rf::String members (calloc gives zeros = valid empty strings for POD-like String)
-        std::construct_at(&ci->cls_name);
-        std::construct_at(&ci->v3d_filename);
-        std::construct_at(&ci->corpse_class_name);
-        std::construct_at(&ci->debris_filename);
-        std::construct_at(&ci->debris_sound_set);
+        // Allocate a dedicated ClutterInfo — default constructor handles all members
+        auto* ci = new rf::ClutterInfo{};
 
         ci->material = info.material;
         ci->sound = -1;
@@ -596,12 +592,7 @@ void alpine_mesh_clear_state()
     g_dummy_clutter_info_initialized = false;
     // Free per-mesh ClutterInfo objects
     for (auto* ci : g_mesh_clutter_infos) {
-        std::destroy_at(&ci->cls_name);
-        std::destroy_at(&ci->v3d_filename);
-        std::destroy_at(&ci->corpse_class_name);
-        std::destroy_at(&ci->debris_filename);
-        std::destroy_at(&ci->debris_sound_set);
-        std::free(ci);
+        delete ci;
     }
     g_mesh_clutter_infos.clear();
 }
