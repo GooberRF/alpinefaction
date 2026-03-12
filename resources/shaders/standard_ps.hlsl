@@ -18,12 +18,13 @@ cbuffer RenderModeBuffer : register(b0)
     float3 fog_color;
     float _pad0;
     // Side-scroller occlusion
-    float3 ss_player_pos;
     float ss_fade_strength;
-    float ss_camera_x;
     float ss_radius;
     float ss_is_detail;
-    float _ss_pad;
+    float ss_num_entities;
+    float4 ss_entity_pos[16];
+    float3 ss_camera_pos;
+    float _pad1;
 };
 
 struct PointLight {
@@ -89,19 +90,33 @@ float4 main(VsOutput input) : SV_TARGET
 
     clip(target.a - alpha_test);
 
-    // Side-scroller occlusion: dithered transparency for detail/mover geometry near player
+    // Side-scroller occlusion: dithered transparency for detail/mover geometry near entities.
+    // For each entity, a cylinder is oriented along the entity-to-camera axis so that
+    // geometry between the entity and camera gets dithered regardless of viewing angle.
     if (ss_fade_strength > 0.0f && ss_is_detail > 0.5f) {
         float3 world_pos = input.world_pos_and_depth.xyz;
-        // Distance from player axis in YZ plane (cylinder around player)
-        float2 delta_yz = world_pos.yz - ss_player_pos.yz;
-        float dist_yz = length(delta_yz);
-        if (dist_yz < ss_radius) {
-            // Linear falloff: full fade at center, zero at edge
-            float fade = ss_fade_strength * saturate(1.0f - dist_yz / ss_radius);
-            // Dithered discard using Bayer matrix
+        float max_fade = 0.0f;
+        for (int ei = 0; ei < (int)ss_num_entities; ++ei) {
+            float3 entity_pos = ss_entity_pos[ei].xyz;
+            float3 axis = ss_camera_pos - entity_pos;
+            float axis_len = length(axis);
+            if (axis_len < 0.001f) continue;
+            float3 axis_dir = axis / axis_len;
+            float3 to_pixel = world_pos - entity_pos;
+            float proj = dot(to_pixel, axis_dir);
+            // Only affect pixels between entity and camera (along the axis)
+            if (proj < 0.0f || proj > axis_len) continue;
+            float3 perp = to_pixel - proj * axis_dir;
+            float dist = length(perp);
+            if (dist < ss_radius) {
+                float fade = ss_fade_strength * saturate(1.0f - dist / ss_radius);
+                max_fade = max(max_fade, fade);
+            }
+        }
+        if (max_fade > 0.0f) {
             uint2 pixel = uint2(input.pos.xy) % 4;
             float dither = bayer4x4[pixel.y][pixel.x];
-            clip(dither - fade);
+            clip(dither - max_fade);
         }
     }
 

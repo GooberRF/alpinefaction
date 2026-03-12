@@ -1,8 +1,10 @@
 #include <cmath>
+#include <algorithm>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/MemUtils.h>
+#include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include "side_scroller.h"
 #include "level.h"
@@ -546,14 +548,51 @@ CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> side_scroller_gr_s
                 g_ss_occlusion_fade_current = std::min(g_ss_occlusion_fade_current + fade_speed * dt, fade_target);
             }
 
-            // Player position is camera pos with X offset removed
+            // Collect positions of all alive entities for occlusion cylinders,
+            // prioritizing those closest to the local player
             g_ss_occlusion.active = true;
-            g_ss_occlusion.player_x = g_ss_camera_pos.x - camera_offset_x;
-            g_ss_occlusion.player_y = g_ss_camera_pos.y;
-            g_ss_occlusion.player_z = g_ss_camera_pos.z;
-            g_ss_occlusion.camera_x = g_ss_camera_pos.x;
             g_ss_occlusion.fade_strength = g_ss_occlusion_fade_current;
             g_ss_occlusion.radius = 2.5f;
+            g_ss_occlusion.num_entities = 0;
+
+            rf::Entity* local_entity = rf::local_player
+                ? rf::entity_from_handle(rf::local_player->entity_handle) : nullptr;
+
+            struct EntityEntry {
+                float dist_sq;
+                rf::Vector3 pos;
+            };
+            static std::vector<EntityEntry> candidates;
+            candidates.clear();
+
+            for (auto& entity : DoublyLinkedList{rf::entity_list}) {
+                if (rf::entity_is_dying(&entity)) continue;
+                float dist_sq = 0.0f;
+                if (local_entity) {
+                    float dx = entity.pos.x - local_entity->pos.x;
+                    float dy = entity.pos.y - local_entity->pos.y;
+                    float dz = entity.pos.z - local_entity->pos.z;
+                    dist_sq = dx * dx + dy * dy + dz * dz;
+                }
+                candidates.push_back({dist_sq, entity.pos});
+            }
+
+            if (static_cast<int>(candidates.size()) > max_ss_occlusion_entities) {
+                std::partial_sort(candidates.begin(),
+                    candidates.begin() + max_ss_occlusion_entities,
+                    candidates.end(),
+                    [](const EntityEntry& a, const EntityEntry& b) { return a.dist_sq < b.dist_sq; });
+            }
+
+            int count = std::min(static_cast<int>(candidates.size()), max_ss_occlusion_entities);
+            for (int i = 0; i < count; ++i) {
+                auto& ep = g_ss_occlusion.entity_pos[i];
+                ep.x = candidates[i].pos.x;
+                ep.y = candidates[i].pos.y;
+                ep.z = candidates[i].pos.z;
+            }
+            g_ss_occlusion.num_entities = count;
+            g_ss_occlusion.camera_pos = {g_ss_camera_pos.x, g_ss_camera_pos.y, g_ss_camera_pos.z};
         }
         else {
             // Fade out when leaving side-scroller mode
