@@ -77,6 +77,15 @@ static std::unordered_set<int> g_alpine_corpse_applied;
 // Used by alpine_mesh_clear_texture to restore the base mesh texture.
 static std::unordered_map<uint64_t, int> g_original_tex_handles;
 
+// Build a tex_handles map key from handle + slot, avoiding sign-extension
+static uint64_t tex_key(int handle, int slot) {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(handle)) << 32)
+         | static_cast<uint32_t>(slot);
+}
+static uint64_t tex_key_handle(int handle) {
+    return static_cast<uint64_t>(static_cast<uint32_t>(handle)) << 32;
+}
+
 // ─── VMesh Type Detection ───────────────────────────────────────────────────
 
 static rf::VMeshType determine_vmesh_type(const std::string& filename)
@@ -98,11 +107,14 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
 
     rf::File::ChunkGuard chunk_guard{file, remaining};
 
+    bool read_error = false;
+
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
-        if (remaining < n) return false;
+        if (remaining < n) { read_error = true; return false; }
         int got = file.read(dst, n);
         if (got != static_cast<int>(n)) {
             if (got > 0) remaining -= got;
+            read_error = true;
             return false;
         }
         remaining -= n;
@@ -142,8 +154,11 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
         if (!read_bytes(&info.orient.fvec.z, sizeof(float))) return;
         // strings
         info.script_name = read_string();
+        if (read_error) return;
         info.mesh_filename = read_string();
+        if (read_error) return;
         info.state_anim = read_string();
+        if (read_error) return;
         // collision mode
         uint8_t collision_mode = 2;
         if (!read_bytes(&collision_mode, sizeof(collision_mode))) return;
@@ -155,6 +170,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
             uint8_t slot_id = 0;
             if (!read_bytes(&slot_id, sizeof(slot_id))) return;
             std::string tex = read_string();
+            if (read_error) return;
             if (!tex.empty()) {
                 info.texture_overrides.push_back({slot_id, std::move(tex)});
             }
@@ -173,17 +189,19 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
                     auto& cp = info.clutter;
                     if (!read_bytes(&cp.life, sizeof(float))) return;
                     cp.debris_filename = read_string();
+                    if (read_error) return;
                     cp.explosion_vclip = read_string();
+                    if (read_error) return;
                     if (!read_bytes(&cp.explosion_radius, sizeof(float))) return;
                     if (!read_bytes(&cp.debris_velocity, sizeof(float))) return;
                     for (int di = 0; di < 11; di++) {
                         if (!read_bytes(&cp.damage_type_factors[di], sizeof(float))) return;
                     }
                     // Corpse fields
-                    if (remaining > 0) {
+                    if (remaining > 0 && !read_error) {
                         cp.corpse_filename = read_string();
                     }
-                    if (remaining > 0) {
+                    if (remaining > 0 && !read_error) {
                         cp.corpse_state_anim = read_string();
                     }
                     if (remaining >= 1) {
@@ -437,7 +455,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
                         ovr.filename, ovr.slot);
                     continue;
                 }
-                auto key = (static_cast<uint64_t>(obj->handle) << 32) | ovr.slot;
+                auto key = tex_key(obj->handle, ovr.slot);
                 if (g_original_tex_handles.find(key) == g_original_tex_handles.end()) {
                     g_original_tex_handles[key] = materials[ovr.slot].texture_maps[0].tex_handle;
                 }
@@ -631,7 +649,7 @@ void alpine_mesh_apply_corpse(rf::Object* obj, const std::string& corpse_filenam
 
     // Clear stale original-texture entries for this object before destroying the old vmesh
     for (auto it = g_original_tex_handles.begin(); it != g_original_tex_handles.end(); ) {
-        if ((it->first >> 32) == static_cast<uint64_t>(obj->handle))
+        if ((it->first >> 32) == static_cast<uint64_t>(static_cast<uint32_t>(obj->handle)))
             it = g_original_tex_handles.erase(it);
         else
             ++it;
@@ -845,7 +863,7 @@ void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& textu
         return;
     }
 
-    auto key = (static_cast<uint64_t>(obj->handle) << 32) | slot;
+    auto key = tex_key(obj->handle, slot);
     if (g_original_tex_handles.find(key) == g_original_tex_handles.end()) {
         g_original_tex_handles[key] = materials[slot].texture_maps[0].tex_handle;
     }
@@ -860,7 +878,7 @@ void alpine_mesh_clear_texture(rf::Object* obj, int slot)
         return;
     }
 
-    auto key = (static_cast<uint64_t>(obj->handle) << 32) | slot;
+    auto key = tex_key(obj->handle, slot);
     auto it = g_original_tex_handles.find(key);
     if (it == g_original_tex_handles.end()) {
         // No override was applied to this slot — nothing to restore

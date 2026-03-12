@@ -241,9 +241,12 @@ static INT_PTR CALLBACK NoteDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp
             int sel = ListView_GetNextItem(hlist, -1, LVNI_SELECTED);
             if (sel >= 0 && sel < static_cast<int>(s_note->notes.size())) {
                 int len = GetWindowTextLengthA(GetDlgItem(hdlg, IDC_NOTE_TEXT));
-                std::string text(len, '\0');
+                std::string text(len + 1, '\0');
                 if (len > 0) {
-                    GetDlgItemTextA(hdlg, IDC_NOTE_TEXT, text.data(), len + 1);
+                    int got = GetDlgItemTextA(hdlg, IDC_NOTE_TEXT, text.data(), len + 1);
+                    text.resize(got);
+                } else {
+                    text.clear();
                 }
                 s_note->notes[sel] = text;
                 // Update list preview for this item
@@ -261,9 +264,12 @@ static INT_PTR CALLBACK NoteDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp
         switch (LOWORD(wp)) {
         case IDC_NOTE_ADD: {
             int len = GetWindowTextLengthA(GetDlgItem(hdlg, IDC_NOTE_TEXT));
-            std::string text(len, '\0');
+            std::string text(len + 1, '\0');
             if (len > 0) {
-                GetDlgItemTextA(hdlg, IDC_NOTE_TEXT, text.data(), len + 1);
+                int got = GetDlgItemTextA(hdlg, IDC_NOTE_TEXT, text.data(), len + 1);
+                text.resize(got);
+            } else {
+                text.clear();
             }
             if (text.empty()) {
                 text = "(empty)";

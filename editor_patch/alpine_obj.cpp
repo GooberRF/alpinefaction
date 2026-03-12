@@ -221,12 +221,11 @@ CodeInjection alpine_copy_hook{
 static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*/)
 {
     auto* level = reinterpret_cast<CDedLevel*>(ecx_level);
-    level->paste_objects();
+    if (!level) return;
 
-    if (level) {
-        mesh_paste_objects(level);
-        note_paste_objects(level);
-    }
+    level->paste_objects();
+    mesh_paste_objects(level);
+    note_paste_objects(level);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────

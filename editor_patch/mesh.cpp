@@ -1739,6 +1739,9 @@ void mesh_clear_clipboard()
 {
     for (auto* mesh : g_mesh_clipboard) {
         if (auto* v = get_vmesh(mesh)) {
+            g_v3c_action_cache.erase(v);
+            g_v3c_action_simulating.erase(v);
+            g_v3c_action_elapsed.erase(v);
             vmesh_free(v);
         }
         mesh->field_4.free();
