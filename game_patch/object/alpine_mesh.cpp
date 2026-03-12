@@ -101,7 +101,10 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
         if (remaining < n) return false;
         int got = file.read(dst, n);
-        if (got != static_cast<int>(n)) return false;
+        if (got != static_cast<int>(n)) {
+            if (got > 0) remaining -= got;
+            return false;
+        }
         remaining -= n;
         return true;
     };
@@ -317,11 +320,11 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         // Allocate a dedicated ClutterInfo for this mesh
         auto* ci = static_cast<rf::ClutterInfo*>(std::calloc(1, sizeof(rf::ClutterInfo)));
         // Placement-construct rf::String members (calloc gives zeros = valid empty strings for POD-like String)
-        new (&ci->cls_name) rf::String();
-        new (&ci->v3d_filename) rf::String();
-        new (&ci->corpse_class_name) rf::String();
-        new (&ci->debris_filename) rf::String();
-        new (&ci->debris_sound_set) rf::String();
+        std::construct_at(&ci->cls_name);
+        std::construct_at(&ci->v3d_filename);
+        std::construct_at(&ci->corpse_class_name);
+        std::construct_at(&ci->debris_filename);
+        std::construct_at(&ci->debris_sound_set);
 
         ci->material = info.material;
         ci->sound = -1;
@@ -845,10 +848,13 @@ void alpine_mesh_clear_texture(rf::Object* obj, int slot)
         return;
     }
 
-    // To clear a texture override, we need the original material.
-    // The replacement materials array is a copy of the originals when first allocated,
-    // so we need to reload from the base mesh. For now, set handle to -1 which
-    // will cause the renderer to use the default texture.
+    auto key = (static_cast<uint64_t>(obj->handle) << 32) | slot;
+    auto it = g_original_tex_handles.find(key);
+    if (it == g_original_tex_handles.end()) {
+        // No override was applied to this slot — nothing to restore
+        return;
+    }
+
     int num_materials = 0;
     rf::MeshMaterial* materials = nullptr;
     if (!get_replacement_materials(obj->vmesh, num_materials, materials)) {
@@ -861,15 +867,9 @@ void alpine_mesh_clear_texture(rf::Object* obj, int slot)
         return;
     }
 
-    auto key = (static_cast<uint64_t>(obj->handle) << 32) | slot;
-    auto it = g_original_tex_handles.find(key);
-    if (it != g_original_tex_handles.end()) {
-        materials[slot].texture_maps[0].tex_handle = it->second;
-        g_original_tex_handles.erase(it);
-    } else {
-        materials[slot].texture_maps[0].tex_handle = -1;
-    }
-    xlog::debug("[AlpineMesh] Cleared texture slot {} on obj handle {}", slot, obj->handle);
+    materials[slot].texture_maps[0].tex_handle = it->second;
+    g_original_tex_handles.erase(it);
+    xlog::debug("[AlpineMesh] Restored original texture on slot {} for obj handle {}", slot, obj->handle);
 }
 
 void alpine_mesh_set_collision(rf::Object* obj, int collision_type)

@@ -424,8 +424,10 @@ struct AlpineLevelProperties
             if (remaining < n)
                 return false;
             int got = file.read(dst, n);
-            if (got != static_cast<int>(n) || file.error())
+            if (got != static_cast<int>(n) || file.error()) {
+                if (got > 0) remaining -= got;
                 return false;
+            }
             remaining -= n;
             return true;
         };

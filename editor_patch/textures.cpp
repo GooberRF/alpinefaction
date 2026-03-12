@@ -433,7 +433,8 @@ static void reload_bm_placeholders()
             Placeholder ph;
             ph.entry = entry;
             ph.original_checksum = entry->name_checksum;
-            memcpy(ph.name, entry->name, 32);
+            memcpy(ph.name, entry->name, 31);
+            ph.name[31] = '\0';
 
             // Invalidate checksum so bm_load's name lookup skips this entry.
             // Entry stays in its hash slot (preserving linear probe chain).
