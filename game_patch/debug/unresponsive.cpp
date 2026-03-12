@@ -18,9 +18,9 @@ FunHook<void()> gr_flip_hook{
 #ifndef NDEBUG
 ConsoleCommand2 hang_cmd{
     "d_hang",
-    []() {
-        int start = rf::timer_get(1000);
-        while (rf::timer_get(1000) - start < 6000) {}
+    [] {
+        const int start = rf::timer::get(1000);
+        while (rf::timer::get(1000) - start < 6000) {}
     },
 };
 #endif

@@ -523,7 +523,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.flag_dropping = *v;
     if (auto v = t["flag_captures_while_stolen"].value<bool>())
         o.flag_captures_while_stolen = *v;
-    if (auto v = t["flag_return_time"].value<int>())
+    if (auto v = t["flag_return_time"].value<float>())
         o.set_flag_return_time(*v);
     if (auto v = t["pvp_damage_modifier"].value<float>())
         o.set_pvp_damage_modifier(*v);

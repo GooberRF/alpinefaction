@@ -191,7 +191,7 @@ protected:
 
     static int current_time()
     {
-        return rf::timer_get(ProfilerStats::time_resolution);
+        return rf::timer::get(ProfilerStats::time_resolution);
     }
 
     void enter()

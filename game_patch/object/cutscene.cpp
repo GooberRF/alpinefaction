@@ -63,9 +63,11 @@ FunHook<void(bool)> cutscene_do_frame_hook{
                     else
                         shot_time_left_ms = std::min(shot_time_left_ms, 100);
                 }
-                rf::timer_add_delta_time(shot_time_left_ms);
+                rf::timer::add_delta_time(shot_time_left_ms);
                 rf::frametime = shot_time_left_ms / 1000.0f;
-                rf::timer_base -= static_cast<int64_t>(shot_time_left_ms) * rf::timer_freq / 1000;
+                rf::timer::base -= static_cast<int64_t>(shot_time_left_ms)
+                    * g_qpc_frequency.QuadPart
+                    / 1000;
                 cutscene_do_frame_hook.call_target(dlg_open);
             }
 

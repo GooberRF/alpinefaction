@@ -511,19 +511,26 @@ ConsoleCommand2 max_decals_cmd{
     },
 };
 
-static void render_rooms_clip_wnds()
-{
-    rf::GRoom** rooms;
-    int num_rooms;
+static void render_rooms_clip_wnds() {
+    rf::GRoom** rooms = nullptr;
+    int num_rooms = 0;
     rf::g_get_room_render_list(&rooms, &num_rooms);
     rf::gr::set_color(255, 255, 255, 255);
     for (int i = 0; i < num_rooms; ++i) {
-        rf::GRoom* room = rooms[i];
+        const rf::GRoom* const room = rooms[i];
         char buf[256];
         std::snprintf(buf, sizeof(buf), "room %d", room->room_index);
-        rf::gr::string(room->clip_wnd.left, room->clip_wnd.top, buf);
-        rf::gr::rect_border(room->clip_wnd.left, room->clip_wnd.top,
-            room->clip_wnd.right - room->clip_wnd.left, room->clip_wnd.bot - room->clip_wnd.top);
+        rf::gr::string(
+            std::lround(room->clip_wnd.left),
+            std::lround(room->clip_wnd.top),
+            buf
+        );
+        rf::gr::rect_border(
+            std::lround(room->clip_wnd.left),
+            std::lround(room->clip_wnd.top),
+            std::lround(room->clip_wnd.right - room->clip_wnd.left),
+            std::lround(room->clip_wnd.bot - room->clip_wnd.top)
+        );
     }
 }
 
