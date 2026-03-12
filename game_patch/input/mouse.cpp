@@ -291,7 +291,7 @@ CodeInjection linear_pitch_patch{
         const float current_pitch_non_lin = entity->control_data.eye_phb.x;
         float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
         const float& yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
-        if (!std::lround(pitch_delta)) {
+        if (pitch_delta == .0f) {
             return;
         }
         // Convert to linear space.  See `physics_make_orient`.

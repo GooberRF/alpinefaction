@@ -2736,7 +2736,7 @@ std::optional<int> is_closer_to_red_flag(const rf::Vector3* pos)
         + std::powf(pos->y - red_flag_pos.y, 2)
         + std::powf(pos->z - red_flag_pos.z, 2);
 
-    const  float dist_to_blue_sq = std::powf(pos->x - blue_flag_pos.x, 2)
+    const float dist_to_blue_sq = std::powf(pos->x - blue_flag_pos.x, 2)
         + std::powf(pos->y - blue_flag_pos.y, 2)
         + std::powf(pos->z - blue_flag_pos.z, 2);
 
