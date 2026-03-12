@@ -233,10 +233,14 @@ ConsoleCommand2 speed_display_cmd{
 CallHook<void(int)> frametime_calculate_sleep_hook{
     0x005095B4,
     [] (int ms) {
+        // Avoid oversleep.
         --ms;
+
         if (ms > 0) {
+            // Does not need to be `thread_local`.
+            static WaitableTimer timer{};
             // `wait_for` is higher resolution than `Sleep`.
-            wait_for(static_cast<float>(ms));
+            wait_for(static_cast<float>(ms), timer);
         }
     },
 };

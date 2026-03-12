@@ -10,6 +10,7 @@
 #include "win32_console.h"
 #include <xlog/xlog.h>
 #include <timeapi.h>
+#include "os.h"
 
 FunHook<void()> os_poll_hook{
     0x00524B60,
@@ -132,26 +133,17 @@ static FunHook<void(char*, bool)> os_parse_params_hook{
     },
 };
 
-void wait_for(const float ms) {
+void wait_for(const float ms, const WaitableTimer& timer) {
     if (ms <= .0f) {
         return;
     }
 
-    // Should be a resolution of 500 us.
-    const HANDLE timer = CreateWaitableTimerExA(
-        nullptr,
-        nullptr,
-        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-        TIMER_MODIFY_STATE | SYNCHRONIZE
-    );
-
-    if (!timer) {
-        ERR_ONCE("CreateWaitableTimerExA in wait_for failed ({})", GetLastError());
+    if (!timer.handle) {
     SLEEP:
         static const MMRESULT res = timeBeginPeriod(1);
         if (res != TIMERR_NOERROR) {
             ERR_ONCE(
-                "The frame rate may be unstable, because timeBeginPeriod failed ({})",
+                "The frame rate may be unstable, because `timeBeginPeriod` failed ({})",
                 res
             );
         }
@@ -163,18 +155,16 @@ void wait_for(const float ms) {
             .QuadPart = -static_cast<LONGLONG>(static_cast<double>(ms) * 10'000.)
         };
 
-        if (!SetWaitableTimer(timer, &dur, 0, nullptr, nullptr, FALSE)) {
-            ERR_ONCE("SetWaitableTimer in wait_for failed ({})", GetLastError());
+        if (!SetWaitableTimer(timer.handle, &dur, 0, nullptr, nullptr, FALSE)) {
+            ERR_ONCE("`SetWaitableTimer` in `wait_for` failed ({})", GetLastError());
             goto SLEEP;
         }
 
-        if (WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0) {
-            ERR_ONCE("WaitForSingleObject in wait_for failed ({})", GetLastError());
+        if (WaitForSingleObject(timer.handle, INFINITE) != WAIT_OBJECT_0) {
+            ERR_ONCE("`WaitForSingleObject` in `wait_for` failed ({})", GetLastError());
             goto SLEEP;
         }
     }
-
-    CloseHandle(timer);
 }
 
 void os_apply_patch()
