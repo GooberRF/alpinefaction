@@ -3,7 +3,7 @@
 #include <chrono>
 #include <optional>
 #include <algorithm>
-#include <Windows.h>
+#include <windows.h>
 
 void os_apply_patch();
 void frametime_render_ui();
