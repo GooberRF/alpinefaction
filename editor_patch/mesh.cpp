@@ -27,7 +27,8 @@ static const char* get_meshes_dir()
 {
     static char path[MAX_PATH] = {};
     if (!path[0]) {
-        GetModuleFileNameA(NULL, path, MAX_PATH);
+        DWORD len = GetModuleFileNameA(NULL, path, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) { path[0] = '\0'; return path; }
         char* last_sep = strrchr(path, '\\');
         if (last_sep) *(last_sep + 1) = '\0';
         strcat_s(path, "user_maps\\meshes");
@@ -340,7 +341,7 @@ void mesh_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
         if (remaining < n) return false;
         int got = file.read(dst, n);
-        if (got != static_cast<int>(n)) {
+        if (got != static_cast<int>(n) || file.error()) {
             if (got > 0) remaining -= got;
             return false;
         }

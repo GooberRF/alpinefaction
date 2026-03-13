@@ -22,7 +22,8 @@ static void register_custom_texture_subdirectories(void* texture_manager)
 {
     // Resolve path relative to executable directory
     char exe_dir[MAX_PATH];
-    GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    DWORD len = GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return;
     char* last_sep = strrchr(exe_dir, '\\');
     if (last_sep) *(last_sep + 1) = '\0';
 
@@ -438,7 +439,8 @@ static void add_mesh_to_vpp_list(const char* filename)
 
     // Get exe directory for constructing absolute paths
     char exe_dir[MAX_PATH];
-    GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    DWORD len = GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return;
     char* last_sep = std::strrchr(exe_dir, '\\');
     if (last_sep) *(last_sep + 1) = '\0';
 

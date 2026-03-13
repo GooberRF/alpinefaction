@@ -543,12 +543,18 @@ static INT_PTR CALLBACK ConvertOptionsDlgProc(HWND hdlg, UINT msg, WPARAM wParam
 // ─── Drop mesh object ───────────────────────────────────────────────────────
 
 // Create a DedMesh object at the given position with the given filename.
-// Returns true if the mesh was successfully loaded by the editor.
+// Returns true if the mesh was successfully loaded and added to the level.
 static bool create_mesh_object_at(CDedLevel* level, const char* mesh_filename,
                                   const Vector3& pos)
 {
     // Reload VFS paths so the editor can find the newly exported file
     reload_custom_meshes();
+
+    // Verify the mesh can be loaded before creating the object
+    EditorVMesh* loaded_vmesh = vmesh_load_v3m(mesh_filename, 1, -1);
+    if (!loaded_vmesh) {
+        return false;
+    }
 
     auto* mesh = new DedMesh();
     std::memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
@@ -563,27 +569,10 @@ static bool create_mesh_object_at(CDedLevel* level, const char* mesh_filename,
     mesh->orient.uvec = {0.0f, 1.0f, 0.0f};
     mesh->orient.fvec = {0.0f, 0.0f, 1.0f};
     mesh->uid = generate_uid();
+    mesh->vmesh = loaded_vmesh;
 
-    // Add to level (vmesh loaded lazily on first render)
     level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
     level->master_objects.add(static_cast<DedObject*>(mesh));
-
-    // Verify the mesh can be loaded by attempting an immediate load
-    EditorVMesh* test_vmesh = vmesh_load_v3m(mesh_filename, 1, -1);
-    if (!test_vmesh) {
-        // Mesh couldn't be loaded - remove the DedMesh we just created
-        auto& meshes = level->GetAlpineLevelProperties().mesh_objects;
-        auto it = std::find(meshes.begin(), meshes.end(), mesh);
-        if (it != meshes.end()) meshes.erase(it);
-        level->master_objects.remove_by_value(static_cast<DedObject*>(mesh));
-        DestroyDedMesh(mesh);
-        return false;
-    }
-
-    // Store the loaded vmesh
-    mesh->vmesh = test_vmesh;
-    mesh->vmesh_load_failed = false;
-
     return true;
 }
 

@@ -94,7 +94,7 @@ void note_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t chunk_
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
         if (remaining < n) return false;
         int got = file.read(dst, n);
-        if (got != static_cast<int>(n)) {
+        if (got != static_cast<int>(n) || file.error()) {
             if (got > 0) remaining -= got;
             return false;
         }

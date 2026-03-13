@@ -113,7 +113,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
         if (remaining < n) { read_error = true; return false; }
         int got = file.read(dst, n);
-        if (got != static_cast<int>(n)) {
+        if (got != static_cast<int>(n) || file.error()) {
             if (got > 0) remaining -= got;
             read_error = true;
             return false;
