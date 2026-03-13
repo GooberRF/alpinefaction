@@ -27,6 +27,15 @@
 static rf::ui::Gadget* new_gadgets[6]; // Allocate space for 6 options buttons
 static rf::ui::Button alpine_options_btn;
 
+// Controller bindings overlay (shown when the CONTROLLER tab is active on options panel 3)
+static bool g_ctrl_bind_view       = false; // KEYBOARD vs CONTROLLER tab toggle
+static bool g_ctrl_codes_installed = false; // true while gamepad scan codes are in cc.bindings
+static int16_t g_saved_scan_codes[128] = {}; // saved keyboard scan_codes[0] per binding slot
+
+// CONTROLLER mode checkbox (integrated into the controls panel)
+static rf::ui::Checkbox g_ctrl_mode_cbox;
+static bool g_ctrl_mode_btns_initialized = false;
+
 // alpine options panel elements
 static rf::ui::Panel alpine_options_panel; // parent to all subpanels
 static rf::ui::Panel alpine_options_panel0;
@@ -1610,17 +1619,172 @@ CodeInjection handle_options_button_click_patch{
     },
 };
 
+// Controller bindings tab strip (drawn on top of options panel 3 = Controls)
+
+// Write the current gamepad binding for every action into scan_codes[0] using the
+// CTRL_GAMEPAD_SCAN_BASE encoding, saving the original keyboard scan codes first.
+static void install_ctrl_gamepad_codes()
+{
+    if (!rf::local_player || g_ctrl_codes_installed) return;
+    auto& cc = rf::local_player->settings.controls;
+    int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+    for (int i = 0; i < n; ++i) {
+        g_saved_scan_codes[i] = cc.bindings[i].scan_codes[0];
+        int btn  = gamepad_get_button_for_action(i);
+        int trig = gamepad_get_trigger_for_action(i);
+        int16_t code = 0; // unbound
+        if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
+        else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
+        else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
+        cc.bindings[i].scan_codes[0] = code;
+    }
+    g_ctrl_codes_installed = true;
+}
+
+// Rewrite scan_codes[0] from the current g_button_map/g_trigger_action state.
+// Called after a bind completes so the list immediately reflects the new assignment.
+static void refresh_ctrl_gamepad_codes()
+{
+    if (!rf::local_player || !g_ctrl_codes_installed) return;
+    auto& cc = rf::local_player->settings.controls;
+    int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+    for (int i = 0; i < n; ++i) {
+        int btn  = gamepad_get_button_for_action(i);
+        int trig = gamepad_get_trigger_for_action(i);
+        int16_t code = 0;
+        if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
+        else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
+        else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
+        cc.bindings[i].scan_codes[0] = code;
+    }
+}
+
+// Harvest whatever RF wrote into scan_codes[0] back into g_button_map/g_trigger_action,
+// then restore the original keyboard scan codes.
+static void uninstall_ctrl_gamepad_codes()
+{
+    if (!rf::local_player || !g_ctrl_codes_installed) return;
+    gamepad_sync_bindings_from_scan_codes();
+    auto& cc = rf::local_player->settings.controls;
+    int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+    for (int i = 0; i < n; ++i)
+        cc.bindings[i].scan_codes[0] = g_saved_scan_codes[i];
+    g_ctrl_codes_installed = false;
+}
+
+bool ui_ctrl_bindings_view_active()
+{
+    return g_ctrl_bind_view;
+}
+
+void ui_ctrl_bindings_view_reset()
+{
+    uninstall_ctrl_gamepad_codes();
+    g_ctrl_bind_view = false;
+}
+
+// X/Y position for the CONTROLLER mode checkbox in UI 640x480 space.
+// Sits to the right of the stock "Change Binding" button on the same row.
+static constexpr int CTRL_CHK_X = 390;
+static constexpr int CTRL_CHK_Y = 352;
+
+static void ctrl_mode_cbox_on_click(int, int)
+{
+    if (g_ctrl_bind_view) {
+        uninstall_ctrl_gamepad_codes();
+        g_ctrl_bind_view = false;
+    } else {
+        g_ctrl_bind_view = true;
+        install_ctrl_gamepad_codes();
+    }
+    g_ctrl_mode_cbox.checked = g_ctrl_bind_view;
+    rf::snd_play(43, 0, 0.0f, 1.0f);
+}
+
+// Create the checkbox once (called lazily on first Controls panel render).
+static void init_ctrl_mode_btns()
+{
+    if (g_ctrl_mode_btns_initialized) return;
+    g_ctrl_mode_cbox.create("checkbox.tga", "checkbox_selected.tga", "checkbox_checked.tga",
+        CTRL_CHK_X, CTRL_CHK_Y, 0, "", rf::ui::medium_font_0);
+    g_ctrl_mode_cbox.enabled = true;
+    g_ctrl_mode_cbox.on_click = ctrl_mode_cbox_on_click;
+    g_ctrl_mode_btns_initialized = true;
+}
+
+// Render the checkbox and a label indicating what it controls.
+static void render_ctrl_mode_btns()
+{
+    init_ctrl_mode_btns();
+    g_ctrl_mode_cbox.checked = g_ctrl_bind_view;
+    g_ctrl_mode_cbox.render();
+    // Draw an inline label to the right of the checkbox.
+    int lx = static_cast<int>((CTRL_CHK_X + g_ctrl_mode_cbox.w + 5) * rf::ui::scale_x);
+    int cbox_screen_h = static_cast<int>(g_ctrl_mode_cbox.h * rf::ui::scale_y);
+    int font_h = rf::gr::get_font_height(rf::ui::medium_font_0);
+    int ly = static_cast<int>(CTRL_CHK_Y * rf::ui::scale_y) + (cbox_screen_h - font_h) / 2;
+    rf::gr::set_color(0, 0, 0, 255);
+    rf::gr::string(lx, ly, "Gamepad Controls", rf::ui::medium_font_0);
+}
+
+// Handle a click on the checkbox.
+static void handle_ctrl_mode_btns(int x, int y)
+{
+    if (!g_ctrl_mode_btns_initialized || !rf::mouse_was_button_pressed(0)) return;
+    int bx = static_cast<int>(g_ctrl_mode_cbox.x * rf::ui::scale_x);
+    int by = static_cast<int>(g_ctrl_mode_cbox.y * rf::ui::scale_y);
+    int bw = static_cast<int>(g_ctrl_mode_cbox.w * rf::ui::scale_x);
+    int bh = static_cast<int>(g_ctrl_mode_cbox.h * rf::ui::scale_y);
+    if (x >= bx && x < bx + bw && y >= by && y < by + bh)
+        ctrl_mode_cbox_on_click(x, y);
+}
+
 // handle alpine options panel rendering
 CodeInjection options_render_alpine_panel_patch{
     0x0044F80B,
     []() {
         int index = rf::ui::options_current_panel;
-        //xlog::warn("render index {}", index);
 
-        // render alpine options panel
-        if (index == 4) {
-            alpine_options_panel_do_frame(static_cast<int>(rf::ui::options_animated_offset));
+        // Restore keyboard bindings if user has navigated away from the Controls panel
+        if (index != 3 && g_ctrl_bind_view) {
+            uninstall_ctrl_gamepad_codes();
+            g_ctrl_bind_view = false;
         }
+
+        // Detect bind completion (falling edge of waiting_for_key): RF wrote the sentinel scan
+        // code into the selected binding slot; correlate it back to the pressed gamepad input.
+        static bool s_was_waiting = false;
+        bool now_waiting = (index == 3) && rf::ui::options_controls_waiting_for_key;
+        if (s_was_waiting && !now_waiting && g_ctrl_bind_view) {
+            gamepad_apply_rebind();                  // sentinel → display code, dedup
+            gamepad_sync_bindings_from_scan_codes(); // rebuild runtime maps from updated scan_codes
+            refresh_ctrl_gamepad_codes();            // normalize display codes from rebuilt maps
+        }
+        s_was_waiting = now_waiting;
+
+        if (index == 3 && g_ctrl_codes_installed && rf::local_player) {
+            auto& cc = rf::local_player->settings.controls;
+            int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+            bool defaults_hit = false;
+            for (int i = 0; i < n && !defaults_hit; ++i) {
+                int16_t sc = cc.bindings[i].scan_codes[0];
+                bool is_gamepad = (sc >= static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE)
+                                && sc <= static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER));
+                if (sc != 0 && sc != static_cast<int16_t>(CTRL_REBIND_SENTINEL) && !is_gamepad)
+                    defaults_hit = true;
+            }
+            if (defaults_hit) {
+                for (int i = 0; i < n; ++i)
+                    g_saved_scan_codes[i] = cc.bindings[i].scan_codes[0];
+                gamepad_reset_to_defaults();
+                refresh_ctrl_gamepad_codes();
+            }
+        }
+
+        if (index == 4)
+            alpine_options_panel_do_frame(static_cast<int>(rf::ui::options_animated_offset));
+        if (index == 3)
+            render_ctrl_mode_btns();
     },
 };
 
@@ -1645,8 +1809,10 @@ CodeInjection options_handle_mouse_patch{
         int y = *reinterpret_cast<int*>(regs.esp + 0x4);
         int index = rf::ui::options_current_panel;
 
-        if (index == 4) {
+        if (index == 4)
             alpine_options_panel_handle_mouse(x, y);
+        if (index == 3) {
+            handle_ctrl_mode_btns(x, y);
         }
     },
 };

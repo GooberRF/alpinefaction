@@ -146,6 +146,7 @@ struct AlpineGameSettings
     bool gamepad_gyro_invert_y = false;
     float gamepad_gyro_tightening = 3.0f;
     float gamepad_gyro_smoothing = 16.0f;
+    int gamepad_icon_override = 0; // ControllerIconType: 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool scoreboard_split_simple = true;

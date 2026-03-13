@@ -16,6 +16,7 @@
 #include "../rf/gr/gr.h"
 #include "../sound/sound.h"
 #include "../input/gyro.h"
+#include "../input/gamepad.h"
 #include <shlwapi.h>
 #include <windows.h>
 #include <shellapi.h>
@@ -1003,6 +1004,26 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_gyro_smoothing = std::max(0.0f, std::stof(settings["GamepadGyroSmoothing"]));
         processed_keys.insert("GamepadGyroSmoothing");
     }
+    if (settings.count("GamepadIconOverride")) {
+        g_alpine_game_config.gamepad_icon_override = std::clamp(std::stoi(settings["GamepadIconOverride"]), 0, 8);
+        processed_keys.insert("GamepadIconOverride");
+    }
+    // Per-button gamepad bindings
+    for (int b = 0; b < gamepad_get_button_count(); ++b) {
+        std::string key = "GamepadBtn_" + std::to_string(b);
+        if (settings.count(key)) {
+            gamepad_set_button_binding(b, std::stoi(settings[key]));
+            processed_keys.insert(key);
+        }
+    }
+    if (settings.count("GamepadLTAction")) {
+        gamepad_set_trigger_action(0, std::stoi(settings["GamepadLTAction"]));
+        processed_keys.insert("GamepadLTAction");
+    }
+    if (settings.count("GamepadRTAction")) {
+        gamepad_set_trigger_action(1, std::stoi(settings["GamepadRTAction"]));
+        processed_keys.insert("GamepadRTAction");
+    }
     if (settings.count("SwapARBinds")) {
         g_alpine_game_config.swap_ar_controls = std::stoi(settings["SwapARBinds"]);
         processed_keys.insert("SwapARBinds");
@@ -1119,6 +1140,15 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadGyroInvertY=" << g_alpine_game_config.gamepad_gyro_invert_y << "\n";
     file << "GamepadGyroTightening=" << g_alpine_game_config.gamepad_gyro_tightening << "\n";
     file << "GamepadGyroSmoothing=" << g_alpine_game_config.gamepad_gyro_smoothing << "\n";
+    file << "GamepadIconOverride=" << g_alpine_game_config.gamepad_icon_override << "\n";
+    // Per-button gamepad bindings (only write slots that are actually bound)
+    for (int b = 0; b < gamepad_get_button_count(); ++b) {
+        int action = gamepad_get_button_binding(b);
+        if (action >= 0)
+            file << "GamepadBtn_" << b << "=" << action << "\n";
+    }
+    file << "GamepadLTAction=" << gamepad_get_trigger_action(0) << "\n";
+    file << "GamepadRTAction=" << gamepad_get_trigger_action(1) << "\n";
 
     file << "\n[ActionBinds]\n";
     file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID}\n";
