@@ -10,6 +10,8 @@
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../rf/player/control_config.h"
+#include "../rf/player/player_fpgun.h"
+#include "../rf/vmesh.h"
 #include "../rf/entity.h"
 #include "../rf/os/frametime.h"
 #include "../misc/alpine_settings.h"
@@ -32,7 +34,6 @@ static constexpr int k_action_count = static_cast<int>(rf::CC_ACTION_QUICK_LOAD)
 static bool g_action_prev[k_action_count] = {};
 static bool g_action_curr[k_action_count] = {};
 
-
 // Normalize an axis value, strip the deadzone band, and rescale the remainder to [-1, 1].
 static float get_axis(SDL_GamepadAxis axis, float deadzone)
 {
@@ -43,9 +44,11 @@ static float get_axis(SDL_GamepadAxis axis, float deadzone)
     return 0.0f;
 }
 
-// Analog left-stick axes (post-deadzone, [-1,1]) cached each frame so the
-// physics hook can scale movement velocity proportionally.
+//  Left stick movement 
 static float g_move_lx = 0.0f, g_move_ly = 0.0f;
+static float g_move_mag = 0.0f;
+static rf::VMesh* g_local_player_body_vmesh = nullptr;
+static bool g_scaling_fpgun_vmesh = false;
 
 static bool action_is_down(rf::ControlConfigAction action)
 {
@@ -111,6 +114,7 @@ static void update_stick_movement()
 
     g_move_lx = lx;
     g_move_ly = ly;
+    g_move_mag = std::min(1.0f, std::sqrt(lx * lx + ly * ly));
 
     set_movement_key(rf::CC_ACTION_FORWARD,     ly < 0.0f);
     set_movement_key(rf::CC_ACTION_BACKWARD,    ly > 0.0f);
@@ -121,6 +125,7 @@ static void update_stick_movement()
 static void release_movement_keys()
 {
     g_move_lx = g_move_ly = 0.0f;
+    g_move_mag = 0.0f;
     set_movement_key(rf::CC_ACTION_FORWARD,     false);
     set_movement_key(rf::CC_ACTION_BACKWARD,    false);
     set_movement_key(rf::CC_ACTION_SLIDE_LEFT,  false);
@@ -188,6 +193,7 @@ void gamepad_do_frame()
     if (g_gamepad) {
         update_trigger_actions();
         update_stick_movement();
+        g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
 
         if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled && g_gyro_fresh) {
             gyro_process_motion(g_gyro_x, g_gyro_y, g_gyro_z,
@@ -252,46 +258,40 @@ FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config
 FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
     0x0049F3C0,
     [](rf::Entity* entity) {
-        bool is_moving = g_gamepad && entity == rf::local_player_entity
-            && (action_is_down(rf::CC_ACTION_FORWARD)    || action_is_down(rf::CC_ACTION_BACKWARD)
-             || action_is_down(rf::CC_ACTION_SLIDE_LEFT) || action_is_down(rf::CC_ACTION_SLIDE_RIGHT));
-
-        float pre_vx = entity->p_data.vel.x;
-        float pre_vz = entity->p_data.vel.z;
-
-        physics_simulate_entity_hook.call_target(entity);
-
-        if (!is_moving) return;
-
-        float mag = std::sqrt(g_move_lx * g_move_lx + g_move_ly * g_move_ly);
-        if (mag < 0.001f) return;
-        mag = std::min(1.0f, mag);
-
-        float delta_vx = entity->p_data.vel.x - pre_vx;
-        float delta_vz = entity->p_data.vel.z - pre_vz;
-        float delta_speed = std::sqrt(delta_vx * delta_vx + delta_vz * delta_vz);
-        if (delta_speed < 0.001f) return;
-
-        float world_yaw = entity->control_data.phb.y;
-        float cos_y = std::cos(world_yaw);
-        float sin_y = std::sin(world_yaw);
-        float wx = (g_move_lx * cos_y - g_move_ly * sin_y) / mag;
-        float wz = -(g_move_ly * cos_y + g_move_lx * sin_y) / mag;
-
-        float new_vx = pre_vx + wx * delta_speed * mag;
-        float new_vz = pre_vz + wz * delta_speed * mag;
-
-        if (entity->max_vel > 0.001f) {
-            float new_speed = std::sqrt(new_vx * new_vx + new_vz * new_vz);
-            if (new_speed > entity->max_vel * mag) {
-                float scale = entity->max_vel * mag / new_speed;
-                new_vx *= scale;
-                new_vz *= scale;
+        if (g_gamepad && entity == rf::local_player_entity && g_move_mag > 0.001f) {
+            if (rf::is_multi) {
+                float inv_mag = 1.0f / g_move_mag;
+                entity->ai.ci.move.x = g_move_lx * inv_mag;
+                entity->ai.ci.move.z = -g_move_ly * inv_mag;
+            } else {
+                entity->ai.ci.move.x = g_move_lx;
+                entity->ai.ci.move.z = -g_move_ly;
             }
         }
 
-        entity->p_data.vel.x = new_vx;
-        entity->p_data.vel.z = new_vz;
+        physics_simulate_entity_hook.call_target(entity);
+    },
+};
+
+static FunHook<void(rf::Player*)> player_fpgun_process_hook{
+    0x004AA6D0,
+    [](rf::Player* player) {
+        bool scale = player == rf::local_player && !rf::is_multi
+            && g_move_mag > 0.001f && g_move_mag < 0.999f;
+        if (scale) g_scaling_fpgun_vmesh = true;
+        player_fpgun_process_hook.call_target(player);
+        if (scale) g_scaling_fpgun_vmesh = false;
+    },
+};
+
+static FunHook<void(rf::VMesh*, float, int, rf::Vector3*, rf::Matrix3*, int)> vmesh_process_hook{
+    0x00503360,
+    [](rf::VMesh* vmesh, float frametime, int increment_only, rf::Vector3* pos, rf::Matrix3* orient, int lod_level) {
+        bool is_player_body = vmesh == g_local_player_body_vmesh;
+        if (!rf::is_multi && g_move_mag > 0.001f && g_move_mag < 0.999f
+                && (is_player_body || g_scaling_fpgun_vmesh))
+            frametime *= g_move_mag;
+        vmesh_process_hook.call_target(vmesh, frametime, increment_only, pos, orient, lod_level);
     },
 };
 
@@ -388,6 +388,8 @@ void gamepad_apply_patch()
     control_is_control_down_hook.install();
     control_config_check_pressed_hook.install();
     physics_simulate_entity_hook.install();
+    player_fpgun_process_hook.install();
+    vmesh_process_hook.install();
     joy_sens_cmd.register_cmd();
     joy_move_deadzone_cmd.register_cmd();
     joy_look_deadzone_cmd.register_cmd();
