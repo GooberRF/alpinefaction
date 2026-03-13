@@ -19,8 +19,8 @@ FunHook<void()> gr_flip_hook{
 ConsoleCommand2 hang_cmd{
     "d_hang",
     [] {
-        const int start = rf::timer::get(1000);
-        while (rf::timer::get(1000) - start < 6000) {}
+        const int64_t start = timer::get_i64(1000);
+        while (timer::get_i64(1000) - start < 6000) {}
     },
 };
 #endif

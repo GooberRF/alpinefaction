@@ -1,8 +1,10 @@
 #pragma once
 
+#ifndef RC_INVOKED
 #include <functional>
 #include <format>
 #include <string>
+#endif
 
 #ifndef TOSTRING
 #define STRINGIFY(x) #x
@@ -63,6 +65,7 @@
 #define PRODUCT_NAME_VERSION PRODUCT_NAME " " VERSION_STR
 #define AF_USER_AGENT_SUFFIX(suffix) PRODUCT_NAME " v" VERSION_STR " " suffix
 
+#ifndef RC_INVOKED
 inline const std::string& get_build_date() {
     static std::string res = std::invoke([] {
         std::string date = __DATE__;
@@ -86,3 +89,4 @@ inline const std::string& get_build_time() {
     });
     return res;
 }
+#endif
