@@ -570,6 +570,7 @@ static bool create_mesh_object_at(CDedLevel* level, const char* mesh_filename,
     mesh->orient.fvec = {0.0f, 0.0f, 1.0f};
     mesh->uid = generate_uid();
     mesh->vmesh = loaded_vmesh;
+    mesh->vmesh_load_failed = false;
 
     level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
     level->master_objects.add(static_cast<DedObject*>(mesh));
