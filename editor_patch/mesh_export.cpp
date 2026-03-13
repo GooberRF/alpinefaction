@@ -30,7 +30,7 @@ static constexpr size_t MAX_BATCH_VERTICES = 5460;
 
 // ─── Export options (persisted across dialog invocations) ────────────────────
 
-static bool g_opt_replace_with_mesh = false;
+static bool g_opt_drop_mesh_object = false;
 static bool g_opt_reset_origin = false;
 
 // ─── Intermediate representation ────────────────────────────────────────────
@@ -69,8 +69,8 @@ static std::string resolve_texture_name(int bitmap_id)
 
 // ─── Geometry gathering ─────────────────────────────────────────────────────
 
-// Transform a vector by a rotation matrix: result = M * v
-// Matrix3 columns are rvec (right), uvec (up), fvec (forward)
+// Transform a vector by a rotation matrix (matches rf::Matrix3::transform_vector).
+// rvec/uvec/fvec are stored as rows but the transform treats them as columns.
 static Vector3 rotate_vector(const Matrix3& m, const Vector3& v)
 {
     return Vector3{
@@ -80,12 +80,17 @@ static Vector3 rotate_vector(const Matrix3& m, const Vector3& v)
     };
 }
 
+enum class GatherResult { ok, no_faces, vertex_limit };
+
 // origin: subtracted from all vertex positions (world-space point that becomes mesh local origin)
 // Vertices and normals are transformed from brush-local space to world space using brush->orient.
-static std::vector<ExportBatch> gather_brush_geometry(BrushNode* brush, const Vector3& origin)
+static GatherResult gather_brush_geometry(BrushNode* brush, const Vector3& origin,
+                                          std::vector<ExportBatch>& out_batches)
 {
+    out_batches.clear();
+
     auto* solid = static_cast<GSolid*>(brush->geometry);
-    if (!solid) return {};
+    if (!solid) return GatherResult::no_faces;
 
     const Matrix3& orient = brush->orient;
     std::map<std::string, ExportBatch> batch_map;
@@ -138,8 +143,7 @@ static std::vector<ExportBatch> gather_brush_geometry(BrushNode* brush, const Ve
 
         size_t vert_count = batch.vertices.size() + face_verts.size();
         if (vert_count > MAX_BATCH_VERTICES) {
-            // Return empty to signal failure — caller shows the error
-            return {};
+            return GatherResult::vertex_limit;
         }
 
         uint16_t base = static_cast<uint16_t>(batch.vertices.size());
@@ -168,11 +172,10 @@ static std::vector<ExportBatch> gather_brush_geometry(BrushNode* brush, const Ve
         face = face->next_solid;
     }
 
-    std::vector<ExportBatch> result;
     for (auto& [name, batch] : batch_map) {
-        result.push_back(std::move(batch));
+        out_batches.push_back(std::move(batch));
     }
-    return result;
+    return out_batches.empty() ? GatherResult::no_faces : GatherResult::ok;
 }
 
 // ─── Binary writer helpers ──────────────────────────────────────────────────
@@ -518,12 +521,12 @@ static INT_PTR CALLBACK ConvertOptionsDlgProc(HWND hdlg, UINT msg, WPARAM wParam
 {
     switch (msg) {
         case WM_INITDIALOG:
-            CheckDlgButton(hdlg, IDC_CONVERT_REPLACE, g_opt_replace_with_mesh ? BST_CHECKED : BST_UNCHECKED);
+            CheckDlgButton(hdlg, IDC_CONVERT_REPLACE, g_opt_drop_mesh_object ? BST_CHECKED : BST_UNCHECKED);
             CheckDlgButton(hdlg, IDC_CONVERT_RESET_ORIGIN, g_opt_reset_origin ? BST_CHECKED : BST_UNCHECKED);
             return TRUE;
         case WM_COMMAND:
             if (LOWORD(wParam) == IDOK) {
-                g_opt_replace_with_mesh = IsDlgButtonChecked(hdlg, IDC_CONVERT_REPLACE) == BST_CHECKED;
+                g_opt_drop_mesh_object = IsDlgButtonChecked(hdlg, IDC_CONVERT_REPLACE) == BST_CHECKED;
                 g_opt_reset_origin = IsDlgButtonChecked(hdlg, IDC_CONVERT_RESET_ORIGIN) == BST_CHECKED;
                 EndDialog(hdlg, IDOK);
                 return TRUE;
@@ -709,20 +712,18 @@ void handle_brush_convert()
         auto* solid = static_cast<GSolid*>(brush->geometry);
         if (!solid || !solid->face_list_head) continue;
 
-        auto batches = gather_brush_geometry(brush, export_origin);
-        if (batches.empty()) {
-            // Empty result with faces present means the vertex limit was exceeded
-            if (solid->face_list_count > 0) {
-                char msg[256];
-                std::snprintf(msg, sizeof(msg),
-                    "Brush %d has too many vertices sharing a single texture (limit is %zu per texture batch). "
-                    "Split the brush or use more distinct textures.",
-                    static_cast<int>(si + 1), MAX_BATCH_VERTICES);
-                show_error_message(msg);
-                return;
-            }
-            continue;
+        std::vector<ExportBatch> batches;
+        auto result = gather_brush_geometry(brush, export_origin, batches);
+        if (result == GatherResult::vertex_limit) {
+            char msg[256];
+            std::snprintf(msg, sizeof(msg),
+                "Brush %d has too many vertices sharing a single texture (limit is %zu per texture batch). "
+                "Split the brush or use more distinct textures.",
+                static_cast<int>(si + 1), MAX_BATCH_VERTICES);
+            show_error_message(msg);
+            return;
         }
+        if (result == GatherResult::no_faces) continue;
 
         // V3M format: max 7 textures per LOD (each batch = 1 texture)
         if (batches.size() > V3D_MAX_TEXTURES_PER_LOD) {
@@ -773,7 +774,7 @@ void handle_brush_convert()
                   static_cast<int>(submeshes.size()), total_tris);
 
     // Replace with mesh object if requested
-    if (g_opt_replace_with_mesh) {
+    if (g_opt_drop_mesh_object) {
         const char* mesh_basename = std::strrchr(filename, '\\');
         mesh_basename = mesh_basename ? mesh_basename + 1 : filename;
 
