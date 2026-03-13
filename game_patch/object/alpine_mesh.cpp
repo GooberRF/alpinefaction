@@ -340,6 +340,12 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         // Allocate a dedicated ClutterInfo — default constructor handles all members
         auto* ci = new rf::ClutterInfo{};
 
+        // The stock clutter death function checks explode_anim_timer.elapsed()
+        // before playing the explosion vclip. Timestamp's default value is -1
+        // (invalid), which makes elapsed() return false — preventing vclip/debris
+        // from ever firing. Set to 0 so elapsed() returns true on the first death frame.
+        ci->explode_anim_timer.value = 0;
+
         ci->material = info.material;
         ci->sound = -1;
         ci->use_sound = -1;

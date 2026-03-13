@@ -399,6 +399,10 @@ static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
         handle_brush_mirror();
         return 0;
     }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_BRUSH_CONVERT) {
+        handle_brush_convert();
+        return 0;
+    }
     if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
         int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
         // Normalize: skip indeterminate state, treat as unchecked
@@ -1104,6 +1108,9 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case IDC_BRUSH_MIRROR:
                 handler = handle_brush_mirror;
+                break;
+            case IDC_BRUSH_CONVERT:
+                handler = handle_brush_convert;
                 break;
             case IDC_VERTEX_DELETE:
                 handler = handle_vertex_delete;

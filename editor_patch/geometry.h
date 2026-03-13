@@ -13,6 +13,7 @@ void handle_face_flip_normal();
 
 // Brush mode operations
 void handle_brush_mirror();
+void handle_brush_convert();
 
 // Group mode operations
 void handle_group_mirror();

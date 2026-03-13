@@ -5,6 +5,7 @@ set(SRCS
     event.cpp
     geometry.cpp
     graphics.cpp
+    mesh_export.cpp
     main.cpp
     mesh.cpp
     mesh.h

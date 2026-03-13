@@ -22,7 +22,9 @@ struct AlpineEventDialog
 enum class AlpineDedEventID : int
 {
     // Stock events referenced by Alpine patches
+    Play_Animation = 25,
     Swap_Textures = 38,
+    Switch_Model = 40,
     Display_Fullscreen_Image = 84,
 
     // Alpine-specific events (89+)
