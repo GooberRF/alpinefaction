@@ -35,7 +35,7 @@ FunHook<void()> os_poll_hook{
 LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_param)
 {
     // extern const char* get_win_msg_name(UINT msg);
-    // xlog::trace("{:08x}: msg {} {:x} {:x}", GetTickCount(), get_win_msg_name(msg), w_param, l_param);
+    // xlog::trace("{:08x}: msg {} {:x} {:x}", GetTickCount64(), get_win_msg_name(msg), w_param, l_param);
     if (rf::main_wnd && wnd_handle != rf::main_wnd) {
         xlog::warn("Got unknown window in the window procedure: hwnd {} msg {}",
             static_cast<void*>(wnd_handle), msg);

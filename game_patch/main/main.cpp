@@ -65,13 +65,13 @@ void initialize_random_generator() {
 
 CallHook<void()> rf_init_hook{
     0x004B27CD,
-    []() {
-        auto start_ticks = GetTickCount();
+    [] {
+        const uint64_t start_ticks = GetTickCount64();
         xlog::info("Initializing game...");
         initialize_alpine_core_config();
         rf_init_hook.call_target();
         vpackfile_disable_overriding();
-        xlog::info("Game initialized ({} ms).", GetTickCount() - start_ticks);
+        xlog::info("Game initialized ({} ms).", GetTickCount64() - start_ticks);
     },
 };
 
@@ -437,7 +437,7 @@ extern "C" void subhook_unk_opcode_handler(uint8_t* opcode)
 extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 {
     g_process_startup_time = std::time(nullptr);
-    const DWORD startup_ticks = GetTickCount();
+    const uint64_t startup_ticks = GetTickCount64();
 
     // Init logging and crash dump support first
     init_logging();
@@ -486,7 +486,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 #endif
     debug_apply_patches();
 
-    xlog::info("Installing hooks took {} ms", GetTickCount() - startup_ticks);
+    xlog::info("Installing hooks took {} ms", GetTickCount64() - startup_ticks);
 
     return 1; // success
 }
