@@ -24,8 +24,9 @@ static constexpr uint32_t V3D_LOD_TRIANGLE_PLANES = 0x20;
 static constexpr int V3D_ALIGNMENT = 16;
 
 // v3d_batch_info stores positions_size as uint16_t (num_vertices * 12, aligned to 16).
-// This overflows at 5462 vertices, so cap per-batch vertex count accordingly.
-static constexpr size_t MAX_BATCH_VERTICES = 5461;
+// 5461 * 12 = 65532, which aligns up to 65536 and overflows uint16_t.
+// 5460 * 12 = 65520, already 16-byte aligned, fits in uint16_t.
+static constexpr size_t MAX_BATCH_VERTICES = 5460;
 
 // ─── Export options (persisted across dialog invocations) ────────────────────
 
@@ -137,10 +138,8 @@ static std::vector<ExportBatch> gather_brush_geometry(BrushNode* brush, const Ve
 
         size_t vert_count = batch.vertices.size() + face_verts.size();
         if (vert_count > MAX_BATCH_VERTICES) {
-            xlog::warn("Batch for texture '%s' exceeds %zu vertices — skipping face",
-                        tex_name.c_str(), MAX_BATCH_VERTICES);
-            face = face->next_solid;
-            continue;
+            // Return empty to signal failure — caller shows the error
+            return {};
         }
 
         uint16_t base = static_cast<uint16_t>(batch.vertices.size());
@@ -704,7 +703,6 @@ void handle_brush_convert()
 
     // Build one submesh per selected brush
     std::vector<SubmeshData> submeshes;
-    int total_faces = 0;
 
     for (size_t si = 0; si < selected.size(); si++) {
         auto* brush = selected[si];
@@ -712,7 +710,19 @@ void handle_brush_convert()
         if (!solid || !solid->face_list_head) continue;
 
         auto batches = gather_brush_geometry(brush, export_origin);
-        if (batches.empty()) continue;
+        if (batches.empty()) {
+            // Empty result with faces present means the vertex limit was exceeded
+            if (solid->face_list_count > 0) {
+                char msg[256];
+                std::snprintf(msg, sizeof(msg),
+                    "Brush %d has too many vertices sharing a single texture (limit is %zu per texture batch). "
+                    "Split the brush or use more distinct textures.",
+                    static_cast<int>(si + 1), MAX_BATCH_VERTICES);
+                show_error_message(msg);
+                return;
+            }
+            continue;
+        }
 
         // V3M format: max 7 textures per LOD (each batch = 1 texture)
         if (batches.size() > V3D_MAX_TEXTURES_PER_LOD) {
@@ -739,7 +749,6 @@ void handle_brush_convert()
         }
         if (sm.name.size() > 23) sm.name.resize(23);
 
-        total_faces += solid->face_list_count;
         sm.batches = std::move(batches);
         submeshes.push_back(std::move(sm));
     }
@@ -754,9 +763,14 @@ void handle_brush_convert()
         return;
     }
 
-    LogDlg_Append(GetLogDlg(), "Exported %d brush(es) to %s (%d submeshes, %d faces).",
+    int total_tris = 0;
+    for (auto& sm : submeshes)
+        for (auto& b : sm.batches)
+            total_tris += static_cast<int>(b.triangles.size());
+
+    LogDlg_Append(GetLogDlg(), "Exported %d brush(es) to %s (%d submeshes, %d triangles).",
                   static_cast<int>(selected.size()), filename,
-                  static_cast<int>(submeshes.size()), total_faces);
+                  static_cast<int>(submeshes.size()), total_tris);
 
     // Replace with mesh object if requested
     if (g_opt_replace_with_mesh) {
