@@ -1,7 +1,5 @@
 #pragma once
 
-// Gyro processing and calibration.
-// GamepadMotion instance lives here; gamepad.cpp feeds raw sensor data per-frame.
 
 enum class GyroSpace : int {
     Yaw         = 0,
@@ -20,5 +18,7 @@ void gyro_process_motion(float gyro_x, float gyro_y, float gyro_z,
                          float accel_x, float accel_y, float accel_z, float delta_time);
 void gyro_get_calibrated(float& x, float& y, float& z);
 void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps);
+void gyro_apply_tightening(float& pitch_dps, float& yaw_dps);
+void gyro_apply_smoothing(float& pitch_dps, float& yaw_dps);
 const char* gyro_get_space_name(int space);
 void gyro_apply_patch();

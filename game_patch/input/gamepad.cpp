@@ -14,6 +14,7 @@
 #include "../rf/vmesh.h"
 #include "../rf/entity.h"
 #include "../rf/os/frametime.h"
+#include "../rf/gameseq.h"
 #include "../misc/alpine_settings.h"
 #include <SDL3/SDL.h>
 #include "gyro.h"
@@ -96,7 +97,7 @@ static void set_movement_key(rf::ControlConfigAction action, bool down)
 {
     int idx = static_cast<int>(action);
     if (g_action_curr[idx] == down) return;
-    if (rf::local_player) {
+    if (rf::local_player && !rf::console::console_is_visible()) {
         int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
         if (sc >= 0)
             rf::key_process_event(sc, down ? 1 : 0, 0);
@@ -104,10 +105,25 @@ static void set_movement_key(rf::ControlConfigAction action, bool down)
     g_action_curr[idx] = down;
 }
 
+static void release_movement_keys()
+{
+    g_move_lx = g_move_ly = 0.0f;
+    g_move_mag = 0.0f;
+    set_movement_key(rf::CC_ACTION_FORWARD,     false);
+    set_movement_key(rf::CC_ACTION_BACKWARD,    false);
+    set_movement_key(rf::CC_ACTION_SLIDE_LEFT,  false);
+    set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, false);
+}
+
 static void update_stick_movement()
 {
     if (!rf::local_player)
         return;
+
+    if (!rf::gameseq_in_gameplay()) {
+        release_movement_keys();
+        return;
+    }
 
     float lx = get_axis(SDL_GAMEPAD_AXIS_LEFTX, g_alpine_game_config.gamepad_move_deadzone);
     float ly = get_axis(SDL_GAMEPAD_AXIS_LEFTY, g_alpine_game_config.gamepad_move_deadzone);
@@ -121,17 +137,6 @@ static void update_stick_movement()
     set_movement_key(rf::CC_ACTION_SLIDE_LEFT,  lx < 0.0f);
     set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, lx > 0.0f);
 }
-
-static void release_movement_keys()
-{
-    g_move_lx = g_move_ly = 0.0f;
-    g_move_mag = 0.0f;
-    set_movement_key(rf::CC_ACTION_FORWARD,     false);
-    set_movement_key(rf::CC_ACTION_BACKWARD,    false);
-    set_movement_key(rf::CC_ACTION_SLIDE_LEFT,  false);
-    set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, false);
-}
-
 
 void gamepad_do_frame()
 {
@@ -221,6 +226,8 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
                                 && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f) {
         float gyro_pitch, gyro_yaw;
         gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
+        gyro_apply_smoothing(gyro_pitch, gyro_yaw);
+        gyro_apply_tightening(gyro_pitch, gyro_yaw);
 
         constexpr float deg2rad = 3.14159265f / 180.0f;
         float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;

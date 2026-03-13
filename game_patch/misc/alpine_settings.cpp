@@ -995,6 +995,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_gyro_invert_y = std::stoi(settings["GamepadGyroInvertY"]) != 0;
         processed_keys.insert("GamepadGyroInvertY");
     }
+    if (settings.count("GamepadGyroTightening")) {
+        g_alpine_game_config.gamepad_gyro_tightening = std::max(0.0f, std::stof(settings["GamepadGyroTightening"]));
+        processed_keys.insert("GamepadGyroTightening");
+    }
+    if (settings.count("GamepadGyroSmoothing")) {
+        g_alpine_game_config.gamepad_gyro_smoothing = std::max(0.0f, std::stof(settings["GamepadGyroSmoothing"]));
+        processed_keys.insert("GamepadGyroSmoothing");
+    }
     if (settings.count("SwapARBinds")) {
         g_alpine_game_config.swap_ar_controls = std::stoi(settings["SwapARBinds"]);
         processed_keys.insert("SwapARBinds");
@@ -1109,6 +1117,8 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadGyroAutocalibration=" << g_alpine_game_config.gamepad_gyro_autocalibration << "\n";
     file << "GamepadGyroSpace=" << g_alpine_game_config.gamepad_gyro_space << "\n";
     file << "GamepadGyroInvertY=" << g_alpine_game_config.gamepad_gyro_invert_y << "\n";
+    file << "GamepadGyroTightening=" << g_alpine_game_config.gamepad_gyro_tightening << "\n";
+    file << "GamepadGyroSmoothing=" << g_alpine_game_config.gamepad_gyro_smoothing << "\n";
 
     file << "\n[ActionBinds]\n";
     file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID}\n";
