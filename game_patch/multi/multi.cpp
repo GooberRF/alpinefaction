@@ -465,11 +465,8 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
         // Calculate server-enforced cooldown from weapon fire wait, half of ping,
         // and 50 ms jitter tolerance.
         const int adjusted_ping = std::max(0, pp->net_data->ping);
-        const int cooldown_threshold = std::max(
-            0,
-            // Half of ping and jitter tolerance.
-            fire_wait_ms - (adjusted_ping / 2) - 50
-        );
+        const int cooldown_threshold =
+            std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50);
         if (time_since_last_shot < cooldown_threshold) {
             // Send notification to player for firing too fast.
             // send_private_message_for_cancelled_shot(pp, "You are firing too fast!");
