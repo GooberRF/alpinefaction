@@ -1804,7 +1804,7 @@ CodeInjection glass_decal_material_injection{
             // Per-room dedup: some weapons create multiple projectile entities per shot
             // (e.g., pistol). Skip effects and damage for the second projectile hitting
             // the same room in the same frame. Kill it so it doesn't re-hit next substep.
-            // Use a time window (50ms) instead of exact equality because GetTickCount has
+            // Use a time window (50ms) instead of exact equality because GetTickCount64 has
             // ~15ms resolution and two projectiles may straddle a tick boundary.
             const uint64_t now = GetTickCount64();
             if (room == s_last_vfx_room && (now - s_last_vfx_tick) < 50) {
