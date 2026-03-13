@@ -991,7 +991,16 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
     auto [cmd_name, cmd_arg] = strip_by_space(server_command);
 
     if (cmd_name == "info") {
-        af_send_automated_chat_msg(std::format("Server powered by Alpine Faction {} ({}), build date: {} {}", VERSION_STR, VERSION_CODE, __DATE__, __TIME__), sender);
+        af_send_automated_chat_msg(
+            std::format(
+                "This server is powered by Alpine Faction {} ({}) - {} {}",
+                VERSION_STR,
+                VERSION_CODE,
+                BUILD_DATE_STR,
+                BUILD_TIME_STR
+            ),
+            sender
+        );
     }
     else if (cmd_name == "vote") {
         auto [vote_name, vote_arg] = strip_by_space(cmd_arg);
