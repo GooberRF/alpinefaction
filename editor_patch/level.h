@@ -764,6 +764,12 @@ inline void* editor_alloc(size_t size)
     return AddrCaller{0x0052ee74}.c_call<void*>(size);
 }
 
+// FUN_0052ee9d: free raw memory (editor's operator delete, wraps CRT free)
+inline void editor_free(void* ptr)
+{
+    AddrCaller{0x0052ee9d}.c_call(ptr);
+}
+
 // FUN_00444980: append formatted text to the editor's log dialog
 static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...)>(0x00444980);
 

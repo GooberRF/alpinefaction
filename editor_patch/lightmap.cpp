@@ -421,7 +421,31 @@ CodeInjection lightmap_per_texel_ambient_nolights_injection{
         }
 
         if (s_ambient_room_count == 0) {
-            // No custom ambient rooms — let original uniform fill handle it
+            // No custom ambient rooms — replicate original uniform byte fill inline.
+            // Cannot fall through to original code because trampoline is null at this address.
+            float ar = *reinterpret_cast<float*>(0x0057c968);
+            float ag = *reinterpret_cast<float*>(0x0057c96c);
+            float ab = *reinterpret_cast<float*>(0x0057c970);
+            int br = static_cast<int>(ar * 128.0f);
+            int bg = static_cast<int>(ag * 128.0f);
+            int bb = static_cast<int>(ab * 128.0f);
+            if (br > 255) br = 255;
+            if (bg > 255) bg = 255;
+            if (bb > 255) bb = 255;
+
+            uintptr_t lm = *reinterpret_cast<uintptr_t*>(surface + 0xC);
+            auto* buf = reinterpret_cast<uint8_t*>(*reinterpret_cast<uintptr_t*>(lm + 0xC));
+            int stride = *reinterpret_cast<int*>(lm + 4);
+
+            for (int row = 0; row < height; row++) {
+                for (int col = 0; col < width; col++) {
+                    int off = ((p.ystart + row) * stride + (p.xstart + col)) * 3;
+                    buf[off]     = static_cast<uint8_t>(br);
+                    buf[off + 1] = static_cast<uint8_t>(bg);
+                    buf[off + 2] = static_cast<uint8_t>(bb);
+                }
+            }
+
             regs.eip = 0x004aca40;
             return;
         }
