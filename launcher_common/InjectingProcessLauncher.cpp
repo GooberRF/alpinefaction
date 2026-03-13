@@ -34,7 +34,7 @@ void InjectingProcessLauncher::wait_for_process_initialization(uintptr_t entry_p
     FlushInstructionCache(m_process.get_handle(), entry_point_ptr, 2);
     // Resume main thread
     m_thread.resume();
-    // Wait untill main thread reaches the entry point
+    // Wait until main thread reaches the entry point
     CONTEXT context;
     const uint64_t start_ticks = GetTickCount64();
     do {

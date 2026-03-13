@@ -4,6 +4,8 @@
 #include <functional>
 #include <format>
 #include <string>
+#include <cstdio>
+#include <string_view>
 #endif
 
 #ifndef TOSTRING
