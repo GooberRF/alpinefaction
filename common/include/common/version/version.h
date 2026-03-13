@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <format>
 #include <string>
 
@@ -85,6 +86,3 @@ inline const std::string& get_build_time() {
     });
     return res;
 }
-
-inline const std::string& BUILD_DATE_STR = get_build_date();
-inline const std::string& BUILD_TIME_STR = get_build_time();

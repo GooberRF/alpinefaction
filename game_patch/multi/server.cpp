@@ -996,8 +996,8 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
                 "This server is powered by Alpine Faction {} ({}) - {} {}",
                 VERSION_STR,
                 VERSION_CODE,
-                BUILD_DATE_STR,
-                BUILD_TIME_STR
+                get_build_date(),
+                get_build_time()
             ),
             sender
         );

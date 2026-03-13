@@ -1817,7 +1817,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "\n---- Core configuration ----\n");
     std::format_to(iter, "  Port:                                  {} - UDP\n", netgame.server_addr.port);
     std::format_to(iter, "  Name:                                  {}\n", netgame.name);
-    std::format_to(iter, "  Version:                               {} - {}\n", VERSION_STR, BUILD_DATE_STR);
+    std::format_to(iter, "  Version:                               {} - {}\n", VERSION_STR, get_build_date());
     if (!remote) {
         std::format_to(iter, "  Uptime:                                {}\n", get_uptime_from(g_process_startup_time));
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
