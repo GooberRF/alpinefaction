@@ -240,7 +240,6 @@ CallHook<void(int)> frametime_calculate_sleep_hook{
             // For better performance, cache a `WaitableTimer`.
             // Does not need to be `thread_local`.
             static WaitableTimer timer{};
-            // `wait_for` is higher resolution than `Sleep`.
             wait_for(static_cast<float>(ms), timer);
         }
     },
