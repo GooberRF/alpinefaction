@@ -12,11 +12,13 @@
 #include "resources.h"
 
 void DestroyDedMesh(DedMesh* mesh);
+void DestroyDedCorona(DedCorona* corona);
 
 constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_note_chunk_id = 0x0AFBAE02;
+constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 
 // Forward declarations
 struct GFace;
@@ -348,6 +350,9 @@ struct AlpineLevelProperties
     // Alpine note objects (editor-only, not loaded by game)
     std::vector<DedNote*> note_objects;
 
+    // Alpine corona objects
+    std::vector<DedCorona*> corona_objects;
+
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
@@ -378,6 +383,11 @@ struct AlpineLevelProperties
             delete n;
         }
         note_objects.clear();
+
+        for (auto* c : corona_objects) {
+            DestroyDedCorona(c);
+        }
+        corona_objects.clear();
     }
 
     void Serialize(rf::File& file) const

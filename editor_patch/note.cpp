@@ -10,6 +10,7 @@
 #include "level.h"
 #include "resources.h"
 #include "vtypes.h"
+#include "alpine_obj.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -346,13 +347,9 @@ void PlaceNewNoteObject()
 
     note->script_name.assign_0("Note");
 
-    void* viewport = get_active_viewport();
-    if (viewport) {
-        void* view_data = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(viewport) + 0x54);
-        if (view_data) {
-            auto* cam_pos = reinterpret_cast<Vector3*>(reinterpret_cast<uintptr_t>(view_data) + 0x28);
-            note->pos = *cam_pos;
-        }
+    auto* viewport = get_active_viewport();
+    if (viewport && viewport->view_data) {
+        note->pos = viewport->view_data->camera_pos;
     }
 
     note->orient.rvec = {1.0f, 0.0f, 0.0f};
@@ -420,19 +417,12 @@ void note_render(CDedLevel* level)
 
     note_load_icon();
 
-    float cam_param = *reinterpret_cast<float*>(0x014cf7e0);
+    float cam_param = gr_cam_param;
 
     for (auto* note : notes) {
         if (note->hidden_in_editor) continue;
 
-        bool selected = false;
-        auto& sel = level->selection;
-        for (int i = 0; i < sel.size; i++) {
-            if (sel.data_ptr[i] == static_cast<DedObject*>(note)) {
-                selected = true;
-                break;
-            }
-        }
+        bool selected = is_object_selected(level, note);
 
         if (selected) {
             set_draw_color(0xff, 0x00, 0x00, 0xff);

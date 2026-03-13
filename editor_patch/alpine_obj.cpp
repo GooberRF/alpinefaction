@@ -9,6 +9,7 @@
 #include "alpine_obj.h"
 #include "mesh.h"
 #include "note.h"
+#include "corona.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "vtypes.h"
@@ -42,6 +43,7 @@ FunHook<int()> alpine_generate_uid_hook{
         if (level) {
             mesh_ensure_uid(uid);
             note_ensure_uid(uid);
+            corona_ensure_uid(uid);
         }
         return uid;
     },
@@ -67,6 +69,12 @@ CodeInjection alpine_properties_patch{
             regs.eip = 0x00402293;
             return;
         }
+        if (regs.eax == static_cast<int>(DedObjectType::DED_CORONA)) {
+            auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
+            ShowCoronaPropertiesDialog(level);
+            regs.eip = 0x00402293;
+            return;
+        }
     },
 };
 
@@ -86,6 +94,7 @@ CodeInjection alpine_tree_patch{
 
         mesh_tree_populate(tree, master_groups, level);
         note_tree_populate(tree, master_groups, level);
+        corona_tree_populate(tree, master_groups, level);
     },
 };
 
@@ -105,6 +114,7 @@ CodeInjection alpine_pick_patch{
 
         mesh_pick(level, param1, param2);
         note_pick(level, param1, param2);
+        corona_pick(level, param1, param2);
     },
 };
 
@@ -135,10 +145,15 @@ CodeInjection alpine_click_pick_patch{
             // Check note objects using fixed screen radius
             DedNote* best_note = note_click_pick(level, click_x, click_y);
 
+            // Check corona objects using fixed screen radius
+            DedCorona* best_corona = corona_click_pick(level, click_x, click_y);
+
             // Determine best Alpine hit
             DedObject* best_alpine = nullptr;
+            float best_dist_sq = 1e30f;
             if (best_mesh) {
                 best_alpine = static_cast<DedObject*>(best_mesh);
+                best_dist_sq = mesh_dist_sq;
             }
             if (best_note) {
                 float note_pos[3] = {best_note->pos.x, best_note->pos.y, best_note->pos.z};
@@ -146,8 +161,20 @@ CodeInjection alpine_click_pick_patch{
                 if (project_to_screen_2d(note_pos, &nsx, &nsy)) {
                     float ndx = nsx - click_x, ndy = nsy - click_y;
                     float note_dist = ndx * ndx + ndy * ndy;
-                    if (!best_alpine || note_dist < mesh_dist_sq) {
+                    if (!best_alpine || note_dist < best_dist_sq) {
                         best_alpine = static_cast<DedObject*>(best_note);
+                        best_dist_sq = note_dist;
+                    }
+                }
+            }
+            if (best_corona) {
+                float corona_pos[3] = {best_corona->pos.x, best_corona->pos.y, best_corona->pos.z};
+                float csx = 0.0f, csy = 0.0f;
+                if (project_to_screen_2d(corona_pos, &csx, &csy)) {
+                    float cdx = csx - click_x, cdy = csy - click_y;
+                    float corona_dist = cdx * cdx + cdy * cdy;
+                    if (!best_alpine || corona_dist < best_dist_sq) {
+                        best_alpine = static_cast<DedObject*>(best_corona);
                     }
                 }
             }
@@ -193,6 +220,7 @@ CodeInjection alpine_copy_begin_hook{
     [](auto& /*regs*/) {
         mesh_clear_clipboard();
         note_clear_clipboard();
+        corona_clear_clipboard();
     },
 };
 
@@ -213,6 +241,11 @@ CodeInjection alpine_copy_hook{
             note_copy_object(source);
             regs.eip = 0x00412edb;
         }
+        else if (source && source->type == DedObjectType::DED_CORONA) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            corona_copy_object(source);
+            regs.eip = 0x00412edb;
+        }
     },
 };
 
@@ -226,6 +259,7 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     level->paste_objects();
     mesh_paste_objects(level);
     note_paste_objects(level);
+    corona_paste_objects(level);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -264,6 +298,11 @@ CodeInjection alpine_paste_finalize_patch{
                 note_handle_delete_or_cut(obj);
             }
         }
+        else if (obj && obj->type == DedObjectType::DED_CORONA) {
+            if (g_alpine_delete_mode || g_alpine_cut_mode) {
+                corona_handle_delete_or_cut(obj);
+            }
+        }
     },
 };
 
@@ -277,6 +316,7 @@ CodeInjection alpine_delete_patch{
 
         note_handle_delete_selection(level);
         mesh_handle_delete_selection(level);
+        corona_handle_delete_selection(level);
     },
 };
 
@@ -289,11 +329,12 @@ CodeInjection alpine_object_tree_patch{
         auto* tree = reinterpret_cast<EditorTreeCtrl*>(static_cast<uintptr_t>(regs.esi));
         mesh_tree_add_object_type(tree);
         note_tree_add_object_type(tree);
+        corona_tree_add_object_type(tree);
     },
 };
 
 // Track which Alpine object type the tree view is creating.
-static int g_alpine_create_type = 0; // 0=Mesh, 2=Note
+static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona
 
 // Hook factory FUN_00442a40 to detect Alpine object types by tree item text.
 int __fastcall alpine_factory_hooked(void* ecx_panel, void* /*edx*/, void* tree_item);
@@ -317,6 +358,9 @@ int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item
         if (strcmp(text, "Note") == 0) {
             g_alpine_create_type = 2;
         }
+        else if (strcmp(text, "Corona") == 0) {
+            g_alpine_create_type = 3;
+        }
     }
 
     return alpine_factory_hook.call_target(ecx_panel, edx, tree_item);
@@ -330,6 +374,9 @@ CodeInjection alpine_create_object_patch{
         if (regs.eax == 0) {
             if (g_alpine_create_type == 2) {
                 PlaceNewNoteObject();
+            }
+            else if (g_alpine_create_type == 3) {
+                PlaceNewCoronaObject();
             }
             else {
                 PlaceNewMeshObject();
@@ -352,6 +399,7 @@ CodeInjection alpine_render_patch{
 
         mesh_render(level);
         note_render(level);
+        corona_render(level);
     },
 };
 

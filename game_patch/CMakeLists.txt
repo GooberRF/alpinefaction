@@ -174,6 +174,8 @@ set(SRCS
     object/particle.cpp
     object/obj_light.cpp
     object/alpine_mesh.cpp
+    object/alpine_corona.cpp
+    object/alpine_corona.h
     misc/achievements.h
     misc/achievements.cpp
     misc/character.cpp

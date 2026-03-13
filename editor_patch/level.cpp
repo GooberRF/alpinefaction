@@ -16,6 +16,7 @@
 #include "resources.h"
 #include "mesh.h"
 #include "note.h"
+#include "corona.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -76,6 +77,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_note_chunk_id) {
                     note_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_corona_chunk_id) {
+                    corona_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -517,7 +522,7 @@ CodeInjection skip_alpine_objects_bounds_check{
     0x0041d7c0,
     [](auto& regs) {
         auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.edx));
-        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE) {
+        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE || obj->type == DedObjectType::DED_CORONA) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -546,6 +551,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write note objects chunk
         note_serialize_chunk(level, file);
+
+        // Write corona objects chunk
+        corona_serialize_chunk(level, file);
     },
 };
 
