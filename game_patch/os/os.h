@@ -39,6 +39,8 @@ struct WaitableTimer {
     WaitableTimer(const WaitableTimer&) = delete;
     WaitableTimer& operator=(const WaitableTimer&) = delete;
 };
+
+// `timer` should be provided in hot paths.
 void wait_for(float ms, const WaitableTimer& timer = WaitableTimer{});
 
 namespace timer {

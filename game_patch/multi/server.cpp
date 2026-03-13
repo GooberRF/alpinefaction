@@ -1984,8 +1984,8 @@ std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_st
     }
 
     if (check_level_version) {
-        const uint32_t level_version
-            = get_level_file_version(rf::level.filename.c_str()).value_or(0);
+        const uint32_t level_version =
+            get_level_file_version(rf::level.filename.c_str()).value_or(0);
 
         if (level_version > info.max_rfl_ver
             && info.software != ClientSoftware::Browser) {

@@ -434,8 +434,10 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
                 fire_wait_ms = get_semi_auto_fire_wait_override();
             } else {
                 // otherwise use the minimum fire wait between both modes in weapons.tbl
-                fire_wait_ms = std::min(rf::weapon_get_fire_wait_ms(weapon_type, 0),  // primary
-                rf::weapon_get_fire_wait_ms(weapon_type, 1)); // alt
+                fire_wait_ms = std::min(
+                    rf::weapon_get_fire_wait_ms(weapon_type, 0), // primary
+                    rf::weapon_get_fire_wait_ms(weapon_type, 1) // alt
+                );
             }
         } else {
             // otherwise, don't enforce a limit for semi autos
@@ -443,8 +445,10 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
         }
     } else {
         // for automatic weapons, use the minimum fire wait between both modes in weapons.tbl
-        fire_wait_ms = std::min(rf::weapon_get_fire_wait_ms(weapon_type, 0),  // primary
-        rf::weapon_get_fire_wait_ms(weapon_type, 1)); // alt
+        fire_wait_ms = std::min(
+            rf::weapon_get_fire_wait_ms(weapon_type, 0), // primary
+            rf::weapon_get_fire_wait_ms(weapon_type, 1) // alt
+        );
     }
 
     static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
@@ -453,24 +457,27 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
     const int player_id = pp->net_data->player_id;
     const int64_t now = timer::get_i64(1000);
 
-    // reset if weapon changed
+    // If weapon changed, skip interval check.
     if (last_weapon_id[player_id] != weapon_type) {
-        last_weapon_fire[player_id] = now;
         last_weapon_id[player_id] = weapon_type;
     } else {
         const int64_t time_since_last_shot = now - last_weapon_fire[player_id];
-
-        // calculate server-enforced cooldown from weapon fire wait, halfping, and 50ms jitter tolerance
-        const int adjusted_ping = std::max(0, pp->net_data->ping); // ensure ping is positive
-        const int cooldown_threshold = std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50); // halfping and jitter tolerance
+        // Calculate server-enforced cooldown from weapon fire wait, half of ping,
+        // and 50 ms jitter tolerance.
+        const int adjusted_ping = std::max(0, pp->net_data->ping);
+        const int cooldown_threshold = std::max(
+            0,
+            // Half of ping and jitter tolerance.
+            fire_wait_ms - (adjusted_ping / 2) - 50
+        );
         if (time_since_last_shot < cooldown_threshold) {
-            // send notification to player for firing too fast
+            // Send notification to player for firing too fast.
             // send_private_message_for_cancelled_shot(pp, "You are firing too fast!");
             return true;
         }
     }
 
-    // we fired
+    // We fired.
     last_weapon_fire[player_id] = now;
     return false;
 }

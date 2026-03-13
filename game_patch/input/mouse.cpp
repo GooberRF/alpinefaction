@@ -287,19 +287,19 @@ static float convert_pitch_delta_to_non_linear_space(
     const float yaw_delta
 ) {
     // Convert to linear space.  See `physics_make_orient`.
-    const rf::Vector3 fvec
-        = fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
+    const rf::Vector3 fvec =
+        fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
     const float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
 
     // Calculate in linear space.
     constexpr float HALF_PI = 1.5707964f;
-    const float new_pitch_lin
-        = std::clamp(current_pitch_lin + pitch_delta, -HALF_PI, HALF_PI);
+    const float new_pitch_lin =
+        std::clamp(current_pitch_lin + pitch_delta, -HALF_PI, HALF_PI);
     const float new_yaw = current_yaw + yaw_delta;
 
     // Convert back to non-linear space.
-    const rf::Vector3 fvec_new
-        = fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
+    const rf::Vector3 fvec_new =
+        fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
     const float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
 
     // Update non-linear pitch delta.
