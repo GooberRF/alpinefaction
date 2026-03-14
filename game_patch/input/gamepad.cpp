@@ -352,6 +352,15 @@ FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config
     },
 };
 
+// Returns true if `entity` is the vehicle that the local player is currently riding.
+static bool is_local_player_vehicle(rf::Entity* entity)
+{
+    if (!rf::local_player_entity || !rf::entity_in_vehicle(rf::local_player_entity))
+        return false;
+    rf::Entity* vehicle = rf::entity_from_handle(rf::local_player_entity->host_handle);
+    return vehicle == entity;
+}
+
 FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
     0x0049F3C0,
     [](rf::Entity* entity) {
@@ -363,6 +372,34 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
             } else {
                 entity->ai.ci.move.x = g_move_lx;
                 entity->ai.ci.move.z = -g_move_ly;
+            }
+        }
+
+        // Pre-sim: inject gamepad stick + gyro into vehicle rotation input (ci.rot)
+        // ci.rot expects values in the range of keyboard input (±1.0).
+        // The vehicle's own turn rate and frametime scaling apply on top.
+        if (g_gamepad && is_local_player_vehicle(entity)) {
+            // Stick: raw axis (-1 to 1) maps directly to keyboard-like input
+            float rx = get_axis(SDL_GAMEPAD_AXIS_RIGHTX, g_alpine_game_config.gamepad_look_deadzone);
+            float ry = get_axis(SDL_GAMEPAD_AXIS_RIGHTY, g_alpine_game_config.gamepad_look_deadzone);
+            entity->ai.ci.rot.y += rx;
+            entity->ai.ci.rot.x += -ry;
+
+            // Gyro: convert deg/s to ci.rot range (±1.0) with a fixed scale factor.
+            // 1/90 means 90 deg/s of gyro rotation equals full keyboard deflection.
+            if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled
+                && g_alpine_game_config.gamepad_gyro_vehicle_camera
+                && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f) {
+                float gyro_pitch, gyro_yaw;
+                gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
+                gyro_apply_smoothing(gyro_pitch, gyro_yaw);
+                gyro_apply_tightening(gyro_pitch, gyro_yaw);
+
+                constexpr float gyro_to_rot = 1.0f / 90.0f;
+                float sens = g_alpine_game_config.gamepad_gyro_sensitivity;
+                float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
+                entity->ai.ci.rot.y += -gyro_yaw * gyro_to_rot * sens;
+                entity->ai.ci.rot.x += pitch_sign * gyro_pitch * gyro_to_rot * sens;
             }
         }
 
@@ -440,6 +477,16 @@ ConsoleCommand2 gyro_camera_cmd{
     },
     "Enable/disable gyro camera (default 1)",
     "gyro_camera [0|1]",
+};
+
+ConsoleCommand2 gyro_vehicle_camera_cmd{
+    "gyro_vehicle_camera",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_gyro_vehicle_camera = val.value() != 0;
+        rf::console::print("Gyro camera for vehicles: {}", g_alpine_game_config.gamepad_gyro_vehicle_camera ? "enabled" : "disabled");
+    },
+    "Enable/disable gyro camera while in vehicles (default 0)",
+    "gyro_vehicle_camera [0|1]",
 };
 
 ConsoleCommand2 gamepad_icons_cmd{
@@ -630,6 +677,7 @@ void gamepad_apply_patch()
     joy_look_deadzone_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
+    gyro_vehicle_camera_cmd.register_cmd();
     gamepad_icons_cmd.register_cmd();
     gyro_apply_patch();
     xlog::info("Gamepad support initialized");

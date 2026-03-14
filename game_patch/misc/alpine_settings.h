@@ -141,6 +141,7 @@ struct AlpineGameSettings
     float gamepad_look_deadzone = 0.15f;
     float gamepad_gyro_sensitivity = 2.5f;
     bool gamepad_gyro_enabled = false;
+    bool gamepad_gyro_vehicle_camera = false;
     bool gamepad_gyro_autocalibration = true;
     int gamepad_gyro_space = 3; // GyroSpace: Yaw=0  Roll=1  Local=2  Player=3  World=4
     bool gamepad_gyro_invert_y = false;
