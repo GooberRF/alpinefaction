@@ -4,65 +4,53 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <SDL3/SDL.h>
 #include "../os/console.h"
 #include "../rf/input.h"
 #include "../rf/os/os.h"
-#include "../rf/gr/gr.h"
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/entity.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 
+static SDL_Window* g_sdl_window = nullptr;
+static float g_sdl_mouse_dx_rem = 0.0f, g_sdl_mouse_dy_rem = 0.0f;
+static int g_sdl_mouse_dx = 0, g_sdl_mouse_dy = 0;
+
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
 static float applied_static_sensitivity_value = 0.25f; // value written by AsmWriter
 static float applied_dynamic_sensitivity_value = 1.0f; // value written by AsmWriter
 
-bool set_direct_input_enabled(bool enabled)
-{
-    auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
-    auto mouse_di_init = addr_as_ref<int()>(0x0051E070);
-    rf::direct_input_disabled = !enabled;
-    if (enabled && !direct_input_initialized) {
-        if (mouse_di_init() != 0) {
-            xlog::error("Failed to initialize DirectInput");
-            rf::direct_input_disabled = true;
-            return false;
-        }
-    }
-    if (direct_input_initialized) {
-        if (rf::direct_input_disabled)
-            rf::di_mouse->Unacquire();
-        else
-            rf::di_mouse->Acquire();
-    }
-    return true;
-}
-
 FunHook<void()> mouse_eval_deltas_hook{
     0x0051DC70,
     []() {
-        // disable mouse when window is not active
-        if (rf::os_foreground() || g_alpine_game_config.background_mouse) {
-            mouse_eval_deltas_hook.call_target();
+        if (!rf::os_foreground() && !g_alpine_game_config.background_mouse) {
+            return;
         }
-    },
-};
 
-FunHook<void()> mouse_eval_deltas_di_hook{
-    0x0051DEB0,
-    []() {
-        mouse_eval_deltas_di_hook.call_target();
-
-        // Fix invalid mouse scroll delta, when DirectInput is turned off.
-        rf::mouse_old_z = rf::mouse_wheel_pos;
-
-        // center cursor if in game
         if (rf::keep_mouse_centered) {
-            POINT pt{rf::gr::screen_width() / 2, rf::gr::screen_height() / 2};
+            g_sdl_mouse_dx = static_cast<int>(g_sdl_mouse_dx_rem);
+            g_sdl_mouse_dy = static_cast<int>(g_sdl_mouse_dy_rem);
+            g_sdl_mouse_dx_rem -= g_sdl_mouse_dx;
+            g_sdl_mouse_dy_rem -= g_sdl_mouse_dy;
+
+            rf::mouse_old_z = rf::mouse_wheel_pos; // keep scroll delta tracking consistent
+        }
+
+        mouse_eval_deltas_hook.call_target();
+
+        // Fallback: if SDL relative mode is inactive, center the cursor manually and flush
+        // the resulting WM_MOUSEMOVE so it doesn't corrupt the next frame's delta.
+        if (rf::keep_mouse_centered && (!g_sdl_window || !SDL_GetWindowRelativeMouseMode(g_sdl_window))) {
+            RECT rect{};
+            GetClientRect(rf::main_wnd, &rect);
+            POINT pt{rect.right / 2, rect.bottom / 2};
             ClientToScreen(rf::main_wnd, &pt);
             SetCursorPos(pt.x, pt.y);
+            SDL_PumpEvents();
+            SDL_FlushEvents(SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_MOTION);
         }
     },
 };
@@ -70,8 +58,10 @@ FunHook<void()> mouse_eval_deltas_di_hook{
 FunHook<void()> mouse_keep_centered_enable_hook{
     0x0051E690,
     []() {
-        if (!rf::keep_mouse_centered && !rf::is_dedicated_server)
-            set_direct_input_enabled(g_alpine_game_config.direct_input);
+        // keep_mouse_centered is still false here; call_target sets it
+        if (!rf::keep_mouse_centered && !rf::is_dedicated_server) {
+            SDL_SetWindowRelativeMouseMode(g_sdl_window, true);
+        }
         mouse_keep_centered_enable_hook.call_target();
     },
 };
@@ -79,31 +69,26 @@ FunHook<void()> mouse_keep_centered_enable_hook{
 FunHook<void()> mouse_keep_centered_disable_hook{
     0x0051E6A0,
     []() {
-        if (rf::keep_mouse_centered)
-            set_direct_input_enabled(false);
+        // keep_mouse_centered is still true here; call_target clears it
+        if (rf::keep_mouse_centered) {
+            SDL_SetWindowRelativeMouseMode(g_sdl_window, false);
+        }
         mouse_keep_centered_disable_hook.call_target();
     },
 };
 
-ConsoleCommand2 input_mode_cmd{
-    "inputmode",
-    []() {
-        g_alpine_game_config.direct_input = !g_alpine_game_config.direct_input;
-
-        if (g_alpine_game_config.direct_input) {
-            if (!set_direct_input_enabled(g_alpine_game_config.direct_input)) {
-                rf::console::print("Failed to initialize DirectInput");
-            }
-            else {
-                set_direct_input_enabled(rf::keep_mouse_centered);
-                rf::console::print("DirectInput is enabled");
-            }
-        }
-        else {
-            rf::console::print("DirectInput is disabled");
+FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
+    0x0051E630,
+    [](int& dx, int& dy, int& dz) {
+        mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel); dx/dy overridden below during gameplay
+        // Only override dx/dy during gameplay; menus use the Win32 values from call_target directly.
+        if (rf::keep_mouse_centered) {
+            dx = g_sdl_mouse_dx;
+            dy = g_sdl_mouse_dy;
+            g_sdl_mouse_dx = 0;
+            g_sdl_mouse_dy = 0;
         }
     },
-    "Toggles input mode",
 };
 
 ConsoleCommand2 ms_cmd{
@@ -351,6 +336,28 @@ ConsoleCommand2 linear_pitch_cmd{
     "Toggles mouse linear pitch angle",
 };
 
+void mouse_sdl_poll()
+{
+    if (!g_sdl_window) return;
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev)) {
+        if (ev.type == SDL_EVENT_MOUSE_MOTION && rf::keep_mouse_centered) {
+            g_sdl_mouse_dx_rem += ev.motion.xrel;
+            g_sdl_mouse_dy_rem += ev.motion.yrel;
+        }
+    }
+}
+
+void mouse_init_sdl_window()
+{
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER, rf::main_wnd);
+    g_sdl_window = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (!g_sdl_window)
+        xlog::error("SDL_CreateWindowWithProperties failed: {}", SDL_GetError());
+}
+
 void mouse_apply_patch()
 {
     // Handle zoom sens customization
@@ -364,22 +371,18 @@ void mouse_apply_patch()
     // Disable mouse when window is not active
     mouse_eval_deltas_hook.install();
 
-    // Add DirectInput mouse support
-    mouse_eval_deltas_di_hook.install();
+    // SDL3 raw mouse input (replaces DirectInput)
     mouse_keep_centered_enable_hook.install();
     mouse_keep_centered_disable_hook.install();
+    mouse_get_delta_hook.install();
 
     // Do not limit the cursor to the game window if in menu (Win32 mouse)
     AsmWriter(0x0051DD7C).jmp(0x0051DD8E);
-
-    // Use exclusive DirectInput mode so cursor cannot exit game window
-    //write_mem<u8>(0x0051E14B + 1, 5); // DISCL_EXCLUSIVE|DISCL_FOREGROUND
 
     // Linear vertical rotation (pitch)
     linear_pitch_patch.install();
 
     // Commands
-    input_mode_cmd.register_cmd();
     ms_cmd.register_cmd();
     static_scope_sens_cmd.register_cmd();
     scope_sens_cmd.register_cmd();
