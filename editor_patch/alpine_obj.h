@@ -9,6 +9,10 @@
 // Type-specific logic lives in mesh.cpp / note.cpp / corona.cpp; this file wires them together.
 void ApplyAlpineObjectPatches();
 
+// Replacement dialogs for stock Select Objects / Hide Objects (Tools menu)
+void alpine_select_objects(CDedLevel* level);
+void alpine_hide_objects(CDedLevel* level);
+
 // ─── Shared selection helper ────────────────────────────────────────────────
 
 inline bool is_object_selected(CDedLevel* level, DedObject* obj)
