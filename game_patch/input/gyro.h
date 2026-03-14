@@ -1,6 +1,6 @@
 #pragma once
 
-
+// Gyro Axis orientation modes
 enum class GyroSpace : int {
     Yaw         = 0,
     Roll        = 1,

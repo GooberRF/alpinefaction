@@ -7,7 +7,7 @@ bool gamepad_is_motionsensors_supported();
 bool gamepad_is_last_input_gamepad();
 void gamepad_set_last_input_keyboard();
 
-// Controller binding UI helpers
+// Controller binding UI
 int         gamepad_get_button_for_action(int action_idx);  // -1 if unbound
 int         gamepad_get_trigger_for_action(int action_idx); // 0=LT, 1=RT, -1 if unbound
 const char* gamepad_get_scan_code_name(int scan_code);
@@ -27,5 +27,5 @@ void gamepad_set_button_binding(int button_idx, int action_idx);
 int  gamepad_get_trigger_action(int trigger_idx);
 void gamepad_set_trigger_action(int trigger_idx, int action_idx);
 
-// Call on the falling edge of options_controls_waiting_for_key (CONTROLLER tab only).
+// rebind gamepad buttons/triggers
 void gamepad_apply_rebind();
