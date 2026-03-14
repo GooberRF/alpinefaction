@@ -30,19 +30,18 @@ FunHook<void()> mouse_eval_deltas_hook{
             return;
         }
 
-        if (rf::keep_mouse_centered) {
-            g_sdl_mouse_dx = static_cast<int>(g_sdl_mouse_dx_rem);
-            g_sdl_mouse_dy = static_cast<int>(g_sdl_mouse_dy_rem);
-            g_sdl_mouse_dx_rem -= g_sdl_mouse_dx;
-            g_sdl_mouse_dy_rem -= g_sdl_mouse_dy;
+        g_sdl_mouse_dx = static_cast<int>(g_sdl_mouse_dx_rem);
+        g_sdl_mouse_dy = static_cast<int>(g_sdl_mouse_dy_rem);
+        g_sdl_mouse_dx_rem -= g_sdl_mouse_dx;
+        g_sdl_mouse_dy_rem -= g_sdl_mouse_dy;
 
+        if (rf::keep_mouse_centered) {
             rf::mouse_old_z = rf::mouse_wheel_pos; // keep scroll delta tracking consistent
         }
 
         mouse_eval_deltas_hook.call_target();
 
-        // Fallback: if SDL relative mode is inactive, center the cursor manually and flush
-        // the resulting WM_MOUSEMOVE so it doesn't corrupt the next frame's delta.
+        // Fallback: center cursor and flush WM_MOUSEMOVE if SDL relative mode is inactive.
         if (rf::keep_mouse_centered && (!g_sdl_window || !SDL_GetWindowRelativeMouseMode(g_sdl_window))) {
             RECT rect{};
             GetClientRect(rf::main_wnd, &rect);
@@ -80,14 +79,11 @@ FunHook<void()> mouse_keep_centered_disable_hook{
 FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     0x0051E630,
     [](int& dx, int& dy, int& dz) {
-        mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel); dx/dy overridden below during gameplay
-        // Only override dx/dy during gameplay; menus use the Win32 values from call_target directly.
-        if (rf::keep_mouse_centered) {
-            dx = g_sdl_mouse_dx;
-            dy = g_sdl_mouse_dy;
-            g_sdl_mouse_dx = 0;
-            g_sdl_mouse_dy = 0;
-        }
+        mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
+        dx = g_sdl_mouse_dx;
+        dy = g_sdl_mouse_dy;
+        g_sdl_mouse_dx = 0;
+        g_sdl_mouse_dy = 0;
     },
 };
 
@@ -341,7 +337,7 @@ void mouse_sdl_poll()
     if (!g_sdl_window) return;
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_EVENT_MOUSE_MOTION && rf::keep_mouse_centered) {
+        if (ev.type == SDL_EVENT_MOUSE_MOTION) {
             g_sdl_mouse_dx_rem += ev.motion.xrel;
             g_sdl_mouse_dy_rem += ev.motion.yrel;
         }
@@ -371,7 +367,7 @@ void mouse_apply_patch()
     // Disable mouse when window is not active
     mouse_eval_deltas_hook.install();
 
-    // SDL3 raw mouse input (replaces DirectInput)
+    // SDL3 raw mouse input hooks
     mouse_keep_centered_enable_hook.install();
     mouse_keep_centered_disable_hook.install();
     mouse_get_delta_hook.install();
