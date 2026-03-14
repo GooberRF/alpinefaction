@@ -1744,7 +1744,7 @@ static void render_ctrl_mode_btns()
     int font_h = rf::gr::get_font_height(rf::ui::medium_font_0);
     int ly = static_cast<int>(CTRL_CHK_Y * rf::ui::scale_y) + (cbox_screen_h - font_h) / 2;
     rf::gr::set_color(0, 0, 0, 255);
-    rf::gr::string(lx, ly, "Gamepad Controls", rf::ui::medium_font_0);
+    rf::gr::string(lx, ly, g_ctrl_bind_view ? "Switch to Keyboard" : "Switch to Gamepad", rf::ui::medium_font_0);
 }
 
 // Handle a click on the checkbox.
