@@ -238,6 +238,12 @@ struct EditorTreeCtrl : CWnd
     {
         AddrCaller{0x00442320}.this_call(this, item_handle, data);
     }
+
+    void sort_children(int parent_handle)
+    {
+        SendMessage(_d.m_hWnd, 0x1113 /*TVM_SORTCHILDREN*/, FALSE,
+            static_cast<LPARAM>(parent_handle));
+    }
 };
 static_assert(sizeof(EditorTreeCtrl) == sizeof(CWnd));
 

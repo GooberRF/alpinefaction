@@ -100,6 +100,7 @@ CodeInjection alpine_tree_patch{
         mesh_tree_populate(tree, master_groups, level);
         note_tree_populate(tree, master_groups, level);
         corona_tree_populate(tree, master_groups, level);
+        tree->sort_children(master_groups);
     },
 };
 
@@ -335,6 +336,7 @@ CodeInjection alpine_object_tree_patch{
         mesh_tree_add_object_type(tree);
         note_tree_add_object_type(tree);
         corona_tree_add_object_type(tree);
+        tree->sort_children(static_cast<int>(reinterpret_cast<intptr_t>(TVI_ROOT)));
     },
 };
 
