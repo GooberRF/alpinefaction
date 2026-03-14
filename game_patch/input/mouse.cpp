@@ -15,6 +15,7 @@
 #include "../main/main.h"
 
 static SDL_Window* g_sdl_window = nullptr;
+static bool g_relative_mouse_mode_window_missing_logged = false;
 static float g_sdl_mouse_dx_rem = 0.0f, g_sdl_mouse_dy_rem = 0.0f;
 static int g_sdl_mouse_dx = 0, g_sdl_mouse_dy = 0;
 
@@ -59,7 +60,12 @@ FunHook<void()> mouse_keep_centered_enable_hook{
     []() {
         // keep_mouse_centered is still false here; call_target sets it
         if (!rf::keep_mouse_centered && !rf::is_dedicated_server) {
-            SDL_SetWindowRelativeMouseMode(g_sdl_window, true);
+            if (g_sdl_window) {
+                SDL_SetWindowRelativeMouseMode(g_sdl_window, true);
+            } else if (!g_relative_mouse_mode_window_missing_logged) {
+                xlog::warn("mouse_keep_centered_enable_hook: SDL window is null, cannot enable relative mouse mode");
+                g_relative_mouse_mode_window_missing_logged = true;
+            }
         }
         mouse_keep_centered_enable_hook.call_target();
     },
@@ -70,7 +76,12 @@ FunHook<void()> mouse_keep_centered_disable_hook{
     []() {
         // keep_mouse_centered is still true here; call_target clears it
         if (rf::keep_mouse_centered) {
-            SDL_SetWindowRelativeMouseMode(g_sdl_window, false);
+            if (g_sdl_window) {
+                SDL_SetWindowRelativeMouseMode(g_sdl_window, false);
+            } else if (!g_relative_mouse_mode_window_missing_logged) {
+                xlog::warn("mouse_keep_centered_disable_hook: SDL window is null, cannot disable relative mouse mode");
+                g_relative_mouse_mode_window_missing_logged = true;
+            }
         }
         mouse_keep_centered_disable_hook.call_target();
     },
@@ -335,13 +346,13 @@ ConsoleCommand2 linear_pitch_cmd{
 void mouse_sdl_poll()
 {
     if (!g_sdl_window) return;
-    SDL_Event ev;
-    while (SDL_PollEvent(&ev)) {
-        if (ev.type == SDL_EVENT_MOUSE_MOTION) {
-            g_sdl_mouse_dx_rem += ev.motion.xrel;
-            g_sdl_mouse_dy_rem += ev.motion.yrel;
-        }
-    }
+
+    float dx = 0.0f;
+    float dy = 0.0f;
+    SDL_GetRelativeMouseState(&dx, &dy);
+
+    g_sdl_mouse_dx_rem += dx;
+    g_sdl_mouse_dy_rem += dy;
 }
 
 void mouse_init_sdl_window()

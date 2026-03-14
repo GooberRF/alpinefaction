@@ -9,6 +9,7 @@
 #include "../rf/crt.h"
 #include "../main/main.h"
 #include "../input/input.h"
+#include "../misc/alpine_settings.h"
 #include "win32_console.h"
 #include <xlog/xlog.h>
 #include <timeapi.h>
@@ -28,7 +29,12 @@ FunHook<void()> os_poll_hook{
             // xlog::info("msg {}\n", msg.message);
         }
 
-        mouse_sdl_poll();
+        // Avoid accumulating mouse deltas while the window is unfocused
+        // and background mouse input is disabled, to prevent a large
+        // "dump" of motion on refocus.
+        if (rf::os_foreground() || g_alpine_game_config.background_mouse) {
+            mouse_sdl_poll();
+        }
 
         if (win32_console_is_enabled()) {
             win32_console_poll_input();
@@ -174,7 +180,9 @@ void wait_for(const float ms, const WaitableTimer& timer) {
 
 void os_apply_patch()
 {
-    SDL_Init(SDL_INIT_VIDEO);
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        xlog::error("SDL_Init(SDL_INIT_VIDEO) failed: {}", SDL_GetError());
+    }
 
     // Process messages in the same thread as DX processing (alternative: D3DCREATE_MULTITHREADED)
     AsmWriter(0x00524C48, 0x00524C83).nop(); // disable msg loop thread
