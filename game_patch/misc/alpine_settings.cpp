@@ -1012,6 +1012,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_icon_override = std::clamp(std::stoi(settings["GamepadIconOverride"]), 0, 8);
         processed_keys.insert("GamepadIconOverride");
     }
+    if (settings.count("GamepadJoyInvertY")) {
+        g_alpine_game_config.gamepad_joy_invert_y = std::stoi(settings["GamepadJoyInvertY"]) != 0;
+        processed_keys.insert("GamepadJoyInvertY");
+    }
+    if (settings.count("GamepadSwapSticks")) {
+        g_alpine_game_config.gamepad_swap_sticks = std::stoi(settings["GamepadSwapSticks"]) != 0;
+        processed_keys.insert("GamepadSwapSticks");
+    }
     // Per-button gamepad bindings
     for (int b = 0; b < gamepad_get_button_count(); ++b) {
         std::string key = "GamepadBtn_" + std::to_string(b);
@@ -1146,6 +1154,8 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadGyroTightening=" << g_alpine_game_config.gamepad_gyro_tightening << "\n";
     file << "GamepadGyroSmoothing=" << g_alpine_game_config.gamepad_gyro_smoothing << "\n";
     file << "GamepadIconOverride=" << g_alpine_game_config.gamepad_icon_override << "\n";
+    file << "GamepadJoyInvertY=" << g_alpine_game_config.gamepad_joy_invert_y << "\n";
+    file << "GamepadSwapSticks=" << g_alpine_game_config.gamepad_swap_sticks << "\n";
     // Per-button gamepad bindings (only write slots that are actually bound)
     for (int b = 0; b < gamepad_get_button_count(); ++b) {
         int action = gamepad_get_button_binding(b);

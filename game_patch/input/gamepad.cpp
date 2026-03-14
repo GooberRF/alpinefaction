@@ -1,4 +1,5 @@
 #include "gamepad.h"
+#include "input.h"
 #include "glyph.h"
 #include <algorithm>
 #include <cmath>
@@ -109,6 +110,20 @@ static void inject_action_key(int action, bool down)
         rf::key_process_event(sc, down ? 1 : 0, 0);
 }
 
+// Syncs g_action_curr for any binding whose scan_codes contain `sc`,
+// skipping `primary_action` (already handled by g_button_map / g_trigger_action).
+// Does NOT inject key events — the hook-based path is sufficient for alpine controls.
+static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_action)
+{
+    if (!rf::local_player) return;
+    auto& cc = rf::local_player->settings.controls;
+    for (int i = 0; i < cc.num_bindings && i < k_action_count; ++i) {
+        if (i == primary_action) continue;
+        if (cc.bindings[i].scan_codes[0] == sc || cc.bindings[i].scan_codes[1] == sc)
+            g_action_curr[i] = down;
+    }
+}
+
 static void update_trigger_actions()
 {
     float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / (float)SDL_MAX_SINT16;
@@ -116,15 +131,18 @@ static void update_trigger_actions()
     bool lt_down = lt > 0.5f;
     bool rt_down = rt > 0.5f;
 
-    if (lt_down != g_lt_was_down)
+    if (lt_down != g_lt_was_down) {
         inject_action_key(g_trigger_action[0], lt_down);
-    if (rt_down != g_rt_was_down)
+        if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count)
+            g_action_curr[g_trigger_action[0]] = lt_down;
+        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER), lt_down, g_trigger_action[0]);
+    }
+    if (rt_down != g_rt_was_down) {
         inject_action_key(g_trigger_action[1], rt_down);
-
-    if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count)
-        g_action_curr[g_trigger_action[0]] = lt_down;
-    if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count)
-        g_action_curr[g_trigger_action[1]] = rt_down;
+        if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count)
+            g_action_curr[g_trigger_action[1]] = rt_down;
+        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER), rt_down, g_trigger_action[1]);
+    }
 
     g_lt_was_down = lt_down;
     g_rt_was_down = rt_down;
@@ -162,8 +180,12 @@ static void update_stick_movement()
         return;
     }
 
-    float lx = get_axis(SDL_GAMEPAD_AXIS_LEFTX, g_alpine_game_config.gamepad_move_deadzone);
-    float ly = get_axis(SDL_GAMEPAD_AXIS_LEFTY, g_alpine_game_config.gamepad_move_deadzone);
+    SDL_GamepadAxis mov_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX;
+    SDL_GamepadAxis mov_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
+    float mov_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_look_deadzone
+                                                                      : g_alpine_game_config.gamepad_move_deadzone;
+    float lx = get_axis(mov_x, mov_dz);
+    float ly = get_axis(mov_y, mov_dz);
 
     g_move_lx = lx;
     g_move_ly = ly;
@@ -207,24 +229,41 @@ void gamepad_do_frame()
             if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
             g_last_input_was_gamepad = true;
             if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
-                g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button;
-                rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
+                if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+                    // Start is reserved as "cancel rebind", same role as keyboard ESC.
+                    // TODO: replace baked-in ESC with menu game action
+                    rf::key_process_event(rf::KEY_ESC, 1, 0);
+                    rf::key_process_event(rf::KEY_ESC, 0, 0);
+                } else {
+                    g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button;
+                    rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
+                }
                 break; // skip normal gameplay dispatch
             }
             if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
                 rf::key_process_event(rf::KEY_ESC, 1, 0);
                 rf::key_process_event(rf::KEY_ESC, 0, 0);
             }
-            if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT && g_button_map[ev.gbutton.button] >= 0) {
-                inject_action_key(g_button_map[ev.gbutton.button], true);
-                g_action_curr[g_button_map[ev.gbutton.button]] = true;
+            if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
+                int mapped = g_button_map[ev.gbutton.button];
+                if (mapped >= 0) {
+                    inject_action_key(mapped, true);
+                    g_action_curr[mapped] = true;
+                }
+                int16_t gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button);
+                sync_extra_actions_for_scancode(gp_sc, true, mapped);
             }
             break;
         case SDL_EVENT_GAMEPAD_BUTTON_UP:
             if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
-            if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT && g_button_map[ev.gbutton.button] >= 0) {
-                inject_action_key(g_button_map[ev.gbutton.button], false);
-                g_action_curr[g_button_map[ev.gbutton.button]] = false;
+            if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
+                int mapped = g_button_map[ev.gbutton.button];
+                if (mapped >= 0) {
+                    inject_action_key(mapped, false);
+                    g_action_curr[mapped] = false;
+                }
+                int16_t gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button);
+                sync_extra_actions_for_scancode(gp_sc, false, mapped);
             }
             break;
         case SDL_EVENT_GAMEPAD_AXIS_MOTION:
@@ -306,14 +345,20 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     if (!g_gamepad || !rf::keep_mouse_centered)
         return;
 
-    float rx = get_axis(SDL_GAMEPAD_AXIS_RIGHTX, g_alpine_game_config.gamepad_look_deadzone);
-    float ry = get_axis(SDL_GAMEPAD_AXIS_RIGHTY, g_alpine_game_config.gamepad_look_deadzone);
+    SDL_GamepadAxis cam_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTX  : SDL_GAMEPAD_AXIS_RIGHTX;
+    SDL_GamepadAxis cam_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTY  : SDL_GAMEPAD_AXIS_RIGHTY;
+    float cam_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
+                                                                       : g_alpine_game_config.gamepad_look_deadzone;
+    float rx = get_axis(cam_x, cam_dz);
+    float ry = get_axis(cam_y, cam_dz);
 
-    yaw_delta   =  rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx;
-    pitch_delta = -rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry;
+    float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
+    yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx;
+    pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry;
 
     if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled
-                                && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f) {
+                                && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
+                                && gyro_modifier_is_active()) {
         float gyro_pitch, gyro_yaw;
         gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
         gyro_apply_smoothing(gyro_pitch, gyro_yaw);
@@ -380,16 +425,22 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
         // The vehicle's own turn rate and frametime scaling apply on top.
         if (g_gamepad && is_local_player_vehicle(entity)) {
             // Stick: raw axis (-1 to 1) maps directly to keyboard-like input
-            float rx = get_axis(SDL_GAMEPAD_AXIS_RIGHTX, g_alpine_game_config.gamepad_look_deadzone);
-            float ry = get_axis(SDL_GAMEPAD_AXIS_RIGHTY, g_alpine_game_config.gamepad_look_deadzone);
+            SDL_GamepadAxis rot_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTX  : SDL_GAMEPAD_AXIS_RIGHTX;
+            SDL_GamepadAxis rot_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTY  : SDL_GAMEPAD_AXIS_RIGHTY;
+            float rot_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
+                                                                              : g_alpine_game_config.gamepad_look_deadzone;
+            float rx = get_axis(rot_x, rot_dz);
+            float ry = get_axis(rot_y, rot_dz);
+            float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
             entity->ai.ci.rot.y += rx;
-            entity->ai.ci.rot.x += -ry;
+            entity->ai.ci.rot.x += joy_pitch_sign * ry;
 
             // Gyro: convert deg/s to ci.rot range (±1.0) with a fixed scale factor.
             // 1/90 means 90 deg/s of gyro rotation equals full keyboard deflection.
             if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled
                 && g_alpine_game_config.gamepad_gyro_vehicle_camera
-                && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f) {
+                && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
+                && gyro_modifier_is_active()) {
                 float gyro_pitch, gyro_yaw;
                 gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
                 gyro_apply_smoothing(gyro_pitch, gyro_yaw);
@@ -566,8 +617,10 @@ void gamepad_sync_bindings_from_scan_codes()
     for (int i = 0; i < cc.num_bindings; ++i) {
         int16_t sc = cc.bindings[i].scan_codes[0];
         int offset = static_cast<int>(sc) - CTRL_GAMEPAD_SCAN_BASE;
-        if (offset >= 0 && offset < SDL_GAMEPAD_BUTTON_COUNT)
-            g_button_map[offset] = i;
+        if (offset >= 0 && offset < SDL_GAMEPAD_BUTTON_COUNT) {
+            if (offset != SDL_GAMEPAD_BUTTON_START) // Start is reserved, never rebindable
+                g_button_map[offset] = i;
+        }
         else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER))
             g_trigger_action[0] = i;
         else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER))
@@ -601,6 +654,20 @@ void gamepad_apply_rebind()
         }
 
         cc.bindings[i].scan_codes[0] = new_code;
+
+        // Gyro modifier actions are mutually exclusive, so if one of them is bound, it unbinds the other two.
+        if (new_code != 0) {
+            const int hold_idx     = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD));
+            const int hold_inv_idx = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT));
+            const int toggle_idx   = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE));
+            if (i == hold_idx || i == hold_inv_idx || i == toggle_idx) {
+                for (int k = 0; k < cc.num_bindings; ++k) {
+                    if (k != i && (k == hold_idx || k == hold_inv_idx || k == toggle_idx))
+                        cc.bindings[k].scan_codes[0] = 0;
+                }
+            }
+        }
+
         break;
     }
 }
@@ -649,6 +716,8 @@ void gamepad_apply_patch()
     gamepad_reset_to_defaults();
 
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
 
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
         xlog::error("Failed to initialize SDL gamepad subsystem: {}", SDL_GetError());

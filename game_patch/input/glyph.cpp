@@ -109,8 +109,6 @@ static const ButtonOverride switchpro_overrides[] = {
     {  4, "-"        },
     {  5, "Home"     },
     {  6, "+"        },
-    {  7, "LS Click" },
-    {  8, "RS Click" },
     {  9, "L"        },
     { 10, "R"        },
     { 15, "Capture"  },
@@ -124,8 +122,6 @@ static const ButtonOverride switchpro_overrides[] = {
 
 static const ButtonOverride switchjoycon_overrides[] = {
     {  5, "Home"     },
-    {  7, "LS Click" },
-    {  8, "RS Click" },
     {  9, "L"        },
     { 10, "R"        },
     { 16, "Right SR" },
@@ -148,34 +144,34 @@ static const ButtonOverride gamecube_overrides[] = {
 const char* gamepad_get_button_name(int button_idx)
 {
     static const char* names[] = {
-        "South",           // SDL_GAMEPAD_BUTTON_SOUTH          0
-        "East",            // SDL_GAMEPAD_BUTTON_EAST           1
-        "West",            // SDL_GAMEPAD_BUTTON_WEST           2
-        "North",           // SDL_GAMEPAD_BUTTON_NORTH          3
-        "Back",            // SDL_GAMEPAD_BUTTON_BACK           4
-        "Guide",           // SDL_GAMEPAD_BUTTON_GUIDE          5
-        "Start",           // SDL_GAMEPAD_BUTTON_START          6
-        "Left Stick",      // SDL_GAMEPAD_BUTTON_LEFT_STICK     7
-        "Right Stick",     // SDL_GAMEPAD_BUTTON_RIGHT_STICK    8
-        "Left Shoulder",   // SDL_GAMEPAD_BUTTON_LEFT_SHOULDER  9
-        "Right Shoulder",  // SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER 10
-        "D-Pad Up",        // SDL_GAMEPAD_BUTTON_DPAD_UP        11
-        "D-Pad Down",      // SDL_GAMEPAD_BUTTON_DPAD_DOWN      12
-        "D-Pad Left",      // SDL_GAMEPAD_BUTTON_DPAD_LEFT      13
-        "D-Pad Right",     // SDL_GAMEPAD_BUTTON_DPAD_RIGHT     14
-        "Misc 1",          // SDL_GAMEPAD_BUTTON_MISC1          15
-        "Right Paddle 1",  // SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1  16
-        "Left Paddle 1",   // SDL_GAMEPAD_BUTTON_LEFT_PADDLE1   17
-        "Right Paddle 2",  // SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2  18
-        "Left Paddle 2",   // SDL_GAMEPAD_BUTTON_LEFT_PADDLE2   19
-        "Touchpad",        // SDL_GAMEPAD_BUTTON_TOUCHPAD       20
-        "Misc 2",          // SDL_GAMEPAD_BUTTON_MISC2          21
-        "Misc 3",          // SDL_GAMEPAD_BUTTON_MISC3          22
-        "Misc 4",          // SDL_GAMEPAD_BUTTON_MISC4          23
-        "Misc 5",          // SDL_GAMEPAD_BUTTON_MISC5          24
-        "Misc 6",          // SDL_GAMEPAD_BUTTON_MISC6          25
-        "Left Trigger",    // Left Trigger                      26
-        "Right Trigger",   // Right Trigger                     27
+        "South",              // SDL_GAMEPAD_BUTTON_SOUTH          0
+        "East",               // SDL_GAMEPAD_BUTTON_EAST           1
+        "West",               // SDL_GAMEPAD_BUTTON_WEST           2
+        "North",              // SDL_GAMEPAD_BUTTON_NORTH          3
+        "Back",               // SDL_GAMEPAD_BUTTON_BACK           4
+        "Guide",              // SDL_GAMEPAD_BUTTON_GUIDE          5
+        "Start",              // SDL_GAMEPAD_BUTTON_START          6
+        "Left Stick Click",   // SDL_GAMEPAD_BUTTON_LEFT_STICK     7
+        "Right Stick Click",  // SDL_GAMEPAD_BUTTON_RIGHT_STICK    8
+        "Left Shoulder",      // SDL_GAMEPAD_BUTTON_LEFT_SHOULDER  9
+        "Right Shoulder",     // SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER 10
+        "D-Pad Up",           // SDL_GAMEPAD_BUTTON_DPAD_UP        11
+        "D-Pad Down",         // SDL_GAMEPAD_BUTTON_DPAD_DOWN      12
+        "D-Pad Left",         // SDL_GAMEPAD_BUTTON_DPAD_LEFT      13
+        "D-Pad Right",        // SDL_GAMEPAD_BUTTON_DPAD_RIGHT     14
+        "Misc 1",             // SDL_GAMEPAD_BUTTON_MISC1          15
+        "Right Paddle 1",     // SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1  16
+        "Left Paddle 1",      // SDL_GAMEPAD_BUTTON_LEFT_PADDLE1   17
+        "Right Paddle 2",     // SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2  18
+        "Left Paddle 2",      // SDL_GAMEPAD_BUTTON_LEFT_PADDLE2   19
+        "Touchpad",           // SDL_GAMEPAD_BUTTON_TOUCHPAD       20
+        "Misc 2",             // SDL_GAMEPAD_BUTTON_MISC2          21
+        "Misc 3",             // SDL_GAMEPAD_BUTTON_MISC3          22
+        "Misc 4",             // SDL_GAMEPAD_BUTTON_MISC4          23
+        "Misc 5",             // SDL_GAMEPAD_BUTTON_MISC5          24
+        "Misc 6",             // SDL_GAMEPAD_BUTTON_MISC6          25
+        "Left Trigger",       // Left Trigger                      26
+        "Right Trigger",      // Right Trigger                     27
     };
     static_assert(sizeof(names) / sizeof(names[0]) == SDL_GAMEPAD_BUTTON_COUNT + 2,
         "Input name table size mismatch — update when SDL_GAMEPAD_BUTTON_COUNT changes");

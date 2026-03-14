@@ -23,6 +23,7 @@
 #include "../multi/alpine_packets.h"
 #include "../os/console.h"
 #include "gamepad.h"
+#include "input.h"
 
 static int starting_alpine_control_index = -1;
 
@@ -295,6 +296,14 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG);
         alpine_control_config_add_item(ccp, "Inspect Weapon", false, rf::KEY_I, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON);
+        alpine_control_config_add_item(ccp, "Reset Camera", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
+        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold)", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD);
+        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold - Invert)", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT);
+        alpine_control_config_add_item(ccp, "Gyro Modifier (Toggle)", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);
     },
 };
 
@@ -337,6 +346,10 @@ CodeInjection player_execute_action_patch{
             else if (action_index == starting_alpine_control_index +
                 static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON)) {
                 fpgun_play_random_idle_anim();
+            }
+            else if (action_index == starting_alpine_control_index +
+                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA)) {
+                camera_start_reset_to_horizon();
             }
         }
     },
@@ -434,7 +447,7 @@ CodeInjection controls_process_patch{
 
         // C++ doesn't have a way to dynamically get the last enum index, so just update this when adding new controls
         if (index >= starting_alpine_control_index &&
-            index <= static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
+            index <= starting_alpine_control_index + static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
             //xlog::warn("passing control {}", index);
             regs.eip = 0x00430E24;
         }

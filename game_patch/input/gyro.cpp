@@ -1,10 +1,13 @@
 #include "gyro.h"
+#include "input.h"
+#include "gamepad.h"
 #include <cmath>
 #include <optional>
 #include <GamepadMotion.hpp>
 #include <xlog/xlog.h>
 #include "../os/console.h"
 #include "../misc/alpine_settings.h"
+#include "../rf/player/player.h"
 
 static GamepadMotion g_motion;
 
@@ -130,6 +133,62 @@ void gyro_apply_smoothing(float& pitch_dps, float& yaw_dps)
 
     pitch_dps = pitch_dps * direct_weight + sum_pitch / SMOOTH_BUF_SIZE;
     yaw_dps   = yaw_dps   * direct_weight + sum_yaw   / SMOOTH_BUF_SIZE;
+}
+
+static bool gyro_action_has_binding(rf::ControlConfigAction action)
+{
+    if (!rf::local_player) return false;
+    auto& cc = rf::local_player->settings.controls;
+    int idx = static_cast<int>(action);
+    if (idx < 0 || idx >= cc.num_bindings) return false;
+    const auto& b = cc.bindings[idx];
+    return b.scan_codes[0] > 0 || b.scan_codes[1] > 0 || b.mouse_btn_id >= 0
+        || gamepad_get_button_for_action(idx) >= 0
+        || gamepad_get_trigger_for_action(idx) >= 0;
+}
+
+// Toggle state for Gyro Modifier binding.
+static bool g_gyro_toggle_state = true;
+static bool g_gyro_toggle_prev_down = false;
+
+// Returns whether gyro input should be applied this frame.
+// - None of the three modifier bindings assigned  -> always active.
+// - Gyro Modifier (Hold)          -> active while held.
+// - Gyro Modifier (Hold - Invert) -> active while NOT held.
+// - Gyro Modifier (Toggle)        -> button press flips on/off (starts on).
+// If multiple bindings are assigned, any active condition enables gyro (OR).
+bool gyro_modifier_is_active()
+{
+    using namespace rf;
+
+    if (!local_player) return true;
+
+    const auto hold_action        = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD);
+    const auto hold_invert_action = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT);
+    const auto toggle_action      = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);
+
+    const bool hold_bound        = gyro_action_has_binding(hold_action);
+    const bool hold_invert_bound = gyro_action_has_binding(hold_invert_action);
+    const bool toggle_bound      = gyro_action_has_binding(toggle_action);
+
+    if (!hold_bound && !hold_invert_bound && !toggle_bound)
+        return true; // no modifier bound — gyro always on
+
+    auto& cc = local_player->settings.controls;
+
+    // Toggle:
+    if (toggle_bound) {
+        bool down = control_is_control_down(&cc, toggle_action);
+        if (down && !g_gyro_toggle_prev_down)
+            g_gyro_toggle_state = !g_gyro_toggle_state;
+        g_gyro_toggle_prev_down = down;
+    }
+
+    bool active = false;
+    if (hold_bound)        active |= control_is_control_down(&cc, hold_action);
+    if (hold_invert_bound) active |= !control_is_control_down(&cc, hold_invert_action);
+    if (toggle_bound)      active |= g_gyro_toggle_state;
+    return active;
 }
 
 ConsoleCommand2 gyro_autocalibration_cmd{

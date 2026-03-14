@@ -13,7 +13,9 @@
 #include "../rf/entity.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
+#include "../rf/os/frametime.h"
 #include "gamepad.h"
+#include "input.h"
 
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
@@ -302,6 +304,9 @@ static void apply_linear_pitch(float current_yaw, float current_pitch_non_lin, f
     pitch_delta = new_pitch_delta;
 }
 
+static bool s_camera_resetting = false;
+static bool s_camera_reset_prev_down = false;
+
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
@@ -321,8 +326,35 @@ CodeInjection linear_pitch_patch{
             float current_pitch_non_lin = entity->control_data.eye_phb.x;
             apply_linear_pitch(current_yaw, current_pitch_non_lin, pitch_delta, yaw_delta);
         }
+
+        // Reset camera pitch to horizon on press (rising-edge detection).
+        if (rf::local_player) {
+            const auto reset_action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
+            bool down = rf::control_is_control_down(&rf::local_player->settings.controls, reset_action);
+            if (down && !s_camera_reset_prev_down)
+                s_camera_resetting = true;
+            s_camera_reset_prev_down = down;
+        }
+        if (s_camera_resetting) {
+            constexpr float reset_speed = 12.0f; // radians per second
+            constexpr float done_threshold = 0.001f;
+            const float current_pitch = entity->control_data.eye_phb.x;
+            if (std::abs(current_pitch) < done_threshold) {
+                pitch_delta = 0.0f;
+                s_camera_resetting = false;
+            } else {
+                const float toward_zero = -current_pitch;
+                const float max_step = reset_speed * rf::frametime;
+                pitch_delta = std::clamp(toward_zero, -max_step, max_step);
+            }
+        }
     },
 };
+
+void camera_start_reset_to_horizon()
+{
+    s_camera_resetting = true;
+}
 
 ConsoleCommand2 linear_pitch_cmd{
     "cl_linearpitch",

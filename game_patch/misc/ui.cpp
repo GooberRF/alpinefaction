@@ -218,6 +218,10 @@ static rf::ui::Label ao_gyro_space_butlabel;
 static char ao_gyro_space_butlabel_text[12];
 static rf::ui::Checkbox ao_gyro_invert_y_cbox;
 static rf::ui::Label ao_gyro_invert_y_label;
+static rf::ui::Checkbox ao_joy_invert_y_cbox;
+static rf::ui::Label ao_joy_invert_y_label;
+static rf::ui::Checkbox ao_swap_sticks_cbox;
+static rf::ui::Label ao_swap_sticks_label;
 
 // levelsounds audio options slider
 std::vector<rf::ui::Gadget*> alpine_audio_panel_settings;
@@ -896,6 +900,18 @@ void ao_gyro_invert_y_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.gamepad_gyro_invert_y);
 }
 
+void ao_joy_invert_y_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_joy_invert_y = !g_alpine_game_config.gamepad_joy_invert_y;
+    ao_joy_invert_y_cbox.checked = g_alpine_game_config.gamepad_joy_invert_y;
+    ao_play_button_snd(g_alpine_game_config.gamepad_joy_invert_y);
+}
+
+void ao_swap_sticks_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_swap_sticks = !g_alpine_game_config.gamepad_swap_sticks;
+    ao_swap_sticks_cbox.checked = g_alpine_game_config.gamepad_swap_sticks;
+    ao_play_button_snd(g_alpine_game_config.gamepad_swap_sticks);
+}
+
 void ao_joinbeep_cbox_on_click(int x, int y) {
     g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
     ao_joinbeep_cbox.checked = g_alpine_game_config.player_join_beep;
@@ -1345,11 +1361,15 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_togglecrouch_cbox, &ao_togglecrouch_label, &alpine_options_panel2, ao_togglecrouch_cbox_on_click, rf::local_player->settings.toggle_crouch, 280, 174, "Toggle crouch");
     alpine_options_panel_inputbox_init(
-        &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 204, "Stick sensitivity");
+        &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 204, "Camera sens");
     alpine_options_panel_inputbox_init(
         &ao_move_deadzone_cbox, &ao_move_deadzone_label, &ao_move_deadzone_butlabel, &alpine_options_panel2, ao_move_deadzone_cbox_on_click, 112, 234, "Move deadzone");
     alpine_options_panel_inputbox_init(
-        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Look deadzone");
+        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Camera deadzone");
+    alpine_options_panel_checkbox_init(
+        &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 294, "Camera Invert Y");
+    alpine_options_panel_checkbox_init(
+        &ao_swap_sticks_cbox, &ao_swap_sticks_label, &alpine_options_panel2, ao_swap_sticks_cbox_on_click, g_alpine_game_config.gamepad_swap_sticks, 112, 324, "Swap Sticks");
     alpine_options_panel_checkbox_init(
         &ao_gyro_enabled_cbox, &ao_gyro_enabled_label, &alpine_options_panel2, ao_gyro_enabled_cbox_on_click, g_alpine_game_config.gamepad_gyro_enabled, 280, 204, "Gyro Aiming");
     alpine_options_panel_inputbox_init(
@@ -1364,7 +1384,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_gyro_autocalibration_cbox, &ao_gyro_autocalibration_label,
         &alpine_options_panel2, ao_gyro_autocalibration_cbox_on_click,
-        g_alpine_game_config.gamepad_gyro_autocalibration, 280, 324, "Gyro AutoCalib");
+        g_alpine_game_config.gamepad_gyro_autocalibration, 280, 324, "Gyro Auto-Calib");
 
     // panel 3
     alpine_options_panel_checkbox_init(

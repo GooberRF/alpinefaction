@@ -21,4 +21,5 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps);
 void gyro_apply_tightening(float& pitch_dps, float& yaw_dps);
 void gyro_apply_smoothing(float& pitch_dps, float& yaw_dps);
 const char* gyro_get_space_name(int space);
+bool gyro_modifier_is_active();
 void gyro_apply_patch();
