@@ -121,6 +121,7 @@ set(SRCS
     hud/multi_spectate.h
     hud/multi_hud.cpp
     hud/multi_hud_chat.cpp
+    hud/multi_hud_killfeed.cpp
     hud/weapon_select.cpp
     hud/message_log.cpp
     debug/debugwinmsg.cpp
@@ -178,6 +179,7 @@ set(SRCS
     object/monitor.cpp
     object/particle.cpp
     object/obj_light.cpp
+    object/alpine_mesh.cpp
     misc/achievements.h
     misc/achievements.cpp
     misc/character.cpp

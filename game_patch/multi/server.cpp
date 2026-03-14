@@ -1168,10 +1168,17 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
+        float life_before = damaged_ep->life;
+        float armor_before = damaged_ep->armor;
+        int damaged_ep_handle = damaged_ep->handle;
+
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
 
+        // Re-fetch pointer: entity may have been destroyed during damage processing, making the original pointer dangling
+        damaged_ep = rf::entity_from_handle(damaged_ep_handle);
+
         // should entity gib?
-        if (damaged_ep) { // damaged_ep can sometimes be invalid at this point
+        if (damaged_ep) {
             if (!rf::is_multi) { // SP gibbing
                 if (damaged_ep->life < -100.0f &&               // very dead
                     damage_type == 3 &&                         // explosive
@@ -1198,16 +1205,27 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
-        // damaged_ep may be invalid at this point. If so, assume dead to avoid a rare crash from checking life
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
+
+        // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
+        float effective_damage = real_damage;
+        if (real_damage > 0.0f) {
+            if (damaged_ep) {
+                float health_removed = life_before - std::max(damaged_ep->life, 0.0f);
+                float armor_removed = armor_before - std::max(damaged_ep->armor, 0.0f);
+                effective_damage = std::max(health_removed + armor_removed * 2.0f, 0.0f);
+            } else {
+                effective_damage = std::min(real_damage, std::max(life_before, 0.0f) + std::max(armor_before, 0.0f) * 2.0f);
+            }
+        }
 
         if (rf::is_server && is_pvp_damage && real_damage > 0.0f) {
 
             auto* killer_player_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
-            killer_player_stats->add_damage_given(real_damage);
+            killer_player_stats->add_damage_given(effective_damage);
 
             auto* damaged_player_stats = static_cast<PlayerStatsNew*>(damaged_player->stats);
-            damaged_player_stats->add_damage_received(real_damage);
+            damaged_player_stats->add_damage_received(effective_damage);
 
             if (g_alpine_server_config.damage_notification_config.enabled && damaged_player && killer_player) {
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {
@@ -1217,7 +1235,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                         //xlog::warn("sending damage notify to {}, is dead? {}", killer_player->name, is_dead);
                         af_send_damage_notify_packet(
                             damaged_player->net_data->player_id,
-                            real_damage,
+                            effective_damage,
                             is_dead,
                             killer_player);
                     }
@@ -1236,7 +1254,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                             if (is_player_minimum_af_client_version(&player, 1, 1, 0)) {
                                 af_send_damage_notify_packet(
                                     damaged_player->net_data->player_id,
-                                    real_damage,
+                                    effective_damage,
                                     is_dead,
                                     &player);
                             }

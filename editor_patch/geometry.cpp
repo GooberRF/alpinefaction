@@ -244,7 +244,9 @@ void handle_group_mirror()
         mirror_brush(brush, axis, mirrored_verts);
     }
 
-    // Mirror objects
+    // Mirror objects — selection VArray does not need re-acquisition after undo snapshot.
+    // create_undo_snapshot (0x0043bbe0) only clones BrushNode objects in the brush linked list;
+    // DedObject pointers in the selection VArray remain valid.
     int num_objects = 0;
     auto& sel = level->selection;
     for (int i = 0; i < sel.size; i++) {
@@ -494,6 +496,7 @@ static GFace* create_split_face(GSolid* solid, GFace* original, std::vector<Spli
     GFaceVertex* first = nullptr;
     GFaceVertex* prev = nullptr;
     bool alloc_failed = false;
+    std::vector<GVertex*> allocated_gverts; // track GVertex allocations for cleanup on failure
 
     for (auto& sv : verts) {
         GFaceVertex* fv = GFaceVertex::alloc();
@@ -504,6 +507,7 @@ static GFace* create_split_face(GSolid* solid, GFace* original, std::vector<Spli
         if (!sv.gvertex) {
             sv.gvertex = alloc_gvertex(sv.pos);
             if (!sv.gvertex) { GFaceVertex::free(fv); alloc_failed = true; break; }
+            allocated_gverts.push_back(sv.gvertex);
         }
         fv->vertex = sv.gvertex;
         fv->u = sv.u;
@@ -527,13 +531,16 @@ static GFace* create_split_face(GSolid* solid, GFace* original, std::vector<Spli
         face->bounding_box_max.z = std::max(face->bounding_box_max.z, sv.pos.z);
     }
 
-    // On alloc failure, free any face vertices built so far and the face itself
+    // On alloc failure, free any face vertices and GVertex objects allocated in this call
     if (alloc_failed) {
         GFaceVertex* fv = first;
         while (fv) {
             GFaceVertex* nxt = fv->next;
             GFaceVertex::free(fv);
             fv = nxt;
+        }
+        for (GVertex* gv : allocated_gverts) {
+            editor_free(gv);
         }
         GFace::destroy(face);
         return nullptr;
@@ -654,7 +661,13 @@ static int split_face(GSolid* solid, GFace* face, int num_splits, bool along_x)
         auto [sv2, p2] = interp(cross2, (cross2 + 1) % rn);
 
         sv1.gvertex = alloc_gvertex(sv1.pos);
+        if (!sv1.gvertex) break;
         sv2.gvertex = alloc_gvertex(sv2.pos);
+        if (!sv2.gvertex) {
+            editor_free(sv1.gvertex);
+            sv1.gvertex = nullptr;
+            break;
+        }
 
         std::vector<SplitVert> poly_a, poly_b;
         std::vector<float> proj_a, proj_b;

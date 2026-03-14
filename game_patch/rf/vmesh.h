@@ -23,7 +23,7 @@ namespace rf
         char filename[65];
         //uint8_t padding[3];             // 0x4D - 3 bytes of padding
         void* replacement_materials;
-        char use_replacement_materials;
+        bool use_replacement_materials;
         //uint8_t _padding[3];            // 0x55 - Padding bytes to align to size 0x58
     };
     static_assert(sizeof(VMesh) == 0x58);   
@@ -101,9 +101,17 @@ namespace rf
     static auto& vmesh_collide = addr_as_ref<bool(VMesh *vmesh, VMeshCollisionInput *in, VMeshCollisionOutput *out, bool clear)>(0x005031F0);
     static auto& vmesh_calc_lighting_data_size = addr_as_ref<int(VMesh *vmesh)>(0x00503F50);
     static auto& vmesh_update_lighting_data = addr_as_ref<int(VMesh *vmesh, GRoom *room, const Vector3 &pos, const Matrix3 &orient, void *mesh_lighting_data)>(0x00504000);
+    static auto& vmesh_reset_actions = addr_as_ref<void(VMesh* vmesh)>(0x005033F0);
+    static auto& vmesh_set_action_weight = addr_as_ref<void(VMesh* vmesh, int action_index, float weight)>(0x00503390);
+    static auto& vmesh_play_action_by_index = addr_as_ref<void(VMesh* vmesh, int action_index, float transition_time, int hold_last_frame)>(0x005033B0);
     static auto& vmesh_stop_all_actions = addr_as_ref<void(VMesh* vmesh)>(0x00503400);
     static auto& vmesh_get_materials_array = addr_as_ref<void(VMesh *vmesh, int *num_materials_out, MeshMaterial **materials_array_out)>(0x00503650);
     static auto& vmesh_process = addr_as_ref<void(VMesh* vmesh, float frametime, int increment_only, Vector3* pos, Matrix3* orient, int lod_level)>(0x00503360);
+
+    // character_mesh_load_action: __thiscall on mesh_data (VMesh::mesh), loads .rfa animation file
+    // 3 stack args: filename, is_state flag, unused — original function does RET 0xC (12 bytes)
+    using CharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char is_state, char unused);
+    static const auto character_mesh_load_action = reinterpret_cast<CharMeshLoadActionFn>(0x0051CC10);
     static auto& vmesh_create_anim_fx = addr_as_ref<VMesh*(const char *filename, int path_id)>(0x00502A60);
     static auto& vclip_lookup = addr_as_ref<int(const char* name)>(0x004C1D00);
     static auto& vclip_play_3d =

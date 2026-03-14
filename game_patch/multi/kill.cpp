@@ -15,6 +15,8 @@
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
 #include "../hud/multi_spectate.h"
+#include "../hud/hud_internal.h"
+#include "../misc/alpine_settings.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
 #include "../misc/player.h"
@@ -422,8 +424,48 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
         }
     }
 
-    rf::String prefix;
-    rf::multi_chat_print(msg, color_id, prefix);
+    if (g_alpine_game_config.killfeed_enabled) {
+        bool is_team_mode = multi_is_team_game_type();
+        bool is_local = (killed_player == rf::local_player || killer_player == rf::local_player);
+
+        if (is_local) {
+            // Local player involved: show full message in white
+            killfeed_add_kill(nullptr, 0, nullptr, 0, msg.c_str(), true, is_team_mode);
+        }
+        else if (!killer_player) {
+            // Mysterious death: "PlayerName was killed mysteriously"
+            killfeed_add_kill(killed_player->name, killed_player->team,
+                              nullptr, 0,
+                              null_to_empty(rf::strings::was_killed_mysteriously),
+                              false, is_team_mode);
+        }
+        else if (killer_player == killed_player) {
+            // Self-kill: "PlayerName was killed by his/her own hand"
+            const char* self_verb;
+            if (rf::multi_entity_is_female(killed_player->settings.multi_character))
+                self_verb = null_to_empty(rf::strings::was_killed_by_her_own_hand);
+            else
+                self_verb = null_to_empty(rf::strings::was_killed_by_his_own_hand);
+            killfeed_add_kill(killed_player->name, killed_player->team,
+                              nullptr, 0,
+                              self_verb, false, is_team_mode);
+        }
+        else {
+            // Third-party kill: "KilledName verb KillerName"
+            const char* verb;
+            if (killer_entity && killer_entity->ai.current_primary_weapon == rf::riot_stick_weapon_type)
+                verb = null_to_empty(rf::strings::got_beat_down_by);
+            else
+                verb = null_to_empty(rf::strings::was_killed_by);
+            killfeed_add_kill(killed_player->name, killed_player->team,
+                              killer_player->name, killer_player->team,
+                              verb, false, is_team_mode);
+        }
+    }
+    else {
+        rf::String prefix;
+        rf::multi_chat_print(msg, color_id, prefix);
+    }
 }
 
 void multi_apply_kill_reward(rf::Player* player)

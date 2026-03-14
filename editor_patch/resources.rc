@@ -298,6 +298,9 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Hide Selected\tH", ID_HIDE_SELECTED
 
         MENUITEM SEPARATOR
+        MENUITEM "&Reload Meshes", ID_RELOAD_MESHES
+        MENUITEM "Reload &Textures", ID_RELOAD_TEXTURES
+        MENUITEM SEPARATOR
         MENUITEM "&Generate Report...", 0x8077
         MENUITEM SEPARATOR
         MENUITEM "&Preferences...", 0x801B
@@ -365,6 +368,101 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 }
 
 
+// Alpine Mesh Properties dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_MESH_PROPERTIES DIALOGEX 0, 0, 280, 440
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Mesh Properties"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    LTEXT           "Script Name:", -1, 7, 11, 44, 8
+    EDITTEXT        IDC_MESH_SCRIPT_NAME, 60, 9, 150, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Mesh File:", -1, 7, 31, 44, 8
+    EDITTEXT        IDC_MESH_FILENAME, 60, 29, 150, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_MESH_BROWSE, 215, 29, 50, 14
+
+    LTEXT           "", IDC_MESH_TYPE_LABEL, 60, 46, 200, 8
+
+    LTEXT           "State Anim:", -1, 7, 61, 44, 8
+    EDITTEXT        IDC_MESH_STATE_ANIM, 60, 59, 140, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Simulate in editor", IDC_MESH_SIMULATE, 206, 61, 70, 10
+
+    LTEXT           "Collision:", -1, 7, 81, 44, 8
+    COMBOBOX        IDC_MESH_COLLISION_MODE, 60, 79, 80, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Material:", -1, 148, 81, 30, 8
+    COMBOBOX        IDC_MESH_MATERIAL, 180, 79, 84, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    GROUPBOX        "Texture Overrides", -1, 7, 98, 260, 108
+    CONTROL         "", IDC_MESH_OVERRIDE_LIST, WC_LISTVIEW, WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 14, 110, 246, 62
+    LTEXT           "Slot:", -1, 14, 178, 18, 8
+    EDITTEXT        IDC_MESH_OVERRIDE_SLOT, 34, 176, 24, 14, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Texture:", -1, 64, 178, 28, 8
+    EDITTEXT        IDC_MESH_OVERRIDE_FILENAME, 94, 176, 120, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "+", IDC_MESH_OVERRIDE_ADD, 220, 176, 18, 14
+    PUSHBUTTON      "-", IDC_MESH_OVERRIDE_REMOVE, 242, 176, 18, 14
+    LTEXT           "Use + to add, - to remove selected.", -1, 14, 194, 246, 8
+
+    AUTOCHECKBOX    "Destructible", IDC_MESH_IS_CLUTTER, 7, 212, 60, 10
+
+    GROUPBOX        "Destructible Properties", IDC_MESH_CLUTTER_GROUP, 7, 224, 260, 190
+
+    // Left column: destructible mesh options
+    LTEXT           "Debris Mesh:", -1, 14, 238, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DEBRIS, 14, 248, 118, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_MESH_CLUTTER_DEBRIS_BROWSE, 134, 248, 14, 14
+    LTEXT           "Debris Vel:", -1, 14, 266, 40, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DEBRIS_VEL, 54, 264, 36, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Explosion Vclip:", -1, 14, 282, 54, 8
+    EDITTEXT        IDC_MESH_CLUTTER_VCLIP, 14, 292, 118, 14, ES_AUTOHSCROLL
+    LTEXT           "Expl. Radius:", -1, 14, 310, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_EXPLODE_RADIUS, 54, 308, 36, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Corpse Mesh:", -1, 14, 326, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_CORPSE, 14, 336, 118, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_MESH_CLUTTER_CORPSE_BROWSE, 134, 336, 14, 14
+    LTEXT           "", IDC_MESH_CLUTTER_CORPSE_TYPE_LABEL, 14, 352, 134, 8
+    LTEXT           "Corpse Anim:", -1, 14, 364, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, 62, 362, 86, 14, ES_AUTOHSCROLL
+    LTEXT           "Corpse Collision:", -1, 14, 380, 56, 8
+    COMBOBOX        IDC_MESH_CLUTTER_CORPSE_COLLISION, 72, 378, 76, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Corpse Material:", -1, 14, 396, 54, 8
+    COMBOBOX        IDC_MESH_CLUTTER_CORPSE_MATERIAL, 72, 394, 76, 120, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    // Right column: life + damage type factors
+    LTEXT           "Life:", -1, 156, 238, 16, 8
+    EDITTEXT        IDC_MESH_CLUTTER_LIFE, 174, 236, 36, 14, ES_AUTOHSCROLL
+    LTEXT           "(-1 = invuln.)", -1, 214, 238, 50, 8
+
+    LTEXT           "Damage Factors:", -1, 156, 260, 56, 8
+
+    LTEXT           "Bash:", -1, 156, 273, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_BASH, 228, 271, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Bullet:", -1, 156, 286, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_BULLET, 228, 284, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "AP Bullet:", -1, 156, 299, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_AP_BULLET, 228, 297, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Explosive:", -1, 156, 312, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_EXPLOSIVE, 228, 310, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Fire:", -1, 156, 325, 18, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_FIRE, 228, 323, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Energy:", -1, 156, 338, 28, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ENERGY, 228, 336, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Electrical:", -1, 156, 351, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ELECTRICAL, 228, 349, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Acid:", -1, 156, 364, 20, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ACID, 228, 362, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Scalding:", -1, 156, 377, 34, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_SCALDING, 228, 375, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Crush:", -1, 156, 390, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_CRUSH, 228, 388, 32, 12, ES_AUTOHSCROLL
+
+    PUSHBUTTON      "Links", ID_LINKS, 7, 420, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 160, 420, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 215, 420, 50, 14
+}
+
 // Brush mode side panel (replaces stock dialog 205 with added "Is Geoable" checkbox)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
 IDD_BRUSH_MODE_PANEL DIALOGEX 0, 0, 129, 355
@@ -390,6 +488,7 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Clip", 1582, 9, 216, 50, 14
     PUSHBUTTON      "Carve", 1581, 67, 216, 50, 14
     PUSHBUTTON      "Mirror", IDC_BRUSH_MIRROR, 9, 233, 50, 14
+    PUSHBUTTON      "To Mesh", IDC_BRUSH_CONVERT, 67, 233, 50, 14
     GROUPBOX        "Brush Operations", -1, 4, 136, 121, 118
     GROUPBOX        "Brush Properties", -1, 4, 259, 121, 94
     AUTO3STATE      "Is Portal", 1214, 10, 270, 41, 10
@@ -425,6 +524,26 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Cancel", IDCANCEL, 126, 24, 50, 14
 }
 
+// Alpine Note Properties dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_NOTE_PROPERTIES DIALOGEX 0, 0, 280, 300
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Note Properties"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    LTEXT           "Script Name:", -1, 7, 11, 44, 8
+    EDITTEXT        IDC_NOTE_SCRIPT_NAME, 60, 9, 150, 14, ES_AUTOHSCROLL
+
+    GROUPBOX        "Notes", -1, 7, 30, 260, 230
+    CONTROL         "", IDC_NOTE_LIST, WC_LISTVIEW, WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 14, 42, 246, 80
+    LTEXT           "Text:", -1, 14, 128, 18, 8
+    EDITTEXT        IDC_NOTE_TEXT, 14, 138, 246, 80, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+    PUSHBUTTON      "Add", IDC_NOTE_ADD, 14, 224, 40, 14
+    PUSHBUTTON      "Remove", IDC_NOTE_REMOVE, 58, 224, 40, 14
+    LTEXT           "Select an entry above to edit. Changes are saved automatically.", -1, 14, 243, 246, 8
+
+    DEFPUSHBUTTON   "Close", IDOK, 215, 275, 50, 14
+}
 // Face mode side panel (replaces stock dialog 178 with added Delete/Delete Ext./Split buttons)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
 IDD_FACE_MODE_PANEL DIALOGEX 0, 0, 129, 314
@@ -526,6 +645,19 @@ FONT 8, "MS Sans Serif"
     AUTORADIOBUTTON "Z", IDC_MIRROR_Z, 15, 40, 30, 10
     DEFPUSHBUTTON   "OK", IDOK, 66, 8, 48, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 66, 26, 48, 14
+}
+
+// Brush-to-mesh export options dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_BRUSH_CONVERT_OPTIONS DIALOGEX 0, 0, 180, 72
+STYLE DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Export Brush as Mesh"
+FONT 8, "MS Sans Serif"
+{
+    AUTOCHECKBOX    "Drop a new mesh object", IDC_CONVERT_REPLACE, 10, 10, 140, 10
+    AUTOCHECKBOX    "Reset mesh origin to brush bbox center", IDC_CONVERT_RESET_ORIGIN, 10, 26, 160, 10
+    DEFPUSHBUTTON   "OK", IDOK, 68, 48, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 122, 48, 50, 14
 }
 
 // VERSIONINFO

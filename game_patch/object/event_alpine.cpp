@@ -91,6 +91,9 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"Owner_Gate", 142},
                 {"Set_Gameplay_Rule", 143},
                 {"When_Round_Ends", 144},
+                {"Mesh_Animate", 145},
+                {"Mesh_Set_Texture", 146},
+                {"Mesh_Set_Collision", 147},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -161,6 +164,9 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {142, []() { return new rf::EventOwnerGate(); }},
                 {143, []() { return new rf::EventSetGameplayRule(); }},
                 {144, []() { return new rf::EventWhenRoundEnds(); }},
+                {145, []() { return new rf::EventMeshAnimate(); }},
+                {146, []() { return new rf::EventMeshSetTexture(); }},
+                {147, []() { return new rf::EventMeshSetCollision(); }},
             };
 
             // find type and allocate
@@ -235,6 +241,9 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {142, [](rf::Event* e) { delete static_cast<rf::EventOwnerGate*>(e); }},
                 {143, [](rf::Event* e) { delete static_cast<rf::EventSetGameplayRule*>(e); }},
                 {144, [](rf::Event* e) { delete static_cast<rf::EventWhenRoundEnds*>(e); }},
+                {145, [](rf::Event* e) { delete static_cast<rf::EventMeshAnimate*>(e); }},
+                {146, [](rf::Event* e) { delete static_cast<rf::EventMeshSetTexture*>(e); }},
+                {147, [](rf::Event* e) { delete static_cast<rf::EventMeshSetCollision*>(e); }},
             };
 
             // find type and deallocate
@@ -280,7 +289,10 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Set_Capture_Point_Owner,
         rf::EventType::When_Captured,
         rf::EventType::Owner_Gate,
-        rf::EventType::When_Round_Ends
+        rf::EventType::When_Round_Ends,
+        rf::EventType::Mesh_Animate,
+        rf::EventType::Mesh_Set_Texture,
+        rf::EventType::Mesh_Set_Collision
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
@@ -735,6 +747,42 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
             auto* event = dynamic_cast<rf::EventSetGameplayRule*>(base_event);
             if (event) {
                 event->rule = static_cast<rf::GameplayRule>(params.int1);
+            }
+            return event;
+        }
+    },
+    // Mesh_Animate
+    {
+        rf::EventType::Mesh_Animate, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Animate));
+            auto* event = dynamic_cast<rf::EventMeshAnimate*>(base_event);
+            if (event) {
+                event->animate_type = params.int1;
+                event->anim_filename = params.str1;
+                event->blend_weight = (params.float1 > 0.0f) ? params.float1 : 1.0f;
+            }
+            return event;
+        }
+    },
+    // Mesh_Set_Texture
+    {
+        rf::EventType::Mesh_Set_Texture, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Set_Texture));
+            auto* event = dynamic_cast<rf::EventMeshSetTexture*>(base_event);
+            if (event) {
+                event->texture_slot = params.int1;
+                event->texture_filename = params.str1;
+            }
+            return event;
+        }
+    },
+    // Mesh_Set_Collision
+    {
+        rf::EventType::Mesh_Set_Collision, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Set_Collision));
+            auto* event = dynamic_cast<rf::EventMeshSetCollision*>(base_event);
+            if (event) {
+                event->collision_type = params.int1;
             }
             return event;
         }

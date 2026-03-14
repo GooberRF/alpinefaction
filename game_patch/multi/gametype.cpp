@@ -9,6 +9,7 @@
 #include "gametype.h"
 #include "multi.h"
 #include "alpine_packets.h"
+#include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../sound/sound.h"
 #include "../rf/os/timestamp.h"
@@ -543,6 +544,7 @@ void koth_local_announce_hill_captured(const HillInfo* h, HillOwner new_owner, c
     if (new_owner == HillOwner::HO_Blue)
         color_id = rf::ChatMsgColor::blue_blue;
 
+    killfeed_route_next_message();
     rf::multi_chat_print(msg, color_id, {});
 
     const int sfx = capture_sfx_for_local(new_owner);

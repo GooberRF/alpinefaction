@@ -14,6 +14,8 @@
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
+#include "mesh.h"
+#include "note.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -26,6 +28,19 @@ CodeInjection CDedLevel_construct_patch{
         set_initial_level_rfl_version();
         std::byte* level = regs.esi;
         new (&level[stock_cdedlevel_size]) AlpineLevelProperties();
+    },
+};
+
+// Clear alpine properties when the level is reset (File > New or File > Open).
+// FUN_00418960 is CDedLevel::DeleteContents, called via the virtual DeleteContents
+// override at vtable[27] (FUN_0041CDF0). This fires for both New and Open.
+CodeInjection CDedLevel_DeleteContents_patch{
+    0x00418960,
+    []() {
+        auto* level = CDedLevel::Get();
+        if (level) {
+            level->GetAlpineLevelProperties().LoadDefaults();
+        }
     },
 };
 
@@ -52,6 +67,17 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 auto& alpine_level_props = level.GetAlpineLevelProperties();
                 alpine_level_props.Deserialize(file, chunk_size);
                 regs.eip = 0x0043090C;
+            }
+            // Mesh and note chunks were introduced in rfl v304
+            if (file.check_version(304)) {
+                if (chunk_id == alpine_mesh_chunk_id) {
+                    mesh_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_note_chunk_id) {
+                    note_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
             }
         }
     },
@@ -481,7 +507,25 @@ bool __cdecl adjacency_test_hooked(GFace* face1, GFace* face2)
     return true;                        // same isolated brush: allow
 }
 
+// Skip "objects outside of level" bounds check for Alpine object types (DED_MESH, DED_NOTE).
+// The stock save validator (FUN_0041d4c0) iterates master_objects and checks if each object
+// is inside a room. Alpine objects won't be in any room since they're not stock types, so
+// they'd always trigger a false warning. At 0x0041d7c0, EDX = DedObject*, and the code reads
+// obj->type at offset 0x5c. We intercept before the switch and skip to the next iteration
+// (0x0041dcfa) for our custom types.
+CodeInjection skip_alpine_objects_bounds_check{
+    0x0041d7c0,
+    [](auto& regs) {
+        auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.edx));
+        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE) {
+            regs.eip = 0x0041dcfa;
+        }
+    },
+};
+
 // save AlpineLevelProperties when saving rfl file
+// At 0x00430CBD, all_objects is already populated but link UIDs haven't been
+// converted to indices yet (that happens later in 0x10000/0x20000 chunks).
 CodeInjection CDedLevel_SaveLevel_patch{
     0x00430CBD,
     [](auto& regs) {
@@ -496,6 +540,12 @@ CodeInjection CDedLevel_SaveLevel_patch{
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
         alpine_level_props.Serialize(file);
         level.EndRflSection(file, start_pos);
+
+        // Write mesh objects chunk
+        mesh_serialize_chunk(level, file);
+
+        // Write note objects chunk
+        note_serialize_chunk(level, file);
     },
 };
 
@@ -552,8 +602,13 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
     return
         t0 == DedObjectType::DED_TRIGGER ||
         t0 == DedObjectType::DED_EVENT ||
-        (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT) ||
-        (t0 == DedObjectType::DED_CLUTTER && t1 == DedObjectType::DED_LIGHT);
+        (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT);
+}
+
+// Stock RED DoLink (0x00415850) stores links at DedObject+0x7C for all types.
+static VArray<int>& get_link_array(DedObject* obj)
+{
+    return obj->links;  // +0x7C for all object types
 }
 
 void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
@@ -601,8 +656,9 @@ void DedLevel_DoLinkImpl(CDedLevel* level, bool reverse_link_direction)
 
         attempted_uids.push_back(reverse_link_direction ? src->uid : dst->uid);
 
-        int old_size = src->links.get_size();
-        int idx = src->links.add_if_not_exists_int(dst->uid);
+        auto& src_links = get_link_array(src);
+        int old_size = src_links.get_size();
+        int idx = src_links.add_if_not_exists_int(dst->uid);
 
         if (idx < 0) {
             xlog::warn("DoLink: Failed to add link src_uid={} dst_uid={}", src->uid, dst->uid);
@@ -679,6 +735,7 @@ void ApplyLevelPatches()
 
     // handle AlpineLevelProperties chunk
     CDedLevel_construct_patch.install();
+    CDedLevel_DeleteContents_patch.install();
     CDedLevel_LoadLevel_patch1.install();
     CDedLevel_LoadLevel_patch2.install();
     CDedLevel_SaveLevel_patch.install();
@@ -708,4 +765,7 @@ void ApplyLevelPatches()
 
     // Allow creating multiple links in a single operation
     CDedLevel_DoLink_hook.install();
+
+    // Skip "objects outside of level" bounds check for alpine object types
+    skip_alpine_objects_bounds_check.install();
 }
