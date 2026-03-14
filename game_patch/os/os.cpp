@@ -174,12 +174,6 @@ void wait_for(const float ms, const WaitableTimer& timer) {
 
 void os_apply_patch()
 {
-    // Lock to DPI_AWARENESS_CONTEXT_UNAWARE so the legacy D3D renderer's bitmap-scaling
-    // virtualisation stays active. Must run before any subsystem (e.g. SDL) can escalate it.
-    if (auto* set_dpi_ctx = reinterpret_cast<BOOL(WINAPI*)(HANDLE)>(
-            GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext"))) {
-        set_dpi_ctx(reinterpret_cast<HANDLE>(-1)); // DPI_AWARENESS_CONTEXT_UNAWARE
-    }
     SDL_Init(SDL_INIT_VIDEO);
 
     // Process messages in the same thread as DX processing (alternative: D3DCREATE_MULTITHREADED)
