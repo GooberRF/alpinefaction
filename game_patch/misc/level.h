@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include <unordered_set>
 #include <xlog/xlog.h>
@@ -8,6 +9,7 @@
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int dash_level_props_chunk_id = 0xDA58FA00;
+constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
@@ -40,30 +42,16 @@ struct AlpineLevelProperties
     {
         std::size_t remaining = chunk_len;
 
-        // scope-exit: always skip any unread tail (forward compatibility for unknown newer fields)
-        struct Tail
-        {
-            rf::File& f;
-            std::size_t& rem;
-            bool active = true;
-            ~Tail()
-            {
-                if (active && rem) {
-                    f.seek(static_cast<int>(rem), rf::File::seek_cur);
-                }
-            }
-            void dismiss()
-            {
-                active = false;
-            }
-        } tail{file, remaining};
+        rf::File::ChunkGuard chunk_guard{file, remaining};
 
         auto read_bytes = [&](void* dst, std::size_t n) -> bool {
             if (remaining < n)
                 return false;
             int got = file.read(dst, n);
-            if (got != static_cast<int>(n) || file.error())
+            if (got != static_cast<int>(n) || file.error()) {
+                if (got > 0) remaining -= got;
                 return false;
+            }
             remaining -= n;
             return true;
         };
@@ -185,6 +173,55 @@ struct DashLevelProps
         chunk_version = 1u; // latest supported version
     }
 };
+
+// Per-slot texture override for mesh objects
+struct MeshTextureOverride {
+    uint8_t slot;
+    std::string filename;
+};
+
+// Clutter behavior properties for mesh objects
+struct MeshClutterInfo {
+    bool is_clutter = false;
+    float life = -1.0f;
+    std::string debris_filename;
+    std::string explosion_vclip;
+    float explosion_radius = 1.0f;
+    float debris_velocity = 10.0f;
+    std::string corpse_filename;
+    std::string corpse_state_anim;
+    uint8_t corpse_collision = 2;      // 0=None, 1=Only Weapons, 2=All
+    int8_t corpse_material = -1;       // -1=Automatic (inherit from base), 0-9=specific material
+    float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1};
+};
+
+// Alpine mesh object info, loaded from RFL
+struct AlpineMeshInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    std::string script_name;
+    std::string mesh_filename;
+    std::string state_anim;
+    uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All
+    std::vector<MeshTextureOverride> texture_overrides;
+    int material = 0;               // material type for impact sounds
+    MeshClutterInfo clutter;
+};
+
+void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);
+void alpine_mesh_do_frame();
+void alpine_mesh_clear_state();
+
+// Mesh event helpers
+namespace rf { struct Object; }
+const std::string* alpine_mesh_get_corpse_filename(int handle);
+bool alpine_mesh_is_corpse(int handle);
+void alpine_mesh_apply_corpse(rf::Object* obj, const std::string& corpse_filename);
+void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
+void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
+void alpine_mesh_clear_texture(rf::Object* obj, int slot);
+void alpine_mesh_set_collision(rf::Object* obj, int collision_type);
 
 // used by RF2-style geomod
 struct RF2AnchorInfo {

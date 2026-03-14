@@ -101,6 +101,7 @@ CodeInjection level_load_init_patch{
     []() {
         AlpineLevelProperties::instance() = {};
         DashLevelProps::instance() = {};
+        alpine_mesh_clear_state();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
     },
 };
@@ -117,6 +118,13 @@ CodeInjection level_load_chunk_patch{
             AlpineLevelProperties::instance().deserialize(file, chunk_len);
             set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
             regs.eip = 0x004608EF; // loop back to begin next chunk
+        }
+
+        // handling for alpine mesh objects chunk
+        if (chunk_id == alpine_mesh_chunk_id) {
+            xlog::debug("[Level] Loading alpine mesh chunk: len={}", chunk_len);
+            alpine_mesh_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
         }
 
         // handling for dash faction level props chunk, safe up to v1

@@ -340,7 +340,10 @@ namespace rf
         Set_Capture_Point_Owner,
         Owner_Gate,
         Set_Gameplay_Rule,
-        When_Round_Ends
+        When_Round_Ends,
+        Mesh_Animate,
+        Mesh_Set_Texture,
+        Mesh_Set_Collision
     };
 
     // int to EventType

@@ -27,7 +27,7 @@ namespace rf
         float explode_anim_radius;
         float explode_damage;
         Vector3 explode_offset;
-        Timestamp timer_70;
+        Timestamp explode_anim_timer;
         int flags;
         float debris_velocity;
         int glare;

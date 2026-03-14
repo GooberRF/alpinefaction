@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <utility>
 #include <vector>
 #include <string>
 #include <algorithm>
@@ -10,8 +11,12 @@
 #include "mfc_types.h"
 #include "resources.h"
 
+void DestroyDedMesh(DedMesh* mesh);
+
 constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
+constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
+constexpr int alpine_note_chunk_id = 0x0AFBAE02;
 
 // Forward declarations
 struct GFace;
@@ -337,6 +342,12 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
     std::vector<uint8_t> breakable_materials;  // material type per entry
 
+    // Alpine mesh objects (stored separately from stock object VArrays)
+    std::vector<DedMesh*> mesh_objects;
+
+    // Alpine note objects (editor-only, not loaded by game)
+    std::vector<DedNote*> note_objects;
+
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
@@ -355,6 +366,18 @@ struct AlpineLevelProperties
         breakable_brush_uids.clear();
         breakable_room_uids.clear();
         breakable_materials.clear();
+        for (auto* m : mesh_objects) {
+            DestroyDedMesh(m);
+        }
+        mesh_objects.clear();
+
+        for (auto* n : note_objects) {
+            n->field_4.free();
+            n->script_name.free();
+            n->class_name.free();
+            delete n;
+        }
+        note_objects.clear();
     }
 
     void Serialize(rf::File& file) const
@@ -395,30 +418,16 @@ struct AlpineLevelProperties
     {
         std::size_t remaining = chunk_len;
 
-        // scope-exit: always skip any unread tail (forward compatibility for unknown newer fields)
-        struct Tail
-        {
-            rf::File& f;
-            std::size_t& rem;
-            bool active = true;
-            ~Tail()
-            {
-                if (active && rem) {
-                    f.seek(static_cast<int>(rem), rf::File::seek_cur);
-                }
-            }
-            void dismiss()
-            {
-                active = false;
-            }
-        } tail{file, remaining};
+        rf::File::ChunkGuard chunk_guard{file, remaining};
 
         auto read_bytes = [&](void* dst, std::size_t n) -> bool {
             if (remaining < n)
                 return false;
             int got = file.read(dst, n);
-            if (got != static_cast<int>(n) || file.error())
+            if (got != static_cast<int>(n) || file.error()) {
+                if (got > 0) remaining -= got;
                 return false;
+            }
             remaining -= n;
             return true;
         };
@@ -600,30 +609,34 @@ struct CDedLevel
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
-    char _pad_2A4[0x340 - 0x2A4];                // +0x2A4 (13 VArrays + 1 container, internal editor state)
+    char _pad_2A4[0x2E0 - 0x2A4];                // +0x2A4
+    VArray<DedObject*> master_objects;            // +0x2E0 (all DedObjects, searched by FUN_00483920 for link validation)
+    char _pad_2EC[0x340 - 0x2EC];                // +0x2EC
 
     // --- object VArrays (21 contiguous, 12 bytes each) ---
-    VArray<DedObject*> items;                     // +0x340
-    VArray<DedObject*> entities;                  // +0x34C
-    VArray<DedObject*> respawn_points;            // +0x358
-    VArray<DedObject*> triggers;                  // +0x364
-    VArray<DedObject*> events;                    // +0x370
-    VArray<DedObject*> ambient_sounds;            // +0x37C
-    VArray<DedObject*> clutter;                   // +0x388
-    VArray<DedObject*> lights;                    // +0x394
-    VArray<DedObject*> geo_regions;               // +0x3A0
-    VArray<DedObject*> nav_points;                // +0x3AC
-    VArray<DedObject*> cutscene_cameras;          // +0x3B8
-    VArray<DedObject*> cutscene_path_nodes;       // +0x3C4
-    VArray<DedObject*> emitters;                  // +0x3D0
-    VArray<DedObject*> gas_regions;               // +0x3DC
-    VArray<DedObject*> room_effects;              // +0x3E8
-    VArray<DedObject*> eax_effects;               // +0x3F4
-    VArray<DedObject*> climb_regions;             // +0x400
-    VArray<DedObject*> bolt_emitters;             // +0x40C
-    VArray<DedObject*> targets;                   // +0x418
-    VArray<DedObject*> decals;                    // +0x424
-    VArray<DedObject*> push_regions;              // +0x430
+    // Offsets verified against save function FUN_00430bf0 chunk IDs
+    // FUN_004839a0 searches +0x3AC (type 9), FUN_00483920 searches +0x2E0 (master list).
+    VArray<DedObject*> obj_arr_340;               // +0x340 (chunk 0x40000)
+    VArray<DedObject*> obj_arr_34C;               // +0x34C (chunk 0x30000)
+    VArray<DedObject*> nav_points;                // +0x358 (chunk 0x700)
+    VArray<DedObject*> obj_arr_364;               // +0x364 (chunk 0x60000)
+    VArray<DedObject*> clutter;                   // +0x370 (chunk 0x600)
+    VArray<DedObject*> triggers;                  // +0x37C (chunk 0x500)
+    VArray<DedObject*> obj_arr_388;               // +0x388 (chunk 0x50000)
+    VArray<DedObject*> entities;                  // +0x394 (chunk 0x300)
+    VArray<DedObject*> lights;                    // +0x3A0 (chunk 0x200)
+    VArray<DedObject*> obj_arr_3AC;               // +0x3AC (type 9 objects, chunk 0x20000, searched by FUN_004839a0)
+    VArray<DedObject*> ambient_sounds;            // +0x3B8 (chunk 0x400)
+    VArray<DedObject*> events;                    // +0x3C4 (chunk 0x5000)
+    VArray<DedObject*> emitters;                  // +0x3D0 (chunk 0xA00)
+    VArray<DedObject*> gas_regions;               // +0x3DC (chunk 0xB00)
+    VArray<DedObject*> room_effects;              // +0x3E8 (chunk 0xC00)
+    VArray<DedObject*> eax_effects;               // +0x3F4 (chunk 0x8000)
+    VArray<DedObject*> climb_regions;             // +0x400 (chunk 0xD00)
+    VArray<DedObject*> bolt_emitters;             // +0x40C (chunk 0xE00)
+    VArray<DedObject*> targets;                   // +0x418 (chunk 0xF00)
+    VArray<DedObject*> decals;                    // +0x424 (chunk 0x1000)
+    VArray<DedObject*> push_regions;              // +0x430 (chunk 0x1100)
     char _pad_43C[0x444 - 0x43C];                // +0x43C
 
     // --- editor dialog panel pointers (28 MFC dialog objects) ---
@@ -646,6 +659,46 @@ struct CDedLevel
     AlpineLevelProperties& GetAlpineLevelProperties()
     {
         return struct_field_ref<AlpineLevelProperties>(this, stock_cdedlevel_size);
+    }
+
+    void deselect_all()
+    {
+        AddrCaller{0x0042C7A0}.this_call(this);
+    }
+
+    void clear_selection()
+    {
+        AddrCaller{0x00419EB0}.this_call(&selection);
+    }
+
+    void select_object(DedObject* obj)
+    {
+        AddrCaller{0x00416BF0}.this_call(&selection, obj);
+    }
+
+    void add_to_selection(DedObject* obj)
+    {
+        AddrCaller{0x00491020}.this_call(&selection, obj);
+    }
+
+    void update_console_display()
+    {
+        AddrCaller{0x00423460}.this_call(this);
+    }
+
+    bool hit_test_point(int screen_x, int screen_y, const Vector3* pos)
+    {
+        return AddrCaller{0x0042AC00}.this_call<bool>(this, screen_x, screen_y, pos);
+    }
+
+    void* pick_object(uintptr_t click_data, uintptr_t param2)
+    {
+        return AddrCaller{0x0042B880}.this_call<void*>(this, click_data, param2);
+    }
+
+    void paste_objects()
+    {
+        AddrCaller{0x00413050}.this_call(this);
     }
 
     // FUN_0042d6b0: check if any brush has face selection (face mode)
@@ -709,6 +762,12 @@ inline void show_error_message(const char* msg)
 inline void* editor_alloc(size_t size)
 {
     return AddrCaller{0x0052ee74}.c_call<void*>(size);
+}
+
+// FUN_0052ee9d: free raw memory (editor's operator delete, wraps CRT free)
+inline void editor_free(void* ptr)
+{
+    AddrCaller{0x0052ee9d}.c_call(ptr);
 }
 
 // FUN_00444980: append formatted text to the editor's log dialog

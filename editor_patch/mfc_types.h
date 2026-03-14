@@ -140,7 +140,9 @@ enum class DedObjectType : int
     DED_BOLT_EMITTER = 0x13,
     DED_TARGET = 0x14,
     DED_KEYFRAME = 0x15,
-    DED_PUSH_REGION = 0x16
+    DED_PUSH_REGION = 0x16,
+    DED_MESH = 0x17, // Alpine 1.3
+    DED_NOTE = 0x18  // Alpine 1.3
 };
 
 struct Vector3
@@ -217,6 +219,32 @@ struct VArray
     {
         return add_if_not_exists_raw(reinterpret_cast<void*>(value));
     }
+
+    void remove_at(int index)
+    {
+        if (index < 0 || index >= size) return;
+        for (int i = index; i < size - 1; i++) {
+            data_ptr[i] = data_ptr[i + 1];
+        }
+        size--;
+    }
+
+    // Add element (delegates to stock add-if-not-exists, works for pointers and ints)
+    void add(T value)
+    {
+        add_if_not_exists_raw(reinterpret_cast<void*>(value));
+    }
+
+    // Remove first occurrence of value
+    void remove_by_value(T value)
+    {
+        for (int i = 0; i < size; i++) {
+            if (data_ptr[i] == value) {
+                remove_at(i);
+                return;
+            }
+        }
+    }
 };
 static_assert(sizeof(VArray<int>) == 0xC, "VArray size mismatch!");
 
@@ -257,6 +285,12 @@ struct VString
         return buf ? buf : "";
     }
 
+    // Free the buffer using the stock allocator
+    void free()
+    {
+        AddrCaller{0x004B6710}.this_call(this);
+    }
+
     // Check if the string is empty
     bool empty() const
     {
@@ -290,6 +324,9 @@ struct Color
     Color(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha = 255) : r(red), g(green), b(blue), a(alpha) {}
 };
 static_assert(sizeof(Color) == 0x4, "Color size mismatch!");
+
+// Stock DedObject vtable (used by all object types in the editor)
+static constexpr uintptr_t ded_object_vtbl_addr = 0x55712C;
 
 struct DedObject
 {
@@ -341,6 +378,45 @@ struct DedRoomEffect : DedObject
     char pad_B0[0xD4 - 0xB0];
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
+
+// Per-slot texture override for editor mesh objects
+struct EditorTextureOverride {
+    uint8_t slot;
+    std::string filename;
+};
+
+// Clutter behavior properties for mesh objects (applied when is_clutter is true)
+struct MeshClutterProps {
+    bool is_clutter = false;
+    float life = -1.0f;            // hit points (-1 = invulnerable)
+    std::string debris_filename;   // debris mesh (.v3m) spawned on destruction
+    std::string explosion_vclip;   // explosion vclip name
+    float explosion_radius = 1.0f; // explosion visual radius
+    float debris_velocity = 10.0f; // debris fragment velocity
+    std::string corpse_filename;       // mesh to swap to on death (empty = remove on death)
+    std::string corpse_state_anim;     // state anim for corpse mesh (v3c only)
+    uint8_t corpse_collision = 2;      // corpse collision mode: 0=None, 1=Only Weapons, 2=All
+    int8_t corpse_material = -1;       // corpse material: -1=Automatic (inherit from base), 0-9=specific material
+    float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1}; // per-damage-type multipliers
+};
+
+struct DedMesh : DedObject
+{
+    VString mesh_filename;          // .v3m / .v3c / .vfx path
+    VString state_anim;             // animation name (for .v3c skeletal meshes)
+    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
+    bool vmesh_load_failed;         // true if vmesh load was attempted and failed
+    char padding_mesh[2];
+    std::vector<EditorTextureOverride> texture_overrides;
+    bool simulate_in_editor = false;   // v3c only: play animation continuously instead of freezing frame 0
+    int material = 0;                  // material type for impact sounds (0=default, applies to all meshes)
+    MeshClutterProps clutter_props;
+};
+
+struct DedNote : DedObject
+{
+    std::vector<std::string> notes;
+};
 
 struct DedBoltEmitter : DedObject
 {

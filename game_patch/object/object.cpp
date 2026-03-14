@@ -22,6 +22,7 @@
 #include "event_alpine.h"
 #include "object.h"
 #include "object_private.h"
+#include "../misc/level.h"
 
 std::string get_object_type_string(int type) {
     switch (type) {
@@ -402,6 +403,25 @@ CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
         }
 
         rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
+
+        // Check for alpine mesh corpse: if this is an alpine mesh (info_index == -1)
+        // with a corpse filename, swap to corpse model instead of removing the object.
+        // Also skip killing if corpse was already applied (the death processing function
+        // calls obj_flag_dead multiple times — we must block all subsequent calls).
+        if (cp->info_index == -1) {
+            if (alpine_mesh_is_corpse(objp->handle)) {
+                return;
+            }
+            const std::string* corpse = alpine_mesh_get_corpse_filename(objp->handle);
+            if (corpse && !corpse->empty()) {
+                std::string corpse_copy = *corpse;
+                alpine_mesh_apply_corpse(objp, corpse_copy);
+                if (alpine_mesh_is_corpse(objp->handle)) {
+                    return; // Corpse applied successfully, don't kill
+                }
+                // Corpse mesh failed to load — fall through to normal death
+            }
+        }
 
         obj_flag_dead_clutter_hook.call_target(objp);
     },
