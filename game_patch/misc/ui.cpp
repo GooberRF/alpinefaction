@@ -10,6 +10,8 @@
 #include "misc.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
+#include "../os/os.h"
+#include "../multi/multi.h"
 #include "../rf/ui.h"
 #include "../rf/sound/sound.h"
 #include "../rf/input.h"
@@ -461,6 +463,9 @@ static bool is_any_font_modded()
 FunHook<void()> menu_init_hook{
     0x00442BB0,
     []() {
+        if (client_bot_headless_enabled() || headless_bot_requested_from_raw_cmdline()) {
+            return;
+        }
         menu_init_hook.call_target();
 #if SHARP_UI_TEXT
         xlog::info("UI scale: {:.4f} {:.4f}", rf::ui::scale_x, rf::ui::scale_y);

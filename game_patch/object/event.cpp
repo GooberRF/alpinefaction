@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <format>
 #include "../misc/misc.h"
+#include "../misc/alpine_settings.h"
 #include "../rf/file/file.h"
 #include "../rf/object.h"
 #include "../rf/event.h"
@@ -122,7 +123,7 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
             rf::physics_create_object(&obj->p_data, &oci);
 
             // D3D11 renderer: reset static mesh vertex colors for the swapped mesh
-            if (g_game_config.renderer == GameConfig::Renderer::d3d11 &&
+            if (is_d3d11() &&
                 obj->vmesh &&
                 rf::vmesh_get_type(obj->vmesh) == rf::MESH_TYPE_STATIC) {
 

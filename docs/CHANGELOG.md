@@ -5,6 +5,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
+- Add advanced bot system
+    - Headless bot clients
+    - Waypoint grid editor
 - Expanded destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
@@ -48,6 +51,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
 - Add level editor support for custom texture subdirectories under `user_maps\textures`
+- Add `-bot` command line argument to run a client in bot mode
+- Add `disconnect` console command
+- Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
 - Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
 - Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
 - Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
@@ -95,6 +101,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
 - Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
+- Fix bots not always spawning correctly when `ideal_player_count` is 32
 - Fix rare level editor crash when transforming decal objects in a level with a large number of decals
 - Fix level editor clip tool silently failing on certain brush orientations
 

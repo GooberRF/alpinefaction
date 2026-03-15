@@ -121,6 +121,11 @@ static int __fastcall character_load_animation(rf::Character *this_, int, const 
         rf::skeleton_unlink_base(sp, false);
         return 0;
     }
+    // tech_gren_attack is missing from base game files — skip silently
+    if (std::string_view{anim_filename}.find("tech_gren_attack") != std::string_view::npos) {
+        rf::skeleton_unlink_base(sp, false);
+        return (this_->num_anims > 0 ? 0 : -1);
+    }
     rf::skeleton_page_in(anim_filename, nullptr);
     if (!sp->animation_data) {
         xlog::warn("Cannot add animation '{}' to character '{}' because skeleton data failed to load", anim_filename, this_->name);
