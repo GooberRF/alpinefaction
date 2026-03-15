@@ -95,6 +95,12 @@ namespace rf
             return num_elements == 0;
         }
 
+        void clear()
+        {
+            head = nullptr;
+            num_elements = 0;
+        }
+
         [[nodiscard]] Iterator begin()
         {
             return Iterator{head};

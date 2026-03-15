@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <string>
 #include "../rf/multi.h"
+#include "destruction.h"
 
 extern bool g_character_meshes_are_fullbright;
 void misc_init();

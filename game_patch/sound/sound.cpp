@@ -775,6 +775,7 @@ void play_chat_sound(const std::string_view msg, const bool is_taunt) {
 }
 
 extern void snd_ds_apply_patch();
+extern void sound_foley_apply_patches();
 
 void apply_sound_patches()
 {
@@ -815,6 +816,9 @@ void apply_sound_patches()
 
     // Apply patch for DirectSound specific code
     snd_ds_apply_patch();
+
+    // Apply foley and impact sound set patches
+    sound_foley_apply_patches();
 
     // eax_ks_property_set should not call Release, since it is a weak pointer.
     AsmWriter{0x00527EE0, 0x00527EE4}.nop();

@@ -130,6 +130,15 @@ namespace rf
             }
             return def_val;
         }
+
+        // RAII guard that seeks past unread chunk data on scope exit.
+        // Use at the top of chunk deserialize functions to ensure the file
+        // position advances past the full chunk even on early return.
+        struct ChunkGuard {
+            File& file;
+            std::size_t& remaining;
+            ~ChunkGuard() { if (remaining > 0) file.seek(static_cast<int>(remaining), seek_cur); }
+        };
     };
 
     static auto& file_get_ext = addr_as_ref<char*(const char *path)>(0x005143F0);

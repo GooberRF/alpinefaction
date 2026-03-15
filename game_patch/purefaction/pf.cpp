@@ -88,7 +88,8 @@ void send_pf_player_stats_packet(rf::Player* player)
         packet_len += 3;
     }
 
-    stats_packet.hdr.size = packet_len - sizeof(stats_packet.hdr);
+    stats_packet.hdr.size =
+        static_cast<uint16_t>(packet_len - sizeof(stats_packet.hdr));
     std::memcpy(packet_buf, &stats_packet, sizeof(stats_packet));
     pf_send_reliable_packet(player, packet_buf, packet_len);
 }

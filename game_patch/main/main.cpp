@@ -1,4 +1,5 @@
 #include <ctime>
+#include <vector>
 #include <windows.h>
 #include <shellapi.h>
 #include <common/config/GameConfig.h>
@@ -38,6 +39,7 @@
 #include "../misc/vpackfile.h"
 #include "../misc/high_fps.h"
 #include "../misc/player.h"
+#include "../misc/level.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -65,13 +67,13 @@ void initialize_random_generator() {
 
 CallHook<void()> rf_init_hook{
     0x004B27CD,
-    []() {
-        auto start_ticks = GetTickCount();
+    [] {
+        const uint64_t start_ticks = GetTickCount64();
         xlog::info("Initializing game...");
         initialize_alpine_core_config();
         rf_init_hook.call_target();
         vpackfile_disable_overriding();
-        xlog::info("Game initialized ({} ms).", GetTickCount() - start_ticks);
+        xlog::info("Game initialized ({} ms).", GetTickCount64() - start_ticks);
     },
 };
 
@@ -142,6 +144,7 @@ FunHook<int()> rf_do_frame_hook{
         high_fps_update();
         server_do_frame();
         koth_do_frame();
+        alpine_mesh_do_frame();
         int result = rf_do_frame_hook.call_target();
         maybe_autosave();
         debug_do_frame_post();
@@ -209,6 +212,8 @@ FunHook<void(bool)> level_init_post_hook{
         populate_world_hud_sprite_events();
         reset_achievement_state_info();
         multi_level_init_post_gametypes();
+        apply_geoable_flags();
+        apply_breakable_materials();
 
         if (!rf::is_dedicated_server) {
             explosion_flash_lights_level_init();
@@ -435,7 +440,7 @@ extern "C" void subhook_unk_opcode_handler(uint8_t* opcode)
 extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 {
     g_process_startup_time = std::time(nullptr);
-    const DWORD startup_ticks = GetTickCount();
+    const uint64_t startup_ticks = GetTickCount64();
 
     // Init logging and crash dump support first
     init_logging();
@@ -484,7 +489,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
 #endif
     debug_apply_patches();
 
-    xlog::info("Installing hooks took {} ms", GetTickCount() - startup_ticks);
+    xlog::info("Installing hooks took {} ms", GetTickCount64() - startup_ticks);
 
     return 1; // success
 }

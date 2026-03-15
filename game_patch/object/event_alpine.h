@@ -28,6 +28,7 @@
 #include "../rf/os/timestamp.h"
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
+#include "../misc/level.h"
 
 void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale);
 rf::Vector3 rotate_velocity(const rf::Vector3& old_velocity, const rf::Matrix3& old_orient, const rf::Matrix3& new_orient);
@@ -2453,6 +2454,123 @@ namespace rf
                     default:
                         break;
                     }
+                }
+            }
+        }
+    };
+
+    // id 145
+    struct EventMeshAnimate : Event
+    {
+        char padding_align[3];
+        int animate_type = 0;        // 0=Action, 1=Action Hold Last, 2=State
+        std::string anim_filename;
+        float blend_weight = 1.0f;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshAnimate*>(event);
+                e->animate_type = std::stoi(value);
+            };
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshAnimate*>(event);
+                e->anim_filename = value;
+            };
+            handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshAnimate*>(event);
+                e->blend_weight = std::stof(value);
+            };
+        }
+
+        void turn_on() override
+        {
+            xlog::debug("[EventMeshAnimate] turn_on: uid={} type={} anim='{}' weight={:.2f} links={}",
+                this->uid, animate_type, anim_filename, blend_weight,
+                this->links.size());
+            for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+                int link_handle = this->links[i];
+                Object* obj = obj_from_handle(link_handle);
+                if (obj) {
+                    alpine_mesh_animate(obj, animate_type, anim_filename, blend_weight);
+                } else {
+                    xlog::warn("[EventMeshAnimate] link[{}]: handle={} -> NULL (stale handle!)", i, link_handle);
+                }
+            }
+        }
+    };
+
+    // id 146
+    struct EventMeshSetTexture : Event
+    {
+        char padding_align[3];
+        int texture_slot = 0;
+        std::string texture_filename;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshSetTexture*>(event);
+                e->texture_slot = std::stoi(value);
+            };
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshSetTexture*>(event);
+                e->texture_filename = value;
+            };
+        }
+
+        void turn_on() override
+        {
+            xlog::debug("[EventMeshSetTexture] turn_on: uid={} slot={} texture='{}'",
+                this->uid, texture_slot, texture_filename);
+            for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+                int link_handle = this->links[i];
+                Object* obj = obj_from_handle(link_handle);
+                if (obj) {
+                    if (texture_filename.empty()) {
+                        alpine_mesh_clear_texture(obj, texture_slot);
+                    }
+                    else {
+                        alpine_mesh_set_texture(obj, texture_slot, texture_filename);
+                    }
+                } else {
+                    xlog::warn("[EventMeshSetTexture]   link[{}]: handle={} -> NULL (stale handle!)", i, link_handle);
+                }
+            }
+        }
+    };
+
+    // id 147
+    struct EventMeshSetCollision : Event
+    {
+        char padding_align[3];
+        int collision_type = 0; // 0=None, 1=Only Weapons, 2=All
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshSetCollision*>(event);
+                e->collision_type = std::stoi(value);
+            };
+        }
+
+        void turn_on() override
+        {
+            xlog::debug("[EventMeshSetCollision] turn_on: uid={} collision_type={} links={}",
+                this->uid, collision_type, this->links.size());
+            for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+                int link_handle = this->links[i];
+                Object* obj = obj_from_handle(link_handle);
+                if (obj) {
+                    alpine_mesh_set_collision(obj, collision_type);
+                } else {
+                    xlog::warn("[EventMeshSetCollision] link[{}]: handle={} -> NULL", i, link_handle);
                 }
             }
         }

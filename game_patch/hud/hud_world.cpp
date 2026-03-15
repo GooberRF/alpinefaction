@@ -391,12 +391,13 @@ void clear_koth_name_textures()
 
 bool hill_vis_contested(HillInfo& h)
 {
-    const int now = rf::timer_get(1000);
+    const int64_t now = timer::get_i64(1000);
     const int enter = 500;
     const int exit = 200;
 
     // desired
-    const bool desired = (h.steal_dir != HillOwner::HO_Neutral) && (h.capture_milli >= (h.vis_contested ? exit : enter));
+    const bool desired = h.steal_dir != HillOwner::HO_Neutral
+        && h.capture_milli >= (h.vis_contested ? exit : enter);
 
     if (desired != h.vis_contested) {
         if (now - h.vis_last_flip_ms >= 120) {

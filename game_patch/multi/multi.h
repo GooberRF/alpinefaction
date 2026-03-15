@@ -1,5 +1,6 @@
 #pragma once
 
+#include <expected>
 #include <optional>
 #include <string>
 #include <utility>
@@ -96,6 +97,7 @@ struct AlpineFactionServerInfo
     std::optional<int> semi_auto_cooldown;
     bool unlimited_fps = false;
     bool gaussian_spread = false;
+    bool geo_chunk_physics = false;
     bool location_pinging = false;
     bool delayed_spawns = false;
     int koth_score_limit = 0;
@@ -132,7 +134,7 @@ void multi_level_download_abort();
 bool rotation_autodl_in_progress();
 void rotation_autodl_start(size_t levels_count, std::vector<std::string> unique_levels);
 void multi_ban_apply_patch();
-int get_level_file_version(const std::string& file_name);
+std::expected<uint32_t, std::errc> get_level_file_version(const std::string& file_name);
 void print_player_info(rf::Player* player, bool new_join);
 void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
 void start_level_in_multi(std::string filename);

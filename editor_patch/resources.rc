@@ -100,7 +100,7 @@ FONT 8, "MS Sans Serif", 0, 0, 1
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 350
+IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 362
 STYLE DS_MODALFRAME | DS_SETFONT | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Level Properties"
 FONT 8, "MS Sans Serif"
@@ -139,18 +139,19 @@ FONT 8, "MS Sans Serif"
     LTEXT           "Level hardness:", -1, 7, 235, 50, 8
     EDITTEXT        1083, 63, 233, 40, 14, ES_AUTOHSCROLL
     CONTROL         "Spin3", 1157, UPDOWN_CLASS, UDS_ARROWKEYS, 103, 233, 11, 14
-    LTEXT           "0 (large GeoMod craters) - 100 (no GeoMod)", -1, 122, 235, 200, 8
+    LTEXT           "0 (large craters) - 100 (no craters)", -1, 122, 235, 200, 8
     AUTOCHECKBOX    "&Multiplayer level", 1670, 7, 252, 105, 10
     DEFPUSHBUTTON   "OK", IDOK, 241, 7, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 241, 24, 50, 14
 
-    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 78
+    GROUPBOX        "Advanced Options", -1, 7, 268, 284, 90
     AUTOCHECKBOX    "Legacy Cyclic_Timer events", IDC_LEGACY_CYCLIC_TIMERS, 13, 280, 175, 10
     AUTOCHECKBOX    "Legacy movers", IDC_LEGACY_MOVERS, 13, 292, 175, 10
     AUTOCHECKBOX    "Player starts with headlamp", IDC_STARTS_WITH_HEADLAMP, 13, 304, 175, 10
     AUTOCHECKBOX    "Override static mesh ambient light scale", IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER, 13, 316, 190, 10
     LTEXT           "New scale value:", -1, 30, 331, 120, 8
     EDITTEXT        IDC_MESH_AMBIENT_LIGHT_MODIFIER, 90, 328, 30, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Brush-based geomod (RF2-style)", IDC_RF2_STYLE_GEOMOD, 13, 344, 200, 10
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
@@ -297,6 +298,9 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Hide Selected\tH", ID_HIDE_SELECTED
 
         MENUITEM SEPARATOR
+        MENUITEM "&Reload Meshes", ID_RELOAD_MESHES
+        MENUITEM "Reload &Textures", ID_RELOAD_TEXTURES
+        MENUITEM SEPARATOR
         MENUITEM "&Generate Report...", 0x8077
         MENUITEM SEPARATOR
         MENUITEM "&Preferences...", 0x801B
@@ -363,6 +367,298 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     PUSHBUTTON "OK", IDOK, 180, 105, 80, 14, WS_TABSTOP
 }
 
+
+// Alpine Mesh Properties dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_MESH_PROPERTIES DIALOGEX 0, 0, 280, 440
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Mesh Properties"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    LTEXT           "Script Name:", -1, 7, 11, 44, 8
+    EDITTEXT        IDC_MESH_SCRIPT_NAME, 60, 9, 150, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Mesh File:", -1, 7, 31, 44, 8
+    EDITTEXT        IDC_MESH_FILENAME, 60, 29, 150, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_MESH_BROWSE, 215, 29, 50, 14
+
+    LTEXT           "", IDC_MESH_TYPE_LABEL, 60, 46, 200, 8
+
+    LTEXT           "State Anim:", -1, 7, 61, 44, 8
+    EDITTEXT        IDC_MESH_STATE_ANIM, 60, 59, 140, 14, ES_AUTOHSCROLL
+    AUTOCHECKBOX    "Simulate in editor", IDC_MESH_SIMULATE, 206, 61, 70, 10
+
+    LTEXT           "Collision:", -1, 7, 81, 44, 8
+    COMBOBOX        IDC_MESH_COLLISION_MODE, 60, 79, 80, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Material:", -1, 148, 81, 30, 8
+    COMBOBOX        IDC_MESH_MATERIAL, 180, 79, 84, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    GROUPBOX        "Texture Overrides", -1, 7, 98, 260, 108
+    CONTROL         "", IDC_MESH_OVERRIDE_LIST, WC_LISTVIEW, WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 14, 110, 246, 62
+    LTEXT           "Slot:", -1, 14, 178, 18, 8
+    EDITTEXT        IDC_MESH_OVERRIDE_SLOT, 34, 176, 24, 14, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Texture:", -1, 64, 178, 28, 8
+    EDITTEXT        IDC_MESH_OVERRIDE_FILENAME, 94, 176, 120, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "+", IDC_MESH_OVERRIDE_ADD, 220, 176, 18, 14
+    PUSHBUTTON      "-", IDC_MESH_OVERRIDE_REMOVE, 242, 176, 18, 14
+    LTEXT           "Use + to add, - to remove selected.", -1, 14, 194, 246, 8
+
+    AUTOCHECKBOX    "Destructible", IDC_MESH_IS_CLUTTER, 7, 212, 60, 10
+
+    GROUPBOX        "Destructible Properties", IDC_MESH_CLUTTER_GROUP, 7, 224, 260, 190
+
+    // Left column: destructible mesh options
+    LTEXT           "Debris Mesh:", -1, 14, 238, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DEBRIS, 14, 248, 118, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_MESH_CLUTTER_DEBRIS_BROWSE, 134, 248, 14, 14
+    LTEXT           "Debris Vel:", -1, 14, 266, 40, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DEBRIS_VEL, 54, 264, 36, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Explosion Vclip:", -1, 14, 282, 54, 8
+    EDITTEXT        IDC_MESH_CLUTTER_VCLIP, 14, 292, 118, 14, ES_AUTOHSCROLL
+    LTEXT           "Expl. Radius:", -1, 14, 310, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_EXPLODE_RADIUS, 54, 308, 36, 14, ES_AUTOHSCROLL
+
+    LTEXT           "Corpse Mesh:", -1, 14, 326, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_CORPSE, 14, 336, 118, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_MESH_CLUTTER_CORPSE_BROWSE, 134, 336, 14, 14
+    LTEXT           "", IDC_MESH_CLUTTER_CORPSE_TYPE_LABEL, 14, 352, 134, 8
+    LTEXT           "Corpse Anim:", -1, 14, 364, 46, 8
+    EDITTEXT        IDC_MESH_CLUTTER_CORPSE_STATE_ANIM, 62, 362, 86, 14, ES_AUTOHSCROLL
+    LTEXT           "Corpse Collision:", -1, 14, 380, 56, 8
+    COMBOBOX        IDC_MESH_CLUTTER_CORPSE_COLLISION, 72, 378, 76, 60, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Corpse Material:", -1, 14, 396, 54, 8
+    COMBOBOX        IDC_MESH_CLUTTER_CORPSE_MATERIAL, 72, 394, 76, 120, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    // Right column: life + damage type factors
+    LTEXT           "Life:", -1, 156, 238, 16, 8
+    EDITTEXT        IDC_MESH_CLUTTER_LIFE, 174, 236, 36, 14, ES_AUTOHSCROLL
+    LTEXT           "(-1 = invuln.)", -1, 214, 238, 50, 8
+
+    LTEXT           "Damage Factors:", -1, 156, 260, 56, 8
+
+    LTEXT           "Bash:", -1, 156, 273, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_BASH, 228, 271, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Bullet:", -1, 156, 286, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_BULLET, 228, 284, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "AP Bullet:", -1, 156, 299, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_AP_BULLET, 228, 297, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Explosive:", -1, 156, 312, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_EXPLOSIVE, 228, 310, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Fire:", -1, 156, 325, 18, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_FIRE, 228, 323, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Energy:", -1, 156, 338, 28, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ENERGY, 228, 336, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Electrical:", -1, 156, 351, 36, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ELECTRICAL, 228, 349, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Acid:", -1, 156, 364, 20, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_ACID, 228, 362, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Scalding:", -1, 156, 377, 34, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_SCALDING, 228, 375, 32, 12, ES_AUTOHSCROLL
+    LTEXT           "Crush:", -1, 156, 390, 24, 8
+    EDITTEXT        IDC_MESH_CLUTTER_DMG_CRUSH, 228, 388, 32, 12, ES_AUTOHSCROLL
+
+    PUSHBUTTON      "Links", ID_LINKS, 7, 420, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 160, 420, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 215, 420, 50, 14
+}
+
+// Brush mode side panel (replaces stock dialog 205 with added "Is Geoable" checkbox)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_BRUSH_MODE_PANEL DIALOGEX 0, 0, 129, 355
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
+EXSTYLE WS_EX_CLIENTEDGE | WS_EX_CONTROLPARENT
+FONT 8, "MS Sans Serif"
+{
+    LTEXT           "Shape:", -1, 10, 16, 24, 8
+    COMBOBOX        1313, 35, 14, 84, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Type:", -1, 13, 33, 19, 8
+    COMBOBOX        1314, 35, 32, 84, 72, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "", 1322, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 8, 50, 114, 56, WS_EX_CLIENTEDGE
+    PUSHBUTTON      "Create Brush", 1305, 21, 117, 82, 14
+    GROUPBOX        "Brush Properties", -1, 4, 4, 121, 107
+    PUSHBUTTON      "Start of Time", 1304, 9, 148, 50, 14
+    PUSHBUTTON      "End of Time", 1303, 67, 148, 50, 14
+    PUSHBUTTON      "Mesh Smooth", 1298, 9, 165, 50, 14
+    PUSHBUTTON      "Bend", 1213, 67, 165, 50, 14
+    PUSHBUTTON      "Twist", 1216, 9, 182, 50, 14
+    PUSHBUTTON      "Stretch", 1217, 67, 182, 50, 14
+    PUSHBUTTON      "Fuse", 1580, 9, 199, 50, 14
+    PUSHBUTTON      "Build", 1544, 67, 199, 50, 14
+    PUSHBUTTON      "Clip", 1582, 9, 216, 50, 14
+    PUSHBUTTON      "Carve", 1581, 67, 216, 50, 14
+    PUSHBUTTON      "Mirror", IDC_BRUSH_MIRROR, 9, 233, 50, 14
+    PUSHBUTTON      "To Mesh", IDC_BRUSH_CONVERT, 67, 233, 50, 14
+    GROUPBOX        "Brush Operations", -1, 4, 136, 121, 118
+    GROUPBOX        "Brush Properties", -1, 4, 259, 121, 94
+    AUTO3STATE      "Is Portal", 1214, 10, 270, 41, 10
+    AUTO3STATE      "Is Detail", 1215, 10, 279, 41, 10
+    AUTO3STATE      "Is Geoable", IDC_IS_GEOABLE, 10, 289, 54, 10
+    AUTOCHECKBOX    "Emits Steam", 1608, 10, 299, 58, 8
+    AUTOCHECKBOX    "No Debris", IDC_NO_DEBRIS, 10, 309, 50, 8
+    LTEXT           "Life (-1 = infinite):", -1, 10, 323, 56, 8
+    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 67, 320, 52, 14, WS_EX_CLIENTEDGE
+    LTEXT           "Material:", IDC_MATERIAL_LABEL, 10, 339, 32, 8
+    COMBOBOX        IDC_MATERIAL_COMBO, 67, 336, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Update", 1523, 69, 270, 50, 14
+}
+
+// Brush properties popup (replaces stock dialog 270 with added "Is Geoable" checkbox)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_BRUSH_PROPERTIES DIALOGEX 0, 0, 183, 99
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Brush Properties"
+FONT 8, "MS Sans Serif"
+{
+    AUTO3STATE      "Is Portal", 1214, 7, 7, 41, 10
+    AUTO3STATE      "Is Detail", 1215, 7, 18, 41, 10
+    AUTO3STATE      "Is Geoable", IDC_IS_GEOABLE, 7, 29, 54, 10
+    AUTOCHECKBOX    "Emits Steam", 1608, 7, 40, 58, 8
+    AUTOCHECKBOX    "No Debris", IDC_NO_DEBRIS, 7, 50, 50, 8
+    LTEXT           "Life:", -1, 7, 67, 14, 8
+    CONTROL         "", 1603, "Static", SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP, 40, 64, 52, 14, WS_EX_CLIENTEDGE
+    LTEXT           "(-1 = infinite)", -1, 96, 67, 52, 8
+    LTEXT           "Material:", IDC_MATERIAL_LABEL, 7, 83, 30, 8
+    COMBOBOX        IDC_MATERIAL_COMBO, 40, 80, 52, 40, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON   "OK", IDOK, 126, 7, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 126, 24, 50, 14
+}
+
+// Alpine Note Properties dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_NOTE_PROPERTIES DIALOGEX 0, 0, 280, 300
+STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+CAPTION "Note Properties"
+FONT 8, "MS Sans Serif", 0, 0, 0
+{
+    LTEXT           "Script Name:", -1, 7, 11, 44, 8
+    EDITTEXT        IDC_NOTE_SCRIPT_NAME, 60, 9, 150, 14, ES_AUTOHSCROLL
+
+    GROUPBOX        "Notes", -1, 7, 30, 260, 230
+    CONTROL         "", IDC_NOTE_LIST, WC_LISTVIEW, WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER, 14, 42, 246, 80
+    LTEXT           "Text:", -1, 14, 128, 18, 8
+    EDITTEXT        IDC_NOTE_TEXT, 14, 138, 246, 80, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+    PUSHBUTTON      "Add", IDC_NOTE_ADD, 14, 224, 40, 14
+    PUSHBUTTON      "Remove", IDC_NOTE_REMOVE, 58, 224, 40, 14
+    LTEXT           "Select an entry above to edit. Changes are saved automatically.", -1, 14, 243, 246, 8
+
+    DEFPUSHBUTTON   "Close", IDOK, 215, 275, 50, 14
+}
+// Face mode side panel (replaces stock dialog 178 with added Delete/Delete Ext./Split buttons)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_FACE_MODE_PANEL DIALOGEX 0, 0, 129, 314
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
+EXSTYLE WS_EX_CLIENTEDGE
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Face Operations", -1, 4, 4, 121, 160
+    PUSHBUTTON      "Extrude", 1232, 12, 18, 50, 14
+    PUSHBUTTON      "Bevel", 1454, 69, 17, 50, 14
+    PUSHBUTTON      "Flip Edge", 1239, 12, 36, 50, 14
+    PUSHBUTTON      "Collapse", 1221, 69, 36, 50, 14
+    PUSHBUTTON      "Triangulate", 1238, 11, 54, 50, 14
+    PUSHBUTTON      "Pinwheel", 1363, 69, 54, 50, 14
+    PUSHBUTTON      "Mesh Smooth", 1298, 12, 72, 50, 14
+    PUSHBUTTON      "Bend", 1213, 69, 72, 50, 14
+    PUSHBUTTON      "Twist", 1216, 12, 90, 50, 14
+    PUSHBUTTON      "Combine", 1240, 69, 90, 50, 14
+    PUSHBUTTON      "Stretch", 1217, 12, 108, 50, 14
+    PUSHBUTTON      "Split", IDC_FACE_SPLIT, 69, 108, 50, 14
+    PUSHBUTTON      "Delete", IDC_FACE_DELETE, 12, 126, 50, 14
+    PUSHBUTTON      "Delete Ext.", IDC_FACE_DELETE_EXT, 69, 126, 50, 14
+    PUSHBUTTON      "Flip Normal", IDC_FACE_FLIP_NORMAL, 12, 144, 50, 14
+}
+
+// Vertex mode side panel (stock dialog 175 + custom buttons)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_VERTEX_MODE_PANEL DIALOGEX 0, 0, 130, 314
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
+EXSTYLE WS_EX_CLIENTEDGE
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Vertex Operations", -1, 4, 4, 122, 113
+    PUSHBUTTON      "Weld", 1241, 12, 21, 50, 14
+    PUSHBUTTON      "Collapse", 1221, 69, 21, 50, 14
+    PUSHBUTTON      "Bend", 1213, 12, 40, 50, 14
+    PUSHBUTTON      "Twist", 1216, 69, 40, 50, 14
+    PUSHBUTTON      "Jitter", 1214, 11, 59, 50, 14
+    PUSHBUTTON      "Stretch", 1217, 69, 59, 50, 14
+    PUSHBUTTON      "Align X", 1447, 11, 78, 33, 14
+    PUSHBUTTON      "Align Y", 1448, 49, 78, 32, 14
+    PUSHBUTTON      "Align Z", 1449, 86, 78, 33, 14
+    PUSHBUTTON      "Delete", IDC_VERTEX_DELETE, 12, 97, 50, 14
+    PUSHBUTTON      "Bridge", IDC_VERTEX_CAP, 69, 97, 50, 14
+}
+
+// Group mode side panel (stock dialog 231 + Mirror button)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_GROUP_MODE_PANEL DIALOGEX 0, 0, 130, 314
+STYLE DS_SETFONT | WS_CHILD | WS_VISIBLE | WS_BORDER
+EXSTYLE WS_EX_CLIENTEDGE
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Groups", -1, 4, 4, 121, 242
+    CONTROL         "Tree1", 1381, "SysTreeView32", TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP, 12, 17, 105, 120
+    PUSHBUTTON      "Create", 1385, 11, 141, 50, 14
+    PUSHBUTTON      "Dissolve", 1382, 67, 141, 50, 14
+    PUSHBUTTON      "Add To", 1395, 11, 158, 50, 14
+    PUSHBUTTON      "Remove", 1400, 67, 158, 50, 14
+    PUSHBUTTON      "Rename", 1401, 11, 175, 50, 14
+    PUSHBUTTON      "Duplicate", 1396, 67, 175, 50, 14
+    PUSHBUTTON      "Lock", 1402, 11, 192, 50, 14
+    PUSHBUTTON      "Unlock", 1403, 67, 192, 50, 14
+    PUSHBUTTON      "Keyframe", 1563, 39, 209, 50, 14
+    PUSHBUTTON      "Dissolve Temporary", 1397, 13, 226, 106, 14
+    PUSHBUTTON      "Reconnect", 1567, 30, 296, 50, 14, NOT WS_VISIBLE
+    GROUPBOX        "Group Operations", -1, 4, 250, 121, 51
+    PUSHBUTTON      "Save", 1387, 11, 264, 50, 14
+    PUSHBUTTON      "Load", 1388, 67, 264, 50, 14
+    PUSHBUTTON      "Mirror", IDC_GROUP_MIRROR, 11, 281, 50, 14
+}
+
+// Face split dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_FACE_SPLIT DIALOGEX 0, 0, 160, 80
+STYLE DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Split Faces"
+FONT 8, "MS Sans Serif"
+{
+    LTEXT           "Number of splits:", -1, 7, 10, 58, 8
+    EDITTEXT        IDC_SPLIT_AMOUNT, 68, 8, 30, 14, ES_AUTOHSCROLL | ES_NUMBER
+    GROUPBOX        "Direction", -1, 7, 28, 93, 32
+    AUTORADIOBUTTON "Along X", IDC_SPLIT_ALONG_U, 15, 40, 38, 10, WS_GROUP
+    AUTORADIOBUTTON "Along Y", IDC_SPLIT_ALONG_V, 56, 40, 38, 10
+    DEFPUSHBUTTON   "OK", IDOK, 106, 8, 48, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 106, 26, 48, 14
+}
+
+// Mirror axis dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_BRUSH_MIRROR DIALOGEX 0, 0, 120, 70
+STYLE DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Mirror"
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Axis", -1, 7, 4, 52, 48
+    AUTORADIOBUTTON "X", IDC_MIRROR_X, 15, 16, 30, 10, WS_GROUP
+    AUTORADIOBUTTON "Y", IDC_MIRROR_Y, 15, 28, 30, 10
+    AUTORADIOBUTTON "Z", IDC_MIRROR_Z, 15, 40, 30, 10
+    DEFPUSHBUTTON   "OK", IDOK, 66, 8, 48, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 66, 26, 48, 14
+}
+
+// Brush-to-mesh export options dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_BRUSH_CONVERT_OPTIONS DIALOGEX 0, 0, 180, 72
+STYLE DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Export Brush as Mesh"
+FONT 8, "MS Sans Serif"
+{
+    AUTOCHECKBOX    "Drop a new mesh object", IDC_CONVERT_REPLACE, 10, 10, 140, 10
+    AUTOCHECKBOX    "Reset mesh origin to brush bbox center", IDC_CONVERT_RESET_ORIGIN, 10, 26, 160, 10
+    DEFPUSHBUTTON   "OK", IDOK, 68, 48, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 122, 48, 50, 14
+}
 
 // VERSIONINFO
 #define VER_FILE_DESCRIPTION "Alpine Faction Level Editor Patch"

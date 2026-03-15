@@ -23,6 +23,7 @@
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../hud/multi_spectate.h"
+#include "../hud/hud_internal.h"
 #include "../hud/hud.h"
 #include "../multi/alpine_packets.h"
 #include "../hud/hud_world.h"

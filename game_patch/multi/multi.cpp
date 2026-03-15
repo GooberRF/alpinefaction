@@ -418,69 +418,63 @@ void send_private_message_for_cancelled_shot(rf::Player* player, const std::stri
     af_send_automated_chat_msg(message, player);
 }
 
-bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
-{
+bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapon_type) {
     // do not consider melee weapons for click limiter
     if (rf::weapon_is_melee(weapon_type)) {
         return false;
     }
 
-    int player_id = pp->net_data->player_id;
-    int now = rf::timer_get(1000);
-
-    static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
-    static std::vector<int> last_weapon_fire(rf::multi_max_player_id, 0);
-
     int fire_wait_ms = 0;
-
     if (rf::weapon_is_semi_automatic(weapon_type)) {
-
         // if semi auto click limit is on
-        if (get_af_server_info().has_value() &&
-            get_af_server_info()->click_limit) {
-
+        if (get_af_server_info().has_value() && get_af_server_info()->click_limit) {
             // use override value for pistol/PR in stock game
             // stock game pistol has alt fire wait of 200ms, so can't use normal min logic for it
             if (rf::weapon_get_fire_wait_ms(weapon_type, 0) == 500) {
                 fire_wait_ms = get_semi_auto_fire_wait_override();
+            } else {
+                // otherwise use the minimum fire wait between both modes in weapons.tbl
+                fire_wait_ms = std::min(
+                    rf::weapon_get_fire_wait_ms(weapon_type, 0), // primary
+                    rf::weapon_get_fire_wait_ms(weapon_type, 1) // alt
+                );
             }
-            // otherwise use the minimum fire wait between both modes in weapons.tbl
-            else {
-                fire_wait_ms = std::min(rf::weapon_get_fire_wait_ms(weapon_type, 0),  // primary
-                    rf::weapon_get_fire_wait_ms(weapon_type, 1)); // alt
-            }
-        }
-        // otherwise, don't enforce a limit for semi autos
-        else {
+        } else {
+            // otherwise, don't enforce a limit for semi autos
             fire_wait_ms = 0;
         }
-    }
-    // for automatic weapons, use the minimum fire wait between both modes in weapons.tbl
-    else {
-        fire_wait_ms = std::min(rf::weapon_get_fire_wait_ms(weapon_type, 0),  // primary
-            rf::weapon_get_fire_wait_ms(weapon_type, 1)); // alt
+    } else {
+        // for automatic weapons, use the minimum fire wait between both modes in weapons.tbl
+        fire_wait_ms = std::min(
+            rf::weapon_get_fire_wait_ms(weapon_type, 0), // primary
+            rf::weapon_get_fire_wait_ms(weapon_type, 1) // alt
+        );
     }
 
-    // reset if weapon changed
+    static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
+    static std::vector<int64_t> last_weapon_fire(rf::multi_max_player_id, 0);
+
+    const int player_id = pp->net_data->player_id;
+    const int64_t now = timer::get_i64(1000);
+
+    // If weapon changed, skip interval check.
     if (last_weapon_id[player_id] != weapon_type) {
-        last_weapon_fire[player_id] = 0;
         last_weapon_id[player_id] = weapon_type;
+    } else {
+        const int64_t time_since_last_shot = now - last_weapon_fire[player_id];
+        // Calculate server-enforced cooldown from weapon fire wait, half of ping,
+        // and 50 ms jitter tolerance.
+        const int adjusted_ping = std::max(0, pp->net_data->ping);
+        const int cooldown_threshold =
+            std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50);
+        if (time_since_last_shot < cooldown_threshold) {
+            // Send notification to player for firing too fast.
+            // send_private_message_for_cancelled_shot(pp, "You are firing too fast!");
+            return true;
+        }
     }
 
-    // check if time since last shot is less than minimum wait time
-    int time_since_last_shot = std::max(0, now - last_weapon_fire[player_id]); // ensure time is positive
-
-    // calculate server-enforced cooldown from weapon fire wait, halfping, and 50ms jitter tolerance
-    int adjusted_ping = std::max(0, pp->net_data->ping); // ensure ping is positive
-    int cooldown_threshold = std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50); // halfping and jitter tolerance
-    if (time_since_last_shot < cooldown_threshold) {
-        // send notification to player for firing too fast
-        //send_private_message_for_cancelled_shot(pp, "firing too fast!");
-
-        return true;
-    }
-
-    // we fired
+    // We fired.
     last_weapon_fire[player_id] = now;
     return false;
 }
@@ -722,34 +716,33 @@ ConsoleCommand2 mapver_cmd{
             filename += ".rfl";
         }
 
-        int map_ver = get_level_file_version(filename);
-        if (map_ver == -1) {
+        const std::expected map_ver = get_level_file_version(filename);
+        if (!map_ver) {
             rf::console::print("Level {} not found.", filename);
-        }
-        else {
+        } else {
             std::string version_text;
 
-            if (map_ver == 175) {
+            if (*map_ver == 175) {
                 version_text = "Official - PS2 retail";
-            }
-            else if (map_ver == 180) {
+            } else if (*map_ver == 180) {
                 version_text = "Official - PC retail";
-            }
-            else if (map_ver == 200) {
+            } else if (*map_ver == 200) {
                 version_text = "Community - RF/PF/DF";
-            }
-            else if (map_ver > 0 && map_ver < 200) {
+            } else if (*map_ver > 0 && *map_ver < 200) {
                 version_text = "Official - Internal";
-            }
-            else if (map_ver >= 300) {
+            } else if (*map_ver >= 300) {
                 version_text = "Community - Alpine";
-            }
-            else {
+            } else {
                 version_text = "Unsupported";
             }
 
-            rf::console::print("RFL version for level {} is {} ({}). You can {}load this map.", filename,
-                               map_ver, version_text, map_ver > MAXIMUM_RFL_VERSION ? " NOT" : "");
+            rf::console::print(
+                "RFL version for level {} is {} ({}). You can {}load this map.",
+                filename,
+                *map_ver,
+                version_text,
+                *map_ver > MAXIMUM_RFL_VERSION ? " NOT" : ""
+            );
         }
     },
     "Check the version of a specific level file",

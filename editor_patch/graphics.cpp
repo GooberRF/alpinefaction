@@ -404,16 +404,6 @@ void ApplyGraphicsPatches()
     // Reset render cache pool after geometry rebuild so stale geo_cache pointers are detected
     geo_build_reset_render_cache.install();
 
-    // Fix: In FUN_00485990's secondary phase, the "detail room" check (FUN_0048bd90) calls
-    // FUN_00486a10(1) which sets room->field_0 = 1 (outdoor flag). The subsequent call to
-    // FUN_00426210 reads room->field_0, now seeing "outdoor" instead of the original value.
-    // This causes the indoor room to permanently stay in world+0xa8 (outdoor container)
-    // instead of world+0x9c (indoor/visibility container), making it invisible to the renderer.
-    // The bug is latent in the stock engine but manifests on second+ builds when FUN_0048bd90
-    // returns true due to slight face count variations in the rebuilt world geometry.
-    // Fix: change JNZ to JMP at 0x00485e02 to skip the detail check entirely.
-    write_mem<u8>(0x00485e02, 0xEB); // JNZ 0x00485e1b → JMP 0x00485e1b
-
     // Expand detail rooms array from 256 entries (0x010cee5c)
     // Array base references
     write_mem_ptr(0x0049b046, detail_room_list);  // FUN_0049afb0: read loop base
