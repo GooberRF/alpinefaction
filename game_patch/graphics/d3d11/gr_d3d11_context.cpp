@@ -2,6 +2,7 @@
 #include <cstring>
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/frametime.h"
+#include "../../misc/side_scroller.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_texture.h"
@@ -249,6 +250,16 @@ namespace df::gr::d3d11
         float disable_textures;
         std::array<float, 3> fog_color;
         float pad0;
+        // Side-scroller occlusion (dithered transparency)
+        float ss_fade_strength;
+        float ss_radius;
+        float ss_is_detail;
+        float ss_num_entities;
+        // Each entity position stored as float4 (xyz + pad) for HLSL array packing
+        std::array<float, 4> ss_entity_pos[max_ss_occlusion_entities];
+        // Camera position for computing entity-to-camera cylinder axis
+        std::array<float, 3> ss_camera_pos;
+        float pad1;
     };
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
@@ -288,6 +299,23 @@ namespace df::gr::d3d11
         data.colorblind_mode = static_cast<float>(current_colorblind_mode_);
         data.disable_textures = current_lightmap_only_ ? 1.0f : 0.0f;
         data.pad0 = 0.0f;
+
+        const auto& ss = get_ss_occlusion_params();
+        if (ss.active) {
+            data.ss_fade_strength = ss.fade_strength;
+            data.ss_radius = ss.radius;
+            data.ss_num_entities = static_cast<float>(ss.num_entities);
+            for (int i = 0; i < ss.num_entities; ++i) {
+                data.ss_entity_pos[i] = {ss.entity_pos[i].x, ss.entity_pos[i].y, ss.entity_pos[i].z, 0.0f};
+            }
+            data.ss_camera_pos = {ss.camera_pos.x, ss.camera_pos.y, ss.camera_pos.z};
+        }
+        else {
+            data.ss_fade_strength = 0.0f;
+            data.ss_radius = 0.0f;
+            data.ss_num_entities = 0.0f;
+        }
+        data.ss_is_detail = current_ss_is_detail_ ? 1.0f : 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

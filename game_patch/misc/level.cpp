@@ -12,6 +12,7 @@
 #include "level.h"
 #include "misc.h"
 #include "player.h"
+#include "side_scroller.h"
 #include "../multi/server.h"
 
 CodeInjection level_read_data_check_restore_status_patch{
@@ -103,6 +104,7 @@ CodeInjection level_load_init_patch{
         DashLevelProps::instance() = {};
         alpine_mesh_clear_state();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
+        side_scroller_on_level_load();
     },
 };
 

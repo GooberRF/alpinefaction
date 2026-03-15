@@ -26,6 +26,7 @@ struct AlpineLevelProperties
     float static_mesh_ambient_light_modifier = 2.0f;
     // v4
     bool rf2_style_geomod = false;
+    uint8_t perspective = 0; // 0 = First person, 1 = Side-scroller
     // std::vector<int32_t> geoable_brush_uids; // unnecessary in game
     std::vector<int32_t> geoable_room_uids;
     // std::vector<int32_t> breakable_brush_uids; // unnecessary in game
@@ -150,6 +151,15 @@ struct AlpineLevelProperties
                 xlog::trace("[AlpineLevelProps] GAME: breakable[{}] brush_uid={} room_uid={} material={}", i, brush_uid, room_uid, mat);
             }
             xlog::trace("[AlpineLevelProps] GAME: total breakable entries loaded={}", bcount);
+        }
+
+        // perspective appended to v4
+        if (version >= 4) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            perspective = u8;
+            xlog::debug("[AlpineLevelProps] perspective {}", perspective);
         }
     }
 };
