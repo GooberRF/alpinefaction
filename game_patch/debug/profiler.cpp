@@ -13,6 +13,7 @@
 #include "../rf/os/frametime.h"
 #include "debug_internal.h"
 #include <common/utils/perf-utils.h>
+#include "../os/os.h"
 
 std::vector<std::unique_ptr<PerfAggregator>> PerfAggregator::instances_;
 
@@ -125,7 +126,7 @@ public:
     // 1 us resolution
     static constexpr int time_resolution = 1000000;
 
-    void add_sample(int duration)
+    void add_sample(const int64_t duration)
     {
         current_frame_times_.add_sample(duration);
         last_times_.add_sample(duration);
@@ -153,9 +154,9 @@ public:
     }
 
 private:
-    SimpleAggregator<int> current_frame_times_;
-    SlotsAggregator<int, 128> last_times_;
-    SlotsAggregator<int, 128> last_frames_summed_times_;
+    SimpleAggregator<int64_t> current_frame_times_;
+    SlotsAggregator<int64_t, 128> last_times_;
+    SlotsAggregator<int64_t, 128> last_frames_summed_times_;
 };
 
 class BaseProfiler
@@ -186,12 +187,12 @@ public:
 protected:
     const char* m_name;
     ProfilerStats m_stats;
-    int m_enter_time;
+    int64_t m_enter_time;
     bool m_is_cpu_in_range = false;
 
-    static int current_time()
+    static int64_t current_time()
     {
-        return rf::timer_get(ProfilerStats::time_resolution);
+        return timer::get_i64(ProfilerStats::time_resolution);
     }
 
     void enter()
@@ -211,7 +212,7 @@ protected:
             return;
         }
         m_is_cpu_in_range = false;
-        int duration = current_time() - m_enter_time;
+        const int64_t duration = current_time() - m_enter_time;
         m_stats.add_sample(duration);
     }
 };

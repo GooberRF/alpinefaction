@@ -295,4 +295,7 @@ namespace rf
     static auto& weapon_uses_clip = addr_as_ref<bool(int weapon_type)>(0x004C86E0);
     static auto& weapon_get_fire_wait_ms = addr_as_ref<int __cdecl(int weapon_type, bool alt_fire)>(0x004C8710);
     static auto& weapon_restore_mesh = addr_as_ref<void(Weapon *wp, const char *mesh_filename)>(0x004C8140);
+    static auto& weapon_create_impact_vclip = addr_as_ref<void(int weapon_type, int entity_base, void* pos_or_null,
+        Vector3* hit_point, Vector3* hit_normal, int parent_handle)>(0x004C8A10);
+    static auto& weapon_is_underwater = addr_as_ref<char(void* entity)>(0x004C98B0);
 }

@@ -107,6 +107,7 @@ struct AlpineGameSettings
     bool play_team_rad_msg_sounds = true;
     bool unlimited_semi_auto = false;
     bool gaussian_spread = false;
+    bool geo_chunk_physics = true;
     bool show_run_timer = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;
@@ -186,6 +187,7 @@ struct AlpineGameSettings
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
+    bool killfeed_enabled = false;
 
     // hud color overrides
     std::optional<uint32_t> sniper_scope_color_override{};

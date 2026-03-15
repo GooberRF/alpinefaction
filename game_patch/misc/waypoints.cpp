@@ -4852,7 +4852,7 @@ bool point_matches_autogen_explosion_target_hardness_rules(const rf::Vector3& po
         }
 
         rf::Vector3 query_point = point;
-        if (!rf::level_geo_region_contains(&query_point, region)) {
+        if (!rf::geo_region_test_point(query_point, region)) {
             continue;
         }
 
@@ -4882,7 +4882,7 @@ bool point_inside_shallow_geo_region(const rf::Vector3& point)
         }
 
         rf::Vector3 query_point = point;
-        if (rf::level_geo_region_contains(&query_point, region)) {
+        if (rf::geo_region_test_point(query_point, region)) {
             return true;
         }
     }

@@ -146,6 +146,7 @@ struct AlpineFactionJoinAcceptPacketExt
         gaussian_spread     = 1u << 9,
         location_pinging    = 1u << 10,
         delayed_spawns      = 1u << 11,
+        geo_chunk_physics   = 1u << 12,
     } flags = Flags::none;
 
     float max_fov;
@@ -167,7 +168,7 @@ struct StashedPacket
 struct AfGiReqSeen
 {
     uint8_t ver = 0; // game_info_req version: 1 is current, pre-Alpine v1.2 never sends a version
-    int last_seen_ms = 0;
+    int64_t last_seen_ms = 0;
 };
 
 enum class RconCommandCheckResult

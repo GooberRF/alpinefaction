@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 46; // must be 1 higher than actual count
+constexpr int new_event_count = 49; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -86,6 +86,9 @@ const char* additional_event_names[new_event_count] = {
     "Owner_Gate",
     "Set_Gameplay_Rule",
     "When_Round_Ends",
+    "Mesh_Animate",
+    "Mesh_Set_Texture",
+    "Mesh_Set_Collision",
     "_dummy"
 };
 
@@ -657,6 +660,41 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         },
         {
             {FIELD_INT1, {"Player has headlamp"}}
+        },
+        {
+            {FIELD_INT1, true}
+        }
+    }},
+    {AlpineDedEventID::Mesh_Animate, {
+        {FIELD_INT1, FIELD_STR1, FIELD_FLOAT1},
+        {
+            {FIELD_INT1, "Type (int1):"},
+            {FIELD_STR1, "Animation filename (str1):"},
+            {FIELD_FLOAT1, "Blend weight (float1):"}
+        },
+        {
+            {FIELD_INT1, {"Action", "Action Hold Last", "State"}}
+        },
+        {
+            {FIELD_INT1, true}
+        }
+    }},
+    {AlpineDedEventID::Mesh_Set_Texture, {
+        {FIELD_INT1, FIELD_STR1},
+        {
+            {FIELD_INT1, "Texture slot (int1):"},
+            {FIELD_STR1, "Texture filename (str1):"}
+        },
+        {},
+        {}
+    }},
+    {AlpineDedEventID::Mesh_Set_Collision, {
+        {FIELD_INT1},
+        {
+            {FIELD_INT1, "Collision type (int1):"}
+        },
+        {
+            {FIELD_INT1, {"None", "Only Weapons", "All"}}
         },
         {
             {FIELD_INT1, true}

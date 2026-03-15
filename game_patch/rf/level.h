@@ -145,7 +145,7 @@ namespace rf
     static auto& level_filename_to_load = addr_as_ref<String>(0x00646140);
     static auto& level_get_push_region_from_uid = addr_as_ref<PushRegion*(int uid)>(0x0045D6D0);
     static auto& level_point_in_climb_region = addr_as_ref<ClimbRegion*(Vector3* pos)>(0x0045CCA0);
-    static auto& level_geo_region_contains = addr_as_ref<bool(Vector3* pos, GeoRegion* region)>(0x0045D520);
+    static auto& geo_region_test_point = addr_as_ref<bool(const Vector3& pos, GeoRegion* region)>(0x0045d520);
 
     static auto& level_set_level_to_load = addr_as_ref<void(String filename, String state_filename)>(0x0045E2E0);
     static auto& game_new_game = addr_as_ref<void()>(0x00436950);

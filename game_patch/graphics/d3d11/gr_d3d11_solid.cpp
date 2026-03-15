@@ -302,8 +302,17 @@ namespace df::gr::d3d11
         for (GFace& face : room->face_list) {
             add_face(&face, solid);
         }
-        for (GRoom* detail_room : room->detail_rooms) {
-            add_room(detail_room, solid);
+        // Only iterate detail_rooms for non-detail rooms. Detail rooms should never
+        // have sub-detail rooms in Red Faction. After RF2-style geomod, the boolean
+        // engine may corrupt the detail_rooms VArray on detail rooms, causing infinite
+        // recursion if we iterate it unconditionally.
+        if (!room->is_detail) {
+            for (GRoom* detail_room : room->detail_rooms) {
+                if (detail_room->face_list.empty()) {
+                    continue; // skip destroyed breakable detail rooms
+                }
+                add_room(detail_room, solid);
+            }
         }
     }
 
@@ -331,19 +340,40 @@ namespace df::gr::d3d11
         int face_tex = face->attributes.bitmap_id;
         int lightmap_tex = -1;
         if (!is_sky_ && render_type != FaceRenderType::liquid && face->attributes.surface_index >= 0) {
+            if (face->attributes.surface_index >= solid->surfaces.size()) {
+                xlog::warn("add_face: surface_index {} out of bounds (size {}), skipping face",
+                    face->attributes.surface_index, solid->surfaces.size());
+                return;
+            }
             GSurface* surface = solid->surfaces[face->attributes.surface_index];
+            if (!surface || !surface->lightmap) {
+                xlog::warn("add_face: null surface or lightmap at surface_index {}, skipping face",
+                    face->attributes.surface_index);
+                return;
+            }
             lightmap_tex = surface->lightmap->bm_handle;
         }
         FaceBatchKey key = std::make_tuple(render_type, face_tex, lightmap_tex);
         batched_faces_[key].push_back(face);
         auto fvert = face->edge_loop;
         int num_fverts = 0;
+        constexpr int max_fverts = 10000;
         while (fvert) {
             ++num_fverts;
+            if (num_fverts > max_fverts) {
+                xlog::error("add_face: edge_loop exceeds {} vertices, likely corrupted", max_fverts);
+                batched_faces_[key].pop_back();
+                return;
+            }
             fvert = fvert->next;
             if (fvert == face->edge_loop) {
                 break;
             }
+        }
+        if (num_fverts < 3) {
+            // Degenerate face, remove from batch
+            batched_faces_[key].pop_back();
+            return;
         }
         DecalPoly* dp = face->decal_list;
         int num_dp = 0;
@@ -376,14 +406,39 @@ namespace df::gr::d3d11
             std::size_t start_index = ib_data.size();
             std::size_t base_vertex = vb_data.size();
 
+            // Emit the current batch and start a new one (same key).
+            // Needed when per-batch vertex count approaches the ushort index limit.
+            auto emit_batch = [&]() {
+                std::size_t num_indices = ib_data.size() - start_index;
+                if (num_indices > 0) {
+                    std::array<int, 2> textures = {texture_1, texture_2};
+                    gr::Mode mode = determine_face_mode(render_type, texture_2 != -1, is_sky_);
+                    batches.get_batches(render_type).emplace_back(
+                        start_index, num_indices, base_vertex, textures, mode
+                    );
+                }
+                start_index = ib_data.size();
+                base_vertex = vb_data.size();
+            };
+
+            constexpr std::size_t max_batch_verts = 0xF000; // leave headroom below UINT16_MAX
             for (GFace* face : faces) {
                 auto fvert = face->edge_loop;
+                if (!fvert) continue;
+                if (vb_data.size() - base_vertex > max_batch_verts) {
+                    emit_batch();
+                }
                 GTextureMover* texture_mover = face->attributes.texture_mover;
                 float u_pan_speed = texture_mover ? texture_mover->u_pan_speed : 0.0f;
                 float v_pan_speed = texture_mover ? texture_mover->v_pan_speed : 0.0f;
                 auto face_start_index = static_cast<ushort>(vb_data.size() - base_vertex);
                 int fvert_index = 0;
+                constexpr int max_fverts = 10000;
                 while (fvert) {
+                    if (fvert_index >= max_fverts) {
+                        xlog::error("build: edge_loop exceeds {} vertices", max_fverts);
+                        break;
+                    }
                     auto& gpu_vert = vb_data.emplace_back();
                     gpu_vert.x = fvert->vertex->pos.x;
                     gpu_vert.y = fvert->vertex->pos.y;
@@ -411,12 +466,7 @@ namespace df::gr::d3d11
                     }
                 }
             }
-            std::size_t num_indices = ib_data.size() - start_index;
-            std::array<int, 2> textures = {texture_1, texture_2};
-            gr::Mode mode = determine_face_mode(render_type, texture_2 != -1, is_sky_);
-            batches.get_batches(render_type).emplace_back(
-                start_index, num_indices, base_vertex, textures, mode
-            );
+            emit_batch();
         }
         for (auto& e : batched_decal_polys_) {
             const GRenderCacheBuilder::DecalPolyBatchKey& key = e.first;
@@ -424,15 +474,37 @@ namespace df::gr::d3d11
             auto [render_type, texture_1, texture_2, mode] = key;
             std::size_t start_index = ib_data.size();
             std::size_t base_vertex = vb_data.size();
+
+            auto emit_decal_batch = [&]() {
+                std::size_t num_indices = ib_data.size() - start_index;
+                if (num_indices > 0) {
+                    std::array<int, 2> textures = {texture_1, texture_2};
+                    batches.get_batches(render_type).emplace_back(
+                        start_index, num_indices, base_vertex, textures, mode
+                    );
+                }
+                start_index = ib_data.size();
+                base_vertex = vb_data.size();
+            };
+
+            constexpr std::size_t max_batch_verts = 0xF000;
             for (DecalPoly* dp : dps) {
                 GDecal* decal = dp->my_decal;
                 ubyte alpha = rfl_version_minimum(304) ? decal->alpha : 255;
                 int diffuse = pack_color(Color{255, 255, 255, alpha});
                 auto face = dp->face;
                 auto fvert = face->edge_loop;
+                if (!fvert) continue;
+                if (vb_data.size() - base_vertex > max_batch_verts) {
+                    emit_decal_batch();
+                }
                 auto face_start_index = static_cast<ushort>(vb_data.size() - base_vertex);
                 int fvert_index = 0;
                 while (fvert) {
+                    if (fvert_index >= static_cast<int>(std::size(dp->uvs))) {
+                        xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
+                        break;
+                    }
                     auto& gpu_vert = vb_data.emplace_back();
                     gpu_vert.x = fvert->vertex->pos.x;
                     gpu_vert.y = fvert->vertex->pos.y;
@@ -460,11 +532,7 @@ namespace df::gr::d3d11
                     }
                 }
             }
-            int num_indices = ib_data.size() - start_index;
-            std::array<int, 2> textures = {texture_1, texture_2};
-            batches.get_batches(render_type).emplace_back(
-                start_index, num_indices, base_vertex, textures, mode
-            );
+            emit_decal_batch();
         }
 
         SolidGeometryBuffers geometry_buffers{vb_data, ib_data, device};
@@ -512,6 +580,8 @@ namespace df::gr::d3d11
 
     void RoomRenderCache::update(ID3D11Device* device)
     {
+        xlog::debug("RoomRenderCache::update room {} start (faces: {})",
+            room_->room_index, room_->face_list.size());
         GRenderCacheBuilder builder;
         builder.add_room(room_, solid_);
 
@@ -521,10 +591,11 @@ namespace df::gr::d3d11
             return;
         }
 
-        xlog::debug("Creating render cache for room {} - verts {} inds {} batches {}", room_->room_index,
+        xlog::debug("Building render cache for room {} - verts {} inds {} batches {}", room_->room_index,
             builder.get_num_verts(), builder.get_num_inds(), builder.get_num_batches());
 
         cache_ = std::optional{builder.build(device)};
+        xlog::debug("RoomRenderCache::update room {} complete", room_->room_index);
 
         state_ = 0;
     }
@@ -532,7 +603,7 @@ namespace df::gr::d3d11
     void RoomRenderCache::render(FaceRenderType render_type, ID3D11Device* device, RenderContext& context)
     {
         if (invalid()) {
-            xlog::debug("Room {} render cache invalidated!", room_->room_index);
+            xlog::debug("Room {} render cache invalidated! state={}", room_->room_index, state_);
             cache_.reset();
             update(device);
         }
@@ -675,27 +746,46 @@ namespace df::gr::d3d11
     void SolidRenderer::render_detail(rf::GSolid* solid, GRoom* room, bool alpha)
     {
         GRenderCache* cache = get_or_create_detail_room_cache(solid, room);
+        if (!cache) return;
         FaceRenderType render_type = alpha ? FaceRenderType::alpha : FaceRenderType::opaque;
         cache->render(render_type, render_context_);
     }
 
+    // Sentinel value stored in room->geo_cache to mark detail rooms that have been checked
+    // but have no renderable batches. Avoids rebuilding the cache builder every frame.
+    // clear_cache() resets all geo_cache to nullptr, which properly clears this sentinel.
+    static const auto k_empty_detail_sentinel = reinterpret_cast<rf::GCache*>(uintptr_t(1));
+
     GRenderCache* SolidRenderer::get_or_create_detail_room_cache(rf::GSolid* solid, rf::GRoom* room)
     {
+        if (room->geo_cache == k_empty_detail_sentinel) {
+            return nullptr;
+        }
         auto cache = reinterpret_cast<GRenderCache*>(room->geo_cache);
         if (!cache) {
-            xlog::debug("Creating render cache for detail room {}", room->room_index);
+            xlog::debug("Creating render cache for detail room {} (faces: {})",
+                room->room_index, room->face_list.size());
             GRenderCacheBuilder builder;
             builder.add_room(room, solid);
-            detail_render_cache_.push_back(std::make_unique<GRenderCache>(builder.build(device_)));
-            cache = detail_render_cache_.back().get();
-            room->geo_cache = reinterpret_cast<GCache*>(cache);
+            xlog::debug("Detail room {} builder: verts={} inds={} batches={}",
+                room->room_index, builder.get_num_verts(), builder.get_num_inds(), builder.get_num_batches());
+            if (builder.get_num_batches() > 0) {
+                detail_render_cache_.push_back(std::make_unique<GRenderCache>(builder.build(device_)));
+                cache = detail_render_cache_.back().get();
+                room->geo_cache = reinterpret_cast<GCache*>(cache);
+            }
+            else {
+                room->geo_cache = k_empty_detail_sentinel;
+            }
+            xlog::debug("Detail room {} cache creation complete", room->room_index);
         }
         return cache;
     }
 
     void SolidRenderer::clear_cache()
     {
-        xlog::debug("Room render cache clear");
+        xlog::debug("Room render cache clear (rooms={}, detail={}, movers={})",
+            room_cache_.size(), detail_render_cache_.size(), mover_render_cache_.size());
 
         if (rf::level.geometry) {
             for (rf::GRoom* room: rf::level.geometry->all_rooms) {
@@ -708,10 +798,12 @@ namespace df::gr::d3d11
         mover_render_cache_.clear();
         geo_cache_rooms_.clear();
         geo_cache_num_rooms = 0;
+        xlog::debug("Room render cache clear complete");
     }
 
     void SolidRenderer::reset_cache_after_boolean()
     {
+        xlog::debug("reset_cache_after_boolean ({} rooms)", geo_cache_rooms_.size());
         for (rf::GRoom* room : geo_cache_rooms_) {
             auto cache = reinterpret_cast<RoomRenderCache*>(room->geo_cache);
             if (cache) {
@@ -801,6 +893,10 @@ namespace df::gr::d3d11
             // Note: calling set_currently_rendered_room could improve culling here but it breaks some levels
             // if a detail brush is contained in multiple normal rooms
             for (GRoom* detail_room : room->detail_rooms) {
+                if (detail_room->face_list.empty()) {
+                    // Happens when a breakable detail brush is destroyed
+                    continue;
+                }
                 if (detail_room->room_to_render_with == room && !gr::cull_bounding_box(detail_room->bbox_min, detail_room->bbox_max)) {
                     render_detail(solid, detail_room, false);
                 }

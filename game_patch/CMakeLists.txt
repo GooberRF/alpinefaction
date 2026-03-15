@@ -115,6 +115,7 @@ set(SRCS
     hud/multi_spectate.h
     hud/multi_hud.cpp
     hud/multi_hud_chat.cpp
+    hud/multi_hud_killfeed.cpp
     hud/weapon_select.cpp
     hud/message_log.cpp
     debug/debugwinmsg.cpp
@@ -223,6 +224,7 @@ set(SRCS
     object/monitor.cpp
     object/particle.cpp
     object/obj_light.cpp
+    object/alpine_mesh.cpp
     misc/achievements.h
     misc/achievements.cpp
     misc/character.cpp
@@ -239,6 +241,8 @@ set(SRCS
     misc/player.cpp
     misc/player_fpgun.cpp
     misc/g_solid.cpp
+    misc/destruction.cpp
+    misc/destruction.h
     misc/camera.cpp
     misc/ui.cpp
     misc/game.cpp
@@ -255,6 +259,8 @@ set(SRCS
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp
+    sound/sound_foley.cpp
+    sound/sound_foley.h
     res/resources.rc
     purefaction/pf.cpp
     purefaction/pf.h

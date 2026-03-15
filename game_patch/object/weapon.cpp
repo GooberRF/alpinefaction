@@ -138,6 +138,15 @@ CodeInjection weapon_vs_obj_collision_fix{
     [](auto& regs) {
         rf::Object* obj = regs.edi;
         rf::Object* weapon = regs.ebp;
+
+        // Skip collision with debris that has OF_NO_COLLIDE_REGISTER (e.g. geomod rock debris).
+        // The flag only prevents pair registration from the debris side; weapons still try to
+        // register pairs with all physics objects, so we must reject the pair here.
+        if (obj->type == rf::OT_DEBRIS && (obj->obj_flags & rf::OF_NO_COLLIDE_REGISTER)) {
+            regs.eip = 0x0048C82A;
+            return;
+        }
+
         auto dir = obj->pos - weapon->pos;
         // Take into account weapon and object radius
         float rad = weapon->radius + obj->radius;
