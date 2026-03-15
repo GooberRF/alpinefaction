@@ -57,6 +57,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 
 [@is-this-c](https://github.com/is-this-c)
+- Use 64-bit integers for time deltas
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add version and uptime to a server's printed config
 - Default gore level to 1
@@ -82,6 +83,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
+- Fix pings of zero after 24 days of uptime
 - Fix `AF_Heal` event forwarding received messages
 - Fix rare crash when shooting at alpha-masked surfaces in Direct3D 11 renderer
 - Fix overflow fix for `emitters.tbl` entries not being correctly applied
@@ -97,6 +99,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor clip tool silently failing on certain brush orientations
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix parse of `flag_return_time` to be as a float instead of an integer
 - Fix faulty cull in fpgun infrared scanners
 - Fix stale weapon selection time stamps
 

@@ -83,11 +83,11 @@ inline const std::string& get_build_date() {
 
 inline const std::string& get_build_time() {
     static std::string res = std::invoke([] {
-        int hh = 0, mm = 0, ss = 0;
-        std::sscanf(__TIME__, "%d:%d:%d", &hh, &mm, &ss);
-        const std::string_view suffix = (hh < 12) ? "AM" : "PM";
+        int hours = 0, minutes = 0, seconds = 0;
+        std::sscanf(__TIME__, "%d:%d:%d", &hours, &minutes, &seconds);
+        const std::string_view suffix = (hours < 12) ? "AM" : "PM";
         // Use a zero-indexed 12-hour clock for elegance.
-        return std::format("{}:{:02} {}", hh % 12, mm, suffix);
+        return std::format("{}:{:02} {}", hours % 12, minutes, suffix);
     });
     return res;
 }
