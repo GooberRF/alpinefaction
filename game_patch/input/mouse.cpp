@@ -13,6 +13,9 @@
 #include "../rf/entity.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
+#include "../rf/os/frametime.h"
+#include "gamepad.h"
+#include "input.h"
 
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
@@ -315,28 +318,62 @@ static float convert_pitch_delta_to_non_linear_space(
     return new_pitch_delta;
 }
 
+static bool s_camera_resetting = false;
+static bool s_camera_reset_prev_down = false;
+
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
-    [] (const auto& regs) {
-        if (!g_alpine_game_config.mouse_linear_pitch) {
-            return;
-        }
+    [](auto& regs) {
+        rf::Entity* entity = regs.esi;
         float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
-        if (pitch_delta == .0f) {
-            return;
+        float& yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
+
+        // Add gamepad rotation deltas to the game's computed deltas
+        float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
+        gamepad_get_camera(gamepad_pitch, gamepad_yaw);
+        pitch_delta += gamepad_pitch;
+        yaw_delta += gamepad_yaw;
+
+        // Apply linear pitch correction to combined mouse+gamepad delta
+        if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0) {
+            const float current_yaw = entity->control_data.phb.y;
+            const float current_pitch_non_lin = entity->control_data.eye_phb.x;
+            pitch_delta = convert_pitch_delta_to_non_linear_space(
+                current_yaw,
+                current_pitch_non_lin,
+                pitch_delta,
+                yaw_delta
+            );
         }
-        const rf::Entity* const entity = regs.esi;
-        const float current_yaw = entity->control_data.phb.y;
-        const float current_pitch_non_lin = entity->control_data.eye_phb.x;
-        const float yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
-        pitch_delta = convert_pitch_delta_to_non_linear_space(
-            current_yaw,
-            current_pitch_non_lin,
-            pitch_delta,
-            yaw_delta
-        );
+
+        // Reset camera pitch to horizon on press (rising-edge detection).
+        if (rf::local_player) {
+            const auto reset_action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
+            bool down = rf::control_is_control_down(&rf::local_player->settings.controls, reset_action);
+            if (down && !s_camera_reset_prev_down)
+                s_camera_resetting = true;
+            s_camera_reset_prev_down = down;
+        }
+        if (s_camera_resetting) {
+            constexpr float reset_speed = 12.0f; // radians per second
+            constexpr float done_threshold = 0.001f;
+            const float current_pitch = entity->control_data.eye_phb.x;
+            if (std::abs(current_pitch) < done_threshold) {
+                pitch_delta = 0.0f;
+                s_camera_resetting = false;
+            } else {
+                const float toward_zero = -current_pitch;
+                const float max_step = reset_speed * rf::frametime;
+                pitch_delta = std::clamp(toward_zero, -max_step, max_step);
+            }
+        }
     },
 };
+
+void camera_start_reset_to_horizon()
+{
+    s_camera_resetting = true;
+}
 
 ConsoleCommand2 linear_pitch_cmd{
     "cl_linearpitch",
@@ -344,7 +381,6 @@ ConsoleCommand2 linear_pitch_cmd{
 #ifdef DEBUG
         linear_pitch_test();
 #endif
-
         g_alpine_game_config.mouse_linear_pitch = !g_alpine_game_config.mouse_linear_pitch;
         rf::console::print("Linear pitch is {}", g_alpine_game_config.mouse_linear_pitch ? "enabled" : "disabled");
     },
@@ -375,7 +411,7 @@ void mouse_apply_patch()
     // Use exclusive DirectInput mode so cursor cannot exit game window
     //write_mem<u8>(0x0051E14B + 1, 5); // DISCL_EXCLUSIVE|DISCL_FOREGROUND
 
-    // Linear vertical rotation (pitch)
+  // Linear vertical rotation for mouse and gamepad
     linear_pitch_patch.install();
 
     // Commands

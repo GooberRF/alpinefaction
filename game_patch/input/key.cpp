@@ -1,4 +1,5 @@
 #include <cctype>
+#include <cstring>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
@@ -7,6 +8,7 @@
 #include "../hud/hud.h"
 #include "../misc/player.h"
 #include "../misc/achievements.h"
+#include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/multi.h"
 #include "../multi/endgame_votes.h"
@@ -20,15 +22,32 @@
 #include "../rf/os/os.h"
 #include "../multi/alpine_packets.h"
 #include "../os/console.h"
+#include "gamepad.h"
+#include "input.h"
 
 static int starting_alpine_control_index = -1;
 
 rf::String get_action_bind_name(int action)
 {
+    // Prefer gamepad button name when a controller is active
+    if (gamepad_is_last_input_gamepad()) {
+        int btn = gamepad_get_button_for_action(action);
+        if (btn >= 0)
+            return gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + btn);
+        int trig = gamepad_get_trigger_for_action(action);
+        if (trig == 0) return gamepad_get_scan_code_name(CTRL_GAMEPAD_LEFT_TRGGER);
+        if (trig == 1) return gamepad_get_scan_code_name(CTRL_GAMEPAD_RIGHT_TRGGER);
+    }
+
     auto& config_item = rf::local_player->settings.controls.bindings[action];
     rf::String name;
     if (config_item.scan_codes[0] >= 0) {
-        rf::control_config_get_key_name(&name, config_item.scan_codes[0]);
+        int sc = static_cast<int>(config_item.scan_codes[0]);
+        if (sc >= CTRL_GAMEPAD_SCAN_BASE && sc <= CTRL_GAMEPAD_RIGHT_TRGGER) {
+            name = gamepad_get_scan_code_name(sc);
+        } else {
+            rf::control_config_get_key_name(&name, sc);
+        }
     }
     else if (config_item.mouse_btn_id >= 0) {
         rf::control_config_get_mouse_button_name(&name, config_item.mouse_btn_id);
@@ -147,7 +166,17 @@ CodeInjection key_name_in_options_patch{
     [](auto& regs) {
         static char buf[32];
         int key = regs.edx;
-        get_key_name(key, buf, std::size(buf));
+        // Gamepad scan codes installed by the CONTROLLER binding view.
+        if (key >= CTRL_GAMEPAD_SCAN_BASE && key <= CTRL_GAMEPAD_RIGHT_TRGGER) {
+            std::strncpy(buf, gamepad_get_scan_code_name(key), std::size(buf) - 1);
+            buf[std::size(buf) - 1] = '\0';
+        } else if (key == 0 && ui_ctrl_bindings_view_active()) {
+            // Unbound action in CONTROLLER view — show placeholder
+            std::strncpy(buf, "<none>", std::size(buf) - 1);
+            buf[std::size(buf) - 1] = '\0';
+        } else {
+            get_key_name(key, buf, std::size(buf));
+        }
         regs.edi = buf;
         regs.eip = 0x0045032F;
     },
@@ -267,6 +296,14 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG);
         alpine_control_config_add_item(ccp, "Inspect Weapon", false, rf::KEY_I, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON);
+        alpine_control_config_add_item(ccp, "Reset Camera", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
+        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold)", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD);
+        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold - Invert)", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT);
+        alpine_control_config_add_item(ccp, "Gyro Modifier (Toggle)", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);
     },
 };
 
@@ -309,6 +346,10 @@ CodeInjection player_execute_action_patch{
             else if (action_index == starting_alpine_control_index +
                 static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON)) {
                 fpgun_play_random_idle_anim();
+            }
+            else if (action_index == starting_alpine_control_index +
+                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA)) {
+                camera_start_reset_to_horizon();
             }
         }
     },
@@ -406,7 +447,7 @@ CodeInjection controls_process_patch{
 
         // C++ doesn't have a way to dynamically get the last enum index, so just update this when adding new controls
         if (index >= starting_alpine_control_index &&
-            index <= static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
+            index <= starting_alpine_control_index + static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
             //xlog::warn("passing control {}", index);
             regs.eip = 0x00430E24;
         }
@@ -465,8 +506,16 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
     0x0051EBA0,
     [] (const int msg, const int w_param, int l_param) {
         switch (msg) {
+            case WM_LBUTTONDOWN:
+            case WM_RBUTTONDOWN:
+            case WM_MBUTTONDOWN:
+            case WM_XBUTTONDOWN:
+                gamepad_set_last_input_keyboard();
+                break;
             case WM_KEYDOWN:
             case WM_SYSKEYDOWN:
+                gamepad_set_last_input_keyboard();
+                [[fallthrough]];
             case WM_KEYUP:
             case WM_SYSKEYUP: {
                 // For num pads, RF requires `KF_EXTENDED` to be set.

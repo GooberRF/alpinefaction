@@ -8,6 +8,7 @@
 #include "../rf/crt.h"
 #include "../main/main.h"
 #include "win32_console.h"
+#include "../input/input.h"
 #include <xlog/xlog.h>
 #include <timeapi.h>
 #include "os.h"
@@ -29,6 +30,8 @@ FunHook<void()> os_poll_hook{
         if (win32_console_is_enabled()) {
             win32_console_poll_input();
         }
+
+        sdl_input_poll();
     },
 };
 

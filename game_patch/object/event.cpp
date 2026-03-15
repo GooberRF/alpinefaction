@@ -19,6 +19,7 @@
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
 #include "../os/console.h"
+#include "../input/input.h"
 #include "../rf/v3d.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 
@@ -474,29 +475,11 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
         const auto get_binding_or_unbound = [](const char* action_name) -> std::string {
             if (!rf::local_player)
                 return "UNBOUND";
-
             int action_index = rf::control_config_find_action_by_name(&rf::local_player->settings, action_name);
             if (action_index < 0)
                 return "UNBOUND";
-
-            const auto& binding = rf::local_player->settings.controls.bindings[action_index];
-            std::string result;
-
-            if (binding.scan_codes[0] >= 0) {
-                rf::String key_name;
-                rf::control_config_get_key_name(&key_name, binding.scan_codes[0]);
-                result = std::string(key_name.c_str());
-            }
-
-            if (binding.mouse_btn_id >= 0) {
-                rf::String mouse_name;
-                rf::control_config_get_mouse_button_name(&mouse_name, binding.mouse_btn_id);
-                if (!result.empty())
-                    result += ", ";
-                result += std::string(mouse_name.c_str());
-            }
-
-            return result.empty() ? "UNBOUND" : result;
+            rf::String name = get_action_bind_name(action_index);
+            return name.c_str()[0] ? std::string{name.c_str()} : "UNBOUND";
         };
 
         // Match known HUD tokens

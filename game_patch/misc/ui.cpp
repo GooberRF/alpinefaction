@@ -17,6 +17,8 @@
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
 #include "../object/object.h"
+#include "../input/gyro.h"
+#include "../input/gamepad.h"
 
 #define DEBUG_UI_LAYOUT 0
 #define SHARP_UI_TEXT 1
@@ -24,6 +26,15 @@
 // options menu elements
 static rf::ui::Gadget* new_gadgets[6]; // Allocate space for 6 options buttons
 static rf::ui::Button alpine_options_btn;
+
+// Controller bindings overlay (shown when the CONTROLLER tab is active on options panel 3)
+static bool g_ctrl_bind_view       = false; // KEYBOARD vs CONTROLLER tab toggle
+static bool g_ctrl_codes_installed = false; // true while gamepad scan codes are in cc.bindings
+static int16_t g_saved_scan_codes[128] = {}; // saved keyboard scan_codes[0] per binding slot
+
+// CONTROLLER mode checkbox (integrated into the controls panel)
+static rf::ui::Checkbox g_ctrl_mode_cbox;
+static bool g_ctrl_mode_btns_initialized = false;
 
 // alpine options panel elements
 static rf::ui::Panel alpine_options_panel; // parent to all subpanels
@@ -179,6 +190,38 @@ static rf::ui::Checkbox ao_exposuredamage_cbox;
 static rf::ui::Label ao_exposuredamage_label;
 static rf::ui::Checkbox ao_painsounds_cbox;
 static rf::ui::Label ao_painsounds_label;
+
+// gamepad settings
+static rf::ui::Checkbox ao_gyro_enabled_cbox;
+static rf::ui::Label ao_gyro_enabled_label;
+static rf::ui::Checkbox ao_joy_sensitivity_cbox;
+static rf::ui::Label ao_joy_sensitivity_label;
+static rf::ui::Label ao_joy_sensitivity_butlabel;
+static char ao_joy_sensitivity_butlabel_text[9];
+static rf::ui::Checkbox ao_move_deadzone_cbox;
+static rf::ui::Label ao_move_deadzone_label;
+static rf::ui::Label ao_move_deadzone_butlabel;
+static char ao_move_deadzone_butlabel_text[9];
+static rf::ui::Checkbox ao_look_deadzone_cbox;
+static rf::ui::Label ao_look_deadzone_label;
+static rf::ui::Label ao_look_deadzone_butlabel;
+static char ao_look_deadzone_butlabel_text[9];
+static rf::ui::Checkbox ao_gyro_sensitivity_cbox;
+static rf::ui::Label ao_gyro_sensitivity_label;
+static rf::ui::Label ao_gyro_sensitivity_butlabel;
+static char ao_gyro_sensitivity_butlabel_text[9];
+static rf::ui::Checkbox ao_gyro_autocalibration_cbox;
+static rf::ui::Label ao_gyro_autocalibration_label;
+static rf::ui::Checkbox ao_gyro_space_cbox;
+static rf::ui::Label ao_gyro_space_label;
+static rf::ui::Label ao_gyro_space_butlabel;
+static char ao_gyro_space_butlabel_text[12];
+static rf::ui::Checkbox ao_gyro_invert_y_cbox;
+static rf::ui::Label ao_gyro_invert_y_label;
+static rf::ui::Checkbox ao_joy_invert_y_cbox;
+static rf::ui::Label ao_joy_invert_y_label;
+static rf::ui::Checkbox ao_swap_sticks_cbox;
+static rf::ui::Label ao_swap_sticks_label;
 
 // levelsounds audio options slider
 std::vector<rf::ui::Gadget*> alpine_audio_panel_settings;
@@ -768,6 +811,107 @@ void ao_togglecrouch_cbox_on_click(int x, int y) {
     ao_play_button_snd(rf::local_player->settings.toggle_crouch);
 }
 
+// gamepad settings
+void ao_gyro_enabled_cbox_on_click(int x, int y) {
+    if (!gamepad_is_motionsensors_supported()) return;
+    g_alpine_game_config.gamepad_gyro_enabled = !g_alpine_game_config.gamepad_gyro_enabled;
+    ao_gyro_enabled_cbox.checked = g_alpine_game_config.gamepad_gyro_enabled;
+    ao_play_button_snd(g_alpine_game_config.gamepad_gyro_enabled);
+}
+
+void ao_joy_sensitivity_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        float val = std::stof(str);
+        g_alpine_game_config.gamepad_joy_sensitivity = std::max(0.0f, val);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid gamepad sensitivity input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_joy_sensitivity_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter new gamepad stick sensitivity:", "", ao_joy_sensitivity_cbox_on_click_callback, 1);
+}
+
+void ao_move_deadzone_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        float val = std::stof(str);
+        g_alpine_game_config.gamepad_move_deadzone = std::clamp(val, 0.0f, 0.9f);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid move deadzone input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_move_deadzone_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter new move deadzone (0.0 - 0.9):", "", ao_move_deadzone_cbox_on_click_callback, 1);
+}
+
+void ao_look_deadzone_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        float val = std::stof(str);
+        g_alpine_game_config.gamepad_look_deadzone = std::clamp(val, 0.0f, 0.9f);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid look deadzone input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_look_deadzone_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter new look deadzone (0.0 - 0.9):", "", ao_look_deadzone_cbox_on_click_callback, 1);
+}
+
+void ao_gyro_sensitivity_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        float val = std::stof(str);
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, val);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid gyro sensitivity input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_gyro_sensitivity_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter new gyro sensitivity:", "", ao_gyro_sensitivity_cbox_on_click_callback, 1);
+}
+
+void ao_gyro_autocalibration_cbox_on_click(int x, int y) {
+    gyro_set_autocalibration(!g_alpine_game_config.gamepad_gyro_autocalibration);
+    ao_gyro_autocalibration_cbox.checked = g_alpine_game_config.gamepad_gyro_autocalibration;
+    ao_play_button_snd(g_alpine_game_config.gamepad_gyro_autocalibration);
+}
+
+void ao_gyro_space_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+    g_alpine_game_config.gamepad_gyro_space = (g_alpine_game_config.gamepad_gyro_space + 1) % 5;
+    ao_play_button_snd(true);
+}
+
+void ao_gyro_invert_y_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_gyro_invert_y = !g_alpine_game_config.gamepad_gyro_invert_y;
+    ao_gyro_invert_y_cbox.checked = g_alpine_game_config.gamepad_gyro_invert_y;
+    ao_play_button_snd(g_alpine_game_config.gamepad_gyro_invert_y);
+}
+
+void ao_joy_invert_y_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_joy_invert_y = !g_alpine_game_config.gamepad_joy_invert_y;
+    ao_joy_invert_y_cbox.checked = g_alpine_game_config.gamepad_joy_invert_y;
+    ao_play_button_snd(g_alpine_game_config.gamepad_joy_invert_y);
+}
+
+void ao_swap_sticks_cbox_on_click(int x, int y) {
+    g_alpine_game_config.gamepad_swap_sticks = !g_alpine_game_config.gamepad_swap_sticks;
+    ao_swap_sticks_cbox.checked = g_alpine_game_config.gamepad_swap_sticks;
+    ao_play_button_snd(g_alpine_game_config.gamepad_swap_sticks);
+}
+
 void ao_joinbeep_cbox_on_click(int x, int y) {
     g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
     ao_joinbeep_cbox.checked = g_alpine_game_config.player_join_beep;
@@ -1216,6 +1360,31 @@ void alpine_options_panel_init() {
         &ao_staticscope_cbox, &ao_staticscope_label, &alpine_options_panel2, ao_staticscope_cbox_on_click, g_alpine_game_config.scope_static_sensitivity, 280, 144, "Linear scope");
     alpine_options_panel_checkbox_init(
         &ao_togglecrouch_cbox, &ao_togglecrouch_label, &alpine_options_panel2, ao_togglecrouch_cbox_on_click, rf::local_player->settings.toggle_crouch, 280, 174, "Toggle crouch");
+    alpine_options_panel_inputbox_init(
+        &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 204, "Camera sens");
+    alpine_options_panel_inputbox_init(
+        &ao_move_deadzone_cbox, &ao_move_deadzone_label, &ao_move_deadzone_butlabel, &alpine_options_panel2, ao_move_deadzone_cbox_on_click, 112, 234, "Move deadzone");
+    alpine_options_panel_inputbox_init(
+        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Camera deadzone");
+    alpine_options_panel_checkbox_init(
+        &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 294, "Camera Invert Y");
+    alpine_options_panel_checkbox_init(
+        &ao_swap_sticks_cbox, &ao_swap_sticks_label, &alpine_options_panel2, ao_swap_sticks_cbox_on_click, g_alpine_game_config.gamepad_swap_sticks, 112, 324, "Swap Sticks");
+    alpine_options_panel_checkbox_init(
+        &ao_gyro_enabled_cbox, &ao_gyro_enabled_label, &alpine_options_panel2, ao_gyro_enabled_cbox_on_click, g_alpine_game_config.gamepad_gyro_enabled, 280, 204, "Gyro Aiming");
+    alpine_options_panel_inputbox_init(
+        &ao_gyro_sensitivity_cbox, &ao_gyro_sensitivity_label, &ao_gyro_sensitivity_butlabel, &alpine_options_panel2, ao_gyro_sensitivity_cbox_on_click, 280, 234, "Gyro sensitivity");
+    alpine_options_panel_checkbox_init(
+        &ao_gyro_invert_y_cbox, &ao_gyro_invert_y_label,
+        &alpine_options_panel2, ao_gyro_invert_y_cbox_on_click,
+        g_alpine_game_config.gamepad_gyro_invert_y, 280, 264, "Gyro Invert Y");
+    alpine_options_panel_inputbox_init(
+        &ao_gyro_space_cbox, &ao_gyro_space_label, &ao_gyro_space_butlabel,
+        &alpine_options_panel2, ao_gyro_space_cbox_on_click, 280, 294, "Gyro Space");
+    alpine_options_panel_checkbox_init(
+        &ao_gyro_autocalibration_cbox, &ao_gyro_autocalibration_label,
+        &alpine_options_panel2, ao_gyro_autocalibration_cbox_on_click,
+        g_alpine_game_config.gamepad_gyro_autocalibration, 280, 324, "Gyro Auto-Calib");
 
     // panel 3
     alpine_options_panel_checkbox_init(
@@ -1312,7 +1481,7 @@ void alpine_options_panel_do_frame(int x)
     for (auto* ui_element : alpine_options_panel_settings) {
         if (ui_element) {
             auto checkbox = static_cast<rf::ui::Checkbox*>(ui_element);
-            if (checkbox) {
+            if (checkbox && checkbox->enabled) {
                 checkbox->render();
             }
         }
@@ -1367,9 +1536,40 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_simdist_butlabel_text, sizeof(ao_simdist_butlabel_text), "%6.2f", g_alpine_game_config.entity_sim_distance);
     ao_simdist_butlabel.text = ao_simdist_butlabel_text;
 
+    // gamepad settings
+    snprintf(ao_joy_sensitivity_butlabel_text, sizeof(ao_joy_sensitivity_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_joy_sensitivity);
+    ao_joy_sensitivity_butlabel.text = ao_joy_sensitivity_butlabel_text;
+
+    snprintf(ao_move_deadzone_butlabel_text, sizeof(ao_move_deadzone_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_move_deadzone);
+    ao_move_deadzone_butlabel.text = ao_move_deadzone_butlabel_text;
+
+    snprintf(ao_look_deadzone_butlabel_text, sizeof(ao_look_deadzone_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_look_deadzone);
+    ao_look_deadzone_butlabel.text = ao_look_deadzone_butlabel_text;
+
+    snprintf(ao_gyro_sensitivity_butlabel_text, sizeof(ao_gyro_sensitivity_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_gyro_sensitivity);
+    ao_gyro_sensitivity_butlabel.text = ao_gyro_sensitivity_butlabel_text;
+
+    snprintf(ao_gyro_space_butlabel_text, sizeof(ao_gyro_space_butlabel_text), "%s", gyro_get_space_name(g_alpine_game_config.gamepad_gyro_space));
+    ao_gyro_space_butlabel.text = ao_gyro_space_butlabel_text;
+
+    // show/hide gyro ui if gamepad supports motion sensors
+    bool gyro_hw = gamepad_is_motionsensors_supported();
+    ao_gyro_enabled_cbox.enabled         = gyro_hw;
+    ao_gyro_enabled_label.enabled        = gyro_hw;
+    ao_gyro_sensitivity_cbox.enabled     = gyro_hw;
+    ao_gyro_sensitivity_label.enabled    = gyro_hw;
+    ao_gyro_sensitivity_butlabel.enabled = gyro_hw;
+    ao_gyro_autocalibration_cbox.enabled   = gyro_hw;
+    ao_gyro_autocalibration_label.enabled  = gyro_hw;
+    ao_gyro_invert_y_cbox.enabled        = gyro_hw;
+    ao_gyro_invert_y_label.enabled       = gyro_hw;
+    ao_gyro_space_cbox.enabled           = gyro_hw;
+    ao_gyro_space_label.enabled          = gyro_hw;
+    ao_gyro_space_butlabel.enabled       = gyro_hw;
+
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {
-        if (ui_label) {
+        if (ui_label && ui_label->enabled) {
             ui_label->render();
         }
     }
@@ -1439,17 +1639,172 @@ CodeInjection handle_options_button_click_patch{
     },
 };
 
+// Controller bindings tab strip (drawn on top of options panel 3 = Controls)
+
+// Write the current gamepad binding for every action into scan_codes[0] using the
+// CTRL_GAMEPAD_SCAN_BASE encoding, saving the original keyboard scan codes first.
+static void install_ctrl_gamepad_codes()
+{
+    if (!rf::local_player || g_ctrl_codes_installed) return;
+    auto& cc = rf::local_player->settings.controls;
+    int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+    for (int i = 0; i < n; ++i) {
+        g_saved_scan_codes[i] = cc.bindings[i].scan_codes[0];
+        int btn  = gamepad_get_button_for_action(i);
+        int trig = gamepad_get_trigger_for_action(i);
+        int16_t code = 0; // unbound
+        if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
+        else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
+        else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
+        cc.bindings[i].scan_codes[0] = code;
+    }
+    g_ctrl_codes_installed = true;
+}
+
+// Rewrite scan_codes[0] from the current g_button_map/g_trigger_action state.
+// Called after a bind completes so the list immediately reflects the new assignment.
+static void refresh_ctrl_gamepad_codes()
+{
+    if (!rf::local_player || !g_ctrl_codes_installed) return;
+    auto& cc = rf::local_player->settings.controls;
+    int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+    for (int i = 0; i < n; ++i) {
+        int btn  = gamepad_get_button_for_action(i);
+        int trig = gamepad_get_trigger_for_action(i);
+        int16_t code = 0;
+        if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
+        else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
+        else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
+        cc.bindings[i].scan_codes[0] = code;
+    }
+}
+
+// Harvest whatever RF wrote into scan_codes[0] back into g_button_map/g_trigger_action,
+// then restore the original keyboard scan codes.
+static void uninstall_ctrl_gamepad_codes()
+{
+    if (!rf::local_player || !g_ctrl_codes_installed) return;
+    gamepad_sync_bindings_from_scan_codes();
+    auto& cc = rf::local_player->settings.controls;
+    int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+    for (int i = 0; i < n; ++i)
+        cc.bindings[i].scan_codes[0] = g_saved_scan_codes[i];
+    g_ctrl_codes_installed = false;
+}
+
+bool ui_ctrl_bindings_view_active()
+{
+    return g_ctrl_bind_view;
+}
+
+void ui_ctrl_bindings_view_reset()
+{
+    uninstall_ctrl_gamepad_codes();
+    g_ctrl_bind_view = false;
+}
+
+// X/Y position for the CONTROLLER mode checkbox in UI 640x480 space.
+// Sits to the right of the stock "Change Binding" button on the same row.
+static constexpr int CTRL_CHK_X = 390;
+static constexpr int CTRL_CHK_Y = 352;
+
+static void ctrl_mode_cbox_on_click(int, int)
+{
+    if (g_ctrl_bind_view) {
+        uninstall_ctrl_gamepad_codes();
+        g_ctrl_bind_view = false;
+    } else {
+        g_ctrl_bind_view = true;
+        install_ctrl_gamepad_codes();
+    }
+    g_ctrl_mode_cbox.checked = g_ctrl_bind_view;
+    rf::snd_play(43, 0, 0.0f, 1.0f);
+}
+
+// Create the checkbox once (called lazily on first Controls panel render).
+static void init_ctrl_mode_btns()
+{
+    if (g_ctrl_mode_btns_initialized) return;
+    g_ctrl_mode_cbox.create("checkbox.tga", "checkbox_selected.tga", "checkbox_checked.tga",
+        CTRL_CHK_X, CTRL_CHK_Y, 0, "", rf::ui::medium_font_0);
+    g_ctrl_mode_cbox.enabled = true;
+    g_ctrl_mode_cbox.on_click = ctrl_mode_cbox_on_click;
+    g_ctrl_mode_btns_initialized = true;
+}
+
+// Render the checkbox and a label indicating what it controls.
+static void render_ctrl_mode_btns()
+{
+    init_ctrl_mode_btns();
+    g_ctrl_mode_cbox.checked = g_ctrl_bind_view;
+    g_ctrl_mode_cbox.render();
+    // Draw an inline label to the right of the checkbox.
+    int lx = static_cast<int>((CTRL_CHK_X + g_ctrl_mode_cbox.w + 5) * rf::ui::scale_x);
+    int cbox_screen_h = static_cast<int>(g_ctrl_mode_cbox.h * rf::ui::scale_y);
+    int font_h = rf::gr::get_font_height(rf::ui::medium_font_0);
+    int ly = static_cast<int>(CTRL_CHK_Y * rf::ui::scale_y) + (cbox_screen_h - font_h) / 2;
+    rf::gr::set_color(0, 0, 0, 255);
+    rf::gr::string(lx, ly, g_ctrl_bind_view ? "Switch to Keyboard" : "Switch to Gamepad", rf::ui::medium_font_0);
+}
+
+// Handle a click on the checkbox.
+static void handle_ctrl_mode_btns(int x, int y)
+{
+    if (!g_ctrl_mode_btns_initialized || !rf::mouse_was_button_pressed(0)) return;
+    int bx = static_cast<int>(g_ctrl_mode_cbox.x * rf::ui::scale_x);
+    int by = static_cast<int>(g_ctrl_mode_cbox.y * rf::ui::scale_y);
+    int bw = static_cast<int>(g_ctrl_mode_cbox.w * rf::ui::scale_x);
+    int bh = static_cast<int>(g_ctrl_mode_cbox.h * rf::ui::scale_y);
+    if (x >= bx && x < bx + bw && y >= by && y < by + bh)
+        ctrl_mode_cbox_on_click(x, y);
+}
+
 // handle alpine options panel rendering
 CodeInjection options_render_alpine_panel_patch{
     0x0044F80B,
     []() {
         int index = rf::ui::options_current_panel;
-        //xlog::warn("render index {}", index);
 
-        // render alpine options panel
-        if (index == 4) {
-            alpine_options_panel_do_frame(static_cast<int>(rf::ui::options_animated_offset));
+        // Restore keyboard bindings if user has navigated away from the Controls panel
+        if (index != 3 && g_ctrl_bind_view) {
+            uninstall_ctrl_gamepad_codes();
+            g_ctrl_bind_view = false;
         }
+
+        // Detect bind completion (falling edge of waiting_for_key): RF wrote the sentinel scan
+        // code into the selected binding slot; correlate it back to the pressed gamepad input.
+        static bool s_was_waiting = false;
+        bool now_waiting = (index == 3) && rf::ui::options_controls_waiting_for_key;
+        if (s_was_waiting && !now_waiting && g_ctrl_bind_view) {
+            gamepad_apply_rebind();                  // sentinel → display code, dedup
+            gamepad_sync_bindings_from_scan_codes(); // rebuild runtime maps from updated scan_codes
+            refresh_ctrl_gamepad_codes();            // normalize display codes from rebuilt maps
+        }
+        s_was_waiting = now_waiting;
+
+        if (index == 3 && g_ctrl_codes_installed && rf::local_player) {
+            auto& cc = rf::local_player->settings.controls;
+            int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+            bool defaults_hit = false;
+            for (int i = 0; i < n && !defaults_hit; ++i) {
+                int16_t sc = cc.bindings[i].scan_codes[0];
+                bool is_gamepad = (sc >= static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE)
+                                && sc <= static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER));
+                if (sc != 0 && sc != static_cast<int16_t>(CTRL_REBIND_SENTINEL) && !is_gamepad)
+                    defaults_hit = true;
+            }
+            if (defaults_hit) {
+                for (int i = 0; i < n; ++i)
+                    g_saved_scan_codes[i] = cc.bindings[i].scan_codes[0];
+                gamepad_reset_to_defaults();
+                refresh_ctrl_gamepad_codes();
+            }
+        }
+
+        if (index == 4)
+            alpine_options_panel_do_frame(static_cast<int>(rf::ui::options_animated_offset));
+        if (index == 3)
+            render_ctrl_mode_btns();
     },
 };
 
@@ -1474,8 +1829,10 @@ CodeInjection options_handle_mouse_patch{
         int y = *reinterpret_cast<int*>(regs.esp + 0x4);
         int index = rf::ui::options_current_panel;
 
-        if (index == 4) {
+        if (index == 4)
             alpine_options_panel_handle_mouse(x, y);
+        if (index == 3) {
+            handle_ctrl_mode_btns(x, y);
         }
     },
 };

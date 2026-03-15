@@ -15,6 +15,8 @@
 #include "../rf/sound/sound.h"
 #include "../rf/gr/gr.h"
 #include "../sound/sound.h"
+#include "../input/gyro.h"
+#include "../input/gamepad.h"
 #include <shlwapi.h>
 #include <windows.h>
 #include <shellapi.h>
@@ -962,6 +964,82 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
         processed_keys.insert("MouseLinearPitch");
     }
+    if (settings.count("GamepadJoySensitivity")) {
+        g_alpine_game_config.gamepad_joy_sensitivity = std::max(0.0f, std::stof(settings["GamepadJoySensitivity"]));
+        processed_keys.insert("GamepadJoySensitivity");
+    }
+    if (settings.count("GamepadMoveDeadzone")) {
+        g_alpine_game_config.gamepad_move_deadzone = std::clamp(std::stof(settings["GamepadMoveDeadzone"]), 0.0f, 0.9f);
+        processed_keys.insert("GamepadMoveDeadzone");
+    }
+    else if (settings.count("GamepadDeadzone")) { // legacy key
+        g_alpine_game_config.gamepad_move_deadzone = std::clamp(std::stof(settings["GamepadDeadzone"]), 0.0f, 0.9f);
+        processed_keys.insert("GamepadDeadzone");
+    }
+    if (settings.count("GamepadLookDeadzone")) {
+        g_alpine_game_config.gamepad_look_deadzone = std::clamp(std::stof(settings["GamepadLookDeadzone"]), 0.0f, 0.9f);
+        processed_keys.insert("GamepadLookDeadzone");
+    }
+    if (settings.count("GamepadGyroSensitivity")) {
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, std::stof(settings["GamepadGyroSensitivity"]));
+        processed_keys.insert("GamepadGyroSensitivity");
+    }
+    if (settings.count("GamepadGyroEnabled")) {
+        g_alpine_game_config.gamepad_gyro_enabled = std::stoi(settings["GamepadGyroEnabled"]) != 0;
+        processed_keys.insert("GamepadGyroEnabled");
+    }
+    if (settings.count("GamepadGyroVehicleEnabled")) {
+        g_alpine_game_config.gamepad_gyro_vehicle_camera = std::stoi(settings["GamepadGyroVehicleEnabled"]) != 0;
+        processed_keys.insert("GamepadGyroVehicleEnabled");
+    }
+    if (settings.count("GamepadGyroAutocalibration")) {
+        g_alpine_game_config.gamepad_gyro_autocalibration = std::stoi(settings["GamepadGyroAutocalibration"]) != 0;
+        processed_keys.insert("GamepadGyroAutocalibration");
+    }
+    if (settings.count("GamepadGyroSpace")) {
+        g_alpine_game_config.gamepad_gyro_space = std::clamp(std::stoi(settings["GamepadGyroSpace"]), 0, 4);
+        processed_keys.insert("GamepadGyroSpace");
+    }
+    if (settings.count("GamepadGyroInvertY")) {
+        g_alpine_game_config.gamepad_gyro_invert_y = std::stoi(settings["GamepadGyroInvertY"]) != 0;
+        processed_keys.insert("GamepadGyroInvertY");
+    }
+    if (settings.count("GamepadGyroTightening")) {
+        g_alpine_game_config.gamepad_gyro_tightening = std::max(0.0f, std::stof(settings["GamepadGyroTightening"]));
+        processed_keys.insert("GamepadGyroTightening");
+    }
+    if (settings.count("GamepadGyroSmoothing")) {
+        g_alpine_game_config.gamepad_gyro_smoothing = std::max(0.0f, std::stof(settings["GamepadGyroSmoothing"]));
+        processed_keys.insert("GamepadGyroSmoothing");
+    }
+    if (settings.count("GamepadIconOverride")) {
+        g_alpine_game_config.gamepad_icon_override = std::clamp(std::stoi(settings["GamepadIconOverride"]), 0, 8);
+        processed_keys.insert("GamepadIconOverride");
+    }
+    if (settings.count("GamepadJoyInvertY")) {
+        g_alpine_game_config.gamepad_joy_invert_y = std::stoi(settings["GamepadJoyInvertY"]) != 0;
+        processed_keys.insert("GamepadJoyInvertY");
+    }
+    if (settings.count("GamepadSwapSticks")) {
+        g_alpine_game_config.gamepad_swap_sticks = std::stoi(settings["GamepadSwapSticks"]) != 0;
+        processed_keys.insert("GamepadSwapSticks");
+    }
+    // Per-button gamepad bindings
+    for (int b = 0; b < gamepad_get_button_count(); ++b) {
+        std::string key = "GamepadBtn_" + std::to_string(b);
+        if (settings.count(key)) {
+            gamepad_set_button_binding(b, std::stoi(settings[key]));
+            processed_keys.insert(key);
+        }
+    }
+    if (settings.count("GamepadLTAction")) {
+        gamepad_set_trigger_action(0, std::stoi(settings["GamepadLTAction"]));
+        processed_keys.insert("GamepadLTAction");
+    }
+    if (settings.count("GamepadRTAction")) {
+        gamepad_set_trigger_action(1, std::stoi(settings["GamepadRTAction"]));
+        processed_keys.insert("GamepadRTAction");
+    }
     if (settings.count("SwapARBinds")) {
         g_alpine_game_config.swap_ar_controls = std::stoi(settings["SwapARBinds"]);
         processed_keys.insert("SwapARBinds");
@@ -1018,6 +1096,19 @@ bool alpine_player_settings_load(rf::Player* player)
                     player->settings.controls.bindings[bind_id].scan_codes[1] = scan2.empty() ? -1 : std::stoi(scan2);
                     player->settings.controls.bindings[bind_id].mouse_btn_id = mouse_btn.empty() ? -1 : std::stoi(mouse_btn);
 
+                    // Optional 5th field: gamepad scan code
+                    std::string gp_sc_str;
+                    if (std::getline(bind_values, gp_sc_str, ',') && !gp_sc_str.empty()) {
+                        int gp_sc = std::stoi(gp_sc_str);
+                        int offset = gp_sc - CTRL_GAMEPAD_SCAN_BASE;
+                        if (offset >= 0 && offset < gamepad_get_button_count())
+                            gamepad_set_button_binding(offset, bind_id);
+                        else if (gp_sc == CTRL_GAMEPAD_LEFT_TRGGER)
+                            gamepad_set_trigger_action(0, bind_id);
+                        else if (gp_sc == CTRL_GAMEPAD_RIGHT_TRGGER)
+                            gamepad_set_trigger_action(1, bind_id);
+                    }
+
                     xlog::info("Loaded Bind: {} = {}, {}, {}, {}", action_name, bind_id, scan1, scan2, mouse_btn);
                     processed_keys.insert(key);
                 }
@@ -1068,25 +1159,49 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "ScopeSensitivityModifier=" << g_alpine_game_config.scope_sensitivity_modifier << "\n";
     file << "ScannerSensitivityModifier=" << g_alpine_game_config.scanner_sensitivity_modifier << "\n";
     file << "QuickExit=" << g_alpine_game_config.quick_exit << "\n";
+    file << "GamepadJoySensitivity=" << g_alpine_game_config.gamepad_joy_sensitivity << "\n";
+    file << "GamepadMoveDeadzone=" << g_alpine_game_config.gamepad_move_deadzone << "\n";
+    file << "GamepadLookDeadzone=" << g_alpine_game_config.gamepad_look_deadzone << "\n";
+    file << "GamepadGyroSensitivity=" << g_alpine_game_config.gamepad_gyro_sensitivity << "\n";
+    file << "GamepadGyroEnabled=" << g_alpine_game_config.gamepad_gyro_enabled << "\n";
+    file << "GamepadGyroVehicleEnabled=" << g_alpine_game_config.gamepad_gyro_vehicle_camera << "\n";
+    file << "GamepadGyroAutocalibration=" << g_alpine_game_config.gamepad_gyro_autocalibration << "\n";
+    file << "GamepadGyroSpace=" << g_alpine_game_config.gamepad_gyro_space << "\n";
+    file << "GamepadGyroInvertY=" << g_alpine_game_config.gamepad_gyro_invert_y << "\n";
+    file << "GamepadGyroTightening=" << g_alpine_game_config.gamepad_gyro_tightening << "\n";
+    file << "GamepadGyroSmoothing=" << g_alpine_game_config.gamepad_gyro_smoothing << "\n";
+    file << "GamepadIconOverride=" << g_alpine_game_config.gamepad_icon_override << "\n";
+    file << "GamepadJoyInvertY=" << g_alpine_game_config.gamepad_joy_invert_y << "\n";
+    file << "GamepadSwapSticks=" << g_alpine_game_config.gamepad_swap_sticks << "\n";
 
     file << "\n[ActionBinds]\n";
-    file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID}\n";
+    file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID},{GamepadScanCode}\n";
 
-    // Key bind format: Bind:ActionName=ID,PrimaryScanCode,SecondaryScanCode,MouseButtonID
+    // Key bind format: Bind:ActionName=ID,PrimaryScanCode,SecondaryScanCode,MouseButtonID,GamepadScanCode
     // Note ActionName is not used when loading, ID is. ActionName is included for readability.
+    // GamepadScanCode is -1 if no gamepad button is bound to this action.
     for (int i = 0; i < cc.num_bindings; ++i) {
-        xlog::info("Saving Bind: {} = {}, {}, {}, {}", 
-                   cc.bindings[i].name, 
-                   i, 
-                   cc.bindings[i].scan_codes[0], 
-                   cc.bindings[i].scan_codes[1], 
-                   cc.bindings[i].mouse_btn_id);
+        int16_t gp_sc = -1;
+        int btn = gamepad_get_button_for_action(i);
+        int trig = gamepad_get_trigger_for_action(i);
+        if (btn >= 0) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
+        else if (trig == 0) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
+        else if (trig == 1) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
 
-        file << "Bind:" << cc.bindings[i].name << "=" 
-             << i << "," 
-             << cc.bindings[i].scan_codes[0] << "," 
+        xlog::info("Saving Bind: {} = {}, {}, {}, {}, {}",
+                   cc.bindings[i].name,
+                   i,
+                   cc.bindings[i].scan_codes[0],
+                   cc.bindings[i].scan_codes[1],
+                   cc.bindings[i].mouse_btn_id,
+                   gp_sc);
+
+        file << "Bind:" << cc.bindings[i].name << "="
+             << i << ","
+             << cc.bindings[i].scan_codes[0] << ","
              << cc.bindings[i].scan_codes[1] << ","
-             << cc.bindings[i].mouse_btn_id << "\n";
+             << cc.bindings[i].mouse_btn_id << ","
+             << gp_sc << "\n";
     }
 }
 
@@ -1381,6 +1496,9 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
                 xlog::warn("Legacy RF settings file not found. Applying default settings.");
             }
         }
+
+        // Re-apply gyro calibration system
+        gyro_update_calibration_mode();
 
         // display popup recommending ff link
         if (ff_link_prompt && !g_game_config.suppress_ff_link_prompt) {
