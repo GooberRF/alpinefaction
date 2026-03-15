@@ -721,11 +721,30 @@ void gamepad_apply_patch()
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
 
-    // Load SDL_GameControllerDB
+    // Load SDL_GameControllerDB (thread-safe, no SDL subsystem required)
     std::string mappings_path = get_module_dir(g_hmodule) + "gamecontrollerdb.txt";
     if (SDL_AddGamepadMappingsFromFile(mappings_path.c_str()) < 0)
         xlog::warn("SDL_GameControllerDB: failed to load mappings: {}", SDL_GetError());
 
+    control_is_control_down_hook.install();
+    control_config_check_pressed_hook.install();
+    physics_simulate_entity_hook.install();
+    player_fpgun_process_hook.install();
+    vmesh_process_hook.install();
+    joy_sens_cmd.register_cmd();
+    joy_move_deadzone_cmd.register_cmd();
+    joy_look_deadzone_cmd.register_cmd();
+    gyro_sens_cmd.register_cmd();
+    gyro_camera_cmd.register_cmd();
+    gyro_vehicle_camera_cmd.register_cmd();
+    gamepad_icons_cmd.register_cmd();
+    gyro_apply_patch();
+}
+
+// Must be called from the game main thread (SDL3 requires SDL_PumpEvents on the same
+// thread that called SDL_InitSubSystem; Init() runs on a remote injector thread).
+void gamepad_sdl_init()
+{
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
         xlog::error("Failed to initialize SDL gamepad subsystem: {}", SDL_GetError());
         return;
@@ -743,18 +762,5 @@ void gamepad_apply_patch()
         }
     }
 
-    control_is_control_down_hook.install();
-    control_config_check_pressed_hook.install();
-    physics_simulate_entity_hook.install();
-    player_fpgun_process_hook.install();
-    vmesh_process_hook.install();
-    joy_sens_cmd.register_cmd();
-    joy_move_deadzone_cmd.register_cmd();
-    joy_look_deadzone_cmd.register_cmd();
-    gyro_sens_cmd.register_cmd();
-    gyro_camera_cmd.register_cmd();
-    gyro_vehicle_camera_cmd.register_cmd();
-    gamepad_icons_cmd.register_cmd();
-    gyro_apply_patch();
     xlog::info("Gamepad support initialized");
 }

@@ -41,6 +41,7 @@
 #include "../misc/player.h"
 #include "../misc/level.h"
 #include "../input/input.h"
+#include "../input/gamepad.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
 #include "../rf/level.h"
@@ -73,6 +74,7 @@ CallHook<void()> rf_init_hook{
         initialize_alpine_core_config();
         rf_init_hook.call_target();
         vpackfile_disable_overriding();
+        gamepad_sdl_init();
         xlog::info("Game initialized ({} ms).", GetTickCount() - start_ticks);
     },
 };
