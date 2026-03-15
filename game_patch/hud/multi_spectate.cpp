@@ -33,6 +33,7 @@ static rf::Player* g_spectate_mode_target;
 static rf::Camera* g_old_target_camera = nullptr;
 static bool g_spectate_mode_enabled = false;
 static bool g_spectate_mode_follow_killer = false;
+static rf::Player* g_spectate_freelook_saved_target = nullptr;
 
 // Edge-detection state for spectated player action animations
 static bool g_prev_weapon_is_on = false;
@@ -253,6 +254,61 @@ bool multi_spectate_is_spectating()
     return g_spectate_mode_enabled || multi_spectate_is_freelook();
 }
 
+bool multi_spectate_is_first_person()
+{
+    return g_spectate_mode_enabled;
+}
+
+void multi_spectate_toggle_freelook()
+{
+    if (!multi_spectate_is_spectating())
+        return;
+
+    if (g_spectate_mode_enabled) {
+        // Currently in first-person spectate, switch to freelook
+        // Save the current target so we can resume on the same player when toggling back
+        g_spectate_freelook_saved_target = g_spectate_mode_target;
+
+        // Clean up the first-person spectate state (restore old target's camera, weapon state)
+        if (g_spectate_mode_target && g_spectate_mode_target != rf::local_player) {
+            g_spectate_mode_target->cam = g_old_target_camera;
+            g_old_target_camera = nullptr;
+
+#if SPECTATE_MODE_SHOW_WEAPON
+            g_spectate_mode_target->flags &= ~(1u << 4);
+            rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+            if (entity)
+                entity->local_player = nullptr;
+#endif
+        }
+
+        g_spectate_mode_enabled = false;
+        g_spectate_mode_target = rf::local_player;
+
+#if SPECTATE_MODE_SHOW_WEAPON
+        player_fpgun_set_player(rf::local_player);
+#endif
+
+        // Now enter freelook cleanly
+        multi_spectate_enter_freelook();
+    }
+    else {
+        // Currently in freelook, switch to first-person spectate
+        // Try to resume on the saved target if they're still valid
+        if (g_spectate_freelook_saved_target
+            && g_spectate_freelook_saved_target != rf::local_player
+            && !g_spectate_freelook_saved_target->is_browser) {
+            multi_spectate_set_target_player(g_spectate_freelook_saved_target);
+        }
+        else {
+            // Saved target is gone, find any player
+            g_spectate_mode_target = rf::local_player;
+            spectate_next_player(true, true);
+        }
+        g_spectate_freelook_saved_target = nullptr;
+    }
+}
+
 rf::Player* multi_spectate_get_target_player()
 {
     return g_spectate_mode_target;
@@ -294,7 +350,8 @@ bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pres
     else if (multi_spectate_is_freelook()) {
         // don't allow respawn in freelook spectate
         if (action == rf::CC_ACTION_PRIMARY_ATTACK || action == rf::CC_ACTION_SECONDARY_ATTACK) {
-            if (was_pressed)
+            // If we entered freelook via toggle, just consume the click without leaving
+            if (!g_spectate_freelook_saved_target && was_pressed)
                 multi_spectate_leave();
             return true;
         }
@@ -325,6 +382,8 @@ void multi_spectate_on_player_kill(rf::Player* victim, rf::Player* killer)
 void multi_spectate_on_destroy_player(rf::Player* player)
 {
     if (player != rf::local_player) {
+        if (g_spectate_freelook_saved_target == player)
+            g_spectate_freelook_saved_target = nullptr;
         if (g_spectate_mode_target == player)
             spectate_next_player(true);
         if (g_spectate_mode_target == player)
@@ -915,9 +974,13 @@ void multi_spectate_render() {
             std::string spec_menu_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU)
             );
+            std::string toggle_freelook_text = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK)
+            );
             const char* hints[][3] = {
                 {next_player_text.c_str(), "Next Player"},
                 {prev_player_text.c_str(), "Previous Player"},
+                {toggle_freelook_text.c_str(), "Toggle Freelook"},
                 {spec_menu_text.c_str(), "Open Spectate Options Menu"},
                 {exit_spec_text.c_str(), "Exit Spectate Mode"},
             };
