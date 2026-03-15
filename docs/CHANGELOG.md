@@ -15,6 +15,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Added new object types
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
   - `Note` for leaving important information in levels (editor only)
+  - `Corona` for configuring custom glare effects in levels
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -55,6 +56,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Reload Meshes` and `Reload Textures` options to level editor `Tools` menu, to scan for new assets in `\user_maps\`
 - Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
+- Add new and revised `Select Objects` and `Hide Objects` windows in level editor
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

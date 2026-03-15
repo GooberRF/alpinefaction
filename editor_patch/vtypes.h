@@ -238,12 +238,76 @@ struct EditorTreeCtrl : CWnd
     {
         AddrCaller{0x00442320}.this_call(this, item_handle, data);
     }
+
+    void sort_children(int parent_handle)
+    {
+        SendMessage(_d.m_hWnd, 0x1113 /*TVM_SORTCHILDREN*/, FALSE,
+            static_cast<LPARAM>(parent_handle));
+    }
 };
 static_assert(sizeof(EditorTreeCtrl) == sizeof(CWnd));
 
 // ─── Viewport ────────────────────────────────────────────────────────────────
 
-static auto& get_active_viewport = addr_as_ref<void* __cdecl()>(0x004835B0);
+// Editor view data — accessed from the active viewport at +0x54
+struct EditorViewData
+{
+    uint8_t pad_00[0x04];               // +0x00
+    Matrix3 camera_orient;              // +0x04
+    Vector3 camera_pos;                 // +0x28
+};
+static_assert(offsetof(EditorViewData, camera_orient) == 0x04);
+static_assert(offsetof(EditorViewData, camera_pos) == 0x28);
+
+// Editor viewport — returned by get_active_viewport()
+struct EditorViewport
+{
+    uint8_t pad_00[0x54];               // +0x00
+    EditorViewData* view_data;          // +0x54
+};
+static_assert(offsetof(EditorViewport, view_data) == 0x54);
+
+static auto& get_active_viewport = addr_as_ref<EditorViewport* __cdecl()>(0x004835B0);
+
+// ─── Editor GrVertex ─────────────────────────────────────────────────────────
+// Vertex structure (48 bytes) used by the editor's polygon renderer.
+// Fields [0]-[2] are VIEW-SPACE coordinates (not world-space).
+
+struct GrVertex {
+    float vx, vy, vz;                  // +0x00 view-space position
+    float screen_x, screen_y;          // +0x0C
+    float rhw;                          // +0x14
+    uint8_t clip_flags;                 // +0x18
+    uint8_t proj_flags;                 // +0x19
+    uint8_t pad1a[2];                   // +0x1A
+    float u, v;                         // +0x1C
+    uint8_t pad24[8];                   // +0x24
+    uint8_t r, g, b, a;                // +0x2C
+};
+static_assert(sizeof(GrVertex) == 0x30);
+
+// ─── Rendering pipeline ──────────────────────────────────────────────────────
+
+// D3D8 device pointer
+static auto& d3d_device_ptr = addr_as_ref<void*>(0x0183b914);
+
+// Batch management
+static auto& gr_flush_batch = addr_as_ref<void()>(0x004e99d0);
+static auto& gr_begin_batch = addr_as_ref<void(int, int)>(0x004e98e0);
+
+// Render mode and polygon submission
+static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
+static auto& gr_poly_render = addr_as_ref<uint32_t(int, void**, int, float, int, float)>(0x004CB1C0);
+
+// Computes clip flags from view-space coords in a GrVertex
+static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);
+
+// Camera position and 3x3 view matrix used by the editor's rendering pipeline
+static auto& ed_cam_pos = addr_as_ref<float[3]>(0x0158ef20);
+static auto& ed_view_mat = addr_as_ref<float[9]>(0x0158ef58); // row-major 3x3
+
+// Billboard camera parameter (used as depth sort / z-bias)
+static auto& gr_cam_param = addr_as_ref<float>(0x014cf7e0);
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
 

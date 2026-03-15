@@ -1079,6 +1079,18 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_HIDE_SELECTED:
                 handler = std::bind(CMainFrame_HideSelected, this_);
                 break;
+            case ID_SELECT_OBJECTS:
+                handler = [this_]() {
+                    auto* level = reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_));
+                    if (level) alpine_select_objects(level);
+                };
+                break;
+            case ID_HIDE_OBJECTS:
+                handler = [this_]() {
+                    auto* level = reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_));
+                    if (level) alpine_hide_objects(level);
+                };
+                break;
             case ID_SELECT_OBJECT_BY_UID:
                 handler = std::bind(CMainFrame_SelectObjectByUid, this_);
                 break;

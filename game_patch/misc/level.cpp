@@ -13,6 +13,7 @@
 #include "misc.h"
 #include "player.h"
 #include "../multi/server.h"
+#include "../object/alpine_corona.h"
 
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
@@ -102,6 +103,7 @@ CodeInjection level_load_init_patch{
         AlpineLevelProperties::instance() = {};
         DashLevelProps::instance() = {};
         alpine_mesh_clear_state();
+        alpine_corona_clear_state();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
     },
 };
@@ -124,6 +126,13 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_mesh_chunk_id) {
             xlog::debug("[Level] Loading alpine mesh chunk: len={}", chunk_len);
             alpine_mesh_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine corona objects chunk
+        if (chunk_id == alpine_corona_chunk_id) {
+            xlog::debug("[Level] Loading alpine corona chunk: len={}", chunk_len);
+            alpine_corona_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 
