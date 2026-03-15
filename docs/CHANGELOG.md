@@ -15,6 +15,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Added new object types
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
   - `Note` for leaving important information in levels (editor only)
+  - `Corona` for configuring custom glare effects in levels
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -53,6 +54,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
 - Add `Mesh_Animate`, `Mesh_Set_Texture`, and `Mesh_Set_Collision` events
 - Add `Reload Meshes` and `Reload Textures` options to level editor `Tools` menu, to scan for new assets in `\user_maps\`
+- Add new and revised `Select Objects` and `Hide Objects` windows in level editor
 
 [@is-this-c](https://github.com/is-this-c)
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
