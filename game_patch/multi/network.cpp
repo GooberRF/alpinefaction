@@ -1155,7 +1155,7 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
         // purge stale recorded Alpine client game_info_req entries
         constexpr int seen_ttl_ms = 20000;
         const uint64_t key = addr_key(*addr);
-        const int now = rf::timer_get(1000);
+        const int64_t now = timer::get_i64(1000);
 
         for (auto it = g_af_gi_req_seen.begin(); it != g_af_gi_req_seen.end();) {
             if (now - it->second.last_seen_ms > seen_ttl_ms)
@@ -2056,10 +2056,10 @@ CodeInjection obj_interp_rotation_fix{
 
 CodeInjection obj_interp_too_fast_fix{
     0x00483C3B,
-    [](auto& regs) {
+    [] (auto& regs) {
         // Make all calculations on milliseconds instead of using microseconds and rounding them up
-        auto now = rf::timer_get(1000);
-        int frame_time_us = regs.ebp;
+        const int now = rf::timer::get(1000);
+        const int frame_time_us = regs.ebp;
         regs.eax = now - frame_time_us;
         regs.edi = now;
     },
@@ -2198,7 +2198,7 @@ CodeInjection multi_io_process_packets_injection{
 
                 uint8_t ver = 0;
                 if (parse_af_gi_req_tail(base + off, size_t(len), ver)) {
-                    const int now = rf::timer_get(1000);
+                    const int64_t now = timer::get_i64(1000);
                     g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{ver, now};
                     xlog::debug("AF GI-REQ detected from {:x}:{} (ver={})", addr.ip_addr, addr.port, ver);
                 }

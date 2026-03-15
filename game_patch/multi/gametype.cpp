@@ -1581,12 +1581,12 @@ void koth_do_frame() // fires every frame on both server and client
 
     // server tick
     if (rf::is_dedicated_server || rf::is_server) {
-        static int last_srv = rf::timer_get(1000);
-        const int now_srv = rf::timer_get(1000);
-        int dt_srv = now_srv - last_srv;
+        static int64_t last_srv = timer::get_i64(1000);
+        const int64_t now_srv = timer::get_i64(1000);
+        const int64_t dt_srv = now_srv - last_srv;
         if (dt_srv > 0) {
             last_srv = now_srv;
-            const int dt_ms = std::clamp(dt_srv, 0, 250);
+            const int dt_ms = static_cast<int>(std::min(dt_srv, 250LL));
 
             for (auto& h : g_koth_info.hills) {
                 // Only need to update hills if they are available
@@ -1608,12 +1608,12 @@ void koth_do_frame() // fires every frame on both server and client
 
     // client prediction tick
     if (!rf::is_server && !rf::is_dedicated_server) {
-        static int last_cli = rf::timer_get(1000);
-        const int now_cli = rf::timer_get(1000);
-        int dt_cli = now_cli - last_cli;
+        static int64_t last_cli = timer::get_i64(1000);
+        const int64_t now_cli = timer::get_i64(1000);
+        const int64_t dt_cli = now_cli - last_cli;
         if (dt_cli > 0) {
             last_cli = now_cli;
-            const int dt_ms = std::clamp(dt_cli, 0, 250);
+            const int dt_ms = static_cast<int>(std::min(dt_cli, 250LL));
             koth_client_predict_tick(dt_ms);
         }
     }

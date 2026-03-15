@@ -162,7 +162,7 @@ static bool g_breaking_from_explosion = false;
 // Per-room dedup: prevents multiple projectiles from creating effects on the same room
 // in the same frame (e.g., pistol creating two weapon entities per shot).
 static rf::GRoom* s_last_vfx_room = nullptr;
-static DWORD s_last_vfx_tick = 0;
+static uint64_t s_last_vfx_tick = 0;
 
 // Captured damage_type from apply_radius_damage (FUN_00488dc0) for use in room damage scaling.
 // apply_radius_damage has damage_type as param_5 but doesn't pass it to room_apply_radius_damage.
@@ -1804,9 +1804,9 @@ CodeInjection glass_decal_material_injection{
             // Per-room dedup: some weapons create multiple projectile entities per shot
             // (e.g., pistol). Skip effects and damage for the second projectile hitting
             // the same room in the same frame. Kill it so it doesn't re-hit next substep.
-            // Use a time window (50ms) instead of exact equality because GetTickCount has
+            // Use a time window (50ms) instead of exact equality because GetTickCount64 has
             // ~15ms resolution and two projectiles may straddle a tick boundary.
-            DWORD now = GetTickCount();
+            const uint64_t now = GetTickCount64();
             if (room == s_last_vfx_room && (now - s_last_vfx_tick) < 50) {
                 *reinterpret_cast<float*>(proj + 0x34) = -1.0f;
                 regs.eip = 0x004c5023;

@@ -113,7 +113,7 @@ void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len)
     auto read_bytes = [&](void* dst, std::size_t n) -> bool {
         if (remaining < n) { read_error = true; return false; }
         int got = file.read(dst, n);
-        if (got != static_cast<int>(n)) {
+        if (got != static_cast<int>(n) || file.error()) {
             if (got > 0) remaining -= got;
             read_error = true;
             return false;
@@ -339,6 +339,12 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
     if (needs_own_info) {
         // Allocate a dedicated ClutterInfo — default constructor handles all members
         auto* ci = new rf::ClutterInfo{};
+
+        // The stock clutter death function checks explode_anim_timer.elapsed()
+        // before playing the explosion vclip. Timestamp's default value is -1
+        // (invalid), which makes elapsed() return false — preventing vclip/debris
+        // from ever firing. Set to 0 so elapsed() returns true on the first death frame.
+        ci->explode_anim_timer.value = 0;
 
         ci->material = info.material;
         ci->sound = -1;

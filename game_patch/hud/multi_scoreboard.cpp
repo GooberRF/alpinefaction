@@ -40,7 +40,7 @@ constexpr float LEAVE_ANIM_MS = 100.0f;
 
 static bool g_scoreboard_force_hide = false;
 static bool g_scoreboard_visible = false;
-static unsigned g_anim_ticks = 0;
+static int64_t g_anim_ticks = 0;
 static bool g_enter_anim = false;
 static bool g_leave_anim = false;
 static bool g_big_scoreboard = false;
@@ -537,7 +537,7 @@ void draw_scoreboard_internal_new(bool draw) {
     float progress_w = 1.0f;
     float progress_h = 1.0f;
     if (g_alpine_game_config.scoreboard_anim) {
-        unsigned anim_delta = rf::timer_get(1000) - g_anim_ticks;
+        const int64_t anim_delta = timer::get_i64(1000) - g_anim_ticks;
         if (g_enter_anim) {
             anim_progress = anim_delta / ENTER_ANIM_MS;
         } else if (g_leave_anim) {
@@ -684,13 +684,13 @@ void scoreboard_maybe_render(bool show_scoreboard)
         if (!g_scoreboard_visible && show_scoreboard) {
             g_enter_anim = true;
             g_leave_anim = false;
-            g_anim_ticks = rf::timer_get(1000);
+            g_anim_ticks = timer::get_i64(1000);
             g_scoreboard_visible = true;
         }
         if (g_scoreboard_visible && !show_scoreboard && !g_leave_anim) {
             g_enter_anim = false;
             g_leave_anim = true;
-            g_anim_ticks = rf::timer_get(1000);
+            g_anim_ticks = timer::get_i64(1000);
         }
     }
     else {

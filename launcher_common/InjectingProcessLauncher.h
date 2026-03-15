@@ -21,7 +21,7 @@ private:
 
 public:
     InjectingProcessLauncher(const char* app_name, const char* work_dir, const char* command_line,
-                             STARTUPINFO& startup_info, int timeout);
+                             STARTUPINFO& startup_info, uint32_t timeout);
 
     ~InjectingProcessLauncher()
     {
@@ -52,5 +52,5 @@ public:
     }
 
 private:
-    void wait_for_process_initialization(uintptr_t entry_point, int timeout);
+    void wait_for_process_initialization(uintptr_t entry_point, uint32_t timeout);
 };

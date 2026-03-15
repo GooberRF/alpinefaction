@@ -22,7 +22,8 @@ static void register_custom_texture_subdirectories(void* texture_manager)
 {
     // Resolve path relative to executable directory
     char exe_dir[MAX_PATH];
-    GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    DWORD len = GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return;
     char* last_sep = strrchr(exe_dir, '\\');
     if (last_sep) *(last_sep + 1) = '\0';
 
@@ -400,6 +401,101 @@ CodeInjection vpp_extra_textures_injection{
     }
 };
 
+// ─── Mesh file VPP packing ──────────────────────────────────────────────────
+//
+// The stock VPP packing function only gathers textures. Custom mesh files
+// (.v3m, .v3c, .vfx, .rfa) referenced by Mesh objects and events also need
+// to be included. We inject right before the VPP is written (0x004485e2) and
+// add mesh file paths to the global file list at 0x006c9ba8.
+
+static const char* mesh_search_dirs[] = {
+    "user_maps\\meshes\\",
+    "red\\meshes\\",
+};
+
+static bool has_mesh_extension(const char* filename)
+{
+    if (!filename || !filename[0]) return false;
+    const char* ext = strrchr(filename, '.');
+    if (!ext) return false;
+    return (_stricmp(ext, ".v3m") == 0 ||
+            _stricmp(ext, ".v3c") == 0 ||
+            _stricmp(ext, ".vfx") == 0 ||
+            _stricmp(ext, ".rfa") == 0);
+}
+
+// Add a mesh file to the global VPP file list (0x006c9ba8) if it exists on disk
+// in one of the mesh search directories. Stock meshes only exist inside VPP archives
+// and won't be found as loose files, so this naturally filters them out.
+static void add_mesh_to_vpp_list(const char* filename)
+{
+    if (!has_mesh_extension(filename)) return;
+
+    // Strip any path prefix to get bare filename
+    const char* bare = std::strrchr(filename, '\\');
+    if (!bare) bare = std::strrchr(filename, '/');
+    bare = bare ? bare + 1 : filename;
+    if (!bare[0]) return;
+
+    // Get exe directory for constructing absolute paths
+    char exe_dir[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return;
+    char* last_sep = std::strrchr(exe_dir, '\\');
+    if (last_sep) *(last_sep + 1) = '\0';
+
+    for (const char* search_dir : mesh_search_dirs) {
+        std::string full_path = std::string(exe_dir) + search_dir + bare;
+        if (GetFileAttributesA(full_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            // File exists on disk — add absolute path to VPP file list
+            // (matches stock texture path format used by the VPP writer)
+            VString str;
+            str.assign_0(full_path.c_str());
+            int ml = str.max_len;
+            char* b = str.buf;
+            str.max_len = 0;
+            str.buf = nullptr;
+            AddrCaller{0x00438640}.this_call<int>(reinterpret_cast<void*>(0x006c9ba8), ml, b);
+            xlog::info("VPP: Added mesh file '{}'", full_path);
+            return;
+        }
+    }
+}
+
+CodeInjection vpp_mesh_files_injection{
+    0x004485e2,
+    [](auto& regs) {
+        auto* level = CDedLevel::Get();
+        if (!level) return;
+
+        // Mesh objects: mesh_filename, state_anim, debris, corpse mesh, corpse state anim
+        for (auto* mesh : level->GetAlpineLevelProperties().mesh_objects) {
+            add_mesh_to_vpp_list(mesh->mesh_filename.c_str());
+            add_mesh_to_vpp_list(mesh->state_anim.c_str());
+            add_mesh_to_vpp_list(mesh->clutter_props.debris_filename.c_str());
+            add_mesh_to_vpp_list(mesh->clutter_props.corpse_filename.c_str());
+            add_mesh_to_vpp_list(mesh->clutter_props.corpse_state_anim.c_str());
+        }
+
+        // Events: Switch_Model (str1=mesh), Play_Animation (str1=anim),
+        // Mesh_Animate (str1=anim)
+        for (int i = 0; i < level->events.get_size(); i++) {
+            auto* evt = static_cast<DedEvent*>(level->events[i]);
+            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+                add_mesh_to_vpp_list(evt->str1.c_str());
+            }
+            else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Play_Animation)) {
+                add_mesh_to_vpp_list(evt->str1.c_str());
+            }
+            else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Mesh_Animate)) {
+                add_mesh_to_vpp_list(evt->str1.c_str());
+            }
+        }
+    }
+};
+
+// ─── Texture reload ─────────────────────────────────────────────────────────
+
 // Reload bitmap manager placeholder entries in-place.
 // bm_load creates a 32x32 TYPE_USER placeholder with the texture's name on failure
 // (FUN_004bc9c0). Subsequent loads find this cached entry and never retry from disk.
@@ -525,5 +621,6 @@ void ApplyTexturesPatches() {
     vpp_extra_textures_injection.install();
     vpp_skip_missing_file_injection.install();
     vpp_clear_log_injection.install();
+    vpp_mesh_files_injection.install();
     config_save_skip_custom_subdirs.install();
 }

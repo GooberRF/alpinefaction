@@ -523,7 +523,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.flag_dropping = *v;
     if (auto v = t["flag_captures_while_stolen"].value<bool>())
         o.flag_captures_while_stolen = *v;
-    if (auto v = t["flag_return_time"].value<int>())
+    if (auto v = t["flag_return_time"].value<float>())
         o.set_flag_return_time(*v);
     if (auto v = t["pvp_damage_modifier"].value<float>())
         o.set_pvp_damage_modifier(*v);
@@ -1817,7 +1817,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "\n---- Core configuration ----\n");
     std::format_to(iter, "  Port:                                  {} - UDP\n", netgame.server_addr.port);
     std::format_to(iter, "  Name:                                  {}\n", netgame.name);
-    std::format_to(iter, "  Version:                               {} - {}\n", VERSION_STR, __DATE__);
+    std::format_to(iter, "  Version:                               {} - {}\n", VERSION_STR, get_build_date());
     if (!remote) {
         std::format_to(iter, "  Uptime:                                {}\n", get_uptime_from(g_process_startup_time));
         std::format_to(iter, "  Password:                              {}\n", netgame.password);

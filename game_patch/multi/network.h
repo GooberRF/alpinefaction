@@ -136,7 +136,7 @@ struct StashedPacket
 struct AfGiReqSeen
 {
     uint8_t ver = 0; // game_info_req version: 1 is current, pre-Alpine v1.2 never sends a version
-    int last_seen_ms = 0;
+    int64_t last_seen_ms = 0;
 };
 
 enum class RconCommandCheckResult
