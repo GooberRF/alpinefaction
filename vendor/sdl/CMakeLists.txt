@@ -1,7 +1,15 @@
-add_library(SDL3::SDL3-static STATIC IMPORTED GLOBAL)
-set_target_properties(SDL3::SDL3-static PROPERTIES
-    IMPORTED_LOCATION_RELEASE "${CMAKE_CURRENT_SOURCE_DIR}/lib/SDL3-static.lib"
-    IMPORTED_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/lib/SDL3-static.lib"
-    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/include"
-    INTERFACE_LINK_LIBRARIES "user32;gdi32;winmm;imm32;ole32;oleaut32;shell32;version;uuid;dinput8;dxguid;setupapi;cfgmgr32"
+# SDL3 built from source via FetchContent:
+# To upgrade, update SDL3_VERSION to the desired release tag.
+# See: https://wiki.libsdl.org/SDL3/README-cmake
+set(SDL3_VERSION "3.4.2")
+
+include(FetchContent)
+FetchContent_Declare(
+    SDL3
+    URL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL3_VERSION}/SDL3-${SDL3_VERSION}.tar.gz"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
+set(SDL_STATIC ON  CACHE BOOL "" FORCE)
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_TEST   OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(SDL3)
