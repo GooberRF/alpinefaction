@@ -72,6 +72,7 @@ CallHook<void()> rf_init_hook{
         xlog::info("Initializing game...");
         initialize_alpine_core_config();
         rf_init_hook.call_target();
+        mouse_init_sdl_window();
         vpackfile_disable_overriding();
         xlog::info("Game initialized ({} ms).", GetTickCount64() - start_ticks);
     },

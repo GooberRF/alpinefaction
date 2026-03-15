@@ -954,13 +954,13 @@ bool alpine_player_settings_load(rf::Player* player)
         player->settings.controls.axes[1].invert = std::stoi(settings["MouseYInvert"]);
         processed_keys.insert("MouseYInvert");
     }
-    if (settings.count("DirectInput")) {
-        g_alpine_game_config.direct_input = std::stoi(settings["DirectInput"]);
-        processed_keys.insert("DirectInput");
-    }
     if (settings.count("MouseLinearPitch")) {
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
         processed_keys.insert("MouseLinearPitch");
+    }
+    if (settings.count("SDLMouse")) {
+        g_alpine_game_config.sdl_mouse = std::stoi(settings["SDLMouse"]);
+        processed_keys.insert("SDLMouse");
     }
     if (settings.count("SwapARBinds")) {
         g_alpine_game_config.swap_ar_controls = std::stoi(settings["SwapARBinds"]);
@@ -1057,8 +1057,8 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "\n[InputSettings]\n";
     file << "MouseSensitivity=" << cc.mouse_sensitivity << "\n";
     file << "MouseYInvert=" << cc.axes[1].invert << "\n";
-    file << "DirectInput=" << g_alpine_game_config.direct_input << "\n";
     file << "MouseLinearPitch=" << g_alpine_game_config.mouse_linear_pitch << "\n";
+    file << "SDLMouse=" << g_alpine_game_config.sdl_mouse << "\n";
     file << "SwapARBinds=" << g_alpine_game_config.swap_ar_controls << "\n";
     file << "SwapGNBinds=" << g_alpine_game_config.swap_gn_controls << "\n";
     file << "SwapSGBinds=" << g_alpine_game_config.swap_sg_controls << "\n";

@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <SDL3/SDL.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
@@ -7,6 +8,8 @@
 #include "../rf/input.h"
 #include "../rf/crt.h"
 #include "../main/main.h"
+#include "../input/input.h"
+#include "../misc/alpine_settings.h"
 #include "win32_console.h"
 #include <xlog/xlog.h>
 #include <timeapi.h>
@@ -24,6 +27,13 @@ FunHook<void()> os_poll_hook{
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
             // xlog::info("msg {}\n", msg.message);
+        }
+
+        // Avoid accumulating mouse deltas while the window is unfocused
+        // and background mouse input is disabled, to prevent a large
+        // "dump" of motion on refocus.
+        if (rf::os_foreground() || g_alpine_game_config.background_mouse) {
+            mouse_sdl_poll();
         }
 
         if (win32_console_is_enabled()) {
@@ -99,6 +109,7 @@ static FunHook<void()> os_close_hook{
     []() {
         os_close_hook.call_target();
         win32_console_close();
+        SDL_Quit();
     },
 };
 
@@ -169,6 +180,17 @@ void wait_for(const float ms, const WaitableTimer& timer) {
 
 void os_apply_patch()
 {
+    // Lock to DPI_AWARENESS_CONTEXT_UNAWARE so the legacy D3D renderer's bitmap-scaling
+    // virtualisation stays active.
+    if (auto* set_dpi_ctx = reinterpret_cast<BOOL(WINAPI*)(HANDLE)>(
+            GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext"))) {
+        set_dpi_ctx(reinterpret_cast<HANDLE>(-1)); // DPI_AWARENESS_CONTEXT_UNAWARE
+    }
+
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        xlog::error("SDL_Init(SDL_INIT_VIDEO) failed: {}", SDL_GetError());
+    }
+
     // Process messages in the same thread as DX processing (alternative: D3DCREATE_MULTITHREADED)
     AsmWriter(0x00524C48, 0x00524C83).nop(); // disable msg loop thread
     AsmWriter(0x00524C48).call(0x00524E40);  // os_create_main_window

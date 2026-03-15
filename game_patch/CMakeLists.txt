@@ -264,4 +264,13 @@ target_link_libraries(AlpineFaction
     ws2_32
     freetype
     stb_vorbis
+    SDL3::SDL3-static
 )
+
+if(WIN32)
+    target_link_libraries(AlpineFaction
+        setupapi
+        imm32
+        cfgmgr32
+    )
+endif()

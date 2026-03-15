@@ -135,7 +135,6 @@ struct AlpineGameSettings
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;
     bool nearest_texture_filtering = false;
-    bool direct_input = true;
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool scoreboard_split_simple = true;
@@ -343,6 +342,7 @@ struct AlpineGameSettings
     bool rendering_enabled = true;
     bool sound_enabled = true;
     bool background_mouse = false;
+    bool sdl_mouse = true;
 };
 
 struct FpsCounterState
