@@ -17,6 +17,7 @@
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
 #include "../object/object.h"
+#include "../input/input.h"
 
 #define DEBUG_UI_LAYOUT 0
 #define SHARP_UI_TEXT 1
@@ -87,6 +88,8 @@ static char ao_simdist_butlabel_text[9];
 // alpine options checkboxes and labels
 static rf::ui::Checkbox ao_mpcharlod_cbox;
 static rf::ui::Label ao_mpcharlod_label;
+static rf::ui::Checkbox ao_sdlmouse_cbox;
+static rf::ui::Label ao_sdlmouse_label;
 static rf::ui::Checkbox ao_linearpitch_cbox;
 static rf::ui::Label ao_linearpitch_label;
 static rf::ui::Checkbox ao_bighud_cbox;
@@ -535,6 +538,12 @@ void ao_bighud_cbox_on_click(int x, int y) {
     ao_bighud_cbox.checked = g_alpine_game_config.big_hud;
     set_big_hud(g_alpine_game_config.big_hud);
     ao_play_button_snd(g_alpine_game_config.big_hud);
+}
+
+void ao_sdlmouse_cbox_on_click(int x, int y) {
+    set_sdl_mouse_enabled(!g_alpine_game_config.sdl_mouse);
+    ao_sdlmouse_cbox.checked = g_alpine_game_config.sdl_mouse;
+    ao_play_button_snd(g_alpine_game_config.sdl_mouse);
 }
 
 void ao_linearpitch_cbox_on_click(int x, int y) {
@@ -1187,13 +1196,15 @@ void alpine_options_panel_init() {
 
     // panel 2
     alpine_options_panel_checkbox_init(
-        &ao_linearpitch_cbox, &ao_linearpitch_label, &alpine_options_panel2, ao_linearpitch_cbox_on_click, g_alpine_game_config.mouse_linear_pitch, 112, 54, "Linear pitch");
+        &ao_sdlmouse_cbox, &ao_sdlmouse_label, &alpine_options_panel2, ao_sdlmouse_cbox_on_click, g_alpine_game_config.sdl_mouse, 112, 54, "SDL mouse");
     alpine_options_panel_checkbox_init(
-        &ao_swapar_cbox, &ao_swapar_label, &alpine_options_panel2, ao_swapar_cbox_on_click, g_alpine_game_config.swap_ar_controls, 112, 84, "Swap AR");
+        &ao_linearpitch_cbox, &ao_linearpitch_label, &alpine_options_panel2, ao_linearpitch_cbox_on_click, g_alpine_game_config.mouse_linear_pitch, 112, 84, "Linear pitch");
     alpine_options_panel_checkbox_init(
-        &ao_swapgn_cbox, &ao_swapgn_label, &alpine_options_panel2, ao_swapgn_cbox_on_click, g_alpine_game_config.swap_gn_controls, 112, 114, "Swap Grenade");
+        &ao_swapar_cbox, &ao_swapar_label, &alpine_options_panel2, ao_swapar_cbox_on_click, g_alpine_game_config.swap_ar_controls, 112, 114, "Swap AR");
     alpine_options_panel_checkbox_init(
-        &ao_swapsg_cbox, &ao_swapsg_label, &alpine_options_panel2, ao_swapsg_cbox_on_click, g_alpine_game_config.swap_sg_controls, 112, 144, "Swap Shotgun");
+        &ao_swapgn_cbox, &ao_swapgn_label, &alpine_options_panel2, ao_swapgn_cbox_on_click, g_alpine_game_config.swap_gn_controls, 112, 144, "Swap Grenade");
+    alpine_options_panel_checkbox_init(
+        &ao_swapsg_cbox, &ao_swapsg_label, &alpine_options_panel2, ao_swapsg_cbox_on_click, g_alpine_game_config.swap_sg_controls, 112, 174, "Swap Shotgun");
 
     alpine_options_panel_inputbox_init(
         &ao_ms_cbox, &ao_ms_label, &ao_ms_butlabel, &alpine_options_panel2, ao_ms_cbox_on_click, 280, 54, "Mouse sensitivity");

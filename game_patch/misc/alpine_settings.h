@@ -342,6 +342,7 @@ struct AlpineGameSettings
     bool rendering_enabled = true;
     bool sound_enabled = true;
     bool background_mouse = false;
+    bool sdl_mouse = true;
 };
 
 struct FpsCounterState

@@ -24,6 +24,20 @@ static float scanner_sensitivity_value = 0.25f;
 static float applied_static_sensitivity_value = 0.25f; // value written by AsmWriter
 static float applied_dynamic_sensitivity_value = 1.0f; // value written by AsmWriter
 
+void set_sdl_mouse_enabled(bool enabled)
+{
+    g_alpine_game_config.sdl_mouse = enabled;
+    if (!rf::is_dedicated_server && g_sdl_window) {
+        SDL_SetWindowRelativeMouseMode(g_sdl_window, enabled && rf::keep_mouse_centered);
+    }
+    if (!enabled) {
+        g_sdl_mouse_dx = 0;
+        g_sdl_mouse_dy = 0;
+        g_sdl_mouse_dx_rem = 0.0f;
+        g_sdl_mouse_dy_rem = 0.0f;
+    }
+}
+
 FunHook<void()> mouse_eval_deltas_hook{
     0x0051DC70,
     []() {
@@ -31,18 +45,20 @@ FunHook<void()> mouse_eval_deltas_hook{
             return;
         }
 
-        g_sdl_mouse_dx = static_cast<int>(g_sdl_mouse_dx_rem);
-        g_sdl_mouse_dy = static_cast<int>(g_sdl_mouse_dy_rem);
-        g_sdl_mouse_dx_rem -= g_sdl_mouse_dx;
-        g_sdl_mouse_dy_rem -= g_sdl_mouse_dy;
+        if (g_alpine_game_config.sdl_mouse) {
+            g_sdl_mouse_dx = static_cast<int>(g_sdl_mouse_dx_rem);
+            g_sdl_mouse_dy = static_cast<int>(g_sdl_mouse_dy_rem);
+            g_sdl_mouse_dx_rem -= g_sdl_mouse_dx;
+            g_sdl_mouse_dy_rem -= g_sdl_mouse_dy;
 
-        if (rf::keep_mouse_centered) {
-            rf::mouse_old_z = rf::mouse_wheel_pos; // keep scroll delta tracking consistent
+            if (rf::keep_mouse_centered) {
+                rf::mouse_old_z = rf::mouse_wheel_pos; // keep scroll delta tracking consistent
+            }
         }
 
         mouse_eval_deltas_hook.call_target();
 
-        // Fallback: center cursor and flush WM_MOUSEMOVE if SDL relative mode is inactive.
+        // Cursor centering fallback: used when SDL relative mode is inactive (SDL mouse disabled or window unavailable).
         if (rf::keep_mouse_centered && (!g_sdl_window || !SDL_GetWindowRelativeMouseMode(g_sdl_window))) {
             RECT rect{};
             GetClientRect(rf::main_wnd, &rect);
@@ -59,7 +75,7 @@ FunHook<void()> mouse_keep_centered_enable_hook{
     0x0051E690,
     []() {
         // keep_mouse_centered is still false here; call_target sets it
-        if (!rf::keep_mouse_centered && !rf::is_dedicated_server) {
+        if (!rf::keep_mouse_centered && !rf::is_dedicated_server && g_alpine_game_config.sdl_mouse) {
             if (g_sdl_window) {
                 SDL_SetWindowRelativeMouseMode(g_sdl_window, true);
             } else if (!g_relative_mouse_mode_window_missing_logged) {
@@ -75,7 +91,7 @@ FunHook<void()> mouse_keep_centered_disable_hook{
     0x0051E6A0,
     []() {
         // keep_mouse_centered is still true here; call_target clears it
-        if (rf::keep_mouse_centered) {
+        if (rf::keep_mouse_centered && g_alpine_game_config.sdl_mouse) {
             if (g_sdl_window) {
                 SDL_SetWindowRelativeMouseMode(g_sdl_window, false);
             } else if (!g_relative_mouse_mode_window_missing_logged) {
@@ -91,11 +107,27 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     0x0051E630,
     [](int& dx, int& dy, int& dz) {
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
-        dx = g_sdl_mouse_dx;
-        dy = g_sdl_mouse_dy;
-        g_sdl_mouse_dx = 0;
-        g_sdl_mouse_dy = 0;
+        if (g_alpine_game_config.sdl_mouse) {
+            dx = g_sdl_mouse_dx;
+            dy = g_sdl_mouse_dy;
+            g_sdl_mouse_dx = 0;
+            g_sdl_mouse_dy = 0;
+        }
     },
+};
+
+ConsoleCommand2 input_mode_cmd{
+    "inputmode",
+    []() {
+        set_sdl_mouse_enabled(!g_alpine_game_config.sdl_mouse);
+        if (g_alpine_game_config.sdl_mouse) {
+            rf::console::print("Input mode: SDL");
+        }
+        else {
+            rf::console::print("Input mode: stock");
+        }
+    },
+    "Toggles between SDL mouse input and stock mouse input",
 };
 
 ConsoleCommand2 ms_cmd{
@@ -349,10 +381,12 @@ void mouse_sdl_poll()
 
     float dx = 0.0f;
     float dy = 0.0f;
-    SDL_GetRelativeMouseState(&dx, &dy);
+    SDL_GetRelativeMouseState(&dx, &dy); // always drain to prevent buildup
 
-    g_sdl_mouse_dx_rem += dx;
-    g_sdl_mouse_dy_rem += dy;
+    if (g_alpine_game_config.sdl_mouse) {
+        g_sdl_mouse_dx_rem += dx;
+        g_sdl_mouse_dy_rem += dy;
+    }
 }
 
 void mouse_init_sdl_window()
@@ -390,6 +424,7 @@ void mouse_apply_patch()
     linear_pitch_patch.install();
 
     // Commands
+    input_mode_cmd.register_cmd();
     ms_cmd.register_cmd();
     static_scope_sens_cmd.register_cmd();
     scope_sens_cmd.register_cmd();
