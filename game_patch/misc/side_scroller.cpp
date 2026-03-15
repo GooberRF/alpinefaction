@@ -84,7 +84,7 @@ static float g_ss_occlusion_fade_current = 0.0f; // smoothly ramps toward target
 
 bool is_side_scroller_mode()
 {
-    return AlpineLevelProperties::instance().game_style == 1;
+    return AlpineLevelProperties::instance().perspective == 1;
 }
 
 const SsOcclusionParams& get_ss_occlusion_params()

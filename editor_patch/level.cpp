@@ -518,11 +518,11 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
         CheckDlgButton(hdlg, IDC_RF2_STYLE_GEOMOD, alpine_level_props.rf2_style_geomod ? BST_CHECKED : BST_UNCHECKED);
 
-        // Populate game style dropdown
-        HWND combo = GetDlgItem(hdlg, IDC_GAME_STYLE_COMBO);
-        SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Default"));
+        // Populate perspective dropdown
+        HWND combo = GetDlgItem(hdlg, IDC_PERSPECTIVE_COMBO);
+        SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("First person"));
         SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Side-scroller"));
-        SendMessageA(combo, CB_SETCURSEL, alpine_level_props.game_style, 0);
+        SendMessageA(combo, CB_SETCURSEL, alpine_level_props.perspective, 0);
     },
 };
 
@@ -548,9 +548,9 @@ CodeInjection CLevelDialog_OnOK_patch{
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
 
-        int sel = static_cast<int>(SendDlgItemMessageA(hdlg, IDC_GAME_STYLE_COMBO, CB_GETCURSEL, 0, 0));
+        int sel = static_cast<int>(SendDlgItemMessageA(hdlg, IDC_PERSPECTIVE_COMBO, CB_GETCURSEL, 0, 0));
         if (sel != CB_ERR) {
-            alpine_level_props.game_style = static_cast<uint8_t>(sel);
+            alpine_level_props.perspective = static_cast<uint8_t>(sel);
         }
     },
 };
