@@ -3,12 +3,13 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <chrono>
 
 struct PerfAggregator
 {
     std::string name_;
     unsigned num_calls_ = 0;
-    unsigned total_duration_us_ = 0;
+    int64_t total_duration_us_ = 0;
     static std::vector<std::unique_ptr<PerfAggregator>> instances_;
 
     PerfAggregator(std::string&& name) : name_(name)
@@ -26,9 +27,9 @@ public:
         return instances_;
     }
 
-    void add_call(unsigned duration)
+    void add_call(const int64_t duration)
     {
-        num_calls_++;
+        ++num_calls_;
         total_duration_us_ += duration;
     }
 
@@ -42,12 +43,12 @@ public:
         return num_calls_;
     }
 
-    [[nodiscard]] unsigned get_total_duration_us() const
+    [[nodiscard]] int64_t get_total_duration_us() const
     {
         return total_duration_us_;
     }
 
-    [[nodiscard]] unsigned get_avg_duration_us() const
+    [[nodiscard]] int64_t get_avg_duration_us() const
     {
         return total_duration_us_ / num_calls_;
     }
@@ -56,13 +57,18 @@ public:
 class ScopedPerfMonitor
 {
     PerfAggregator& agg_;
-    unsigned start_ = rf::timer_get(1000000);
+    std::chrono::steady_clock::time_point start_ =
+        std::chrono::steady_clock::now();
 
 public:
     ScopedPerfMonitor(PerfAggregator& agg) : agg_(agg) {}
 
     ~ScopedPerfMonitor()
     {
-        agg_.add_call(rf::timer_get(1000000) - start_);
+        const std::chrono::microseconds duration_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - start_
+            );
+        agg_.add_call(duration_us.count());
     }
 };

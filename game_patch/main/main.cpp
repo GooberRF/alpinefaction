@@ -74,8 +74,8 @@ CallHook<void()> rf_init_hook{
         initialize_alpine_core_config();
         rf_init_hook.call_target();
         vpackfile_disable_overriding();
-        gamepad_sdl_init();
         xlog::info("Game initialized ({} ms).", GetTickCount() - start_ticks);
+        gamepad_sdl_init();
     },
 };
 

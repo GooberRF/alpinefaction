@@ -511,7 +511,7 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
     update_player_active_status(killed_player); // active pulse on killed
 
     if (rf::is_server) {
-        killed_player->death_time.emplace(std::chrono::high_resolution_clock::now());
+        killed_player->death_time.emplace(std::chrono::steady_clock::now());
     }
 
     auto* killed_stats = static_cast<PlayerStatsNew*>(killed_player->stats);

@@ -579,7 +579,7 @@ void force_file_from_packfile(const char* name, const char* packfile_name)
 
 static void vpackfile_init_new()
 {
-    unsigned start_ticks = GetTickCount();
+    const uint64_t start_ticks = GetTickCount64();
 
     g_loopup_table.reserve(10000);
 
@@ -653,7 +653,7 @@ static void vpackfile_init_new()
         force_file_from_packfile("strings.tbl", "ui.vpp");
     }
 
-    xlog::info("Packfiles initialization took {}ms", GetTickCount() - start_ticks);
+    xlog::info("Packfiles initialization took {}ms", GetTickCount64() - start_ticks);
     xlog::info("Packfile name collisions: {}", g_num_name_collisions);
 
     if (g_is_modded_game)

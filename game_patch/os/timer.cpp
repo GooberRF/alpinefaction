@@ -1,82 +1,59 @@
 #include <windows.h>
-#include <timeapi.h>
-#include <xlog/xlog.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include "../rf/os/timer.h"
+#include "os.h"
+#include <patch_common/CodeInjection.h>
 
-void wait_for(const float ms) {
-    if (ms <= .0f) {
-        return;
+int64_t timer::get_i64(const int scale) {
+    LARGE_INTEGER current_value{};
+    // QPC is monotonic.
+    QueryPerformanceCounter(&current_value);
+    const int64_t current = current_value.QuadPart;
+    const int64_t delta = current - rf::timer::last_value;
+    rf::timer::last_value = current;
+    const int64_t freq = g_qpc_frequency.QuadPart;
+    constexpr int64_t MAX_JUMP_SECONDS = 32LL;
+    // In theory, if a hypervisor is faulty, live migration may cause QPC to go backwards
+    // or jump too far forwards,
+    if (delta < 0) {
+        xlog::trace("Time went backwards");
+        rf::timer::base += delta;
+    } else if (delta > freq * MAX_JUMP_SECONDS) {
+        xlog::trace("Time jumped too far forwards");
+        rf::timer::base += delta;
     }
-
-    // Should be a resolution of 500 us.
-    thread_local const HANDLE timer = CreateWaitableTimerExA(
-        nullptr,
-        nullptr,
-        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-        TIMER_MODIFY_STATE | SYNCHRONIZE
-    );
-
-    if (!timer) {
-        ERR_ONCE("CreateWaitableTimerExA in wait_for failed ({})", GetLastError());
-    SLEEP:
-        static const MMRESULT res = timeBeginPeriod(1);
-        if (res != TIMERR_NOERROR) {
-            ERR_ONCE(
-                "The frame rate may be unstable, because timeBeginPeriod failed ({})",
-                res
-            );
-        }
-        Sleep(static_cast<DWORD>(ms));
-    } else {
-        // `SetWaitableTimer` requires 100-nanosecond intervals.
-        // Negative values indicate relative time.
-        LARGE_INTEGER dur{
-            .QuadPart = -static_cast<LONGLONG>(static_cast<double>(ms) * 10'000.)
-        };
-
-        if (!SetWaitableTimer(timer, &dur, 0, nullptr, nullptr, FALSE)) {
-            ERR_ONCE("SetWaitableTimer in wait_for failed ({})", GetLastError());
-            goto SLEEP;
-        }
-
-        if (WaitForSingleObject(timer, INFINITE) != WAIT_OBJECT_0) {
-            ERR_ONCE("WaitForSingleObject in wait_for failed ({})", GetLastError());
-            goto SLEEP;
-        }
-    }
+    // Count from start-up.
+    const int64_t elapsed = current - rf::timer::base;
+    // Avoid overflow for large elapsed values.
+    return (elapsed / freq) * scale + (elapsed % freq) * scale / freq;
 }
-
-static LARGE_INTEGER g_qpc_frequency;
 
 FunHook<int(int)> timer_get_hook{
     0x00504AB0,
-    [](int scale) {
-        // get QPC current value
-        LARGE_INTEGER current_qpc_value;
-        QueryPerformanceCounter(&current_qpc_value);
-        // make sure time never goes backward
-        if (current_qpc_value.QuadPart < rf::timer_last_value) {
-            current_qpc_value.QuadPart = rf::timer_last_value;
-        }
-        rf::timer_last_value = current_qpc_value.QuadPart;
-        // Make sure we count from game start
-        current_qpc_value.QuadPart -= rf::timer_base;
-        // Multiply with unit scale (eg. ms/us) before division
-        current_qpc_value.QuadPart *= scale;
-        // Divide by frequency using 64 bits and then cast to 32 bits
+    [] (const int scale) {
         // Note: sign of result does not matter because it is used only for deltas
-        return static_cast<int>(current_qpc_value.QuadPart / g_qpc_frequency.QuadPart);
+        return static_cast<int>(timer::get_i64(scale));
     },
 };
 
-void timer_apply_patch()
-{
-    // Remove Sleep calls in timer_init
-    AsmWriter(0x00504A67, 0x00504A82).nop();
+CodeInjection timer_init_patch{
+    0x00504A50,
+    [] (auto& regs) {
+        // `rf::timer::freq` can overflow, because it is not a `LARGE_INTEGER`.
+        QueryPerformanceFrequency(&g_qpc_frequency);
 
-    // Fix timer_get handling of frequency greater than 2MHz (sign bit is set in 32 bit dword)
-    QueryPerformanceFrequency(&g_qpc_frequency);
+        // Prevent a near impossible edge case in which QPC jumps backwards or too far
+        // forwards.
+        rf::timer::last_value = rf::timer::base;
+
+        regs.eip = 0x00504A57;
+    },
+};
+
+void timer_apply_patch() {
+    // Remove `Sleep` calls in `timer_init`.
+    AsmWriter{0x00504A67, 0x00504A82}.nop();
     timer_get_hook.install();
+    timer_init_patch.install();
 }
