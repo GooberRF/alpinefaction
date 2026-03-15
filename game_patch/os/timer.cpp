@@ -11,9 +11,11 @@ int64_t timer::get_i64(const int scale) {
     QueryPerformanceCounter(&current_value);
     const int64_t current = current_value.QuadPart;
     const int64_t delta = current - rf::timer::last_value;
+    rf::timer::last_value = current;
     const int64_t freq = g_qpc_frequency.QuadPart;
     constexpr int64_t MAX_JUMP_SECONDS = 32LL;
-    // In theory, live migration may cause QPC to go backwards or jump too far forwards.
+    // In theory, if a hypervisor is faulty, live migration may cause QPC to go backwards
+    // or jump too far forwards,
     if (delta < 0) {
         xlog::trace("Time went backwards");
         rf::timer::base += delta;
@@ -23,7 +25,6 @@ int64_t timer::get_i64(const int scale) {
     }
     // Count from start-up.
     const int64_t elapsed = current - rf::timer::base;
-    rf::timer::last_value = current;
     // Avoid overflow for large elapsed values.
     return (elapsed / freq) * scale + (elapsed % freq) * scale / freq;
 }
@@ -43,7 +44,7 @@ CodeInjection timer_init_patch{
         QueryPerformanceFrequency(&g_qpc_frequency);
 
         // Prevent a near impossible edge case in which QPC jumps backwards or too far
-        // forward.
+        // forwards.
         rf::timer::last_value = rf::timer::base;
 
         regs.eip = 0x00504A57;
