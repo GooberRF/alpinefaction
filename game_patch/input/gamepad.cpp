@@ -20,6 +20,8 @@
 #include "../rf/gameseq.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/misc.h"
+#include "../main/main.h"
+#include <common/utils/os-utils.h>
 #include <SDL3/SDL.h>
 #include "gyro.h"
 
@@ -718,6 +720,11 @@ void gamepad_apply_patch()
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
+
+    // Load SDL_GameControllerDB
+    std::string mappings_path = get_module_dir(g_hmodule) + "gamecontrollerdb.txt";
+    if (SDL_AddGamepadMappingsFromFile(mappings_path.c_str()) < 0)
+        xlog::warn("SDL_GameControllerDB: failed to load mappings: {}", SDL_GetError());
 
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
         xlog::error("Failed to initialize SDL gamepad subsystem: {}", SDL_GetError());
