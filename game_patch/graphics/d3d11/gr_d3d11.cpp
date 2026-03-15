@@ -520,16 +520,16 @@ namespace df::gr::d3d11
         solid_renderer_->reset_cache_after_boolean();
     }
 
-    void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params)
+    void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
-        mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params);
+        mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
     }
 
-    void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params)
+    void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
-        mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
+        mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
     }
 
     void Renderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
@@ -571,6 +571,11 @@ namespace df::gr::d3d11
     void Renderer::reset_static_vertex_color_tracking()
     {
         mesh_renderer_->reset_static_vertex_color_tracking();
+    }
+
+    void Renderer::clear_mesh_lights()
+    {
+        render_context_->update_lights();
     }
 
     float Renderer::z_far() const

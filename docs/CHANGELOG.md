@@ -55,6 +55,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Reload Meshes` and `Reload Textures` options to level editor `Tools` menu, to scan for new assets in `\user_maps\`
 - Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
+- Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

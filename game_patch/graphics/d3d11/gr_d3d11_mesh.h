@@ -9,6 +9,7 @@
 
 namespace rf
 {
+    struct V3d;
     struct VifLodMesh;
     struct VifMesh;
     struct MeshRenderParams;
@@ -22,6 +23,12 @@ namespace df::gr::d3d11
 
     void on_character_fullbright_state_changed();
     void on_static_vertex_color_state_changed(rf::VifLodMesh* changed_lod_mesh = nullptr);
+
+    // Per-material self-illumination data for GPU rendering
+    void register_mesh_self_illumination(rf::V3d* v3d);
+    void unregister_mesh_self_illumination(rf::VifLodMesh* lod_mesh);
+    void clear_mesh_self_illumination();
+    float get_mesh_self_illumination(rf::VifLodMesh* lod_mesh, int material_index);
 
     class BaseMeshRenderCache
     {
@@ -112,8 +119,8 @@ namespace df::gr::d3d11
     public:
         MeshRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager, StateManager& state_manager, RenderContext& render_context);
         ~MeshRenderer();
-        void render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params);
-        void render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params);
+        void render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
+        void render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
         void clear_vif_cache(rf::VifLodMesh *lod_mesh);
         void page_in_v3d_mesh(rf::VifLodMesh* lod_mesh);
         void page_in_character_mesh(rf::VifLodMesh* lod_mesh);
@@ -124,7 +131,7 @@ namespace df::gr::d3d11
         void handle_static_vertex_color_state_change(rf::VifLodMesh* changed_lod_mesh, uint64_t generation);
 
     private:
-        void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index);
+        void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache = false);
 
         ComPtr<ID3D11Device> device_;
         RenderContext& render_context_;

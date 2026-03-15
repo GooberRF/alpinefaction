@@ -13,6 +13,7 @@
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/math/quaternion.h"
 #include "../../rf/v3d.h"
+#include "../../rf/vmesh.h"
 #include "../../rf/character.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
@@ -32,6 +33,58 @@ namespace df::gr::d3d11
     static uint64_t character_vertex_color_generation = 1;
     static uint64_t static_vertex_color_generation = 1;
     static std::vector<MeshRenderer*> mesh_renderers;
+
+    // Per-VifLodMesh self-illumination values indexed by material index.
+    // Values are stored normalized to 0-1 range (stock engine uses 0-255 floats).
+    static std::unordered_map<VifLodMesh*, std::vector<float>> mesh_self_illumination;
+
+    // Per-entity cache of the last valid blended ambient (keyed by MeshRenderParams address).
+    // When an entity walks over geometry without lightmaps (ambient_color = white),
+    // the cached value is used instead of falling back to global ambient.
+    static std::unordered_map<const MeshRenderParams*, std::array<float, 3>> entity_ambient_cache;
+
+    void register_mesh_self_illumination(V3d* v3d)
+    {
+        if (!v3d || v3d->num_meshes <= 0) return;
+
+        for (int i = 0; i < v3d->num_meshes; ++i) {
+            auto& mesh = v3d->meshes[i];
+            auto* lod_mesh = mesh.vu;
+            if (!lod_mesh || !mesh.materials || mesh.num_materials <= 0) continue;
+            if (mesh_self_illumination.count(lod_mesh)) continue; // already registered
+
+            auto* materials = reinterpret_cast<MeshMaterial*>(mesh.materials);
+            std::vector<float> self_illum(mesh.num_materials, 0.0f);
+            for (int j = 0; j < mesh.num_materials; ++j) {
+                if (materials[j].num_self_illumination_frames > 0 && materials[j].self_illumination) {
+                    // Stock engine stores self_illumination as 0-255 float, normalize to 0-1
+                    self_illum[j] = std::min(materials[j].self_illumination[0] / 255.0f, 1.0f);
+                }
+            }
+            mesh_self_illumination[lod_mesh] = std::move(self_illum);
+        }
+    }
+
+    void unregister_mesh_self_illumination(VifLodMesh* lod_mesh)
+    {
+        mesh_self_illumination.erase(lod_mesh);
+    }
+
+    void clear_mesh_self_illumination()
+    {
+        mesh_self_illumination.clear();
+        entity_ambient_cache.clear();
+    }
+
+    float get_mesh_self_illumination(VifLodMesh* lod_mesh, int material_index)
+    {
+        auto it = mesh_self_illumination.find(lod_mesh);
+        if (it != mesh_self_illumination.end() && material_index >= 0 &&
+            material_index < static_cast<int>(it->second.size())) {
+            return it->second[material_index];
+        }
+        return 0.0f;
+    }
 
     struct PackedRgb
     {
@@ -657,7 +710,7 @@ namespace df::gr::d3d11
         render_caches_.clear();
     }
 
-    void MeshRenderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params)
+    void MeshRenderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         page_in_v3d_mesh(lod_mesh);
 
@@ -669,10 +722,10 @@ namespace df::gr::d3d11
 
         auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
     }
 
-    void MeshRenderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params)
+    void MeshRenderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         page_in_character_mesh(lod_mesh);
         auto render_cache = reinterpret_cast<CharacterMeshRenderCache*>(lod_mesh->render_cache);
@@ -697,7 +750,7 @@ namespace df::gr::d3d11
         render_cache->update_bone_transforms_buffer(ci, render_context_);
         render_cache->bind_buffers(render_context_, morphed);
 
-        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index);
+        draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
     }
 
     void MeshRenderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
@@ -713,7 +766,7 @@ namespace df::gr::d3d11
         return lod_mesh->meshes[lod_index]->tex_handles;
     }
 
-    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index)
+    void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
     {
         const int* tex_handles = get_tex_handles(lod_mesh, params, lod_index);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -748,22 +801,17 @@ namespace df::gr::d3d11
         };
 
         bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
+        bool gpu_dynamic_lighting = false;
         if (!ir_scanner) {
-            // replicate approximate lighting level from stock game DX9
             if (is_character_mesh) {
-                color = add_clamped(params.ambient_color, {224, 224, 224, 224});
-            } else { // static meshes
-                if (params.flags & MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) { // third person weapon models
-                    if (g_character_meshes_are_fullbright) {
-                        color = {255, 255, 255, 255};
-                    }
-                    else {
-                        color = params.ambient_color;
-                    }
-                }
-                else {
-                    color = add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
-                }
+                color = {255, 255, 255, 255};
+                bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0;
+                gpu_dynamic_lighting = !fullbright_character;
+            } else { // static meshes (items, clutters, VFX)
+                // GPU handles lighting via ambient + point lights in the shader.
+                // Mode color is neutral white; base vertex colors are already white.
+                color = {255, 255, 255, 255};
+                gpu_dynamic_lighting = true;
             }
             color.alpha = static_cast<ubyte>(params.alpha);
         } else {
@@ -780,7 +828,52 @@ namespace df::gr::d3d11
         }
 
         bool use_vertex_colors = params.vertex_colors != nullptr;
-        render_context_.update_lights();
+        if (gpu_dynamic_lighting) {
+            // Stock engine uses the per-entity lightmap-sampled ambient_color for
+            // directional key/fill lights (FUN_0052dad0), NOT as the flat ambient.
+            // The flat ambient base is always the global level ambient.
+            // Blend a small amount of the entity's lightmap color for environmental tinting.
+            if (params.flags & MRF_CUSTOM_AMBIENT_COLOR) {
+                // White (255,255,255) means no lightmap data (e.g. invisible geometry).
+                // In that case, reuse the last valid blended ambient for this entity so
+                // lighting stays consistent when walking over geometry without lightmaps.
+                bool is_white = (params.ambient_color.red == 255 &&
+                                 params.ambient_color.green == 255 &&
+                                 params.ambient_color.blue == 255);
+                if (!is_white) {
+                    float global_amb[3];
+                    rf::gr::light_get_ambient(&global_amb[0], &global_amb[1], &global_amb[2]);
+                    constexpr float blend = 0.45f;
+                    float mesh_ambient[3] = {
+                        global_amb[0] * (1.0f - blend) + (params.ambient_color.red / 255.0f) * blend,
+                        global_amb[1] * (1.0f - blend) + (params.ambient_color.green / 255.0f) * blend,
+                        global_amb[2] * (1.0f - blend) + (params.ambient_color.blue / 255.0f) * blend,
+                    };
+                    // Cache this blended ambient keyed by the entity's MeshRenderParams address
+                    // (stable per entity since params is a reference to a field in the entity struct).
+                    // Skip caching when params is a stack copy to avoid unbounded growth.
+                    if (!skip_ambient_cache) {
+                        entity_ambient_cache[&params] = {mesh_ambient[0], mesh_ambient[1], mesh_ambient[2]};
+                    }
+                    render_context_.update_lights(false, mesh_ambient);
+                } else {
+                    if (!skip_ambient_cache) {
+                        auto it = entity_ambient_cache.find(&params);
+                        if (it != entity_ambient_cache.end()) {
+                            render_context_.update_lights(false, it->second.data());
+                        } else {
+                            render_context_.update_lights();
+                        }
+                    } else {
+                        render_context_.update_lights();
+                    }
+                }
+            } else {
+                render_context_.update_lights();
+            }
+        } else {
+            render_context_.update_lights();
+        }
 
         const std::vector<BaseMeshRenderCache::Batch>* batches_ptr = &cache.get_batches(lod_index);
         ID3D11Buffer* character_vertex_buffer_override = nullptr;
@@ -826,6 +919,10 @@ namespace df::gr::d3d11
 
         const auto& batches = *batches_ptr;
 
+        // Get VifMesh for tex_ids lookup (maps texture_index -> material index)
+        rf::VifMesh* vif_mesh = (lod_index >= 0 && lod_index < lod_mesh->num_levels)
+            ? lod_mesh->meshes[lod_index] : nullptr;
+
         for (auto& b : batches) {
             // ccrunch tool chunkifies mesh and inits render mode flags
             // 0x110C21 is used for materials with additive blending (except admin_poshlight01.v3d):
@@ -845,7 +942,20 @@ namespace df::gr::d3d11
             // This information may be useful for simplifying shaders
             render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
             int texture = tex_handles[b.texture_index];
-            render_context_.set_mode(forced_mode.value_or(b.mode), color);
+
+            // Look up per-material self-illumination via tex_ids mapping
+            float self_illum = 0.0f;
+            if (gpu_dynamic_lighting && vif_mesh && b.texture_index >= 0 && b.texture_index < 7) {
+                int material_idx = vif_mesh->tex_ids[b.texture_index];
+                self_illum = get_mesh_self_illumination(lod_mesh, material_idx);
+            }
+            // COLOR_SOURCE_TEXTURE means no vertex color influence — the stock engine
+            // renders these surfaces without per-vertex lighting (fullbright).
+            if (gpu_dynamic_lighting && b.mode.get_color_source() == gr::COLOR_SOURCE_TEXTURE) {
+                self_illum = 1.0f;
+            }
+
+            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum);
             render_context_.set_textures(texture, -1);
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }

@@ -2,6 +2,7 @@
 #include <cstring>
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/frametime.h"
+#include "../../misc/level.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_texture.h"
@@ -202,7 +203,7 @@ namespace df::gr::d3d11
         DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, nullptr, &buffer_));
     }
 
-    void LightsBuffer::update(ID3D11DeviceContext* device_context, bool force_neutral)
+    void LightsBuffer::update(ID3D11DeviceContext* device_context, bool force_neutral, const float* ambient_override)
     {
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
@@ -217,7 +218,11 @@ namespace df::gr::d3d11
                 gpu_light.radius = 0.0001f;
             }
 
-            rf::gr::light_get_ambient(&data.ambient_light[0], &data.ambient_light[1], &data.ambient_light[2]);
+            if (ambient_override) {
+                data.ambient_light = {ambient_override[0], ambient_override[1], ambient_override[2]};
+            } else {
+                rf::gr::light_get_ambient(&data.ambient_light[0], &data.ambient_light[1], &data.ambient_light[2]);
+            }
 
             int num_point_lights = std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights);
             data.num_point_lights = static_cast<float>(num_point_lights);
@@ -248,7 +253,10 @@ namespace df::gr::d3d11
         float colorblind_mode;
         float disable_textures;
         std::array<float, 3> fog_color;
-        float pad0;
+        float use_dynamic_lighting;
+        float self_illumination;
+        float light_scale;
+        float _pad[2];
     };
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
@@ -287,7 +295,12 @@ namespace df::gr::d3d11
         }
         data.colorblind_mode = static_cast<float>(current_colorblind_mode_);
         data.disable_textures = current_lightmap_only_ ? 1.0f : 0.0f;
-        data.pad0 = 0.0f;
+        data.use_dynamic_lighting = current_dynamic_lighting_ ? 1.0f : 0.0f;
+        data.self_illumination = current_self_illumination_;
+        const auto& level_props = AlpineLevelProperties::instance();
+        data.light_scale = level_props.override_static_mesh_ambient_light_modifier
+            ? level_props.static_mesh_ambient_light_modifier
+            : 2.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
