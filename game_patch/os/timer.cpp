@@ -8,7 +8,10 @@ int64_t timer::get_i64(const int scale) {
     LARGE_INTEGER current_value{};
     // QPC is monotonic.
     QueryPerformanceCounter(&current_value);
-    // Count from start-up.
+    // Guard against QPC going backward (e.g. buggy hypervisor during VM live-migration)
+    if (current_value.QuadPart < rf::timer::last_value) {
+        current_value.QuadPart = rf::timer::last_value;
+    }
     const int64_t elapsed = current_value.QuadPart - rf::timer::base;
     rf::timer::last_value = current_value.QuadPart;
     const int64_t freq = g_qpc_frequency.QuadPart;
