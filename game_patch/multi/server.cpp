@@ -3363,7 +3363,7 @@ static void bot_decommission_check() {
         } else {
             const bool is_spawned = !rf::player_is_dead(&player)
                 && !rf::player_is_dying(&player);
-            const auto now = std::chrono::high_resolution_clock::now();
+            const auto now = std::chrono::steady_clock::now();
             const bool was_just_unspawned = player.death_time
                 && now - *player.death_time
                     < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
