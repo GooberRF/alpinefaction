@@ -180,6 +180,13 @@ void wait_for(const float ms, const WaitableTimer& timer) {
 
 void os_apply_patch()
 {
+    // Lock to DPI_AWARENESS_CONTEXT_UNAWARE so the legacy D3D renderer's bitmap-scaling
+    // virtualisation stays active.
+    if (auto* set_dpi_ctx = reinterpret_cast<BOOL(WINAPI*)(HANDLE)>(
+            GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext"))) {
+        set_dpi_ctx(reinterpret_cast<HANDLE>(-1)); // DPI_AWARENESS_CONTEXT_UNAWARE
+    }
+
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         xlog::error("SDL_Init(SDL_INIT_VIDEO) failed: {}", SDL_GetError());
     }
