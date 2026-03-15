@@ -196,7 +196,7 @@ CallHook<void()> main_menu_render_hook{
                 const float enter_progress = anim_delta_time / static_cast<float>(EGG_ANIM_ENTER_TIME);
                 pos_y += h - static_cast<int>(sinf(enter_progress * static_cast<float>(PI) / 2.0f) * h);
             } else if (anim_delta_time > EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME) {
-                const int leave_delta = anim_delta_time - (EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME);
+                const uint64_t leave_delta = anim_delta_time - (EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME);
                 const float leave_progress = leave_delta / static_cast<float>(EGG_ANIM_LEAVE_TIME);
                 pos_y += static_cast<int>((1.0f - cosf(leave_progress * static_cast<float>(PI) / 2.0f)) * h);
                 if (leave_delta > EGG_ANIM_LEAVE_TIME) {
