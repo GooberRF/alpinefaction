@@ -14,7 +14,6 @@
 void DestroyDedMesh(DedMesh* mesh);
 void DestroyDedCorona(DedCorona* corona);
 
-constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_note_chunk_id = 0x0AFBAE02;
@@ -615,7 +614,15 @@ struct CDedLevel
     int icon_push_region;                         // +0x22C (Icon_ClimbRegion.tga second)
     char _pad_230[0x272 - 0x230];                // +0x230 (editor state)
     bool geometry_needs_rebuild;                   // +0x272
-    char _pad_273[0x298 - 0x273];                // +0x273
+    char _pad_273[0x280 - 0x273];                // +0x273
+
+    // --- undo/redo stacks (VArrays of UndoEntry pointers) ---
+    // FUN_0043d210 (undo) pops from +0x280, pushes to +0x28C
+    // FUN_0043d320 (redo) pops from +0x28C, pushes to +0x280
+    // Each entry's child VArray at +0x04 may hold raw DedObject* pointers
+    // FUN_0043d170 cleanup calls FUN_0041c360 on those pointers (use-after-free risk)
+    VArray<void*> undo_stack;                     // +0x280
+    VArray<void*> redo_stack;                     // +0x28C
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
@@ -666,10 +673,8 @@ struct CDedLevel
         return AddrCaller{0x00430B90}.this_call(this, &file, start_pos);
     }
 
-    AlpineLevelProperties& GetAlpineLevelProperties()
-    {
-        return struct_field_ref<AlpineLevelProperties>(this, stock_cdedlevel_size);
-    }
+    AlpineLevelProperties& GetAlpineLevelProperties();
+
 
     void deselect_all()
     {

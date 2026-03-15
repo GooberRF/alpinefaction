@@ -951,282 +951,222 @@ void alpine_hide_objects(CDedLevel* level)
 }
 
 // ─── Group Save / Load (.rfg) ───────────────────────────────────────────────
+// The rfg I/O context at CDedLevel+0x50 is an rf::File*, so we reuse the same
+// chunk serializers/deserializers used for .rfl level files. This ensures the
+// binary format for Alpine objects is identical in both .rfl and .rfg files.
 
-// .rfg I/O helpers — operate on the stock bidirectional I/O context at CDedLevel+0x50
-static void rfg_write_int32(void* ctx, int32_t val) {
-    AddrCaller{0x004d1230}.this_call(ctx, val);
-}
-static void rfg_write_raw(void* ctx, const void* data, int size) {
-    AddrCaller{0x004d13f0}.this_call(ctx, data, size);
-}
-static int32_t rfg_read_int32(void* ctx) {
-    return AddrCaller{0x004d08f0}.this_call<int32_t>(ctx, 0, 0);
-}
-static bool rfg_read_raw(void* ctx, void* dst, int size) {
-    AddrCaller{0x004d0f40}.this_call(ctx, dst, size, 0, 0);
-    return AddrCaller{0x004d01f0}.this_call<int>(ctx) == 0;
-}
+// Global vectors to collect Alpine objects during group serialization.
+// FUN_00435630 (per-group serializer) has a switch on obj->type that handles types 0..0x16.
+// Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA) fall through and are silently
+// dropped. We hook the switch's overflow check (JA at 0x00435a82) to collect them here.
+static std::vector<DedMesh*> g_group_save_meshes;
+static std::vector<DedNote*> g_group_save_notes;
+static std::vector<DedCorona*> g_group_save_coronas;
 
-// String I/O: int32 length + raw chars
-static void rfg_write_vstring(void* ctx, const VString& s) {
-    const char* str = s.c_str();
-    int32_t len = static_cast<int32_t>(strlen(str));
-    rfg_write_int32(ctx, len);
-    if (len > 0) rfg_write_raw(ctx, str, len);
-}
-static void rfg_write_std_string(void* ctx, const std::string& s) {
-    int32_t len = static_cast<int32_t>(s.size());
-    rfg_write_int32(ctx, len);
-    if (len > 0) rfg_write_raw(ctx, s.c_str(), len);
-}
-static std::string rfg_read_string(void* ctx) {
-    int32_t len = rfg_read_int32(ctx);
-    if (len <= 0 || len > 10000) return "";
-    std::string result(len, '\0');
-    if (!rfg_read_raw(ctx, result.data(), len)) return "";
-    return result;
-}
+// Tracks moving_groups.size before stock group load, so we can find new group entries afterward.
+static int g_moving_groups_size_before_load = 0;
 
-constexpr int32_t alpine_group_sentinel = 0x0AFB0001;
-
-// Save hook: append Alpine objects after stock data, before file close.
-// At 0x0041d11c: ESI = CDedLevel*, [ESI+0x50] = I/O context, about to close file.
-CodeInjection alpine_group_save_hook{
-    0x0041d11c,
+// Hook at 0x0041ce4f: beginning of save function, clears collection vectors.
+CodeInjection alpine_group_save_clear_hook{
+    0x0041ce4f,
     [](auto& regs) {
-        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
-        void* io_ctx = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(level) + 0x50);
-
-        // Collect selected Alpine objects
-        auto& sel = level->selection;
-        std::vector<DedMesh*> meshes;
-        std::vector<DedNote*> notes;
-        std::vector<DedCorona*> coronas;
-        for (int i = 0; i < sel.size; i++) {
-            auto* obj = sel.data_ptr[i];
-            if (!obj) continue;
-            if (obj->type == DedObjectType::DED_MESH)
-                meshes.push_back(static_cast<DedMesh*>(obj));
-            else if (obj->type == DedObjectType::DED_NOTE)
-                notes.push_back(static_cast<DedNote*>(obj));
-            else if (obj->type == DedObjectType::DED_CORONA)
-                coronas.push_back(static_cast<DedCorona*>(obj));
-        }
-
-        if (meshes.empty() && notes.empty() && coronas.empty()) return;
-
-        rfg_write_int32(io_ctx, alpine_group_sentinel);
-
-        // Meshes
-        rfg_write_int32(io_ctx, static_cast<int32_t>(meshes.size()));
-        for (auto* m : meshes) {
-            rfg_write_int32(io_ctx, m->uid);
-            rfg_write_raw(io_ctx, &m->pos, sizeof(Vector3));
-            rfg_write_raw(io_ctx, &m->orient, sizeof(Matrix3));
-            rfg_write_vstring(io_ctx, m->script_name);
-            rfg_write_vstring(io_ctx, m->mesh_filename);
-            rfg_write_vstring(io_ctx, m->state_anim);
-            rfg_write_raw(io_ctx, &m->collision_mode, 1);
-            uint8_t num_ov = static_cast<uint8_t>(m->texture_overrides.size());
-            rfg_write_raw(io_ctx, &num_ov, 1);
-            for (const auto& ovr : m->texture_overrides) {
-                rfg_write_raw(io_ctx, &ovr.slot, 1);
-                rfg_write_std_string(io_ctx, ovr.filename);
-            }
-            rfg_write_int32(io_ctx, m->material);
-            uint8_t is_cl = m->clutter_props.is_clutter ? 1 : 0;
-            rfg_write_raw(io_ctx, &is_cl, 1);
-            if (m->clutter_props.is_clutter) {
-                auto& cp = m->clutter_props;
-                rfg_write_raw(io_ctx, &cp.life, sizeof(float));
-                rfg_write_std_string(io_ctx, cp.debris_filename);
-                rfg_write_std_string(io_ctx, cp.explosion_vclip);
-                rfg_write_raw(io_ctx, &cp.explosion_radius, sizeof(float));
-                rfg_write_raw(io_ctx, &cp.debris_velocity, sizeof(float));
-                for (int d = 0; d < 11; d++)
-                    rfg_write_raw(io_ctx, &cp.damage_type_factors[d], sizeof(float));
-                rfg_write_std_string(io_ctx, cp.corpse_filename);
-                rfg_write_std_string(io_ctx, cp.corpse_state_anim);
-                rfg_write_raw(io_ctx, &cp.corpse_collision, 1);
-                rfg_write_raw(io_ctx, &cp.corpse_material, 1);
-            }
-        }
-
-        // Notes
-        rfg_write_int32(io_ctx, static_cast<int32_t>(notes.size()));
-        for (auto* n : notes) {
-            rfg_write_int32(io_ctx, n->uid);
-            rfg_write_raw(io_ctx, &n->pos, sizeof(Vector3));
-            rfg_write_raw(io_ctx, &n->orient, sizeof(Matrix3));
-            rfg_write_vstring(io_ctx, n->script_name);
-            rfg_write_int32(io_ctx, static_cast<int32_t>(n->notes.size()));
-            for (const auto& text : n->notes) {
-                rfg_write_std_string(io_ctx, text);
-            }
-        }
-
-        // Coronas
-        rfg_write_int32(io_ctx, static_cast<int32_t>(coronas.size()));
-        for (auto* c : coronas) {
-            rfg_write_int32(io_ctx, c->uid);
-            rfg_write_raw(io_ctx, &c->pos, sizeof(Vector3));
-            rfg_write_raw(io_ctx, &c->orient, sizeof(Matrix3));
-            rfg_write_vstring(io_ctx, c->script_name);
-            rfg_write_raw(io_ctx, &c->color_r, 1);
-            rfg_write_raw(io_ctx, &c->color_g, 1);
-            rfg_write_raw(io_ctx, &c->color_b, 1);
-            rfg_write_raw(io_ctx, &c->color_a, 1);
-            rfg_write_std_string(io_ctx, c->corona_bitmap);
-            rfg_write_raw(io_ctx, &c->cone_angle, sizeof(float));
-            rfg_write_raw(io_ctx, &c->intensity, sizeof(float));
-            rfg_write_raw(io_ctx, &c->radius_distance, sizeof(float));
-            rfg_write_raw(io_ctx, &c->radius_scale, sizeof(float));
-            rfg_write_raw(io_ctx, &c->diminish_distance, sizeof(float));
-            rfg_write_std_string(io_ctx, c->volumetric_bitmap);
-            uint8_t has_vol = !c->volumetric_bitmap.empty() ? 1 : 0;
-            rfg_write_raw(io_ctx, &has_vol, 1);
-            if (has_vol) {
-                rfg_write_raw(io_ctx, &c->volumetric_height, sizeof(float));
-                rfg_write_raw(io_ctx, &c->volumetric_length, sizeof(float));
-            }
-        }
-
-        xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas to group",
-            meshes.size(), notes.size(), coronas.size());
+        g_group_save_meshes.clear();
+        g_group_save_notes.clear();
+        g_group_save_coronas.clear();
     },
 };
 
-// Load hook: read Alpine objects after stock data, before file close.
-// At 0x0041d2e4: ESI = CDedLevel*, [ESI+0x50] = I/O context, stock deserialization done.
+// Hook at 0x00435a82: replaces `JA 0x00435be1` in the type switch of FUN_00435630.
+// For types > 0x16, collects Alpine objects and skips to loop continue (0x00435be1).
+// For types <= 0x16, falls through to the jump table at 0x00435a88 (original behavior).
+CodeInjection alpine_group_type_collect_hook{
+    0x00435a82,
+    [](auto& regs) {
+        auto type = static_cast<int>(regs.ecx); // ECX = obj->type (set at 0x00435a7c)
+        if (type > 0x16) {
+            auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.eax));
+            if (type == static_cast<int>(DedObjectType::DED_MESH))
+                g_group_save_meshes.push_back(static_cast<DedMesh*>(obj));
+            else if (type == static_cast<int>(DedObjectType::DED_NOTE))
+                g_group_save_notes.push_back(static_cast<DedNote*>(obj));
+            else if (type == static_cast<int>(DedObjectType::DED_CORONA))
+                g_group_save_coronas.push_back(static_cast<DedCorona*>(obj));
+            regs.eip = 0x00435be1; // skip to loop continue
+        }
+        // types <= 0x16 fall through to jump table at 0x00435a88
+    },
+};
+
+// Save hook: append Alpine object chunks after stock data, before file close.
+// At 0x0041d11c: ESI = CDocument*, [ESI+0x50] = rf::File*, about to close file.
+CodeInjection alpine_group_save_hook{
+    0x0041d11c,
+    [](auto& regs) {
+        // ESI = CDocument*; CDedLevel is at CDocument + 0x60
+        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi) + 0x60);
+        auto* file = reinterpret_cast<rf::File*>(
+            *reinterpret_cast<void**>(static_cast<uintptr_t>(regs.esi) + 0x50));
+        auto& props = level->GetAlpineLevelProperties();
+
+        if (g_group_save_meshes.empty() && g_group_save_notes.empty() && g_group_save_coronas.empty())
+            return;
+
+        // Temporarily swap the level's object vectors with the collected group objects,
+        // then call the same chunk serializers used for .rfl files, then restore.
+        if (!g_group_save_meshes.empty()) {
+            auto saved = std::move(props.mesh_objects);
+            props.mesh_objects.assign(g_group_save_meshes.begin(), g_group_save_meshes.end());
+            mesh_serialize_chunk(*level, *file);
+            props.mesh_objects = std::move(saved);
+        }
+
+        if (!g_group_save_notes.empty()) {
+            auto saved = std::move(props.note_objects);
+            props.note_objects.assign(g_group_save_notes.begin(), g_group_save_notes.end());
+            note_serialize_chunk(*level, *file);
+            props.note_objects = std::move(saved);
+        }
+
+        if (!g_group_save_coronas.empty()) {
+            auto saved = std::move(props.corona_objects);
+            props.corona_objects.assign(g_group_save_coronas.begin(), g_group_save_coronas.end());
+            corona_serialize_chunk(*level, *file);
+            props.corona_objects = std::move(saved);
+        }
+
+        xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas to group",
+            g_group_save_meshes.size(), g_group_save_notes.size(), g_group_save_coronas.size());
+
+        g_group_save_meshes.clear();
+        g_group_save_notes.clear();
+        g_group_save_coronas.clear();
+    },
+};
+
+// Pre-load hook: capture moving_groups.size before stock group load runs.
+// At 0x0041d2d8: ESI = CDocument*, about to call FUN_00438340.
+// Instruction: MOV EDX, [ESI+0x50] (3 bytes)
+CodeInjection alpine_group_pre_load_hook{
+    0x0041d2d8,
+    [](auto& regs) {
+        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi) + 0x60);
+        g_moving_groups_size_before_load = level->moving_groups.size;
+    },
+};
+
+// Load hook: read Alpine object chunks after stock data.
+// At 0x0041d2e4: ESI = CDocument*, stock deserialization done.
+// Stock group load (FUN_00438340) deselects all, loads objects, selects each loaded
+// object, and creates a User-Defined Group entry in moving_groups. Alpine objects are
+// loaded after stock code finishes, so we must also add them to the selection and to
+// the newly created group entry's objects VArray (at group_entry + 0x10).
 CodeInjection alpine_group_load_hook{
     0x0041d2e4,
     [](auto& regs) {
-        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi));
-        void* io_ctx = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(level) + 0x50);
+        // ESI = CDocument*; CDedLevel is at CDocument + 0x60
+        auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi) + 0x60);
+        auto* file = reinterpret_cast<rf::File*>(
+            *reinterpret_cast<void**>(static_cast<uintptr_t>(regs.esi) + 0x50));
         auto& props = level->GetAlpineLevelProperties();
 
-        // Try to read sentinel — returns 0 on EOF/error (stock .rfg files)
-        int32_t sentinel = rfg_read_int32(io_ctx);
-        if (sentinel != alpine_group_sentinel) return;
+        // Track which objects existed before loading so we can select only the new ones
+        auto mesh_start = props.mesh_objects.size();
+        auto note_start = props.note_objects.size();
+        auto corona_start = props.corona_objects.size();
 
-        // Meshes
-        int32_t mesh_count = rfg_read_int32(io_ctx);
-        if (mesh_count < 0 || mesh_count > 10000) return;
-        for (int32_t i = 0; i < mesh_count; i++) {
-            auto* mesh = new DedMesh();
-            memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
-            mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
-            mesh->type = DedObjectType::DED_MESH;
-            mesh->collision_mode = 2;
+        // Read chunks in the same format as .rfl files: chunk_id (int32) + chunk_size (int32) + data
+        while (true) {
+            int32_t chunk_id = 0;
+            if (file->read(&chunk_id, 4) != 4) break;
+            int32_t chunk_size = 0;
+            if (file->read(&chunk_size, 4) != 4) break;
+            if (chunk_size < 0 || chunk_size > 10000000) break;
 
-            mesh->uid = rfg_read_int32(io_ctx);
-            if (!rfg_read_raw(io_ctx, &mesh->pos, sizeof(Vector3))) { DestroyDedMesh(mesh); return; }
-            if (!rfg_read_raw(io_ctx, &mesh->orient, sizeof(Matrix3))) { DestroyDedMesh(mesh); return; }
-            std::string sname = rfg_read_string(io_ctx);
-            mesh->script_name.assign_0(sname.c_str());
-            std::string mfn = rfg_read_string(io_ctx);
-            mesh->mesh_filename.assign_0(mfn.c_str());
-            std::string sa = rfg_read_string(io_ctx);
-            mesh->state_anim.assign_0(sa.c_str());
-            rfg_read_raw(io_ctx, &mesh->collision_mode, 1);
-            uint8_t num_ov = 0;
-            rfg_read_raw(io_ctx, &num_ov, 1);
-            for (uint8_t oi = 0; oi < num_ov; oi++) {
-                uint8_t slot = 0;
-                rfg_read_raw(io_ctx, &slot, 1);
-                std::string tex = rfg_read_string(io_ctx);
-                if (!tex.empty()) mesh->texture_overrides.push_back({slot, std::move(tex)});
+            if (chunk_id == alpine_mesh_chunk_id) {
+                mesh_deserialize_chunk(*level, *file, chunk_size);
             }
-            mesh->material = rfg_read_int32(io_ctx);
-            uint8_t is_cl = 0;
-            rfg_read_raw(io_ctx, &is_cl, 1);
-            mesh->clutter_props.is_clutter = (is_cl != 0);
-            if (mesh->clutter_props.is_clutter) {
-                auto& cp = mesh->clutter_props;
-                rfg_read_raw(io_ctx, &cp.life, sizeof(float));
-                cp.debris_filename = rfg_read_string(io_ctx);
-                cp.explosion_vclip = rfg_read_string(io_ctx);
-                rfg_read_raw(io_ctx, &cp.explosion_radius, sizeof(float));
-                rfg_read_raw(io_ctx, &cp.debris_velocity, sizeof(float));
-                for (int d = 0; d < 11; d++)
-                    rfg_read_raw(io_ctx, &cp.damage_type_factors[d], sizeof(float));
-                cp.corpse_filename = rfg_read_string(io_ctx);
-                cp.corpse_state_anim = rfg_read_string(io_ctx);
-                rfg_read_raw(io_ctx, &cp.corpse_collision, 1);
-                rfg_read_raw(io_ctx, &cp.corpse_material, 1);
+            else if (chunk_id == alpine_note_chunk_id) {
+                note_deserialize_chunk(*level, *file, chunk_size);
             }
-            mesh->vmesh = nullptr;
-            mesh->vmesh_load_failed = false;
-
-            props.mesh_objects.push_back(mesh);
-            level->master_objects.add(static_cast<DedObject*>(mesh));
-            level->select_object(static_cast<DedObject*>(mesh));
+            else if (chunk_id == alpine_corona_chunk_id) {
+                corona_deserialize_chunk(*level, *file, chunk_size);
+            }
+            else {
+                // Unknown chunk — stop reading
+                break;
+            }
         }
 
-        // Notes
-        int32_t note_count = rfg_read_int32(io_ctx);
-        if (note_count < 0 || note_count > 10000) return;
-        for (int32_t i = 0; i < note_count; i++) {
-            auto* note = new DedNote();
-            memset(static_cast<DedObject*>(note), 0, sizeof(DedObject));
-            note->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
-            note->type = DedObjectType::DED_NOTE;
+        int meshes_loaded = static_cast<int>(props.mesh_objects.size() - mesh_start);
+        int notes_loaded = static_cast<int>(props.note_objects.size() - note_start);
+        int coronas_loaded = static_cast<int>(props.corona_objects.size() - corona_start);
 
-            note->uid = rfg_read_int32(io_ctx);
-            if (!rfg_read_raw(io_ctx, &note->pos, sizeof(Vector3))) { delete note; return; }
-            if (!rfg_read_raw(io_ctx, &note->orient, sizeof(Matrix3))) { delete note; return; }
-            std::string sn = rfg_read_string(io_ctx);
-            note->script_name.assign_0(sn.c_str());
-            int32_t ncount = rfg_read_int32(io_ctx);
-            if (ncount < 0 || ncount > 10000) ncount = 0;
-            for (int32_t ni = 0; ni < ncount; ni++) {
-                note->notes.push_back(rfg_read_string(io_ctx));
+        if (!meshes_loaded && !notes_loaded && !coronas_loaded)
+            return;
+
+        // Assign new unique UIDs to imported Alpine objects (group import must not
+        // reuse UIDs from the file — stock FUN_004365c0 does the same for stock types).
+        // FUN_00484230 (hooked by alpine_generate_uid_hook) considers all objects.
+        auto generate_uid = AddrCaller{0x00484230};
+        for (auto i = mesh_start; i < props.mesh_objects.size(); i++)
+            static_cast<DedObject*>(props.mesh_objects[i])->uid = generate_uid.c_call<int>();
+        for (auto i = note_start; i < props.note_objects.size(); i++)
+            static_cast<DedObject*>(props.note_objects[i])->uid = generate_uid.c_call<int>();
+        for (auto i = corona_start; i < props.corona_objects.size(); i++)
+            static_cast<DedObject*>(props.corona_objects[i])->uid = generate_uid.c_call<int>();
+
+        // Add newly loaded Alpine objects to the selection so they move with the
+        // other stock objects when the user places the imported group.
+        for (auto i = mesh_start; i < props.mesh_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.mesh_objects[i]));
+        for (auto i = note_start; i < props.note_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.note_objects[i]));
+        for (auto i = corona_start; i < props.corona_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.corona_objects[i]));
+
+        // Refresh console display to include newly selected Alpine objects
+        // (stock FUN_00423460 runs inside FUN_00438340, before our hook loads them)
+        level->update_console_display();
+
+        // Add Alpine objects to the User-Defined Group entry created by the stock
+        // group load. Group entries are 0x34-byte structs in moving_groups (CDedLevel+0x4B4):
+        //   +0x00: int type
+        //   +0x04: VArray<Brush*> brushes
+        //   +0x10: VArray<DedObject*> objects
+        //   +0x1C: int flag (0=user-defined, non-zero=moving group/keyframes)
+        //   +0x20: char name[20]
+        // The stock loader (FUN_004365c0) populates the objects VArray from the file;
+        // we add Alpine objects to the same VArray so they appear in the group.
+        //
+        // Limitation: our Alpine chunk format doesn't encode per-group membership, so
+        // if multiple groups were imported at once, Alpine objects are added to the first
+        // new user-defined group only. This matches the typical single-group import case.
+        auto& mg = level->moving_groups;
+        int new_groups = mg.size - g_moving_groups_size_before_load;
+        // Safety cap: never iterate more than 16 new entries to guard against corruption
+        if (new_groups > 0 && new_groups <= 16) {
+            for (int gi = g_moving_groups_size_before_load; gi < mg.size; gi++) {
+                auto* group_entry = mg.data_ptr[gi];
+                if (!group_entry) continue;
+                // Only add to user-defined groups (flag at +0x1C == 0), not moving groups
+                int group_flag = *reinterpret_cast<int*>(
+                    reinterpret_cast<uintptr_t>(group_entry) + 0x1C);
+                if (group_flag != 0) continue;
+                // group_entry+0x10 is the objects VArray within the group entry struct
+                auto* obj_varray = reinterpret_cast<VArray<DedObject*>*>(
+                    reinterpret_cast<uintptr_t>(group_entry) + 0x10);
+                for (auto i = mesh_start; i < props.mesh_objects.size(); i++)
+                    AddrCaller{0x00491020}.this_call(obj_varray, static_cast<DedObject*>(props.mesh_objects[i]));
+                for (auto i = note_start; i < props.note_objects.size(); i++)
+                    AddrCaller{0x00491020}.this_call(obj_varray, static_cast<DedObject*>(props.note_objects[i]));
+                for (auto i = corona_start; i < props.corona_objects.size(); i++)
+                    AddrCaller{0x00491020}.this_call(obj_varray, static_cast<DedObject*>(props.corona_objects[i]));
+                break; // Only add to the first user-defined group
             }
-
-            props.note_objects.push_back(note);
-            level->master_objects.add(static_cast<DedObject*>(note));
-            level->select_object(static_cast<DedObject*>(note));
-        }
-
-        // Coronas
-        int32_t corona_count = rfg_read_int32(io_ctx);
-        if (corona_count < 0 || corona_count > 10000) return;
-        for (int32_t i = 0; i < corona_count; i++) {
-            auto* corona = new DedCorona();
-            memset(static_cast<DedObject*>(corona), 0, sizeof(DedObject));
-            corona->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
-            corona->type = DedObjectType::DED_CORONA;
-
-            corona->uid = rfg_read_int32(io_ctx);
-            if (!rfg_read_raw(io_ctx, &corona->pos, sizeof(Vector3))) { DestroyDedCorona(corona); return; }
-            if (!rfg_read_raw(io_ctx, &corona->orient, sizeof(Matrix3))) { DestroyDedCorona(corona); return; }
-            std::string sn = rfg_read_string(io_ctx);
-            corona->script_name.assign_0(sn.c_str());
-            rfg_read_raw(io_ctx, &corona->color_r, 1);
-            rfg_read_raw(io_ctx, &corona->color_g, 1);
-            rfg_read_raw(io_ctx, &corona->color_b, 1);
-            rfg_read_raw(io_ctx, &corona->color_a, 1);
-            corona->corona_bitmap = rfg_read_string(io_ctx);
-            rfg_read_raw(io_ctx, &corona->cone_angle, sizeof(float));
-            rfg_read_raw(io_ctx, &corona->intensity, sizeof(float));
-            rfg_read_raw(io_ctx, &corona->radius_distance, sizeof(float));
-            rfg_read_raw(io_ctx, &corona->radius_scale, sizeof(float));
-            rfg_read_raw(io_ctx, &corona->diminish_distance, sizeof(float));
-            corona->volumetric_bitmap = rfg_read_string(io_ctx);
-            uint8_t has_vol = 0;
-            rfg_read_raw(io_ctx, &has_vol, 1);
-            if (has_vol) {
-                rfg_read_raw(io_ctx, &corona->volumetric_height, sizeof(float));
-                rfg_read_raw(io_ctx, &corona->volumetric_length, sizeof(float));
-            }
-
-            props.corona_objects.push_back(corona);
-            level->master_objects.add(static_cast<DedObject*>(corona));
-            level->select_object(static_cast<DedObject*>(corona));
         }
 
         xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas from group",
-            mesh_count, note_count, corona_count);
+            meshes_loaded, notes_loaded, coronas_loaded);
     },
 };
 
@@ -1249,7 +1189,10 @@ void ApplyAlpineObjectPatches()
     alpine_factory_hook.install();
     alpine_create_object_patch.install();
     alpine_render_patch.install();
+    alpine_group_save_clear_hook.install();
+    alpine_group_type_collect_hook.install();
     alpine_group_save_hook.install();
+    alpine_group_pre_load_hook.install();
     alpine_group_load_hook.install();
 
     xlog::info("[AlpineObj] Shared Alpine object patches applied");
