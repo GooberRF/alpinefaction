@@ -40,7 +40,6 @@ FunHook<int(int)> timer_get_hook{
 CodeInjection timer_init_patch{
     0x00504A50,
     [] (auto& regs) {
-        // `rf::timer::freq` can overflow, because it is not a `LARGE_INTEGER`.
         QueryPerformanceFrequency(&g_qpc_frequency);
 
         // Prevent a near impossible edge case in which QPC jumps backwards or too far
