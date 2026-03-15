@@ -274,7 +274,12 @@ target_link_libraries(AlpineFaction
     stb_vorbis
     SDL3::SDL3-static
     GamepadMotionHelpers
-    setupapi
-    imm32
-    cfgmgr32
 )
+
+if(WIN32)
+    target_link_libraries(AlpineFaction
+        setupapi
+        imm32
+        cfgmgr32
+    )
+endif()
