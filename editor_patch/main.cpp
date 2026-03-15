@@ -33,7 +33,11 @@
 #include "vtypes.h"
 #include "level.h"
 #include "event.h"
+#include "mesh.h"
+#include "alpine_obj.h"
 #include "geometry.h"
+#include "textures.h"
+#include "meshes.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -104,10 +108,7 @@ CodeInjection CMainFrame_PreCreateWindow_injection{
 CodeInjection CEditorApp_InitInstance_additional_file_paths_injection{
     0x0048290D,
     []() {
-        // Load v3m files from more localizations instead of only VPP packfiles
-        auto file_add_path = addr_as_ref<int(const char *path, const char *exts, bool cd)>(0x004C3950);
-        file_add_path("red\\meshes", ".v3m .vfx", false);
-        file_add_path("user_maps\\meshes", ".v3m .vfx", false);
+        meshes_init_paths();
     },
 };
 
@@ -396,6 +397,10 @@ static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
 {
     if (msg == WM_COMMAND && LOWORD(wParam) == IDC_BRUSH_MIRROR) {
         handle_brush_mirror();
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_BRUSH_CONVERT) {
+        handle_brush_convert();
         return 0;
     }
     if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
@@ -1104,6 +1109,9 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case IDC_BRUSH_MIRROR:
                 handler = handle_brush_mirror;
                 break;
+            case IDC_BRUSH_CONVERT:
+                handler = handle_brush_convert;
+                break;
             case IDC_VERTEX_DELETE:
                 handler = handle_vertex_delete;
                 break;
@@ -1112,6 +1120,12 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case IDC_GROUP_MIRROR:
                 handler = handle_group_mirror;
+                break;
+            case ID_RELOAD_MESHES:
+                handler = reload_custom_meshes;
+                break;
+            case ID_RELOAD_TEXTURES:
+                handler = reload_custom_textures;
                 break;
         }
 
@@ -1210,6 +1224,17 @@ CodeInjection CDedLevel_CloneObject_injection{
         if (type == 0xC) {
             // clone cutscene path node
             regs.eax = AddrCaller{0x00413C70}.this_call<void*>(that, obj);
+            regs.eip = 0x004135CF;
+        }
+        else if (type == static_cast<int>(DedObjectType::DED_MESH)) {
+            // Safety net: if CloneObject is called for mesh (shouldn't normally happen
+            // since mesh_paste_skip_stock handles it), create clone WITHOUT adding to
+            // mesh_objects to avoid double-cloning.
+            auto* source = static_cast<DedMesh*>(reinterpret_cast<DedObject*>(obj));
+            xlog::info("[Mesh] CloneObject called (safety): source={:p} uid={} type=0x{:x}",
+                static_cast<void*>(source), source->uid, type);
+            auto* clone = CloneMeshObject(source, false);
+            regs.eax = reinterpret_cast<uintptr_t>(static_cast<DedObject*>(clone));
             regs.eip = 0x004135CF;
         }
     },
@@ -1521,6 +1546,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyTriggerPatches();
     ApplyLevelPatches();
     ApplyEventsPatches();
+    ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
 

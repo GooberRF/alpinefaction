@@ -54,11 +54,12 @@ struct PlayerAdditionalData {
     bool is_muted = false;
 
     // Server-side variables.
+    bool in_grace_period = true;
     ClientVersionInfoProfile version_info{};
-    std::optional<std::chrono::high_resolution_clock::time_point> death_time{};
+    std::optional<std::chrono::steady_clock::time_point> death_time{};
 
-    std::optional<int> last_hit_sound_ms{};
-    std::optional<int> last_critical_sound_ms{};
+    std::optional<int64_t> last_hit_sound_ms{};
+    std::optional<int64_t> last_critical_sound_ms{};
 
     struct {
         std::map<std::string, PlayerNetGameSaveData> saves{};

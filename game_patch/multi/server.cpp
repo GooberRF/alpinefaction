@@ -252,26 +252,20 @@ CodeInjection entity_reload_current_primary_patch{
     },
 };
 
-int get_level_file_version(const std::string& file_name)
-{
-    auto level_file = std::make_unique<rf::File>();
-
-    if (level_file->open(file_name.c_str(), rf::File::mode_read) != 0) {
+std::expected<uint32_t, std::errc> get_level_file_version(const std::string& file_name) {
+    rf::File level_file{};
+    if (level_file.open(file_name.c_str(), rf::File::mode_read) != 0) {
         xlog::debug("Could not open {}", file_name);
-        return -1; // error
+        return std::unexpected(std::errc::io_error);
     }
 
     // Seek directly to offset 4
-    if (level_file->seek(4, rf::File::seek_set) != 0) {
+    if (level_file.seek(4, rf::File::seek_set) != 0) {
         xlog::debug("Failed to seek in {}", file_name);
-        level_file->close();
-        return -1;
+        return std::unexpected(std::errc::invalid_seek);
     }
 
-    uint32_t version = level_file->read<uint32_t>(0, 0);
-
-    level_file->close();
-    return static_cast<int>(version);
+    return level_file.read<uint32_t>(0, 0);
 }
 
 std::string build_player_info_line(rf::Player* player, bool new_join) {
@@ -412,7 +406,7 @@ void handle_next_map_command(rf::Player* player)
 {
     int next_idx = (rf::netgame.current_level_index + 1) % rf::netgame.levels.size();
     rf::String next_level_filename = rf::netgame.levels[next_idx];
-    int version = get_level_file_version(next_level_filename);
+    const uint32_t version = get_level_file_version(next_level_filename).value_or(0);
     auto msg = std::format("Next level: {} (version {})", next_level_filename, version);
     af_send_automated_chat_msg(msg, player);
 }
@@ -633,7 +627,7 @@ CodeInjection multi_limbo_leave_pre_patch{
     0x0047C497,
     [](auto& regs) {
         if (rf::is_server) {
-            const int ver = get_level_file_version(rf::level_filename_to_load);
+            const uint32_t ver = get_level_file_version(rf::level_filename_to_load).value_or(0);
             std::vector<rf::Player*> to_kick;
 
             auto plist = SinglyLinkedList{rf::player_list};
@@ -872,7 +866,7 @@ static void print_alpine_restrict_status_summary()
     const bool reject_non_alpine = cfg.reject_non_alpine_clients || hard_reject;
     const bool require_alpine = cfg.clients_require_alpine || auto_require_alpine;
     const bool enforce_release = cfg.alpine_require_release_build || auto_require_release;
-    const auto level_version = get_level_file_version(rf::level.filename.c_str());
+    const auto level_version = get_level_file_version(rf::level.filename.c_str()).value_or(0);
     const auto game_type = rf::multi_get_game_type();
 
     rf::console::print("Alpine restriction summary:");
@@ -997,7 +991,16 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
     auto [cmd_name, cmd_arg] = strip_by_space(server_command);
 
     if (cmd_name == "info") {
-        af_send_automated_chat_msg(std::format("Server powered by Alpine Faction {} ({}), build date: {} {}", VERSION_STR, VERSION_CODE, __DATE__, __TIME__), sender);
+        af_send_automated_chat_msg(
+            std::format(
+                "This server is powered by Alpine Faction {} ({}) - {} {}",
+                VERSION_STR,
+                VERSION_CODE,
+                get_build_date(),
+                get_build_time()
+            ),
+            sender
+        );
     }
     else if (cmd_name == "vote") {
         auto [vote_name, vote_arg] = strip_by_space(cmd_arg);
@@ -1085,17 +1088,21 @@ void send_sound_packet_throwaway(rf::Player* target, int sound_id)
     rf::multi_io_send(target, &packet, sizeof(packet));
 }
 
-void send_sound_packet(rf::Player* target, std::optional<int>& last_sent_time, int rate_limit, int sound_id)
-{
+void send_sound_packet(
+    rf::Player* const target,
+    std::optional<int64_t>& last_sent_time,
+    const int rate_limit,
+    const int sound_id
+) {
     // Rate limiting - max `rate_limit` times per second
-    int now = rf::timer_get(1000);
+    const int64_t now = timer::get_i64(1000);
     if (last_sent_time && now - *last_sent_time < 1000 / rate_limit) {
         return;
     }
     last_sent_time.emplace(now);
 
     // Send sound packet
-    RF_SoundPacket packet;
+    RF_SoundPacket packet{};
     packet.header.type = RF_GPT_SOUND;
     packet.header.size = sizeof(packet) - sizeof(packet.header);
     packet.sound_id = sound_id;
@@ -1381,12 +1388,27 @@ CodeInjection send_ping_time_wrap_fix{
             xlog::trace("sending ping");
             io_stats.send_ping_packet_timestamp.set(3000);
             rf::multi_ping_player(player);
-            io_stats.last_ping_time = rf::timer_get(1000);
+            io_stats.last_ping_time = rf::timer::get(1000);
 
             // check if player is idle
             player_idle_check(player);
         }
         regs.eip = 0x0047CD64;
+    },
+};
+
+CodeInjection ping_response_time_wrap_fix{
+    0x0047CB83,
+    [] (auto& regs) {
+        const rf::MultiIoStats& io_stats = addr_as_ref<rf::MultiIoStats>(regs.esi);
+        // HACKFIX.  May be valid, but treat as sentinel.
+        if (io_stats.last_ping_time == -1) {
+            // Reset.
+            regs.eip = 0x0047CB8D;
+        } else {
+            // Calculate ping.
+            regs.eip = 0x0047CBA9;
+        }
     },
 };
 
@@ -1826,7 +1848,7 @@ void bot_decommission_check() {
     std::array<int, MAX_TEAMS> active_persons_per_team{0, 0};
 
     const bool is_team_mode = multi_is_team_game_type();
-    const auto now = std::chrono::high_resolution_clock::now();
+    const auto now = std::chrono::steady_clock::now();
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (player.is_browser) {
             continue;
@@ -1885,34 +1907,35 @@ void update_player_active_status(rf::Player* const player) {
 }
 
 void player_idle_check(rf::Player* const player) {
-    const auto& inactivity_cfg = g_alpine_server_config.inactivity_config;
+    const InactivityConfig& inactivity_cfg = g_alpine_server_config.inactivity_config;
     if (!inactivity_cfg.enabled) {
         return;
-    }
-
-    if (player->idle.kick_timer.valid()) {
+    } else if (player->idle.kick_timer.valid()) {
         if (inactivity_cfg.kick_after_warning && player->idle.kick_timer.elapsed()) {
             kick_player_delayed(player);
         }
-        return; // don't continue if a kick is already pending
-    }
-
-    if (rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
-        return; // don't mark players as idle unless we're in gameplay
-    }
-
-    if (player->version_info.software == ClientSoftware::Browser
+        // don't continue if a kick is already pending
+        return;
+    } else if (rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
+        // don't mark players as idle unless we're in gameplay
+        return;
+    } else if (player->version_info.software == ClientSoftware::Browser
         || player->is_bot) {
         return; // don't mark browsers or bots as idle
+    } else if (g_match_info.match_active || g_match_info.pre_match_active) {
+        // don't mark players as idle during a match or pre-match
+        return;
     }
 
-    if (g_match_info.match_active || g_match_info.pre_match_active) {
-        return; // don't mark players as idle during a match or pre-match
-    }
-
-    if (player->net_data->join_time_ms
-        > (rf::timer_get_milliseconds() - inactivity_cfg.new_player_grace_ms)) {
-        return; // don't mark new players as idle
+    // Use unsigned delta to handle timer wrap correctly (~25 days)
+    const uint32_t time_since_join = static_cast<uint32_t>(rf::timer::get(1000))
+        - static_cast<uint32_t>(player->net_data->join_time_ms);
+    if (player->in_grace_period
+        && time_since_join < inactivity_cfg.new_player_grace_ms) {
+        // don't mark new players as idle
+        return;
+    } else if (player->in_grace_period) {
+        player->in_grace_period = false;
     }
 
     if (player_is_idle(player)) {
@@ -1988,9 +2011,11 @@ std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_st
     }
 
     if (check_level_version) {
-        int level_version = get_level_file_version(rf::level.filename.c_str());
+        const uint32_t level_version =
+            get_level_file_version(rf::level.filename.c_str()).value_or(0);
 
-        if (level_version > info.max_rfl_ver && info.software != ClientSoftware::Browser) {
+        if (level_version > info.max_rfl_ver
+            && info.software != ClientSoftware::Browser) {
             std::string client_name = "";
             switch (info.software) {
                 case ClientSoftware::AlpineFaction:
@@ -2734,13 +2759,8 @@ std::optional<int> is_closer_to_red_flag(const rf::Vector3* pos)
         return std::nullopt;
     }
 
-    float dist_to_red_sq =  std::pow(pos->x - red_flag_pos.x, 2) +
-                            std::pow(pos->y - red_flag_pos.y, 2) +
-                            std::pow(pos->z - red_flag_pos.z, 2);
-
-    float dist_to_blue_sq = std::pow(pos->x - blue_flag_pos.x, 2) +
-                            std::pow(pos->y - blue_flag_pos.y, 2) +
-                            std::pow(pos->z - blue_flag_pos.z, 2);
+    const float dist_to_red_sq = (*pos - red_flag_pos).len_sq();
+    const float dist_to_blue_sq = (*pos - blue_flag_pos).len_sq();
 
     return dist_to_red_sq < dist_to_blue_sq ? 1 : 0;
 }
@@ -3102,6 +3122,9 @@ void server_init()
     // Fix sending ping packets after time in ms wraps around (~25 days)
     send_ping_time_wrap_fix.install();
 
+    // Fix receiving ping responses after time in ms wraps around (~25 days)
+    ping_response_time_wrap_fix.install();
+
     // Ignore obj_update position for some time after teleportation
     process_obj_update_set_pos_injection.install();
 
@@ -3165,7 +3188,7 @@ void server_on_limbo_state_enter()
 
     auto player_list = SinglyLinkedList{rf::player_list};
 
-    const int ver = get_level_file_version(rf::level_filename_to_load);
+    const uint32_t ver = get_level_file_version(rf::level_filename_to_load).value_or(0);
 
     apply_game_type_for_current_level();
     koth_force_broadcast_all_hill_states();
@@ -3184,10 +3207,9 @@ void server_on_limbo_state_enter()
         if (&player != rf::local_player) {
             if (ver > player.version_info.max_rfl_ver && player.version_info.software != ClientSoftware::Browser) {
                 notify_for_upcoming_level_version_incompatible(&player);
-            }
-            else if (get_upcoming_game_type() != rf::netgame.type &&
-                !(player.version_info.software == ClientSoftware::AlpineFaction && player.version_info.minor >= 2) &&
-                player.version_info.software != ClientSoftware::Browser) {
+            } else if (get_upcoming_game_type() != rf::netgame.type
+                && !(player.version_info.software == ClientSoftware::AlpineFaction && player.version_info.minor >= 2U)
+                && player.version_info.software != ClientSoftware::Browser) {
                 // only notify them if they CAN load the map, otherwise they can't play anyway so no point
                 notify_for_client_incompatible_with_switching_game_type(&player);
             }

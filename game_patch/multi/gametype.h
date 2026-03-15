@@ -115,7 +115,7 @@ struct HillInfo
 
     // clientside visual smoothing
     bool vis_contested = false;
-    int vis_last_flip_ms = 0;
+    int64_t vis_last_flip_ms = 0;
 };
 
 struct CPGTRules // capture point game types

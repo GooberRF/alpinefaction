@@ -6,12 +6,15 @@ Version 1.3.0 (Bakeapple): Not yet released
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
 - Expanded destruction capabilities available to developers
-    - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
-    - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
-    - `Is Geoable` flag added to brush properties
-    - Support for rock, wood, cement, metal, and ice breakable detail brushes
-    - Add dynamic debris generation from breakable detail brushes
-    - `No Debris` flag added to brush properties for breakable detail brushes
+  - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
+  - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
+  - `Is Geoable` flag added to brush properties
+  - Support for rock, wood, cement, metal, and ice breakable detail brushes
+  - Add dynamic debris generation from breakable detail brushes
+  - `No Debris` flag added to brush properties for breakable detail brushes
+- Added new object types
+  - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
+  - `Note` for leaving important information in levels (editor only)
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -48,8 +51,13 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
 - Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
 - Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
+- Add `Mesh_Animate`, `Mesh_Set_Texture`, and `Mesh_Set_Collision` events
+- Add `Reload Meshes` and `Reload Textures` options to level editor `Tools` menu, to scan for new assets in `\user_maps\`
+- Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
+- Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 
 [@is-this-c](https://github.com/is-this-c)
+- Use 64-bit integers for time deltas
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add version and uptime to a server's printed config
 - Default gore level to 1
@@ -68,12 +76,14 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `cl_legacy_bob` to restore legacy first person weapon running animation behavior
 - Show powerup icons in spectator mode
 - Improve presented damage calculations for stats and damage numbers
+- Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
+- Fix pings of zero after 24 days of uptime
 - Fix `AF_Heal` event forwarding received messages
 - Fix rare crash when shooting at alpha-masked surfaces in Direct3D 11 renderer
 - Fix overflow fix for `emitters.tbl` entries not being correctly applied
@@ -89,6 +99,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor clip tool silently failing on certain brush orientations
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix parse of `flag_return_time` to be as a float instead of an integer
 - Fix faulty cull in fpgun infrared scanners
 - Fix stale weapon selection time stamps
 

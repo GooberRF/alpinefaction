@@ -154,7 +154,7 @@ public:
             IpRange r = IpRange::parse(s);
             ip_ranges_.push_back(r);
             return true;
-        } catch (const std::exception& e) {
+        } catch (const std::exception&) {
             xlog::error("Failed to parse banlist entry: {}", s);
             return false;
         }
@@ -206,7 +206,7 @@ FunHook multi_ban_validate_ip_hook{
     [](const char* s) {
         try {
             IpRange::parse(s);
-        } catch (const std::exception& e) {
+        } catch (const std::exception&) {
             xlog::error("Invalid IP range: {}", s);
             return 0;
         }

@@ -1178,6 +1178,8 @@ CodeInjection multi_hud_render_patch{
                 toggle_chat_menu(ChatMenuType::None);
             }
         }
+
+        multi_hud_render_killfeed();
     }
 };
 
@@ -1187,6 +1189,7 @@ void multi_hud_level_init() {
     g_run_life_start_timestamp.invalidate();
     g_run_timer_reset_by_respawn_key = false;
     g_run_timer_fade_active = false;
+    killfeed_clear();
 
     level_menu = ChatMenuList{
         .display_string = "MAP MESSAGES",
@@ -1627,6 +1630,16 @@ ConsoleCommand2 ui_always_show_specators_cmd{
     "ui_always_show_specators",
 };
 
+ConsoleCommand2 ui_gamefeed_cmd{
+    "ui_gamefeed",
+    [] {
+        g_alpine_game_config.killfeed_enabled = !g_alpine_game_config.killfeed_enabled;
+        rf::console::print("Game feed is {}", g_alpine_game_config.killfeed_enabled ? "enabled" : "disabled");
+    },
+    "Toggle game event messages in a dedicated feed instead of chat",
+    "ui_gamefeed",
+};
+
 ConsoleCommand2 ui_simple_server_chat_messages_cmd{
     "ui_simple_server_chat_messages",
     [] {
@@ -1674,6 +1687,9 @@ void multi_hud_apply_patches()
     ui_runtimer_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();
+    ui_gamefeed_cmd.register_cmd();
+
+    multi_hud_killfeed_apply_patches();
 
     control_config_get_mouse_delta_hook.install();
 }

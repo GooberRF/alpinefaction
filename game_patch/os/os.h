@@ -3,15 +3,54 @@
 #include <chrono>
 #include <optional>
 #include <algorithm>
+#include <windows.h>
+#include <xlog/xlog.h>
 
 void os_apply_patch();
 void frametime_render_ui();
 float get_maximum_fps();
 void apply_maximum_fps();
-void wait_for(float ms);
+
+struct WaitableTimer {
+    HANDLE handle;
+
+    WaitableTimer()
+        // Should be a resolution of 500 us.
+        : handle(CreateWaitableTimerExA(
+            nullptr,
+            nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            TIMER_MODIFY_STATE | SYNCHRONIZE
+        )) {
+        if (!handle) {
+            ERR_ONCE(
+                "`CreateWaitableTimerExA` in `WaitableTimer::WaitableTimer` failed ({})",
+                GetLastError()
+            );
+        }
+    }
+
+    ~WaitableTimer() {
+        if (handle) {
+            CloseHandle(handle);
+        }
+    }
+
+    WaitableTimer(const WaitableTimer&) = delete;
+    WaitableTimer& operator=(const WaitableTimer&) = delete;
+};
+
+// `timer` should be cached in hot paths.
+void wait_for(float ms, const WaitableTimer& timer = WaitableTimer{});
+
+namespace timer {
+    int64_t get_i64(int scale);
+}
+
+inline LARGE_INTEGER g_qpc_frequency{};
 
 class HighResTimer {
-    using clock = std::chrono::high_resolution_clock;
+    using clock = std::chrono::steady_clock;
 
     std::optional<clock::time_point> _start_time{};
     std::chrono::nanoseconds _duration{0};
