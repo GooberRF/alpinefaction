@@ -1096,6 +1096,19 @@ bool alpine_player_settings_load(rf::Player* player)
                     player->settings.controls.bindings[bind_id].scan_codes[1] = scan2.empty() ? -1 : std::stoi(scan2);
                     player->settings.controls.bindings[bind_id].mouse_btn_id = mouse_btn.empty() ? -1 : std::stoi(mouse_btn);
 
+                    // Optional 5th field: gamepad scan code
+                    std::string gp_sc_str;
+                    if (std::getline(bind_values, gp_sc_str, ',') && !gp_sc_str.empty()) {
+                        int gp_sc = std::stoi(gp_sc_str);
+                        int offset = gp_sc - CTRL_GAMEPAD_SCAN_BASE;
+                        if (offset >= 0 && offset < gamepad_get_button_count())
+                            gamepad_set_button_binding(offset, bind_id);
+                        else if (gp_sc == CTRL_GAMEPAD_LEFT_TRGGER)
+                            gamepad_set_trigger_action(0, bind_id);
+                        else if (gp_sc == CTRL_GAMEPAD_RIGHT_TRGGER)
+                            gamepad_set_trigger_action(1, bind_id);
+                    }
+
                     xlog::info("Loaded Bind: {} = {}, {}, {}, {}", action_name, bind_id, scan1, scan2, mouse_btn);
                     processed_keys.insert(key);
                 }
@@ -1160,33 +1173,35 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadIconOverride=" << g_alpine_game_config.gamepad_icon_override << "\n";
     file << "GamepadJoyInvertY=" << g_alpine_game_config.gamepad_joy_invert_y << "\n";
     file << "GamepadSwapSticks=" << g_alpine_game_config.gamepad_swap_sticks << "\n";
-    // Per-button gamepad bindings (only write slots that are actually bound)
-    for (int b = 0; b < gamepad_get_button_count(); ++b) {
-        int action = gamepad_get_button_binding(b);
-        if (action >= 0)
-            file << "GamepadBtn_" << b << "=" << action << "\n";
-    }
-    file << "GamepadLTAction=" << gamepad_get_trigger_action(0) << "\n";
-    file << "GamepadRTAction=" << gamepad_get_trigger_action(1) << "\n";
 
     file << "\n[ActionBinds]\n";
-    file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID}\n";
+    file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID},{GamepadScanCode}\n";
 
-    // Key bind format: Bind:ActionName=ID,PrimaryScanCode,SecondaryScanCode,MouseButtonID
+    // Key bind format: Bind:ActionName=ID,PrimaryScanCode,SecondaryScanCode,MouseButtonID,GamepadScanCode
     // Note ActionName is not used when loading, ID is. ActionName is included for readability.
+    // GamepadScanCode is -1 if no gamepad button is bound to this action.
     for (int i = 0; i < cc.num_bindings; ++i) {
-        xlog::info("Saving Bind: {} = {}, {}, {}, {}", 
-                   cc.bindings[i].name, 
-                   i, 
-                   cc.bindings[i].scan_codes[0], 
-                   cc.bindings[i].scan_codes[1], 
-                   cc.bindings[i].mouse_btn_id);
+        int16_t gp_sc = -1;
+        int btn = gamepad_get_button_for_action(i);
+        int trig = gamepad_get_trigger_for_action(i);
+        if (btn >= 0) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
+        else if (trig == 0) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
+        else if (trig == 1) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
 
-        file << "Bind:" << cc.bindings[i].name << "=" 
-             << i << "," 
-             << cc.bindings[i].scan_codes[0] << "," 
+        xlog::info("Saving Bind: {} = {}, {}, {}, {}, {}",
+                   cc.bindings[i].name,
+                   i,
+                   cc.bindings[i].scan_codes[0],
+                   cc.bindings[i].scan_codes[1],
+                   cc.bindings[i].mouse_btn_id,
+                   gp_sc);
+
+        file << "Bind:" << cc.bindings[i].name << "="
+             << i << ","
+             << cc.bindings[i].scan_codes[0] << ","
              << cc.bindings[i].scan_codes[1] << ","
-             << cc.bindings[i].mouse_btn_id << "\n";
+             << cc.bindings[i].mouse_btn_id << ","
+             << gp_sc << "\n";
     }
 }
 
