@@ -236,6 +236,12 @@ struct VArray
         add_if_not_exists_raw(reinterpret_cast<void*>(value));
     }
 
+    // FUN_00491020: unconditional append (always adds, no dedup check)
+    void push_back(T value)
+    {
+        AddrCaller{0x00491020}.this_call(this, value);
+    }
+
     // Remove first occurrence of value
     void remove_by_value(T value)
     {

@@ -192,10 +192,10 @@ struct GFace
         AddrCaller{0x0048a700}.c_call(face);
     }
 
-    // FUN_00484230: generate next unique face/brush UID
+    // FUN_00484230: generate next unique face/brush UID (delegates to ::generate_uid in vtypes.h)
     static int generate_uid()
     {
-        return AddrCaller{0x00484230}.c_call<int>();
+        return ::generate_uid();
     }
 };
 static_assert(sizeof(GFace) == 0x60);
@@ -541,6 +541,31 @@ enum class DedRoomEffectType : int
     Liquid = 2,
 };
 
+// Group entry struct (0x34 bytes) — element of CDedLevel::moving_groups
+// Constructor: FUN_0043dec0 (zeros 4 x 12-byte blocks at +0x04, +0x10, +0x1C, +0x28)
+// Creation: FUN_0043ccf0 (allocs 0x34, calls constructor, sets type, pushes to moving_groups)
+// Tree view: FUN_00440590 (iterates entries, sorts into User_Defined vs Moving groups)
+struct GroupEntry
+{
+    int type;                               // +0x00  set by FUN_0043ccf0 (values: 3,4,5,10)
+    VArray<BrushNode*> brushes;             // +0x04  brushes in this group
+    VArray<DedObject*> objects;             // +0x10  objects in this group
+    VArray<DedObject*>* keyframes;          // +0x1C  NULL=user-defined group, non-NULL=moving group
+                                            //        points to dynamically allocated VArray of keyframe objects
+    VString name;                           // +0x20  group display name
+    VArray<void*> field_28;                 // +0x28  purpose unknown (zeroed by constructor)
+
+    bool is_user_defined() const { return keyframes == nullptr; }
+    bool is_moving_group() const { return keyframes != nullptr; }
+};
+static_assert(sizeof(GroupEntry) == 0x34);
+static_assert(offsetof(GroupEntry, type) == 0x00);
+static_assert(offsetof(GroupEntry, brushes) == 0x04);
+static_assert(offsetof(GroupEntry, objects) == 0x10);
+static_assert(offsetof(GroupEntry, keyframes) == 0x1C);
+static_assert(offsetof(GroupEntry, name) == 0x20);
+static_assert(offsetof(GroupEntry, field_28) == 0x28);
+
 struct CDedLevel
 {
     // --- vtable + string properties ---
@@ -660,7 +685,7 @@ struct CDedLevel
     void* dialog_panels[28];                      // +0x444 (28 pointers, ends at +0x4B4)
 
     // --- moving groups (Keyframes) ---
-    VArray<DedObject*> moving_groups;             // +0x4B4 (each element has nested VArray at +0x1C)
+    VArray<GroupEntry*> moving_groups;             // +0x4B4 (0x34-byte GroupEntry structs)
     char _pad_4C0[0x608 - 0x4C0];                // +0x4C0 (VArrays, containers, strings to end)
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)
@@ -693,7 +718,7 @@ struct CDedLevel
 
     void add_to_selection(DedObject* obj)
     {
-        AddrCaller{0x00491020}.this_call(&selection, obj);
+        selection.push_back(obj);
     }
 
     void update_console_display()

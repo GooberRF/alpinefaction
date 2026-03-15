@@ -1106,14 +1106,13 @@ CodeInjection alpine_group_load_hook{
 
         // Assign new unique UIDs to imported Alpine objects (group import must not
         // reuse UIDs from the file — stock FUN_004365c0 does the same for stock types).
-        // FUN_00484230 (hooked by alpine_generate_uid_hook) considers all objects.
-        auto generate_uid = AddrCaller{0x00484230};
+        // generate_uid (vtypes.h, hooked by alpine_generate_uid_hook) considers all objects.
         for (auto i = mesh_start; i < props.mesh_objects.size(); i++)
-            static_cast<DedObject*>(props.mesh_objects[i])->uid = generate_uid.c_call<int>();
+            static_cast<DedObject*>(props.mesh_objects[i])->uid = generate_uid();
         for (auto i = note_start; i < props.note_objects.size(); i++)
-            static_cast<DedObject*>(props.note_objects[i])->uid = generate_uid.c_call<int>();
+            static_cast<DedObject*>(props.note_objects[i])->uid = generate_uid();
         for (auto i = corona_start; i < props.corona_objects.size(); i++)
-            static_cast<DedObject*>(props.corona_objects[i])->uid = generate_uid.c_call<int>();
+            static_cast<DedObject*>(props.corona_objects[i])->uid = generate_uid();
 
         // Add newly loaded Alpine objects to the selection so they move with the
         // other stock objects when the user places the imported group.
@@ -1129,14 +1128,9 @@ CodeInjection alpine_group_load_hook{
         level->update_console_display();
 
         // Add Alpine objects to the User-Defined Group entry created by the stock
-        // group load. Group entries are 0x34-byte structs in moving_groups (CDedLevel+0x4B4):
-        //   +0x00: int type
-        //   +0x04: VArray<Brush*> brushes
-        //   +0x10: VArray<DedObject*> objects
-        //   +0x1C: int flag (0=user-defined, non-zero=moving group/keyframes)
-        //   +0x20: char name[20]
-        // The stock loader (FUN_004365c0) populates the objects VArray from the file;
-        // we add Alpine objects to the same VArray so they appear in the group.
+        // group load. The stock loader (FUN_004365c0) populates each GroupEntry's objects
+        // VArray from the file; we add Alpine objects to the same VArray so they appear
+        // in the group.
         //
         // Limitation: our Alpine chunk format doesn't encode per-group membership, so
         // if multiple groups were imported at once, Alpine objects are added to the first
@@ -1146,21 +1140,15 @@ CodeInjection alpine_group_load_hook{
         // Safety cap: never iterate more than 16 new entries to guard against corruption
         if (new_groups > 0 && new_groups <= 16) {
             for (int gi = g_moving_groups_size_before_load; gi < mg.size; gi++) {
-                auto* group_entry = mg.data_ptr[gi];
-                if (!group_entry) continue;
-                // Only add to user-defined groups (flag at +0x1C == 0), not moving groups
-                int group_flag = *reinterpret_cast<int*>(
-                    reinterpret_cast<uintptr_t>(group_entry) + 0x1C);
-                if (group_flag != 0) continue;
-                // group_entry+0x10 is the objects VArray within the group entry struct
-                auto* obj_varray = reinterpret_cast<VArray<DedObject*>*>(
-                    reinterpret_cast<uintptr_t>(group_entry) + 0x10);
+                auto* entry = mg.data_ptr[gi];
+                if (!entry) continue;
+                if (!entry->is_user_defined()) continue;
                 for (auto i = mesh_start; i < props.mesh_objects.size(); i++)
-                    AddrCaller{0x00491020}.this_call(obj_varray, static_cast<DedObject*>(props.mesh_objects[i]));
+                    entry->objects.push_back(static_cast<DedObject*>(props.mesh_objects[i]));
                 for (auto i = note_start; i < props.note_objects.size(); i++)
-                    AddrCaller{0x00491020}.this_call(obj_varray, static_cast<DedObject*>(props.note_objects[i]));
+                    entry->objects.push_back(static_cast<DedObject*>(props.note_objects[i]));
                 for (auto i = corona_start; i < props.corona_objects.size(); i++)
-                    AddrCaller{0x00491020}.this_call(obj_varray, static_cast<DedObject*>(props.corona_objects[i]));
+                    entry->objects.push_back(static_cast<DedObject*>(props.corona_objects[i]));
                 break; // Only add to the first user-defined group
             }
         }
