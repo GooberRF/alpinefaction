@@ -264,7 +264,7 @@ void alpine_corona_create_all()
         g_corona_clutter_handles.push_back(obj->handle);
         g_corona_glare_infos.push_back(gi);
 
-        xlog::info("[AlpineCorona] Created corona uid={} pos=({:.2f},{:.2f},{:.2f}) room={:#010x} clutter={:#x} glare={:#x}",
+        xlog::trace("[AlpineCorona] Created corona uid={} pos=({:.2f},{:.2f},{:.2f}) room={:#010x} clutter={:#x} glare={:#x}",
             info.uid, obj->pos.x, obj->pos.y, obj->pos.z,
             reinterpret_cast<uintptr_t>(obj->room),
             obj->handle, glare_obj->handle);
