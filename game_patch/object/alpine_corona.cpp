@@ -1,9 +1,7 @@
 #include <string>
 #include <vector>
-#include <cstring>
 #include <cmath>
 #include <xlog/xlog.h>
-#include <patch_common/MemUtils.h>
 #include "../rf/object.h"
 #include "../rf/clutter.h"
 #include "../rf/glare.h"
@@ -27,14 +25,6 @@ static std::vector<AlpineCoronaInfo> g_pending_coronas;
 static std::vector<int> g_corona_clutter_handles;
 static std::vector<rf::GlareInfo*> g_corona_glare_infos;
 
-// Dummy ClutterInfo — shared with alpine_mesh if both are used, but we keep our own
-// to avoid coupling. All zeros + sentinel values = safe empty state.
-alignas(rf::ClutterInfo) static uint8_t g_corona_dummy_clutter_info_buf[sizeof(rf::ClutterInfo)];
-static bool g_corona_dummy_initialized = false;
-
-// Clutter linked list tail pointer and count (same addresses as alpine_mesh)
-static auto& clutter_list_tail = addr_as_ref<rf::Clutter*>(0x005C95F0);
-static auto& clutter_count = addr_as_ref<int>(0x005C9358);
 
 // ─── Chunk Loading ───────────────────────────────────────────────────────────
 
@@ -124,20 +114,6 @@ void alpine_corona_create_all()
 {
     if (g_pending_coronas.empty()) return;
 
-    // Initialize dummy ClutterInfo once
-    if (!g_corona_dummy_initialized) {
-        auto* dummy = reinterpret_cast<rf::ClutterInfo*>(g_corona_dummy_clutter_info_buf);
-        std::memset(dummy, 0, sizeof(rf::ClutterInfo));
-        dummy->life = -1.0f;
-        dummy->sound = -1;
-        dummy->use_sound = -1;
-        dummy->explode_anim_vclip = -1;
-        dummy->glare = -1;
-        dummy->rod_glare = -1;
-        dummy->light_prop = -1;
-        g_corona_dummy_initialized = true;
-    }
-
     rf::GSolid* solid = rf::g_level_solid;
 
     for (const auto& info : g_pending_coronas) {
@@ -155,7 +131,7 @@ void alpine_corona_create_all()
         auto* clutter = reinterpret_cast<rf::Clutter*>(obj);
 
         // Set up clutter fields (same pattern as alpine_mesh)
-        clutter->info = reinterpret_cast<rf::ClutterInfo*>(g_corona_dummy_clutter_info_buf);
+        clutter->info = &rf::get_dummy_clutter_info();
         clutter->info_index = -1;
         clutter->corpse_index = -1;
         clutter->sound_handle = -1;
@@ -169,11 +145,11 @@ void alpine_corona_create_all()
         *reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(clutter) + 0x2D0) = -1;
 
         // Insert into clutter linked list
-        clutter->prev = clutter_list_tail;
+        clutter->prev = rf::clutter_list_tail;
         clutter->next = reinterpret_cast<rf::Clutter*>(&rf::clutter_list);
-        clutter_list_tail->next = clutter;
-        clutter_list_tail = clutter;
-        clutter_count++;
+        rf::clutter_list_tail->next = clutter;
+        rf::clutter_list_tail = clutter;
+        rf::clutter_count++;
 
         // Set identity
         obj->uid = info.uid;
