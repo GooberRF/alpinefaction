@@ -10,6 +10,7 @@
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int dash_level_props_chunk_id = 0xDA58FA00;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
+constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
@@ -222,6 +223,27 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);
 void alpine_mesh_set_collision(rf::Object* obj, int collision_type);
+
+// Alpine corona object info, loaded from RFL
+struct AlpineCoronaInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    std::string script_name;
+    uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
+    std::string corona_bitmap;
+    float cone_angle = 0.0f;         // degrees (multiplied by 0.5 at creation, matching effects.tbl)
+    float intensity = 1.0f;
+    float radius_distance = 100.0f;
+    float radius_scale = 1.0f;
+    float diminish_distance = 200.0f;
+    std::string volumetric_bitmap;
+    float volumetric_height = 0.0f;
+    float volumetric_length = 0.0f;
+};
+
+void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len);
+void alpine_corona_clear_state();
 
 // used by RF2-style geomod
 struct RF2AnchorInfo {

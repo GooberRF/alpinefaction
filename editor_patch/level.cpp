@@ -16,33 +16,78 @@
 #include "resources.h"
 #include "mesh.h"
 #include "note.h"
+#include "corona.h"
 
 // Forward declarations
 int get_level_rfl_version();
 void set_initial_level_rfl_version();
 
-// add AlpineLevelProperties chunk after stock game chunks when creating a new level
+// Global AlpineLevelProperties — kept separate from CDedLevel allocation to avoid
+// stock code overwriting it (the stock rfg group loader writes to CDedLevel fields
+// that overlap with the embedded ALP region).
+static AlpineLevelProperties g_alpine_level_props;
+
+AlpineLevelProperties& CDedLevel::GetAlpineLevelProperties()
+{
+    return g_alpine_level_props;
+}
+
+// Initialize on CDedLevel construction
 CodeInjection CDedLevel_construct_patch{
     0x004181B8,
     [](auto& regs) {
         set_initial_level_rfl_version();
-        std::byte* level = regs.esi;
-        new (&level[stock_cdedlevel_size]) AlpineLevelProperties();
+        g_alpine_level_props.LoadDefaults();
     },
 };
 
 // Clear alpine properties when the level is reset (File > New or File > Open).
-// FUN_00418960 is CDedLevel::DeleteContents, called via the virtual DeleteContents
-// override at vtable[27] (FUN_0041CDF0). This fires for both New and Open.
-CodeInjection CDedLevel_DeleteContents_patch{
+// FUN_00418960 is CDedLevel::DeleteContents (thiscall, ECX = CDedLevel*).
+// Called via the virtual DeleteContents override at vtable[27] (FUN_0041CDF0).
+//
+// Strategy: wrap with FunHook so we can run cleanup both BEFORE and AFTER stock code.
+//
+// BEFORE: Null out vmesh on Alpine objects so stock FUN_0041c360 (called from
+// DeleteContents loop 3 on master_objects) won't try to free it via FUN_004bfec0.
+// Alpine objects are LEFT in master_objects so that undo cleanup (FUN_0043d170)
+// finds them there and skips processing entirely — avoiding the "orphan" path
+// (FUN_00491020 + FUN_0041c360) that causes heap corruption.
+// FUN_0041c360 switches on [obj+0x5C] (type): types > 0x16 fall through to
+// default → return without calling the virtual destructor, so Alpine objects
+// survive stock cleanup.
+//
+// AFTER: Call LoadDefaults() to properly free the Alpine objects. At this point
+// stock code has finished processing all undo entries and VArrays, so the Alpine
+// objects are no longer referenced anywhere.
+void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unused);
+FunHook<decltype(CDedLevel_DeleteContents_hooked)> CDedLevel_DeleteContents_hook{
     0x00418960,
-    []() {
-        auto* level = CDedLevel::Get();
-        if (level) {
-            level->GetAlpineLevelProperties().LoadDefaults();
-        }
-    },
+    CDedLevel_DeleteContents_hooked,
 };
+void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unused)
+{
+    auto& props = level->GetAlpineLevelProperties();
+
+    // Null out vmesh BEFORE stock code runs, but leave objects in master_objects.
+    // This makes Alpine objects safe for stock FUN_0041c360 (loop 3):
+    //   - [obj+0x0C] (vmesh) = NULL → skips FUN_004bfec0 free
+    //   - [obj+0x5C] (type) > 0x16 → switch defaults to return (no destructor)
+    // Keeping objects in master_objects means FUN_0043d170 (undo cleanup) finds
+    // them and skips the orphan processing path entirely (no heap corruption).
+    for (auto* m : props.mesh_objects)
+        static_cast<DedObject*>(m)->vmesh = nullptr;
+    for (auto* n : props.note_objects)
+        static_cast<DedObject*>(n)->vmesh = nullptr;
+    for (auto* c : props.corona_objects)
+        static_cast<DedObject*>(c)->vmesh = nullptr;
+
+    // Let stock DeleteContents run — undo/redo cleanup skips Alpine objects
+    // (found in master_objects), and loop 3 safely returns early for type > 0x16.
+    CDedLevel_DeleteContents_hook.call_target(level, edx_unused);
+
+    // Now stock code is done. Free the Alpine objects properly.
+    props.LoadDefaults();
+}
 
 // load default AlpineLevelProperties values
 CodeInjection CDedLevel_LoadLevel_patch1{
@@ -76,6 +121,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_note_chunk_id) {
                     note_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_corona_chunk_id) {
+                    corona_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -517,7 +566,7 @@ CodeInjection skip_alpine_objects_bounds_check{
     0x0041d7c0,
     [](auto& regs) {
         auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.edx));
-        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE) {
+        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE || obj->type == DedObjectType::DED_CORONA) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -546,6 +595,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write note objects chunk
         note_serialize_chunk(level, file);
+
+        // Write corona objects chunk
+        corona_serialize_chunk(level, file);
     },
 };
 
@@ -730,12 +782,9 @@ void DedLevel_DoBackLink()
 
 void ApplyLevelPatches()
 {
-    // include space for default AlpineLevelProperties chunk in newly created rfls
-    write_mem<std::uint32_t>(0x0041C906 + 1, 0x668 + sizeof(AlpineLevelProperties));
-
     // handle AlpineLevelProperties chunk
     CDedLevel_construct_patch.install();
-    CDedLevel_DeleteContents_patch.install();
+    CDedLevel_DeleteContents_hook.install();
     CDedLevel_LoadLevel_patch1.install();
     CDedLevel_LoadLevel_patch2.install();
     CDedLevel_SaveLevel_patch.install();
