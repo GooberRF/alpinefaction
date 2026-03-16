@@ -70,6 +70,7 @@ namespace d3d8 {
     constexpr unsigned int RS_DESTBLEND = 20;
     constexpr unsigned int BLEND_ONE = 2;
     constexpr unsigned int BLEND_SRCALPHA = 5;
+    constexpr unsigned int BLEND_INVSRCALPHA = 6;
 
     using SetRenderStateFn = long(__stdcall*)(void*, unsigned int, unsigned int);
 
@@ -98,6 +99,8 @@ inline void flush_additive()
     gr_begin_batch(4, 3);
 
     setRS(device, d3d8::RS_ALPHABLENDENABLE, 0);
+    setRS(device, d3d8::RS_SRCBLEND, d3d8::BLEND_SRCALPHA);
+    setRS(device, d3d8::RS_DESTBLEND, d3d8::BLEND_INVSRCALPHA);
     setRS(device, d3d8::RS_ZWRITEENABLE, 1);
 }
 

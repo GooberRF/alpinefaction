@@ -181,6 +181,7 @@ CodeInjection alpine_click_pick_patch{
                     float corona_dist = cdx * cdx + cdy * cdy;
                     if (!best_alpine || corona_dist < best_dist_sq) {
                         best_alpine = static_cast<DedObject*>(best_corona);
+                        best_dist_sq = corona_dist;
                     }
                 }
             }
