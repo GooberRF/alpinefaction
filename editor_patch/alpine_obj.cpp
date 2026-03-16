@@ -534,9 +534,8 @@ static void collect_all_objects(CDedLevel* level, bool include_hidden,
     auto& mg = level->moving_groups;
     for (int i = 0; i < mg.size; i++) {
         auto* group = mg.data_ptr[i];
-        if (!group) continue;
-        auto& kfs = *reinterpret_cast<VArray<DedObject*>*>(
-            reinterpret_cast<uintptr_t>(group) + 0x1C);
+        if (!group || !group->keyframes) continue;
+        auto& kfs = *group->keyframes;
         for (int j = 0; j < kfs.size; j++)
             add_obj(kfs.data_ptr[j]);
     }

@@ -207,7 +207,6 @@ void alpine_corona_create_all()
 
         // Allocate and populate GlareInfo
         auto* gi = new rf::GlareInfo{};
-        std::memset(gi, 0, sizeof(rf::GlareInfo));
 
         gi->light_color = rf::gr::Color{info.color_r, info.color_g, info.color_b, info.color_a};
 

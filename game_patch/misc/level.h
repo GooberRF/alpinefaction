@@ -232,7 +232,7 @@ struct AlpineCoronaInfo {
     std::string script_name;
     uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
     std::string corona_bitmap;
-    float cone_angle = 0.0f;         // degrees (converted to radians at creation)
+    float cone_angle = 0.0f;         // degrees (multiplied by 0.5 at creation, matching effects.tbl)
     float intensity = 1.0f;
     float radius_distance = 100.0f;
     float radius_scale = 1.0f;

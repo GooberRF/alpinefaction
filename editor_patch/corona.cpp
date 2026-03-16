@@ -266,9 +266,9 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
             float vol_height = corona_get_float_field(hdlg, IDC_CORONA_VOLUMETRIC_HEIGHT);
             float vol_length = corona_get_float_field(hdlg, IDC_CORONA_VOLUMETRIC_LENGTH);
 
-            uint8_t r = static_cast<uint8_t>(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_R, nullptr, FALSE));
-            uint8_t g = static_cast<uint8_t>(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_G, nullptr, FALSE));
-            uint8_t b = static_cast<uint8_t>(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_B, nullptr, FALSE));
+            uint8_t r = static_cast<uint8_t>(std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_R, nullptr, FALSE), 255u));
+            uint8_t g = static_cast<uint8_t>(std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_G, nullptr, FALSE), 255u));
+            uint8_t b = static_cast<uint8_t>(std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_B, nullptr, FALSE), 255u));
 
             for (auto* c : g_selected_coronas) {
                 c->script_name.assign_0(buf);
@@ -299,9 +299,9 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
         // Draw color preview swatch (SS_OWNERDRAW static control)
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if (dis && dis->CtlID == IDC_CORONA_COLOR_PREVIEW) {
-            uint8_t r = static_cast<uint8_t>(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_R, nullptr, FALSE));
-            uint8_t g = static_cast<uint8_t>(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_G, nullptr, FALSE));
-            uint8_t b = static_cast<uint8_t>(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_B, nullptr, FALSE));
+            uint8_t r = static_cast<uint8_t>(std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_R, nullptr, FALSE), 255u));
+            uint8_t g = static_cast<uint8_t>(std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_G, nullptr, FALSE), 255u));
+            uint8_t b = static_cast<uint8_t>(std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_B, nullptr, FALSE), 255u));
             HBRUSH brush = CreateSolidBrush(RGB(r, g, b));
             FillRect(dis->hDC, &dis->rcItem, brush);
             DeleteObject(brush);
