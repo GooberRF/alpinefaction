@@ -113,10 +113,10 @@ static void try_open_gamepad(SDL_JoystickID id)
     gyro_reset();
 }
 
-// Injects the keyboard scan code bound to `action` so all game code paths see the input.
+// Injects the keyboard scan code bound to `action` — gameplay only, never into menus.
 static void inject_action_key(int action, bool down)
 {
-    if (ui_ctrl_bindings_view_active()) return;
+    if (!rf::gameseq_in_gameplay()) return;
     if (!rf::local_player || action < 0 || action >= rf::local_player->settings.controls.num_bindings)
         return;
     int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
@@ -181,11 +181,29 @@ static void update_trigger_actions()
     g_rt_was_down = rt_down;
 }
 
+// Returns true if a gamepad button or trigger currently held maps to `action_idx`.
+// Used to prevent stick movement logic from releasing an action held via a digital button.
+static bool is_action_held_by_button(int action_idx)
+{
+    if (!g_gamepad) return false;
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+        if (g_button_map[b] == action_idx && SDL_GetGamepadButton(g_gamepad, static_cast<SDL_GamepadButton>(b)))
+            return true;
+    if (g_trigger_action[0] == action_idx && g_lt_was_down) return true;
+    if (g_trigger_action[1] == action_idx && g_rt_was_down) return true;
+    return false;
+}
+
 static void set_movement_key(rf::ControlConfigAction action, bool down)
 {
     int idx = static_cast<int>(action);
+    // A digital button binding takes priority: don't release the key while a button holds it.
+    // Only applies during gameplay — outside of it no scan codes should be injected at all.
+    bool in_gameplay = rf::gameseq_in_gameplay();
+    if (in_gameplay)
+        down = down || is_action_held_by_button(idx);
     if (g_action_curr[idx] == down) return;
-    if (rf::local_player && !rf::console::console_is_visible()) {
+    if (in_gameplay && rf::local_player && !rf::console::console_is_visible()) {
         int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
         if (sc >= 0)
             rf::key_process_event(sc, down ? 1 : 0, 0);
