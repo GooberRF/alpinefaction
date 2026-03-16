@@ -53,6 +53,17 @@ static int g_rebind_pending_sc = -1;
 // True when the last meaningful input (button/key press, not mouse movement) came from the gamepad.
 static bool g_last_input_was_gamepad = false;
 
+// Menu navigation state — D-pad auto-repeat and right-stick scroll rate limiting.
+static int   g_menu_nav_repeat_btn   = -1;    // SDL_GamepadButton held for D-pad repeat, -1 if none
+static float g_menu_nav_repeat_timer = 0.0f;  // seconds until next repeat injection
+static float g_menu_scroll_timer     = 0.0f;  // cooldown between right-stick scroll ticks
+
+// True when D-pad was the last navigation input. Cleared when the mouse cursor actually moves.
+// Used to suppress the LClick on South/A so KEY_ENTER drives the action instead.
+static bool  g_dpad_nav_active       = false;
+static POINT g_last_cursor_pos       = {-1, -1};
+static bool  g_south_lclick_held     = false;  // WM_LBUTTONDOWN sent but WM_LBUTTONUP not yet sent
+
 // Normalize an axis value, strip the deadzone band, and rescale the remainder to [-1, 1].
 static float get_axis(SDL_GamepadAxis axis, float deadzone)
 {
@@ -110,6 +121,25 @@ static void inject_action_key(int action, bool down)
     int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
     if (sc > 0)
         rf::key_process_event(sc, down ? 1 : 0, 0);
+}
+
+// Injects a raw key scan code down+up pair directly into the RF key queue.
+static void inject_menu_key(int key)
+{
+    rf::key_process_event(key, 1, 0);
+    rf::key_process_event(key, 0, 0);
+}
+
+// Maps a D-pad SDL_GamepadButton to its corresponding RF navigation key scan code.
+static int dpad_btn_to_navkey(int btn)
+{
+    switch (btn) {
+    case SDL_GAMEPAD_BUTTON_DPAD_UP:    return rf::KEY_UP;
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN:  return rf::KEY_DOWN;
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT:  return rf::KEY_LEFT;
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return rf::KEY_RIGHT;
+    default: return 0;
+    }
 }
 
 // Syncs g_action_curr for any binding whose scan_codes contain `sc`,
@@ -199,6 +229,75 @@ static void update_stick_movement()
     set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, lx > 0.0f);
 }
 
+static SDL_GamepadButton get_menu_confirm_button()
+{
+    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A)
+        return SDL_GAMEPAD_BUTTON_EAST;
+    return SDL_GAMEPAD_BUTTON_SOUTH;
+}
+
+static SDL_GamepadButton get_menu_cancel_button()
+{
+    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_SOUTH) == SDL_GAMEPAD_BUTTON_LABEL_B)
+        return SDL_GAMEPAD_BUTTON_SOUTH;
+    return SDL_GAMEPAD_BUTTON_EAST;
+}
+
+static bool menu_nav_on_button_down(int btn)
+{
+    SDL_GamepadButton confirm_btn = get_menu_confirm_button();
+    SDL_GamepadButton cancel_btn  = get_menu_cancel_button();
+
+    if (btn == static_cast<int>(confirm_btn)) {
+        if (!rf::ui::options_controls_waiting_for_key) {
+            if (g_dpad_nav_active) {
+                // D-pad is driving focus — KEY_ENTER confirms the currently focused item.
+                inject_menu_key(rf::KEY_ENTER);
+            } else {
+                // Stick cursor is active — act as a pure left click at the cursor position.
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(rf::main_wnd, &pt);
+                SendMessage(rf::main_wnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(pt.x, pt.y));
+                g_south_lclick_held = true;
+            }
+        }
+        return true;
+    }
+    if (btn == static_cast<int>(cancel_btn)) {
+        inject_menu_key(rf::KEY_ESC);
+        return true;
+    }
+    switch (btn) {
+    case SDL_GAMEPAD_BUTTON_DPAD_UP:
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+        if (!rf::ui::options_controls_waiting_for_key)
+            inject_menu_key(dpad_btn_to_navkey(btn));
+        g_dpad_nav_active       = true;
+        g_menu_nav_repeat_btn   = btn;
+        g_menu_nav_repeat_timer = 0.4f;
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Clears D-pad auto-repeat and releases any held LClick on button release.
+static void menu_nav_on_button_up(int btn)
+{
+    if (btn == g_menu_nav_repeat_btn)
+        g_menu_nav_repeat_btn = -1;
+    if (btn == static_cast<int>(get_menu_confirm_button()) && g_south_lclick_held) {
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(rf::main_wnd, &pt);
+        SendMessage(rf::main_wnd, WM_LBUTTONUP, 0, MAKELPARAM(pt.x, pt.y));
+        g_south_lclick_held = false;
+    }
+}
+
 void gamepad_sdl_poll()
 {
     memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
@@ -230,6 +329,13 @@ void gamepad_sdl_poll()
                         inject_action_key(g_button_map[b], false);
                     inject_action_key(g_trigger_action[0], false);
                     inject_action_key(g_trigger_action[1], false);
+                    if (g_south_lclick_held) {
+                        POINT pt;
+                        GetCursorPos(&pt);
+                        ScreenToClient(rf::main_wnd, &pt);
+                        SendMessage(rf::main_wnd, WM_LBUTTONUP, 0, MAKELPARAM(pt.x, pt.y));
+                        g_south_lclick_held = false;
+                    }
                     SDL_CloseGamepad(g_gamepad);
                     g_gamepad               = nullptr;
                     g_motion_sensors_active = false;
@@ -258,6 +364,8 @@ void gamepad_sdl_poll()
                     rf::key_process_event(rf::KEY_ESC, 1, 0);
                     rf::key_process_event(rf::KEY_ESC, 0, 0);
                 }
+                if (!rf::gameseq_in_gameplay() && menu_nav_on_button_down(ev.gbutton.button))
+                    break;
                 if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
                     int mapped = g_button_map[ev.gbutton.button];
                     if (mapped >= 0) {
@@ -270,6 +378,7 @@ void gamepad_sdl_poll()
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_UP:
                 if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
+                menu_nav_on_button_up(ev.gbutton.button);
                 if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
                     int mapped = g_button_map[ev.gbutton.button];
                     if (mapped >= 0) {
@@ -325,6 +434,93 @@ void gamepad_sdl_poll()
     }
 }
 
+static void gamepad_do_menu_frame()
+{
+    // Left-stick cursor navigation (respects gamepad_swap_sticks).
+    // Moving the stick moves the OS cursor and posts WM_MOUSEMOVE so RF's UI tracks it.
+    // Any stick movement clears g_dpad_nav_active so South/A will send LClick again.
+    {
+        SDL_GamepadAxis cx_axis = g_alpine_game_config.gamepad_swap_sticks
+            ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX;
+        SDL_GamepadAxis cy_axis = g_alpine_game_config.gamepad_swap_sticks
+            ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
+        float cursor_dz = g_alpine_game_config.gamepad_swap_sticks
+            ? g_alpine_game_config.gamepad_look_deadzone : g_alpine_game_config.gamepad_move_deadzone;
+
+        float sx = get_axis(cx_axis, cursor_dz);
+        float sy = get_axis(cy_axis, cursor_dz);
+
+        if (sx != 0.0f || sy != 0.0f) {
+            // Speed: up to 1000 px/s at full deflection, scaled by screen height so it
+            // feels consistent across resolutions.
+            constexpr float k_base_speed = 1000.0f;
+            float speed = k_base_speed * (static_cast<float>(rf::gr::screen_height()) / 600.0f);
+
+            POINT pt;
+            GetCursorPos(&pt);
+            pt.x += static_cast<LONG>(sx * speed * rf::frametime);
+            pt.y += static_cast<LONG>(sy * speed * rf::frametime);
+
+            // Clamp to the window client area.
+            RECT rc;
+            GetClientRect(rf::main_wnd, &rc);
+            POINT tl{rc.left, rc.top}, br{rc.right - 1, rc.bottom - 1};
+            ClientToScreen(rf::main_wnd, &tl);
+            ClientToScreen(rf::main_wnd, &br);
+            pt.x = std::clamp(pt.x, tl.x, br.x);
+            pt.y = std::clamp(pt.y, tl.y, br.y);
+
+            SetCursorPos(pt.x, pt.y);
+
+            // Deliver WM_MOUSEMOVE synchronously via SendMessage so RF's WndProc processes
+            // the hover update inline — same behaviour as a real mouse move within this frame.
+            // PostMessage would defer it to the next os_poll (next frame), causing a 1-frame lag
+            // on hover highlights and making the stick feel less responsive than the real mouse.
+            POINT client = pt;
+            ScreenToClient(rf::main_wnd, &client);
+            SendMessage(rf::main_wnd, WM_MOUSEMOVE, 0, MAKELPARAM(client.x, client.y));
+
+            g_dpad_nav_active = false;
+            g_last_cursor_pos = pt;
+        }
+    }
+
+    // Detect physical mouse movement and clear the D-pad nav flag if the cursor has moved.
+    POINT cur;
+    GetCursorPos(&cur);
+    if (g_last_cursor_pos.x != -1 && (cur.x != g_last_cursor_pos.x || cur.y != g_last_cursor_pos.y))
+        g_dpad_nav_active = false;
+    g_last_cursor_pos = cur;
+    // D-pad auto-repeat: fire on a 120 ms cadence after an initial 400 ms delay.
+    if (g_menu_nav_repeat_btn >= 0) {
+        g_menu_nav_repeat_timer -= rf::frametime;
+        if (g_menu_nav_repeat_timer <= 0.0f) {
+            if (!rf::ui::options_controls_waiting_for_key)
+                inject_menu_key(dpad_btn_to_navkey(g_menu_nav_repeat_btn));
+            g_menu_nav_repeat_timer = 0.12f;
+        }
+    }
+
+    // Right-stick scroll: write rf::mouse_dz so the existing state-aware CodeInjection patches
+    // in main_menu.cpp pick it up and call the correct up_on_click / down_on_click.
+    // Respects gamepad_swap_sticks — use the "look" stick Y axis whichever it is.
+    SDL_GamepadAxis scroll_axis = g_alpine_game_config.gamepad_swap_sticks
+        ? SDL_GAMEPAD_AXIS_LEFTY : SDL_GAMEPAD_AXIS_RIGHTY;
+    float scroll_dz = g_alpine_game_config.gamepad_swap_sticks
+        ? g_alpine_game_config.gamepad_move_deadzone : g_alpine_game_config.gamepad_look_deadzone;
+    float ry = get_axis(scroll_axis, scroll_dz);
+    if (ry != 0.0f) {
+        g_menu_scroll_timer -= rf::frametime;
+        if (g_menu_scroll_timer <= 0.0f) {
+            // Stick up (ry < 0) → positive mouse_dz → patches call up_on_click.
+            rf::mouse_dz = (ry < 0.0f) ? 1 : -1;
+            g_menu_scroll_timer = 0.12f;
+        }
+    } else {
+        g_menu_scroll_timer = 0.0f; // reset so next deflection fires immediately
+    }
+}
+
 void gamepad_do_frame()
 {
     gamepad_sdl_poll();
@@ -344,6 +540,9 @@ void gamepad_do_frame()
 
         update_trigger_actions();
         update_stick_movement();
+
+        if (!rf::gameseq_in_gameplay())
+            gamepad_do_menu_frame();
 
         g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
 
