@@ -58,8 +58,8 @@ FunHook<void()> mouse_eval_deltas_hook{
 
         mouse_eval_deltas_hook.call_target();
 
-        // Cursor centering fallback: used when SDL relative mode is inactive (SDL mouse disabled or window unavailable).
-        if (rf::keep_mouse_centered && (!g_sdl_window || !SDL_GetWindowRelativeMouseMode(g_sdl_window))) {
+        // Cursor centering fallback: used when SDL mouse is enabled but relative mode is unavailable (e.g. no SDL window).
+        if (rf::keep_mouse_centered && g_alpine_game_config.sdl_mouse && (!g_sdl_window || !SDL_GetWindowRelativeMouseMode(g_sdl_window))) {
             RECT rect{};
             GetClientRect(rf::main_wnd, &rect);
             POINT pt{rect.right / 2, rect.bottom / 2};
