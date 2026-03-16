@@ -205,6 +205,9 @@ namespace df::gr::d3d11
         void reset_texture_uv_scale()
         {
             texture_scale_cbuffer_.update(1.0f, 1.0f, device_context_);
+            // Invalidate cached handles so the next set_textures() call
+            // re-evaluates the UV scale for the bound texture
+            current_tex_handles_ = {-2, -2};
         }
 
         void set_pow2_tex_active(bool active)
