@@ -77,8 +77,6 @@ namespace df::gr::d3d11
             lookup_texture(bm_handle);
         }
 
-
-
     private:
         struct Texture
         {
