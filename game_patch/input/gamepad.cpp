@@ -24,6 +24,7 @@
 #include <common/utils/os-utils.h>
 #include <SDL3/SDL.h>
 #include "gyro.h"
+#include "../rf/os/os.h"
 
 static SDL_Gamepad* g_gamepad = nullptr;
 static bool g_motion_sensors_active = false; // true only when the connected gamepad has gyro+accel and is enabled
@@ -347,6 +348,7 @@ void gamepad_sdl_poll()
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
                 if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
+                if (!rf::is_main_wnd_active) break;
                 g_last_input_was_gamepad = true;
                 if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
                     if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
@@ -378,6 +380,7 @@ void gamepad_sdl_poll()
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_UP:
                 if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
+                if (!rf::is_main_wnd_active) break;
                 menu_nav_on_button_up(ev.gbutton.button);
                 if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
                     int mapped = g_button_map[ev.gbutton.button];
@@ -391,6 +394,7 @@ void gamepad_sdl_poll()
                 break;
             case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
                 if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gaxis.which) break;
+                if (!rf::is_main_wnd_active) break;
                 float v = ev.gaxis.value / static_cast<float>(SDL_MAX_SINT16);
                 float deadzone = 0.0f;
                 switch (static_cast<SDL_GamepadAxis>(ev.gaxis.axis)) {
@@ -415,6 +419,7 @@ void gamepad_sdl_poll()
             }
             case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
                 if (!g_motion_sensors_active || SDL_GetGamepadID(g_gamepad) != ev.gsensor.which) break;
+                if (!rf::is_main_wnd_active) break; // discard gyro events while app is not focused
                 if (ev.gsensor.sensor == SDL_SENSOR_GYRO) {
                     constexpr float rad2deg = 180.0f / 3.14159265f;
                     g_gyro_x = ev.gsensor.data[0] * rad2deg;
@@ -524,7 +529,8 @@ static void gamepad_do_menu_frame()
 void gamepad_do_frame()
 {
     gamepad_sdl_poll();
-    if (g_gamepad) {
+    if (!g_gamepad || !rf::is_main_wnd_active)
+        return;
         if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
             float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
             float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_MAX_SINT16);
@@ -551,7 +557,6 @@ void gamepad_do_frame()
                                 g_accel_x, g_accel_y, g_accel_z, rf::frametime);
             g_gyro_fresh = false;
         }
-    }
 }
 
 void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
@@ -559,7 +564,7 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     pitch_delta = 0.0f;
     yaw_delta   = 0.0f;
 
-    if (!g_gamepad || !rf::keep_mouse_centered)
+    if (!g_gamepad || !rf::keep_mouse_centered || !rf::is_main_wnd_active)
         return;
 
     SDL_GamepadAxis cam_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTX  : SDL_GAMEPAD_AXIS_RIGHTX;
@@ -626,7 +631,7 @@ static bool is_local_player_vehicle(rf::Entity* entity)
 FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
     0x0049F3C0,
     [](rf::Entity* entity) {
-        if (g_gamepad && entity == rf::local_player_entity && g_move_mag > 0.001f) {
+        if (g_gamepad && rf::is_main_wnd_active && entity == rf::local_player_entity && g_move_mag > 0.001f) {
             if (rf::is_multi) {
                 float inv_mag = 1.0f / g_move_mag;
                 entity->ai.ci.move.x = g_move_lx * inv_mag;
@@ -640,7 +645,7 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
         // Pre-sim: inject gamepad stick + gyro into vehicle rotation input (ci.rot)
         // ci.rot expects values in the range of keyboard input (±1.0).
         // The vehicle's own turn rate and frametime scaling apply on top.
-        if (g_gamepad && is_local_player_vehicle(entity)) {
+        if (g_gamepad && rf::is_main_wnd_active && is_local_player_vehicle(entity)) {
             // Stick: raw axis (-1 to 1) maps directly to keyboard-like input
             SDL_GamepadAxis rot_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTX  : SDL_GAMEPAD_AXIS_RIGHTX;
             SDL_GamepadAxis rot_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTY  : SDL_GAMEPAD_AXIS_RIGHTY;
@@ -955,6 +960,31 @@ void gamepad_apply_patch()
     gyro_apply_patch();
 }
 
+static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
+{
+    if (msg != WM_ACTIVATEAPP || w_param)
+        return;
+    // Focus lost: release all gamepad input so nothing stays held while unfocused.
+    if (g_gamepad) {
+        release_movement_keys();
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+            inject_action_key(g_button_map[b], false);
+        inject_action_key(g_trigger_action[0], false);
+        inject_action_key(g_trigger_action[1], false);
+        if (g_south_lclick_held) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(rf::main_wnd, &pt);
+            SendMessage(rf::main_wnd, WM_LBUTTONUP, 0, MAKELPARAM(pt.x, pt.y));
+            g_south_lclick_held = false;
+        }
+    }
+    g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
+    g_accel_x = g_accel_y = g_accel_z = 0.0f;
+    g_gyro_fresh = false;
+    memset(g_action_curr, 0, sizeof(g_action_curr));
+}
+
 // Must be called from the game main thread (SDL3 requires SDL_PumpEvents on the same
 // thread that called SDL_InitSubSystem; Init() runs on a remote injector thread).
 void gamepad_sdl_init()
@@ -976,5 +1006,6 @@ void gamepad_sdl_init()
         }
     }
 
+    rf::os_add_msg_handler(gamepad_msg_handler);
     xlog::info("Gamepad support initialized");
 }
