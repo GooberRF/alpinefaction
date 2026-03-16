@@ -503,16 +503,10 @@ ConsoleCommand2 pow2_tex_cmd{
             case 0:
                 override_pow2tex = true;
                 rf::gr::d3d::p2t = 0;
-                if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
-                    df::gr::d3d11::set_pow2_tex_active(false);
-                }
                 break;
             case 1:
                 override_pow2tex = true;
                 rf::gr::d3d::p2t = 1;
-                if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
-                    df::gr::d3d11::set_pow2_tex_active(true);
-                }
                 break;
             default:
                 override_pow2tex = false;
@@ -533,21 +527,20 @@ ConsoleCommand2 pow2_tex_cmd{
 // checked during level load
 void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
-    if (override_pow2tex) {
-        return;
+    if (!override_pow2tex) {
+        bool should_p2t_fix = false;
+
+        if (is_p2t_fix_level(level_filename)) {
+            should_p2t_fix = true;
+            rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
+        }
+
+        rf::gr::d3d::p2t = should_p2t_fix;
     }
 
-    bool should_p2t_fix = false;
-
-    if (is_p2t_fix_level(level_filename)) {
-        should_p2t_fix = true;
-        rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
-    }
-
-    rf::gr::d3d::p2t = should_p2t_fix;
-
+    // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
-        df::gr::d3d11::set_pow2_tex_active(should_p2t_fix);
+        df::gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
     }
 }
 
