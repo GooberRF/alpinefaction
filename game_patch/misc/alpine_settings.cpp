@@ -954,13 +954,20 @@ bool alpine_player_settings_load(rf::Player* player)
         player->settings.controls.axes[1].invert = std::stoi(settings["MouseYInvert"]);
         processed_keys.insert("MouseYInvert");
     }
+     if (settings.count("SDLMouse")) {
+         g_alpine_game_config.sdl_mouse = std::stoi(settings["SDLMouse"]);
+         processed_keys.insert("SDLMouse");
+     } else if (settings.count("DirectInput")) {
+         // Legacy fallback: map DirectInput to the closest SDLMouse equivalent
+         // DirectInput == 0  -> SDLMouse = 0 (keep legacy / non-SDL behavior)
+         // DirectInput != 0  -> SDLMouse = 1 (use SDL-like backend)
+         int direct_input = std::stoi(settings["DirectInput"]);
+         g_alpine_game_config.sdl_mouse = (direct_input != 0) ? 1 : 0;
+         processed_keys.insert("DirectInput");
+    }
     if (settings.count("MouseLinearPitch")) {
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
         processed_keys.insert("MouseLinearPitch");
-    }
-    if (settings.count("SDLMouse")) {
-        g_alpine_game_config.sdl_mouse = std::stoi(settings["SDLMouse"]);
-        processed_keys.insert("SDLMouse");
     }
     if (settings.count("SwapARBinds")) {
         g_alpine_game_config.swap_ar_controls = std::stoi(settings["SwapARBinds"]);

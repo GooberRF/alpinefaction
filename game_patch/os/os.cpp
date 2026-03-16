@@ -12,6 +12,8 @@
 #include "../misc/alpine_settings.h"
 #include "win32_console.h"
 #include <xlog/xlog.h>
+#include <timeapi.h>
+#include "os.h"
 
 const char* get_win_msg_name(UINT msg);
 
@@ -144,6 +146,40 @@ static FunHook<void(char*, bool)> os_parse_params_hook{
         }
     },
 };
+
+void wait_for(const float ms, const WaitableTimer& timer) {
+    if (ms <= .0f) {
+        return;
+    }
+
+    if (!timer.handle) {
+    SLEEP:
+        static const MMRESULT res = timeBeginPeriod(1);
+        if (res != TIMERR_NOERROR) {
+            ERR_ONCE(
+                "The frame rate may be unstable, because `timeBeginPeriod` failed ({})",
+                res
+            );
+        }
+        Sleep(static_cast<DWORD>(ms));
+    } else {
+        // SetWaitableTimer requires 100-nanosecond intervals.
+        // Negative values indicate relative time.
+        LARGE_INTEGER dur{
+            .QuadPart = -static_cast<LONGLONG>(static_cast<double>(ms) * 10'000.)
+        };
+
+        if (!SetWaitableTimer(timer.handle, &dur, 0, nullptr, nullptr, FALSE)) {
+            ERR_ONCE("`SetWaitableTimer` in `wait_for` failed ({})", GetLastError());
+            goto SLEEP;
+        }
+
+        if (WaitForSingleObject(timer.handle, INFINITE) != WAIT_OBJECT_0) {
+            ERR_ONCE("`WaitForSingleObject` in `wait_for` failed ({})", GetLastError());
+            goto SLEEP;
+        }
+    }
+}
 
 void os_apply_patch()
 {
