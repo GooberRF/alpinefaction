@@ -45,6 +45,8 @@ add_packfile(alpinefaction.vpp
     tables/CTF_EuropaOneOutpost_info.tbl
     tables/dm-SpecialForces_info.tbl
     tables/Dm-NukeTown2050_info.tbl
+    tables/DM-Catan-Hill_info.tbl
+    tables/DM-Catan-Mountain_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav

@@ -117,6 +117,7 @@ struct AlpineGameSettings
     bool burning_entity_lights = true;
     bool death_bars = true;
     bool mesh_static_lighting = true;
+    bool vertex_lighting = false;
     bool show_glares = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;

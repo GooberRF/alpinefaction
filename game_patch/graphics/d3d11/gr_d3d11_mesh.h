@@ -6,6 +6,9 @@
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include "gr_d3d11_shader.h"
+#include "../../misc/alpine_options.h"
+#include "../../misc/alpine_settings.h"
+#include "../../rf/level.h"
 
 namespace rf
 {
@@ -20,6 +23,16 @@ namespace df::gr::d3d11
 {
     class StateManager;
     class RenderContext;
+
+    // Cached vertex lighting state for the current level, updated at level load.
+    // Avoids per-frame string comparisons and hash lookups in hot render paths.
+    extern bool g_level_vertex_lighting;
+    void evaluate_vertex_lighting(const std::string& level_filename);
+
+    inline bool level_uses_vertex_lighting()
+    {
+        return g_level_vertex_lighting;
+    }
 
     void on_character_fullbright_state_changed();
     void on_static_vertex_color_state_changed(rf::VifLodMesh* changed_lod_mesh = nullptr);

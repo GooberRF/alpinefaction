@@ -56,6 +56,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
+- Add `r_vertexlighting` console command and `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

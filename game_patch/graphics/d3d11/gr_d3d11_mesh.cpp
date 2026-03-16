@@ -27,6 +27,19 @@ using namespace rf;
 
 namespace df::gr::d3d11
 {
+    bool g_level_vertex_lighting = false;
+
+    void evaluate_vertex_lighting(const std::string& level_filename)
+    {
+        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
+            && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
+            g_level_vertex_lighting = true;
+        }
+        else {
+            g_level_vertex_lighting = g_alpine_game_config.vertex_lighting;
+        }
+    }
+
     constexpr unsigned initial_vb_size = 6000;
     constexpr unsigned initial_ib_size = 10000;
 
@@ -802,16 +815,32 @@ namespace df::gr::d3d11
 
         bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         bool gpu_dynamic_lighting = false;
+        bool use_vtx_lighting = level_uses_vertex_lighting();
         if (!ir_scanner) {
-            if (is_character_mesh) {
-                color = {255, 255, 255, 255};
-                bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0;
-                gpu_dynamic_lighting = !fullbright_character;
-            } else { // static meshes (items, clutters, VFX)
-                // GPU handles lighting via ambient + point lights in the shader.
-                // Mode color is neutral white; base vertex colors are already white.
-                color = {255, 255, 255, 255};
-                gpu_dynamic_lighting = true;
+            if (use_vtx_lighting) {
+                // Old (master) vertex lighting: approximate lighting via mode color
+                if (is_character_mesh) {
+                    color = add_clamped(params.ambient_color, {224, 224, 224, 224});
+                } else {
+                    if (params.flags & MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) {
+                        color = g_character_meshes_are_fullbright
+                            ? rf::Color{255, 255, 255, 255}
+                            : params.ambient_color;
+                    } else {
+                        color = add_clamped(rf::level.ambient_light, {224, 224, 224, 224});
+                    }
+                }
+                gpu_dynamic_lighting = false;
+            } else {
+                // Enhanced pixel lighting: GPU handles all lighting
+                if (is_character_mesh) {
+                    color = {255, 255, 255, 255};
+                    bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & MRF_FIRST_PERSON) == 0;
+                    gpu_dynamic_lighting = !fullbright_character;
+                } else {
+                    color = {255, 255, 255, 255};
+                    gpu_dynamic_lighting = true;
+                }
             }
             color.alpha = static_cast<ubyte>(params.alpha);
         } else {

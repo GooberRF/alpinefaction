@@ -318,7 +318,7 @@ namespace df::gr::d3d11
 
     void render_v3d_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, int lod_index, const rf::MeshRenderParams& params)
     {
-        if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels) {
+        if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels && !level_uses_vertex_lighting()) {
             bool lights_gathered = false;
             if (rf::level.geometry) {
                 gather_mesh_lights(pos);
@@ -343,11 +343,14 @@ namespace df::gr::d3d11
 
     void render_character_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, int lod_index, const rf::MeshRenderParams& params)
     {
+        bool use_vertex_lighting = level_uses_vertex_lighting();
+
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels) {
             // Gather nearby lights (both static and dynamic) so the pixel shader can
             // compute per-pixel N·L lighting for this character mesh.
+            // Skip when using vertex lighting — the old path doesn't need gathered lights.
             bool lights_gathered = false;
-            if (rf::level.geometry) {
+            if (!use_vertex_lighting && rf::level.geometry) {
                 gather_mesh_lights(pos);
                 lights_gathered = true;
             }
@@ -374,11 +377,29 @@ namespace df::gr::d3d11
                 static thread_local ScratchVertexColors scratch_vertex_colors;
                 scratch_vertex_colors.data.resize(static_cast<std::size_t>(total_vertices) * 3);
 
-                // Vertex colors are neutral white: the pixel shader handles all
-                // lighting (ambient + point lights) via the light_color path when
-                // use_dynamic_lighting is set. For fullbright, white is also correct
-                // since use_dynamic_lighting is false and gray lightmap -> 1.0.
                 rf::Color base_color{255, 255, 255, 255};
+
+                if (use_vertex_lighting && !fullbright_character) {
+                    // Old (master) CPU ambient calculation: scale + bias the entity's
+                    // lightmap-sampled ambient color into vertex colors.
+                    float ambient_r = static_cast<float>(params.ambient_color.red);
+                    float ambient_g = static_cast<float>(params.ambient_color.green);
+                    float ambient_b = static_cast<float>(params.ambient_color.blue);
+
+                    // White ambient means no lightmap data — guess from level ambient
+                    if (ambient_r == 255 && ambient_g == 255 && ambient_b == 255) {
+                        ambient_r = static_cast<float>(rf::level.ambient_light.red) + 64.0f;
+                        ambient_g = static_cast<float>(rf::level.ambient_light.green) + 64.0f;
+                        ambient_b = static_cast<float>(rf::level.ambient_light.blue) + 64.0f;
+                    }
+
+                    constexpr float scale = 1.5f;
+                    constexpr float bias = 32.0f;
+                    base_color.red = static_cast<rf::ubyte>(std::clamp(ambient_r * scale + bias, 0.0f, 255.0f));
+                    base_color.green = static_cast<rf::ubyte>(std::clamp(ambient_g * scale + bias, 0.0f, 255.0f));
+                    base_color.blue = static_cast<rf::ubyte>(std::clamp(ambient_b * scale + bias, 0.0f, 255.0f));
+                }
+                // else: enhanced lighting uses neutral white — shader handles all lighting
 
                 bool color_changed =
                     scratch_vertex_colors.last_color.red != base_color.red ||
@@ -397,7 +418,7 @@ namespace df::gr::d3d11
                 }
 
                 params_with_vertex_colors.vertex_colors = scratch_vertex_colors.data.data();
-                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors, true);
+                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors, !use_vertex_lighting);
 
                 if (lights_gathered) {
                     rf::gr::light_filter_reset();
