@@ -14,6 +14,7 @@
 #include "level.h"
 #include "resources.h"
 #include "vtypes.h"
+#include "alpine_obj.h"
 #include <common/utils/string-utils.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
@@ -1244,17 +1245,10 @@ void PlaceNewMeshObject()
     mesh->mesh_filename.assign_0("barrel.v3m");
 
     // Get camera position and orientation from the active viewport
-    void* viewport = get_active_viewport();
-    if (viewport) {
-        void* view_data = *reinterpret_cast<void**>(reinterpret_cast<uintptr_t>(viewport) + 0x54);
-        if (view_data) {
-            // Position at view_data + 0x28 (Vector3)
-            auto* cam_pos = reinterpret_cast<Vector3*>(reinterpret_cast<uintptr_t>(view_data) + 0x28);
-            mesh->pos = *cam_pos;
-            // Orientation at view_data + 0x4 (Matrix3)
-            auto* cam_orient = reinterpret_cast<Matrix3*>(reinterpret_cast<uintptr_t>(view_data) + 0x4);
-            mesh->orient = *cam_orient;
-        }
+    auto* viewport = get_active_viewport();
+    if (viewport && viewport->view_data) {
+        mesh->pos = viewport->view_data->camera_pos;
+        mesh->orient = viewport->view_data->camera_orient;
     }
 
     // Fallback if no viewport data
@@ -1397,55 +1391,6 @@ void ShowMeshPropertiesForSelection(CDedLevel* level)
     g_current_level = nullptr;
 }
 
-// Draw a plain 3D line (no arrowhead) by projecting endpoints and drawing a 2D line
-static void draw_3d_line(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)
-{
-    uint8_t screen1[48] = {};
-    uint8_t screen2[48] = {};
-    float p1[3] = {x1, y1, z1};
-    float p2[3] = {x2, y2, z2};
-
-    project_to_screen(screen1, p1);
-    project_to_screen(screen2, p2);
-
-    // Check that projected points differ (not zero-length or behind camera)
-    float sx1 = *reinterpret_cast<float*>(screen1);
-    float sy1 = *reinterpret_cast<float*>(screen1 + 4);
-    float sx2 = *reinterpret_cast<float*>(screen2);
-    float sy2 = *reinterpret_cast<float*>(screen2 + 4);
-    if (sx1 == sx2 && sy1 == sy2) return;
-
-    set_draw_color(r, g, b, 0xff);
-    draw_line_2d(screen1, screen2, *reinterpret_cast<uint32_t*>(0x0147d260));
-}
-
-static bool is_mesh_selected(CDedLevel* level, DedMesh* mesh)
-{
-    auto& sel = level->selection;
-    for (int i = 0; i < sel.size; i++) {
-        if (sel.data_ptr[i] == static_cast<DedObject*>(mesh)) return true;
-    }
-    return false;
-}
-
-static void draw_wireframe_sphere(float cx, float cy, float cz, float radius, int r, int g, int b)
-{
-    // Draw 3 circles (XY, XZ, YZ planes) using line segments
-    constexpr int segments = 24;
-    constexpr float pi2 = 6.2831853f;
-    for (int i = 0; i < segments; i++) {
-        float a0 = pi2 * i / segments;
-        float a1 = pi2 * (i + 1) / segments;
-        float c0 = cosf(a0) * radius, s0 = sinf(a0) * radius;
-        float c1 = cosf(a1) * radius, s1 = sinf(a1) * radius;
-        // XY circle
-        draw_3d_line(cx + c0, cy + s0, cz, cx + c1, cy + s1, cz, r, g, b);
-        // XZ circle
-        draw_3d_line(cx + c0, cy, cz + s0, cx + c1, cy, cz + s1, r, g, b);
-        // YZ circle
-        draw_3d_line(cx, cy + c0, cz + s0, cx, cy + c1, cz + s1, r, g, b);
-    }
-}
 
 void mesh_render(CDedLevel* level)
 {
@@ -1493,7 +1438,7 @@ void mesh_render(CDedLevel* level)
     for (auto* mesh : meshes) {
         if (mesh->hidden_in_editor) continue;
         float x = mesh->pos.x, y = mesh->pos.y, z = mesh->pos.z;
-        bool selected = is_mesh_selected(level, mesh);
+        bool selected = is_object_selected(level, mesh);
 
         // Lazy-load vmesh on first render (one per frame to avoid VFX loader issues)
         bool just_loaded = false;
