@@ -226,7 +226,9 @@ namespace df::gr::d3d11
             bool lightmap_only = rf::gr::show_lightmaps && what != FaceRenderType::alpha;
             render_context.set_mode(b.mode, {255, 255, 255, 255}, lightmap_only);
             render_context.set_textures(b.textures[0], b.textures[1]);
-            //xlog::warn("DrawIndexed {} {}", b.num_indices, b.start_index);
+            // World geometry UVs are authored for pow2 texture dimensions on old GPUs,
+            // so force identity UV scale regardless of pow2 padding state
+            render_context.reset_texture_uv_scale();
             render_context.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }
     }

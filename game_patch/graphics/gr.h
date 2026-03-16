@@ -5,7 +5,7 @@
 #include "../rf/os/string.h"
 
 void gr_apply_patch();
-void evaluate_pow2tex(rf::String level_filename);
+void evaluate_pow2tex(const rf::String& level_filename);
 void evaluate_lightmaps_only();
 int gr_font_get_default();
 void gr_font_set_default(int font_id);

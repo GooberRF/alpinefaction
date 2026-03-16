@@ -525,7 +525,7 @@ ConsoleCommand2 pow2_tex_cmd{
 };
 
 // checked during level load
-void evaluate_pow2tex(rf::String level_filename) {
+void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
     if (override_pow2tex) {
         return;

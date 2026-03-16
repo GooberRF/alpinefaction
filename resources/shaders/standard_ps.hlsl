@@ -33,6 +33,11 @@ cbuffer LightsBuffer : register(b1)
     PointLight point_lights[MAX_POINT_LIGHTS];
 };
 
+cbuffer TextureScaleBuffer : register(b2)
+{
+    float2 tex0_uv_scale;
+};
+
 Texture2D tex0;
 Texture2D tex1;
 SamplerState samp0;
@@ -68,7 +73,8 @@ float3 apply_colorblind(float3 color)
 
 float4 main(VsOutput input) : SV_TARGET
 {
-    float4 tex0_color = disable_textures > 0.5f ? float4(1.0, 1.0, 1.0, 1.0) : tex0.Sample(samp0, input.uv0);
+    float2 scaled_uv0 = input.uv0 * tex0_uv_scale;
+    float4 tex0_color = disable_textures > 0.5f ? float4(1.0, 1.0, 1.0, 1.0) : tex0.Sample(samp0, scaled_uv0);
     float4 target = input.color * tex0_color * current_color;
 
     clip(target.a - alpha_test);
