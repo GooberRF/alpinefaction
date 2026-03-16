@@ -30,3 +30,4 @@ void gamepad_set_trigger_action(int trigger_idx, int action_idx);
 
 // rebind gamepad buttons/triggers
 void gamepad_apply_rebind();
+bool gamepad_has_pending_rebind(); // true if a gamepad button/trigger was captured for the current rebind

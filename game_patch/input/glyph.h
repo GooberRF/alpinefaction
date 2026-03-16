@@ -50,7 +50,7 @@ inline bool is_steam_triton_controller_pid(Uint16 pid)
 
 // Checks Valve VID/PID to resolve Steam-specific controller icon types.
 // For Steam Virtual Gamepad (0x11ff), passes through the supplied fallback icon type.
-// For Steam Deck/Triton, returns SteamDeck; for Steam Controller (2015), returns SteamController.
+// For Steam Deck/SteamController 2, returns Steam Deck glyphs; for Steam Controller (2015), returns Steam Controller glyphs.
 inline ControllerIconType get_steam_virtual_controller_detection(SDL_Gamepad* ctrl, ControllerIconType fallback)
 {
     if (!ctrl)

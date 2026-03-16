@@ -1771,14 +1771,31 @@ CodeInjection options_render_alpine_panel_patch{
             g_ctrl_bind_view = false;
         }
 
-        // Detect bind completion (falling edge of waiting_for_key): RF wrote the sentinel scan
-        // code into the selected binding slot; correlate it back to the pressed gamepad input.
+        // Detect bind completion (falling edge of waiting_for_key).
         static bool s_was_waiting = false;
+        static int16_t s_saved_mouse_btn_ids[128];
         bool now_waiting = (index == 3) && rf::ui::options_controls_waiting_for_key;
+
+        if (!s_was_waiting && now_waiting && g_ctrl_bind_view && rf::local_player) {
+            auto& cc = rf::local_player->settings.controls;
+            for (int i = 0; i < std::min(cc.num_bindings, 128); ++i)
+                s_saved_mouse_btn_ids[i] = cc.bindings[i].mouse_btn_id;
+        }
+
         if (s_was_waiting && !now_waiting && g_ctrl_bind_view) {
-            gamepad_apply_rebind();                  // sentinel → display code, dedup
-            gamepad_sync_bindings_from_scan_codes(); // rebuild runtime maps from updated scan_codes
-            refresh_ctrl_gamepad_codes();            // normalize display codes from rebuilt maps
+            if (gamepad_has_pending_rebind()) {
+                gamepad_apply_rebind();
+                gamepad_sync_bindings_from_scan_codes();
+                refresh_ctrl_gamepad_codes();
+            } else {
+                // Non-gamepad input — reject and roll back all RF side-effects
+                refresh_ctrl_gamepad_codes();
+                if (rf::local_player) {
+                    auto& cc = rf::local_player->settings.controls;
+                    for (int i = 0; i < std::min(cc.num_bindings, 128); ++i)
+                        cc.bindings[i].mouse_btn_id = s_saved_mouse_btn_ids[i];
+                }
+            }
         }
         s_was_waiting = now_waiting;
 

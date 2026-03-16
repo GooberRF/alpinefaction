@@ -366,8 +366,12 @@ void gamepad_sdl_poll()
                     rf::key_process_event(rf::KEY_ESC, 1, 0);
                     rf::key_process_event(rf::KEY_ESC, 0, 0);
                 }
-                if (!rf::gameseq_in_gameplay() && menu_nav_on_button_down(ev.gbutton.button))
+                if (!rf::gameseq_in_gameplay() && menu_nav_on_button_down(ev.gbutton.button)) {
+                    // Re-assert gamepad input: WM_LBUTTONDOWN sent on the gamepad's behalf
+                    // flows through key_msg_handler_hook which would clear this flag.
+                    g_last_input_was_gamepad = true;
                     break;
+                }
                 if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
                     int mapped = g_button_map[ev.gbutton.button];
                     if (mapped >= 0) {
@@ -762,6 +766,19 @@ ConsoleCommand2 gyro_vehicle_camera_cmd{
     "gyro_vehicle_camera [0|1]",
 };
 
+ConsoleCommand2 input_prompts_cmd{
+    "input_prompts",
+    [](std::optional<int> val) {
+        if (val) {
+            g_alpine_game_config.input_prompt_override = std::clamp(*val, 0, 2);
+        }
+        static const char* modes[] = {"Auto", "Controller", "Keyboard"};
+        rf::console::print("Input prompts: {} ({})", modes[g_alpine_game_config.input_prompt_override], g_alpine_game_config.input_prompt_override);
+    },
+    "Set input prompt display: 0=Auto 1=Controller 2=Keyboard",
+    "input_prompts [0|1|2]",
+};
+
 ConsoleCommand2 gamepad_icons_cmd{
     "joy_icons",
     [](std::optional<int> val) {
@@ -786,6 +803,8 @@ bool gamepad_is_motionsensors_supported()
 
 bool gamepad_is_last_input_gamepad()
 {
+    if (g_alpine_game_config.input_prompt_override == 1) return true;
+    if (g_alpine_game_config.input_prompt_override == 2) return false;
     return g_last_input_was_gamepad;
 }
 
@@ -847,6 +866,11 @@ void gamepad_sync_bindings_from_scan_codes()
         else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER))
             g_trigger_action[1] = i;
     }
+}
+
+bool gamepad_has_pending_rebind()
+{
+    return g_rebind_pending_sc >= 0;
 }
 
 void gamepad_apply_rebind()
@@ -956,6 +980,7 @@ void gamepad_apply_patch()
     gyro_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();
+    input_prompts_cmd.register_cmd();
     gamepad_icons_cmd.register_cmd();
     gyro_apply_patch();
 }

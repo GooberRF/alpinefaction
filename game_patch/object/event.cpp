@@ -20,6 +20,7 @@
 #include "../rf/os/console.h"
 #include "../os/console.h"
 #include "../input/input.h"
+#include "../input/gamepad.h"
 #include "../rf/v3d.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 
@@ -533,6 +534,40 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
     },
 };
 
+// Cache the raw $TOKEN$ template so we can re-display it with fresh bindings when the
+// player switches between gamepad and keyboard/mouse while the message is still on screen.
+static std::string   g_hud_msg_template;
+static bool          g_hud_msg_was_gamepad = false;
+static rf::Timestamp g_hud_msg_expire;
+
+FunHook<void(const char*, int, int, rf::Color*)> hud_msg_hook{
+    0x004383C0,
+    [](const char* text, int arg2, int duration, rf::Color* color) {
+        if (text && std::strchr(text, '$')) {
+            g_hud_msg_template    = text;
+            g_hud_msg_was_gamepad = gamepad_is_last_input_gamepad();
+            g_hud_msg_expire.set(duration > 0 ? duration : 8000);
+        } else if (text) {
+            g_hud_msg_template.clear();
+            g_hud_msg_expire.invalidate();
+        }
+        hud_msg_hook.call_target(text, arg2, duration, color);
+    },
+};
+
+FunHook<void(rf::Player*)> hud_do_frame_input_sync_hook{
+    0x00437B80,
+    [](rf::Player* player) {
+        hud_do_frame_input_sync_hook.call_target(player);
+        bool is_gamepad = gamepad_is_last_input_gamepad();
+        if (!g_hud_msg_template.empty() && g_hud_msg_expire.valid() && !g_hud_msg_expire.elapsed()
+            && is_gamepad != g_hud_msg_was_gamepad) {
+            g_hud_msg_was_gamepad = is_gamepad;
+            rf::hud_msg(g_hud_msg_template.c_str(), 0, std::max(1, g_hud_msg_expire.time_until()), nullptr);
+        }
+    },
+};
+
 void apply_event_patches()
 {
     // allow custom directional events
@@ -540,6 +575,8 @@ void apply_event_patches()
 
     // HUD Message magic word handling
     hud_translate_special_character_token_hook.install();
+    hud_msg_hook.install();
+    hud_do_frame_input_sync_hook.install();
 
     // fix some events not working if delay value is specified (alpine levels only)
     EventUnhide__process_patch.install();
