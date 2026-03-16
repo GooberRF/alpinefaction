@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <windowsx.h>
 #include <commctrl.h>
 #include <cstdint>
 #include <algorithm>
@@ -622,6 +623,131 @@ static void refresh_object_list(HWND hwnd, TypeFilterDialogData* data)
     InvalidateRect(list, nullptr, TRUE);
 }
 
+// ─── ListView subclass for click-drag multi-select ──────────────────────────
+// Stock editor used CListBox with LBS_EXTENDEDSEL which natively supports
+// click-drag selection. ListView doesn't support this, so we subclass to
+// handle mouse drag and select the range from anchor to current item.
+
+static WNDPROC g_orig_listview_proc = nullptr;
+static int g_drag_anchor = -1;
+static bool g_drag_active = false;
+static int g_drag_last_idx = -1;
+static UINT_PTR g_scroll_timer = 0;
+static constexpr UINT_PTR SCROLL_TIMER_ID = 9001;
+static constexpr int SCROLL_INTERVAL_MS = 50;
+
+static void drag_update_selection(HWND hwnd, int current_idx)
+{
+    if (current_idx < 0 || g_drag_anchor < 0 || current_idx == g_drag_last_idx) return;
+    g_drag_last_idx = current_idx;
+
+    int lo = std::min(g_drag_anchor, current_idx);
+    int hi = std::max(g_drag_anchor, current_idx);
+    int count = ListView_GetItemCount(hwnd);
+
+    SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
+    for (int i = 0; i < count; i++) {
+        UINT want = (i >= lo && i <= hi) ? LVIS_SELECTED : 0;
+        ListView_SetItemState(hwnd, i, want, LVIS_SELECTED);
+    }
+    SendMessage(hwnd, WM_SETREDRAW, TRUE, 0);
+    RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+
+    ListView_EnsureVisible(hwnd, current_idx, FALSE);
+}
+
+static int drag_hit_test_with_scroll(HWND hwnd, int y)
+{
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    int count = ListView_GetItemCount(hwnd);
+    if (y < rc.top) {
+        int top = ListView_GetTopIndex(hwnd);
+        return std::max(0, top - 1);
+    }
+    if (y >= rc.bottom) {
+        int top = ListView_GetTopIndex(hwnd);
+        int per_page = ListView_GetCountPerPage(hwnd);
+        return std::min(count - 1, top + per_page);
+    }
+    LVHITTESTINFO ht = {};
+    ht.pt = {rc.left + (rc.right - rc.left) / 2, y};
+    return ListView_HitTest(hwnd, &ht);
+}
+
+static LRESULT CALLBACK ListViewDragSelectProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    switch (msg) {
+    case WM_LBUTTONDOWN: {
+        if (wparam & (MK_SHIFT | MK_CONTROL)) break;
+        LVHITTESTINFO ht = {};
+        ht.pt = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+        int idx = ListView_HitTest(hwnd, &ht);
+        if (idx >= 0) {
+            // Let checkbox clicks pass through to default handler
+            if (ht.flags & LVHT_ONITEMSTATEICON)
+                break;
+
+            int count = ListView_GetItemCount(hwnd);
+            SendMessage(hwnd, WM_SETREDRAW, FALSE, 0);
+            for (int i = 0; i < count; i++)
+                ListView_SetItemState(hwnd, i, 0, LVIS_SELECTED);
+            ListView_SetItemState(hwnd, idx, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            SendMessage(hwnd, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+
+            g_drag_anchor = idx;
+            g_drag_last_idx = idx;
+            g_drag_active = true;
+            SetCapture(hwnd);
+            return 0;
+        }
+        break;
+    }
+    case WM_MOUSEMOVE: {
+        if (!g_drag_active || !(wparam & MK_LBUTTON)) break;
+        int y = GET_Y_LPARAM(lparam);
+        int idx = drag_hit_test_with_scroll(hwnd, y);
+        drag_update_selection(hwnd, idx);
+
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        if (y < rc.top || y >= rc.bottom) {
+            if (!g_scroll_timer)
+                g_scroll_timer = SetTimer(hwnd, SCROLL_TIMER_ID, SCROLL_INTERVAL_MS, nullptr);
+        } else if (g_scroll_timer) {
+            KillTimer(hwnd, SCROLL_TIMER_ID);
+            g_scroll_timer = 0;
+        }
+        return 0;
+    }
+    case WM_TIMER: {
+        if (wparam == SCROLL_TIMER_ID && g_drag_active) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            int idx = drag_hit_test_with_scroll(hwnd, pt.y);
+            drag_update_selection(hwnd, idx);
+            return 0;
+        }
+        break;
+    }
+    case WM_LBUTTONUP:
+        if (g_drag_active) {
+            g_drag_active = false;
+            if (g_scroll_timer) { KillTimer(hwnd, SCROLL_TIMER_ID); g_scroll_timer = 0; }
+            ReleaseCapture();
+            return 0;
+        }
+        break;
+    case WM_CAPTURECHANGED:
+        g_drag_active = false;
+        if (g_scroll_timer) { KillTimer(hwnd, SCROLL_TIMER_ID); g_scroll_timer = 0; }
+        break;
+    }
+    return CallWindowProc(g_orig_listview_proc, hwnd, msg, wparam, lparam);
+}
+
 static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     auto* data = reinterpret_cast<TypeFilterDialogData*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
@@ -640,6 +766,14 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         DWORD ex_style = LVS_EX_FULLROWSELECT;
         if (data->hide_mode) ex_style |= LVS_EX_CHECKBOXES;
         ListView_SetExtendedListViewStyle(list, ex_style);
+
+        // Subclass for click-drag multi-select (replicates LBS_EXTENDEDSEL behavior)
+        g_orig_listview_proc = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtr(list, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(ListViewDragSelectProc)));
+        g_drag_active = false;
+        g_drag_anchor = -1;
+        g_drag_last_idx = -1;
+        g_scroll_timer = 0;
 
         RECT lr;
         GetClientRect(list, &lr);
