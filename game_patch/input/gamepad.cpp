@@ -199,119 +199,135 @@ static void update_stick_movement()
     set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, lx > 0.0f);
 }
 
-void gamepad_do_frame()
+void gamepad_sdl_poll()
 {
     memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
     SDL_UpdateGamepads();
-    SDL_Event ev;
-    while (SDL_PeepEvents(&ev, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) > 0) {
-        switch (ev.type) {
-        case SDL_EVENT_GAMEPAD_ADDED:
-            if (!g_gamepad)
-                try_open_gamepad(ev.gdevice.which);
-            break;
-        case SDL_EVENT_GAMEPAD_REMOVED:
-            if (g_gamepad && SDL_GetGamepadID(g_gamepad) == ev.gdevice.which) {
-                xlog::info("Gamepad disconnected");
-                release_movement_keys();
-                for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
-                    inject_action_key(g_button_map[b], false);
-                inject_action_key(g_trigger_action[0], false);
-                inject_action_key(g_trigger_action[1], false);
-                SDL_CloseGamepad(g_gamepad);
-                g_gamepad             = nullptr;
-                g_motion_sensors_active = false;
-                g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
-                g_accel_x = g_accel_y = g_accel_z = 0.0f;
-                g_gyro_fresh = false;
-                memset(g_action_curr, 0, sizeof(g_action_curr));
-            }
-            break;
-        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-            if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
-            g_last_input_was_gamepad = true;
-            if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
+    // Flush SDL Gamepad events outside the gamepad range to prevent queue buildup.
+    // Keyboard and mouse input is handled via Win32 message dispatch and doesn't need flushing.
+    SDL_FlushEvents(SDL_EVENT_FIRST,
+        static_cast<SDL_EventType>(static_cast<Uint32>(SDL_EVENT_GAMEPAD_AXIS_MOTION) - 1u));
+    SDL_FlushEvents(
+        static_cast<SDL_EventType>(static_cast<Uint32>(SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED) + 1u),
+        SDL_EVENT_LAST);
+    SDL_Event events[16];
+    int n;
+    while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
+                               SDL_GETEVENT, SDL_EVENT_GAMEPAD_AXIS_MOTION,
+                               SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED)) > 0) {
+        for (int i = 0; i < n; ++i) {
+            const SDL_Event& ev = events[i];
+            switch (ev.type) {
+            case SDL_EVENT_GAMEPAD_ADDED:
+                if (!g_gamepad)
+                    try_open_gamepad(ev.gdevice.which);
+                break;
+            case SDL_EVENT_GAMEPAD_REMOVED:
+                if (g_gamepad && SDL_GetGamepadID(g_gamepad) == ev.gdevice.which) {
+                    xlog::info("Gamepad disconnected");
+                    release_movement_keys();
+                    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+                        inject_action_key(g_button_map[b], false);
+                    inject_action_key(g_trigger_action[0], false);
+                    inject_action_key(g_trigger_action[1], false);
+                    SDL_CloseGamepad(g_gamepad);
+                    g_gamepad               = nullptr;
+                    g_motion_sensors_active = false;
+                    g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
+                    g_accel_x = g_accel_y = g_accel_z = 0.0f;
+                    g_gyro_fresh = false;
+                    memset(g_action_curr, 0, sizeof(g_action_curr));
+                }
+                break;
+            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+                if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
+                g_last_input_was_gamepad = true;
+                if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
+                    if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+                        // Start is reserved as "cancel rebind", same role as keyboard ESC.
+                        // TODO: replace baked-in ESC with menu game action
+                        rf::key_process_event(rf::KEY_ESC, 1, 0);
+                        rf::key_process_event(rf::KEY_ESC, 0, 0);
+                    } else {
+                        g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button;
+                        rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
+                    }
+                    break; // skip normal gameplay dispatch
+                }
                 if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
-                    // Start is reserved as "cancel rebind", same role as keyboard ESC.
-                    // TODO: replace baked-in ESC with menu game action
                     rf::key_process_event(rf::KEY_ESC, 1, 0);
                     rf::key_process_event(rf::KEY_ESC, 0, 0);
-                } else {
-                    g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button;
-                    rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
                 }
-                break; // skip normal gameplay dispatch
-            }
-            if (ev.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
-                rf::key_process_event(rf::KEY_ESC, 1, 0);
-                rf::key_process_event(rf::KEY_ESC, 0, 0);
-            }
-            if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
-                int mapped = g_button_map[ev.gbutton.button];
-                if (mapped >= 0) {
-                    inject_action_key(mapped, true);
-                    g_action_curr[mapped] = true;
+                if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
+                    int mapped = g_button_map[ev.gbutton.button];
+                    if (mapped >= 0) {
+                        inject_action_key(mapped, true);
+                        g_action_curr[mapped] = true;
+                    }
+                    int16_t gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button);
+                    sync_extra_actions_for_scancode(gp_sc, true, mapped);
                 }
-                int16_t gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button);
-                sync_extra_actions_for_scancode(gp_sc, true, mapped);
-            }
-            break;
-        case SDL_EVENT_GAMEPAD_BUTTON_UP:
-            if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
-            if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
-                int mapped = g_button_map[ev.gbutton.button];
-                if (mapped >= 0) {
-                    inject_action_key(mapped, false);
-                    g_action_curr[mapped] = false;
+                break;
+            case SDL_EVENT_GAMEPAD_BUTTON_UP:
+                if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gbutton.which) break;
+                if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
+                    int mapped = g_button_map[ev.gbutton.button];
+                    if (mapped >= 0) {
+                        inject_action_key(mapped, false);
+                        g_action_curr[mapped] = false;
+                    }
+                    int16_t gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button);
+                    sync_extra_actions_for_scancode(gp_sc, false, mapped);
                 }
-                int16_t gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button);
-                sync_extra_actions_for_scancode(gp_sc, false, mapped);
-            }
-            break;
-        case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-            if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gaxis.which) break;
-            {
-                float v = ev.gaxis.value / (float)SDL_MAX_SINT16;
+                break;
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
+                if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.gaxis.which) break;
+                float v = ev.gaxis.value / static_cast<float>(SDL_MAX_SINT16);
                 float deadzone = 0.0f;
                 switch (static_cast<SDL_GamepadAxis>(ev.gaxis.axis)) {
-                    case SDL_GAMEPAD_AXIS_LEFTX:
-                    case SDL_GAMEPAD_AXIS_LEFTY:
-                        deadzone = g_alpine_game_config.gamepad_move_deadzone;
-                        break;
-                    case SDL_GAMEPAD_AXIS_RIGHTX:
-                    case SDL_GAMEPAD_AXIS_RIGHTY:
-                        deadzone = g_alpine_game_config.gamepad_look_deadzone;
-                        break;
-                    case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
-                    case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
-                        deadzone = 0.5f;
-                        break;
-                    default:
-                        break;
+                case SDL_GAMEPAD_AXIS_LEFTX:
+                case SDL_GAMEPAD_AXIS_LEFTY:
+                    deadzone = g_alpine_game_config.gamepad_move_deadzone;
+                    break;
+                case SDL_GAMEPAD_AXIS_RIGHTX:
+                case SDL_GAMEPAD_AXIS_RIGHTY:
+                    deadzone = g_alpine_game_config.gamepad_look_deadzone;
+                    break;
+                case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
+                case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
+                    deadzone = 0.5f;
+                    break;
+                default:
+                    break;
                 }
                 if (std::abs(v) > deadzone)
                     g_last_input_was_gamepad = true;
+                break;
             }
-            break;
-        case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
-            if (!g_motion_sensors_active || SDL_GetGamepadID(g_gamepad) != ev.gsensor.which) break;
-            if (ev.gsensor.sensor == SDL_SENSOR_GYRO) {
-                constexpr float rad2deg = 180.0f / 3.14159265f;
-                g_gyro_x = ev.gsensor.data[0] * rad2deg;
-                g_gyro_y = ev.gsensor.data[1] * rad2deg;
-                g_gyro_z = ev.gsensor.data[2] * rad2deg;
-                g_gyro_fresh = true;
-            } else if (ev.gsensor.sensor == SDL_SENSOR_ACCEL) {
-                g_accel_x = ev.gsensor.data[0] / SDL_STANDARD_GRAVITY;
-                g_accel_y = ev.gsensor.data[1] / SDL_STANDARD_GRAVITY;
-                g_accel_z = ev.gsensor.data[2] / SDL_STANDARD_GRAVITY;
+            case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+                if (!g_motion_sensors_active || SDL_GetGamepadID(g_gamepad) != ev.gsensor.which) break;
+                if (ev.gsensor.sensor == SDL_SENSOR_GYRO) {
+                    constexpr float rad2deg = 180.0f / 3.14159265f;
+                    g_gyro_x = ev.gsensor.data[0] * rad2deg;
+                    g_gyro_y = ev.gsensor.data[1] * rad2deg;
+                    g_gyro_z = ev.gsensor.data[2] * rad2deg;
+                    g_gyro_fresh = true;
+                } else if (ev.gsensor.sensor == SDL_SENSOR_ACCEL) {
+                    g_accel_x = ev.gsensor.data[0] / SDL_STANDARD_GRAVITY;
+                    g_accel_y = ev.gsensor.data[1] / SDL_STANDARD_GRAVITY;
+                    g_accel_z = ev.gsensor.data[2] / SDL_STANDARD_GRAVITY;
+                }
+                break;
+            default:
+                break;
             }
-            break;
-        default:
-            break;
         }
     }
+}
 
+void gamepad_do_frame()
+{
+    gamepad_sdl_poll();
     if (g_gamepad) {
         if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
             float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
