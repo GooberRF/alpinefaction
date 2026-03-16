@@ -17,6 +17,7 @@ static const char* search_overrides(const ButtonOverride (&table)[N], int button
 }
 
 // Maps SDL face-button labels to display strings.
+// Face button glyphs takes priority
 static const char* get_label_name(SDL_GamepadButtonLabel label)
 {
     switch (label) {
@@ -32,18 +33,31 @@ static const char* get_label_name(SDL_GamepadButtonLabel label)
     }
 }
 
-static const ButtonOverride xbox360_overrides[] = {
-    {  4, "Back"  },
-    {  5, "Xbox"  },
-    {  6, "Start" },
-    {  7, "LS"    },
-    {  8, "RS"    },
-    {  9, "LB"    },
-    { 10, "RB"    },
-    { 26, "LT"    },
-    { 27, "RT"    },
+// Standard glyph overrides — shared across all controller families
+static const ButtonOverride glyph_standard[] = {
+    {  7, "L3"        },  // Left stick click
+    {  8, "R3"        },  // Right stick click
+    {  9, "L1"        },  // Left shoulder
+    { 10, "R1"        },  // Right shoulder
+    { 15, "M1"        },
+    { 16, "L4"        },  // Left back upper paddle
+    { 17, "L5"        },  // Left back lower paddle
+    { 18, "R4"        },  // Right back upper paddle
+    { 19, "R5"        },  // Right back lower paddle
+    { 21, "M2"        },
+    { 22, "M3"        },
+    { 23, "M4"        },
+    { 26, "L2"        },
+    { 27, "R2"        },
 };
 
+// Xbox 360-specific overrides (Back/Start differ from Xbox One's View/Menu)
+static const ButtonOverride xbox360_overrides[] = {
+    {  4, "Back"  },
+    {  6, "Start" },
+};
+
+// Xbox One/Series overrides — also used as fallback for Xbox 360
 static const ButtonOverride xboxone_overrides[] = {
     {  4, "View"     },
     {  5, "Xbox"     },
@@ -62,47 +76,28 @@ static const ButtonOverride xboxone_overrides[] = {
 };
 
 static const ButtonOverride ps3_overrides[] = {
-    {  4, "Select"   },
-    {  5, "PS"       },
-    {  6, "Start"    },
-    {  7, "L3"       },
-    {  8, "R3"       },
-    {  9, "L1"       },
-    { 10, "R1"       },
-    { 20, "Touchpad" },
-    { 26, "L2"       },
-    { 27, "R2"       },
+    {  4, "Select" },
+    {  5, "PS"     },
+    {  6, "Start"  },
 };
 
 static const ButtonOverride ps4_overrides[] = {
     {  4, "Share"    },
     {  5, "PS"       },
     {  6, "Options"  },
-    {  7, "L3"       },
-    {  8, "R3"       },
-    {  9, "L1"       },
-    { 10, "R1"       },
     { 20, "Touchpad" },
-    { 26, "L2"       },
-    { 27, "R2"       },
 };
 
 static const ButtonOverride ps5_overrides[] = {
     {  4, "Create"    },
     {  5, "PS"        },
     {  6, "Options"   },
-    {  7, "L3"        },
-    {  8, "R3"        },
-    {  9, "L1"        },
-    { 10, "R1"        },
     { 15, "Mic"       },
     { 16, "RB Paddle" },
     { 17, "LB Paddle" },
     { 18, "Right Fn"  },
     { 19, "Left Fn"   },
     { 20, "Touchpad"  },
-    { 26, "L2"        },
-    { 27, "R2"        },
 };
 
 static const ButtonOverride switchpro_overrides[] = {
@@ -120,18 +115,6 @@ static const ButtonOverride switchpro_overrides[] = {
     { 27, "ZR"       },
 };
 
-static const ButtonOverride switchjoycon_overrides[] = {
-    {  5, "Home"     },
-    {  9, "L"        },
-    { 10, "R"        },
-    { 16, "Right SR" },
-    { 17, "Left SL"  },
-    { 18, "Right SL" },
-    { 19, "Left SR"  },
-    { 26, "ZL"       },
-    { 27, "ZR"       },
-};
-
 static const ButtonOverride gamecube_overrides[] = {
     {  9, "Z"       },  // SDL_GAMEPAD_BUTTON_LEFT_SHOULDER  → Z
     { 10, "R"       },  // SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER → R
@@ -139,6 +122,21 @@ static const ButtonOverride gamecube_overrides[] = {
     { 23, "R Click" },  // SDL_GAMEPAD_BUTTON_MISC4          → R trigger digital
     { 26, "L"       },
     { 27, "R"       },
+};
+
+static const ButtonOverride steamdeck_overrides[] = {
+    {  4, "View"  },
+    {  5, "Steam" },
+    {  6, "Menu"  },
+    { 15, "..."   },   // Quick Access button
+};
+
+static const ButtonOverride steamcontroller_overrides[] = {
+    {  5, "Steam"  },
+    {  7, "Stick Click"  }, 
+    {  8, "R-Pad"  },   // Right trackpad press
+    { 16, "RG"     },   // Right grip
+    { 17, "LG"     },   // Left grip
 };
 
 const char* gamepad_get_button_name(int button_idx)
@@ -180,66 +178,112 @@ const char* gamepad_get_button_name(int button_idx)
     return names[button_idx];
 }
 
-const char* gamepad_get_button_display_name(SDL_GamepadType type, int button_idx)
+// Maps ControllerIconType to SDL_GamepadType for face-button label lookup.
+static SDL_GamepadType icon_type_to_sdl(ControllerIconType icon)
 {
-    // Unknown / generic controllers: use positional names only.
-    if (type == SDL_GAMEPAD_TYPE_UNKNOWN || type == SDL_GAMEPAD_TYPE_STANDARD)
-        return gamepad_get_button_name(button_idx);
+    switch (icon) {
+        case ControllerIconType::Xbox360:          return SDL_GAMEPAD_TYPE_XBOX360;
+        case ControllerIconType::XboxOne:          return SDL_GAMEPAD_TYPE_XBOXONE;
+        case ControllerIconType::PS3:              return SDL_GAMEPAD_TYPE_PS3;
+        case ControllerIconType::PS4:              return SDL_GAMEPAD_TYPE_PS4;
+        case ControllerIconType::PS5:              return SDL_GAMEPAD_TYPE_PS5;
+        case ControllerIconType::NintendoSwitch:   return SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO;
+#if SDL_VERSION_ATLEAST(3, 2, 0)
+        case ControllerIconType::NintendoGameCube: return SDL_GAMEPAD_TYPE_GAMECUBE;
+#endif
+        // Steam devices use Xbox-style A/B/X/Y face labels
+        case ControllerIconType::SteamController:
+        case ControllerIconType::SteamDeck:        return SDL_GAMEPAD_TYPE_XBOXONE;
+        default:                                   return SDL_GAMEPAD_TYPE_UNKNOWN;
+    }
+}
 
+// Maps SDL_GamepadType to ControllerIconType for auto-detection.
+static ControllerIconType sdl_type_to_icon(SDL_GamepadType type)
+{
+    switch (type) {
+        case SDL_GAMEPAD_TYPE_XBOX360:                       return ControllerIconType::Xbox360;
+        case SDL_GAMEPAD_TYPE_XBOXONE:                       return ControllerIconType::XboxOne;
+        case SDL_GAMEPAD_TYPE_PS3:                           return ControllerIconType::PS3;
+        case SDL_GAMEPAD_TYPE_PS4:                           return ControllerIconType::PS4;
+        case SDL_GAMEPAD_TYPE_PS5:                           return ControllerIconType::PS5;
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:  return ControllerIconType::NintendoSwitch;
+#if SDL_VERSION_ATLEAST(3, 2, 0)
+        case SDL_GAMEPAD_TYPE_GAMECUBE:                      return ControllerIconType::NintendoGameCube;
+#endif
+        default:                                             return ControllerIconType::Generic;
+    }
+}
+
+const char* gamepad_get_button_display_name(ControllerIconType type, int button_idx)
+{
     // Face buttons (0–3): SDL handles per-controller label mapping, including Switch A/B swap.
+    // Generic/Auto have no SDL type (→ UNKNOWN), so this is naturally skipped for them.
     if (button_idx >= 0 && button_idx < 4) {
-        const char* label_name = get_label_name(
-            SDL_GetGamepadButtonLabelForType(type, static_cast<SDL_GamepadButton>(button_idx)));
-        if (label_name)
-            return label_name;
+        SDL_GamepadType sdl_type = icon_type_to_sdl(type);
+        if (sdl_type != SDL_GAMEPAD_TYPE_UNKNOWN) {
+            const char* label_name = get_label_name(
+                SDL_GetGamepadButtonLabelForType(sdl_type, static_cast<SDL_GamepadButton>(button_idx)));
+            if (label_name)
+                return label_name;
+        }
     }
 
     // Non-face buttons: look up in the controller-specific table.
     const char* result = nullptr;
     switch (type) {
-        case SDL_GAMEPAD_TYPE_XBOX360:
-            result = search_overrides(xbox360_overrides, button_idx); break;
-        case SDL_GAMEPAD_TYPE_XBOXONE:
+        case ControllerIconType::Xbox360:
+            result = search_overrides(xbox360_overrides, button_idx);
+            if (result) return result;
             result = search_overrides(xboxone_overrides, button_idx); break;
-        case SDL_GAMEPAD_TYPE_PS3:
+        case ControllerIconType::XboxOne:
+            result = search_overrides(xboxone_overrides, button_idx); break;
+        case ControllerIconType::PS3:
             result = search_overrides(ps3_overrides, button_idx); break;
-        case SDL_GAMEPAD_TYPE_PS4:
+        case ControllerIconType::PS4:
             result = search_overrides(ps4_overrides, button_idx); break;
-        case SDL_GAMEPAD_TYPE_PS5:
+        case ControllerIconType::PS5:
             result = search_overrides(ps5_overrides, button_idx); break;
-        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
-        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+        case ControllerIconType::NintendoSwitch:
             result = search_overrides(switchpro_overrides, button_idx); break;
-        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
-        case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
-            result = search_overrides(switchjoycon_overrides, button_idx); break;
-        case SDL_GAMEPAD_TYPE_GAMECUBE:
+        case ControllerIconType::NintendoGameCube:
             result = search_overrides(gamecube_overrides, button_idx); break;
+        case ControllerIconType::SteamController:
+            result = search_overrides(steamcontroller_overrides, button_idx);
+            if (result) return result;
+            result = search_overrides(xbox360_overrides, button_idx);  // Back/Start
+            if (result) return result;
+            result = search_overrides(xboxone_overrides, button_idx); break;  // LB/RB/LT/RT
+        case ControllerIconType::SteamDeck:
+            result = search_overrides(steamdeck_overrides, button_idx); break;
         default:
             break;
     }
 
-    return result ? result : gamepad_get_button_name(button_idx);
-}
+    if (result)
+        return result;
 
-static SDL_GamepadType icon_type_to_sdl(ControllerIconType icon)
-{
-    switch (icon) {
-        case ControllerIconType::Xbox360:         return SDL_GAMEPAD_TYPE_XBOX360;
-        case ControllerIconType::XboxOne:         return SDL_GAMEPAD_TYPE_XBOXONE;
-        case ControllerIconType::PS3:             return SDL_GAMEPAD_TYPE_PS3;
-        case ControllerIconType::PS4:             return SDL_GAMEPAD_TYPE_PS4;
-        case ControllerIconType::PS5:             return SDL_GAMEPAD_TYPE_PS5;
-        case ControllerIconType::NintendoSwitch:  return SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO;
-        case ControllerIconType::NintendoGameCube: return SDL_GAMEPAD_TYPE_GAMECUBE;
-        default:                                  return SDL_GAMEPAD_TYPE_UNKNOWN;
+    // Shared standard fallback — covers sticks, paddles, triggers, misc buttons
+    // consistently across all known controller families.
+    if (type != ControllerIconType::Generic) {
+        const char* standard = search_overrides(glyph_standard, button_idx);
+        if (standard)
+            return standard;
     }
+    return gamepad_get_button_name(button_idx);
 }
 
-const char* gamepad_get_effective_display_name(ControllerIconType icon_pref, SDL_GamepadType connected_type, int button_idx)
+const char* gamepad_get_effective_display_name(ControllerIconType icon_pref, SDL_Gamepad* ctrl, int button_idx)
 {
-    SDL_GamepadType type = (icon_pref == ControllerIconType::Auto)
-        ? connected_type
-        : icon_type_to_sdl(icon_pref);
+    ControllerIconType type;
+    if (icon_pref == ControllerIconType::Auto) {
+        SDL_GamepadType sdl_type = ctrl ? SDL_GetGamepadType(ctrl) : SDL_GAMEPAD_TYPE_UNKNOWN;
+        type = get_steam_virtual_controller_detection(ctrl, sdl_type_to_icon(sdl_type));
+    } else {
+        type = icon_pref;
+    }
     return gamepad_get_button_display_name(type, button_idx);
 }

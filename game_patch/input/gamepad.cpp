@@ -813,9 +813,8 @@ const char* gamepad_get_scan_code_name(int scan_code)
 {
     int offset = scan_code - CTRL_GAMEPAD_SCAN_BASE;
     if (offset >= 0 && offset < SDL_GAMEPAD_BUTTON_COUNT + 2) {
-        SDL_GamepadType type = g_gamepad ? SDL_GetGamepadType(g_gamepad) : SDL_GAMEPAD_TYPE_UNKNOWN;
         auto icon_pref = static_cast<ControllerIconType>(g_alpine_game_config.gamepad_icon_override);
-        return gamepad_get_effective_display_name(icon_pref, type, offset);
+        return gamepad_get_effective_display_name(icon_pref, g_gamepad, offset);
     }
     return "<none>";
 }
