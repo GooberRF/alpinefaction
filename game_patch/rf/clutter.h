@@ -103,21 +103,19 @@ namespace rf
     static auto& clutter_count = addr_as_ref<int>(0x005C9358);
 
     // Shared dummy ClutterInfo for alpine objects that don't need clutter behavior.
-    // Function-local static ensures proper construction and one-time sentinel init.
     inline ClutterInfo& get_dummy_clutter_info()
     {
-        static ClutterInfo info{};
-        static bool initialized = false;
-        if (!initialized) {
-            info.life = -1.0f;
-            info.sound = -1;
-            info.use_sound = -1;
-            info.explode_anim_vclip = -1;
-            info.glare = -1;
-            info.rod_glare = -1;
-            info.light_prop = -1;
-            initialized = true;
-        }
+        static ClutterInfo info = []() {
+            ClutterInfo ci{};
+            ci.life = -1.0f;
+            ci.sound = -1;
+            ci.use_sound = -1;
+            ci.explode_anim_vclip = -1;
+            ci.glare = -1;
+            ci.rod_glare = -1;
+            ci.light_prop = -1;
+            return ci;
+        }();
         return info;
     }
     static auto& monitor_list = addr_as_ref<Monitor>(0x005C98A8);
