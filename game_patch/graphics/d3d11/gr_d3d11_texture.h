@@ -61,6 +61,16 @@ namespace df::gr::d3d11
             lookup_texture(bm_handle);
         }
 
+
+        std::pair<float, float> get_texture_uv_scale(int bm_handle)
+        {
+            if (bm_handle < 0) {
+                return {1.0f, 1.0f};
+            }
+            Texture& texture = get_or_load_texture(bm_handle, false);
+            return {texture.u_scale, texture.v_scale};
+        }
+
     private:
         struct Texture
         {
@@ -95,6 +105,8 @@ namespace df::gr::d3d11
             ComPtr<ID3D11Texture2D> gpu_ms_texture;
             ComPtr<ID3D11RenderTargetView> render_target_view;
             ComPtr<ID3D11ShaderResourceView> shader_resource_view;
+            float u_scale = 1.0f;
+            float v_scale = 1.0f;
             short save_cache_count = 0;
             short ref_count = 0;
 
@@ -116,7 +128,7 @@ namespace df::gr::d3d11
             return insert_result.first->second;
         }
 
-        Texture create_texture(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal, int mip_levels, bool staging);
+        Texture create_texture(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal, int mip_levels, bool staging, int src_w = 0, int src_h = 0);
         Texture create_render_target(int bm_handle, int w, int h);
         Texture load_texture(int bm_handle, bool staging);
         std::pair<DXGI_FORMAT, rf::bm::Format> determine_supported_texture_format(rf::bm::Format fmt);

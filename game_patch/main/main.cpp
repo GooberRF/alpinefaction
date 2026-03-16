@@ -21,7 +21,6 @@
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
-#include "../graphics/legacy/gr_d3d.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
 #include "../hud/multi_scoreboard.h"

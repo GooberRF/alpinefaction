@@ -409,6 +409,13 @@ namespace df::gr::d3d11
         },
     };
 
+    void set_pow2_tex_active(bool active)
+    {
+        if (renderer) {
+            renderer->set_pow2_tex_active(active);
+        }
+    }
+
     static CodeInjection level_page_in_injection{
         0x0045CC20,
         []() {

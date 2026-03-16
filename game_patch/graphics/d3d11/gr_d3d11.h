@@ -82,6 +82,7 @@ namespace df::gr::d3d11
         void page_in_movable_solid(rf::GSolid* solid);
         void flush_caches();
         void reset_static_vertex_color_tracking();
+        void set_pow2_tex_active(bool active);
         float z_far() const;
 
     private:

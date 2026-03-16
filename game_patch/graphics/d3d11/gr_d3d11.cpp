@@ -577,4 +577,9 @@ namespace df::gr::d3d11
     {
         return render_context_->projection().z_far();
     }
+
+    void Renderer::set_pow2_tex_active(bool active)
+    {
+        render_context_->set_pow2_tex_active(active);
+    }
 }
