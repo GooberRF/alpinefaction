@@ -304,61 +304,36 @@ void linear_pitch_test()
 }
 #endif // DEBUG
 
-static float convert_pitch_delta_to_non_linear_space(
-    const float current_yaw,
-    const float current_pitch_non_lin,
-    const float pitch_delta,
-    const float yaw_delta
-) {
-    // Convert to linear space.  See `physics_make_orient`.
-    const rf::Vector3 fvec =
-        fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
-    const float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
-
-    // Calculate in linear space.
-    constexpr float HALF_PI = 1.5707964f;
-    const float new_pitch_lin =
-        std::clamp(current_pitch_lin + pitch_delta, -HALF_PI, HALF_PI);
-    const float new_yaw = current_yaw + yaw_delta;
-
-    // Convert back to non-linear space.
-    const rf::Vector3 fvec_new =
-        fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
-    const float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
-
-    // Update non-linear pitch delta.
-    const float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
-    xlog::trace(
-        "non-lin {} lin {} delta {} new {}",
-        current_pitch_non_lin,
-        current_pitch_lin,
-        pitch_delta,
-        new_pitch_delta
-    );
-
-    return new_pitch_delta;
-}
-
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
-    [] (const auto& regs) {
-        if (!g_alpine_game_config.mouse_linear_pitch) {
+    [](auto& regs) {
+        if (!g_alpine_game_config.mouse_linear_pitch)
             return;
-        }
-        float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
-        if (pitch_delta == .0f) {
+        // Non-linear pitch value and delta from RF
+        rf::Entity* entity = regs.esi;
+        float current_yaw = entity->control_data.phb.y;
+        float current_pitch_non_lin = entity->control_data.eye_phb.x;
+        float& pitch_delta = *reinterpret_cast<float*>(regs.esp + 0x44 - 0x34);
+        float& yaw_delta = *reinterpret_cast<float*>(regs.esp + 0x44 + 0x4);
+        if (pitch_delta == 0)
             return;
-        }
-        const rf::Entity* const entity = regs.esi;
-        const float current_yaw = entity->control_data.phb.y;
-        const float current_pitch_non_lin = entity->control_data.eye_phb.x;
-        const float yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
-        pitch_delta = convert_pitch_delta_to_non_linear_space(
-            current_yaw,
-            current_pitch_non_lin,
-            pitch_delta,
-            yaw_delta
-        );
+        // Convert to linear space (see RotMatixFromEuler function at 004A0D70)
+        auto fvec = fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
+        float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
+        // Calculate new pitch in linear space
+        float new_pitch_lin = current_pitch_lin + pitch_delta;
+        float new_yaw = current_yaw + yaw_delta;
+        // Clamp to [-pi, pi]
+        constexpr float half_pi = 1.5707964f;
+        new_pitch_lin = std::clamp(new_pitch_lin, -half_pi, half_pi);
+        // Convert back to non-linear space
+        auto fvec_new = fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
+        float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
+        // Update non-linear pitch delta
+        float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
+        xlog::trace("non-lin {} lin {} delta {} new {}", current_pitch_non_lin, current_pitch_lin, pitch_delta,
+              new_pitch_delta);
+        pitch_delta = new_pitch_delta;
     },
 };
 
@@ -379,13 +354,18 @@ void mouse_sdl_poll()
 {
     if (!g_sdl_window) return;
 
-    float dx = 0.0f;
-    float dy = 0.0f;
-    SDL_GetRelativeMouseState(&dx, &dy); // always drain to prevent buildup
-
-    if (g_alpine_game_config.sdl_mouse) {
-        g_sdl_mouse_dx_rem += dx;
-        g_sdl_mouse_dy_rem += dy;
+    SDL_Event events[16];
+    int n;
+    while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
+                               SDL_GETEVENT, SDL_EVENT_MOUSE_MOTION,
+                               SDL_EVENT_MOUSE_REMOVED)) > 0) {
+        for (int i = 0; i < n; ++i) {
+            const SDL_Event& ev = events[i];
+            if (ev.type == SDL_EVENT_MOUSE_MOTION && g_alpine_game_config.sdl_mouse) {
+                g_sdl_mouse_dx_rem += ev.motion.xrel;
+                g_sdl_mouse_dy_rem += ev.motion.yrel;
+            }
+        }
     }
 }
 
@@ -395,8 +375,11 @@ void mouse_init_sdl_window()
     SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER, rf::main_wnd);
     g_sdl_window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
-    if (!g_sdl_window)
+    if (!g_sdl_window) {
         xlog::error("SDL_CreateWindowWithProperties failed: {}", SDL_GetError());
+        return;
+    }
+    SDL_StartTextInput(g_sdl_window);
 }
 
 void mouse_apply_patch()

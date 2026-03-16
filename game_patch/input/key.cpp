@@ -1,4 +1,4 @@
-#include <cctype>
+#include <SDL3/SDL.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
@@ -44,24 +44,28 @@ rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_cont
     return static_cast<rf::ControlConfigAction>(starting_alpine_control_index + static_cast<int>(alpine_control));
 }
 
+static SDL_Scancode rf_key_to_sdl_scancode(int key); // defined below
+
 FunHook<int(int16_t)> key_to_ascii_hook{
     0x0051EFC0,
     [](int16_t key) {
         using namespace rf;
         constexpr int empty_result = 0xFF;
-        if (!key) {
+        if (!key)
             return empty_result;
-        }
-        // special handling for Num Lock (because ToAscii API does not support it)
+
+        // Ctrl+key: game doesn't use control characters for text input
+        if (key & KEY_CTRLED)
+            return empty_result;
+
+        // Numpad: SDL keycodes for KP_x are not printable chars, handle explicitly
         switch (key & KEY_MASK) {
-            // Numpad keys that always work
             case KEY_PADMULTIPLY: return static_cast<int>('*');
-            case KEY_PADMINUS: return static_cast<int>('-');
-            case KEY_PADPLUS: return static_cast<int>('+');
-            // Disable Numpad Enter key because game is not prepared for getting new line character from this function
-            case KEY_PADENTER: return empty_result;
+            case KEY_PADMINUS:    return static_cast<int>('-');
+            case KEY_PADPLUS:     return static_cast<int>('+');
+            case KEY_PADENTER:    return empty_result; // game not prepared for newline from numpad
         }
-        if (GetKeyState(VK_NUMLOCK) & 1) {
+        if (SDL_GetModState() & SDL_KMOD_NUM) {
             switch (key & KEY_MASK) {
                 case KEY_PAD7: return static_cast<int>('7');
                 case KEY_PAD8: return static_cast<int>('8');
@@ -76,57 +80,185 @@ FunHook<int(int16_t)> key_to_ascii_hook{
                 case KEY_PADPERIOD: return static_cast<int>('.');
             }
         }
-        BYTE key_state[256] = {0};
-        if (key & KEY_SHIFTED) {
-            key_state[VK_SHIFT] = 0x80;
-        }
-        if (key & KEY_ALTED) {
-            key_state[VK_MENU] = 0x80;
-        }
-        if (key & KEY_CTRLED) {
-            key_state[VK_CONTROL] = 0x80;
-        }
-        int scan_code = key & 0x7F;
-        auto vk = MapVirtualKeyA(scan_code, MAPVK_VSC_TO_VK);
-        WCHAR unicode_chars[3];
-        auto num_unicode_chars = ToUnicode(vk, scan_code, key_state, unicode_chars, std::size(unicode_chars), 0);
-        if (num_unicode_chars < 1) {
+
+        // Use SDL for layout-aware translation (handles non-US keyboards and Wine correctly)
+        SDL_Scancode sc = rf_key_to_sdl_scancode(key);
+        if (sc == SDL_SCANCODE_UNKNOWN)
             return empty_result;
-        }
-        char ansi_char;
-#if 0 // Windows-1252 codepage support - disabled because callers of this function expects ASCII
-        int num_ansi_chars = WideCharToMultiByte(1252, 0, unicode_chars, num_unicode_chars,
-            &ansi_char, sizeof(ansi_char), nullptr, nullptr);
-        if (num_ansi_chars == 0) {
+
+        SDL_Keymod mods = SDL_KMOD_NONE;
+        if (key & KEY_SHIFTED) mods |= SDL_KMOD_SHIFT;
+        if (key & KEY_ALTED)   mods |= SDL_KMOD_RALT; // AltGr on most non-US layouts
+
+        SDL_Keycode kc = SDL_GetKeyFromScancode(sc, mods, false);
+        if (kc == SDLK_UNKNOWN || kc < 0x20 || kc > 0x7E)
             return empty_result;
-        }
-#else
-        if (static_cast<char16_t>(unicode_chars[0]) >= 0x80 || !std::isprint(unicode_chars[0])) {
-            return empty_result;
-        }
-        ansi_char = static_cast<char>(unicode_chars[0]);
-#endif
-        xlog::trace("vk {:x} ({}) char {}", vk, vk, ansi_char);
-        return static_cast<int>(ansi_char);
+
+        return static_cast<int>(kc);
     },
 };
 
+static SDL_Scancode rf_key_to_sdl_scancode(int key)
+{
+    using namespace rf;
+    switch (key & KEY_MASK) {
+        case KEY_ESC:          return SDL_SCANCODE_ESCAPE;
+        case KEY_1:            return SDL_SCANCODE_1;
+        case KEY_2:            return SDL_SCANCODE_2;
+        case KEY_3:            return SDL_SCANCODE_3;
+        case KEY_4:            return SDL_SCANCODE_4;
+        case KEY_5:            return SDL_SCANCODE_5;
+        case KEY_6:            return SDL_SCANCODE_6;
+        case KEY_7:            return SDL_SCANCODE_7;
+        case KEY_8:            return SDL_SCANCODE_8;
+        case KEY_9:            return SDL_SCANCODE_9;
+        case KEY_0:            return SDL_SCANCODE_0;
+        case KEY_MINUS:        return SDL_SCANCODE_MINUS;
+        case KEY_EQUAL:        return SDL_SCANCODE_EQUALS;
+        case KEY_BACKSP:       return SDL_SCANCODE_BACKSPACE;
+        case KEY_TAB:          return SDL_SCANCODE_TAB;
+        case KEY_Q:            return SDL_SCANCODE_Q;
+        case KEY_W:            return SDL_SCANCODE_W;
+        case KEY_E:            return SDL_SCANCODE_E;
+        case KEY_R:            return SDL_SCANCODE_R;
+        case KEY_T:            return SDL_SCANCODE_T;
+        case KEY_Y:            return SDL_SCANCODE_Y;
+        case KEY_U:            return SDL_SCANCODE_U;
+        case KEY_I:            return SDL_SCANCODE_I;
+        case KEY_O:            return SDL_SCANCODE_O;
+        case KEY_P:            return SDL_SCANCODE_P;
+        case KEY_LBRACKET:     return SDL_SCANCODE_LEFTBRACKET;
+        case KEY_RBRACKET:     return SDL_SCANCODE_RIGHTBRACKET;
+        case KEY_ENTER:        return SDL_SCANCODE_RETURN;
+        case KEY_LCTRL:        return SDL_SCANCODE_LCTRL;
+        case KEY_A:            return SDL_SCANCODE_A;
+        case KEY_S:            return SDL_SCANCODE_S;
+        case KEY_D:            return SDL_SCANCODE_D;
+        case KEY_F:            return SDL_SCANCODE_F;
+        case KEY_G:            return SDL_SCANCODE_G;
+        case KEY_H:            return SDL_SCANCODE_H;
+        case KEY_J:            return SDL_SCANCODE_J;
+        case KEY_K:            return SDL_SCANCODE_K;
+        case KEY_L:            return SDL_SCANCODE_L;
+        case KEY_SEMICOL:      return SDL_SCANCODE_SEMICOLON;
+        case KEY_RAPOSTRO:     return SDL_SCANCODE_APOSTROPHE;
+        case KEY_LAPOSTRO_DBG: return SDL_SCANCODE_GRAVE;
+        case KEY_LSHIFT:       return SDL_SCANCODE_LSHIFT;
+        case KEY_SLASH:        return SDL_SCANCODE_BACKSLASH;
+        case KEY_Z:            return SDL_SCANCODE_Z;
+        case KEY_X:            return SDL_SCANCODE_X;
+        case KEY_C:            return SDL_SCANCODE_C;
+        case KEY_V:            return SDL_SCANCODE_V;
+        case KEY_B:            return SDL_SCANCODE_B;
+        case KEY_N:            return SDL_SCANCODE_N;
+        case KEY_M:            return SDL_SCANCODE_M;
+        case KEY_COMMA:        return SDL_SCANCODE_COMMA;
+        case KEY_PERIOD:       return SDL_SCANCODE_PERIOD;
+        case KEY_DIVIDE:       return SDL_SCANCODE_SLASH;
+        case KEY_RSHIFT:       return SDL_SCANCODE_RSHIFT;
+        case KEY_PADMULTIPLY:  return SDL_SCANCODE_KP_MULTIPLY;
+        case KEY_LALT:         return SDL_SCANCODE_LALT;
+        case KEY_SPACEBAR:     return SDL_SCANCODE_SPACE;
+        case KEY_CAPSLOCK:     return SDL_SCANCODE_CAPSLOCK;
+        case KEY_F1:           return SDL_SCANCODE_F1;
+        case KEY_F2:           return SDL_SCANCODE_F2;
+        case KEY_F3:           return SDL_SCANCODE_F3;
+        case KEY_F4:           return SDL_SCANCODE_F4;
+        case KEY_F5:           return SDL_SCANCODE_F5;
+        case KEY_F6:           return SDL_SCANCODE_F6;
+        case KEY_F7:           return SDL_SCANCODE_F7;
+        case KEY_F8:           return SDL_SCANCODE_F8;
+        case KEY_F9:           return SDL_SCANCODE_F9;
+        case KEY_F10:          return SDL_SCANCODE_F10;
+        case KEY_PAUSE:        return SDL_SCANCODE_PAUSE;
+        case KEY_SCROLLLOCK:   return SDL_SCANCODE_SCROLLLOCK;
+        case KEY_PAD7:         return SDL_SCANCODE_KP_7;
+        case KEY_PAD8:         return SDL_SCANCODE_KP_8;
+        case KEY_PAD9:         return SDL_SCANCODE_KP_9;
+        case KEY_PADMINUS:     return SDL_SCANCODE_KP_MINUS;
+        case KEY_PAD4:         return SDL_SCANCODE_KP_4;
+        case KEY_PAD5:         return SDL_SCANCODE_KP_5;
+        case KEY_PAD6:         return SDL_SCANCODE_KP_6;
+        case KEY_PADPLUS:      return SDL_SCANCODE_KP_PLUS;
+        case KEY_PAD1:         return SDL_SCANCODE_KP_1;
+        case KEY_PAD2:         return SDL_SCANCODE_KP_2;
+        case KEY_PAD3:         return SDL_SCANCODE_KP_3;
+        case KEY_PAD0:         return SDL_SCANCODE_KP_0;
+        case KEY_PADPERIOD:    return SDL_SCANCODE_KP_PERIOD;
+        case KEY_F11:          return SDL_SCANCODE_F11;
+        case KEY_F12:          return SDL_SCANCODE_F12;
+        case KEY_PADENTER:     return SDL_SCANCODE_KP_ENTER;
+        case KEY_RCTRL:        return SDL_SCANCODE_RCTRL;
+        case KEY_PRINT_SCRN:   return SDL_SCANCODE_PRINTSCREEN;
+        case KEY_RALT:         return SDL_SCANCODE_RALT;
+        case KEY_NUMLOCK:      return SDL_SCANCODE_NUMLOCKCLEAR;
+        case KEY_BREAK:        return SDL_SCANCODE_PAUSE;
+        case KEY_HOME:         return SDL_SCANCODE_HOME;
+        case KEY_UP:           return SDL_SCANCODE_UP;
+        case KEY_PAGEUP:       return SDL_SCANCODE_PAGEUP;
+        case KEY_LEFT:         return SDL_SCANCODE_LEFT;
+        case KEY_RIGHT:        return SDL_SCANCODE_RIGHT;
+        case KEY_END:          return SDL_SCANCODE_END;
+        case KEY_DOWN:         return SDL_SCANCODE_DOWN;
+        case KEY_PAGEDOWN:     return SDL_SCANCODE_PAGEDOWN;
+        case KEY_INSERT:       return SDL_SCANCODE_INSERT;
+        case KEY_DELETE:       return SDL_SCANCODE_DELETE;
+        default:               return SDL_SCANCODE_UNKNOWN;
+    }
+}
+
+static rf::Key sdl_scancode_to_rf_key(SDL_Scancode sc)
+{
+    static rf::Key table[SDL_SCANCODE_COUNT] = {};
+    static bool built = false;
+    if (!built) {
+        for (int k = 1; k <= static_cast<int>(rf::KEY_MASK); ++k) {
+            SDL_Scancode mapped = rf_key_to_sdl_scancode(k);
+            if (mapped != SDL_SCANCODE_UNKNOWN && table[mapped] == rf::KEY_NONE) {
+                table[mapped] = static_cast<rf::Key>(k);
+            }
+        }
+        built = true;
+    }
+    if (sc == SDL_SCANCODE_UNKNOWN || static_cast<int>(sc) >= SDL_SCANCODE_COUNT)
+        return rf::KEY_NONE;
+    return table[static_cast<int>(sc)];
+}
+
+void keyboard_sdl_poll()
+{
+    SDL_Event events[16];
+    int n;
+    while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
+                               SDL_GETEVENT, SDL_EVENT_KEY_DOWN, SDL_EVENT_TEXT_EDITING_CANDIDATES)) > 0) {
+        for (int i = 0; i < n; ++i) {
+            const auto& evt = events[i];
+            if (evt.type != SDL_EVENT_KEY_DOWN && evt.type != SDL_EVENT_KEY_UP)
+                continue; // only key state changes are relevant; discard text editing events
+            if (evt.key.repeat)
+                continue; // ignore OS key repeat; RF tracks state itself
+            const bool down = (evt.type == SDL_EVENT_KEY_DOWN);
+            const rf::Key rf_key = sdl_scancode_to_rf_key(evt.key.scancode);
+            if (rf_key != rf::KEY_NONE)
+                rf::key_process_event(static_cast<int>(rf_key), down ? 1 : 0, 0);
+        }
+    }
+}
+
 int get_key_name(int key, char* buf, size_t buf_len)
 {
-     LONG lparam = (key & 0x7F) << 16;
-    if (key & 0x80) {
-        lparam |= 1 << 24;
-    }
-    // Note: it seems broken on Wine with non-US layout (most likely broken MAPVK_VSC_TO_VK_EX mapping is responsible)
-    int ret = GetKeyNameTextA(lparam, buf, buf_len);
-    if (ret <= 0) {
-        WARN_ONCE("GetKeyNameTextA failed for 0x{:X}", key);
+    SDL_Scancode sc = rf_key_to_sdl_scancode(key);
+    if (sc == SDL_SCANCODE_UNKNOWN) {
         buf[0] = '\0';
+        return 0;
     }
-    else {
-        xlog::trace("key 0x{:x} name {}", key, buf);
+    const char* name = SDL_GetKeyName(SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false));
+    if (!name || name[0] == '\0') {
+        buf[0] = '\0';
+        return 0;
     }
-    return ret;
+    SDL_strlcpy(buf, name, buf_len);
+    return static_cast<int>(SDL_strlen(name));
 }
 
 FunHook<int(rf::String&, int)> get_key_name_hook{
@@ -468,15 +600,8 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
             case WM_KEYDOWN:
             case WM_SYSKEYDOWN:
             case WM_KEYUP:
-            case WM_SYSKEYUP: {
-                // For num pads, RF requires `KF_EXTENDED` to be set.
-                if (w_param == VK_PRIOR
-                    || w_param == VK_NEXT
-                    || w_param == VK_END
-                    || w_param == VK_HOME) {
-                    l_param |= KF_EXTENDED << 16;
-                }
-            }
+            case WM_SYSKEYUP:
+                return; // Keyboard events handled via SDL in keyboard_sdl_poll
         }
         key_msg_handler_hook.call_target(msg, w_param, l_param);
     },
@@ -510,6 +635,7 @@ void key_apply_patch()
     // Support suppress autoswitch bind
     item_touch_weapon_autoswitch_patch.install();
 
-    // Num pads need a patch to support `PgUp`, `PgDown`, `End`, and `Home`.
+    // Block Win32 WM_KEY* messages from reaching the RF key handler;
+    // keyboard events are fed to RF via SDL in keyboard_sdl_poll instead.
     key_msg_handler_hook.install();
 }

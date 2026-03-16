@@ -95,6 +95,7 @@ set(SRCS
     graphics/d3d11/gr_d3d11_hooks.cpp
     graphics/d3d11/gr_d3d11_hooks.h
     input/input.h
+    input/input.cpp
     input/mouse.cpp
     input/key.cpp
     hud/hud_colors.cpp
