@@ -11,6 +11,13 @@ namespace df::gr::d3d11
     public:
         TextureManager(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> device_context);
 
+        struct TextureLookupResult
+        {
+            ID3D11ShaderResourceView* srv = nullptr;
+            float u_scale = 1.0f;
+            float v_scale = 1.0f;
+        };
+
         ID3D11ShaderResourceView* lookup_texture(int bm_handle)
         {
             if (bm_handle < 0) {
@@ -18,6 +25,15 @@ namespace df::gr::d3d11
             }
             Texture& texture = get_or_load_texture(bm_handle, false);
             return texture.get_or_create_texture_view(device_, device_context_);
+        }
+
+        TextureLookupResult lookup_texture_with_scale(int bm_handle)
+        {
+            if (bm_handle < 0) {
+                return {};
+            }
+            Texture& texture = get_or_load_texture(bm_handle, false);
+            return {texture.get_or_create_texture_view(device_, device_context_), texture.u_scale, texture.v_scale};
         }
 
         ID3D11RenderTargetView* lookup_render_target(int bm_handle)
@@ -62,14 +78,6 @@ namespace df::gr::d3d11
         }
 
 
-        std::pair<float, float> get_texture_uv_scale(int bm_handle)
-        {
-            if (bm_handle < 0) {
-                return {1.0f, 1.0f};
-            }
-            Texture& texture = get_or_load_texture(bm_handle, false);
-            return {texture.u_scale, texture.v_scale};
-        }
 
     private:
         struct Texture

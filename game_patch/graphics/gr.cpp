@@ -503,10 +503,16 @@ ConsoleCommand2 pow2_tex_cmd{
             case 0:
                 override_pow2tex = true;
                 rf::gr::d3d::p2t = 0;
+                if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+                    df::gr::d3d11::set_pow2_tex_active(false);
+                }
                 break;
             case 1:
                 override_pow2tex = true;
                 rf::gr::d3d::p2t = 1;
+                if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+                    df::gr::d3d11::set_pow2_tex_active(true);
+                }
                 break;
             default:
                 override_pow2tex = false;

@@ -189,30 +189,48 @@ namespace df::gr::d3d11
             if (current_tex_handles_[0] != tex_handle0 || current_tex_handles_[1] != tex_handle1) {
                 current_tex_handles_[0] = tex_handle0;
                 current_tex_handles_[1] = tex_handle1;
-                ID3D11ShaderResourceView* shader_resources[] = {
-                    get_diffuse_texture_view(tex_handle0),
-                    get_lightmap_texture_view(tex_handle1),
-                };
-                device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
 
                 if (pow2_tex_active_) {
-                    auto [u_scale, v_scale] = texture_manager_.get_texture_uv_scale(tex_handle0);
-                    texture_scale_cbuffer_.update(u_scale, v_scale, device_context_);
+                    // Combined lookup: get SRV and UV scale in a single cache access
+                    auto [srv, u_scale, v_scale] = texture_manager_.lookup_texture_with_scale(tex_handle0);
+                    ID3D11ShaderResourceView* shader_resources[] = {
+                        srv ? srv : texture_manager_.get_white_texture(),
+                        get_lightmap_texture_view(tex_handle1),
+                    };
+                    device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
+
+                    if (!suppress_texture_uv_scale_) {
+                        texture_scale_cbuffer_.update(u_scale, v_scale, device_context_);
+                    }
+                }
+                else {
+                    ID3D11ShaderResourceView* shader_resources[] = {
+                        get_diffuse_texture_view(tex_handle0),
+                        get_lightmap_texture_view(tex_handle1),
+                    };
+                    device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
                 }
             }
         }
 
-        void reset_texture_uv_scale()
+        void set_suppress_texture_uv_scale(bool suppress)
         {
-            texture_scale_cbuffer_.update(1.0f, 1.0f, device_context_);
-            // Invalidate cached handles so the next set_textures() call
-            // re-evaluates the UV scale for the bound texture
-            current_tex_handles_ = {-2, -2};
+            if (pow2_tex_active_) {
+                suppress_texture_uv_scale_ = suppress;
+                if (suppress) {
+                    texture_scale_cbuffer_.update(1.0f, 1.0f, device_context_);
+                }
+                else {
+                    // Invalidate so next set_textures() re-evaluates the scale
+                    current_tex_handles_ = {-2, -2};
+                }
+            }
         }
 
         void set_pow2_tex_active(bool active)
         {
             pow2_tex_active_ = active;
+            suppress_texture_uv_scale_ = false;
             if (active) {
                 // Invalidate cached texture handles so the next set_textures() call
                 // updates the scale buffer for the currently bound texture
@@ -472,5 +490,6 @@ namespace df::gr::d3d11
         bool depth_clip_enabled_changed_ = true;
         Projection projection_;
         bool pow2_tex_active_ = false;
+        bool suppress_texture_uv_scale_ = false;
     };
 }

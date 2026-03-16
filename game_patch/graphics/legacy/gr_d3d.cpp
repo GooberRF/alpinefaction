@@ -673,7 +673,6 @@ CodeInjection gr_d3d_close_injection{
     },
 };
 
-
 bool gr_d3d_is_d3d8to9()
 {
     if (rf::gr::screen.mode != rf::gr::DIRECT3D) {
@@ -747,7 +746,6 @@ void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h,
     verts[3].v1 = v_bottom;
     rf::gr::tmapper(std::size(verts_ptrs), verts_ptrs, rf::gr::TMAP_FLAG_TEXTURED, mode);
 }
-
 
 void gr_d3d_apply_patch()
 {
