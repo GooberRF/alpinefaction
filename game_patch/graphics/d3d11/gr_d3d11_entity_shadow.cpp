@@ -446,7 +446,7 @@ namespace df::gr::d3d11
         for (auto& entity : DoublyLinkedList{rf::entity_list}) {
             if (entity.handle == local_entity_handle) continue;
             if (entity.entity_flags2 & rf::EF2_NO_SHADOW) continue;
-            if (entity.obj_flags & OF_DELAYED_DELETE) continue;
+            if (entity.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
             if (!entity.vmesh) continue;
 
             float dx = entity.pos.x - current_camera_pos_.x;
@@ -493,7 +493,7 @@ namespace df::gr::d3d11
         float fade_end_sq = fade_end * fade_end;
 
         for (auto& corpse : DoublyLinkedList{rf::corpse_list}) {
-            if (corpse.obj_flags & OF_DELAYED_DELETE) continue;
+            if (corpse.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
             if (!corpse.vmesh) continue;
 
             float dx = corpse.pos.x - current_camera_pos_.x;
