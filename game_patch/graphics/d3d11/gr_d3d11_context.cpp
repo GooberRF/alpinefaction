@@ -318,7 +318,10 @@ namespace df::gr::d3d11
             }
             data.num_point_lights = static_cast<float>(gpu_index);
 
-            if (logging && gpu_index > 0) {
+            if (logging) {
+                if (gpu_index == 0) {
+                    xlog::warn("--- GPU lights upload: 0 lights after filtering ---");
+                }
                 g_dbg_log_spotlights = false;
             }
         }

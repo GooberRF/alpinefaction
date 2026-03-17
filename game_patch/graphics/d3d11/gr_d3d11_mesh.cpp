@@ -964,10 +964,6 @@ namespace df::gr::d3d11
 
         const auto& batches = *batches_ptr;
 
-        // Get VifMesh for tex_ids lookup (maps texture_index -> material index)
-        rf::VifMesh* vif_mesh = (lod_index >= 0 && lod_index < lod_mesh->num_levels)
-            ? lod_mesh->meshes[lod_index] : nullptr;
-
         for (auto& b : batches) {
             // ccrunch tool chunkifies mesh and inits render mode flags
             // 0x110C21 is used for materials with additive blending (except admin_poshlight01.v3d):

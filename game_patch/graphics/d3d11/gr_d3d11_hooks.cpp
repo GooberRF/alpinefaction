@@ -78,7 +78,6 @@ namespace df::gr::d3d11
     // Local working buffer for gathered lights, avoids mutating the global
     // rf::gr::relevant_lights/num_relevant_lights between engine calls.
     static rf::gr::Light* gathered_lights[rf::gr::max_relevant_lights];
-    static int num_gathered_lights = 0;
 
     static void gather_mesh_lights(const rf::Vector3& pos, float mesh_radius = 0.0f, bool skip_debug = false)
     {
@@ -210,7 +209,6 @@ namespace df::gr::d3d11
         }
 
         // Write results back to the global arrays for the GPU upload to read
-        num_gathered_lights = total;
         std::memcpy(rf::gr::relevant_lights, gathered_lights, total * sizeof(rf::gr::Light*));
         rf::gr::num_relevant_lights = total;
 
@@ -693,40 +691,6 @@ namespace df::gr::d3d11
             unregister_mesh_self_illumination(lod_mesh);
         },
     };
-
-    static void apply_self_illumination_to_cache(rf::V3d* v3d)
-    {
-        if (!v3d) return;
-        for (int i = 0; i < v3d->num_meshes; ++i) {
-            auto& mesh = v3d->meshes[i];
-            auto* lod_mesh = mesh.vu;
-            if (!lod_mesh || !mesh.materials || mesh.num_materials <= 0) continue;
-            auto* materials = reinterpret_cast<rf::MeshMaterial*>(mesh.materials);
-            auto* cache = reinterpret_cast<BaseMeshRenderCache*>(lod_mesh->render_cache);
-            if (!cache) continue;
-
-            for (int lod = 0; lod < lod_mesh->num_levels; ++lod) {
-                auto* vif_mesh = lod_mesh->meshes[lod];
-                if (!vif_mesh) continue;
-                auto& batches = const_cast<std::vector<BaseMeshRenderCache::Batch>&>(cache->get_batches(lod));
-                for (auto& batch : batches) {
-                    // Check material self-illumination via tex_ids mapping
-                    if (batch.texture_index >= 0 && batch.texture_index < 7) {
-                        int mat_idx = vif_mesh->tex_ids[batch.texture_index];
-                        if (mat_idx >= 0 && mat_idx < mesh.num_materials) {
-                            if (materials[mat_idx].self_illumination) {
-                                float si = materials[mat_idx].self_illumination[0];
-                                if (si > 0.0f) {
-                                    batch.self_illumination = std::min(si, 1.0f);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
 
 
     static CodeInjection v3d_page_in_injection{

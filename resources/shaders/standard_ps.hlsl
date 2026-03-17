@@ -143,8 +143,8 @@ float4 main(VsOutput input) : SV_TARGET
             // Static meshes: use baked lightmap
             light_color *= 2;
         }
+        float3 pixel_pos = input.world_pos_and_depth.xyz;
         for (int i = 0; i < num_point_lights; ++i) {
-            float3 pixel_pos = input.world_pos_and_depth.xyz;
             float ltype = point_lights[i].light_type;
             float dist;
             float3 light_dir;
