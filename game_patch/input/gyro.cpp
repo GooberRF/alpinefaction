@@ -94,6 +94,8 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
     }
 }
 
+// Gyro Tighting is based on Good Gyro Controls Part 1 from GyroWiki
+// http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-1:the-gyro-is-a-mouse#toc9
 void gyro_apply_tightening(float& pitch_dps, float& yaw_dps)
 {
     float threshold = g_alpine_game_config.gamepad_gyro_tightening;
@@ -107,6 +109,8 @@ void gyro_apply_tightening(float& pitch_dps, float& yaw_dps)
     }
 }
 
+// Based on Soft Tiered Smoothing from GyroWiki 
+// http://gyrowiki.jibbsmart.com/blog:tight-and-smooth:soft-tiered-smoothing
 static constexpr int SMOOTH_BUF_SIZE = 16;
 static float g_smooth_pitch[SMOOTH_BUF_SIZE] = {};
 static float g_smooth_yaw[SMOOTH_BUF_SIZE]   = {};
