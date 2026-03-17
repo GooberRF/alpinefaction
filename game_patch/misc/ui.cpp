@@ -88,10 +88,10 @@ static char ao_simdist_butlabel_text[9];
 // alpine options checkboxes and labels
 static rf::ui::Checkbox ao_mpcharlod_cbox;
 static rf::ui::Label ao_mpcharlod_label;
-static rf::ui::Checkbox ao_sdlmouse_cbox;
-static rf::ui::Label ao_sdlmouse_label;
-static rf::ui::Label ao_sdlmouse_butlabel;
-static char ao_sdlmouse_butlabel_text[16];
+static rf::ui::Checkbox ao_input_mode_cbox;
+static rf::ui::Label ao_input_mode_label;
+static rf::ui::Label ao_input_mode_butlabel;
+static char ao_input_mode_butlabel_text[16];
 static constexpr const char* input_mode_names[] = {"Stock", "DInput", "SDL"};
 static rf::ui::Checkbox ao_linearpitch_cbox;
 static rf::ui::Label ao_linearpitch_label;
@@ -545,9 +545,10 @@ void ao_bighud_cbox_on_click(int x, int y) {
 
 void ao_sdlmouse_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
     set_input_mode((g_alpine_game_config.input_mode + 1) % 3);
-    snprintf(ao_sdlmouse_butlabel_text, sizeof(ao_sdlmouse_butlabel_text), "%s",
-        input_mode_names[g_alpine_game_config.input_mode]);
-    ao_sdlmouse_butlabel.text = ao_sdlmouse_butlabel_text;
+    int mode_index = std::clamp(g_alpine_game_config.input_mode, 0, 2);
+    snprintf(ao_input_mode_butlabel_text, sizeof(ao_input_mode_butlabel_text), "%s",
+        input_mode_names[mode_index]);
+    ao_input_mode_butlabel.text = ao_input_mode_butlabel_text;
     ao_play_button_snd(true);
 }
 
@@ -1201,10 +1202,11 @@ void alpine_options_panel_init() {
 
     // panel 2
     alpine_options_panel_inputbox_init(
-        &ao_sdlmouse_cbox, &ao_sdlmouse_label, &ao_sdlmouse_butlabel, &alpine_options_panel2, ao_sdlmouse_cbox_on_click, 112, 54, "Input mode");
-    snprintf(ao_sdlmouse_butlabel_text, sizeof(ao_sdlmouse_butlabel_text), "%s",
-        input_mode_names[g_alpine_game_config.input_mode]);
-    ao_sdlmouse_butlabel.text = ao_sdlmouse_butlabel_text;
+        &ao_input_mode_cbox, &ao_input_mode_label, &ao_input_mode_butlabel, &alpine_options_panel2, ao_sdlmouse_cbox_on_click, 112, 54, "Input mode");
+    int mode_index = std::clamp(g_alpine_game_config.input_mode, 0, 2);
+    snprintf(ao_input_mode_butlabel_text, sizeof(ao_input_mode_butlabel_text), "%s",
+        input_mode_names[mode_index]);
+    ao_input_mode_butlabel.text = ao_input_mode_butlabel_text;
     alpine_options_panel_checkbox_init(
         &ao_linearpitch_cbox, &ao_linearpitch_label, &alpine_options_panel2, ao_linearpitch_cbox_on_click, g_alpine_game_config.mouse_linear_pitch, 112, 84, "Linear pitch");
     alpine_options_panel_checkbox_init(
@@ -1453,6 +1455,40 @@ CodeInjection options_render_alpine_panel_patch{
     []() {
         int index = rf::ui::options_current_panel;
         //xlog::warn("render index {}", index);
+
+        // Detect falling edge of waiting_for_key to finalize extra mouse button rebinds
+        if (index == 3) {
+            static bool s_was_waiting = false;
+            bool now_waiting = rf::ui::options_controls_waiting_for_key;
+            if (s_was_waiting && !now_waiting) {
+                int xbtn = mouse_take_pending_rebind();
+                if (xbtn >= 0 && rf::local_player) {
+                    auto& cc = rf::local_player->settings.controls;
+                    int n = std::min(cc.num_bindings, 128);
+                    // RF wrote CTRL_REBIND_SENTINEL into some scan_codes slot of the rebound binding.
+                    // Overwrite it with our custom extra-mouse scan code so RF's key layer picks it up naturally.
+                    int16_t new_sc = static_cast<int16_t>(CTRL_EXTRA_MOUSE_SCAN_BASE + (xbtn - 3));
+                    // RF may write the sentinel into scan_codes[0] or scan_codes[1] depending
+                    // on which slot the user was editing; check both.
+                    bool found = false;
+                    for (int i = 0; i < n && !found; ++i) {
+                        for (int slot = 0; slot < 2 && !found; ++slot) {
+                            if (cc.bindings[i].scan_codes[slot] == static_cast<int16_t>(CTRL_REBIND_SENTINEL)) {
+                                // Clear any other binding that already has the same extra-mouse scan code
+                                for (int j = 0; j < n; ++j)
+                                    for (int s = 0; s < 2; ++s)
+                                        if ((j != i || s != slot) && cc.bindings[j].scan_codes[s] == new_sc)
+                                            cc.bindings[j].scan_codes[s] = -1;
+                                cc.bindings[i].scan_codes[slot] = new_sc;
+                                found = true;
+                            }
+                        }
+                    }
+                    rf::key_process_event(CTRL_REBIND_SENTINEL, 0, 0); // release the sentinel key
+                }
+            }
+            s_was_waiting = now_waiting;
+        }
 
         // render alpine options panel
         if (index == 4) {

@@ -17,6 +17,8 @@
 
 const char* get_win_msg_name(UINT msg);
 
+static bool g_sdl_video_initialized = false;
+
 FunHook<void()> os_poll_hook{
     0x00524B60,
     []() {
@@ -31,10 +33,10 @@ FunHook<void()> os_poll_hook{
             // xlog::info("msg {}\n", msg.message);
         }
 
-        // Avoid accumulating mouse deltas while the window is unfocused
-        // and background mouse input is disabled, to prevent a large
-        // "dump" of motion on refocus.
-        if (rf::os_foreground() || g_alpine_game_config.background_mouse) {
+        // Always pump SDL events to avoid a backlog even when the
+        // window is unfocused; lower-level input handling is responsible
+        // for ignoring or clamping deltas when background input is disabled.
+        if (g_sdl_video_initialized) {
             sdl_input_poll();
         }
 
@@ -60,13 +62,17 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
     case WM_ACTIVATE:
         if (!rf::is_dedicated_server) {
             if (w_param) {
-                SDL_HideCursor();
+                if (g_sdl_video_initialized) {
+                    SDL_HideCursor();
+                }
                 // Drive Win32 counter to exactly -1 (hidden)
                 while (ShowCursor(FALSE) >= 0)
                     ;
             }
             else {
-                SDL_ShowCursor();
+                if (g_sdl_video_initialized) {
+                    SDL_ShowCursor();
+                }
                 // Drive Win32 counter to exactly 0 (visible) so external dialogs
                 // (assertions, crash popups) always see the correct cursor state.
                 while (ShowCursor(TRUE) < 0)
@@ -190,8 +196,12 @@ void os_apply_patch()
         set_dpi_ctx(reinterpret_cast<HANDLE>(-1)); // DPI_AWARENESS_CONTEXT_UNAWARE
     }
 
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
-        xlog::error("SDL_Init(SDL_INIT_VIDEO) failed: {}", SDL_GetError());
+    if (!rf::is_dedicated_server) {
+        if (SDL_Init(SDL_INIT_VIDEO)) {
+            g_sdl_video_initialized = true;
+        } else {
+            xlog::error("SDL_Init(SDL_INIT_VIDEO) failed: {}", SDL_GetError());
+        }
     }
 
     // Process messages in the same thread as DX processing (alternative: D3DCREATE_MULTITHREADED)

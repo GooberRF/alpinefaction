@@ -5,6 +5,7 @@
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
 #include <SDL3/SDL.h>
+#include "input.h"
 #include "../os/console.h"
 #include "../rf/input.h"
 #include "../rf/os/os.h"
@@ -12,13 +13,18 @@
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/entity.h"
+#include "../rf/ui.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 
+// SDL window and mouse motion state (used in SDL input mode only)
 static SDL_Window* g_sdl_window = nullptr;
 static bool g_relative_mouse_mode_window_missing_logged = false;
 static float g_sdl_mouse_dx_rem = 0.0f, g_sdl_mouse_dy_rem = 0.0f;
 static int g_sdl_mouse_dx = 0, g_sdl_mouse_dy = 0;
+
+// Extra mouse button rebind state (Mouse 4-8, used with SDL input mode)
+static int g_pending_mouse_extra_btn_rebind = -1;
 
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
@@ -48,6 +54,11 @@ static bool set_direct_input_enabled(bool enabled)
 
 void set_input_mode(int mode)
 {
+    if (mode < 0 || mode > 2) {
+        xlog::warn("set_input_mode: invalid mode {}, clamping to 0..2", mode);
+        mode = std::clamp(mode, 0, 2);
+    }
+
     const int old_mode = g_alpine_game_config.input_mode;
     g_alpine_game_config.input_mode = mode;
 
@@ -65,12 +76,19 @@ void set_input_mode(int mode)
         }
     }
 
-    // Clear SDL deltas when leaving SDL mode
+    // Clear SDL state when leaving SDL mode
     if (old_mode == 2 && mode != 2) {
         g_sdl_mouse_dx = 0;
         g_sdl_mouse_dy = 0;
         g_sdl_mouse_dx_rem = 0.0f;
         g_sdl_mouse_dy_rem = 0.0f;
+    }
+
+    // Release any held extra mouse scan codes so they don't stay stuck after mode switch
+    if (old_mode != mode) {
+        for (int i = 0; i < CTRL_EXTRA_MOUSE_SCAN_COUNT; ++i)
+            rf::key_process_event(CTRL_EXTRA_MOUSE_SCAN_BASE + i, 0, 0);
+        g_pending_mouse_extra_btn_rebind = -1;
     }
 }
 
@@ -179,8 +197,8 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     0x0051E630,
     [](int& dx, int& dy, int& dz) {
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
-        if (g_alpine_game_config.input_mode == 2) {
-            // SDL mode: override dx/dy with SDL-sourced deltas
+        if (g_alpine_game_config.input_mode == 2 && g_sdl_window) {
+            // SDL mode: override dx/dy with SDL-sourced deltas when SDL window is available
             dx = g_sdl_mouse_dx;
             dy = g_sdl_mouse_dy;
             g_sdl_mouse_dx = 0;
@@ -445,6 +463,33 @@ ConsoleCommand2 linear_pitch_cmd{
     "Toggles mouse linear pitch angle",
 };
 
+// Handle an SDL extra mouse button event (Mouse 4-8).
+// Maps SDL button indices to custom scan codes and injects them into RF's key layer.
+// Only active in SDL input mode (mode 2).
+static void handle_extra_mouse_button(const SDL_Event& ev)
+{
+    if (g_alpine_game_config.input_mode != 2)
+        return;
+
+    if (ev.button.button < SDL_BUTTON_X1 ||
+        ev.button.button >= SDL_BUTTON_X1 + CTRL_EXTRA_MOUSE_SCAN_COUNT)
+        return;
+
+    int rf_btn = static_cast<int>(ev.button.button) - 1; // SDL 4→rf 3, SDL 5→rf 4 ...
+
+    if (ev.button.down && g_pending_mouse_extra_btn_rebind < 0
+        && rf::ui::options_controls_waiting_for_key) {
+        // Rebind UI active: inject the sentinel key so RF processes the rebind,
+        // then ui.cpp's falling-edge handler replaces it with our custom scan code.
+        g_pending_mouse_extra_btn_rebind = rf_btn;
+        rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
+    } else {
+        // Inject our custom scan code directly into RF's key state.
+        int scan_code = CTRL_EXTRA_MOUSE_SCAN_BASE + (rf_btn - 3);
+        rf::key_process_event(scan_code, ev.button.down ? 1 : 0, 0);
+    }
+}
+
 void mouse_sdl_poll()
 {
     if (!g_sdl_window) return;
@@ -456,14 +501,29 @@ void mouse_sdl_poll()
                                SDL_EVENT_MOUSE_REMOVED)) > 0) {
         for (int i = 0; i < n; ++i) {
             const SDL_Event& ev = events[i];
-            if (ev.type == SDL_EVENT_MOUSE_MOTION && g_alpine_game_config.input_mode == 2) {
-                // SDL mode only: accumulate raw motion for this frame
-                g_sdl_mouse_dx_rem += ev.motion.xrel;
-                g_sdl_mouse_dy_rem += ev.motion.yrel;
+            switch (ev.type) {
+            case SDL_EVENT_MOUSE_MOTION:
+                if (g_alpine_game_config.input_mode == 2) {
+                    g_sdl_mouse_dx_rem += ev.motion.xrel;
+                    g_sdl_mouse_dy_rem += ev.motion.yrel;
+                }
+                break;
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+            case SDL_EVENT_MOUSE_BUTTON_UP:
+                handle_extra_mouse_button(ev);
+                break;
+            default:
+                break;
             }
-            // Always drain events to prevent SDL queue buildup in non-SDL modes
         }
     }
+}
+
+int mouse_take_pending_rebind()
+{
+    int btn = g_pending_mouse_extra_btn_rebind;
+    g_pending_mouse_extra_btn_rebind = -1;
+    return btn;
 }
 
 void mouse_init_sdl_window()
@@ -476,7 +536,6 @@ void mouse_init_sdl_window()
         xlog::error("SDL_CreateWindowWithProperties failed: {}", SDL_GetError());
         return;
     }
-    SDL_StartTextInput(g_sdl_window);
 }
 
 void mouse_apply_patch()

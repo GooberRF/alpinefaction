@@ -11,6 +11,7 @@
 #include "../misc/alpine_settings.h"
 #include "../multi/multi.h"
 #include "../multi/endgame_votes.h"
+#include "input.h"
 #include "../rf/input.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
@@ -65,10 +66,18 @@ FunHook<int(int16_t)> key_to_ascii_hook{
 
         if (g_alpine_game_config.input_mode == 2) {
             // SDL keyboard mode
-            if (key & KEY_CTRLED)
-                return empty_result;
+            SDL_Keymod sdl_mods = SDL_GetModState();
 
-            if (SDL_GetModState() & SDL_KMOD_NUM) {
+            // Treat pure Ctrl shortcuts as non-text, but allow AltGr (often Ctrl+Alt or SDL_KMOD_MODE)
+            if (key & KEY_CTRLED) {
+                bool is_altgr =
+                    (sdl_mods & SDL_KMOD_MODE) != 0 ||
+                    ((sdl_mods & SDL_KMOD_CTRL) && (sdl_mods & SDL_KMOD_ALT));
+                if (!is_altgr)
+                    return empty_result;
+            }
+
+            if (sdl_mods & SDL_KMOD_NUM) {
                 switch (key & KEY_MASK) {
                     case KEY_PAD7: return static_cast<int>('7');
                     case KEY_PAD8: return static_cast<int>('8');
@@ -283,6 +292,12 @@ void keyboard_sdl_poll()
 
 int get_key_name(int key, char* buf, size_t buf_len)
 {
+    // Custom scan codes for extra mouse buttons (Mouse 4+) — valid in all input modes
+    if (key >= CTRL_EXTRA_MOUSE_SCAN_BASE && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT) {
+        int mouse_num = (key - CTRL_EXTRA_MOUSE_SCAN_BASE) + 4; // 0x75→Mouse 4, 0x76→Mouse 5, ...
+        int n = std::snprintf(buf, buf_len, "Mouse %d", mouse_num);
+        return n > 0 ? n : 0;
+    }
     if (g_alpine_game_config.input_mode == 2) {
         // SDL mode: use SDL key names
         SDL_Scancode sc = rf_key_to_sdl_scancode(key);
@@ -655,9 +670,11 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
             case WM_SYSKEYDOWN:
             case WM_KEYUP:
             case WM_SYSKEYUP:
-                if (g_alpine_game_config.input_mode == 2)
-                    return; // SDL keyboard handles input in mode 2
-                // Modes 0/1: RF requires KF_EXTENDED for these numpad-derived keys
+                if (g_alpine_game_config.input_mode == 2
+                    && (SDL_WasInit(SDL_INIT_VIDEO) & SDL_INIT_VIDEO) != 0
+                    && SDL_GetKeyboardFocus() != nullptr)
+                    return; // SDL keyboard handles input in mode 2 when active
+                // Modes 0/1 (and fallback when SDL keyboard is inactive): RF requires KF_EXTENDED for these numpad-derived keys
                 if (w_param == VK_PRIOR
                     || w_param == VK_NEXT
                     || w_param == VK_END

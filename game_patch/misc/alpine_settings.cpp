@@ -18,6 +18,7 @@
 #include <shlwapi.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <algorithm>
 #include <array>
 #include <fstream>
 #include <iostream>
@@ -955,7 +956,8 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("MouseYInvert");
     }
     if (settings.count("InputMode")) {
-        g_alpine_game_config.input_mode = std::stoi(settings["InputMode"]);
+        int input_mode = std::stoi(settings["InputMode"]);
+        g_alpine_game_config.input_mode = std::clamp(input_mode, 0, 2);
         processed_keys.insert("InputMode");
     } else if (settings.count("SDLMouse")) {
         // Legacy: SDLMouse=0 was "non-SDL" (closest = DInput mode 1), SDLMouse=1 was SDL (mode 2)
