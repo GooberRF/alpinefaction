@@ -6,6 +6,7 @@
 #include "alpine_settings.h"
 #include "alpine_options.h"
 #include <common/version/version.h>
+#include "../input/input.h"
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../rf/ui.h"
@@ -957,17 +958,16 @@ bool alpine_player_settings_load(rf::Player* player)
     }
     if (settings.count("InputMode")) {
         int input_mode = std::stoi(settings["InputMode"]);
-        g_alpine_game_config.input_mode = std::clamp(input_mode, 0, 2);
+        set_input_mode(std::clamp(input_mode, 0, 2));
         processed_keys.insert("InputMode");
     } else if (settings.count("SDLMouse")) {
-        // Legacy: SDLMouse=0 was "non-SDL" (closest = DInput mode 1), SDLMouse=1 was SDL (mode 2)
         int sdl_mouse = std::stoi(settings["SDLMouse"]);
-        g_alpine_game_config.input_mode = (sdl_mouse != 0) ? 2 : 1;
+        set_input_mode((sdl_mouse != 0) ? 2 : 1);
         processed_keys.insert("SDLMouse");
     } else if (settings.count("DirectInput")) {
-        // Legacy: DirectInput=0 was stock/Win32 (mode 0), DirectInput=1 was DInput (mode 1)
+        // Legacy: DirectInput=0 was Legacy/Win32 (mode 0), DirectInput=1 was DInput (mode 1)
         int direct_input = std::stoi(settings["DirectInput"]);
-        g_alpine_game_config.input_mode = (direct_input != 0) ? 1 : 0;
+        set_input_mode((direct_input != 0) ? 1 : 0);
         processed_keys.insert("DirectInput");
     }
     if (settings.count("MouseLinearPitch")) {

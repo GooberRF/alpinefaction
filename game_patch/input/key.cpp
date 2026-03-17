@@ -107,7 +107,7 @@ FunHook<int(int16_t)> key_to_ascii_hook{
 
             return static_cast<int>(kc);
         } else {
-            // Stock/DirectInput keyboard modes (0 and 1): use Win32 APIs
+            // Legacy/DirectInput keyboard modes (0 and 1): use Win32 APIs
             // Note: broken on Wine with non-US layout (MAPVK_VSC_TO_VK_EX mapping issue)
             if (GetKeyState(VK_NUMLOCK) & 1) {
                 switch (key & KEY_MASK) {

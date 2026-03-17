@@ -96,6 +96,9 @@ FunHook<void()> mouse_eval_deltas_hook{
     0x0051DC70,
     []() {
         if (!rf::os_foreground() && !g_alpine_game_config.background_mouse) {
+            // Discard any SDL motion that accumulated while unfocused
+            g_sdl_mouse_dx_rem = 0.0f;
+            g_sdl_mouse_dy_rem = 0.0f;
             return;
         }
 
@@ -126,7 +129,7 @@ FunHook<void()> mouse_eval_deltas_hook{
     },
 };
 
-// Handles scroll-wheel delta fix and Win32 cursor centering for stock/DInput modes (0 and 1).
+// Handles scroll-wheel delta fix and Win32 cursor centering for Legacy/DInput modes (0 and 1).
 // In SDL mode (2) this hook fires but we skip its extra work — SDL manages it instead.
 FunHook<void()> mouse_eval_deltas_di_hook{
     0x0051DEB0,
@@ -210,12 +213,12 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
 ConsoleCommand2 input_mode_cmd{
     "inputmode",
     []() {
-        static constexpr const char* mode_names[] = {"stock", "DirectInput", "SDL"};
+        static constexpr const char* mode_names[] = {"Legacy", "DirectInput", "SDL"};
         int new_mode = (g_alpine_game_config.input_mode + 1) % 3;
         set_input_mode(new_mode);
         rf::console::print("Input mode: {} ({})", new_mode, mode_names[new_mode]);
     },
-    "Cycles input mode: 0=stock Win32 mouse+keyboard, 1=DirectInput mouse+stock keyboard, 2=SDL mouse+keyboard",
+    "Cycles input mode: 0=Legacy Win32 mouse+keyboard, 1=DirectInput mouse+Legacy keyboard, 2=SDL mouse+keyboard",
 };
 
 ConsoleCommand2 ms_cmd{
@@ -551,7 +554,7 @@ void mouse_apply_patch()
     // Disable mouse when window is not active
     mouse_eval_deltas_hook.install();
 
-    // Scroll-wheel fix and Win32 cursor centering for stock/DInput modes (0 and 1)
+    // Scroll-wheel fix and Win32 cursor centering for Legacy/DInput modes (0 and 1)
     mouse_eval_deltas_di_hook.install();
 
     // Mouse mode hooks (DInput or SDL depending on input_mode)

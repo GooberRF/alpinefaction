@@ -92,7 +92,7 @@ static rf::ui::Checkbox ao_input_mode_cbox;
 static rf::ui::Label ao_input_mode_label;
 static rf::ui::Label ao_input_mode_butlabel;
 static char ao_input_mode_butlabel_text[16];
-static constexpr const char* input_mode_names[] = {"Stock", "DInput", "SDL"};
+static constexpr const char* input_mode_names[] = {"Legacy", "DInput", "SDL"};
 static rf::ui::Checkbox ao_linearpitch_cbox;
 static rf::ui::Label ao_linearpitch_label;
 static rf::ui::Checkbox ao_bighud_cbox;
