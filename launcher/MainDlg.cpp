@@ -170,7 +170,7 @@ LRESULT MainDlg::OnShowWhatsNew(WPARAM wparam, LPARAM lparam)
         if (game_config.renderer.value() != GameConfig::Renderer::d3d11
             && is_d3d11_device_available()) {
             int result = MessageBoxA(
-                "Direct3D 11 is now the recommended renderer for Alpine Faction as of v1.3. "
+                "Direct3D 11 is now the recommended renderer.\n\n"
                 "Do you want to switch to it now?\n\n"
                 "You can configure the renderer at any time via the settings panel (gear icon) "
                 "in the Alpine Faction launcher.",
