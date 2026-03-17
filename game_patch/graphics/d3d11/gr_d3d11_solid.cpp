@@ -132,8 +132,6 @@ namespace df::gr::d3d11
             render_context.set_index_buffer(index_buffer_);
         }
 
-        bool valid() const { return vertex_buffer_ && index_buffer_; }
-
     private:
         ComPtr<ID3D11Buffer> vertex_buffer_;
         ComPtr<ID3D11Buffer> index_buffer_;
