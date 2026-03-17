@@ -1,7 +1,9 @@
 #include <cassert>
 #include <cstring>
+#include <xlog/xlog.h>
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/frametime.h"
+#include "../../rf/multi.h"
 #include "../../misc/level.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
@@ -10,6 +12,9 @@
 #include "gr_d3d11_shader.h"
 
 using namespace rf;
+
+// One-shot diagnostic: logs all spotlight data on next GPU upload, then resets
+bool g_dbg_log_spotlights = false;
 
 namespace df::gr::d3d11
 {
@@ -184,13 +189,20 @@ namespace df::gr::d3d11
         {
             std::array<float, 3> pos;
             float radius;
-            std::array<float, 4> color;
+            std::array<float, 4> color;       // rgb + unused alpha
+            std::array<float, 3> spot_dir;    // spotlight direction (0,0,0 for omni)
+            float spot_fov1_dot;              // -cos(fov1/2): inner cone threshold (negated)
+            float spot_fov2_dot;              // -cos(fov2/2): outer cone threshold (negated)
+            float spot_atten;                 // spotlight distance attenuation modifier
+            float spot_sq_falloff;            // 1.0 if squared cone falloff, 0.0 for linear
+            float atten_algo;                 // distance attenuation: 0=linear, 1=squared, 2=cosine, 3=sqrt
         };
 
         std::array<float, 3> ambient_light;
         float num_point_lights;
         PointLight point_lights[max_point_lights];
     };
+    static_assert(sizeof(LightsBufferData::PointLight) % 16 == 0);
 
     LightsBuffer::LightsBuffer(ID3D11Device* device)
     {
@@ -227,12 +239,63 @@ namespace df::gr::d3d11
             int num_point_lights = std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights);
             data.num_point_lights = static_cast<float>(num_point_lights);
 
+            bool logging = g_dbg_log_spotlights && num_point_lights > 0;
+            if (logging) {
+                xlog::warn("--- GPU lights upload: {} lights ---", num_point_lights);
+            }
+
+            int gpu_index = 0;
             for (int i = 0; i < num_point_lights; ++i) {
                 rf::gr::Light* light = rf::gr::relevant_lights[i];
-                LightsBufferData::PointLight& gpu_light = data.point_lights[i];
+                // Skip negative-intensity lights at upload time as a safety net
+                if (light->r < 0.0f || light->g < 0.0f || light->b < 0.0f) {
+                    continue;
+                }
+                LightsBufferData::PointLight& gpu_light = data.point_lights[gpu_index];
                 gpu_light.pos = {light->vec.x, light->vec.y, light->vec.z};
                 gpu_light.color = {light->r, light->g, light->b, 1.0f};
                 gpu_light.radius = light->rad_2;
+                if (light->type == rf::gr::LT_SPOT) {
+                    gpu_light.spot_dir = {light->spotlight_dir.x, light->spotlight_dir.y, light->spotlight_dir.z};
+                    gpu_light.spot_fov1_dot = light->spotlight_fov1_dot;
+                    gpu_light.spot_fov2_dot = light->spotlight_fov2_dot;
+                    gpu_light.spot_atten = light->spotlight_atten;
+                    gpu_light.spot_sq_falloff = light->use_squared_fov_falloff ? 1.0f : 0.0f;
+                    if (logging) {
+                        xlog::warn("[{}] SPOT: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) "
+                            "dir=({:.3f}, {:.3f}, {:.3f}) radius={:.1f} fov1_dot={:.4f} fov2_dot={:.4f} "
+                            "atten={:.3f} sq_falloff={} algo={}",
+                            i, light->r, light->g, light->b,
+                            light->vec.x, light->vec.y, light->vec.z,
+                            light->spotlight_dir.x, light->spotlight_dir.y, light->spotlight_dir.z,
+                            light->rad_2, light->spotlight_fov1_dot, light->spotlight_fov2_dot,
+                            light->spotlight_atten, light->use_squared_fov_falloff,
+                            light->attenuation_algorithm);
+                    }
+                } else {
+                    gpu_light.spot_dir = {0.0f, 0.0f, 0.0f};
+                    gpu_light.spot_fov1_dot = 0.0f;
+                    gpu_light.spot_fov2_dot = 0.0f;
+                    gpu_light.spot_atten = 0.0f;
+                    gpu_light.spot_sq_falloff = 0.0f;
+                    if (logging) {
+                        const char* type_name = "OMNI";
+                        if (light->type == rf::gr::LT_DIRECTIONAL) type_name = "DIR";
+                        else if (light->type == rf::gr::LT_TUBE) type_name = "TUBE";
+                        xlog::warn("[{}] {}: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) "
+                            "radius={:.1f} algo={} dynamic={}",
+                            i, type_name, light->r, light->g, light->b,
+                            light->vec.x, light->vec.y, light->vec.z,
+                            light->rad_2, light->attenuation_algorithm, light->dynamic);
+                    }
+                }
+                gpu_light.atten_algo = static_cast<float>(light->attenuation_algorithm);
+                gpu_index++;
+            }
+            data.num_point_lights = static_cast<float>(gpu_index);
+
+            if (logging && gpu_index > 0) {
+                g_dbg_log_spotlights = false;
             }
         }
         else {
@@ -297,10 +360,15 @@ namespace df::gr::d3d11
         data.disable_textures = current_lightmap_only_ ? 1.0f : 0.0f;
         data.use_dynamic_lighting = current_dynamic_lighting_ ? 1.0f : 0.0f;
         data.self_illumination = current_self_illumination_;
+        // Mesh lighting scale: matches stock vmesh_update_lighting_data behavior.
+        // Stock game uses 2.0 in singleplayer, 3.2 in multiplayer.
+        // Alpine level properties override takes precedence when set.
         const auto& level_props = AlpineLevelProperties::instance();
-        data.light_scale = level_props.override_static_mesh_ambient_light_modifier
-            ? level_props.static_mesh_ambient_light_modifier
-            : 2.0f;
+        if (level_props.override_static_mesh_ambient_light_modifier) {
+            data.light_scale = level_props.static_mesh_ambient_light_modifier;
+        } else {
+            data.light_scale = rf::is_multi ? 3.2f : 2.0f;
+        }
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

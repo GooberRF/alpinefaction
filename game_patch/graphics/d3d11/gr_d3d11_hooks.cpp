@@ -23,67 +23,151 @@
 
 void gr_light_use_static(bool use_static);
 
+// Debug visualization for GPU-driven mesh lights
+bool g_dbg_mesh_lights_omni = false;
+bool g_dbg_mesh_lights_spot = false;
+bool g_dbg_log_fp_lights = false;
+
 namespace df::gr::d3d11
 {
+    // Draw debug wireframe for gathered mesh lights
+    static void draw_debug_lights()
+    {
+        rf::gr::Mode mode{
+            rf::gr::TEXTURE_SOURCE_NONE,
+            rf::gr::COLOR_SOURCE_VERTEX,
+            rf::gr::ALPHA_SOURCE_VERTEX,
+            rf::gr::ALPHA_BLEND_NONE,
+            rf::gr::ZBUFFER_TYPE_READ,
+            rf::gr::FOG_NOT_ALLOWED,
+        };
+
+        constexpr int gpu_max = 32;
+        int total = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
+        for (int i = 0; i < total; ++i) {
+            const rf::gr::Light* light = rf::gr::relevant_lights[i];
+            bool in_range = i < gpu_max;
+
+            if (light->type == rf::gr::LT_SPOT && g_dbg_mesh_lights_spot) {
+                rf::gr::set_color(in_range ? 255 : 80, in_range ? 255 : 80, 0, 128);
+                rf::gr::sphere(light->vec, light->rad_2, mode);
+                rf::Vector3 tip = light->vec + light->spotlight_dir * light->rad_2;
+                rf::gr::set_color(0, 255, 255, 255);
+                rf::gr::line_vec(light->vec, tip, mode);
+            } else if (light->type != rf::gr::LT_SPOT && g_dbg_mesh_lights_omni) {
+                rf::gr::set_color(in_range ? 0 : 255, in_range ? 255 : 0, 0, 128);
+                rf::gr::sphere(light->vec, light->rad_2, mode);
+            }
+        }
+    }
+
     // Gather both dynamic and static lights for GPU-lit meshes.
     // is_find_static_lights controls which linked list the internal light search
     // functions traverse, so we must call light_filter_set_solid twice to get both.
-    static void gather_mesh_lights(const rf::Vector3& pos)
+    // Check if a light's sphere overlaps a mesh's bounding sphere.
+    // More accurate than point-to-point distance for large meshes where
+    // the origin may be far from the nearest surface to the light.
+    static bool light_overlaps_mesh(const rf::gr::Light* light, const rf::Vector3& mesh_pos, float mesh_radius)
+    {
+        float combined_radius = light->rad_2 + mesh_radius;
+        float dist_sq = (light->vec - mesh_pos).len_sq();
+        return dist_sq <= combined_radius * combined_radius;
+    }
+
+    // Local working buffer for gathered lights, avoids mutating the global
+    // rf::gr::relevant_lights/num_relevant_lights between engine calls.
+    static rf::gr::Light* gathered_lights[rf::gr::max_relevant_lights];
+    static int num_gathered_lights = 0;
+
+    static void gather_mesh_lights(const rf::Vector3& pos, float mesh_radius = 0.0f, bool skip_debug = false)
     {
         // Pass 1: dynamic lights (default is_find_static_lights=false)
         rf::gr::light_filter_set_solid(rf::level.geometry, true, false);
         int dynamic_count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
 
+        // Copy dynamic lights to local buffer
+        int total = 0;
+        for (int i = 0; i < dynamic_count && total < rf::gr::max_relevant_lights; ++i) {
+            gathered_lights[total++] = rf::gr::relevant_lights[i];
+        }
+
         // Pass 2: static lights (requires is_find_static_lights=true)
         if (g_alpine_game_config.mesh_static_lighting) {
-            // Save dynamic light pointers before they might be overwritten
-            constexpr int max_save = 32;
-            rf::gr::Light* saved_dynamic[max_save];
-            int saved_count = std::min(dynamic_count, max_save);
-            std::memcpy(saved_dynamic, rf::gr::relevant_lights, saved_count * sizeof(rf::gr::Light*));
-
             rf::gr::light_filter_reset();
             gr_light_use_static(true);
             rf::gr::light_filter_set_solid(rf::level.geometry, true, true);
             gr_light_use_static(false);
 
-            // Merge: append saved dynamic lights after static lights
+            // Append static lights
             int static_count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
-            int total = static_count;
-            for (int i = 0; i < saved_count && total < rf::gr::max_relevant_lights; ++i) {
-                rf::gr::relevant_lights[total++] = saved_dynamic[i];
+            // Insert static lights before dynamic so static don't push out dynamic
+            // Shift dynamic lights right, insert static at front
+            if (static_count > 0 && total > 0) {
+                int space = std::min(static_count, rf::gr::max_relevant_lights - total);
+                std::memmove(gathered_lights + space, gathered_lights, total * sizeof(rf::gr::Light*));
+                for (int i = 0; i < space; ++i) {
+                    gathered_lights[i] = rf::gr::relevant_lights[i];
+                }
+                total += space;
+            } else {
+                for (int i = 0; i < static_count && total < rf::gr::max_relevant_lights; ++i) {
+                    gathered_lights[total++] = rf::gr::relevant_lights[i];
+                }
             }
-            rf::gr::num_relevant_lights = total;
-
         }
 
-        // Prioritize dynamic lights whose radius reaches the mesh (muzzle flashes,
-        // explosions, fire) so they can never be pushed out by distant static lights.
-        // Partition in-range dynamic lights to the front, then sort the remainder by distance.
-        constexpr int gpu_max = 32;
-        int count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
-        if (count > 1) {
-            auto* begin = rf::gr::relevant_lights;
-            auto* end = begin + count;
+        // Filter out negative-intensity (subtractive) lights. These are a lightmap
+        // baking trick to darken areas and have no physical meaning for real-time
+        // point lighting. They waste GPU slots and cause color artifacts.
+        {
+            int write = 0;
+            for (int read = 0; read < total; ++read) {
+                const auto* light = gathered_lights[read];
+                if (light->r >= 0.0f && light->g >= 0.0f && light->b >= 0.0f) {
+                    gathered_lights[write++] = gathered_lights[read];
+                }
+            }
+            total = write;
+        }
 
-            // Stable partition: in-range dynamic lights first
-            auto* mid = std::stable_partition(begin, end,
-                [&pos](const rf::gr::Light* light) {
+        // Priority sorting for the 32-light GPU limit.
+        // Three tiers, each stable-partitioned to the front:
+        //   1. Dynamic lights whose sphere overlaps the mesh (muzzle flashes, explosions, fire)
+        //   2. Large spotlights (radius >= 30m) whose sphere overlaps the mesh
+        //   3. Everything else, sorted by distance to mesh center
+        // All overlap tests use sphere-sphere intersection (light radius + mesh radius)
+        // to correctly handle large meshes where the origin is far from the nearest surface.
+        constexpr int gpu_max = 32;
+        constexpr float large_spot_radius = 30.0f;
+        if (total > 1) {
+            auto* begin = gathered_lights;
+            auto* end = begin + total;
+
+            // Tier 1: dynamic lights overlapping the mesh
+            auto* t1_end = std::stable_partition(begin, end,
+                [&pos, mesh_radius](const rf::gr::Light* light) {
                     if (!light->dynamic) return false;
-                    float dist_sq = (light->vec - pos).len_sq();
-                    float radius = light->rad_2;
-                    return dist_sq <= radius * radius;
+                    return light_overlaps_mesh(light, pos, mesh_radius);
                 }
             );
-            int priority_count = static_cast<int>(mid - begin);
 
-            // Sort the remaining (non-priority) lights by distance
-            int remaining = count - priority_count;
+            // Tier 2: large spotlights overlapping the mesh (not already in tier 1)
+            auto* t2_end = std::stable_partition(t1_end, end,
+                [&pos, mesh_radius](const rf::gr::Light* light) {
+                    if (light->type != rf::gr::LT_SPOT) return false;
+                    if (light->rad_2 < large_spot_radius) return false;
+                    return light_overlaps_mesh(light, pos, mesh_radius);
+                }
+            );
+            int priority_count = static_cast<int>(t2_end - begin);
+
+            // Sort the remaining (non-priority) lights by distance to mesh center
+            int remaining = total - priority_count;
             if (remaining > 1) {
                 int slots_left = std::max(gpu_max - priority_count, 0);
                 std::partial_sort(
-                    mid,
-                    mid + std::min(remaining, slots_left),
+                    t2_end,
+                    t2_end + std::min(remaining, slots_left),
                     end,
                     [&pos](const rf::gr::Light* a, const rf::gr::Light* b) {
                         float da = (a->vec - pos).len_sq();
@@ -92,6 +176,47 @@ namespace df::gr::d3d11
                     }
                 );
             }
+        }
+
+        // Log gathered lights for first-person weapon mesh (one-shot diagnostic)
+        if (skip_debug && g_dbg_log_fp_lights) {
+            // skip_debug is true for first-person weapon renders
+            xlog::warn("--- FP weapon mesh lights: {} gathered ---", total);
+            for (int i = 0; i < total; ++i) {
+                const auto* light = gathered_lights[i];
+                if (light->type == rf::gr::LT_SPOT) {
+                    xlog::warn("[{}] SPOT: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) "
+                        "dir=({:.3f}, {:.3f}, {:.3f}) radius={:.1f} fov1_dot={:.4f} fov2_dot={:.4f} "
+                        "atten={:.3f} sq_falloff={} algo={}",
+                        i, light->r, light->g, light->b,
+                        light->vec.x, light->vec.y, light->vec.z,
+                        light->spotlight_dir.x, light->spotlight_dir.y, light->spotlight_dir.z,
+                        light->rad_2, light->spotlight_fov1_dot, light->spotlight_fov2_dot,
+                        light->spotlight_atten, light->use_squared_fov_falloff,
+                        light->attenuation_algorithm);
+                } else {
+                    const char* type_name = "OMNI";
+                    if (light->type == rf::gr::LT_DIRECTIONAL) type_name = "DIR";
+                    else if (light->type == rf::gr::LT_TUBE) type_name = "TUBE";
+                    xlog::warn("[{}] {}: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) radius={:.1f} algo={} dyn={}{}",
+                        i, type_name, light->r, light->g, light->b,
+                        light->vec.x, light->vec.y, light->vec.z, light->rad_2,
+                        light->attenuation_algorithm, light->dynamic,
+                        (light->r < 0.0f || light->g < 0.0f || light->b < 0.0f) ? " *** NEGATIVE ***" : "");
+                }
+            }
+            g_dbg_log_fp_lights = false;
+        }
+
+        // Write results back to the global arrays for the GPU upload to read
+        num_gathered_lights = total;
+        std::memcpy(rf::gr::relevant_lights, gathered_lights, total * sizeof(rf::gr::Light*));
+        rf::gr::num_relevant_lights = total;
+
+        // Debug visualization (skip during first-person weapon rendering to avoid
+        // duplicate draws through the weapon's different projection matrix)
+        if (!skip_debug && (g_dbg_mesh_lights_omni || g_dbg_mesh_lights_spot)) {
+            draw_debug_lights();
         }
     }
 
@@ -319,9 +444,10 @@ namespace df::gr::d3d11
     void render_v3d_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, int lod_index, const rf::MeshRenderParams& params)
     {
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels && !level_uses_vertex_lighting()) {
+            bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
             if (rf::level.geometry) {
-                gather_mesh_lights(pos);
+                gather_mesh_lights(pos, lod_mesh->radius, is_first_person);
                 lights_gathered = true;
             }
 
@@ -349,13 +475,14 @@ namespace df::gr::d3d11
             // Gather nearby lights (both static and dynamic) so the pixel shader can
             // compute per-pixel N·L lighting for this character mesh.
             // Skip when using vertex lighting — the old path doesn't need gathered lights.
+            bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
             if (!use_vertex_lighting && rf::level.geometry) {
-                gather_mesh_lights(pos);
+                gather_mesh_lights(pos, lod_mesh->radius, is_first_person);
                 lights_gathered = true;
             }
 
-            bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) == 0;
+            bool fullbright_character = g_character_meshes_are_fullbright && !is_first_person;
             bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character;
 
             if (synthesize_colors) {

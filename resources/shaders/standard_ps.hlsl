@@ -25,6 +25,13 @@ struct PointLight {
     float3 pos;
     float radius;
     float3 color;
+    float _pad0;
+    float3 spot_dir;        // spotlight direction (0,0,0 for omni)
+    float spot_fov1_dot;    // -cos(fov1/2): inner cone (negated)
+    float spot_fov2_dot;    // -cos(fov2/2): outer cone (negated)
+    float spot_atten;       // spotlight distance attenuation modifier
+    float spot_sq_falloff;  // 1.0 = squared cone falloff, 0.0 = linear
+    float atten_algo;       // distance attenuation: 0=linear, 1=squared, 2=cosine, 3=sqrt
 };
 
 #define MAX_POINT_LIGHTS 32
@@ -80,9 +87,9 @@ float4 main(VsOutput input) : SV_TARGET
     if (disable_textures < 0.5f) {
         if (use_dynamic_lighting > 0.5f) {
             // Dynamic-lit meshes (V3D items, characters): no lightmap.
-            // Scale ambient to visible brightness (default 2.0, configurable via AlpineLevelProps).
-            // Point lights are added after at their natural intensity.
-            light_color = ambient_light * light_scale;
+            // Start from level ambient; light_scale applied to total after accumulation
+            // to match stock vmesh_update_lighting_data which scales (ambient + lights) together.
+            light_color = ambient_light;
         } else {
             // Static meshes: use baked lightmap
             light_color *= 2;
@@ -91,24 +98,81 @@ float4 main(VsOutput input) : SV_TARGET
             float3 light_vec = point_lights[i].pos - input.world_pos_and_depth.xyz;
             float3 light_dir = normalize(light_vec);
             float dist = length(light_vec);
-            float atten = saturate(dist / point_lights[i].radius);
-            atten = atten * atten * (3.0f - 2.0f * atten);
-            float intensity = (1.0f - atten) * saturate(dot(input.norm, light_dir));
-            float per_light_scale = use_dynamic_lighting > 0.5f ? 1.0f : 1.5f;
-            light_color += point_lights[i].color * intensity * per_light_scale;
+
+            // Spotlight cone falloff (matches RED.exe lightmap baking math exactly).
+            // light_dir = pixel-to-light direction. spot_dir = spotlight aim direction.
+            // dot(light_dir, spot_dir) is negative when the pixel is in front of the light
+            // (opposite directions). The engine stores fov thresholds as -cos(fov/2).
+            // Editor comparison: dot < fov2_dot = inside cone; fov1_dot <= dot = falloff zone.
+            // For omni lights, spot_dir = (0,0,0) so is_spot = false and spot_factor = 1.
+            bool is_spot = dot(point_lights[i].spot_dir, point_lights[i].spot_dir) > 0.001f;
+            float spot_factor = 1.0f;
+            if (is_spot) {
+                float cos_angle = dot(light_dir, point_lights[i].spot_dir);
+                if (cos_angle >= point_lights[i].spot_fov2_dot) {
+                    // Outside outer cone — no contribution
+                    spot_factor = 0.0f;
+                } else if (point_lights[i].spot_fov1_dot <= cos_angle) {
+                    // Between inner and outer cone — linear falloff
+                    spot_factor = 1.0f - (cos_angle - point_lights[i].spot_fov1_dot)
+                                       / (point_lights[i].spot_fov2_dot - point_lights[i].spot_fov1_dot);
+                    // Optionally square the falloff for sharper cone edges
+                    if (point_lights[i].spot_sq_falloff > 0.5f) {
+                        spot_factor = spot_factor * spot_factor;
+                    }
+                }
+                // else: cos_angle < fov1_dot = inside inner cone, spot_factor stays 1.0
+
+                // Spotlight distance attenuation modifier: shrinks effective distance
+                dist = (1.0f - point_lights[i].spot_atten) * dist;
+            }
+
+            // Distance attenuation matching RED.exe lightmap baking algorithms.
+            // All algorithms compute r = (radius - dist) / radius = 1 - t first,
+            // then apply the curve. Verified against RED.exe disassembly at 0x00488CC0.
+            float t = saturate(dist / point_lights[i].radius);
+            float r = 1.0f - t;
+            float atten;
+            float algo = point_lights[i].atten_algo;
+            if (algo < 0.5f) {
+                atten = r;                      // 0: linear
+            } else if (algo < 1.5f) {
+                atten = r * r;                  // 1: squared
+            } else if (algo < 2.5f) {
+                atten = cos(t * 1.5707963f);    // 2: cosine (= cos((1-r)*pi/2))
+            } else {
+                atten = sqrt(r);                // 3: sqrt
+            }
+            atten = max(atten, 0.0f);
+            float intensity = atten * saturate(dot(input.norm, light_dir)) * spot_factor;
+            if (use_dynamic_lighting > 0.5f) {
+                light_color += point_lights[i].color * intensity;
+            } else {
+                light_color += point_lights[i].color * intensity * 1.5f;
+            }
         }
         if (use_dynamic_lighting > 0.5f) {
-            // Soft-knee compression: identity below shoulder, smoothly compressed
-            // above. Prevents overbright near strong lights while preserving
-            // natural lighting variation. C1 smooth — no hard edges.
-            float shoulder = 1.2f;
-            float range = 0.8f;
-            float3 excess = max(light_color - shoulder, 0.0f);
-            light_color = min(light_color, shoulder) + excess * range / (excess + range);
+            // Apply light_scale (default 2.0, per-level configurable) to the total
+            // (ambient + direct lights), matching stock vmesh_update_lighting_data
+            // which applies the modifier to the entire lighting result.
+            light_color *= light_scale;
+
+            // Soft-knee luminance compression: prevents overbright while preserving
+            // color hue. Per-channel compression would shift hues (e.g. warm lights
+            // with red > green get red compressed more, producing a green tint).
+            // Instead, compress based on luminance and scale all channels equally.
+            float lum = dot(light_color, float3(0.2126f, 0.7152f, 0.0722f));
+            if (lum > 0.0f) {
+                float shoulder = 1.2f;
+                float range = 0.8f;
+                float excess = max(lum - shoulder, 0.0f);
+                float compressed_lum = min(lum, shoulder) + excess * range / (excess + range);
+                light_color *= compressed_lum / lum;
+            }
         }
     }
 
-    // Self-illumination sets a minimum brightness floor (matches stock engine behavior)
+    // Self-illumination sets a minimum brightness floor (matches stock engine behavior).
     if (self_illumination > 0.0f) {
         light_color = max(light_color, self_illumination);
     }

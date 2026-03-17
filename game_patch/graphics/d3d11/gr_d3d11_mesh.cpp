@@ -69,9 +69,12 @@ namespace df::gr::d3d11
             auto* materials = reinterpret_cast<MeshMaterial*>(mesh.materials);
             std::vector<float> self_illum(mesh.num_materials, 0.0f);
             for (int j = 0; j < mesh.num_materials; ++j) {
-                if (materials[j].num_self_illumination_frames > 0 && materials[j].self_illumination) {
-                    // Stock engine stores self_illumination as 0-255 float, normalize to 0-1
-                    self_illum[j] = std::min(materials[j].self_illumination[0] / 255.0f, 1.0f);
+                if (materials[j].self_illumination) {
+                    // V3D stores self_illumination as a 0.0-1.0 float (not 0-255)
+                    float si_value = materials[j].self_illumination[0];
+                    if (si_value > 0.0f) {
+                        self_illum[j] = std::min(si_value, 1.0f);
+                    }
                 }
             }
             mesh_self_illumination[lod_mesh] = std::move(self_illum);
@@ -878,9 +881,6 @@ namespace df::gr::d3d11
                         global_amb[1] * (1.0f - blend) + (params.ambient_color.green / 255.0f) * blend,
                         global_amb[2] * (1.0f - blend) + (params.ambient_color.blue / 255.0f) * blend,
                     };
-                    // Cache this blended ambient keyed by the entity's MeshRenderParams address
-                    // (stable per entity since params is a reference to a field in the entity struct).
-                    // Skip caching when params is a stack copy to avoid unbounded growth.
                     if (!skip_ambient_cache) {
                         entity_ambient_cache[&params] = {mesh_ambient[0], mesh_ambient[1], mesh_ambient[2]};
                     }

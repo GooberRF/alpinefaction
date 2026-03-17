@@ -194,6 +194,54 @@ ConsoleCommand2 mesh_static_lighting_cmd{
     "Toggle mesh static lighting calculation",
 };
 
+extern bool g_dbg_mesh_lights_omni;
+extern bool g_dbg_mesh_lights_spot;
+extern bool g_dbg_log_spotlights;
+extern bool g_dbg_log_fp_lights;
+
+ConsoleCommand2 dbg_log_fp_lights_cmd{
+    "dbg_logfplights",
+    []() {
+        g_dbg_log_fp_lights = true;
+        rf::console::print("FP weapon light data will be logged on next frame");
+    },
+    "Log all lights gathered for first-person weapon mesh (D3D11 only)",
+};
+
+ConsoleCommand2 dbg_log_spotlights_cmd{
+    "dbg_logspotlights",
+    []() {
+        g_dbg_log_spotlights = true;
+        rf::console::print("Spotlight data will be logged on next frame (check console.log)");
+    },
+    "Log all spotlight GPU upload data for one frame (D3D11 only)",
+};
+
+ConsoleCommand2 dbg_mesh_lights_omni_cmd{
+    "dbg_meshlightsomni",
+    []() {
+        g_dbg_mesh_lights_omni = !g_dbg_mesh_lights_omni;
+        rf::console::print("Omni light debug visualization is {}", g_dbg_mesh_lights_omni ? "enabled" : "disabled");
+        if (g_dbg_mesh_lights_omni) {
+            rf::console::print("  Green sphere = in GPU range, Red sphere = overflow (not sent to GPU)");
+        }
+    },
+    "Toggle debug visualization of omni point lights used for mesh pixel lighting (D3D11 only)",
+};
+
+ConsoleCommand2 dbg_mesh_lights_spot_cmd{
+    "dbg_meshlightsspot",
+    []() {
+        g_dbg_mesh_lights_spot = !g_dbg_mesh_lights_spot;
+        rf::console::print("Spotlight debug visualization is {}", g_dbg_mesh_lights_spot ? "enabled" : "disabled");
+        if (g_dbg_mesh_lights_spot) {
+            rf::console::print("  Yellow sphere = radius, Cyan line = cone direction");
+            rf::console::print("  Dim = overflow (not sent to GPU)");
+        }
+    },
+    "Toggle debug visualization of spotlights used for mesh pixel lighting (D3D11 only)",
+};
+
 ConsoleCommand2 vertex_lighting_cmd{
     "r_vertexlighting",
     []() {
@@ -295,6 +343,10 @@ void obj_light_apply_patch()
     // Commands
     mesh_static_lighting_cmd.register_cmd();
     vertex_lighting_cmd.register_cmd();
+    dbg_mesh_lights_omni_cmd.register_cmd();
+    dbg_mesh_lights_spot_cmd.register_cmd();
+    dbg_log_fp_lights_cmd.register_cmd();
+    dbg_log_spotlights_cmd.register_cmd();
     muzzle_flash_cmd.register_cmd();
     fullbright_models_cmd.register_cmd();
 }
