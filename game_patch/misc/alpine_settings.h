@@ -343,6 +343,20 @@ struct AlpineGameSettings
     bool rendering_enabled = true;
     bool sound_enabled = true;
     bool background_mouse = false;
+
+    // entity shadow settings
+    bool shadow_corpses = true;
+    bool shadow_items = true;
+    int shadow_distance = 3; // 0=lowest, 1=low, 2=medium, 3=high, 4=very_high, 5=maximum
+    void set_shadow_distance(int value)
+    {
+        shadow_distance = std::clamp(value, 0, 5);
+    }
+    int shadow_quality = 3; // 0=lowest(blob), 1=low, 2=medium, 3=high, 4=very_high, 5=maximum
+    void set_shadow_quality(int value)
+    {
+        shadow_quality = std::clamp(value, 0, 5);
+    }
 };
 
 struct FpsCounterState

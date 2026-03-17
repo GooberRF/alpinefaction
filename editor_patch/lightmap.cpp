@@ -593,8 +593,8 @@ void ApplyLightmapPatches()
 
     // MOVSX -> MOVZX for face+0x36 reads from register (5 sites)
     // These follow 16-bit MOV AX,[face+0x36] and sign-extend AX to 32-bit before use as index
-    write_mem<u8>(0x0048778d, 0xB7); // FUN_004872e0: lightmap surface container lookup
-    write_mem<u8>(0x00487864, 0xB7);
+    write_mem<u8>(0x0048778b, 0xB7); // FUN_004872e0: lightmap surface container lookup
+    write_mem<u8>(0x00487862, 0xB7);
     write_mem<u8>(0x0049b955, 0xB7); // FUN_0049b550: geo-cache build
     write_mem<u8>(0x0049bea0, 0xB7);
     write_mem<u8>(0x0049bed3, 0xB7);

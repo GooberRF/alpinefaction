@@ -99,6 +99,25 @@ namespace rf
     };
 
     static auto& clutter_list = addr_as_ref<Clutter>(0x005C9360);
+    static auto& clutter_list_tail = addr_as_ref<Clutter*>(0x005C95F0);
+    static auto& clutter_count = addr_as_ref<int>(0x005C9358);
+
+    // Shared dummy ClutterInfo for alpine objects that don't need clutter behavior.
+    inline ClutterInfo& get_dummy_clutter_info()
+    {
+        static ClutterInfo info = []() {
+            ClutterInfo ci{};
+            ci.life = -1.0f;
+            ci.sound = -1;
+            ci.use_sound = -1;
+            ci.explode_anim_vclip = -1;
+            ci.glare = -1;
+            ci.rod_glare = -1;
+            ci.light_prop = -1;
+            return ci;
+        }();
+        return info;
+    }
     static auto& monitor_list = addr_as_ref<Monitor>(0x005C98A8);
 
     static auto& clutter_restore_mesh = addr_as_ref<void(Clutter *clutter, const char *mesh_name)>(0x00410ED0);

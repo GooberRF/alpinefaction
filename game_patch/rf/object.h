@@ -62,8 +62,8 @@ namespace rf
         OF_IS_PLAYER = 0x8,            // checked by obj_is_player (FUN_004895d0)
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
-        OF_NO_COLLIDE_SP = 0x4000,     // skip object-object collision in singleplayer
-        OF_NO_COLLIDE_REGISTER = 0x8000, // skip collision pair registration (FUN_0048c9a0)
+        OF_HIDDEN = 0x4000,              // set by obj_hide, cleared by obj_unhide
+        OF_NO_COLLIDE_REGISTER = 0x8000, // deferred collision registration, cleared on obj_unhide (FUN_0048c9a0)
         OF_NO_PLAYER_COLLIDE = 0x20000,  // skip entity-player collision in collision_filter
         OF_WEAPON_ONLY_COLLIDE = 0x40000, // only collide with weapons (type 2)
         OF_IN_LIQUID = 0x80000,

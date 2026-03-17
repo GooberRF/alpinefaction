@@ -1,5 +1,4 @@
 
-
 #include <patch_common/FunHook.h>
 #include "../rf/entity.h"
 #include "../rf/corpse.h"

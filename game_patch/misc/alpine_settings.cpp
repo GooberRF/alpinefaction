@@ -13,7 +13,9 @@
 #include "../rf/os/console.h"
 #include "../rf/player/player.h"
 #include "../rf/sound/sound.h"
+#include "../graphics/d3d11/gr_d3d11_entity_shadow.h"
 #include "../rf/gr/gr.h"
+#include "../rf/multi.h"
 #include "../sound/sound.h"
 #include <shlwapi.h>
 #include <windows.h>
@@ -530,6 +532,22 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("PrecacheRooms")) {
         g_alpine_game_config.precache_rooms = std::stoi(settings["PrecacheRooms"]);
         processed_keys.insert("PrecacheRooms");
+    }
+    if (settings.count("ShadowCorpses")) {
+        g_alpine_game_config.shadow_corpses = std::stoi(settings["ShadowCorpses"]);
+        processed_keys.insert("ShadowCorpses");
+    }
+    if (settings.count("ShadowItems")) {
+        g_alpine_game_config.shadow_items = std::stoi(settings["ShadowItems"]);
+        processed_keys.insert("ShadowItems");
+    }
+    if (settings.count("ShadowDistance")) {
+        g_alpine_game_config.set_shadow_distance(std::stoi(settings["ShadowDistance"]));
+        processed_keys.insert("ShadowDistance");
+    }
+    if (settings.count("ShadowQuality")) {
+        g_alpine_game_config.set_shadow_quality(std::stoi(settings["ShadowQuality"]));
+        processed_keys.insert("ShadowQuality");
     }
     if (settings.count("NearestTextureFiltering")) {
         g_alpine_game_config.nearest_texture_filtering = std::stoi(settings["NearestTextureFiltering"]);
@@ -1201,6 +1219,10 @@ void alpine_player_settings_save(rf::Player* player)
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
     file << "Picmip=" << g_alpine_game_config.picmip << "\n";
     file << "PrecacheRooms=" << g_alpine_game_config.precache_rooms << "\n";
+    file << "ShadowCorpses=" << g_alpine_game_config.shadow_corpses << "\n";
+    file << "ShadowItems=" << g_alpine_game_config.shadow_items << "\n";
+    file << "ShadowDistance=" << g_alpine_game_config.shadow_distance << "\n";
+    file << "ShadowQuality=" << g_alpine_game_config.shadow_quality << "\n";
     file << "NearestTextureFiltering=" << g_alpine_game_config.nearest_texture_filtering << "\n";
     file << "FastAnimations=" << rf::g_fast_animations << "\n";
     file << "MonitorResolutionScale=" << g_alpine_game_config.monitor_resolution_scale << "\n";
@@ -1470,6 +1492,75 @@ CallHook<int(const char*, const char*, unsigned*, unsigned)> os_config_read_uint
     }
 };
 
+ConsoleCommand2 shadow_corpses_cmd{
+    "r_shadowcorpses",
+    []() {
+        g_alpine_game_config.shadow_corpses = !g_alpine_game_config.shadow_corpses;
+        rf::console::print("Corpse shadows: {}", g_alpine_game_config.shadow_corpses ? "enabled" : "disabled");
+    },
+    "Toggle corpse shadow rendering",
+};
+
+ConsoleCommand2 shadow_items_cmd{
+    "r_shadowitems",
+    []() {
+        g_alpine_game_config.shadow_items = !g_alpine_game_config.shadow_items;
+        rf::console::print("Item shadows: {}", g_alpine_game_config.shadow_items ? "enabled" : "disabled");
+    },
+    "Toggle item shadow rendering",
+};
+
+ConsoleCommand2 dbg_shadows_cmd{
+    "dbg_shadows",
+    []() {
+        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        if (rf::is_multi && !rf::is_server) {
+            rf::console::print("This command is only available in single-player or as host");
+            return;
+        }
+        ESR::debug_enabled = !ESR::debug_enabled;
+        rf::console::print("Shadow debug overlay: {}", ESR::debug_enabled ? "enabled" : "disabled");
+    },
+    "Toggle shadow map debug overlay (SP/host only)",
+};
+
+ConsoleCommand2 shadow_distance_cmd{
+    "r_shadowdistance",
+    [](std::optional<int> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.set_shadow_distance(value_opt.value());
+        }
+        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        int d = g_alpine_game_config.shadow_distance;
+        rf::console::print("Shadow distance: {} ({}) [0-5]",
+            d, ESR::preset_names[d]);
+    },
+    "Set shadow distance preset (0-5)",
+    "r_shadowdistance <0-5>",
+};
+
+ConsoleCommand2 shadow_quality_cmd{
+    "r_shadowquality",
+    [](std::optional<int> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.set_shadow_quality(value_opt.value());
+        }
+        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        int q = g_alpine_game_config.shadow_quality;
+        const auto& preset = ESR::shadow_quality_presets[q];
+        if (preset.resolution == 0) {
+            rf::console::print("Shadow quality: {} ({}) - blob shadows [0-5]",
+                q, ESR::preset_names[q]);
+        }
+        else {
+            rf::console::print("Shadow quality: {} ({}) - {}x{}, {} PCF taps [0-5]",
+                q, ESR::preset_names[q], preset.resolution, preset.resolution, preset.pcf_taps);
+        }
+    },
+    "Set shadow quality preset (0=blob, 1-5=shadow maps)",
+    "r_shadowquality <0-5>",
+};
+
 ConsoleCommand2 load_settings_cmd{
     "dbg_loadsettings",
     []() {
@@ -1504,6 +1595,11 @@ void alpine_settings_apply_patch()
     // Register commands
     load_settings_cmd.register_cmd();
     save_settings_cmd.register_cmd();
+    shadow_corpses_cmd.register_cmd();
+    shadow_items_cmd.register_cmd();
+    shadow_distance_cmd.register_cmd();
+    shadow_quality_cmd.register_cmd();
+    dbg_shadows_cmd.register_cmd();
 
     // Init cmd line
     get_afs_cmd_line_param();

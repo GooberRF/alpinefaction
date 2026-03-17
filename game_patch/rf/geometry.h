@@ -163,6 +163,13 @@ namespace rf
         {
             return AddrCaller{0x004d0590}.this_call<GSolid*>(this, group_id);
         }
+
+        // Find room containing the given position. hint can be null.
+        // FUN_004cd970: __thiscall, RET 0x10 (4 stack params)
+        GRoom* find_room(GRoom* hint, const Vector3* pos1, const Vector3* pos2, void* param4)
+        {
+            return AddrCaller{0x004CD970}.this_call<GRoom*>(this, hint, pos1, pos2, param4);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
 

@@ -31,6 +31,7 @@ namespace df::gr::d3d11
     class RenderContext;
     class SolidRenderer;
     class MeshRenderer;
+    class EntityShadowRenderer;
 
     class Renderer
     {
@@ -82,6 +83,7 @@ namespace df::gr::d3d11
         void page_in_movable_solid(rf::GSolid* solid);
         void flush_caches();
         void reset_static_vertex_color_tracking();
+        void set_pow2_tex_active(bool active);
         float z_far() const;
 
     private:
@@ -107,6 +109,7 @@ namespace df::gr::d3d11
         std::unique_ptr<RenderContext> render_context_;
         std::unique_ptr<SolidRenderer> solid_renderer_;
         std::unique_ptr<MeshRenderer> mesh_renderer_;
+        std::unique_ptr<EntityShadowRenderer> entity_shadow_renderer_;
         int render_target_bm_handle_ = -1;
     };
 

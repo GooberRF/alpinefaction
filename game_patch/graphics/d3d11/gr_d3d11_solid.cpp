@@ -223,13 +223,16 @@ namespace df::gr::d3d11
         }
 
         geometry_buffers_.bind_buffers(render_context);
+        // World geometry UVs are authored for pow2 texture dimensions on old GPUs,
+        // so suppress UV scaling for this entire pass
+        render_context.set_suppress_texture_uv_scale(true);
         for (SolidBatch& b : batches) {
             bool lightmap_only = rf::gr::show_lightmaps && what != FaceRenderType::alpha;
             render_context.set_mode(b.mode, {255, 255, 255, 255}, lightmap_only);
             render_context.set_textures(b.textures[0], b.textures[1]);
-            //xlog::warn("DrawIndexed {} {}", b.num_indices, b.start_index);
             render_context.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }
+        render_context.set_suppress_texture_uv_scale(false);
     }
 
     class GRenderCacheBuilder
@@ -975,4 +978,5 @@ namespace df::gr::d3d11
             get_or_create_detail_room_cache(solid, room);
         }
     }
+
 }

@@ -21,7 +21,6 @@
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
-#include "../graphics/legacy/gr_d3d.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
 #include "../hud/multi_scoreboard.h"
@@ -40,6 +39,7 @@
 #include "../misc/high_fps.h"
 #include "../misc/player.h"
 #include "../misc/level.h"
+#include "../object/alpine_corona.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -206,6 +206,9 @@ FunHook<void(bool)> level_init_post_hook{
     [](bool transition) {
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
+
+        // Create corona objects (clutter + glare pairs) now that geometry is loaded
+        alpine_corona_create_all();
 
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
