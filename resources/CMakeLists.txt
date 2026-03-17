@@ -207,6 +207,7 @@ add_packfile(alpinefaction.vpp
     images/Icon_EAX.tga
     images/Icon_Event.tga
     images/Icon_AFNote.tga
+    images/Icon_AFCorona.tga
     images/radar_dish.tga
     images/score_aflogo.tga
     images/mtl_archway04-mip1.tga
@@ -234,8 +235,11 @@ add_packfile(alpinefaction.vpp
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin
     transformed_vs:${CMAKE_BINARY_DIR}/shaders/transformed_vs.bin
+    shadow_standard_vs:${CMAKE_BINARY_DIR}/shaders/shadow_standard_vs.bin
+    shadow_character_vs:${CMAKE_BINARY_DIR}/shaders/shadow_character_vs.bin
     standard_ps:${CMAKE_BINARY_DIR}/shaders/standard_ps.bin
     ui_ps:${CMAKE_BINARY_DIR}/shaders/ui_ps.bin
+    shadow_debug_ps:${CMAKE_BINARY_DIR}/shaders/shadow_debug_ps.bin
 )
 
 # Copy licensing-info.txt

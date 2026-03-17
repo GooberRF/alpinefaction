@@ -90,7 +90,7 @@ static void register_custom_texture_subdirectories(void* texture_manager)
         cat->path_handle = file_add_path(subdir_path.c_str(), ".tga .vbm", false);
 
         // Append to the manager's category array at this+0x7C
-        AddrCaller{0x00491020}.this_call<void>(category_array, cat);
+        category_array->push_back(cat);
 
         xlog::info("Registered custom texture category: '{}' (path_handle={})", display_name, cat->path_handle);
     }

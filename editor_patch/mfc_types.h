@@ -141,8 +141,9 @@ enum class DedObjectType : int
     DED_TARGET = 0x14,
     DED_KEYFRAME = 0x15,
     DED_PUSH_REGION = 0x16,
-    DED_MESH = 0x17, // Alpine 1.3
-    DED_NOTE = 0x18  // Alpine 1.3
+    DED_MESH = 0x17,   // Alpine 1.3
+    DED_NOTE = 0x18,   // Alpine 1.3
+    DED_CORONA = 0x19  // Alpine 1.3
 };
 
 struct Vector3
@@ -233,6 +234,12 @@ struct VArray
     void add(T value)
     {
         add_if_not_exists_raw(reinterpret_cast<void*>(value));
+    }
+
+    // FUN_00491020: unconditional append (always adds, no dedup check)
+    void push_back(T value)
+    {
+        AddrCaller{0x00491020}.this_call(this, value);
     }
 
     // Remove first occurrence of value
@@ -416,6 +423,21 @@ struct DedMesh : DedObject
 struct DedNote : DedObject
 {
     std::vector<std::string> notes;
+};
+
+struct DedCorona : DedObject
+{
+    uint8_t color_r = 200, color_g = 154, color_b = 228, color_a = 255;
+    std::string corona_bitmap = "LightCorona04.tga";
+    float cone_angle = 83.0f;        // degrees
+    float intensity = 0.5f;
+    float radius_distance = 0.6f;
+    float radius_scale = 0.8f;
+    float diminish_distance = -0.05f;
+    std::string volumetric_bitmap = "LightBeam02.tga";
+    float volumetric_height = 1.6f;
+    float volumetric_length = 3.2f;
+    bool show_in_editor = false;       // not serialized — local editor toggle
 };
 
 struct DedBoltEmitter : DedObject
