@@ -189,13 +189,16 @@ namespace df::gr::d3d11
         {
             std::array<float, 3> pos;
             float radius;
-            std::array<float, 4> color;       // rgb + unused alpha
+            std::array<float, 3> color;       // rgb
+            float light_type;                 // 0=omni, 1=spot, 2=tube
             std::array<float, 3> spot_dir;    // spotlight direction (0,0,0 for omni)
             float spot_fov1_dot;              // -cos(fov1/2): inner cone threshold (negated)
             float spot_fov2_dot;              // -cos(fov2/2): outer cone threshold (negated)
             float spot_atten;                 // spotlight distance attenuation modifier
             float spot_sq_falloff;            // 1.0 if squared cone falloff, 0.0 for linear
             float atten_algo;                 // distance attenuation: 0=linear, 1=squared, 2=cosine, 3=sqrt
+            std::array<float, 3> pos2;        // tube light second endpoint
+            float _pad;
         };
 
         std::array<float, 3> ambient_light;
@@ -253,9 +256,12 @@ namespace df::gr::d3d11
                 }
                 LightsBufferData::PointLight& gpu_light = data.point_lights[gpu_index];
                 gpu_light.pos = {light->vec.x, light->vec.y, light->vec.z};
-                gpu_light.color = {light->r, light->g, light->b, 1.0f};
+                gpu_light.color = {light->r, light->g, light->b};
                 gpu_light.radius = light->rad_2;
+                gpu_light.pos2 = {0.0f, 0.0f, 0.0f};
+                gpu_light._pad = 0.0f;
                 if (light->type == rf::gr::LT_SPOT) {
+                    gpu_light.light_type = 1.0f;
                     gpu_light.spot_dir = {light->spotlight_dir.x, light->spotlight_dir.y, light->spotlight_dir.z};
                     gpu_light.spot_fov1_dot = light->spotlight_fov1_dot;
                     gpu_light.spot_fov2_dot = light->spotlight_fov2_dot;
@@ -272,7 +278,24 @@ namespace df::gr::d3d11
                             light->spotlight_atten, light->use_squared_fov_falloff,
                             light->attenuation_algorithm);
                     }
+                } else if (light->type == rf::gr::LT_TUBE) {
+                    gpu_light.light_type = 2.0f;
+                    gpu_light.pos2 = {light->vec2.x, light->vec2.y, light->vec2.z};
+                    gpu_light.spot_dir = {0.0f, 0.0f, 0.0f};
+                    gpu_light.spot_fov1_dot = 0.0f;
+                    gpu_light.spot_fov2_dot = 0.0f;
+                    gpu_light.spot_atten = 0.0f;
+                    gpu_light.spot_sq_falloff = 0.0f;
+                    if (logging) {
+                        xlog::warn("[{}] TUBE: color=({:.3f}, {:.3f}, {:.3f}) pos1=({:.1f}, {:.1f}, {:.1f}) "
+                            "pos2=({:.1f}, {:.1f}, {:.1f}) radius={:.1f} algo={}",
+                            i, light->r, light->g, light->b,
+                            light->vec.x, light->vec.y, light->vec.z,
+                            light->vec2.x, light->vec2.y, light->vec2.z,
+                            light->rad_2, light->attenuation_algorithm);
+                    }
                 } else {
+                    gpu_light.light_type = 0.0f;
                     gpu_light.spot_dir = {0.0f, 0.0f, 0.0f};
                     gpu_light.spot_fov1_dot = 0.0f;
                     gpu_light.spot_fov2_dot = 0.0f;
@@ -281,7 +304,6 @@ namespace df::gr::d3d11
                     if (logging) {
                         const char* type_name = "OMNI";
                         if (light->type == rf::gr::LT_DIRECTIONAL) type_name = "DIR";
-                        else if (light->type == rf::gr::LT_TUBE) type_name = "TUBE";
                         xlog::warn("[{}] {}: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) "
                             "radius={:.1f} algo={} dynamic={}",
                             i, type_name, light->r, light->g, light->b,
