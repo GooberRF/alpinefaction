@@ -524,6 +524,10 @@ bool alpine_player_settings_load(rf::Player* player)
         recalc_mesh_static_lighting();
         processed_keys.insert("MeshStaticLighting");
     }
+    if (settings.count("VertexLighting")) {
+        g_alpine_game_config.vertex_lighting = std::stoi(settings["VertexLighting"]);
+        processed_keys.insert("VertexLighting");
+    }
     if (settings.count("Picmip")) {
         g_alpine_game_config.set_picmip(std::stoi(settings["Picmip"]));
         gr_update_texture_filtering();
@@ -1217,6 +1221,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
+    file << "VertexLighting=" << g_alpine_game_config.vertex_lighting << "\n";
     file << "Picmip=" << g_alpine_game_config.picmip << "\n";
     file << "PrecacheRooms=" << g_alpine_game_config.precache_rooms << "\n";
     file << "ShadowCorpses=" << g_alpine_game_config.shadow_corpses << "\n";
