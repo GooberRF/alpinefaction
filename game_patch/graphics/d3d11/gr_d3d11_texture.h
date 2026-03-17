@@ -77,6 +77,20 @@ namespace df::gr::d3d11
             lookup_texture(bm_handle);
         }
 
+        void flush_pow2_padded_textures()
+        {
+            auto it = texture_cache_.begin();
+            while (it != texture_cache_.end()) {
+                Texture& texture = it->second;
+                if (texture.u_scale != 1.0f || texture.v_scale != 1.0f) {
+                    it = texture_cache_.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+        }
+
     private:
         struct Texture
         {

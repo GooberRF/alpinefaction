@@ -580,6 +580,14 @@ namespace df::gr::d3d11
 
     void Renderer::set_pow2_tex_active(bool active)
     {
+        bool was_active = render_context_->is_pow2_tex_active();
         render_context_->set_pow2_tex_active(active);
+
+        // When transitioning from p2t to non-p2t, evict only pow2-padded textures
+        // so they are reloaded at native dimensions. Non-padded textures (fonts,
+        // user bitmaps, already-pow2 textures) are preserved.
+        if (was_active && !active) {
+            texture_manager_->flush_pow2_padded_textures();
+        }
     }
 }

@@ -227,6 +227,11 @@ namespace df::gr::d3d11
             }
         }
 
+        bool is_pow2_tex_active() const
+        {
+            return pow2_tex_active_;
+        }
+
         void set_pow2_tex_active(bool active)
         {
             pow2_tex_active_ = active;
