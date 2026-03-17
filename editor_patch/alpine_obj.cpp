@@ -1217,7 +1217,7 @@ CodeInjection alpine_group_save_hook{
                 // Write chunk: chunk_id (int32) + chunk_size (int32) + data
                 // Format: version (uint32) + entry_size (uint16) + entry_count (uint32) + entries
                 constexpr uint32_t chunk_version = 1;
-                constexpr auto entry_size = brush_group_entry_size;
+                constexpr uint16_t entry_size = sizeof(BrushGroupEntry);
                 uint32_t entry_count = static_cast<uint32_t>(entries.size());
                 int32_t data_size = static_cast<int32_t>(
                     sizeof(chunk_version) + sizeof(entry_size) + sizeof(entry_count)
@@ -1300,15 +1300,26 @@ CodeInjection alpine_group_load_hook{
                 corona_deserialize_chunk(*level, *file, chunk_size);
             }
             else if (chunk_id == alpine_brush_group_chunk_id) {
-                // Read brush metadata chunk
+                // Read brush metadata chunk, tracking remaining bytes to stay within chunk bounds
+                int32_t remaining = chunk_size;
+
                 uint32_t version = 0;
-                if (file->read(&version, 4) != 4) break;
-                if (version < 1) break;
+                if (remaining < 4 || file->read(&version, 4) != 4) { file->seek(std::max(remaining, 0), rf::File::seek_cur); break; }
+                remaining -= 4;
+                if (version < 1) { file->seek(remaining, rf::File::seek_cur); break; }
+
                 uint16_t entry_size = 0;
-                if (file->read(&entry_size, 2) != 2) break;
-                if (entry_size < brush_group_entry_size) break; // minimum v1 entry size
+                if (remaining < 2 || file->read(&entry_size, 2) != 2) { file->seek(std::max(remaining, 0), rf::File::seek_cur); break; }
+                remaining -= 2;
+                if (entry_size < sizeof(BrushGroupEntry)) { file->seek(remaining, rf::File::seek_cur); break; }
+
                 uint32_t entry_count = 0;
-                if (file->read(&entry_count, 4) != 4) break;
+                if (remaining < 4 || file->read(&entry_count, 4) != 4) { file->seek(std::max(remaining, 0), rf::File::seek_cur); break; }
+                remaining -= 4;
+
+                // Validate entry_count against remaining chunk bytes
+                if (entry_count > static_cast<uint32_t>(remaining) / entry_size)
+                    entry_count = static_cast<uint32_t>(remaining) / entry_size;
                 if (entry_count > 10000) entry_count = 10000;
 
                 brush_group_entries.resize(entry_count);
@@ -1319,15 +1330,18 @@ CodeInjection alpine_group_load_hook{
                     if (file->read(&brush_index, 4) != 4) break;
                     if (file->read(&flags, 1) != 1) break;
                     if (file->read(&material, 1) != 1) break;
+                    remaining -= sizeof(BrushGroupEntry);
                     brush_group_entries[i] = {brush_index, flags, material};
-                    // Skip unknown trailing bytes for forward compat
-                    if (entry_size > brush_group_entry_size) {
-                        for (uint16_t skip = 0; skip < entry_size - brush_group_entry_size; skip++) {
-                            uint8_t dummy;
-                            file->read(&dummy, 1);
-                        }
+                    // Skip unknown trailing bytes per entry for forward compat
+                    int extra = entry_size - sizeof(BrushGroupEntry);
+                    if (extra > 0) {
+                        file->seek(extra, rf::File::seek_cur);
+                        remaining -= extra;
                     }
                 }
+                // Skip any remaining bytes in the chunk
+                if (remaining > 0)
+                    file->seek(remaining, rf::File::seek_cur);
                 xlog::info("[AlpineObj] Read {} brush property entries from group", entry_count);
             }
             else {
