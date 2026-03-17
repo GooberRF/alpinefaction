@@ -1322,6 +1322,7 @@ CodeInjection alpine_group_load_hook{
                     entry_count = static_cast<uint32_t>(remaining) / entry_size;
                 if (entry_count > 10000) entry_count = 10000;
 
+                uint32_t read_count = 0;
                 brush_group_entries.resize(entry_count);
                 for (uint32_t i = 0; i < entry_count; i++) {
                     uint32_t brush_index = 0;
@@ -1332,6 +1333,7 @@ CodeInjection alpine_group_load_hook{
                     if (file->read(&material, 1) != 1) break;
                     remaining -= sizeof(BrushGroupEntry);
                     brush_group_entries[i] = {brush_index, flags, material};
+                    read_count++;
                     // Skip unknown trailing bytes per entry for forward compat
                     int extra = entry_size - sizeof(BrushGroupEntry);
                     if (extra > 0) {
@@ -1339,10 +1341,11 @@ CodeInjection alpine_group_load_hook{
                         remaining -= extra;
                     }
                 }
+                brush_group_entries.resize(read_count);
                 // Skip any remaining bytes in the chunk
                 if (remaining > 0)
                     file->seek(remaining, rf::File::seek_cur);
-                xlog::info("[AlpineObj] Read {} brush property entries from group", entry_count);
+                xlog::info("[AlpineObj] Read {} brush property entries from group", read_count);
             }
             else {
                 // Unknown chunk — stop reading
