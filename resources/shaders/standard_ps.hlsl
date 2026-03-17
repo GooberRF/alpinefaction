@@ -145,8 +145,9 @@ float4 main(VsOutput input) : SV_TARGET
                 if (cos_angle >= point_lights[i].spot_fov2_dot) {
                     spot_factor = 0.0f;
                 } else if (point_lights[i].spot_fov1_dot <= cos_angle) {
+                    float cone_range = point_lights[i].spot_fov2_dot - point_lights[i].spot_fov1_dot;
                     spot_factor = 1.0f - (cos_angle - point_lights[i].spot_fov1_dot)
-                                       / (point_lights[i].spot_fov2_dot - point_lights[i].spot_fov1_dot);
+                                       / max(cone_range, 0.0001f);
                     if (point_lights[i].spot_sq_falloff > 0.5f) {
                         spot_factor = spot_factor * spot_factor;
                     }

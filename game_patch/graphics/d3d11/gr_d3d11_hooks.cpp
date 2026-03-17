@@ -733,7 +733,10 @@ namespace df::gr::d3d11
         [](auto& regs) {
             rf::V3d* v3d = regs.ecx;
             if (renderer && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
-                renderer->page_in_v3d_mesh(v3d->meshes[0].vu);
+                auto* materials = reinterpret_cast<rf::MeshMaterial*>(v3d->meshes[0].materials);
+                int num_materials = v3d->meshes[0].num_materials;
+                renderer->page_in_v3d_mesh(v3d->meshes[0].vu,
+                    (num_materials > 0) ? materials : nullptr, num_materials);
             }
         },
     };
