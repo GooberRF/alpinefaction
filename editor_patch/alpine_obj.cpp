@@ -1097,6 +1097,10 @@ static std::vector<DedMesh*> g_group_save_meshes;
 static std::vector<DedNote*> g_group_save_notes;
 static std::vector<DedCorona*> g_group_save_coronas;
 
+// Brush UIDs captured in serialization order during group save.
+// Used to write brush metadata (geoable/breakable flags) to the .rfg brush group chunk.
+static std::vector<int> g_group_save_brush_uids;
+
 // Tracks moving_groups.size before stock group load, so we can find new group entries afterward.
 static int g_moving_groups_size_before_load = 0;
 
@@ -1107,6 +1111,18 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_meshes.clear();
         g_group_save_notes.clear();
         g_group_save_coronas.clear();
+        g_group_save_brush_uids.clear();
+    },
+};
+
+// Hook at 0x004358af: inside FUN_00435630's brush serialization loop.
+// At this point ECX = BrushNode* (loaded at 0x004358ad from VArray element).
+// EBP = loop index. Captures each brush's UID in serialization order.
+CodeInjection alpine_group_brush_save_capture_hook{
+    0x004358af,
+    [](auto& regs) {
+        auto* brush = reinterpret_cast<BrushNode*>(static_cast<uintptr_t>(regs.ecx));
+        g_group_save_brush_uids.push_back(brush->uid);
     },
 };
 
@@ -1142,9 +1158,6 @@ CodeInjection alpine_group_save_hook{
             *reinterpret_cast<void**>(static_cast<uintptr_t>(regs.esi) + 0x50));
         auto& props = level->GetAlpineLevelProperties();
 
-        if (g_group_save_meshes.empty() && g_group_save_notes.empty() && g_group_save_coronas.empty())
-            return;
-
         // Temporarily swap the level's object vectors with the collected group objects,
         // then call the same chunk serializers used for .rfl files, then restore.
         if (!g_group_save_meshes.empty()) {
@@ -1168,12 +1181,70 @@ CodeInjection alpine_group_save_hook{
             props.corona_objects = std::move(saved);
         }
 
+        // Write brush group metadata chunk: which brushes (by serialization index) are
+        // geoable/breakable. This enables .rfg round-tripping of brush properties.
+        if (!g_group_save_brush_uids.empty()) {
+            // Build entries for brushes that have alpine properties
+            std::vector<BrushGroupEntry> entries;
+
+            for (uint32_t i = 0; i < g_group_save_brush_uids.size(); i++) {
+                int uid = g_group_save_brush_uids[i];
+                uint8_t flags = 0;
+                uint8_t material = 0;
+
+                // Check geoable
+                if (std::find(props.geoable_brush_uids.begin(),
+                              props.geoable_brush_uids.end(), uid)
+                    != props.geoable_brush_uids.end()) {
+                    flags |= 1;
+                }
+
+                // Check breakable
+                auto bit = std::find(props.breakable_brush_uids.begin(),
+                                     props.breakable_brush_uids.end(), uid);
+                if (bit != props.breakable_brush_uids.end()) {
+                    flags |= 2;
+                    auto idx = std::distance(props.breakable_brush_uids.begin(), bit);
+                    if (idx < static_cast<int>(props.breakable_materials.size()))
+                        material = props.breakable_materials[idx];
+                }
+
+                if (flags != 0)
+                    entries.push_back({i, flags, material});
+            }
+
+            if (!entries.empty()) {
+                // Write chunk: chunk_id (int32) + chunk_size (int32) + data
+                // Format: version (uint32) + entry_size (uint16) + entry_count (uint32) + entries
+                constexpr uint32_t chunk_version = 1;
+                constexpr uint16_t entry_size = sizeof(BrushGroupEntry);
+                uint32_t entry_count = static_cast<uint32_t>(entries.size());
+                int32_t data_size = static_cast<int32_t>(
+                    sizeof(chunk_version) + sizeof(entry_size) + sizeof(entry_count)
+                    + entry_count * entry_size);
+
+                file->write<int32_t>(alpine_brush_group_chunk_id);
+                file->write<int32_t>(data_size);
+                file->write<uint32_t>(chunk_version);
+                file->write<uint16_t>(entry_size);
+                file->write<uint32_t>(entry_count);
+                for (auto& e : entries) {
+                    file->write<uint32_t>(e.brush_index);
+                    file->write<uint8_t>(e.flags);
+                    file->write<uint8_t>(e.material);
+                }
+
+                xlog::info("[AlpineObj] Saved {} brush property entries to group", entry_count);
+            }
+        }
+
         xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas to group",
             g_group_save_meshes.size(), g_group_save_notes.size(), g_group_save_coronas.size());
 
         g_group_save_meshes.clear();
         g_group_save_notes.clear();
         g_group_save_coronas.clear();
+        g_group_save_brush_uids.clear();
     },
 };
 
@@ -1208,6 +1279,9 @@ CodeInjection alpine_group_load_hook{
         auto note_start = props.note_objects.size();
         auto corona_start = props.corona_objects.size();
 
+        // Brush group entries parsed from the .rfg brush metadata chunk.
+        std::vector<BrushGroupEntry> brush_group_entries;
+
         // Read chunks in the same format as .rfl files: chunk_id (int32) + chunk_size (int32) + data
         while (true) {
             int32_t chunk_id = 0;
@@ -1225,6 +1299,54 @@ CodeInjection alpine_group_load_hook{
             else if (chunk_id == alpine_corona_chunk_id) {
                 corona_deserialize_chunk(*level, *file, chunk_size);
             }
+            else if (chunk_id == alpine_brush_group_chunk_id) {
+                // Read brush metadata chunk, tracking remaining bytes to stay within chunk bounds
+                int32_t remaining = chunk_size;
+
+                uint32_t version = 0;
+                if (remaining < 4 || file->read(&version, 4) != 4) { file->seek(std::max(remaining, 0), rf::File::seek_cur); break; }
+                remaining -= 4;
+                if (version < 1) { file->seek(remaining, rf::File::seek_cur); break; }
+
+                uint16_t entry_size = 0;
+                if (remaining < 2 || file->read(&entry_size, 2) != 2) { file->seek(std::max(remaining, 0), rf::File::seek_cur); break; }
+                remaining -= 2;
+                if (entry_size < sizeof(BrushGroupEntry)) { file->seek(remaining, rf::File::seek_cur); break; }
+
+                uint32_t entry_count = 0;
+                if (remaining < 4 || file->read(&entry_count, 4) != 4) { file->seek(std::max(remaining, 0), rf::File::seek_cur); break; }
+                remaining -= 4;
+
+                // Validate entry_count against remaining chunk bytes
+                if (entry_count > static_cast<uint32_t>(remaining) / entry_size)
+                    entry_count = static_cast<uint32_t>(remaining) / entry_size;
+                if (entry_count > 10000) entry_count = 10000;
+
+                uint32_t read_count = 0;
+                brush_group_entries.resize(entry_count);
+                for (uint32_t i = 0; i < entry_count; i++) {
+                    uint32_t brush_index = 0;
+                    uint8_t flags = 0;
+                    uint8_t material = 0;
+                    if (file->read(&brush_index, 4) != 4) break;
+                    if (file->read(&flags, 1) != 1) break;
+                    if (file->read(&material, 1) != 1) break;
+                    remaining -= sizeof(BrushGroupEntry);
+                    brush_group_entries[i] = {brush_index, flags, material};
+                    read_count++;
+                    // Skip unknown trailing bytes per entry for forward compat
+                    int extra = entry_size - sizeof(BrushGroupEntry);
+                    if (extra > 0) {
+                        file->seek(extra, rf::File::seek_cur);
+                        remaining -= extra;
+                    }
+                }
+                brush_group_entries.resize(read_count);
+                // Skip any remaining bytes in the chunk
+                if (remaining > 0)
+                    file->seek(remaining, rf::File::seek_cur);
+                xlog::info("[AlpineObj] Read {} brush property entries from group", read_count);
+            }
             else {
                 // Unknown chunk — stop reading
                 break;
@@ -1234,8 +1356,9 @@ CodeInjection alpine_group_load_hook{
         int meshes_loaded = static_cast<int>(props.mesh_objects.size() - mesh_start);
         int notes_loaded = static_cast<int>(props.note_objects.size() - note_start);
         int coronas_loaded = static_cast<int>(props.corona_objects.size() - corona_start);
+        bool has_brush_props = !brush_group_entries.empty();
 
-        if (!meshes_loaded && !notes_loaded && !coronas_loaded)
+        if (!meshes_loaded && !notes_loaded && !coronas_loaded && !has_brush_props)
             return;
 
         // Assign new unique UIDs to imported Alpine objects (group import must not
@@ -1283,6 +1406,40 @@ CodeInjection alpine_group_load_hook{
                     entry->objects.push_back(static_cast<DedObject*>(props.note_objects[i]));
                 for (auto i = corona_start; i < props.corona_objects.size(); i++)
                     entry->objects.push_back(static_cast<DedObject*>(props.corona_objects[i]));
+
+                // Apply brush group properties: map serialization index → final brush UID
+                // via the group entry's brushes VArray (same order as serialized).
+                if (!brush_group_entries.empty()) {
+                    auto& brushes = entry->brushes;
+                    int applied = 0;
+                    for (auto& bge : brush_group_entries) {
+                        if (bge.brush_index >= static_cast<uint32_t>(brushes.size))
+                            continue;
+                        auto* brush = brushes.data_ptr[bge.brush_index];
+                        if (!brush) continue;
+                        int uid = brush->uid;
+
+                        if (bge.flags & 1) { // geoable
+                            if (std::find(props.geoable_brush_uids.begin(),
+                                          props.geoable_brush_uids.end(), uid)
+                                == props.geoable_brush_uids.end()) {
+                                props.geoable_brush_uids.push_back(uid);
+                            }
+                        }
+                        if (bge.flags & 2) { // breakable
+                            if (std::find(props.breakable_brush_uids.begin(),
+                                          props.breakable_brush_uids.end(), uid)
+                                == props.breakable_brush_uids.end()) {
+                                props.breakable_brush_uids.push_back(uid);
+                                props.breakable_room_uids.push_back(0); // computed at .rfl save time
+                                props.breakable_materials.push_back(bge.material);
+                            }
+                        }
+                        applied++;
+                    }
+                    xlog::info("[AlpineObj] Applied {} brush properties from group", applied);
+                }
+
                 break; // Only add to the first user-defined group
             }
         }
@@ -1312,6 +1469,7 @@ void ApplyAlpineObjectPatches()
     alpine_create_object_patch.install();
     alpine_render_patch.install();
     alpine_group_save_clear_hook.install();
+    alpine_group_brush_save_capture_hook.install();
     alpine_group_type_collect_hook.install();
     alpine_group_save_hook.install();
     alpine_group_pre_load_hook.install();
