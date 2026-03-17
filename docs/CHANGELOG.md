@@ -18,6 +18,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Added new object types
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
   - `Note` for leaving important information in levels (editor only)
+  - `Corona` for configuring custom glare effects in levels
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -54,6 +55,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-bot` command line argument to run a client in bot mode
 - Add `disconnect` console command
 - Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
+- Add full mesh shadows for entities, corpses, and items (Direct3D 11 renderer only)
+- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
 - Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
 - Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
 - Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
@@ -61,6 +64,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Reload Meshes` and `Reload Textures` options to level editor `Tools` menu, to scan for new assets in `\user_maps\`
 - Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
+- Add new and revised `Select Objects` and `Hide Objects` windows in level editor
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -104,6 +108,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix bots not always spawning correctly when `ideal_player_count` is 32
 - Fix rare level editor crash when transforming decal objects in a level with a large number of decals
 - Fix level editor clip tool silently failing on certain brush orientations
+- Fix P2T Fix not working properly on Direct3D 11 renderer
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

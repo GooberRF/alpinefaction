@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <patch_common/AsmWriter.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
@@ -14,6 +15,7 @@
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/misc.h"
+#include "../../misc/alpine_settings.h"
 #include "gr_d3d11.h"
 
 namespace df::gr::d3d11
@@ -409,6 +411,13 @@ namespace df::gr::d3d11
         },
     };
 
+    void set_pow2_tex_active(bool active)
+    {
+        if (renderer) {
+            renderer->set_pow2_tex_active(active);
+        }
+    }
+
     static CodeInjection level_page_in_injection{
         0x0045CC20,
         []() {
@@ -428,6 +437,17 @@ namespace df::gr::d3d11
             if (renderer) {
                 renderer->flush_caches();
             }
+        },
+    };
+
+    // Hook blob shadow rendering: allow blob shadows only when D3D11 shadow quality is 0
+    static CallHook<void()> obj_shadow_render_all_hook{
+        0x00432021,
+        []() {
+            if (g_alpine_game_config.shadow_quality > 0) {
+                return; // D3D11 shadow mapping handles shadows at quality > 0
+            }
+            obj_shadow_render_all_hook.call_target();
         },
     };
 }
@@ -526,6 +546,9 @@ void gr_d3d11_apply_patch()
     AsmWriter{0x0052E9E0}.jmp(render_character_vif); // gr_d3d_render_character_vif
     AsmWriter{0x004D34D0}.jmp(render_alpha_detail_room); // room_render_alpha_detail
     AsmWriter{0x0054F160}.ret(); // gr_d3d_set_state
+
+    // Hook blob shadow rendering: skip when D3D11 shadow mapping is active (quality > 0)
+    obj_shadow_render_all_hook.install();
 
     // Change size of standard structures
     write_mem<int8_t>(0x00569884 + 1, sizeof(rf::VifMesh));

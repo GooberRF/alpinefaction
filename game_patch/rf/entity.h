@@ -23,6 +23,7 @@ namespace rf
 
     enum EntityFlags2
     {
+        EF2_NO_SHADOW = 0x2,
         EF2_POWERUP_DAMAGE_AMP = 0x20000,
         EF2_POWERUP_INVULNERABLE = 0x40000,
         EF2_POWERUP_NANO_SHIELD = 0x80000,

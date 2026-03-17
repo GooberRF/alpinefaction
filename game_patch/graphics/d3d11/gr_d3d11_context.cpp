@@ -23,7 +23,8 @@ namespace df::gr::d3d11
         view_proj_transform_cbuffer_{device_},
         lights_buffer_{device_},
         render_mode_cbuffer_{device_},
-        per_frame_buffer_{device_}
+        per_frame_buffer_{device_},
+        texture_scale_cbuffer_{device_}
     {
         bind_cbuffers();
     }
@@ -41,6 +42,7 @@ namespace df::gr::d3d11
         ID3D11Buffer* ps_cbuffers[] = {
             render_mode_cbuffer_,
             lights_buffer_,
+            texture_scale_cbuffer_,
         };
         device_context_->PSSetConstantBuffers(0, std::size(ps_cbuffers), ps_cbuffers);
     }
@@ -261,6 +263,42 @@ namespace df::gr::d3d11
             D3D11_CPU_ACCESS_WRITE,
         };
         DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, nullptr, &buffer_));
+    }
+
+    struct alignas(16) TextureScaleBufferData
+    {
+        std::array<float, 2> tex0_uv_scale;
+        std::array<float, 2> pad;
+    };
+    static_assert(sizeof(TextureScaleBufferData) % 16 == 0);
+
+    TextureScaleBuffer::TextureScaleBuffer(ID3D11Device* device)
+    {
+        TextureScaleBufferData init_data{};
+        init_data.tex0_uv_scale = {1.0f, 1.0f};
+        init_data.pad = {0.0f, 0.0f};
+        D3D11_SUBRESOURCE_DATA subres_data{&init_data, 0, 0};
+        CD3D11_BUFFER_DESC desc{
+            sizeof(TextureScaleBufferData),
+            D3D11_BIND_CONSTANT_BUFFER,
+            D3D11_USAGE_DYNAMIC,
+            D3D11_CPU_ACCESS_WRITE,
+        };
+        DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, &subres_data, &buffer_));
+    }
+
+    void TextureScaleBuffer::update_buffer(ID3D11DeviceContext* device_context)
+    {
+        TextureScaleBufferData data{};
+        data.tex0_uv_scale = {current_u_scale_, current_v_scale_};
+        data.pad = {0.0f, 0.0f};
+
+        D3D11_MAPPED_SUBRESOURCE mapped_subres;
+        DF_GR_D3D11_CHECK_HR(
+            device_context->Map(buffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
+        );
+        std::memcpy(mapped_subres.pData, &data, sizeof(data));
+        device_context->Unmap(buffer_, 0);
     }
 
     void RenderModeBuffer::update_buffer(ID3D11DeviceContext* device_context)

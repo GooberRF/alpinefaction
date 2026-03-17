@@ -21,12 +21,15 @@ namespace df::gr::d3d11
         standard,
         character,
         transformed,
+        shadow_standard,
+        shadow_character,
     };
 
     enum class PixelShaderId
     {
         standard,
         ui,
+        shadow_debug,
     };
 
     inline const char* get_vertex_shader_filename(VertexShaderId vertex_shader_id)
@@ -38,6 +41,10 @@ namespace df::gr::d3d11
                 return "character_vs.bin";
             case VertexShaderId::transformed:
                 return "transformed_vs.bin";
+            case VertexShaderId::shadow_standard:
+                return "shadow_standard_vs.bin";
+            case VertexShaderId::shadow_character:
+                return "shadow_character_vs.bin";
             default:
                 return nullptr;
         }
@@ -47,8 +54,10 @@ namespace df::gr::d3d11
     {
         switch (vertex_shader_id) {
             case VertexShaderId::standard:
+            case VertexShaderId::shadow_standard:
                 return VertexLayout::standard;
             case VertexShaderId::character:
+            case VertexShaderId::shadow_character:
                 return VertexLayout::character;
             case VertexShaderId::transformed:
                 return VertexLayout::transformed;
@@ -64,6 +73,8 @@ namespace df::gr::d3d11
                 return "standard_ps.bin";
             case PixelShaderId::ui:
                 return "ui_ps.bin";
+            case PixelShaderId::shadow_debug:
+                return "shadow_debug_ps.bin";
             default:
                 return nullptr;
         }

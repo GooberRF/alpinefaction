@@ -11,6 +11,8 @@ set(SRCS
     mesh.h
     note.cpp
     note.h
+    corona.cpp
+    corona.h
     textures.cpp
     meshes.cpp
     meshes.h
