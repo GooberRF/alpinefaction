@@ -451,6 +451,32 @@ namespace df::gr::d3d11
                 lights_gathered = true;
             }
 
+            // Ensure render cache exists before setting self-illumination.
+            renderer->page_in_v3d_mesh(lod_mesh);
+
+            // Detect fullbright batches from CPU vertex colors.
+            // The stock CPU code sets vertex colors to exactly (255,255,255) for self-illuminated
+            // materials via max(computed_lighting, self_illumination * 255).
+            // Only update batches that don't already have self_illumination set (from v3d_page_in
+            // materials path) to avoid overwriting correct values with false positives.
+            if (params.vertex_colors && lod_mesh->render_cache) {
+                auto* cache = reinterpret_cast<BaseMeshRenderCache*>(lod_mesh->render_cache);
+                auto& batches = const_cast<std::vector<BaseMeshRenderCache::Batch>&>(cache->get_batches(lod_index));
+                rf::VifMesh* vif_mesh_lod = lod_mesh->meshes[lod_index];
+                if (vif_mesh_lod) {
+                    int vertex_offset = 0;
+                    for (int ci = 0; ci < vif_mesh_lod->num_chunks && ci < static_cast<int>(batches.size()); ++ci) {
+                        if (batches[ci].self_illumination == 0.0f) {
+                            const rf::ubyte* vc = params.vertex_colors + vertex_offset * 3;
+                            if (vc[0] == 255 && vc[1] == 255 && vc[2] == 255) {
+                                batches[ci].self_illumination = 1.0f;
+                            }
+                        }
+                        vertex_offset += vif_mesh_lod->chunks[ci].num_vecs;
+                    }
+                }
+            }
+
             // Clear CPU vertex colors so the GPU shader handles all lighting.
             rf::MeshRenderParams params_no_cpu_lighting = params;
             params_no_cpu_lighting.vertex_colors = nullptr;
@@ -667,13 +693,47 @@ namespace df::gr::d3d11
         },
     };
 
+    static void apply_self_illumination_to_cache(rf::V3d* v3d)
+    {
+        if (!v3d) return;
+        for (int i = 0; i < v3d->num_meshes; ++i) {
+            auto& mesh = v3d->meshes[i];
+            auto* lod_mesh = mesh.vu;
+            if (!lod_mesh || !mesh.materials || mesh.num_materials <= 0) continue;
+            auto* materials = reinterpret_cast<rf::MeshMaterial*>(mesh.materials);
+            auto* cache = reinterpret_cast<BaseMeshRenderCache*>(lod_mesh->render_cache);
+            if (!cache) continue;
+
+            for (int lod = 0; lod < lod_mesh->num_levels; ++lod) {
+                auto* vif_mesh = lod_mesh->meshes[lod];
+                if (!vif_mesh) continue;
+                auto& batches = const_cast<std::vector<BaseMeshRenderCache::Batch>&>(cache->get_batches(lod));
+                for (auto& batch : batches) {
+                    // Check material self-illumination via tex_ids mapping
+                    if (batch.texture_index >= 0 && batch.texture_index < 7) {
+                        int mat_idx = vif_mesh->tex_ids[batch.texture_index];
+                        if (mat_idx >= 0 && mat_idx < mesh.num_materials) {
+                            if (materials[mat_idx].self_illumination) {
+                                float si = materials[mat_idx].self_illumination[0];
+                                if (si > 0.0f) {
+                                    batch.self_illumination = std::min(si, 1.0f);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+
+
     static CodeInjection v3d_page_in_injection{
         0x0053C1B9,
         [](auto& regs) {
             rf::V3d* v3d = regs.ecx;
-            if (renderer && v3d->num_meshes > 0) {
+            if (renderer && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
                 renderer->page_in_v3d_mesh(v3d->meshes[0].vu);
-                register_mesh_self_illumination(v3d);
             }
         },
     };

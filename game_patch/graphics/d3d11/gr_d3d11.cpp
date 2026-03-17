@@ -543,9 +543,9 @@ namespace df::gr::d3d11
         render_context_->fog_set();
     }
 
-    void Renderer::page_in_v3d_mesh(rf::VifLodMesh* lod_mesh)
+    void Renderer::page_in_v3d_mesh(rf::VifLodMesh* lod_mesh, rf::MeshMaterial* materials, int num_materials)
     {
-        mesh_renderer_->page_in_v3d_mesh(lod_mesh);
+        mesh_renderer_->page_in_v3d_mesh(lod_mesh, materials, num_materials);
     }
 
     void Renderer::page_in_character_mesh(rf::VifLodMesh* lod_mesh)

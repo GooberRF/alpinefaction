@@ -20,6 +20,9 @@
 #include "../rf/os/console.h"
 #include "../os/console.h"
 #include "../rf/v3d.h"
+#include "../rf/vmesh.h"
+#include <common/config/GameConfig.h>
+#include "../main/main.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "object.h"
 
@@ -127,21 +130,15 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
             obj_mesh_lighting_alloc_one(obj);
             obj_mesh_lighting_update_one(obj);
 
-            // D3D11 renderer: update GPU state for the swapped mesh
+            // D3D11 renderer: update vertex color state for the swapped mesh.
+            // Self-illumination is detected at render time from CPU vertex colors.
             if (g_game_config.renderer == GameConfig::Renderer::d3d11 &&
                 obj->vmesh &&
                 rf::vmesh_get_type(obj->vmesh) == rf::MESH_TYPE_STATIC) {
 
-                // Register self-illumination data for the new mesh's materials
-                auto* v3d = static_cast<rf::V3d*>(obj->vmesh->mesh);
-                if (v3d) {
-                    df::gr::d3d11::register_mesh_self_illumination(v3d);
-                }
-
-                // The VIF LOD mesh instance points at the submesh that was swapped in
-                if (auto* lod_mesh = static_cast<rf::VifLodMesh*>(obj->vmesh->instance)) {
-                    xlog::debug("D3D11 renderer: vertex color state changed for mesh {} on UID {}", obj->vmesh->filename, obj->uid);
-                    df::gr::d3d11::on_static_vertex_color_state_changed(lod_mesh);
+                auto* v3d = static_cast<rf::V3d*>(obj->vmesh->instance);
+                if (v3d && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
+                    df::gr::d3d11::on_static_vertex_color_state_changed(v3d->meshes[0].vu);
                 }
             }
         }

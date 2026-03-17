@@ -15,6 +15,7 @@ namespace rf
     struct V3d;
     struct VifLodMesh;
     struct VifMesh;
+    struct MeshMaterial;
     struct MeshRenderParams;
     struct CharacterInstance;
 }
@@ -41,16 +42,16 @@ namespace df::gr::d3d11
     void register_mesh_self_illumination(rf::V3d* v3d);
     void unregister_mesh_self_illumination(rf::VifLodMesh* lod_mesh);
     void clear_mesh_self_illumination();
-    float get_mesh_self_illumination(rf::VifLodMesh* lod_mesh, int material_index);
 
     class BaseMeshRenderCache
     {
     public:
         struct Batch
         {
-            Batch(int start_index, int num_indices, int base_vertex, int texture_index, rf::gr::Mode mode, bool double_sided) :
+            Batch(int start_index, int num_indices, int base_vertex, int texture_index, rf::gr::Mode mode, bool double_sided, float self_illumination = 0.0f) :
                 start_index{start_index}, num_indices{num_indices}, base_vertex{base_vertex},
-                texture_index{texture_index}, mode{mode}, double_sided{double_sided}
+                texture_index{texture_index}, mode{mode}, double_sided{double_sided},
+                self_illumination{self_illumination}
             {}
 
             int start_index;
@@ -59,6 +60,7 @@ namespace df::gr::d3d11
             int texture_index;
             rf::gr::Mode mode;
             bool double_sided = false;
+            float self_illumination = 0.0f;
         };
 
         struct Mesh
@@ -135,7 +137,7 @@ namespace df::gr::d3d11
         void render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
         void render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache = false);
         void clear_vif_cache(rf::VifLodMesh *lod_mesh);
-        void page_in_v3d_mesh(rf::VifLodMesh* lod_mesh);
+        void page_in_v3d_mesh(rf::VifLodMesh* lod_mesh, rf::MeshMaterial* materials = nullptr, int num_materials = 0);
         void page_in_character_mesh(rf::VifLodMesh* lod_mesh);
         void flush_caches();
         void reset_static_vertex_color_tracking();

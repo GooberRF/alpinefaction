@@ -47,9 +47,10 @@ namespace df::gr::d3d11
     static uint64_t static_vertex_color_generation = 1;
     static std::vector<MeshRenderer*> mesh_renderers;
 
-    // Per-VifLodMesh self-illumination values indexed by material index.
-    // Values are stored normalized to 0-1 range (stock engine uses 0-255 floats).
-    static std::unordered_map<VifLodMesh*, std::vector<float>> mesh_self_illumination;
+    // Per-VifMesh self-illumination values indexed by material index.
+    // Keyed by VifMesh* (the actual mesh data pointer, shared across VifLodMesh instances)
+    // so that Switch_Model'd meshes that share the same underlying mesh data get the same values.
+    static std::unordered_map<VifMesh*, std::vector<float>> mesh_self_illumination;
 
     // Per-entity cache of the last valid blended ambient (keyed by MeshRenderParams address).
     // When an entity walks over geometry without lightmaps (ambient_color = white),
@@ -64,42 +65,40 @@ namespace df::gr::d3d11
             auto& mesh = v3d->meshes[i];
             auto* lod_mesh = mesh.vu;
             if (!lod_mesh || !mesh.materials || mesh.num_materials <= 0) continue;
-            if (mesh_self_illumination.count(lod_mesh)) continue; // already registered
 
             auto* materials = reinterpret_cast<MeshMaterial*>(mesh.materials);
             std::vector<float> self_illum(mesh.num_materials, 0.0f);
             for (int j = 0; j < mesh.num_materials; ++j) {
                 if (materials[j].self_illumination) {
-                    // V3D stores self_illumination as a 0.0-1.0 float (not 0-255)
                     float si_value = materials[j].self_illumination[0];
                     if (si_value > 0.0f) {
                         self_illum[j] = std::min(si_value, 1.0f);
                     }
                 }
             }
-            mesh_self_illumination[lod_mesh] = std::move(self_illum);
+            // Register for each LOD level's VifMesh
+            for (int lod = 0; lod < lod_mesh->num_levels; ++lod) {
+                if (lod_mesh->meshes[lod]) {
+                    mesh_self_illumination[lod_mesh->meshes[lod]] = self_illum;
+                }
+            }
         }
     }
 
     void unregister_mesh_self_illumination(VifLodMesh* lod_mesh)
     {
-        mesh_self_illumination.erase(lod_mesh);
+        if (!lod_mesh) return;
+        for (int lod = 0; lod < lod_mesh->num_levels; ++lod) {
+            if (lod_mesh->meshes[lod]) {
+                mesh_self_illumination.erase(lod_mesh->meshes[lod]);
+            }
+        }
     }
 
     void clear_mesh_self_illumination()
     {
         mesh_self_illumination.clear();
         entity_ambient_cache.clear();
-    }
-
-    float get_mesh_self_illumination(VifLodMesh* lod_mesh, int material_index)
-    {
-        auto it = mesh_self_illumination.find(lod_mesh);
-        if (it != mesh_self_illumination.end() && material_index >= 0 &&
-            material_index < static_cast<int>(it->second.size())) {
-            return it->second[material_index];
-        }
-        return 0.0f;
     }
 
     struct PackedRgb
@@ -186,7 +185,8 @@ namespace df::gr::d3d11
     class MeshRenderCache : public BaseMeshRenderCache
     {
     public:
-        MeshRenderCache(VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context);
+        MeshRenderCache(VifLodMesh* lod_mesh, BufferWrapper& vertex_buffer, BufferWrapper& index_buffer, RenderContext& render_context,
+            MeshMaterial* materials = nullptr, int num_materials = 0);
 
         const std::vector<GpuVertex>& vertices() const
         {
@@ -220,7 +220,9 @@ namespace df::gr::d3d11
         VifLodMesh* lod_mesh,
         BufferWrapper& vertex_buffer,
         BufferWrapper& index_buffer,
-        RenderContext& render_context
+        RenderContext& render_context,
+        MeshMaterial* materials,
+        int num_materials
     ) :
         BaseMeshRenderCache(lod_mesh),
         vertex_color_batches_(lod_mesh->num_levels),
@@ -286,9 +288,23 @@ namespace df::gr::d3d11
                 }
 
                 int num_indices = static_cast<int>(gpu_inds.size() - start_index);
+                // Read self-illumination from MeshMaterial (0xC8 bytes each).
+                // self_illumination is a float* at offset 0xBC; null means no self-illumination.
+                float si = 0.0f;
+                if (materials && num_materials > 0 && chunk.texture_idx >= 0 && chunk.texture_idx < 7) {
+                    int mat_idx = mesh->tex_ids[chunk.texture_idx];
+                    if (mat_idx >= 0 && mat_idx < num_materials) {
+                        if (materials[mat_idx].self_illumination) {
+                            float si_val = materials[mat_idx].self_illumination[0];
+                            if (si_val > 0.0f) {
+                                si = std::min(si_val, 1.0f);
+                            }
+                        }
+                    }
+                }
                 meshes_[lod_index].batches.emplace_back(
                     index_buffer.size() + start_index, num_indices, base_vertex,
-                    chunk.texture_idx, chunk.mode, double_sided);
+                    chunk.texture_idx, chunk.mode, double_sided, si);
             }
             meshes_[lod_index].vertex_count = gpu_verts.size() - meshes_[lod_index].vertex_offset;
         }
@@ -972,16 +988,14 @@ namespace df::gr::d3d11
             render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
             int texture = tex_handles[b.texture_index];
 
-            // Look up per-material self-illumination via tex_ids mapping
+            // Self-illumination from material emissive_factor (set at cache build time),
+            // or force fullbright for COLOR_SOURCE_TEXTURE batches (no vertex color influence).
             float self_illum = 0.0f;
-            if (gpu_dynamic_lighting && vif_mesh && b.texture_index >= 0 && b.texture_index < 7) {
-                int material_idx = vif_mesh->tex_ids[b.texture_index];
-                self_illum = get_mesh_self_illumination(lod_mesh, material_idx);
-            }
-            // COLOR_SOURCE_TEXTURE means no vertex color influence — the stock engine
-            // renders these surfaces without per-vertex lighting (fullbright).
-            if (gpu_dynamic_lighting && b.mode.get_color_source() == gr::COLOR_SOURCE_TEXTURE) {
-                self_illum = 1.0f;
+            if (gpu_dynamic_lighting) {
+                self_illum = b.self_illumination;
+                if (b.mode.get_color_source() == gr::COLOR_SOURCE_TEXTURE) {
+                    self_illum = 1.0f;
+                }
             }
 
             render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum);
@@ -1013,10 +1027,10 @@ namespace df::gr::d3d11
         }
     }
 
-    void MeshRenderer::page_in_v3d_mesh(rf::VifLodMesh* lod_mesh)
+    void MeshRenderer::page_in_v3d_mesh(rf::VifLodMesh* lod_mesh, rf::MeshMaterial* materials, int num_materials)
     {
         if (!lod_mesh->render_cache) {
-            auto p = render_caches_.insert_or_assign(lod_mesh, std::make_unique<MeshRenderCache>(lod_mesh, v3d_vb_, v3d_ib_, render_context_));
+            auto p = render_caches_.insert_or_assign(lod_mesh, std::make_unique<MeshRenderCache>(lod_mesh, v3d_vb_, v3d_ib_, render_context_, materials, num_materials));
             lod_mesh->render_cache = p.first->second.get();
         }
     }
