@@ -90,6 +90,9 @@ static rf::ui::Checkbox ao_mpcharlod_cbox;
 static rf::ui::Label ao_mpcharlod_label;
 static rf::ui::Checkbox ao_sdlmouse_cbox;
 static rf::ui::Label ao_sdlmouse_label;
+static rf::ui::Label ao_sdlmouse_butlabel;
+static char ao_sdlmouse_butlabel_text[16];
+static constexpr const char* input_mode_names[] = {"Stock", "DInput", "SDL"};
 static rf::ui::Checkbox ao_linearpitch_cbox;
 static rf::ui::Label ao_linearpitch_label;
 static rf::ui::Checkbox ao_bighud_cbox;
@@ -540,10 +543,12 @@ void ao_bighud_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.big_hud);
 }
 
-void ao_sdlmouse_cbox_on_click(int x, int y) {
-    set_sdl_mouse_enabled(!g_alpine_game_config.sdl_mouse);
-    ao_sdlmouse_cbox.checked = g_alpine_game_config.sdl_mouse;
-    ao_play_button_snd(g_alpine_game_config.sdl_mouse);
+void ao_sdlmouse_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+    set_input_mode((g_alpine_game_config.input_mode + 1) % 3);
+    snprintf(ao_sdlmouse_butlabel_text, sizeof(ao_sdlmouse_butlabel_text), "%s",
+        input_mode_names[g_alpine_game_config.input_mode]);
+    ao_sdlmouse_butlabel.text = ao_sdlmouse_butlabel_text;
+    ao_play_button_snd(true);
 }
 
 void ao_linearpitch_cbox_on_click(int x, int y) {
@@ -1195,8 +1200,11 @@ void alpine_options_panel_init() {
         &ao_always_show_spectators_cbox, &ao_always_show_spectators_label, &alpine_options_panel1, ao_always_show_spectators_cbox_on_click, g_alpine_game_config.always_show_spectators, 280, 264, "Show spectators");
 
     // panel 2
-    alpine_options_panel_checkbox_init(
-        &ao_sdlmouse_cbox, &ao_sdlmouse_label, &alpine_options_panel2, ao_sdlmouse_cbox_on_click, g_alpine_game_config.sdl_mouse, 112, 54, "SDL mouse");
+    alpine_options_panel_inputbox_init(
+        &ao_sdlmouse_cbox, &ao_sdlmouse_label, &ao_sdlmouse_butlabel, &alpine_options_panel2, ao_sdlmouse_cbox_on_click, 112, 54, "Input mode");
+    snprintf(ao_sdlmouse_butlabel_text, sizeof(ao_sdlmouse_butlabel_text), "%s",
+        input_mode_names[g_alpine_game_config.input_mode]);
+    ao_sdlmouse_butlabel.text = ao_sdlmouse_butlabel_text;
     alpine_options_panel_checkbox_init(
         &ao_linearpitch_cbox, &ao_linearpitch_label, &alpine_options_panel2, ao_linearpitch_cbox_on_click, g_alpine_game_config.mouse_linear_pitch, 112, 84, "Linear pitch");
     alpine_options_panel_checkbox_init(

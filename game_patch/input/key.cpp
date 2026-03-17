@@ -1,3 +1,4 @@
+#include <cctype>
 #include <SDL3/SDL.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -54,47 +55,80 @@ FunHook<int(int16_t)> key_to_ascii_hook{
         if (!key)
             return empty_result;
 
-        // Ctrl+key: game doesn't use control characters for text input
-        if (key & KEY_CTRLED)
-            return empty_result;
-
-        // Numpad: SDL keycodes for KP_x are not printable chars, handle explicitly
+        // Numpad arithmetic keys: same in all modes
         switch (key & KEY_MASK) {
             case KEY_PADMULTIPLY: return static_cast<int>('*');
             case KEY_PADMINUS:    return static_cast<int>('-');
             case KEY_PADPLUS:     return static_cast<int>('+');
             case KEY_PADENTER:    return empty_result; // game not prepared for newline from numpad
         }
-        if (SDL_GetModState() & SDL_KMOD_NUM) {
-            switch (key & KEY_MASK) {
-                case KEY_PAD7: return static_cast<int>('7');
-                case KEY_PAD8: return static_cast<int>('8');
-                case KEY_PAD9: return static_cast<int>('9');
-                case KEY_PAD4: return static_cast<int>('4');
-                case KEY_PAD5: return static_cast<int>('5');
-                case KEY_PAD6: return static_cast<int>('6');
-                case KEY_PAD1: return static_cast<int>('1');
-                case KEY_PAD2: return static_cast<int>('2');
-                case KEY_PAD3: return static_cast<int>('3');
-                case KEY_PAD0: return static_cast<int>('0');
-                case KEY_PADPERIOD: return static_cast<int>('.');
+
+        if (g_alpine_game_config.input_mode == 2) {
+            // SDL keyboard mode
+            if (key & KEY_CTRLED)
+                return empty_result;
+
+            if (SDL_GetModState() & SDL_KMOD_NUM) {
+                switch (key & KEY_MASK) {
+                    case KEY_PAD7: return static_cast<int>('7');
+                    case KEY_PAD8: return static_cast<int>('8');
+                    case KEY_PAD9: return static_cast<int>('9');
+                    case KEY_PAD4: return static_cast<int>('4');
+                    case KEY_PAD5: return static_cast<int>('5');
+                    case KEY_PAD6: return static_cast<int>('6');
+                    case KEY_PAD1: return static_cast<int>('1');
+                    case KEY_PAD2: return static_cast<int>('2');
+                    case KEY_PAD3: return static_cast<int>('3');
+                    case KEY_PAD0: return static_cast<int>('0');
+                    case KEY_PADPERIOD: return static_cast<int>('.');
+                }
             }
+
+            SDL_Scancode sc = rf_key_to_sdl_scancode(key);
+            if (sc == SDL_SCANCODE_UNKNOWN)
+                return empty_result;
+
+            SDL_Keymod mods = SDL_KMOD_NONE;
+            if (key & KEY_SHIFTED) mods |= SDL_KMOD_SHIFT;
+            if (key & KEY_ALTED)   mods |= SDL_KMOD_RALT; // AltGr on most non-US layouts
+
+            SDL_Keycode kc = SDL_GetKeyFromScancode(sc, mods, false);
+            if (kc == SDLK_UNKNOWN || kc < 0x20 || kc > 0x7E)
+                return empty_result;
+
+            return static_cast<int>(kc);
+        } else {
+            // Stock/DirectInput keyboard modes (0 and 1): use Win32 APIs
+            // Note: broken on Wine with non-US layout (MAPVK_VSC_TO_VK_EX mapping issue)
+            if (GetKeyState(VK_NUMLOCK) & 1) {
+                switch (key & KEY_MASK) {
+                    case KEY_PAD7: return static_cast<int>('7');
+                    case KEY_PAD8: return static_cast<int>('8');
+                    case KEY_PAD9: return static_cast<int>('9');
+                    case KEY_PAD4: return static_cast<int>('4');
+                    case KEY_PAD5: return static_cast<int>('5');
+                    case KEY_PAD6: return static_cast<int>('6');
+                    case KEY_PAD1: return static_cast<int>('1');
+                    case KEY_PAD2: return static_cast<int>('2');
+                    case KEY_PAD3: return static_cast<int>('3');
+                    case KEY_PAD0: return static_cast<int>('0');
+                    case KEY_PADPERIOD: return static_cast<int>('.');
+                }
+            }
+            BYTE key_state[256] = {0};
+            if (key & KEY_SHIFTED) key_state[VK_SHIFT]   = 0x80;
+            if (key & KEY_ALTED)   key_state[VK_MENU]    = 0x80;
+            if (key & KEY_CTRLED)  key_state[VK_CONTROL] = 0x80;
+            int scan_code = key & 0x7F;
+            auto vk = MapVirtualKeyA(scan_code, MAPVK_VSC_TO_VK);
+            WCHAR unicode_chars[3];
+            auto num_unicode_chars = ToUnicode(vk, scan_code, key_state, unicode_chars, std::size(unicode_chars), 0);
+            if (num_unicode_chars < 1)
+                return empty_result;
+            if (static_cast<char16_t>(unicode_chars[0]) >= 0x80 || !std::isprint(unicode_chars[0]))
+                return empty_result;
+            return static_cast<int>(unicode_chars[0]);
         }
-
-        // Use SDL for layout-aware translation (handles non-US keyboards and Wine correctly)
-        SDL_Scancode sc = rf_key_to_sdl_scancode(key);
-        if (sc == SDL_SCANCODE_UNKNOWN)
-            return empty_result;
-
-        SDL_Keymod mods = SDL_KMOD_NONE;
-        if (key & KEY_SHIFTED) mods |= SDL_KMOD_SHIFT;
-        if (key & KEY_ALTED)   mods |= SDL_KMOD_RALT; // AltGr on most non-US layouts
-
-        SDL_Keycode kc = SDL_GetKeyFromScancode(sc, mods, false);
-        if (kc == SDLK_UNKNOWN || kc < 0x20 || kc > 0x7E)
-            return empty_result;
-
-        return static_cast<int>(kc);
     },
 };
 
@@ -231,6 +265,8 @@ void keyboard_sdl_poll()
     int n;
     while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
                                SDL_GETEVENT, SDL_EVENT_KEY_DOWN, SDL_EVENT_TEXT_EDITING_CANDIDATES)) > 0) {
+        if (g_alpine_game_config.input_mode != 2)
+            continue; // drain without processing; Win32 keyboard handles input in modes 0/1
         for (int i = 0; i < n; ++i) {
             const auto& evt = events[i];
             if (evt.type != SDL_EVENT_KEY_DOWN && evt.type != SDL_EVENT_KEY_UP)
@@ -247,18 +283,36 @@ void keyboard_sdl_poll()
 
 int get_key_name(int key, char* buf, size_t buf_len)
 {
-    SDL_Scancode sc = rf_key_to_sdl_scancode(key);
-    if (sc == SDL_SCANCODE_UNKNOWN) {
-        buf[0] = '\0';
-        return 0;
+    if (g_alpine_game_config.input_mode == 2) {
+        // SDL mode: use SDL key names
+        SDL_Scancode sc = rf_key_to_sdl_scancode(key);
+        if (sc == SDL_SCANCODE_UNKNOWN) {
+            buf[0] = '\0';
+            return 0;
+        }
+        const char* name = SDL_GetKeyName(SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false));
+        if (!name || name[0] == '\0') {
+            buf[0] = '\0';
+            return 0;
+        }
+        SDL_strlcpy(buf, name, buf_len);
+        return static_cast<int>(SDL_strlen(name));
     }
-    const char* name = SDL_GetKeyName(SDL_GetKeyFromScancode(sc, SDL_KMOD_NONE, false));
-    if (!name || name[0] == '\0') {
-        buf[0] = '\0';
-        return 0;
+    // Modes 0/1: use Win32 key names
+    // Note: it seems broken on Wine with non-US layout due to MAPVK_VSC_TO_VK_EX mapping
+    LONG lparam = (key & 0x7F) << 16;
+    if (key & 0x80) {
+        lparam |= 1 << 24;
     }
-    SDL_strlcpy(buf, name, buf_len);
-    return static_cast<int>(SDL_strlen(name));
+    int ret = GetKeyNameTextA(lparam, buf, buf_len);
+    if (ret <= 0) {
+        WARN_ONCE("GetKeyNameTextA failed for 0x{:X}", key);
+        buf[0] = '\0';
+    }
+    else {
+        xlog::trace("key 0x{:x} name {}", key, buf);
+    }
+    return ret;
 }
 
 FunHook<int(rf::String&, int)> get_key_name_hook{
@@ -601,7 +655,16 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
             case WM_SYSKEYDOWN:
             case WM_KEYUP:
             case WM_SYSKEYUP:
-                return; // Keyboard events handled via SDL in keyboard_sdl_poll
+                if (g_alpine_game_config.input_mode == 2)
+                    return; // SDL keyboard handles input in mode 2
+                // Modes 0/1: RF requires KF_EXTENDED for these numpad-derived keys
+                if (w_param == VK_PRIOR
+                    || w_param == VK_NEXT
+                    || w_param == VK_END
+                    || w_param == VK_HOME) {
+                    l_param |= KF_EXTENDED << 16;
+                }
+                break;
         }
         key_msg_handler_hook.call_target(msg, w_param, l_param);
     },
@@ -635,7 +698,7 @@ void key_apply_patch()
     // Support suppress autoswitch bind
     item_touch_weapon_autoswitch_patch.install();
 
-    // Block Win32 WM_KEY* messages from reaching the RF key handler;
-    // keyboard events are fed to RF via SDL in keyboard_sdl_poll instead.
+    // Route keyboard events: Win32 WM_KEY* messages for modes 0/1 (with numpad KF_EXTENDED fix),
+    // blocked for mode 2 where SDL feeds keyboard events via keyboard_sdl_poll.
     key_msg_handler_hook.install();
 }

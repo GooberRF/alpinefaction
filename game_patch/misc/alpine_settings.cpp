@@ -954,16 +954,19 @@ bool alpine_player_settings_load(rf::Player* player)
         player->settings.controls.axes[1].invert = std::stoi(settings["MouseYInvert"]);
         processed_keys.insert("MouseYInvert");
     }
-     if (settings.count("SDLMouse")) {
-         g_alpine_game_config.sdl_mouse = std::stoi(settings["SDLMouse"]);
-         processed_keys.insert("SDLMouse");
-     } else if (settings.count("DirectInput")) {
-         // Legacy fallback: map DirectInput to the closest SDLMouse equivalent
-         // DirectInput == 0  -> SDLMouse = 0 (keep legacy / non-SDL behavior)
-         // DirectInput != 0  -> SDLMouse = 1 (use SDL-like backend)
-         int direct_input = std::stoi(settings["DirectInput"]);
-         g_alpine_game_config.sdl_mouse = (direct_input != 0) ? 1 : 0;
-         processed_keys.insert("DirectInput");
+    if (settings.count("InputMode")) {
+        g_alpine_game_config.input_mode = std::stoi(settings["InputMode"]);
+        processed_keys.insert("InputMode");
+    } else if (settings.count("SDLMouse")) {
+        // Legacy: SDLMouse=0 was "non-SDL" (closest = DInput mode 1), SDLMouse=1 was SDL (mode 2)
+        int sdl_mouse = std::stoi(settings["SDLMouse"]);
+        g_alpine_game_config.input_mode = (sdl_mouse != 0) ? 2 : 1;
+        processed_keys.insert("SDLMouse");
+    } else if (settings.count("DirectInput")) {
+        // Legacy: DirectInput=0 was stock/Win32 (mode 0), DirectInput=1 was DInput (mode 1)
+        int direct_input = std::stoi(settings["DirectInput"]);
+        g_alpine_game_config.input_mode = (direct_input != 0) ? 1 : 0;
+        processed_keys.insert("DirectInput");
     }
     if (settings.count("MouseLinearPitch")) {
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
@@ -1064,7 +1067,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "\n[InputSettings]\n";
     file << "MouseSensitivity=" << cc.mouse_sensitivity << "\n";
     file << "MouseYInvert=" << cc.axes[1].invert << "\n";
-    file << "SDLMouse=" << g_alpine_game_config.sdl_mouse << "\n";
+    file << "InputMode=" << g_alpine_game_config.input_mode << "\n";
     file << "MouseLinearPitch=" << g_alpine_game_config.mouse_linear_pitch << "\n";
     file << "SwapARBinds=" << g_alpine_game_config.swap_ar_controls << "\n";
     file << "SwapGNBinds=" << g_alpine_game_config.swap_gn_controls << "\n";

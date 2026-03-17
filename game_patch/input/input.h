@@ -10,4 +10,4 @@ void mouse_sdl_poll();
 void keyboard_sdl_poll();
 void sdl_input_poll();
 void key_apply_patch();
-void set_sdl_mouse_enabled(bool enabled);
+void set_input_mode(int mode);

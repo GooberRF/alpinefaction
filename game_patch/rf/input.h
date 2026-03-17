@@ -1,5 +1,8 @@
 #pragma once
 
+// RF uses DirectInput 8
+#define DIRECTINPUT_VERSION 0x0800
+#include <dinput.h>
 #include <patch_common/MemUtils.h>
 
 namespace rf
@@ -123,6 +126,9 @@ namespace rf
     static auto& key_get_and_reset_down_counter = addr_as_ref<int(Key key)>(0x0051F140);
 
     static auto& scope_sensitivity_constant = addr_as_ref<float>(0x005895C0);
+    static auto& mouse_initialized = addr_as_ref<uint8_t>(0x01885461);
+    static auto& direct_input_disabled = addr_as_ref<bool>(0x005A4F88);
+    static auto& di_mouse = addr_as_ref<LPDIRECTINPUTDEVICE8A>(0x0188545C);
     static auto& keep_mouse_centered = addr_as_ref<bool>(0x01885471);
     static auto& mouse_wheel_pos = addr_as_ref<int>(0x018853C8);
     static auto& mouse_old_z = addr_as_ref<int>(0x01885480);
