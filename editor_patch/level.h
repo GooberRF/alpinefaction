@@ -18,6 +18,18 @@ constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_note_chunk_id = 0x0AFBAE02;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
+constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
+
+// Per-entry data in the alpine_brush_group_chunk_id chunk (.rfg only).
+// Stores geoable/breakable flags for brushes by serialization index.
+#pragma pack(push, 1)
+struct BrushGroupEntry {
+    uint32_t brush_index;
+    uint8_t flags;      // bit 0 = geoable, bit 1 = breakable
+    uint8_t material;   // breakable material byte (bits 0-6 = material, bit 7 = no_debris)
+};
+#pragma pack(pop)
+static_assert(sizeof(BrushGroupEntry) == 6);
 
 // Forward declarations
 struct GFace;

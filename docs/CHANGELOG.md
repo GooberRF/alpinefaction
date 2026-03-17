@@ -5,9 +5,11 @@ Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
-- Add advanced bot system
-    - Headless bot clients
-    - Waypoint grid editor
+- Implement advanced multiplayer bots system, including headless bot clients and fully featured waypoint grid editor
+- Promote Direct3D 11 renderer to recommended and add several notable improvements
+  - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
+  - Add full mesh shadows for entities, corpses, and items
+  - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
 - Expanded destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
@@ -24,7 +26,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Standardize user agent string format across all use cases
 - Bump RFL version to 304
-- Support `Alpha` field in `Decal` objects placed in version >= 304 levels (Direct3D 11 renderer only)
 - Improve output of object create failure log message
 - Add `Players in linked triggers` application setting for `AF_Heal` events
 - Add speedometer to HUD, bind to `ui_show_speed` console command
@@ -55,8 +56,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-bot` command line argument to run a client in bot mode
 - Add `disconnect` console command
 - Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
-- Add full mesh shadows for entities, corpses, and items (Direct3D 11 renderer only)
-- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
 - Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
 - Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
 - Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
@@ -65,6 +64,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 - Add new and revised `Select Objects` and `Hide Objects` windows in level editor
+- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
+- Add `r_vertexlighting` console command and `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

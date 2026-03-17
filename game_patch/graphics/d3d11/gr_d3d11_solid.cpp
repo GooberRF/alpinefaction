@@ -837,6 +837,8 @@ namespace df::gr::d3d11
     void SolidRenderer::render_movable_solid(GSolid* solid, const Vector3& pos, const Matrix3& orient)
     {
         xlog::trace("Rendering movable solid {}", solid);
+        // Upload gathered lights so the pixel shader can apply point lighting to movers
+        render_context_.update_lights();
         GRenderCache* cache = get_or_create_movable_solid_cache(solid);
         before_render(pos, orient);
         cache->render(FaceRenderType::opaque, render_context_);
@@ -867,6 +869,10 @@ namespace df::gr::d3d11
             // Happens when glass is killed
             return;
         }
+        // Clear stale point lights that may remain from mesh rendering (which runs
+        // between render_solid and render_alpha_detail). Without this, alpha surfaces
+        // pick up mesh lights and get overbright/blinking artifacts.
+        render_context_.update_lights();
         before_render(rf::zero_vector, rf::identity_matrix);
         render_detail(solid, room, true);
         if (decals_enabled) {
