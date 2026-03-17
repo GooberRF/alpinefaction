@@ -179,3 +179,34 @@ std::unique_ptr<VideoDeviceInfoProvider> create_d3d11_device_info_provider()
 {
     return std::make_unique<VideoDeviceInfoProviderD3D11>();
 }
+
+bool is_d3d11_device_available()
+{
+    try {
+        DynamicLinkLibrary d3d11_lib{L"d3d11.dll"};
+        if (!d3d11_lib)
+            return false;
+
+        auto pD3D11CreateDevice = d3d11_lib.get_proc_address<decltype(D3D11CreateDevice)*>("D3D11CreateDevice");
+        if (!pD3D11CreateDevice)
+            return false;
+
+        ComPtr<ID3D11Device> device;
+        HRESULT hr = pD3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            0,
+            nullptr,
+            0,
+            D3D11_SDK_VERSION,
+            &device,
+            nullptr,
+            nullptr
+        );
+        return SUCCEEDED(hr);
+    }
+    catch (...) {
+        return false;
+    }
+}

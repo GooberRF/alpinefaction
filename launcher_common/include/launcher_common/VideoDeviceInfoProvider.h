@@ -30,6 +30,7 @@ public:
 std::unique_ptr<VideoDeviceInfoProvider> create_d3d8_device_info_provider();
 std::unique_ptr<VideoDeviceInfoProvider> create_d3d9_device_info_provider();
 std::unique_ptr<VideoDeviceInfoProvider> create_d3d11_device_info_provider();
+bool is_d3d11_device_available();
 
 inline std::unique_ptr<VideoDeviceInfoProvider> create_device_info_provider(GameConfig::Renderer renderer)
 {

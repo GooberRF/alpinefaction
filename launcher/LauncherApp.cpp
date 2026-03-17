@@ -256,16 +256,12 @@ void LauncherApp::MigrateConfig()
         if (config.alpine_faction_version.value() != VERSION_STR) {
             config.alpine_faction_version = VERSION_STR;
 
-            // On a new install, if D3D11 is not available on this machine,
+            // On a new install, if D3D11 hardware device creation fails,
             // fall back to D3D9 instead of using the default
-            if (is_new_install && config.renderer.value() == GameConfig::Renderer::d3d11) {
-                try {
-                    create_d3d11_device_info_provider();
-                }
-                catch (const std::exception&) {
-                    xlog::warn("D3D11 is not available on this machine, falling back to D3D9");
-                    config.renderer = GameConfig::Renderer::d3d9;
-                }
+            if (is_new_install && config.renderer.value() == GameConfig::Renderer::d3d11
+                && !is_d3d11_device_available()) {
+                xlog::warn("D3D11 is not available on this machine, falling back to D3D9");
+                config.renderer = GameConfig::Renderer::d3d9;
             }
 
             config.save();
