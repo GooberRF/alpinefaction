@@ -711,7 +711,7 @@ namespace df::gr::d3d11
         context->Unmap(shadow_cbuffer_, 0);
 
         ID3D11Buffer* ps_cb = shadow_cbuffer_;
-        context->PSSetConstantBuffers(2, 1, &ps_cb);
+        context->PSSetConstantBuffers(3, 1, &ps_cb);
 
         if (shadows_active) {
             // Always bind the comparison sampler

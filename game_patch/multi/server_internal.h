@@ -547,6 +547,7 @@ struct AlpineServerConfigRules
     int koth_score_limit = 100;
     int dc_score_limit = 300;
     int geo_limit = 64;
+    int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
     bool fall_damage = false;
     bool weapons_stay = false;
@@ -580,6 +581,7 @@ struct AlpineServerConfigRules
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
     GunGameConfig gungame;
+    bool geo_chunk_physics = true;
 
     // =============================================
     void set_time_limit(float count)
@@ -609,6 +611,10 @@ struct AlpineServerConfigRules
     void set_geo_limit(int count)
     {
         geo_limit = std::clamp(count, 0, 128);
+    }
+    void set_rf2_geo_limit(int count)
+    {
+        rf2_geo_limit = std::max(count, -1);
     }
     void set_ideal_player_count(int count)
     {

@@ -136,6 +136,33 @@ namespace df::gr::d3d11
         ComPtr<ID3D11Buffer> buffer_;
     };
 
+    class TextureScaleBuffer
+    {
+    public:
+        TextureScaleBuffer(ID3D11Device* device);
+
+        void update(float u_scale, float v_scale, ID3D11DeviceContext* device_context)
+        {
+            if (current_u_scale_ != u_scale || current_v_scale_ != v_scale) {
+                current_u_scale_ = u_scale;
+                current_v_scale_ = v_scale;
+                update_buffer(device_context);
+            }
+        }
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        void update_buffer(ID3D11DeviceContext* device_context);
+
+        ComPtr<ID3D11Buffer> buffer_;
+        float current_u_scale_ = 1.0f;
+        float current_v_scale_ = 1.0f;
+    };
+
     class RenderContext
     {
     public:
@@ -162,11 +189,61 @@ namespace df::gr::d3d11
             if (current_tex_handles_[0] != tex_handle0 || current_tex_handles_[1] != tex_handle1) {
                 current_tex_handles_[0] = tex_handle0;
                 current_tex_handles_[1] = tex_handle1;
-                ID3D11ShaderResourceView* shader_resources[] = {
-                    get_diffuse_texture_view(tex_handle0),
-                    get_lightmap_texture_view(tex_handle1),
-                };
-                device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
+
+                if (pow2_tex_active_) {
+                    // Combined lookup: get SRV and UV scale in a single cache access
+                    auto [srv, u_scale, v_scale] = texture_manager_.lookup_texture_with_scale(tex_handle0);
+                    ID3D11ShaderResourceView* shader_resources[] = {
+                        srv ? srv : texture_manager_.get_white_texture(),
+                        get_lightmap_texture_view(tex_handle1),
+                    };
+                    device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
+
+                    if (!suppress_texture_uv_scale_) {
+                        texture_scale_cbuffer_.update(u_scale, v_scale, device_context_);
+                    }
+                }
+                else {
+                    ID3D11ShaderResourceView* shader_resources[] = {
+                        get_diffuse_texture_view(tex_handle0),
+                        get_lightmap_texture_view(tex_handle1),
+                    };
+                    device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
+                }
+            }
+        }
+
+        void set_suppress_texture_uv_scale(bool suppress)
+        {
+            if (pow2_tex_active_) {
+                suppress_texture_uv_scale_ = suppress;
+                if (suppress) {
+                    texture_scale_cbuffer_.update(1.0f, 1.0f, device_context_);
+                }
+                else {
+                    // Invalidate so next set_textures() re-evaluates the scale
+                    current_tex_handles_ = {-2, -2};
+                }
+            }
+        }
+
+        bool is_pow2_tex_active() const
+        {
+            return pow2_tex_active_;
+        }
+
+        void set_pow2_tex_active(bool active)
+        {
+            pow2_tex_active_ = active;
+            suppress_texture_uv_scale_ = false;
+            if (active) {
+                // Invalidate cached texture handles so the next set_textures() call
+                // updates the scale buffer for the currently bound texture
+                current_tex_handles_ = {-2, -2};
+            }
+            else {
+                // Reset scale to (1,1) when p2t is disabled
+                texture_scale_cbuffer_.update(1.0f, 1.0f, device_context_);
             }
         }
 
@@ -428,6 +505,7 @@ namespace df::gr::d3d11
         LightsBuffer lights_buffer_;
         RenderModeBuffer render_mode_cbuffer_;
         PerFrameBuffer per_frame_buffer_;
+        TextureScaleBuffer texture_scale_cbuffer_;
 
         ID3D11RenderTargetView* render_target_view_ = nullptr;
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;
@@ -449,5 +527,7 @@ namespace df::gr::d3d11
         bool depth_clip_enabled_ = true;
         bool depth_clip_enabled_changed_ = true;
         Projection projection_;
+        bool pow2_tex_active_ = false;
+        bool suppress_texture_uv_scale_ = false;
     };
 }

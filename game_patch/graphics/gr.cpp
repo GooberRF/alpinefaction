@@ -27,6 +27,7 @@
 #include "../rf/clutter.h"
 #include "gr.h"
 #include "gr_internal.h"
+#include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
@@ -486,6 +487,63 @@ CodeInjection gr_d3d_render_lod_vif_injection{
     },
 };
 
+// Power of 2 texture enforcement
+// Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
+namespace rf::gr::d3d {
+    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
+}
+static bool override_pow2tex = false;
+
+ConsoleCommand2 pow2_tex_cmd{
+    "dbg_pow2tex",
+    [](std::optional<int> argument) {
+        if (argument) {
+            int arg = argument.value();
+            switch (arg) {
+            case 0:
+                override_pow2tex = true;
+                rf::gr::d3d::p2t = 0;
+                break;
+            case 1:
+                override_pow2tex = true;
+                rf::gr::d3d::p2t = 1;
+                break;
+            default:
+                override_pow2tex = false;
+                break;
+            }
+        }
+
+        if (override_pow2tex) {
+            rf::console::print("Enforcement of power of 2 textures is set to manual override. The option is currently {}. Use 'dbg_pow2tex -1' to disable override.", rf::gr::d3d::p2t ? "enabled" : "disabled");
+        }
+        else {
+            rf::console::print("Enforcement of power of 2 textures is set to automatic. Use 'dbg_pow2tex 0' or 'dbg_pow2tex 1' to override for debugging.");
+        }
+    },
+    "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
+};
+
+// checked during level load
+void evaluate_pow2tex(const rf::String& level_filename) {
+    // if dbg_pow2tex is active, use manual override instead of level filename lookup
+    if (!override_pow2tex) {
+        bool should_p2t_fix = false;
+
+        if (is_p2t_fix_level(level_filename)) {
+            should_p2t_fix = true;
+            rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
+        }
+
+        rf::gr::d3d::p2t = should_p2t_fix;
+    }
+
+    // Always sync D3D11 state with current p2t value at level load
+    if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+        df::gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
+    }
+}
+
 void gr_apply_patch()
 {
     if (g_game_config.wnd_mode != GameConfig::FULLSCREEN) {
@@ -578,6 +636,7 @@ void gr_apply_patch()
     colorblind_cmd.register_cmd();
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
+    pow2_tex_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

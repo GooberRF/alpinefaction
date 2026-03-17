@@ -18,6 +18,11 @@ cbuffer RenderModeBuffer : register(b0)
     float3 fog_color;
 };
 
+cbuffer TextureScaleBuffer : register(b2)
+{
+    float2 tex0_uv_scale;
+};
+
 Texture2D tex0;
 SamplerState samp0;
 
@@ -51,7 +56,8 @@ float3 apply_colorblind(float3 color)
 
 float4 main(VsOutput input) : SV_TARGET
 {
-    float4 col = tex0.Sample(samp0, input.uv0) * input.color;
+    float2 scaled_uv0 = input.uv0 * tex0_uv_scale;
+    float4 col = tex0.Sample(samp0, scaled_uv0) * input.color;
     if (colorblind_mode > 0.5f) {
         col.rgb = saturate(apply_colorblind(col.rgb));
     }

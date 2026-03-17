@@ -388,6 +388,15 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Set_Capture_Point_Owner"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "Mesh_Animate"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Mesh_Set_Texture"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Mesh_Set_Collision"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------

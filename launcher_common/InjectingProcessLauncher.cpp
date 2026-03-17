@@ -22,7 +22,7 @@ static uintptr_t get_pe_file_entrypoint(const char* filename)
     return nt_hdrs.OptionalHeader.ImageBase + nt_hdrs.OptionalHeader.AddressOfEntryPoint;
 }
 
-void InjectingProcessLauncher::wait_for_process_initialization(uintptr_t entry_point, int timeout)
+void InjectingProcessLauncher::wait_for_process_initialization(uintptr_t entry_point, uint32_t timeout)
 {
     // Change process entry point into an infinite loop (one opcode: jmp -2)
     // Based on: https://opcode0x90.wordpress.com/2011/01/15/injecting-dll-into-process-on-load/
@@ -34,9 +34,9 @@ void InjectingProcessLauncher::wait_for_process_initialization(uintptr_t entry_p
     FlushInstructionCache(m_process.get_handle(), entry_point_ptr, 2);
     // Resume main thread
     m_thread.resume();
-    // Wait untill main thread reaches the entry point
+    // Wait until main thread reaches the entry point
     CONTEXT context;
-    DWORD start_ticks = GetTickCount();
+    const uint64_t start_ticks = GetTickCount64();
     do {
         Sleep(50);
         context.ContextFlags = CONTEXT_CONTROL;
@@ -49,9 +49,10 @@ void InjectingProcessLauncher::wait_for_process_initialization(uintptr_t entry_p
             throw;
         }
 
-        if (context.Eip == entry_point)
+        if (context.Eip == entry_point) {
             break;
-    } while (static_cast<int>(GetTickCount() - start_ticks) < timeout);
+        }
+    } while (GetTickCount64() - start_ticks < timeout);
     if (context.Eip != entry_point)
         THROW_EXCEPTION("timeout");
     // Suspend main thread
@@ -62,7 +63,7 @@ void InjectingProcessLauncher::wait_for_process_initialization(uintptr_t entry_p
 }
 
 InjectingProcessLauncher::InjectingProcessLauncher(
-    const char* app_name, const char* work_dir, const char* command_line, STARTUPINFO& startup_info, int timeout)
+    const char* app_name, const char* work_dir, const char* command_line, STARTUPINFO& startup_info, uint32_t timeout)
 {
     xlog::info("Creating suspended process");
     PROCESS_INFORMATION process_info;

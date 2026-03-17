@@ -63,6 +63,20 @@ namespace rf
     };
     static_assert(sizeof(PhysicsData) == 0x170);
 
+    // PhysicsData.flags — controls physics simulation behavior.
+    // Set via ObjectCreateInfo.physics_flags, copied to p_data.flags by physics_create_object.
+    enum PhysicsFlags : int
+    {
+        PF_GRAVITY         = 0x1,        // apply gravity
+        PF_UNK_02          = 0x2,
+        PF_UNK_04          = 0x4,
+        PF_UNK_08          = 0x8,
+        PF_COLLIDE_WORLD   = 0x10,       // collide with world geometry
+        PF_COLLIDE_OBJECTS = 0x20,       // participate in object-object collision pairs
+        PF_UNK_40          = 0x40,
+        PF_BOUNCE          = 0x100,      // bounce on impact (added when debris_flags & 0x04)
+    };
+
     static auto& physics_create_object = addr_as_ref<void(PhysicsData *pd, ObjectCreateInfo *oci)>(0x0049EC90);
     static auto& physics_delete_object = addr_as_ref<void(PhysicsData *pd)>(0x0049F1D0);
 

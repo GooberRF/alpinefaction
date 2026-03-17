@@ -305,7 +305,10 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf
     damage_notify_packet.header.size = sizeof(damage_notify_packet) - sizeof(damage_notify_packet.header);
     damage_notify_packet.player_id = player_id;
     int rounded_damage = static_cast<int>(std::round(damage));
-    damage_notify_packet.damage = static_cast<uint16_t>(std::max(1, rounded_damage)); // round damage with minimum 1
+    if (rounded_damage <= 0) {
+        return; // skip negligible damage
+    }
+    damage_notify_packet.damage = static_cast<uint16_t>(rounded_damage);
 
     damage_notify_packet.flags =
         (static_cast<uint8_t>(died)       << 0);
@@ -1249,6 +1252,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS;
     if (g_alpine_server_config.gaussian_spread)
         af |= af_server_info_flags::SIF_GAUSSIAN_SPREAD;
+    if (g_alpine_server_config_active_rules.geo_chunk_physics)
+        af |= af_server_info_flags::SIF_GEO_CHUNK_PHYSICS;
     if (g_alpine_server_config_active_rules.location_pinging)
         af |= af_server_info_flags::SIF_LOCATION_PINGING;
     if (g_alpine_server_config_active_rules.spawn_delay.enabled)
@@ -1423,6 +1428,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
     server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
     server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
     server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
+    server_info.geo_chunk_physics = (pkt.af_flags & af_server_info_flags::SIF_GEO_CHUNK_PHYSICS) != 0;
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();

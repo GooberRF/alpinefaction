@@ -329,6 +329,7 @@ namespace rf
     static auto& scoreboard_render_internal = addr_as_ref<void(bool netgame_scoreboard)>(0x00470880);
     static auto& multiplayer_walk_speed = addr_as_ref<float>(0x0059458C);
     static auto& multiplayer_crouch_walk_speed = addr_as_ref<float>(0x00594590);
+    static auto& send_glass_kill_packet = addr_as_ref<void(int room_uid, Vector3* break_pos, Vector3* explosion_pos, bool explosion)>(0x00472250);
 
     constexpr int multi_max_player_id = 256;
 }
