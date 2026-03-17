@@ -84,10 +84,12 @@ void set_input_mode(int mode)
         g_sdl_mouse_dy_rem = 0.0f;
     }
 
-    // Release any held extra mouse scan codes so they don't stay stuck after mode switch
+    // Release held extra scan codes so they don't stay stuck after mode switch
     if (old_mode != mode) {
         for (int i = 0; i < CTRL_EXTRA_MOUSE_SCAN_COUNT; ++i)
             rf::key_process_event(CTRL_EXTRA_MOUSE_SCAN_BASE + i, 0, 0);
+        for (int i = 0; i < CTRL_EXTRA_KEY_SCAN_COUNT; ++i)
+            rf::key_process_event(CTRL_EXTRA_KEY_SCAN_BASE + i, 0, 0);
         g_pending_mouse_extra_btn_rebind = -1;
     }
 }

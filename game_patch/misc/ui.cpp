@@ -1456,25 +1456,27 @@ CodeInjection options_render_alpine_panel_patch{
         int index = rf::ui::options_current_panel;
         //xlog::warn("render index {}", index);
 
-        // Detect falling edge of waiting_for_key to finalize extra mouse button rebinds
+        // handle key rebinding in input options panel
         if (index == 3) {
             static bool s_was_waiting = false;
             bool now_waiting = rf::ui::options_controls_waiting_for_key;
             if (s_was_waiting && !now_waiting) {
+                int16_t new_sc = -1;
                 int xbtn = mouse_take_pending_rebind();
-                if (xbtn >= 0 && rf::local_player) {
+                if (xbtn >= 0) {
+                    new_sc = static_cast<int16_t>(CTRL_EXTRA_MOUSE_SCAN_BASE + (xbtn - 3));
+                } else {
+                    int extra_key = key_take_pending_extra_rebind();
+                    if (extra_key >= 0)
+                        new_sc = static_cast<int16_t>(extra_key);
+                }
+                if (new_sc >= 0 && rf::local_player) {
                     auto& cc = rf::local_player->settings.controls;
                     int n = std::min(cc.num_bindings, 128);
-                    // RF wrote CTRL_REBIND_SENTINEL into some scan_codes slot of the rebound binding.
-                    // Overwrite it with our custom extra-mouse scan code so RF's key layer picks it up naturally.
-                    int16_t new_sc = static_cast<int16_t>(CTRL_EXTRA_MOUSE_SCAN_BASE + (xbtn - 3));
-                    // RF may write the sentinel into scan_codes[0] or scan_codes[1] depending
-                    // on which slot the user was editing; check both.
                     bool found = false;
                     for (int i = 0; i < n && !found; ++i) {
                         for (int slot = 0; slot < 2 && !found; ++slot) {
                             if (cc.bindings[i].scan_codes[slot] == static_cast<int16_t>(CTRL_REBIND_SENTINEL)) {
-                                // Clear any other binding that already has the same extra-mouse scan code
                                 for (int j = 0; j < n; ++j)
                                     for (int s = 0; s < 2; ++s)
                                         if ((j != i || s != slot) && cc.bindings[j].scan_codes[s] == new_sc)
@@ -1484,7 +1486,7 @@ CodeInjection options_render_alpine_panel_patch{
                             }
                         }
                     }
-                    rf::key_process_event(CTRL_REBIND_SENTINEL, 0, 0); // release the sentinel key
+                    rf::key_process_event(CTRL_REBIND_SENTINEL, 0, 0);
                 }
             }
             s_was_waiting = now_waiting;

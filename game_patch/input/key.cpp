@@ -20,10 +20,12 @@
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
 #include "../rf/os/os.h"
+#include "../rf/ui.h"
 #include "../multi/alpine_packets.h"
 #include "../os/console.h"
 
 static int starting_alpine_control_index = -1;
+static int g_pending_extra_key_rebind = -1; // pending scan code for sentinel rebind pattern
 
 rf::String get_action_bind_name(int action)
 {
@@ -62,6 +64,7 @@ FunHook<int(int16_t)> key_to_ascii_hook{
             case KEY_PADMINUS:    return static_cast<int>('-');
             case KEY_PADPLUS:     return static_cast<int>('+');
             case KEY_PADENTER:    return empty_result; // game not prepared for newline from numpad
+            case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_KP_DIVIDE: return static_cast<int>('/');
         }
 
         if (g_alpine_game_config.input_mode == 2) {
@@ -246,6 +249,21 @@ static SDL_Scancode rf_key_to_sdl_scancode(int key)
         case KEY_PAGEDOWN:     return SDL_SCANCODE_PAGEDOWN;
         case KEY_INSERT:       return SDL_SCANCODE_INSERT;
         case KEY_DELETE:       return SDL_SCANCODE_DELETE;
+        // Extra keyboard keys (custom scan codes not in RF's original DInput table)
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_KP_DIVIDE:      return SDL_SCANCODE_KP_DIVIDE;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_NONUSBACKSLASH:  return SDL_SCANCODE_NONUSBACKSLASH;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F13:             return SDL_SCANCODE_F13;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F14:             return SDL_SCANCODE_F14;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F15:             return SDL_SCANCODE_F15;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F16:             return SDL_SCANCODE_F16;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F17:             return SDL_SCANCODE_F17;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F18:             return SDL_SCANCODE_F18;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F19:             return SDL_SCANCODE_F19;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F20:             return SDL_SCANCODE_F20;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F21:             return SDL_SCANCODE_F21;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F22:             return SDL_SCANCODE_F22;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F23:             return SDL_SCANCODE_F23;
+        case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_F24:             return SDL_SCANCODE_F24;
         default:               return SDL_SCANCODE_UNKNOWN;
     }
 }
@@ -268,6 +286,15 @@ static rf::Key sdl_scancode_to_rf_key(SDL_Scancode sc)
     return table[static_cast<int>(sc)];
 }
 
+// Returns true for scan codes that RF's rebind UI ignores (extra keys + Alt).
+static bool scan_needs_rebind_sentinel(int scan)
+{
+    if (scan >= CTRL_EXTRA_KEY_SCAN_BASE &&
+        scan < CTRL_EXTRA_KEY_SCAN_BASE + CTRL_EXTRA_KEY_SCAN_COUNT)
+        return true;
+    return scan == rf::KEY_LALT || scan == rf::KEY_RALT;
+}
+
 void keyboard_sdl_poll()
 {
     SDL_Event events[16];
@@ -284,18 +311,48 @@ void keyboard_sdl_poll()
                 continue; // ignore OS key repeat; RF tracks state itself
             const bool down = (evt.type == SDL_EVENT_KEY_DOWN);
             const rf::Key rf_key = sdl_scancode_to_rf_key(evt.key.scancode);
-            if (rf_key != rf::KEY_NONE)
-                rf::key_process_event(static_cast<int>(rf_key), down ? 1 : 0, 0);
+            if (rf_key == rf::KEY_NONE)
+                continue;
+
+            int scan = static_cast<int>(rf_key);
+            // Keys that RF's rebind UI can't handle use the sentinel pattern
+            if (scan_needs_rebind_sentinel(scan)) {
+                if (down && g_pending_extra_key_rebind < 0 &&
+                    rf::ui::options_controls_waiting_for_key) {
+                    g_pending_extra_key_rebind = scan;
+                    rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
+                } else {
+                    rf::key_process_event(scan, down ? 1 : 0, 0);
+                }
+            } else {
+                rf::key_process_event(scan, down ? 1 : 0, 0);
+            }
         }
     }
 }
 
+int key_take_pending_extra_rebind()
+{
+    int sc = g_pending_extra_key_rebind;
+    g_pending_extra_key_rebind = -1;
+    return sc;
+}
+
 int get_key_name(int key, char* buf, size_t buf_len)
 {
-    // Custom scan codes for extra mouse buttons (Mouse 4+) — valid in all input modes
+    // Extra mouse buttons (Mouse 4+)
     if (key >= CTRL_EXTRA_MOUSE_SCAN_BASE && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT) {
-        int mouse_num = (key - CTRL_EXTRA_MOUSE_SCAN_BASE) + 4; // 0x75→Mouse 4, 0x76→Mouse 5, ...
-        int n = std::snprintf(buf, buf_len, "Mouse %d", mouse_num);
+        int n = std::snprintf(buf, buf_len, "Mouse %d", (key - CTRL_EXTRA_MOUSE_SCAN_BASE) + 4);
+        return n > 0 ? n : 0;
+    }
+    // Extra keyboard keys
+    if (key >= CTRL_EXTRA_KEY_SCAN_BASE && key < CTRL_EXTRA_KEY_SCAN_BASE + CTRL_EXTRA_KEY_SCAN_COUNT) {
+        static const char* names[] = {
+            "Keypad /", "ISO \\",
+            "F13", "F14", "F15", "F16", "F17", "F18",
+            "F19", "F20", "F21", "F22", "F23", "F24",
+        };
+        int n = std::snprintf(buf, buf_len, "%s", names[key - CTRL_EXTRA_KEY_SCAN_BASE]);
         return n > 0 ? n : 0;
     }
     if (g_alpine_game_config.input_mode == 2) {
@@ -673,13 +730,24 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
                 if (g_alpine_game_config.input_mode == 2
                     && (SDL_WasInit(SDL_INIT_VIDEO) & SDL_INIT_VIDEO) != 0
                     && SDL_GetKeyboardFocus() != nullptr)
-                    return; // SDL keyboard handles input in mode 2 when active
-                // Modes 0/1 (and fallback when SDL keyboard is inactive): RF requires KF_EXTENDED for these numpad-derived keys
-                if (w_param == VK_PRIOR
-                    || w_param == VK_NEXT
-                    || w_param == VK_END
-                    || w_param == VK_HOME) {
+                    return; // SDL handles keyboard in mode 2
+
+                // RF requires KF_EXTENDED for numpad-derived navigation keys
+                if (w_param == VK_PRIOR || w_param == VK_NEXT
+                    || w_param == VK_END || w_param == VK_HOME)
                     l_param |= KF_EXTENDED << 16;
+
+                // Sentinel pattern for keys RF's rebind UI rejects (Alt, extra keys)
+                if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+                    && rf::ui::options_controls_waiting_for_key
+                    && g_pending_extra_key_rebind < 0) {
+                    int win32_scan = (l_param >> 16) & 0x1FF;
+                    int rf_scan = (win32_scan & 0x7F) | ((win32_scan & 0x100) ? 0x80 : 0);
+                    if (scan_needs_rebind_sentinel(rf_scan)) {
+                        g_pending_extra_key_rebind = rf_scan;
+                        rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
+                        return;
+                    }
                 }
                 break;
         }

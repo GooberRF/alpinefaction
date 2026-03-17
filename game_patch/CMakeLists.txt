@@ -97,6 +97,7 @@ set(SRCS
     input/input.h
     input/input.cpp
     input/mouse.cpp
+    input/mouse.h
     input/key.cpp
     hud/hud_colors.cpp
     hud/hud_scale.cpp
