@@ -1774,12 +1774,15 @@ CodeInjection options_render_alpine_panel_patch{
         // Detect bind completion (falling edge of waiting_for_key).
         static bool s_was_waiting = false;
         static int16_t s_saved_mouse_btn_ids[128];
+        static int16_t s_saved_scan_codes_alt[128];
         bool now_waiting = (index == 3) && rf::ui::options_controls_waiting_for_key;
 
         if (!s_was_waiting && now_waiting && g_ctrl_bind_view && rf::local_player) {
             auto& cc = rf::local_player->settings.controls;
-            for (int i = 0; i < std::min(cc.num_bindings, 128); ++i)
+            for (int i = 0; i < std::min(cc.num_bindings, 128); ++i) {
                 s_saved_mouse_btn_ids[i] = cc.bindings[i].mouse_btn_id;
+                s_saved_scan_codes_alt[i] = cc.bindings[i].scan_codes[1];
+            }
         }
 
         if (s_was_waiting && !now_waiting && g_ctrl_bind_view) {
@@ -1790,10 +1793,14 @@ CodeInjection options_render_alpine_panel_patch{
             } else {
                 // Non-gamepad input — reject and roll back all RF side-effects
                 refresh_ctrl_gamepad_codes();
-                if (rf::local_player) {
-                    auto& cc = rf::local_player->settings.controls;
-                    for (int i = 0; i < std::min(cc.num_bindings, 128); ++i)
-                        cc.bindings[i].mouse_btn_id = s_saved_mouse_btn_ids[i];
+            }
+            // Restore keyboard/mouse fields that RF's rebind handler may have
+            // cleared as a side-effect of accepting the sentinel key.
+            if (rf::local_player) {
+                auto& cc = rf::local_player->settings.controls;
+                for (int i = 0; i < std::min(cc.num_bindings, 128); ++i) {
+                    cc.bindings[i].mouse_btn_id = s_saved_mouse_btn_ids[i];
+                    cc.bindings[i].scan_codes[1] = s_saved_scan_codes_alt[i];
                 }
             }
         }
