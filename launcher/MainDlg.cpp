@@ -162,6 +162,23 @@ LRESULT MainDlg::OnShowWhatsNew(WPARAM wparam, LPARAM lparam)
     std::string content = FetchWhatsNewContent();
     MessageBoxA(content.c_str(), "What's new?", MB_OK | MB_ICONINFORMATION);
 
+    // Prompt to switch to D3D11 if not already using it
+    GameConfig game_config;
+    game_config.load();
+    if (game_config.renderer.value() != GameConfig::Renderer::d3d11) {
+        int result = MessageBoxA(
+            "Using the Direct3D 11 renderer is now recommended.\n\n"
+            "Do you want to switch to it now?\n\n"
+            "You can change this setting at any time via the settings panel (gear icon) "
+            "in the Alpine Faction launcher.",
+            "Switch to Direct3D 11?",
+            MB_YESNO | MB_ICONINFORMATION);
+        if (result == IDYES) {
+            game_config.renderer = GameConfig::Renderer::d3d11;
+            game_config.save();
+        }
+    }
+
     return 0;
 }
 
