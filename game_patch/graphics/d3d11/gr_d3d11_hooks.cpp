@@ -75,8 +75,8 @@ namespace df::gr::d3d11
         return dist_sq <= combined_radius * combined_radius;
     }
 
-    // Local working buffer for gathered lights, avoids mutating the global
-    // rf::gr::relevant_lights/num_relevant_lights between engine calls.
+    // Local working buffer for gathered lights. Preserves dynamic-light results
+    // while running the static-light pass, then overwrites the globals for GPU upload.
     static rf::gr::Light* gathered_lights[rf::gr::max_relevant_lights];
 
     static void gather_mesh_lights(const rf::Vector3& pos, float mesh_radius = 0.0f, bool skip_debug = false)
@@ -688,7 +688,6 @@ namespace df::gr::d3d11
             if (renderer) {
                 renderer->clear_vif_cache(lod_mesh);
             }
-            unregister_mesh_self_illumination(lod_mesh);
         },
     };
 
@@ -742,7 +741,7 @@ namespace df::gr::d3d11
             if (renderer) {
                 renderer->flush_caches();
             }
-            clear_mesh_self_illumination();
+            clear_entity_ambient_cache();
         },
     };
 

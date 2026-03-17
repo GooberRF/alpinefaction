@@ -192,11 +192,13 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         // attempt to load level_info tbl file
         load_level_info_config(level_filename);
 
-        // evaluate and cache vertex lighting mode for this level
-        df::gr::d3d11::evaluate_vertex_lighting(level_filename);
-        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
-            && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
-            rf::console::print("Applying legacy vertex lighting for {} (per override present in mapname_info.tbl)", level_filename);
+        // evaluate and cache vertex lighting mode for this level (D3D11 only)
+        if (is_d3d11()) {
+            df::gr::d3d11::evaluate_vertex_lighting(level_filename);
+            if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
+                && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
+                rf::console::print("Applying legacy vertex lighting for {} (per override present in mapname_info.tbl)", level_filename);
+            }
         }
 
         int ret = level_load_hook.call_target(level_filename, save_filename, error);

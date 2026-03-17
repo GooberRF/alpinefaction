@@ -47,57 +47,13 @@ namespace df::gr::d3d11
     static uint64_t static_vertex_color_generation = 1;
     static std::vector<MeshRenderer*> mesh_renderers;
 
-    // Per-VifMesh self-illumination values indexed by material index.
-    // Keyed by VifMesh* (the actual mesh data pointer, shared across VifLodMesh instances)
-    // so that Switch_Model'd meshes that share the same underlying mesh data get the same values.
-    static std::unordered_map<VifMesh*, std::vector<float>> mesh_self_illumination;
-
     // Per-entity cache of the last valid blended ambient (keyed by MeshRenderParams address).
     // When an entity walks over geometry without lightmaps (ambient_color = white),
     // the cached value is used instead of falling back to global ambient.
     static std::unordered_map<const MeshRenderParams*, std::array<float, 3>> entity_ambient_cache;
 
-    void register_mesh_self_illumination(V3d* v3d)
+    void clear_entity_ambient_cache()
     {
-        if (!v3d || v3d->num_meshes <= 0) return;
-
-        for (int i = 0; i < v3d->num_meshes; ++i) {
-            auto& mesh = v3d->meshes[i];
-            auto* lod_mesh = mesh.vu;
-            if (!lod_mesh || !mesh.materials || mesh.num_materials <= 0) continue;
-
-            auto* materials = reinterpret_cast<MeshMaterial*>(mesh.materials);
-            std::vector<float> self_illum(mesh.num_materials, 0.0f);
-            for (int j = 0; j < mesh.num_materials; ++j) {
-                if (materials[j].self_illumination) {
-                    float si_value = materials[j].self_illumination[0];
-                    if (si_value > 0.0f) {
-                        self_illum[j] = std::min(si_value, 1.0f);
-                    }
-                }
-            }
-            // Register for each LOD level's VifMesh
-            for (int lod = 0; lod < lod_mesh->num_levels; ++lod) {
-                if (lod_mesh->meshes[lod]) {
-                    mesh_self_illumination[lod_mesh->meshes[lod]] = self_illum;
-                }
-            }
-        }
-    }
-
-    void unregister_mesh_self_illumination(VifLodMesh* lod_mesh)
-    {
-        if (!lod_mesh) return;
-        for (int lod = 0; lod < lod_mesh->num_levels; ++lod) {
-            if (lod_mesh->meshes[lod]) {
-                mesh_self_illumination.erase(lod_mesh->meshes[lod]);
-            }
-        }
-    }
-
-    void clear_mesh_self_illumination()
-    {
-        mesh_self_illumination.clear();
         entity_ambient_cache.clear();
     }
 
