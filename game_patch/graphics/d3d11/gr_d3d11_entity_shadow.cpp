@@ -365,9 +365,8 @@ namespace df::gr::d3d11
     {
         // Only generate once per frame — render_solid is called multiple times
         // per frame for different room/portal groups
-        static int last_frame = -1;
-        if (rf::frame_count == last_frame) return;
-        last_frame = rf::frame_count;
+        if (rf::frame_count == last_frame_) return;
+        last_frame_ = rf::frame_count;
 
         // Respect the stock game's ShowShadows toggle
         if (rf::local_player && !rf::local_player->settings.shadows_enabled) return;
@@ -653,12 +652,15 @@ namespace df::gr::d3d11
                 ID3D11Buffer* model_cb = render_context.model_transform_cbuffer();
                 context->VSSetConstantBuffers(0, 1, &model_cb);
 
-                // Bind VFX dynamic VB and draw
+                // Bind VFX dynamic VB and draw (bypasses render_context state cache)
                 UINT stride = sizeof(GpuVertex);
                 UINT vb_offset = 0;
                 ID3D11Buffer* vb = vfx_shadow_vb_;
                 context->IASetVertexBuffers(0, 1, &vb, &stride, &vb_offset);
                 context->Draw(total_verts, 0);
+
+                // Invalidate render_context VB cache so subsequent static mesh draws rebind correctly
+                render_context.set_vertex_buffer(vfx_shadow_vb_, sizeof(GpuVertex), 0);
 
                 // Restore shadow VP at b1
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };

@@ -122,6 +122,7 @@ namespace df::gr::d3d11
 
         int current_quality_ = 2;
         int current_resolution_ = 1024;
+        int last_frame_ = -1;
 
         // Dynamic vertex buffer for VFX (MESH_TYPE_ANIM_FX) shadow geometry
         ComPtr<ID3D11Buffer> vfx_shadow_vb_;
