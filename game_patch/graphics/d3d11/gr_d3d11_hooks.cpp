@@ -24,44 +24,8 @@
 
 void gr_light_use_static(bool use_static);
 
-// Debug visualization for GPU-driven mesh lights
-bool g_dbg_mesh_lights_omni = false;
-bool g_dbg_mesh_lights_spot = false;
-bool g_dbg_log_fp_lights = false;
-
 namespace df::gr::d3d11
 {
-    // Draw debug wireframe for gathered mesh lights
-    static void draw_debug_lights()
-    {
-        rf::gr::Mode mode{
-            rf::gr::TEXTURE_SOURCE_NONE,
-            rf::gr::COLOR_SOURCE_VERTEX,
-            rf::gr::ALPHA_SOURCE_VERTEX,
-            rf::gr::ALPHA_BLEND_NONE,
-            rf::gr::ZBUFFER_TYPE_READ,
-            rf::gr::FOG_NOT_ALLOWED,
-        };
-
-        constexpr int gpu_max = 32;
-        int total = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
-        for (int i = 0; i < total; ++i) {
-            const rf::gr::Light* light = rf::gr::relevant_lights[i];
-            bool in_range = i < gpu_max;
-
-            if (light->type == rf::gr::LT_SPOT && g_dbg_mesh_lights_spot) {
-                rf::gr::set_color(in_range ? 255 : 80, in_range ? 255 : 80, 0, 128);
-                rf::gr::sphere(light->vec, light->rad_2, mode);
-                rf::Vector3 tip = light->vec + light->spotlight_dir * light->rad_2;
-                rf::gr::set_color(0, 255, 255, 255);
-                rf::gr::line_vec(light->vec, tip, mode);
-            } else if (light->type != rf::gr::LT_SPOT && g_dbg_mesh_lights_omni) {
-                rf::gr::set_color(in_range ? 0 : 255, in_range ? 255 : 0, 0, 128);
-                rf::gr::sphere(light->vec, light->rad_2, mode);
-            }
-        }
-    }
-
     // Gather both dynamic and static lights for GPU-lit meshes.
     // is_find_static_lights controls which linked list the internal light search
     // functions traverse, so we must call light_filter_set_solid twice to get both.
@@ -79,7 +43,7 @@ namespace df::gr::d3d11
     // while running the static-light pass, then overwrites the globals for GPU upload.
     static rf::gr::Light* gathered_lights[rf::gr::max_relevant_lights];
 
-    static void gather_mesh_lights(const rf::Vector3& pos, float mesh_radius = 0.0f, bool skip_debug = false)
+    static void gather_mesh_lights(const rf::Vector3& pos, float mesh_radius = 0.0f)
     {
         // Pass 1: dynamic lights (default is_find_static_lights=false)
         rf::gr::light_filter_set_solid(rf::level.geometry, true, false);
@@ -178,45 +142,9 @@ namespace df::gr::d3d11
             }
         }
 
-        // Log gathered lights for first-person weapon mesh (one-shot diagnostic)
-        if (skip_debug && g_dbg_log_fp_lights) {
-            // skip_debug is true for first-person weapon renders
-            xlog::warn("--- FP weapon mesh lights: {} gathered ---", total);
-            for (int i = 0; i < total; ++i) {
-                const auto* light = gathered_lights[i];
-                if (light->type == rf::gr::LT_SPOT) {
-                    xlog::warn("[{}] SPOT: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) "
-                        "dir=({:.3f}, {:.3f}, {:.3f}) radius={:.1f} fov1_dot={:.4f} fov2_dot={:.4f} "
-                        "atten={:.3f} sq_falloff={} algo={}",
-                        i, light->r, light->g, light->b,
-                        light->vec.x, light->vec.y, light->vec.z,
-                        light->spotlight_dir.x, light->spotlight_dir.y, light->spotlight_dir.z,
-                        light->rad_2, light->spotlight_fov1_dot, light->spotlight_fov2_dot,
-                        light->spotlight_atten, light->use_squared_fov_falloff,
-                        light->attenuation_algorithm);
-                } else {
-                    const char* type_name = "OMNI";
-                    if (light->type == rf::gr::LT_DIRECTIONAL) type_name = "DIR";
-                    else if (light->type == rf::gr::LT_TUBE) type_name = "TUBE";
-                    xlog::warn("[{}] {}: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) radius={:.1f} algo={} dyn={}{}",
-                        i, type_name, light->r, light->g, light->b,
-                        light->vec.x, light->vec.y, light->vec.z, light->rad_2,
-                        light->attenuation_algorithm, light->dynamic,
-                        (light->r < 0.0f || light->g < 0.0f || light->b < 0.0f) ? " *** NEGATIVE ***" : "");
-                }
-            }
-            g_dbg_log_fp_lights = false;
-        }
-
         // Write results back to the global arrays for the GPU upload to read
         std::memcpy(rf::gr::relevant_lights, gathered_lights, total * sizeof(rf::gr::Light*));
         rf::gr::num_relevant_lights = total;
-
-        // Debug visualization (skip during first-person weapon rendering to avoid
-        // duplicate draws through the weapon's different projection matrix)
-        if (!skip_debug && (g_dbg_mesh_lights_omni || g_dbg_mesh_lights_spot)) {
-            draw_debug_lights();
-        }
     }
 
     static std::optional<Renderer> renderer;
@@ -446,7 +374,7 @@ namespace df::gr::d3d11
             bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
             if (rf::level.geometry) {
-                gather_mesh_lights(pos, lod_mesh->radius, is_first_person);
+                gather_mesh_lights(pos, lod_mesh->radius);
                 lights_gathered = true;
             }
 
@@ -503,7 +431,7 @@ namespace df::gr::d3d11
             bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
             if (!use_vertex_lighting && rf::level.geometry) {
-                gather_mesh_lights(pos, lod_mesh->radius, is_first_person);
+                gather_mesh_lights(pos, lod_mesh->radius);
                 lights_gathered = true;
             }
 

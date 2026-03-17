@@ -1,6 +1,5 @@
 #include <cassert>
 #include <cstring>
-#include <xlog/xlog.h>
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/multi.h"
@@ -12,9 +11,6 @@
 #include "gr_d3d11_shader.h"
 
 using namespace rf;
-
-// One-shot diagnostic: logs all spotlight data on next GPU upload, then resets
-bool g_dbg_log_spotlights = false;
 
 namespace df::gr::d3d11
 {
@@ -244,11 +240,6 @@ namespace df::gr::d3d11
             int num_point_lights = std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights);
             data.num_point_lights = static_cast<float>(num_point_lights);
 
-            bool logging = g_dbg_log_spotlights && num_point_lights > 0;
-            if (logging) {
-                xlog::warn("--- GPU lights upload: {} lights ---", num_point_lights);
-            }
-
             int gpu_index = 0;
             for (int i = 0; i < num_point_lights; ++i) {
                 rf::gr::Light* light = rf::gr::relevant_lights[i];
@@ -269,17 +260,6 @@ namespace df::gr::d3d11
                     gpu_light.spot_fov2_dot = light->spotlight_fov2_dot;
                     gpu_light.spot_atten = light->spotlight_atten;
                     gpu_light.spot_sq_falloff = light->use_squared_fov_falloff ? 1.0f : 0.0f;
-                    if (logging) {
-                        xlog::warn("[{}] SPOT: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) "
-                            "dir=({:.3f}, {:.3f}, {:.3f}) radius={:.1f} fov1_dot={:.4f} fov2_dot={:.4f} "
-                            "atten={:.3f} sq_falloff={} algo={}",
-                            i, light->r, light->g, light->b,
-                            light->vec.x, light->vec.y, light->vec.z,
-                            light->spotlight_dir.x, light->spotlight_dir.y, light->spotlight_dir.z,
-                            light->rad_2, light->spotlight_fov1_dot, light->spotlight_fov2_dot,
-                            light->spotlight_atten, light->use_squared_fov_falloff,
-                            light->attenuation_algorithm);
-                    }
                 } else if (light->type == rf::gr::LT_TUBE) {
                     gpu_light.light_type = 2.0f;
                     gpu_light.pos2 = {light->vec2.x, light->vec2.y, light->vec2.z};
@@ -288,14 +268,6 @@ namespace df::gr::d3d11
                     gpu_light.spot_fov2_dot = 0.0f;
                     gpu_light.spot_atten = 0.0f;
                     gpu_light.spot_sq_falloff = 0.0f;
-                    if (logging) {
-                        xlog::warn("[{}] TUBE: color=({:.3f}, {:.3f}, {:.3f}) pos1=({:.1f}, {:.1f}, {:.1f}) "
-                            "pos2=({:.1f}, {:.1f}, {:.1f}) radius={:.1f} algo={}",
-                            i, light->r, light->g, light->b,
-                            light->vec.x, light->vec.y, light->vec.z,
-                            light->vec2.x, light->vec2.y, light->vec2.z,
-                            light->rad_2, light->attenuation_algorithm);
-                    }
                 } else {
                     gpu_light.light_type = 0.0f;
                     gpu_light.spot_dir = {0.0f, 0.0f, 0.0f};
@@ -303,27 +275,11 @@ namespace df::gr::d3d11
                     gpu_light.spot_fov2_dot = 0.0f;
                     gpu_light.spot_atten = 0.0f;
                     gpu_light.spot_sq_falloff = 0.0f;
-                    if (logging) {
-                        const char* type_name = "OMNI";
-                        if (light->type == rf::gr::LT_DIRECTIONAL) type_name = "DIR";
-                        xlog::warn("[{}] {}: color=({:.3f}, {:.3f}, {:.3f}) pos=({:.1f}, {:.1f}, {:.1f}) "
-                            "radius={:.1f} algo={} dynamic={}",
-                            i, type_name, light->r, light->g, light->b,
-                            light->vec.x, light->vec.y, light->vec.z,
-                            light->rad_2, light->attenuation_algorithm, light->dynamic);
-                    }
                 }
                 gpu_light.atten_algo = static_cast<float>(light->attenuation_algorithm);
                 gpu_index++;
             }
             data.num_point_lights = static_cast<float>(gpu_index);
-
-            if (logging) {
-                if (gpu_index == 0) {
-                    xlog::warn("--- GPU lights upload: 0 lights after filtering ---");
-                }
-                g_dbg_log_spotlights = false;
-            }
         }
         else {
             data.ambient_light = {1.0f, 1.0f, 1.0f};
