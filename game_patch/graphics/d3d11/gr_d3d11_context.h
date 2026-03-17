@@ -9,6 +9,7 @@
 #include "gr_d3d11_texture.h"
 #include "gr_d3d11_state.h"
 #include "../../misc/alpine_settings.h"
+#include "../../misc/side_scroller.h"
 #include "../../rf/gr/gr.h"
 
 namespace df::gr::d3d11
@@ -86,7 +87,8 @@ namespace df::gr::d3d11
             bool alpha_test = mode.get_zbuffer_type() == gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
             bool fog_allowed = mode.get_fog_type() != gr::FOG_NOT_ALLOWED;
             int colorblind_mode = g_alpine_game_config.colorblind_mode;
-            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only) {
+            bool ss_active = get_ss_occlusion_params().active;
+            if (force_update_ || ss_active || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only) {
                 current_alpha_test_ = alpha_test;
                 current_fog_allowed_ = fog_allowed;
                 current_color_ = color;
@@ -109,6 +111,14 @@ namespace df::gr::d3d11
             }
         }
 
+        void set_ss_is_detail(bool is_detail)
+        {
+            if (current_ss_is_detail_ != is_detail) {
+                current_ss_is_detail_ = is_detail;
+                force_update_ = true;
+            }
+        }
+
     private:
         void update_buffer(ID3D11DeviceContext* device_context);
 
@@ -119,6 +129,7 @@ namespace df::gr::d3d11
         rf::Color current_color_{255, 255, 255};
         int current_colorblind_mode_ = 0;
         bool current_lightmap_only_ = false;
+        bool current_ss_is_detail_ = false;
     };
 
     class PerFrameBuffer
@@ -331,6 +342,11 @@ namespace df::gr::d3d11
         void update_per_frame_constants()
         {
             per_frame_buffer_.update(device_context_);
+        }
+
+        void set_ss_is_detail(bool is_detail)
+        {
+            render_mode_cbuffer_.set_ss_is_detail(is_detail);
         }
 
         void fog_set()

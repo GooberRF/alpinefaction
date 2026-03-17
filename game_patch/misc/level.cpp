@@ -12,6 +12,7 @@
 #include "level.h"
 #include "misc.h"
 #include "player.h"
+#include "side_scroller.h"
 #include "../multi/server.h"
 #include "../object/alpine_corona.h"
 
@@ -105,6 +106,7 @@ CodeInjection level_load_init_patch{
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
+        side_scroller_on_level_load();
     },
 };
 

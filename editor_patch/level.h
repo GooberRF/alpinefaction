@@ -349,6 +349,8 @@ struct AlpineLevelProperties
     float static_mesh_ambient_light_modifier = 2.0f;
     // v4
     bool rf2_style_geomod = false;
+    uint8_t perspective = 0; // 0 = First person, 1 = Side-scroller
+    // v4 (continued - vectors kept after scalars for clean versioning)
     std::vector<int32_t> geoable_brush_uids;
     std::vector<int32_t> geoable_room_uids; // computed at save time, parallel to geoable_brush_uids
     std::vector<int32_t> breakable_brush_uids;
@@ -377,6 +379,7 @@ struct AlpineLevelProperties
         override_static_mesh_ambient_light_modifier = false;
         static_mesh_ambient_light_modifier = 2.0f;
         rf2_style_geomod = false;
+        perspective = 0;
         geoable_brush_uids.clear();
         geoable_room_uids.clear();
         breakable_brush_uids.clear();
@@ -433,6 +436,7 @@ struct AlpineLevelProperties
             uint8_t mat = (i < breakable_materials.size()) ? breakable_materials[i] : 0;
             file.write<uint8_t>(mat);
         }
+        file.write<std::uint8_t>(perspective);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -544,6 +548,15 @@ struct AlpineLevelProperties
                     return;
                 breakable_materials[i] = mat;
             }
+        }
+
+        // perspective appended to v4
+        if (version >= 4) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            perspective = u8;
+            xlog::debug("[AlpineLevelProps] perspective {}", perspective);
         }
     }
 };

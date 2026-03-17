@@ -274,6 +274,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
         }
 
         multi_spectate_sync_crouch_anim();
+
         gameplay_render_frame_hook.call_target(pp, flags);
     },
 };

@@ -113,6 +113,8 @@ namespace rf
     using CharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char is_state, char unused);
     static const auto character_mesh_load_action = reinterpret_cast<CharMeshLoadActionFn>(0x0051CC10);
     static auto& vmesh_create_anim_fx = addr_as_ref<VMesh*(const char *filename, int path_id)>(0x00502A60);
+    static auto& vmesh_get_tag_world_pos = addr_as_ref<void(VMesh* vmesh, int tag_index,
+        const Matrix3& orient, const Vector3& pos, Matrix3& out_orient, Vector3& out_pos)>(0x005034F0);
     static auto& vclip_lookup = addr_as_ref<int(const char* name)>(0x004C1D00);
     static auto& vclip_play_3d =
         addr_as_ref<void(int index, GRoom* src_room, Vector3* src_pos, Vector3* pos, float radius,
