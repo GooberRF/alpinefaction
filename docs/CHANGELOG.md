@@ -16,12 +16,14 @@ Version 1.3.0 (Bakeapple): Not yet released
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
   - `Note` for leaving important information in levels (editor only)
   - `Corona` for configuring custom glare effects in levels
+- Promote Direct3D 11 renderer to recommended, and add several notable improvements
+  - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
+  - Add full mesh shadows for entities, corpses, and items
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Standardize user agent string format across all use cases
 - Bump RFL version to 304
-- Support `Alpha` field in `Decal` objects placed in version >= 304 levels (Direct3D 11 renderer only)
 - Improve output of object create failure log message
 - Add `Players in linked triggers` application setting for `AF_Heal` events
 - Add speedometer to HUD, bind to `ui_show_speed` console command
@@ -49,7 +51,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
 - Add level editor support for custom texture subdirectories under `user_maps\textures`
-- Add full mesh shadows for entities, corpses, and items (Direct3D 11 renderer only)
 - Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
 - Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
 - Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
