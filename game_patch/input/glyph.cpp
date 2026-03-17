@@ -33,8 +33,10 @@ static const char* get_label_name(SDL_GamepadButtonLabel label)
     }
 }
 
-// Standard glyph overrides — shared across all controller families
-static const ButtonOverride glyph_standard[] = {
+// shared names — shared by PlayStation and Steam Deck families.
+// Provides L1/R1/L2/R2/L3/R3/L4/R4/L5/R5 and misc button names for buttons
+// not covered by a family-specific override table.
+static const ButtonOverride shared_glyphs[] = {
     {  7, "L3"        },  // Left stick click
     {  8, "R3"        },  // Right stick click
     {  9, "L1"        },  // Left shoulder
@@ -82,10 +84,10 @@ static const ButtonOverride ps3_overrides[] = {
 };
 
 static const ButtonOverride ps4_overrides[] = {
-    {  4, "Share"    },
-    {  5, "PS"       },
-    {  6, "Options"  },
-    { 20, "Touchpad" },
+    {  4, "Share"          },
+    {  5, "PS"             },
+    {  6, "Options"        },
+    { 20, "Touchpad Click" },
 };
 
 static const ButtonOverride ps5_overrides[] = {
@@ -95,9 +97,9 @@ static const ButtonOverride ps5_overrides[] = {
     { 15, "Mic"       },
     { 16, "RB Paddle" },
     { 17, "LB Paddle" },
-    { 18, "Right Fn"  },
-    { 19, "Left Fn"   },
-    { 20, "Touchpad"  },
+    { 18, "Right Fn"        },
+    { 19, "Left Fn"          },
+    { 20, "Touchpad Click"   },
 };
 
 static const ButtonOverride switchpro_overrides[] = {
@@ -132,11 +134,13 @@ static const ButtonOverride steamdeck_overrides[] = {
 };
 
 static const ButtonOverride steamcontroller_overrides[] = {
-    {  5, "Steam"  },
-    {  7, "Stick Click"  }, 
-    {  8, "R-Pad"  },   // Right trackpad press
-    { 16, "RG"     },   // Right grip
-    { 17, "LG"     },   // Left grip
+    {  4, "Back"                 },
+    {  5, "Steam"                },
+    {  6, "Start"                },
+    {  7, "Stick Click"          },
+    {  8, "Right Trackpad Click" },
+    { 16, "RG"                   },  // Right grip
+    { 17, "LG"                   },  // Left grip
 };
 
 const char* gamepad_get_button_name(int button_idx)
@@ -218,47 +222,70 @@ static ControllerIconType sdl_type_to_icon(SDL_GamepadType type)
     }
 }
 
+// Returns true for controller families that use shared naming as their shared standard tier
+// (L1/R1/L2/R2/L3/R3 etc.) for buttons not covered by a platform-specific override.
+static bool uses_shared_glyphs(ControllerIconType type)
+{
+    switch (type) {
+        case ControllerIconType::PS3:
+        case ControllerIconType::PS4:
+        case ControllerIconType::PS5:
+        case ControllerIconType::SteamDeck:
+            return true;
+        default:
+            return false;
+    }
+}
+
 const char* gamepad_get_button_display_name(ControllerIconType type, int button_idx)
 {
-    // Face buttons (0–3): SDL handles per-controller label mapping, including Switch A/B swap.
-    // Generic/Auto have no SDL type (→ UNKNOWN), so this is naturally skipped for them.
+    // Tier 1: SDL face-button label (buttons 0–3).
+    // SDL handles per-controller A/B/X/Y label mapping including Switch A/B swap.
+    // Generic/Auto have no SDL type (→ UNKNOWN), so this tier is naturally skipped for them.
     if (button_idx >= 0 && button_idx < 4) {
         SDL_GamepadType sdl_type = icon_type_to_sdl(type);
         if (sdl_type != SDL_GAMEPAD_TYPE_UNKNOWN) {
-            const char* label_name = get_label_name(
+            const char* label = get_label_name(
                 SDL_GetGamepadButtonLabelForType(sdl_type, static_cast<SDL_GamepadButton>(button_idx)));
-            if (label_name)
-                return label_name;
+            if (label)
+                return label;
         }
     }
 
-    // Non-face buttons: look up in the controller-specific table.
+    // Tier 2: Family-specific override table.
     const char* result = nullptr;
     switch (type) {
         case ControllerIconType::Xbox360:
             result = search_overrides(xbox360_overrides, button_idx);
             if (result) return result;
-            result = search_overrides(xboxone_overrides, button_idx); break;
+            result = search_overrides(xboxone_overrides, button_idx);  // LB/RB/LS/RS/LT/RT/etc.
+            break;
         case ControllerIconType::XboxOne:
-            result = search_overrides(xboxone_overrides, button_idx); break;
+            result = search_overrides(xboxone_overrides, button_idx);
+            break;
         case ControllerIconType::PS3:
-            result = search_overrides(ps3_overrides, button_idx); break;
+            result = search_overrides(ps3_overrides, button_idx);
+            break;
         case ControllerIconType::PS4:
-            result = search_overrides(ps4_overrides, button_idx); break;
+            result = search_overrides(ps4_overrides, button_idx);
+            break;
         case ControllerIconType::PS5:
-            result = search_overrides(ps5_overrides, button_idx); break;
+            result = search_overrides(ps5_overrides, button_idx);
+            break;
         case ControllerIconType::NintendoSwitch:
-            result = search_overrides(switchpro_overrides, button_idx); break;
+            result = search_overrides(switchpro_overrides, button_idx);
+            break;
         case ControllerIconType::NintendoGameCube:
-            result = search_overrides(gamecube_overrides, button_idx); break;
+            result = search_overrides(gamecube_overrides, button_idx);
+            break;
         case ControllerIconType::SteamController:
             result = search_overrides(steamcontroller_overrides, button_idx);
             if (result) return result;
-            result = search_overrides(xbox360_overrides, button_idx);  // Back/Start
-            if (result) return result;
-            result = search_overrides(xboxone_overrides, button_idx); break;  // LB/RB/LT/RT
+            result = search_overrides(xboxone_overrides, button_idx);  // LB/RB/LT/RT
+            break;
         case ControllerIconType::SteamDeck:
-            result = search_overrides(steamdeck_overrides, button_idx); break;
+            result = search_overrides(steamdeck_overrides, button_idx);
+            break;
         default:
             break;
     }
@@ -266,13 +293,15 @@ const char* gamepad_get_button_display_name(ControllerIconType type, int button_
     if (result)
         return result;
 
-    // Shared standard fallback — covers sticks, paddles, triggers, misc buttons
-    // consistently across all known controller families.
-    if (type != ControllerIconType::Generic) {
-        const char* standard = search_overrides(glyph_standard, button_idx);
-        if (standard)
-            return standard;
+    // Tier 3: Apple MFi shared standard (L1/R1/L2/R2/L3/R3 etc.)
+    // Covers stick clicks, shoulders, and paddles for PlayStation and Steam Deck families.
+    if (uses_shared_glyphs(type)) {
+        const char* mfi = search_overrides(shared_glyphs, button_idx);
+        if (mfi)
+            return mfi;
     }
+
+    // Tier 4: SDL positional fallback — always defined for every button index.
     return gamepad_get_button_name(button_idx);
 }
 

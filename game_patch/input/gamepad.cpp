@@ -45,6 +45,10 @@ static int g_trigger_action[2] = {rf::CC_ACTION_CROUCH, rf::CC_ACTION_SECONDARY_
 static bool g_lt_was_down = false;
 static bool g_rt_was_down = false;
 
+// Previous-frame "held by gamepad" state for just-pressed detection (mirrors ControlConfig::bindings[128]).
+static constexpr int k_action_count = 128;
+static bool g_gamepad_action_prev[k_action_count] = {};
+
 // Gamepad scan code captured during a rebind, or -1 if none pending.
 static int g_rebind_pending_sc = -1;
 
@@ -151,7 +155,6 @@ static void update_trigger_actions()
 }
 
 // Returns true if a gamepad button or trigger currently held maps to `action_idx`.
-// Used to prevent stick movement logic from releasing an action held via a digital button.
 static bool is_action_held_by_button(int action_idx)
 {
     if (!g_gamepad) return false;
@@ -328,6 +331,7 @@ void gamepad_sdl_poll()
                     g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
                     g_accel_x = g_accel_y = g_accel_z = 0.0f;
                     g_gyro_fresh = false;
+                    memset(g_gamepad_action_prev, 0, sizeof(g_gamepad_action_prev));
                 }
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -530,6 +534,22 @@ void gamepad_do_frame()
         if (!rf::gameseq_in_gameplay())
             gamepad_do_menu_frame();
 
+        // Snapshot current gamepad-held state for just-pressed detection next frame.
+        // Build from button/trigger maps directly to avoid O(actions × buttons) scanning.
+        memset(g_gamepad_action_prev, 0, sizeof(g_gamepad_action_prev));
+        if (g_gamepad) {
+            for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
+                int a = g_button_map[b];
+                if (a >= 0 && a < k_action_count
+                    && SDL_GetGamepadButton(g_gamepad, static_cast<SDL_GamepadButton>(b)))
+                    g_gamepad_action_prev[a] = true;
+            }
+            if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count && g_lt_was_down)
+                g_gamepad_action_prev[g_trigger_action[0]] = true;
+            if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count && g_rt_was_down)
+                g_gamepad_action_prev[g_trigger_action[1]] = true;
+        }
+
         g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
 
         if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled && g_gyro_fresh) {
@@ -572,6 +592,34 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
         pitch_delta += pitch_sign * gyro_pitch * deg2rad * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime;
     }
 }
+
+// Hooks: let the game's control system see gamepad buttons/triggers as active for any
+// action, including Alpine-specific ones that may have no keyboard scan code binding.
+FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_down_hook{
+    0x00430F40,
+    [](rf::ControlConfig* ccp, rf::ControlConfigAction action) -> bool {
+        if (control_is_control_down_hook.call_target(ccp, action))
+            return true;
+        return g_gamepad && rf::is_main_wnd_active && is_action_held_by_button(static_cast<int>(action));
+    },
+};
+
+FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_hook{
+    0x0043D4F0,
+    [](rf::ControlConfig* ccp, rf::ControlConfigAction action, bool* just_pressed) -> bool {
+        if (control_config_check_pressed_hook.call_target(ccp, action, just_pressed))
+            return true;
+        int idx = static_cast<int>(action);
+        if (!g_gamepad || !rf::is_main_wnd_active || !is_action_held_by_button(idx))
+            return false;
+        bool is_just = (idx >= 0 && idx < k_action_count) ? !g_gamepad_action_prev[idx] : false;
+        if (ccp->bindings[idx].press_mode != 0 || is_just) {
+            if (just_pressed) *just_pressed = is_just;
+            return true;
+        }
+        return false;
+    },
+};
 
 // Returns true if `entity` is the vehicle that the local player is currently riding.
 static bool is_local_player_vehicle(rf::Entity* entity)
@@ -914,11 +962,13 @@ void gamepad_apply_patch()
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
 
-    // Load SDL_GameControllerDB (thread-safe, no SDL subsystem required)
+    // Load SDL_GameControllerDB
     std::string mappings_path = get_module_dir(g_hmodule) + "gamecontrollerdb.txt";
     if (SDL_AddGamepadMappingsFromFile(mappings_path.c_str()) < 0)
         xlog::warn("SDL_GameControllerDB: failed to load mappings: {}", SDL_GetError());
 
+    control_is_control_down_hook.install();
+    control_config_check_pressed_hook.install();
     physics_simulate_entity_hook.install();
     player_fpgun_process_hook.install();
     vmesh_process_hook.install();
@@ -955,6 +1005,7 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
     g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
     g_accel_x = g_accel_y = g_accel_z = 0.0f;
     g_gyro_fresh = false;
+    memset(g_gamepad_action_prev, 0, sizeof(g_gamepad_action_prev));
 }
 
 // Must be called from the game main thread (SDL3 requires SDL_PumpEvents on the same

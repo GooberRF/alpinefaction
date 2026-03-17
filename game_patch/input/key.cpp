@@ -298,9 +298,9 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON);
         alpine_control_config_add_item(ccp, "Reset Camera", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
-        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold)", false, -1, -1, -1,
+        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold On)", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD);
-        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold - Invert)", false, -1, -1, -1,
+        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold Off)", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT);
         alpine_control_config_add_item(ccp, "Gyro Modifier (Toggle)", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);

@@ -157,9 +157,9 @@ static bool g_gyro_toggle_prev_down = false;
 
 // Returns whether gyro input should be applied this frame.
 // - None of the three modifier bindings assigned  -> always active.
-// - Gyro Modifier (Hold)          -> active while held.
-// - Gyro Modifier (Hold - Invert) -> active while NOT held.
-// - Gyro Modifier (Toggle)        -> button press flips on/off (starts on).
+// - Gyro Modifier (Hold On)    -> active while held.
+// - Gyro Modifier (Hold Off)   -> active while NOT held.
+// - Gyro Modifier (Toggle)     -> button press flips on/off (starts on).
 // If multiple bindings are assigned, any active condition enables gyro (OR).
 bool gyro_modifier_is_active()
 {

@@ -20,7 +20,6 @@ void        gamepad_sync_bindings_from_scan_codes();
 static constexpr int CTRL_GAMEPAD_SCAN_BASE   = 0x59; // SDL button 0
 static constexpr int CTRL_GAMEPAD_LEFT_TRGGER  = 0x73; // SCAN_BASE + 26
 static constexpr int CTRL_GAMEPAD_RIGHT_TRGGER = 0x74; // SCAN_BASE + 27
-static constexpr int CTRL_REBIND_SENTINEL      = 0x58; // KEY_F12, injected during rebind
 
 // Per-binding get/set for save/load
 int  gamepad_get_button_binding(int button_idx);

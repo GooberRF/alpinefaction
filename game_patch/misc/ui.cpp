@@ -19,6 +19,7 @@
 #include "../object/object.h"
 #include "../input/gyro.h"
 #include "../input/gamepad.h"
+#include "../input/input.h"
 
 #define DEBUG_UI_LAYOUT 0
 #define SHARP_UI_TEXT 1
