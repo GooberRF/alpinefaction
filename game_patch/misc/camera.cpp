@@ -405,16 +405,15 @@ CodeInjection linear_pitch_patch{
             s_camera_reset_prev_down = down;
         }
         if (s_camera_resetting) {
-            constexpr float reset_speed = 12.0f; // radians per second
-            constexpr float done_threshold = 0.001f;
+            constexpr float lerp_rate = 12.0f; // exponential decay rate
+            constexpr float done_threshold = 0.02f; // ~1 degree — imperceptible snap
             const float current_pitch = entity->control_data.eye_phb.x;
             if (std::abs(current_pitch) < done_threshold) {
-                pitch_delta = 0.0f;
+                pitch_delta = -current_pitch; // snap the last sliver
                 s_camera_resetting = false;
             } else {
-                const float toward_zero = -current_pitch;
-                const float max_step = reset_speed * rf::frametime;
-                pitch_delta = std::clamp(toward_zero, -max_step, max_step);
+                const float t = std::min(lerp_rate * rf::frametime, 1.0f);
+                pitch_delta = -current_pitch * t;
             }
         }
     },
