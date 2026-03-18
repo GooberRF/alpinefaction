@@ -1,4 +1,5 @@
 #include "gamepad.h"
+#include "gyro.h"
 #include "input.h"
 #include "glyph.h"
 #include <algorithm>

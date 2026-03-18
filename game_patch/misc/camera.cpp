@@ -396,8 +396,9 @@ CodeInjection linear_pitch_patch{
             );
         }
 
-        // Reset camera pitch to horizon on press (rising-edge detection).
-        if (rf::local_player) {
+        // Reset camera pitch to horizon on rising-edge press.
+        // Skip input poll while already resetting — re-arm only after completion.
+        if (!s_camera_resetting && rf::local_player) {
             const auto reset_action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
             bool down = rf::control_is_control_down(&rf::local_player->settings.controls, reset_action);
             if (down && !s_camera_reset_prev_down)
@@ -411,6 +412,7 @@ CodeInjection linear_pitch_patch{
             if (std::abs(current_pitch) < done_threshold) {
                 pitch_delta = -current_pitch; // snap the last sliver
                 s_camera_resetting = false;
+                s_camera_reset_prev_down = false; // re-arm edge detection
             } else {
                 const float t = std::min(lerp_rate * rf::frametime, 1.0f);
                 pitch_delta = -current_pitch * t;

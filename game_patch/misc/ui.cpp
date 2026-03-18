@@ -1366,7 +1366,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_inputbox_init(
         &ao_move_deadzone_cbox, &ao_move_deadzone_label, &ao_move_deadzone_butlabel, &alpine_options_panel2, ao_move_deadzone_cbox_on_click, 112, 234, "Move deadzone");
     alpine_options_panel_inputbox_init(
-        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Camera deadzone");
+        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Cam deadzone");
     alpine_options_panel_checkbox_init(
         &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 294, "Camera Invert Y");
     alpine_options_panel_checkbox_init(
