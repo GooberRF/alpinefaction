@@ -6,6 +6,7 @@
 namespace rf
 {
     struct GRoom;
+    struct MeshRenderParams;
 
     enum VMeshType
     {
@@ -106,6 +107,7 @@ namespace rf
     static auto& vmesh_play_action_by_index = addr_as_ref<void(VMesh* vmesh, int action_index, float transition_time, int hold_last_frame)>(0x005033B0);
     static auto& vmesh_stop_all_actions = addr_as_ref<void(VMesh* vmesh)>(0x00503400);
     static auto& vmesh_get_materials_array = addr_as_ref<void(VMesh *vmesh, int *num_materials_out, MeshMaterial **materials_array_out)>(0x00503650);
+    static auto& vmesh_render = addr_as_ref<void(VMesh* vmesh, Vector3* pos, Matrix3* orient, MeshRenderParams* params)>(0x00503100);
     static auto& vmesh_process = addr_as_ref<void(VMesh* vmesh, float frametime, int increment_only, Vector3* pos, Matrix3* orient, int lod_level)>(0x00503360);
 
     // character_mesh_load_action: __thiscall on mesh_data (VMesh::mesh), loads .rfa animation file

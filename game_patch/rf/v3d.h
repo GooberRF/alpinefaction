@@ -138,6 +138,20 @@ namespace rf
         int powerup_bitmaps[2];
         gr::Color ambient_color;
         Matrix3 orient;
+
+        // Initialize to stock defaults (matches FUN_00500fb0)
+        void init_defaults()
+        {
+            flags = 0;
+            lod_level = -1;
+            alpha = 255;
+            alt_tex = nullptr;
+            field_14_unk_fire = -1.0f;
+            vertex_colors = nullptr;
+            powerup_bitmaps[0] = -1;
+            powerup_bitmaps[1] = -1;
+            orient.make_identity();
+        }
     };
 
     enum MeshRenderFlags

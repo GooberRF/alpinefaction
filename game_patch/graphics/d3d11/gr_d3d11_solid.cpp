@@ -38,9 +38,6 @@ namespace df::gr::d3d11
     static auto& gr_solid_alpha_mode = addr_as_ref<gr::Mode>(0x0180832C);
     static auto& geo_cache_rooms = addr_as_ref<GRoom*[256]>(0x01375DB4);
     static auto& geo_cache_num_rooms = addr_as_ref<int>(0x013761B8);
-    static auto& sky_room_center = addr_as_ref<Vector3>(0x0088FB10);
-    static auto& sky_room_offset = addr_as_ref<Vector3>(0x0087BB00);
-    static auto& sky_room_orient = addr_as_ref<Matrix3*>(0x009BB56C);
 
     static auto& set_currently_rendered_room = addr_as_ref<void (GRoom *room)>(0x004D3350);
 
@@ -817,26 +814,24 @@ namespace df::gr::d3d11
         }
     }
 
-    void SolidRenderer::render_sky_room(GRoom *room)
+    void SolidRenderer::render_sky_room(GRoom *room, Vector3& out_sky_transform_pos, Matrix3& out_sky_transform_orient)
     {
         xlog::trace("Rendering sky room {} cache {}", room->room_index, room->geo_cache);
         render_context_.update_lights(true);
 
         // Compute sky room transform: maps world coords to camera-relative coords
-        Vector3 sky_transform_pos;
-        Matrix3 sky_transform_orient;
         if (const Matrix3* skybox_orient = sky_room_orient) {
-            sky_transform_orient = *skybox_orient;
-            sky_transform_orient.inverse();
-            const Vector3 rotated_center = sky_transform_orient.transform_vector(sky_room_center);
-            sky_transform_pos = sky_room_offset + sky_room_center - rotated_center;
+            out_sky_transform_orient = *skybox_orient;
+            out_sky_transform_orient.inverse();
+            const Vector3 rotated_center = out_sky_transform_orient.transform_vector(sky_room_center);
+            out_sky_transform_pos = sky_room_offset + sky_room_center - rotated_center;
         }
         else {
-            sky_transform_pos = sky_room_offset;
-            sky_transform_orient = rf::identity_matrix;
+            out_sky_transform_pos = sky_room_offset;
+            out_sky_transform_orient = rf::identity_matrix;
         }
 
-        before_render(sky_transform_pos, sky_transform_orient);
+        before_render(out_sky_transform_pos, out_sky_transform_orient);
         render_room_faces(rf::level.geometry, room, FaceRenderType::opaque);
         render_room_faces(rf::level.geometry, room, FaceRenderType::alpha);
 
@@ -849,8 +844,8 @@ namespace df::gr::d3d11
                 continue;
             }
             // Transform mover position and orientation by the sky room transform
-            Vector3 transformed_pos = sky_transform_orient.transform_vector(mb.pos) + sky_transform_pos;
-            Matrix3 transformed_orient = sky_transform_orient;
+            Vector3 transformed_pos = out_sky_transform_orient.transform_vector(mb.pos) + out_sky_transform_pos;
+            Matrix3 transformed_orient = out_sky_transform_orient;
             transformed_orient.mul(mb.orient);
 
             GRenderCache* cache = get_or_create_movable_solid_cache(mb.geometry);
