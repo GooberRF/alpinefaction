@@ -194,6 +194,21 @@ ConsoleCommand2 mesh_static_lighting_cmd{
     "Toggle mesh static lighting calculation",
 };
 
+
+ConsoleCommand2 vertex_lighting_cmd{
+    "r_vertexlighting",
+    []() {
+        g_alpine_game_config.vertex_lighting = !g_alpine_game_config.vertex_lighting;
+        // Re-evaluate cached state so the change takes effect immediately
+        df::gr::d3d11::evaluate_vertex_lighting(rf::level.filename);
+        rf::console::print("Using {} lighting for meshes. (D3D11 only)", g_alpine_game_config.vertex_lighting ? "legacy vertex" : "modern pixel");
+        if (df::gr::d3d11::g_level_vertex_lighting != g_alpine_game_config.vertex_lighting) {
+            rf::console::print("Note: per-map override in mapname_info.tbl is active for this level");
+        }
+    },
+    "Toggle between legacy vertex lighting and modern pixel lighting for meshes (D3D11 only)",
+};
+
 CallHook<void(rf::Entity&)> entity_update_muzzle_flash_light_hook{
     0x0041E814,
     [](rf::Entity& ep) {
@@ -280,6 +295,7 @@ void obj_light_apply_patch()
 
     // Commands
     mesh_static_lighting_cmd.register_cmd();
+    vertex_lighting_cmd.register_cmd();
     muzzle_flash_cmd.register_cmd();
     fullbright_models_cmd.register_cmd();
 }

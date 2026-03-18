@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <unordered_map>
 #include <unordered_set>
-#include <cstring>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
 #include "../rf/object.h"
@@ -43,18 +42,6 @@ struct EventAnimatedMesh {
     int startup_delay = 0;  // frames to wait before first vmesh_process
 };
 static std::vector<EventAnimatedMesh> g_event_animated_meshes;
-
-// Dummy ClutterInfo as raw bytes - avoids calling rf::String/VArray constructors.
-// All zeros is safe: String{0,nullptr} = empty, VArray{0,nullptr} = empty.
-// Only scalar sentinel fields are written; String members are never used.
-alignas(rf::ClutterInfo) static uint8_t g_dummy_clutter_info_buf[sizeof(rf::ClutterInfo)];
-
-// Clutter linked list tail pointer (sentinel.prev)
-static auto& clutter_list_tail = addr_as_ref<rf::Clutter*>(0x005C95F0);
-// Clutter count
-static auto& clutter_count = addr_as_ref<int>(0x005C9358);
-
-static bool g_dummy_clutter_info_initialized = false;
 
 // Per-mesh ClutterInfo objects allocated for "is clutter" meshes (need cleanup)
 static std::vector<rf::ClutterInfo*> g_mesh_clutter_infos;
@@ -298,21 +285,6 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         return;
     }
 
-    // Initialize dummy ClutterInfo once (memset + sentinel writes only —
-    // String members stay as {0,nullptr} which is valid empty state)
-    if (!g_dummy_clutter_info_initialized) {
-        auto* dummy_info = reinterpret_cast<rf::ClutterInfo*>(g_dummy_clutter_info_buf);
-        std::memset(dummy_info, 0, sizeof(rf::ClutterInfo));
-        dummy_info->life = -1.0f;
-        dummy_info->sound = -1;
-        dummy_info->use_sound = -1;
-        dummy_info->explode_anim_vclip = -1;
-        dummy_info->glare = -1;
-        dummy_info->rod_glare = -1;
-        dummy_info->light_prop = -1;
-        g_dummy_clutter_info_initialized = true;
-    }
-
     rf::VMeshType vtype = determine_vmesh_type(info.mesh_filename);
 
     rf::ObjectCreateInfo oci{};
@@ -376,8 +348,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
         clutter->info = ci;
         g_mesh_clutter_infos.push_back(ci);
     } else {
-        auto* dummy_info = reinterpret_cast<rf::ClutterInfo*>(g_dummy_clutter_info_buf);
-        clutter->info = dummy_info;
+        clutter->info = &rf::get_dummy_clutter_info();
     }
 
     clutter->info_index = -1;
@@ -392,11 +363,11 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
     clutter->killable_index = 0xFFFF;
     *reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(clutter) + 0x2D0) = -1;
 
-    clutter->prev = clutter_list_tail;
+    clutter->prev = rf::clutter_list_tail;
     clutter->next = reinterpret_cast<rf::Clutter*>(&rf::clutter_list);
-    clutter_list_tail->next = clutter;
-    clutter_list_tail = clutter;
-    clutter_count++;
+    rf::clutter_list_tail->next = clutter;
+    rf::clutter_list_tail = clutter;
+    rf::clutter_count++;
 
     obj->uid = info.uid;
     if (!info.script_name.empty()) {
@@ -595,7 +566,6 @@ void alpine_mesh_clear_state()
     g_alpine_corpse_data.clear();
     g_alpine_corpse_applied.clear();
     g_original_tex_handles.clear();
-    g_dummy_clutter_info_initialized = false;
     // Free per-mesh ClutterInfo objects
     for (auto* ci : g_mesh_clutter_infos) {
         delete ci;

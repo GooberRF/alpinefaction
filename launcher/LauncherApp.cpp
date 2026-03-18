@@ -7,6 +7,7 @@
 #include <common/version/version.h>
 #include <common/error/error-utils.h>
 #include <launcher_common/PatchedAppLauncher.h>
+#include <launcher_common/VideoDeviceInfoProvider.h>
 #include <xlog/xlog.h>
 #include <thread>
 
@@ -248,8 +249,21 @@ void LauncherApp::MigrateConfig()
 {
     try {
         GameConfig config;
-        if (config.load() && config.alpine_faction_version.value() != VERSION_STR) {
+        config.load();
+
+        bool is_new_install = config.alpine_faction_version.value().empty();
+
+        if (config.alpine_faction_version.value() != VERSION_STR) {
             config.alpine_faction_version = VERSION_STR;
+
+            // On a new install, if D3D11 hardware device creation fails,
+            // fall back to D3D9 instead of using the default
+            if (is_new_install && config.renderer.value() == GameConfig::Renderer::d3d11
+                && !is_d3d11_device_available()) {
+                xlog::warn("D3D11 is not available on this machine, falling back to D3D9");
+                config.renderer = GameConfig::Renderer::d3d9;
+            }
+
             config.save();
         }
     }

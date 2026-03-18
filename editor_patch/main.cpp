@@ -713,44 +713,21 @@ CodeInjection CCutscenePropertiesDialog_ct_crash_fix{
     },
 };
 
-struct CFrameWnd
-{
-    char padding[0xBC];
-};
-static_assert(sizeof(CFrameWnd) == 0xBC);
-
-struct CMainFrame : CFrameWnd
-{
-    void* views[4];
-    void* unk_view;
-    CDocument* doc;
-    VString field_D4;
-    char dialog_bar[0x88]; // CDialogBar
-    char status_bar[0x7C]; // CStatusBar
-    char splitter[0x26C]; // CDedSplitterWnd
-    float grid_size_available_values[12];
-    float rotate_by_available_vals[8];
-    int texture_grid_size_available_values[8];
-    int grid_size_index;
-    int rotate_by_index;
-    int texture_grid_size_index;
-    float camera_speed_allowed_values[6];
-    int camera_speed_index;
-    float grid_brightness;
-    int custom_colors[16];
-    int favorite_textures[8];
-    bool play_no_tnl;
-    char padding[3];
-    void* preferences_dlg;
-};
-static_assert(sizeof(CMainFrame) == 0x550);
-
 static auto RedrawEditorAfterModification = addr_as_ref<int __cdecl()>(0x00483560);
 
 void* GetLevelFromMainFrame(CWnd* main_frame)
 {
     auto* doc = struct_field_ref<void*>(main_frame, 0xD0);
     return &struct_field_ref<int>(doc, 0x60);
+}
+
+void CMainFrame_ToggleMaximizeViewport(CMainFrame* this_)
+{
+    if (g_maximized_viewport == -1) {
+        this_->MaximizeActiveViewport();
+    } else {
+        this_->RestoreAllViewports();
+    }
 }
 
 void CMainFrame_OpenHelp(CWnd* this_)
@@ -1079,6 +1056,18 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_HIDE_SELECTED:
                 handler = std::bind(CMainFrame_HideSelected, this_);
                 break;
+            case ID_SELECT_OBJECTS:
+                handler = [this_]() {
+                    auto* level = reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_));
+                    if (level) alpine_select_objects(level);
+                };
+                break;
+            case ID_HIDE_OBJECTS:
+                handler = [this_]() {
+                    auto* level = reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_));
+                    if (level) alpine_hide_objects(level);
+                };
+                break;
             case ID_SELECT_OBJECT_BY_UID:
                 handler = std::bind(CMainFrame_SelectObjectByUid, this_);
                 break;
@@ -1126,6 +1115,9 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case ID_RELOAD_TEXTURES:
                 handler = reload_custom_textures;
+                break;
+            case ID_TOGGLE_MAXIMIZE_VIEWPORT:
+                handler = std::bind(CMainFrame_ToggleMaximizeViewport, reinterpret_cast<CMainFrame*>(this_));
                 break;
         }
 
@@ -1606,7 +1598,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     write_mem<int>(0x0044770D + 1, max_size); // 1 cx
     write_mem<int>(0x0044771D + 1, max_size); // 1 cy
     write_mem<int>(0x00447750 + 1, -max_size); // 2 add cx
-    write_mem<int>(0x004477E1 + 1, -max_size); // 4 add cx crash
+    write_mem<int>(0x004477E1 + 2, -max_size); // 4 add cx
     write_mem<int>(0x00447797 + 1, max_size); // 3 cx
     write_mem<int>(0x00447761 + 1, max_size); // 3 cy
     write_mem<int>(0x004477A0 + 2, -max_size); // 3 lea

@@ -10,7 +10,7 @@ std::string xlog::SimpleFormatter::prepare(xlog::Level level, const std::string&
     buf.reserve(64);
 
     if (include_time_) {
-        const float ticks = (GetTickCount64() - start_ticks) / 1000.f;
+        const double ticks = (GetTickCount64() - start_ticks) / 1000.;
         std::format_to(std::back_inserter(buf), "[{:7.2f}] ", ticks);
     }
 

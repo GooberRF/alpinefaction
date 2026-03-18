@@ -21,7 +21,7 @@
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
-#include "../graphics/legacy/gr_d3d.h"
+#include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
 #include "../hud/multi_scoreboard.h"
@@ -40,6 +40,7 @@
 #include "../misc/high_fps.h"
 #include "../misc/player.h"
 #include "../misc/level.h"
+#include "../object/alpine_corona.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -194,6 +195,15 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         // attempt to load level_info tbl file
         load_level_info_config(level_filename);
 
+        // evaluate and cache vertex lighting mode for this level (D3D11 only)
+        if (is_d3d11()) {
+            df::gr::d3d11::evaluate_vertex_lighting(level_filename);
+            if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
+                && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
+                rf::console::print("Applying legacy vertex lighting for {} (per override present in mapname_info.tbl)", level_filename);
+            }
+        }
+
         int ret = level_load_hook.call_target(level_filename, save_filename, error);
         if (ret != 0)
             xlog::warn("Loading failed: {}", error);
@@ -209,6 +219,9 @@ FunHook<void(bool)> level_init_post_hook{
     [](bool transition) {
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
+
+        // Create corona objects (clutter + glare pairs) now that geometry is loaded
+        alpine_corona_create_all();
 
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();

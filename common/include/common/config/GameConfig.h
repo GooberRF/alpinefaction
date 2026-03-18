@@ -35,7 +35,7 @@ struct GameConfig
         d3d9 = 1,
         d3d11 = 2,
     };
-    CfgVar<Renderer> renderer = Renderer::d3d9;
+    CfgVar<Renderer> renderer = Renderer::d3d11;
 
     // Graphics
     CfgVar<bool> anisotropic_filtering = true;

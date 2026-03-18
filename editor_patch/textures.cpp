@@ -90,7 +90,7 @@ static void register_custom_texture_subdirectories(void* texture_manager)
         cat->path_handle = file_add_path(subdir_path.c_str(), ".tga .vbm", false);
 
         // Append to the manager's category array at this+0x7C
-        AddrCaller{0x00491020}.this_call<void>(category_array, cat);
+        category_array->push_back(cat);
 
         xlog::info("Registered custom texture category: '{}' (path_handle={})", display_name, cat->path_handle);
     }
@@ -317,8 +317,7 @@ static void add_texture_to_pack_list(void* temp_list, const char* filename)
 CodeInjection vpp_clear_log_injection{
     0x0044cb10,
     [](auto& regs) {
-        void* log_dlg = *reinterpret_cast<void**>(
-            *reinterpret_cast<uintptr_t*>(0x006f9e68) + 0x2b4);
+        void* log_dlg = struct_field_ref<void*>(g_main_frame, 0x2b4);
         log_dlg_clear(log_dlg);
     }
 };
@@ -346,8 +345,7 @@ CodeInjection vpp_skip_missing_file_injection{
             if (file_handle != 0 && mode == 0) {
                 xlog::warn("Packfile: Skipping missing file: {}", filename);
 
-                void* log_dlg = *reinterpret_cast<void**>(
-                    *reinterpret_cast<uintptr_t*>(0x006f9e68) + 0x2b4);
+                void* log_dlg = struct_field_ref<void*>(g_main_frame, 0x2b4);
                 log_dlg_append(log_dlg, "Warning: Skipping missing file %s\n", filename);
             }
         }

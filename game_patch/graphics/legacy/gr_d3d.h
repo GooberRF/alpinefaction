@@ -11,4 +11,3 @@ void gr_d3d_texture_apply_patch();
 void gr_d3d_capture_apply_patch();
 void gr_d3d_gamma_apply_patch();
 void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
-void evaluate_pow2tex(rf::String level_filename);

@@ -16,6 +16,7 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_entity_shadow.h"
 
 using namespace rf;
 
@@ -41,6 +42,7 @@ namespace df::gr::d3d11
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
 
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         render_context_->set_cull_mode(D3D11_CULL_BACK);
@@ -327,6 +329,8 @@ namespace df::gr::d3d11
     void Renderer::flip()
     {
         dyn_geo_renderer_->flush();
+        entity_shadow_renderer_->render_debug_overlay(context_);
+        entity_shadow_renderer_->unbind_shadow_resources(context_);
         if (msaa_render_target_) {
             context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
         }
@@ -483,6 +487,24 @@ namespace df::gr::d3d11
     void Renderer::render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
     {
         dyn_geo_renderer_->flush();
+
+        // Generate entity shadow map before rendering the scene
+        entity_shadow_renderer_->generate_shadow_map(context_, *render_context_, rf::gr::eye_pos);
+
+        // Restore render target and viewport after shadow pass
+        // Use the current render target (may be a security camera/mirror texture, not the backbuffer)
+        ID3D11RenderTargetView* current_rtv = default_render_target_view_;
+        if (render_target_bm_handle_ != -1) {
+            ID3D11RenderTargetView* rt = texture_manager_->lookup_render_target(render_target_bm_handle_);
+            if (rt) current_rtv = rt;
+        }
+        render_context_->set_render_target(current_rtv, depth_stencil_view_);
+        render_context_->set_clip();
+        render_context_->set_cull_mode(D3D11_CULL_BACK);
+
+        // Bind shadow resources for the scene pixel shader
+        entity_shadow_renderer_->bind_shadow_resources(context_);
+
         solid_renderer_->render_solid(solid, rooms, num_rooms);
     }
 
@@ -520,16 +542,16 @@ namespace df::gr::d3d11
         solid_renderer_->reset_cache_after_boolean();
     }
 
-    void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params)
+    void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
-        mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params);
+        mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
     }
 
-    void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params)
+    void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
-        mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
+        mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
     }
 
     void Renderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
@@ -543,9 +565,9 @@ namespace df::gr::d3d11
         render_context_->fog_set();
     }
 
-    void Renderer::page_in_v3d_mesh(rf::VifLodMesh* lod_mesh)
+    void Renderer::page_in_v3d_mesh(rf::VifLodMesh* lod_mesh, rf::MeshMaterial* materials, int num_materials)
     {
-        mesh_renderer_->page_in_v3d_mesh(lod_mesh);
+        mesh_renderer_->page_in_v3d_mesh(lod_mesh, materials, num_materials);
     }
 
     void Renderer::page_in_character_mesh(rf::VifLodMesh* lod_mesh)
@@ -573,8 +595,26 @@ namespace df::gr::d3d11
         mesh_renderer_->reset_static_vertex_color_tracking();
     }
 
+    void Renderer::clear_mesh_lights()
+    {
+        render_context_->update_lights();
+    }
+
     float Renderer::z_far() const
     {
         return render_context_->projection().z_far();
+    }
+
+    void Renderer::set_pow2_tex_active(bool active)
+    {
+        bool was_active = render_context_->is_pow2_tex_active();
+        render_context_->set_pow2_tex_active(active);
+
+        // When transitioning from p2t to non-p2t, evict only pow2-padded textures
+        // so they are reloaded at native dimensions. Non-padded textures (fonts,
+        // user bitmaps, already-pow2 textures) are preserved.
+        if (was_active && !active) {
+            texture_manager_->flush_pow2_padded_textures();
+        }
     }
 }

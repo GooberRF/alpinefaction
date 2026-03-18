@@ -12,11 +12,24 @@
 #include "resources.h"
 
 void DestroyDedMesh(DedMesh* mesh);
+void DestroyDedCorona(DedCorona* corona);
 
-constexpr std::size_t stock_cdedlevel_size = 0x608;
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_note_chunk_id = 0x0AFBAE02;
+constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
+constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
+
+// Per-entry data in the alpine_brush_group_chunk_id chunk (.rfg only).
+// Stores geoable/breakable flags for brushes by serialization index.
+#pragma pack(push, 1)
+struct BrushGroupEntry {
+    uint32_t brush_index;
+    uint8_t flags;      // bit 0 = geoable, bit 1 = breakable
+    uint8_t material;   // breakable material byte (bits 0-6 = material, bit 7 = no_debris)
+};
+#pragma pack(pop)
+static_assert(sizeof(BrushGroupEntry) == 6);
 
 // Forward declarations
 struct GFace;
@@ -191,10 +204,10 @@ struct GFace
         AddrCaller{0x0048a700}.c_call(face);
     }
 
-    // FUN_00484230: generate next unique face/brush UID
+    // FUN_00484230: generate next unique face/brush UID (delegates to ::generate_uid in vtypes.h)
     static int generate_uid()
     {
-        return AddrCaller{0x00484230}.c_call<int>();
+        return ::generate_uid();
     }
 };
 static_assert(sizeof(GFace) == 0x60);
@@ -348,6 +361,9 @@ struct AlpineLevelProperties
     // Alpine note objects (editor-only, not loaded by game)
     std::vector<DedNote*> note_objects;
 
+    // Alpine corona objects
+    std::vector<DedCorona*> corona_objects;
+
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
@@ -378,6 +394,11 @@ struct AlpineLevelProperties
             delete n;
         }
         note_objects.clear();
+
+        for (auto* c : corona_objects) {
+            DestroyDedCorona(c);
+        }
+        corona_objects.clear();
     }
 
     void Serialize(rf::File& file) const
@@ -532,6 +553,31 @@ enum class DedRoomEffectType : int
     Liquid = 2,
 };
 
+// Group entry struct (0x34 bytes) — element of CDedLevel::moving_groups
+// Constructor: FUN_0043dec0 (zeros 4 x 12-byte blocks at +0x04, +0x10, +0x1C, +0x28)
+// Creation: FUN_0043ccf0 (allocs 0x34, calls constructor, sets type, pushes to moving_groups)
+// Tree view: FUN_00440590 (iterates entries, sorts into User_Defined vs Moving groups)
+struct GroupEntry
+{
+    int type;                               // +0x00  set by FUN_0043ccf0 (values: 3,4,5,10)
+    VArray<BrushNode*> brushes;             // +0x04  brushes in this group
+    VArray<DedObject*> objects;             // +0x10  objects in this group
+    VArray<DedObject*>* keyframes;          // +0x1C  NULL=user-defined group, non-NULL=moving group
+                                            //        points to dynamically allocated VArray of keyframe objects
+    VString name;                           // +0x20  group display name
+    VArray<void*> field_28;                 // +0x28  purpose unknown (zeroed by constructor)
+
+    bool is_user_defined() const { return keyframes == nullptr; }
+    bool is_moving_group() const { return keyframes != nullptr; }
+};
+static_assert(sizeof(GroupEntry) == 0x34);
+static_assert(offsetof(GroupEntry, type) == 0x00);
+static_assert(offsetof(GroupEntry, brushes) == 0x04);
+static_assert(offsetof(GroupEntry, objects) == 0x10);
+static_assert(offsetof(GroupEntry, keyframes) == 0x1C);
+static_assert(offsetof(GroupEntry, name) == 0x20);
+static_assert(offsetof(GroupEntry, field_28) == 0x28);
+
 struct CDedLevel
 {
     // --- vtable + string properties ---
@@ -605,7 +651,15 @@ struct CDedLevel
     int icon_push_region;                         // +0x22C (Icon_ClimbRegion.tga second)
     char _pad_230[0x272 - 0x230];                // +0x230 (editor state)
     bool geometry_needs_rebuild;                   // +0x272
-    char _pad_273[0x298 - 0x273];                // +0x273
+    char _pad_273[0x280 - 0x273];                // +0x273
+
+    // --- undo/redo stacks (VArrays of UndoEntry pointers) ---
+    // FUN_0043d210 (undo) pops from +0x280, pushes to +0x28C
+    // FUN_0043d320 (redo) pops from +0x28C, pushes to +0x280
+    // Each entry's child VArray at +0x04 may hold raw DedObject* pointers
+    // FUN_0043d170 cleanup calls FUN_0041c360 on those pointers (use-after-free risk)
+    VArray<void*> undo_stack;                     // +0x280
+    VArray<void*> redo_stack;                     // +0x28C
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
@@ -643,7 +697,7 @@ struct CDedLevel
     void* dialog_panels[28];                      // +0x444 (28 pointers, ends at +0x4B4)
 
     // --- moving groups (Keyframes) ---
-    VArray<DedObject*> moving_groups;             // +0x4B4 (each element has nested VArray at +0x1C)
+    VArray<GroupEntry*> moving_groups;             // +0x4B4 (0x34-byte GroupEntry structs)
     char _pad_4C0[0x608 - 0x4C0];                // +0x4C0 (VArrays, containers, strings to end)
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)
@@ -656,10 +710,8 @@ struct CDedLevel
         return AddrCaller{0x00430B90}.this_call(this, &file, start_pos);
     }
 
-    AlpineLevelProperties& GetAlpineLevelProperties()
-    {
-        return struct_field_ref<AlpineLevelProperties>(this, stock_cdedlevel_size);
-    }
+    AlpineLevelProperties& GetAlpineLevelProperties();
+
 
     void deselect_all()
     {
@@ -678,7 +730,7 @@ struct CDedLevel
 
     void add_to_selection(DedObject* obj)
     {
-        AddrCaller{0x00491020}.this_call(&selection, obj);
+        selection.push_back(obj);
     }
 
     void update_console_display()
