@@ -6,7 +6,6 @@
 #include "alpine_settings.h"
 #include "alpine_options.h"
 #include <common/version/version.h>
-#include "../input/input.h"
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../rf/ui.h"

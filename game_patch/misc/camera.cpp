@@ -1,4 +1,6 @@
 #include <cassert>
+#include <algorithm>
+#include <cmath>
 #include <xlog/xlog.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
@@ -354,13 +356,6 @@ static float convert_pitch_delta_to_non_linear_space(
 
     // Update non-linear pitch delta.
     const float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
-    xlog::trace(
-        "non-lin {} lin {} delta {} new {}",
-        current_pitch_non_lin,
-        current_pitch_lin,
-        pitch_delta,
-        new_pitch_delta
-    );
 
     return new_pitch_delta;
 }

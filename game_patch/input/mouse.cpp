@@ -12,7 +12,6 @@
 #include "../rf/player/player.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
-#include "input.h"
 #include "mouse.h"
 
 // Raw mouse delta accumulators for centralized camera angle computation.

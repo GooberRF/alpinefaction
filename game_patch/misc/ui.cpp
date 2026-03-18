@@ -17,7 +17,6 @@
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
 #include "../object/object.h"
-#include "../input/input.h"
 
 #define DEBUG_UI_LAYOUT 0
 #define SHARP_UI_TEXT 1
@@ -1513,7 +1512,6 @@ static void handle_ctrl_camscale_btns(int x, int y)
 CodeInjection options_render_alpine_panel_patch{
     0x0044F80B,
     []() {
-        static bool s_was_waiting = false;
         bool now_waiting = false;
 
         int index = rf::ui::options_current_panel;
@@ -1522,7 +1520,6 @@ CodeInjection options_render_alpine_panel_patch{
         // handle key rebinding in input options panel
         if (index == 3) {
             now_waiting = rf::ui::options_controls_waiting_for_key;
-            s_was_waiting = now_waiting;
         }
 
         if (index == 3 && !now_waiting)
