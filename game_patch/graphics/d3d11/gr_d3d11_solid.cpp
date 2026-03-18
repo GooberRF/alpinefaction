@@ -12,6 +12,8 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/level.h"
+#include "../../rf/mover.h"
+#include <common/utils/list-utils.h>
 #include "../../os/console.h"
 #include "../../misc/misc.h"
 #include "gr_d3d11.h"
@@ -819,18 +821,44 @@ namespace df::gr::d3d11
     {
         xlog::trace("Rendering sky room {} cache {}", room->room_index, room->geo_cache);
         render_context_.update_lights(true);
-        if (const Matrix3* skybox_orient = sky_room_orient) {
-            Matrix3 skybox_orient_inv = *skybox_orient;
-            skybox_orient_inv.inverse();
 
-            const Vector3 rotated_center = skybox_orient_inv.transform_vector(sky_room_center);
-            before_render(sky_room_offset + sky_room_center - rotated_center, skybox_orient_inv);
+        // Compute sky room transform: maps world coords to camera-relative coords
+        Vector3 sky_transform_pos;
+        Matrix3 sky_transform_orient;
+        if (const Matrix3* skybox_orient = sky_room_orient) {
+            sky_transform_orient = *skybox_orient;
+            sky_transform_orient.inverse();
+            const Vector3 rotated_center = sky_transform_orient.transform_vector(sky_room_center);
+            sky_transform_pos = sky_room_offset + sky_room_center - rotated_center;
         }
         else {
-            before_render(sky_room_offset, rf::identity_matrix);
+            sky_transform_pos = sky_room_offset;
+            sky_transform_orient = rf::identity_matrix;
         }
+
+        before_render(sky_transform_pos, sky_transform_orient);
         render_room_faces(rf::level.geometry, room, FaceRenderType::opaque);
         render_room_faces(rf::level.geometry, room, FaceRenderType::alpha);
+
+        // Render mover brushes that are in the sky room being projected
+        for (auto& mb : DoublyLinkedList{rf::mover_brush_list}) {
+            if (!mb.geometry || mb.room != room) {
+                continue;
+            }
+            if (mb.obj_flags & rf::OF_HIDDEN) {
+                continue;
+            }
+            // Transform mover position and orientation by the sky room transform
+            Vector3 transformed_pos = sky_transform_orient.transform_vector(mb.pos) + sky_transform_pos;
+            Matrix3 transformed_orient = sky_transform_orient;
+            transformed_orient.mul(mb.orient);
+
+            GRenderCache* cache = get_or_create_movable_solid_cache(mb.geometry);
+            before_render(transformed_pos, transformed_orient);
+            cache->render(FaceRenderType::opaque, render_context_);
+            cache->render(FaceRenderType::alpha, render_context_);
+        }
+
         render_context_.update_lights();
     }
 
