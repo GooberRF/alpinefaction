@@ -40,14 +40,13 @@ static int g_button_map[SDL_GAMEPAD_BUTTON_COUNT];
 // Trigger action map: [0] = LT action index, [1] = RT action index, -1 = unbound.
 static int g_trigger_action[2] = {rf::CC_ACTION_CROUCH, rf::CC_ACTION_SECONDARY_ATTACK};
 
-
-
 static bool g_lt_was_down = false;
 static bool g_rt_was_down = false;
 
-// Previous-frame "held by gamepad" state for just-pressed detection (mirrors ControlConfig::bindings[128]).
+// Per-frame action state, indexed by rf::ControlConfigAction. 128 = hard limit.
 static constexpr int k_action_count = 128;
-static bool g_gamepad_action_prev[k_action_count] = {};
+static bool g_action_prev[k_action_count] = {};
+static bool g_action_curr[k_action_count] = {};
 
 // Gamepad scan code captured during a rebind, or -1 if none pending.
 static int g_rebind_pending_sc = -1;
@@ -80,6 +79,12 @@ static float g_move_lx = 0.0f, g_move_ly = 0.0f;
 static float g_move_mag = 0.0f;
 static rf::VMesh* g_local_player_body_vmesh = nullptr;
 static bool g_scaling_fpgun_vmesh = false;
+
+static bool action_is_down(rf::ControlConfigAction action)
+{
+    int i = static_cast<int>(action);
+    return i >= 0 && i < k_action_count && g_action_curr[i];
+}
 
 static void try_open_gamepad(SDL_JoystickID id)
 {
@@ -138,6 +143,18 @@ static int dpad_btn_to_navkey(int btn)
     }
 }
 
+// Syncs g_action_curr for any binding whose scan_codes contain `sc`,
+static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_action)
+{
+    if (!rf::local_player) return;
+    auto& cc = rf::local_player->settings.controls;
+    for (int i = 0; i < cc.num_bindings && i < k_action_count; ++i) {
+        if (i == primary_action) continue;
+        if (cc.bindings[i].scan_codes[0] == sc || cc.bindings[i].scan_codes[1] == sc)
+            g_action_curr[i] = down;
+    }
+}
+
 static void update_trigger_actions()
 {
     float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / (float)SDL_MAX_SINT16;
@@ -145,10 +162,18 @@ static void update_trigger_actions()
     bool lt_down = lt > 0.5f;
     bool rt_down = rt > 0.5f;
 
-    if (lt_down != g_lt_was_down)
+    if (lt_down != g_lt_was_down) {
         inject_action_key(g_trigger_action[0], lt_down);
-    if (rt_down != g_rt_was_down)
+        if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count)
+            g_action_curr[g_trigger_action[0]] = lt_down;
+        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER), lt_down, g_trigger_action[0]);
+    }
+    if (rt_down != g_rt_was_down) {
         inject_action_key(g_trigger_action[1], rt_down);
+        if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count)
+            g_action_curr[g_trigger_action[1]] = rt_down;
+        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER), rt_down, g_trigger_action[1]);
+    }
 
     g_lt_was_down = lt_down;
     g_rt_was_down = rt_down;
@@ -168,18 +193,19 @@ static bool is_action_held_by_button(int action_idx)
 
 static void set_movement_key(rf::ControlConfigAction action, bool down)
 {
-    if (!rf::local_player) return;
     int idx = static_cast<int>(action);
     // A digital button binding takes priority: don't release the key while a button holds it.
-    if (rf::gameseq_in_gameplay())
+    // Only applies during gameplay — outside of it no scan codes should be injected at all.
+    bool in_gameplay = rf::gameseq_in_gameplay();
+    if (in_gameplay)
         down = down || is_action_held_by_button(idx);
-    // Don't assert movement keys outside gameplay or while the console is open.
-    if (!rf::gameseq_in_gameplay() || rf::console::console_is_visible())
-        down = false;
-    int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
-    if (sc <= 0) return;
-    if (rf::key_is_down(static_cast<rf::Key>(sc)) == down) return;
-    rf::key_process_event(sc, down ? 1 : 0, 0);
+    if (g_action_curr[idx] == down) return;
+    if (in_gameplay && rf::local_player && !rf::console::console_is_visible()) {
+        int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
+        if (sc >= 0)
+            rf::key_process_event(sc, down ? 1 : 0, 0);
+    }
+    g_action_curr[idx] = down;
 }
 
 static void release_movement_keys()
@@ -290,6 +316,7 @@ static void menu_nav_on_button_up(int btn)
 
 void gamepad_sdl_poll()
 {
+    memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
     SDL_UpdateGamepads();
     // Flush SDL Gamepad events outside the gamepad range to prevent queue buildup.
     // Keyboard and mouse input is handled via Win32 message dispatch and doesn't need flushing.
@@ -331,7 +358,7 @@ void gamepad_sdl_poll()
                     g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
                     g_accel_x = g_accel_y = g_accel_z = 0.0f;
                     g_gyro_fresh = false;
-                    memset(g_gamepad_action_prev, 0, sizeof(g_gamepad_action_prev));
+                    memset(g_action_curr, 0, sizeof(g_action_curr));
                 }
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -362,8 +389,12 @@ void gamepad_sdl_poll()
                 }
                 if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
                     int mapped = g_button_map[ev.gbutton.button];
-                    if (mapped >= 0)
+                    if (mapped >= 0) {
                         inject_action_key(mapped, true);
+                        g_action_curr[mapped] = true;
+                    }
+                    int16_t gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button);
+                    sync_extra_actions_for_scancode(gp_sc, true, mapped);
                 }
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_UP:
@@ -372,8 +403,12 @@ void gamepad_sdl_poll()
                 menu_nav_on_button_up(ev.gbutton.button);
                 if (ev.gbutton.button < SDL_GAMEPAD_BUTTON_COUNT) {
                     int mapped = g_button_map[ev.gbutton.button];
-                    if (mapped >= 0)
+                    if (mapped >= 0) {
                         inject_action_key(mapped, false);
+                        g_action_curr[mapped] = false;
+                    }
+                    int16_t gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.gbutton.button);
+                    sync_extra_actions_for_scancode(gp_sc, false, mapped);
                 }
                 break;
             case SDL_EVENT_GAMEPAD_AXIS_MOTION: {
@@ -515,48 +550,32 @@ void gamepad_do_frame()
     gamepad_sdl_poll();
     if (!g_gamepad || !rf::is_main_wnd_active)
         return;
-        if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
-            float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
-            float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_MAX_SINT16);
-            if (lt > 0.5f && !g_lt_was_down) {
-                g_rebind_pending_sc = CTRL_GAMEPAD_LEFT_TRGGER;
-                rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
-            }
-            if (rt > 0.5f && !g_rt_was_down) {
-                g_rebind_pending_sc = CTRL_GAMEPAD_RIGHT_TRGGER;
-                rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
-            }
+    if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
+        float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
+        float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_MAX_SINT16);
+        if (lt > 0.5f && !g_lt_was_down) {
+            g_rebind_pending_sc = CTRL_GAMEPAD_LEFT_TRGGER;
+            rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
         }
-
-        update_trigger_actions();
-        update_stick_movement();
-
-        if (!rf::gameseq_in_gameplay())
-            gamepad_do_menu_frame();
-
-        // Snapshot current gamepad-held state for just-pressed detection next frame.
-        // Build from button/trigger maps directly to avoid O(actions × buttons) scanning.
-        memset(g_gamepad_action_prev, 0, sizeof(g_gamepad_action_prev));
-        if (g_gamepad) {
-            for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
-                int a = g_button_map[b];
-                if (a >= 0 && a < k_action_count
-                    && SDL_GetGamepadButton(g_gamepad, static_cast<SDL_GamepadButton>(b)))
-                    g_gamepad_action_prev[a] = true;
-            }
-            if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count && g_lt_was_down)
-                g_gamepad_action_prev[g_trigger_action[0]] = true;
-            if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count && g_rt_was_down)
-                g_gamepad_action_prev[g_trigger_action[1]] = true;
+        if (rt > 0.5f && !g_rt_was_down) {
+            g_rebind_pending_sc = CTRL_GAMEPAD_RIGHT_TRGGER;
+            rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
         }
+    }
 
-        g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
+    update_trigger_actions();
+    update_stick_movement();
 
-        if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled && g_gyro_fresh) {
-            gyro_process_motion(g_gyro_x, g_gyro_y, g_gyro_z,
-                                g_accel_x, g_accel_y, g_accel_z, rf::frametime);
-            g_gyro_fresh = false;
-        }
+    if (!rf::gameseq_in_gameplay())
+        gamepad_do_menu_frame();
+
+    g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
+
+    if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled && g_gyro_fresh) {
+        gyro_process_motion(g_gyro_x, g_gyro_y, g_gyro_z,
+                            g_accel_x, g_accel_y, g_accel_z, rf::frametime);
+        g_gyro_fresh = false;
+    }
 }
 
 void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
@@ -593,28 +612,26 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     }
 }
 
-// Hooks: let the game's control system see gamepad buttons/triggers as active for any
-// action, including Alpine-specific ones that may have no keyboard scan code binding.
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_down_hook{
     0x00430F40,
     [](rf::ControlConfig* ccp, rf::ControlConfigAction action) -> bool {
-        if (control_is_control_down_hook.call_target(ccp, action))
-            return true;
-        return g_gamepad && rf::is_main_wnd_active && is_action_held_by_button(static_cast<int>(action));
+        return control_is_control_down_hook.call_target(ccp, action) || action_is_down(action);
     },
 };
 
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_hook{
     0x0043D4F0,
     [](rf::ControlConfig* ccp, rf::ControlConfigAction action, bool* just_pressed) -> bool {
-        if (control_config_check_pressed_hook.call_target(ccp, action, just_pressed))
-            return true;
+        bool result = control_config_check_pressed_hook.call_target(ccp, action, just_pressed);
+        if (result) return true;
+
         int idx = static_cast<int>(action);
-        if (!g_gamepad || !rf::is_main_wnd_active || !is_action_held_by_button(idx))
+        if (idx < 0 || idx >= k_action_count || !g_action_curr[idx])
             return false;
-        bool is_just = (idx >= 0 && idx < k_action_count) ? !g_gamepad_action_prev[idx] : false;
-        if (ccp->bindings[idx].press_mode != 0 || is_just) {
-            if (just_pressed) *just_pressed = is_just;
+
+        bool is_just_pressed = !g_action_prev[idx];
+        if (ccp->bindings[idx].press_mode != 0 || is_just_pressed) {
+            if (just_pressed) *just_pressed = is_just_pressed;
             return true;
         }
         return false;
@@ -792,7 +809,6 @@ ConsoleCommand2 gamepad_icons_cmd{
     "Set gamepad button icon style: 0=Auto 1=Generic 2=Xbox360 3=XboxOne 4=DS3 5=DS4 6=DualSense 7=NintendoSwitch 8=NintendoGameCube",
     "joy_icons [0-8]",
 };
-
 
 bool gamepad_is_motionsensors_supported()
 {
@@ -1005,7 +1021,7 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
     g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
     g_accel_x = g_accel_y = g_accel_z = 0.0f;
     g_gyro_fresh = false;
-    memset(g_gamepad_action_prev, 0, sizeof(g_gamepad_action_prev));
+    memset(g_action_curr, 0, sizeof(g_action_curr));
 }
 
 // Must be called from the game main thread (SDL3 requires SDL_PumpEvents on the same
