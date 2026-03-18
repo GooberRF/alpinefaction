@@ -1,3 +1,5 @@
+#include <cassert>
+#include <xlog/xlog.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
@@ -6,6 +8,7 @@
 #include "../rf/multi.h"
 #include "../os/console.h"
 #include "../input/input.h"
+#include "../rf/entity.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/alpine_options.h"
@@ -243,6 +246,159 @@ CodeInjection multi_get_state_info_camera_enter_fixed_patch{
     }
 };
 
+// Math helpers for converting between non-linear (RF engine) and linear pitch representations
+static rf::Vector3 fw_vector_from_non_linear_yaw_pitch(float yaw, float pitch)
+{
+    // Based on RF code
+    rf::Vector3 fvec0;
+    fvec0.y = std::sin(pitch);
+    float factor = 1.0f - std::abs(fvec0.y);
+    fvec0.x = factor * std::sin(yaw);
+    fvec0.z = factor * std::cos(yaw);
+
+    rf::Vector3 fvec = fvec0;
+    fvec.normalize(); // vector is never zero
+
+    return fvec;
+}
+
+static float linear_pitch_from_forward_vector(const rf::Vector3& fvec)
+{
+    return std::asin(fvec.y);
+}
+
+static rf::Vector3 fw_vector_from_linear_yaw_pitch(float yaw, float pitch)
+{
+    rf::Vector3 fvec;
+    fvec.y = std::sin(pitch);
+    fvec.x = std::cos(pitch) * std::sin(yaw);
+    fvec.z = std::cos(pitch) * std::cos(yaw);
+    fvec.normalize();
+    return fvec;
+}
+
+static float non_linear_pitch_from_fw_vector(rf::Vector3 fvec)
+{
+    float yaw = std::atan2(fvec.x, fvec.z);
+    assert(!std::isnan(yaw));
+    float fvec_y_2 = fvec.y * fvec.y;
+    float y_sin = std::sin(yaw);
+    float y_cos = std::cos(yaw);
+    float y_sin_2 = y_sin * y_sin;
+    float y_cos_2 = y_cos * y_cos;
+    float p_sgn = std::signbit(fvec.y) ? -1.f : 1.f;
+    if (fvec.y == 0.0f) {
+        return 0.0f;
+    }
+
+    float a = 1.f / fvec_y_2 - y_sin_2 - 1.f - y_cos_2;
+    float b = 2.f * p_sgn * y_sin_2 + 2.f * p_sgn * y_cos_2;
+    float c = -y_sin_2 - y_cos_2;
+    float delta = b * b - 4.f * a * c;
+    // Note: delta is sometimes slightly below 0 - most probably because of precision error
+    // To avoid NaN value delta is changed to 0 in that case
+    float delta_sqrt = std::sqrt(std::max(delta, 0.0f));
+    assert(!std::isnan(delta_sqrt));
+
+    if (a == 0.0f) {
+        return 0.0f;
+    }
+
+    float p_sin_1 = (-b - delta_sqrt) / (2.f * a);
+    float p_sin_2 = (-b + delta_sqrt) / (2.f * a);
+
+    float result;
+    if (std::abs(p_sin_1) < std::abs(p_sin_2))
+        result = std::asin(p_sin_1);
+    else
+        result = std::asin(p_sin_2);
+    assert(!std::isnan(result));
+    return result;
+}
+
+#ifdef DEBUG
+static void linear_pitch_test()
+{
+    float yaw = 3.141592f / 4.0f;
+    float pitch = 3.141592f / 4.0f;
+    rf::Vector3 fvec = fw_vector_from_non_linear_yaw_pitch(yaw, pitch);
+    float lin_pitch = linear_pitch_from_forward_vector(fvec);
+    rf::Vector3 fvec2 = fw_vector_from_linear_yaw_pitch(yaw, lin_pitch);
+    float pitch2 = non_linear_pitch_from_fw_vector(fvec2);
+    assert(std::abs(pitch - pitch2) < 0.00001);
+}
+#endif // DEBUG
+
+static float convert_pitch_delta_to_non_linear_space(
+    const float current_yaw,
+    const float current_pitch_non_lin,
+    const float pitch_delta,
+    const float yaw_delta
+) {
+    // Convert to linear space.  See `physics_make_orient`.
+    const rf::Vector3 fvec =
+        fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
+    const float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
+
+    // Calculate in linear space.
+    constexpr float HALF_PI = 1.5707964f;
+    const float new_pitch_lin =
+        std::clamp(current_pitch_lin + pitch_delta, -HALF_PI, HALF_PI);
+    const float new_yaw = current_yaw + yaw_delta;
+
+    // Convert back to non-linear space.
+    const rf::Vector3 fvec_new =
+        fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
+    const float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
+
+    // Update non-linear pitch delta.
+    const float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
+    xlog::trace(
+        "non-lin {} lin {} delta {} new {}",
+        current_pitch_non_lin,
+        current_pitch_lin,
+        pitch_delta,
+        new_pitch_delta
+    );
+
+    return new_pitch_delta;
+}
+
+// Applies linear pitch correction.
+CodeInjection linear_pitch_patch{
+    0x0049DEC9,
+    [](auto& regs) {
+        rf::Entity* entity = regs.esi;
+        float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
+        const float yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
+
+        // Apply linear pitch correction
+        if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0) {
+            const float current_yaw = entity->control_data.phb.y;
+            const float current_pitch_non_lin = entity->control_data.eye_phb.x;
+            pitch_delta = convert_pitch_delta_to_non_linear_space(
+                current_yaw,
+                current_pitch_non_lin,
+                pitch_delta,
+                yaw_delta
+            );
+        }
+
+    },
+};
+
+ConsoleCommand2 linear_pitch_cmd{
+    "cl_linearpitch",
+    []() {
+#ifdef DEBUG
+        linear_pitch_test();
+#endif
+        g_alpine_game_config.mouse_linear_pitch = !g_alpine_game_config.mouse_linear_pitch;
+        rf::console::print("Linear pitch is {}", g_alpine_game_config.mouse_linear_pitch ? "enabled" : "disabled");
+    },
+    "Toggles mouse linear pitch angle",
+};
+
 void camera_do_patch()
 {
     // Maintain third person camera mode if set
@@ -272,4 +428,8 @@ void camera_do_patch()
 
     // Improve freelook spectate logic after level transition.
     multi_get_state_info_camera_enter_fixed_patch.install();
+
+    // Linear pitch correction and camera horizon reset
+    linear_pitch_patch.install();
+    linear_pitch_cmd.register_cmd();
 }
