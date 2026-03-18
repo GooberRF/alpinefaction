@@ -13,6 +13,7 @@
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 #include "input.h"
+#include "mouse.h"
 
 // Raw mouse delta accumulators for centralized camera angle computation.
 static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
@@ -95,11 +96,11 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     [](int& dx, int& dy, int& dz) {
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
 
-        // Nothing to do in Legacy mode or outside gameplay.
+        // Nothing to do in Classic mode or outside gameplay.
         if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0)
             return;
 
-        // In Standard/Raw mode: capture raw deltas for centralized angle
+        // In Raw/Modern mode: capture raw deltas for centralized angle
         // computation and zero them so RF does not apply its own scaling.
         // Skip when in a vehicle (RF needs the deltas to steer), but scale
         // them down to stay consistent with the camera formula feel.
@@ -110,8 +111,8 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
             g_camera_mouse_dy += dy;
             dx = 0;
             dy = 0;
-        } else if (g_alpine_game_config.mouse_scale == 1) {
-            // Standard mode: scale vehicle steering down to match camera formula feel.
+        } else if (g_alpine_game_config.mouse_scale == 2) {
+            // Modern mode: scale vehicle steering down to match camera formula feel.
             constexpr float vehicle_sens_scale = 0.08f;
             g_vehicle_mouse_dx_rem += dx * vehicle_sens_scale;
             g_vehicle_mouse_dy_rem += dy * vehicle_sens_scale;
@@ -163,11 +164,11 @@ ConsoleCommand2 ms_scale_cmd{
         if (value_opt) {
             g_alpine_game_config.mouse_scale = std::clamp(value_opt.value(), 0, 2);
         }
-        static constexpr const char* mode_names[] = {"Legacy", "Standard", "Raw"};
+        static constexpr const char* mode_names[] = {"Classic", "Raw", "Modern"};
         int mode = std::clamp(g_alpine_game_config.mouse_scale, 0, 2);
         rf::console::print("ms_scale: {} ({})", mode, mode_names[mode]);
     },
-    "Sets mouse scale mode. 0 = Legacy (RF native), 1 = Standard (Quake/Source 0.022 deg/pixel), 2 = Raw (pure camera angles: 360 pixel-units * sens = 360 degree turn).",
+    "Sets mouse scale mode. 0 = Classic (RF native), 1 = Raw (pure degrees), 2 = Modern (id Tech/Source 0.022 deg/pixel).",
     "ms_scale <0|1|2>",
 };
 
@@ -251,8 +252,8 @@ CodeInjection static_zoom_sensitivity_patch2 {
 
 // Converts the per-frame raw mouse pixel deltas captured by mouse_get_delta_hook
 // into camera angle deltas (radians).
-// Mode 1 (Standard): angle = raw_pixels * sens * 0.022 deg/pixel * deg2rad  (Quake/Source formula)
-// Mode 2 (Raw):      pure camera angles — 360 pixels * sens = 360 degree camera turn (angle = raw_pixels * sens * deg2rad)
+// Mode 1 (Raw):    pure camera angles — 360 pixels * sens = 360 degree camera turn (angle = raw_pixels * sens * deg2rad)
+// Mode 2 (Modern): angle = raw_pixels * sens * 0.022 deg/pixel * deg2rad  (id Tech/Source formula)
 // Called from camera.cpp's centralized camera injection point.
 void mouse_get_camera(float& pitch_delta, float& yaw_delta)
 {
@@ -262,8 +263,8 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
         return;
     float sens = rf::local_player->settings.controls.mouse_sensitivity;
     constexpr float deg2rad = 3.14159265f / 180.0f;
-    // Standard (1) uses 0.022 multiplier (matches Quake/Source); Raw (2) is pure degrees
-    float scale = (g_alpine_game_config.mouse_scale == 2)
+    // Raw (1) is pure degrees; Modern (2) uses 0.022 multiplier (matches id Tech/Source)
+    float scale = (g_alpine_game_config.mouse_scale == 1)
         ? deg2rad
         : 0.022f * deg2rad;
     // Apply scope/scanner sensitivity modifiers

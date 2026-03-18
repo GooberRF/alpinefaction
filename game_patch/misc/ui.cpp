@@ -1447,7 +1447,7 @@ static constexpr int CTRL_CAMSCALE_Y = 107;
 
 static bool g_ctrl_camscale_initialized = false;
 
-static constexpr const char* camscale_mode_names[] = {"Legacy", "Standard", "Raw"};
+static constexpr const char* camscale_mode_names[] = {"Classic", "Raw", "Modern"};
 
 static void ctrl_camscale_on_click(int, int)
 {
@@ -1488,30 +1488,44 @@ static void render_ctrl_camscale_btns()
 
 static void handle_ctrl_camscale_btns(int x, int y)
 {
-    if (!g_ctrl_camscale_initialized || !rf::mouse_was_button_pressed(0)) return;
-    int bx = static_cast<int>(ao_mousecamerascale_cbox.x * rf::ui::scale_x);
-    int by = static_cast<int>(ao_mousecamerascale_cbox.y * rf::ui::scale_y);
+    if (!g_ctrl_camscale_initialized)
+        return;
+
+    // Use absolute position so hit-testing tracks parent panel offsets/animations.
+    int bx = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_x() * rf::ui::scale_x);
+    int by = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_y() * rf::ui::scale_y);
     int bw = static_cast<int>(ao_mousecamerascale_cbox.w * rf::ui::scale_x);
     int bh = static_cast<int>(ao_mousecamerascale_cbox.h * rf::ui::scale_y);
-    if (x >= bx && x < bx + bw && y >= by && y < by + bh)
-        ctrl_camscale_on_click(x, y);
+
+    bool inside = (x >= bx && x < bx + bw && y >= by && y < by + bh);
+
+    // Keep hover state in sync with cursor position so the correct bitmap/state is rendered.
+    ao_mousecamerascale_cbox.highlighted = inside;
+
+    // Do not react to clicks while the controls panel is waiting for a key/mouse binding.
+    if (!inside || rf::ui::options_controls_waiting_for_key || !rf::mouse_was_button_pressed(0))
+        return;
+
+    ctrl_camscale_on_click(x, y);
 }
 
 // handle alpine options panel rendering
 CodeInjection options_render_alpine_panel_patch{
     0x0044F80B,
     []() {
+        static bool s_was_waiting = false;
+        bool now_waiting = false;
+
         int index = rf::ui::options_current_panel;
         //xlog::warn("render index {}", index);
 
         // handle key rebinding in input options panel
         if (index == 3) {
-            static bool s_was_waiting = false;
-            bool now_waiting = rf::ui::options_controls_waiting_for_key;
+            now_waiting = rf::ui::options_controls_waiting_for_key;
             s_was_waiting = now_waiting;
         }
 
-        if (index == 3)
+        if (index == 3 && !now_waiting)
             render_ctrl_camscale_btns();
 
         // render alpine options panel

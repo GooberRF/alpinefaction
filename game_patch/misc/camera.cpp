@@ -366,7 +366,7 @@ static float convert_pitch_delta_to_non_linear_space(
 }
 
 // Applies mouse camera scaling and linear pitch correction.
-// Mouse angles are computed by mouse_get_camera (Quake/Source-style formula)
+// Mouse angles are computed by mouse_get_camera (id Tech/Source-style formula)
 // rather than by RF's own sensitivity pipeline when camera-angles mode is enabled.
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
@@ -375,7 +375,7 @@ CodeInjection linear_pitch_patch{
         float& yaw_delta   = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
 
         // Mouse camera contribution: raw pixel deltas converted to radians.
-        // Only active when mouse scale mode is non-Legacy; otherwise RF's own
+        // Only active when mouse scale mode is non-Classic; otherwise RF's own
         // pipeline has already applied sensitivity and pitch_delta/yaw_delta
         // are populated.
         if (g_alpine_game_config.mouse_scale != 0) {
