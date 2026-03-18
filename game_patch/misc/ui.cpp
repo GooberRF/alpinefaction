@@ -1706,8 +1706,8 @@ void ui_ctrl_bindings_view_reset()
 
 // X/Y position for the CONTROLLER mode checkbox in UI 640x480 space.
 // Sits to the right of the stock "Change Binding" button on the same row.
-static constexpr int CTRL_CHK_X = 390;
-static constexpr int CTRL_CHK_Y = 352;
+static constexpr int CTRL_CHK_X = 265;
+static constexpr int CTRL_CHK_Y = 350;
 
 static void ctrl_mode_cbox_on_click(int, int)
 {
@@ -1738,9 +1738,9 @@ static void render_ctrl_mode_btns()
 {
     init_ctrl_mode_btns();
     g_ctrl_mode_cbox.checked = g_ctrl_bind_view;
+    g_ctrl_mode_cbox.x = CTRL_CHK_X + static_cast<int>(rf::ui::options_animated_offset);
     g_ctrl_mode_cbox.render();
-    // Draw an inline label to the right of the checkbox.
-    int lx = static_cast<int>((CTRL_CHK_X + g_ctrl_mode_cbox.w + 5) * rf::ui::scale_x);
+    int lx = static_cast<int>((g_ctrl_mode_cbox.x + g_ctrl_mode_cbox.w + 5) * rf::ui::scale_x);
     int cbox_screen_h = static_cast<int>(g_ctrl_mode_cbox.h * rf::ui::scale_y);
     int font_h = rf::gr::get_font_height(rf::ui::medium_font_0);
     int ly = static_cast<int>(CTRL_CHK_Y * rf::ui::scale_y) + (cbox_screen_h - font_h) / 2;
@@ -1751,13 +1751,25 @@ static void render_ctrl_mode_btns()
 // Handle a click on the checkbox.
 static void handle_ctrl_mode_btns(int x, int y)
 {
-    if (!g_ctrl_mode_btns_initialized || !rf::mouse_was_button_pressed(0)) return;
-    int bx = static_cast<int>(g_ctrl_mode_cbox.x * rf::ui::scale_x);
-    int by = static_cast<int>(g_ctrl_mode_cbox.y * rf::ui::scale_y);
+    if (!g_ctrl_mode_btns_initialized)
+        return;
+
+    // Use absolute position so hit-testing tracks the panel animation offset.
+    int bx = static_cast<int>(g_ctrl_mode_cbox.get_absolute_x() * rf::ui::scale_x);
+    int by = static_cast<int>(g_ctrl_mode_cbox.get_absolute_y() * rf::ui::scale_y);
     int bw = static_cast<int>(g_ctrl_mode_cbox.w * rf::ui::scale_x);
     int bh = static_cast<int>(g_ctrl_mode_cbox.h * rf::ui::scale_y);
-    if (x >= bx && x < bx + bw && y >= by && y < by + bh)
-        ctrl_mode_cbox_on_click(x, y);
+
+    bool inside = (x >= bx && x < bx + bw && y >= by && y < by + bh);
+
+    // Keep hover state in sync with cursor position.
+    g_ctrl_mode_cbox.highlighted = inside;
+
+    // Do not react to clicks while the controls panel is waiting for a key/mouse binding.
+    if (!inside || rf::ui::options_controls_waiting_for_key || !rf::mouse_was_button_pressed(0))
+        return;
+
+    ctrl_mode_cbox_on_click(x, y);
 }
 
 // handle alpine options panel rendering
