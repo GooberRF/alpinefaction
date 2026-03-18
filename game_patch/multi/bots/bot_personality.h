@@ -124,11 +124,6 @@ float bot_get_weapon_skill_weight(int weapon_type);
 float bot_get_skill_factor();
 float bot_get_decision_skill_factor();
 
-// Centralized profile configuration interface.
-// Resets initialized state so profiles are reloaded on next access.
-// Call this when the server sends new profile info or on level transitions.
-void bot_personality_reset_profiles();
-
 // Configure presets by name and immediately reinitialize.
 // Passing nullptr for either parameter leaves that preset unchanged.
 void bot_personality_set_presets(const char* personality_name, const char* skill_name);

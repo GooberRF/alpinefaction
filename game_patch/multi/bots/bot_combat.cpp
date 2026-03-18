@@ -15,7 +15,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <random>
 #include <unordered_map>
@@ -1154,32 +1153,7 @@ float get_entity_armor_ratio(const rf::Entity& entity)
     return std::clamp(entity.armor / kBotNominalMaxArmor, 0.0f, 1.0f);
 }
 
-int resolve_weapon_type_cached(const char* weapon_name)
-{
-    struct CacheEntry
-    {
-        const char* name = nullptr;
-        int weapon_type = -2;
-    };
-    static std::array<CacheEntry, 4> cache_entries{{
-        {"rail_gun", -2},
-        {"Shotgun", -2},
-        {"Rocket Launcher", -2},
-        {"Remote Charge", -2},
-    }};
-
-    for (CacheEntry& entry : cache_entries) {
-        if (std::strcmp(entry.name, weapon_name) != 0) {
-            continue;
-        }
-        if (entry.weapon_type == -2) {
-            entry.weapon_type = rf::weapon_lookup_type(entry.name);
-        }
-        return entry.weapon_type;
-    }
-
-    return rf::weapon_lookup_type(weapon_name);
-}
+// resolve_weapon_type_cached is defined in bot_utils.cpp
 
 int find_best_melee_weapon(rf::Player& local_player, rf::Entity& local_entity)
 {
@@ -1524,7 +1498,7 @@ void maybe_switch_weapon_for_combat_context(
     if (bot_personality_has_quirk(BotPersonalityQuirk::shotgun_low_health_finisher)
         && enemy_survivability <= 0.42f
         && enemy_dist <= 20.0f) {
-        const int shotgun_type = resolve_weapon_type_cached("Shotgun");
+        const int shotgun_type = bot_resolve_weapon_type_cached("Shotgun");
         if (weapon_has_usable_ammo(local_player, local_entity, shotgun_type)) {
             quirk_weapon = shotgun_type;
         }
@@ -1538,7 +1512,7 @@ void maybe_switch_weapon_for_combat_context(
     if (quirk_weapon < 0
         && !enemy_has_los
         && bot_personality_has_quirk(BotPersonalityQuirk::railgun_no_los_hunter)) {
-        const int railgun_type = resolve_weapon_type_cached("rail_gun");
+        const int railgun_type = bot_resolve_weapon_type_cached("rail_gun");
         if (weapon_has_usable_ammo(local_player, local_entity, railgun_type)) {
             quirk_weapon = railgun_type;
         }

@@ -1837,6 +1837,16 @@ static size_t write_profile_update_payload(
     const std::string& preset_name,
     const std::vector<BotConfigOverride>& overrides)
 {
+    // Validate that the payload fits in the buffer.
+    const size_t num_overrides_unclamped = std::min<size_t>(overrides.size(), 255);
+    const size_t name_len_unclamped = std::min<size_t>(preset_name.size(), kMaxPresetNameLen);
+    const size_t max_needed = sizeof(RF_GamePacketHeader) + 2 + 1 + name_len_unclamped
+        + 1 + num_overrides_unclamped * (1 + sizeof(float));
+    if (max_needed > buf_cap) {
+        xlog::warn("write_profile_update_payload: payload size {} exceeds buffer capacity {}", max_needed, buf_cap);
+        return 0;
+    }
+
     size_t offset = 0;
 
     RF_GamePacketHeader header{};
@@ -1851,15 +1861,13 @@ static size_t write_profile_update_payload(
     buf[offset++] = static_cast<std::byte>(subtype);
 
     // preset name
-    const uint8_t name_len = static_cast<uint8_t>(
-        std::min<size_t>(preset_name.size(), kMaxPresetNameLen));
+    const uint8_t name_len = static_cast<uint8_t>(name_len_unclamped);
     buf[offset++] = static_cast<std::byte>(name_len);
     std::memcpy(buf + offset, preset_name.data(), name_len);
     offset += name_len;
 
     // overrides
-    const uint8_t num_overrides = static_cast<uint8_t>(
-        std::min<size_t>(overrides.size(), 255));
+    const uint8_t num_overrides = static_cast<uint8_t>(num_overrides_unclamped);
     buf[offset++] = static_cast<std::byte>(num_overrides);
     for (uint8_t i = 0; i < num_overrides; ++i) {
         buf[offset++] = static_cast<std::byte>(overrides[i].field_id);

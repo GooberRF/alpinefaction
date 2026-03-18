@@ -106,25 +106,6 @@ CodeInjection gr_d3d_init_headless_early_return_injection{
     },
 };
 
-CodeInjection vsdk_init_headless_skip_graphics_block_injection{
-    0x004B150A,
-    [](auto& regs) {
-        if (!should_bypass_graphics_init_for_headless_bot()) {
-            return;
-        }
-
-        static bool logged = false;
-        if (!logged) {
-            xlog::info("Headless bot: skipping vsdk_init graphics/mouse block (dedicated-style)");
-            logged = true;
-        }
-
-        // Mirror stock dedicated behavior: skip the fullscreen/window/gr_init/mouse_init block.
-        // This avoids any renderer startup path when running a headless bot.
-        regs.eip = 0x004B1586;
-    },
-};
-
 static inline void set_uv(rf::gr::Vertex& v, float u, float w)
 {
     v.u1 = u;

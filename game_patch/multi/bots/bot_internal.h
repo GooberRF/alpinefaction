@@ -648,8 +648,6 @@ bool bot_internal_find_best_item_goal(
     const rf::Entity* enemy_target,
     ItemGoalCandidate& out_candidate);
 void bot_internal_note_item_goal_selection(int item_handle, BotGoalType goal_type);
-float bot_internal_get_recent_item_goal_penalty(int item_handle, BotGoalType goal_type);
-float bot_internal_get_secondary_goal_repeat_penalty(BotGoalType goal_type);
 float bot_internal_compute_enemy_goal_score(
     const rf::Entity& local_entity,
     const rf::Entity& enemy_target,
@@ -658,11 +656,7 @@ float bot_internal_compute_combat_readiness(
     const rf::Entity& local_entity,
     const rf::Entity* enemy_target);
 float bot_internal_get_combat_readiness_threshold();
-bool bot_internal_is_combat_ready(
-    const rf::Entity& local_entity,
-    const rf::Entity* enemy_target);
 bool bot_internal_is_deathmatch_mode();
-bool bot_internal_is_ctf_mode();
 bool bot_internal_is_control_point_mode();
 void bot_internal_set_last_heading_change_reason(const char* reason);
 const char* bot_internal_get_last_heading_change_reason();

@@ -290,82 +290,7 @@ bool is_probe_direction_blocked(
         &collision);
 }
 
-int find_closest_waypoint_with_los_fallback(const rf::Entity& entity)
-{
-    const bool can_use_cache =
-        g_client_bot_state.closest_los_waypoint_cache_timer.valid()
-        && !g_client_bot_state.closest_los_waypoint_cache_timer.elapsed();
-    if (can_use_cache && g_client_bot_state.closest_los_waypoint_cache > 0) {
-        rf::Vector3 moved = entity.pos - g_client_bot_state.closest_los_waypoint_cache_pos;
-        moved.y = 0.0f;
-        if (moved.len_sq()
-            <= kClosestLosWaypointCacheMoveDist * kClosestLosWaypointCacheMoveDist) {
-            return g_client_bot_state.closest_los_waypoint_cache;
-        }
-    }
-
-    const int waypoint_total = waypoints_count();
-    if (waypoint_total <= 1) {
-        return 0;
-    }
-
-    const int nearest_waypoint = bot_find_closest_waypoint_with_fallback(entity.pos);
-    const rf::Vector3 eye_offset = entity.eye_pos - entity.pos;
-    if (nearest_waypoint > 0) {
-        rf::Vector3 nearest_pos{};
-        if (waypoints_get_pos(nearest_waypoint, nearest_pos)) {
-            const rf::Vector3 nearest_eye_pos = nearest_pos + eye_offset;
-            if (bot_has_unobstructed_level_los(
-                    entity.eye_pos,
-                    nearest_eye_pos,
-                    &entity,
-                    nullptr)) {
-                g_client_bot_state.closest_los_waypoint_cache = nearest_waypoint;
-                g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-                g_client_bot_state.closest_los_waypoint_cache_timer.set(
-                    kClosestLosWaypointCacheMs
-                );
-                return nearest_waypoint;
-            }
-        }
-    }
-
-    float best_dist_sq = std::numeric_limits<float>::max();
-    int best_waypoint = 0;
-    for (int waypoint = 1; waypoint < waypoint_total; ++waypoint) {
-        rf::Vector3 waypoint_pos{};
-        if (!waypoints_get_pos(waypoint, waypoint_pos)) {
-            continue;
-        }
-
-        const rf::Vector3 waypoint_eye_pos = waypoint_pos + eye_offset;
-        if (!bot_has_unobstructed_level_los(entity.eye_pos, waypoint_eye_pos, &entity, nullptr)) {
-            continue;
-        }
-
-        const float dist_sq = rf::vec_dist_squared(&entity.pos, &waypoint_pos);
-        if (dist_sq < best_dist_sq) {
-            best_dist_sq = dist_sq;
-            best_waypoint = waypoint;
-        }
-    }
-
-    if (best_waypoint > 0) {
-        g_client_bot_state.closest_los_waypoint_cache = best_waypoint;
-        g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-        g_client_bot_state.closest_los_waypoint_cache_timer.set(
-            kClosestLosWaypointCacheMs
-        );
-        return best_waypoint;
-    }
-
-    g_client_bot_state.closest_los_waypoint_cache = nearest_waypoint;
-    g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-    g_client_bot_state.closest_los_waypoint_cache_timer.set(
-        kClosestLosWaypointCacheMs
-    );
-    return nearest_waypoint;
-}
+// find_closest_waypoint_with_los_fallback is defined in bot_utils.cpp
 
 bool has_visibility_to_target_position(
     const rf::Vector3& origin,
@@ -740,7 +665,7 @@ bool is_following_waypoint_link(const rf::Entity& entity)
 
 bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_waypoint)
 {
-    int anchor_waypoint = find_closest_waypoint_with_los_fallback(entity);
+    int anchor_waypoint = bot_find_closest_waypoint_with_los_fallback(entity);
     anchor_waypoint = choose_recovery_anchor_waypoint(entity, anchor_waypoint);
     clear_waypoint_route();
     if (anchor_waypoint <= 0) {
@@ -1360,7 +1285,7 @@ bool try_recover_from_stuck_on_geometry(const rf::Entity& entity)
             );
         }
         if (previous_waypoint <= 0) {
-            previous_waypoint = find_closest_waypoint_with_los_fallback(entity);
+            previous_waypoint = bot_find_closest_waypoint_with_los_fallback(entity);
         }
         if (previous_waypoint > 0 && previous_waypoint != blocked_waypoint) {
             bot_nav_register_failed_edge_cooldown(
@@ -1956,7 +1881,7 @@ bool update_waypoint_target(const rf::Entity& entity)
         return true;
     }
 
-    int closest_waypoint = find_closest_waypoint_with_los_fallback(entity);
+    int closest_waypoint = bot_find_closest_waypoint_with_los_fallback(entity);
     if (g_client_bot_state.recovery_pending_reroute
         && g_client_bot_state.recovery_anchor_waypoint > 0) {
         closest_waypoint = g_client_bot_state.recovery_anchor_waypoint;
@@ -2132,7 +2057,7 @@ bool update_waypoint_target_towards(
             closest_waypoint = g_client_bot_state.recovery_anchor_waypoint;
         }
         else {
-            closest_waypoint = find_closest_waypoint_with_los_fallback(entity);
+            closest_waypoint = bot_find_closest_waypoint_with_los_fallback(entity);
         }
         if (closest_waypoint <= 0) {
             clear_waypoint_route();
@@ -2320,7 +2245,7 @@ bool update_waypoint_target_for_local_los_reposition(
         anchor_waypoint = g_client_bot_state.combat_los_anchor_waypoint;
     }
     else {
-        anchor_waypoint = find_closest_waypoint_with_los_fallback(entity);
+        anchor_waypoint = bot_find_closest_waypoint_with_los_fallback(entity);
     }
 
     if (anchor_waypoint <= 0) {

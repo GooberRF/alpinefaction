@@ -11,10 +11,8 @@
 #include "../../rf/collide.h"
 #include "../../rf/multi.h"
 #include "../../rf/weapon.h"
-#include <array>
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <limits>
 
 namespace
@@ -48,37 +46,7 @@ bool has_visibility_to_target_entity(
     );
 }
 
-int resolve_weapon_type_cached(const char* weapon_name)
-{
-    struct CacheEntry
-    {
-        const char* name = nullptr;
-        int weapon_type = -2;
-    };
-    static std::array<CacheEntry, 2> cache_entries{{
-        {"Shotgun", -2},
-        {"Riot Stick", -2},
-    }};
-
-    for (CacheEntry& entry : cache_entries) {
-        if (std::strcmp(entry.name, weapon_name) != 0) {
-            continue;
-        }
-        if (entry.weapon_type == -2) {
-            entry.weapon_type = rf::weapon_lookup_type(entry.name);
-        }
-        return entry.weapon_type;
-    }
-
-    return rf::weapon_lookup_type(weapon_name);
-}
-
-bool entity_has_weapon_type(const rf::Entity& entity, const int weapon_type)
-{
-    return weapon_type >= 0
-        && weapon_type < rf::num_weapon_types
-        && entity.ai.has_weapon[weapon_type];
-}
+// resolve_weapon_type_cached and entity_has_weapon_type are defined in bot_utils.cpp
 }
 
 void bot_perception_manager_reset_tracking()
@@ -288,16 +256,16 @@ rf::Entity* bot_perception_manager_select_enemy_target(
         if (bot_personality_has_quirk(BotPersonalityQuirk::shotgun_low_health_finisher)
             && enemy_survivability <= 0.42f
             && enemy_dist <= 18.0f) {
-            const int shotgun_type = resolve_weapon_type_cached("Shotgun");
-            if (entity_has_weapon_type(local_entity, shotgun_type)) {
+            const int shotgun_type = bot_resolve_weapon_type_cached("Shotgun");
+            if (bot_entity_has_weapon_type(local_entity, shotgun_type)) {
                 score *= 0.70f;
             }
         }
         if (bot_personality_has_quirk(BotPersonalityQuirk::melee_finisher)
             && enemy_survivability <= 0.30f
             && enemy_dist <= 3.2f) {
-            const int riot_stick_type = resolve_weapon_type_cached("Riot Stick");
-            if (entity_has_weapon_type(local_entity, riot_stick_type)) {
+            const int riot_stick_type = bot_resolve_weapon_type_cached("Riot Stick");
+            if (bot_entity_has_weapon_type(local_entity, riot_stick_type)) {
                 score *= 0.66f;
             }
         }

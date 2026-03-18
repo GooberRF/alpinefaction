@@ -1,12 +1,11 @@
 #include "bot_decision_eval.h"
 
 #include "bot_internal.h"
+#include "bot_utils.h"
 #include "../../rf/player/player.h"
 #include "../../rf/weapon.h"
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <cstring>
 
 namespace
 {
@@ -30,39 +29,7 @@ bool weapon_has_readiness_ammo(const rf::Entity& entity, const int weapon_type)
     return false;
 }
 
-int resolve_weapon_type_cached(const char* weapon_name)
-{
-    struct CacheEntry
-    {
-        const char* name = nullptr;
-        int weapon_type = -2;
-    };
-    static std::array<CacheEntry, 4> cache_entries{{
-        {"rail_gun", -2},
-        {"Shotgun", -2},
-        {"Riot Stick", -2},
-        {"shoulder_cannon", -2},
-    }};
-
-    for (CacheEntry& entry : cache_entries) {
-        if (std::strcmp(entry.name, weapon_name) != 0) {
-            continue;
-        }
-        if (entry.weapon_type == -2) {
-            entry.weapon_type = rf::weapon_lookup_type(entry.name);
-        }
-        return entry.weapon_type;
-    }
-
-    return rf::weapon_lookup_type(weapon_name);
-}
-
-bool entity_has_weapon_type(const rf::Entity& entity, const int weapon_type)
-{
-    return weapon_type >= 0
-        && weapon_type < rf::num_weapon_types
-        && entity.ai.has_weapon[weapon_type];
-}
+// resolve_weapon_type_cached and entity_has_weapon_type are defined in bot_utils.cpp
 }
 
 float bot_decision_get_entity_health_ratio(const rf::Entity& entity)
@@ -308,8 +275,8 @@ float bot_decision_compute_enemy_goal_score(
 
     if (!enemy_has_los
         && bot_personality_has_quirk(BotPersonalityQuirk::railgun_no_los_hunter)) {
-        const int railgun_type = resolve_weapon_type_cached("rail_gun");
-        if (entity_has_weapon_type(local_entity, railgun_type)) {
+        const int railgun_type = bot_resolve_weapon_type_cached("rail_gun");
+        if (bot_entity_has_weapon_type(local_entity, railgun_type)) {
             score += 24.0f;
         }
     }

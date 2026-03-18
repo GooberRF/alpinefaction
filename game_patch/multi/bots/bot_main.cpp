@@ -1228,82 +1228,7 @@ bool find_item_goal_waypoint_internal(const rf::Vector3& item_pos, int& out_wayp
     return false;
 }
 
-int find_closest_waypoint_with_los_fallback(const rf::Entity& entity)
-{
-    const bool can_use_cache =
-        g_client_bot_state.closest_los_waypoint_cache_timer.valid()
-        && !g_client_bot_state.closest_los_waypoint_cache_timer.elapsed();
-    if (can_use_cache && g_client_bot_state.closest_los_waypoint_cache > 0) {
-        rf::Vector3 moved = entity.pos - g_client_bot_state.closest_los_waypoint_cache_pos;
-        moved.y = 0.0f;
-        if (moved.len_sq()
-            <= kClosestLosWaypointCacheMoveDist * kClosestLosWaypointCacheMoveDist) {
-            return g_client_bot_state.closest_los_waypoint_cache;
-        }
-    }
-
-    const int waypoint_total = waypoints_count();
-    if (waypoint_total <= 1) {
-        return 0;
-    }
-
-    const int nearest_waypoint = bot_find_closest_waypoint_with_fallback(entity.pos);
-    const rf::Vector3 eye_offset = entity.eye_pos - entity.pos;
-    if (nearest_waypoint > 0) {
-        rf::Vector3 nearest_pos{};
-        if (waypoints_get_pos(nearest_waypoint, nearest_pos)) {
-            const rf::Vector3 nearest_eye_pos = nearest_pos + eye_offset;
-            if (bot_has_unobstructed_level_los(
-                    entity.eye_pos,
-                    nearest_eye_pos,
-                    &entity,
-                    nullptr)) {
-                g_client_bot_state.closest_los_waypoint_cache = nearest_waypoint;
-                g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-                g_client_bot_state.closest_los_waypoint_cache_timer.set(
-                    kClosestLosWaypointCacheMs
-                );
-                return nearest_waypoint;
-            }
-        }
-    }
-
-    float best_dist_sq = std::numeric_limits<float>::max();
-    int best_waypoint = 0;
-    for (int waypoint = 1; waypoint < waypoint_total; ++waypoint) {
-        rf::Vector3 waypoint_pos{};
-        if (!waypoints_get_pos(waypoint, waypoint_pos)) {
-            continue;
-        }
-
-        const rf::Vector3 waypoint_eye_pos = waypoint_pos + eye_offset;
-        if (!bot_has_unobstructed_level_los(entity.eye_pos, waypoint_eye_pos, &entity, nullptr)) {
-            continue;
-        }
-
-        const float dist_sq = rf::vec_dist_squared(&entity.pos, &waypoint_pos);
-        if (dist_sq < best_dist_sq) {
-            best_dist_sq = dist_sq;
-            best_waypoint = waypoint;
-        }
-    }
-
-    if (best_waypoint > 0) {
-        g_client_bot_state.closest_los_waypoint_cache = best_waypoint;
-        g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-        g_client_bot_state.closest_los_waypoint_cache_timer.set(
-            kClosestLosWaypointCacheMs
-        );
-        return best_waypoint;
-    }
-
-    g_client_bot_state.closest_los_waypoint_cache = nearest_waypoint;
-    g_client_bot_state.closest_los_waypoint_cache_pos = entity.pos;
-    g_client_bot_state.closest_los_waypoint_cache_timer.set(
-        kClosestLosWaypointCacheMs
-    );
-    return nearest_waypoint;
-}
+// find_closest_waypoint_with_los_fallback is defined in bot_utils.cpp
 
 float get_entity_health_ratio(const rf::Entity& entity)
 {
@@ -1343,39 +1268,7 @@ float compute_weapon_readiness_score(
     return bot_decision_compute_weapon_readiness_score(local_entity, enemy_target);
 }
 
-int resolve_weapon_type_cached(const char* weapon_name)
-{
-    struct CacheEntry
-    {
-        const char* name = nullptr;
-        int weapon_type = -2;
-    };
-    static std::array<CacheEntry, 4> cache_entries{{
-        {"rail_gun", -2},
-        {"Shotgun", -2},
-        {"Riot Stick", -2},
-        {"shoulder_cannon", -2},
-    }};
-
-    for (CacheEntry& entry : cache_entries) {
-        if (std::strcmp(entry.name, weapon_name) != 0) {
-            continue;
-        }
-        if (entry.weapon_type == -2) {
-            entry.weapon_type = rf::weapon_lookup_type(entry.name);
-        }
-        return entry.weapon_type;
-    }
-
-    return rf::weapon_lookup_type(weapon_name);
-}
-
-bool entity_has_weapon_type(const rf::Entity& entity, const int weapon_type)
-{
-    return weapon_type >= 0
-        && weapon_type < rf::num_weapon_types
-        && entity.ai.has_weapon[weapon_type];
-}
+// resolve_weapon_type_cached and entity_has_weapon_type are defined in bot_utils.cpp
 
 float compute_waypoint_path_length(const std::vector<int>& path)
 {
@@ -1693,8 +1586,8 @@ bool item_matches_super_item_hoarder_target(const rf::Item& item, const rf::Item
         return true;
     }
 
-    const int railgun_type = resolve_weapon_type_cached("rail_gun");
-    const int shoulder_cannon_type = resolve_weapon_type_cached("shoulder_cannon");
+    const int railgun_type = bot_resolve_weapon_type_cached("rail_gun");
+    const int shoulder_cannon_type = bot_resolve_weapon_type_cached("shoulder_cannon");
     if (item_info) {
         const bool gives_super_weapon =
             item_info->gives_weapon_id == railgun_type
@@ -2074,7 +1967,7 @@ bool find_best_item_goal(
         local_entity,
         enemy_target
     );
-    const int start_waypoint = find_closest_waypoint_with_los_fallback(local_entity);
+    const int start_waypoint = bot_find_closest_waypoint_with_los_fallback(local_entity);
     if (start_waypoint <= 0) {
         return false;
     }
@@ -2786,16 +2679,6 @@ void bot_internal_note_item_goal_selection(const int item_handle, const BotGoalT
     bot_goal_memory_note_item_goal_selection(item_handle, goal_type);
 }
 
-float bot_internal_get_recent_item_goal_penalty(const int item_handle, const BotGoalType goal_type)
-{
-    return bot_goal_memory_get_recent_item_goal_penalty(item_handle, goal_type);
-}
-
-float bot_internal_get_secondary_goal_repeat_penalty(const BotGoalType goal_type)
-{
-    return bot_goal_memory_get_secondary_goal_repeat_penalty(goal_type);
-}
-
 float bot_internal_compute_enemy_goal_score(
     const rf::Entity& local_entity,
     const rf::Entity& enemy_target,
@@ -2816,21 +2699,9 @@ float bot_internal_get_combat_readiness_threshold()
     return bot_personality_manager_compute_combat_readiness_threshold();
 }
 
-bool bot_internal_is_combat_ready(
-    const rf::Entity& local_entity,
-    const rf::Entity* enemy_target)
-{
-    return bot_personality_manager_is_combat_ready(local_entity, enemy_target);
-}
-
 bool bot_internal_is_deathmatch_mode()
 {
     return bot_personality_manager_is_deathmatch_mode();
-}
-
-bool bot_internal_is_ctf_mode()
-{
-    return bot_personality_manager_is_ctf_mode();
 }
 
 bool bot_internal_is_control_point_mode()

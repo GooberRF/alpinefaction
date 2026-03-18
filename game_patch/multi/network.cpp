@@ -1732,6 +1732,13 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                 bool should_mark_as_bot = false;
                 if (bot_mode_requested) {
                     should_mark_as_bot = !server_requires_bot_secret || bot_secret_valid;
+                    if (should_mark_as_bot && !server_requires_bot_secret) {
+                        xlog::warn(
+                            "Bot {} joining without shared secret authentication. "
+                            "Configure BotSharedSecret in dedicated_server.txt to require authentication.",
+                            valid_player->name
+                        );
+                    }
                 } else if (server_requires_bot_secret && bot_secret_valid) {
                     // Backward compatibility for older clients that only send the secret.
                     should_mark_as_bot = true;

@@ -2300,13 +2300,19 @@ static void broadcast_name_change(rf::Player* player)
     header.type = RF_GPT_NAME_CHANGE;
     const char* name = player->name.c_str();
     const size_t name_len = std::strlen(name);
-    header.size = static_cast<uint16_t>(1 + name_len + 1); // player_id + name + null
+    const size_t max_name_len = sizeof(buf) - sizeof(header) - 1 - 1; // player_id + null
+    if (name_len > max_name_len) {
+        xlog::warn("broadcast_name_change: name too long ({} bytes), truncating", name_len);
+    }
+    const size_t safe_name_len = std::min(name_len, max_name_len);
+    header.size = static_cast<uint16_t>(1 + safe_name_len + 1); // player_id + name + null
     std::memcpy(buf + offset, &header, sizeof(header));
     offset += sizeof(header);
 
     buf[offset++] = player->net_data->player_id;
-    std::memcpy(buf + offset, name, name_len + 1);
-    offset += name_len + 1;
+    std::memcpy(buf + offset, name, safe_name_len);
+    offset += safe_name_len;
+    buf[offset++] = '\0';
 
     rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), 0);
 }

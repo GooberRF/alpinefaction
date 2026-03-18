@@ -950,11 +950,6 @@ float bot_get_decision_skill_factor()
     return std::clamp(base_decision * profile_scale, 0.0f, 1.0f);
 }
 
-void bot_personality_reset_profiles()
-{
-    g_profiles_initialized = false;
-}
-
 void bot_personality_set_presets(const char* personality_name, const char* skill_name)
 {
     if (personality_name) {
