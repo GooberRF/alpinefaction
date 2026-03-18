@@ -25,7 +25,6 @@
 #include "gr_d3d_internal.h"
 
 void monitor_refresh_all();
-static bool override_pow2tex = false;
 
 static void set_texture_min_mag_filter_in_code(D3DTEXTUREFILTERTYPE filter_type0, D3DTEXTUREFILTERTYPE filter_type1)
 {
@@ -674,36 +673,6 @@ CodeInjection gr_d3d_close_injection{
     },
 };
 
-ConsoleCommand2 pow2_tex_cmd{
-    "dbg_pow2tex",
-    [](std::optional<int> argument) {
-        if (argument) {
-            int arg = argument.value();
-            switch (arg) {
-            case 0:
-                override_pow2tex = true;
-                rf::gr::d3d::p2t = 0;
-                break;
-            case 1:
-                override_pow2tex = true;
-                rf::gr::d3d::p2t = 1;
-                break;
-            default:
-                override_pow2tex = false;
-                break;
-            }
-        }
-
-        if (override_pow2tex) {
-            rf::console::print("Enforcement of power of 2 textures is set to manual override. The option is currently {}. Use 'dbg_pow2tex -1' to disable override.", rf::gr::d3d::p2t ? "enabled" : "disabled");
-        }
-        else {
-            rf::console::print("Enforcement of power of 2 textures is set to automatic. Use 'dbg_pow2tex 0' or 'dbg_pow2tex 1' to override for debugging.");
-        }
-    },
-    "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
-};
-
 bool gr_d3d_is_d3d8to9()
 {
     if (rf::gr::screen.mode != rf::gr::DIRECT3D) {
@@ -776,23 +745,6 @@ void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h,
     verts[3].u1 = u_left;
     verts[3].v1 = v_bottom;
     rf::gr::tmapper(std::size(verts_ptrs), verts_ptrs, rf::gr::TMAP_FLAG_TEXTURED, mode);
-}
-
-// checked during level load
-void evaluate_pow2tex(rf::String level_filename) {
-    // if dbg_pow2tex is active, use manual override instead of level filename lookup
-    if (override_pow2tex) {
-        return;
-    }
-
-    bool should_p2t_fix = false;
-
-    if (is_p2t_fix_level(level_filename)) {
-        should_p2t_fix = true;
-        rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
-    }
-
-    rf::gr::d3d::p2t = should_p2t_fix;
 }
 
 void gr_d3d_apply_patch()
@@ -918,7 +870,6 @@ void gr_d3d_apply_patch()
 
     // Commands
     antialiasing_cmd.register_cmd();
-    pow2_tex_cmd.register_cmd();
 #ifdef DEBUG
     profile_frame_cmd.register_cmd();
 #endif

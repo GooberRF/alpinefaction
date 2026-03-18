@@ -125,6 +125,7 @@ enum class AlpineLevelInfoID
     ChatMap8,
     ChatMap9,
     CraterTexturePPM,
+    UseVertexLighting,
     _optioncount       // dummy for total count
 };
 

@@ -141,8 +141,9 @@ enum class DedObjectType : int
     DED_TARGET = 0x14,
     DED_KEYFRAME = 0x15,
     DED_PUSH_REGION = 0x16,
-    DED_MESH = 0x17, // Alpine 1.3
-    DED_NOTE = 0x18  // Alpine 1.3
+    DED_MESH = 0x17,   // Alpine 1.3
+    DED_NOTE = 0x18,   // Alpine 1.3
+    DED_CORONA = 0x19  // Alpine 1.3
 };
 
 struct Vector3
@@ -233,6 +234,12 @@ struct VArray
     void add(T value)
     {
         add_if_not_exists_raw(reinterpret_cast<void*>(value));
+    }
+
+    // FUN_00491020: unconditional append (always adds, no dedup check)
+    void push_back(T value)
+    {
+        AddrCaller{0x00491020}.this_call(this, value);
     }
 
     // Remove first occurrence of value
@@ -416,6 +423,21 @@ struct DedMesh : DedObject
 struct DedNote : DedObject
 {
     std::vector<std::string> notes;
+};
+
+struct DedCorona : DedObject
+{
+    uint8_t color_r = 200, color_g = 154, color_b = 228, color_a = 255;
+    std::string corona_bitmap = "LightCorona04.tga";
+    float cone_angle = 83.0f;        // degrees
+    float intensity = 0.5f;
+    float radius_distance = 0.6f;
+    float radius_scale = 0.8f;
+    float diminish_distance = -0.05f;
+    std::string volumetric_bitmap = "LightBeam02.tga";
+    float volumetric_height = 1.6f;
+    float volumetric_length = 3.2f;
+    bool show_in_editor = false;       // not serialized — local editor toggle
 };
 
 struct DedBoltEmitter : DedObject
@@ -680,4 +702,48 @@ static_assert(sizeof(VFile) == 0x114);
 bool get_is_saving_af_version();
 
 static auto& editor_file_default_matrix = *reinterpret_cast<Matrix3*>(0x01642060);
-static auto& g_main_frame = addr_as_ref<CWnd*>(0x006F9E68);
+
+struct CFrameWnd : CWnd
+{
+    char padding_frame[0x80]; // 0xBC - 0x3C = 0x80
+};
+static_assert(sizeof(CFrameWnd) == 0xBC);
+
+struct CMainFrame : CFrameWnd
+{
+    void* views[4];
+    void* unk_view;
+    CDocument* doc;
+    VString field_D4;
+    char dialog_bar[0x88]; // CDialogBar
+    char status_bar[0x7C]; // CStatusBar
+    char splitter[0x26C]; // CDedSplitterWnd
+    float grid_size_available_values[12];
+    float rotate_by_available_vals[8];
+    int texture_grid_size_available_values[8];
+    int grid_size_index;
+    int rotate_by_index;
+    int texture_grid_size_index;
+    float camera_speed_allowed_values[6];
+    int camera_speed_index;
+    float grid_brightness;
+    int custom_colors[16];
+    int favorite_textures[8];
+    bool play_no_tnl;
+    char padding_tail[3];
+    void* preferences_dlg;
+
+    void MaximizeActiveViewport()
+    {
+        AddrCaller{0x004476E0}.this_call(this);
+    }
+
+    void RestoreAllViewports()
+    {
+        AddrCaller{0x00447670}.this_call(this);
+    }
+};
+static_assert(sizeof(CMainFrame) == 0x550);
+
+static auto& g_main_frame = addr_as_ref<CMainFrame*>(0x006F9E68);
+static auto& g_maximized_viewport = addr_as_ref<int>(0x0057B9C0);

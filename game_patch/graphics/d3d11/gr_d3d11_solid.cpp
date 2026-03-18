@@ -222,13 +222,16 @@ namespace df::gr::d3d11
         }
 
         geometry_buffers_.bind_buffers(render_context);
+        // World geometry UVs are authored for pow2 texture dimensions on old GPUs,
+        // so suppress UV scaling for this entire pass
+        render_context.set_suppress_texture_uv_scale(true);
         for (SolidBatch& b : batches) {
             bool lightmap_only = rf::gr::show_lightmaps && what != FaceRenderType::alpha;
             render_context.set_mode(b.mode, {255, 255, 255, 255}, lightmap_only);
             render_context.set_textures(b.textures[0], b.textures[1]);
-            //xlog::warn("DrawIndexed {} {}", b.num_indices, b.start_index);
             render_context.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }
+        render_context.set_suppress_texture_uv_scale(false);
     }
 
     class GRenderCacheBuilder
@@ -834,6 +837,8 @@ namespace df::gr::d3d11
     void SolidRenderer::render_movable_solid(GSolid* solid, const Vector3& pos, const Matrix3& orient)
     {
         xlog::trace("Rendering movable solid {}", solid);
+        // Upload gathered lights so the pixel shader can apply point lighting to movers
+        render_context_.update_lights();
         GRenderCache* cache = get_or_create_movable_solid_cache(solid);
         before_render(pos, orient);
         cache->render(FaceRenderType::opaque, render_context_);
@@ -864,6 +869,10 @@ namespace df::gr::d3d11
             // Happens when glass is killed
             return;
         }
+        // Clear stale point lights that may remain from mesh rendering (which runs
+        // between render_solid and render_alpha_detail). Without this, alpha surfaces
+        // pick up mesh lights and get overbright/blinking artifacts.
+        render_context_.update_lights();
         before_render(rf::zero_vector, rf::identity_matrix);
         render_detail(solid, room, true);
         if (decals_enabled) {
@@ -931,4 +940,5 @@ namespace df::gr::d3d11
             get_or_create_detail_room_cache(solid, room);
         }
     }
+
 }

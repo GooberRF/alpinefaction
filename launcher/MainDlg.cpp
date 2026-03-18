@@ -15,6 +15,7 @@
 #include <chrono>
 #include <launcher_common/PatchedAppLauncher.h>
 #include <launcher_common/UpdateChecker.h>
+#include <launcher_common/VideoDeviceInfoProvider.h>
 #include "ImageButton.h"
 
 #ifdef _DEBUG
@@ -161,6 +162,29 @@ LRESULT MainDlg::OnShowWhatsNew(WPARAM wparam, LPARAM lparam)
     ClearWhatsNewFlag();
     std::string content = FetchWhatsNewContent();
     MessageBoxA(content.c_str(), "What's new?", MB_OK | MB_ICONINFORMATION);
+
+    // Prompt to switch to D3D11 if not already using it and D3D11 hardware is available
+    try {
+        GameConfig game_config;
+        game_config.load();
+        if (game_config.renderer.value() != GameConfig::Renderer::d3d11
+            && is_d3d11_device_available()) {
+            int result = MessageBoxA(
+                "Direct3D 11 is now the recommended renderer.\n\n"
+                "Do you want to switch to it now?\n\n"
+                "You can configure the renderer at any time via the settings panel (gear icon) "
+                "in the Alpine Faction launcher.",
+                "Recommended Renderer",
+                MB_YESNO | MB_ICONINFORMATION);
+            if (result == IDYES) {
+                game_config.renderer = GameConfig::Renderer::d3d11;
+                game_config.save();
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        xlog::warn("Skipping D3D11 renderer prompt: {}", e.what());
+    }
 
     return 0;
 }
