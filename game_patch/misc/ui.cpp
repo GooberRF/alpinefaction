@@ -1442,7 +1442,7 @@ CodeInjection handle_options_button_click_patch{
 };
 
 // Mouse scale button toggle injected into the stock Controls panel (next to Mouse Y-Invert)
-static constexpr int CTRL_CAMSCALE_X = 430;
+static constexpr int CTRL_CAMSCALE_X = 306;
 static constexpr int CTRL_CAMSCALE_Y = 107;
 
 static bool g_ctrl_camscale_initialized = false;
@@ -1475,13 +1475,13 @@ static void render_ctrl_camscale_btns()
     init_ctrl_camscale_btns();
     snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
         camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
+    ao_mousecamerascale_cbox.x = CTRL_CAMSCALE_X + static_cast<int>(rf::ui::options_animated_offset);
     ao_mousecamerascale_cbox.render();
-    // Center text within the button's label area (indicator ends ~x+25, button ends ~x+87, center = x+56)
-    int val_x = static_cast<int>((CTRL_CAMSCALE_X + 50) * rf::ui::scale_x);
+    int val_x = static_cast<int>((ao_mousecamerascale_cbox.x + 50) * rf::ui::scale_x);
     int val_y = static_cast<int>((CTRL_CAMSCALE_Y + 6) * rf::ui::scale_y);
     rf::gr::set_color(255, 255, 255, 255);
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, val_x, val_y, ao_mousecamerascale_butlabel_text, rf::ui::medium_font_0);
-    int name_x = static_cast<int>((CTRL_CAMSCALE_X + 87) * rf::ui::scale_x);
+    int name_x = static_cast<int>((ao_mousecamerascale_cbox.x + 87) * rf::ui::scale_x);
     rf::gr::set_color(0, 0, 0, 255);
     rf::gr::string(name_x, val_y, "Mouse scale", rf::ui::medium_font_0);
 }
