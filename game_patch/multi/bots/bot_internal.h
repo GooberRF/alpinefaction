@@ -140,6 +140,7 @@ inline constexpr int kSemiAutoClickMinMs = 90;
 inline constexpr int kSemiAutoClickMaxMs = 900;
 inline constexpr int kRemoteChargeDetonationWindowMs = 5000;
 inline constexpr int kBotServerConfigTimeoutMs = 10000;
+inline constexpr int kBotConnectionWatchdogMs = 30000;
 
 enum class BotGoalType
 {
@@ -568,6 +569,7 @@ struct ClientBotState
     bool server_config_received = false;
     bool server_deactivated = false;
     rf::Timestamp server_config_timeout_timer{};
+    rf::Timestamp connection_watchdog_timer{};
     rf::Timestamp no_move_target_watchdog_timer{};
     int no_move_target_watchdog_retries = 0;
     BotPositionStallWatchdog position_stall_wd{};

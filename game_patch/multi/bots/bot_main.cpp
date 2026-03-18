@@ -2758,6 +2758,23 @@ void client_bot_do_frame()
     }
 
     if (!is_client_bot_active()) {
+        // Connection watchdog: if config was received but we haven't reached (or returned to)
+        // GS_GAMEPLAY within the timeout, the connection is likely dead.
+        if (g_client_bot_state.server_config_received
+            && g_client_bot_state.connection_watchdog_timer.valid()
+            && g_client_bot_state.connection_watchdog_timer.elapsed()) {
+            if (g_alpine_game_config.bot_quit_when_disconnected) {
+                xlog::warn("Bot connection watchdog expired (no gameplay for {}s after config) - auto-quitting",
+                    kBotConnectionWatchdogMs / 1000);
+                rf::gameseq_set_state(rf::GS_QUITING, false);
+            }
+            else {
+                xlog::warn("Bot connection watchdog expired - disconnecting");
+                multi_disconnect_from_server();
+            }
+            return;
+        }
+
         reset_client_bot_state();
         bot_chat_manager_reset();
         reset_goal_stuck_watchdog(true);
@@ -2773,6 +2790,9 @@ void client_bot_do_frame()
         bot_perception_manager_reset_tracking();
         return;
     }
+
+    // In active gameplay - reset connection watchdog since we're connected and playing.
+    g_client_bot_state.connection_watchdog_timer.set(kBotConnectionWatchdogMs);
 
     // If server config hasn't been received yet, don't run bot logic.
     // The timeout is handled above (before the is_client_bot_active check).

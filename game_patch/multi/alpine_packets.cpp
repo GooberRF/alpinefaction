@@ -2027,6 +2027,7 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
             g_client_bot_state.server_config_received = true;
             g_client_bot_state.server_deactivated = false;
             g_client_bot_state.server_config_timeout_timer.invalidate();
+            g_client_bot_state.connection_watchdog_timer.set(kBotConnectionWatchdogMs);
             break;
 
         case af_bot_control_type::disconnect_bot:
