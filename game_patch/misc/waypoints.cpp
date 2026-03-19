@@ -2824,6 +2824,7 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
         static_cast<int>(WaypointDroppedSubtype::normal),
         true);
 
+    // Standard radius linking (same-height and nearby waypoints).
     const float link_radius_sq = kWaypointLinkRadius * kWaypointLinkRadius;
     for (int i = 1; i < crater_index; ++i) {
         const auto& node = g_waypoints[i];
@@ -2839,6 +2840,81 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
         }
         if (waypoint_upward_link_allowed(node.pos, crater_pos, kWaypointGenerateMaxInclineDeg)) {
             link_waypoint_if_clear(i, crater_index);
+        }
+    }
+
+    // Downward drop trace: search for waypoints up to 15m directly below the crater.
+    // This finds waypoints at the bottom of holes created by geomod. Links are
+    // one-directional (crater → below) since bots can drop but not climb back up.
+    constexpr float kCraterDownwardTraceDistance = 15.0f;
+    constexpr float kCraterDownwardHorizontalRadius = kWaypointLinkRadius;
+    const float horiz_radius_sq = kCraterDownwardHorizontalRadius * kCraterDownwardHorizontalRadius;
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        if (i == crater_index) {
+            continue;
+        }
+        const auto& node = g_waypoints[i];
+        if (!node.valid) {
+            continue;
+        }
+        // Must be below the crater
+        const float drop = crater_pos.y - node.pos.y;
+        if (drop <= kWaypointLinkRadiusEpsilon || drop > kCraterDownwardTraceDistance) {
+            continue;
+        }
+        // Must be roughly underneath (within horizontal radius)
+        const float dx = crater_pos.x - node.pos.x;
+        const float dz = crater_pos.z - node.pos.z;
+        if (dx * dx + dz * dz > horiz_radius_sq) {
+            continue;
+        }
+        // Already linked by the standard pass?
+        if (distance_sq(crater_pos, node.pos) <= link_radius_sq) {
+            continue;
+        }
+        // LOS check — can the bot see (fall to) this waypoint?
+        link_waypoint_if_clear(crater_index, i);
+    }
+
+    // Detect "hole in floor" craters: if the crater has any downward outgoing links
+    // (to waypoints significantly below), remove outgoing links FROM the crater to
+    // same-height neighbors so bots don't use it as a throughway on level ground.
+    // Incoming links TO the crater from same-height neighbors are kept so bots can
+    // still intentionally navigate to the hole and drop down.
+    if (crater_index > 0 && crater_index < static_cast<int>(g_waypoints.size())) {
+        auto& crater_node = g_waypoints[crater_index];
+        constexpr float kSameHeightThreshold = 1.0f;
+
+        bool has_downward_link = false;
+        for (int link = 0; link < crater_node.num_links; ++link) {
+            const int target_uid = crater_node.links[link];
+            if (target_uid <= 0 || target_uid >= static_cast<int>(g_waypoints.size())) {
+                continue;
+            }
+            const auto& target_node = g_waypoints[target_uid];
+            if (target_node.valid
+                && target_node.pos.y < crater_pos.y - kSameHeightThreshold) {
+                has_downward_link = true;
+                break;
+            }
+        }
+
+        if (has_downward_link) {
+            // Remove outgoing links from crater to same-height/upward neighbors.
+            // Keep only downward links (intentional drops).
+            int write = 0;
+            for (int read = 0; read < crater_node.num_links; ++read) {
+                const int target_uid = crater_node.links[read];
+                if (target_uid > 0 && target_uid < static_cast<int>(g_waypoints.size())) {
+                    const auto& target_node = g_waypoints[target_uid];
+                    if (target_node.valid
+                        && target_node.pos.y >= crater_pos.y - kSameHeightThreshold) {
+                        continue; // skip same-height/upward outgoing link
+                    }
+                }
+                crater_node.links[write++] = crater_node.links[read];
+            }
+            crater_node.num_links = write;
         }
     }
 }
