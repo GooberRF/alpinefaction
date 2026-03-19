@@ -1894,6 +1894,9 @@ void af_send_bot_control_update_personality(rf::Player* player, const ServerBotC
         af_bot_control_type::update_personality,
         config.personality_preset,
         config.personality_overrides);
+    if (len == 0) {
+        return;
+    }
 
     af_send_packet(player, buf, static_cast<int>(len), true);
 }
@@ -1910,6 +1913,9 @@ void af_send_bot_control_update_skill(rf::Player* player, const ServerBotConfig&
         af_bot_control_type::update_skill,
         config.skill_preset,
         config.skill_overrides);
+    if (len == 0) {
+        return;
+    }
 
     af_send_packet(player, buf, static_cast<int>(len), true);
 }
