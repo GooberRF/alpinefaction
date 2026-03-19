@@ -437,7 +437,7 @@ void camera_do_patch()
     // Improve freelook spectate logic after level transition.
     multi_get_state_info_camera_enter_fixed_patch.install();
 
-    // Linear pitch correction and camera horizon reset
+    // Linear pitch correction
     linear_pitch_patch.install();
     linear_pitch_cmd.register_cmd();
 }

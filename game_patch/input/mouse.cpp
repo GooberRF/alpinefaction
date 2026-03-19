@@ -16,8 +16,17 @@
 
 // Raw mouse delta accumulators for centralized camera angle computation.
 static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
+
 // Sub-pixel remainder accumulators for vehicle mouse sensitivity scaling.
 static float g_vehicle_mouse_dx_rem = 0.0f, g_vehicle_mouse_dy_rem = 0.0f;
+
+static void reset_mouse_delta_accumulators()
+{
+    g_camera_mouse_dx = 0;
+    g_camera_mouse_dy = 0;
+    g_vehicle_mouse_dx_rem = 0.0f;
+    g_vehicle_mouse_dy_rem = 0.0f;
+}
 
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
@@ -84,8 +93,10 @@ FunHook<void()> mouse_keep_centered_enable_hook{
 FunHook<void()> mouse_keep_centered_disable_hook{
     0x0051E6A0,
     []() {
-        if (rf::keep_mouse_centered)
+        if (rf::keep_mouse_centered) {
             set_direct_input_enabled(false);
+            reset_mouse_delta_accumulators();
+        }
         mouse_keep_centered_disable_hook.call_target();
     },
 };
@@ -96,8 +107,10 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
 
         // Nothing to do in Classic mode or outside gameplay.
-        if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0)
+        if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0) {
+            reset_mouse_delta_accumulators();
             return;
+        }
 
         // In Raw/Modern mode: capture raw deltas for centralized angle
         // computation and zero them so RF does not apply its own scaling.
@@ -162,6 +175,9 @@ ConsoleCommand2 ms_scale_cmd{
     [](std::optional<int> value_opt) {
         if (value_opt) {
             g_alpine_game_config.mouse_scale = std::clamp(value_opt.value(), 0, 2);
+            if (g_alpine_game_config.mouse_scale == 0) {
+                reset_mouse_delta_accumulators();
+            }
         }
         static constexpr const char* mode_names[] = {"Classic", "Raw", "Modern"};
         int mode = std::clamp(g_alpine_game_config.mouse_scale, 0, 2);
@@ -257,14 +273,17 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
 {
     pitch_delta = 0.0f;
     yaw_delta   = 0.0f;
-    if (!rf::local_player || !rf::keep_mouse_centered)
+    if (!rf::local_player || !rf::keep_mouse_centered) {
+        reset_mouse_delta_accumulators();
         return;
+    }
     float sens = rf::local_player->settings.controls.mouse_sensitivity;
     constexpr float deg2rad = 3.14159265f / 180.0f;
-    // Raw (1) is pure degrees; Modern (2) uses 0.022 multiplier (matches id Tech/Source)
+    constexpr float id_tech_deg_per_pixel = 0.022f;
+    // Raw (1) is pure degrees; Modern (2) uses id Tech/Source multiplier
     float scale = (g_alpine_game_config.mouse_scale == 1)
         ? deg2rad
-        : 0.022f * deg2rad;
+        : id_tech_deg_per_pixel * deg2rad;
     // Apply scope/scanner sensitivity modifiers
     if (rf::local_player->fpgun_data.scanning_for_target)
         sens *= scanner_sensitivity_value;

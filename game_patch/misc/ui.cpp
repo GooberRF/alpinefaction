@@ -541,7 +541,8 @@ void ao_bighud_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.big_hud);
 }
 
-void ao_dinput_cbox_on_click(int x, int y) {
+void ao_dinput_cbox_on_click(int x, int y)
+{
     g_alpine_game_config.direct_input = !g_alpine_game_config.direct_input;
     ao_dinput_cbox.checked = g_alpine_game_config.direct_input;
     ao_play_button_snd(g_alpine_game_config.direct_input);
@@ -1197,7 +1198,7 @@ void alpine_options_panel_init() {
 
     // panel 2
     alpine_options_panel_checkbox_init(
-        &ao_dinput_cbox, &ao_dinput_label, &alpine_options_panel2, ao_dinput_cbox_on_click, g_alpine_game_config.direct_input, 112, 54, "DirectInput");
+        &ao_dinput_cbox, &ao_dinput_label, &alpine_options_panel2, ao_dinput_cbox_on_click, g_alpine_game_config.direct_input, 112, 54, "DirectInput"); 
     alpine_options_panel_checkbox_init(
         &ao_linearpitch_cbox, &ao_linearpitch_label, &alpine_options_panel2, ao_linearpitch_cbox_on_click, g_alpine_game_config.mouse_linear_pitch, 112, 84, "Linear pitch");
     alpine_options_panel_checkbox_init(
@@ -1512,18 +1513,12 @@ static void handle_ctrl_camscale_btns(int x, int y)
 CodeInjection options_render_alpine_panel_patch{
     0x0044F80B,
     []() {
-        bool now_waiting = false;
-
         int index = rf::ui::options_current_panel;
         //xlog::warn("render index {}", index);
 
-        // handle key rebinding in input options panel
-        if (index == 3) {
-            now_waiting = rf::ui::options_controls_waiting_for_key;
-        }
-
-        if (index == 3 && !now_waiting)
+        if (index == 3 && !rf::ui::options_controls_waiting_for_key) {
             render_ctrl_camscale_btns();
+        }
 
         // render alpine options panel
         if (index == 4) {
