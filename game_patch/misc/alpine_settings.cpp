@@ -462,6 +462,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.entity_pain_sounds = std::stoi(settings["EntityPainSounds"]);
         processed_keys.insert("EntityPainSounds");
     }
+    if (settings.count("Footsteps")) {
+        g_alpine_game_config.footsteps = std::stoi(settings["Footsteps"]);
+        processed_keys.insert("Footsteps");
+    }
 
     // Load video settings
     if (settings.count("Gamma")) {
@@ -1216,6 +1220,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "MessagesVolume=" << rf::snd_get_group_volume(2) << "\n";
     file << "LevelSoundVolume=" << g_alpine_game_config.level_sound_volume << "\n";
     file << "EntityPainSounds=" << g_alpine_game_config.entity_pain_sounds << "\n";
+    file << "Footsteps=" << g_alpine_game_config.footsteps << "\n";
 
     // Video
     file << "\n[VideoSettings]\n";

@@ -21,7 +21,7 @@
 #include "multi_private.h"
 #include "alpine_packets.h"
 #include "../misc/player.h"
-#include "../object/object_private.h"
+#include "../misc/misc.h"
 
 bool kill_messages = true;
 

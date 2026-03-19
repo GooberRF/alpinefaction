@@ -24,6 +24,7 @@
 #include "bots/bot_personality.h"
 #include "bots/bot_state.h"
 #include "../object/object_private.h"
+#include "../misc/misc.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {

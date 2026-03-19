@@ -49,7 +49,6 @@
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
 #include "../object/object.h"
-#include "../object/object_private.h"
 #include "../os/console.h"
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
@@ -1471,6 +1470,7 @@ CodeInjection process_join_accept_injection{
         }
         else {
             g_af_server_info.reset();
+            evaluate_footsteps();
         }
     },
 };
