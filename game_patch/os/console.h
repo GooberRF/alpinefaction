@@ -1,5 +1,4 @@
 #pragma once
-#pragma once
 
 #include <patch_common/Traits.h>
 #include <optional>

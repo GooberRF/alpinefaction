@@ -310,19 +310,8 @@ namespace rf
             return int16_t(i);
         }
 
-        // clamp a float->int16 conversion
         static ShortVector from(const rf::Vector3& v)
         {
-            auto clamp16 = [](float f) {
-                // round to nearest
-                int i = int(std::lroundf(f));
-                if (i > std::numeric_limits<int16_t>::max())
-                    return std::numeric_limits<int16_t>::max();
-                else if (i < std::numeric_limits<int16_t>::min())
-                    return std::numeric_limits<int16_t>::min();
-                else
-                    return int16_t(i);
-            };
             return {clamp16(v.x), clamp16(v.y), clamp16(v.z)};
         }
 

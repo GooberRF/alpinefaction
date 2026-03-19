@@ -3126,6 +3126,9 @@ void ensure_cache()
     }
     g_cache_nodes.clear();
     std::vector<int> indices = gather_indices();
+    // IMPORTANT: reserve enough capacity upfront so build_cache() never triggers
+    // a reallocation. build_cache() stores raw WpCacheNode* pointers (left/right)
+    // into g_cache_nodes during recursion — any reallocation would invalidate them.
     g_cache_nodes.reserve(indices.size());
     g_cache_root = build_cache(indices, 0);
     g_cache_dirty = false;
