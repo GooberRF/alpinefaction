@@ -7075,10 +7075,10 @@ bool waypoints_auto_link_nearby(const int waypoint_uid, WaypointAutoLinkStats& o
 
         ++out_stats.candidate_waypoints;
         if (try_add_waypoint_link_if_new(waypoint_uid, candidate_uid)) {
-            ++out_stats.links_added;
+            ++out_stats.source_links_added;
         }
         if (try_add_waypoint_link_if_new(candidate_uid, waypoint_uid)) {
-            ++out_stats.links_added;
+            ++out_stats.neighbor_links_added;
         }
     }
 

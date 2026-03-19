@@ -165,7 +165,8 @@ struct WaypointBridgeZoneState
 struct WaypointAutoLinkStats
 {
     int candidate_waypoints = 0;
-    int links_added = 0;
+    int source_links_added = 0;
+    int neighbor_links_added = 0;
 };
 
 struct WpCacheNode

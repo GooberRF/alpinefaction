@@ -3436,16 +3436,20 @@ void render_waypoint_editor_overlay_panel()
                     waypoint_actions_enabled)) {
                 WaypointAutoLinkStats auto_link_stats{};
                 if (waypoints_auto_link_nearby(g_waypoint_editor_selection.uid, auto_link_stats)) {
+                    const int total = auto_link_stats.source_links_added + auto_link_stats.neighbor_links_added;
                     rf::console::print(
-                        "Waypoint {} auto-link: {} nearby, {} links added",
+                        "Waypoint {} auto-link: {} nearby, +{} outgoing, +{} incoming ({} total)",
                         g_waypoint_editor_selection.uid,
                         auto_link_stats.candidate_waypoints,
-                        auto_link_stats.links_added);
+                        auto_link_stats.source_links_added,
+                        auto_link_stats.neighbor_links_added,
+                        total);
                     push_waypoint_editor_log(std::format(
-                        "Waypoint {} auto-link: {} nearby, +{} links",
+                        "Waypoint {} auto-link: {} nearby, +{} out, +{} in",
                         g_waypoint_editor_selection.uid,
                         auto_link_stats.candidate_waypoints,
-                        auto_link_stats.links_added));
+                        auto_link_stats.source_links_added,
+                        auto_link_stats.neighbor_links_added));
                 }
             }
             if (draw_waypoint_editor_button(
