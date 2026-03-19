@@ -23,6 +23,14 @@ static bool g_relative_mouse_mode_window_missing_logged = false;
 static float g_sdl_mouse_dx_rem = 0.0f, g_sdl_mouse_dy_rem = 0.0f;
 static int g_sdl_mouse_dx = 0, g_sdl_mouse_dy = 0;
 
+static void reset_sdl_mouse_accumulators()
+{
+    g_sdl_mouse_dx = 0;
+    g_sdl_mouse_dy = 0;
+    g_sdl_mouse_dx_rem = 0.0f;
+    g_sdl_mouse_dy_rem = 0.0f;
+}
+
 // Extra mouse button rebind state (Mouse 4-8, used with SDL input mode)
 static int g_pending_mouse_extra_btn_rebind = -1;
 
@@ -62,6 +70,9 @@ void set_input_mode(int mode)
     const int old_mode = g_alpine_game_config.input_mode;
     g_alpine_game_config.input_mode = mode;
 
+    // NOTE: SDL cursor visibility/position is used across all modes (because the game
+    // drives the Windows cursor in legacy+DirectInput modes), but SDL's relative mouse
+    // mode (used for camera movement) is only enabled in SDL input mode (2).
     if (!rf::is_dedicated_server) {
         // Handle SDL relative mouse mode
         if (g_sdl_window) {
@@ -76,12 +87,9 @@ void set_input_mode(int mode)
         }
     }
 
-    // Clear SDL state when leaving SDL mode
-    if (old_mode == 2 && mode != 2) {
-        g_sdl_mouse_dx = 0;
-        g_sdl_mouse_dy = 0;
-        g_sdl_mouse_dx_rem = 0.0f;
-        g_sdl_mouse_dy_rem = 0.0f;
+    // Clear SDL state when switching input modes to avoid applying stale motion
+    if (old_mode != mode) {
+        reset_sdl_mouse_accumulators();
     }
 
     // Release held extra scan codes so they don't stay stuck after mode switch
