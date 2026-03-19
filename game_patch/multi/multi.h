@@ -4,7 +4,7 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <WS2tcpip.h>
+#include <ws2tcpip.h>
 #include <xlog/xlog.h>
 #include "server_internal.h"
 #include "../rf/player/player.h"

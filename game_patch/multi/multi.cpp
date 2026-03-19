@@ -36,7 +36,6 @@
 #include "../rf/item.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
-#include <WS2tcpip.h>
 
 // Note: this must be called from DLL init function
 // Note: we can't use global variable because that would lead to crash when launcher loads this DLL to check dependencies

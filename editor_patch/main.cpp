@@ -55,7 +55,6 @@ static int g_current_level_version = -1;
 
 static const auto g_editor_app = reinterpret_cast<std::byte*>(0x006F9DA0);
 
-
 void *GetMainFrame()
 {
     return struct_field_ref<void*>(g_editor_app, 0xC8);

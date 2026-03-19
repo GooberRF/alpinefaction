@@ -7,6 +7,7 @@
 #include <functional>
 #include <thread>
 #include <utility>
+#include <deque>
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <ws2ipdef.h>
@@ -50,8 +51,6 @@
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
 #include "../misc/tlv.h"
-#include <deque>
-#include <WS2tcpip.h>
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
