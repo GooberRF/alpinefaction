@@ -318,7 +318,7 @@ FunHook UiLabel_create2_hook{0x00456C20, UiLabel_create2};
 
 void __fastcall UiLabel_set_text(rf::ui::Label& this_, int, const char *text, int font)
 {
-    delete[] this_.text;
+    free(this_.text);
     this_.text = _strdup(text);
     this_.font = font;
 }
