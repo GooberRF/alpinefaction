@@ -151,8 +151,8 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
 
 inline std::string net_addr_to_string(const uint32_t addr) {
     char buf[INET_ADDRSTRLEN];
-    const uint32_t network = htonl(addr); 
-    if (!inet_ntop(AF_INET, &network, buf, sizeof(buf))) {
+    const uint32_t addr_net_order = htonl(addr); 
+    if (!inet_ntop(AF_INET, &addr_net_order, buf, sizeof(buf))) {
         return std::string{};
     }
     return std::string{buf};

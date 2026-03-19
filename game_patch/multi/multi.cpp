@@ -79,7 +79,7 @@ void handle_url_param()
         return;
     }
 
-    const sockaddr_in* const next = reinterpret_cast<sockaddr_in*>(host_addr->ai_addr);
+    sockaddr_in* const next = reinterpret_cast<sockaddr_in*>(host_addr->ai_addr);
     if (!next) {
         xlog::warn("URL host lookup failed");
         freeaddrinfo(host_addr);
