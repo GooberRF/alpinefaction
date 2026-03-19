@@ -62,7 +62,7 @@ bool g_missing_awp_from_level_init = false;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
 std::vector<std::string> g_waypoint_authors{};
-bool g_waypoints_compress = true;
+
 int g_next_waypoint_target_uid = 1;
 
 std::unordered_map<int, int> g_last_drop_waypoint_by_entity{};
@@ -1255,44 +1255,17 @@ rf::Vector3 decompress_waypoint_pos(const rf::ShortVector& pos)
     return out;
 }
 
-std::optional<rf::Vector3> parse_waypoint_pos(const toml::array& pos, bool header_compressed)
+std::optional<rf::Vector3> parse_waypoint_pos(const toml::array& pos)
 {
     if (pos.size() != 3) {
         return std::nullopt;
     }
-    bool has_float = false;
-    bool all_int = true;
-    for (const auto& entry : pos) {
-        has_float |= entry.is_floating_point();
-        all_int &= entry.is_integer();
-    }
-    bool should_use_short = header_compressed;
-    if (!header_compressed) {
-        if (!has_float && all_int) {
-            should_use_short = true;
-            for (const auto& entry : pos) {
-                int value = entry.value_or<int>(0);
-                if (value < std::numeric_limits<int16_t>::min() || value > std::numeric_limits<int16_t>::max()) {
-                    should_use_short = false;
-                    break;
-                }
-            }
-        }
-    }
-    if (should_use_short) {
-        rf::ShortVector compressed{
-            static_cast<int16_t>(pos[0].value_or<int>(0)),
-            static_cast<int16_t>(pos[1].value_or<int>(0)),
-            static_cast<int16_t>(pos[2].value_or<int>(0)),
-        };
-        return decompress_waypoint_pos(compressed);
-    }
-    rf::Vector3 wp_pos{
-        static_cast<float>(pos[0].value_or<double>(0.0)),
-        static_cast<float>(pos[1].value_or<double>(0.0)),
-        static_cast<float>(pos[2].value_or<double>(0.0)),
+    rf::ShortVector compressed{
+        static_cast<int16_t>(pos[0].value_or<int>(0)),
+        static_cast<int16_t>(pos[1].value_or<int>(0)),
+        static_cast<int16_t>(pos[2].value_or<int>(0)),
     };
-    return wp_pos;
+    return decompress_waypoint_pos(compressed);
 }
 
 std::optional<rf::Vector3> parse_vec3_floats(const toml::array& values)
@@ -3232,6 +3205,64 @@ std::filesystem::path get_waypoint_filename()
         return map_name.string() + ".awp";
     }
     return std::filesystem::path(waypoint_dir.value()) / (map_name.string() + ".awp");
+}
+
+static std::filesystem::path get_waypoint_filename_for_rfl(const std::string& rfl_filename)
+{
+    std::filesystem::path map_name = std::string{get_filename_without_ext(rfl_filename.c_str())};
+    auto waypoint_dir = get_waypoint_dir();
+    if (!waypoint_dir) {
+        return map_name.string() + ".awp";
+    }
+    return std::filesystem::path(waypoint_dir.value()) / (map_name.string() + ".awp");
+}
+
+int get_local_awp_revision(const std::string& rfl_filename)
+{
+    auto filepath = get_waypoint_filename_for_rfl(rfl_filename);
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        return -1;
+    }
+
+    // Lightweight scan: read lines until we find "revision = N" within [header].
+    // This avoids parsing the full TOML which can be large (thousands of waypoints).
+    bool in_header = false;
+    std::string line;
+    while (std::getline(file, line)) {
+        auto trimmed = ltrim(std::string_view{line});
+        if (trimmed.empty()) {
+            continue;
+        }
+
+        if (trimmed.front() == '[') {
+            if (in_header) {
+                break; // left [header] without finding revision
+            }
+            in_header = (trimmed.find("[header]") != std::string_view::npos);
+            continue;
+        }
+
+        if (in_header && trimmed.starts_with("revision")) {
+            auto eq = trimmed.find('=');
+            if (eq == std::string_view::npos) {
+                continue;
+            }
+            auto value = ltrim(trimmed.substr(eq + 1));
+            if (value.empty()) {
+                continue;
+            }
+            try {
+                return std::stoi(std::string{value});
+            }
+            catch (...) {
+                return -1;
+            }
+        }
+    }
+
+    // File exists but no revision found
+    return 0;
 }
 
 void seed_waypoints_from_objects()
@@ -5244,12 +5275,10 @@ bool save_waypoints()
     }
 
     const int revision = g_waypoint_revision + 1;
-    const bool save_compressed = g_waypoints_compress;
     const bool preserve_std_new_types = is_waypoint_bot_mode_active();
     toml::table header{
         {"revision", revision},
         {"awp_ver", kWptVersion},
-        {"compressed", save_compressed},
         {"level", std::string{rf::level.filename.c_str()}},
         {"level_checksum", static_cast<int64_t>(rf::level.checksum)},
         {"saved_at", std::string{time_buf}},
@@ -5261,14 +5290,8 @@ bool save_waypoints()
         if (!node.valid || node.temporary) {
             continue;
         }
-        toml::array pos;
-        if (save_compressed) {
-            auto compressed = compress_waypoint_pos(node.pos);
-            pos = toml::array{compressed.x, compressed.y, compressed.z};
-        }
-        else {
-            pos = toml::array{node.pos.x, node.pos.y, node.pos.z};
-        }
+        auto compressed_pos = compress_waypoint_pos(node.pos);
+        toml::array pos{compressed_pos.x, compressed_pos.y, compressed_pos.z};
         toml::array links;
         for (int link = 0; link < node.num_links; ++link) {
             links.push_back(node.links[link]);
@@ -5285,13 +5308,8 @@ bool save_waypoints()
             entry.insert("m", normalize_waypoint_dropped_subtype(node.movement_subtype));
         }
         if (std::fabs(node.link_radius - kWaypointLinkRadius) > kWaypointLinkRadiusEpsilon) {
-            if (save_compressed) {
-                if (auto compressed_radius = compress_waypoint_radius(node.link_radius); compressed_radius) {
-                    entry.insert("r", static_cast<int64_t>(compressed_radius.value()));
-                }
-                else {
-                    entry.insert("r", node.link_radius);
-                }
+            if (auto compressed_radius = compress_waypoint_radius(node.link_radius); compressed_radius) {
+                entry.insert("r", static_cast<int64_t>(compressed_radius.value()));
             }
             else {
                 entry.insert("r", node.link_radius);
@@ -5369,14 +5387,8 @@ bool save_waypoints()
     if (!g_waypoint_targets.empty()) {
         toml::array targets{};
         for (const auto& target : g_waypoint_targets) {
-            toml::array pos{};
-            if (save_compressed) {
-                auto compressed = compress_waypoint_pos(target.pos);
-                pos = toml::array{compressed.x, compressed.y, compressed.z};
-            }
-            else {
-                pos = toml::array{target.pos.x, target.pos.y, target.pos.z};
-            }
+            auto compressed_tgt = compress_waypoint_pos(target.pos);
+            toml::array pos{compressed_tgt.x, compressed_tgt.y, compressed_tgt.z};
 
             toml::array waypoint_uids{};
             for (int waypoint_uid : target.waypoint_uids) {
@@ -5425,14 +5437,10 @@ bool load_waypoints(bool include_std_new_waypoints = true)
         return false;
     }
     g_waypoint_revision = 0;
-    bool header_compressed = false;
     std::optional<uint32_t> header_checksum;
     if (const auto* header = root["header"].as_table()) {
         if (const auto* revision_node = header->get("revision"); revision_node && revision_node->is_number()) {
             g_waypoint_revision = static_cast<int>(revision_node->value_or(g_waypoint_revision));
-        }
-        if (const auto* compressed_node = header->get("compressed"); compressed_node && compressed_node->is_boolean()) {
-            header_compressed = compressed_node->value_or(false);
         }
         const auto* checksum_node = header->get("level_checksum");
         if ((!checksum_node || !checksum_node->is_number()) && header->get("checksum")) {
@@ -5507,7 +5515,7 @@ bool load_waypoints(bool include_std_new_waypoints = true)
         if (!pos) {
             continue;
         }
-        auto wp_pos_opt = parse_waypoint_pos(*pos, header_compressed);
+        auto wp_pos_opt = parse_waypoint_pos(*pos);
         if (!wp_pos_opt) {
             continue;
         }
@@ -5548,17 +5556,15 @@ bool load_waypoints(bool include_std_new_waypoints = true)
             }
         }
         if (const auto* radius_node = node_tbl->get("r")) {
-            if (radius_node->is_number()) {
-                if (header_compressed && radius_node->is_integer()) {
-                    const int packed_radius = static_cast<int>(radius_node->value_or(0));
-                    if (packed_radius >= std::numeric_limits<int16_t>::min()
-                        && packed_radius <= std::numeric_limits<int16_t>::max()) {
-                        link_radius = decompress_waypoint_radius(static_cast<int16_t>(packed_radius));
-                    }
+            if (radius_node->is_integer()) {
+                const int packed_radius = static_cast<int>(radius_node->value_or(0));
+                if (packed_radius >= std::numeric_limits<int16_t>::min()
+                    && packed_radius <= std::numeric_limits<int16_t>::max()) {
+                    link_radius = decompress_waypoint_radius(static_cast<int16_t>(packed_radius));
                 }
-                else {
-                    link_radius = static_cast<float>(radius_node->value_or<double>(link_radius));
-                }
+            }
+            else if (radius_node->is_floating_point()) {
+                link_radius = static_cast<float>(radius_node->value_or<double>(link_radius));
             }
         }
         else if (const auto* radius_node = node_tbl->get("radius")) {
@@ -5648,7 +5654,7 @@ bool load_waypoints(bool include_std_new_waypoints = true)
                 continue;
             }
 
-            auto target_pos_opt = parse_waypoint_pos(*pos_node, header_compressed);
+            auto target_pos_opt = parse_waypoint_pos(*pos_node);
             if (!target_pos_opt) {
                 continue;
             }
@@ -6181,23 +6187,6 @@ ConsoleCommand2 waypoint_debug_cmd{
     "waypoints_debug [0|1|2|3]",
 };
 
-ConsoleCommand2 waypoint_compress_cmd{
-    "waypoints_compress",
-    [](std::optional<bool> enabled) {
-        if (!ensure_waypoint_command_enabled("waypoints_compress")) {
-            return;
-        }
-        if (enabled) {
-            g_waypoints_compress = enabled.value();
-        }
-        else {
-            g_waypoints_compress = !g_waypoints_compress;
-        }
-        rf::console::print("Waypoint compression {}", g_waypoints_compress ? "enabled" : "disabled");
-    },
-    "Toggle waypoint position compression on save",
-    "waypoints_compress [true|false]",
-};
 
 ConsoleCommand2 waypoint_clean_cmd{
     "waypoints_clean",
@@ -6875,7 +6864,7 @@ void waypoints_init()
     waypoint_load_all_cmd.register_cmd();
     waypoint_drop_cmd.register_cmd();
     waypoint_debug_cmd.register_cmd();
-    waypoint_compress_cmd.register_cmd();
+
     waypoint_clean_cmd.register_cmd();
     waypoint_reset_cmd.register_cmd();
     waypoint_generate_cmd.register_cmd();

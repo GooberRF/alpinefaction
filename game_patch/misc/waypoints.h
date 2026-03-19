@@ -3,6 +3,7 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <string>
 #include "../rf/math/vector.h"
 #include "../rf/os/timestamp.h"
 
@@ -178,6 +179,7 @@ struct WpCacheNode
 };
 
 void waypoints_init();
+int get_local_awp_revision(const std::string& rfl_filename);
 void waypoints_do_frame();
 void waypoints_render_debug();
 void waypoints_level_init();
