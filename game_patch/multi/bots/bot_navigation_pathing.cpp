@@ -1859,7 +1859,15 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
             }
         }
         else {
+            // Reached end of path. For roam, immediately pick a new route so the
+            // bot keeps moving continuously without a stop-and-go pause.
             clear_waypoint_route();
+            if (g_client_bot_state.active_goal == BotGoalType::roam
+                || g_client_bot_state.active_goal == BotGoalType::none) {
+                if (pick_waypoint_route(current_waypoint)) {
+                    return update_waypoint_target_from_current_path(entity);
+                }
+            }
             return false;
         }
     }
@@ -1886,6 +1894,21 @@ bool update_waypoint_target(const rf::Entity& entity)
     if (closest_waypoint <= 0) {
         clear_waypoint_route();
         return false;
+    }
+
+    // If the closest waypoint has no outgoing links (e.g., a crater hole waypoint
+    // with stripped links), it's useless as a route start. Walk directly toward it
+    // and let the next frame find a better starting waypoint once we've moved.
+    {
+        std::array<int, kMaxWaypointLinks> links{};
+        if (waypoints_get_links(closest_waypoint, links) == 0) {
+            rf::Vector3 wp_pos{};
+            if (waypoints_get_pos(closest_waypoint, wp_pos)) {
+                g_client_bot_state.waypoint_target_pos = wp_pos;
+                g_client_bot_state.has_waypoint_target = true;
+                return true;
+            }
+        }
     }
 
     const bool need_route =

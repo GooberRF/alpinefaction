@@ -2846,9 +2846,10 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
     // Downward drop trace: search for waypoints up to 15m directly below the crater.
     // This finds waypoints at the bottom of holes created by geomod. Links are
     // one-directional (crater → below) since bots can drop but not climb back up.
-    constexpr float kCraterDownwardTraceDistance = 15.0f;
+    constexpr float kCraterDownwardTraceDistance = 100.0f;
     constexpr float kCraterDownwardHorizontalRadius = kWaypointLinkRadius;
     const float horiz_radius_sq = kCraterDownwardHorizontalRadius * kCraterDownwardHorizontalRadius;
+    bool created_drop_link = false;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         if (i == crater_index) {
             continue;
@@ -2873,33 +2874,21 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
             continue;
         }
         // LOS check — can the bot see (fall to) this waypoint?
-        link_waypoint_if_clear(crater_index, i);
+        if (link_waypoint_if_clear(crater_index, i)) {
+            created_drop_link = true;
+        }
     }
 
-    // Detect "hole in floor" craters: if the crater has any downward outgoing links
-    // (to waypoints significantly below), remove outgoing links FROM the crater to
-    // same-height neighbors so bots don't use it as a throughway on level ground.
-    // Incoming links TO the crater from same-height neighbors are kept so bots can
-    // still intentionally navigate to the hole and drop down.
-    if (crater_index > 0 && crater_index < static_cast<int>(g_waypoints.size())) {
+    // Only strip same-height outgoing links if the downward drop trace actually
+    // created a link — confirming this is a hole with reachable waypoints below.
+    // Without a confirmed drop link, the crater is just a surface dent and all
+    // links should be kept for normal navigation.
+    if (created_drop_link
+        && crater_index > 0 && crater_index < static_cast<int>(g_waypoints.size())) {
         auto& crater_node = g_waypoints[crater_index];
         constexpr float kSameHeightThreshold = 1.0f;
 
-        bool has_downward_link = false;
-        for (int link = 0; link < crater_node.num_links; ++link) {
-            const int target_uid = crater_node.links[link];
-            if (target_uid <= 0 || target_uid >= static_cast<int>(g_waypoints.size())) {
-                continue;
-            }
-            const auto& target_node = g_waypoints[target_uid];
-            if (target_node.valid
-                && target_node.pos.y < crater_pos.y - kSameHeightThreshold) {
-                has_downward_link = true;
-                break;
-            }
-        }
-
-        if (has_downward_link) {
+        if (crater_node.num_links > 0) {
             // Remove outgoing links from crater to same-height/upward neighbors.
             // Keep only downward links (intentional drops).
             int write = 0;

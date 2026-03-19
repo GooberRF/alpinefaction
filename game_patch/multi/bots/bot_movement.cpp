@@ -870,6 +870,11 @@ void bot_process_movement(
         // run through the direct objective center once close.
         stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.10f;
     }
+    else if (g_client_bot_state.active_goal == BotGoalType::roam
+        || g_client_bot_state.active_goal == BotGoalType::none) {
+        // Roam should always keep moving through waypoints, never stop near them.
+        stop_distance = g_client_bot_state.has_waypoint_target ? 0.65f : 0.10f;
+    }
     if (active_to_is_jump_pad) {
         stop_distance = kJumpPadFinalApproachStopDistance;
     }
