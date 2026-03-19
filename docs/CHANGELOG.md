@@ -5,7 +5,11 @@ Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
-- Implement advanced multiplayer bots system, including headless bot clients and fully featured waypoint grid editor
+- Implement advanced multiplayer bots system
+  - Headless bot clients with server control
+  - Bot profile customization
+  - Fully featured waypoint grid editor with autogen functionality for custom maps
+  - Waypoint grid files for all default maps are included
 - Promote Direct3D 11 renderer to recommended and add several notable improvements
   - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
   - Add full mesh shadows for entities, corpses, and items

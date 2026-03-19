@@ -24,6 +24,19 @@ add_packfile(alpinefaction.vpp
     tables/events.tbl
     tables/af_level_quirks.tbl
 
+    # waypoint files
+    waypoints/dm01.awp
+    waypoints/dm02.awp
+    waypoints/dm03.awp
+    waypoints/dm04.awp
+    waypoints/dm05.awp
+    waypoints/dm06.awp
+    waypoints/dm07.awp
+    waypoints/dm08.awp
+    waypoints/dm09.awp
+    waypoints/dm10.awp
+    waypoints/dm11.awp
+
     # compatibility _info.tbls
     tables/pdm01_info.tbl
     tables/pdm02_info.tbl

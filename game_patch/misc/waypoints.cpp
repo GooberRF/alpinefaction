@@ -83,6 +83,7 @@ bool link_waypoint_if_clear_autogen(int from, int to);
 rf::Mover* find_mover_by_uid(int mover_uid);
 void update_ctf_dropped_flag_temporary_waypoints();
 bool is_waypoint_bot_mode_active();
+bool are_waypoint_commands_enabled_for_local_client();
 bool is_ctf_mode_for_waypoints();
 int get_ctf_flag_object_uid(bool red_flag);
 int create_temporary_dropped_flag_waypoint(bool red_flag, const rf::Vector3& flag_pos, int flag_uid);
@@ -100,7 +101,8 @@ constexpr int kWaypointWorldTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIB
 FunHook<void(rf::Vector3*, float)> glass_remove_floating_shards_hook{
     0x00492400,
     [](rf::Vector3* pos, float radius) {
-        if (pos) {
+        // drop crater waypoints locally for bot clients and autolink them to the grid
+        if (pos && is_waypoint_bot_mode_active()) {
             on_geomod_crater_created(*pos, radius);
         }
         glass_remove_floating_shards_hook.call_target(pos, radius);
