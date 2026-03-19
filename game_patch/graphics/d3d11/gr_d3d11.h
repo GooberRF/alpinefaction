@@ -1,12 +1,13 @@
 #pragma once
 
+#include <source_location>
+#include <concepts>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include <common/DynamicLinkLibrary.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "gr_d3d11_transform.h"
-#include <source_location>
 
 namespace rf
 {

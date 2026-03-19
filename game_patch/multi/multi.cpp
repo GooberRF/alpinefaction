@@ -2,6 +2,7 @@
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -30,12 +31,21 @@
 #include "../rf/os/console.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
-#include "../rf/player/player.h"
 #include "../rf/localize.h"
 #include "../rf/ai.h"
 #include "../rf/item.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
+
+// `addr` is in host byte order.
+std::string net_addr_to_string(const uint32_t addr) {
+    char buf[INET_ADDRSTRLEN];
+    const uint32_t addr_net_order = htonl(addr); 
+    if (!inet_ntop(AF_INET, &addr_net_order, buf, sizeof(buf))) {
+        return std::string{};
+    }
+    return std::string{buf};
+}
 
 // Note: this must be called from DLL init function
 // Note: we can't use global variable because that would lead to crash when launcher loads this DLL to check dependencies

@@ -97,7 +97,7 @@ rf::NetGameType upcoming_game_type;
 UpcomingGameTypeSelection g_upcoming_game_type_selection = UpcomingGameTypeSelection::Rotation;
 static std::optional<rf::NetGameType> g_previous_level_game_type;
 
-const rf::NetGameType get_upcoming_game_type()
+rf::NetGameType get_upcoming_game_type()
 {
     return upcoming_game_type;
 }
@@ -121,7 +121,7 @@ bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection select
     return upcoming_game_type != rf::netgame.type;
 }
 
-const bool was_level_loaded_manually()
+bool was_level_loaded_manually()
 {
     return g_manually_loaded_level;
 }

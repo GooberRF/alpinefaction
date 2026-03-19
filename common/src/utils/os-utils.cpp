@@ -16,12 +16,16 @@
 std::string get_os_version() {
     OSVERSIONINFOA ver_info{};
     ver_info.dwOSVersionInfoSize = sizeof(ver_info);
+#ifdef _MSC_VER
 #pragma warning(push)
 #pragma warning(disable : 4996)
+#endif
     if (!GetVersionExA(&ver_info)) {
         THROW_WIN32_ERROR("GetVersionEx failed");
     }
+#ifdef _MSC_VER
 #pragma warning(pop)
+#endif
     return std::format(
         "{}.{}.{}",
         ver_info.dwMajorVersion,

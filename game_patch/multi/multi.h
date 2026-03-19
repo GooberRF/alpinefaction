@@ -4,7 +4,6 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <ws2tcpip.h>
 #include <xlog/xlog.h>
 #include "server_internal.h"
 #include "../rf/player/player.h"
@@ -117,7 +116,7 @@ extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
 
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
-const bool was_level_loaded_manually();
+bool was_level_loaded_manually();
 void set_manually_loaded_level(bool is_true);
 bool version_is_older(int aMaj, int aMin, int bMaj, int bMin);
 void enforce_alpine_hard_reject_for_all_players_on_current_level();
@@ -148,12 +147,4 @@ std::string_view multi_game_type_prefix(rf::NetGameType game_type);
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);
-
-inline std::string net_addr_to_string(const uint32_t addr) {
-    char buf[INET_ADDRSTRLEN];
-    const uint32_t addr_net_order = htonl(addr); 
-    if (!inet_ntop(AF_INET, &addr_net_order, buf, sizeof(buf))) {
-        return std::string{};
-    }
-    return std::string{buf};
-}
+std::string net_addr_to_string(uint32_t addr);

@@ -70,7 +70,6 @@ namespace rf
         const std::source_location& loc = std::source_location::current()) {
         static auto& debug_error =
             addr_as_ref<void(const char*, int, const char*)>(0x0050BA90);
-        // Does not return.
         debug_error(loc.file_name(), loc.line(), text.c_str());
     }
 }
