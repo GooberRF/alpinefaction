@@ -16,9 +16,9 @@ if(MSVC)
     )
 endif()
 
-# Set our target version to Windows 10, version 1607.
+# Set our target version to Windows 7.
 add_compile_definitions(
-    NTDDI_VERSION=0x0A000002
+    NTDDI_VERSION=0x06010000
     ALPINE_FACTION
     "$<$<CONFIG:Debug>:DEBUG>"
 )
