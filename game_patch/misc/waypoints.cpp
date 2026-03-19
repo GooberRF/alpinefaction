@@ -6119,28 +6119,27 @@ ConsoleCommand2 waypoint_edit_cmd{
             return;
         }
 
-        const bool request_enable = !enabled || enabled.value();
-        if (!request_enable) {
-            rf::console::print("waypoints_edit can only enable waypoint editing.");
-            return;
-        }
+        const bool request_enable = enabled ? enabled.value() : !g_alpine_game_config.waypoints_edit_mode;
 
-        if (is_multiplayer_client()) {
+        if (request_enable && is_multiplayer_client()) {
             rf::console::print("waypoints_edit cannot be enabled while connected as a multiplayer client.");
             return;
         }
 
-        if (!g_alpine_game_config.waypoints_edit_mode) {
+        if (request_enable && !g_alpine_game_config.waypoints_edit_mode) {
             g_alpine_game_config.waypoints_edit_mode = true;
             rf::console::print("Waypoint editing enabled.");
             waypoint_editor_log_if_active("Waypoint editing enabled");
         }
-        else {
-            rf::console::print("Waypoint editing is already enabled.");
+        else if (!request_enable && g_alpine_game_config.waypoints_edit_mode) {
+            g_alpine_game_config.waypoints_edit_mode = false;
+            g_last_drop_waypoint_by_entity.clear();
+            g_last_lift_uid_by_entity.clear();
+            rf::console::print("Waypoint editing disabled.");
         }
     },
-    "Enable waypoint editing mode for non-bot clients",
-    "waypoints_edit [true]",
+    "Toggle waypoint editing mode for non-bot clients",
+    "waypoints_edit [true|false]",
 };
 
 ConsoleCommand2 waypoint_drop_cmd{
@@ -7042,6 +7041,11 @@ bool try_add_waypoint_link_if_new(const int from_waypoint_uid, const int to_wayp
 
     auto& from_node = g_waypoints[from_waypoint_uid];
     if (waypoint_link_exists(from_node, to_waypoint_uid)) {
+        return false;
+    }
+
+    // Respect max links cap — don't overwrite existing links.
+    if (from_node.num_links >= kMaxWaypointLinks) {
         return false;
     }
 
