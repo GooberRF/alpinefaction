@@ -380,13 +380,18 @@ namespace df::gr::d3d11
         data.use_dynamic_lighting = current_dynamic_lighting_ ? 1.0f : 0.0f;
         data.self_illumination = current_self_illumination_;
         // Mesh lighting scale: matches stock vmesh_update_lighting_data behavior.
-        // Stock game uses 2.0 in singleplayer, 3.2 in multiplayer.
-        // Alpine level properties override takes precedence when set.
-        const auto& level_props = AlpineLevelProperties::instance();
-        if (level_props.override_static_mesh_ambient_light_modifier) {
-            data.light_scale = level_props.static_mesh_ambient_light_modifier;
+        // Stock game applies this scale only to static meshes (clutter/items via
+        // vmesh_update_lighting_data), NOT to character meshes (skeletal/v3c).
+        // When apply_light_scale is false (character meshes), use 1.0 to skip scaling.
+        if (current_apply_light_scale_) {
+            const auto& level_props = AlpineLevelProperties::instance();
+            if (level_props.override_static_mesh_ambient_light_modifier) {
+                data.light_scale = level_props.static_mesh_ambient_light_modifier;
+            } else {
+                data.light_scale = rf::is_multi ? 3.2f : 2.0f;
+            }
         } else {
-            data.light_scale = rf::is_multi ? 3.2f : 2.0f;
+            data.light_scale = 1.0f;
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;

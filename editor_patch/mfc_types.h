@@ -702,4 +702,48 @@ static_assert(sizeof(VFile) == 0x114);
 bool get_is_saving_af_version();
 
 static auto& editor_file_default_matrix = *reinterpret_cast<Matrix3*>(0x01642060);
-static auto& g_main_frame = addr_as_ref<CWnd*>(0x006F9E68);
+
+struct CFrameWnd : CWnd
+{
+    char padding_frame[0x80]; // 0xBC - 0x3C = 0x80
+};
+static_assert(sizeof(CFrameWnd) == 0xBC);
+
+struct CMainFrame : CFrameWnd
+{
+    void* views[4];
+    void* unk_view;
+    CDocument* doc;
+    VString field_D4;
+    char dialog_bar[0x88]; // CDialogBar
+    char status_bar[0x7C]; // CStatusBar
+    char splitter[0x26C]; // CDedSplitterWnd
+    float grid_size_available_values[12];
+    float rotate_by_available_vals[8];
+    int texture_grid_size_available_values[8];
+    int grid_size_index;
+    int rotate_by_index;
+    int texture_grid_size_index;
+    float camera_speed_allowed_values[6];
+    int camera_speed_index;
+    float grid_brightness;
+    int custom_colors[16];
+    int favorite_textures[8];
+    bool play_no_tnl;
+    char padding_tail[3];
+    void* preferences_dlg;
+
+    void MaximizeActiveViewport()
+    {
+        AddrCaller{0x004476E0}.this_call(this);
+    }
+
+    void RestoreAllViewports()
+    {
+        AddrCaller{0x00447670}.this_call(this);
+    }
+};
+static_assert(sizeof(CMainFrame) == 0x550);
+
+static auto& g_main_frame = addr_as_ref<CMainFrame*>(0x006F9E68);
+static auto& g_maximized_viewport = addr_as_ref<int>(0x0057B9C0);

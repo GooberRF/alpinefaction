@@ -15,6 +15,8 @@
 #include "../../rf/level.h"
 #include "../../rf/geometry.h"
 #include "../../rf/mover.h"
+#include "../../rf/object.h"
+#include "../../rf/vmesh.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/misc.h"
@@ -42,6 +44,10 @@ namespace df::gr::d3d11
     // Local working buffer for gathered lights. Preserves dynamic-light results
     // while running the static-light pass, then overwrites the globals for GPU upload.
     static rf::gr::Light* gathered_lights[rf::gr::max_relevant_lights];
+
+    // When true, render_v3d_vif/render_character_vif skip automatic light gathering.
+    // Used by sky room mesh rendering which pre-gathers lights at the untransformed position.
+    static bool skip_mesh_light_gather = false;
 
     static void gather_mesh_lights(const rf::Vector3& pos, float mesh_radius = 0.0f)
     {
@@ -365,14 +371,85 @@ namespace df::gr::d3d11
 
     void render_sky_room(rf::GRoom *room)
     {
-        renderer->render_sky_room(room);
+        if (!room) {
+            return;
+        }
+
+        // Render sky room geometry and movers; get the computed sky transform back
+        rf::Vector3 sky_transform_pos;
+        rf::Matrix3 sky_transform_orient;
+        renderer->render_sky_room(room, sky_transform_pos, sky_transform_orient);
+
+        // Gather lights once for the sky room and build transformed copies.
+        // Filter to only lights within the sky room's bounding box.
+        // All meshes in the same sky room share the same light set.
+        constexpr int max_sky_lights = 32;
+        rf::gr::Light sky_light_copies[max_sky_lights];
+        rf::gr::Light* sky_light_ptrs[max_sky_lights];
+        int sky_light_count = 0;
+
+        gather_mesh_lights(rf::Vector3{
+            (room->bbox_min.x + room->bbox_max.x) * 0.5f,
+            (room->bbox_min.y + room->bbox_max.y) * 0.5f,
+            (room->bbox_min.z + room->bbox_max.z) * 0.5f});
+
+        for (int i = 0; i < rf::gr::num_relevant_lights && sky_light_count < max_sky_lights; ++i) {
+            rf::gr::Light* light = rf::gr::relevant_lights[i];
+            if (light->vec.x < room->bbox_min.x || light->vec.x > room->bbox_max.x ||
+                light->vec.y < room->bbox_min.y || light->vec.y > room->bbox_max.y ||
+                light->vec.z < room->bbox_min.z || light->vec.z > room->bbox_max.z) {
+                continue;
+            }
+            sky_light_copies[sky_light_count] = *light;
+            sky_light_copies[sky_light_count].vec = sky_transform_orient.transform_vector(light->vec) + sky_transform_pos;
+            sky_light_copies[sky_light_count].vec2 = sky_transform_orient.transform_vector(light->vec2) + sky_transform_pos;
+            sky_light_copies[sky_light_count].spotlight_dir = sky_transform_orient.transform_vector(light->spotlight_dir);
+            sky_light_ptrs[sky_light_count] = &sky_light_copies[sky_light_count];
+            sky_light_count++;
+        }
+        rf::gr::light_filter_reset();
+
+        // Render meshes (entities, clutter, items, etc.) that are in the sky room
+        for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
+            if (!obj->vmesh || obj->room != room) {
+                continue;
+            }
+            if (obj->obj_flags & rf::OF_HIDDEN) {
+                continue;
+            }
+            if (obj->type == rf::OT_MOVER_BRUSH) {
+                continue;
+            }
+
+            // Set pre-built sky room lights for this mesh
+            std::memcpy(rf::gr::relevant_lights, sky_light_ptrs, sky_light_count * sizeof(rf::gr::Light*));
+            rf::gr::num_relevant_lights = sky_light_count;
+            skip_mesh_light_gather = true;
+
+            rf::MeshRenderParams render_params{};
+            render_params.init_defaults();
+            render_params.flags = rf::MRF_CLIP_VERTICES;
+            render_params.vertex_colors = reinterpret_cast<rf::ubyte*>(obj->mesh_lighting_data);
+            if (room->ambient_light_defined) {
+                render_params.flags |= rf::MRF_CUSTOM_AMBIENT_COLOR;
+                render_params.ambient_color = room->ambient_light;
+            }
+
+            rf::Vector3 transformed_pos = sky_transform_orient.transform_vector(obj->pos) + sky_transform_pos;
+            rf::Matrix3 transformed_orient = sky_transform_orient;
+            transformed_orient.mul(obj->orient);
+            rf::vmesh_render(obj->vmesh, &transformed_pos, &transformed_orient, &render_params);
+
+            skip_mesh_light_gather = false;
+            renderer->clear_mesh_lights();
+        }
     }
 
     void render_v3d_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, int lod_index, const rf::MeshRenderParams& params)
     {
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels && !level_uses_vertex_lighting()) {
             bool lights_gathered = false;
-            if (rf::level.geometry) {
+            if (rf::level.geometry && !skip_mesh_light_gather) {
                 gather_mesh_lights(pos, lod_mesh->radius);
                 lights_gathered = true;
             }
@@ -429,7 +506,7 @@ namespace df::gr::d3d11
             // Skip when using vertex lighting — the old path doesn't need gathered lights.
             bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
             bool lights_gathered = false;
-            if (!use_vertex_lighting && rf::level.geometry) {
+            if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
                 gather_mesh_lights(pos, lod_mesh->radius);
                 lights_gathered = true;
             }

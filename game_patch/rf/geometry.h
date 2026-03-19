@@ -563,6 +563,12 @@ namespace rf
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);
 
     static auto& find_room = addr_as_ref<GRoom*(GSolid* solid, const Vector3* pos)>(0x004E1630);
+
+    // Sky room rendering globals (set by stock engine before sky room render call)
+    static auto& sky_room_center = addr_as_ref<Vector3>(0x0088FB10);
+    static auto& sky_room_offset = addr_as_ref<Vector3>(0x0087BB00);
+    static auto& sky_room_orient = addr_as_ref<Matrix3*>(0x009BB56C);
+
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);
     static auto& decompress_vector3 = addr_as_ref<void(GSolid* solid, const ShortVector* in_vec, Vector3* out_vec)>(0x004B5900);

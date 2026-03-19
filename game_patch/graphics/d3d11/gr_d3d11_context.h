@@ -81,12 +81,12 @@ namespace df::gr::d3d11
     public:
         RenderModeBuffer(ID3D11Device* device);
 
-        void update(gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, ID3D11DeviceContext* device_context)
+        void update(gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, ID3D11DeviceContext* device_context)
         {
             bool alpha_test = mode.get_zbuffer_type() == gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
             bool fog_allowed = mode.get_fog_type() != gr::FOG_NOT_ALLOWED;
             int colorblind_mode = g_alpine_game_config.colorblind_mode;
-            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination) {
+            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale) {
                 current_alpha_test_ = alpha_test;
                 current_fog_allowed_ = fog_allowed;
                 current_color_ = color;
@@ -94,6 +94,7 @@ namespace df::gr::d3d11
                 current_lightmap_only_ = lightmap_only;
                 current_dynamic_lighting_ = dynamic_lighting;
                 current_self_illumination_ = self_illumination;
+                current_apply_light_scale_ = apply_light_scale;
                 force_update_ = false;
                 update_buffer(device_context);
             }
@@ -123,6 +124,7 @@ namespace df::gr::d3d11
         bool current_lightmap_only_ = false;
         bool current_dynamic_lighting_ = false;
         float current_self_illumination_ = 0.0f;
+        bool current_apply_light_scale_ = true;
     };
 
     class PerFrameBuffer
@@ -251,9 +253,9 @@ namespace df::gr::d3d11
             }
         }
 
-        void set_mode(gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f)
+        void set_mode(gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true)
         {
-            render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, device_context_);
+            render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, device_context_);
             if (!current_mode_ || current_mode_.value() != mode) {
                 if (!current_mode_ || current_mode_.value().get_texture_source() != mode.get_texture_source()) {
                     std::array<ID3D11SamplerState*, 2> sampler_states = {

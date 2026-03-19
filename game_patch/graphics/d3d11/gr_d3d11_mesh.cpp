@@ -950,7 +950,7 @@ namespace df::gr::d3d11
                 }
             }
 
-            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum);
+            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh);
             render_context_.set_textures(texture, -1);
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }
