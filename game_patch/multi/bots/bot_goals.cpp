@@ -979,7 +979,15 @@ void bot_refresh_goal_state(
         }
     }
     if (item_goal_satisfied_now) {
+        goal_target_invalidated = true;
         reevaluate_goal = true;
+        g_client_bot_state.goal_switch_lock_timer.invalidate();
+        g_client_bot_state.goal_eval_timer.invalidate();
+        g_client_bot_state.recovery_roam_lock_timer.invalidate();
+        g_client_bot_state.pursuit_recovery_timer.invalidate();
+        bot_state_clear_recovery_reroute();
+        bot_state_clear_waypoint_route(true, true, false);
+        bot_state_clear_goal();
     }
     if (g_client_bot_state.active_goal == BotGoalType::eliminate_target) {
         if (!alive_enemy_present) {

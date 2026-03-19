@@ -39,6 +39,7 @@
 #include <filesystem>
 #include <fstream>
 #include <format>
+#include <sstream>
 #include <limits>
 #include <optional>
 #include <random>
@@ -58,6 +59,7 @@ bool g_cache_dirty = true;
 std::unordered_map<int, std::vector<int>> g_waypoints_by_type;
 int g_waypoints_by_type_total = 0;
 bool g_has_loaded_wpt = false;
+int g_last_awp_source = 0; // 0=not_found, 1=user_maps, 2=vpp
 bool g_missing_awp_from_level_init = false;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
@@ -232,23 +234,28 @@ bool ensure_waypoint_command_enabled(std::string_view command_name)
     return false;
 }
 
-void waypoint_editor_log_if_active(std::string_view message)
+template<typename... Args>
+void waypoint_log(std::format_string<Args...> fmt, Args&&... args)
 {
-    if (message.empty()
-        || is_waypoint_bot_mode_active()
-        || !g_alpine_game_config.waypoints_edit_mode) {
+    auto message = std::format(fmt, std::forward<Args>(args)...);
+    rf::console::print("{}", message);
+    if (is_waypoint_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
         return;
     }
     waypoints_utils_log(message);
 }
 
-template<typename... Args>
-void waypoint_editor_logf(std::format_string<Args...> fmt, Args&&... args)
+void waypoint_log(std::string_view message)
 {
-    if (is_waypoint_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
+    if (message.empty()) {
         return;
     }
-    waypoints_utils_log(std::format(fmt, std::forward<Args>(args)...));
+    rf::console::print("{}", message);
+    if (is_waypoint_bot_mode_active()
+        || !g_alpine_game_config.waypoints_edit_mode) {
+        return;
+    }
+    waypoints_utils_log(message);
 }
 
 bool is_multiplayer_client()
@@ -3217,19 +3224,78 @@ static std::filesystem::path get_waypoint_filename_for_rfl(const std::string& rf
     return std::filesystem::path(waypoint_dir.value()) / (map_name.string() + ".awp");
 }
 
-int get_local_awp_revision(const std::string& rfl_filename)
+static std::string get_awp_bare_filename(const std::string& rfl_filename)
 {
-    auto filepath = get_waypoint_filename_for_rfl(rfl_filename);
-    std::ifstream file(filepath);
-    if (!file.is_open()) {
-        return -1;
+    return std::string{get_filename_without_ext(rfl_filename.c_str())} + ".awp";
+}
+
+// Try to read an AWP file's content from the VPP packfile system.
+// Returns the file content as a string, or empty if not found.
+static std::string read_awp_from_vpp(const std::string& bare_awp_filename)
+{
+    rf::File file;
+    if (file.open(bare_awp_filename.c_str()) != 0) {
+        return {};
+    }
+    const int file_size = file.size();
+    if (file_size <= 0) {
+        file.close();
+        return {};
+    }
+    std::string content(static_cast<size_t>(file_size), '\0');
+    const int bytes_read = file.read(content.data(), file_size);
+    file.close();
+    if (bytes_read != file_size) {
+        return {};
+    }
+    return content;
+}
+
+enum class AwpSource
+{
+    not_found,
+    user_maps,
+    vpp,
+};
+
+// Try to parse an AWP file, preferring user_maps/waypoints on disk, falling back to VPP.
+static std::pair<AwpSource, toml::table> parse_awp_file(
+    const std::filesystem::path& disk_path,
+    const std::string& bare_awp_filename)
+{
+    // First: try loading from user_maps/waypoints on disk.
+    if (std::filesystem::exists(disk_path)) {
+        try {
+            return {AwpSource::user_maps, toml::parse_file(disk_path.string())};
+        }
+        catch (const toml::parse_error& err) {
+            xlog::error("Failed to parse waypoint file {}: {}", disk_path.string(), err.description());
+            return {AwpSource::not_found, {}};
+        }
     }
 
-    // Lightweight scan: read lines until we find "revision = N" within [header].
-    // This avoids parsing the full TOML which can be large (thousands of waypoints).
+    // Second: try loading from alpinefaction.vpp (or other loaded VPPs).
+    std::string vpp_content = read_awp_from_vpp(bare_awp_filename);
+    if (!vpp_content.empty()) {
+        try {
+            return {AwpSource::vpp, toml::parse(vpp_content, bare_awp_filename)};
+        }
+        catch (const toml::parse_error& err) {
+            xlog::error("Failed to parse waypoint file {} from VPP: {}", bare_awp_filename, err.description());
+            return {AwpSource::not_found, {}};
+        }
+    }
+
+    return {AwpSource::not_found, {}};
+}
+
+// Scan AWP content line-by-line for "revision = N" in the [header] section.
+// Returns the revision number, or -1 if not found.
+static int scan_awp_revision_from_content(std::istream& stream)
+{
     bool in_header = false;
     std::string line;
-    while (std::getline(file, line)) {
+    while (std::getline(stream, line)) {
         auto trimmed = ltrim(std::string_view{line});
         if (trimmed.empty()) {
             continue;
@@ -3260,9 +3326,27 @@ int get_local_awp_revision(const std::string& rfl_filename)
             }
         }
     }
+    return -1;
+}
 
-    // File exists but no revision found
-    return 0;
+int get_local_awp_revision(const std::string& rfl_filename)
+{
+    // First: try disk file in user_maps/waypoints.
+    auto filepath = get_waypoint_filename_for_rfl(rfl_filename);
+    std::ifstream disk_file(filepath);
+    if (disk_file.is_open()) {
+        return scan_awp_revision_from_content(disk_file);
+    }
+
+    // Second: try VPP.
+    const std::string bare_filename = get_awp_bare_filename(rfl_filename);
+    std::string vpp_content = read_awp_from_vpp(bare_filename);
+    if (!vpp_content.empty()) {
+        std::istringstream vpp_stream(std::move(vpp_content));
+        return scan_awp_revision_from_content(vpp_stream);
+    }
+
+    return -1;
 }
 
 void seed_waypoints_from_objects()
@@ -4684,7 +4768,7 @@ bool waypoints_trace_breakable_glass_from_camera(
     constexpr int kShatterTraceFlags = 0;
 
     const auto log_line_success = [&](int flags) {
-        waypoint_editor_logf(
+        waypoint_log(
             "Shatter trace success: level_solid f={:#x} room={} hit=({:.2f},{:.2f},{:.2f})",
             flags,
             out_room_key,
@@ -4703,7 +4787,7 @@ bool waypoints_trace_breakable_glass_from_camera(
         return true;
     }
 
-    waypoint_editor_logf(
+    waypoint_log(
         "Shatter trace failed: level_solid f={:#x} hit no breakable glass (max_dist={:.1f})",
         kShatterTraceFlags,
         max_dist);
@@ -5427,14 +5511,16 @@ bool save_waypoints()
 bool load_waypoints(bool include_std_new_waypoints = true)
 {
     clear_waypoints();
-    auto filename = get_waypoint_filename();
-    toml::table root;
-    try {
-        root = toml::parse_file(filename.string());
-    }
-    catch (const toml::parse_error& err) {
-        xlog::error("Failed to parse waypoint file {}: {}", filename.string(), err.description());
+    auto disk_path = get_waypoint_filename();
+    const std::string bare_filename = get_awp_bare_filename(
+        std::string{rf::level.filename.c_str()});
+    auto [source, root] = parse_awp_file(disk_path, bare_filename);
+    g_last_awp_source = static_cast<int>(source);
+    if (source == AwpSource::not_found) {
         return false;
+    }
+    if (source == AwpSource::vpp) {
+        xlog::info("Loaded waypoint file {} from VPP", bare_filename);
     }
     g_waypoint_revision = 0;
     std::optional<uint32_t> header_checksum;
@@ -5471,7 +5557,7 @@ bool load_waypoints(bool include_std_new_waypoints = true)
         }
     }
     if (header_checksum && *header_checksum != rf::level.checksum) {
-        xlog::warn("Waypoint checksum mismatch for {}: file {}, level {}", filename.string(), *header_checksum,
+        xlog::warn("Waypoint checksum mismatch for {}: file {}, level {}", bare_filename, *header_checksum,
                    rf::level.checksum);
     }
     auto load_zone_entries = [](const toml::array& zone_entries) {
@@ -6063,8 +6149,7 @@ ConsoleCommand2 waypoint_save_cmd{
             return;
         }
         if (save_waypoints()) {
-            rf::console::print("Waypoints saved");
-            waypoint_editor_log_if_active("Waypoints saved");
+            waypoint_log("Waypoints saved");
         }
         else {
             rf::console::print("No waypoints to save");
@@ -6074,6 +6159,15 @@ ConsoleCommand2 waypoint_save_cmd{
     "waypoints_save",
 };
 
+static const char* get_awp_source_label()
+{
+    switch (static_cast<AwpSource>(g_last_awp_source)) {
+        case AwpSource::user_maps: return "from user_maps";
+        case AwpSource::vpp: return "from vpp";
+        default: return "";
+    }
+}
+
 ConsoleCommand2 waypoint_load_cmd{
     "waypoints_load",
     []() {
@@ -6082,11 +6176,11 @@ ConsoleCommand2 waypoint_load_cmd{
         }
         const bool include_std_new_waypoints = is_waypoint_bot_mode_active();
         if (load_waypoints(include_std_new_waypoints)) {
-            rf::console::print("Waypoints loaded");
-            waypoint_editor_log_if_active("Waypoints loaded");
+            waypoint_log(
+                std::format("Waypoints loaded ({})", get_awp_source_label()));
         }
         else {
-            rf::console::print("No waypoint file found");
+            waypoint_log("No waypoint file found");
         }
     },
     "Load waypoint graph from .awp",
@@ -6100,11 +6194,11 @@ ConsoleCommand2 waypoint_load_all_cmd{
             return;
         }
         if (load_waypoints(true)) {
-            rf::console::print("Waypoints loaded");
-            waypoint_editor_log_if_active("Waypoints loaded (including std_new)");
+            waypoint_log(
+                std::format("Waypoints loaded ({}, including std_new)", get_awp_source_label()));
         }
         else {
-            rf::console::print("No waypoint file found");
+            waypoint_log("No waypoint file found");
         }
     },
     "Load waypoint graph from .awp (including std_new waypoints)",
@@ -6128,8 +6222,7 @@ ConsoleCommand2 waypoint_edit_cmd{
 
         if (request_enable && !g_alpine_game_config.waypoints_edit_mode) {
             g_alpine_game_config.waypoints_edit_mode = true;
-            rf::console::print("Waypoint editing enabled.");
-            waypoint_editor_log_if_active("Waypoint editing enabled");
+            waypoint_log("Waypoint editing enabled");
         }
         else if (!request_enable && g_alpine_game_config.waypoints_edit_mode) {
             g_alpine_game_config.waypoints_edit_mode = false;
@@ -6194,8 +6287,7 @@ ConsoleCommand2 waypoint_clean_cmd{
             return;
         }
         clean_waypoints();
-        rf::console::print("Waypoints cleaned");
-        waypoint_editor_log_if_active("Waypoints cleaned");
+        waypoint_log("Waypoints cleaned");
     },
     "Remove invalid waypoints",
     "waypoints_clean",
@@ -6212,8 +6304,7 @@ ConsoleCommand2 waypoint_reset_cmd{
             return;
         }
         reset_waypoints_to_default_grid();
-        rf::console::print("Waypoints reset to default map grid");
-        waypoint_editor_log_if_active("Waypoints reset to default map grid");
+        waypoint_log("Waypoints reset to default map grid");
     },
     "Reset waypoints to default map grid",
     "waypoints_reset",
@@ -6249,7 +6340,7 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print(
                 "Waypoint generation hit creation cap of {} nodes",
                 kWaypointGenerateMaxCreatedWaypoints);
-            waypoint_editor_logf(
+            waypoint_log(
                 "Waypoint generation hit creation cap of {} nodes",
                 kWaypointGenerateMaxCreatedWaypoints);
         }
@@ -6257,7 +6348,7 @@ ConsoleCommand2 waypoint_generate_cmd{
             "Generated {} waypoints from {} ctf_flag/item/respawn seeds",
             generated_count,
             static_cast<int>(seed_indices.size()));
-        waypoint_editor_logf(
+        waypoint_log(
             "Generated {} waypoints from {} ctf_flag/item/respawn seeds",
             generated_count,
             static_cast<int>(seed_indices.size()));
@@ -6265,7 +6356,7 @@ ConsoleCommand2 waypoint_generate_cmd{
             "Link pass added {} bidirectional links and {} downward links",
             link_stats.bidirectional_links,
             link_stats.downward_links);
-        waypoint_editor_logf(
+        waypoint_log(
             "Link pass added {} bidirectional links and {} downward links",
             link_stats.bidirectional_links,
             link_stats.downward_links);
@@ -6273,7 +6364,7 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print(
                 "Link pass rerouted {} links through intermediate waypoints",
                 link_stats.pass_through_links_rerouted);
-            waypoint_editor_logf(
+            waypoint_log(
                 "Link pass rerouted {} links through intermediate waypoints",
                 link_stats.pass_through_links_rerouted);
         }
@@ -6281,7 +6372,7 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print(
                 "Link pass pruned {} redundant direct links",
                 link_stats.redundant_links_pruned);
-            waypoint_editor_logf(
+            waypoint_log(
                 "Link pass pruned {} redundant direct links",
                 link_stats.redundant_links_pruned);
         }
@@ -6289,7 +6380,7 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print(
                 "Generated {} explosion targets from blocked waypoint pairs",
                 generated_explosion_target_count);
-            waypoint_editor_logf(
+            waypoint_log(
                 "Generated {} explosion targets from blocked waypoint pairs",
                 generated_explosion_target_count);
         }
@@ -6297,7 +6388,7 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print(
                 "Generated {} shatter targets from breakable-glass blocked waypoint pairs",
                 generated_shatter_target_count);
-            waypoint_editor_logf(
+            waypoint_log(
                 "Generated {} shatter targets from breakable-glass blocked waypoint pairs",
                 generated_shatter_target_count);
         }
@@ -6396,7 +6487,7 @@ ConsoleCommand2 waypoint_zone_add_cmd{
                                        waypoint_zone_type_name(zone.type), zone_index,
                                        zone.trigger_uid, zone.duration,
                                        static_cast<int>(zone.bridge_waypoint_uids.size()));
-                    waypoint_editor_logf(
+                    waypoint_log(
                         "Added zone {} as index {} (trigger uid {}, duration {:.2f}s, on false, gated waypoints {})",
                         waypoint_zone_type_name(zone.type), zone_index,
                         zone.trigger_uid, zone.duration,
@@ -6406,7 +6497,7 @@ ConsoleCommand2 waypoint_zone_add_cmd{
                     rf::console::print("Added zone {} as index {} (trigger uid {})",
                                        waypoint_zone_type_name(zone.type), zone_index,
                                        zone.trigger_uid);
-                    waypoint_editor_logf(
+                    waypoint_log(
                         "Added zone {} as index {} (trigger uid {})",
                         waypoint_zone_type_name(zone.type), zone_index, zone.trigger_uid);
                 }
@@ -6433,7 +6524,7 @@ ConsoleCommand2 waypoint_zone_add_cmd{
                 const int zone_index = add_waypoint_zone_definition(zone);
                 rf::console::print("Added zone {} as index {} (room uid {})",
                                    waypoint_zone_type_name(zone.type), zone_index, zone.room_uid);
-                waypoint_editor_logf(
+                waypoint_log(
                     "Added zone {} as index {} (room uid {})",
                     waypoint_zone_type_name(zone.type), zone_index, zone.room_uid);
                 return;
@@ -6463,7 +6554,7 @@ ConsoleCommand2 waypoint_zone_add_cmd{
                                    waypoint_zone_type_name(stored_zone.type), zone_index,
                                    stored_zone.box_min.x, stored_zone.box_min.y, stored_zone.box_min.z,
                                    stored_zone.box_max.x, stored_zone.box_max.y, stored_zone.box_max.z);
-                waypoint_editor_logf(
+                waypoint_log(
                     "Added zone {} as index {} (box min {:.2f},{:.2f},{:.2f} max {:.2f},{:.2f},{:.2f})",
                     waypoint_zone_type_name(stored_zone.type), zone_index,
                     stored_zone.box_min.x, stored_zone.box_min.y, stored_zone.box_min.z,
@@ -6607,7 +6698,7 @@ ConsoleCommand2 waypoint_target_add_cmd{
                     shatter_room_key)) {
                 rf::console::print(
                     "Could not place shatter target: looked-at surface is not breakable glass");
-                waypoint_editor_logf(
+                waypoint_log(
                     "Could not place shatter target: looked-at surface is not breakable glass");
                 return;
             }
@@ -6627,7 +6718,7 @@ ConsoleCommand2 waypoint_target_add_cmd{
             auto looked_at_target = get_looked_at_target_point();
             if (!looked_at_target) {
                 rf::console::print("Could not place target: no valid looked-at world position");
-                waypoint_editor_logf("Could not place target: no valid looked-at world position");
+                waypoint_log("Could not place target: no valid looked-at world position");
                 return;
             }
             target_pos = looked_at_target->pos;
@@ -6647,7 +6738,7 @@ ConsoleCommand2 waypoint_target_add_cmd{
             target_uid,
             target_pos.x, target_pos.y, target_pos.z,
             waypoint_ref_count);
-        waypoint_editor_logf(
+        waypoint_log(
             "Added target {} uid {} at {:.2f},{:.2f},{:.2f} ({} waypoint refs)",
             waypoint_target_type_name(target_type.value()),
             target_uid,
@@ -6734,7 +6825,7 @@ ConsoleCommand2 waypoint_delete_cmd{
                 return;
             }
             rf::console::print("Deleted waypoint {}", waypoint_uid.value());
-            waypoint_editor_logf("Deleted waypoint {}", waypoint_uid.value());
+            waypoint_log("Deleted waypoint {}", waypoint_uid.value());
             return;
         }
 
@@ -6747,7 +6838,7 @@ ConsoleCommand2 waypoint_delete_cmd{
             if (string_iequals(tokens[2], "all")) {
                 const int removed = clear_waypoint_zone_definitions();
                 rf::console::print("Cleared {} zone(s).", removed);
-                waypoint_editor_logf("Cleared {} zone(s).", removed);
+                waypoint_log("Cleared {} zone(s).", removed);
                 return;
             }
 
@@ -6761,7 +6852,7 @@ ConsoleCommand2 waypoint_delete_cmd{
                 return;
             }
             rf::console::print("Deleted zone {}", zone_uid.value());
-            waypoint_editor_logf("Deleted zone {}", zone_uid.value());
+            waypoint_log("Deleted zone {}", zone_uid.value());
             return;
         }
 
@@ -6774,7 +6865,7 @@ ConsoleCommand2 waypoint_delete_cmd{
             if (string_iequals(tokens[2], "all")) {
                 const int removed = clear_waypoint_targets();
                 rf::console::print("Cleared {} target(s).", removed);
-                waypoint_editor_logf("Cleared {} target(s).", removed);
+                waypoint_log("Cleared {} target(s).", removed);
                 return;
             }
 
@@ -6788,7 +6879,7 @@ ConsoleCommand2 waypoint_delete_cmd{
                 return;
             }
             rf::console::print("Deleted target {}", target_uid.value());
-            waypoint_editor_logf("Deleted target {}", target_uid.value());
+            waypoint_log("Deleted target {}", target_uid.value());
             return;
         }
 
@@ -6843,7 +6934,7 @@ ConsoleCommand2 waypoint_delete_cmd{
                 return;
             }
             rf::console::print("Deleted {} link(s).", removed_links);
-            waypoint_editor_logf("Deleted {} link(s).", removed_links);
+            waypoint_log("Deleted {} link(s).", removed_links);
             return;
         }
 
