@@ -21,7 +21,7 @@
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
 #include "../object/object.h"
-#include "../object/object_private.h"
+#include "../misc/misc.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {

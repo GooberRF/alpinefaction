@@ -463,13 +463,13 @@ CodeInjection footstep_trigger_fixup_injection{
     [](auto& regs) {
         if (!g_footsteps_active) return;
 
-        uint32_t* anims_array = reinterpret_cast<uint32_t*>(static_cast<int32_t>(regs.edx));
+        uint32_t* anims_array = reinterpret_cast<uint32_t*>(static_cast<uint32_t>(regs.edx));
         int anim_index = static_cast<int32_t>(regs.ebp);
         rf::Skeleton* skeleton = reinterpret_cast<rf::Skeleton*>(anims_array[anim_index]);
         if (!skeleton) return;
 
-        // Only inject if trigger names are empty (no existing footstep data)
-        if (skeleton->triggers[0].name[0] != '\0') return;
+        // Only inject if both trigger names are empty (no existing footstep data)
+        if (skeleton->triggers[0].name[0] != '\0' || skeleton->triggers[1].name[0] != '\0') return;
 
         const char* name = skeleton->mvf_filename;
         if (!name || name[0] == '\0') return;
@@ -481,10 +481,13 @@ CodeInjection footstep_trigger_fixup_injection{
         if (!skeleton->animation_data) return;
 
         uint8_t* data = static_cast<uint8_t*>(skeleton->animation_data);
+        if (skeleton->data_size < 0x18) return;
         if (data[0] != 'V' || data[1] != 'M' || data[2] != 'V' || data[3] != 'F') return;
 
-        int start_time = *reinterpret_cast<int*>(data + 0x10);
-        int end_time = *reinterpret_cast<int*>(data + 0x14);
+        int start_time = 0;
+        int end_time = 0;
+        std::memcpy(&start_time, data + 0x10, sizeof(start_time));
+        std::memcpy(&end_time, data + 0x14, sizeof(end_time));
         int duration = end_time - start_time;
         if (duration <= 0) return;
 
