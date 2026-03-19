@@ -249,8 +249,7 @@ CodeInjection static_zoom_sensitivity_patch2 {
     },
 };
 
-// Converts the per-frame raw mouse pixel deltas captured by mouse_get_delta_hook
-// into camera angle deltas (radians).
+// Converts the per-frame raw mouse pixel deltas captured into camera angle deltas (radians).
 // Mode 1 (Raw):    pure camera angles — 360 pixels * sens = 360 degree camera turn (angle = raw_pixels * sens * deg2rad)
 // Mode 2 (Modern): angle = raw_pixels * sens * 0.022 deg/pixel * deg2rad  (id Tech/Source formula)
 // Called from camera.cpp's centralized camera injection point.
@@ -271,7 +270,11 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
         sens *= scanner_sensitivity_value;
     else if (rf::player_fpgun_is_zoomed(rf::local_player))
         sens *= scope_sensitivity_value;
-    pitch_delta = -static_cast<float>(g_camera_mouse_dy) * sens * scale;
+    // Mouse Y-Invert setting (axes[1].invert) for Raw/Modern modes
+    float dy = static_cast<float>(g_camera_mouse_dy);
+    if (rf::local_player->settings.controls.axes[1].invert)
+        dy = -dy;
+    pitch_delta = -dy * sens * scale;
     yaw_delta   =  static_cast<float>(g_camera_mouse_dx) * sens * scale;
     g_camera_mouse_dx = 0;
     g_camera_mouse_dy = 0;
