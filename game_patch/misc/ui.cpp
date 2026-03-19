@@ -92,7 +92,7 @@ static rf::ui::Checkbox ao_input_mode_cbox;
 static rf::ui::Label ao_input_mode_label;
 static rf::ui::Label ao_input_mode_butlabel;
 static char ao_input_mode_butlabel_text[16];
-static constexpr const char* input_mode_names[] = {"Legacy", "DInput", "SDL"};
+static constexpr const char* input_mode_names[] = {"Classic", "DInput", "SDL"};
 static rf::ui::Checkbox ao_linearpitch_cbox;
 static rf::ui::Label ao_linearpitch_label;
 static rf::ui::Checkbox ao_bighud_cbox;
@@ -543,7 +543,7 @@ void ao_bighud_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.big_hud);
 }
 
-void ao_sdlmouse_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+void ao_input_mode_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
     set_input_mode((g_alpine_game_config.input_mode + 1) % 3);
     int mode_index = std::clamp(g_alpine_game_config.input_mode, 0, 2);
     snprintf(ao_input_mode_butlabel_text, sizeof(ao_input_mode_butlabel_text), "%s",
@@ -1202,7 +1202,7 @@ void alpine_options_panel_init() {
 
     // panel 2
     alpine_options_panel_inputbox_init(
-        &ao_input_mode_cbox, &ao_input_mode_label, &ao_input_mode_butlabel, &alpine_options_panel2, ao_sdlmouse_cbox_on_click, 112, 54, "Input mode");
+        &ao_input_mode_cbox, &ao_input_mode_label, &ao_input_mode_butlabel, &alpine_options_panel2, ao_input_mode_cbox_on_click, 112, 54, "Input mode");
     int mode_index = std::clamp(g_alpine_game_config.input_mode, 0, 2);
     snprintf(ao_input_mode_butlabel_text, sizeof(ao_input_mode_butlabel_text), "%s",
         input_mode_names[mode_index]);

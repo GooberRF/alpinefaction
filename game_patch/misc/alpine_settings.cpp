@@ -982,10 +982,10 @@ bool alpine_player_settings_load(rf::Player* player)
         int input_mode = std::stoi(settings["InputMode"]);
         set_input_mode(std::clamp(input_mode, 0, 2));
         processed_keys.insert("InputMode");
-    } else if (settings.count("SDLMouse")) {
-        int sdl_mouse = std::stoi(settings["SDLMouse"]);
-        set_input_mode((sdl_mouse != 0) ? 2 : 1);
-        processed_keys.insert("SDLMouse");
+    } else if (settings.count("SDL")) {
+        int sdl_mode = std::stoi(settings["SDL"]);
+        set_input_mode((sdl_mode != 0) ? 2 : 1);
+        processed_keys.insert("SDL");
     } else if (settings.count("DirectInput")) {
         // Legacy: DirectInput=0 was Legacy/Win32 (mode 0), DirectInput=1 was DInput (mode 1)
         int direct_input = std::stoi(settings["DirectInput"]);
