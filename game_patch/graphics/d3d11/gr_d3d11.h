@@ -6,6 +6,7 @@
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "gr_d3d11_transform.h"
+#include <source_location>
 
 namespace rf
 {
@@ -115,24 +116,38 @@ namespace df::gr::d3d11
         int render_target_bm_handle_ = -1;
     };
 
-    void init_error(ID3D11Device* device);
-    void fatal_error(HRESULT hr);
+    void set_dbg_breaks(ID3D11Device* device);
+    void fatal_gr_error(
+        HRESULT hr,
+        const std::source_location& loc = std::source_location::current()
+    );
 
-    template<typename T>
-    static inline void check_hr(HRESULT hr, T what)
-    {
+    template <typename F>
+    inline void check_hr(
+        const HRESULT hr,
+        F&& what,
+        const std::source_location& loc = std::source_location::current()
+    ) {
         if (FAILED(hr)) {
-            if constexpr (std::is_pointer_v<T>) {
-                xlog::error("D3D11 API returned error: {}", what);
-            }
-            else {
-                what();
-            }
-            fatal_error(hr);
+            what();
+            fatal_gr_error(hr, loc);
         }
     }
 
-    #define DF_GR_D3D11_CHECK_HR(code) { auto func_name = __func__; check_hr(code, [=]() { xlog::error("D3D11 call failed: {} (function {} in line {})", #code, func_name, __LINE__); }); }
+    #define DF_GR_D3D11_CHECK_HR(code) { \
+        const char* const func_name = __func__; \
+        ::df::gr::d3d11::check_hr( \
+            code, \
+            [=] { \
+                ::xlog::error( \
+                    "D3D11 call failed: {} (function {} in line {})", \
+                    #code, \
+                    func_name, \
+                    __LINE__ \
+                ); \
+            } \
+        ); \
+    }
 
     static inline int pack_color(const rf::Color& color)
     {

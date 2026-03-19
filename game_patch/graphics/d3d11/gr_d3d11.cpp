@@ -28,7 +28,7 @@ namespace df::gr::d3d11
     Renderer::Renderer(HWND hwnd) : hwnd_{hwnd}, d3d11_lib_{L"d3d11.dll"}
     {
         if (!d3d11_lib_) {
-            RF_DEBUG_ERROR("Failed to load d3d11.dll");
+            rf::fatal_error("Failed to load d3d11.dll");
         }
         init_device();
         init_swap_chain(hwnd);
@@ -104,7 +104,7 @@ namespace df::gr::d3d11
     {
         auto pD3D11CreateDevice = d3d11_lib_.get_proc_address<PFN_D3D11_CREATE_DEVICE>("D3D11CreateDevice");
         if (!pD3D11CreateDevice) {
-            RF_DEBUG_ERROR("Cannot find D3D11CreateDevice procedure");
+            rf::fatal_error("Cannot find D3D11CreateDevice procedure");
         }
 
         // D3D_FEATURE_LEVEL feature_levels[] = {
@@ -118,10 +118,9 @@ namespace df::gr::d3d11
         // };
 
         DWORD flags = 0;
-    //#ifndef NDEBUG
-        // Requires Windows 10 SDK
-        //flags |= D3D11_CREATE_DEVICE_DEBUG;
-    //#endif
+    #ifndef NDEBUG
+        flags |= D3D11_CREATE_DEVICE_DEBUG;
+    #endif
         D3D_FEATURE_LEVEL feature_level_supported;
         DF_GR_D3D11_CHECK_HR(
             pD3D11CreateDevice(
@@ -140,7 +139,7 @@ namespace df::gr::d3d11
             )
         );
 
-        init_error(device_);
+        set_dbg_breaks(device_);
 
         xlog::info("D3D11 feature level: 0x{:x}", static_cast<int>(feature_level_supported));
     }

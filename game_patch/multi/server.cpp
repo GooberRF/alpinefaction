@@ -292,32 +292,57 @@ std::string build_player_info_line(rf::Player* player, bool new_join) {
         return std::format("- {} | Ping: {}", name, player->net_data->ping);
     }
 
-    std::string client_info;
+    std::string client_info{};
     if (player->version_info.software == ClientSoftware::AlpineFaction) {
-        client_info = std::format("Alpine Faction {}.{}.{}-{}",
-            player->version_info.major, player->version_info.minor, player->version_info.patch, player->version_info.type == VERSION_TYPE_RELEASE ? "stable" : "dev");
+        client_info = std::format(
+            "Alpine Faction {}.{}.{}-{}",
+            player->version_info.major,
+            player->version_info.minor,
+            player->version_info.patch,
+            player->version_info.type == VERSION_TYPE_RELEASE ? "stable" : "dev"
+        );
     }
     else if (player->version_info.software == ClientSoftware::DashFaction) {
-        client_info = std::format("Dash Faction {}.{}{}",
-            player->version_info.major, player->version_info.minor, player->version_info.type == VERSION_TYPE_BETA ? "-m" : "");
+        client_info = std::format(
+            "Dash Faction {}.{}{}",
+            player->version_info.major,
+            player->version_info.minor,
+            player->version_info.type == VERSION_TYPE_BETA ? "-m" : ""
+        );
     }
     else if (player->version_info.software == ClientSoftware::Browser) {
-        client_info = std::format("RF Server Browser {}.{}.{}",
-            player->version_info.major, player->version_info.minor, player->version_info.patch);
+        client_info = std::format(
+            "RF Server Browser {}.{}.{}",
+            player->version_info.major,
+            player->version_info.minor,
+            player->version_info.patch
+        );
     }
     else {
         client_info = std::format("Legacy Client");
     }
 
-    in_addr addr;
-    auto player_addr = player->net_data->addr;
-    addr.S_un.S_addr = ntohl(player_addr.ip_addr);
     if (new_join) {
-        return std::format("===| {}{} | IP: {}:{} | {} | Max RFL: {} |===",
-            name, rf::strings::has_joined, inet_ntoa(addr), player->net_data->addr.port, client_info, player->version_info.max_rfl_ver);
+        return std::format(
+            "===| {}{} | IP: {}:{} | {} | Max RFL: {} |===",
+            name,
+            rf::strings::has_joined,
+            net_addr_to_string(player->net_data->addr.ip_addr),
+            player->net_data->addr.port,
+            client_info,
+            player->version_info.max_rfl_ver
+        );
+    } else {
+        return std::format(
+            "- {} | IP: {}:{} | {} | Max RFL: {} | Ping: {} | HC: {}%",
+            name,
+            net_addr_to_string(player->net_data->addr.ip_addr),
+            player->net_data->addr.port,
+            client_info, player->version_info.max_rfl_ver,
+            player->net_data->ping,
+            player->damage_handicap
+        );
     }
-    return std::format("- {} | IP: {}:{} | {} | Max RFL: {} | Ping: {} | HC: {}%",
-        name, inet_ntoa(addr), player->net_data->addr.port, client_info, player->version_info.max_rfl_ver, player->net_data->ping, player->damage_handicap);
 }
 
 std::string build_all_player_info_output() {
@@ -1422,10 +1447,12 @@ CodeInjection multi_on_new_player_injection{
 
         // ADS version is in handled in process_join_req_packet_hook in network.cpp
         if (!g_dedicated_launched_from_ads) {
-            rf::Player* player = regs.esi;
-            in_addr addr;
-            addr.S_un.S_addr = ntohl(player->net_data->addr.ip_addr);
-            rf::console::print("{}{} ({})", player->name,  rf::strings::has_joined, inet_ntoa(addr));
+            const rf::Player* const player = regs.esi;
+            rf::console::print(
+                "{}{} ({})", player->name,
+                rf::strings::has_joined,
+                net_addr_to_string(player->net_data->addr.ip_addr)
+            );
         }
         regs.eip = 0x0047B051;
     },

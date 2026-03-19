@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <WS2tcpip.h>
 #include <xlog/xlog.h>
 #include "server_internal.h"
 #include "../rf/player/player.h"
@@ -147,3 +148,12 @@ std::string_view multi_game_type_prefix(rf::NetGameType game_type);
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);
+
+inline std::string net_addr_to_string(const uint32_t addr) {
+    char buf[INET_ADDRSTRLEN];
+    const uint32_t network = htonl(addr); 
+    if (!inet_ntop(AF_INET, &network, buf, sizeof(buf))) {
+        return std::string{};
+    }
+    return std::string{buf};
+}

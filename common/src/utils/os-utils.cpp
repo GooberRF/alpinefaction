@@ -13,14 +13,21 @@
 #include <intrin.h>
 #endif
 
-std::string get_os_version()
-{
-    OSVERSIONINFO ver_info;
+std::string get_os_version() {
+    OSVERSIONINFO ver_info{};
     ver_info.dwOSVersionInfoSize = sizeof(ver_info);
-    if (!GetVersionEx(&ver_info))
+#pragma warning(push)
+#pragma warning(disable : 4996)
+    if (!GetVersionExA(&ver_info)) {
         THROW_WIN32_ERROR("GetVersionEx failed");
-
-    return std::format("{}.{}.{}", ver_info.dwMajorVersion, ver_info.dwMinorVersion, ver_info.dwBuildNumber);
+    }
+#pragma warning(pop)
+    return std::format(
+        "{}.{}.{}",
+        ver_info.dwMajorVersion,
+        ver_info.dwMinorVersion,
+        ver_info.dwBuildNumber
+    );
 }
 
 std::string get_real_os_version()

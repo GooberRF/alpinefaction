@@ -6,7 +6,9 @@
 template <typename T, size_t N>
 class MemPool
 {
-    using Slot = typename std::aligned_storage<sizeof(T), alignof(T)>::type;
+    struct Slot {
+        alignas(T) std::byte buffer[sizeof(T)];
+    };
 
     class Delete
     {

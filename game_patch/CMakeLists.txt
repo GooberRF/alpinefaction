@@ -221,7 +221,6 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
 add_library(AlpineFaction SHARED ${SRCS})
 target_compile_features(AlpineFaction PUBLIC cxx_std_23)
 set_target_properties(AlpineFaction PROPERTIES
-    PREFIX ""
     CXX_EXTENSIONS NO
 )
 enable_warnings(AlpineFaction)
