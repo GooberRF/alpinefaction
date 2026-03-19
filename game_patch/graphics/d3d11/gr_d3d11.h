@@ -122,7 +122,7 @@ namespace df::gr::d3d11
         const std::source_location& loc = std::source_location::current()
     );
 
-    template <typename F>
+    template <std::invocable F>
     inline void check_hr(
         const HRESULT hr,
         F&& what,

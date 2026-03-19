@@ -228,7 +228,7 @@ FunHook UiButton_create_hook{0x004574D0, UiButton_create};
 
 void __fastcall UiButton_set_text(rf::ui::Button& this_, int, const char *text, int font)
 {
-    delete[] this_.text;
+    free(this_.text);
     this_.text = _strdup(text);
     this_.font = font;
 }

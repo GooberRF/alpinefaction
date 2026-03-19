@@ -14,7 +14,7 @@
 #endif
 
 std::string get_os_version() {
-    OSVERSIONINFO ver_info{};
+    OSVERSIONINFOA ver_info{};
     ver_info.dwOSVersionInfoSize = sizeof(ver_info);
 #pragma warning(push)
 #pragma warning(disable : 4996)

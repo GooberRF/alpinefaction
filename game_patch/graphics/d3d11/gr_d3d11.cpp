@@ -120,24 +120,34 @@ namespace df::gr::d3d11
         DWORD flags = 0;
     #ifndef NDEBUG
         flags |= D3D11_CREATE_DEVICE_DEBUG;
+    CREATE_DEVICE:
     #endif
-        D3D_FEATURE_LEVEL feature_level_supported;
-        DF_GR_D3D11_CHECK_HR(
-            pD3D11CreateDevice(
-                nullptr,
-                D3D_DRIVER_TYPE_HARDWARE,
-                nullptr,
-                flags,
-                // feature_levels,
-                // std::size(feature_levels),
-                nullptr,
-                0,
-                D3D11_SDK_VERSION,
-                &device_,
-                &feature_level_supported,
-                &context_
-            )
+        D3D_FEATURE_LEVEL feature_level_supported{};
+        HRESULT hr = pD3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            flags,
+            // feature_levels,
+            // std::size(feature_levels),
+            nullptr,
+            0,
+            D3D11_SDK_VERSION,
+            &device_,
+            &feature_level_supported,
+            &context_
         );
+
+     #ifndef NDEBUG
+         if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING &&
+            flags & D3D11_CREATE_DEVICE_DEBUG) {
+             xlog::warn( "D3D11 debug layer not available");
+             flags &= ~D3D11_CREATE_DEVICE_DEBUG;
+             goto CREATE_DEVICE;
+         }
+     #endif
+
+        DF_GR_D3D11_CHECK_HR(hr);
 
         set_dbg_breaks(device_);
 

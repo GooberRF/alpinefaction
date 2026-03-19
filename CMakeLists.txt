@@ -18,7 +18,10 @@ endif()
 
 # Set our target version to Windows 7.
 add_compile_definitions(
+    _WIN32_WINNT=0x0601
     NTDDI_VERSION=0x06010000
+    WINVER=0x0601
+    _WIN32_IE=0x0800
     ALPINE_FACTION
     "$<$<CONFIG:Debug>:DEBUG>"
 )

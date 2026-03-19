@@ -71,7 +71,6 @@ void handle_url_param()
 
     addrinfo hints{};
     hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
     addrinfo* host_addr = nullptr;
 
     if (getaddrinfo(host_name.c_str(), nullptr, &hints, &host_addr) != 0
