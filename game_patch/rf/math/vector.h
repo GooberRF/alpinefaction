@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <patch_common/MemUtils.h>
 #include "../os/os.h"
