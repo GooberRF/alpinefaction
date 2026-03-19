@@ -139,6 +139,7 @@ inline constexpr float kSemiAutoClickIntervalScale = 3.0f;
 inline constexpr int kSemiAutoClickMinMs = 90;
 inline constexpr int kSemiAutoClickMaxMs = 900;
 inline constexpr int kRemoteChargeDetonationWindowMs = 5000;
+inline constexpr int kTargetAcquisitionReactionMs = 50;
 inline constexpr int kBotServerConfigTimeoutMs = 10000;
 inline constexpr int kBotConnectionWatchdogMs = 30000;
 
@@ -317,6 +318,8 @@ struct BotCombatFiringState
     bool synthetic_secondary_fire_down = false;
     bool synthetic_primary_fire_just_pressed = false;
     bool synthetic_secondary_fire_just_pressed = false;
+    rf::Timestamp target_acquisition_timer{};
+    int target_acquisition_handle = -1;
     rf::Timestamp aim_error_timer{};
     int aim_error_target_handle = -1;
     float aim_error_right = 0.0f;

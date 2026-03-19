@@ -85,7 +85,7 @@ constexpr int kGlobalFailsafeRetryWindowMs = 20000;
 constexpr int kGlobalFailsafeRetryLimit = 2;
 constexpr float kGlobalFailsafeStillDistance = 0.5f;
 constexpr float kGlobalFailsafeAimDotThreshold = 0.9992f;
-constexpr int kIdleEscalationMs = 600;
+constexpr int kIdleEscalationMs = 150;
 constexpr int kCombatLockWatchdogOverrideMs = 6000;
 constexpr int kPositionStallWatchdogRecoveryMs = 1200;
 

@@ -865,6 +865,52 @@ void bot_refresh_goal_state(
         // Runtime gameplay should immediately recover from a temporary no-goal state.
         reevaluate_goal = true;
     }
+
+    // Forced re-evaluation when the current goal's target is no longer valid.
+    // This ensures the bot transitions immediately rather than waiting for timer expiry.
+    bool goal_target_invalidated = false;
+    if (g_client_bot_state.active_goal == BotGoalType::eliminate_target
+        && g_client_bot_state.goal_target_handle >= 0) {
+        rf::Entity* tracked = rf::entity_from_handle(g_client_bot_state.goal_target_handle);
+        const bool entity_gone = !tracked || tracked->life <= 0.0f;
+        // Also check player-level death state, since entity life may lag behind
+        bool player_dead_or_dying = false;
+        if (tracked) {
+            rf::Player* target_player = rf::player_from_entity_handle(tracked->handle);
+            if (target_player) {
+                player_dead_or_dying = rf::player_is_dead(target_player)
+                    || rf::player_is_dying(target_player);
+            }
+        }
+        if (entity_gone || player_dead_or_dying) {
+            goal_target_invalidated = true;
+            reevaluate_goal = true;
+        }
+    }
+    else if (bot_goal_is_item_collection(g_client_bot_state.active_goal)
+        && g_client_bot_state.goal_target_handle >= 0) {
+        rf::Object* goal_obj = rf::obj_from_handle(g_client_bot_state.goal_target_handle);
+        if (!goal_obj || !bot_internal_is_collectible_goal_item(*static_cast<rf::Item*>(goal_obj))) {
+            goal_target_invalidated = true;
+            reevaluate_goal = true;
+        }
+    }
+    if (goal_target_invalidated) {
+        // Current goal's target is gone — clear everything so the bot immediately
+        // picks the next best objective without any stale state interfering.
+        g_client_bot_state.goal_switch_lock_timer.invalidate();
+        g_client_bot_state.goal_eval_timer.invalidate();
+        g_client_bot_state.recovery_roam_lock_timer.invalidate();
+        g_client_bot_state.pursuit_recovery_timer.invalidate();
+        g_client_bot_state.pursuit_route_failures = 0;
+        g_client_bot_state.pursuit_target_handle = -1;
+        g_client_bot_state.eliminate_target_reacquire_timer.invalidate();
+        bot_state_clear_recovery_reroute();
+        bot_state_clear_waypoint_route(true, true, false);
+        // Clear the stale goal so downstream checks don't see the old goal type
+        // and apply commitment/lock overrides for a goal that no longer exists.
+        bot_state_clear_goal();
+    }
     const bool recovering_navigation_now =
         g_client_bot_state.recovery_pending_reroute
         || g_client_bot_state.fsm_state == BotFsmState::recover_navigation;
@@ -912,13 +958,15 @@ void bot_refresh_goal_state(
     const bool immediate_enemy_pressure =
         enemy_target
         && (enemy_has_los || retaliation_matches_enemy);
-    if (bot_goal_is_item_collection(g_client_bot_state.active_goal)
+    if (!goal_target_invalidated
+        && bot_goal_is_item_collection(g_client_bot_state.active_goal)
         && has_committed_pickup_route()
         && !immediate_enemy_pressure) {
         // Keep a committed pickup route stable unless there is immediate combat pressure.
         reevaluate_goal = false;
     }
-    if (g_client_bot_state.active_goal == BotGoalType::collect_super_item
+    if (!goal_target_invalidated
+        && g_client_bot_state.active_goal == BotGoalType::collect_super_item
         && g_client_bot_state.goal_target_handle >= 0
         && !immediate_enemy_pressure) {
         rf::Object* goal_obj = rf::obj_from_handle(g_client_bot_state.goal_target_handle);
@@ -943,7 +991,7 @@ void bot_refresh_goal_state(
             reevaluate_goal = true;
         }
 
-        if (g_client_bot_state.goal_target_handle >= 0) {
+        if (g_client_bot_state.goal_target_handle >= 0 && !goal_target_invalidated) {
             if (rf::Entity* tracked_entity = rf::entity_from_handle(
                     g_client_bot_state.goal_target_handle)) {
                 g_client_bot_state.goal_target_pos = tracked_entity->pos;
@@ -953,7 +1001,10 @@ void bot_refresh_goal_state(
                 && enemy_target->handle == g_client_bot_state.goal_target_handle) {
                 g_client_bot_state.eliminate_target_reacquire_timer.invalidate();
             }
-            else {
+            else if (alive_enemy_present) {
+                // Only delay re-evaluation for reacquire if there are still live enemies
+                // to potentially reacquire. When no enemies are alive, let the bot
+                // immediately transition to a new goal.
                 if (!g_client_bot_state.eliminate_target_reacquire_timer.valid()) {
                     const int reacquire_ms = static_cast<int>(std::lround(std::lerp(
                         650.0f,

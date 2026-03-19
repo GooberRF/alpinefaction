@@ -2741,6 +2741,10 @@ void bot_update_move_target(
         // If roam has no valid route target this frame, force immediate
         // reconsideration on the next frame instead of waiting on eval cadence.
         g_client_bot_state.goal_eval_timer.invalidate();
+        // Also clear repath timer so the next frame immediately tries a fresh route
+        // instead of waiting for the recovery repath interval to expire.
+        g_client_bot_state.repath_timer.invalidate();
+        bot_state_clear_waypoint_route(false, false, false);
     }
 
     if (has_move_target

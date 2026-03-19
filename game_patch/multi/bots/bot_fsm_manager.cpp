@@ -2,6 +2,7 @@
 
 #include "bot_fsm.h"
 #include "bot_personality_manager.h"
+#include "bot_state.h"
 #include <algorithm>
 #include <cmath>
 
@@ -24,10 +25,20 @@ BotFsmState bot_fsm_manager_select_state(
         g_client_bot_state.recovery_pending_reroute = false;
     }
 
-    if (g_client_bot_state.recovery_pending_reroute
-        || (g_client_bot_state.pursuit_recovery_timer.valid()
-            && !g_client_bot_state.pursuit_recovery_timer.elapsed())) {
+    // Recovery navigation is only forced for goals that need precise pathing (combat pursuit,
+    // item collection, objectives). For roam goals, skip recovery — the bot can just pick any
+    // nearby waypoint and walk there without the full recovery anchor system.
+    const bool recovery_applicable =
+        g_client_bot_state.active_goal != BotGoalType::roam
+        && g_client_bot_state.active_goal != BotGoalType::none;
+    if (recovery_applicable
+        && (g_client_bot_state.recovery_pending_reroute
+            || (g_client_bot_state.pursuit_recovery_timer.valid()
+                && !g_client_bot_state.pursuit_recovery_timer.elapsed()))) {
         return BotFsmState::recover_navigation;
+    }
+    if (!recovery_applicable && g_client_bot_state.recovery_pending_reroute) {
+        bot_state_clear_recovery_reroute();
     }
 
     const bool retreat_now =

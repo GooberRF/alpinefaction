@@ -2127,7 +2127,11 @@ void multi_disconnect_from_server()
     }
     xlog::info("Disconnecting from server");
     rf::multi_stop();
-    rf::gameseq_set_state(rf::GS_MAIN_MENU, false);
+    // multi_stop_hook may have already set GS_QUITING for bot auto-quit.
+    // Only transition to main menu for non-bot clients.
+    if (!client_bot_launch_enabled() || !g_alpine_game_config.bot_quit_when_disconnected) {
+        rf::gameseq_set_state(rf::GS_MAIN_MENU, false);
+    }
 }
 
 ConsoleCommand2 disconnect_cmd{

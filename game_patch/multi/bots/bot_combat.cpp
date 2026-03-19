@@ -1780,6 +1780,24 @@ void bot_process_combat(
     bool next_primary_fire_down = false;
     bool next_secondary_fire_down = false;
 
+    // Track target acquisition for reaction delay — the bot should not fire
+    // the instant a new enemy becomes visible; a brief delay lets the aim
+    // system turn towards the target first.
+    bool within_acquisition_reaction = false;
+    if (enemy_target && enemy_has_los) {
+        if (g_client_bot_state.firing.target_acquisition_handle != enemy_target->handle) {
+            g_client_bot_state.firing.target_acquisition_handle = enemy_target->handle;
+            g_client_bot_state.firing.target_acquisition_timer.set(kTargetAcquisitionReactionMs);
+        }
+        within_acquisition_reaction =
+            g_client_bot_state.firing.target_acquisition_timer.valid()
+            && !g_client_bot_state.firing.target_acquisition_timer.elapsed();
+    }
+    else if (!enemy_target) {
+        g_client_bot_state.firing.target_acquisition_handle = -1;
+        g_client_bot_state.firing.target_acquisition_timer.invalidate();
+    }
+
     if ((enemy_target || crater_goal_active || shatter_goal_active)
         && local_entity.ai.current_primary_weapon >= 0) {
         const int weapon_type = local_entity.ai.current_primary_weapon;
@@ -1831,6 +1849,11 @@ void bot_process_combat(
                 && shatter_target_has_direct_los(
                     local_entity,
                     g_client_bot_state.goal_target_identifier);
+        }
+        else if (within_acquisition_reaction) {
+            // Suppress firing during the brief reaction window after acquiring a new target.
+            // This prevents the bot from shooting before the aim system has turned to face the enemy.
+            wants_attack = false;
         }
         else {
             const bool automatic_engage_now =

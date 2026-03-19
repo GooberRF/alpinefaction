@@ -164,6 +164,16 @@ bool get_active_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 
 void request_soft_repath_around_waypoint(const int avoid_waypoint)
 {
+    // Skip recovery for roam/none goals — just clear the route and let normal
+    // navigation pick a new path without the recovery anchor system.
+    if (g_client_bot_state.active_goal == BotGoalType::roam
+        || g_client_bot_state.active_goal == BotGoalType::none) {
+        g_client_bot_state.recovery_pending_reroute = false;
+        g_client_bot_state.recovery_avoid_waypoint = 0;
+        g_client_bot_state.recovery_anchor_waypoint = 0;
+        g_client_bot_state.repath_timer.set(kWallAvoidSoftRepathMs);
+        return;
+    }
     g_client_bot_state.recovery_pending_reroute = true;
     g_client_bot_state.recovery_avoid_waypoint = avoid_waypoint;
     g_client_bot_state.recovery_anchor_waypoint = 0;
@@ -940,9 +950,13 @@ void bot_process_movement(
         }
     }
 
+    const bool respawn_gearup_active =
+        g_client_bot_state.respawn_gearup_timer.valid()
+        && !g_client_bot_state.respawn_gearup_timer.elapsed();
+
     bool maneuver_jump = false;
     bool combat_crouch_hold = false;
-    if (pursuing_enemy_goal && enemy_has_los) {
+    if (pursuing_enemy_goal && enemy_has_los && !respawn_gearup_active) {
         const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
 
         if (!g_client_bot_state.combat_maneuver_timer.valid()
@@ -1275,8 +1289,8 @@ void bot_process_movement(
     }
 
     const bool should_hold_crouch =
-        combat_crouch_hold
-        || g_client_bot_state.traversal_crouch_active;
+        !respawn_gearup_active
+        && (combat_crouch_hold || g_client_bot_state.traversal_crouch_active);
     const bool currently_crouched = rf::entity_is_crouching(const_cast<rf::Entity*>(&local_entity));
     g_client_bot_state.traversal_crouch_toggled_on = currently_crouched;
     if (currently_crouched != should_hold_crouch) {

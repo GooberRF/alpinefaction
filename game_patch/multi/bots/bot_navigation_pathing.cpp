@@ -665,6 +665,17 @@ bool is_following_waypoint_link(const rf::Entity& entity)
 
 bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_waypoint)
 {
+    // Skip recovery for goals that don't need precise pathing — roam can just
+    // pick a new nearby waypoint without the full anchor reroute system.
+    if (g_client_bot_state.active_goal == BotGoalType::roam
+        || g_client_bot_state.active_goal == BotGoalType::none) {
+        clear_waypoint_route();
+        g_client_bot_state.recovery_anchor_waypoint = 0;
+        g_client_bot_state.recovery_avoid_waypoint = 0;
+        g_client_bot_state.recovery_pending_reroute = false;
+        return false;
+    }
+
     int anchor_waypoint = bot_find_closest_waypoint_with_los_fallback(entity);
     anchor_waypoint = choose_recovery_anchor_waypoint(entity, anchor_waypoint);
     clear_waypoint_route();
