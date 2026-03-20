@@ -126,7 +126,7 @@ FunHook<void()> mouse_keep_centered_disable_hook{
             return;
         }
 
-        if (rf::keep_mouse_centered)
+        if (rf::keep_mouse_centered) {
             set_direct_input_enabled(false);
             reset_mouse_delta_accumulators();
         }
