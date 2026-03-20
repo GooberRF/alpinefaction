@@ -11,6 +11,7 @@
 #include "../rf/os/os.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
+#include "../multi/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/entity.h"
 #include "../rf/ui.h"
@@ -44,8 +45,9 @@ static bool set_direct_input_enabled(bool enabled)
     if (client_bot_headless_enabled()) {
         auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
         rf::direct_input_disabled = true;
-        if (direct_input_initialized && rf::di_mouse)
+        if (direct_input_initialized && rf::di_mouse) {
             rf::di_mouse->Unacquire();
+        }
         return true;
     }
 
@@ -70,6 +72,12 @@ static bool set_direct_input_enabled(bool enabled)
 
 void set_input_mode(int mode)
 {
+    if (client_bot_headless_enabled()) {
+        set_direct_input_enabled(false);
+        g_alpine_game_config.input_mode = 0;
+        return;
+    }
+
     if (mode < 0 || mode > 2) {
         xlog::warn("set_input_mode: invalid mode {}, clamping to 0..2", mode);
         mode = std::clamp(mode, 0, 2);
@@ -182,13 +190,7 @@ FunHook<void()> mouse_keep_centered_enable_hook{
     0x0051E690,
     []() {
         // keep_mouse_centered is still false here; call_target sets it
-        if (client_bot_headless_enabled()) {
-            rf::keep_mouse_centered = false;
-            set_direct_input_enabled(false);
-            return;
-        }
-
-        if (!rf::keep_mouse_centered && !rf::is_dedicated_server) {
+        if (!rf::keep_mouse_centered && !rf::is_dedicated_server && !client_bot_headless_enabled()) {
             switch (g_alpine_game_config.input_mode) {
             case 1: // DirectInput mouse
                 set_direct_input_enabled(true);
@@ -211,13 +213,7 @@ FunHook<void()> mouse_keep_centered_disable_hook{
     0x0051E6A0,
     []() {
         // keep_mouse_centered is still true here; call_target clears it
-        if (client_bot_headless_enabled()) {
-            rf::keep_mouse_centered = false;
-            set_direct_input_enabled(false);
-            return;
-        }
-
-        if (rf::keep_mouse_centered && !rf::is_dedicated_server) {
+        if (rf::keep_mouse_centered && !rf::is_dedicated_server && !client_bot_headless_enabled()) {
             switch (g_alpine_game_config.input_mode) {
             case 1: // DirectInput mouse
                 set_direct_input_enabled(false);
@@ -252,13 +248,28 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
 
 ConsoleCommand2 input_mode_cmd{
     "inputmode",
-    []() {
+    [](std::optional<int> mode_opt) {
         static constexpr const char* mode_names[] = {"Legacy", "DirectInput", "SDL"};
-        int new_mode = (g_alpine_game_config.input_mode + 1) % 3;
+
+        if (client_bot_headless_enabled()) {
+            set_input_mode(0);
+            rf::console::print("Input mode: 0 (Legacy) in headless bot mode");
+            return;
+        }
+
+        if (!mode_opt) {
+            int current_mode = std::clamp(g_alpine_game_config.input_mode, 0, 2);
+            rf::console::print("Input mode: {}", mode_names[current_mode]);
+            return;
+        }
+
+        int new_mode = std::clamp(mode_opt.value(), 0, 2);
         set_input_mode(new_mode);
         rf::console::print("Input mode: {} ({})", new_mode, mode_names[new_mode]);
     },
-    "Cycles input mode: 0=Legacy Win32 mouse+keyboard, 1=DirectInput mouse+Legacy keyboard, 2=SDL mouse+keyboard",
+    "Set input mode: 0=Legacy Win32 mouse+keyboard, 1=DirectInput mouse+Legacy keyboard, 2=SDL mouse+keyboard",
+    "inputmode <0|1|2>",
+    true,
 };
 
 ConsoleCommand2 ms_cmd{

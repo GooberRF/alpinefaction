@@ -1417,7 +1417,7 @@ static void set_headless_bot_defaults()
     g_alpine_game_config.swap_ar_controls = false;
     g_alpine_game_config.swap_gn_controls = false;
     g_alpine_game_config.swap_sg_controls = false;
-    g_alpine_game_config.direct_input = false;
+    g_alpine_game_config.input_mode = 0; // headless mode uses legacy mouse path
     g_alpine_game_config.save_console_history = false;
     g_alpine_game_config.set_max_fps(30);
     g_alpine_game_config.dbg_bot = false;
