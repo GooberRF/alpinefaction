@@ -5623,9 +5623,10 @@ bool load_waypoints(bool include_std_new_waypoints = true)
             }
         }
     }
-    if (header_checksum && *header_checksum != rf::level.checksum) {
-        xlog::warn("Waypoint checksum mismatch for {}: file {}, level {}", bare_filename, *header_checksum,
-                   rf::level.checksum);
+    if (g_alpine_game_config.waypoints_edit_mode && !is_waypoint_bot_mode_active()
+        && header_checksum && *header_checksum != rf::level.checksum) {
+        waypoint_log("Level checksum mismatch for {}: file {}, level {}",
+            bare_filename, *header_checksum, rf::level.checksum);
     }
     auto load_zone_entries = [](const toml::array& zone_entries) {
         for (const auto& zone_entry_node : zone_entries) {
