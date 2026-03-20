@@ -220,7 +220,7 @@ ConsoleCommand2 reticle_locked_color_cmd{
 
 ConsoleCommand2 reticle_color_custom_cmd{
     "ui_colorize_custom_reticles",
-    [](std::optional<std::string> color_opt) {
+    [] {
         g_alpine_game_config.colorize_custom_reticles = !g_alpine_game_config.colorize_custom_reticles;
         rf::console::print(
             "Colorization of custom reticle textures is {}",

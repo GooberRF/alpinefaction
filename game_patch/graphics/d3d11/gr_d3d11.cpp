@@ -123,7 +123,7 @@ namespace df::gr::d3d11
     CREATE_DEVICE:
     #endif
         D3D_FEATURE_LEVEL feature_level_supported{};
-        HRESULT hr = pD3D11CreateDevice(
+        const HRESULT hr = pD3D11CreateDevice(
             nullptr,
             D3D_DRIVER_TYPE_HARDWARE,
             nullptr,
@@ -147,7 +147,7 @@ namespace df::gr::d3d11
          }
      #endif
 
-        DF_GR_D3D11_CHECK_HR(hr);
+        check_hr(hr, [] { xlog::error("`D3D11CreateDevice` failed"); });
 
         set_dbg_breaks(device_);
 

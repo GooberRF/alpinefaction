@@ -194,7 +194,8 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
             if (!eventp)
                 return;
 
-            // map of deallocators
+            // Map of deallocators.
+            // Note.  `Event::~Event` is not virtual, so use derived types.
             static const std::unordered_map<int, std::function<void(rf::Event*)>> event_deallocators{
                 {100, [](rf::Event* e) { delete static_cast<rf::EventSetVar*>(e); }},
                 {101, [](rf::Event* e) { delete static_cast<rf::EventCloneEntity*>(e); }},

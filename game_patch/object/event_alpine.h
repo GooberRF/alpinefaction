@@ -30,10 +30,19 @@
 #include "../rf/gr/gr_light.h"
 #include "../misc/level.h"
 
-void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale);
-rf::Vector3 rotate_velocity(const rf::Vector3& old_velocity, const rf::Matrix3& old_orient, const rf::Matrix3& new_orient);
+extern void set_sky_room_uid_override(
+    int room_uid,
+    int anchor_uid,
+    bool relative_position,
+    float position_scale
+);
 
-namespace rf
+rf::Vector3 rotate_velocity(
+    const rf::Vector3& old_velocity,
+    const rf::Matrix3& old_orient,
+    const rf::Matrix3& new_orient
+);
+
 {
     struct EventCreateParams
     {

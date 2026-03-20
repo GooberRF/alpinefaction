@@ -77,11 +77,11 @@ namespace df::gr::d3d11
             error_desc
         );
         if (hr == DXGI_ERROR_DEVICE_REMOVED) {
-            const HRESULT hr = g_device->GetDeviceRemovedReason();
+            const HRESULT removed_hr = g_device->GetDeviceRemovedReason();
             xlog::error(
                 "Device removed reason: 0x{:X} ({})",
-                static_cast<uint32_t>(hr),
-                get_hresult_code_name(hr)
+                static_cast<uint32_t>(removed_hr),
+                get_hresult_code_name(removed_hr)
             );
         }
         rf::fatal_error("D3D11 subsystem fatal error", loc);
