@@ -8,10 +8,7 @@
 #include "../rf/multi.h"
 
 // forward declarations
-namespace rf
-{
-    struct EventCapturePointHandler;
-}
+struct EventCapturePointHandler;
 
 static const char* const multi_rfl_prefixes[] = {
     // "m_",
@@ -82,7 +79,7 @@ struct HillInfo
     rf::Trigger* trigger = nullptr; // set on koth init during map init
     float outline_offset = 0.0f;
     float capture_rate = 0.0f;
-    rf::EventCapturePointHandler* handler = nullptr; // used for world HUD icon
+    EventCapturePointHandler* handler = nullptr; // used for world HUD icon
     HillRole role = HillRole::HR_Center;
     HillOwner ownership = HillOwner::HO_Neutral;
     HillOwner steal_dir = HillOwner::HO_Neutral;
@@ -181,8 +178,8 @@ int multi_koth_get_blue_team_score();
 void multi_koth_set_red_team_score(int score);
 void multi_koth_set_blue_team_score(int score);
 HillInfo* koth_find_hill_by_uid(uint8_t uid);
-HillInfo* koth_find_hill_by_handler(const rf::EventCapturePointHandler* handler);
-bool koth_set_capture_point_owner(rf::EventCapturePointHandler* handler, int owner, bool announce = true);
+HillInfo* koth_find_hill_by_handler(const EventCapturePointHandler* handler);
+bool koth_set_capture_point_owner(EventCapturePointHandler* handler, int owner, bool announce = true);
 rf::Trigger* koth_resolve_trigger_from_uid(int uid);
 void koth_force_broadcast_all_hill_states();
 void koth_local_announce_hill_captured(const HillInfo* h, HillOwner new_owner, const uint8_t* ids, size_t ids_len);

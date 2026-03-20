@@ -119,54 +119,54 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
 
             // map of allocators
             static const std::unordered_map<int, AllocFunc> event_allocators{
-                {100, []() { return new rf::EventSetVar(); }},
-                {101, []() { return new rf::EventCloneEntity(); }},
-                {102, []() { return new rf::EventSetCollisionPlayer(); }},
-                {103, []() { return new rf::EventSwitchRandom(); }},
-                {104, []() { return new rf::EventDifficultyGate(); }},
-                {105, []() { return new rf::EventHUDMessage(); }},
-                {106, []() { return new rf::EventPlayVideo(); }},
-                {107, []() { return new rf::EventSetLevelHardness(); }},
-                {108, []() { return new rf::EventSequence(); }},
-                {109, []() { return new rf::EventClearQueued(); }},
-                {110, []() { return new rf::EventRemoveLink(); }},
-                {111, []() { return new rf::EventRouteNode(); }},
-                {112, []() { return new rf::EventAddLink(); }},
-                {113, []() { return new rf::EventValidGate(); }},
-                {114, []() { return new rf::EventGoalMath(); }},
-                {115, []() { return new rf::EventGoalGate(); }},
-                {116, []() { return new rf::EventScopeGate(); }},
-                {117, []() { return new rf::EventInsideGate(); }},
-                {118, []() { return new rf::EventAnchorMarker(); }},
-                {119, []() { return new rf::EventForceUnhide(); }},
-                {120, []() { return new rf::EventSetDifficulty(); }},
-                {121, []() { return new rf::EventSetFogFarClip(); }},
-                {122, []() { return new rf::EventAFWhenDead(); }},
-                {123, []() { return new rf::EventGametypeGate(); }},
-                {124, []() { return new rf::EventWhenPickedUp(); }},
-                {125, []() { return new rf::EventSetSkybox(); }},
-                {126, []() { return new rf::EventSetLife(); }},
-                {127, []() { return new rf::EventSetDebris(); }},
-                {128, []() { return new rf::EventSetFogColor(); }},
-                {129, []() { return new rf::EventSetEntityFlag(); }},
-                {130, []() { return new rf::EventAFTeleportPlayer(); }},
-                {131, []() { return new rf::EventSetItemDrop(); }},
-                {132, []() { return new rf::EventAFHeal(); }},
-                {133, []() { return new rf::EventAnchorMarkerOrient(); }},
-                {134, []() { return new rf::EventLightState(); }},
-                {135, []() { return new rf::EventWorldHUDSprite(); }},
-                {136, []() { return new rf::EventSetLightColor(); }},
-                {137, []() { return new rf::EventCapturePointHandler(); }},
-                {138, []() { return new rf::EventRespawnPointState(); }},
-                {139, []() { return new rf::EventModifyRespawnPoint(); }},
-                {140, []() { return new rf::EventWhenCaptured(); }},
-                {141, []() { return new rf::EventSetCapturePointOwner(); }},
-                {142, []() { return new rf::EventOwnerGate(); }},
-                {143, []() { return new rf::EventSetGameplayRule(); }},
-                {144, []() { return new rf::EventWhenRoundEnds(); }},
-                {145, []() { return new rf::EventMeshAnimate(); }},
-                {146, []() { return new rf::EventMeshSetTexture(); }},
-                {147, []() { return new rf::EventMeshSetCollision(); }},
+                {100, []() { return new EventSetVar(); }},
+                {101, []() { return new EventCloneEntity(); }},
+                {102, []() { return new EventSetCollisionPlayer(); }},
+                {103, []() { return new EventSwitchRandom(); }},
+                {104, []() { return new EventDifficultyGate(); }},
+                {105, []() { return new EventHUDMessage(); }},
+                {106, []() { return new EventPlayVideo(); }},
+                {107, []() { return new EventSetLevelHardness(); }},
+                {108, []() { return new EventSequence(); }},
+                {109, []() { return new EventClearQueued(); }},
+                {110, []() { return new EventRemoveLink(); }},
+                {111, []() { return new EventRouteNode(); }},
+                {112, []() { return new EventAddLink(); }},
+                {113, []() { return new EventValidGate(); }},
+                {114, []() { return new EventGoalMath(); }},
+                {115, []() { return new EventGoalGate(); }},
+                {116, []() { return new EventScopeGate(); }},
+                {117, []() { return new EventInsideGate(); }},
+                {118, []() { return new EventAnchorMarker(); }},
+                {119, []() { return new EventForceUnhide(); }},
+                {120, []() { return new EventSetDifficulty(); }},
+                {121, []() { return new EventSetFogFarClip(); }},
+                {122, []() { return new EventAFWhenDead(); }},
+                {123, []() { return new EventGametypeGate(); }},
+                {124, []() { return new EventWhenPickedUp(); }},
+                {125, []() { return new EventSetSkybox(); }},
+                {126, []() { return new EventSetLife(); }},
+                {127, []() { return new EventSetDebris(); }},
+                {128, []() { return new EventSetFogColor(); }},
+                {129, []() { return new EventSetEntityFlag(); }},
+                {130, []() { return new EventAFTeleportPlayer(); }},
+                {131, []() { return new EventSetItemDrop(); }},
+                {132, []() { return new EventAFHeal(); }},
+                {133, []() { return new EventAnchorMarkerOrient(); }},
+                {134, []() { return new EventLightState(); }},
+                {135, []() { return new EventWorldHUDSprite(); }},
+                {136, []() { return new EventSetLightColor(); }},
+                {137, []() { return new EventCapturePointHandler(); }},
+                {138, []() { return new EventRespawnPointState(); }},
+                {139, []() { return new EventModifyRespawnPoint(); }},
+                {140, []() { return new EventWhenCaptured(); }},
+                {141, []() { return new EventSetCapturePointOwner(); }},
+                {142, []() { return new EventOwnerGate(); }},
+                {143, []() { return new EventSetGameplayRule(); }},
+                {144, []() { return new EventWhenRoundEnds(); }},
+                {145, []() { return new EventMeshAnimate(); }},
+                {146, []() { return new EventMeshSetTexture(); }},
+                {147, []() { return new EventMeshSetCollision(); }},
             };
 
             // find type and allocate
@@ -197,54 +197,54 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
             // Map of deallocators.
             // Note.  `Event::~Event` is not virtual, so use derived types.
             static const std::unordered_map<int, std::function<void(rf::Event*)>> event_deallocators{
-                {100, [](rf::Event* e) { delete static_cast<rf::EventSetVar*>(e); }},
-                {101, [](rf::Event* e) { delete static_cast<rf::EventCloneEntity*>(e); }},
-                {102, [](rf::Event* e) { delete static_cast<rf::EventSetCollisionPlayer*>(e); }},
-                {103, [](rf::Event* e) { delete static_cast<rf::EventSwitchRandom*>(e); }},
-                {104, [](rf::Event* e) { delete static_cast<rf::EventDifficultyGate*>(e); }},
-                {105, [](rf::Event* e) { delete static_cast<rf::EventHUDMessage*>(e); }},
-                {106, [](rf::Event* e) { delete static_cast<rf::EventPlayVideo*>(e); }},
-                {107, [](rf::Event* e) { delete static_cast<rf::EventSetLevelHardness*>(e); }},
-                {108, [](rf::Event* e) { delete static_cast<rf::EventSequence*>(e); }},
-                {109, [](rf::Event* e) { delete static_cast<rf::EventClearQueued*>(e); }},
-                {110, [](rf::Event* e) { delete static_cast<rf::EventRemoveLink*>(e); }},
-                {111, [](rf::Event* e) { delete static_cast<rf::EventRouteNode*>(e); }},
-                {112, [](rf::Event* e) { delete static_cast<rf::EventAddLink*>(e); }},
-                {113, [](rf::Event* e) { delete static_cast<rf::EventValidGate*>(e); }},
-                {114, [](rf::Event* e) { delete static_cast<rf::EventGoalMath*>(e); }},
-                {115, [](rf::Event* e) { delete static_cast<rf::EventGoalGate*>(e); }},
-                {116, [](rf::Event* e) { delete static_cast<rf::EventScopeGate*>(e); }},
-                {117, [](rf::Event* e) { delete static_cast<rf::EventInsideGate*>(e); }},
-                {118, [](rf::Event* e) { delete static_cast<rf::EventAnchorMarker*>(e); }},
-                {119, [](rf::Event* e) { delete static_cast<rf::EventForceUnhide*>(e); }},
-                {120, [](rf::Event* e) { delete static_cast<rf::EventSetDifficulty*>(e); }},
-                {121, [](rf::Event* e) { delete static_cast<rf::EventSetFogFarClip*>(e); }},
-                {122, [](rf::Event* e) { delete static_cast<rf::EventAFWhenDead*>(e); }},
-                {123, [](rf::Event* e) { delete static_cast<rf::EventGametypeGate*>(e); }},
-                {124, [](rf::Event* e) { delete static_cast<rf::EventWhenPickedUp*>(e); }},
-                {125, [](rf::Event* e) { delete static_cast<rf::EventSetSkybox*>(e); }},
-                {126, [](rf::Event* e) { delete static_cast<rf::EventSetLife*>(e); }},
-                {127, [](rf::Event* e) { delete static_cast<rf::EventSetDebris*>(e); }},
-                {128, [](rf::Event* e) { delete static_cast<rf::EventSetFogColor*>(e); }},
-                {129, [](rf::Event* e) { delete static_cast<rf::EventSetEntityFlag*>(e); }},
-                {130, [](rf::Event* e) { delete static_cast<rf::EventAFTeleportPlayer*>(e); }},
-                {131, [](rf::Event* e) { delete static_cast<rf::EventSetItemDrop*>(e); }},
-                {132, [](rf::Event* e) { delete static_cast<rf::EventAFHeal*>(e); }},
-                {133, [](rf::Event* e) { delete static_cast<rf::EventAnchorMarkerOrient*>(e); }},
-                {134, [](rf::Event* e) { delete static_cast<rf::EventLightState*>(e); }},
-                {135, [](rf::Event* e) { delete static_cast<rf::EventWorldHUDSprite*>(e); }},
-                {136, [](rf::Event* e) { delete static_cast<rf::EventSetLightColor*>(e); }},
-                {137, [](rf::Event* e) { delete static_cast<rf::EventCapturePointHandler*>(e); }},
-                {138, [](rf::Event* e) { delete static_cast<rf::EventRespawnPointState*>(e); }},
-                {139, [](rf::Event* e) { delete static_cast<rf::EventModifyRespawnPoint*>(e); }},
-                {140, [](rf::Event* e) { delete static_cast<rf::EventWhenCaptured*>(e); }},
-                {141, [](rf::Event* e) { delete static_cast<rf::EventSetCapturePointOwner*>(e); }},
-                {142, [](rf::Event* e) { delete static_cast<rf::EventOwnerGate*>(e); }},
-                {143, [](rf::Event* e) { delete static_cast<rf::EventSetGameplayRule*>(e); }},
-                {144, [](rf::Event* e) { delete static_cast<rf::EventWhenRoundEnds*>(e); }},
-                {145, [](rf::Event* e) { delete static_cast<rf::EventMeshAnimate*>(e); }},
-                {146, [](rf::Event* e) { delete static_cast<rf::EventMeshSetTexture*>(e); }},
-                {147, [](rf::Event* e) { delete static_cast<rf::EventMeshSetCollision*>(e); }},
+                {100, [](rf::Event* e) { delete static_cast<EventSetVar*>(e); }},
+                {101, [](rf::Event* e) { delete static_cast<EventCloneEntity*>(e); }},
+                {102, [](rf::Event* e) { delete static_cast<EventSetCollisionPlayer*>(e); }},
+                {103, [](rf::Event* e) { delete static_cast<EventSwitchRandom*>(e); }},
+                {104, [](rf::Event* e) { delete static_cast<EventDifficultyGate*>(e); }},
+                {105, [](rf::Event* e) { delete static_cast<EventHUDMessage*>(e); }},
+                {106, [](rf::Event* e) { delete static_cast<EventPlayVideo*>(e); }},
+                {107, [](rf::Event* e) { delete static_cast<EventSetLevelHardness*>(e); }},
+                {108, [](rf::Event* e) { delete static_cast<EventSequence*>(e); }},
+                {109, [](rf::Event* e) { delete static_cast<EventClearQueued*>(e); }},
+                {110, [](rf::Event* e) { delete static_cast<EventRemoveLink*>(e); }},
+                {111, [](rf::Event* e) { delete static_cast<EventRouteNode*>(e); }},
+                {112, [](rf::Event* e) { delete static_cast<EventAddLink*>(e); }},
+                {113, [](rf::Event* e) { delete static_cast<EventValidGate*>(e); }},
+                {114, [](rf::Event* e) { delete static_cast<EventGoalMath*>(e); }},
+                {115, [](rf::Event* e) { delete static_cast<EventGoalGate*>(e); }},
+                {116, [](rf::Event* e) { delete static_cast<EventScopeGate*>(e); }},
+                {117, [](rf::Event* e) { delete static_cast<EventInsideGate*>(e); }},
+                {118, [](rf::Event* e) { delete static_cast<EventAnchorMarker*>(e); }},
+                {119, [](rf::Event* e) { delete static_cast<EventForceUnhide*>(e); }},
+                {120, [](rf::Event* e) { delete static_cast<EventSetDifficulty*>(e); }},
+                {121, [](rf::Event* e) { delete static_cast<EventSetFogFarClip*>(e); }},
+                {122, [](rf::Event* e) { delete static_cast<EventAFWhenDead*>(e); }},
+                {123, [](rf::Event* e) { delete static_cast<EventGametypeGate*>(e); }},
+                {124, [](rf::Event* e) { delete static_cast<EventWhenPickedUp*>(e); }},
+                {125, [](rf::Event* e) { delete static_cast<EventSetSkybox*>(e); }},
+                {126, [](rf::Event* e) { delete static_cast<EventSetLife*>(e); }},
+                {127, [](rf::Event* e) { delete static_cast<EventSetDebris*>(e); }},
+                {128, [](rf::Event* e) { delete static_cast<EventSetFogColor*>(e); }},
+                {129, [](rf::Event* e) { delete static_cast<EventSetEntityFlag*>(e); }},
+                {130, [](rf::Event* e) { delete static_cast<EventAFTeleportPlayer*>(e); }},
+                {131, [](rf::Event* e) { delete static_cast<EventSetItemDrop*>(e); }},
+                {132, [](rf::Event* e) { delete static_cast<EventAFHeal*>(e); }},
+                {133, [](rf::Event* e) { delete static_cast<EventAnchorMarkerOrient*>(e); }},
+                {134, [](rf::Event* e) { delete static_cast<EventLightState*>(e); }},
+                {135, [](rf::Event* e) { delete static_cast<EventWorldHUDSprite*>(e); }},
+                {136, [](rf::Event* e) { delete static_cast<EventSetLightColor*>(e); }},
+                {137, [](rf::Event* e) { delete static_cast<EventCapturePointHandler*>(e); }},
+                {138, [](rf::Event* e) { delete static_cast<EventRespawnPointState*>(e); }},
+                {139, [](rf::Event* e) { delete static_cast<EventModifyRespawnPoint*>(e); }},
+                {140, [](rf::Event* e) { delete static_cast<EventWhenCaptured*>(e); }},
+                {141, [](rf::Event* e) { delete static_cast<EventSetCapturePointOwner*>(e); }},
+                {142, [](rf::Event* e) { delete static_cast<EventOwnerGate*>(e); }},
+                {143, [](rf::Event* e) { delete static_cast<EventSetGameplayRule*>(e); }},
+                {144, [](rf::Event* e) { delete static_cast<EventWhenRoundEnds*>(e); }},
+                {145, [](rf::Event* e) { delete static_cast<EventMeshAnimate*>(e); }},
+                {146, [](rf::Event* e) { delete static_cast<EventMeshSetTexture*>(e); }},
+                {147, [](rf::Event* e) { delete static_cast<EventMeshSetCollision*>(e); }},
             };
 
             // find type and deallocate
@@ -325,16 +325,16 @@ CodeInjection event_type_forwards_messages_patch{
     }
 };
 
-using EventFactory = std::function<rf::Event*(const rf::EventCreateParams&)>;
+using EventFactory = std::function<rf::Event*(const EventCreateParams&)>;
 
 static std::unordered_map<rf::EventType, EventFactory> event_factories {
     // Set_Variable
     {
-        rf::EventType::Set_Variable, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Variable, [](const EventCreateParams& params) {
          auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Variable));
-            auto* event = dynamic_cast<rf::EventSetVar*>(base_event);
+            auto* event = dynamic_cast<EventSetVar*>(base_event);
             if (event) {
-                event->var = static_cast<rf::SetVarOpts>(params.int1);
+                event->var = static_cast<SetVarOpts>(params.int1);
                 event->value_int = params.int2;
                 event->value_float = params.float1;
                 event->value_bool = params.bool1;
@@ -345,9 +345,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Clone_Entity
     {
-        rf::EventType::Clone_Entity, [](const rf::EventCreateParams& params) {
+        rf::EventType::Clone_Entity, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Clone_Entity));
-            auto* event = dynamic_cast<rf::EventCloneEntity*>(base_event);
+            auto* event = dynamic_cast<EventCloneEntity*>(base_event);
             if (event) {                
                 event->hostile_to_player = params.bool1;
                 event->find_player = params.bool2;
@@ -358,9 +358,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Switch_Random
     {
-        rf::EventType::Switch_Random, [](const rf::EventCreateParams& params) {
+        rf::EventType::Switch_Random, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Switch_Random));
-            auto* event = dynamic_cast<rf::EventSwitchRandom*>(base_event);
+            auto* event = dynamic_cast<EventSwitchRandom*>(base_event);
             if (event) {                
                 event->no_repeats = params.bool1;
             }
@@ -369,9 +369,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Difficulty_Gate
     {
-        rf::EventType::Difficulty_Gate, [](const rf::EventCreateParams& params) {
+        rf::EventType::Difficulty_Gate, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Difficulty_Gate));
-            auto* event = dynamic_cast<rf::EventDifficultyGate*>(base_event);
+            auto* event = dynamic_cast<EventDifficultyGate*>(base_event);
             if (event) {
                 event->difficulty = static_cast<rf::GameDifficultyLevel>(params.int1);
             }
@@ -380,9 +380,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // HUD_Message
     {
-        rf::EventType::HUD_Message, [](const rf::EventCreateParams& params) {
+        rf::EventType::HUD_Message, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::HUD_Message));
-            auto* event = dynamic_cast<rf::EventHUDMessage*>(base_event);
+            auto* event = dynamic_cast<EventHUDMessage*>(base_event);
             if (event) {
                 event->message = params.str1;
                 event->duration = params.float1;
@@ -392,9 +392,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Play_Video
     {
-        rf::EventType::Play_Video, [](const rf::EventCreateParams& params) {
+        rf::EventType::Play_Video, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Play_Video));
-            auto* event = dynamic_cast<rf::EventPlayVideo*>(base_event);
+            auto* event = dynamic_cast<EventPlayVideo*>(base_event);
             if (event) {
                 event->filename = params.str1;
             }
@@ -403,9 +403,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Level_Hardness
     {
-        rf::EventType::Set_Level_Hardness, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Level_Hardness, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Level_Hardness));
-            auto* event = dynamic_cast<rf::EventSetLevelHardness*>(base_event);
+            auto* event = dynamic_cast<EventSetLevelHardness*>(base_event);
             if (event) {
                 event->hardness = params.int1;
             }
@@ -414,9 +414,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Sequence
     {
-        rf::EventType::Sequence, [](const rf::EventCreateParams& params) {
+        rf::EventType::Sequence, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Sequence));
-            auto* event = dynamic_cast<rf::EventSequence*>(base_event);
+            auto* event = dynamic_cast<EventSequence*>(base_event);
             if (event) {
                 event->next_link_index = params.int1;
             }
@@ -425,9 +425,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Remove_Link
     {
-        rf::EventType::Remove_Link, [](const rf::EventCreateParams& params) {
+        rf::EventType::Remove_Link, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Remove_Link));
-            auto* event = dynamic_cast<rf::EventRemoveLink*>(base_event);
+            auto* event = dynamic_cast<EventRemoveLink*>(base_event);
             if (event) {
                 event->remove_all = params.bool1;
             }
@@ -436,11 +436,11 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Route_Node
     {
-        rf::EventType::Route_Node, [](const rf::EventCreateParams& params) {
+        rf::EventType::Route_Node, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Route_Node));
-            auto* event = dynamic_cast<rf::EventRouteNode*>(base_event);
+            auto* event = dynamic_cast<EventRouteNode*>(base_event);
             if (event) {
-                event->behaviour = static_cast<rf::RouteNodeBehavior>(params.int1);
+                event->behaviour = static_cast<RouteNodeBehavior>(params.int1);
                 event->fixed = params.bool1;
                 event->clear_trigger_info = params.bool2;
             }
@@ -449,9 +449,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Add_Link
     {
-        rf::EventType::Add_Link, [](const rf::EventCreateParams& params) {
+        rf::EventType::Add_Link, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Add_Link));
-            auto* event = dynamic_cast<rf::EventAddLink*>(base_event);
+            auto* event = dynamic_cast<EventAddLink*>(base_event);
             if (event) {
                 event->subject_uid = params.int1;
                 event->inbound = params.bool1;
@@ -461,9 +461,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Valid_Gate
     {
-        rf::EventType::Valid_Gate, [](const rf::EventCreateParams& params) {
+        rf::EventType::Valid_Gate, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Valid_Gate));
-            auto* event = dynamic_cast<rf::EventValidGate*>(base_event);
+            auto* event = dynamic_cast<EventValidGate*>(base_event);
             if (event) {
                 event->check_uid = params.int1;
             }
@@ -472,12 +472,12 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Goal_Math
     {
-        rf::EventType::Goal_Math, [](const rf::EventCreateParams& params) {
+        rf::EventType::Goal_Math, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Goal_Math));
-            auto* event = dynamic_cast<rf::EventGoalMath*>(base_event);
+            auto* event = dynamic_cast<EventGoalMath*>(base_event);
             if (event) {
                 event->goal = params.str1;
-                event->operation = static_cast<rf::GoalMathOperation>(params.int1);
+                event->operation = static_cast<GoalMathOperation>(params.int1);
                 event->operation_value = params.int2;
             }
             return event;
@@ -485,12 +485,12 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Goal_Gate
     {
-        rf::EventType::Goal_Gate, [](const rf::EventCreateParams& params) {
+        rf::EventType::Goal_Gate, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Goal_Gate));
-            auto* event = dynamic_cast<rf::EventGoalGate*>(base_event);
+            auto* event = dynamic_cast<EventGoalGate*>(base_event);
             if (event) {
                 event->goal = params.str1;
-                event->test_type = static_cast<rf::GoalGateTests>(params.int1);
+                event->test_type = static_cast<GoalGateTests>(params.int1);
                 event->test_value = params.int2;
             }
             return event;
@@ -498,20 +498,20 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Scope_Gate
     {
-        rf::EventType::Scope_Gate, [](const rf::EventCreateParams& params) {
+        rf::EventType::Scope_Gate, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Scope_Gate));
-            auto* event = dynamic_cast<rf::EventScopeGate*>(base_event);
+            auto* event = dynamic_cast<EventScopeGate*>(base_event);
             if (event) {
-                event->scope = static_cast<rf::ScopeGateTests>(params.int1);
+                event->scope = static_cast<ScopeGateTests>(params.int1);
             }
             return event;
         }
     },
     // Inside_Gate
     {
-        rf::EventType::Inside_Gate, [](const rf::EventCreateParams& params) {
+        rf::EventType::Inside_Gate, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Inside_Gate));
-            auto* event = dynamic_cast<rf::EventInsideGate*>(base_event);
+            auto* event = dynamic_cast<EventInsideGate*>(base_event);
             if (event) {
                 event->check_uid = params.int1;
             }
@@ -520,9 +520,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Difficulty
     {
-        rf::EventType::Set_Difficulty, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Difficulty, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Difficulty));
-            auto* event = dynamic_cast<rf::EventSetDifficulty*>(base_event);
+            auto* event = dynamic_cast<EventSetDifficulty*>(base_event);
             if (event) {
                 event->difficulty = static_cast<rf::GameDifficultyLevel>(params.int1);
             }
@@ -531,9 +531,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Fog_Far_Clip
     {
-        rf::EventType::Set_Fog_Far_Clip, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Fog_Far_Clip, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Fog_Far_Clip));
-            auto* event = dynamic_cast<rf::EventSetFogFarClip*>(base_event);
+            auto* event = dynamic_cast<EventSetFogFarClip*>(base_event);
             if (event) {
                 event->far_clip = params.float1;
             }
@@ -542,9 +542,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // AF_When_Dead
     {
-        rf::EventType::AF_When_Dead, [](const rf::EventCreateParams& params) {
+        rf::EventType::AF_When_Dead, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_When_Dead));
-            auto* event = dynamic_cast<rf::EventAFWhenDead*>(base_event);
+            auto* event = dynamic_cast<EventAFWhenDead*>(base_event);
             if (event) {
                 event->any_dead = params.bool1;
             }
@@ -553,9 +553,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Gametype_Gate
     {
-        rf::EventType::Gametype_Gate, [](const rf::EventCreateParams& params) {
+        rf::EventType::Gametype_Gate, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Gametype_Gate));
-            auto* event = dynamic_cast<rf::EventGametypeGate*>(base_event);
+            auto* event = dynamic_cast<EventGametypeGate*>(base_event);
             if (event) {
                 event->gametype = static_cast<rf::NetGameType>(params.int1);
             }
@@ -564,9 +564,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Skybox
     {
-        rf::EventType::Set_Skybox, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Skybox, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Skybox));
-            auto* event = dynamic_cast<rf::EventSetSkybox*>(base_event);
+            auto* event = dynamic_cast<EventSetSkybox*>(base_event);
             if (event) {
                 event->new_sky_room_uid = params.int1;
                 event->new_sky_room_anchor_uid = params.int2;
@@ -578,9 +578,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Life
     {
-        rf::EventType::Set_Life, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Life, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Life));
-            auto* event = dynamic_cast<rf::EventSetLife*>(base_event);
+            auto* event = dynamic_cast<EventSetLife*>(base_event);
             if (event) {
                 event->new_life = params.float1;
             }
@@ -589,9 +589,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Debris
     {
-        rf::EventType::Set_Debris, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Debris, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Debris));
-            auto* event = dynamic_cast<rf::EventSetDebris*>(base_event);
+            auto* event = dynamic_cast<EventSetDebris*>(base_event);
             if (event) {
                 event->debris_filename = params.str1;
                 event->debris_sound_set = params.str2;
@@ -604,9 +604,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Fog_Color
     {
-        rf::EventType::Set_Fog_Color, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Fog_Color, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Fog_Color));
-            auto* event = dynamic_cast<rf::EventSetFogColor*>(base_event);
+            auto* event = dynamic_cast<EventSetFogColor*>(base_event);
             if (event) {
                 event->fog_color = params.str1;
             }
@@ -615,20 +615,20 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Entity_Flag
     {
-        rf::EventType::Set_Entity_Flag, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Entity_Flag, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Entity_Flag));
-            auto* event = dynamic_cast<rf::EventSetEntityFlag*>(base_event);
+            auto* event = dynamic_cast<EventSetEntityFlag*>(base_event);
             if (event) {
-                event->flag = static_cast<rf::SetEntityFlagOption>(params.int1);
+                event->flag = static_cast<SetEntityFlagOption>(params.int1);
             }
             return event;
         }
     },
     // AF_Teleport_Player
     {
-        rf::EventType::AF_Teleport_Player, [](const rf::EventCreateParams& params) {
+        rf::EventType::AF_Teleport_Player, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Teleport_Player));
-            auto* event = dynamic_cast<rf::EventAFTeleportPlayer*>(base_event);
+            auto* event = dynamic_cast<EventAFTeleportPlayer*>(base_event);
             if (event) {
                 event->reset_velocity = params.bool1;
                 event->force_exit_vehicle = params.bool2;
@@ -640,9 +640,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Item_Drop
     {
-        rf::EventType::Set_Item_Drop, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Item_Drop, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Item_Drop));
-            auto* event = dynamic_cast<rf::EventSetItemDrop*>(base_event);
+            auto* event = dynamic_cast<EventSetItemDrop*>(base_event);
             if (event) {
                 event->item_name = params.str1;
             }
@@ -651,12 +651,12 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // AF_Heal
     {
-        rf::EventType::AF_Heal, [](const rf::EventCreateParams& params) {
+        rf::EventType::AF_Heal, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Heal));
-            auto* event = dynamic_cast<rf::EventAFHeal*>(base_event);
+            auto* event = dynamic_cast<EventAFHeal*>(base_event);
             if (event) {
                 event->amount = params.int1;
-                event->target = static_cast<rf::AFHealTargetOption>(params.int2);
+                event->target = static_cast<AFHealTargetOption>(params.int2);
                 event->apply_to_armor = params.bool1;
                 event->super = params.bool2;
             }
@@ -665,9 +665,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // World_HUD_Sprite
     {
-        rf::EventType::World_HUD_Sprite, [](const rf::EventCreateParams& params) {
+        rf::EventType::World_HUD_Sprite, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::World_HUD_Sprite));
-            auto* event = dynamic_cast<rf::EventWorldHUDSprite*>(base_event);
+            auto* event = dynamic_cast<EventWorldHUDSprite*>(base_event);
             if (event) {
                 event->enabled = params.bool1;
                 event->render_mode = static_cast<WorldHUDRenderMode>(params.int1);
@@ -680,9 +680,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Light_Color
     {
-        rf::EventType::Set_Light_Color, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Light_Color, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Light_Color));
-            auto* event = dynamic_cast<rf::EventSetLightColor*>(base_event);
+            auto* event = dynamic_cast<EventSetLightColor*>(base_event);
             if (event) {
                 event->light_color = params.str1;
                 event->randomize = params.bool1;
@@ -692,9 +692,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Capture_Point_Handler
     {
-        rf::EventType::Capture_Point_Handler, [](const rf::EventCreateParams& params) {
+        rf::EventType::Capture_Point_Handler, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Capture_Point_Handler));
-            auto* event = dynamic_cast<rf::EventCapturePointHandler*>(base_event);
+            auto* event = dynamic_cast<EventCapturePointHandler*>(base_event);
             if (event) {
                 event->name = params.str1;
                 event->outline_offset = params.float1;
@@ -708,9 +708,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Modify_Respawn_Point
     {
-        rf::EventType::Modify_Respawn_Point, [](const rf::EventCreateParams& params) {
+        rf::EventType::Modify_Respawn_Point, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Modify_Respawn_Point));
-            auto* event = dynamic_cast<rf::EventModifyRespawnPoint*>(base_event);
+            auto* event = dynamic_cast<EventModifyRespawnPoint*>(base_event);
             if (event) {
                 event->red = params.bool1;
                 event->blue = params.bool2;
@@ -720,9 +720,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Capture_Point_Owner
     {
-        rf::EventType::Set_Capture_Point_Owner, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Capture_Point_Owner, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Capture_Point_Owner));
-            auto* event = dynamic_cast<rf::EventSetCapturePointOwner*>(base_event);
+            auto* event = dynamic_cast<EventSetCapturePointOwner*>(base_event);
             if (event) {
                 event->owner = params.int1;
             }
@@ -731,9 +731,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Owner_Gate
     {
-        rf::EventType::Owner_Gate, [](const rf::EventCreateParams& params) {
+        rf::EventType::Owner_Gate, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Owner_Gate));
-            auto* event = dynamic_cast<rf::EventOwnerGate*>(base_event);
+            auto* event = dynamic_cast<EventOwnerGate*>(base_event);
             if (event) {
                 event->handler_uid = params.int1;
                 event->required_owner = params.int2;
@@ -743,20 +743,20 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Set_Gameplay_Rule
     {
-        rf::EventType::Set_Gameplay_Rule, [](const rf::EventCreateParams& params) {
+        rf::EventType::Set_Gameplay_Rule, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Set_Gameplay_Rule));
-            auto* event = dynamic_cast<rf::EventSetGameplayRule*>(base_event);
+            auto* event = dynamic_cast<EventSetGameplayRule*>(base_event);
             if (event) {
-                event->rule = static_cast<rf::GameplayRule>(params.int1);
+                event->rule = static_cast<GameplayRule>(params.int1);
             }
             return event;
         }
     },
     // Mesh_Animate
     {
-        rf::EventType::Mesh_Animate, [](const rf::EventCreateParams& params) {
+        rf::EventType::Mesh_Animate, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Animate));
-            auto* event = dynamic_cast<rf::EventMeshAnimate*>(base_event);
+            auto* event = dynamic_cast<EventMeshAnimate*>(base_event);
             if (event) {
                 event->animate_type = params.int1;
                 event->anim_filename = params.str1;
@@ -767,9 +767,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Mesh_Set_Texture
     {
-        rf::EventType::Mesh_Set_Texture, [](const rf::EventCreateParams& params) {
+        rf::EventType::Mesh_Set_Texture, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Set_Texture));
-            auto* event = dynamic_cast<rf::EventMeshSetTexture*>(base_event);
+            auto* event = dynamic_cast<EventMeshSetTexture*>(base_event);
             if (event) {
                 event->texture_slot = params.int1;
                 event->texture_filename = params.str1;
@@ -779,9 +779,9 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Mesh_Set_Collision
     {
-        rf::EventType::Mesh_Set_Collision, [](const rf::EventCreateParams& params) {
+        rf::EventType::Mesh_Set_Collision, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Mesh_Set_Collision));
-            auto* event = dynamic_cast<rf::EventMeshSetCollision*>(base_event);
+            auto* event = dynamic_cast<EventMeshSetCollision*>(base_event);
             if (event) {
                 event->collision_type = params.int1;
             }
@@ -790,7 +790,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
 };
 
-rf::Event* construct_alpine_event(int event_type, const rf::EventCreateParams& params)
+rf::Event* construct_alpine_event(int event_type, const EventCreateParams& params)
 {
     auto it = event_factories.find(rf::int_to_event_type(event_type));
     if (it != event_factories.end()) {
@@ -810,7 +810,7 @@ CodeInjection level_read_events_factories_patch {
             if (event_type >= 100) { // only handle AF events, stock events handled by original code
                 rf::Vector3* pos = regs.edx;
 
-                rf::EventCreateParams params{
+                EventCreateParams params{
                     pos,
                     *reinterpret_cast<rf::String*>(regs.esp + 0x5C),    // class_name
                     *reinterpret_cast<rf::String*>(regs.esp + 0x54),    // script_name
@@ -868,12 +868,12 @@ CodeInjection event_activate_route_node{
         if (af_rfl_version(rf::level.version)) {
             // verify it's a Route_Node
             if (event->event_type == rf::event_type_to_int(rf::EventType::Route_Node)) {
-                auto* delay_event = reinterpret_cast<rf::EventRouteNode*>(event);
+                auto* delay_event = reinterpret_cast<EventRouteNode*>(event);
                 bool on = *reinterpret_cast<bool*>(regs.esp + 0x18);
                 bool proceed = true;
 
                 // mode = drop, or mode = fixed + existing delay
-                if (delay_event->behaviour == rf::RouteNodeBehavior::drop ||
+                if (delay_event->behaviour == RouteNodeBehavior::drop ||
                     (delay_event->fixed && event->delay_timestamp.valid())) {
                     xlog::debug("Ignoring message request in {} ({})", event->name, event->uid); // would be nice to use dbg_events
                     proceed = false; // ignoring message, stop
@@ -882,16 +882,16 @@ CodeInjection event_activate_route_node{
                 // calculate desired on/off state
                 bool real_on = false;
                 switch (delay_event->behaviour) {
-                    case rf::RouteNodeBehavior::force_on:
+                    case RouteNodeBehavior::force_on:
                         real_on = true;
                         break;
-                    case rf::RouteNodeBehavior::force_off:
+                    case RouteNodeBehavior::force_off:
                         real_on = false;
                         break;
-                    case rf::RouteNodeBehavior::invert:
+                    case RouteNodeBehavior::invert:
                         real_on = !on;
                         break;
-                    case rf::RouteNodeBehavior::pass:
+                    case RouteNodeBehavior::pass:
                     default:
                         real_on = on;
                         break;

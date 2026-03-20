@@ -241,7 +241,7 @@ HillInfo* koth_find_hill_by_uid(uint8_t uid)
     return nullptr;
 }
 
-HillInfo* koth_find_hill_by_handler(const rf::EventCapturePointHandler* handler)
+HillInfo* koth_find_hill_by_handler(const EventCapturePointHandler* handler)
 {
     if (!handler)
         return nullptr;
@@ -1011,7 +1011,7 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
     }
 }
 
-bool koth_set_capture_point_owner(rf::EventCapturePointHandler* handler, int owner, bool announce)
+bool koth_set_capture_point_owner(EventCapturePointHandler* handler, int owner, bool announce)
 {
     if (!rf::is_multi || !rf::is_server)
         return false; // ignore on client
@@ -1707,7 +1707,7 @@ static int build_hills_from_capture_point_events()
         if (!e || int(g_koth_info.hills.size()) >= game_type_max_hills) // respect gametype max hills
             continue;
 
-        auto* cp = static_cast<rf::EventCapturePointHandler*>(e);
+        auto* cp = static_cast<EventCapturePointHandler*>(e);
 
         // find trigger_uid from event links
         if (cp->trigger_uid < 0 && !e->links.empty()) {

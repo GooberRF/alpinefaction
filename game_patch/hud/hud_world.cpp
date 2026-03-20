@@ -31,7 +31,7 @@ WorldHUDAssets g_world_hud_assets;
 static KothHudTuning g_koth_hud_tuning{};
 static std::unordered_map<int, NameLabelTex> g_koth_name_labels;
 bool draw_mp_spawn_world_hud = false;
-std::unordered_set<rf::EventWorldHUDSprite*> world_hud_sprite_events;
+std::unordered_set<EventWorldHUDSprite*> world_hud_sprite_events;
 std::vector<EphemeralWorldHUDSprite> ephemeral_world_hud_sprites;
 std::vector<EphemeralWorldHUDString> ephemeral_world_hud_strings;
 
@@ -1090,7 +1090,7 @@ void populate_world_hud_sprite_events()
     std::vector<rf::Event*> events = rf::find_all_events_by_type(rf::EventType::World_HUD_Sprite);
 
     for (rf::Event* event : events) {
-        if (auto* hud_sprite_event = dynamic_cast<rf::EventWorldHUDSprite*>(event)) {
+        if (auto* hud_sprite_event = dynamic_cast<EventWorldHUDSprite*>(event)) {
             world_hud_sprite_events.insert(hud_sprite_event);
             hud_sprite_event->build_sprite_ints();
         }
