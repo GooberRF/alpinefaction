@@ -41,6 +41,14 @@ static float applied_dynamic_sensitivity_value = 1.0f; // value written by AsmWr
 
 static bool set_direct_input_enabled(bool enabled)
 {
+    if (client_bot_headless_enabled()) {
+        auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
+        rf::direct_input_disabled = true;
+        if (direct_input_initialized && rf::di_mouse)
+            rf::di_mouse->Unacquire();
+        return true;
+    }
+
     auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
     auto mouse_di_init = addr_as_ref<int()>(0x0051E070);
     rf::direct_input_disabled = !enabled;
@@ -105,6 +113,10 @@ void set_input_mode(int mode)
 FunHook<void()> mouse_eval_deltas_hook{
     0x0051DC70,
     []() {
+        if (client_bot_headless_enabled()) {
+            return;
+        }
+
         if (!rf::os_foreground() && !g_alpine_game_config.background_mouse) {
             // Discard any SDL motion that accumulated while unfocused
             g_sdl_mouse_dx_rem = 0.0f;
@@ -144,6 +156,12 @@ FunHook<void()> mouse_eval_deltas_hook{
 FunHook<void()> mouse_eval_deltas_di_hook{
     0x0051DEB0,
     []() {
+        if (client_bot_headless_enabled()) {
+            rf::mouse_dz = 0;
+            rf::mouse_old_z = rf::mouse_wheel_pos;
+            return;
+        }
+
         mouse_eval_deltas_di_hook.call_target();
         if (g_alpine_game_config.input_mode == 2)
             return; // SDL mode handles its own cursor management and scroll tracking
@@ -193,6 +211,12 @@ FunHook<void()> mouse_keep_centered_disable_hook{
     0x0051E6A0,
     []() {
         // keep_mouse_centered is still true here; call_target clears it
+        if (client_bot_headless_enabled()) {
+            rf::keep_mouse_centered = false;
+            set_direct_input_enabled(false);
+            return;
+        }
+
         if (rf::keep_mouse_centered && !rf::is_dedicated_server) {
             switch (g_alpine_game_config.input_mode) {
             case 1: // DirectInput mouse

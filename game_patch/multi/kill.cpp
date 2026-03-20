@@ -18,6 +18,7 @@
 #include "../hud/hud_internal.h"
 #include "../misc/alpine_settings.h"
 #include "server_internal.h"
+#include "multi_private.h"
 #include "alpine_packets.h"
 #include "../misc/player.h"
 
@@ -525,6 +526,12 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
         }
         else {
             rf::player_add_score(killer_player, -1);
+
+            // decrement TDM team score on self kill in match mode servers
+            if (g_alpine_server_config.vote_match.enabled
+                && rf::multi_get_game_type() == rf::NG_TYPE_TEAMDM) {
+                multi_tdm_add_team_score(killer_player, -1);
+            }
         }
 
         multi_apply_kill_reward(killer_player);

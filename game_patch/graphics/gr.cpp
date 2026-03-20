@@ -11,7 +11,10 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <optional>
+#include <shellapi.h>
 #include "../os/console.h"
+#include "../os/os.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
@@ -39,6 +42,11 @@ namespace df::gr::d3d11
     void bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
 }
 
+bool should_bypass_graphics_init_for_headless_bot()
+{
+    return client_bot_headless_enabled() || headless_bot_requested_from_raw_cmdline();
+}
+
 CodeInjection gr_init_stretched_window_injection{
     0x0050C464,
     [](auto& regs) {
@@ -60,6 +68,41 @@ CodeInjection gr_init_injection{
     []() {
         // Make sure pixel aspect ratio is set to 1 so the frame is not stretched
         rf::gr::screen.aspect = 1.0f;
+    },
+};
+
+CodeInjection gr_init_headless_skip_backend_injection{
+    0x0050C551,
+    [](auto& regs) {
+        if (!should_bypass_graphics_init_for_headless_bot()) {
+            return;
+        }
+
+        // Skip the backend init path entirely (gr_d3d_init / renderer bootstrap).
+        // This keeps headless bot startup independent from Direct3D availability.
+        rf::gr::screen.mode = rf::gr::NONE;
+        regs.eip = 0x0050C582;
+    },
+};
+
+CodeInjection gr_d3d_init_headless_early_return_injection{
+    0x00545960,
+    [](auto& regs) {
+        if (!should_bypass_graphics_init_for_headless_bot()) {
+            return;
+        }
+
+        static bool logged = false;
+        if (!logged) {
+            xlog::info("Headless bot: bypassing gr_d3d_init entry");
+            logged = true;
+        }
+
+        // Extra safety: if any path still reaches gr_d3d_init while headless,
+        // bail before any Direct3D module/device setup runs.
+        regs.eax = 0;
+        regs.eip = addr_as_ref<uint32_t>(regs.esp);
+        regs.esp += 4;
     },
 };
 
@@ -269,7 +312,7 @@ ConsoleCommand2 disable_rendering_cmd{
 FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
     0x00431A00,
     [](rf::Player* pp, int flags) {
-        if (!g_alpine_game_config.rendering_enabled) {
+        if (client_bot_headless_enabled() || !g_alpine_game_config.rendering_enabled) {
             return;
         }
 
@@ -281,7 +324,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
 FunHook<void()> gameplay_render_frame_pre_hook{
     0x00431820,
     []() {
-        if (!g_alpine_game_config.rendering_enabled) {
+        if (client_bot_headless_enabled() || !g_alpine_game_config.rendering_enabled) {
             return;
         }
 
@@ -546,6 +589,8 @@ void evaluate_pow2tex(const rf::String& level_filename) {
 
 void gr_apply_patch()
 {
+    const bool headless_bot_graphics_bypass = should_bypass_graphics_init_for_headless_bot();
+
     if (g_game_config.wnd_mode != GameConfig::FULLSCREEN) {
         // Enable windowed mode
         write_mem<u32>(0x004B29A5 + 6, 0xC8);
@@ -554,6 +599,8 @@ void gr_apply_patch()
 
     // Fix FOV for widescreen
     gr_init_injection.install();
+    gr_init_headless_skip_backend_injection.install();
+    gr_d3d_init_headless_early_return_injection.install();
     gameplay_render_frame_fov_injection.install();
     gr_setup_3d_railgun_hook.install();
 
@@ -569,22 +616,26 @@ void gr_apply_patch()
     // Lights
     gr_light_apply_patch();
 
-    if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
-        void gr_d3d11_apply_patch();
-        gr_d3d11_apply_patch();
-    }
-    else {
-        // D3D generic patches
-        gr_d3d_apply_patch();
+    if (!headless_bot_graphics_bypass) {
+        const bool use_d3d11_renderer =
+            g_game_config.renderer == GameConfig::Renderer::d3d11;
+        if (use_d3d11_renderer) {
+            void gr_d3d11_apply_patch();
+            gr_d3d11_apply_patch();
+        }
+        else {
+            // D3D generic patches
+            gr_d3d_apply_patch();
 
-        // D3D texture handling
-        gr_d3d_texture_apply_patch();
+            // D3D texture handling
+            gr_d3d_texture_apply_patch();
 
-        // Back-buffer capture or render to texture related code
-        gr_d3d_capture_apply_patch();
+            // Back-buffer capture or render to texture related code
+            gr_d3d_capture_apply_patch();
 
-        // Gamma related code
-        gr_d3d_gamma_apply_patch();
+            // Gamma related code
+            gr_d3d_gamma_apply_patch();
+        }
     }
 
     // Bink Video patch

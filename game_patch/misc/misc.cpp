@@ -16,6 +16,7 @@
 #include "alpine_options.h"
 #include "alpine_settings.h"
 #include "misc.h"
+#include "string.h"
 #include "level.h"
 #include "../sound/sound.h"
 #include "../os/console.h"
@@ -33,6 +34,7 @@
 #include "../rf/level.h"
 #include "../rf/file/file.h"
 #include "../object/object.h"
+#include "waypoints.h"
 
 void achievements_apply_patch();
 void apply_main_menu_patches();
@@ -626,8 +628,9 @@ void misc_init()
     // Fix crash caused by explosion near dying player-controlled entity (entity->local_player is null)
     explosion_crash_fix.install();
 
-    // If speed reduction in background is not wanted disable that code in RF
-    if (!g_game_config.reduced_speed_in_background) {
+    // If speed reduction in background is not wanted disable that code in RF.
+    // Headless bot clients should always bypass this throttle to keep net/sim stable.
+    if (!g_game_config.reduced_speed_in_background || client_bot_headless_enabled()) {
         write_mem<u8>(0x004353CC, asm_opcodes::jmp_rel_short);
     }
 
@@ -670,4 +673,6 @@ void misc_init()
     game_apply_patch();
     character_apply_patch();
     level_apply_patch();
+    misc_string_apply_patch();
+    waypoints_init();
 }

@@ -21,6 +21,8 @@
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
 #include "../object/object.h"
+#include "bots/bot_personality.h"
+#include "bots/bot_state.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
@@ -123,6 +125,10 @@ bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::P
         }
         case af_packet_type::af_server_req: {
             af_process_server_req_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_server_bot_control: {
+            af_process_bot_control_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -1794,3 +1800,369 @@ void af_process_server_msg_packet(
     }
 }
 
+// ---------------------------------------------------------------------------
+// af_server_bot_control (0x5F)
+// ---------------------------------------------------------------------------
+
+static bool can_send_bot_control(rf::Player* player)
+{
+    return rf::is_server && player && player->net_data && player->is_bot;
+}
+
+void af_send_bot_control_simple(rf::Player* player, af_bot_control_type subtype)
+{
+    if (!can_send_bot_control(player)) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    size_t offset = 0;
+
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_server_bot_control);
+    header.size = 2; // version + subtype
+    std::memcpy(buf + offset, &header, sizeof(header));
+    offset += sizeof(header);
+
+    buf[offset++] = static_cast<std::byte>(kBotControlPacketVersion);
+    buf[offset++] = static_cast<std::byte>(subtype);
+
+    af_send_packet(player, buf, static_cast<int>(offset), true);
+}
+
+static size_t write_profile_update_payload(
+    std::byte* buf,
+    size_t buf_cap,
+    af_bot_control_type subtype,
+    const std::string& preset_name,
+    const std::vector<BotConfigOverride>& overrides)
+{
+    // Validate that the payload fits in the buffer.
+    const size_t num_overrides_unclamped = std::min<size_t>(overrides.size(), 255);
+    const size_t name_len_unclamped = std::min<size_t>(preset_name.size(), kMaxPresetNameLen);
+    const size_t max_needed = sizeof(RF_GamePacketHeader) + 2 + 1 + name_len_unclamped
+        + 1 + num_overrides_unclamped * (1 + sizeof(float));
+    if (max_needed > buf_cap) {
+        xlog::warn("write_profile_update_payload: payload size {} exceeds buffer capacity {}", max_needed, buf_cap);
+        return 0;
+    }
+
+    size_t offset = 0;
+
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_server_bot_control);
+    // size will be filled in after
+    std::memcpy(buf + offset, &header, sizeof(header));
+    offset += sizeof(header);
+
+    const size_t payload_start = offset;
+
+    buf[offset++] = static_cast<std::byte>(kBotControlPacketVersion);
+    buf[offset++] = static_cast<std::byte>(subtype);
+
+    // preset name
+    const uint8_t name_len = static_cast<uint8_t>(name_len_unclamped);
+    buf[offset++] = static_cast<std::byte>(name_len);
+    std::memcpy(buf + offset, preset_name.data(), name_len);
+    offset += name_len;
+
+    // overrides
+    const uint8_t num_overrides = static_cast<uint8_t>(num_overrides_unclamped);
+    buf[offset++] = static_cast<std::byte>(num_overrides);
+    for (uint8_t i = 0; i < num_overrides; ++i) {
+        buf[offset++] = static_cast<std::byte>(overrides[i].field_id);
+        std::memcpy(buf + offset, &overrides[i].value, sizeof(float));
+        offset += sizeof(float);
+    }
+
+    // patch header size
+    const uint16_t payload_size = static_cast<uint16_t>(offset - payload_start);
+    std::memcpy(buf + offsetof(RF_GamePacketHeader, size), &payload_size, sizeof(payload_size));
+
+    return offset;
+}
+
+void af_send_bot_control_update_personality(rf::Player* player, const ServerBotConfig& config)
+{
+    if (!can_send_bot_control(player)) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    const size_t len = write_profile_update_payload(
+        buf, sizeof(buf),
+        af_bot_control_type::update_personality,
+        config.personality_preset,
+        config.personality_overrides);
+    if (len == 0) {
+        return;
+    }
+
+    af_send_packet(player, buf, static_cast<int>(len), true);
+}
+
+void af_send_bot_control_update_skill(rf::Player* player, const ServerBotConfig& config)
+{
+    if (!can_send_bot_control(player)) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    const size_t len = write_profile_update_payload(
+        buf, sizeof(buf),
+        af_bot_control_type::update_skill,
+        config.skill_preset,
+        config.skill_overrides);
+    if (len == 0) {
+        return;
+    }
+
+    af_send_packet(player, buf, static_cast<int>(len), true);
+}
+
+void af_send_bot_control_update_identity(rf::Player* player, const std::string& name, int32_t character_index)
+{
+    if (!can_send_bot_control(player)) {
+        return;
+    }
+
+    const uint8_t name_len = static_cast<uint8_t>(
+        std::min<size_t>(name.size(), kMaxPresetNameLen));
+
+    std::byte buf[rf::max_packet_size];
+    size_t offset = 0;
+
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_server_bot_control);
+    // size will be filled in after
+    std::memcpy(buf + offset, &header, sizeof(header));
+    offset += sizeof(header);
+
+    const size_t payload_start = offset;
+
+    buf[offset++] = static_cast<std::byte>(kBotControlPacketVersion);
+    buf[offset++] = static_cast<std::byte>(af_bot_control_type::update_identity);
+
+    // player name
+    buf[offset++] = static_cast<std::byte>(name_len);
+    std::memcpy(buf + offset, name.data(), name_len);
+    offset += name_len;
+
+    // character index
+    std::memcpy(buf + offset, &character_index, sizeof(character_index));
+    offset += sizeof(character_index);
+
+    // patch header size
+    const uint16_t payload_size = static_cast<uint16_t>(offset - payload_start);
+    std::memcpy(buf + offsetof(RF_GamePacketHeader, size), &payload_size, sizeof(payload_size));
+
+    af_send_packet(player, buf, static_cast<int>(offset), true);
+}
+
+void af_send_bot_config(rf::Player* player, const ServerBotConfig& config,
+                        const std::string& resolved_name, int32_t resolved_character)
+{
+    if (!can_send_bot_control(player)) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 3, 0)) {
+        return;
+    }
+
+    af_send_bot_control_update_personality(player, config);
+    af_send_bot_control_update_skill(player, config);
+    af_send_bot_control_update_identity(player, resolved_name, resolved_character);
+    af_send_bot_control_simple(player, af_bot_control_type::go_active);
+}
+
+void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server (bot clients only)
+    if (!rf::is_multi || rf::is_server || !client_bot_launch_enabled()) {
+        return;
+    }
+
+    if (len < sizeof(RF_GamePacketHeader)) {
+        xlog::warn("af_process_bot_control_packet: packet too short for header (len={})", len);
+        return;
+    }
+
+    RF_GamePacketHeader header{};
+    std::memcpy(&header, data, sizeof(header));
+
+    const size_t expected_wire_size = sizeof(RF_GamePacketHeader) + static_cast<size_t>(header.size);
+    if (expected_wire_size > len) {
+        xlog::warn("af_process_bot_control_packet: truncated packet ({} > {})", expected_wire_size, len);
+        return;
+    }
+
+    if (header.size < 2) {
+        xlog::warn("af_process_bot_control_packet: payload too small ({})", header.size);
+        return;
+    }
+
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+    const size_t payload_begin = sizeof(RF_GamePacketHeader);
+    const size_t payload_end = sizeof(RF_GamePacketHeader) + static_cast<size_t>(header.size);
+
+    size_t offset = payload_begin;
+
+    const uint8_t version = bytes[offset++];
+    if (version > kBotControlPacketVersion) {
+        xlog::error("af_process_bot_control_packet: unsupported version {} (max {})",
+            version, kBotControlPacketVersion);
+        return;
+    }
+
+    const auto subtype = static_cast<af_bot_control_type>(bytes[offset++]);
+    const size_t remaining = (offset <= payload_end) ? (payload_end - offset) : 0;
+
+    switch (subtype) {
+        case af_bot_control_type::go_inactive:
+            xlog::info("Bot control: go_inactive");
+            // Deactivate the bot: stop decision-making but preserve config.
+            // The server can reactivate with go_active without resending config.
+            g_client_bot_state.server_deactivated = true;
+            bot_state_clear_goal();
+            bot_state_clear_waypoint_route(true, true, true);
+            bot_state_reset_fsm(BotFsmState::inactive);
+            break;
+
+        case af_bot_control_type::go_active:
+            xlog::info("Bot control: go_active");
+            g_client_bot_state.server_config_received = true;
+            g_client_bot_state.server_deactivated = false;
+            g_client_bot_state.server_config_timeout_timer.invalidate();
+            g_client_bot_state.connection_watchdog_timer.set(kBotConnectionWatchdogMs);
+            break;
+
+        case af_bot_control_type::disconnect_bot:
+            xlog::info("Bot control: disconnect_bot");
+            multi_disconnect_from_server();
+            break;
+
+        case af_bot_control_type::update_personality: {
+            if (remaining < 1) {
+                xlog::warn("af_process_bot_control_packet: update_personality too short");
+                return;
+            }
+            const uint8_t name_len = bytes[offset++];
+            if (name_len > kMaxPresetNameLen || offset + name_len > payload_end) {
+                xlog::warn("af_process_bot_control_packet: preset name too long or truncated");
+                return;
+            }
+            std::string preset_name(reinterpret_cast<const char*>(bytes + offset), name_len);
+            offset += name_len;
+
+            if (offset >= payload_end) {
+                xlog::warn("af_process_bot_control_packet: missing override count");
+                return;
+            }
+            const uint8_t num_overrides = bytes[offset++];
+
+            // Apply preset first
+            bot_personality_set_presets(preset_name.c_str(), nullptr);
+            xlog::info("Bot control: update_personality preset='{}' overrides={}", preset_name, num_overrides);
+
+            // Apply field overrides
+            for (uint8_t i = 0; i < num_overrides; ++i) {
+                if (offset + 5 > payload_end) {
+                    xlog::warn("af_process_bot_control_packet: override {} truncated", i);
+                    break;
+                }
+                const uint8_t field_id = bytes[offset++];
+                float value = 0.0f;
+                std::memcpy(&value, bytes + offset, sizeof(float));
+                offset += sizeof(float);
+
+                if (!bot_personality_apply_field_override(field_id, value)) {
+                    xlog::debug("af_process_bot_control_packet: unknown personality field_id 0x{:02x}", field_id);
+                }
+            }
+            break;
+        }
+
+        case af_bot_control_type::update_skill: {
+            if (remaining < 1) {
+                xlog::warn("af_process_bot_control_packet: update_skill too short");
+                return;
+            }
+            const uint8_t name_len = bytes[offset++];
+            if (name_len > kMaxPresetNameLen || offset + name_len > payload_end) {
+                xlog::warn("af_process_bot_control_packet: skill preset name too long or truncated");
+                return;
+            }
+            std::string preset_name(reinterpret_cast<const char*>(bytes + offset), name_len);
+            offset += name_len;
+
+            if (offset >= payload_end) {
+                xlog::warn("af_process_bot_control_packet: missing skill override count");
+                return;
+            }
+            const uint8_t num_overrides = bytes[offset++];
+
+            // Apply preset first
+            bot_personality_set_presets(nullptr, preset_name.c_str());
+            xlog::info("Bot control: update_skill preset='{}' overrides={}", preset_name, num_overrides);
+
+            // Apply field overrides
+            for (uint8_t i = 0; i < num_overrides; ++i) {
+                if (offset + 5 > payload_end) {
+                    xlog::warn("af_process_bot_control_packet: skill override {} truncated", i);
+                    break;
+                }
+                const uint8_t field_id = bytes[offset++];
+                float value = 0.0f;
+                std::memcpy(&value, bytes + offset, sizeof(float));
+                offset += sizeof(float);
+
+                if (!bot_skill_apply_field_override(field_id, value)) {
+                    xlog::debug("af_process_bot_control_packet: unknown skill field_id 0x{:02x}", field_id);
+                }
+            }
+            break;
+        }
+
+        case af_bot_control_type::update_identity: {
+            if (remaining < 1) {
+                xlog::warn("af_process_bot_control_packet: update_identity too short");
+                return;
+            }
+            const uint8_t name_len = bytes[offset++];
+            if (name_len > kMaxPresetNameLen || offset + name_len > payload_end) {
+                xlog::warn("af_process_bot_control_packet: identity name too long or truncated");
+                return;
+            }
+            std::string new_name(reinterpret_cast<const char*>(bytes + offset), name_len);
+            offset += name_len;
+
+            if (offset + sizeof(int32_t) > payload_end) {
+                xlog::warn("af_process_bot_control_packet: identity missing character index");
+                return;
+            }
+            int32_t character_index = 0;
+            std::memcpy(&character_index, bytes + offset, sizeof(character_index));
+            offset += sizeof(character_index);
+
+            xlog::info("Bot control: update_identity name='{}' character={}", new_name, character_index);
+
+            if (rf::local_player) {
+                if (!new_name.empty()) {
+                    rf::local_player->name = new_name.c_str();
+                }
+                if (character_index >= 0 && character_index < rf::num_multi_characters) {
+                    rf::local_player->settings.multi_character = character_index;
+                }
+                else if (character_index != -1) {
+                    xlog::warn("Bot control: character_index {} out of range (0-{})",
+                        character_index, rf::num_multi_characters - 1);
+                }
+            }
+            break;
+        }
+
+        default:
+            xlog::debug("af_process_bot_control_packet: unknown subtype {}", static_cast<int>(subtype));
+            break;
+    }
+}

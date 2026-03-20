@@ -17,6 +17,32 @@
 #include "../rf/parse.h"
 #include "../rf/level.h"
 
+rf::Mover* mover_find_by_mover_brush(const rf::MoverBrush* mover_brush)
+{
+    if (!mover_brush) {
+        return nullptr;
+    }
+
+    const int target_brush_handle = mover_brush->handle;
+    if (target_brush_handle < 0) {
+        return nullptr;
+    }
+
+    for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
+        if (obj->type != rf::OT_MOVER) {
+            continue;
+        }
+
+        auto* mover = static_cast<rf::Mover*>(obj);
+        if (std::any_of(mover->brush_handles.begin(), mover->brush_handles.end(),
+                        [target_brush_handle](int brush_handle) { return brush_handle == target_brush_handle; })) {
+            return mover;
+        }
+    }
+
+    return nullptr;
+}
+
 CodeInjection mover_rotating_keyframe_oob_crashfix{
     0x0046A559,
     [](auto& regs) {

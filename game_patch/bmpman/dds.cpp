@@ -2,6 +2,8 @@
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
 #include "../graphics/gr.h"
+#include "../os/os.h"
+#include "../multi/multi.h"
 #include "../rf/bmpman.h"
 #include "../rf/file/file.h"
 #include "../rf/crt.h"
@@ -48,6 +50,9 @@ rf::bm::Format get_bm_format_from_dds_pixel_format(DDS_PIXELFORMAT& ddspf)
 rf::bm::Type read_dds_header(rf::File& file, int *width_out, int *height_out, rf::bm::Format *format_out,
     int *num_levels_out)
 {
+    if (client_bot_headless_enabled() || headless_bot_requested_from_raw_cmdline()) {
+        return rf::bm::TYPE_NONE;
+    }
     auto magic = file.read<uint32_t>();
     if (magic != DDS_MAGIC) {
         xlog::warn("Invalid magic number in DDS file: {:x}", magic);
