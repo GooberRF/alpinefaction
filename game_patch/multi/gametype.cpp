@@ -296,7 +296,7 @@ bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid)
         if (rf::Event* event = rf::event_lookup_from_uid(handler_uid);
             event
             && event->event_type == rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
-            auto* handler = static_cast<rf::EventCapturePointHandler*>(event);
+            auto* handler = static_cast<EventCapturePointHandler*>(event);
             return handler->sphere_to_cylinder;
         }
     }
