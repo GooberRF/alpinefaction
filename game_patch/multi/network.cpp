@@ -29,10 +29,12 @@
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
+#include "bots/bot_chat_manager.h"
 #include "../main/main.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/multi.h"
+#include "../rf/gameseq.h"
 #include "../rf/misc.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
@@ -45,6 +47,7 @@
 #include "../misc/misc.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "../os/console.h"
 #include "../purefaction/pf.h"
@@ -222,7 +225,8 @@ enum packet_type : uint8_t {
     af_spectate_start      = 0x5B,
     af_spectate_notify     = 0x5C,
     af_server_msg          = 0x5D,
-    af_server_req          = 0x5E
+    af_server_req          = 0x5E,
+    af_server_bot_control  = 0x5F
 };
 
 // client -> server
@@ -306,7 +310,8 @@ std::array g_client_side_packet_whitelist{
     af_server_info,
     af_spectate_notify,
     af_server_msg,
-    af_server_req
+    af_server_req,
+    af_server_bot_control
 };
 // clang-format on
 
@@ -533,8 +538,15 @@ CodeInjection process_game_info_packet_game_type_bounds_patch{
 FunHook<MultiIoPacketHandler> process_join_deny_packet_hook{
     0x0047A400,
     [](char* data, const rf::NetAddr& addr) {
-        if (rf::multi_is_connecting_to_server(addr)) // client-side
+        if (rf::multi_is_connecting_to_server(addr)) { // client-side
             process_join_deny_packet_hook.call_target(data, addr);
+
+            // Auto-quit for bots when join is denied (server full, wrong password, level changing, etc.)
+            if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
+                xlog::info("Bot join denied by server - auto-quitting (BotQuitWhenDisconnected=1)");
+                rf::gameseq_set_state(rf::GS_QUITING, false);
+            }
+        }
     },
 };
 
@@ -693,6 +705,9 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             }
             else {
                 handle_sound_msg(msg);
+                if (rf::Player* sender = rf::multi_find_player_by_id(static_cast<uint8_t>(data[0]))) {
+                    bot_chat_manager_on_remote_chat_message(*sender, msg);
+                }
             }
         }
 
@@ -1274,6 +1289,8 @@ enum JoinReqTlv : uint8_t {
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
     0x0047ABFB,
     [] (const rf::NetAddr* const addr, std::byte* const data, const size_t len) {
+        const bool session_client_bot_mode = client_bot_launch_enabled();
+
         // Add Alpine Faction info to join_req packet
         AFJoinReq_v2 ext_data{
             .signature = ALPINE_FACTION_SIGNATURE,
@@ -1284,11 +1301,14 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
             .max_rfl_version = MAXIMUM_RFL_VERSION,
             .flags = 0u,
         };
+        if (session_client_bot_mode) {
+            ext_data.flags |= static_cast<uint32_t>(AlpineFactionJoinReqPacketExt::Flags::client_bot);
+        }
 
         std::vector<uint8_t> tlvs{};
         tlvs.reserve(32);
         TlvWriter<JoinReqTlv> writer{tlvs};
-        if (g_alpine_game_config.bot_shared_secret) {
+        if (session_client_bot_mode && g_alpine_game_config.bot_shared_secret) {
             writer.write_le(
                 JR_TLV_BOT_SHARED_SECRET,
                 g_alpine_game_config.bot_shared_secret
@@ -1297,6 +1317,62 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
         const auto [buf, new_len] = append_af_v3_tail(data, len, ext_data, tlvs);
 
         return send_join_req_packet_hook.call_target(addr, buf.get(), new_len);
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_ctf_flag_dropped_packet_hook{
+    0x00474D70,
+    [](char* data, const rf::NetAddr& addr) {
+        process_ctf_flag_dropped_packet_hook.call_target(data, addr);
+        if (!data) {
+            return;
+        }
+
+        RFCtfFlagDroppedPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        waypoints_on_ctf_flag_dropped_packet(packet.is_red == 1, packet.get_flag_position());
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_ctf_flag_returned_packet_hook{
+    0x00474420,
+    [](char* data, const rf::NetAddr& addr) {
+        process_ctf_flag_returned_packet_hook.call_target(data, addr);
+        if (!data) {
+            return;
+        }
+
+        RFCtfFlagSingleTeamPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        waypoints_on_ctf_flag_returned_packet(packet.is_red == 1);
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_ctf_flag_captured_packet_hook{
+    0x004742E0,
+    [](char* data, const rf::NetAddr& addr) {
+        process_ctf_flag_captured_packet_hook.call_target(data, addr);
+        if (!data) {
+            return;
+        }
+
+        RFCtfFlagSingleTeamPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        waypoints_on_ctf_flag_captured_packet(packet.is_red == 1);
+    },
+};
+
+FunHook<MultiIoPacketHandler> process_ctf_flag_picked_up_packet_hook{
+    0x00474040,
+    [](char* data, const rf::NetAddr& addr) {
+        process_ctf_flag_picked_up_packet_hook.call_target(data, addr);
+        if (!data) {
+            return;
+        }
+
+        RFCtfFlagPickedUpPacket packet{};
+        std::memcpy(&packet, data, sizeof(packet));
+        waypoints_on_ctf_flag_picked_up_packet(packet.picker_player_id);
     },
 };
 
@@ -1640,15 +1716,70 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     .max_rfl_ver = g_joining_player_info.max_rfl_version
                 };
 
-                if (g_joining_player_info.bot_shared_secret
-                    == std::optional{g_alpine_server_config.bot_shared_secret}) {
+                const bool bot_mode_requested =
+                    (g_joining_player_info.flags
+                        & AlpineFactionJoinReqPacketExt::Flags::client_bot)
+                    != AlpineFactionJoinReqPacketExt::Flags::none;
+                const bool has_bot_secret =
+                    g_joining_player_info.bot_shared_secret.has_value();
+                const bool server_requires_bot_secret =
+                    g_alpine_server_config.bot_shared_secret != 0u;
+                const bool bot_secret_valid =
+                    has_bot_secret
+                    && (g_joining_player_info.bot_shared_secret
+                        == std::optional{g_alpine_server_config.bot_shared_secret});
+
+                bool should_mark_as_bot = false;
+                if (bot_mode_requested) {
+                    should_mark_as_bot = !server_requires_bot_secret || bot_secret_valid;
+                    if (should_mark_as_bot && !server_requires_bot_secret) {
+                        xlog::warn(
+                            "Bot {} joining without shared secret authentication. "
+                            "Configure BotSharedSecret in dedicated_server.txt to require authentication.",
+                            valid_player->name
+                        );
+                    }
+                } else if (server_requires_bot_secret && bot_secret_valid) {
+                    // Backward compatibility for older clients that only send the secret.
+                    should_mark_as_bot = true;
+                }
+
+                // Reject bot clients that provide an invalid shared secret
+                if (bot_mode_requested && !should_mark_as_bot) {
+                    if (has_bot_secret) {
+                        rf::console::print(
+                            "Rejecting {}: invalid bot shared secret provided",
+                            valid_player->name
+                        );
+                    } else {
+                        rf::console::print(
+                            "Rejecting {}: no bot shared secret provided",
+                            valid_player->name
+                        );
+                    }
+                    rf::multi_kick_player(valid_player);
+                    g_joining_player_info = {};
+                    g_joining_client_version = ClientSoftware::Unknown;
+                    return;
+                }
+
+                if (should_mark_as_bot) {
                     valid_player->is_bot = true;
-                    valid_player->is_spawn_disabled = true;
-                    rf::console::print(
-                        "{}'s bot shared secret was valid",
-                        valid_player->name
-                    );
-                } else if (g_joining_player_info.bot_shared_secret.has_value()) {
+                    valid_player->bot_skill = 100u;
+                    valid_player->is_spawn_disabled = false;
+                    if (bot_secret_valid) {
+                        rf::console::print(
+                            "{}'s bot shared secret was valid",
+                            valid_player->name
+                        );
+                    }
+                    else {
+                        rf::console::print(
+                            "{} joined in client bot mode",
+                            valid_player->name
+                        );
+                    }
+                } else if (has_bot_secret) {
                     rf::console::print(
                         "{}'s bot shared secret was invalid",
                         valid_player->name
@@ -1975,7 +2106,40 @@ FunHook<void()> multi_stop_hook{
             *player_add_data = PlayerAdditionalData{};
         }
         multi_stop_hook.call_target();
+
+        // Auto-quit for bots when disconnected from server
+        if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
+            xlog::info("Bot disconnected from server - auto-quitting (BotQuitWhenDisconnected=1)");
+            rf::gameseq_set_state(rf::GS_QUITING, false);
+        }
     },
+};
+
+void multi_disconnect_from_server()
+{
+    if (!rf::is_multi) {
+        rf::console::print("Not connected to a server");
+        return;
+    }
+    if (rf::is_server) {
+        rf::console::print("Cannot disconnect: you are the server host");
+        return;
+    }
+    xlog::info("Disconnecting from server");
+    rf::multi_stop();
+    // multi_stop_hook may have already set GS_QUITING for bot auto-quit.
+    // Only transition to main menu for non-bot clients.
+    if (!client_bot_launch_enabled() || !g_alpine_game_config.bot_quit_when_disconnected) {
+        rf::gameseq_set_state(rf::GS_MAIN_MENU, false);
+    }
+}
+
+ConsoleCommand2 disconnect_cmd{
+    "disconnect",
+    [] {
+        multi_disconnect_from_server();
+    },
+    "Disconnect from the current server",
 };
 
 const std::optional<AlpineFactionServerInfo>& get_af_server_info()
@@ -2390,6 +2554,10 @@ void network_init()
     process_name_change_packet_hook.install();
     process_team_change_packet_hook.install();
     process_rate_change_packet_hook.install();
+    process_ctf_flag_picked_up_packet_hook.install();
+    process_ctf_flag_captured_packet_hook.install();
+    process_ctf_flag_returned_packet_hook.install();
+    process_ctf_flag_dropped_packet_hook.install();
     process_entity_create_packet_hook.install();
     process_reload_packet_hook.install();
     process_reload_request_packet_hook.install();
@@ -2464,6 +2632,7 @@ void network_init()
     multi_stop_hook.install();
 
     bot_shared_secret_cmd.register_cmd();
+    disconnect_cmd.register_cmd();
 
     // print join_req denial reasons
     check_access_for_new_player_hook.install();

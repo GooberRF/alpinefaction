@@ -36,6 +36,7 @@ enum class af_packet_type : uint8_t
     af_spectate_notify = 0x5C,          // Alpine 1.2
     af_server_msg = 0x5D,               // Alpine 1.2
     af_server_req = 0x5E,               // Alpine 1.2.1
+    af_server_bot_control = 0x5F,       // Alpine 1.3
 };
 
 struct af_ping_location_req_packet
@@ -230,7 +231,89 @@ struct af_server_msg_packet {
     char data[];
 };
 
+enum class af_bot_control_type : uint8_t
+{
+    go_inactive        = 0x00,
+    go_active          = 0x01,
+    disconnect_bot     = 0x02,
+    update_personality = 0x03,
+    update_skill       = 0x04,
+    update_identity    = 0x05,
+};
+
+enum class af_personality_field : uint8_t
+{
+    attack_style = 0x00,
+    preferred_engagement_near = 0x01,
+    preferred_engagement_far = 0x02,
+    super_pickup_bias = 0x03,
+    revisit_avoidance_bias = 0x04,
+    retrace_avoidance_bias = 0x05,
+    retrace_lookback_waypoints = 0x06,
+    decision_aggression_bias = 0x07,
+    decision_efficiency_bias = 0x08,
+    decision_risk_tolerance = 0x09,
+    path_smoothing_bias = 0x0A,
+    corner_centering_bias = 0x0B,
+    roam_intensity_bias = 0x0C,
+    navigation_strafe_bias = 0x0D,
+    crouch_route_avoidance_bias = 0x0E,
+    stuck_goal_retry_limit = 0x0F,
+    goal_commitment_bias = 0x10,
+    eliminate_target_commitment_bias = 0x11,
+    opportunism_bias = 0x12,
+    retreat_health_threshold = 0x13,
+    retreat_armor_threshold = 0x14,
+    replenish_health_threshold = 0x15,
+    replenish_armor_threshold = 0x16,
+    seek_weapon_bias = 0x17,
+    satisfactory_weapon_threshold = 0x18,
+    preferred_weapon_ammo_fill_threshold = 0x19,
+    replenish_bias = 0x1A,
+    power_position_bias = 0x1B,
+    weapon_switch_bias = 0x1C,
+    min_weapon_switch_cooldown_ms = 0x1D,
+    crouch_combat_bias = 0x1E,
+    jump_combat_bias = 0x1F,
+    dodge_combat_bias = 0x20,
+    raw_aggression_bias = 0x21,
+    camping_bias = 0x22,
+    easy_frag_bias = 0x23,
+    retaliation_bias = 0x24,
+    combat_readiness_threshold = 0x25,
+    deathmatch_kill_focus_bias = 0x26,
+    ctf_capture_priority_bias = 0x27,
+    ctf_flag_recovery_bias = 0x28,
+    ctf_hold_enemy_flag_safety_bias = 0x29,
+    ctf_hold_carrier_hunt_bias = 0x2A,
+    quirk_mask_low = 0x2B,
+    quirk_mask_high = 0x2C,
+    pickup_switch_chance_without_preferences = 0x2D,
+    taunt_on_kill_chance = 0x2E,
+    gg_on_map_end_chance = 0x2F,
+    hello_on_join_chance = 0x30,
+    red_faction_response_chance = 0x31,
+};
+
+enum class af_skill_field : uint8_t
+{
+    base_skill = 0x00,
+    aim_profile_scale = 0x01,
+    decision_profile_scale = 0x02,
+    survivability_maintenance_bias = 0x03,
+    alertness = 0x04,
+    fov_degrees = 0x05,
+    target_focus_bias = 0x06,
+    weapon_switch_likelihood = 0x07,
+    crouch_likelihood = 0x08,
+    jump_likelihood = 0x09,
+    dodge_likelihood = 0x0A,
+};
+
 #pragma pack(pop)
+
+inline constexpr uint8_t kBotControlPacketVersion = 1;
+inline constexpr uint8_t kMaxPresetNameLen = 31;
 
 bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player);
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable);
@@ -274,3 +357,12 @@ void af_send_server_console_msg(std::string_view msg, rf::Player* player, bool t
 // client requests
 void af_send_handicap_request(uint8_t amount);
 void af_send_server_cfg_request();
+
+// server bot control
+void af_send_bot_control_simple(rf::Player* player, af_bot_control_type subtype);
+void af_send_bot_control_update_personality(rf::Player* player, const ServerBotConfig& config);
+void af_send_bot_control_update_skill(rf::Player* player, const ServerBotConfig& config);
+void af_send_bot_control_update_identity(rf::Player* player, const std::string& name, int32_t character_index);
+void af_send_bot_config(rf::Player* player, const ServerBotConfig& config,
+                        const std::string& resolved_name, int32_t resolved_character);
+void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAddr& addr);

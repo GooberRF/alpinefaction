@@ -63,7 +63,9 @@ namespace rf
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
         OF_HIDDEN = 0x4000,              // set by obj_hide, cleared by obj_unhide
-        OF_NO_COLLIDE_REGISTER = 0x8000, // deferred collision registration, cleared on obj_unhide (FUN_0048c9a0)
+        OF_NO_COLLIDE_SP = 0x4000,     // same bit as OF_HIDDEN — context-dependent alias used for SP collision skip
+        OF_START_HIDDEN = 0x8000,
+        OF_NO_COLLIDE_REGISTER = 0x8000, // same bit as OF_START_HIDDEN — context-dependent alias for deferred collision registration
         OF_NO_PLAYER_COLLIDE = 0x20000,  // skip entity-player collision in collision_filter
         OF_WEAPON_ONLY_COLLIDE = 0x40000, // only collide with weapons (type 2)
         OF_IN_LIQUID = 0x80000,

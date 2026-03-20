@@ -76,7 +76,39 @@ struct AFFooter
     uint16_t total_len; // bytes from start of AF block up to start of this footer
     uint32_t magic;
 };
+
+// CTF flag packet payloads used by process_* hooks.
+struct RFCtfFlagDroppedPacket
+{
+    uint8_t is_red;
+    uint8_t red_score;
+    uint8_t blue_score;
+    float pos_x;
+    float pos_y;
+    float pos_z;
+
+    rf::Vector3 get_flag_position() const
+    {
+        return {pos_x, pos_y, pos_z};
+    }
+};
+
+struct RFCtfFlagSingleTeamPacket
+{
+    uint8_t is_red;
+};
+
+struct RFCtfFlagPickedUpPacket
+{
+    uint8_t picker_player_id;
+    uint8_t red_score;
+    uint8_t blue_score;
+};
 #pragma pack(pop)
+
+static_assert(sizeof(RFCtfFlagDroppedPacket) == 15);
+static_assert(sizeof(RFCtfFlagSingleTeamPacket) == 1);
+static_assert(sizeof(RFCtfFlagPickedUpPacket) == 3);
 
 // Appended to game_info packets
 struct af_sign_packet_ext
@@ -161,6 +193,7 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
     enum class Flags : uint32_t
     {
         none = 0,
+        client_bot = 1u << 0,
     };
 
     uint32_t af_signature = 0u;
@@ -181,3 +214,4 @@ void handle_sound_msg(std::string_view name);
 void send_queues_rel_clear_packets(int socket_id);
 void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
 void clear_rcon_profile_sessions();
+void multi_disconnect_from_server();

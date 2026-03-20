@@ -520,10 +520,10 @@ namespace df::gr::d3d11
         solid_renderer_->render_alpha_detail(room, solid);
     }
 
-    void Renderer::render_sky_room(rf::GRoom *room)
+    void Renderer::render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient)
     {
         dyn_geo_renderer_->flush();
-        solid_renderer_->render_sky_room(room);
+        solid_renderer_->render_sky_room(room, out_sky_transform_pos, out_sky_transform_orient);
     }
 
     void Renderer::render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room)
