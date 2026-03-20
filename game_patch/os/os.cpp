@@ -1,5 +1,7 @@
 #include <windows.h>
 #include <SDL3/SDL.h>
+#include <cwchar>
+#include <cwctype>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
@@ -10,10 +12,10 @@
 #include "../main/main.h"
 #include "../input/input.h"
 #include "../misc/alpine_settings.h"
-#include "win32_console.h"
-#include <xlog/xlog.h>
-#include <timeapi.h>
+#include "../multi/multi.h"
 #include "os.h"
+#include "win32_console.h"
+#include <timeapi.h>
 
 const char* get_win_msg_name(UINT msg);
 

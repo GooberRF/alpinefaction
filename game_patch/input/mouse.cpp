@@ -164,6 +164,12 @@ FunHook<void()> mouse_keep_centered_enable_hook{
     0x0051E690,
     []() {
         // keep_mouse_centered is still false here; call_target sets it
+        if (client_bot_headless_enabled()) {
+            rf::keep_mouse_centered = false;
+            set_direct_input_enabled(false);
+            return;
+        }
+
         if (!rf::keep_mouse_centered && !rf::is_dedicated_server) {
             switch (g_alpine_game_config.input_mode) {
             case 1: // DirectInput mouse
