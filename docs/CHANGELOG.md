@@ -5,7 +5,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
-- Implement advanced multiplayer bots system
+- Advanced multiplayer bots system
   - Headless bot clients with server control
   - Bot profile customization
   - Integrated waypoint grid editor with autogeneration support for custom maps
