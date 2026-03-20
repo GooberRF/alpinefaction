@@ -8,8 +8,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Implement advanced multiplayer bots system
   - Headless bot clients with server control
   - Bot profile customization
-  - Fully featured waypoint grid editor with autogen functionality for custom maps
-  - Waypoint grid files for all default maps are included
+  - Integrated waypoint grid editor with autogeneration support for custom maps
+  - Waypoint grid files for all default maps included
 - Promote Direct3D 11 renderer to recommended and add several notable improvements
   - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
   - Add full mesh shadows for entities, corpses, and items
@@ -24,8 +24,8 @@ Version 1.3.0 (Bakeapple): Not yet released
   - `No Debris` flag added to brush properties for breakable detail brushes
 - Added new object types
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
-  - `Note` for leaving important information in levels (editor only)
   - `Corona` for configuring custom glare effects in levels
+  - `Note` for leaving important information in levels (editor only)
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -58,9 +58,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
 - Add level editor support for custom texture subdirectories under `user_maps\textures`
-- Add `-bot` command line argument to run a client in bot mode
-- Add `disconnect` console command
-- Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
 - Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
 - Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
 - Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
@@ -73,6 +70,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `r_vertexlighting` console command and `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
 - In TDM match mode, made self kills reduce team score by 1 (floor of 0)
+- Add `-bot` command line argument to run a client in bot mode
+- Add `disconnect` console command
+- Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -113,11 +113,12 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
 - Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
-- Fix bots not always spawning correctly when `ideal_player_count` is 32
 - Fix rare level editor crash when transforming decal objects in a level with a large number of decals
 - Fix level editor clip tool silently failing on certain brush orientations
 - Fix P2T Fix not working properly on Direct3D 11 renderer
 - Fix level editor crash when maximizing the bottom right viewport
+- Fix bots not always spawning correctly when `ideal_player_count` is 32
+- Fix possible crash in substring handling
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
