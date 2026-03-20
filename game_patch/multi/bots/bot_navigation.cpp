@@ -2592,7 +2592,8 @@ void bot_update_move_target(
         }
 
         if (routed_towards_pickup && !has_move_target) {
-            if (g_client_bot_state.last_pursuit_route_was_fallback) {
+            if (g_client_bot_state.last_pursuit_route_was_fallback
+                || g_client_bot_state.recovery_pending_reroute) {
                 ++g_client_bot_state.collect_route_failures;
             }
             else {
