@@ -9,12 +9,12 @@
 #include "../rf/input.h"
 #include "../rf/crt.h"
 #include "../main/main.h"
+#include "../multi/multi.h"
+#include "os.h"
 #include "win32_console.h"
 #include "../input/input.h"
 #include <xlog/xlog.h>
 #include <timeapi.h>
-#include "os.h"
-
 
 const char* get_win_msg_name(UINT msg);
 
