@@ -5,10 +5,16 @@ Version 1.3.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
+- Advanced multiplayer bots system
+  - Headless bot clients with server control
+  - Bot profile customization
+  - Integrated waypoint grid editor with autogeneration support for custom maps
+  - Waypoint grid files for all default maps included
 - Promote Direct3D 11 renderer to recommended and add several notable improvements
   - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
   - Add full mesh shadows for entities, corpses, and items
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
+  - Support movers, meshes, and mesh pixel lighting in skyboxes
 - Expanded destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
@@ -18,8 +24,8 @@ Version 1.3.0 (Bakeapple): Not yet released
   - `No Debris` flag added to brush properties for breakable detail brushes
 - Added new object types
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
-  - `Note` for leaving important information in levels (editor only)
   - `Corona` for configuring custom glare effects in levels
+  - `Note` for leaving important information in levels (editor only)
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -63,6 +69,10 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
 - Add `r_vertexlighting` console command and `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
+- In TDM match mode, made self kills reduce team score by 1 (floor of 0)
+- Add `-bot` command line argument to run a client in bot mode
+- Add `disconnect` console command
+- Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -107,6 +117,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor clip tool silently failing on certain brush orientations
 - Fix P2T Fix not working properly on Direct3D 11 renderer
 - Fix level editor crash when maximizing the bottom right viewport
+- Fix bots not always spawning correctly when `ideal_player_count` is 32
+- Fix possible crash in substring handling
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <format>
 #include "../misc/misc.h"
+#include "../misc/alpine_settings.h"
 #include "../rf/file/file.h"
 #include "../rf/object.h"
 #include "../rf/event.h"

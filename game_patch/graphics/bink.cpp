@@ -3,6 +3,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include "../main/main.h"
+#include "../misc/alpine_settings.h"
 #include "../rf/gr/gr.h"
 #include "../rf/sound/sound_ds.h"
 
@@ -71,7 +72,7 @@ void bink_apply_patch()
     play_bik_file_vram_leak_fix.install();
 
     // Use renderer agnostic code in Bink rendering
-    if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+    if (is_d3d11()) {
         AsmWriter{0x00520ADA}.jmp(0x00520B24);
     }
 }
