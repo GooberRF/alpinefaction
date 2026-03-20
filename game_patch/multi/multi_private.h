@@ -12,3 +12,4 @@ void level_download_init();
 void network_init();
 
 void multi_tdm_apply_patch();
+void multi_tdm_add_team_score(rf::Player* player, int delta);

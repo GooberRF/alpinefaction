@@ -61,6 +61,36 @@ namespace rf
         FACE_INVISIBLE = 0x2000,
     };
 
+    enum CollideFlags
+    {
+        CF_ANY_HIT = 0x1,
+        CF_SKIP_SEE_THRU = 0x2,
+        CF_SKIP_SHOOT_THRU = 0x4,
+        CF_SEE_THRU_ALPHA_TEST = 0x8,
+        CF_SHOOT_THRU_ALPHA_TEST = 0x10,
+        CF_SKIP_DESTRUCTIBLE_GLASS = 0x20,
+        CF_PROCESS_LIQUID_FACES = 0x40,
+        CF_PROCESS_INVISIBLE_FACES = 0x80,
+    };
+
+    enum GCollisionFlags
+    {
+        GCF_ANY_HIT = 0x1, // stop at first detected hit
+        GCF_PROCESS_PORTALS = 0x2,
+        GCF_MESH_SPACE = 0x4, // coordinates in model space
+        GCF_PROCESS_SKYROOM = 0x8,
+        GCF_10 = 0x10,
+        GCF_SKIP_SEE_THRU = 0x20,
+        GCF_SKIP_SHOOT_THRU = 0x40,
+        GCF_SEE_THRU_ALPHA_TEST = 0x80,
+        GCF_SHOOT_THRU_ALPHA_TEST = 0x100,
+        GCF_200 = 0x200,
+        GCF_SKIP_DESTRUCTIBLE_GLASS = 0x400,
+        GCF_PROCESS_SHOW_SKY_FACES = 0x800,
+        GCF_PROCESS_LIQUID_FACES = 0x1000,
+        GCF_PROCESS_INVISIBLE_FACES = 0x2000,
+    };
+
     enum class GBooleanOperation
     {
         BOP_ALL = 0x0,
@@ -235,6 +265,11 @@ namespace rf
         float liquid_surface_pan_v;
         VArray<GrLight*> cached_lights;
         int light_state;
+
+        bool is_breakable_glass()
+        {
+            return AddrCaller{0x00465F00}.this_call<bool>(this);
+        }
     };
     static_assert(sizeof(GRoom) == 0x1CC);
 
@@ -527,6 +562,8 @@ namespace rf
     static auto& g_cache_clear = addr_as_ref<void()>(0x004F0B90);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);
 
+    static auto& find_room = addr_as_ref<GRoom*(GSolid* solid, const Vector3* pos)>(0x004E1630);
+
     // Sky room rendering globals (set by stock engine before sky room render call)
     static auto& sky_room_center = addr_as_ref<Vector3>(0x0088FB10);
     static auto& sky_room_offset = addr_as_ref<Vector3>(0x0087BB00);
@@ -534,6 +571,8 @@ namespace rf
 
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);
+    static auto& decompress_vector3 = addr_as_ref<void(GSolid* solid, const ShortVector* in_vec, Vector3* out_vec)>(0x004B5900);
+    static auto& compress_vector3 = addr_as_ref<int(GSolid* solid, Vector3* in_vec, ShortVector* out_vec)>(0x004B5820);
 
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
 

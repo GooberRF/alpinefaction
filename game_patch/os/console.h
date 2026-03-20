@@ -1,5 +1,4 @@
 #pragma once
-#pragma once
 
 #include <patch_common/Traits.h>
 #include <optional>
@@ -33,6 +32,16 @@ inline bool console_read_arg_internal(unsigned type_flag, bool preserve_case = f
     if (!(rf::console::arg_type & rf::console::ARG_NONE))
         throw DcInvalidArgTypeError();
     return false;
+}
+
+inline void console_consume_remaining_args(bool preserve_case = true)
+{
+    while (true) {
+        rf::console::get_arg(rf::console::ARG_ANY, preserve_case);
+        if (rf::console::arg_type & rf::console::ARG_NONE) {
+            break;
+        }
+    }
 }
 
 template<typename T>
@@ -145,12 +154,13 @@ private:
 
     HandlerWrapper<typename function_traits<T>::f_type> m_handler_wrapper;
     const char* m_usage_text;
+    bool m_consume_unused_tail;
 
 public:
     ConsoleCommand2(const char* name, T handler, const char* description = nullptr,
-               const char* usage_text = nullptr) :
+               const char* usage_text = nullptr, bool consume_unused_tail = false) :
         BaseCommand(name, description),
-        m_handler_wrapper(handler), m_usage_text(usage_text)
+        m_handler_wrapper(handler), m_usage_text(usage_text), m_consume_unused_tail(consume_unused_tail)
     {}
 
 private:
@@ -172,6 +182,9 @@ private:
         }
         catch (const DcRequiredArgMissingError&) {
             rf::console::output("Required arg is missing!", nullptr);
+        }
+        if (m_consume_unused_tail) {
+            console_consume_remaining_args();
         }
     }
 

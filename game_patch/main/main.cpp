@@ -39,6 +39,7 @@
 #include "../misc/vpackfile.h"
 #include "../misc/high_fps.h"
 #include "../misc/player.h"
+#include "../misc/waypoints.h"
 #include "../misc/level.h"
 #include "../object/alpine_corona.h"
 #include "../input/input.h"
@@ -52,6 +53,8 @@
 #ifdef HAS_EXPERIMENTAL
 #include "../experimental/experimental.h"
 #endif
+
+#include "../multi/bots/bot_main.h"
 
 GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
@@ -104,7 +107,9 @@ CodeInjection after_full_game_init_hook{
         console_init();
         multi_after_full_game_init();
         debug_init();
-        load_world_hud_assets();
+        if (!client_bot_headless_enabled()) {
+            load_world_hud_assets();
+        }
         execute_startup_scripts();
 
         xlog::info("Game fully initialized");
@@ -144,12 +149,14 @@ FunHook<int()> rf_do_frame_hook{
         rf::os_poll();
         high_fps_update();
         server_do_frame();
+        client_bot_do_frame();
         koth_do_frame();
         alpine_mesh_do_frame();
         int result = rf_do_frame_hook.call_target();
         maybe_autosave();
         debug_do_frame_post();
         multi_level_download_update();
+        waypoints_do_frame();
         return result;
     },
 };
@@ -157,10 +164,15 @@ FunHook<int()> rf_do_frame_hook{
 CodeInjection after_level_render_hook{
     0x00432375,
     []() {
+        if (client_bot_headless_enabled()) {
+            return;
+        }
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
         experimental_render_in_game();
 #endif
         debug_render();
+        waypoints_render_debug();
+        client_bot_render_debug();
         hud_world_do_frame();
     },
 };
@@ -168,7 +180,7 @@ CodeInjection after_level_render_hook{
 CodeInjection after_frame_render_hook{
     0x004B2DC2,
     []() {
-        if (!rf::is_dedicated_server) {
+        if (!rf::is_dedicated_server && !client_bot_headless_enabled()) {
             // Draw on top (after scene)
             frametime_render_ui();
             achievement_system_do_frame();
@@ -186,6 +198,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
     [](rf::String& level_filename, rf::String& save_filename, char* error) {
         xlog::info("Loading level: {}", level_filename);
         evaluate_pow2tex(level_filename);
+        waypoints_level_reset();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);
 
@@ -216,6 +229,7 @@ FunHook<void(bool)> level_init_post_hook{
     [](bool transition) {
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
+        waypoints_level_init();
 
         // Create corona objects (clutter + glare pairs) now that geometry is loaded
         alpine_corona_create_all();
@@ -228,7 +242,7 @@ FunHook<void(bool)> level_init_post_hook{
         apply_geoable_flags();
         apply_breakable_materials();
 
-        if (!rf::is_dedicated_server) {
+        if (!rf::is_dedicated_server && !client_bot_headless_enabled()) {
             explosion_flash_lights_level_init();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();

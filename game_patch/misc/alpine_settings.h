@@ -180,6 +180,11 @@ struct AlpineGameSettings
     bool simple_server_chat_msgs = true;
     bool quick_exit = false;
     uint32_t bot_shared_secret = 0;
+    std::string bot_personality_preset = "balanced";
+    std::string bot_skill_preset = "average";
+    bool bot_quit_when_disconnected = true;
+    bool waypoints_edit_mode = false;
+    bool waypoints_edit_default_enabled = false;
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
@@ -344,6 +349,7 @@ struct AlpineGameSettings
     bool rendering_enabled = true;
     bool sound_enabled = true;
     bool background_mouse = false;
+    bool dbg_bot = false;
 
     // entity shadow settings
     bool shadow_corpses = true;

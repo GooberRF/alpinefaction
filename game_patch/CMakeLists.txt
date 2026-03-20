@@ -149,6 +149,57 @@ set(SRCS
     multi/faction_files.cpp
     multi/faction_files.h
     multi/multi_ban.cpp
+    multi/bots/bot_alerts.cpp
+    multi/bots/bot_alerts.h
+    multi/bots/bot_chat_manager.cpp
+    multi/bots/bot_chat_manager.h
+    multi/bots/bot_combat.cpp
+    multi/bots/bot_combat.h
+    multi/bots/bot_combat_manager.cpp
+    multi/bots/bot_combat_manager.h
+    multi/bots/bot_decision_eval.cpp
+    multi/bots/bot_decision_eval.h
+    multi/bots/bot_fsm.cpp
+    multi/bots/bot_fsm.h
+    multi/bots/bot_fsm_manager.cpp
+    multi/bots/bot_fsm_manager.h
+    multi/bots/bot_goal_manager.cpp
+    multi/bots/bot_goal_manager.h
+    multi/bots/bot_goal_memory.cpp
+    multi/bots/bot_goal_memory.h
+    multi/bots/bot_goal_runtime.cpp
+    multi/bots/bot_goal_runtime.h
+    multi/bots/bot_goals.cpp
+    multi/bots/bot_goals.h
+    multi/bots/bot_internal.h
+    multi/bots/bot_main.cpp
+    multi/bots/bot_main.h
+    multi/bots/bot_math.h
+    multi/bots/bot_memory_manager.cpp
+    multi/bots/bot_memory_manager.h
+    multi/bots/bot_movement.cpp
+    multi/bots/bot_movement.h
+    multi/bots/bot_navigation.cpp
+    multi/bots/bot_navigation.h
+    multi/bots/bot_navigation_manager.cpp
+    multi/bots/bot_navigation_manager.h
+    multi/bots/bot_navigation_pathing.cpp
+    multi/bots/bot_navigation_pathing.h
+    multi/bots/bot_navigation_routes.cpp
+    multi/bots/bot_navigation_routes.h
+    multi/bots/bot_perception_manager.cpp
+    multi/bots/bot_perception_manager.h
+    multi/bots/bot_personality.cpp
+    multi/bots/bot_personality.h
+    multi/bots/bot_personality_manager.cpp
+    multi/bots/bot_personality_manager.h
+    multi/bots/bot_state.cpp
+    multi/bots/bot_state.h
+    multi/bots/bot_utils.cpp
+    multi/bots/bot_utils.h
+    multi/bots/bot_waypoint_route.cpp
+    multi/bots/bot_waypoint_route.h
+    multi/bots/bot_weapon_profiles.h
     os/console.cpp
     os/console.h
     os/commands.cpp
@@ -185,6 +236,8 @@ set(SRCS
     misc/high_fps.h
     misc/misc.cpp
     misc/misc.h
+    misc/string.cpp
+    misc/string.h
     misc/vpackfile.cpp
     misc/vpackfile.h
     misc/save_restore.cpp
@@ -198,6 +251,11 @@ set(SRCS
     misc/ui.cpp
     misc/game.cpp
     misc/level.cpp
+    misc/waypoints.cpp
+    misc/waypoints.h
+    misc/waypoints_internal.h
+    misc/waypoints_utils.cpp
+    misc/waypoints_utils.h
     misc/alpine_options.h
     misc/alpine_options.cpp
     misc/alpine_settings.h
@@ -249,6 +307,7 @@ target_compile_definitions(AlpineFaction PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX BU
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experimental/experimental.cpp")
     target_compile_definitions(AlpineFaction PRIVATE HAS_EXPERIMENTAL)
 endif()
+
 
 target_link_libraries(AlpineFaction
     psapi
