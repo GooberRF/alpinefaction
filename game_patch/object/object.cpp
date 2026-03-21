@@ -524,4 +524,5 @@ void object_do_patch()
     mover_do_patch();
     particle_do_patch();
     obj_light_apply_patch();
+    mesh_collision_apply_patches();
 }

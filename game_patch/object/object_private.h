@@ -13,3 +13,4 @@ void entity_do_patch();
 void item_do_patch();
 void particle_do_patch();
 void obj_light_apply_patch();
+void mesh_collision_apply_patches();
