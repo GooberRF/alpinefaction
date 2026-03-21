@@ -123,7 +123,7 @@ CodeInjection level_load_chunk_patch{
 
             // check if level requires d3d11 renderer (client-only, not on dedicated server)
             if (AlpineLevelProperties::instance().requires_d3d11 && !rf::is_dedicated_server && !is_d3d11()) {
-                char* error_info = reinterpret_cast<char*>(regs.ebp);
+                char* error_info = reinterpret_cast<char*>(static_cast<int32_t>(regs.ebp));
                 std::strcpy(error_info, "This level requires the Direct3D 11 renderer.\nYou can set your renderer in the settings panel (gear icon) of the Alpine Faction launcher.");
                 regs.eip = 0x004608CC; // level_read_data failure path
                 return;
