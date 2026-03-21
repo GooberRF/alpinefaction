@@ -568,6 +568,7 @@ FunHook<void(rf::Entity*)> entity_footsteps_do_frame_hook{
     }
 };
 
+
 FunHook<void(rf::Entity*, float)> entity_maybe_play_pain_sound_hook{
     0x004196F0, [](rf::Entity* ep, float percent_damage) {
         if (g_alpine_game_config.entity_pain_sounds) {
@@ -649,6 +650,7 @@ void entity_do_patch()
 
     // Mute footstep audio for dying entities
     entity_footsteps_do_frame_hook.install();
+
 
     // Commands
     sp_exposuredamage_cmd.register_cmd();

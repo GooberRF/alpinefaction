@@ -3510,6 +3510,7 @@ bool server_geo_chunk_physics()
     return g_alpine_server_config_active_rules.geo_chunk_physics;
 }
 
+
 bool server_allow_footsteps()
 {
     return g_alpine_server_config.allow_footsteps;
