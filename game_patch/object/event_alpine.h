@@ -29,6 +29,7 @@
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
 #include "../misc/level.h"
+#include "../misc/alpine_settings.h"
 
 void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale);
 rf::Vector3 rotate_velocity(const rf::Vector3& old_velocity, const rf::Matrix3& old_orient, const rf::Matrix3& new_orient);
@@ -106,7 +107,9 @@ namespace rf
         red_team_spawned,
         has_flag,
         blue_team,
-        red_team
+        red_team,
+        renderer_d3d11,
+        renderer_legacy
     };
 
     enum class GoalInsideCheckSubject : int
@@ -1062,6 +1065,12 @@ namespace rf
                 break;
             case ScopeGateTests::red_team:
                 pass = (local_player && (local_player->team == 0));
+                break;
+            case ScopeGateTests::renderer_d3d11:
+                pass = is_d3d11();
+                break;
+            case ScopeGateTests::renderer_legacy:
+                pass = !is_d3d11();
                 break;
             default:
                 break;

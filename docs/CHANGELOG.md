@@ -65,6 +65,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `r_vertexlighting` console command and `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
 - In TDM match mode, made self kills reduce team score by 1 (floor of 0)
+- Add `D3D11 Renderer` and `D3D8/9 Renderer` scope options to `Scope_Gate` event
+- Add `Requires Direct3D 11 renderer` option to `Level Properties`
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

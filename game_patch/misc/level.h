@@ -32,6 +32,7 @@ struct AlpineLevelProperties
     // std::vector<int32_t> breakable_brush_uids; // unnecessary in game
     std::vector<int32_t> breakable_room_uids;
     std::vector<uint8_t> breakable_materials;
+    bool requires_d3d11 = false;
 
     static AlpineLevelProperties& instance()
     {
@@ -151,6 +152,15 @@ struct AlpineLevelProperties
                 xlog::trace("[AlpineLevelProps] GAME: breakable[{}] brush_uid={} room_uid={} material={}", i, brush_uid, room_uid, mat);
             }
             xlog::trace("[AlpineLevelProps] GAME: total breakable entries loaded={}", bcount);
+
+            // requires_d3d11
+            if (remaining >= 1) {
+                std::uint8_t u8 = 0;
+                if (!read_bytes(&u8, sizeof(u8)))
+                    return;
+                requires_d3d11 = (u8 != 0);
+                xlog::debug("[AlpineLevelProps] requires_d3d11 {}", requires_d3d11);
+            }
         }
     }
 };
