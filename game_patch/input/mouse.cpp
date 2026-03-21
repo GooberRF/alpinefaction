@@ -198,6 +198,10 @@ FunHook<void()> mouse_keep_centered_enable_hook{
             case 2: // SDL mouse
                 if (g_sdl_window) {
                     SDL_SetWindowRelativeMouseMode(g_sdl_window, true);
+                    // Flush any cursor-warp motion events SDL generated when enabling
+                    // relative mode — without this the camera spins on the first frame.
+                    SDL_FlushEvents(SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_MOTION);
+                    reset_sdl_mouse_accumulators();
                 } else if (!g_relative_mouse_mode_window_missing_logged) {
                     xlog::warn("mouse_keep_centered_enable_hook: SDL window is null, cannot enable relative mouse mode");
                     g_relative_mouse_mode_window_missing_logged = true;
@@ -249,11 +253,11 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
 ConsoleCommand2 input_mode_cmd{
     "inputmode",
     [](std::optional<int> mode_opt) {
-        static constexpr const char* mode_names[] = {"Legacy", "DirectInput", "SDL"};
+        static constexpr const char* mode_names[] = {"Classic", "DirectInput", "SDL"};
 
         if (client_bot_headless_enabled()) {
             set_input_mode(0);
-            rf::console::print("Input mode: 0 (Legacy) in headless bot mode");
+            rf::console::print("Input mode: 0 (Classic) in headless bot mode");
             return;
         }
 
@@ -267,7 +271,7 @@ ConsoleCommand2 input_mode_cmd{
         set_input_mode(new_mode);
         rf::console::print("Input mode: {} ({})", new_mode, mode_names[new_mode]);
     },
-    "Set input mode: 0=Legacy Win32 mouse+keyboard, 1=DirectInput mouse+Legacy keyboard, 2=SDL mouse+keyboard",
+    "Set input mode: 0=Classic (Win32 mouse+keyboard), 1=DirectInput mouse+Win32 keyboard, 2=SDL mouse+keyboard",
     "inputmode <0|1|2>",
     true,
 };

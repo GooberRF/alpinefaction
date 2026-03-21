@@ -136,7 +136,7 @@ struct AlpineGameSettings
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;
     bool nearest_texture_filtering = false;
-    int input_mode = 2; // 0=Win32 mouse+keyboard (referred as Classic), 1=DInput mouse+Classic keyboard, 2=SDL mouse+keyboard
+    int input_mode = 2; // 0=Win32 mouse+keyboard (referred as Classic), 1=DInput mouse+Win32 keyboard, 2=SDL mouse+keyboard
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool scoreboard_split_simple = true;
