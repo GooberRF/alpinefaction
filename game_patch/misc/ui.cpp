@@ -215,6 +215,8 @@ static rf::ui::Label ao_gyro_sensitivity_butlabel;
 static char ao_gyro_sensitivity_butlabel_text[9];
 static rf::ui::Checkbox ao_gyro_autocalibration_cbox;
 static rf::ui::Label ao_gyro_autocalibration_label;
+static rf::ui::Label ao_gyro_autocalibration_butlabel;
+static char ao_gyro_autocalibration_butlabel_text[16];
 static rf::ui::Checkbox ao_gyro_space_cbox;
 static rf::ui::Label ao_gyro_space_label;
 static rf::ui::Label ao_gyro_space_butlabel;
@@ -889,10 +891,10 @@ void ao_gyro_sensitivity_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new gyro sensitivity (0.0-30.00):", "", ao_gyro_sensitivity_cbox_on_click_callback, 1);
 }
 
-void ao_gyro_autocalibration_cbox_on_click(int x, int y) {
-    gyro_set_autocalibration(!g_alpine_game_config.gamepad_gyro_autocalibration);
-    ao_gyro_autocalibration_cbox.checked = g_alpine_game_config.gamepad_gyro_autocalibration;
-    ao_play_button_snd(g_alpine_game_config.gamepad_gyro_autocalibration);
+void ao_gyro_autocalibration_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+    int mode = static_cast<int>(g_alpine_game_config.gamepad_gyro_autocalibration_mode);
+    gyro_set_autocalibration_mode((mode + 1) % 3);
+    ao_play_button_snd(true);
 }
 
 void ao_gyro_space_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
@@ -1387,10 +1389,9 @@ void alpine_options_panel_init() {
     alpine_options_panel_inputbox_init(
         &ao_gyro_space_cbox, &ao_gyro_space_label, &ao_gyro_space_butlabel,
         &alpine_options_panel2, ao_gyro_space_cbox_on_click, 280, 294, "Gyro Space");
-    alpine_options_panel_checkbox_init(
-        &ao_gyro_autocalibration_cbox, &ao_gyro_autocalibration_label,
-        &alpine_options_panel2, ao_gyro_autocalibration_cbox_on_click,
-        g_alpine_game_config.gamepad_gyro_autocalibration, 280, 324, "Gyro Auto-Calib");
+    alpine_options_panel_inputbox_init(
+        &ao_gyro_autocalibration_cbox, &ao_gyro_autocalibration_label, &ao_gyro_autocalibration_butlabel,
+        &alpine_options_panel2, ao_gyro_autocalibration_cbox_on_click, 280, 324, "Gyro Auto-Calib");
 
     // panel 3
     alpine_options_panel_checkbox_init(
@@ -1555,6 +1556,22 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_gyro_sensitivity_butlabel_text, sizeof(ao_gyro_sensitivity_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_gyro_sensitivity);
     ao_gyro_sensitivity_butlabel.text = ao_gyro_sensitivity_butlabel_text;
 
+    const char* mode_name = "(unknown)";
+    switch (std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2)) {
+    case 0:
+        mode_name = "Off";
+        break;
+    case 1:
+        mode_name = "Menu";
+        break;
+    case 2:
+        mode_name = "Always";
+        break;
+    }
+
+    snprintf(ao_gyro_autocalibration_butlabel_text, sizeof(ao_gyro_autocalibration_butlabel_text), "%s", mode_name);
+    ao_gyro_autocalibration_butlabel.text = ao_gyro_autocalibration_butlabel_text;
+
     snprintf(ao_gyro_space_butlabel_text, sizeof(ao_gyro_space_butlabel_text), "%s", gyro_get_space_name(g_alpine_game_config.gamepad_gyro_space));
     ao_gyro_space_butlabel.text = ao_gyro_space_butlabel_text;
 
@@ -1567,6 +1584,7 @@ void alpine_options_panel_do_frame(int x)
     ao_gyro_sensitivity_butlabel.enabled = gyro_hw;
     ao_gyro_autocalibration_cbox.enabled   = gyro_hw;
     ao_gyro_autocalibration_label.enabled  = gyro_hw;
+    ao_gyro_autocalibration_butlabel.enabled = gyro_hw;
     ao_gyro_invert_y_cbox.enabled        = gyro_hw;
     ao_gyro_invert_y_label.enabled       = gyro_hw;
     ao_gyro_space_cbox.enabled           = gyro_hw;
@@ -1592,6 +1610,9 @@ static void options_alpine_on_click() {
     rf::ui::options_menu_tab_move_anim_speed = -rf::ui::menu_move_anim_speed;
     rf::ui::options_incoming_panel = alpine_options_panel_id;
     rf::ui::options_set_panel_open(); // Transition to new panel
+    
+    // For MenuOnly mode: restart gyro autocalibration while preserving confidence threshold
+    gyro_reset_motion_preserve_confidence();
 }
 
 // build alpine options button

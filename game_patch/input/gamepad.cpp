@@ -579,6 +579,9 @@ void gamepad_do_frame()
     gamepad_sdl_poll();
     if (!is_gamepad_input_active())
         return;
+
+    gyro_update_calibration_mode();
+
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
         float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
         float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_MAX_SINT16);

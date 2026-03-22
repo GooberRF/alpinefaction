@@ -1023,9 +1023,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_gyro_vehicle_camera = std::stoi(settings["GamepadGyroVehicleEnabled"]) != 0;
         processed_keys.insert("GamepadGyroVehicleEnabled");
     }
-    if (settings.count("GamepadGyroAutocalibration")) {
-        g_alpine_game_config.gamepad_gyro_autocalibration = std::stoi(settings["GamepadGyroAutocalibration"]) != 0;
-        processed_keys.insert("GamepadGyroAutocalibration");
+    if (settings.count("GamepadGyroAutocalibrationMode")) {
+        int mode = std::clamp(std::stoi(settings["GamepadGyroAutocalibrationMode"]), 0, 2);
+        g_alpine_game_config.gamepad_gyro_autocalibration_mode = mode;
+        processed_keys.insert("GamepadGyroAutocalibrationMode");
     }
     if (settings.count("GamepadGyroSpace")) {
         g_alpine_game_config.gamepad_gyro_space = std::clamp(std::stoi(settings["GamepadGyroSpace"]), 0, 4);
@@ -1205,7 +1206,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadGyroSensitivity=" << g_alpine_game_config.gamepad_gyro_sensitivity << "\n";
     file << "GamepadGyroEnabled=" << g_alpine_game_config.gamepad_gyro_enabled << "\n";
     file << "GamepadGyroVehicleEnabled=" << g_alpine_game_config.gamepad_gyro_vehicle_camera << "\n";
-    file << "GamepadGyroAutocalibration=" << g_alpine_game_config.gamepad_gyro_autocalibration << "\n";
+    file << "GamepadGyroAutocalibrationMode=" << g_alpine_game_config.gamepad_gyro_autocalibration_mode << "\n";
     file << "GamepadGyroSpace=" << g_alpine_game_config.gamepad_gyro_space << "\n";
     file << "GamepadGyroInvertY=" << g_alpine_game_config.gamepad_gyro_invert_y << "\n";
     file << "GamepadGyroTightening=" << g_alpine_game_config.gamepad_gyro_tightening << "\n";

@@ -4,6 +4,7 @@
 #include "../rf/os/timestamp.h"
 #include "../hud/hud.h"
 #include "../hud/remote_server_cfg_ui.h"
+#include "../input/gyro.h"
 
 extern bool g_loaded_alpine_settings_file;
 
@@ -143,7 +144,7 @@ struct AlpineGameSettings
     float gamepad_gyro_sensitivity = 2.5f;
     bool gamepad_gyro_enabled = false;
     bool gamepad_gyro_vehicle_camera = false;
-    bool gamepad_gyro_autocalibration = true;
+    int gamepad_gyro_autocalibration_mode = 1; // 0=Off, 1=MenuOnly, 2=Always
     int gamepad_gyro_space = 3; // GyroSpace: Yaw=0  Roll=1  Local=2  Player=3  World=4
     bool gamepad_gyro_invert_y = false;
     float gamepad_gyro_tightening = 1.4f;

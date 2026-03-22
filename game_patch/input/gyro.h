@@ -9,9 +9,18 @@ enum class GyroSpace : int {
     WorldSpace  = 4,
 };
 
+// Gyro autocalibration modes.
+enum class GyroAutocalibrationMode : int {
+    Off = 0,
+    MenuOnly = 1,
+    Always = 2,
+};
+
 void gyro_reset();
+void gyro_reset_motion_preserve_confidence(); // Reset motion data but keep confidence threshold (for MenuOnly mode)
 void gyro_update_calibration_mode();
 void gyro_set_autocalibration(bool enable);
+void gyro_set_autocalibration_mode(int mode); // 0=Off,1=MenuOnly,2=Always
 float gyro_get_autocalibration_confidence();
 bool gyro_is_autocalibration_steady();
 void gyro_process_motion(float gyro_x, float gyro_y, float gyro_z,

@@ -1,6 +1,7 @@
 #include "gyro.h"
 #include "input.h"
 #include "gamepad.h"
+#include "../rf/gameseq.h"
 #include <cmath>
 #include <optional>
 #include <GamepadMotion.hpp>
@@ -11,12 +12,54 @@
 
 static GamepadMotion g_motion;
 
+static bool gyro_autocalibration_enabled()
+{
+    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2);
+    switch (mode) {
+    case 0: // Off
+        return false;
+    case 1: // Menu Only
+        return !rf::gameseq_in_gameplay();
+    case 2: // Always
+        return true;
+    default:
+        return false;
+    }
+}
+
 void gyro_update_calibration_mode()
 {
     using CM = GamepadMotionHelpers::CalibrationMode;
-    g_motion.SetCalibrationMode(g_alpine_game_config.gamepad_gyro_autocalibration
-        ? CM::Stillness
-        : CM::Manual);
+    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2);
+
+    CM desired;
+    switch (mode) {
+    case 1: // Menu Only — only calibrate when not in gameplay
+        desired = rf::gameseq_in_gameplay() ? CM::Manual : CM::Stillness;
+        break;
+    case 2: // Always - will try to calibrate whenever possible
+        desired = CM::Stillness | CM::SensorFusion;
+        break;
+    default: // Off - disable auto calibration
+        desired = CM::Manual;
+        break;
+    }
+
+    static CM s_last_mode = static_cast<CM>(-1);
+    if (desired == s_last_mode)
+        return;
+    s_last_mode = desired;
+
+    // Preserve calibrated offset and confidence across mode changes.
+    float ox, oy, oz;
+    g_motion.GetCalibrationOffset(ox, oy, oz);
+    float confidence = g_motion.GetAutoCalibrationConfidence();
+
+    g_motion.SetCalibrationMode(desired);
+
+    // Restore offset and confidence that may have been cleared by SetCalibrationMode.
+    g_motion.SetCalibrationOffset(ox, oy, oz, 1);
+    g_motion.SetAutoCalibrationConfidence(confidence);
 }
 
 void gyro_reset()
@@ -25,9 +68,31 @@ void gyro_reset()
     gyro_update_calibration_mode();
 }
 
+void gyro_reset_motion_preserve_confidence()
+{
+    // Save current confidence threshold
+    float confidence = g_motion.GetAutoCalibrationConfidence();
+    
+    // Reset motion data (clears offset, calibration, etc.)
+    g_motion.Reset();
+    
+    // Restore the confidence threshold
+    g_motion.SetAutoCalibrationConfidence(confidence);
+    
+    // Update calibration mode based on current game state
+    gyro_update_calibration_mode();
+}
+
 void gyro_set_autocalibration(bool enable)
 {
-    g_alpine_game_config.gamepad_gyro_autocalibration = enable;
+    g_alpine_game_config.gamepad_gyro_autocalibration_mode = enable ? 2 : 0;
+    gyro_update_calibration_mode();
+}
+
+void gyro_set_autocalibration_mode(int mode)
+{
+    mode = std::clamp(mode, 0, 2);
+    g_alpine_game_config.gamepad_gyro_autocalibration_mode = mode;
     gyro_update_calibration_mode();
 }
 
@@ -190,26 +255,49 @@ bool gyro_modifier_is_active()
 ConsoleCommand2 gyro_autocalibration_cmd{
     "gyro_autocalibration",
     [](std::optional<int> val) {
-        if (val) gyro_set_autocalibration(val.value() != 0);
-        if (g_alpine_game_config.gamepad_gyro_autocalibration) {
-            rf::console::print("Gyro autocalibration: enabled  confidence: {:.2f}  steady: {}",
-                g_motion.GetAutoCalibrationConfidence(),
-                g_motion.GetAutoCalibrationIsSteady() ? "yes" : "no");
-        } else {
-            rf::console::print("Gyro autocalibration: disabled");
+        if (val) {
+            gyro_set_autocalibration_mode(val.value());
         }
+
+        int mode = std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2);
+        const char* mode_name = "unknown";
+        switch (mode) {
+        case 0:
+            mode_name = "Off";
+            break;
+        case 1:
+            mode_name = "Menu Only";
+            break;
+        case 2:
+            mode_name = "Always";
+            break;
+        }
+
+        rf::console::print("Gyro autocalibration mode: {} ({})", mode_name, mode);
     },
-    "Enable/disable gyro auto-calibration (default 1)",
-    "gyro_autocalibration [0|1]",
+    "Set gyro auto-calibration mode: 0=Off, 1=Menu Only, 2=Always (default 2)",
+    "gyro_autocalibration [0|1|2]",
 };
 
-ConsoleCommand2 gyro_reset_autocalibration_cmd{
-    "gyro_reset_autocalibration",
+ConsoleCommand2 gyro_reset_autocalibration_partial_cmd{
+    "gyro_reset_autocalibration_partial",
     [](std::optional<int>) {
         g_motion.SetAutoCalibrationConfidence(0.0f);
-        rf::console::print("Gyro auto-calibration reset");
+        gyro_update_calibration_mode();
+        rf::console::print("Gyro auto-calibration partial reset (offset preserved)");
     },
-    "Reset gyro auto-calibration",
+    "Reset gyro auto-calibration confidence (preserves offset)",
+};
+
+ConsoleCommand2 gyro_reset_autocalibration_full_cmd{
+    "gyro_reset_autocalibration_full",
+    [](std::optional<int>) {
+        g_motion.SetAutoCalibrationConfidence(0.0f);
+        g_motion.Reset();
+        gyro_update_calibration_mode();
+        rf::console::print("Gyro auto-calibration full reset");
+    },
+    "Reset gyro auto-calibration confidence and clear offset",
 };
 
 ConsoleCommand2 gyro_space_cmd{
@@ -265,7 +353,8 @@ void gyro_apply_patch()
 
     gyro_update_calibration_mode();
     gyro_autocalibration_cmd.register_cmd();
-    gyro_reset_autocalibration_cmd.register_cmd();
+    gyro_reset_autocalibration_partial_cmd.register_cmd();
+    gyro_reset_autocalibration_full_cmd.register_cmd();
     gyro_space_cmd.register_cmd();
     gyro_invert_y_cmd.register_cmd();
     gyro_tightening_cmd.register_cmd();
