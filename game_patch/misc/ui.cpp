@@ -879,14 +879,14 @@ void ao_gyro_sensitivity_cbox_on_click_callback() {
     std::string str = str_buffer;
     try {
         float val = std::stof(str);
-        g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, val);
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(val, 0.0f, 30.0f);
     }
     catch (const std::exception& e) {
         xlog::info("Invalid gyro sensitivity input: '{}', reason: {}", str, e.what());
     }
 }
 void ao_gyro_sensitivity_cbox_on_click(int x, int y) {
-    rf::ui::popup_message("Enter new gyro sensitivity:", "", ao_gyro_sensitivity_cbox_on_click_callback, 1);
+    rf::ui::popup_message("Enter new gyro sensitivity (0.0-30.00):", "", ao_gyro_sensitivity_cbox_on_click_callback, 1);
 }
 
 void ao_gyro_autocalibration_cbox_on_click(int x, int y) {
@@ -1373,7 +1373,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_inputbox_init(
         &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Cam deadzone");
     alpine_options_panel_checkbox_init(
-        &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 294, "Camera Invert Y");
+        &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 294, "Camera Y-Invert");
     alpine_options_panel_checkbox_init(
         &ao_swap_sticks_cbox, &ao_swap_sticks_label, &alpine_options_panel2, ao_swap_sticks_cbox_on_click, g_alpine_game_config.gamepad_swap_sticks, 112, 324, "Swap Sticks");
     alpine_options_panel_checkbox_init(
@@ -1383,7 +1383,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_gyro_invert_y_cbox, &ao_gyro_invert_y_label,
         &alpine_options_panel2, ao_gyro_invert_y_cbox_on_click,
-        g_alpine_game_config.gamepad_gyro_invert_y, 280, 264, "Gyro Invert Y");
+        g_alpine_game_config.gamepad_gyro_invert_y, 280, 264, "Gyro Y-Invert");
     alpine_options_panel_inputbox_init(
         &ao_gyro_space_cbox, &ao_gyro_space_label, &ao_gyro_space_butlabel,
         &alpine_options_panel2, ao_gyro_space_cbox_on_click, 280, 294, "Gyro Space");

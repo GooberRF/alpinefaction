@@ -81,11 +81,16 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
         out_pitch_dps = x;
         out_yaw_dps   = -z;
         break;
-    case GyroSpace::LocalSpace:
+    case GyroSpace::LocalSpace: {
+        // Local Space code is based on http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained
+        // This one combines a bit of Gravity Vector inorder to avoid Axis conflict
+        float gx, gy, gz;
         g_motion.GetCalibratedGyro(x, y, z);
+        g_motion.GetGravity(gx, gy, gz);
         out_pitch_dps = x;
-        out_yaw_dps   = y - z;
+        out_yaw_dps   = -(gy * y + gz * z);
         break;
+    }
     default: // Yaw
         g_motion.GetCalibratedGyro(x, y, z);
         out_pitch_dps = x;
@@ -98,7 +103,8 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
 // http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-1:the-gyro-is-a-mouse#toc9
 void gyro_apply_tightening(float& pitch_dps, float& yaw_dps)
 {
-    float threshold = g_alpine_game_config.gamepad_gyro_tightening;
+    // 0-100 user value maps to 0-50 deg/s threshold (percentage scale)
+    float threshold = g_alpine_game_config.gamepad_gyro_tightening * 0.5f;
     if (threshold > 0.0f) {
         float mag = std::hypot(pitch_dps, yaw_dps);
         if (mag > 0.0f && mag < threshold) {
@@ -109,34 +115,20 @@ void gyro_apply_tightening(float& pitch_dps, float& yaw_dps)
     }
 }
 
-// Based on Soft Tiered Smoothing from GyroWiki 
-// http://gyrowiki.jibbsmart.com/blog:tight-and-smooth:soft-tiered-smoothing
-static constexpr int SMOOTH_BUF_SIZE = 16;
-static float g_smooth_pitch[SMOOTH_BUF_SIZE] = {};
-static float g_smooth_yaw[SMOOTH_BUF_SIZE]   = {};
-static int   g_smooth_idx = 0;
+static float g_smooth_pitch_prev = 0.0f;
+static float g_smooth_yaw_prev   = 0.0f;
 
 void gyro_apply_smoothing(float& pitch_dps, float& yaw_dps)
 {
-    float threshold = g_alpine_game_config.gamepad_gyro_smoothing;
-    if (threshold <= 0.0f) return;
+    float factor = g_alpine_game_config.gamepad_gyro_smoothing / 100.0f;
+    if (factor <= 0.0f) return;
+    factor = std::min(factor, 0.99f); // prevent full freeze at 100
 
-    float mag = std::hypot(pitch_dps, yaw_dps);
-    float t1  = threshold * 0.5f;
-    float direct_weight = std::clamp((mag - t1) / t1, 0.0f, 1.0f);
+    g_smooth_pitch_prev = pitch_dps * (1.0f - factor) + g_smooth_pitch_prev * factor;
+    g_smooth_yaw_prev   = yaw_dps   * (1.0f - factor) + g_smooth_yaw_prev   * factor;
 
-    g_smooth_pitch[g_smooth_idx] = pitch_dps * (1.0f - direct_weight);
-    g_smooth_yaw[g_smooth_idx]   = yaw_dps   * (1.0f - direct_weight);
-    g_smooth_idx = (g_smooth_idx + 1) % SMOOTH_BUF_SIZE;
-
-    float sum_pitch = 0.0f, sum_yaw = 0.0f;
-    for (int i = 0; i < SMOOTH_BUF_SIZE; ++i) {
-        sum_pitch += g_smooth_pitch[i];
-        sum_yaw   += g_smooth_yaw[i];
-    }
-
-    pitch_dps = pitch_dps * direct_weight + sum_pitch / SMOOTH_BUF_SIZE;
-    yaw_dps   = yaw_dps   * direct_weight + sum_yaw   / SMOOTH_BUF_SIZE;
+    pitch_dps = g_smooth_pitch_prev;
+    yaw_dps   = g_smooth_yaw_prev;
 }
 
 static bool gyro_action_has_binding(rf::ControlConfigAction action)
@@ -247,22 +239,22 @@ ConsoleCommand2 gyro_invert_y_cmd{
 ConsoleCommand2 gyro_tightening_cmd{
     "gyro_tightening",
     [](std::optional<float> val) {
-        if (val) g_alpine_game_config.gamepad_gyro_tightening = std::max(0.0f, val.value());
+        if (val) g_alpine_game_config.gamepad_gyro_tightening = std::clamp(val.value(), 0.0f, 100.0f);
         rf::console::print("Gyro tightening threshold: {:.1f}",
             g_alpine_game_config.gamepad_gyro_tightening);
     },
-    "Set gyro tightening threshold (0 = disabled)",
+    "Set gyro tightening threshold (0 = disabled, max 100)",
     "gyro_tightening [value]",
 };
 
 ConsoleCommand2 gyro_smoothing_cmd{
     "gyro_smoothing",
     [](std::optional<float> val) {
-        if (val) g_alpine_game_config.gamepad_gyro_smoothing = std::max(0.0f, val.value());
+        if (val) g_alpine_game_config.gamepad_gyro_smoothing = std::clamp(val.value(), 0.0f, 100.0f);
         rf::console::print("Gyro smoothing threshold: {:.1f}",
             g_alpine_game_config.gamepad_gyro_smoothing);
     },
-    "Set gyro soft-tier smoothing threshold (0 = disabled)",
+    "Set gyro soft-tier smoothing threshold (0 = disabled, max 100)",
     "gyro_smoothing [value]",
 };
 

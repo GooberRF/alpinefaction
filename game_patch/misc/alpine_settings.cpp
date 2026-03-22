@@ -1012,7 +1012,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GamepadLookDeadzone");
     }
     if (settings.count("GamepadGyroSensitivity")) {
-        g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, std::stof(settings["GamepadGyroSensitivity"]));
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(std::stof(settings["GamepadGyroSensitivity"]), 0.0f, 30.0f);
         processed_keys.insert("GamepadGyroSensitivity");
     }
     if (settings.count("GamepadGyroEnabled")) {
@@ -1036,11 +1036,11 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GamepadGyroInvertY");
     }
     if (settings.count("GamepadGyroTightening")) {
-        g_alpine_game_config.gamepad_gyro_tightening = std::max(0.0f, std::stof(settings["GamepadGyroTightening"]));
+        g_alpine_game_config.gamepad_gyro_tightening = std::clamp(std::stof(settings["GamepadGyroTightening"]), 0.0f, 100.0f);
         processed_keys.insert("GamepadGyroTightening");
     }
     if (settings.count("GamepadGyroSmoothing")) {
-        g_alpine_game_config.gamepad_gyro_smoothing = std::max(0.0f, std::stof(settings["GamepadGyroSmoothing"]));
+        g_alpine_game_config.gamepad_gyro_smoothing = std::clamp(std::stof(settings["GamepadGyroSmoothing"]), 0.0f, 100.0f);
         processed_keys.insert("GamepadGyroSmoothing");
     }
     if (settings.count("GamepadIconOverride")) {

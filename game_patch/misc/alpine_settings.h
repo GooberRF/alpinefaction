@@ -146,8 +146,8 @@ struct AlpineGameSettings
     bool gamepad_gyro_autocalibration = true;
     int gamepad_gyro_space = 3; // GyroSpace: Yaw=0  Roll=1  Local=2  Player=3  World=4
     bool gamepad_gyro_invert_y = false;
-    float gamepad_gyro_tightening = 3.0f;
-    float gamepad_gyro_smoothing = 16.0f;
+    float gamepad_gyro_tightening = 1.4f;
+    float gamepad_gyro_smoothing = 7.0f;
     int gamepad_icon_override = 0; // ControllerIconType: 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube
     int input_prompt_override = 0; // 0=Auto, 1=Controller, 2=Keyboard
     bool gamepad_joy_invert_y = false;

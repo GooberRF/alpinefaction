@@ -610,6 +610,38 @@ void gamepad_do_frame()
     }
 }
 
+static bool is_gamepad_controls_rebind_active()
+{
+    return ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key;
+}
+
+static bool is_key_allowed_during_rebind(int scan_code)
+{
+    if (scan_code == CTRL_REBIND_SENTINEL)
+        return true;
+    if ((scan_code & rf::KEY_MASK) == rf::KEY_ESC)
+        return true;
+    return false;
+}
+
+FunHook<void(int,int,int)> key_process_event_hook{
+    0x0051E6C0,
+    [](int scan_code, int key_down, int delta_time) {
+        if (is_gamepad_controls_rebind_active() && !is_key_allowed_during_rebind(scan_code))
+            return;
+        key_process_event_hook.call_target(scan_code, key_down, delta_time);
+    }
+};
+
+FunHook<int(int)> mouse_was_button_pressed_hook{
+    0x0051E5D0,
+    [](int btn_idx) -> int {
+        if (is_gamepad_controls_rebind_active())
+            return 0;
+        return mouse_was_button_pressed_hook.call_target(btn_idx);
+    }
+};
+
 void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
 {
     pitch_delta = 0.0f;
@@ -634,8 +666,8 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
                                 && gyro_modifier_is_active()) {
         float gyro_pitch, gyro_yaw;
         gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
-        gyro_apply_smoothing(gyro_pitch, gyro_yaw);
         gyro_apply_tightening(gyro_pitch, gyro_yaw);
+        gyro_apply_smoothing(gyro_pitch, gyro_yaw);
 
         constexpr float deg2rad = 3.14159265f / 180.0f;
         float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
@@ -716,8 +748,8 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
                 && gyro_modifier_is_active()) {
                 float gyro_pitch, gyro_yaw;
                 gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
-                gyro_apply_smoothing(gyro_pitch, gyro_yaw);
                 gyro_apply_tightening(gyro_pitch, gyro_yaw);
+                gyro_apply_smoothing(gyro_pitch, gyro_yaw);
 
                 constexpr float gyro_to_rot = 1.0f / 90.0f;
                 float sens = g_alpine_game_config.gamepad_gyro_sensitivity;
@@ -786,10 +818,10 @@ ConsoleCommand2 joy_look_deadzone_cmd{
 ConsoleCommand2 gyro_sens_cmd{
     "gyro_sens",
     [](std::optional<float> val) {
-        if (val) g_alpine_game_config.gamepad_gyro_sensitivity = std::max(0.0f, val.value());
+        if (val) g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(val.value(), 0.0f, 30.0f);
         rf::console::print("Gyro sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_sensitivity);
     },
-    "Set gyro sensitivity (default 2.5)",
+    "Set gyro sensitivity 0-30 (default 2.5)",
     "gyro_sens [value]",
 };
 
@@ -1020,6 +1052,8 @@ void gamepad_apply_patch()
     physics_simulate_entity_hook.install();
     player_fpgun_process_hook.install();
     vmesh_process_hook.install();
+    key_process_event_hook.install();
+    mouse_was_button_pressed_hook.install();
     joy_sens_cmd.register_cmd();
     joy_move_deadzone_cmd.register_cmd();
     joy_look_deadzone_cmd.register_cmd();
