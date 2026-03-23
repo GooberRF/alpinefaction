@@ -29,7 +29,6 @@ static void reset_mouse_delta_accumulators()
     g_vehicle_mouse_dy_rem = 0.0f;
 }
 
-
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
 static float applied_static_sensitivity_value = 0.25f; // value written by AsmWriter
@@ -223,7 +222,7 @@ ConsoleCommand2 ms_scale_cmd{
         int mode = std::clamp(g_alpine_game_config.mouse_scale, 0, 2);
         rf::console::print("ms_scale: {} ({})", mode, mode_names[mode]);
     },
-    "Sets mouse scale mode. 0 = Classic (RF native), 1 = Raw (pure degrees), 2 = Modern (id Tech/Source 0.022 deg/pixel).",
+    "Sets mouse scale mode. 0 = Classic (RF native), 1 = Raw (pure degrees), 2 = Modern (id Tech/Source style).",
     "ms_scale <0|1|2>",
 };
 
