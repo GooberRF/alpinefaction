@@ -499,7 +499,7 @@ static void gamepad_do_menu_frame()
         // Use dedicated menu joystick deadzone.
         SDL_GamepadAxis cx_axis = SDL_GAMEPAD_AXIS_LEFTX;
         SDL_GamepadAxis cy_axis = SDL_GAMEPAD_AXIS_LEFTY;
-        constexpr float k_menu_joystick_deadzone = 0.12f;
+        constexpr float k_menu_joystick_deadzone = 0.24f;
 
         float sx = get_axis(cx_axis, k_menu_joystick_deadzone);
         float sy = get_axis(cy_axis, k_menu_joystick_deadzone);
@@ -559,7 +559,7 @@ static void gamepad_do_menu_frame()
     // Right-stick scroll: write rf::mouse_dz so the existing state-aware CodeInjection patches
     // in main_menu.cpp pick it up and call the correct up_on_click / down_on_click.
     SDL_GamepadAxis scroll_axis = SDL_GAMEPAD_AXIS_RIGHTY;
-    constexpr float k_menu_scroll_joystick_deadzone = 0.12f;
+    constexpr float k_menu_scroll_joystick_deadzone = 0.24f;
     float scroll_dz = k_menu_scroll_joystick_deadzone;
     float ry = get_axis(scroll_axis, scroll_dz);
     if (ry != 0.0f) {
@@ -577,10 +577,11 @@ static void gamepad_do_menu_frame()
 void gamepad_do_frame()
 {
     gamepad_sdl_poll();
-    if (!is_gamepad_input_active())
-        return;
 
     gyro_update_calibration_mode();
+
+    if (!is_gamepad_input_active())
+        return;
 
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
         float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
@@ -603,7 +604,7 @@ void gamepad_do_frame()
 
     g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
 
-    if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled && g_gyro_fresh) {
+    if (g_motion_sensors_active) {
         gyro_process_motion(g_gyro_x, g_gyro_y, g_gyro_z,
                             g_accel_x, g_accel_y, g_accel_z, rf::frametime);
         g_gyro_fresh = false;
@@ -1087,8 +1088,6 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
     reset_gamepad_input_state();
 }
 
-// Must be called from the game main thread (SDL3 requires SDL_PumpEvents on the same
-// thread that called SDL_InitSubSystem; Init() runs on a remote injector thread).
 void gamepad_sdl_init()
 {
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {

@@ -12,21 +12,6 @@
 
 static GamepadMotion g_motion;
 
-static bool gyro_autocalibration_enabled()
-{
-    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2);
-    switch (mode) {
-    case 0: // Off
-        return false;
-    case 1: // Menu Only
-        return !rf::gameseq_in_gameplay();
-    case 2: // Always
-        return true;
-    default:
-        return false;
-    }
-}
-
 void gyro_update_calibration_mode()
 {
     using CM = GamepadMotionHelpers::CalibrationMode;
@@ -35,7 +20,9 @@ void gyro_update_calibration_mode()
     CM desired;
     switch (mode) {
     case 1: // Menu Only — only calibrate when not in gameplay
-        desired = rf::gameseq_in_gameplay() ? CM::Manual : CM::Stillness;
+        desired = rf::gameseq_in_gameplay()
+            ? CM::Manual
+            : (CM::Stillness | CM::SensorFusion);
         break;
     case 2: // Always - will try to calibrate whenever possible
         desired = CM::Stillness | CM::SensorFusion;
