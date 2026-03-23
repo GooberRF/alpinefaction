@@ -515,11 +515,6 @@ void evaluate_footsteps()
 
     bool new_active = client_wants_fix && server_allows_fix;
 
-    if (g_footsteps_active != new_active) {
-        xlog::info("Footstep fix: client_wants={}, server_allows={}, active={}",
-            client_wants_fix, server_allows_fix, new_active);
-    }
-
     g_footsteps_active = new_active;
 }
 
@@ -532,19 +527,19 @@ ConsoleCommand2 cl_footsteps_cmd{
             g_alpine_game_config.footsteps ? "enabled" : "disabled",
             g_footsteps_active ? "yes" : "no");
     },
-    "Toggle footstep trigger injection for all weapons (full effect on next level load)",
+    "Toggle third-person footstep audio for non-pistol weapons",
     "cl_footsteps",
 };
 
-// Footstep processing hook: injects triggers for attack_run state animations
-// and mutes footstep audio for dying entities
+// Footstep processing hook: injects missing triggers for attack_run state animations
+// and gates sound playback based on footstep preference (pistol always plays per stock behavior)
 FunHook<void(rf::Entity*)> entity_footsteps_do_frame_hook{
     0x0042F940,
     [](rf::Entity* ep) {
         if (!ep || rf::entity_is_dying(ep)) return;
 
-        // Inject footstep triggers for entities in attack_run state
-        if (g_footsteps_active && ep->current_state_anim == rf::ENTITY_STATE_ATTACK_RUN) {
+        // Always inject missing footstep triggers (data fix, not a preference)
+        if (ep->current_state_anim == rf::ENTITY_STATE_ATTACK_RUN) {
             auto* vmesh = ep->vmesh;
             if (vmesh && vmesh->type == rf::MESH_TYPE_CHARACTER) {
                 auto* ci = static_cast<rf::CharacterInstance*>(vmesh->instance);
@@ -557,7 +552,10 @@ FunHook<void(rf::Entity*)> entity_footsteps_do_frame_hook{
             }
         }
 
-        entity_footsteps_do_frame_hook.call_target(ep);
+        // Gate sound playback: pistol always plays (stock behavior), others require feature enabled
+        if (g_footsteps_active || rf::weapon_is_glock(ep->ai.current_primary_weapon)) {
+            entity_footsteps_do_frame_hook.call_target(ep);
+        }
     }
 };
 
