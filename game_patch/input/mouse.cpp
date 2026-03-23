@@ -371,3 +371,4 @@ void mouse_apply_patch()
     scanner_sens_cmd.register_cmd();
     ms_scale_cmd.register_cmd();
 }
+
