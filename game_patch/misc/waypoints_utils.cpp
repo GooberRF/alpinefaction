@@ -379,7 +379,14 @@ void capture_waypoint_editor_mouse_input()
     int mouse_z = 0;
     rf::mouse_get_pos(g_waypoint_editor_mouse_x, g_waypoint_editor_mouse_y, mouse_z);
     g_waypoint_editor_left_click_pressed = rf::mouse_was_button_pressed(0) > 0;
-    g_waypoint_editor_right_click_pressed = rf::mouse_was_button_pressed(1) > 0;
+    // Use secondary attack bind (whatever key/button it's bound to) for cursor toggle.
+    // Call the original (unhooked) function since our hook blocks this action.
+    bool secondary_just_pressed = false;
+    control_config_check_pressed_waypoint_editor_hook.call_target(
+        &rf::local_player->settings.controls,
+        rf::CC_ACTION_SECONDARY_ATTACK,
+        &secondary_just_pressed);
+    g_waypoint_editor_right_click_pressed = secondary_just_pressed;
     g_waypoint_editor_left_click_consumed = false;
 }
 
