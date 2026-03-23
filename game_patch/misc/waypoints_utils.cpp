@@ -1141,11 +1141,7 @@ void finalize_selection_after_translation(const WaypointEditorSelectionState& se
         return;
     }
 
-    if (selection.kind == WaypointEditorSelectionKind::target) {
-        if (WaypointTargetDefinition* target = find_waypoint_target_by_uid(selection.uid)) {
-            rebuild_target_waypoint_refs(*target);
-        }
-    }
+    // Targets keep their waypoint refs on move — use Auto link to rebuild.
 }
 
 std::string selection_debug_name(const WaypointEditorSelectionState& selection)
@@ -3551,6 +3547,20 @@ void render_waypoint_editor_overlay_panel()
             }
             if (draw_waypoint_editor_button(
                     {action_x + half_w + action_gap, action_y, half_w, action_h},
+                    "Auto link",
+                    font_id,
+                    target_actions_enabled)) {
+                waypoints_autolink_target(g_waypoint_editor_selection.uid);
+                const auto* target = find_waypoint_target_by_uid(g_waypoint_editor_selection.uid);
+                const int ref_count = target ? static_cast<int>(target->waypoint_uids.size()) : 0;
+                push_waypoint_editor_log(std::format(
+                    "Target {} autolinked: {} waypoint refs",
+                    g_waypoint_editor_selection.uid, ref_count));
+            }
+            action_y += action_h + 4;
+
+            if (draw_waypoint_editor_button(
+                    {action_x, action_y, half_w, action_h},
                     "Delete target",
                     font_id,
                     target_actions_enabled)) {

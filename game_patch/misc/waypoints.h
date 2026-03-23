@@ -215,6 +215,7 @@ bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, 
 bool waypoints_auto_link_nearby(int waypoint_uid, WaypointAutoLinkStats& out_stats);
 int waypoints_send_probe(int waypoint_uid);
 int waypoints_calculate_ledge_drops(int waypoint_uid);
+void waypoints_autolink_target(int target_uid);
 int waypoints_target_count();
 bool waypoints_get_target_by_index(int index, WaypointTargetDefinition& out_target);
 bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_target);
