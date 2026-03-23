@@ -26,7 +26,7 @@ constexpr float kBridgeWaypointMaxGroundDistance = 1.5f;
 constexpr float kWaypointGenerateProbeAngleStepDeg = 15.0f;
 constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
 constexpr float kWaypointGenerateGroundOffset = 1.0f;
-constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
+constexpr float kWaypointGenerateMaxInclineDeg = 60.0f;
 constexpr float kWaypointGenerateWallClearance = 0.5f;
 constexpr float kWaypointGenerateEdgeClearance = 1.0f;
 constexpr float kWaypointGenerateMinHeadroom = 1.375f;
@@ -214,6 +214,7 @@ bool waypoints_waypoint_has_zone_type(int waypoint_uid, WaypointZoneType zone_ty
 bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, rf::Vector3& out_pos);
 bool waypoints_auto_link_nearby(int waypoint_uid, WaypointAutoLinkStats& out_stats);
 int waypoints_send_probe(int waypoint_uid);
+int waypoints_calculate_ledge_drops(int waypoint_uid);
 int waypoints_target_count();
 bool waypoints_get_target_by_index(int index, WaypointTargetDefinition& out_target);
 bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_target);
