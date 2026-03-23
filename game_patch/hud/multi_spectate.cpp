@@ -316,6 +316,7 @@ rf::Player* multi_spectate_get_target_player()
 
 void multi_spectate_leave()
 {
+    g_spectate_freelook_saved_target = nullptr;
     if (g_spectate_mode_enabled) {
         multi_spectate_set_target_player(nullptr);
     } else {
@@ -849,6 +850,7 @@ void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* en
 void multi_spectate_level_init()
 {
     g_spawned_in_current_level = false;
+    g_spectate_freelook_saved_target = nullptr;
 }
 
 template<typename F>
