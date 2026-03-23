@@ -84,6 +84,9 @@ struct PlayerAdditionalData {
     // `std::nullptr` represents freelook spectate mode.
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
+
+    // Rail gun reload cooldown (server-side, needed because entity_is_reloading is unreliable on server)
+    rf::Timestamp rail_gun_reload_timer{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif

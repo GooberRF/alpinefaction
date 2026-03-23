@@ -73,6 +73,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-bot` command line argument to run a client in bot mode
 - Add `disconnect` console command
 - Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
+- Add `force_rail_reload` dedicated server config option, to force reloading the rail before being able to switch weapons
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

@@ -543,6 +543,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.weapon_infinite_magazines = *v;
     if (auto v = t["drop_weapons"].value<bool>())
         o.drop_weapons = *v;
+    if (auto v = t["force_rail_reload"].value<bool>())
+        o.force_rail_reload = *v;
 
     if (auto sub = t["spawn_weapon"].as_table())
         o.default_player_weapon = parse_default_player_weapon(*sub, o.default_player_weapon);
@@ -1643,6 +1645,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Drop amps:                             {}\n", rules.drop_amps);
     if (base || rules.drop_weapons != b.drop_weapons)
         std::format_to(iter, "  Drop weapons:                          {}\n", rules.drop_weapons);
+    if (base || rules.force_rail_reload != b.force_rail_reload)
+        std::format_to(iter, "  Force rail reload before switch:        {}\n", rules.force_rail_reload);
     if (base || rules.no_player_collide != b.no_player_collide)
         std::format_to(iter, "  No player collide:                     {}\n", rules.no_player_collide);
     if (base || rules.location_pinging != b.location_pinging)

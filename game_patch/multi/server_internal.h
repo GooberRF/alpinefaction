@@ -575,6 +575,7 @@ struct AlpineServerConfigRules
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
     bool drop_weapons = true;
+    bool force_rail_reload = true;
     KillRewardConfig kill_rewards;
     WeaponStayExemptionConfig weapon_stay_exemptions;
     std::map<std::string, std::string> item_replacements;
