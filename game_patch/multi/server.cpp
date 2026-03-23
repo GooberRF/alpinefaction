@@ -3510,6 +3510,12 @@ bool server_geo_chunk_physics()
     return g_alpine_server_config_active_rules.geo_chunk_physics;
 }
 
+
+bool server_allow_footsteps()
+{
+    return g_alpine_server_config.allow_footsteps;
+}
+
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 {
     bool requires_alpine = false; // alpine required to spawn

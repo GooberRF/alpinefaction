@@ -73,6 +73,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-bot` command line argument to run a client in bot mode
 - Add `disconnect` console command
 - Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
+- Add `force_rail_reload` dedicated server config option, to force reloading the rail before being able to switch weapons
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -95,6 +96,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Show powerup icons in spectator mode
 - Improve presented damage calculations for stats and damage numbers
 - Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
+- Implement enemy and teammate footstep audio for weapons other than pistol
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
