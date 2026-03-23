@@ -85,7 +85,8 @@ struct PlayerAdditionalData {
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 
-    // Rail gun reload cooldown (server-side, needed because entity_is_reloading is unreliable on server)
+    // Server side rail gun reload cooldown, used for force_rail_reload
+    // needed because entity_is_reloading is unreliable on server
     rf::Timestamp rail_gun_reload_timer{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);

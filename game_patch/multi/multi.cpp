@@ -465,6 +465,8 @@ void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
             float reload_secs = rf::weapon_types[weapon_type].clip_reload_time_secs;
 
             // default rail reload time is 3 seconds, but the animation time isn't that long
+            // without this fix, the player is blocked from switching away from the rail for
+            // 500ms after the reload finishes
             if (reload_secs == 3.0f) {
                 reload_secs = 2.5f;
             }
