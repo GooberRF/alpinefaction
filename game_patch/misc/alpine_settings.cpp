@@ -1011,6 +1011,22 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_look_deadzone = std::clamp(std::stof(settings["GamepadLookDeadzone"]), 0.0f, 0.9f);
         processed_keys.insert("GamepadLookDeadzone");
     }
+    if (settings.count("GamepadFlickstick")) {
+        g_alpine_game_config.gamepad_flickstick = std::stoi(settings["GamepadFlickstick"]) != 0;
+        processed_keys.insert("GamepadFlickstick");
+    }
+    if (settings.count("GamepadFlickstickSweep")) {
+        g_alpine_game_config.gamepad_flickstick_sweep = std::clamp(std::stof(settings["GamepadFlickstickSweep"]), 0.01f, 10.0f);
+        processed_keys.insert("GamepadFlickstickSweep");
+    }
+    if (settings.count("GamepadFlickstickDeadzone")) {
+        g_alpine_game_config.gamepad_flickstick_deadzone = std::clamp(std::stof(settings["GamepadFlickstickDeadzone"]), 0.0f, 0.9f);
+        processed_keys.insert("GamepadFlickstickDeadzone");
+    }
+    if (settings.count("GamepadFlickstickReleaseDeadzone")) {
+        g_alpine_game_config.gamepad_flickstick_release_deadzone = std::clamp(std::stof(settings["GamepadFlickstickReleaseDeadzone"]), 0.0f, 0.9f);
+        processed_keys.insert("GamepadFlickstickReleaseDeadzone");
+    }
     if (settings.count("GamepadGyroSensitivity")) {
         g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(std::stof(settings["GamepadGyroSensitivity"]), 0.0f, 30.0f);
         processed_keys.insert("GamepadGyroSensitivity");
@@ -1203,6 +1219,10 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadJoySensitivity=" << g_alpine_game_config.gamepad_joy_sensitivity << "\n";
     file << "GamepadMoveDeadzone=" << g_alpine_game_config.gamepad_move_deadzone << "\n";
     file << "GamepadLookDeadzone=" << g_alpine_game_config.gamepad_look_deadzone << "\n";
+    file << "GamepadFlickstick=" << g_alpine_game_config.gamepad_flickstick << "\n";
+    file << "GamepadFlickstickDeadzone=" << g_alpine_game_config.gamepad_flickstick_deadzone << "\n";
+    file << "GamepadFlickstickReleaseDeadzone=" << g_alpine_game_config.gamepad_flickstick_release_deadzone << "\n";
+    file << "GamepadFlickstickSweep=" << g_alpine_game_config.gamepad_flickstick_sweep << "\n";
     file << "GamepadGyroSensitivity=" << g_alpine_game_config.gamepad_gyro_sensitivity << "\n";
     file << "GamepadGyroEnabled=" << g_alpine_game_config.gamepad_gyro_enabled << "\n";
     file << "GamepadGyroVehicleEnabled=" << g_alpine_game_config.gamepad_gyro_vehicle_camera << "\n";

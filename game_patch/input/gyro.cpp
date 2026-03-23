@@ -151,7 +151,7 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
     }
 }
 
-// Gyro Tighting is based on Good Gyro Controls Part 1 from GyroWiki
+// Gyro Tighting is based on GyroWiki documents
 // http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-1:the-gyro-is-a-mouse#toc9
 void gyro_apply_tightening(float& pitch_dps, float& yaw_dps)
 {

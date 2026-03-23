@@ -69,6 +69,13 @@ static bool  g_south_lclick_held     = false;  // WM_LBUTTONDOWN sent but WM_LBU
 static float g_move_lx = 0.0f, g_move_ly = 0.0f;
 static float g_move_mag = 0.0f;
 
+static bool g_flickstick_has_aim = false;
+static float g_flickstick_target_yaw = 0.0f;
+static float g_flickstick_target_pitch = 0.0f;
+static float g_flickstick_prev_stick_angle = 0.0f;
+static bool g_flickstick_prev_stick_valid = false;
+static float g_flickstick_yaw_delta_filtered = 0.0f;
+
 static bool is_gamepad_input_active()
 {
     // Use RF's own window focus flag 
@@ -100,6 +107,13 @@ static void reset_gamepad_input_state()
     // Rebind state
     g_rebind_pending_sc = -1;
 
+    // Flick stick state
+    g_flickstick_has_aim = false;
+    g_flickstick_target_yaw = 0.0f;
+    g_flickstick_target_pitch = 0.0f;
+    g_flickstick_prev_stick_valid = false;
+    g_flickstick_yaw_delta_filtered = 0.0f;
+
     // Misc input tracking
     g_lt_was_down = false;
     g_rt_was_down = false;
@@ -115,6 +129,21 @@ static float get_axis(SDL_GamepadAxis axis, float deadzone)
     if (v < -deadzone) return (v + deadzone) / (1.0f - deadzone);
     return 0.0f;
 }
+
+static float wrap_angle_pi(float a)
+{
+    while (a > 3.14159265f) a -= 2.0f * 3.14159265f;
+    while (a <= -3.14159265f) a += 2.0f * 3.14159265f;
+    return a;
+}
+
+static float angle_diff(float target, float current)
+{
+    return wrap_angle_pi(target - current);
+}
+
+static void gamepad_apply_flickstick(float rx, float ry, float current_yaw, float current_pitch,
+                                    float& yaw_delta, float& pitch_delta);
 
 static rf::VMesh* g_local_player_body_vmesh = nullptr;
 static bool g_scaling_fpgun_vmesh = false;
@@ -655,16 +684,34 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     SDL_GamepadAxis cam_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTY  : SDL_GAMEPAD_AXIS_RIGHTY;
     float cam_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
                                                                        : g_alpine_game_config.gamepad_look_deadzone;
+
+    // Raw axes (no deadzone remapping) for flickstick rotation math to avoid quadrant snapping.
+    float raw_rx = SDL_GetGamepadAxis(g_gamepad, cam_x) / static_cast<float>(SDL_MAX_SINT16);
+    float raw_ry = SDL_GetGamepadAxis(g_gamepad, cam_y) / static_cast<float>(SDL_MAX_SINT16);
+
     float rx = get_axis(cam_x, cam_dz);
     float ry = get_axis(cam_y, cam_dz);
 
     float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
-    yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx;
-    pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry;
 
-    if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled
-                                && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
-                                && gyro_modifier_is_active()) {
+    float current_yaw = rf::local_player_entity ? rf::local_player_entity->control_data.phb.y : 0.0f;
+    float current_pitch = rf::local_player_entity ? rf::local_player_entity->control_data.eye_phb.x : 0.0f;
+    float stick_mag = std::hypot(rx, ry);
+
+    if (g_alpine_game_config.gamepad_flickstick) {
+        gamepad_apply_flickstick(raw_rx, raw_ry, current_yaw, current_pitch, yaw_delta, pitch_delta);
+    } else {
+        g_flickstick_yaw_delta_filtered = 0.0f;
+        yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx;
+        pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry;
+    }
+
+    bool allow_gyro = g_motion_sensors_active
+        && g_alpine_game_config.gamepad_gyro_enabled
+        && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
+        && gyro_modifier_is_active();
+
+    if (allow_gyro) {
         float gyro_pitch, gyro_yaw;
         gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
         gyro_apply_tightening(gyro_pitch, gyro_yaw);
@@ -676,6 +723,61 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
         pitch_delta += pitch_sign * gyro_pitch * deg2rad * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime;
     }
 }
+
+// Flick stick is based on GyroWiki documents
+// http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-2:the-flick-stick
+static void gamepad_apply_flickstick(float rx, float ry, float current_yaw, float current_pitch,
+                                    float& yaw_delta, float& pitch_delta)
+{
+    yaw_delta = 0.0f;
+    pitch_delta = 0.0f;
+
+    float stick_mag = std::hypot(rx, ry);
+    bool start_flick = stick_mag > g_alpine_game_config.gamepad_flickstick_deadzone;
+    bool end_flick   = stick_mag <= g_alpine_game_config.gamepad_flickstick_release_deadzone;
+
+    float flick_angle     = std::atan2(rx, -ry);
+    float flick_turn_delta = 0.0f;
+    float flick_angle_change = 0.0f;
+
+    if (g_flickstick_prev_stick_valid) {
+        flick_turn_delta = angle_diff(flick_angle, g_flickstick_prev_stick_angle);
+        flick_angle_change = std::abs(flick_turn_delta);
+    }
+    g_flickstick_prev_stick_angle = flick_angle;
+    g_flickstick_prev_stick_valid = true;
+
+    static constexpr float k_flickstick_retrigger_angle = 1.04719755f; // 60 degrees
+
+    if (start_flick && (!g_flickstick_has_aim || flick_angle_change > k_flickstick_retrigger_angle)) {
+        // New flick event (either initial or quick direction change).
+        g_flickstick_has_aim = true;
+        g_flickstick_target_yaw = wrap_angle_pi(current_yaw + flick_angle);
+        g_flickstick_target_pitch = current_pitch;
+        yaw_delta = angle_diff(g_flickstick_target_yaw, current_yaw);
+    } else if (g_flickstick_has_aim && start_flick) {
+        // Continue current flick with relative delta movement.
+        yaw_delta = flick_turn_delta;
+        g_flickstick_target_yaw = wrap_angle_pi(g_flickstick_target_yaw + flick_turn_delta);
+    } else if (end_flick) {
+        g_flickstick_has_aim = false;
+        g_flickstick_prev_stick_valid = false;
+    } else {
+        yaw_delta = 0.0f;
+        pitch_delta = 0.0f;
+    }
+
+    // Apply sweep sensitivity multiplier.
+    yaw_delta *= g_alpine_game_config.gamepad_flickstick_sweep;
+
+    // Flick-stick smoothing (optional, keep turn smooth while still responsive)
+    static constexpr float k_flickstick_smooth = 0.75f;
+    g_flickstick_yaw_delta_filtered = g_flickstick_yaw_delta_filtered * k_flickstick_smooth
+        + yaw_delta * (1.0f - k_flickstick_smooth);
+    yaw_delta = g_flickstick_yaw_delta_filtered;
+    pitch_delta = 0.0f;
+}
+
 
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_down_hook{
     0x00430F40,
@@ -815,6 +917,47 @@ ConsoleCommand2 joy_look_deadzone_cmd{
     "Set right stick deadzone 0.0-0.9 (default 0.15)",
     "joy_look_deadzone [value]",
 };
+
+ConsoleCommand2 joy_flickstick_cmd{
+    "joy_flickstick",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_flickstick = val.value() != 0;
+        rf::console::print("Joy flick-stick: {}", g_alpine_game_config.gamepad_flickstick ? "enabled" : "disabled");
+    },
+    "Enable/disable flick-stick mode (default 0)",
+    "joy_flickstick [0|1]",
+};
+
+ConsoleCommand2 joy_flickstick_sweep_cmd{
+    "joy_flickstick_sweep",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.gamepad_flickstick_sweep = std::clamp(val.value(), 0.01f, 6.0f);
+        rf::console::print("Gamepad flickstick sweep: {:.2f}", g_alpine_game_config.gamepad_flickstick_sweep);
+    },
+    "Set flick-stick sweep sensitivity 0.01-6.0 (default 1.00)",
+    "joy_flickstick_sweep [value]",
+};
+
+ConsoleCommand2 joy_flickstick_deadzone_cmd{
+    "joy_flickstick_deadzone",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.gamepad_flickstick_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
+        rf::console::print("Gamepad flickstick deadzone: {:.2f}", g_alpine_game_config.gamepad_flickstick_deadzone);
+    },
+    "Set flick-stick activation deadzone 0.0-0.9 (default 0.80)",
+    "joy_flickstick_deadzone [value]",
+};
+
+ConsoleCommand2 joy_flickstick_release_deadzone_cmd{
+    "joy_flickstick_release_deadzone",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.gamepad_flickstick_release_deadzone = std::clamp(val.value(), 0.0f, 0.9f);
+        rf::console::print("Gamepad flickstick release deadzone: {:.2f}", g_alpine_game_config.gamepad_flickstick_release_deadzone);
+    },
+    "Set flick-stick release deadzone 0.0-0.9 (default 0.70)",
+    "joy_flickstick_release_deadzone [value]",
+};
+
 
 ConsoleCommand2 gyro_sens_cmd{
     "gyro_sens",
@@ -1058,6 +1201,10 @@ void gamepad_apply_patch()
     joy_sens_cmd.register_cmd();
     joy_move_deadzone_cmd.register_cmd();
     joy_look_deadzone_cmd.register_cmd();
+    joy_flickstick_cmd.register_cmd();
+    joy_flickstick_sweep_cmd.register_cmd();
+    joy_flickstick_deadzone_cmd.register_cmd();
+    joy_flickstick_release_deadzone_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();

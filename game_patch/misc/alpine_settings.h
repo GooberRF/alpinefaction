@@ -141,6 +141,10 @@ struct AlpineGameSettings
     float gamepad_joy_sensitivity = 2.5f;
     float gamepad_move_deadzone = 0.25f;
     float gamepad_look_deadzone = 0.15f;
+    bool gamepad_flickstick = false;
+    float gamepad_flickstick_deadzone = 0.90f;
+    float gamepad_flickstick_release_deadzone = 0.70f;
+    float gamepad_flickstick_sweep = 1.0f;
     float gamepad_gyro_sensitivity = 2.5f;
     bool gamepad_gyro_enabled = false;
     bool gamepad_gyro_vehicle_camera = false;
