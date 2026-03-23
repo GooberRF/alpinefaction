@@ -492,19 +492,18 @@ void gamepad_sdl_poll()
 
 static void gamepad_do_menu_frame()
 {
-    // Left-stick cursor navigation (respects gamepad_swap_sticks).
+    // Menu cursor navigation
     // Moving the stick moves the OS cursor and posts WM_MOUSEMOVE so RF's UI tracks it.
-    // Any stick movement clears g_dpad_nav_active so South/A will send LClick again.
+    // Any cursor movement clears g_dpad_nav_active so South Button will send Left Mouse Click again.
     {
-        SDL_GamepadAxis cx_axis = g_alpine_game_config.gamepad_swap_sticks
-            ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX;
-        SDL_GamepadAxis cy_axis = g_alpine_game_config.gamepad_swap_sticks
-            ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
-        float cursor_dz = g_alpine_game_config.gamepad_swap_sticks
-            ? g_alpine_game_config.gamepad_look_deadzone : g_alpine_game_config.gamepad_move_deadzone;
+        // Use dedicated menu joystick deadzone.
+        SDL_GamepadAxis cx_axis = SDL_GAMEPAD_AXIS_LEFTX;
+        SDL_GamepadAxis cy_axis = SDL_GAMEPAD_AXIS_LEFTY;
+        constexpr float k_menu_joystick_deadzone = 0.12f;
 
-        float sx = get_axis(cx_axis, cursor_dz);
-        float sy = get_axis(cy_axis, cursor_dz);
+        float sx = get_axis(cx_axis, k_menu_joystick_deadzone);
+        float sy = get_axis(cy_axis, k_menu_joystick_deadzone);
+
 
         if (sx != 0.0f || sy != 0.0f) {
             // Speed: up to 1000 px/s at full deflection, scaled by screen height so it
@@ -559,11 +558,9 @@ static void gamepad_do_menu_frame()
 
     // Right-stick scroll: write rf::mouse_dz so the existing state-aware CodeInjection patches
     // in main_menu.cpp pick it up and call the correct up_on_click / down_on_click.
-    // Respects gamepad_swap_sticks — use the "look" stick Y axis whichever it is.
-    SDL_GamepadAxis scroll_axis = g_alpine_game_config.gamepad_swap_sticks
-        ? SDL_GAMEPAD_AXIS_LEFTY : SDL_GAMEPAD_AXIS_RIGHTY;
-    float scroll_dz = g_alpine_game_config.gamepad_swap_sticks
-        ? g_alpine_game_config.gamepad_move_deadzone : g_alpine_game_config.gamepad_look_deadzone;
+    SDL_GamepadAxis scroll_axis = SDL_GAMEPAD_AXIS_RIGHTY;
+    constexpr float k_menu_scroll_joystick_deadzone = 0.12f;
+    float scroll_dz = k_menu_scroll_joystick_deadzone;
     float ry = get_axis(scroll_axis, scroll_dz);
     if (ry != 0.0f) {
         g_menu_scroll_timer -= rf::frametime;
