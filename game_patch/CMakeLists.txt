@@ -335,7 +335,7 @@ target_link_libraries(AlpineFaction
     ws2_32
     freetype
     stb_vorbis
-    SDL3::SDL3-static
+    SDL3::SDL3
     GamepadMotionHelpers
 )
 
