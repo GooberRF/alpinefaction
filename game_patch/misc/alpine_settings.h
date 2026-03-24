@@ -78,6 +78,7 @@ struct AlpineGameSettings
     bool swap_gn_controls = false;
     bool swap_sg_controls = false;
     bool mouse_linear_pitch = true;
+    int mouse_scale = 0; // 0=Classic (RF native), 1=Raw (pure degrees), 2=Modern (id Tech/Source 0.022 deg/pixel)
     bool big_hud = false;
     int skip_cutscene_bind_alias = -1;
     bool try_disable_weapon_shake = false;
@@ -152,6 +153,7 @@ struct AlpineGameSettings
     bool always_clamp_official_lightmaps = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
+    bool footsteps = true;
     static constexpr int min_gib_chunk_count = 7;
     static constexpr int max_gib_chunk_count = 100;
     int gib_chunk_count = 14;

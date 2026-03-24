@@ -99,6 +99,10 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Improve presented damage calculations for stats and damage numbers
 - Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
 - Add freelook/first person toggle bind in spectator mode
+- Implement enemy and teammate footstep audio for weapons other than pistol
+
+[@AL2009man](https://github.com/AL2009man)
+- Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher

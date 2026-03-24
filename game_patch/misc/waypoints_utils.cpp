@@ -379,7 +379,14 @@ void capture_waypoint_editor_mouse_input()
     int mouse_z = 0;
     rf::mouse_get_pos(g_waypoint_editor_mouse_x, g_waypoint_editor_mouse_y, mouse_z);
     g_waypoint_editor_left_click_pressed = rf::mouse_was_button_pressed(0) > 0;
-    g_waypoint_editor_right_click_pressed = rf::mouse_was_button_pressed(1) > 0;
+    // Use secondary attack bind (whatever key/button it's bound to) for cursor toggle.
+    // Call the original (unhooked) function since our hook blocks this action.
+    bool secondary_just_pressed = false;
+    control_config_check_pressed_waypoint_editor_hook.call_target(
+        &rf::local_player->settings.controls,
+        rf::CC_ACTION_SECONDARY_ATTACK,
+        &secondary_just_pressed);
+    g_waypoint_editor_right_click_pressed = secondary_just_pressed;
     g_waypoint_editor_left_click_consumed = false;
 }
 
@@ -1141,11 +1148,7 @@ void finalize_selection_after_translation(const WaypointEditorSelectionState& se
         return;
     }
 
-    if (selection.kind == WaypointEditorSelectionKind::target) {
-        if (WaypointTargetDefinition* target = find_waypoint_target_by_uid(selection.uid)) {
-            rebuild_target_waypoint_refs(*target);
-        }
-    }
+    // Targets keep their waypoint refs on move — use Auto link to rebuild.
 }
 
 std::string selection_debug_name(const WaypointEditorSelectionState& selection)
@@ -3551,6 +3554,20 @@ void render_waypoint_editor_overlay_panel()
             }
             if (draw_waypoint_editor_button(
                     {action_x + half_w + action_gap, action_y, half_w, action_h},
+                    "Auto link",
+                    font_id,
+                    target_actions_enabled)) {
+                waypoints_autolink_target(g_waypoint_editor_selection.uid);
+                const auto* target = find_waypoint_target_by_uid(g_waypoint_editor_selection.uid);
+                const int ref_count = target ? static_cast<int>(target->waypoint_uids.size()) : 0;
+                push_waypoint_editor_log(std::format(
+                    "Target {} autolinked: {} waypoint refs",
+                    g_waypoint_editor_selection.uid, ref_count));
+            }
+            action_y += action_h + 4;
+
+            if (draw_waypoint_editor_button(
+                    {action_x, action_y, half_w, action_h},
                     "Delete target",
                     font_id,
                     target_actions_enabled)) {

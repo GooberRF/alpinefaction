@@ -23,6 +23,8 @@
 #include "../object/object.h"
 #include "bots/bot_personality.h"
 #include "bots/bot_state.h"
+#include "../object/object_private.h"
+#include "../misc/misc.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
@@ -1264,6 +1266,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_LOCATION_PINGING;
     if (g_alpine_server_config_active_rules.spawn_delay.enabled)
         af |= af_server_info_flags::SIF_DELAYED_SPAWNS;
+    if (g_alpine_server_config.allow_footsteps)
+        af |= af_server_info_flags::SIF_ALLOW_FOOTSTEPS;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -1435,12 +1439,16 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
     server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
     server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
     server_info.geo_chunk_physics = (pkt.af_flags & af_server_info_flags::SIF_GEO_CHUNK_PHYSICS) != 0;
+    server_info.allow_footsteps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FOOTSTEPS) != 0;
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();
     }
 
     server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
+
+    // Update footstep activation based on new server permissions
+    evaluate_footsteps();
 
     //xlog::warn("af_server_info processed - gt {}, cooldown {}", pkt.game_type, server_info.semi_auto_cooldown.value());
 }

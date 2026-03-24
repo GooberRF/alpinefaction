@@ -85,6 +85,7 @@ bool link_waypoint_if_clear_autogen(int from, int to);
 bool segment_blocked_only_by_geoable_brushes(const rf::Vector3& from, const rf::Vector3& to);
 bool ground_is_breakable_glass(const rf::Vector3& pos, float max_downward_dist);
 bool trace_segment_hits_breakable_glass(const rf::Vector3& from, const rf::Vector3& to);
+bool waypoint_has_link_to(int from, int to);
 rf::Mover* find_mover_by_uid(int mover_uid);
 void update_ctf_dropped_flag_temporary_waypoints();
 bool is_waypoint_bot_mode_active();
@@ -1814,6 +1815,138 @@ std::vector<int> collect_target_waypoint_uids(const rf::Vector3& pos)
     }
     normalize_target_waypoint_uids(waypoint_uids);
     return waypoint_uids;
+}
+
+// Find the shortest path distance (hop count) between two waypoints using BFS.
+// Returns -1 if no path exists.
+int waypoint_graph_distance(int from, int to)
+{
+    if (from == to) {
+        return 0;
+    }
+
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+    std::vector<int> dist(waypoint_count, -1);
+    std::deque<int> queue;
+    dist[from] = 0;
+    queue.push_back(from);
+
+    while (!queue.empty()) {
+        const int current = queue.front();
+        queue.pop_front();
+
+        const auto& node = g_waypoints[current];
+        for (int i = 0; i < node.num_links; ++i) {
+            const int neighbor = node.links[i];
+            if (neighbor <= 0 || neighbor >= waypoint_count) {
+                continue;
+            }
+            if (dist[neighbor] >= 0) {
+                continue;
+            }
+            dist[neighbor] = dist[current] + 1;
+            if (neighbor == to) {
+                return dist[neighbor];
+            }
+            queue.push_back(neighbor);
+        }
+
+        // Also check reverse links (inbound to current).
+        for (int j = 1; j < waypoint_count; ++j) {
+            if (j == current || dist[j] >= 0 || !g_waypoints[j].valid) {
+                continue;
+            }
+            if (waypoint_has_link_to(j, current)) {
+                dist[j] = dist[current] + 1;
+                if (j == to) {
+                    return dist[j];
+                }
+                queue.push_back(j);
+            }
+        }
+    }
+
+    return -1;
+}
+
+// Find the two waypoints in range that are furthest apart by graph distance
+// (number of hops through existing links). If prefer_same_height is true,
+// strongly prefer pairs at similar Y positions (for jump targets).
+std::vector<int> collect_target_waypoint_uids_by_graph_distance(
+    const rf::Vector3& pos, bool prefer_same_height = false)
+{
+    // First collect all waypoints in range.
+    const auto nearby = collect_target_waypoint_uids(pos);
+    if (nearby.size() < 2) {
+        return nearby;
+    }
+
+    // Find the pair with the greatest graph distance.
+    // Unreachable pairs (no path, distance = -1) are the highest priority —
+    // the target would bridge two otherwise disconnected sections of the map.
+    int best_a = -1;
+    int best_b = -1;
+    int best_dist = 0; // 0 = same waypoint, never selected
+    bool best_is_unreachable = false;
+    float best_height_diff = std::numeric_limits<float>::max();
+
+    auto is_better_pair = [&](int wa, int wb, int d, bool unreachable) {
+        const float height_diff = std::fabs(g_waypoints[wa].pos.y - g_waypoints[wb].pos.y);
+
+        // Unreachable always beats reachable.
+        if (unreachable && !best_is_unreachable) {
+            return true;
+        }
+        if (!unreachable && best_is_unreachable) {
+            return false;
+        }
+
+        if (unreachable) {
+            if (prefer_same_height) {
+                // Among unreachable, prefer smallest height difference,
+                // then closest to target as tiebreaker.
+                if (height_diff < best_height_diff - 0.5f) return true;
+                if (height_diff > best_height_diff + 0.5f) return false;
+            }
+            // Prefer the pair closest to the target.
+            const float cur_combined = distance_sq(pos, g_waypoints[wa].pos)
+                + distance_sq(pos, g_waypoints[wb].pos);
+            const float best_combined = (best_a > 0 && best_b > 0)
+                ? distance_sq(pos, g_waypoints[best_a].pos)
+                  + distance_sq(pos, g_waypoints[best_b].pos)
+                : std::numeric_limits<float>::max();
+            return cur_combined < best_combined;
+        }
+
+        // Both reachable.
+        if (prefer_same_height) {
+            // Prefer smallest height difference, then greatest hop count.
+            if (height_diff < best_height_diff - 0.5f) return true;
+            if (height_diff > best_height_diff + 0.5f) return false;
+        }
+        return d > best_dist;
+    };
+
+    for (size_t i = 0; i < nearby.size(); ++i) {
+        for (size_t j = i + 1; j < nearby.size(); ++j) {
+            const int d = waypoint_graph_distance(nearby[i], nearby[j]);
+            const bool unreachable = (d < 0);
+
+            if (is_better_pair(nearby[i], nearby[j], d, unreachable)) {
+                best_is_unreachable = unreachable;
+                best_a = nearby[i];
+                best_b = nearby[j];
+                best_dist = d;
+                best_height_diff = std::fabs(
+                    g_waypoints[nearby[i]].pos.y - g_waypoints[nearby[j]].pos.y);
+            }
+        }
+    }
+
+    if (best_a > 0 && best_b > 0) {
+        return {best_a, best_b};
+    }
+    return nearby;
 }
 
 uint64_t make_undirected_waypoint_link_key(const int waypoint_a, const int waypoint_b)
@@ -8478,6 +8611,18 @@ int waypoints_calculate_ledge_drops(int waypoint_uid)
     }
 
     return links_added;
+}
+
+void waypoints_autolink_target(int target_uid)
+{
+    WaypointTargetDefinition* target = find_waypoint_target_by_uid(target_uid);
+    if (!target) {
+        return;
+    }
+
+    const bool prefer_same_height = (target->type == WaypointTargetType::jump);
+    target->waypoint_uids = collect_target_waypoint_uids_by_graph_distance(target->pos, prefer_same_height);
+    normalize_target_waypoint_uids(target->waypoint_uids);
 }
 
 bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid)
