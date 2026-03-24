@@ -20,6 +20,7 @@ void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* en
 bool multi_spectate_is_spectating();
 bool multi_spectate_is_first_person();
 void multi_spectate_toggle_freelook();
+void multi_spectate_toggle();
 bool multi_spectate_is_freelook();
 bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pressed);
 void multi_spectate_sync_crouch_anim();
