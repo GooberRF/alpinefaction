@@ -144,6 +144,14 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
             return;
         }
 
+        // If the player entity is not valid (dead/spawn transition), pause raw delta.
+        if (!rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity)) {
+            reset_mouse_delta_accumulators();
+            dx = 0;
+            dy = 0;
+            return;
+        }
+
         // In Raw/Modern mode: capture raw deltas for centralized angle
         // computation and zero them so RF does not apply its own scaling.
         // Skip when in a vehicle (RF needs the deltas to steer), but scale
@@ -315,7 +323,7 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
 
     const bool has_player_entity = rf::local_player_entity && !rf::entity_is_dying(rf::local_player_entity);
     if (!rf::local_player || !rf::keep_mouse_centered || !has_player_entity) {
-        if (!rf::local_player || !rf::keep_mouse_centered) {
+        if (!rf::local_player || !rf::keep_mouse_centered || !has_player_entity) {
             reset_mouse_delta_accumulators();
         }
         return;
