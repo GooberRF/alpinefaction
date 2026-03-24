@@ -381,6 +381,10 @@ CodeInjection linear_pitch_patch{
         float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
         float& yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
 
+        if (entity && rf::entity_is_dying(entity)) {
+            return;
+        }
+
         // Mouse camera contribution: raw pixel deltas converted to radians.
         // Only active when mouse_scale mode is non-Classic; otherwise RF's own
         // pipeline has already applied sensitivity and pitch_delta/yaw_delta are populated.
