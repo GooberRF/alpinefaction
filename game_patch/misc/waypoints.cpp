@@ -438,6 +438,8 @@ WaypointType waypoint_type_from_int(int raw_type)
             return WaypointType::tele_entrance;
         case static_cast<int>(WaypointType::tele_exit):
             return WaypointType::tele_exit;
+        case static_cast<int>(WaypointType::conveyer):
+            return WaypointType::conveyer;
         default:
             return static_cast<WaypointType>(raw_type);
     }
@@ -481,6 +483,8 @@ std::string_view waypoint_type_name(WaypointType type)
             return "tele_entrance";
         case WaypointType::tele_exit:
             return "tele_exit";
+        case WaypointType::conveyer:
+            return "conveyer";
         default:
             return "unknown";
     }
@@ -856,6 +860,42 @@ float waypoint_link_radius_from_push_region(const rf::PushRegion& push_region)
     return kWaypointLinkRadius;
 }
 
+bool push_region_is_conveyer_belt(const rf::PushRegion& push_region)
+{
+    // Must be grounded and not a jump pad.
+    const auto flags = push_region.flags_and_turbulence;
+    if ((flags & rf::PushRegionFlags::PRF_GROUNDED) == 0) {
+        return false;
+    }
+    if ((flags & rf::PushRegionFlags::PRF_JUMP_PAD) != 0) {
+        return false;
+    }
+    // Push direction must be roughly horizontal (within 30 degrees of the XZ plane).
+    // fvec is the push direction. Y component represents vertical component.
+    const rf::Vector3& dir = push_region.orient.fvec;
+    const float horizontal_sq = dir.x * dir.x + dir.z * dir.z;
+    const float vertical_sq = dir.y * dir.y;
+    // cos(30 degrees) ~= 0.866, so horizontal component must be >= 0.866 of total length.
+    // Equivalently: horizontal_sq / (horizontal_sq + vertical_sq) >= 0.75
+    return horizontal_sq >= 0.75f * (horizontal_sq + vertical_sq);
+}
+
+int find_conveyer_push_region_uid_at_point(const rf::Vector3& point)
+{
+    for (int i = 0; i < rf::level.pushers.size(); ++i) {
+        auto* push_region = rf::level.pushers[i];
+        if (!push_region || !push_region_is_conveyer_belt(*push_region)) {
+            continue;
+        }
+        if (point.x >= push_region->aabb_min.x && point.x <= push_region->aabb_max.x
+            && point.y >= push_region->aabb_min.y && point.y <= push_region->aabb_max.y
+            && point.z >= push_region->aabb_min.z && point.z <= push_region->aabb_max.z) {
+            return push_region->uid;
+        }
+    }
+    return -1;
+}
+
 float waypoint_link_radius_from_trigger(const rf::Trigger& trigger)
 {
     if (trigger.type == 0) { // sphere
@@ -1016,11 +1056,32 @@ bool lift_exit_inbound_link_allowed(const WaypointNode& from_node, const Waypoin
     return true;
 }
 
+// Conveyer-to-conveyer links are only allowed in the push direction.
+// A link from conveyer A to conveyer B is allowed if the direction from A to B
+// has a positive dot product with A's push direction.
+bool conveyer_outbound_link_allowed(const WaypointNode& from_node, const WaypointNode& to_node)
+{
+    if (from_node.type != WaypointType::conveyer || to_node.type != WaypointType::conveyer) {
+        return true;
+    }
+    // Look up the push region for the source conveyer to get push direction.
+    const auto* push_region = rf::level_get_push_region_from_uid(from_node.identifier);
+    if (!push_region) {
+        return true;
+    }
+    const rf::Vector3 link_dir = to_node.pos - from_node.pos;
+    const rf::Vector3& push_dir = push_region->orient.fvec;
+    // Project onto horizontal plane for direction comparison.
+    const float dot = link_dir.x * push_dir.x + link_dir.z * push_dir.z;
+    return dot > 0.0f;
+}
+
 bool waypoint_link_types_allowed(const WaypointNode& from_node, const WaypointNode& to_node)
 {
     return tele_entrance_outbound_link_allowed(from_node, to_node)
         && lift_entrance_outbound_link_allowed(from_node, to_node)
-        && lift_exit_inbound_link_allowed(from_node, to_node);
+        && lift_exit_inbound_link_allowed(from_node, to_node)
+        && conveyer_outbound_link_allowed(from_node, to_node);
 }
 
 bool waypoint_bridge_zone_is_active(const WaypointZoneDefinition& zone)
@@ -2883,6 +2944,7 @@ bool waypoint_type_requires_floor_supported_midpoint_for_autogen_link(WaypointTy
         case WaypointType::ctf_flag:
         case WaypointType::tele_entrance:
         case WaypointType::tele_exit:
+        case WaypointType::conveyer:
             return true;
         default:
             return false;
@@ -3706,6 +3768,66 @@ void seed_waypoints_from_objects()
         auto_link_source_indices.push_back(waypoint_index);
     }
 
+    // Seed conveyer belt waypoints along grounded horizontal push regions,
+    // placing waypoints at regular intervals along the push direction.
+    for (int i = 0; i < rf::level.pushers.size(); ++i) {
+        auto* push_region = rf::level.pushers[i];
+        if (!push_region || !push_region_is_conveyer_belt(*push_region)) {
+            continue;
+        }
+
+        // Walk along the push direction through the region's AABB,
+        // placing waypoints every probe step distance.
+        const rf::Vector3& push_dir = push_region->orient.fvec;
+        rf::Vector3 horizontal_dir{push_dir.x, 0.0f, push_dir.z};
+        horizontal_dir.normalize_safe();
+
+        // Compute how far the region extends along the push direction from center.
+        const rf::Vector3 half_extents{
+            (push_region->aabb_max.x - push_region->aabb_min.x) * 0.5f,
+            (push_region->aabb_max.y - push_region->aabb_min.y) * 0.5f,
+            (push_region->aabb_max.z - push_region->aabb_min.z) * 0.5f,
+        };
+        const float extent_along_dir =
+            std::fabs(horizontal_dir.x) * half_extents.x
+            + std::fabs(horizontal_dir.z) * half_extents.z;
+
+        const float step = kWaypointGenerateProbeStepDistance;
+        const int half_steps = std::max(0, static_cast<int>(extent_along_dir / step));
+
+        for (int s = -half_steps; s <= half_steps; ++s) {
+            const rf::Vector3 candidate_pos =
+                push_region->pos + horizontal_dir * (static_cast<float>(s) * step);
+
+            // Verify the candidate is inside the AABB.
+            if (candidate_pos.x < push_region->aabb_min.x || candidate_pos.x > push_region->aabb_max.x
+                || candidate_pos.z < push_region->aabb_min.z || candidate_pos.z > push_region->aabb_max.z) {
+                continue;
+            }
+
+            // Find ground below the candidate position.
+            rf::Vector3 floor_pos{};
+            if (!trace_ground_below_point(candidate_pos, kBridgeWaypointMaxGroundDistance, &floor_pos)) {
+                continue;
+            }
+
+            // Place at ground offset (same as standard waypoints).
+            const rf::Vector3 wp_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+
+            // Verify minimum headroom.
+            const float headroom = trace_upward_clearance_from_floor_hit(floor_pos, kWaypointGenerateStandingHeadroom + 1.0f);
+            if (headroom < kWaypointGenerateMinHeadroom) {
+                continue;
+            }
+
+            const int waypoint_index = add_waypoint(
+                wp_pos, WaypointType::conveyer, 0, false,
+                true, kWaypointLinkRadius, push_region->uid);
+            seeded_indices.push_back(waypoint_index);
+            auto_link_source_indices.push_back(waypoint_index);
+        }
+    }
+
     seed_waypoints_from_teleport_events(&seeded_indices, &auto_link_source_indices);
     auto_link_default_seeded_waypoints(seeded_indices, auto_link_source_indices);
 }
@@ -4315,6 +4437,11 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 generated_identifier = lift_uid_below;
                 generated_movement_subtype = static_cast<int>(WaypointDroppedSubtype::normal);
             }
+            else if (const int conveyer_uid = find_conveyer_push_region_uid_at_point(candidate_pos);
+                     conveyer_uid >= 0) {
+                generated_type = WaypointType::conveyer;
+                generated_identifier = conveyer_uid;
+            }
 
             const int waypoint_index = add_waypoint(
                 candidate_pos,
@@ -4855,6 +4982,7 @@ bool waypoint_type_is_special(WaypointType type)
         case WaypointType::ctf_flag:
         case WaypointType::tele_entrance:
         case WaypointType::tele_exit:
+        case WaypointType::conveyer:
             return true;
         default:
             return false;
