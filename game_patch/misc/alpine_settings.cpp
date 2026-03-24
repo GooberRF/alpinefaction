@@ -1215,6 +1215,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "MouseYInvert=" << cc.axes[1].invert << "\n";
     file << "DirectInput=" << g_alpine_game_config.direct_input << "\n";
     file << "MouseLinearPitch=" << g_alpine_game_config.mouse_linear_pitch << "\n";
+    file << "MouseScale=" << g_alpine_game_config.mouse_scale << "\n";
     file << "SwapARBinds=" << g_alpine_game_config.swap_ar_controls << "\n";
     file << "SwapGNBinds=" << g_alpine_game_config.swap_gn_controls << "\n";
     file << "SwapSGBinds=" << g_alpine_game_config.swap_sg_controls << "\n";
