@@ -316,6 +316,12 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
         reset_mouse_delta_accumulators();
         return;
     }
+
+    if (g_camera_mouse_dx == 0 && g_camera_mouse_dy == 0) {
+        // No raw mouse movement accumulated
+        return;
+    }
+
     float sens = rf::local_player->settings.controls.mouse_sensitivity;
     constexpr float deg2rad = 3.14159265f / 180.0f;
     constexpr float id_tech_deg_per_pixel = 0.022f;
