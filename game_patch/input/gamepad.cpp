@@ -771,7 +771,7 @@ static void gamepad_apply_flickstick(float rx, float ry, float current_yaw, floa
     yaw_delta *= g_alpine_game_config.gamepad_flickstick_sweep;
 
     // Flick-stick smoothing (optional, keep turn smooth while still responsive)
-    static constexpr float k_flickstick_smooth = 0.75f;
+    float k_flickstick_smooth = std::clamp(g_alpine_game_config.gamepad_flickstick_smoothing, 0.0f, 1.0f);
     g_flickstick_yaw_delta_filtered = g_flickstick_yaw_delta_filtered * k_flickstick_smooth
         + yaw_delta * (1.0f - k_flickstick_smooth);
     yaw_delta = g_flickstick_yaw_delta_filtered;
@@ -938,6 +938,16 @@ ConsoleCommand2 joy_flickstick_sweep_cmd{
     "joy_flickstick_sweep [value]",
 };
 
+ConsoleCommand2 joy_flickstick_smoothing_cmd{
+    "joy_flickstick_smoothing",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.gamepad_flickstick_smoothing = std::clamp(val.value(), 0.0f, 1.0f);
+        rf::console::print("Gamepad flickstick smoothing: {:.2f}", g_alpine_game_config.gamepad_flickstick_smoothing);
+    },
+    "Set flick-stick smoothing factor 0.0-1.0 (default 0.75)",
+    "joy_flickstick_smoothing [value]",
+};
+
 ConsoleCommand2 joy_flickstick_deadzone_cmd{
     "joy_flickstick_deadzone",
     [](std::optional<float> val) {
@@ -958,24 +968,13 @@ ConsoleCommand2 joy_flickstick_release_deadzone_cmd{
     "joy_flickstick_release_deadzone [value]",
 };
 
-
-ConsoleCommand2 gyro_sens_cmd{
-    "gyro_sens",
-    [](std::optional<float> val) {
-        if (val) g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(val.value(), 0.0f, 30.0f);
-        rf::console::print("Gyro sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_sensitivity);
-    },
-    "Set gyro sensitivity 0-30 (default 2.5)",
-    "gyro_sens [value]",
-};
-
 ConsoleCommand2 gyro_camera_cmd{
     "gyro_camera",
     [](std::optional<int> val) {
         if (val) g_alpine_game_config.gamepad_gyro_enabled = val.value() != 0;
         rf::console::print("Gyro camera: {}", g_alpine_game_config.gamepad_gyro_enabled ? "enabled" : "disabled");
     },
-    "Enable/disable gyro camera (default 1)",
+    "Enable/disable gyro camera (default 0)",
     "gyro_camera [0|1]",
 };
 
@@ -987,6 +986,16 @@ ConsoleCommand2 gyro_vehicle_camera_cmd{
     },
     "Enable/disable gyro camera while in vehicles (default 0)",
     "gyro_vehicle_camera [0|1]",
+};
+
+ConsoleCommand2 gyro_sens_cmd{
+    "gyro_sens",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(val.value(), 0.0f, 30.0f);
+        rf::console::print("Gyro sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_sensitivity);
+    },
+    "Set gyro sensitivity 0-30 (default 2.5)",
+    "gyro_sens [value]",
 };
 
 ConsoleCommand2 input_prompts_cmd{
@@ -1203,6 +1212,7 @@ void gamepad_apply_patch()
     joy_look_deadzone_cmd.register_cmd();
     joy_flickstick_cmd.register_cmd();
     joy_flickstick_sweep_cmd.register_cmd();
+    joy_flickstick_smoothing_cmd.register_cmd();
     joy_flickstick_deadzone_cmd.register_cmd();
     joy_flickstick_release_deadzone_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();

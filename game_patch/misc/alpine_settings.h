@@ -141,18 +141,19 @@ struct AlpineGameSettings
     float gamepad_joy_sensitivity = 2.5f;
     float gamepad_move_deadzone = 0.25f;
     float gamepad_look_deadzone = 0.15f;
-    bool gamepad_flickstick = false;
-    float gamepad_flickstick_deadzone = 0.90f;
-    float gamepad_flickstick_release_deadzone = 0.70f;
-    float gamepad_flickstick_sweep = 1.0f;
-    float gamepad_gyro_sensitivity = 2.5f;
     bool gamepad_gyro_enabled = false;
+    float gamepad_gyro_sensitivity = 2.5f;
     bool gamepad_gyro_vehicle_camera = false;
     int gamepad_gyro_autocalibration_mode = 1; // 0=Off, 1=MenuOnly, 2=Always
     int gamepad_gyro_space = 3; // GyroSpace: Yaw=0  Roll=1  Local=2  Player=3  World=4
     bool gamepad_gyro_invert_y = false;
     float gamepad_gyro_tightening = 1.4f;
     float gamepad_gyro_smoothing = 7.0f;
+    bool gamepad_flickstick = false;
+    float gamepad_flickstick_sweep = 1.0f;    
+    float gamepad_flickstick_deadzone = 0.90f;
+    float gamepad_flickstick_release_deadzone = 0.70f;
+    float gamepad_flickstick_smoothing = 0.75f;    
     int gamepad_icon_override = 0; // ControllerIconType: 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube
     int input_prompt_override = 0; // 0=Auto, 1=Controller, 2=Keyboard
     bool gamepad_joy_invert_y = false;

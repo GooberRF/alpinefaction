@@ -825,6 +825,7 @@ void ao_gyro_enabled_cbox_on_click(int x, int y) {
     g_alpine_game_config.gamepad_gyro_enabled = !g_alpine_game_config.gamepad_gyro_enabled;
     ao_gyro_enabled_cbox.checked = g_alpine_game_config.gamepad_gyro_enabled;
     ao_play_button_snd(g_alpine_game_config.gamepad_gyro_enabled);
+    gyro_update_calibration_mode();
 }
 
 void ao_joy_sensitivity_cbox_on_click_callback() {
@@ -1575,21 +1576,26 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_gyro_space_butlabel_text, sizeof(ao_gyro_space_butlabel_text), "%s", gyro_get_space_name(g_alpine_game_config.gamepad_gyro_space));
     ao_gyro_space_butlabel.text = ao_gyro_space_butlabel_text;
 
-    // show/hide gyro ui if gamepad supports motion sensors
+    // show/hide gyro ui if gamepad supports motion sensors and (for subcontrols) gyro aiming is enabled
     bool gyro_hw = gamepad_is_motionsensors_supported();
+    bool gyro_enabled = gyro_hw && g_alpine_game_config.gamepad_gyro_enabled;
+
     ao_gyro_enabled_cbox.enabled         = gyro_hw;
     ao_gyro_enabled_label.enabled        = gyro_hw;
-    ao_gyro_sensitivity_cbox.enabled     = gyro_hw;
-    ao_gyro_sensitivity_label.enabled    = gyro_hw;
-    ao_gyro_sensitivity_butlabel.enabled = gyro_hw;
-    ao_gyro_autocalibration_cbox.enabled   = gyro_hw;
-    ao_gyro_autocalibration_label.enabled  = gyro_hw;
-    ao_gyro_autocalibration_butlabel.enabled = gyro_hw;
-    ao_gyro_invert_y_cbox.enabled        = gyro_hw;
-    ao_gyro_invert_y_label.enabled       = gyro_hw;
-    ao_gyro_space_cbox.enabled           = gyro_hw;
-    ao_gyro_space_label.enabled          = gyro_hw;
-    ao_gyro_space_butlabel.enabled       = gyro_hw;
+
+    ao_gyro_sensitivity_cbox.enabled     = gyro_enabled;
+    ao_gyro_sensitivity_label.enabled    = gyro_enabled;
+    ao_gyro_sensitivity_butlabel.enabled = gyro_enabled;
+
+    ao_gyro_autocalibration_cbox.enabled   = gyro_enabled;
+    ao_gyro_autocalibration_label.enabled  = gyro_enabled;
+    ao_gyro_autocalibration_butlabel.enabled = gyro_enabled;
+
+    ao_gyro_invert_y_cbox.enabled        = gyro_enabled;
+    ao_gyro_invert_y_label.enabled       = gyro_enabled;
+    ao_gyro_space_cbox.enabled           = gyro_enabled;
+    ao_gyro_space_label.enabled          = gyro_enabled;
+    ao_gyro_space_butlabel.enabled       = gyro_enabled;
 
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {

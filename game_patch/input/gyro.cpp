@@ -17,6 +17,12 @@ void gyro_update_calibration_mode()
     using CM = GamepadMotionHelpers::CalibrationMode;
     int mode = std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2);
 
+    // Autocalibration should only run when gyro aiming is enabled.
+    bool gyro_enabled = g_alpine_game_config.gamepad_gyro_enabled && gamepad_is_motionsensors_supported();
+    if (!gyro_enabled) {
+        mode = 0; // force manual calibration when gyro is disabled
+    }
+
     CM desired;
     switch (mode) {
     case 1: // Menu Only — only calibrate when not in gameplay
