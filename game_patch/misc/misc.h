@@ -28,3 +28,6 @@ bool rocket_locked_reticle_is_customized(bool bighud);
 // Controller bindings tab (ui.cpp) — queried from main_menu.cpp
 bool ui_ctrl_bindings_view_active();
 void ui_ctrl_bindings_view_reset(); // restore keyboard scan codes and deactivate tab
+
+// Redraw currently active HUD token message after input icon/settings change
+void hud_refresh_action_tokens();

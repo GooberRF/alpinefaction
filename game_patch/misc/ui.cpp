@@ -38,6 +38,7 @@ static int16_t g_saved_scan_codes[128] = {}; // saved keyboard scan_codes[0] per
 // CONTROLLER mode checkbox (integrated into the controls panel)
 static rf::ui::Checkbox g_ctrl_mode_cbox;
 static bool g_ctrl_mode_btns_initialized = false;
+static bool g_alpine_options_hud_dirty = false;
 
 // alpine options panel elements
 static rf::ui::Panel alpine_options_panel; // parent to all subpanels
@@ -86,6 +87,17 @@ static rf::ui::Label ao_scopesens_label;
 static rf::ui::Label ao_scopesens_butlabel;
 static char ao_scopesens_butlabel_text[9];
 static rf::ui::Checkbox ao_maxfps_cbox;
+
+static rf::ui::Checkbox ao_gamepad_icon_override_cbox;
+static rf::ui::Label ao_gamepad_icon_override_label;
+static rf::ui::Label ao_gamepad_icon_override_butlabel;
+static char ao_gamepad_icon_override_butlabel_text[20];
+
+static rf::ui::Checkbox ao_input_prompt_mode_cbox;
+static rf::ui::Label ao_input_prompt_mode_label;
+static rf::ui::Label ao_input_prompt_mode_butlabel;
+static char ao_input_prompt_mode_butlabel_text[16];
+
 static rf::ui::Label ao_maxfps_label;
 static rf::ui::Label ao_maxfps_butlabel;
 static char ao_maxfps_butlabel_text[9];
@@ -903,6 +915,18 @@ void ao_gyro_space_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y)
     ao_play_button_snd(true);
 }
 
+void ao_gamepad_icon_override_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+    g_alpine_game_config.gamepad_icon_override = (g_alpine_game_config.gamepad_icon_override + 1) % 11;
+    ao_play_button_snd(true);
+    g_alpine_options_hud_dirty = true;
+}
+
+void ao_input_prompt_mode_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+    g_alpine_game_config.input_prompt_override = (g_alpine_game_config.input_prompt_override + 1) % 3;
+    ao_play_button_snd(true);
+    g_alpine_options_hud_dirty = true;
+}
+
 void ao_gyro_invert_y_cbox_on_click(int x, int y) {
     g_alpine_game_config.gamepad_gyro_invert_y = !g_alpine_game_config.gamepad_gyro_invert_y;
     ao_gyro_invert_y_cbox.checked = g_alpine_game_config.gamepad_gyro_invert_y;
@@ -1144,6 +1168,10 @@ void alpine_options_panel_handle_key(rf::Key* key){
     // todo: more key support (tab, etc.)
     // close panel on escape
     if (*key == rf::Key::KEY_ESC) {
+        if (g_alpine_options_hud_dirty) {
+            hud_refresh_action_tokens();
+            g_alpine_options_hud_dirty = false;
+        }
         rf::ui::options_close_current_panel();
         rf::snd_play(43, 0, 0.0f, 1.0f);
         return;
@@ -1346,6 +1374,15 @@ void alpine_options_panel_init() {
         &ao_targetnames_cbox, &ao_targetnames_label, &alpine_options_panel1, ao_targetnames_cbox_on_click, g_alpine_game_config.display_target_player_names, 280, 234, "Target names");
     alpine_options_panel_checkbox_init(
         &ao_always_show_spectators_cbox, &ao_always_show_spectators_label, &alpine_options_panel1, ao_always_show_spectators_cbox_on_click, g_alpine_game_config.always_show_spectators, 280, 264, "Show spectators");
+
+    alpine_options_panel_inputbox_init(
+        &ao_input_prompt_mode_cbox, &ao_input_prompt_mode_label, &ao_input_prompt_mode_butlabel,
+        &alpine_options_panel1, ao_input_prompt_mode_cbox_on_click, 280, 294, "Input Glyph");
+    ao_input_prompt_mode_butlabel.x -= 8;
+    alpine_options_panel_inputbox_init(
+        &ao_gamepad_icon_override_cbox, &ao_gamepad_icon_override_label, &ao_gamepad_icon_override_butlabel,
+        &alpine_options_panel1, ao_gamepad_icon_override_cbox_on_click, 280, 324, "Gamepad Glyph");
+    ao_gamepad_icon_override_butlabel.x -= 8;
 
     // panel 2
     alpine_options_panel_checkbox_init(
@@ -1576,6 +1613,30 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_gyro_space_butlabel_text, sizeof(ao_gyro_space_butlabel_text), "%s", gyro_get_space_name(g_alpine_game_config.gamepad_gyro_space));
     ao_gyro_space_butlabel.text = ao_gyro_space_butlabel_text;
 
+    static const char* gamepad_icon_names[] = {"auto", "generic", "xbox360", "xboxone", "ds3", "ds4", "dualsense", "ns switch", "gamecube", "sc1", "sd"};
+    int gamepad_icon_index = std::clamp(g_alpine_game_config.gamepad_icon_override, 0, 10);
+    if (gamepad_icon_index == 0) {
+        snprintf(ao_gamepad_icon_override_butlabel_text, sizeof(ao_gamepad_icon_override_butlabel_text), " auto ");
+    } else {
+        snprintf(ao_gamepad_icon_override_butlabel_text, sizeof(ao_gamepad_icon_override_butlabel_text), "%s", gamepad_icon_names[gamepad_icon_index]);
+    }
+    ao_gamepad_icon_override_butlabel.text = ao_gamepad_icon_override_butlabel_text;
+    ao_gamepad_icon_override_butlabel.align = rf::gr::ALIGN_CENTER;
+
+    static const char* input_prompt_names[] = {"auto", "gamepad", "kb/mouse"};
+    int input_prompt_index = std::clamp(g_alpine_game_config.input_prompt_override, 0, 2);
+    if (input_prompt_index == 0) {
+        snprintf(ao_input_prompt_mode_butlabel_text, sizeof(ao_input_prompt_mode_butlabel_text), " auto ");
+    } else {
+        snprintf(ao_input_prompt_mode_butlabel_text, sizeof(ao_input_prompt_mode_butlabel_text), "%s", input_prompt_names[input_prompt_index]);
+    }
+    ao_input_prompt_mode_butlabel.text = ao_input_prompt_mode_butlabel_text;
+    ao_input_prompt_mode_butlabel.align = rf::gr::ALIGN_CENTER;
+
+    // shift all button text a little so it better fits inside the button area
+    ao_gamepad_icon_override_butlabel.x = 326 + 4;
+    ao_input_prompt_mode_butlabel.x = 326 + 4;
+
     // show/hide gyro ui if gamepad supports motion sensors and (for subcontrols) gyro aiming is enabled
     bool gyro_hw = gamepad_is_motionsensors_supported();
     bool gyro_enabled = gyro_hw && g_alpine_game_config.gamepad_gyro_enabled;
@@ -1597,6 +1658,14 @@ void alpine_options_panel_do_frame(int x)
     ao_gyro_space_label.enabled          = gyro_enabled;
     ao_gyro_space_butlabel.enabled       = gyro_enabled;
 
+    ao_gamepad_icon_override_cbox.enabled      = true;
+    ao_gamepad_icon_override_label.enabled     = true;
+    ao_gamepad_icon_override_butlabel.enabled  = true;
+
+    ao_input_prompt_mode_cbox.enabled      = true;
+    ao_input_prompt_mode_label.enabled     = true;
+    ao_input_prompt_mode_butlabel.enabled  = true;
+
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {
         if (ui_label && ui_label->enabled) {
@@ -1609,6 +1678,10 @@ static void options_alpine_on_click() {
     constexpr int alpine_options_panel_id = 4;
 
     if (rf::ui::options_current_panel == alpine_options_panel_id) {
+        if (g_alpine_options_hud_dirty) {
+            hud_refresh_action_tokens();
+            g_alpine_options_hud_dirty = false;
+        }
         rf::ui::options_close_current_panel();
         return;
     }

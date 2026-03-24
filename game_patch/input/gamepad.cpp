@@ -1004,27 +1004,28 @@ ConsoleCommand2 input_prompts_cmd{
         if (val) {
             g_alpine_game_config.input_prompt_override = std::clamp(*val, 0, 2);
         }
-        static const char* modes[] = {"Auto", "Controller", "Keyboard"};
+        static const char* modes[] = {"Auto", "Controller", "Keyboard/Mouse"};
         rf::console::print("Input prompts: {} ({})", modes[g_alpine_game_config.input_prompt_override], g_alpine_game_config.input_prompt_override);
     },
-    "Set input prompt display: 0=Auto 1=Controller 2=Keyboard",
+    "Set input prompt display: 0=Auto, 1=Controller, 2=Keyboard/Mouse",
     "input_prompts [0|1|2]",
 };
 
-ConsoleCommand2 gamepad_icons_cmd{
-    "joy_icons",
+ConsoleCommand2 gamepad_prompts_cmd{
+    "gamepad_prompts",
     [](std::optional<int> val) {
         static const char* icon_names[] = {
             "Auto", "Generic", "Xbox 360 Controller", "Xbox Wireless Controller",
-            "DualShock 3", "DualShock 4", "DualSense", "Nintendo Switch", "Nintendo GameCube",
+            "DualShock 3", "DualShock 4", "DualSense", "Nintendo Switch Controller", "Nintendo GameCube Controller",
+            "Steam Controller (2015)", "Steam Deck",
         };
-        if (val) g_alpine_game_config.gamepad_icon_override = std::clamp(val.value(), 0, 8);
+        if (val) g_alpine_game_config.gamepad_icon_override = std::clamp(val.value(), 0, 10);
         rf::console::print("Gamepad icons: {} ({})",
             icon_names[g_alpine_game_config.gamepad_icon_override],
             g_alpine_game_config.gamepad_icon_override);
     },
-    "Set gamepad button icon style: 0=Auto 1=Generic 2=Xbox360 3=XboxOne 4=DS3 5=DS4 6=DualSense 7=NintendoSwitch 8=NintendoGameCube",
-    "joy_icons [0-8]",
+    "Set gamepad button icon style: 0=Auto, 1=Generic, 2=Xbox 360 Controller, 3=Xbox Wireless Controller, 4=DualShock 3, 5=DualShock 4, 6=DualSense, 7=Nintendo Switch Controller, 8=Nintendo GameCube Controller, 9=Steam Controller (2015), 10=Steam Deck",
+    "gamepad_prompts [0-10]",
 };
 
 bool gamepad_is_motionsensors_supported()
@@ -1219,7 +1220,7 @@ void gamepad_apply_patch()
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();
     input_prompts_cmd.register_cmd();
-    gamepad_icons_cmd.register_cmd();
+    gamepad_prompts_cmd.register_cmd();
     gyro_apply_patch();
 }
 

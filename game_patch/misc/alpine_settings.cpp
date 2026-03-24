@@ -1065,7 +1065,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GamepadFlickstickReleaseDeadzone");
     }
     if (settings.count("GamepadIconOverride")) {
-        g_alpine_game_config.gamepad_icon_override = std::clamp(std::stoi(settings["GamepadIconOverride"]), 0, 8);
+        g_alpine_game_config.gamepad_icon_override = std::clamp(std::stoi(settings["GamepadIconOverride"]), 0, 11);
         processed_keys.insert("GamepadIconOverride");
     }
     if (settings.count("InputPromptMode")) {

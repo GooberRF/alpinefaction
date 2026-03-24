@@ -550,6 +550,14 @@ static std::string   g_hud_msg_template;
 static bool          g_hud_msg_was_gamepad = false;
 static rf::Timestamp g_hud_msg_expire;
 
+void hud_refresh_action_tokens()
+{
+    if (!g_hud_msg_template.empty() && g_hud_msg_expire.valid() && !g_hud_msg_expire.elapsed()) {
+        g_hud_msg_was_gamepad = gamepad_is_last_input_gamepad();
+        rf::hud_msg(g_hud_msg_template.c_str(), 0, std::max(1, g_hud_msg_expire.time_until()), nullptr);
+    }
+}
+
 FunHook<void(const char*, int, int, rf::Color*)> hud_msg_hook{
     0x004383C0,
     [](const char* text, int arg2, int duration, rf::Color* color) {

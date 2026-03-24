@@ -154,7 +154,7 @@ struct AlpineGameSettings
     float gamepad_flickstick_deadzone = 0.90f;
     float gamepad_flickstick_release_deadzone = 0.70f;
     float gamepad_flickstick_smoothing = 0.75f;    
-    int gamepad_icon_override = 0; // ControllerIconType: 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube
+    int gamepad_icon_override = 0; // 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube, 9=SteamController, 10=SteamDeck
     int input_prompt_override = 0; // 0=Auto, 1=Controller, 2=Keyboard
     bool gamepad_joy_invert_y = false;
     bool gamepad_swap_sticks = false;
