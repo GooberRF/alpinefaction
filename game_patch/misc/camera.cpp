@@ -412,7 +412,7 @@ CodeInjection linear_pitch_patch{
         // Reset camera pitch to horizon on rising-edge press.
         // Skip input poll while already resetting — re-arm only after completion.
         if (!s_camera_resetting && rf::local_player) {
-            const auto reset_action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
+            const auto reset_action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
             bool down = rf::control_is_control_down(&rf::local_player->settings.controls, reset_action);
             if (down && !s_camera_reset_prev_down)
                 s_camera_resetting = true;

@@ -1184,6 +1184,7 @@ void gamepad_reset_to_defaults()
     g_button_map[SDL_GAMEPAD_BUTTON_WEST]           = rf::CC_ACTION_PREV_WEAPON;
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_LEFT]      = rf::CC_ACTION_HIDE_WEAPON;
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]     = rf::CC_ACTION_MESSAGES;
+    g_button_map[SDL_GAMEPAD_BUTTON_DPAD_DOWN]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW));
     g_trigger_action[0] = rf::CC_ACTION_CROUCH;
     g_trigger_action[1] = rf::CC_ACTION_SECONDARY_ATTACK;
 }

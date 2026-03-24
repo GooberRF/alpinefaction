@@ -301,8 +301,8 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK);
         alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
-        alpine_control_config_add_item(ccp, "Reset Camera", false, -1, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
+        alpine_control_config_add_item(ccp, "Center View", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
         alpine_control_config_add_item(ccp, "Gyro Modifier (Hold On)", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD);
         alpine_control_config_add_item(ccp, "Gyro Modifier (Hold Off)", false, -1, -1, -1,
@@ -353,7 +353,7 @@ CodeInjection player_execute_action_patch{
                 fpgun_play_random_idle_anim();
             }
             else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA)) {
+                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW)) {
                 camera_start_reset_to_horizon();
             }
         }
