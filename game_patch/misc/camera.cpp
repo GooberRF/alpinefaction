@@ -1,4 +1,6 @@
 #include <cassert>
+#include <algorithm>
+#include <cmath>
 #include <xlog/xlog.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
@@ -9,6 +11,7 @@
 #include "../os/console.h"
 #include "../input/input.h"
 #include "../input/gamepad.h"
+#include "../input/mouse.h"
 #include "../rf/entity.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
@@ -31,6 +34,9 @@ constexpr float freelook_accel_max_scale = 20.0f;
 constexpr float freelook_accel_scroll_step = 0.25f;
 
 bool server_side_restrict_disable_ss = false;
+
+static bool s_camera_resetting = false;
+static bool s_camera_reset_prev_down = false;
 
 FunHook<void(rf::Camera*)> camera_update_shake_hook{
     0x0040DB70,
@@ -365,16 +371,15 @@ static float convert_pitch_delta_to_non_linear_space(
     return new_pitch_delta;
 }
 
-static bool s_camera_resetting = false;
-static bool s_camera_reset_prev_down = false;
 // Applies camera rotation and linear pitch correction at the entity control
 // injection point. Mouse angles are computed by mouse_get_camera (Quake/Source-style
 // formula) rather than by RF's own sensitivity pipeline.
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
-    [](const auto& regs) {
+    [](auto& regs) {
+        rf::Entity* entity = regs.esi;
         float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
-        float& yaw_delta   = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
+        float& yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
 
         // Mouse camera contribution: raw pixel deltas converted to radians.
         // Only active when mouse_scale mode is non-Classic; otherwise RF's own
@@ -386,14 +391,14 @@ CodeInjection linear_pitch_patch{
             yaw_delta   += mouse_yaw;
         }
 
+        // Add gamepad rotation deltas to the game's computed deltas
         float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
         gamepad_get_camera(gamepad_pitch, gamepad_yaw);
         pitch_delta += gamepad_pitch;
         yaw_delta += gamepad_yaw;
 
-        // Apply linear pitch correction to the combined delta.
+        // Apply linear pitch correction to combined delta
         if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0.0f) {
-            const rf::Entity* const entity = regs.esi;
             const float current_yaw = entity->control_data.phb.y;
             const float current_pitch_non_lin = entity->control_data.eye_phb.x;
             pitch_delta = convert_pitch_delta_to_non_linear_space(
@@ -476,7 +481,7 @@ void camera_do_patch()
     // Improve freelook spectate logic after level transition.
     multi_get_state_info_camera_enter_fixed_patch.install();
 
-    // Gamepad camera rotation, linear pitch correction, and camera horizon reset
+    // linear pitch correction
     linear_pitch_patch.install();
     linear_pitch_cmd.register_cmd();
 }

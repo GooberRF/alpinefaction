@@ -1744,8 +1744,75 @@ CodeInjection handle_options_button_click_patch{
     },
 };
 
-// Controller bindings tab strip (drawn on top of options panel 3 = Controls)
+// Mouse scale button toggle injected into the stock Controls panel (next to Mouse Y-Invert)
+static constexpr int CTRL_CAMSCALE_X = 306;
+static constexpr int CTRL_CAMSCALE_Y = 107;
 
+static bool g_ctrl_camscale_initialized = false;
+
+static constexpr const char* camscale_mode_names[] = {"Classic", "Raw", "Modern"};
+
+static void ctrl_camscale_on_click(int, int)
+{
+    g_alpine_game_config.mouse_scale = (g_alpine_game_config.mouse_scale + 1) % 3;
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[g_alpine_game_config.mouse_scale]);
+    ao_play_button_snd(g_alpine_game_config.mouse_scale != 0);
+}
+
+static void init_ctrl_camscale_btns()
+{
+    if (g_ctrl_camscale_initialized) return;
+    ao_mousecamerascale_cbox.create("ao_smbut1.tga", "ao_smbut1_hover.tga", "ao_tab.tga",
+        CTRL_CAMSCALE_X, CTRL_CAMSCALE_Y, 45, "106.26", 0);
+    ao_mousecamerascale_cbox.checked = false;
+    ao_mousecamerascale_cbox.on_click = ctrl_camscale_on_click;
+    ao_mousecamerascale_cbox.enabled = true;
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
+    g_ctrl_camscale_initialized = true;
+}
+
+static void render_ctrl_camscale_btns()
+{
+    init_ctrl_camscale_btns();
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
+    ao_mousecamerascale_cbox.x = CTRL_CAMSCALE_X + static_cast<int>(rf::ui::options_animated_offset);
+    ao_mousecamerascale_cbox.render();
+    int val_x = static_cast<int>((ao_mousecamerascale_cbox.x + 50) * rf::ui::scale_x);
+    int val_y = static_cast<int>((CTRL_CAMSCALE_Y + 6) * rf::ui::scale_y);
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, val_x, val_y, ao_mousecamerascale_butlabel_text, rf::ui::medium_font_0);
+    int name_x = static_cast<int>((ao_mousecamerascale_cbox.x + 87) * rf::ui::scale_x);
+    rf::gr::set_color(0, 0, 0, 255);
+    rf::gr::string(name_x, val_y, "Mouse scale", rf::ui::medium_font_0);
+}
+
+static void handle_ctrl_camscale_btns(int x, int y)
+{
+    if (!g_ctrl_camscale_initialized)
+        return;
+
+    // Use absolute position so hit-testing tracks parent panel offsets/animations.
+    int bx = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_x() * rf::ui::scale_x);
+    int by = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_y() * rf::ui::scale_y);
+    int bw = static_cast<int>(ao_mousecamerascale_cbox.w * rf::ui::scale_x);
+    int bh = static_cast<int>(ao_mousecamerascale_cbox.h * rf::ui::scale_y);
+
+    bool inside = (x >= bx && x < bx + bw && y >= by && y < by + bh);
+
+    // Keep hover state in sync with cursor position so the correct bitmap/state is rendered.
+    ao_mousecamerascale_cbox.highlighted = inside;
+
+    // Do not react to clicks while the controls panel is waiting for a key/mouse binding.
+    if (!inside || rf::ui::options_controls_waiting_for_key || !rf::mouse_was_button_pressed(0))
+        return;
+
+    ctrl_camscale_on_click(x, y);
+}
+
+// Controller bindings tab strip (drawn on top of options panel 3 = Controls)
 // Write the current gamepad binding for every action into scan_codes[0] using the
 // CTRL_GAMEPAD_SCAN_BASE encoding, saving the original keyboard scan codes first.
 static void install_ctrl_gamepad_codes()
@@ -1868,66 +1935,6 @@ static void handle_ctrl_mode_btns(int x, int y)
 
     // Keep hover state in sync with cursor position.
     g_ctrl_mode_cbox.highlighted = inside;
-// Mouse scale button toggle injected into the stock Controls panel (next to Mouse Y-Invert)
-static constexpr int CTRL_CAMSCALE_X = 306;
-static constexpr int CTRL_CAMSCALE_Y = 107;
-
-static bool g_ctrl_camscale_initialized = false;
-
-static constexpr const char* camscale_mode_names[] = {"Classic", "Raw", "Modern"};
-
-static void ctrl_camscale_on_click(int, int)
-{
-    g_alpine_game_config.mouse_scale = (g_alpine_game_config.mouse_scale + 1) % 3;
-    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
-        camscale_mode_names[g_alpine_game_config.mouse_scale]);
-    ao_play_button_snd(g_alpine_game_config.mouse_scale != 0);
-}
-
-static void init_ctrl_camscale_btns()
-{
-    if (g_ctrl_camscale_initialized) return;
-    ao_mousecamerascale_cbox.create("ao_smbut1.tga", "ao_smbut1_hover.tga", "ao_tab.tga",
-        CTRL_CAMSCALE_X, CTRL_CAMSCALE_Y, 45, "106.26", 0);
-    ao_mousecamerascale_cbox.checked = false;
-    ao_mousecamerascale_cbox.on_click = ctrl_camscale_on_click;
-    ao_mousecamerascale_cbox.enabled = true;
-    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
-        camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
-    g_ctrl_camscale_initialized = true;
-}
-
-static void render_ctrl_camscale_btns()
-{
-    init_ctrl_camscale_btns();
-    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
-        camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
-    ao_mousecamerascale_cbox.x = CTRL_CAMSCALE_X + static_cast<int>(rf::ui::options_animated_offset);
-    ao_mousecamerascale_cbox.render();
-    int val_x = static_cast<int>((ao_mousecamerascale_cbox.x + 50) * rf::ui::scale_x);
-    int val_y = static_cast<int>((CTRL_CAMSCALE_Y + 6) * rf::ui::scale_y);
-    rf::gr::set_color(255, 255, 255, 255);
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, val_x, val_y, ao_mousecamerascale_butlabel_text, rf::ui::medium_font_0);
-    int name_x = static_cast<int>((ao_mousecamerascale_cbox.x + 87) * rf::ui::scale_x);
-    rf::gr::set_color(0, 0, 0, 255);
-    rf::gr::string(name_x, val_y, "Mouse scale", rf::ui::medium_font_0);
-}
-
-static void handle_ctrl_camscale_btns(int x, int y)
-{
-    if (!g_ctrl_camscale_initialized)
-        return;
-
-    // Use absolute position so hit-testing tracks parent panel offsets/animations.
-    int bx = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_x() * rf::ui::scale_x);
-    int by = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_y() * rf::ui::scale_y);
-    int bw = static_cast<int>(ao_mousecamerascale_cbox.w * rf::ui::scale_x);
-    int bh = static_cast<int>(ao_mousecamerascale_cbox.h * rf::ui::scale_y);
-
-    bool inside = (x >= bx && x < bx + bw && y >= by && y < by + bh);
-
-    // Keep hover state in sync with cursor position so the correct bitmap/state is rendered.
-    ao_mousecamerascale_cbox.highlighted = inside;
 
     // Do not react to clicks while the controls panel is waiting for a key/mouse binding.
     if (!inside || rf::ui::options_controls_waiting_for_key || !rf::mouse_was_button_pressed(0))
@@ -1946,6 +1953,11 @@ CodeInjection options_render_alpine_panel_patch{
         if (index != 3 && g_ctrl_bind_view) {
             uninstall_ctrl_gamepad_codes();
             g_ctrl_bind_view = false;
+        }
+
+        // how mouse scale toggle when Controls panel is active
+        if (index == 3 && !rf::ui::options_controls_waiting_for_key) {
+            render_ctrl_camscale_btns();
         }
 
         // render alpine options panel
@@ -2035,10 +2047,8 @@ CodeInjection options_handle_mouse_patch{
         int y = *reinterpret_cast<int*>(regs.esp + 0x4);
         int index = rf::ui::options_current_panel;
 
-        if (index == 4)
+        if (index == 4) {
             alpine_options_panel_handle_mouse(x, y);
-        if (index == 3) {
-            handle_ctrl_mode_btns(x, y);
         }
         if (index == 3) {
             handle_ctrl_camscale_btns(x, y);
