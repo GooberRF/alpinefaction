@@ -297,6 +297,10 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG);
         alpine_control_config_add_item(ccp, "Inspect Weapon", false, rf::KEY_I, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON);
+        alpine_control_config_add_item(ccp, "Cycle Spectate Modes", false, rf::KEY_PERIOD, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK);
+        alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
         alpine_control_config_add_item(ccp, "Reset Camera", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_RESET_CAMERA);
         alpine_control_config_add_item(ccp, "Gyro Modifier (Hold On)", false, -1, -1, -1,
@@ -304,7 +308,7 @@ CodeInjection control_config_init_patch{
         alpine_control_config_add_item(ccp, "Gyro Modifier (Hold Off)", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT);
         alpine_control_config_add_item(ccp, "Gyro Modifier (Toggle)", false, -1, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);      
     },
 };
 
@@ -435,6 +439,15 @@ CodeInjection player_execute_action_patch3{
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
                 && is_server_minimum_af_version(1, 2)) {
                 g_remote_server_cfg_popup.toggle();
+            } else if (alpine_action_index
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK)
+                && !rf::is_dedicated_server
+                && multi_spectate_is_spectating()) {
+                multi_spectate_toggle_freelook();
+            } else if (alpine_action_index
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
+                && !rf::is_dedicated_server) {
+                multi_spectate_toggle();
             }
         }
     },
@@ -445,8 +458,6 @@ CodeInjection controls_process_patch{
     0x00430E4C,
     [](auto& regs) {
         int index = regs.edi;
-
-        // C++ doesn't have a way to dynamically get the last enum index, so just update this when adding new controls
         if (index >= starting_alpine_control_index &&
             index <= starting_alpine_control_index + static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
             //xlog::warn("passing control {}", index);
