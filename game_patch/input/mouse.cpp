@@ -140,8 +140,12 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
 
         // Nothing to do in Classic mode or outside gameplay.
-        if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0) {
+        if (g_alpine_game_config.mouse_scale == 0) {
             reset_mouse_delta_accumulators();
+            return;
+        }
+
+        if (!rf::keep_mouse_centered) {
             return;
         }
 
@@ -313,8 +317,11 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
 {
     pitch_delta = 0.0f;
     yaw_delta   = 0.0f;
-    if (!rf::local_player || !rf::keep_mouse_centered) {
+    if (!rf::local_player) {
         reset_mouse_delta_accumulators();
+        return;
+    }
+    if (!rf::keep_mouse_centered) {
         return;
     }
     float sens = rf::local_player->settings.controls.mouse_sensitivity;
