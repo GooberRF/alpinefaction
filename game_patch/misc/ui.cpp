@@ -1565,6 +1565,11 @@ CodeInjection options_render_alpine_panel_patch{
                 }
             }
             s_was_waiting = now_waiting;
+
+            // Render the mouse scale control button in the controls tab when user is not rebinding
+            if (!rf::ui::options_controls_waiting_for_key) {
+                render_ctrl_camscale_btns();
+            }
         }
 
         // render alpine options panel
