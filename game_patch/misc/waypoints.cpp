@@ -1258,7 +1258,10 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
     return true;
 }
 
-float trace_upward_clearance_from_floor_hit(const rf::Vector3& floor_hit_pos, float max_upward_dist)
+float trace_upward_clearance_from_floor_hit(
+    const rf::Vector3& floor_hit_pos,
+    float max_upward_dist,
+    rf::Vector3* out_ceiling_hit = nullptr)
 {
     if (max_upward_dist <= 0.0f) {
         return 0.0f;
@@ -1278,6 +1281,9 @@ float trace_upward_clearance_from_floor_hit(const rf::Vector3& floor_hit_pos, fl
         return max_upward_dist;
     }
 
+    if (out_ceiling_hit) {
+        *out_ceiling_hit = collision.hit_point;
+    }
     return std::clamp(collision.hit_point.y - floor_hit_pos.y, 0.0f, max_upward_dist);
 }
 
@@ -4322,6 +4328,7 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
 
             rf::Vector3 floor_pos{};
             if (!trace_ground_below_point(probe_pos, kBridgeWaypointMaxGroundDistance, &floor_pos)) {
+
                 continue;
             }
             const float upward_clearance = trace_upward_clearance_from_floor_hit(
@@ -4329,11 +4336,33 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 kWaypointGenerateStandingHeadroom
             );
             if (upward_clearance <= kWaypointGenerateMinHeadroom) {
-                continue;
+                // If headroom failed because we found a floor under an elevated surface,
+                // try tracing from just above the ceiling hit to find the walkway surface.
+                rf::Vector3 ceiling_hit{};
+                trace_upward_clearance_from_floor_hit(floor_pos, kWaypointGenerateStandingHeadroom, &ceiling_hit);
+                rf::Vector3 elevated_floor{};
+                const rf::Vector3 above_ceiling = ceiling_hit + rf::Vector3{0.0f, 0.05f, 0.0f};
+                if (trace_ground_below_point(above_ceiling, 0.5f, &elevated_floor)) {
+                    // Found a walkable surface above — use it instead.
+                    const float elevated_clearance = trace_upward_clearance_from_floor_hit(
+                        elevated_floor, kWaypointGenerateStandingHeadroom);
+                    if (elevated_clearance > kWaypointGenerateMinHeadroom) {
+                        floor_pos = elevated_floor;
+                    }
+                    else {
+        
+                        continue;
+                    }
+                }
+                else {
+    
+                    continue;
+                }
             }
 
             rf::Vector3 candidate_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
             if (!waypoint_link_within_incline(source_pos, candidate_pos, kWaypointGenerateMaxInclineDeg)) {
+
                 continue;
             }
             if (!can_link_waypoints(source_pos, candidate_pos)) {
@@ -4391,18 +4420,22 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                         break; // One seed on the other side is enough.
                     }
                 }
+
                 continue;
             }
             if (!waypoint_has_horizontal_geometry_clearance(candidate_pos, kWaypointGenerateWallClearance)) {
+
                 continue;
             }
             if (!waypoint_has_ground_edge_clearance(candidate_pos, kWaypointGenerateEdgeClearance)) {
+
                 continue;
             }
 
             if (const int closest_special = find_special_waypoint_in_radius(candidate_pos);
                 closest_special > 0 && closest_special != source_index) {
                 link_waypoint_if_clear_autogen(source_index, closest_special);
+
                 continue;
             }
 
@@ -8551,7 +8584,6 @@ bool waypoints_auto_link_nearby(const int waypoint_uid, WaypointAutoLinkStats& o
         if (distance_sq(source_pos, candidate_node.pos) > effective_radius_sq) {
             continue;
         }
-
         ++out_stats.candidate_waypoints;
 
         // Tele entrance waypoints only receive inbound links, never create outbound links.
