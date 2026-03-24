@@ -119,6 +119,11 @@ struct AlpineGameSettings
     bool death_bars = true;
     bool mesh_static_lighting = true;
     bool vertex_lighting = false;
+    float dynamic_light_ndotl = 0.0f; // N·L blend for dynamic lights on BSP faces: 0.0 = stock, 1.0 = full N·L (d3d11 only)
+    void set_dynamic_light_ndotl(float value)
+    {
+        dynamic_light_ndotl = std::clamp(value, 0.0f, 1.0f);
+    }
     bool show_glares = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;
