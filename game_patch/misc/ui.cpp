@@ -2052,6 +2052,7 @@ CodeInjection options_handle_mouse_patch{
         }
         if (index == 3) {
             handle_ctrl_camscale_btns(x, y);
+            handle_ctrl_mode_btns(x, y);
         }
     },
 };
