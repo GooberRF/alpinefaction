@@ -312,7 +312,7 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
 {
     pitch_delta = 0.0f;
     yaw_delta   = 0.0f;
-    if (!rf::local_player || !rf::keep_mouse_centered) {
+    if (!rf::local_player || !rf::keep_mouse_centered || !rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity)) {
         reset_mouse_delta_accumulators();
         return;
     }
