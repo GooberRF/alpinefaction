@@ -2058,13 +2058,9 @@ int add_waypoint_target(const rf::Vector3& pos, WaypointTargetType type, std::op
     target.pos = pos;
     target.type = type;
     target.identifier = -1;
-    target.waypoint_uids =
-        (type == WaypointTargetType::jump)
-            ? collect_target_link_waypoint_uids(pos)
-            : collect_target_waypoint_uids(pos);
-    if (target.waypoint_uids.empty()) {
-        target.waypoint_uids = collect_target_waypoint_uids(pos);
-    }
+    const bool prefer_same_height = (type == WaypointTargetType::jump);
+    target.waypoint_uids = collect_target_waypoint_uids_by_graph_distance(pos, prefer_same_height);
+    normalize_target_waypoint_uids(target.waypoint_uids);
     g_waypoint_targets.push_back(std::move(target));
     return g_waypoint_targets.back().uid;
 }
@@ -5963,7 +5959,7 @@ bool point_matches_autogen_explosion_target_hardness_rules(const rf::Vector3& po
 {
     const int level_hardness = std::clamp(rf::level.default_rock_hardness, 0, 100);
     bool has_region_hardness_gte_75 = false;
-    bool has_region_hardness_lte_50 = false;
+    bool has_region_hardness_lte_75 = false;
 
     for (int region_index = 0; region_index < rf::level.regions.size(); ++region_index) {
         auto* region = rf::level.regions[region_index];
@@ -5977,8 +5973,8 @@ bool point_matches_autogen_explosion_target_hardness_rules(const rf::Vector3& po
         }
 
         has_region_hardness_gte_75 = has_region_hardness_gte_75 || (region->hardness >= 75);
-        has_region_hardness_lte_50 = has_region_hardness_lte_50 || (region->hardness <= 50);
-        if (has_region_hardness_gte_75 && has_region_hardness_lte_50) {
+        has_region_hardness_lte_75 = has_region_hardness_lte_75 || (region->hardness <= 75);
+        if (has_region_hardness_gte_75 && has_region_hardness_lte_75) {
             break;
         }
     }
@@ -5988,7 +5984,7 @@ bool point_matches_autogen_explosion_target_hardness_rules(const rf::Vector3& po
         allowed = allowed || !has_region_hardness_gte_75;
     }
     if (level_hardness >= 50) {
-        allowed = allowed || has_region_hardness_lte_50;
+        allowed = allowed || has_region_hardness_lte_75;
     }
     return allowed;
 }
