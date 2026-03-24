@@ -6,6 +6,7 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
+#include <numbers>
 #include <algorithm> // std::min, std::max and std::clamp
 
 // You don't need to look at these. These will just be used internally by the GamepadMotion class declared below.
@@ -571,7 +572,7 @@ namespace GamepadMotionHelpers
 
 		const Vec axis = Vec(inGyroX, inGyroY, inGyroZ);
 		const Vec accel = Vec(inAccelX, inAccelY, inAccelZ);
-		const float angleSpeed = axis.Length() * (float)M_PI / 180.0f;
+		const float angleSpeed = axis.Length() * std::numbers::pi_v<float> / 180.0f;
 		const float angle = angleSpeed * deltaTime;
 
 		// rotate
@@ -835,7 +836,7 @@ namespace GamepadMotionHelpers
 					if (crossLength > 0.f)
 					{
 						const float thisDotPrev = std::clamp(thisNormal.Dot(previousNormal), -1.f, 1.f);
-						const float angleChange = acosf(thisDotPrev) * 180.0f / (float)M_PI;
+						const float angleChange = acosf(thisDotPrev) * 180.0f / std::numbers::pi_v<float>;
 						const float anglePerSecond = angleChange / MinMaxWindow.TimeSampled;
 						angularVelocity *= anglePerSecond / crossLength;
 					}
@@ -964,7 +965,7 @@ namespace GamepadMotionHelpers
 		if (crossLength > 0.f)
 		{
 			const float thisDotPrev = std::clamp(thisNormal.Dot(previousNormal), -1.f, 1.f);
-			const float angleChange = acosf(thisDotPrev) * 180.0f / (float)M_PI;
+			const float angleChange = acosf(thisDotPrev) * 180.0f / std::numbers::pi_v<float>;
 			const float anglePerSecond = angleChange / deltaTime;
 			angularVelocity *= anglePerSecond / crossLength;
 		}
