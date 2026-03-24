@@ -677,7 +677,7 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     pitch_delta = 0.0f;
     yaw_delta   = 0.0f;
 
-    if (!is_gamepad_input_active())
+    if (!is_gamepad_input_active() || !rf::keep_mouse_centered)
         return;
 
     SDL_GamepadAxis cam_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTX  : SDL_GAMEPAD_AXIS_RIGHTX;
