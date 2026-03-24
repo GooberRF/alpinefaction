@@ -375,6 +375,7 @@ bool build_ctf_runtime_state(
         out_state.own_dropped_waypoint = dropped_waypoint;
     }
     if (!out_state.local_has_enemy_flag
+        && out_state.enemy_flag_carrier == nullptr
         && waypoints_find_dropped_ctf_flag_waypoint(
             out_state.enemy_flag_red,
             dropped_waypoint,

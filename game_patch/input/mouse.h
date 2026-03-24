@@ -9,3 +9,4 @@ void mouse_apply_patch();
 void mouse_init_sdl_window();
 int  mouse_take_pending_rebind();
 void mouse_sdl_poll();
+void mouse_get_camera(float& pitch_delta, float& yaw_delta);

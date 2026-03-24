@@ -1,4 +1,3 @@
-#include <cassert>
 #include <algorithm>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -8,15 +7,15 @@
 #include "input.h"
 #include "../os/console.h"
 #include "../rf/input.h"
+#include "../rf/entity.h"
 #include "../rf/os/os.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
-#include "../multi/multi.h"
 #include "../rf/player/player.h"
-#include "../rf/entity.h"
 #include "../rf/ui.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
+#include "mouse.h"
 
 // SDL window and mouse motion state (used in SDL input mode only)
 static SDL_Window* g_sdl_window = nullptr;
@@ -24,16 +23,15 @@ static bool g_relative_mouse_mode_window_missing_logged = false;
 static float g_sdl_mouse_dx_rem = 0.0f, g_sdl_mouse_dy_rem = 0.0f;
 static int g_sdl_mouse_dx = 0, g_sdl_mouse_dy = 0;
 
-static void reset_sdl_mouse_accumulators()
-{
-    g_sdl_mouse_dx = 0;
-    g_sdl_mouse_dy = 0;
-    g_sdl_mouse_dx_rem = 0.0f;
-    g_sdl_mouse_dy_rem = 0.0f;
-}
-
 // Extra mouse button rebind state (Mouse 4-8, used with SDL input mode)
 static int g_pending_mouse_extra_btn_rebind = -1;
+
+// Per-frame raw mouse deltas captured for centralized camera angle computation.
+// Populated by mouse_get_delta_hook during gameplay; consumed by mouse_get_camera.
+static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
+
+// Sub-pixel remainder accumulators for vehicle mouse sensitivity scaling.
+static float g_vehicle_mouse_dx_rem = 0.0f, g_vehicle_mouse_dy_rem = 0.0f;
 
 static float scope_sensitivity_value = 0.25f;
 static float scanner_sensitivity_value = 0.25f;
@@ -42,15 +40,6 @@ static float applied_dynamic_sensitivity_value = 1.0f; // value written by AsmWr
 
 static bool set_direct_input_enabled(bool enabled)
 {
-    if (client_bot_headless_enabled()) {
-        auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
-        rf::direct_input_disabled = true;
-        if (direct_input_initialized && rf::di_mouse) {
-            rf::di_mouse->Unacquire();
-        }
-        return true;
-    }
-
     auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
     auto mouse_di_init = addr_as_ref<int()>(0x0051E070);
     rf::direct_input_disabled = !enabled;
@@ -72,12 +61,6 @@ static bool set_direct_input_enabled(bool enabled)
 
 void set_input_mode(int mode)
 {
-    if (client_bot_headless_enabled()) {
-        set_direct_input_enabled(false);
-        g_alpine_game_config.input_mode = 0;
-        return;
-    }
-
     if (mode < 0 || mode > 2) {
         xlog::warn("set_input_mode: invalid mode {}, clamping to 0..2", mode);
         mode = std::clamp(mode, 0, 2);
@@ -86,9 +69,6 @@ void set_input_mode(int mode)
     const int old_mode = g_alpine_game_config.input_mode;
     g_alpine_game_config.input_mode = mode;
 
-    // NOTE: SDL cursor visibility/position is used across all modes (because the game
-    // drives the Windows cursor in legacy+DirectInput modes), but SDL's relative mouse
-    // mode (used for camera movement) is only enabled in SDL input mode (2).
     if (!rf::is_dedicated_server) {
         // Handle SDL relative mouse mode
         if (g_sdl_window) {
@@ -103,9 +83,12 @@ void set_input_mode(int mode)
         }
     }
 
-    // Clear SDL state when switching input modes to avoid applying stale motion
-    if (old_mode != mode) {
-        reset_sdl_mouse_accumulators();
+    // Clear SDL state when leaving SDL mode
+    if (old_mode == 2 && mode != 2) {
+        g_sdl_mouse_dx = 0;
+        g_sdl_mouse_dy = 0;
+        g_sdl_mouse_dx_rem = 0.0f;
+        g_sdl_mouse_dy_rem = 0.0f;
     }
 
     // Release held extra scan codes so they don't stay stuck after mode switch
@@ -121,10 +104,6 @@ void set_input_mode(int mode)
 FunHook<void()> mouse_eval_deltas_hook{
     0x0051DC70,
     []() {
-        if (client_bot_headless_enabled()) {
-            return;
-        }
-
         if (!rf::os_foreground() && !g_alpine_game_config.background_mouse) {
             // Discard any SDL motion that accumulated while unfocused
             g_sdl_mouse_dx_rem = 0.0f;
@@ -164,12 +143,6 @@ FunHook<void()> mouse_eval_deltas_hook{
 FunHook<void()> mouse_eval_deltas_di_hook{
     0x0051DEB0,
     []() {
-        if (client_bot_headless_enabled()) {
-            rf::mouse_dz = 0;
-            rf::mouse_old_z = rf::mouse_wheel_pos;
-            return;
-        }
-
         mouse_eval_deltas_di_hook.call_target();
         if (g_alpine_game_config.input_mode == 2)
             return; // SDL mode handles its own cursor management and scroll tracking
@@ -190,7 +163,7 @@ FunHook<void()> mouse_keep_centered_enable_hook{
     0x0051E690,
     []() {
         // keep_mouse_centered is still false here; call_target sets it
-        if (!rf::keep_mouse_centered && !rf::is_dedicated_server && !client_bot_headless_enabled()) {
+        if (!rf::keep_mouse_centered && !rf::is_dedicated_server) {
             switch (g_alpine_game_config.input_mode) {
             case 1: // DirectInput mouse
                 set_direct_input_enabled(true);
@@ -198,10 +171,6 @@ FunHook<void()> mouse_keep_centered_enable_hook{
             case 2: // SDL mouse
                 if (g_sdl_window) {
                     SDL_SetWindowRelativeMouseMode(g_sdl_window, true);
-                    // Flush any cursor-warp motion events SDL generated when enabling
-                    // relative mode — without this the camera spins on the first frame.
-                    SDL_FlushEvents(SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_MOTION);
-                    reset_sdl_mouse_accumulators();
                 } else if (!g_relative_mouse_mode_window_missing_logged) {
                     xlog::warn("mouse_keep_centered_enable_hook: SDL window is null, cannot enable relative mouse mode");
                     g_relative_mouse_mode_window_missing_logged = true;
@@ -217,7 +186,7 @@ FunHook<void()> mouse_keep_centered_disable_hook{
     0x0051E6A0,
     []() {
         // keep_mouse_centered is still true here; call_target clears it
-        if (rf::keep_mouse_centered && !rf::is_dedicated_server && !client_bot_headless_enabled()) {
+        if (rf::keep_mouse_centered && !rf::is_dedicated_server) {
             switch (g_alpine_game_config.input_mode) {
             case 1: // DirectInput mouse
                 set_direct_input_enabled(false);
@@ -240,6 +209,7 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     0x0051E630,
     [](int& dx, int& dy, int& dz) {
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
+
         if (g_alpine_game_config.input_mode == 2 && g_sdl_window) {
             // SDL mode: override dx/dy with SDL-sourced deltas when SDL window is available
             dx = g_sdl_mouse_dx;
@@ -247,47 +217,70 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
             g_sdl_mouse_dx = 0;
             g_sdl_mouse_dy = 0;
         }
+
+        // Nothing to do in Classic mode or outside gameplay.
+        if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0)
+            return;
+
+        // In Raw/Modern mode: capture raw deltas for centralized angle
+        // computation and zero them so RF does not apply its own scaling.
+        // Skip zeroing when in a vehicle (RF needs the deltas to steer), but scale
+        // them down to stay consistent with the camera formula feel.
+        bool in_vehicle = rf::local_player_entity && rf::entity_in_vehicle(rf::local_player_entity);
+        if (!in_vehicle) {
+            g_camera_mouse_dx += dx;
+            g_camera_mouse_dy += dy;
+            dx = 0;
+            dy = 0;
+        } else if (g_alpine_game_config.mouse_scale == 2) {
+            // Modern mode: scale vehicle steering down to match camera formula feel.
+            constexpr float vehicle_sens_scale = 0.08f;
+            g_vehicle_mouse_dx_rem += dx * vehicle_sens_scale;
+            g_vehicle_mouse_dy_rem += dy * vehicle_sens_scale;
+            dx = static_cast<int>(g_vehicle_mouse_dx_rem);
+            dy = static_cast<int>(g_vehicle_mouse_dy_rem);
+            g_vehicle_mouse_dx_rem -= dx;
+            g_vehicle_mouse_dy_rem -= dy;
+        }
     },
 };
 
 ConsoleCommand2 input_mode_cmd{
     "inputmode",
-    [](std::optional<int> mode_opt) {
-        static constexpr const char* mode_names[] = {"Classic", "DirectInput", "SDL"};
-
-        if (client_bot_headless_enabled()) {
-            set_input_mode(0);
-            rf::console::print("Input mode: 0 (Classic) in headless bot mode");
-            return;
-        }
-
-        if (!mode_opt) {
-            int current_mode = std::clamp(g_alpine_game_config.input_mode, 0, 2);
-            rf::console::print("Input mode: {}", mode_names[current_mode]);
-            return;
-        }
-
-        int new_mode = std::clamp(mode_opt.value(), 0, 2);
+    []() {
+        static constexpr const char* mode_names[] = {"Legacy", "DirectInput", "SDL"};
+        int new_mode = (g_alpine_game_config.input_mode + 1) % 3;
         set_input_mode(new_mode);
         rf::console::print("Input mode: {} ({})", new_mode, mode_names[new_mode]);
     },
-    "Set input mode: 0=Classic (Win32 mouse+keyboard), 1=DirectInput mouse+Win32 keyboard, 2=SDL mouse+keyboard",
-    "inputmode <0|1|2>",
-    true,
+    "Cycles input mode: 0=Legacy Win32 mouse+keyboard, 1=DirectInput mouse+Legacy keyboard, 2=SDL mouse+keyboard",
 };
 
 ConsoleCommand2 ms_cmd{
     "ms",
     [](std::optional<float> value_opt) {
         if (value_opt) {
-            float value = value_opt.value();
-            value = std::clamp(value, 0.0f, 1.0f);
+            float value = std::max(value_opt.value(), 0.0f);
             rf::local_player->settings.controls.mouse_sensitivity = value;
         }
         rf::console::print("Mouse sensitivity: {:.4f}", rf::local_player->settings.controls.mouse_sensitivity);
     },
-    "Sets mouse sensitivity",
+    "Sets mouse sensitivity (Quake/Source-style: 0.022 deg/pixel * sensitivity)",
     "ms <value>",
+};
+
+ConsoleCommand2 ms_scale_cmd{
+    "ms_scale",
+    [](std::optional<int> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.mouse_scale = std::clamp(value_opt.value(), 0, 2);
+        }
+        static constexpr const char* mode_names[] = {"Classic", "Raw", "Modern"};
+        int mode = std::clamp(g_alpine_game_config.mouse_scale, 0, 2);
+        rf::console::print("ms_scale: {} ({})", mode, mode_names[mode]);
+    },
+    "Sets mouse scale mode. 0 = Classic (RF native), 1 = Raw (pure degrees), 2 = Modern (id Tech/Source 0.022 deg/pixel).",
+    "ms_scale <0|1|2",
 };
 
 void update_scope_sensitivity()
@@ -368,159 +361,6 @@ CodeInjection static_zoom_sensitivity_patch2 {
     },
 };
 
-rf::Vector3 fw_vector_from_non_linear_yaw_pitch(float yaw, float pitch)
-{
-    // Based on RF code
-    rf::Vector3 fvec0;
-    fvec0.y = std::sin(pitch);
-    float factor = 1.0f - std::abs(fvec0.y);
-    fvec0.x = factor * std::sin(yaw);
-    fvec0.z = factor * std::cos(yaw);
-
-    rf::Vector3 fvec = fvec0;
-    fvec.normalize(); // vector is never zero
-
-    return fvec;
-}
-
-float linear_pitch_from_forward_vector(const rf::Vector3& fvec)
-{
-    return std::asin(fvec.y);
-}
-
-rf::Vector3 fw_vector_from_linear_yaw_pitch(float yaw, float pitch)
-{
-    rf::Vector3 fvec;
-    fvec.y = std::sin(pitch);
-    fvec.x = std::cos(pitch) * std::sin(yaw);
-    fvec.z = std::cos(pitch) * std::cos(yaw);
-    fvec.normalize();
-    return fvec;
-}
-
-float non_linear_pitch_from_fw_vector(rf::Vector3 fvec)
-{
-    float yaw = std::atan2(fvec.x, fvec.z);
-    assert(!std::isnan(yaw));
-    float fvec_y_2 = fvec.y * fvec.y;
-    float y_sin = std::sin(yaw);
-    float y_cos = std::cos(yaw);
-    float y_sin_2 = y_sin * y_sin;
-    float y_cos_2 = y_cos * y_cos;
-    float p_sgn = std::signbit(fvec.y) ? -1.f : 1.f;
-    if (fvec.y == 0.0f) {
-        return 0.0f;
-    }
-
-    float a = 1.f / fvec_y_2 - y_sin_2 - 1.f - y_cos_2;
-    float b = 2.f * p_sgn * y_sin_2 + 2.f * p_sgn * y_cos_2;
-    float c = -y_sin_2 - y_cos_2;
-    float delta = b * b - 4.f * a * c;
-    // Note: delta is sometimes slightly below 0 - most probably because of precision error
-    // To avoid NaN value delta is changed to 0 in that case
-    float delta_sqrt = std::sqrt(std::max(delta, 0.0f));
-    assert(!std::isnan(delta_sqrt));
-
-    if (a == 0.0f) {
-        return 0.0f;
-    }
-
-    float p_sin_1 = (-b - delta_sqrt) / (2.f * a);
-    float p_sin_2 = (-b + delta_sqrt) / (2.f * a);
-
-    float result;
-    if (std::abs(p_sin_1) < std::abs(p_sin_2))
-        result = std::asin(p_sin_1);
-    else
-        result = std::asin(p_sin_2);
-    assert(!std::isnan(result));
-    return result;
-}
-
-#ifdef DEBUG
-void linear_pitch_test()
-{
-    float yaw = 3.141592f / 4.0f;
-    float pitch = 3.141592f / 4.0f;
-    rf::Vector3 fvec = fw_vector_from_non_linear_yaw_pitch(yaw, pitch);
-    float lin_pitch = linear_pitch_from_forward_vector(fvec);
-    rf::Vector3 fvec2 = fw_vector_from_linear_yaw_pitch(yaw, lin_pitch);
-    float pitch2 = non_linear_pitch_from_fw_vector(fvec2);
-    assert(std::abs(pitch - pitch2) < 0.00001);
-}
-#endif // DEBUG
-
-static float convert_pitch_delta_to_non_linear_space(
-    const float current_yaw,
-    const float current_pitch_non_lin,
-    const float pitch_delta,
-    const float yaw_delta
-) {
-    // Convert to linear space.  See `physics_make_orient`.
-    const rf::Vector3 fvec =
-        fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
-    const float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
-
-    // Calculate in linear space.
-    constexpr float HALF_PI = 1.5707964f;
-    const float new_pitch_lin =
-        std::clamp(current_pitch_lin + pitch_delta, -HALF_PI, HALF_PI);
-    const float new_yaw = current_yaw + yaw_delta;
-
-    // Convert back to non-linear space.
-    const rf::Vector3 fvec_new =
-        fw_vector_from_linear_yaw_pitch(new_yaw, new_pitch_lin);
-    const float new_pitch_non_lin = non_linear_pitch_from_fw_vector(fvec_new);
-
-    // Update non-linear pitch delta.
-    const float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
-    xlog::trace(
-        "non-lin {} lin {} delta {} new {}",
-        current_pitch_non_lin,
-        current_pitch_lin,
-        pitch_delta,
-        new_pitch_delta
-    );
-
-    return new_pitch_delta;
-}
-
-CodeInjection linear_pitch_patch{
-    0x0049DEC9,
-    [] (const auto& regs) {
-        if (!g_alpine_game_config.mouse_linear_pitch) {
-            return;
-        }
-        float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
-        if (pitch_delta == .0f) {
-            return;
-        }
-        const rf::Entity* const entity = regs.esi;
-        const float current_yaw = entity->control_data.phb.y;
-        const float current_pitch_non_lin = entity->control_data.eye_phb.x;
-        const float yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
-        pitch_delta = convert_pitch_delta_to_non_linear_space(
-            current_yaw,
-            current_pitch_non_lin,
-            pitch_delta,
-            yaw_delta
-        );
-    },
-};
-
-ConsoleCommand2 linear_pitch_cmd{
-    "cl_linearpitch",
-    []() {
-#ifdef DEBUG
-        linear_pitch_test();
-#endif
-
-        g_alpine_game_config.mouse_linear_pitch = !g_alpine_game_config.mouse_linear_pitch;
-        rf::console::print("Linear pitch is {}", g_alpine_game_config.mouse_linear_pitch ? "enabled" : "disabled");
-    },
-    "Toggles mouse linear pitch angle",
-};
-
 // Handle an SDL extra mouse button event (Mouse 4-8).
 // Maps SDL button indices to custom scan codes and injects them into RF's key layer.
 // Only active in SDL input mode (mode 2).
@@ -596,6 +436,37 @@ void mouse_init_sdl_window()
     }
 }
 
+// Converts the per-frame raw mouse pixel deltas captured into camera angle deltas (radians).
+// Mode 1 (Raw):    pure camera angles — 360 pixels * sens = 360 degree camera turn (angle = raw_pixels * sens * deg2rad)
+// Mode 2 (Modern): angle = raw_pixels * sens * 0.022 deg/pixel * deg2rad  (id Tech/Source formula)
+// Called from camera.cpp's centralized camera injection point.
+void mouse_get_camera(float& pitch_delta, float& yaw_delta)
+{
+    pitch_delta = 0.0f;
+    yaw_delta   = 0.0f;
+    if (!rf::local_player || !rf::keep_mouse_centered)
+        return;
+    float sens = rf::local_player->settings.controls.mouse_sensitivity;
+    constexpr float deg2rad = 3.14159265f / 180.0f;
+    // Raw (1) is pure degrees; Modern (2) uses 0.022 multiplier (matches id Tech/Source)
+    float scale = (g_alpine_game_config.mouse_scale == 1)
+        ? deg2rad
+        : 0.022f * deg2rad;
+    // Apply scope/scanner sensitivity modifiers
+    if (rf::local_player->fpgun_data.scanning_for_target)
+        sens *= scanner_sensitivity_value;
+    else if (rf::player_fpgun_is_zoomed(rf::local_player))
+        sens *= scope_sensitivity_value;
+    // Mouse Y-Invert setting (axes[1].invert) for Raw/Modern modes
+    float dy = static_cast<float>(g_camera_mouse_dy);
+    if (rf::local_player->settings.controls.axes[1].invert)
+        dy = -dy;
+    pitch_delta = -dy * sens * scale;
+    yaw_delta   =  static_cast<float>(g_camera_mouse_dx) * sens * scale;
+    g_camera_mouse_dx = 0;
+    g_camera_mouse_dy = 0;
+}
+
 void mouse_apply_patch()
 {
     // Handle zoom sens customization
@@ -620,14 +491,11 @@ void mouse_apply_patch()
     // Do not limit the cursor to the game window if in menu (Win32 mouse)
     AsmWriter(0x0051DD7C).jmp(0x0051DD8E);
 
-    // Linear vertical rotation (pitch)
-    linear_pitch_patch.install();
-
     // Commands
     input_mode_cmd.register_cmd();
     ms_cmd.register_cmd();
+    ms_scale_cmd.register_cmd();
     static_scope_sens_cmd.register_cmd();
     scope_sens_cmd.register_cmd();
     scanner_sens_cmd.register_cmd();
-    linear_pitch_cmd.register_cmd();
 }

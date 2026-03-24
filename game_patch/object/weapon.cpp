@@ -20,20 +20,6 @@
 static std::array<uint8_t, 64U> weapon_reticle_custom_mask{}; // bit 0 = _0, bit 1 = _1
 static std::pair<bool, bool> rocket_locked_custom_reticle = {false, false};
 
-bool entity_is_reloading_player_select_weapon_new(rf::Entity* entity)
-{
-    if (rf::entity_is_reloading(entity))
-        return true;
-
-    int weapon_type = entity->ai.current_primary_weapon;
-    if (weapon_type >= 0) {
-        rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
-        if (entity->ai.clip_ammo[weapon_type] == 0 && entity->ai.ammo[wi.ammo_type] > 0)
-            return true;
-    }
-    return false;
-}
-
 CodeInjection weapons_tbl_buffer_overflow_fix_1{
     0x004C6855,
     [](auto& regs) {
@@ -387,12 +373,6 @@ void apply_weapon_patches()
 
     // Track which weapon reticles are customized
     weapon_init_track_reticle_bitmap_injection.install();
-
-#if 0
-    // Fix weapon switch glitch when reloading (should be used on Match Mode)
-    AsmWriter(0x004A4B4B).call(entity_is_reloading_player_select_weapon_new);
-    AsmWriter(0x004A4B77).call(entity_is_reloading_player_select_weapon_new);
-#endif
 
     // Delete weapons (projectiles) that reach bounding box of the level
     weapon_move_one_hook.install();

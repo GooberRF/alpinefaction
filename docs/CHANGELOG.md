@@ -73,6 +73,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-bot` command line argument to run a client in bot mode
 - Add `disconnect` console command
 - Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
+- Add `force_rail_reload` dedicated server config option, to force reloading the rail before being able to switch weapons
+- Add help strings to spectate UI in freelook spectate mode
+- Add dedicated control for entering/exiting spectate mode
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -95,6 +98,11 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Show powerup icons in spectator mode
 - Improve presented damage calculations for stats and damage numbers
 - Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
+- Add freelook/first person toggle bind in spectator mode
+- Implement enemy and teammate footstep audio for weapons other than pistol
+
+[@AL2009man](https://github.com/AL2009man)
+- Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
@@ -127,6 +135,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
+- Sync animation state for crouched players in first person spectate view
 - Fix Alt+Enter crash in Direct3D 11 renderer
 - Fix premature idle transition in first person weapon running animations
 

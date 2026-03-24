@@ -543,6 +543,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.weapon_infinite_magazines = *v;
     if (auto v = t["drop_weapons"].value<bool>())
         o.drop_weapons = *v;
+    if (auto v = t["force_rail_reload"].value<bool>())
+        o.force_rail_reload = *v;
 
     if (auto sub = t["spawn_weapon"].as_table())
         o.default_player_weapon = parse_default_player_weapon(*sub, o.default_player_weapon);
@@ -1179,6 +1181,10 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.allow_unlimited_fps = *v;
     }
+    else if (key == "allow_footsteps") {
+        if (auto v = node.value<bool>())
+            cfg.allow_footsteps = *v;
+    }
     else if (key == "use_sp_damage_calculation") {
         if (auto v = node.value<bool>())
             cfg.use_sp_damage_calculation = *v;
@@ -1643,6 +1649,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Drop amps:                             {}\n", rules.drop_amps);
     if (base || rules.drop_weapons != b.drop_weapons)
         std::format_to(iter, "  Drop weapons:                          {}\n", rules.drop_weapons);
+    if (base || rules.force_rail_reload != b.force_rail_reload)
+        std::format_to(iter, "  Force rail reload before switch:        {}\n", rules.force_rail_reload);
     if (base || rules.no_player_collide != b.no_player_collide)
         std::format_to(iter, "  No player collide:                     {}\n", rules.no_player_collide);
     if (base || rules.location_pinging != b.location_pinging)
@@ -1998,6 +2006,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow lightmap only mode:              {}\n", cfg.allow_lightmaps_only);
     std::format_to(iter, "  Allow disable muzzle flash:            {}\n", cfg.allow_disable_muzzle_flash);
     std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
+    std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
 
