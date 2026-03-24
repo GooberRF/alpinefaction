@@ -391,6 +391,16 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
     g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
 }
 
+static bool multi_is_rail_gun_on_cooldown(rf::Player* pp, rf::Entity* ep)
+{
+    if (ep->ai.current_primary_weapon != rf::rail_gun_weapon_type) {
+        return false;
+    }
+    bool fire_cooldown = ep->ai.next_fire_primary.valid() && !ep->ai.next_fire_primary.elapsed();
+    bool reloading = pp->rail_gun_reload_timer.valid() && !pp->rail_gun_reload_timer.elapsed();
+    return fire_cooldown || reloading;
+}
+
 FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hook{
     0x004858D0,
     [](rf::Player *pp, rf::Entity *ep, int weapon_type) {
@@ -421,6 +431,10 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             xlog::debug("Player {} attempted to select weapon {} while reloading weapon {}",
                 pp->name, weapon_type, ep->ai.current_primary_weapon);
         }
+        else if (g_alpine_server_config_active_rules.force_rail_reload &&
+            multi_is_rail_gun_on_cooldown(pp, ep)) {
+            xlog::debug("Player {} attempted to switch from rail_gun while on cooldown", pp->name);
+        }
         else {
             rf::player_make_weapon_current_selection(pp, weapon_type);
             ep->ai.current_primary_weapon = weapon_type;
@@ -445,7 +459,20 @@ void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
         xlog::debug("Player {} attempted to reload weapon {} while reloading it", pp->name, weapon_type);
     }
     else {
-        rf::entity_reload_current_primary(ep, false, false);
+        // action the reload
+        bool reloaded = rf::entity_reload_current_primary(ep, false, false);
+        if (reloaded && weapon_type == rf::rail_gun_weapon_type) {
+            float reload_secs = rf::weapon_types[weapon_type].clip_reload_time_secs;
+
+            // default rail reload time is 3 seconds, but the animation time isn't that long
+            // without this fix, the player is blocked from switching away from the rail for
+            // 500ms after the reload finishes
+            if (reload_secs == 3.0f) {
+                reload_secs = 2.5f;
+            }
+
+            pp->rail_gun_reload_timer.set(static_cast<int>(reload_secs * 1000.0f));
+        }
     }
 }
 

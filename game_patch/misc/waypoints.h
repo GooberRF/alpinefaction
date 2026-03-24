@@ -21,11 +21,12 @@ constexpr float kWaypointLinkRadiusEpsilon = 0.001f;
 constexpr float kWaypointRadiusCompressionScale = 100.0f;
 constexpr float kJumpPadAutoLinkRangeScale = 0.5f;
 constexpr float kTeleEntranceAutoLinkRangeScale = 1.0f;
+constexpr float kRespawnAutoLinkRangeScale = 1.0f;
 constexpr float kBridgeWaypointMaxGroundDistance = 1.5f;
 constexpr float kWaypointGenerateProbeAngleStepDeg = 15.0f;
 constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
 constexpr float kWaypointGenerateGroundOffset = 1.0f;
-constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
+constexpr float kWaypointGenerateMaxInclineDeg = 60.0f;
 constexpr float kWaypointGenerateWallClearance = 0.5f;
 constexpr float kWaypointGenerateEdgeClearance = 1.0f;
 constexpr float kWaypointGenerateMinHeadroom = 1.375f;
@@ -36,6 +37,17 @@ constexpr float kWaypointGenerateLadderEdgeClearance = 0.25f;
 constexpr float kWaypointGenerateLinkPassThroughRadius = 1.0f;
 constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
 constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
+
+// Jump pad trajectory simulation constants.
+constexpr float kJumpPadTrajectoryTimeStep = 0.05f;
+constexpr float kJumpPadTrajectoryMaxTime = 10.0f;
+constexpr float kJumpPadLandingSearchRadius = 8.0f;
+constexpr float kJumpPadMinDiversityDistance = 3.0f;
+constexpr float kJumpPadHeightAdvantageScale = 10.0f;
+constexpr float kJumpPadItemProximityRadius = 10.0f;
+constexpr float kJumpPadLandingFloorNormalThreshold = 0.5f;
+constexpr float kJumpPadAirControlRadius = 3.0f;
+constexpr float kJumpPadMinHeightAboveStart = 2.0f;
 
 enum class WaypointType : int
 {
@@ -201,6 +213,9 @@ bool waypoints_waypoint_has_zone(int waypoint_uid, int zone_uid);
 bool waypoints_waypoint_has_zone_type(int waypoint_uid, WaypointZoneType zone_type);
 bool waypoints_find_dropped_ctf_flag_waypoint(bool red_flag, int& out_waypoint, rf::Vector3& out_pos);
 bool waypoints_auto_link_nearby(int waypoint_uid, WaypointAutoLinkStats& out_stats);
+int waypoints_send_probe(int waypoint_uid);
+int waypoints_calculate_ledge_drops(int waypoint_uid);
+void waypoints_autolink_target(int target_uid);
 int waypoints_target_count();
 bool waypoints_get_target_by_index(int index, WaypointTargetDefinition& out_target);
 bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_target);

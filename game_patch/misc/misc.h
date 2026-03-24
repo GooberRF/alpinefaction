@@ -18,6 +18,7 @@ bool af_rfl_version(int version);
 bool rfl_version_minimum(int check_version);
 void evaluate_restrict_disable_ss();
 void evaluate_restrict_disable_muzzle_flash();
+void evaluate_footsteps();
 void initialize_achievement_manager();
 void set_levelmod_autotexture_ppm();
 void clear_explicit_upcoming_game_type_request();

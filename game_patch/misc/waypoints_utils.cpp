@@ -379,7 +379,14 @@ void capture_waypoint_editor_mouse_input()
     int mouse_z = 0;
     rf::mouse_get_pos(g_waypoint_editor_mouse_x, g_waypoint_editor_mouse_y, mouse_z);
     g_waypoint_editor_left_click_pressed = rf::mouse_was_button_pressed(0) > 0;
-    g_waypoint_editor_right_click_pressed = rf::mouse_was_button_pressed(1) > 0;
+    // Use secondary attack bind (whatever key/button it's bound to) for cursor toggle.
+    // Call the original (unhooked) function since our hook blocks this action.
+    bool secondary_just_pressed = false;
+    control_config_check_pressed_waypoint_editor_hook.call_target(
+        &rf::local_player->settings.controls,
+        rf::CC_ACTION_SECONDARY_ATTACK,
+        &secondary_just_pressed);
+    g_waypoint_editor_right_click_pressed = secondary_just_pressed;
     g_waypoint_editor_left_click_consumed = false;
 }
 
@@ -831,17 +838,21 @@ void update_waypoint_editor_selection()
         best_selection.uid = waypoint_uid;
     }
 
+    // Cap zone selection radius to prevent large zones (death pits, etc.) from
+    // dominating the cursor pick. The full radius is still used for rendering.
+    constexpr float kMaxZoneSelectionRadius = 5.0f;
     for (int zone_uid = 0; zone_uid < static_cast<int>(g_waypoint_zones.size()); ++zone_uid) {
         rf::Vector3 zone_center{};
         float zone_radius = 0.0f;
         if (!get_zone_selection_center_and_radius(g_waypoint_zones[zone_uid], zone_center, zone_radius)) {
             continue;
         }
+        const float selection_radius = std::clamp(zone_radius, 0.5f, kMaxZoneSelectionRadius);
         auto hit_t = ray_sphere_intersection_t(
             ray_origin,
             ray_dir,
             zone_center,
-            std::max(zone_radius, 0.5f));
+            selection_radius);
         if (!hit_t || hit_t.value() > best_t) {
             continue;
         }
@@ -1137,11 +1148,7 @@ void finalize_selection_after_translation(const WaypointEditorSelectionState& se
         return;
     }
 
-    if (selection.kind == WaypointEditorSelectionKind::target) {
-        if (WaypointTargetDefinition* target = find_waypoint_target_by_uid(selection.uid)) {
-            rebuild_target_waypoint_refs(*target);
-        }
-    }
+    // Targets keep their waypoint refs on move — use Auto link to rebuild.
 }
 
 std::string selection_debug_name(const WaypointEditorSelectionState& selection)
@@ -2514,13 +2521,36 @@ void draw_debug_waypoints()
             }
         }
         if (show_links) {
+            const int selected_uid = (g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::waypoint)
+                ? g_waypoint_editor_selection.uid : -1;
             for (int j = 0; j < node.num_links; ++j) {
                 int link = node.links[j];
                 if (link <= 0 || link >= static_cast<int>(g_waypoints.size())) {
                     continue;
                 }
                 const auto& dest = g_waypoints[link];
-                rf::gr::line_arrow(node.pos.x, node.pos.y, node.pos.z, dest.pos.x, dest.pos.y, dest.pos.z, 0, 255, 0);
+                int cr = 0, cg = 255, cb = 0;
+                if (selected_uid > 0) {
+                    if (i == selected_uid) {
+                        // Outbound from selected. Check if the dest also links back (bidirectional).
+                        if (waypoint_has_link_to(link, i)) {
+                            cr = 180; cg = 0; cb = 255;
+                        }
+                        else {
+                            cr = 0; cg = 100; cb = 255;
+                        }
+                    }
+                    else if (link == selected_uid) {
+                        // Inbound to selected. Check if selected also links back (bidirectional).
+                        if (waypoint_has_link_to(selected_uid, i)) {
+                            cr = 180; cg = 0; cb = 255;
+                        }
+                        else {
+                            cr = 255; cg = 0; cb = 0;
+                        }
+                    }
+                }
+                rf::gr::line_arrow(node.pos.x, node.pos.y, node.pos.z, dest.pos.x, dest.pos.y, dest.pos.z, cr, cg, cb);
             }
         }
     }
@@ -3454,6 +3484,28 @@ void render_waypoint_editor_overlay_panel()
             }
             if (draw_waypoint_editor_button(
                     {action_x + half_w + action_gap, action_y, half_w, action_h},
+                    "Send probe",
+                    font_id,
+                    waypoint_actions_enabled)) {
+                const int generated = waypoints_send_probe(g_waypoint_editor_selection.uid);
+                push_waypoint_editor_log(std::format(
+                    "Probe from waypoint {}: generated {} waypoints",
+                    g_waypoint_editor_selection.uid, generated));
+            }
+            action_y += action_h + 4;
+
+            if (draw_waypoint_editor_button(
+                    {action_x, action_y, half_w, action_h},
+                    "Ledge calculate",
+                    font_id,
+                    waypoint_actions_enabled)) {
+                const int drops = waypoints_calculate_ledge_drops(g_waypoint_editor_selection.uid);
+                push_waypoint_editor_log(std::format(
+                    "Waypoint {} ledge drops: {} links added",
+                    g_waypoint_editor_selection.uid, drops));
+            }
+            if (draw_waypoint_editor_button(
+                    {action_x + half_w + action_gap, action_y, half_w, action_h},
                     "Delete waypoint",
                     font_id,
                     waypoint_actions_enabled)) {
@@ -3502,6 +3554,20 @@ void render_waypoint_editor_overlay_panel()
             }
             if (draw_waypoint_editor_button(
                     {action_x + half_w + action_gap, action_y, half_w, action_h},
+                    "Auto link",
+                    font_id,
+                    target_actions_enabled)) {
+                waypoints_autolink_target(g_waypoint_editor_selection.uid);
+                const auto* target = find_waypoint_target_by_uid(g_waypoint_editor_selection.uid);
+                const int ref_count = target ? static_cast<int>(target->waypoint_uids.size()) : 0;
+                push_waypoint_editor_log(std::format(
+                    "Target {} autolinked: {} waypoint refs",
+                    g_waypoint_editor_selection.uid, ref_count));
+            }
+            action_y += action_h + 4;
+
+            if (draw_waypoint_editor_button(
+                    {action_x, action_y, half_w, action_h},
                     "Delete target",
                     font_id,
                     target_actions_enabled)) {

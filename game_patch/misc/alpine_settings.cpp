@@ -991,6 +991,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.direct_input = std::stoi(settings["DirectInput"]);
         processed_keys.insert("DirectInput");
     }
+    if (settings.count("MouseScale")) {
+        g_alpine_game_config.mouse_scale = std::clamp(std::stoi(settings["MouseScale"]), 0, 2);
+        processed_keys.insert("MouseScale");
+    }
     if (settings.count("MouseLinearPitch")) {
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
         processed_keys.insert("MouseLinearPitch");

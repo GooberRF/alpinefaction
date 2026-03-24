@@ -336,7 +336,7 @@ static float convert_pitch_delta_to_non_linear_space(
     const float pitch_delta,
     const float yaw_delta
 ) {
-    // Convert to linear space.  See `physics_make_orient`.
+    // Convert to linear space. See `physics_make_orient`.
     const rf::Vector3 fvec =
         fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
     const float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
@@ -367,25 +367,33 @@ static float convert_pitch_delta_to_non_linear_space(
 
 static bool s_camera_resetting = false;
 static bool s_camera_reset_prev_down = false;
-
-// Applies gamepad camera rotation, linear pitch correction, and smooth camera horizon reset.
-// All three must occur at the same injection point so the linear pitch transform applies
-// to the combined mouse+gamepad delta before any override from the reset logic.
+// Applies camera rotation and linear pitch correction at the entity control
+// injection point. Mouse angles are computed by mouse_get_camera (Quake/Source-style
+// formula) rather than by RF's own sensitivity pipeline.
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
-    [](auto& regs) {
-        rf::Entity* entity = regs.esi;
+    [](const auto& regs) {
         float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
-        float& yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
+        float& yaw_delta   = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
 
-        // Add gamepad rotation deltas to the game's computed deltas
+        // Mouse camera contribution: raw pixel deltas converted to radians.
+        // Only active when mouse_scale mode is non-Classic; otherwise RF's own
+        // pipeline has already applied sensitivity and pitch_delta/yaw_delta are populated.
+        if (g_alpine_game_config.mouse_scale != 0) {
+            float mouse_pitch = 0.0f, mouse_yaw = 0.0f;
+            mouse_get_camera(mouse_pitch, mouse_yaw);
+            pitch_delta += mouse_pitch;
+            yaw_delta   += mouse_yaw;
+        }
+
         float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
         gamepad_get_camera(gamepad_pitch, gamepad_yaw);
         pitch_delta += gamepad_pitch;
         yaw_delta += gamepad_yaw;
 
-        // Apply linear pitch correction to combined mouse+gamepad delta
-        if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0) {
+        // Apply linear pitch correction to the combined delta.
+        if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0.0f) {
+            const rf::Entity* const entity = regs.esi;
             const float current_yaw = entity->control_data.phb.y;
             const float current_pitch_non_lin = entity->control_data.eye_phb.x;
             pitch_delta = convert_pitch_delta_to_non_linear_space(
