@@ -76,6 +76,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `force_rail_reload` dedicated server config option, to force reloading the rail before being able to switch weapons
 - Add help strings to spectate UI in freelook spectate mode
 - Add dedicated control for entering/exiting spectate mode
+- Add `To Mesh Object` button when selecting clutter in level editor `Select Objects` window
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
