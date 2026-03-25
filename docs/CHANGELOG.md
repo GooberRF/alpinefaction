@@ -128,6 +128,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix bots not always spawning correctly when `ideal_player_count` is 32
 - Fix possible crash in substring handling
 - Fix rare crash when maintaining freelook spectate through a level change
+- Fix `Set_Variable` event not correctly handling `bool2` for `Clone_Entity`, or `bool2` and `str2` for `AF_Teleport_Player`
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
