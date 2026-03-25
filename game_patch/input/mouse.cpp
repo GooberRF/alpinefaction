@@ -20,7 +20,7 @@
 // Raw mouse delta accumulators for centralized camera angle computation.
 static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
 
-static bool is_mouse_spectator_freelook()
+static bool is_freelook_camera()
 {
     return rf::local_player && rf::local_player->cam
         && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
@@ -155,7 +155,7 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
         // If the player entity is not valid (dead/spawn transition), pause raw delta.
         // Exception: spectator freelook camera should still receive mouse input.
         if (!rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity)) {
-            if (!is_mouse_spectator_freelook()) {
+            if (!is_freelook_camera()) {
                 reset_mouse_delta_accumulators();
                 dx = 0;
                 dy = 0;
@@ -334,8 +334,8 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
     yaw_delta   = 0.0f;
 
     const bool has_player_entity = rf::local_player_entity && !rf::entity_is_dying(rf::local_player_entity);
-    const bool in_spectator_freelook = !has_player_entity && is_mouse_spectator_freelook();
-    if (!rf::local_player || !rf::keep_mouse_centered || (!has_player_entity && !in_spectator_freelook)) {
+    const bool is_freelook = !has_player_entity && is_freelook_camera();
+    if (!rf::local_player || !rf::keep_mouse_centered || (!has_player_entity && !is_freelook)) {
         reset_mouse_delta_accumulators();
         return;
     }
