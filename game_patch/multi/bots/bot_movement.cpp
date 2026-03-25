@@ -144,6 +144,22 @@ bool upward_link_requires_jump_for_obstruction(
     return requires_jump;
 }
 
+bool get_next_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
+{
+    out_from_waypoint = 0;
+    out_to_waypoint = 0;
+    const int next_idx = g_client_bot_state.waypoint_next_index;
+    if (g_client_bot_state.waypoint_path.empty()
+        || next_idx < 0
+        || next_idx + 1 >= static_cast<int>(g_client_bot_state.waypoint_path.size())) {
+        return false;
+    }
+
+    out_from_waypoint = g_client_bot_state.waypoint_path[next_idx];
+    out_to_waypoint = g_client_bot_state.waypoint_path[next_idx + 1];
+    return out_from_waypoint > 0 && out_to_waypoint > 0;
+}
+
 bool get_active_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 {
     out_from_waypoint = 0;
@@ -164,6 +180,9 @@ bool get_active_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 
 void request_soft_repath_around_waypoint(const int avoid_waypoint)
 {
+    if (g_client_bot_state.drop_link_route_locked) {
+        return;
+    }
     // Skip recovery for roam/none goals — just clear the route and let normal
     // navigation pick a new path without the recovery anchor system.
     if (g_client_bot_state.active_goal == BotGoalType::roam
@@ -435,6 +454,24 @@ bool waypoint_is_unsafe_terrain(const int waypoint)
     return movement_subtype == static_cast<int>(WaypointDroppedSubtype::unsafe_terrain);
 }
 
+bool is_significant_downward_link(const int from_waypoint, const int to_waypoint)
+{
+    if (from_waypoint <= 0 || to_waypoint <= 0) {
+        return false;
+    }
+    if (!waypoints_has_direct_link(from_waypoint, to_waypoint)) {
+        return false;
+    }
+    rf::Vector3 from_pos{};
+    rf::Vector3 to_pos{};
+    if (!waypoints_get_pos(from_waypoint, from_pos) || !waypoints_get_pos(to_waypoint, to_pos)) {
+        return false;
+    }
+    // Must drop more than a normal step/ramp height (0.75m).
+    constexpr float kDropLinkMinHeight = 0.75f;
+    return (from_pos.y - to_pos.y) > kDropLinkMinHeight;
+}
+
 bool should_jump_to_cross_gap_link(
     const rf::Entity& local_entity,
     const int from_waypoint,
@@ -602,6 +639,12 @@ void apply_corner_centering_steer(
     forward_right.normalize_safe();
     forward_left.normalize_safe();
 
+    // When edge checks are suppressed (drop links), skip all corner steering —
+    // both wall and edge probes can give false positives at ledge edges.
+    if (suppress_edge_checks) {
+        return;
+    }
+
     const bool forward_blocked = is_forward_probe_blocked(
         local_entity,
         probe_forward,
@@ -609,7 +652,6 @@ void apply_corner_centering_steer(
     );
     const bool forward_over_edge =
         !forward_blocked
-        && !suppress_edge_checks
         && is_forward_probe_over_edge(
             local_entity,
             probe_forward,
@@ -754,11 +796,31 @@ void bot_process_movement(
     const bool active_link_is_gap =
         has_active_link
         && !bot_nav_link_midpoint_has_support(active_from_waypoint, active_to_waypoint);
+    int next_from_waypoint = 0;
+    int next_to_waypoint = 0;
+    const bool has_next_link = get_next_waypoint_link(next_from_waypoint, next_to_waypoint);
+    bool active_link_is_drop =
+        (has_active_link
+            && is_significant_downward_link(active_from_waypoint, active_to_waypoint))
+        || (has_next_link
+            && is_significant_downward_link(next_from_waypoint, next_to_waypoint));
     const bool active_link_from_unsafe_terrain =
         has_active_link
         && waypoint_is_unsafe_terrain(active_from_waypoint);
 
     const rf::Vector3 to_target = move_target - local_entity.pos;
+    // Also detect drops based on entity position relative to target.
+    if (!active_link_is_drop && has_active_link && to_target.y < -0.75f) {
+        active_link_is_drop = true;
+    }
+    // Lock route when on drop links to prevent rerouting during traversal.
+    // Unlock once the bot is in freefall — they've committed to the drop.
+    if (active_link_is_drop && !rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))) {
+        g_client_bot_state.drop_link_route_locked = true;
+    }
+    else if (rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))) {
+        g_client_bot_state.drop_link_route_locked = false;
+    }
     rf::Vector3 climb_region_probe = local_entity.pos;
     const bool in_climb_region = rf::level_point_in_climb_region(&climb_region_probe) != nullptr;
     const bool ladder_traversal_active =
@@ -788,6 +850,7 @@ void bot_process_movement(
                     active_link_is_approximately_level(active_from_waypoint, active_to_waypoint);
                 const bool not_near_ledge =
                     !active_link_is_gap
+                    && !active_link_is_drop
                     && !active_link_from_unsafe_terrain
                     && open_terrain_edge_probes_safe(local_entity, desired_world_dir);
                 if (level_link || not_near_ledge) {
@@ -881,7 +944,26 @@ void bot_process_movement(
 
     float desired_move_x = 0.0f;
     float desired_move_z = 0.0f;
-    if (horizontal_dist > stop_distance) {
+
+    // When on a downward drop link with minimal horizontal distance to target,
+    // walk forward along the link direction to step off the edge.
+    if (active_link_is_drop && horizontal_dist <= stop_distance && has_active_link) {
+        rf::Vector3 from_pos{};
+        rf::Vector3 to_pos{};
+        if (waypoints_get_pos(active_from_waypoint, from_pos) && waypoints_get_pos(active_to_waypoint, to_pos)) {
+            rf::Vector3 link_dir = to_pos - from_pos;
+            link_dir.y = 0.0f;
+            if (link_dir.len_sq() > 0.001f) {
+                link_dir.normalize_safe();
+                const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(
+                    local_entity.control_data.phb.y, 0.0f);
+                const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+                desired_move_z = std::clamp(link_dir.dot_prod(view_forward), -1.0f, 1.0f);
+                desired_move_x = std::clamp(link_dir.dot_prod(view_right), -1.0f, 1.0f);
+            }
+        }
+    }
+    else if (horizontal_dist > stop_distance) {
         desired_world_dir.normalize_safe();
         const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(
             local_entity.control_data.phb.y,
@@ -1038,7 +1120,7 @@ void bot_process_movement(
         local_entity,
         desired_world_dir,
         desired_move_z,
-        active_link_is_gap || active_link_from_unsafe_terrain,
+        active_link_is_gap || active_link_is_drop || active_link_from_unsafe_terrain,
         desired_move_x
     );
 
@@ -1051,7 +1133,7 @@ void bot_process_movement(
         suppress_forward_obstacle_checks_for_upward_link
         || ladder_traversal_active;
     const bool suppress_forward_edge_checks =
-        active_link_is_gap || active_link_from_unsafe_terrain;
+        active_link_is_gap || active_link_is_drop || active_link_from_unsafe_terrain;
 
     if (desired_move_z > 0.25f && !suppress_forward_obstacle_checks) {
         if (!g_client_bot_state.forward_obstacle_guard_timer.valid()) {
@@ -1393,11 +1475,23 @@ void bot_process_movement(
         g_client_bot_state.jump_timer.set(650);
     }
 
-    issue_movement_actions(
-        local_player,
-        desired_move_x,
-        ladder_move_y,
-        desired_move_z,
-        should_jump
-    );
+    // Don't send movement inputs during freefall from ledge drops — backward inputs
+    // cause visible backpedaling animation. Allow air control during jump pad flights.
+    const bool freefall_no_air_control =
+        rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))
+        && !active_to_is_jump_pad
+        && !(has_active_from_type
+             && static_cast<WaypointType>(active_from_type_raw) == WaypointType::jump_pad);
+    if (freefall_no_air_control) {
+        issue_movement_actions(local_player, 0.0f, 0.0f, 0.0f, false);
+    }
+    else {
+        issue_movement_actions(
+            local_player,
+            desired_move_x,
+            ladder_move_y,
+            desired_move_z,
+            should_jump
+        );
+    }
 }
