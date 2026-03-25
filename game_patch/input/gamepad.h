@@ -9,7 +9,8 @@ bool gamepad_is_last_input_gamepad();
 void gamepad_set_last_input_keyboard();
 
 // Controller binding UI
-int         gamepad_get_button_for_action(int action_idx);  // -1 if unbound
+int         gamepad_get_button_for_action(int action_idx);  // -1 if unbound (primary only)
+void        gamepad_get_buttons_for_action(int action_idx, int* btn_primary, int* btn_secondary); // both primary and secondary
 int         gamepad_get_trigger_for_action(int action_idx); // 0=LT, 1=RT, -1 if unbound
 const char* gamepad_get_scan_code_name(int scan_code);
 int         gamepad_get_button_count();
@@ -17,13 +18,17 @@ void        gamepad_reset_to_defaults();
 void        gamepad_sync_bindings_from_scan_codes();
 
 // Scan codes used while the CONTROLLER tab is active (unused gap in RF's key table)
-static constexpr int CTRL_GAMEPAD_SCAN_BASE   = 0x59; // SDL button 0
+static constexpr int CTRL_GAMEPAD_SCAN_BASE    = 0x59; // SDL button 0
+static constexpr int CTRL_GAMEPAD_EXTENDED_BASE = CTRL_GAMEPAD_SCAN_BASE + 15; // SDL_GAMEPAD_BUTTON_MISC1 (0x68)
 static constexpr int CTRL_GAMEPAD_LEFT_TRGGER  = 0x73; // SCAN_BASE + 26
 static constexpr int CTRL_GAMEPAD_RIGHT_TRGGER = 0x74; // SCAN_BASE + 27
 
 // Per-binding get/set for save/load
 int  gamepad_get_button_binding(int button_idx);
 void gamepad_set_button_binding(int button_idx, int action_idx);
+int  gamepad_get_button_alt_binding(int button_idx);     // secondary (extended button) binding
+void gamepad_set_button_alt_binding(int button_idx, int action_idx);
+int  gamepad_get_alt_sc_for_primary_sc(int primary_sc);  // combined name lookup for binding list
 int  gamepad_get_trigger_action(int trigger_idx);
 void gamepad_set_trigger_action(int trigger_idx, int action_idx);
 

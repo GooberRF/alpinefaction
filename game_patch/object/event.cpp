@@ -549,6 +549,12 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
 static std::string   g_hud_msg_template;
 static bool          g_hud_msg_was_gamepad = false;
 static rf::Timestamp g_hud_msg_expire;
+static bool          g_hud_bindings_dirty = false;
+
+void hud_mark_bindings_dirty()
+{
+    g_hud_bindings_dirty = true;
+}
 
 void hud_refresh_action_tokens()
 {
@@ -579,8 +585,9 @@ FunHook<void(rf::Player*)> hud_do_frame_input_sync_hook{
         hud_do_frame_input_sync_hook.call_target(player);
         bool is_gamepad = gamepad_is_last_input_gamepad();
         if (!g_hud_msg_template.empty() && g_hud_msg_expire.valid() && !g_hud_msg_expire.elapsed()
-            && is_gamepad != g_hud_msg_was_gamepad) {
+            && (is_gamepad != g_hud_msg_was_gamepad || g_hud_bindings_dirty)) {
             g_hud_msg_was_gamepad = is_gamepad;
+            g_hud_bindings_dirty = false;
             rf::hud_msg(g_hud_msg_template.c_str(), 0, std::max(1, g_hud_msg_expire.time_until()), nullptr);
         }
     },

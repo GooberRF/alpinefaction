@@ -1156,7 +1156,7 @@ bool alpine_player_settings_load(rf::Player* player)
                     player->settings.controls.bindings[bind_id].scan_codes[1] = scan2.empty() ? -1 : std::stoi(scan2);
                     player->settings.controls.bindings[bind_id].mouse_btn_id = mouse_btn.empty() ? -1 : std::stoi(mouse_btn);
 
-                    // Optional 5th field: gamepad scan code
+                    // Optional 5th field: primary gamepad scan code
                     std::string gp_sc_str;
                     if (std::getline(bind_values, gp_sc_str, ',') && !gp_sc_str.empty()) {
                         int gp_sc = std::stoi(gp_sc_str);
@@ -1167,6 +1167,14 @@ bool alpine_player_settings_load(rf::Player* player)
                             gamepad_set_trigger_action(0, bind_id);
                         else if (gp_sc == CTRL_GAMEPAD_RIGHT_TRGGER)
                             gamepad_set_trigger_action(1, bind_id);
+                    }
+
+                    // Optional 6th field: secondary (extended-button) gamepad scan code
+                    std::string gp_sc_alt_str;
+                    if (std::getline(bind_values, gp_sc_alt_str, ',') && !gp_sc_alt_str.empty()) {
+                        int gp_sc_alt = std::stoi(gp_sc_alt_str);
+                        if (gp_sc_alt >= CTRL_GAMEPAD_EXTENDED_BASE && gp_sc_alt < CTRL_GAMEPAD_LEFT_TRGGER)
+                            gamepad_set_button_alt_binding(gp_sc_alt - CTRL_GAMEPAD_SCAN_BASE, bind_id);
                     }
 
                     xlog::info("Loaded Bind: {} = {}, {}, {}, {}", action_name, bind_id, scan1, scan2, mouse_btn);
@@ -1247,11 +1255,12 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadSwapSticks=" << g_alpine_game_config.gamepad_swap_sticks << "\n";
 
     file << "\n[ActionBinds]\n";
-    file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID},{GamepadScanCode}\n";
+    file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID},{GamepadScanCode},{GamepadScanCodeAlt}\n";
 
-    // Key bind format: Bind:ActionName=ID,PrimaryScanCode,SecondaryScanCode,MouseButtonID,GamepadScanCode
+    // Key bind format: Bind:ActionName=ID,PrimaryScanCode,SecondaryScanCode,MouseButtonID,GamepadScanCode,GamepadScanCodeAlt
     // Note ActionName is not used when loading, ID is. ActionName is included for readability.
     // GamepadScanCode is -1 if no gamepad button is bound to this action.
+    // GamepadScanCodeAlt is -1 if no secondary (extended) button is bound to this action.
     for (int i = 0; i < cc.num_bindings; ++i) {
         int16_t gp_sc = -1;
         int btn = gamepad_get_button_for_action(i);
@@ -1260,20 +1269,27 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
         else if (trig == 0) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
         else if (trig == 1) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
 
-        xlog::info("Saving Bind: {} = {}, {}, {}, {}, {}",
+        int16_t gp_sc_alt = -1;
+        int btn_alt = -1, btn_primary_unused = -1;
+        gamepad_get_buttons_for_action(i, &btn_primary_unused, &btn_alt);
+        if (btn_alt >= 0) gp_sc_alt = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn_alt);
+
+        xlog::info("Saving Bind: {} = {}, {}, {}, {}, {}, {}",
                    cc.bindings[i].name,
                    i,
                    cc.bindings[i].scan_codes[0],
                    cc.bindings[i].scan_codes[1],
                    cc.bindings[i].mouse_btn_id,
-                   gp_sc);
+                   gp_sc,
+                   gp_sc_alt);
 
         file << "Bind:" << cc.bindings[i].name << "="
              << i << ","
              << cc.bindings[i].scan_codes[0] << ","
              << cc.bindings[i].scan_codes[1] << ","
              << cc.bindings[i].mouse_btn_id << ","
-             << gp_sc << "\n";
+             << gp_sc << ","
+             << gp_sc_alt << "\n";
     }
 }
 

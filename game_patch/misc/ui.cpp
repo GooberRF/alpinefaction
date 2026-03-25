@@ -33,7 +33,10 @@ static rf::ui::Button alpine_options_btn;
 // Controller bindings overlay (shown when the CONTROLLER tab is active on options panel 3)
 static bool g_ctrl_bind_view       = false; // KEYBOARD vs CONTROLLER tab toggle
 static bool g_ctrl_codes_installed = false; // true while gamepad scan codes are in cc.bindings
-static int16_t g_saved_scan_codes[128] = {}; // saved keyboard scan_codes[0] per binding slot
+
+static int16_t g_saved_scan_codes[128]   = {}; // keyboard scan_codes[0] per binding slot
+static int16_t g_saved_sc1[128]          = {}; // keyboard scan_codes[1] per binding slot
+static int16_t g_saved_mouse_btn_ids[128] = {}; // keyboard mouse_btn_id per binding slot
 
 // CONTROLLER mode checkbox (integrated into the controls panel)
 static rf::ui::Checkbox g_ctrl_mode_cbox;
@@ -1815,25 +1818,43 @@ static void handle_ctrl_camscale_btns(int x, int y)
 // Controller bindings tab strip (drawn on top of options panel 3 = Controls)
 // Write the current gamepad binding for every action into scan_codes[0] using the
 // CTRL_GAMEPAD_SCAN_BASE encoding, saving the original keyboard scan codes first.
+static void restore_keyboard_fields()
+{
+    if (!rf::local_player || !g_ctrl_codes_installed) return;
+    auto& cc = rf::local_player->settings.controls;
+    int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
+    for (int i = 0; i < n; ++i) {
+        cc.bindings[i].scan_codes[0] = g_saved_scan_codes[i];
+        cc.bindings[i].scan_codes[1] = g_saved_sc1[i];
+        cc.bindings[i].mouse_btn_id  = g_saved_mouse_btn_ids[i];
+    }
+}
+
 static void install_ctrl_gamepad_codes()
 {
     if (!rf::local_player || g_ctrl_codes_installed) return;
     auto& cc = rf::local_player->settings.controls;
     int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
     for (int i = 0; i < n; ++i) {
-        g_saved_scan_codes[i] = cc.bindings[i].scan_codes[0];
-        int btn  = gamepad_get_button_for_action(i);
+        g_saved_scan_codes[i]    = cc.bindings[i].scan_codes[0];
+        g_saved_sc1[i]           = cc.bindings[i].scan_codes[1];
+        g_saved_mouse_btn_ids[i] = cc.bindings[i].mouse_btn_id;
+        int btn = -1, btn_alt = -1;
+        gamepad_get_buttons_for_action(i, &btn, &btn_alt);
         int trig = gamepad_get_trigger_for_action(i);
         int16_t code = 0; // unbound
         if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
         else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
         else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
         cc.bindings[i].scan_codes[0] = code;
+        cc.bindings[i].scan_codes[1] = (btn_alt >= 0)
+            ? static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn_alt) : int16_t{0};
+        cc.bindings[i].mouse_btn_id  = -1; // no mouse binding in gamepad view
     }
     g_ctrl_codes_installed = true;
 }
 
-// Rewrite scan_codes[0] from the current g_button_map/g_trigger_action state.
+// Rewrite scan_codes[0] and scan_codes[1] from the current g_button_map/g_trigger_action state.
 // Called after a bind completes so the list immediately reflects the new assignment.
 static void refresh_ctrl_gamepad_codes()
 {
@@ -1841,26 +1862,26 @@ static void refresh_ctrl_gamepad_codes()
     auto& cc = rf::local_player->settings.controls;
     int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
     for (int i = 0; i < n; ++i) {
-        int btn  = gamepad_get_button_for_action(i);
+        int btn = -1, btn_alt = -1;
+        gamepad_get_buttons_for_action(i, &btn, &btn_alt);
         int trig = gamepad_get_trigger_for_action(i);
         int16_t code = 0;
         if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
         else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
         else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
         cc.bindings[i].scan_codes[0] = code;
+        cc.bindings[i].scan_codes[1] = (btn_alt >= 0)
+            ? static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn_alt) : int16_t{0};
     }
 }
 
-// Harvest whatever RF wrote into scan_codes[0] back into g_button_map/g_trigger_action,
-// then restore the original keyboard scan codes.
+// Harvest whatever RF wrote into scan_codes[0/1] back into the button maps,
+// then restore the original keyboard/mouse binding fields.
 static void uninstall_ctrl_gamepad_codes()
 {
     if (!rf::local_player || !g_ctrl_codes_installed) return;
     gamepad_sync_bindings_from_scan_codes();
-    auto& cc = rf::local_player->settings.controls;
-    int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
-    for (int i = 0; i < n; ++i)
-        cc.bindings[i].scan_codes[0] = g_saved_scan_codes[i];
+    restore_keyboard_fields();
     g_ctrl_codes_installed = false;
 }
 
@@ -1967,36 +1988,16 @@ CodeInjection options_render_alpine_panel_patch{
 
         // Detect bind completion (falling edge of waiting_for_key).
         static bool s_was_waiting = false;
-        static int16_t s_saved_mouse_btn_ids[128];
-        static int16_t s_saved_scan_codes_alt[128];
         bool now_waiting = (index == 3) && rf::ui::options_controls_waiting_for_key;
-
-        if (!s_was_waiting && now_waiting && g_ctrl_bind_view && rf::local_player) {
-            auto& cc = rf::local_player->settings.controls;
-            for (int i = 0; i < std::min(cc.num_bindings, 128); ++i) {
-                s_saved_mouse_btn_ids[i] = cc.bindings[i].mouse_btn_id;
-                s_saved_scan_codes_alt[i] = cc.bindings[i].scan_codes[1];
-            }
-        }
 
         if (s_was_waiting && !now_waiting && g_ctrl_bind_view) {
             if (gamepad_has_pending_rebind()) {
                 gamepad_apply_rebind();
                 gamepad_sync_bindings_from_scan_codes();
-                refresh_ctrl_gamepad_codes();
-            } else {
-                // Non-gamepad input — reject and roll back all RF side-effects
-                refresh_ctrl_gamepad_codes();
             }
-            // Restore keyboard/mouse fields that RF's rebind handler may have
-            // cleared as a side-effect of accepting the sentinel key.
-            if (rf::local_player) {
-                auto& cc = rf::local_player->settings.controls;
-                for (int i = 0; i < std::min(cc.num_bindings, 128); ++i) {
-                    cc.bindings[i].mouse_btn_id = s_saved_mouse_btn_ids[i];
-                    cc.bindings[i].scan_codes[1] = s_saved_scan_codes_alt[i];
-                }
-            }
+            restore_keyboard_fields();
+            refresh_ctrl_gamepad_codes();
+            hud_mark_bindings_dirty();
         }
         s_was_waiting = now_waiting;
 
@@ -2016,6 +2017,7 @@ CodeInjection options_render_alpine_panel_patch{
                     g_saved_scan_codes[i] = cc.bindings[i].scan_codes[0];
                 gamepad_reset_to_defaults();
                 refresh_ctrl_gamepad_codes();
+                hud_mark_bindings_dirty();
             }
         }
 

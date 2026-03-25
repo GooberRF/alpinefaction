@@ -32,3 +32,6 @@ void ui_ctrl_bindings_view_reset(); // restore keyboard scan codes and deactivat
 
 // Redraw currently active HUD token message after input icon/settings change
 void hud_refresh_action_tokens();
+
+// Schedule a HUD token refresh on the next game frame (safe to call while menus are open)
+void hud_mark_bindings_dirty();
