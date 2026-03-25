@@ -1467,15 +1467,18 @@ void bot_process_movement(
         g_client_bot_state.jump_timer.set(650);
     }
 
-    // Don't send movement inputs during freefall from ledge drops — backward inputs
-    // cause visible backpedaling animation. Allow air control during jump pad flights.
-    const bool freefall_no_air_control =
-        rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))
-        && !active_to_is_jump_pad
-        && !(has_active_from_type
-             && static_cast<WaypointType>(active_from_type_raw) == WaypointType::jump_pad);
-    if (freefall_no_air_control) {
-        issue_movement_actions(local_player, 0.0f, 0.0f, 0.0f, false);
+    const bool is_falling = rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity));
+
+    // Suppress aim-at-waypoint only during freefall from unidirectional drop links,
+    // not during jump pad flights, ladder climbs, normal jumps, etc.
+    g_client_bot_state.freefall_suppress_aim = is_falling && active_link_is_drop;
+
+    if (is_falling) {
+        // Use air control to steer toward the target waypoint while airborne.
+        // Clamp backward movement to zero to avoid visible backpedaling animation.
+        const float air_move_x = desired_move_x;
+        const float air_move_z = std::max(desired_move_z, 0.0f);
+        issue_movement_actions(local_player, air_move_x, 0.0f, air_move_z, false);
     }
     else {
         issue_movement_actions(

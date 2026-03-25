@@ -1976,6 +1976,25 @@ bool update_waypoint_target(const rf::Entity& entity)
         }
     }
 
+    // When the closest waypoint is a jump pad, always route to one of its outbound
+    // links (landing spots) so the bot commits to leaving the pad rather than
+    // bouncing on it repeatedly.
+    {
+        int closest_type_raw = 0;
+        int closest_subtype = 0;
+        if (waypoints_get_type_subtype(closest_waypoint, closest_type_raw, closest_subtype)
+            && static_cast<WaypointType>(closest_type_raw) == WaypointType::jump_pad) {
+            if (commit_single_hop_fallback_route(
+                    closest_waypoint,
+                    0,
+                    entity.pos,
+                    kWaypointRecoveryRepathMs,
+                    "jump_pad_landing")) {
+                return update_waypoint_target_from_current_path(entity);
+            }
+        }
+    }
+
     const bool need_route =
         g_client_bot_state.waypoint_path.empty()
         || g_client_bot_state.waypoint_next_index < 0
@@ -2150,6 +2169,24 @@ bool update_waypoint_target_towards(
         if (closest_waypoint <= 0) {
             clear_waypoint_route();
             return false;
+        }
+
+        // When the closest waypoint is a jump pad, always commit to a landing spot
+        // so the bot doesn't bounce on the pad repeatedly while trying to reroute.
+        {
+            int closest_type_raw = 0;
+            int closest_subtype = 0;
+            if (waypoints_get_type_subtype(closest_waypoint, closest_type_raw, closest_subtype)
+                && static_cast<WaypointType>(closest_type_raw) == WaypointType::jump_pad) {
+                if (commit_single_hop_fallback_route(
+                        closest_waypoint,
+                        goal_waypoint,
+                        destination,
+                        std::max(kWaypointRecoveryRepathMs, effective_repath_ms),
+                        "jump_pad_landing")) {
+                    return update_waypoint_target_from_current_path(entity);
+                }
+            }
         }
 
         if (closest_waypoint == goal_waypoint) {

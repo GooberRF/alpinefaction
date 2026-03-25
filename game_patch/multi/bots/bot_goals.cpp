@@ -1440,7 +1440,18 @@ void bot_refresh_goal_state(
                 && enemy_target
                 && !enemy_has_los));
     const bool crater_context = has_crater_weapon_now && route_unlock_context;
-    const bool shatter_context = has_shatter_weapon_now && route_unlock_context;
+    // Shatter glass requires stronger motivation than craters: only destroyer
+    // personality bots (crater_unlock_affinity) will opportunistically shatter
+    // glass when chasing enemies. Other bots only shatter during navigation
+    // recovery or when already committed to a shatter goal.
+    const bool shatter_context =
+        has_shatter_weapon_now
+        && (g_client_bot_state.active_goal == BotGoalType::shatter_glass
+            || bridge_recovery_context
+            || (crater_unlock_affinity
+                && g_client_bot_state.active_goal == BotGoalType::eliminate_target
+                && enemy_target
+                && !enemy_has_los));
     if (crater_context) {
         const int target_count = waypoints_target_count();
         for (int target_index = 0; target_index < target_count; ++target_index) {
@@ -1524,7 +1535,7 @@ void bot_refresh_goal_state(
                 score += 32.0f;
             }
             if (crater_unlock_affinity) {
-                score += 8.0f;
+                score += 35.0f;
             }
             if (target.uid == g_client_bot_state.goal_target_identifier) {
                 score += 16.0f;

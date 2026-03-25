@@ -495,6 +495,7 @@ struct ClientBotState
     int recovery_avoid_waypoint = 0;
     bool recovery_pending_reroute = false;
     bool drop_link_route_locked = false;
+    bool freefall_suppress_aim = false;
     int pursuit_target_handle = -1;
     int pursuit_route_failures = 0;
     bool last_pursuit_route_was_fallback = false;
