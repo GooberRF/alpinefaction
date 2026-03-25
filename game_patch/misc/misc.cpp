@@ -397,6 +397,46 @@ CodeInjection explosion_crash_fix{
     },
 };
 
+CodeInjection camera_get_pos_null_crash_fix{
+    0x0040D760,
+    [](auto& regs) {
+        uintptr_t cp = *reinterpret_cast<uintptr_t*>(regs.esp + 8);
+        if (cp == 0) {
+            regs.eip = 0x0040D779;
+        }
+    },
+};
+
+CodeInjection camera_get_orient_null_crash_fix{
+    0x0040D780,
+    [](auto& regs) {
+        uintptr_t cp = *reinterpret_cast<uintptr_t*>(regs.esp + 8);
+        if (cp == 0) {
+            regs.eip = 0x0040D79C;
+        }
+    },
+};
+
+CodeInjection camera_set_pos_null_crash_fix{
+    0x0040D7A0,
+    [](auto& regs) {
+        uintptr_t cp = *reinterpret_cast<uintptr_t*>(regs.esp + 4);
+        if (cp == 0) {
+            regs.eip = 0x0040D7D5;
+        }
+    },
+};
+
+CodeInjection camera_set_orient_null_crash_fix{
+    0x0040D7E0,
+    [](auto& regs) {
+        uintptr_t cp = *reinterpret_cast<uintptr_t*>(regs.esp + 4);
+        if (cp == 0) {
+            regs.eip = 0x0040D813;
+        }
+    },
+};
+
 CodeInjection vfile_read_stack_corruption_fix{
     0x0052D0E0,
     [](auto& regs) {
@@ -627,6 +667,12 @@ void misc_init()
 
     // Fix crash caused by explosion near dying player-controlled entity (entity->local_player is null)
     explosion_crash_fix.install();
+
+    // Fix crash in camera functions when Camera pointer is null
+    camera_get_pos_null_crash_fix.install();
+    camera_get_orient_null_crash_fix.install();
+    camera_set_pos_null_crash_fix.install();
+    camera_set_orient_null_crash_fix.install();
 
     // If speed reduction in background is not wanted disable that code in RF.
     // Headless bot clients should always bypass this throttle to keep net/sim stable.

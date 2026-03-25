@@ -127,6 +127,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor crash when maximizing the bottom right viewport
 - Fix bots not always spawning correctly when `ideal_player_count` is 32
 - Fix possible crash in substring handling
+- Fix rare crash when maintaining freelook spectate through a level change
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
