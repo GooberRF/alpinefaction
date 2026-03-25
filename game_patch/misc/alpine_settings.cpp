@@ -462,6 +462,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.entity_pain_sounds = std::stoi(settings["EntityPainSounds"]);
         processed_keys.insert("EntityPainSounds");
     }
+    if (settings.count("Footsteps")) {
+        g_alpine_game_config.footsteps = std::stoi(settings["Footsteps"]);
+        processed_keys.insert("Footsteps");
+    }
 
     // Load video settings
     if (settings.count("Gamma")) {
@@ -993,6 +997,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
         processed_keys.insert("MouseLinearPitch");
     }
+    if (settings.count("MouseScale")) {
+        g_alpine_game_config.mouse_scale = std::clamp(std::stoi(settings["MouseScale"]), 0, 2);
+        processed_keys.insert("MouseScale");
+    }
     if (settings.count("SwapARBinds")) {
         g_alpine_game_config.swap_ar_controls = std::stoi(settings["SwapARBinds"]);
         processed_keys.insert("SwapARBinds");
@@ -1095,6 +1103,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "MouseYInvert=" << cc.axes[1].invert << "\n";
     file << "DirectInput=" << g_alpine_game_config.direct_input << "\n";
     file << "MouseLinearPitch=" << g_alpine_game_config.mouse_linear_pitch << "\n";
+    file << "MouseScale=" << g_alpine_game_config.mouse_scale << "\n";
     file << "SwapARBinds=" << g_alpine_game_config.swap_ar_controls << "\n";
     file << "SwapGNBinds=" << g_alpine_game_config.swap_gn_controls << "\n";
     file << "SwapSGBinds=" << g_alpine_game_config.swap_sg_controls << "\n";
@@ -1216,6 +1225,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "MessagesVolume=" << rf::snd_get_group_volume(2) << "\n";
     file << "LevelSoundVolume=" << g_alpine_game_config.level_sound_volume << "\n";
     file << "EntityPainSounds=" << g_alpine_game_config.entity_pain_sounds << "\n";
+    file << "Footsteps=" << g_alpine_game_config.footsteps << "\n";
 
     // Video
     file << "\n[VideoSettings]\n";

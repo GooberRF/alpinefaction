@@ -1715,7 +1715,8 @@ void bot_process_combat(
             aim_alignment
         );
     }
-    else if (has_move_target) {
+    else if (has_move_target
+             && !rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))) {
         rf::Vector3 aim_target = move_target;
         const float vertical_delta = std::abs(move_target.y - local_entity.eye_pos.y);
         if (vertical_delta <= kNavigationAimVerticalThreshold) {
