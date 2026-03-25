@@ -131,6 +131,7 @@ static void reset_gamepad_input_state()
 }
 
 // Normalize an axis value, strip the deadzone band, and rescale the remainder to [-1, 1].
+// Per-axis (cross-shaped) deadzone: each axis is independently deadzoned and rescaled.
 static float get_axis(SDL_GamepadAxis axis, float deadzone)
 {
     if (!g_gamepad) return 0.0f;
@@ -138,6 +139,20 @@ static float get_axis(SDL_GamepadAxis axis, float deadzone)
     if (v >  deadzone) return (v - deadzone) / (1.0f - deadzone);
     if (v < -deadzone) return (v + deadzone) / (1.0f - deadzone);
     return 0.0f;
+}
+
+// Radial (circular) deadzone: deadzone applied to stick magnitude; preserves direction.
+static void get_axis_circular(SDL_GamepadAxis axis_x, SDL_GamepadAxis axis_y, float deadzone,
+                              float& out_x, float& out_y)
+{
+    if (!g_gamepad) { out_x = out_y = 0.0f; return; }
+    float raw_x = SDL_GetGamepadAxis(g_gamepad, axis_x) / static_cast<float>(SDL_MAX_SINT16);
+    float raw_y = SDL_GetGamepadAxis(g_gamepad, axis_y) / static_cast<float>(SDL_MAX_SINT16);
+    float mag = std::hypot(raw_x, raw_y);
+    float remapped = (mag > deadzone) ? (mag - deadzone) / (1.0f - deadzone) : 0.0f;
+    float scale = mag > 0.0f ? remapped / mag : 0.0f;
+    out_x = raw_x * scale;
+    out_y = raw_y * scale;
 }
 
 static float wrap_angle_pi(float a)
@@ -152,7 +167,8 @@ static float angle_diff(float target, float current)
     return wrap_angle_pi(target - current);
 }
 
-static void gamepad_apply_flickstick(float rx, float ry, float current_yaw, float current_pitch,
+static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y,
+                                    float current_yaw, float current_pitch,
                                     float& yaw_delta, float& pitch_delta);
 
 static rf::VMesh* g_local_player_body_vmesh = nullptr;
@@ -339,8 +355,11 @@ static void update_stick_movement()
     SDL_GamepadAxis mov_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
     float mov_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_look_deadzone
                                                                       : g_alpine_game_config.gamepad_move_deadzone;
-    float lx = get_axis(mov_x, mov_dz);
-    float ly = get_axis(mov_y, mov_dz);
+
+    // Cross-shaped deadzone for movement; slightly enlarged to tighten the neutral zone.
+    constexpr float k_movement_dz_multiplier = 1.1f;
+    float lx = get_axis(mov_x, mov_dz * k_movement_dz_multiplier);
+    float ly = get_axis(mov_y, mov_dz * k_movement_dz_multiplier);
 
     g_move_lx = lx;
     g_move_ly = ly;
@@ -750,12 +769,9 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     float cam_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
                                                                        : g_alpine_game_config.gamepad_look_deadzone;
 
-    // Raw axes (no deadzone remapping) for flickstick rotation math to avoid quadrant snapping.
-    float raw_rx = SDL_GetGamepadAxis(g_gamepad, cam_x) / static_cast<float>(SDL_MAX_SINT16);
-    float raw_ry = SDL_GetGamepadAxis(g_gamepad, cam_y) / static_cast<float>(SDL_MAX_SINT16);
-
-    float rx = get_axis(cam_x, cam_dz);
-    float ry = get_axis(cam_y, cam_dz);
+    // Circular (radial) deadzone for camera to preserve direction and avoid cross-shape snapping.
+    float rx, ry;
+    get_axis_circular(cam_x, cam_y, cam_dz, rx, ry);
 
     float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
 
@@ -769,7 +785,7 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     const bool is_spectator_camera = is_freelook;
 
     if (g_alpine_game_config.gamepad_flickstick && !is_spectator_camera) {
-        gamepad_apply_flickstick(raw_rx, raw_ry, current_yaw, current_pitch, yaw_delta, pitch_delta);
+        gamepad_apply_flickstick(cam_x, cam_y, current_yaw, current_pitch, yaw_delta, pitch_delta);
     } else {
         g_flickstick_yaw_delta_filtered = 0.0f;
         yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx;
@@ -797,11 +813,16 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
 
 // Flick stick is based on GyroWiki documents
 // http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-2:the-flick-stick
-static void gamepad_apply_flickstick(float rx, float ry, float current_yaw, float current_pitch,
+static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y,
+                                    float current_yaw, float current_pitch,
                                     float& yaw_delta, float& pitch_delta)
 {
     yaw_delta = 0.0f;
     pitch_delta = 0.0f;
+
+    // Raw axes — no deadzone remapping so flickstick angle math avoids quadrant snapping.
+    float rx = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_x) / static_cast<float>(SDL_MAX_SINT16) : 0.0f;
+    float ry = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_y) / static_cast<float>(SDL_MAX_SINT16) : 0.0f;
 
     float stick_mag = std::hypot(rx, ry);
     bool start_flick = stick_mag > g_alpine_game_config.gamepad_flickstick_deadzone;
