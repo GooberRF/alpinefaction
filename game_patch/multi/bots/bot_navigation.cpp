@@ -1767,6 +1767,16 @@ bool update_ctf_objective_goal(
                     g_client_bot_state.goal_target_waypoint = patrol_waypoint;
                     g_client_bot_state.goal_target_pos = patrol_pos;
                     target_pos = patrol_pos;
+
+                    // If the bot has reached its hold position and there's no secondary
+                    // patrol anchor, force immediate goal re-evaluation so the bot can
+                    // pick up nearby items or take other useful actions instead of freezing.
+                    if (secondary_waypoint <= 0) {
+                        const float hold_dist_sq = rf::vec_dist_squared(&local_entity.pos, &patrol_pos);
+                        if (hold_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius) {
+                            g_client_bot_state.goal_eval_timer.invalidate();
+                        }
+                    }
                 }
                 else if (g_client_bot_state.goal_target_pos.len_sq() > 0.0001f) {
                     target_pos = g_client_bot_state.goal_target_pos;
@@ -2255,6 +2265,9 @@ void bot_update_move_target(
         // Item became unavailable (picked/despawned): force immediate
         // reevaluation so we do not pause in placeholder roam state.
         bot_state_set_roam_fallback_goal(0);
+        // Clear the goal switch lock so the bot immediately re-evaluates for
+        // critical objectives (CTF, etc.) instead of pausing in roam state.
+        g_client_bot_state.goal_switch_lock_timer.invalidate();
         bot_state_clear_waypoint_route(true, true, false);
         bot_internal_set_last_heading_change_reason("item_unavailable");
     };

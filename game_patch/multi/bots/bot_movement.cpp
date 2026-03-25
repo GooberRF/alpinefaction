@@ -918,15 +918,7 @@ void bot_process_movement(
         stop_distance = 0.35f;
     }
     else if (ctf_objective) {
-        if (g_client_bot_state.active_goal == BotGoalType::ctf_hold_enemy_flag) {
-            // Keep moving through patrol anchors while holding enemy flag.
-            stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.05f;
-        }
-        else {
-            // Use normal tolerance while following route waypoints, and only
-            // force run-through distance on the final direct approach.
-            stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.05f;
-        }
+        stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.05f;
     }
     else if (control_point_objective) {
         // CP objective traversal should keep momentum across waypoint links and
