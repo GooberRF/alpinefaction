@@ -16,6 +16,7 @@ public:
         std::string description;
         unsigned size_in_bytes;
         std::string download_url;
+        std::string image_url;
     };
 
     struct VoteInfo
@@ -32,6 +33,7 @@ public:
     std::vector<bool> check_maps(const std::vector<std::string>& file_names);
     void download_map(const char* tmp_filename, const std::string& download_url,
         std::function<bool(unsigned bytes_received, std::chrono::milliseconds duration)> callback);
+    std::vector<unsigned char> fetch_image(const std::string& image_url);
 
 private:
     HttpSession session_;

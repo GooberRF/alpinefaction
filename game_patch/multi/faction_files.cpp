@@ -53,11 +53,11 @@ std::optional<FactionFilesClient::LevelInfo> FactionFilesClient::parse_level_inf
         throw std::runtime_error("empty download url");
     }
 
-    auto image_url = file.value("image_url", "");
+    info.image_url = file.value("image_url", "");
     xlog::info("Parsed level info: '{}' by '{}', {} bytes", info.name, info.author, info.size_in_bytes);
     xlog::info("  description: {}", info.description);
     xlog::info("  download_url: {}", info.download_url);
-    xlog::info("  image_url: {}", image_url);
+    xlog::info("  image_url: {}", info.image_url);
 
     return {info};
 }
@@ -166,6 +166,22 @@ void FactionFilesClient::download_map(const char* tmp_filename, const std::strin
             throw std::runtime_error("download aborted");
         }
     }
+}
+
+std::vector<unsigned char> FactionFilesClient::fetch_image(const std::string& image_url)
+{
+    xlog::info("Fetching map image from: {}", image_url);
+    HttpRequest req{image_url, "GET", session_};
+    req.send();
+
+    std::vector<unsigned char> data;
+    char buf[4096];
+    while (size_t num_bytes_read = req.read(buf, sizeof(buf))) {
+        data.insert(data.end(), buf, buf + num_bytes_read);
+    }
+
+    xlog::info("Fetched map image: {} bytes", data.size());
+    return data;
 }
 
 ConsoleCommand2 fflink_status_cmd{

@@ -1,9 +1,11 @@
 #include <stdexcept>
 #include <future>
+#include <thread>
 #include <fstream>
 #include <format>
 #include <windows.h>
 #include <unzip.h>
+#include <stb_image.h>
 #include <xlog/xlog.h>
 #include <unordered_set>
 #include <patch_common/CodeInjection.h>
@@ -198,6 +200,10 @@ public:
         std::atomic<float> bytes_per_sec{0};
         std::atomic<bool> abort_flag{false};
         std::optional<FactionFilesClient::LevelInfo> level_info;
+        std::vector<unsigned char> image_data;
+        std::vector<std::string> result_packfiles;
+        std::atomic<bool> work_done{false};
+        std::string error;
     };
 
     LevelDownloadWorker(std::string level_filename, std::shared_ptr<SharedData> shared_data) :
@@ -205,7 +211,7 @@ public:
         shared_data_{std::move(shared_data)}
     {}
 
-    std::vector<std::string> operator()();
+    void operator()();
 
 private:
     std::string level_filename_;
@@ -254,7 +260,7 @@ std::vector<std::string> LevelDownloadWorker::extract_archive(const char* temp_f
     return packfiles;
 }
 
-std::vector<std::string> LevelDownloadWorker::operator()()
+void LevelDownloadWorker::operator()()
 {
     xlog::trace("LevelDownloadWorker started");
     shared_data_->state = LevelDownloadState::fetching_info;
@@ -263,9 +269,20 @@ std::vector<std::string> LevelDownloadWorker::operator()()
     if (!shared_data_->level_info) {
         xlog::warn("Level not found: {}", level_filename_);
         shared_data_->state = LevelDownloadState::not_found;
-        return {};
+        shared_data_->work_done = true;
+        return;
     }
     xlog::trace("LevelDownloadWorker got level info");
+
+    if (!shared_data_->level_info->image_url.empty()) {
+        try {
+            FactionFilesClient img_client;
+            shared_data_->image_data = img_client.fetch_image(shared_data_->level_info->image_url);
+        }
+        catch (const std::exception& e) {
+            xlog::warn("Failed to fetch map image: {}", e.what());
+        }
+    }
 
     auto temp_filename = get_temp_path_name("AF_Level_");
     try {
@@ -273,17 +290,18 @@ std::vector<std::string> LevelDownloadWorker::operator()()
         download_archive(shared_data_->level_info.value().download_url, temp_filename.c_str());
 
         shared_data_->state = LevelDownloadState::extracting;
-        std::vector<std::string> packfiles = extract_archive(temp_filename.c_str());
+        shared_data_->result_packfiles = extract_archive(temp_filename.c_str());
         remove(temp_filename.c_str());
 
         xlog::trace("LevelDownloadWorker finished");
         shared_data_->state = LevelDownloadState::finished;
-        return packfiles;
     }
     catch (const std::exception& e) {
         remove(temp_filename.c_str());
-        throw e;
+        shared_data_->error = e.what();
+        xlog::error("Level download failed: {}", e.what());
     }
+    shared_data_->work_done = true;
 }
 
 class LevelDownloadOperation
@@ -298,20 +316,35 @@ public:
 
 private:
     std::shared_ptr<LevelDownloadWorker::SharedData> shared_data_;
-    std::future<std::vector<std::string>> future_;
+    std::thread thread_;
     std::unique_ptr<Listener> listener_;
+    int image_bm_ = -1;
+    int image_w_ = 0;
+    int image_h_ = 0;
+    bool image_load_attempted_ = false;
 
 public:
     LevelDownloadOperation(std::string level_filename, std::unique_ptr<Listener>&& listener) :
         listener_(std::move(listener))
     {
         shared_data_ = std::make_shared<LevelDownloadWorker::SharedData>();
-        future_ = std::async(std::launch::async, LevelDownloadWorker{std::move(level_filename), shared_data_});
+        thread_ = std::thread(LevelDownloadWorker{std::move(level_filename), shared_data_});
     }
 
     ~LevelDownloadOperation()
     {
         shared_data_->abort_flag = true;
+        if (thread_.joinable()) {
+            // If we're extracting, wait for it to finish to avoid corrupt files.
+            // Otherwise detach to avoid hanging on network I/O.
+            auto state = shared_data_->state.load();
+            if (state == LevelDownloadState::extracting) {
+                thread_.join();
+            }
+            else {
+                thread_.detach();
+            }
+        }
     }
 
     [[nodiscard]] LevelDownloadState get_state() const
@@ -335,31 +368,100 @@ public:
         return shared_data_->bytes_received;
     }
 
+    // Returns bitmap handle, or -1 if not available yet. Must be called from main thread.
+    int get_image_bitmap(int* out_w, int* out_h)
+    {
+        if (image_bm_ != -1) {
+            *out_w = image_w_;
+            *out_h = image_h_;
+            return image_bm_;
+        }
+
+        if (image_load_attempted_) {
+            return -1;
+        }
+
+        // Image data is written by the worker before state transitions to fetching_data,
+        // so the atomic state provides the memory ordering guarantee.
+        // Only give up once we know the worker is past the image fetch (state >= fetching_data).
+        if (shared_data_->image_data.empty()) {
+            if (shared_data_->state.load() >= LevelDownloadState::fetching_data) {
+                image_load_attempted_ = true;
+            }
+            return -1;
+        }
+        image_load_attempted_ = true;
+        auto image_data = std::move(shared_data_->image_data);
+
+        int channels;
+        unsigned char* pixels = stbi_load_from_memory(
+            image_data.data(), static_cast<int>(image_data.size()),
+            &image_w_, &image_h_, &channels, 4);
+        if (!pixels) {
+            xlog::warn("Failed to decode map image: {}", stbi_failure_reason());
+            return -1;
+        }
+
+        image_bm_ = rf::bm::create(rf::bm::FORMAT_8888_ARGB, image_w_, image_h_);
+        if (image_bm_ == -1) {
+            xlog::error("Failed to create bitmap for map image");
+            stbi_image_free(pixels);
+            return -1;
+        }
+
+        rf::gr::LockInfo lock_info;
+        if (!rf::gr::lock(image_bm_, 0, &lock_info, rf::gr::LOCK_WRITE_ONLY)) {
+            xlog::error("Failed to lock bitmap for map image");
+            rf::bm::release(image_bm_);
+            image_bm_ = -1;
+            stbi_image_free(pixels);
+            return -1;
+        }
+
+        // stb gives RGBA, game wants ARGB — swizzle while copying
+        for (int row = 0; row < image_h_; ++row) {
+            auto* src = pixels + row * image_w_ * 4;
+            auto* dst = lock_info.data + row * lock_info.stride_in_bytes;
+            for (int col = 0; col < image_w_; ++col) {
+                dst[0] = src[2]; // B
+                dst[1] = src[1]; // G
+                dst[2] = src[0]; // R
+                dst[3] = src[3]; // A
+                src += 4;
+                dst += 4;
+            }
+        }
+
+        rf::gr::unlock(&lock_info);
+        stbi_image_free(pixels);
+
+        xlog::info("Created map image bitmap: {}x{}", image_w_, image_h_);
+        *out_w = image_w_;
+        *out_h = image_h_;
+        return image_bm_;
+    }
+
     [[nodiscard]] bool in_progress() const
     {
-        return future_.valid();
+        return thread_.joinable() && !shared_data_->work_done;
     }
 
     bool finished()
     {
-        if (!future_.valid()) {
-            return false;
-        }
-        using namespace std::chrono_literals;
-        std::future_status status = future_.wait_for(0ms);
-        return status == std::future_status::ready;
+        return shared_data_->work_done;
     }
 
 private:
     std::vector<std::string> get_pending_packfiles()
     {
-        try {
-            return future_.get();
+        if (thread_.joinable()) {
+            thread_.join();
         }
-        catch (const std::exception& e) {
-            xlog::error("Level download failed: {}", e.what());
+        if (!shared_data_->error.empty()) {
+            xlog::error("Level download failed: {}", shared_data_->error);
             return {};
         }
+        return std::move(shared_data_->result_packfiles);
     }
 
 public:
@@ -410,6 +512,11 @@ public:
     }
 
     [[nodiscard]] const std::optional<LevelDownloadOperation>& get_operation() const
+    {
+        return operation_;
+    }
+
+    [[nodiscard]] std::optional<LevelDownloadOperation>& get_operation_mut()
     {
         return operation_;
     }
@@ -604,11 +711,27 @@ void multi_level_download_do_frame()
     int scr_w = rf::gr::screen_width();
     int scr_h = rf::gr::screen_height();
 
-    static int bg_bm = rf::bm::load("demo-gameover.tga", -1, false);
-    int bg_bm_w, bg_bm_h;
-    rf::bm::get_dimensions(bg_bm, &bg_bm_w, &bg_bm_h);
-    rf::gr::set_color(255, 255, 255, 255);
-    rf::gr::bitmap_scaled(bg_bm, 0, 0, scr_w, scr_h, 0, 0, bg_bm_w, bg_bm_h);
+    auto& operation_opt = LevelDownloadManager::instance().get_operation_mut();
+
+    // Background: use map image if available, otherwise default
+    bool drew_bg = false;
+    if (operation_opt) {
+        auto& operation = operation_opt.value();
+        int img_w, img_h;
+        int img_bm = operation.get_image_bitmap(&img_w, &img_h);
+        if (img_bm != -1) {
+            rf::gr::set_color(255, 255, 255, 255);
+            rf::gr::bitmap_scaled(img_bm, 0, 0, scr_w, scr_h, 0, 0, img_w, img_h);
+            drew_bg = true;
+        }
+    }
+    if (!drew_bg) {
+        static int bg_bm = rf::bm::load("demo-gameover.tga", -1, false);
+        int bg_bm_w, bg_bm_h;
+        rf::bm::get_dimensions(bg_bm, &bg_bm_w, &bg_bm_h);
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::bitmap_scaled(bg_bm, 0, 0, scr_w, scr_h, 0, 0, bg_bm_w, bg_bm_h);
+    }
 
     rf::multi_hud_render_chat();
 
@@ -621,66 +744,109 @@ void multi_level_download_do_frame()
         rf::multi_chat_say_render();
     }
 
-    int large_font = hud_get_large_font();
-    int large_font_h = rf::gr::get_font_height(large_font);
     int medium_font = hud_get_default_font();
     int medium_font_h = rf::gr::get_font_height(medium_font);
 
-    int center_x = scr_w / 2;
-    int y = scr_h / 3;
-
-    rf::gr::set_color(255, 255, 255, 255);
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y, "DOWNLOADING LEVEL", large_font);
-    y += large_font_h * 3;
-
-    const std::optional<LevelDownloadOperation>& operation_opt = LevelDownloadManager::instance().get_operation();
     if (!operation_opt) {
         return;
     }
 
-    const auto& operation = operation_opt.value();
+    auto& operation = operation_opt.value();
     auto state = operation.get_state();
+
+    // Determine status text
+    const char* status_text = nullptr;
     if (state == LevelDownloadState::fetching_info) {
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y, "Getting level info...", medium_font);
+        status_text = "Getting level info...";
     }
     else if (state == LevelDownloadState::extracting) {
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y, "Extracting packfiles...", medium_font);
+        status_text = "Extracting packfiles...";
     }
     else if (state == LevelDownloadState::fetching_data) {
+        status_text = "Downloading from FactionFiles...";
+    }
+
+    // Widget layout
+    int padding = static_cast<int>(6 * rf::ui::scale_x);
+    int margin = static_cast<int>(4 * rf::ui::scale_x);
+    int bar_w = static_cast<int>(360 * rf::ui::scale_x);
+    int bar_h = static_cast<int>(14 * rf::ui::scale_x);
+    int inner_gap = static_cast<int>(4 * rf::ui::scale_x);
+    int line_spacing = medium_font_h + static_cast<int>(2 * rf::ui::scale_x);
+
+    // Widget height: status + bar + name + author + time remaining + padding
+    int widget_w = bar_w + padding * 2;
+    int widget_h = padding                      // top padding
+        + medium_font_h + inner_gap             // status text + gap
+        + bar_h + inner_gap                     // progress bar + gap
+        + medium_font_h                         // level name
+        + line_spacing                          // "by: author"
+        + padding;                              // bottom padding
+    int widget_x = scr_w - widget_w - margin;
+    int widget_y = scr_h - widget_h - margin;
+
+    // Semitransparent black background
+    rf::gr::set_color(0, 0, 0, 0xB0);
+    rf::gr::rect(widget_x, widget_y, widget_w, widget_h);
+
+    int content_x = widget_x + padding;
+    int content_y = widget_y + padding;
+
+    // Status text
+    rf::gr::set_color(255, 255, 255, 255);
+    if (status_text) {
+        rf::gr::string(content_x, content_y, status_text, medium_font);
+    }
+    content_y += medium_font_h + inner_gap;
+
+    // Progress bar
+    float progress = 0.0f;
+    if (state == LevelDownloadState::fetching_data) {
+        const FactionFilesClient::LevelInfo& info = operation.get_level_info();
+        unsigned bytes_received = operation.get_bytes_received();
+        progress = static_cast<float>(bytes_received) / static_cast<float>(info.size_in_bytes);
+    }
+    render_progress_bar(content_x, content_y, bar_w, bar_h, progress);
+
+    // Progress text on top of the bar
+    if (state == LevelDownloadState::fetching_data) {
         const FactionFilesClient::LevelInfo& info = operation.get_level_info();
         unsigned bytes_received = operation.get_bytes_received();
         float bytes_per_sec = operation.get_bytes_per_sec();
 
-        auto level_name_str = std::format("Level name: {}", info.name);
-        const auto [str_w, str_h] = rf::gr::get_string_size(level_name_str, medium_font);
-        int info_x = center_x - str_w / 2;
-        int info_spacing = medium_font_h * 3 / 2;
-        rf::gr::string(info_x, y, level_name_str.c_str(), medium_font);
-        y += info_spacing;
-
-        auto created_by_str = std::format("Created by: {}", info.author);
-        rf::gr::string(info_x, y, created_by_str.c_str(), medium_font);
-        y += info_spacing;
-
-        rf::gr::string(info_x, y, std::format("{:.2f} MB / {:.2f} MB ({:.2f} MB/s)",
+        rf::gr::set_color(255, 255, 255, 255);
+        auto progress_str = std::format("{:.2f} MB / {:.2f} MB ({:.2f} MB/s)",
             bytes_received / 1000.0f / 1000.0f,
             info.size_in_bytes / 1000.0f / 1000.0f,
-            bytes_per_sec / 1000.0f / 1000.0f).c_str(), medium_font);
-        y += info_spacing;
+            bytes_per_sec / 1000.0f / 1000.0f);
+        int bar_center_x = content_x + bar_w / 2;
+        int progress_text_y = content_y + (bar_h - medium_font_h) / 2;
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, bar_center_x, progress_text_y, progress_str.c_str(), medium_font);
+    }
+    content_y += bar_h + inner_gap;
 
-        if (bytes_per_sec > 0) {
-            int remaining_size = info.size_in_bytes - bytes_received;
-            int secs_left = static_cast<int>(remaining_size / bytes_per_sec);
-            auto time_left_str = std::format("{} seconds left", secs_left);
-            rf::gr::string(info_x, y, time_left_str.c_str(), medium_font);
+    // Level name and author
+    rf::gr::set_color(255, 255, 255, 255);
+    if (state >= LevelDownloadState::fetching_data && state != LevelDownloadState::not_found) {
+        const FactionFilesClient::LevelInfo& info = operation.get_level_info();
+        rf::gr::string(content_x, content_y, info.name.c_str(), medium_font);
+        content_y += line_spacing;
+
+        auto author_str = std::format(" by {}", info.author);
+        rf::gr::string(content_x, content_y, author_str.c_str(), medium_font);
+
+        // Time remaining (right-aligned on same line as author)
+        if (state == LevelDownloadState::fetching_data) {
+            float bytes_per_sec = operation.get_bytes_per_sec();
+            if (bytes_per_sec > 0) {
+                unsigned bytes_received = operation.get_bytes_received();
+                int remaining_size = info.size_in_bytes - bytes_received;
+                int secs_left = static_cast<int>(remaining_size / bytes_per_sec);
+                auto time_left_str = std::format("{} seconds remaining", secs_left);
+                auto [tw, th] = rf::gr::get_string_size(time_left_str, medium_font);
+                rf::gr::string(content_x + bar_w - tw, content_y, time_left_str.c_str(), medium_font);
+            }
         }
-
-        int w = static_cast<int>(360 * rf::ui::scale_x);
-        int h = static_cast<int>(12 * rf::ui::scale_x);
-        int x = (rf::gr::screen_width() - w) / 2;
-        int y = rf::gr::screen_height() * 4 / 5;
-        float progress = static_cast<float>(bytes_received) / static_cast<float>(info.size_in_bytes);
-        render_progress_bar(x, y, w, h, progress);
     }
 
     // Scoreboard
