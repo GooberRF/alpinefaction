@@ -378,6 +378,11 @@ public:
         return shared_data_->state;
     }
 
+    [[nodiscard]] bool has_level_info() const
+    {
+        return shared_data_->level_info.has_value();
+    }
+
     [[nodiscard]] const FactionFilesClient::LevelInfo& get_level_info() const
     {
         // check state before calling this method
@@ -958,7 +963,7 @@ void multi_level_download_do_frame()
 
     // Level name and author
     rf::gr::set_color(255, 255, 255, 255);
-    if (state >= LevelDownloadState::fetching_data && state != LevelDownloadState::not_found) {
+    if (operation.has_level_info()) {
         const FactionFilesClient::LevelInfo& info = operation.get_level_info();
         rf::gr::string(content_x, content_y, info.name.c_str(), medium_font);
         content_y += line_spacing;
