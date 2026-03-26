@@ -852,6 +852,19 @@ void apply_breakable_materials()
     }
 }
 
+CodeInjection validate_destroy_vertex_count_fix{
+    0x00490BBF,
+    [](auto& regs) {
+        auto* face = reinterpret_cast<rf::GFace*>(static_cast<uintptr_t>(regs.ecx));
+        int count = face->vertex_count();
+
+        // stock game allows breaking of quads only
+        // v303+ levels allow breaking of faces with >= 3 verts
+        bool pass = rfl_version_minimum(304) ? (count >= 3) : (count == 4);
+        regs.eip = pass ? 0x00490BCD : 0x00490BC9;
+    },
+};
+
 // Capture damage_type at entry of apply_radius_damage (0x00488dc0).
 CodeInjection capture_damage_type_injection{
     0x00488ded,
@@ -2710,6 +2723,9 @@ void destruction_do_patch()
     geomod_impact_effects_hook.install();
 
     // Breakable detail brush material system
+    // Fix validate_destroy to accept triangulated faces (>= 3 vertices) for Alpine levels
+    validate_destroy_vertex_count_fix.install();
+
     capture_damage_type_injection.install();
     reset_damage_type_injection.install();
     // AsmWriter patch: overwrite 17 bytes of FPU damage code (0x492090-0x4920A0) with JMP
