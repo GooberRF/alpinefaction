@@ -372,8 +372,8 @@ static float convert_pitch_delta_to_non_linear_space(
 }
 
 // Applies camera rotation and linear pitch correction at the entity control
-// injection point. Mouse angles are computed by mouse_get_camera (Quake/Source-style
-// formula) rather than by RF's own sensitivity pipeline.
+// injection point. Mouse angles are computed by mouse_get_camera 
+// rather than by RF's own sensitivity pipeline.
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
@@ -414,7 +414,7 @@ CodeInjection linear_pitch_patch{
         }
 
         // Reset camera pitch to horizon on rising-edge press.
-        // Skip input poll while already resetting — re-arm only after completion.
+        // Skip input poll while already resetting - re-arm only after completion.
         if (!s_camera_resetting && rf::local_player) {
             const auto reset_action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
             bool down = rf::control_is_control_down(&rf::local_player->settings.controls, reset_action);
