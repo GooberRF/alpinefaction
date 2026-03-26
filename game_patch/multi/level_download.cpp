@@ -321,6 +321,9 @@ private:
     int image_bm_ = -1;
     int image_w_ = 0;
     int image_h_ = 0;
+    int blur_bm_ = -1;
+    int blur_w_ = 0;
+    int blur_h_ = 0;
     bool image_load_attempted_ = false;
 
 public:
@@ -368,6 +371,92 @@ public:
         return shared_data_->bytes_received;
     }
 
+private:
+    // Creates a game bitmap from RGBA pixel data, returns handle or -1
+    static int create_game_bitmap(const unsigned char* rgba_pixels, int w, int h)
+    {
+        int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, w, h);
+        if (bm == -1) {
+            return -1;
+        }
+
+        rf::gr::LockInfo lock_info;
+        if (!rf::gr::lock(bm, 0, &lock_info, rf::gr::LOCK_WRITE_ONLY)) {
+            rf::bm::release(bm);
+            return -1;
+        }
+
+        // RGBA → ARGB swizzle
+        for (int row = 0; row < h; ++row) {
+            auto* src = rgba_pixels + row * w * 4;
+            auto* dst = lock_info.data + row * lock_info.stride_in_bytes;
+            for (int col = 0; col < w; ++col) {
+                dst[0] = src[2]; // B
+                dst[1] = src[1]; // G
+                dst[2] = src[0]; // R
+                dst[3] = src[3]; // A
+                src += 4;
+                dst += 4;
+            }
+        }
+
+        rf::gr::unlock(&lock_info);
+        return bm;
+    }
+
+    void create_image_bitmaps(const unsigned char* pixels, int w, int h)
+    {
+        // Full resolution bitmap
+        image_bm_ = create_game_bitmap(pixels, w, h);
+        if (image_bm_ == -1) {
+            xlog::error("Failed to create bitmap for map image");
+            return;
+        }
+        image_w_ = w;
+        image_h_ = h;
+        xlog::info("Created map image bitmap: {}x{}", w, h);
+
+        // 1/4 resolution blurred bitmap via box filter
+        blur_w_ = std::max(w / 8, 1);
+        blur_h_ = std::max(h / 8, 1);
+        std::vector<unsigned char> blurred(blur_w_ * blur_h_ * 4);
+
+        for (int by = 0; by < blur_h_; ++by) {
+            for (int bx = 0; bx < blur_w_; ++bx) {
+                int sx = bx * w / blur_w_;
+                int sy = by * h / blur_h_;
+                int sx_end = std::min((bx + 1) * w / blur_w_, w);
+                int sy_end = std::min((by + 1) * h / blur_h_, h);
+                int count = 0;
+                int r = 0, g = 0, b = 0, a = 0;
+                for (int iy = sy; iy < sy_end; ++iy) {
+                    for (int ix = sx; ix < sx_end; ++ix) {
+                        const auto* p = pixels + (iy * w + ix) * 4;
+                        r += p[0];
+                        g += p[1];
+                        b += p[2];
+                        a += p[3];
+                        count++;
+                    }
+                }
+                auto* dst = blurred.data() + (by * blur_w_ + bx) * 4;
+                dst[0] = static_cast<unsigned char>(r / count);
+                dst[1] = static_cast<unsigned char>(g / count);
+                dst[2] = static_cast<unsigned char>(b / count);
+                dst[3] = static_cast<unsigned char>(a / count);
+            }
+        }
+
+        blur_bm_ = create_game_bitmap(blurred.data(), blur_w_, blur_h_);
+        if (blur_bm_ == -1) {
+            xlog::warn("Failed to create blurred bitmap for map image");
+        }
+        else {
+            xlog::info("Created blurred map image bitmap: {}x{}", blur_w_, blur_h_);
+        }
+    }
+
+public:
     // Returns bitmap handle, or -1 if not available yet. Must be called from main thread.
     int get_image_bitmap(int* out_w, int* out_h)
     {
@@ -402,43 +491,24 @@ public:
             return -1;
         }
 
-        image_bm_ = rf::bm::create(rf::bm::FORMAT_8888_ARGB, image_w_, image_h_);
-        if (image_bm_ == -1) {
-            xlog::error("Failed to create bitmap for map image");
-            stbi_image_free(pixels);
-            return -1;
-        }
-
-        rf::gr::LockInfo lock_info;
-        if (!rf::gr::lock(image_bm_, 0, &lock_info, rf::gr::LOCK_WRITE_ONLY)) {
-            xlog::error("Failed to lock bitmap for map image");
-            rf::bm::release(image_bm_);
-            image_bm_ = -1;
-            stbi_image_free(pixels);
-            return -1;
-        }
-
-        // stb gives RGBA, game wants ARGB — swizzle while copying
-        for (int row = 0; row < image_h_; ++row) {
-            auto* src = pixels + row * image_w_ * 4;
-            auto* dst = lock_info.data + row * lock_info.stride_in_bytes;
-            for (int col = 0; col < image_w_; ++col) {
-                dst[0] = src[2]; // B
-                dst[1] = src[1]; // G
-                dst[2] = src[0]; // R
-                dst[3] = src[3]; // A
-                src += 4;
-                dst += 4;
-            }
-        }
-
-        rf::gr::unlock(&lock_info);
+        create_image_bitmaps(pixels, image_w_, image_h_);
         stbi_image_free(pixels);
 
-        xlog::info("Created map image bitmap: {}x{}", image_w_, image_h_);
+        if (image_bm_ == -1) {
+            return -1;
+        }
         *out_w = image_w_;
         *out_h = image_h_;
         return image_bm_;
+    }
+
+    int get_blur_bitmap(int* out_w, int* out_h)
+    {
+        if (blur_bm_ != -1) {
+            *out_w = blur_w_;
+            *out_h = blur_h_;
+        }
+        return blur_bm_;
     }
 
     [[nodiscard]] bool in_progress() const
@@ -721,7 +791,36 @@ void multi_level_download_do_frame()
         int img_bm = operation.get_image_bitmap(&img_w, &img_h);
         if (img_bm != -1) {
             rf::gr::set_color(255, 255, 255, 255);
-            rf::gr::bitmap_scaled(img_bm, 0, 0, scr_w, scr_h, 0, 0, img_w, img_h);
+
+            if (g_alpine_game_config.autodl_blur_background) {
+                // Draw blurred image stretched to fill background
+                int blur_w, blur_h;
+                int blur_bm = operation.get_blur_bitmap(&blur_w, &blur_h);
+                if (blur_bm != -1) {
+                    rf::gr::bitmap_scaled(blur_bm, 0, 0, scr_w, scr_h, 0, 0, blur_w, blur_h);
+                }
+
+                // Draw sharp image at correct aspect ratio, centered
+                float img_aspect = static_cast<float>(img_w) / static_cast<float>(img_h);
+                float scr_aspect = static_cast<float>(scr_w) / static_cast<float>(scr_h);
+                int draw_w, draw_h;
+                if (img_aspect > scr_aspect) {
+                    draw_w = scr_w;
+                    draw_h = static_cast<int>(scr_w / img_aspect);
+                }
+                else {
+                    draw_h = scr_h;
+                    draw_w = static_cast<int>(scr_h * img_aspect);
+                }
+                int draw_x = (scr_w - draw_w) / 2;
+                int draw_y = (scr_h - draw_h) / 2;
+                rf::gr::bitmap_scaled(img_bm, draw_x, draw_y, draw_w, draw_h, 0, 0, img_w, img_h);
+            }
+            else {
+                // Simple stretch to fill
+                rf::gr::bitmap_scaled(img_bm, 0, 0, scr_w, scr_h, 0, 0, img_w, img_h);
+            }
+
             drew_bg = true;
         }
     }
@@ -954,6 +1053,17 @@ ConsoleCommand2 download_level_force_cmd{
     "download_level_force <rfl_name>",
 };
 
+ConsoleCommand2 autodl_blur_background_cmd{
+    "autodl_blur_background",
+    []() {
+        g_alpine_game_config.autodl_blur_background = !g_alpine_game_config.autodl_blur_background;
+        rf::console::print("Autodownload blur background is {}",
+            g_alpine_game_config.autodl_blur_background ? "enabled" : "disabled");
+    },
+    "Toggle blurred background on level download screen",
+    "autodl_blur_background",
+};
+
 void level_download_do_patch()
 {
     join_failed_injection.install();
@@ -966,6 +1076,7 @@ void level_download_init()
 {
     download_level_cmd.register_cmd();
     download_level_force_cmd.register_cmd();
+    autodl_blur_background_cmd.register_cmd();
 }
 
 void multi_level_download_update()
