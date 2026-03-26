@@ -329,4 +329,5 @@ target_link_libraries(AlpineFaction
     ws2_32
     freetype
     stb_vorbis
+    stb_image
 )
