@@ -35,3 +35,4 @@ int  key_take_pending_extra_rebind();
 void sdl_input_poll();
 void key_apply_patch();
 void set_input_mode(int mode);
+void ui_refresh_input_mode_label();
