@@ -209,6 +209,19 @@ ConsoleCommand2 vertex_lighting_cmd{
     "Toggle between legacy vertex lighting and modern pixel lighting for meshes (D3D11 only)",
 };
 
+ConsoleCommand2 dynamic_light_ndotl_cmd{
+    "r_dynamiclightndotl",
+    [](std::optional<float> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.set_dynamic_light_ndotl(value_opt.value());
+        }
+        rf::console::print("Dynamic light N·L on world geometry: {:.2f} (0.0 = stock, 1.0 = full N·L, D3D11 only)",
+            g_alpine_game_config.dynamic_light_ndotl);
+    },
+    "Set N·L blend factor for dynamic lights on world geometry (D3D11 only)",
+    "r_dynamiclightndotl <0.0-1.0>",
+};
+
 CallHook<void(rf::Entity&)> entity_update_muzzle_flash_light_hook{
     0x0041E814,
     [](rf::Entity& ep) {
@@ -296,6 +309,7 @@ void obj_light_apply_patch()
     // Commands
     mesh_static_lighting_cmd.register_cmd();
     vertex_lighting_cmd.register_cmd();
+    dynamic_light_ndotl_cmd.register_cmd();
     muzzle_flash_cmd.register_cmd();
     fullbright_models_cmd.register_cmd();
 }

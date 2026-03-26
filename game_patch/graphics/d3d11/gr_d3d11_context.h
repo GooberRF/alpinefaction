@@ -86,7 +86,8 @@ namespace df::gr::d3d11
             bool alpha_test = mode.get_zbuffer_type() == gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
             bool fog_allowed = mode.get_fog_type() != gr::FOG_NOT_ALLOWED;
             int colorblind_mode = g_alpine_game_config.colorblind_mode;
-            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale) {
+            float dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
+            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_dynamic_light_ndotl_ != dynamic_light_ndotl) {
                 current_alpha_test_ = alpha_test;
                 current_fog_allowed_ = fog_allowed;
                 current_color_ = color;
@@ -95,6 +96,7 @@ namespace df::gr::d3d11
                 current_dynamic_lighting_ = dynamic_lighting;
                 current_self_illumination_ = self_illumination;
                 current_apply_light_scale_ = apply_light_scale;
+                current_dynamic_light_ndotl_ = dynamic_light_ndotl;
                 force_update_ = false;
                 update_buffer(device_context);
             }
@@ -125,6 +127,7 @@ namespace df::gr::d3d11
         bool current_dynamic_lighting_ = false;
         float current_self_illumination_ = 0.0f;
         bool current_apply_light_scale_ = true;
+        float current_dynamic_light_ndotl_ = 0.0f;
     };
 
     class PerFrameBuffer

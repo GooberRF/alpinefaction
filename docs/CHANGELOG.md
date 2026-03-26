@@ -77,6 +77,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add help strings to spectate UI in freelook spectate mode
 - Add dedicated control for entering/exiting spectate mode
 - Add `To Mesh Object` button when selecting clutter in level editor `Select Objects` window
+- Add `r_dynamiclightndotl` console command to configure N-L blending for dynamic lights (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
