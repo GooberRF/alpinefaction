@@ -54,10 +54,10 @@ std::optional<FactionFilesClient::LevelInfo> FactionFilesClient::parse_level_inf
     }
 
     info.image_url = file.value("image_url", "");
-    xlog::info("Parsed level info: '{}' by '{}', {} bytes", info.name, info.author, info.size_in_bytes);
-    xlog::info("  description: {}", info.description);
-    xlog::info("  download_url: {}", info.download_url);
-    xlog::info("  image_url: {}", info.image_url);
+    xlog::debug("Parsed level info: '{}' by '{}', {} bytes", info.name, info.author, info.size_in_bytes);
+    xlog::debug("  description: {}", info.description);
+    xlog::debug("  download_url: {}", info.download_url);
+    xlog::debug("  image_url: {}", info.image_url);
 
     return {info};
 }

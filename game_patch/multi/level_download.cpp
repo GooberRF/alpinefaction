@@ -185,8 +185,9 @@ enum class LevelDownloadState
 {
     fetching_info,
     fetching_data,
-    extracting,
     not_found,
+    failed,
+    extracting,
     finished,
 };
 
@@ -300,15 +301,18 @@ void LevelDownloadWorker::operator()()
         catch (const std::exception& e) {
             remove(temp_filename.c_str());
             shared_data_->error = e.what();
+            shared_data_->state = LevelDownloadState::failed;
             xlog::error("Level download failed: {}", e.what());
         }
     }
     catch (const std::exception& e) {
         shared_data_->error = e.what();
+        shared_data_->state = LevelDownloadState::failed;
         xlog::error("Level download worker exception: {}", e.what());
     }
     catch (...) {
         shared_data_->error = "unknown error";
+        shared_data_->state = LevelDownloadState::failed;
         xlog::error("Level download worker unknown exception");
     }
     shared_data_->work_done = true;
@@ -348,10 +352,10 @@ public:
     {
         shared_data_->abort_flag = true;
         if (thread_.joinable()) {
-            // If we're extracting, wait for it to finish to avoid corrupt files.
+            // If we're at or past extraction, wait for it to finish to avoid corrupt files.
             // Otherwise detach to avoid hanging on network I/O.
             auto state = shared_data_->state.load();
-            if (state == LevelDownloadState::extracting) {
+            if (state >= LevelDownloadState::extracting) {
                 thread_.join();
             }
             else {
@@ -885,6 +889,9 @@ void multi_level_download_do_frame()
     }
     else if (state == LevelDownloadState::not_found) {
         status_text = "Level not found on FactionFiles";
+    }
+    else if (state == LevelDownloadState::failed) {
+        status_text = "Download failed";
     }
     else if (state == LevelDownloadState::finished) {
         status_text = "Download complete";
