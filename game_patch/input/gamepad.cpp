@@ -1628,10 +1628,6 @@ void gamepad_apply_patch()
 {
     gamepad_reset_to_defaults();
 
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
-    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
-    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
-
     control_is_control_down_hook.install();
     control_config_check_pressed_hook.install();
     physics_simulate_entity_hook.install();
@@ -1682,15 +1678,28 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
 
 void gamepad_sdl_init()
 {
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
+
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
         xlog::error("Failed to initialize SDL gamepad subsystem: {}", SDL_GetError());
         return;
     }
 
     // Load SDL_GameControllerDB
-    std::string mappings_path = get_module_dir(g_hmodule) + "gamecontrollerdb.txt";
-    if (SDL_AddGamepadMappingsFromFile(mappings_path.c_str()) < 0)
-        xlog::warn("SDL_GameControllerDB: failed to load mappings: {}", SDL_GetError());
+    // note: this might not work right now...
+    for (const auto& dir : {get_module_dir(g_hmodule), get_module_dir(nullptr)}) {
+        std::string path = dir + "gamecontrollerdb.txt";
+        if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+            continue;
+        int n = SDL_AddGamepadMappingsFromFile(path.c_str());
+        if (n < 0)
+            xlog::warn("SDL_GameControllerDB: failed to load {}: {}", path, SDL_GetError());
+        else
+            xlog::info("SDL_GameControllerDB: loaded {} mappings from {}", n, path);
+        break;
+    }
 
     if (SDL_HasGamepad()) {
         int count = 0;
