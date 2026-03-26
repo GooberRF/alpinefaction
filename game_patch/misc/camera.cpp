@@ -360,19 +360,23 @@ static float convert_pitch_delta_to_non_linear_space(
     return new_pitch_delta;
 }
 
-// Applies mouse camera scaling and linear pitch correction.
-// Mouse angles are computed by mouse_get_camera (id Tech/Source-style formula)
-// rather than by RF's own sensitivity pipeline when camera-angles mode is enabled.
+// Applies camera rotation and linear pitch correction at the entity control
+// injection point. Mouse angles are computed by mouse_get_camera 
+// rather than by RF's own sensitivity pipeline.
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
+        rf::Entity* entity = regs.esi;
         float& pitch_delta = addr_as_ref<float>(regs.esp + 0x44 - 0x34);
-        float& yaw_delta   = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
+        float& yaw_delta = addr_as_ref<float>(regs.esp + 0x44 + 0x4);
+
+        if (entity && rf::entity_is_dying(entity)) {
+            return;
+        }
 
         // Mouse camera contribution: raw pixel deltas converted to radians.
-        // Only active when mouse scale mode is non-Classic; otherwise RF's own
-        // pipeline has already applied sensitivity and pitch_delta/yaw_delta
-        // are populated.
+        // Only active when mouse_scale mode is non-Classic; otherwise RF's own
+        // pipeline has already applied sensitivity and pitch_delta/yaw_delta are populated.
         if (g_alpine_game_config.mouse_scale != 0) {
             float mouse_pitch = 0.0f, mouse_yaw = 0.0f;
             mouse_get_camera(mouse_pitch, mouse_yaw);
@@ -380,9 +384,8 @@ CodeInjection linear_pitch_patch{
             yaw_delta   += mouse_yaw;
         }
 
-        // Apply linear pitch correction to the combined delta.
+        // Apply linear pitch correction to combined delta
         if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0.0f) {
-            const rf::Entity* const entity = regs.esi;
             const float current_yaw = entity->control_data.phb.y;
             const float current_pitch_non_lin = entity->control_data.eye_phb.x;
             pitch_delta = convert_pitch_delta_to_non_linear_space(
