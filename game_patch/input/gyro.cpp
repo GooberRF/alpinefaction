@@ -11,6 +11,7 @@
 #include "../rf/player/player.h"
 
 static GamepadMotion g_motion;
+static GamepadMotionHelpers::CalibrationMode g_last_calibration_mode = static_cast<GamepadMotionHelpers::CalibrationMode>(-1);
 
 void gyro_update_calibration_mode()
 {
@@ -28,7 +29,7 @@ void gyro_update_calibration_mode()
     case 1: // Menu Only — only calibrate when not in gameplay
         desired = rf::gameseq_in_gameplay()
             ? CM::Manual
-            : (CM::Stillness | CM::SensorFusion);
+            : (CM::Stillness);
         break;
     case 2: // Always - will try to calibrate whenever possible
         desired = CM::Stillness | CM::SensorFusion;
@@ -38,10 +39,10 @@ void gyro_update_calibration_mode()
         break;
     }
 
-    static CM s_last_mode = static_cast<CM>(-1);
-    if (desired == s_last_mode)
+    if (desired == g_last_calibration_mode)
         return;
-    s_last_mode = desired;
+    g_last_calibration_mode = desired;
+
 
     // Preserve calibrated offset and confidence across mode changes.
     float ox, oy, oz;
@@ -57,22 +58,32 @@ void gyro_update_calibration_mode()
 
 void gyro_reset()
 {
-    g_motion.Reset();
+    g_motion.ResetContinuousCalibration();
+    g_motion.ResetMotion();
+    gyro_update_calibration_mode();
+}
+
+void gyro_reset_full()
+{
+    g_motion.ResetContinuousCalibration();
+    g_motion.ResetMotion();
+    // Invalidate the mode cache so gyro_update_calibration_mode() unconditionally
+    g_last_calibration_mode = static_cast<GamepadMotionHelpers::CalibrationMode>(-1);
     gyro_update_calibration_mode();
 }
 
 void gyro_reset_motion_preserve_confidence()
 {
-    // Save current confidence threshold
+    // Save current confidence before wiping AutoCalibration state.
     float confidence = g_motion.GetAutoCalibrationConfidence();
-    
-    // Reset motion data (clears offset, calibration, etc.)
-    g_motion.Reset();
-    
-    // Restore the confidence threshold
+
+    // Use targeted resets to avoid wiping custom Settings.
+    g_motion.ResetContinuousCalibration();
+    g_motion.ResetMotion();
+
+    // Restore the confidence so the autocalibration ease-in continues smoothly.
     g_motion.SetAutoCalibrationConfidence(confidence);
-    
-    // Update calibration mode based on current game state
+
     gyro_update_calibration_mode();
 }
 

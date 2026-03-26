@@ -17,6 +17,7 @@ enum class GyroAutocalibrationMode : int {
 };
 
 void gyro_reset();
+void gyro_reset_full(); // Full reset: clears offset, confidence, and motion state (use on controller hotswap)
 void gyro_reset_motion_preserve_confidence(); // Reset motion data but keep confidence threshold (for MenuOnly mode)
 void gyro_update_calibration_mode();
 void gyro_set_autocalibration(bool enable);

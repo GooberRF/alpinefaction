@@ -4,5 +4,7 @@
 
 void sdl_input_poll()
 {
-    SDL_PumpEvents();
+    if (SDL_WasInit(SDL_INIT_EVENTS) != 0) {
+        SDL_PumpEvents();
+    }
 }

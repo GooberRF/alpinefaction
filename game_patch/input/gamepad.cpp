@@ -213,6 +213,28 @@ static bool action_is_down(rf::ControlConfigAction action)
     return i >= 0 && i < k_action_count && g_action_curr[i];
 }
 
+static bool try_enable_gamepad_sensors()
+{
+    if (!g_gamepad) return false;
+
+    if (!SDL_GamepadHasSensor(g_gamepad, SDL_SENSOR_GYRO) ||
+        !SDL_GamepadHasSensor(g_gamepad, SDL_SENSOR_ACCEL)) {
+        xlog::info("Gamepad does not support motion sensor");
+        return false;
+    }
+
+    if (!SDL_SetGamepadSensorEnabled(g_gamepad, SDL_SENSOR_GYRO,  true) ||
+        !SDL_SetGamepadSensorEnabled(g_gamepad, SDL_SENSOR_ACCEL, true)) {
+        xlog::warn("Failed to enable motion sensors: {}", SDL_GetError());
+        return false;
+    }
+
+    xlog::info("Motion sensors enabled");
+    g_motion_sensors_active = true;
+    gyro_reset_full();
+    return true;
+}
+
 static void try_open_gamepad(SDL_JoystickID id)
 {
     g_gamepad = SDL_OpenGamepad(id);
@@ -222,22 +244,7 @@ static void try_open_gamepad(SDL_JoystickID id)
     }
 
     xlog::info("Gamepad connected: {}", SDL_GetGamepadName(g_gamepad));
-
-    if (!SDL_GamepadHasSensor(g_gamepad, SDL_SENSOR_GYRO) ||
-        !SDL_GamepadHasSensor(g_gamepad, SDL_SENSOR_ACCEL)) {
-        xlog::info("Gamepad does not support motion sensor");
-        return;
-    }
-
-    if (!SDL_SetGamepadSensorEnabled(g_gamepad, SDL_SENSOR_GYRO,  true) ||
-        !SDL_SetGamepadSensorEnabled(g_gamepad, SDL_SENSOR_ACCEL, true)) {
-        xlog::warn("Failed to enable motion sensors: {}", SDL_GetError());
-        return;
-    }
-
-    xlog::info("Motion sensors enabled");
-    g_motion_sensors_active = true;
-    gyro_reset();
+    try_enable_gamepad_sensors();
 }
 
 // Injects the keyboard scan code bound to `action` — gameplay only, never into menus.
@@ -1397,14 +1404,14 @@ void gamepad_apply_rebind()
 
     auto& cc = rf::local_player->settings.controls;
 
-    auto new_code = g_rebind_pending_sc >= 0 ? static_cast<int16_t>(g_rebind_pending_sc) : int16_t{0};
+    auto new_code = g_rebind_pending_sc >= 0 ? static_cast<int16_t>(g_rebind_pending_sc) : int16_t{-1};
     g_rebind_pending_sc = -1;
 
     for (int i = 0; i < cc.num_bindings; ++i) {
         if (cc.bindings[i].scan_codes[0] != CTRL_REBIND_SENTINEL)
             continue;
 
-        if (new_code != 0) {
+        if (new_code != -1) {
             bool target_is_menu_only = is_menu_only_action(i);
             int new_offset = static_cast<int>(new_code) - CTRL_GAMEPAD_SCAN_BASE;
             bool new_is_extended = (new_offset >= SDL_GAMEPAD_BUTTON_MISC1 && new_offset < SDL_GAMEPAD_BUTTON_COUNT);
@@ -1427,7 +1434,7 @@ void gamepad_apply_rebind()
                     // Conflict-clear this extended button from other actions' secondary slots.
                     for (int j = 0; j < cc.num_bindings; ++j)
                         if (j != i && cc.bindings[j].scan_codes[1] == new_code)
-                            cc.bindings[j].scan_codes[1] = 0;
+                            cc.bindings[j].scan_codes[1] = -1;
                     // Determine the scan code that represents the existing primary.
                     int16_t primary_sc;
                     if (existing_primary >= 0)
@@ -1449,43 +1456,43 @@ void gamepad_apply_rebind()
                 // Clear from primary if the same binding context.
                 if (cc.bindings[j].scan_codes[0] == new_code
                     && is_menu_only_action(j) == target_is_menu_only) {
-                    cc.bindings[j].scan_codes[0] = 0;
+                    cc.bindings[j].scan_codes[0] = -1;
                     // If j still has an extended secondary, promote it to primary now — otherwise
                     // it would become orphaned (secondary with no primary → shows as empty in UI).
                     int16_t sc1_j = cc.bindings[j].scan_codes[1];
                     int off1_j    = static_cast<int>(sc1_j) - CTRL_GAMEPAD_SCAN_BASE;
-                    if (sc1_j != 0
+                    if (sc1_j != -1
                         && off1_j >= SDL_GAMEPAD_BUTTON_MISC1 && off1_j < SDL_GAMEPAD_BUTTON_COUNT
                         && !is_menu_only_action(j)) {
                         cc.bindings[j].scan_codes[0] = sc1_j;
-                        cc.bindings[j].scan_codes[1] = 0;
+                        cc.bindings[j].scan_codes[1] = -1;
                     }
                 }
                 // Always clear from secondary slots to avoid a button appearing in two places.
                 if (cc.bindings[j].scan_codes[1] == new_code)
-                    cc.bindings[j].scan_codes[1] = 0;
+                    cc.bindings[j].scan_codes[1] = -1;
             }
             // If the target action itself already holds new_code as its secondary (e.g. the user
             // presses the same extended button again after its primary was moved away), clear the
             // secondary to prevent "Mic / Mic" after sc[0] is written below.
             if (cc.bindings[i].scan_codes[1] == new_code)
-                cc.bindings[i].scan_codes[1] = 0;
+                cc.bindings[i].scan_codes[1] = -1;
         }
 
         cc.bindings[i].scan_codes[0] = new_code;
         // When clearing the primary binding, also clear any secondary.
-        if (new_code == 0)
-            cc.bindings[i].scan_codes[1] = 0;
+        if (new_code == -1)
+            cc.bindings[i].scan_codes[1] = -1;
 
         // Gyro modifier actions are mutually exclusive, so if one of them is bound, it unbinds the other two.
-        if (new_code != 0) {
+        if (new_code != -1) {
             const int hold_idx     = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD));
             const int hold_inv_idx = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT));
             const int toggle_idx   = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE));
             if (i == hold_idx || i == hold_inv_idx || i == toggle_idx) {
                 for (int k = 0; k < cc.num_bindings; ++k) {
                     if (k != i && (k == hold_idx || k == hold_inv_idx || k == toggle_idx))
-                        cc.bindings[k].scan_codes[0] = 0;
+                        cc.bindings[k].scan_codes[0] = -1;
                 }
             }
         }
@@ -1569,6 +1576,54 @@ void gamepad_reset_to_defaults()
 }
 
 // Initialization and message handling
+ConsoleCommand2 joy_reconnect_cmd{
+    "joy_reset",
+    [](std::optional<int>) {
+        if (!g_gamepad) {
+            // No gamepad open — try to pick up any connected one.
+            if (SDL_HasGamepad()) {
+                int count = 0;
+                SDL_JoystickID* ids = SDL_GetGamepads(&count);
+                if (ids) {
+                    if (count > 0)
+                        try_open_gamepad(ids[0]);
+                    SDL_free(ids);
+                }
+            }
+            if (g_gamepad)
+                rf::console::print("Gamepad reset: opened {}", SDL_GetGamepadName(g_gamepad));
+            else
+                rf::console::print("Gamepad reset: no gamepad found");
+            return;
+        }
+
+        // Release all held inputs before closing.
+        release_movement_keys();
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
+            inject_action_key(g_button_map[b], false);
+            inject_action_key(g_button_map_alt[b], false);
+        }
+        inject_action_key(g_trigger_action[0], false);
+        inject_action_key(g_trigger_action[1], false);
+        menu_nav_release_click();
+
+        SDL_JoystickID prev_id = SDL_GetGamepadID(g_gamepad);
+        SDL_CloseGamepad(g_gamepad);
+        g_gamepad               = nullptr;
+        g_motion_sensors_active = false;
+        reset_gamepad_input_state();
+
+        // Reopen the same device.
+        try_open_gamepad(prev_id);
+
+        if (g_gamepad)
+            rf::console::print("Gamepad reset: reopened {}", SDL_GetGamepadName(g_gamepad));
+        else
+            rf::console::print("Gamepad reset: failed to reopen gamepad");
+    },
+    "Close and reopen the SDL gamepad (re-enables sensors, resets gyro state)",
+};
+
 void gamepad_apply_patch()
 {
     gamepad_reset_to_defaults();
@@ -1576,11 +1631,6 @@ void gamepad_apply_patch()
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
-
-    // Load SDL_GameControllerDB
-    std::string mappings_path = get_module_dir(g_hmodule) + "gamecontrollerdb.txt";
-    if (SDL_AddGamepadMappingsFromFile(mappings_path.c_str()) < 0)
-        xlog::warn("SDL_GameControllerDB: failed to load mappings: {}", SDL_GetError());
 
     control_is_control_down_hook.install();
     control_config_check_pressed_hook.install();
@@ -1602,6 +1652,7 @@ void gamepad_apply_patch()
     gyro_vehicle_camera_cmd.register_cmd();
     input_prompts_cmd.register_cmd();
     gamepad_prompts_cmd.register_cmd();
+    joy_reconnect_cmd.register_cmd();
     gyro_apply_patch();
 }
 
@@ -1635,6 +1686,11 @@ void gamepad_sdl_init()
         xlog::error("Failed to initialize SDL gamepad subsystem: {}", SDL_GetError());
         return;
     }
+
+    // Load SDL_GameControllerDB
+    std::string mappings_path = get_module_dir(g_hmodule) + "gamecontrollerdb.txt";
+    if (SDL_AddGamepadMappingsFromFile(mappings_path.c_str()) < 0)
+        xlog::warn("SDL_GameControllerDB: failed to load mappings: {}", SDL_GetError());
 
     if (SDL_HasGamepad()) {
         int count = 0;
