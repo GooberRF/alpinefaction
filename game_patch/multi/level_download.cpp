@@ -275,7 +275,7 @@ void LevelDownloadWorker::operator()()
         }
         xlog::trace("LevelDownloadWorker got level info");
 
-        if (!shared_data_->level_info->image_url.empty()) {
+        if (!shared_data_->abort_flag && !shared_data_->level_info->image_url.empty()) {
             try {
                 FactionFilesClient img_client;
                 shared_data_->image_data = img_client.fetch_image(shared_data_->level_info->image_url);
@@ -882,6 +882,12 @@ void multi_level_download_do_frame()
     }
     else if (state == LevelDownloadState::fetching_data) {
         status_text = "Downloading from FactionFiles...";
+    }
+    else if (state == LevelDownloadState::not_found) {
+        status_text = "Level not found on FactionFiles";
+    }
+    else if (state == LevelDownloadState::finished) {
+        status_text = "Download complete";
     }
 
     // Widget layout
