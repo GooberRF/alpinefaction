@@ -144,6 +144,22 @@ bool upward_link_requires_jump_for_obstruction(
     return requires_jump;
 }
 
+bool get_next_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
+{
+    out_from_waypoint = 0;
+    out_to_waypoint = 0;
+    const int next_idx = g_client_bot_state.waypoint_next_index;
+    if (g_client_bot_state.waypoint_path.empty()
+        || next_idx < 0
+        || next_idx + 1 >= static_cast<int>(g_client_bot_state.waypoint_path.size())) {
+        return false;
+    }
+
+    out_from_waypoint = g_client_bot_state.waypoint_path[next_idx];
+    out_to_waypoint = g_client_bot_state.waypoint_path[next_idx + 1];
+    return out_from_waypoint > 0 && out_to_waypoint > 0;
+}
+
 bool get_active_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 {
     out_from_waypoint = 0;
@@ -164,6 +180,9 @@ bool get_active_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 
 void request_soft_repath_around_waypoint(const int avoid_waypoint)
 {
+    if (g_client_bot_state.drop_link_route_locked) {
+        return;
+    }
     // Skip recovery for roam/none goals — just clear the route and let normal
     // navigation pick a new path without the recovery anchor system.
     if (g_client_bot_state.active_goal == BotGoalType::roam
@@ -378,6 +397,32 @@ bool is_forward_probe_over_edge(
     return drop_height > kForwardEdgeUnsafeDropHeight;
 }
 
+bool is_eye_level_probe_blocked(
+    const rf::Entity& entity,
+    const rf::Vector3& direction,
+    const float distance)
+{
+    if (distance <= 0.0f || direction.len_sq() < 0.0001f) {
+        return false;
+    }
+
+    rf::Vector3 dir = direction;
+    dir.y = 0.0f;
+    if (dir.len_sq() < 0.0001f) {
+        return false;
+    }
+    dir.normalize_safe();
+
+    rf::Vector3 p0 = entity.eye_pos;
+    rf::Vector3 p1 = p0 + dir * distance;
+    rf::GCollisionOutput collision{};
+    return rf::collide_linesegment_level_solid(
+        p0,
+        p1,
+        kBotMovementTraceFlags,
+        &collision);
+}
+
 void reset_forward_obstacle_progress_tracking()
 {
     g_client_bot_state.forward_obstacle_progress_timer.invalidate();
@@ -433,6 +478,24 @@ bool waypoint_is_unsafe_terrain(const int waypoint)
         return false;
     }
     return movement_subtype == static_cast<int>(WaypointDroppedSubtype::unsafe_terrain);
+}
+
+bool is_significant_downward_link(const int from_waypoint, const int to_waypoint)
+{
+    if (from_waypoint <= 0 || to_waypoint <= 0) {
+        return false;
+    }
+    if (!waypoints_has_direct_link(from_waypoint, to_waypoint)) {
+        return false;
+    }
+    rf::Vector3 from_pos{};
+    rf::Vector3 to_pos{};
+    if (!waypoints_get_pos(from_waypoint, from_pos) || !waypoints_get_pos(to_waypoint, to_pos)) {
+        return false;
+    }
+    // Must drop more than a normal step/ramp height (0.75m).
+    constexpr float kDropLinkMinHeight = 0.75f;
+    return (from_pos.y - to_pos.y) > kDropLinkMinHeight;
 }
 
 bool should_jump_to_cross_gap_link(
@@ -602,6 +665,12 @@ void apply_corner_centering_steer(
     forward_right.normalize_safe();
     forward_left.normalize_safe();
 
+    // When edge checks are suppressed (drop links), skip all corner steering —
+    // both wall and edge probes can give false positives at ledge edges.
+    if (suppress_edge_checks) {
+        return;
+    }
+
     const bool forward_blocked = is_forward_probe_blocked(
         local_entity,
         probe_forward,
@@ -609,7 +678,6 @@ void apply_corner_centering_steer(
     );
     const bool forward_over_edge =
         !forward_blocked
-        && !suppress_edge_checks
         && is_forward_probe_over_edge(
             local_entity,
             probe_forward,
@@ -754,11 +822,37 @@ void bot_process_movement(
     const bool active_link_is_gap =
         has_active_link
         && !bot_nav_link_midpoint_has_support(active_from_waypoint, active_to_waypoint);
+    int next_from_waypoint = 0;
+    int next_to_waypoint = 0;
+    const bool has_next_link = get_next_waypoint_link(next_from_waypoint, next_to_waypoint);
+    bool active_link_is_drop =
+        (has_active_link
+            && is_significant_downward_link(active_from_waypoint, active_to_waypoint))
+        || (has_next_link
+            && is_significant_downward_link(next_from_waypoint, next_to_waypoint));
     const bool active_link_from_unsafe_terrain =
         has_active_link
         && waypoint_is_unsafe_terrain(active_from_waypoint);
 
     const rf::Vector3 to_target = move_target - local_entity.pos;
+    // Also detect drops based on entity position relative to target.
+    if (!active_link_is_drop && has_active_link && to_target.y < -0.75f) {
+        active_link_is_drop = true;
+    }
+    // Lock route when on drop links to prevent rerouting during traversal.
+    // Unlock once the bot is in freefall — they've committed to the drop.
+    if (active_link_is_drop && !rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))) {
+        g_client_bot_state.drop_link_route_locked = true;
+        g_client_bot_state.drop_freefall_active = true;
+    }
+    else if (rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))) {
+        g_client_bot_state.drop_link_route_locked = false;
+        // drop_freefall_active stays true — cleared on landing below.
+    }
+    else {
+        // On the ground and not on a drop link — clear the drop freefall flag.
+        g_client_bot_state.drop_freefall_active = false;
+    }
     rf::Vector3 climb_region_probe = local_entity.pos;
     const bool in_climb_region = rf::level_point_in_climb_region(&climb_region_probe) != nullptr;
     const bool ladder_traversal_active =
@@ -788,6 +882,7 @@ void bot_process_movement(
                     active_link_is_approximately_level(active_from_waypoint, active_to_waypoint);
                 const bool not_near_ledge =
                     !active_link_is_gap
+                    && !active_link_is_drop
                     && !active_link_from_unsafe_terrain
                     && open_terrain_edge_probes_safe(local_entity, desired_world_dir);
                 if (level_link || not_near_ledge) {
@@ -855,15 +950,7 @@ void bot_process_movement(
         stop_distance = 0.35f;
     }
     else if (ctf_objective) {
-        if (g_client_bot_state.active_goal == BotGoalType::ctf_hold_enemy_flag) {
-            // Keep moving through patrol anchors while holding enemy flag.
-            stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.05f;
-        }
-        else {
-            // Use normal tolerance while following route waypoints, and only
-            // force run-through distance on the final direct approach.
-            stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.05f;
-        }
+        stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.05f;
     }
     else if (control_point_objective) {
         // CP objective traversal should keep momentum across waypoint links and
@@ -881,7 +968,26 @@ void bot_process_movement(
 
     float desired_move_x = 0.0f;
     float desired_move_z = 0.0f;
-    if (horizontal_dist > stop_distance) {
+
+    // When on a downward drop link with minimal horizontal distance to target,
+    // walk forward along the link direction to step off the edge.
+    if (active_link_is_drop && horizontal_dist <= stop_distance && has_active_link) {
+        rf::Vector3 from_pos{};
+        rf::Vector3 to_pos{};
+        if (waypoints_get_pos(active_from_waypoint, from_pos) && waypoints_get_pos(active_to_waypoint, to_pos)) {
+            rf::Vector3 link_dir = to_pos - from_pos;
+            link_dir.y = 0.0f;
+            if (link_dir.len_sq() > 0.001f) {
+                link_dir.normalize_safe();
+                const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(
+                    local_entity.control_data.phb.y, 0.0f);
+                const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+                desired_move_z = std::clamp(link_dir.dot_prod(view_forward), -1.0f, 1.0f);
+                desired_move_x = std::clamp(link_dir.dot_prod(view_right), -1.0f, 1.0f);
+            }
+        }
+    }
+    else if (horizontal_dist > stop_distance) {
         desired_world_dir.normalize_safe();
         const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(
             local_entity.control_data.phb.y,
@@ -1038,7 +1144,7 @@ void bot_process_movement(
         local_entity,
         desired_world_dir,
         desired_move_z,
-        active_link_is_gap || active_link_from_unsafe_terrain,
+        active_link_is_gap || active_link_is_drop || active_link_from_unsafe_terrain,
         desired_move_x
     );
 
@@ -1051,7 +1157,7 @@ void bot_process_movement(
         suppress_forward_obstacle_checks_for_upward_link
         || ladder_traversal_active;
     const bool suppress_forward_edge_checks =
-        active_link_is_gap || active_link_from_unsafe_terrain;
+        active_link_is_gap || active_link_is_drop || active_link_from_unsafe_terrain;
 
     if (desired_move_z > 0.25f && !suppress_forward_obstacle_checks) {
         if (!g_client_bot_state.forward_obstacle_guard_timer.valid()) {
@@ -1079,9 +1185,18 @@ void bot_process_movement(
                 probe_forward,
                 kForwardObstacleProbeDistance
             );
+            // Eye-level probe: if the torso-level path is clear but the eye
+            // level is blocked, the bot can crouch under the obstacle.
+            const bool eye_blocked = !forward_blocked
+                && is_eye_level_probe_blocked(
+                    local_entity,
+                    probe_forward,
+                    kForwardObstacleProbeDistance);
+            g_client_bot_state.obstacle_crouch_active = eye_blocked;
             const bool can_sample_edge_drop = !suppress_forward_edge_checks;
             const bool forward_over_edge =
                 !forward_blocked
+                && !eye_blocked
                 && can_sample_edge_drop
                 && is_forward_probe_over_edge(
                     local_entity,
@@ -1290,12 +1405,15 @@ void bot_process_movement(
     else {
         g_client_bot_state.forward_obstacle_guard_timer.invalidate();
         g_client_bot_state.forward_obstacle_blocked_samples = 0;
+        g_client_bot_state.obstacle_crouch_active = false;
         reset_forward_obstacle_progress_tracking();
     }
 
     const bool should_hold_crouch =
         !respawn_gearup_active
-        && (combat_crouch_hold || g_client_bot_state.traversal_crouch_active);
+        && (combat_crouch_hold
+            || g_client_bot_state.traversal_crouch_active
+            || g_client_bot_state.obstacle_crouch_active);
     const bool currently_crouched = rf::entity_is_crouching(const_cast<rf::Entity*>(&local_entity));
     g_client_bot_state.traversal_crouch_toggled_on = currently_crouched;
     if (currently_crouched != should_hold_crouch) {
@@ -1393,11 +1511,166 @@ void bot_process_movement(
         g_client_bot_state.jump_timer.set(650);
     }
 
-    issue_movement_actions(
-        local_player,
-        desired_move_x,
-        ladder_move_y,
-        desired_move_z,
-        should_jump
-    );
+    const bool is_falling = rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity));
+
+    // Detect jump pad link involvement.
+    const bool on_jump_pad_link =
+        active_to_is_jump_pad
+        || (has_active_from_type
+            && static_cast<WaypointType>(active_from_type_raw) == WaypointType::jump_pad);
+
+    // Capture the landing waypoint position while we can still see the jump pad
+    // in the active link — the path may advance past the jump pad once airborne,
+    // so we store the target before that happens.
+    const bool active_from_is_jump_pad =
+        has_active_from_type
+        && static_cast<WaypointType>(active_from_type_raw) == WaypointType::jump_pad;
+    if (active_from_is_jump_pad && has_active_link) {
+        rf::Vector3 to_pos{};
+        if (waypoints_get_pos(active_to_waypoint, to_pos)) {
+            g_client_bot_state.jump_pad_landing_pos = to_pos;
+            g_client_bot_state.jump_pad_landing_pos_valid = true;
+        }
+    }
+    else if (active_to_is_jump_pad && has_next_link) {
+        // Bot hasn't reached the jump pad yet but is about to — capture the
+        // landing spot from the next link (jump_pad -> landing).
+        rf::Vector3 to_pos{};
+        if (waypoints_get_pos(next_to_waypoint, to_pos)) {
+            g_client_bot_state.jump_pad_landing_pos = to_pos;
+            g_client_bot_state.jump_pad_landing_pos_valid = true;
+        }
+    }
+
+    // Activate landing steer once the bot is airborne and we have a stored landing pos.
+    constexpr int kJumpPadSteerDelayMs = 100;
+    if (is_falling
+        && g_client_bot_state.jump_pad_landing_pos_valid
+        && !g_client_bot_state.jump_pad_landing_steer_active
+        && !g_client_bot_state.jump_pad_steer_delay_timer.valid()) {
+        // Check if the landing waypoint is behind the bot's current movement
+        // direction. If so, skip the delay and steer immediately — the bot needs
+        // to reverse its momentum as early as possible.
+        bool needs_immediate_steer = false;
+        rf::Vector3 to_landing = g_client_bot_state.jump_pad_landing_pos - local_entity.pos;
+        to_landing.y = 0.0f;
+        rf::Vector3 horiz_vel = local_entity.p_data.vel;
+        horiz_vel.y = 0.0f;
+        if (to_landing.len_sq() > 0.001f && horiz_vel.len_sq() > 0.001f) {
+            to_landing.normalize_safe();
+            horiz_vel.normalize_safe();
+            needs_immediate_steer = to_landing.dot_prod(horiz_vel) < 0.0f;
+        }
+        if (needs_immediate_steer) {
+            g_client_bot_state.jump_pad_landing_steer_active = true;
+        }
+        else {
+            g_client_bot_state.jump_pad_steer_delay_timer.set(kJumpPadSteerDelayMs);
+        }
+    }
+    if (g_client_bot_state.jump_pad_steer_delay_timer.valid()
+        && g_client_bot_state.jump_pad_steer_delay_timer.elapsed()) {
+        g_client_bot_state.jump_pad_landing_steer_active = true;
+        g_client_bot_state.jump_pad_steer_delay_timer.invalidate();
+    }
+    // Clear on landing.
+    if (!is_falling) {
+        g_client_bot_state.jump_pad_landing_steer_active = false;
+        g_client_bot_state.jump_pad_steer_delay_timer.invalidate();
+        g_client_bot_state.jump_pad_landing_pos_valid = false;
+    }
+
+    // Suppress aim-at-waypoint only during freefall from drop links,
+    // not during jump pad flights, ladder climbs, normal jumps, etc.
+    g_client_bot_state.freefall_suppress_aim = is_falling && g_client_bot_state.drop_freefall_active;
+
+    if (is_falling) {
+        float air_move_x = desired_move_x;
+        float air_move_z = desired_move_z;
+
+        if (g_client_bot_state.jump_pad_landing_steer_active) {
+            // Aggressively steer toward the stored landing waypoint position.
+            rf::Vector3 steer_dir = g_client_bot_state.jump_pad_landing_pos - local_entity.pos;
+            steer_dir.y = 0.0f;
+            if (steer_dir.len_sq() > 0.001f) {
+                steer_dir.normalize_safe();
+                const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(
+                    local_entity.control_data.phb.y, 0.0f);
+                const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+                air_move_z = std::clamp(steer_dir.dot_prod(view_forward), -1.0f, 1.0f);
+                air_move_x = std::clamp(steer_dir.dot_prod(view_right), -1.0f, 1.0f);
+            }
+        }
+        else if (g_client_bot_state.drop_freefall_active) {
+            // During drop freefall, steer toward the furthest visible waypoint
+            // along the current route. This lets the bot cover as much horizontal
+            // distance as possible while falling so it lands ahead on its path.
+            rf::Vector3 best_steer_target{};
+            bool has_air_steer = false;
+            const auto& path = g_client_bot_state.waypoint_path;
+            const int path_size = static_cast<int>(path.size());
+            // Scan forward from the current target along the route.
+            for (int idx = g_client_bot_state.waypoint_next_index; idx < path_size; ++idx) {
+                rf::Vector3 wp_pos{};
+                if (!waypoints_get_pos(path[idx], wp_pos)) {
+                    break;
+                }
+                rf::Vector3 p0 = local_entity.pos;
+                rf::Vector3 p1 = wp_pos;
+                rf::GCollisionOutput collision{};
+                if (rf::collide_linesegment_level_solid(
+                        p0, p1, kBotMovementTraceFlags, &collision)) {
+                    break; // LOS blocked — stop scanning
+                }
+                best_steer_target = wp_pos;
+                has_air_steer = true;
+            }
+            // Fall back to the horizontal component of the drop link direction.
+            if (!has_air_steer && has_active_link) {
+                rf::Vector3 from_pos{};
+                rf::Vector3 to_pos{};
+                if (waypoints_get_pos(active_from_waypoint, from_pos)
+                    && waypoints_get_pos(active_to_waypoint, to_pos)) {
+                    rf::Vector3 link_dir = to_pos - from_pos;
+                    link_dir.y = 0.0f;
+                    if (link_dir.len_sq() > 0.001f) {
+                        link_dir.normalize_safe();
+                        best_steer_target = local_entity.pos + link_dir * 10.0f;
+                        has_air_steer = true;
+                    }
+                }
+            }
+            if (has_air_steer) {
+                rf::Vector3 air_steer_dir = best_steer_target - local_entity.pos;
+                air_steer_dir.y = 0.0f;
+                if (air_steer_dir.len_sq() > 0.001f) {
+                    air_steer_dir.normalize_safe();
+                    const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(
+                        local_entity.control_data.phb.y, 0.0f);
+                    const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+                    air_move_z = std::clamp(air_steer_dir.dot_prod(view_forward), 0.0f, 1.0f);
+                    air_move_x = std::clamp(air_steer_dir.dot_prod(view_right), -1.0f, 1.0f);
+                }
+                else {
+                    air_move_x = 0.0f;
+                    air_move_z = 0.0f;
+                }
+            }
+            else {
+                air_move_x = 0.0f;
+                air_move_z = 0.0f;
+            }
+        }
+
+        issue_movement_actions(local_player, air_move_x, 0.0f, air_move_z, false);
+    }
+    else {
+        issue_movement_actions(
+            local_player,
+            desired_move_x,
+            ladder_move_y,
+            desired_move_z,
+            should_jump
+        );
+    }
 }

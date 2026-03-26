@@ -76,6 +76,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `force_rail_reload` dedicated server config option, to force reloading the rail before being able to switch weapons
 - Add help strings to spectate UI in freelook spectate mode
 - Add dedicated control for entering/exiting spectate mode
+- Add `To Mesh Object` button when selecting clutter in level editor `Select Objects` window
 - Add `r_dynamiclightndotl` console command to configure N-L blending for dynamic lights (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
@@ -128,6 +129,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor crash when maximizing the bottom right viewport
 - Fix bots not always spawning correctly when `ideal_player_count` is 32
 - Fix possible crash in substring handling
+- Fix rare crash when maintaining freelook spectate through a level change
+- Fix `Set_Variable` event not correctly handling `bool2` for `Clone_Entity`, or `bool2` and `str2` for `AF_Teleport_Player`
+- Fix triangulated and ngon faces on breakable detail brushes not breaking properly in version >= 304 levels
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

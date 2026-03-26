@@ -30,6 +30,7 @@ namespace
 int scale_repath_ms(const int base_ms, const bool urgent);
 constexpr int kItemGoalContactTimeoutMs = 1200;
 constexpr float kItemGoalContactRadius = 1.20f;
+constexpr int kItemGoalApproachTimeoutMs = 3500;
 constexpr float kRecoveryAnchorFallbackHorizontalDeadlockRadius = 0.85f;
 constexpr float kRecoveryAnchorFallbackVerticalDeadlockHeight = 1.6f;
 
@@ -1767,6 +1768,39 @@ bool update_ctf_objective_goal(
                     g_client_bot_state.goal_target_waypoint = patrol_waypoint;
                     g_client_bot_state.goal_target_pos = patrol_pos;
                     target_pos = patrol_pos;
+
+                    // When the bot reaches its patrol anchor, swap to the other
+                    // anchor. If there is no secondary anchor, swap between the
+                    // anchor and a random nearby waypoint to keep the bot moving
+                    // and picking up items instead of standing still.
+                    constexpr float kHoldArrivalRadius = kWaypointLinkRadius * 1.2f;
+                    const float hold_dist_sq = rf::vec_dist_squared(&local_entity.pos, &patrol_pos);
+                    if (hold_dist_sq <= kHoldArrivalRadius * kHoldArrivalRadius) {
+                        if (secondary_waypoint > 0) {
+                            g_client_bot_state.goal_target_waypoint =
+                                (patrol_waypoint == primary_waypoint) ? secondary_waypoint : primary_waypoint;
+                        }
+                        else {
+                            // Pick a random neighbor of the current anchor to wander
+                            // to, then come back. This keeps the bot active.
+                            std::array<int, kMaxWaypointLinks> links{};
+                            const int num_links = waypoints_get_links(patrol_waypoint, links);
+                            const int random_neighbor = num_links > 0
+                                ? links[std::rand() % num_links]
+                                : 0;
+                            if (random_neighbor > 0) {
+                                g_client_bot_state.goal_target_waypoint = random_neighbor;
+                                rf::Vector3 neighbor_pos{};
+                                if (waypoints_get_pos(random_neighbor, neighbor_pos)) {
+                                    g_client_bot_state.goal_target_pos = neighbor_pos;
+                                    target_pos = neighbor_pos;
+                                }
+                            }
+                            else {
+                                g_client_bot_state.goal_eval_timer.invalidate();
+                            }
+                        }
+                    }
                 }
                 else if (g_client_bot_state.goal_target_pos.len_sq() > 0.0001f) {
                     target_pos = g_client_bot_state.goal_target_pos;
@@ -1920,7 +1954,11 @@ bool update_ctf_objective_goal(
         &local_entity.pos,
         &g_client_bot_state.goal_target_pos
     );
-    if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius) {
+    // Only commit to direct movement toward the CTF objective if the bot has
+    // LOS — otherwise keep routing via waypoints to avoid walking into walls.
+    const bool direct_approach_allowed =
+        bot_has_unobstructed_level_los(local_entity.eye_pos, g_client_bot_state.goal_target_pos, nullptr, nullptr);
+    if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius && direct_approach_allowed) {
         bot_internal_clear_waypoint_route();
         move_target = g_client_bot_state.goal_target_pos;
         has_move_target = true;
@@ -1935,12 +1973,22 @@ bool update_ctf_objective_goal(
         );
         if (dist_to_goal_waypoint_sq
             <= kCtfFinalApproachWaypointProximity * kCtfFinalApproachWaypointProximity) {
-            // Once we reach the anchor waypoint near the flag objective,
-            // commit to running directly over the live flag position.
-            bot_internal_clear_waypoint_route();
-            move_target = g_client_bot_state.goal_target_pos;
-            has_move_target = true;
-            return true;
+            if (direct_approach_allowed) {
+                // Once we reach the anchor waypoint near the flag objective,
+                // commit to running directly over the live flag position.
+                bot_internal_clear_waypoint_route();
+                move_target = g_client_bot_state.goal_target_pos;
+                has_move_target = true;
+                return true;
+            }
+            // No LOS to objective: re-route to a waypoint closer to the
+            // target position rather than walking through walls.
+            g_client_bot_state.goal_target_waypoint = bot_find_closest_waypoint_with_fallback(
+                g_client_bot_state.goal_target_pos
+            );
+            waypoint_valid =
+                g_client_bot_state.goal_target_waypoint > 0
+                && waypoints_get_pos(g_client_bot_state.goal_target_waypoint, waypoint_pos);
         }
     }
 
@@ -2028,8 +2076,16 @@ bool update_ctf_objective_goal(
             return bot_goal_runtime_abort_ctf_goal();
         }
 
-        move_target = g_client_bot_state.goal_target_pos;
-        has_move_target = true;
+        // Only move directly toward the objective if we have LOS — otherwise
+        // the bot walks into walls. Let navigation recovery handle it.
+        if (bot_has_unobstructed_level_los(
+                local_entity.eye_pos,
+                g_client_bot_state.goal_target_pos,
+                nullptr,
+                nullptr)) {
+            move_target = g_client_bot_state.goal_target_pos;
+            has_move_target = true;
+        }
         return true;
     }
 
@@ -2255,8 +2311,19 @@ void bot_update_move_target(
         // Item became unavailable (picked/despawned): force immediate
         // reevaluation so we do not pause in placeholder roam state.
         bot_state_set_roam_fallback_goal(0);
+        // Clear the goal switch lock so the bot immediately re-evaluates for
+        // critical objectives (CTF, etc.) instead of pausing in roam state.
+        g_client_bot_state.goal_switch_lock_timer.invalidate();
         bot_state_clear_waypoint_route(true, true, false);
         bot_internal_set_last_heading_change_reason("item_unavailable");
+    };
+
+    const auto pickup_direct_approach_radius = [&]() -> float {
+        float radius = kWaypointLinkRadius * 1.35f;
+        if (g_client_bot_state.active_goal == BotGoalType::collect_super_item) {
+            radius = std::max(radius, kWaypointLinkRadius * 2.0f);
+        }
+        return radius;
     };
 
     const auto update_item_goal_contact_watchdog =
@@ -2266,13 +2333,48 @@ void bot_update_move_target(
                 return false;
             }
 
+            // Approach zone timeout: bot is within direct approach radius but can't
+            // close to contact distance. Prevents indefinite oscillation around items
+            // that are slightly out of reach (e.g. on a pedestal).
+            const float direct_radius = pickup_direct_approach_radius();
+            const float direct_radius_sq = direct_radius * direct_radius;
+            if (item_dist_sq <= direct_radius_sq) {
+                if (g_client_bot_state.item_goal_approach_handle != pickup_obj->handle
+                    || !g_client_bot_state.item_goal_approach_timer.valid()) {
+                    g_client_bot_state.item_goal_approach_handle = pickup_obj->handle;
+                    g_client_bot_state.item_goal_approach_timer.set(kItemGoalApproachTimeoutMs);
+                }
+                else if (g_client_bot_state.item_goal_approach_timer.elapsed()) {
+                    bot_memory_manager_note_failed_goal_target(
+                        g_client_bot_state.active_goal,
+                        pickup_obj->handle,
+                        kFailedItemGoalCooldownMs
+                    );
+                    bot_internal_set_last_heading_change_reason("item_approach_timeout");
+                    clear_unavailable_item_goal();
+                    return true;
+                }
+            }
+            else {
+                if (g_client_bot_state.item_goal_approach_handle == pickup_obj->handle) {
+                    g_client_bot_state.item_goal_approach_timer.invalidate();
+                    g_client_bot_state.item_goal_approach_handle = -1;
+                }
+            }
+
             const float contact_radius_sq = kItemGoalContactRadius * kItemGoalContactRadius;
             if (item_dist_sq > contact_radius_sq) {
                 if (g_client_bot_state.item_goal_contact_handle == pickup_obj->handle) {
-                    bot_state_clear_item_goal_contact_tracking();
+                    g_client_bot_state.item_goal_contact_timer.invalidate();
+                    g_client_bot_state.item_goal_contact_handle = -1;
                 }
                 return false;
             }
+
+            // Contact zone: bot reached the item but pickup didn't happen.
+            // Reset the approach timer since we made it to contact distance.
+            g_client_bot_state.item_goal_approach_timer.invalidate();
+            g_client_bot_state.item_goal_approach_handle = -1;
 
             if (g_client_bot_state.item_goal_contact_handle != pickup_obj->handle
                 || !g_client_bot_state.item_goal_contact_timer.valid()) {
@@ -2294,14 +2396,6 @@ void bot_update_move_target(
             clear_unavailable_item_goal();
             return true;
         };
-
-    const auto pickup_direct_approach_radius = [&]() -> float {
-        float radius = kWaypointLinkRadius * 1.35f;
-        if (g_client_bot_state.active_goal == BotGoalType::collect_super_item) {
-            radius = std::max(radius, kWaypointLinkRadius * 2.0f);
-        }
-        return radius;
-    };
 
     bot_goal_runtime_clear_non_active_goal_state(g_client_bot_state.active_goal);
 

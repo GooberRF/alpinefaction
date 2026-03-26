@@ -49,4 +49,5 @@ namespace rf
     }
 
     static auto& camera_get_mode = addr_as_ref<CameraMode(const rf::Camera&)>(0x0040D740);
+    static auto& camera_shake = addr_as_ref<void(Camera* camera, float amplitude, float time_seconds)>(0x0040E0B0);
 }

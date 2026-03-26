@@ -83,7 +83,10 @@ enum class WaypointZoneCreateDialogStage : int
     select_type = 0,
     select_source = 1,
     enter_trigger_uid = 2,
+    enter_bridge_waypoints = 3,
 };
+
+constexpr int kMaxBridgeWaypointFields = 6;
 
 struct WaypointZoneCreateDialogState
 {
@@ -91,11 +94,31 @@ struct WaypointZoneCreateDialogState
     WaypointZoneCreateDialogStage stage = WaypointZoneCreateDialogStage::select_type;
     WaypointZoneType selected_type = WaypointZoneType::control_point;
     std::string trigger_uid_field{};
+    int bridge_active_field = 0;
+    std::array<std::string, kMaxBridgeWaypointFields> bridge_waypoint_fields{};
 };
 
 struct WaypointTargetCreateDialogState
 {
     bool open = false;
+};
+
+constexpr int kMaxTargetLinkFields = 4;
+
+struct WaypointTargetLinkEditorDialogState
+{
+    bool open = false;
+    int target_uid = -1;
+    int active_field = 0;
+    std::array<std::string, kMaxTargetLinkFields> fields{};
+};
+
+struct WaypointZoneBridgeEditorDialogState
+{
+    bool open = false;
+    int zone_uid = -1;
+    int active_field = 0;
+    std::array<std::string, kMaxBridgeWaypointFields> fields{};
 };
 
 enum class WaypointTypeChangeDialogSubject : int
@@ -146,6 +169,8 @@ WaypointLinkEditorDialogState g_waypoint_link_editor_dialog{};
 WaypointZoneCreateDialogState g_waypoint_zone_create_dialog{};
 WaypointTargetCreateDialogState g_waypoint_target_create_dialog{};
 WaypointTypeChangeDialogState g_waypoint_type_change_dialog{};
+WaypointTargetLinkEditorDialogState g_waypoint_target_link_editor_dialog{};
+WaypointZoneBridgeEditorDialogState g_waypoint_zone_bridge_editor_dialog{};
 WaypointGizmoAxis g_waypoint_gizmo_hover_axis = WaypointGizmoAxis::none;
 int g_waypoint_gizmo_hover_zone_corner = -1;
 WaypointGizmoDragState g_waypoint_gizmo_drag{};
@@ -1825,10 +1850,62 @@ bool create_zone_from_trigger_uid_field()
         return false;
     }
 
+    // For bridge zones, advance to bridge waypoint entry stage instead of creating immediately.
+    if (waypoint_zone_type_is_bridge(g_waypoint_zone_create_dialog.selected_type)) {
+        rf::Object* trigger_obj = rf::obj_lookup_from_uid(parsed_uid.value());
+        if (!trigger_obj || trigger_obj->type != rf::OT_TRIGGER) {
+            rf::console::print("UID {} is not a trigger", parsed_uid.value());
+            return false;
+        }
+        g_waypoint_zone_create_dialog.stage = WaypointZoneCreateDialogStage::enter_bridge_waypoints;
+        g_waypoint_zone_create_dialog.bridge_active_field = 0;
+        g_waypoint_zone_create_dialog.bridge_waypoint_fields.fill({});
+        g_waypoint_editor_pending_numeric_key_counts.fill(0);
+        return true;
+    }
+
     if (!create_new_zone_on_trigger(g_waypoint_zone_create_dialog.selected_type, parsed_uid.value())) {
         return false;
     }
 
+    close_waypoint_zone_create_dialog();
+    return true;
+}
+
+bool create_bridge_zone_from_dialog()
+{
+    const auto parsed_trigger_uid = parse_link_field_waypoint_uid(g_waypoint_zone_create_dialog.trigger_uid_field);
+    if (!parsed_trigger_uid || parsed_trigger_uid.value() < 0) {
+        return false;
+    }
+
+    rf::Object* trigger_obj = rf::obj_lookup_from_uid(parsed_trigger_uid.value());
+    if (!trigger_obj || trigger_obj->type != rf::OT_TRIGGER) {
+        rf::console::print("UID {} is not a trigger", parsed_trigger_uid.value());
+        return false;
+    }
+
+    std::vector<int> bridge_waypoint_uids{};
+    for (const auto& field : g_waypoint_zone_create_dialog.bridge_waypoint_fields) {
+        const auto parsed = parse_link_field_waypoint_uid(field);
+        if (parsed && is_valid_waypoint_uid_local(parsed.value())) {
+            bridge_waypoint_uids.push_back(parsed.value());
+        }
+    }
+
+    WaypointZoneDefinition zone{};
+    zone.type = g_waypoint_zone_create_dialog.selected_type;
+    zone.trigger_uid = parsed_trigger_uid.value();
+    zone.bridge_waypoint_uids = std::move(bridge_waypoint_uids);
+    normalize_zone_bridge_waypoint_refs(zone.bridge_waypoint_uids);
+    const int zone_uid = add_waypoint_zone_definition(zone);
+    const int gated_count = static_cast<int>(zone.bridge_waypoint_uids.size());
+    push_waypoint_editor_log(std::format(
+        "Added zone {} as index {} (trigger uid {}, {} gated waypoints)",
+        waypoint_zone_type_name(zone.type),
+        zone_uid,
+        parsed_trigger_uid.value(),
+        gated_count));
     close_waypoint_zone_create_dialog();
     return true;
 }
@@ -2036,6 +2113,231 @@ void process_zone_create_trigger_uid_keyboard_input()
     append_text_from_key_counter(field, rf::KEY_PAD9, '9');
 }
 
+void apply_numeric_input_to_field(std::string& field)
+{
+    int backspace_count = rf::key_get_and_reset_down_counter(rf::KEY_BACKSP);
+    while (backspace_count-- > 0 && !field.empty()) {
+        field.pop_back();
+    }
+
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_0))
+            + rf::key_get_and_reset_down_counter(rf::KEY_0), '0');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_1))
+            + rf::key_get_and_reset_down_counter(rf::KEY_1), '1');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_2))
+            + rf::key_get_and_reset_down_counter(rf::KEY_2), '2');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_3))
+            + rf::key_get_and_reset_down_counter(rf::KEY_3), '3');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_4))
+            + rf::key_get_and_reset_down_counter(rf::KEY_4), '4');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_5))
+            + rf::key_get_and_reset_down_counter(rf::KEY_5), '5');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_6))
+            + rf::key_get_and_reset_down_counter(rf::KEY_6), '6');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_7))
+            + rf::key_get_and_reset_down_counter(rf::KEY_7), '7');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_8))
+            + rf::key_get_and_reset_down_counter(rf::KEY_8), '8');
+    append_text_from_count(field,
+        waypoints_utils_consume_numeric_key(static_cast<int>(rf::KEY_9))
+            + rf::key_get_and_reset_down_counter(rf::KEY_9), '9');
+
+    append_text_from_key_counter(field, rf::KEY_PAD0, '0');
+    append_text_from_key_counter(field, rf::KEY_PAD1, '1');
+    append_text_from_key_counter(field, rf::KEY_PAD2, '2');
+    append_text_from_key_counter(field, rf::KEY_PAD3, '3');
+    append_text_from_key_counter(field, rf::KEY_PAD4, '4');
+    append_text_from_key_counter(field, rf::KEY_PAD5, '5');
+    append_text_from_key_counter(field, rf::KEY_PAD6, '6');
+    append_text_from_key_counter(field, rf::KEY_PAD7, '7');
+    append_text_from_key_counter(field, rf::KEY_PAD8, '8');
+    append_text_from_key_counter(field, rf::KEY_PAD9, '9');
+}
+
+void process_bridge_waypoint_keyboard_input()
+{
+    if (!g_waypoint_zone_create_dialog.open
+        || g_waypoint_zone_create_dialog.stage != WaypointZoneCreateDialogStage::enter_bridge_waypoints
+        || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+
+    if (rf::key_get_and_reset_down_counter(rf::KEY_ESC) > 0) {
+        close_waypoint_zone_create_dialog();
+        return;
+    }
+
+    if (rf::key_get_and_reset_down_counter(rf::KEY_ENTER) > 0
+        || rf::key_get_and_reset_down_counter(rf::KEY_PADENTER) > 0) {
+        create_bridge_zone_from_dialog();
+        return;
+    }
+
+    const int idx = g_waypoint_zone_create_dialog.bridge_active_field;
+    if (idx < 0 || idx >= kMaxBridgeWaypointFields) {
+        return;
+    }
+
+    apply_numeric_input_to_field(g_waypoint_zone_create_dialog.bridge_waypoint_fields[idx]);
+}
+
+void close_target_link_editor_dialog(const bool save_changes)
+{
+    if (!g_waypoint_target_link_editor_dialog.open) {
+        return;
+    }
+
+    if (save_changes) {
+        auto* target = find_waypoint_target_by_uid(g_waypoint_target_link_editor_dialog.target_uid);
+        if (target) {
+            std::vector<int> new_uids{};
+            for (const auto& field : g_waypoint_target_link_editor_dialog.fields) {
+                const auto parsed = parse_link_field_waypoint_uid(field);
+                if (parsed && is_valid_waypoint_uid_local(parsed.value())) {
+                    new_uids.push_back(parsed.value());
+                }
+            }
+            normalize_target_waypoint_uids(new_uids);
+            target->waypoint_uids = std::move(new_uids);
+            push_waypoint_editor_log(std::format(
+                "Saved target {} links ({} waypoint refs)",
+                target->uid,
+                static_cast<int>(target->waypoint_uids.size())));
+        }
+    }
+
+    g_waypoint_editor_pending_numeric_key_counts.fill(0);
+    g_waypoint_target_link_editor_dialog = {};
+}
+
+void open_target_link_editor_dialog(const int target_uid)
+{
+    const auto* target = find_waypoint_target_by_uid(target_uid);
+    if (!target) {
+        return;
+    }
+
+    g_waypoint_target_link_editor_dialog = {};
+    g_waypoint_target_link_editor_dialog.open = true;
+    g_waypoint_target_link_editor_dialog.target_uid = target_uid;
+    g_waypoint_target_link_editor_dialog.active_field = 0;
+    g_waypoint_editor_pending_numeric_key_counts.fill(0);
+
+    for (int i = 0; i < kMaxTargetLinkFields && i < static_cast<int>(target->waypoint_uids.size()); ++i) {
+        g_waypoint_target_link_editor_dialog.fields[i] = std::to_string(target->waypoint_uids[i]);
+    }
+}
+
+void process_target_link_editor_keyboard_input()
+{
+    if (!g_waypoint_target_link_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+
+    if (rf::key_get_and_reset_down_counter(rf::KEY_ESC) > 0) {
+        close_target_link_editor_dialog(false);
+        return;
+    }
+
+    if (rf::key_get_and_reset_down_counter(rf::KEY_ENTER) > 0
+        || rf::key_get_and_reset_down_counter(rf::KEY_PADENTER) > 0) {
+        close_target_link_editor_dialog(true);
+        return;
+    }
+
+    const int idx = g_waypoint_target_link_editor_dialog.active_field;
+    if (idx < 0 || idx >= kMaxTargetLinkFields) {
+        return;
+    }
+
+    apply_numeric_input_to_field(g_waypoint_target_link_editor_dialog.fields[idx]);
+}
+
+void close_zone_bridge_editor_dialog(const bool save_changes)
+{
+    if (!g_waypoint_zone_bridge_editor_dialog.open) {
+        return;
+    }
+
+    if (save_changes) {
+        const int zone_uid = g_waypoint_zone_bridge_editor_dialog.zone_uid;
+        if (zone_uid >= 0 && zone_uid < static_cast<int>(g_waypoint_zones.size())) {
+            auto& zone = g_waypoint_zones[zone_uid];
+            std::vector<int> new_uids{};
+            for (const auto& field : g_waypoint_zone_bridge_editor_dialog.fields) {
+                const auto parsed = parse_link_field_waypoint_uid(field);
+                if (parsed && is_valid_waypoint_uid_local(parsed.value())) {
+                    new_uids.push_back(parsed.value());
+                }
+            }
+            normalize_zone_bridge_waypoint_refs(new_uids);
+            zone.bridge_waypoint_uids = std::move(new_uids);
+            push_waypoint_editor_log(std::format(
+                "Saved zone {} gated waypoints ({} refs)",
+                zone_uid,
+                static_cast<int>(zone.bridge_waypoint_uids.size())));
+        }
+    }
+
+    g_waypoint_editor_pending_numeric_key_counts.fill(0);
+    g_waypoint_zone_bridge_editor_dialog = {};
+}
+
+void open_zone_bridge_editor_dialog(const int zone_uid)
+{
+    if (zone_uid < 0 || zone_uid >= static_cast<int>(g_waypoint_zones.size())) {
+        return;
+    }
+    const auto& zone = g_waypoint_zones[zone_uid];
+    if (!waypoint_zone_type_is_bridge(zone.type)) {
+        return;
+    }
+
+    g_waypoint_zone_bridge_editor_dialog = {};
+    g_waypoint_zone_bridge_editor_dialog.open = true;
+    g_waypoint_zone_bridge_editor_dialog.zone_uid = zone_uid;
+    g_waypoint_zone_bridge_editor_dialog.active_field = 0;
+    g_waypoint_editor_pending_numeric_key_counts.fill(0);
+
+    for (int i = 0; i < kMaxBridgeWaypointFields && i < static_cast<int>(zone.bridge_waypoint_uids.size()); ++i) {
+        g_waypoint_zone_bridge_editor_dialog.fields[i] = std::to_string(zone.bridge_waypoint_uids[i]);
+    }
+}
+
+void process_zone_bridge_editor_keyboard_input()
+{
+    if (!g_waypoint_zone_bridge_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+
+    if (rf::key_get_and_reset_down_counter(rf::KEY_ESC) > 0) {
+        close_zone_bridge_editor_dialog(false);
+        return;
+    }
+
+    if (rf::key_get_and_reset_down_counter(rf::KEY_ENTER) > 0
+        || rf::key_get_and_reset_down_counter(rf::KEY_PADENTER) > 0) {
+        close_zone_bridge_editor_dialog(true);
+        return;
+    }
+
+    const int idx = g_waypoint_zone_bridge_editor_dialog.active_field;
+    if (idx < 0 || idx >= kMaxBridgeWaypointFields) {
+        return;
+    }
+
+    apply_numeric_input_to_field(g_waypoint_zone_bridge_editor_dialog.fields[idx]);
+}
+
 void execute_waypoint_editor_console_command(const char* command, std::string_view log_line)
 {
     if (!command) {
@@ -2076,6 +2378,8 @@ rf::Color debug_waypoint_color(WaypointType type)
             return {255, 140, 60, 150};
         case WaypointType::tele_exit:
             return {255, 80, 220, 150};
+        case WaypointType::conveyer:
+            return {180, 255, 100, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -2944,7 +3248,9 @@ void render_waypoint_zone_create_dialog(const int font_id)
     const int font_h = rf::gr::get_font_height(font_id);
     const int row_h = std::max(24, font_h + 8);
     const int window_w = 520;
-    const int window_h = 320;
+    const bool bridge_waypoint_stage =
+        g_waypoint_zone_create_dialog.stage == WaypointZoneCreateDialogStage::enter_bridge_waypoints;
+    const int window_h = bridge_waypoint_stage ? (320 + row_h * kMaxBridgeWaypointFields) : 320;
     const int window_x = (rf::gr::clip_width() - window_w) / 2;
     const int window_y = (rf::gr::clip_height() - window_h) / 2;
 
@@ -3078,6 +3384,54 @@ void render_waypoint_zone_create_dialog(const int font_id)
             close_waypoint_zone_create_dialog();
         }
     }
+
+    if (g_waypoint_zone_create_dialog.stage == WaypointZoneCreateDialogStage::enter_bridge_waypoints) {
+        rf::gr::set_color(205, 205, 205, 255);
+        rf::gr::string(window_x + 10, content_y, "Gated waypoint UIDs (up to 6):", font_id, no_overdraw_2d_text);
+        content_y += font_h + 6;
+
+        for (int i = 0; i < kMaxBridgeWaypointFields; ++i) {
+            const std::string label = std::format("{}:", i + 1);
+            rf::gr::set_color(230, 230, 230, 255);
+            rf::gr::string(window_x + 14, content_y + 2, label.c_str(), font_id, no_overdraw_2d_text);
+
+            WaypointEditorRect field_rect{window_x + 52, content_y, 180, row_h};
+            const bool active = g_waypoint_zone_create_dialog.bridge_active_field == i;
+            rf::Color fill = active ? rf::Color{75, 95, 130, 230} : rf::Color{45, 45, 45, 220};
+            rf::gr::set_color(fill);
+            rf::gr::rect(field_rect.x, field_rect.y, field_rect.w, field_rect.h);
+            rf::gr::set_color(185, 185, 185, 255);
+            rf::gr::rect_border(field_rect.x, field_rect.y, field_rect.w, field_rect.h);
+
+            rf::gr::set_color(255, 255, 255, 255);
+            rf::gr::string(
+                field_rect.x + 6,
+                field_rect.y + 2,
+                g_waypoint_zone_create_dialog.bridge_waypoint_fields[i].c_str(),
+                font_id,
+                no_overdraw_2d_text);
+
+            if (consume_left_click_in_rect(field_rect)) {
+                g_waypoint_zone_create_dialog.bridge_active_field = i;
+            }
+
+            content_y += row_h;
+        }
+
+        const WaypointEditorRect create_button{window_x + window_w - 272, window_y + window_h - 38, 82, 28};
+        const WaypointEditorRect back_button{window_x + window_w - 184, window_y + window_h - 38, 82, 28};
+        const WaypointEditorRect cancel_button{window_x + window_w - 96, window_y + window_h - 38, 82, 28};
+        if (draw_waypoint_editor_button(create_button, "Create", font_id)) {
+            create_bridge_zone_from_dialog();
+        }
+        if (draw_waypoint_editor_button(back_button, "Back", font_id)) {
+            g_waypoint_zone_create_dialog.stage = WaypointZoneCreateDialogStage::enter_trigger_uid;
+            g_waypoint_editor_pending_numeric_key_counts.fill(0);
+        }
+        if (draw_waypoint_editor_button(cancel_button, "Cancel", font_id)) {
+            close_waypoint_zone_create_dialog();
+        }
+    }
 }
 
 void render_waypoint_target_create_dialog(const int font_id)
@@ -3127,6 +3481,142 @@ void render_waypoint_target_create_dialog(const int font_id)
             "Cancel",
             font_id)) {
         close_waypoint_target_create_dialog();
+    }
+}
+
+void render_waypoint_target_link_editor_dialog(const int font_id)
+{
+    if (!g_waypoint_target_link_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+
+    const int font_h = rf::gr::get_font_height(font_id);
+    const int row_h = std::max(20, font_h + 8);
+    const int window_w = 380;
+    const int window_h = 100 + (row_h * kMaxTargetLinkFields);
+    const int window_x = (rf::gr::clip_width() - window_w) / 2;
+    const int window_y = (rf::gr::clip_height() - window_h) / 2;
+
+    rf::gr::set_color(10, 10, 10, 240);
+    rf::gr::rect(window_x, window_y, window_w, window_h);
+    rf::gr::set_color(180, 180, 180, 255);
+    rf::gr::rect_border(window_x, window_y, window_w, window_h);
+
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string(window_x + 10, window_y + 8, "Edit target links", font_id, no_overdraw_2d_text);
+
+    const std::string subtitle = std::format(
+        "Target {} ({} fields)",
+        g_waypoint_target_link_editor_dialog.target_uid,
+        kMaxTargetLinkFields);
+    rf::gr::set_color(185, 185, 185, 255);
+    rf::gr::string(window_x + 10, window_y + 28, subtitle.c_str(), font_id, no_overdraw_2d_text);
+
+    int field_y = window_y + 52;
+    for (int i = 0; i < kMaxTargetLinkFields; ++i) {
+        const std::string label = std::format("{}:", i + 1);
+        rf::gr::set_color(230, 230, 230, 255);
+        rf::gr::string(window_x + 14, field_y + 2, label.c_str(), font_id, no_overdraw_2d_text);
+
+        WaypointEditorRect field_rect{window_x + 52, field_y, 180, row_h};
+        const bool active = g_waypoint_target_link_editor_dialog.active_field == i;
+        rf::Color fill = active ? rf::Color{75, 95, 130, 230} : rf::Color{45, 45, 45, 220};
+        rf::gr::set_color(fill);
+        rf::gr::rect(field_rect.x, field_rect.y, field_rect.w, field_rect.h);
+        rf::gr::set_color(185, 185, 185, 255);
+        rf::gr::rect_border(field_rect.x, field_rect.y, field_rect.w, field_rect.h);
+
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::string(
+            field_rect.x + 6,
+            field_rect.y + 2,
+            g_waypoint_target_link_editor_dialog.fields[i].c_str(),
+            font_id,
+            no_overdraw_2d_text);
+
+        if (consume_left_click_in_rect(field_rect)) {
+            g_waypoint_target_link_editor_dialog.active_field = i;
+        }
+
+        field_y += row_h;
+    }
+
+    const int button_y = window_y + window_h - 40;
+    const WaypointEditorRect save_button{window_x + 200, button_y, 82, 28};
+    const WaypointEditorRect cancel_button{window_x + 290, button_y, 82, 28};
+    if (draw_waypoint_editor_button(save_button, "Save", font_id)) {
+        close_target_link_editor_dialog(true);
+    }
+    if (draw_waypoint_editor_button(cancel_button, "Cancel", font_id)) {
+        close_target_link_editor_dialog(false);
+    }
+}
+
+void render_zone_bridge_editor_dialog(const int font_id)
+{
+    if (!g_waypoint_zone_bridge_editor_dialog.open || !g_waypoint_editor_mouse_ui_mode) {
+        return;
+    }
+
+    const int font_h = rf::gr::get_font_height(font_id);
+    const int row_h = std::max(20, font_h + 8);
+    const int window_w = 380;
+    const int window_h = 100 + (row_h * kMaxBridgeWaypointFields);
+    const int window_x = (rf::gr::clip_width() - window_w) / 2;
+    const int window_y = (rf::gr::clip_height() - window_h) / 2;
+
+    rf::gr::set_color(10, 10, 10, 240);
+    rf::gr::rect(window_x, window_y, window_w, window_h);
+    rf::gr::set_color(180, 180, 180, 255);
+    rf::gr::rect_border(window_x, window_y, window_w, window_h);
+
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string(window_x + 10, window_y + 8, "Edit gated waypoints", font_id, no_overdraw_2d_text);
+
+    const std::string subtitle = std::format(
+        "Zone {} ({} fields)",
+        g_waypoint_zone_bridge_editor_dialog.zone_uid,
+        kMaxBridgeWaypointFields);
+    rf::gr::set_color(185, 185, 185, 255);
+    rf::gr::string(window_x + 10, window_y + 28, subtitle.c_str(), font_id, no_overdraw_2d_text);
+
+    int field_y = window_y + 52;
+    for (int i = 0; i < kMaxBridgeWaypointFields; ++i) {
+        const std::string label = std::format("{}:", i + 1);
+        rf::gr::set_color(230, 230, 230, 255);
+        rf::gr::string(window_x + 14, field_y + 2, label.c_str(), font_id, no_overdraw_2d_text);
+
+        WaypointEditorRect field_rect{window_x + 52, field_y, 180, row_h};
+        const bool active = g_waypoint_zone_bridge_editor_dialog.active_field == i;
+        rf::Color fill = active ? rf::Color{75, 95, 130, 230} : rf::Color{45, 45, 45, 220};
+        rf::gr::set_color(fill);
+        rf::gr::rect(field_rect.x, field_rect.y, field_rect.w, field_rect.h);
+        rf::gr::set_color(185, 185, 185, 255);
+        rf::gr::rect_border(field_rect.x, field_rect.y, field_rect.w, field_rect.h);
+
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::string(
+            field_rect.x + 6,
+            field_rect.y + 2,
+            g_waypoint_zone_bridge_editor_dialog.fields[i].c_str(),
+            font_id,
+            no_overdraw_2d_text);
+
+        if (consume_left_click_in_rect(field_rect)) {
+            g_waypoint_zone_bridge_editor_dialog.active_field = i;
+        }
+
+        field_y += row_h;
+    }
+
+    const int button_y = window_y + window_h - 40;
+    const WaypointEditorRect save_button{window_x + 200, button_y, 82, 28};
+    const WaypointEditorRect cancel_button{window_x + 290, button_y, 82, 28};
+    if (draw_waypoint_editor_button(save_button, "Save", font_id)) {
+        close_zone_bridge_editor_dialog(true);
+    }
+    if (draw_waypoint_editor_button(cancel_button, "Cancel", font_id)) {
+        close_zone_bridge_editor_dialog(false);
     }
 }
 
@@ -3535,6 +4025,20 @@ void render_waypoint_editor_overlay_panel()
                     zone_actions_enabled)) {
                 delete_selected_waypoint_editor_object();
             }
+            action_y += action_h + 4;
+
+            // Show "Edit gated" button only for bridge zones.
+            const int zone_uid = g_waypoint_editor_selection.uid;
+            if (zone_uid >= 0 && zone_uid < static_cast<int>(g_waypoint_zones.size())
+                && waypoint_zone_type_is_bridge(g_waypoint_zones[zone_uid].type)) {
+                if (draw_waypoint_editor_button(
+                        {action_x, action_y, half_w, action_h},
+                        "Edit gated",
+                        font_id,
+                        zone_actions_enabled)) {
+                    open_zone_bridge_editor_dialog(zone_uid);
+                }
+            }
         }
         else if (g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::target) {
             int action_y = selection_section.y + 8 + (font_h * 2) + 8;
@@ -3568,6 +4072,13 @@ void render_waypoint_editor_overlay_panel()
 
             if (draw_waypoint_editor_button(
                     {action_x, action_y, half_w, action_h},
+                    "Edit links",
+                    font_id,
+                    target_actions_enabled)) {
+                open_target_link_editor_dialog(g_waypoint_editor_selection.uid);
+            }
+            if (draw_waypoint_editor_button(
+                    {action_x + half_w + action_gap, action_y, half_w, action_h},
                     "Delete target",
                     font_id,
                     target_actions_enabled)) {
@@ -3583,6 +4094,8 @@ void render_waypoint_editor_overlay_panel()
     render_waypoint_link_editor_dialog(font_id);
     render_waypoint_zone_create_dialog(font_id);
     render_waypoint_target_create_dialog(font_id);
+    render_waypoint_target_link_editor_dialog(font_id);
+    render_zone_bridge_editor_dialog(font_id);
     render_waypoint_type_change_dialog(font_id);
     draw_waypoint_editor_freelook_reticle();
     draw_waypoint_editor_cursor();
@@ -3596,6 +4109,8 @@ void reset_waypoint_editor_runtime_state(const bool clear_log)
     g_waypoint_link_editor_dialog = {};
     g_waypoint_zone_create_dialog = {};
     g_waypoint_target_create_dialog = {};
+    g_waypoint_target_link_editor_dialog = {};
+    g_waypoint_zone_bridge_editor_dialog = {};
     g_waypoint_type_change_dialog = {};
     g_waypoint_editor_pending_numeric_key_counts.fill(0);
     g_waypoint_gizmo_hover_axis = WaypointGizmoAxis::none;
@@ -3677,10 +4192,21 @@ void waypoints_utils_do_frame()
     if (g_waypoint_link_editor_dialog.open && g_waypoint_editor_mouse_ui_mode) {
         process_link_editor_keyboard_input();
     }
+    else if (g_waypoint_target_link_editor_dialog.open && g_waypoint_editor_mouse_ui_mode) {
+        process_target_link_editor_keyboard_input();
+    }
+    else if (g_waypoint_zone_bridge_editor_dialog.open && g_waypoint_editor_mouse_ui_mode) {
+        process_zone_bridge_editor_keyboard_input();
+    }
     else if (g_waypoint_zone_create_dialog.open
              && g_waypoint_zone_create_dialog.stage == WaypointZoneCreateDialogStage::enter_trigger_uid
              && g_waypoint_editor_mouse_ui_mode) {
         process_zone_create_trigger_uid_keyboard_input();
+    }
+    else if (g_waypoint_zone_create_dialog.open
+             && g_waypoint_zone_create_dialog.stage == WaypointZoneCreateDialogStage::enter_bridge_waypoints
+             && g_waypoint_editor_mouse_ui_mode) {
+        process_bridge_waypoint_keyboard_input();
     }
     else {
         handle_waypoint_editor_input();
@@ -3713,8 +4239,11 @@ bool waypoints_utils_link_editor_text_input_active()
     return waypoint_editor_runtime_mode_active()
         && g_waypoint_editor_mouse_ui_mode
         && (g_waypoint_link_editor_dialog.open
+            || g_waypoint_target_link_editor_dialog.open
+            || g_waypoint_zone_bridge_editor_dialog.open
             || (g_waypoint_zone_create_dialog.open
-                && g_waypoint_zone_create_dialog.stage == WaypointZoneCreateDialogStage::enter_trigger_uid));
+                && (g_waypoint_zone_create_dialog.stage == WaypointZoneCreateDialogStage::enter_trigger_uid
+                    || g_waypoint_zone_create_dialog.stage == WaypointZoneCreateDialogStage::enter_bridge_waypoints)));
 }
 
 void waypoints_utils_capture_numeric_key(const int key_code, const int count)
