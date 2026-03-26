@@ -224,9 +224,10 @@ float4 main(VsOutput input) : SV_TARGET
                 intensity = atten * ndotl_factor * spot_factor;
                 light_color += point_lights[i].color * intensity;
             } else {
-                // Stock D3D8 does not apply N·L for dynamic lights on BSP faces
-                // (uses pure distance attenuation only). r_dynamiclightndotl blends
-                // between stock (0.0) and full N·L (1.0).
+                // Non-dynamic-lighting path (e.g. lightmapped / pre-lit geometry).
+                // Emulates stock D3D8 behavior for dynamic lights on BSP faces,
+                // which uses pure distance attenuation (no N·L). r_dynamiclightndotl
+                // blends between stock (0.0) and full N·L (1.0).
                 float ndotl = lerp(1.0f, ndotl_factor, dynamic_light_ndotl);
                 intensity = atten * ndotl * spot_factor;
                 light_color += point_lights[i].color * intensity;
