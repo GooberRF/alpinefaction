@@ -475,6 +475,11 @@ static void isolate_marked_rooms(GSolid* solid)
             if (!new_room) continue;
             new_room->init(solid, &seed->bounding_box_min, &seed->bounding_box_max);
 
+            // Copy life from original room so breakable brushes retain their HP.
+            // init() defaults to life=-1.0 (indestructible); without this copy,
+            // isolated breakable rooms would never take damage in-game.
+            new_room->life = room->life;
+
             for (GFace* f : faces) {
                 new_room->add_face(f);
             }

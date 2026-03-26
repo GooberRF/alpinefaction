@@ -26,7 +26,7 @@ constexpr float kBridgeWaypointMaxGroundDistance = 1.5f;
 constexpr float kWaypointGenerateProbeAngleStepDeg = 15.0f;
 constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
 constexpr float kWaypointGenerateGroundOffset = 1.0f;
-constexpr float kWaypointGenerateMaxInclineDeg = 60.0f;
+constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
 constexpr float kWaypointGenerateWallClearance = 0.5f;
 constexpr float kWaypointGenerateEdgeClearance = 1.0f;
 constexpr float kWaypointGenerateMinHeadroom = 1.375f;
@@ -64,6 +64,7 @@ enum class WaypointType : int
     crater = 10,
     tele_entrance = 11,
     tele_exit = 12,
+    conveyer = 13,
 };
 
 enum class WaypointDroppedSubtype : int
