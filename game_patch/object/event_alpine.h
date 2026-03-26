@@ -229,7 +229,7 @@ namespace rf
                 this_event->hostile_to_player = (value == "true");
             };
 
-            handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventCloneEntity*>(event);
                 this_event->find_player = (value == "true");
             };
@@ -1716,7 +1716,7 @@ namespace rf
                 this_event->reset_velocity = (value == "true");
             };
 
-            handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
                 this_event->force_exit_vehicle = (value == "true");
             };
@@ -1726,7 +1726,7 @@ namespace rf
                 this_event->entrance_vclip = value;
             };
 
-            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::str2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
                 this_event->exit_vclip = value;
             };

@@ -12,23 +12,22 @@
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
-#include "../rf/ui.h"
+#include "../rf/player/camera.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 #include "mouse.h"
-
-// SDL window and mouse motion state (used in SDL input mode only)
-static SDL_Window* g_sdl_window = nullptr;
-static bool g_relative_mouse_mode_window_missing_logged = false;
-static float g_sdl_mouse_dx_rem = 0.0f, g_sdl_mouse_dy_rem = 0.0f;
-static int g_sdl_mouse_dx = 0, g_sdl_mouse_dy = 0;
-
-// Extra mouse button rebind state (Mouse 4-8, used with SDL input mode)
-static int g_pending_mouse_extra_btn_rebind = -1;
+#include "input.h"
+#include "../multi/multi.h"
 
 // Per-frame raw mouse deltas captured for centralized camera angle computation.
 // Populated by mouse_get_delta_hook during gameplay; consumed by mouse_get_camera.
 static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
+
+static bool is_freelook_camera()
+{
+    return rf::local_player && rf::local_player->cam
+        && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
+}
 
 // Sub-pixel remainder accumulators for vehicle mouse sensitivity scaling.
 static float g_vehicle_mouse_dx_rem = 0.0f, g_vehicle_mouse_dy_rem = 0.0f;
@@ -40,6 +39,15 @@ static float applied_dynamic_sensitivity_value = 1.0f; // value written by AsmWr
 
 static bool set_direct_input_enabled(bool enabled)
 {
+    if (client_bot_headless_enabled()) {
+        auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
+        rf::direct_input_disabled = true;
+        if (direct_input_initialized && rf::di_mouse) {
+            rf::di_mouse->Unacquire();
+        }
+        return true;
+    }
+
     auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
     auto mouse_di_init = addr_as_ref<int()>(0x0051E070);
     rf::direct_input_disabled = !enabled;
@@ -222,6 +230,17 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
         if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0)
             return;
 
+        // If the player entity is not valid (dead/spawn transition), pause raw delta.
+        // Exception: spectator freelook camera should still receive mouse input.
+        if (!rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity)) {
+            if (!is_freelook_camera()) {
+                reset_mouse_delta_accumulators();
+                dx = 0;
+                dy = 0;
+                return;
+            }
+        }
+
         // In Raw/Modern mode: capture raw deltas for centralized angle
         // computation and zero them so RF does not apply its own scaling.
         // Skip zeroing when in a vehicle (RF needs the deltas to steer), but scale
@@ -259,6 +278,7 @@ ConsoleCommand2 input_mode_cmd{
 ConsoleCommand2 ms_cmd{
     "ms",
     [](std::optional<float> value_opt) {
+        if (!rf::local_player) return;
         if (value_opt) {
             float value = std::max(value_opt.value(), 0.0f);
             rf::local_player->settings.controls.mouse_sensitivity = value;
@@ -444,8 +464,16 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
 {
     pitch_delta = 0.0f;
     yaw_delta   = 0.0f;
-    if (!rf::local_player || !rf::keep_mouse_centered)
+    const bool has_player_entity = rf::local_player_entity && !rf::entity_is_dying(rf::local_player_entity);
+    const bool is_freelook = !has_player_entity && is_freelook_camera();
+    if (!rf::local_player || !rf::keep_mouse_centered || (!has_player_entity && !is_freelook)) {
+        reset_mouse_delta_accumulators();
         return;
+    }
+    if (g_camera_mouse_dx == 0 && g_camera_mouse_dy == 0) {
+        // No raw mouse movement accumulated
+        return;
+    }
     float sens = rf::local_player->settings.controls.mouse_sensitivity;
     constexpr float deg2rad = 3.14159265f / 180.0f;
     // Raw (1) is pure degrees; Modern (2) uses 0.022 multiplier (matches id Tech/Source)
@@ -453,10 +481,12 @@ void mouse_get_camera(float& pitch_delta, float& yaw_delta)
         ? deg2rad
         : 0.022f * deg2rad;
     // Apply scope/scanner sensitivity modifiers
-    if (rf::local_player->fpgun_data.scanning_for_target)
-        sens *= scanner_sensitivity_value;
-    else if (rf::player_fpgun_is_zoomed(rf::local_player))
-        sens *= scope_sensitivity_value;
+    if (has_player_entity) {
+        if (rf::local_player->fpgun_data.scanning_for_target)
+            sens *= scanner_sensitivity_value;
+        else if (rf::player_fpgun_is_zoomed(rf::local_player))
+            sens *= scope_sensitivity_value;
+    }
     // Mouse Y-Invert setting (axes[1].invert) for Raw/Modern modes
     float dy = static_cast<float>(g_camera_mouse_dy);
     if (rf::local_player->settings.controls.axes[1].invert)
@@ -499,3 +529,4 @@ void mouse_apply_patch()
     scope_sens_cmd.register_cmd();
     scanner_sens_cmd.register_cmd();
 }
+

@@ -8,6 +8,7 @@
 #include <vector>
 #include <string>
 #include <xlog/xlog.h>
+#include <common/utils/string-utils.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
@@ -498,6 +499,7 @@ struct TypeFilterDialogData {
     HWND filter_cbs[30]; // checkbox HWNDs for "Show In List"
     int sort_mode;       // 0 = name, 1 = type
     std::vector<DedObject*> result_objects;
+    HWND to_mesh_btn = nullptr; // "To Mesh Object" button (select mode only)
 };
 
 // Collect all objects from master_objects + moving_groups
@@ -748,6 +750,31 @@ static LRESULT CALLBACK ListViewDragSelectProc(HWND hwnd, UINT msg, WPARAM wpara
     return CallWindowProc(g_orig_listview_proc, hwnd, msg, wparam, lparam);
 }
 
+// Update "To Mesh Object" button: enabled only when all selected items are clutter
+static void update_to_mesh_button(HWND hwnd, TypeFilterDialogData* data)
+{
+    if (!data || !data->to_mesh_btn) return;
+    HWND list = GetDlgItem(hwnd, IDC_TYPE_FILTER_LIST);
+    bool any_selected = false;
+    bool all_clutter = true;
+    int idx = -1;
+    while ((idx = ListView_GetNextItem(list, idx, LVNI_SELECTED)) >= 0) {
+        any_selected = true;
+        LVITEM lvi = {};
+        lvi.mask = LVIF_PARAM;
+        lvi.iItem = idx;
+        ListView_GetItem(list, &lvi);
+        if (lvi.lParam) {
+            auto* obj = reinterpret_cast<DedObject*>(lvi.lParam);
+            if (obj->type != DedObjectType::DED_CLUTTER) {
+                all_clutter = false;
+                break;
+            }
+        }
+    }
+    EnableWindow(data->to_mesh_btn, any_selected && all_clutter);
+}
+
 static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     auto* data = reinterpret_cast<TypeFilterDialogData*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
@@ -831,6 +858,19 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         data->sort_mode = 0;
         CheckRadioButton(hwnd, IDC_TYPE_FILTER_SORT_NAME, IDC_TYPE_FILTER_SORT_TYPE,
             IDC_TYPE_FILTER_SORT_NAME);
+
+        // Create "To Mesh Object" button in select mode
+        if (!data->hide_mode) {
+            RECT rc_mesh = {350, 175, 350 + 55, 175 + 14};
+            MapDialogRect(hwnd, &rc_mesh);
+            data->to_mesh_btn = CreateWindow(
+                "BUTTON", "To Mesh Object", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                rc_mesh.left, rc_mesh.top, rc_mesh.right - rc_mesh.left, rc_mesh.bottom - rc_mesh.top,
+                hwnd, reinterpret_cast<HMENU>(static_cast<uintptr_t>(IDC_TYPE_FILTER_TO_MESH)),
+                nullptr, nullptr);
+            SendMessage(data->to_mesh_btn, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+            EnableWindow(data->to_mesh_btn, FALSE);
+        }
 
         if (data->hide_mode) {
             // Hide Jump To / View From in Hide mode
@@ -1002,6 +1042,79 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             }
             return TRUE;
         }
+        case IDC_TYPE_FILTER_TO_MESH: {
+            // Convert selected clutter objects to mesh objects
+            HWND list = GetDlgItem(hwnd, IDC_TYPE_FILTER_LIST);
+            std::vector<DedObject*> clutter_objs;
+            int idx = -1;
+            while ((idx = ListView_GetNextItem(list, idx, LVNI_SELECTED)) >= 0) {
+                LVITEM lvi = {};
+                lvi.mask = LVIF_PARAM;
+                lvi.iItem = idx;
+                ListView_GetItem(list, &lvi);
+                if (lvi.lParam) {
+                    auto* obj = reinterpret_cast<DedObject*>(lvi.lParam);
+                    if (obj->type == DedObjectType::DED_CLUTTER)
+                        clutter_objs.push_back(obj);
+                }
+            }
+            if (clutter_objs.empty()) return TRUE;
+
+            auto* level = data->level;
+            std::vector<DedMesh*> new_meshes;
+
+            for (auto* clutter : clutter_objs) {
+                // Get mesh filename from the loaded vmesh
+                std::string filename_str;
+                if (clutter->vmesh) {
+                    auto* vm = static_cast<EditorVMesh*>(clutter->vmesh);
+                    if (vm->filename[0] != '\0')
+                        filename_str = vm->filename;
+                }
+                if (filename_str.empty()) continue;
+
+                // Fix legacy extensions: v3d -> v3m, vcm -> v3c
+                replace_ext_if(filename_str, "v3d", "v3m");
+                replace_ext_if(filename_str, "vcm", "v3c");
+
+                // Create mesh object
+                auto* mesh = new DedMesh();
+                memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
+                mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
+                mesh->type = DedObjectType::DED_MESH;
+                mesh->collision_mode = 2;
+                mesh->pos = clutter->pos;
+                mesh->orient = clutter->orient;
+                mesh->script_name.assign_0(clutter->script_name.c_str());
+                mesh->mesh_filename.assign_0(filename_str.c_str());
+                mesh->uid = generate_uid();
+
+                level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
+                level->master_objects.add(static_cast<DedObject*>(mesh));
+                mesh_load_vmesh(mesh);
+                new_meshes.push_back(mesh);
+            }
+
+            // Delete original clutter and remove from level selection
+            for (auto* clutter : clutter_objs) {
+                remove_from_selection(level->selection, clutter);
+                level->clutter.remove_by_value(clutter);
+                level->master_objects.remove_by_value(clutter);
+            }
+
+            // Select the new mesh objects
+            level->clear_selection();
+            for (auto* mesh : new_meshes)
+                level->add_to_selection(static_cast<DedObject*>(mesh));
+            level->update_console_display();
+
+            // Save filter state and close
+            for (int i = 0; i < g_num_type_filters; i++)
+                g_filter_states[i] = SendMessage(data->filter_cbs[i], BM_GETCHECK, 0, 0) == BST_CHECKED;
+            data->result_objects.clear(); // prevent IDOK from overwriting selection
+            EndDialog(hwnd, IDCANCEL);    // use IDCANCEL so caller doesn't re-apply selection
+            return TRUE;
+        }
         case IDC_TYPE_FILTER_CHECK_ALL:
             for (int i = 0; i < g_num_type_filters; i++)
                 SendMessage(data->filter_cbs[i], BM_SETCHECK, BST_CHECKED, 0);
@@ -1040,6 +1153,13 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                     }
                     data->updating_checks = false;
                 }
+            }
+            // Update "To Mesh Object" button when selection changes
+            if (data && !data->hide_mode &&
+                (nmlv->uChanged & LVIF_STATE) &&
+                ((nmlv->uNewState ^ nmlv->uOldState) & LVIS_SELECTED))
+            {
+                update_to_mesh_button(hwnd, data);
             }
         }
         break;

@@ -72,9 +72,13 @@ BotFsmState bot_fsm_manager_select_state(
     }
     if (bot_goal_is_ctf_objective(g_client_bot_state.active_goal)) {
         if (g_client_bot_state.active_goal == BotGoalType::ctf_hold_enemy_flag
-            && needs_replenish
             && !keep_pressure_on_enemy) {
-            return BotFsmState::replenish_health_armor;
+            if (needs_replenish) {
+                return BotFsmState::replenish_health_armor;
+            }
+            if (needs_weapon) {
+                return BotFsmState::seek_weapon;
+            }
         }
         return BotFsmState::ctf_objective;
     }

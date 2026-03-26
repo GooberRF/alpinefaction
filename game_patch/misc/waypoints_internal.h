@@ -56,3 +56,4 @@ bool waypoints_trace_breakable_glass_from_camera(
     float max_dist,
     rf::Vector3& out_hit_pos,
     int& out_room_key);
+void normalize_zone_bridge_waypoint_refs(std::vector<int>& waypoint_uids);

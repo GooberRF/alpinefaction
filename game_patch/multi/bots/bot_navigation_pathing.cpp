@@ -665,6 +665,11 @@ bool is_following_waypoint_link(const rf::Entity& entity)
 
 bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_waypoint)
 {
+    // Block all rerouting while the bot is traversing a drop link.
+    if (g_client_bot_state.drop_link_route_locked) {
+        return false;
+    }
+
     // Skip recovery for goals that don't need precise pathing — roam can just
     // pick a new nearby waypoint without the full anchor reroute system.
     if (g_client_bot_state.active_goal == BotGoalType::roam
@@ -786,7 +791,6 @@ bool try_fast_forward_path_on_downward_fall(
     if (!g_client_bot_state.fall_fast_forward_pending) {
         return false;
     }
-
     if (g_client_bot_state.waypoint_path.empty()
         || g_client_bot_state.waypoint_next_index < 0
         || g_client_bot_state.waypoint_next_index
@@ -1203,10 +1207,62 @@ void reset_client_bot_state()
     g_client_bot_state.global_failsafe_wd.retry_count = 0;
 }
 
+bool is_on_significant_downward_link()
+{
+    if (g_client_bot_state.waypoint_path.empty()
+        || g_client_bot_state.waypoint_next_index <= 0
+        || g_client_bot_state.waypoint_next_index
+            >= static_cast<int>(g_client_bot_state.waypoint_path.size())) {
+        return false;
+    }
+
+    const int from = g_client_bot_state.waypoint_path[g_client_bot_state.waypoint_next_index - 1];
+    const int to = g_client_bot_state.waypoint_path[g_client_bot_state.waypoint_next_index];
+    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)) {
+        return false;
+    }
+    rf::Vector3 from_pos{};
+    rf::Vector3 to_pos{};
+    if (!waypoints_get_pos(from, from_pos) || !waypoints_get_pos(to, to_pos)) {
+        return false;
+    }
+    constexpr float kDropLinkMinHeight = 0.75f;
+    return (from_pos.y - to_pos.y) > kDropLinkMinHeight;
+}
+
+bool is_next_link_significant_downward()
+{
+    const int next_idx = g_client_bot_state.waypoint_next_index;
+    if (g_client_bot_state.waypoint_path.empty()
+        || next_idx < 0
+        || next_idx + 1 >= static_cast<int>(g_client_bot_state.waypoint_path.size())) {
+        return false;
+    }
+
+    const int from = g_client_bot_state.waypoint_path[next_idx];
+    const int to = g_client_bot_state.waypoint_path[next_idx + 1];
+    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)) {
+        return false;
+    }
+    rf::Vector3 from_pos{};
+    rf::Vector3 to_pos{};
+    if (!waypoints_get_pos(from, from_pos) || !waypoints_get_pos(to, to_pos)) {
+        return false;
+    }
+    constexpr float kDropLinkMinHeight = 0.75f;
+    return (from_pos.y - to_pos.y) > kDropLinkMinHeight;
+}
+
 bool should_check_stuck_progress(const rf::Entity& entity)
 {
     if (g_client_bot_state.waypoint_path.empty()
         && !g_client_bot_state.has_waypoint_target) {
+        return false;
+    }
+
+    // Don't flag as stuck when approaching or traversing a ledge drop —
+    // the bot may have minimal horizontal movement while walking off the edge.
+    if (is_on_significant_downward_link() || is_next_link_significant_downward()) {
         return false;
     }
 
@@ -1733,7 +1789,7 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
         g_client_bot_state.combat_los_waypoint_guard_visible = false;
     }
 
-    if (!enforce_current_link_corridor(entity)) {
+    if (!enforce_current_link_corridor(entity) && !g_client_bot_state.drop_link_route_locked) {
         clear_waypoint_route();
         return false;
     }
@@ -1757,6 +1813,14 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
         }
         else if (g_client_bot_state.waypoint_progress_timer.valid()
                  && g_client_bot_state.waypoint_progress_timer.elapsed()) {
+            // Skip progress failure when approaching or on a significant downward link —
+            // the bot may have minimal horizontal movement while walking off a ledge.
+            if (is_on_significant_downward_link() || is_next_link_significant_downward()) {
+                g_client_bot_state.waypoint_progress_no_improvement_windows = 0;
+                g_client_bot_state.waypoint_progress_timer.set(current_waypoint_progress_timeout_ms());
+                g_client_bot_state.waypoint_progress_origin = entity.pos;
+            }
+            else {
             rf::Vector3 moved = entity.pos - g_client_bot_state.waypoint_progress_origin;
             moved.y = 0.0f;
             const bool has_world_progress = moved.len_sq()
@@ -1806,6 +1870,7 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
             // Keep trying briefly before forcing a reroute.
             g_client_bot_state.waypoint_progress_timer.set(current_waypoint_progress_timeout_ms());
             g_client_bot_state.waypoint_progress_origin = entity.pos;
+            } // else (not on downward link)
         }
     }
 
@@ -1907,6 +1972,25 @@ bool update_waypoint_target(const rf::Entity& entity)
                 g_client_bot_state.waypoint_target_pos = wp_pos;
                 g_client_bot_state.has_waypoint_target = true;
                 return true;
+            }
+        }
+    }
+
+    // When the closest waypoint is a jump pad, always route to one of its outbound
+    // links (landing spots) so the bot commits to leaving the pad rather than
+    // bouncing on it repeatedly.
+    {
+        int closest_type_raw = 0;
+        int closest_subtype = 0;
+        if (waypoints_get_type_subtype(closest_waypoint, closest_type_raw, closest_subtype)
+            && static_cast<WaypointType>(closest_type_raw) == WaypointType::jump_pad) {
+            if (commit_single_hop_fallback_route(
+                    closest_waypoint,
+                    0,
+                    entity.pos,
+                    kWaypointRecoveryRepathMs,
+                    "jump_pad_landing")) {
+                return update_waypoint_target_from_current_path(entity);
             }
         }
     }
@@ -2069,6 +2153,9 @@ bool update_waypoint_target_towards(
 
     const bool prefer_long_route =
         los_target_eye_pos && is_long_route_escape_active();
+    if (need_route && g_client_bot_state.drop_link_route_locked) {
+        need_route = false;
+    }
     if (need_route) {
         set_last_heading_change_reason("repath_needed");
         int closest_waypoint = 0;
@@ -2082,6 +2169,24 @@ bool update_waypoint_target_towards(
         if (closest_waypoint <= 0) {
             clear_waypoint_route();
             return false;
+        }
+
+        // When the closest waypoint is a jump pad, always commit to a landing spot
+        // so the bot doesn't bounce on the pad repeatedly while trying to reroute.
+        {
+            int closest_type_raw = 0;
+            int closest_subtype = 0;
+            if (waypoints_get_type_subtype(closest_waypoint, closest_type_raw, closest_subtype)
+                && static_cast<WaypointType>(closest_type_raw) == WaypointType::jump_pad) {
+                if (commit_single_hop_fallback_route(
+                        closest_waypoint,
+                        goal_waypoint,
+                        destination,
+                        std::max(kWaypointRecoveryRepathMs, effective_repath_ms),
+                        "jump_pad_landing")) {
+                    return update_waypoint_target_from_current_path(entity);
+                }
+            }
         }
 
         if (closest_waypoint == goal_waypoint) {
