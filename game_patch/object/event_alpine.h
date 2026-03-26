@@ -444,7 +444,7 @@ struct EventHUDMessage : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
@@ -498,7 +498,7 @@ struct EventSetLevelHardness : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -520,7 +520,7 @@ struct EventSequence : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -575,7 +575,7 @@ struct EventRemoveLink : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
@@ -618,7 +618,7 @@ struct EventRouteNode : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
 
@@ -647,7 +647,7 @@ struct EventAddLink : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
 
@@ -694,7 +694,7 @@ struct EventValidGate : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -739,7 +739,7 @@ struct EventGoalMath : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
@@ -888,7 +888,7 @@ struct EventGoalGate : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
@@ -1023,7 +1023,7 @@ struct EventScopeGate : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
 
@@ -1089,7 +1089,7 @@ struct EventInsideGate : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -1218,7 +1218,7 @@ struct EventSetDifficulty : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -1240,7 +1240,7 @@ struct EventSetFogFarClip : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
@@ -1262,7 +1262,7 @@ struct EventAFWhenDead : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
@@ -1354,7 +1354,7 @@ struct EventGametypeGate : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -1425,7 +1425,7 @@ struct EventSetSkybox : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -1468,7 +1468,7 @@ struct EventSetLife : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
@@ -1500,7 +1500,7 @@ struct EventSetDebris : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
@@ -1562,7 +1562,7 @@ struct EventSetFogColor : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
@@ -1590,7 +1590,7 @@ struct EventSetEntityFlag : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -1716,7 +1716,7 @@ struct EventAFTeleportPlayer : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
@@ -1815,7 +1815,7 @@ struct EventSetItemDrop : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
@@ -1851,7 +1851,7 @@ struct EventAFHeal : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -2080,7 +2080,7 @@ struct EventSetLightColor : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
@@ -2136,7 +2136,7 @@ struct EventCapturePointHandler : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
@@ -2196,7 +2196,7 @@ struct EventModifyRespawnPoint : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
@@ -2277,7 +2277,7 @@ struct EventSetCapturePointOwner : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -2335,7 +2335,7 @@ struct EventOwnerGate : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -2396,7 +2396,7 @@ struct EventSetGameplayRule : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
@@ -2477,7 +2477,7 @@ struct EventMeshAnimate : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshAnimate*>(event);
@@ -2519,7 +2519,7 @@ struct EventMeshSetTexture : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshSetTexture*>(event);
@@ -2560,7 +2560,7 @@ struct EventMeshSetCollision : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
         auto& handlers = variable_handler_storage[this];
         handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshSetCollision*>(event);
