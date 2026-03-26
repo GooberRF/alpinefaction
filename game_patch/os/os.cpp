@@ -110,6 +110,11 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         }
         return DefWindowProcA(wnd_handle, msg, w_param, l_param);
 
+    case WM_SYSCOMMAND:
+        if ((w_param & 0xFFF0) == SC_KEYMENU)
+            return 0;
+        return DefWindowProcA(wnd_handle, msg, w_param, l_param);
+
     case WM_QUIT:
     case WM_CLOSE:
     case WM_DESTROY:
