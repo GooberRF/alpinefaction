@@ -152,7 +152,7 @@ bool download_level_if_missing(std::string filename)
     auto temp_filename = get_temp_path_name("AF_Level_");
     try {
         rf::console::print("--> Starting level download: {}\n", filename);
-        ff_client.download_map(temp_filename.c_str(), level_info->ticket_id,
+        ff_client.download_map(temp_filename.c_str(), level_info->download_url,
             [](unsigned, std::chrono::milliseconds) { return true; });
         rf::console::print("--> Level download completed: {}\n", filename);
 
@@ -211,11 +211,11 @@ private:
     std::string level_filename_;
     std::shared_ptr<SharedData> shared_data_;
 
-    void download_archive(int ticket_id, const char* temp_filename);
+    void download_archive(const std::string& download_url, const char* temp_filename);
     static std::vector<std::string> extract_archive(const char* temp_filename);
 };
 
-void LevelDownloadWorker::download_archive(int ticket_id, const char* temp_filename)
+void LevelDownloadWorker::download_archive(const std::string& download_url, const char* temp_filename)
 {
     auto callback = [&](unsigned bytes_received, std::chrono::milliseconds duration) {
         if (shared_data_->abort_flag) {
@@ -229,7 +229,7 @@ void LevelDownloadWorker::download_archive(int ticket_id, const char* temp_filen
         return true;
     };
     FactionFilesClient ff_client;
-    ff_client.download_map(temp_filename, ticket_id, callback);
+    ff_client.download_map(temp_filename, download_url, callback);
 }
 
 std::vector<std::string> LevelDownloadWorker::extract_archive(const char* temp_filename)
@@ -270,7 +270,7 @@ std::vector<std::string> LevelDownloadWorker::operator()()
     auto temp_filename = get_temp_path_name("AF_Level_");
     try {
         shared_data_->state = LevelDownloadState::fetching_data;
-        download_archive(shared_data_->level_info.value().ticket_id, temp_filename.c_str());
+        download_archive(shared_data_->level_info.value().download_url, temp_filename.c_str());
 
         shared_data_->state = LevelDownloadState::extracting;
         std::vector<std::string> packfiles = extract_archive(temp_filename.c_str());
