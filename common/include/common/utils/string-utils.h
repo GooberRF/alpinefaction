@@ -296,3 +296,13 @@ inline std::string_view get_ext_from_filename(std::string_view filename)
     return filename.substr(dot_pos + 1);
 }
 
+inline bool replace_ext_if(std::string& filename, std::string_view old_ext, std::string_view new_ext)
+{
+    auto ext = get_ext_from_filename(filename);
+    if (!string_iequals(ext, old_ext)) return false;
+    auto dot_pos = filename.rfind('.');
+    if (dot_pos == std::string::npos) return false;
+    filename.replace(dot_pos + 1, std::string::npos, new_ext);
+    return true;
+}
+
