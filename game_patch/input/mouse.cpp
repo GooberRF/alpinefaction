@@ -19,6 +19,15 @@
 #include "input.h"
 #include "../multi/multi.h"
 
+// SDL window and mouse motion state (used in SDL input mode only)
+static SDL_Window* g_sdl_window = nullptr;
+static bool g_relative_mouse_mode_window_missing_logged = false;
+static float g_sdl_mouse_dx_rem = 0.0f, g_sdl_mouse_dy_rem = 0.0f;
+static int g_sdl_mouse_dx = 0, g_sdl_mouse_dy = 0;
+
+// Extra mouse button rebind state (Mouse 4-8, used with SDL input mode)
+static int g_pending_mouse_extra_btn_rebind = -1;
+
 // Per-frame raw mouse deltas captured for centralized camera angle computation.
 // Populated by mouse_get_delta_hook during gameplay; consumed by mouse_get_camera.
 static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
@@ -529,4 +538,3 @@ void mouse_apply_patch()
     scope_sens_cmd.register_cmd();
     scanner_sens_cmd.register_cmd();
 }
-
