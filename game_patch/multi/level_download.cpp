@@ -262,44 +262,54 @@ std::vector<std::string> LevelDownloadWorker::extract_archive(const char* temp_f
 
 void LevelDownloadWorker::operator()()
 {
-    xlog::trace("LevelDownloadWorker started");
-    shared_data_->state = LevelDownloadState::fetching_info;
-    FactionFilesClient ff_client;
-    shared_data_->level_info = ff_client.find_map(level_filename_.c_str());
-    if (!shared_data_->level_info) {
-        xlog::warn("Level not found: {}", level_filename_);
-        shared_data_->state = LevelDownloadState::not_found;
-        shared_data_->work_done = true;
-        return;
-    }
-    xlog::trace("LevelDownloadWorker got level info");
+    try {
+        xlog::trace("LevelDownloadWorker started");
+        shared_data_->state = LevelDownloadState::fetching_info;
+        FactionFilesClient ff_client;
+        shared_data_->level_info = ff_client.find_map(level_filename_.c_str());
+        if (!shared_data_->level_info) {
+            xlog::warn("Level not found: {}", level_filename_);
+            shared_data_->state = LevelDownloadState::not_found;
+            shared_data_->work_done = true;
+            return;
+        }
+        xlog::trace("LevelDownloadWorker got level info");
 
-    if (!shared_data_->level_info->image_url.empty()) {
+        if (!shared_data_->level_info->image_url.empty()) {
+            try {
+                FactionFilesClient img_client;
+                shared_data_->image_data = img_client.fetch_image(shared_data_->level_info->image_url);
+            }
+            catch (const std::exception& e) {
+                xlog::warn("Failed to fetch map image: {}", e.what());
+            }
+        }
+
+        auto temp_filename = get_temp_path_name("AF_Level_");
         try {
-            FactionFilesClient img_client;
-            shared_data_->image_data = img_client.fetch_image(shared_data_->level_info->image_url);
+            shared_data_->state = LevelDownloadState::fetching_data;
+            download_archive(shared_data_->level_info.value().download_url, temp_filename.c_str());
+
+            shared_data_->state = LevelDownloadState::extracting;
+            shared_data_->result_packfiles = extract_archive(temp_filename.c_str());
+            remove(temp_filename.c_str());
+
+            xlog::trace("LevelDownloadWorker finished");
+            shared_data_->state = LevelDownloadState::finished;
         }
         catch (const std::exception& e) {
-            xlog::warn("Failed to fetch map image: {}", e.what());
+            remove(temp_filename.c_str());
+            shared_data_->error = e.what();
+            xlog::error("Level download failed: {}", e.what());
         }
     }
-
-    auto temp_filename = get_temp_path_name("AF_Level_");
-    try {
-        shared_data_->state = LevelDownloadState::fetching_data;
-        download_archive(shared_data_->level_info.value().download_url, temp_filename.c_str());
-
-        shared_data_->state = LevelDownloadState::extracting;
-        shared_data_->result_packfiles = extract_archive(temp_filename.c_str());
-        remove(temp_filename.c_str());
-
-        xlog::trace("LevelDownloadWorker finished");
-        shared_data_->state = LevelDownloadState::finished;
-    }
     catch (const std::exception& e) {
-        remove(temp_filename.c_str());
         shared_data_->error = e.what();
-        xlog::error("Level download failed: {}", e.what());
+        xlog::error("Level download worker exception: {}", e.what());
+    }
+    catch (...) {
+        shared_data_->error = "unknown error";
+        xlog::error("Level download worker unknown exception");
     }
     shared_data_->work_done = true;
 }
@@ -346,6 +356,15 @@ public:
             }
             else {
                 thread_.detach();
+            }
+        }
+        // Release bitmaps if not shutting down (bitmap system may be torn down during exit)
+        if (rf::gameseq_get_state() != rf::GS_QUITING) {
+            if (image_bm_ != -1) {
+                rf::bm::release(image_bm_);
+            }
+            if (blur_bm_ != -1) {
+                rf::bm::release(blur_bm_);
             }
         }
     }
@@ -416,7 +435,7 @@ private:
         image_h_ = h;
         xlog::info("Created map image bitmap: {}x{}", w, h);
 
-        // 1/4 resolution blurred bitmap via box filter
+        // 1/8 resolution blurred bitmap via box filter
         blur_w_ = std::max(w / 8, 1);
         blur_h_ = std::max(h / 8, 1);
         std::vector<unsigned char> blurred(blur_w_ * blur_h_ * 4);
@@ -470,16 +489,16 @@ public:
             return -1;
         }
 
-        // Image data is written by the worker before state transitions to fetching_data,
-        // so the atomic state provides the memory ordering guarantee.
-        // Only give up once we know the worker is past the image fetch (state >= fetching_data).
-        if (shared_data_->image_data.empty()) {
-            if (shared_data_->state.load() >= LevelDownloadState::fetching_data) {
-                image_load_attempted_ = true;
-            }
-            return -1;
+        // Image data is written by the worker before state transitions to fetching_data.
+        // Load state first (acquire) to establish happens-before with the worker's writes.
+        auto state = shared_data_->state.load(std::memory_order_acquire);
+        if (state < LevelDownloadState::fetching_data) {
+            return -1; // Worker hasn't finished image fetch yet
         }
         image_load_attempted_ = true;
+        if (shared_data_->image_data.empty()) {
+            return -1; // No image available (fetch failed or no image_url)
+        }
         auto image_data = std::move(shared_data_->image_data);
 
         int channels;
@@ -939,7 +958,8 @@ void multi_level_download_do_frame()
             float bytes_per_sec = operation.get_bytes_per_sec();
             if (bytes_per_sec > 0) {
                 unsigned bytes_received = operation.get_bytes_received();
-                int remaining_size = info.size_in_bytes - bytes_received;
+                int remaining_size = (bytes_received < info.size_in_bytes)
+                    ? static_cast<int>(info.size_in_bytes - bytes_received) : 0;
                 int secs_left = static_cast<int>(remaining_size / bytes_per_sec);
                 auto time_left_str = std::format("{} seconds remaining", secs_left);
                 auto [tw, th] = rf::gr::get_string_size(time_left_str, medium_font);
