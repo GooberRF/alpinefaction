@@ -1440,7 +1440,18 @@ void bot_refresh_goal_state(
                 && enemy_target
                 && !enemy_has_los));
     const bool crater_context = has_crater_weapon_now && route_unlock_context;
-    const bool shatter_context = has_shatter_weapon_now && route_unlock_context;
+    // Shatter glass requires stronger motivation than craters: only destroyer
+    // personality bots (crater_unlock_affinity) will opportunistically shatter
+    // glass when chasing enemies. Other bots only shatter during navigation
+    // recovery or when already committed to a shatter goal.
+    const bool shatter_context =
+        has_shatter_weapon_now
+        && (g_client_bot_state.active_goal == BotGoalType::shatter_glass
+            || bridge_recovery_context
+            || (crater_unlock_affinity
+                && g_client_bot_state.active_goal == BotGoalType::eliminate_target
+                && enemy_target
+                && !enemy_has_los));
     if (crater_context) {
         const int target_count = waypoints_target_count();
         for (int target_index = 0; target_index < target_count; ++target_index) {
@@ -1524,7 +1535,7 @@ void bot_refresh_goal_state(
                 score += 32.0f;
             }
             if (crater_unlock_affinity) {
-                score += 8.0f;
+                score += 35.0f;
             }
             if (target.uid == g_client_bot_state.goal_target_identifier) {
                 score += 16.0f;
@@ -1583,7 +1594,7 @@ void bot_refresh_goal_state(
                 * (retaliation_matches_enemy ? 0.30f : 1.0f)
             : 0.0f;
 
-    const float enemy_goal_score = enemy_target
+    float enemy_goal_score = enemy_target
         ? (bot_internal_compute_enemy_goal_score(local_entity, *enemy_target, enemy_has_los)
             + (enemy_has_los ? 18.0f : 0.0f) * aggression
             + std::lerp(-8.0f, 20.0f, std::clamp((raw_aggression - 0.25f) / 2.25f, 0.0f, 1.0f))
@@ -1627,44 +1638,44 @@ void bot_refresh_goal_state(
     const float ctf_capture_bias = std::clamp(personality.ctf_capture_priority_bias, 0.25f, 2.5f);
     const float ctf_recovery_bias = std::clamp(personality.ctf_flag_recovery_bias, 0.25f, 2.5f);
     const float ctf_hold_safety_bias = std::clamp(personality.ctf_hold_enemy_flag_safety_bias, 0.25f, 2.5f);
-    const float ctf_hold_hunt_bias = std::clamp(personality.ctf_hold_carrier_hunt_bias, 0.25f, 2.5f);
     const float ctf_capture_norm = std::clamp((ctf_capture_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float ctf_recovery_norm = std::clamp((ctf_recovery_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float ctf_hold_safety_norm = std::clamp((ctf_hold_safety_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float ctf_hold_hunt_norm = std::clamp((ctf_hold_hunt_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const bool hold_enemy_flag_state =
         ctf_mode
         && ctf_state.local_has_enemy_flag
         && !ctf_state.own_flag_in_base;
-    const bool actively_holding_enemy_flag_goal =
-        hold_enemy_flag_state
-        && g_client_bot_state.active_goal == BotGoalType::ctf_hold_enemy_flag;
-    if (actively_holding_enemy_flag_goal) {
-        if (ctf_state.own_flag_dropped) {
-            // If our flag is dropped, restart hold escalation window and stay defensive near base.
-            g_client_bot_state.ctf_hold_goal_timer.set(15000);
-        }
-        else if (!g_client_bot_state.ctf_hold_goal_timer.valid()) {
-            g_client_bot_state.ctf_hold_goal_timer.set(15000);
-        }
-    }
-    else {
-        g_client_bot_state.ctf_hold_goal_timer.invalidate();
-    }
-    const bool hold_escalation_window_open =
-        actively_holding_enemy_flag_goal
-        && g_client_bot_state.ctf_hold_goal_timer.elapsed();
+    // No escalation timer — bot stays defensive while holding the flag.
+    g_client_bot_state.ctf_hold_goal_timer.invalidate();
 
-    if (hold_enemy_flag_state && has_item_goal) {
-        const bool survivability_pickup =
-            item_goal.goal_type == BotGoalType::collect_health
-            || item_goal.goal_type == BotGoalType::collect_armor
-            || item_goal.goal_type == BotGoalType::collect_super_item;
-        if (survivability_pickup) {
-            const float survivability_bonus =
-                std::lerp(30.0f, 185.0f, maintenance_pressure)
-                * std::lerp(0.80f, 1.35f, ctf_hold_safety_norm);
-            item_goal_score += survivability_bonus;
+    // When holding the enemy flag and unable to capture, the bot should focus on
+    // survival rather than seeking fights. Penalize enemy pursuit and boost all
+    // item collection (health, armor, weapons, ammo) to stay alive near own base.
+    if (hold_enemy_flag_state) {
+        if (enemy_target && !enemy_has_los) {
+            // Don't seek out enemies — only engage if they come to us.
+            enemy_goal_score -= 200.0f;
+        }
+        if (has_item_goal) {
+            const bool survivability_pickup =
+                item_goal.goal_type == BotGoalType::collect_health
+                || item_goal.goal_type == BotGoalType::collect_armor
+                || item_goal.goal_type == BotGoalType::collect_super_item;
+            const bool combat_readiness_pickup =
+                item_goal.goal_type == BotGoalType::collect_weapon
+                || item_goal.goal_type == BotGoalType::collect_ammo;
+            if (survivability_pickup) {
+                const float survivability_bonus =
+                    std::lerp(60.0f, 220.0f, maintenance_pressure)
+                    * std::lerp(0.85f, 1.40f, ctf_hold_safety_norm);
+                item_goal_score += survivability_bonus;
+            }
+            else if (combat_readiness_pickup) {
+                const float readiness_bonus =
+                    std::lerp(25.0f, 120.0f, std::max(1.0f - readiness_delta, 0.0f))
+                    * std::lerp(0.70f, 1.15f, ctf_hold_safety_norm);
+                item_goal_score += readiness_bonus;
+            }
         }
     }
 
@@ -1739,32 +1750,6 @@ void bot_refresh_goal_state(
                     - hold_maintenance_penalty,
             });
 
-            const bool own_flag_carrier_visible =
-                hold_escalation_window_open
-                && ctf_state.own_flag_stolen
-                && ctf_state.own_flag_carrier_entity
-                && enemy_target
-                && enemy_has_los
-                && enemy_target->handle == ctf_state.own_flag_carrier_entity->handle;
-            if (own_flag_carrier_visible) {
-                const float carrier_priority_score =
-                    bot_internal_compute_enemy_goal_score(
-                        local_entity,
-                        *ctf_state.own_flag_carrier_entity,
-                        true
-                    )
-                    + std::lerp(250.0f, 430.0f, ctf_recovery_norm) * ctf_hold_hunt_bias
-                    + std::lerp(35.0f, 110.0f, ctf_capture_norm)
-                    + std::lerp(0.0f, 165.0f, ctf_hold_hunt_norm);
-                consider_ctf_candidate(CtfGoalCandidate{
-                    BotGoalType::eliminate_target,
-                    ctf_state.own_flag_carrier_entity->handle,
-                    ctf_state.own_flag_carrier_entity->uid,
-                    0,
-                    ctf_state.own_flag_carrier_entity->pos,
-                    carrier_priority_score,
-                });
-            }
         }
         else {
             if (ctf_state.own_flag_stolen && ctf_state.own_flag_carrier_entity) {

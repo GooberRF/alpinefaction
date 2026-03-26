@@ -18,6 +18,9 @@ DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level = true);
 void DeleteMeshObject(DedMesh* mesh);
 void DestroyDedMesh(DedMesh* mesh);
 
+// VMesh loading
+void mesh_load_vmesh(DedMesh* mesh);
+
 // Rendering (called from alpine_obj.cpp render hook)
 void mesh_render(CDedLevel* level);
 
