@@ -87,7 +87,7 @@ static bool mesh_play_v3c_action(EditorVMesh* vmesh, const char* action_name,
     return true;
 }
 
-static void mesh_load_vmesh(DedMesh* mesh)
+void mesh_load_vmesh(DedMesh* mesh)
 {
     if (!mesh) return;
 
@@ -520,15 +520,11 @@ static void mesh_dialog_fix_extension(HWND hdlg, int ctrl_id,
 {
     char buf[MAX_PATH] = {};
     GetDlgItemTextA(hdlg, ctrl_id, buf, sizeof(buf));
-    auto ext = get_ext_from_filename(buf);
-    if (string_iequals(ext, old_ext)) {
-        char* dot = strrchr(buf, '.');
-        if (dot) {
-            strcpy(dot + 1, new_ext);
-            SetDlgItemTextA(hdlg, ctrl_id, buf);
-            // Place caret at end so typing isn't disrupted
-            SendDlgItemMessage(hdlg, ctrl_id, EM_SETSEL, strlen(buf), strlen(buf));
-        }
+    std::string str = buf;
+    if (replace_ext_if(str, old_ext, new_ext)) {
+        SetDlgItemTextA(hdlg, ctrl_id, str.c_str());
+        // Place caret at end so typing isn't disrupted
+        SendDlgItemMessage(hdlg, ctrl_id, EM_SETSEL, str.size(), str.size());
     }
 }
 

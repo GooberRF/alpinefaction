@@ -5965,70 +5965,28 @@ void waypoints_on_glass_shattered(const rf::GFace* face)
     }
 
     const int room_key = breakable_glass_room_key(*room);
-    const auto try_link_shatter_target_waypoints = [](const WaypointTargetDefinition& target) {
-        const auto force_link_direction = [](int from_uid, int to_uid) {
-            if (from_uid <= 0 || to_uid <= 0
-                || from_uid >= static_cast<int>(g_waypoints.size())
-                || to_uid >= static_cast<int>(g_waypoints.size())) {
-                return;
-            }
 
-            auto& from_node = g_waypoints[from_uid];
-            const auto& to_node = g_waypoints[to_uid];
-            if (!from_node.valid || !to_node.valid || from_uid == to_uid) {
-                return;
-            }
-            if (waypoint_link_exists(from_node, to_uid)) {
-                return;
-            }
-
-            if (from_node.num_links < kMaxWaypointLinks) {
-                from_node.links[from_node.num_links++] = to_uid;
-                return;
-            }
-
-            std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
-            from_node.links[dist(g_rng)] = to_uid;
-        };
-
-        const auto try_link_direction = [&force_link_direction](int from_uid, int to_uid) {
-            if (from_uid <= 0 || to_uid <= 0
-                || from_uid >= static_cast<int>(g_waypoints.size())
-                || to_uid >= static_cast<int>(g_waypoints.size())) {
-                return;
-            }
-            const auto& from_node = g_waypoints[from_uid];
-            const auto& to_node = g_waypoints[to_uid];
-            if (!from_node.valid || !to_node.valid) {
-                return;
-            }
-            if (!waypoint_upward_link_allowed(from_node.pos, to_node.pos, kWaypointGenerateMaxInclineDeg)) {
-                return;
-            }
-            // Do not require LOS here: target creation already validated this bridge candidate.
-            force_link_direction(from_uid, to_uid);
-        };
-
-        const auto& waypoint_uids = target.waypoint_uids;
-        if (waypoint_uids.size() < 2) {
-            return;
-        }
-
-        for (size_t i = 0; i < waypoint_uids.size(); ++i) {
-            for (size_t j = i + 1; j < waypoint_uids.size(); ++j) {
-                const int uid_a = waypoint_uids[i];
-                const int uid_b = waypoint_uids[j];
-                try_link_direction(uid_a, uid_b);
-                try_link_direction(uid_b, uid_a);
-            }
-        }
-    };
-
+    // Create a crater waypoint at each shatter target position and link it using
+    // runtime LOS validation, rather than force-linking pre-computed autogen pairs.
     for (const auto& target : g_waypoint_targets) {
         if (target.type != WaypointTargetType::shatter || target.identifier != room_key) {
             continue;
         }
-        try_link_shatter_target_waypoints(target);
+
+        const int wp_index = add_waypoint(
+            target.pos,
+            WaypointType::crater,
+            0,
+            false,
+            true,
+            kWaypointLinkRadius,
+            -1,
+            nullptr,
+            true,
+            static_cast<int>(WaypointDroppedSubtype::normal),
+            true);
+
+        link_temporary_waypoint_like_crater(wp_index);
     }
 
     g_waypoint_targets.erase(

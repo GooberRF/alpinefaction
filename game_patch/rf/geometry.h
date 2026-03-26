@@ -325,6 +325,12 @@ namespace rf
         DecalPoly *decal_list;
         short unk_cache_index;
         GFace* next[FACE_LIST_NUM];
+
+        // FUN_004e03e0: count vertices in the circular edge_loop
+        int vertex_count() const
+        {
+            return AddrCaller{0x004E03E0}.this_call<int>(this);
+        }
     };
     static_assert(sizeof(GFace) == 0x60);
 
