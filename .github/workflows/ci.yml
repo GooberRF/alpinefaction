@@ -16,6 +16,10 @@ env:
 jobs:
   build-mingw:
     runs-on: ubuntu-24.04
+    # GCC 14 MinGW required for C++23 deducing-this (game_patch targets cxx_std_23).
+    # Use mirror.gcr.io to avoid Docker Hub rate limits on shared GitHub runners.
+    container:
+      image: mirror.gcr.io/library/debian:trixie
 
     steps:
     - uses: actions/checkout@v4
@@ -23,10 +27,10 @@ jobs:
 
     - name: Install packages
       run: |
-        sudo dpkg --add-architecture i386
-        sudo apt-get update
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake
+        dpkg --add-architecture i386
+        apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates
 
     - name: Create build environment
       run: cmake -E make_directory ./build
