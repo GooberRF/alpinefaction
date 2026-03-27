@@ -16,9 +16,6 @@ env:
 jobs:
   build-mingw:
     runs-on: ubuntu-24.04
-    # ubuntu-24.04 contains an outdated MinGW.
-    container:
-      image: ghcr.io/debian/debian:trixie
 
     steps:
     - uses: actions/checkout@v4
@@ -26,10 +23,10 @@ jobs:
 
     - name: Install packages
       run: |
-        dpkg --add-architecture i386
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates
+        sudo dpkg --add-architecture i386
+        sudo apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake
 
     - name: Create build environment
       run: cmake -E make_directory ./build
