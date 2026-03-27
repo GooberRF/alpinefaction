@@ -621,7 +621,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
 
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
         if (ev.button == SDL_GAMEPAD_BUTTON_START) {
-            menu_nav_handle_cancel();
+            menu_nav_inject_key(rf::KEY_ESC);
         } else {
             g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.button;
             rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
@@ -630,7 +630,9 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
     }
 
     if (ev.button == SDL_GAMEPAD_BUTTON_START) {
-        menu_nav_handle_cancel();
+        // START always behaves exactly like ESC — unconditionally, in any state.
+        // The Cancel face button has its own restricted logic via menu_nav_handle_cancel().
+        menu_nav_inject_key(rf::KEY_ESC);
     }
 
     bool in_menu_state = is_gamepad_menu_state();
