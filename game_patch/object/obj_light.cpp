@@ -15,6 +15,7 @@
 #include "../rf/item.h"
 #include "../rf/level.h"
 #include "../rf/clutter.h"
+#include "../rf/v3d.h"
 #include "../rf/gr/gr.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../rf/multi.h"
@@ -35,7 +36,7 @@ bool g_character_meshes_are_fullbright = false;
 
 void obj_mesh_lighting_alloc_one(rf::Object* objp)
 {
-    if ((objp->type != rf::OT_ITEM && objp->type != rf::OT_CLUTTER) ||
+    if ((objp->type != rf::OT_ITEM && objp->type != rf::OT_CLUTTER && objp->type != rf::OT_DEBRIS) ||
         !objp->vmesh ||
         (objp->obj_flags & rf::OF_DELAYED_DELETE) ||
         rf::vmesh_get_type(objp->vmesh) != rf::MESH_TYPE_STATIC) {
@@ -272,6 +273,18 @@ ConsoleCommand2 fullbright_models_cmd{
     "Toggle fullbright character meshes. In multiplayer, this is only available if the server allows it.",
 };
 
+CodeInjection debris_render_set_vertex_colors_patch{
+    0x00412E28,
+    [](auto& regs) {
+        auto* obj = reinterpret_cast<rf::Object*>(static_cast<uintptr_t>(regs.esi));
+        if (obj->mesh_lighting_data) {
+            // render_params is a stack local at ESP + 0xC in the debris render function
+            auto* params = reinterpret_cast<rf::MeshRenderParams*>(static_cast<uintptr_t>(regs.esp) + 0xC);
+            params->vertex_colors = static_cast<rf::ubyte*>(obj->mesh_lighting_data);
+        }
+    }
+};
+
 CodeInjection dynamic_light_load_patch{
     0x0045F500,
     [](auto& regs) {
@@ -288,6 +301,9 @@ void obj_light_apply_patch()
     AsmWriter{0x0052DB3E}.fld<float>(AsmRegMem(&g_character_ambient_light_r));
     AsmWriter{0x0052DB50}.fld<float>(AsmRegMem(&g_character_ambient_light_g));
     AsmWriter{0x0052DB62}.fld<float>(AsmRegMem(&g_character_ambient_light_b));
+
+    // Set vertex colors for debris meshes so they receive proper lighting instead of being fullbright
+    debris_render_set_vertex_colors_patch.install();
 
     // Allow dynamic lights in levels
     dynamic_light_load_patch.install(); // in LevelLight__load
