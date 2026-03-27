@@ -9,13 +9,67 @@
 #include <string>
 #include <algorithm>
 #include <sstream>
+#include <unordered_set>
+#include <xlog/xlog.h>
 #include "mover.h"
 #include "../misc/level.h"
 #include "../rf/os/frametime.h"
 #include "../rf/event.h"
 #include "../rf/mover.h"
+#include "../rf/object.h"
 #include "../rf/parse.h"
 #include "../rf/level.h"
+
+// Hold Open runtime tracking — populated after level load from brush UIDs
+static std::unordered_set<int> g_hold_open_handles;
+static bool g_hold_open_needs_init = false;
+
+void alpine_mover_clear_hold_open()
+{
+    g_hold_open_handles.clear();
+    g_hold_open_needs_init = true;
+}
+
+static void alpine_mover_do_hold_open_init()
+{
+    g_hold_open_needs_init = false;
+    g_hold_open_handles.clear();
+    const auto& brush_uids = AlpineLevelProperties::instance().hold_open_mover_brush_uids;
+    if (brush_uids.empty())
+        return;
+
+    // Hold Open data can only exist in v304+ levels with an Alpine props chunk
+    if (rf::level.version < 304)
+        return;
+
+    xlog::info("[Mover] Hold Open init: {} brush UIDs to resolve", brush_uids.size());
+    for (int32_t brush_uid : brush_uids) {
+        auto* brush_obj = rf::obj_lookup_from_uid(brush_uid);
+        if (!brush_obj) {
+            xlog::warn("[Mover] Hold Open: brush_uid={} not found", brush_uid);
+            continue;
+        }
+        auto* mover_brush = static_cast<rf::MoverBrush*>(brush_obj);
+        rf::Mover* mover = mover_find_by_mover_brush(mover_brush);
+        if (mover) {
+            g_hold_open_handles.insert(mover->handle);
+            xlog::info("[Mover] Hold Open enabled for mover handle={} (brush_uid={})", mover->handle, brush_uid);
+        }
+        else {
+            xlog::warn("[Mover] Hold Open: no mover found for brush_uid={}", brush_uid);
+        }
+    }
+}
+
+void alpine_mover_init_hold_open()
+{
+    alpine_mover_do_hold_open_init();
+}
+
+bool alpine_mover_holds_open(const rf::Mover* mp)
+{
+    return mp && g_hold_open_handles.count(mp->handle) > 0;
+}
 
 rf::Mover* mover_find_by_mover_brush(const rf::MoverBrush* mover_brush)
 {
@@ -135,8 +189,8 @@ static bool alpine_mover_try_bounce_door_mid_segment(
     if (count < 2)
         return false;
 
-    // Must be a door, must be obstructed by an entity
-    if (!rf::mover_is_door(mp) ||
+    // Must be a door (or Hold Open), must be obstructed by an entity
+    if ((!rf::mover_is_door(mp) && !alpine_mover_holds_open(mp)) ||
         mp->keyframe_move_type == rf::MoverKeyframeMoveType::MKMT_ONE_WAY ||
         to != 0 ||
         !rf::mover_is_obstructed_by_entity(mp))
@@ -711,7 +765,8 @@ static void alpine_mover_process_pre(rf::Mover* mp)
 
     // handle pause time
     if (mover_paused_at_keyframe(mp)) {
-        const bool blocked = (rf::mover_is_door(mp) && rf::mover_is_obstructed_by_entity(mp));
+        const bool blocked = ((rf::mover_is_door(mp) || alpine_mover_holds_open(mp))
+                               && rf::mover_is_obstructed_by_entity(mp));
 
         if (blocked || !mp->wait_timestamp.elapsed()) {
             const int cur = mp->start_at_keyframe;
@@ -735,6 +790,11 @@ FunHook<void(rf::Mover*)> mover_process_pre_hook{
     [](rf::Mover* mp) {
         if (!mp)
             return;
+
+        // Deferred hold-open init runs once after level load, regardless of legacy mode
+        if (g_hold_open_needs_init) {
+            alpine_mover_do_hold_open_init();
+        }
 
         if (AlpineLevelProperties::instance().legacy_movers) {
             mover_process_pre_hook.call_target(mp);
@@ -864,6 +924,26 @@ CodeInjection mover_interpolate_objects_force_orient_rot_patch{
     }
 };
 
+// Stock mover_process_pre: after mover_is_door() returns false at 0x00469B99,
+// also check alpine_mover_holds_open() to allow bounce-back for Hold Open movers.
+// Stock code: CALL mover_is_door; TEST AL,AL; JZ skip_bounce
+// We inject at the JZ to override: if mover_is_door was false but holds_open is true, don't skip.
+// Stock mover_process_pre door bounce: the sequence at 0x00469B8E is:
+//   PUSH ESI; CALL mover_is_door; ADD ESP,4; TEST AL,AL; JZ skip_bounce
+// The short JZ (0x74) can't be hooked directly, so we inject at the PUSH ESI and replace the
+// entire mover_is_door check. We call mover_is_door ourselves plus alpine_mover_holds_open,
+// then set eip to either proceed with bounce (0x469B9B) or skip it (0x469BCC).
+CodeInjection mover_stock_door_bounce_hold_open_patch{
+    0x00469B8E,
+    [](auto& regs) {
+        rf::Mover* mp = regs.esi;
+        if (alpine_mover_holds_open(mp)) {
+            regs.eip = 0x00469B9B; // skip mover_is_door check, proceed with bounce
+        }
+        // otherwise: trampoline runs stock PUSH ESI + CALL mover_is_door normally
+    },
+};
+
 void mover_do_patch()
 {
     // Fix crash when skipping cutscene after robot kill in L7S4
@@ -882,4 +962,7 @@ void mover_do_patch()
     // Make "Force Orient" mover flag work properly
     mover_interpolate_objects_force_orient_trans_patch.install();
     mover_interpolate_objects_force_orient_rot_patch.install();
+
+    // Hold Open: patch stock door bounce check to also trigger for Hold Open movers
+    mover_stock_door_bounce_hold_open_patch.install();
 }

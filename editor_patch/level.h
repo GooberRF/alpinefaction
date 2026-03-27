@@ -354,6 +354,7 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_brush_uids;
     std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
     std::vector<uint8_t> breakable_materials;  // material type per entry
+    std::vector<int32_t> hold_open_mover_uids; // first brush UIDs of moving groups with "Hold Open"
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -382,6 +383,7 @@ struct AlpineLevelProperties
         breakable_brush_uids.clear();
         breakable_room_uids.clear();
         breakable_materials.clear();
+        hold_open_mover_uids.clear();
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -432,6 +434,12 @@ struct AlpineLevelProperties
             file.write<int32_t>(room_uid);
             uint8_t mat = (i < breakable_materials.size()) ? breakable_materials[i] : 0;
             file.write<uint8_t>(mat);
+        }
+        // Write hold open mover brush UIDs
+        std::uint32_t ho_count = static_cast<std::uint32_t>(hold_open_mover_uids.size());
+        file.write<std::uint32_t>(ho_count);
+        for (std::uint32_t i = 0; i < ho_count; i++) {
+            file.write<int32_t>(hold_open_mover_uids[i]);
         }
     }
 
@@ -543,6 +551,19 @@ struct AlpineLevelProperties
                 if (!read_bytes(&mat, sizeof(mat)))
                     return;
                 breakable_materials[i] = mat;
+            }
+
+            // Hold open mover brush UIDs
+            std::uint32_t ho_count = 0;
+            if (!read_bytes(&ho_count, sizeof(ho_count)))
+                return;
+            if (ho_count > 10000) ho_count = 10000;
+            hold_open_mover_uids.resize(ho_count);
+            for (std::uint32_t i = 0; i < ho_count; i++) {
+                int32_t uid = 0;
+                if (!read_bytes(&uid, sizeof(uid)))
+                    return;
+                hold_open_mover_uids[i] = uid;
             }
         }
     }

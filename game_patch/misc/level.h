@@ -32,6 +32,7 @@ struct AlpineLevelProperties
     // std::vector<int32_t> breakable_brush_uids; // unnecessary in game
     std::vector<int32_t> breakable_room_uids;
     std::vector<uint8_t> breakable_materials;
+    std::vector<int32_t> hold_open_mover_brush_uids; // first brush UIDs of movers with "Hold Open"
 
     static AlpineLevelProperties& instance()
     {
@@ -151,6 +152,20 @@ struct AlpineLevelProperties
                 xlog::trace("[AlpineLevelProps] GAME: breakable[{}] brush_uid={} room_uid={} material={}", i, brush_uid, room_uid, mat);
             }
             xlog::trace("[AlpineLevelProps] GAME: total breakable entries loaded={}", bcount);
+
+            // Hold open mover brush UIDs
+            uint32_t ho_count = 0;
+            if (!read_bytes(&ho_count, sizeof(ho_count)))
+                return;
+            if (ho_count > 10000) ho_count = 10000;
+            hold_open_mover_brush_uids.resize(ho_count);
+            for (uint32_t i = 0; i < ho_count; i++) {
+                int32_t uid = 0;
+                if (!read_bytes(&uid, sizeof(uid)))
+                    return;
+                hold_open_mover_brush_uids[i] = uid;
+            }
+            xlog::debug("[AlpineLevelProps] hold_open count={}", ho_count);
         }
     }
 };
