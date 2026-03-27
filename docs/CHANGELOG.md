@@ -78,6 +78,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add dedicated control for entering/exiting spectate mode
 - Add `To Mesh Object` button when selecting clutter in level editor `Select Objects` window
 - Add `r_dynamiclightndotl` console command to configure N-L blending for dynamic lights (Direct3D 11 renderer only)
+- Update MP autodownloader to use new FactionFiles API, and revamp UI
+- Add `autodl_blur_background` console command to toggle the behaviour of the autodownload background
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

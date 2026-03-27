@@ -217,6 +217,7 @@ struct AlpineGameSettings
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
     bool killfeed_enabled = false;
+    bool autodl_blur_background = true;
 
     // hud color overrides
     std::optional<uint32_t> sniper_scope_color_override{};

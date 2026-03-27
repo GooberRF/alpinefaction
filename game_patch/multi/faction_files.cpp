@@ -5,6 +5,7 @@
 #include <chrono>
 #include <functional>
 #include <stdexcept>
+#include <json.hpp>
 #include <xlog/xlog.h>
 #include <common/version/version.h>
 #include <common/utils/string-utils.h>
@@ -23,59 +24,66 @@ FactionFilesClient::FactionFilesClient() :
     session_.set_receive_timeout(3000);
 }
 
-std::optional<FactionFilesClient::LevelInfo> FactionFilesClient::parse_level_info(const char* buf)
+std::optional<FactionFilesClient::LevelInfo> FactionFilesClient::parse_level_info(const std::string& response)
 {
-    std::stringstream ss(buf);
-    ss.exceptions(std::ifstream::failbit | std::ifstream::badbit);
+    auto j = nlohmann::json::parse(response);
 
-    std::string temp;
-    std::getline(ss, temp);
-    if (temp != "found") {
-        if (temp != "notfound") {
-            xlog::warn("Invalid FactionFiles response: {}", buf);
-        }
-        // not found
+    if (!j.value("found", false)) {
         return {};
     }
 
-    LevelInfo info;
-    std::getline(ss, info.name);
-    std::getline(ss, info.author);
-    std::getline(ss, info.description);
+    if (!j.contains("file") || j["file"].is_null()) {
+        xlog::warn("FactionFiles response has found=true but no file object");
+        return {};
+    }
 
-    std::getline(ss, temp);
-    info.size_in_bytes = static_cast<unsigned>(std::stof(temp) * 1024u * 1024u);
+    auto& file = j.at("file");
+    LevelInfo info;
+    info.name = file.at("title").get<std::string>();
+    info.author = file.at("author").get<std::string>();
+    info.description = file.at("description").get<std::string>();
+    info.size_in_bytes = file.at("download_size").get<unsigned>();
+    info.download_url = file.at("download_url").get<std::string>();
+
     if (!info.size_in_bytes) {
         throw std::runtime_error("invalid file size");
     }
 
-    std::getline(ss, temp);
-    info.ticket_id = std::stoi(temp);
-    if (info.ticket_id <= 0) {
-        throw std::runtime_error("invalid ticket id");
+    if (info.download_url.empty()) {
+        throw std::runtime_error("empty download url");
     }
+
+    info.image_url = file.value("image_url", "");
+    xlog::debug("Parsed level info: '{}' by '{}', {} bytes", info.name, info.author, info.size_in_bytes);
+    xlog::debug("  description: {}", info.description);
+    xlog::debug("  download_url: {}", info.download_url);
+    xlog::debug("  image_url: {}", info.image_url);
 
     return {info};
 }
 
 std::optional<FactionFilesClient::LevelInfo> FactionFilesClient::find_map(const char* file_name)
 {
-    auto url = std::format("{}/findmap.php?rflName={}", level_download_base_url, encode_uri_component(file_name));
+    auto url = std::format("{}/v3/find.php?rfl={}", level_download_base_url, encode_uri_component(file_name));
 
     xlog::trace("Fetching level info: {}", file_name);
     HttpRequest req{url, "GET", session_};
     req.send();
 
-    char buf[256];
-    size_t num_bytes_read = req.read(buf, sizeof(buf) - 1);
-    if (num_bytes_read == 0) {
+    std::ostringstream response_stream;
+    char buf[4096];
+    while (size_t num_bytes_read = req.read(buf, sizeof(buf))) {
+        response_stream.write(buf, num_bytes_read);
+    }
+
+    auto response = response_stream.str();
+    if (response.empty()) {
         throw std::runtime_error("empty response");
     }
 
-    buf[num_bytes_read] = '\0';
-    xlog::debug("FactionFiles response: {}", buf);
+    xlog::debug("FactionFiles response: {}", response);
 
-    return parse_level_info(buf);
+    return parse_level_info(response);
 }
 
 std::vector<bool> FactionFilesClient::check_maps(const std::vector<std::string>& file_names)
@@ -123,11 +131,11 @@ std::vector<bool> FactionFilesClient::check_maps(const std::vector<std::string>&
     return results;
 }
 
-void FactionFilesClient::download_map(const char* tmp_filename, int ticket_id,
+void FactionFilesClient::download_map(const char* tmp_filename, const std::string& download_url,
     std::function<bool(unsigned bytes_received, std::chrono::milliseconds duration)> callback)
 {
-    auto url = std::format("{}/downloadmap.php?ticketid={}", level_download_base_url, ticket_id);
-    HttpRequest req{url, "GET", session_};
+    xlog::info("Downloading map from: {}", download_url);
+    HttpRequest req{download_url, "GET", session_};
     req.send();
 
     std::ofstream tmp_file(tmp_filename, std::ios_base::out | std::ios_base::binary);
@@ -158,6 +166,28 @@ void FactionFilesClient::download_map(const char* tmp_filename, int ticket_id,
             throw std::runtime_error("download aborted");
         }
     }
+}
+
+std::vector<unsigned char> FactionFilesClient::fetch_image(const std::string& image_url)
+{
+    static constexpr size_t max_image_size = 8 * 1024 * 1024; // 8 MB
+
+    xlog::info("Fetching map image from: {}", image_url);
+    HttpRequest req{image_url, "GET", session_};
+    req.send();
+
+    std::vector<unsigned char> data;
+    char buf[4096];
+    while (size_t num_bytes_read = req.read(buf, sizeof(buf))) {
+        data.insert(data.end(), buf, buf + num_bytes_read);
+        if (data.size() > max_image_size) {
+            xlog::warn("Image download exceeded max size ({} bytes), aborting", max_image_size);
+            return {};
+        }
+    }
+
+    xlog::info("Fetched map image: {} bytes", data.size());
+    return data;
 }
 
 ConsoleCommand2 fflink_status_cmd{
