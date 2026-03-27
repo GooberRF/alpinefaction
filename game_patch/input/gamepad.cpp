@@ -431,10 +431,23 @@ static void release_movement_keys()
 {
     g_move_lx = g_move_ly = 0.0f;
     g_move_mag = 0.0f;
-    set_movement_key(rf::CC_ACTION_FORWARD,     false);
-    set_movement_key(rf::CC_ACTION_BACKWARD,    false);
-    set_movement_key(rf::CC_ACTION_SLIDE_LEFT,  false);
-    set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, false);
+
+
+    static constexpr rf::ControlConfigAction k_move_actions[] = {
+        rf::CC_ACTION_FORWARD,
+        rf::CC_ACTION_BACKWARD,
+        rf::CC_ACTION_SLIDE_LEFT,
+        rf::CC_ACTION_SLIDE_RIGHT,
+    };
+    for (rf::ControlConfigAction action : k_move_actions) {
+        int idx = static_cast<int>(action);
+        if (g_action_curr[idx] && rf::local_player && !rf::console::console_is_visible()) {
+            int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
+            if (sc >= 0)
+                rf::key_process_event(sc, 0, 0);
+        }
+        g_action_curr[idx] = false;
+    }
 }
 
 static void update_stick_movement()
