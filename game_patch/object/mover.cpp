@@ -34,29 +34,29 @@ static void alpine_mover_do_hold_open_init()
 {
     g_hold_open_needs_init = false;
     g_hold_open_handles.clear();
-    const auto& brush_uids = AlpineLevelProperties::instance().hold_open_mover_brush_uids;
-    if (brush_uids.empty())
+    const auto& kf_uids = AlpineLevelProperties::instance().hold_open_keyframe_uids;
+    if (kf_uids.empty())
         return;
 
     // Hold Open data can only exist in v304+ levels with an Alpine props chunk
     if (rf::level.version < 304)
         return;
 
-    xlog::info("[Mover] Hold Open init: {} brush UIDs to resolve", brush_uids.size());
-    for (int32_t brush_uid : brush_uids) {
-        auto* brush_obj = rf::obj_lookup_from_uid(brush_uid);
-        if (!brush_obj) {
-            xlog::warn("[Mover] Hold Open: brush_uid={} not found", brush_uid);
+    // Resolve keyframe UIDs to mover handles by matching against each mover's first keyframe UID
+    for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
+        if (obj->type != rf::OT_MOVER)
             continue;
-        }
-        auto* mover_brush = static_cast<rf::MoverBrush*>(brush_obj);
-        rf::Mover* mover = mover_find_by_mover_brush(mover_brush);
-        if (mover) {
-            g_hold_open_handles.insert(mover->handle);
-            xlog::info("[Mover] Hold Open enabled for mover handle={} (brush_uid={})", mover->handle, brush_uid);
-        }
-        else {
-            xlog::warn("[Mover] Hold Open: no mover found for brush_uid={}", brush_uid);
+
+        auto* mover = static_cast<rf::Mover*>(obj);
+        if (mover->keyframes.size() <= 0)
+            continue;
+
+        int first_kf_uid = mover->keyframes[0]->uid;
+        for (int32_t target_uid : kf_uids) {
+            if (first_kf_uid == target_uid) {
+                g_hold_open_handles.insert(mover->handle);
+                break;
+            }
         }
     }
 }
@@ -695,6 +695,9 @@ void alpine_mover_process_linear(rf::Mover* mp)
 
         // no longer have a next keyframe, fully stop
         if (!mover_is_moving(mp)) {
+            // zero velocity so mover_interpolate_objects doesn't impart stale velocity to riders
+            mp->cur_vel = 0.0f;
+            mp->p_data.vel = rf::Vector3{0.0f, 0.0f, 0.0f};
             if (!mover_paused_at_keyframe(mp)) {
                 rf::mover_play_stop_sound(mp);
             }
@@ -735,9 +738,9 @@ static void alpine_mover_process_pre(rf::Mover* mp)
         // treat mover as active with zero velocity
         // allows mover_interpolate_objects to ensure child brushes/objects also have their vel zeroed when paused
         // otherwise they would keep their last frame vel and players standing on them would be pushed
-        mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_UNK_8 | rf::MoverFlags::MF_UNK_4000));
+        mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
 
-        mp->obj_flags = static_cast<rf::ObjectFlags>(static_cast<int>(mp->obj_flags) | 0x04000000);
+        mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
 
         const int loop_instance = mp->sound_instances[1];
         if (loop_instance != -1) {
@@ -751,12 +754,17 @@ static void alpine_mover_process_pre(rf::Mover* mp)
     }
 
     if (!mover_is_moving(mp)) {
+        // same treatment as MF_PAUSED: set flags so mover_interpolate_objects
+        // processes this mover with zero velocity, preventing riders from
+        // retaining stale velocity from the last moving frame
+        mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
+        mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
         return;
     }
 
     // normal movement
-    mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_UNK_8 | rf::MoverFlags::MF_UNK_4000));
-    mp->obj_flags = static_cast<rf::ObjectFlags>(static_cast<int>(mp->obj_flags) | 0x04000000);
+    mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
+    mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
 
     const int loop_instance = mp->sound_instances[1];
     if (loop_instance != -1) {

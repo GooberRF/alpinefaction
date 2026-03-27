@@ -1013,86 +1013,55 @@ static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
 // g_kf_props_msg_hook is forward-declared before CDialog_DoModal_injection.
 static WNDPROC g_kf_props_orig_wndproc = nullptr;
 
-// Find the first brush UID of the moving group being edited.
-// Called from WM_INITDIALOG after stock OnInitDialog has populated the dialog controls.
-// Reads the dialog's checkbox/combo state and matches against CDedLevel::moving_groups.
-static int get_editing_group_first_brush_uid(HWND hdlg)
+// Find the moving group being edited by matching CDedLevel::selection against group members.
+// When the keyframe properties dialog opens, the group's objects/keyframes are in the selection.
+static GroupEntry* find_moving_group_from_selection()
 {
     auto* level = CDedLevel::Get();
     if (!level)
-        return -1;
+        return nullptr;
 
-    // Read dialog state (stock checkboxes, populated by OnInitDialog)
-    bool dlg_is_door = (IsDlgButtonChecked(hdlg, IDC_KF_IS_DOOR) == BST_CHECKED);
-    bool dlg_rotate = (IsDlgButtonChecked(hdlg, IDC_KF_ROTATE_IN_PLACE) == BST_CHECKED);
-    bool dlg_backwards = (IsDlgButtonChecked(hdlg, IDC_KF_STARTS_BACKWARDS) == BST_CHECKED);
-    bool dlg_trav_vel = (IsDlgButtonChecked(hdlg, IDC_KF_USE_TRAV_AS_VEL) == BST_CHECKED);
-    bool dlg_force_orient = (IsDlgButtonChecked(hdlg, IDC_KF_FORCE_ORIENT) == BST_CHECKED);
-    bool dlg_no_collide = (IsDlgButtonChecked(hdlg, IDC_KF_NO_PLAYER_COLLIDE) == BST_CHECKED);
-    int dlg_move_type = static_cast<int>(SendDlgItemMessageA(hdlg, IDC_KF_MOVEMENT_TYPE, CB_GETCURSEL, 0, 0));
+    auto& sel = level->selection; // VArray<DedObject*> at +0x298
+    if (sel.size <= 0)
+        return nullptr;
 
-    // Match against moving groups by comparing the stock mover properties.
-    // The stock dialog sets checkboxes from 6 bools stored at known offsets in the dialog class,
-    // which were copied from the moving group's RFL data.
+    DedObject* selected = sel[0];
+    if (!selected)
+        return nullptr;
+
+    // Match against moving groups: check if any group's objects or keyframes contain this DedObject
     auto& mg = level->moving_groups;
-    GroupEntry* found = nullptr;
-    int match_count = 0;
-
     for (int i = 0; i < mg.size; i++) {
         auto* group = mg[i];
-        if (!group || !group->is_moving_group() || group->brushes.size <= 0)
+        if (!group || !group->is_moving_group())
             continue;
 
-        // The stock dialog class stores 6 booleans that map to these checkboxes.
-        // These are read from the RFL moving_group_data during level load and stored on the
-        // dialog object before DoModal. The OnInitDialog copies them to the checkbox controls.
-        // We read from the MFC dialog object (captured at DoModal time) to compare.
-        // Actually, we read from the controls which are already populated.
-        //
-        // The GroupEntry itself doesn't store is_door etc. directly — those are
-        // stored in the RFL data that the dialog reads. We only have the dialog state to match.
-        //
-        // For now, if there's exactly one moving group, use it.
-        found = group;
-        match_count++;
-    }
-
-    if (match_count == 1 && found) {
-        BrushNode* first_brush = found->brushes[0];
-        return first_brush ? first_brush->uid : -1;
-    }
-
-    // Multiple moving groups: try matching via the dialog object's internal data.
-    // The CDialog* was captured in g_kf_props_dialog_obj. The stock code copies properties
-    // from the selected GroupEntry's RFL data into the dialog at specific offsets.
-    // We fall back to matching the group name against the dialog title or
-    // using keyframe count as a discriminator.
-    if (match_count > 1) {
-        // Use keyframe count as additional discriminator
-        // Dialog's keyframe list is shown in a string list; we can count items.
-        // For now, try matching by keyframe count.
-        for (int i = 0; i < mg.size; i++) {
-            auto* group = mg[i];
-            if (!group || !group->is_moving_group() || group->brushes.size <= 0)
-                continue;
-
-            // GroupEntry::keyframes is a VArray<DedObject*>* at +0x1C
-            auto* kf_array = group->keyframes;
-            if (!kf_array)
-                continue;
-
-            // This is the best we can do without deeper RE
-            xlog::warn("[HoldOpen] group[{}] '{}' has {} keyframes, {} brushes",
-                       i, group->name.c_str(), kf_array->size, group->brushes.size);
+        for (int j = 0; j < group->objects.size; j++) {
+            if (group->objects[j] == selected)
+                return group;
         }
-        xlog::warn("[HoldOpen] {} moving groups — ambiguous, using first match", match_count);
-        if (found) {
-            BrushNode* first_brush = found->brushes[0];
-            return first_brush ? first_brush->uid : -1;
+
+        if (group->keyframes) {
+            for (int j = 0; j < group->keyframes->size; j++) {
+                if ((*group->keyframes)[j] == selected)
+                    return group;
+            }
         }
     }
 
-    return -1;
+    return nullptr;
+}
+
+// Get the UID of the first keyframe in the moving group being edited.
+// Keyframe UIDs are stable between editor (DedObject::uid) and game (MoverKeyframe::uid).
+static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
+{
+    auto* group = find_moving_group_from_selection();
+    if (!group || !group->keyframes || group->keyframes->size <= 0)
+        return -1;
+
+    DedObject* first_kf = (*group->keyframes)[0];
+    return first_kf ? first_kf->uid : -1;
 }
 
 static LRESULT CALLBACK KfPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -1100,20 +1069,35 @@ static LRESULT CALLBACK KfPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, 
     if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
         // Read Hold Open checkbox state and update Alpine level properties
         bool hold_open = (IsDlgButtonChecked(hwnd, IDC_KF_HOLD_OPEN) == BST_CHECKED);
-        int brush_uid = get_editing_group_first_brush_uid(hwnd);
+        int kf_uid = get_editing_group_first_keyframe_uid(hwnd);
 
-        if (brush_uid >= 0) {
+        if (kf_uid >= 0) {
             auto* level = CDedLevel::Get();
             if (level) {
                 auto& props = level->GetAlpineLevelProperties();
-                auto& uids = props.hold_open_mover_uids;
-                auto it = std::find(uids.begin(), uids.end(), static_cast<int32_t>(brush_uid));
+                auto& uids = props.hold_open_keyframe_uids;
+                auto it = std::find(uids.begin(), uids.end(), static_cast<int32_t>(kf_uid));
                 if (hold_open && it == uids.end()) {
-                    uids.push_back(static_cast<int32_t>(brush_uid));
+                    uids.push_back(static_cast<int32_t>(kf_uid));
                 }
                 else if (!hold_open && it != uids.end()) {
                     uids.erase(it);
                 }
+
+                // Scrub stale entries: remove any UIDs that don't match a valid first-keyframe UID
+                auto& mg = level->moving_groups;
+                uids.erase(std::remove_if(uids.begin(), uids.end(), [&mg](int32_t uid) {
+                    for (int i = 0; i < mg.size; i++) {
+                        auto* group = mg[i];
+                        if (group && group->is_moving_group() && group->keyframes &&
+                            group->keyframes->size > 0) {
+                            DedObject* first_kf = (*group->keyframes)[0];
+                            if (first_kf && first_kf->uid == uid)
+                                return false; // valid, keep
+                        }
+                    }
+                    return true; // orphan, remove
+                }), uids.end());
             }
         }
     }
@@ -1126,16 +1110,16 @@ static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lPar
         auto* msg = reinterpret_cast<CWPRETSTRUCT*>(lParam);
         if (msg->message == WM_INITDIALOG && GetDlgItem(msg->hwnd, IDC_KF_HOLD_OPEN)) {
             // Set checkbox state from Alpine level properties
-            int brush_uid = get_editing_group_first_brush_uid(msg->hwnd);
+            int kf_uid = get_editing_group_first_keyframe_uid(msg->hwnd);
             bool hold_open = false;
 
-            if (brush_uid >= 0) {
+            if (kf_uid >= 0) {
                 auto* level = CDedLevel::Get();
                 if (level) {
                     auto& props = level->GetAlpineLevelProperties();
-                    auto& uids = props.hold_open_mover_uids;
+                    auto& uids = props.hold_open_keyframe_uids;
                     hold_open = std::find(uids.begin(), uids.end(),
-                                          static_cast<int32_t>(brush_uid)) != uids.end();
+                                          static_cast<int32_t>(kf_uid)) != uids.end();
                 }
             }
 
