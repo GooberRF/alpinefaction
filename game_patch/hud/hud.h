@@ -16,6 +16,9 @@ enum class ChatMenuType : int
     Spectate
 };
 
+// Returns true if HUD should be hidden (cl_hud off, or cinematic spectate freelook)
+bool is_hud_effectively_hidden();
+
 void hud_apply_patches();
 int hud_get_small_font();
 int hud_get_default_font();

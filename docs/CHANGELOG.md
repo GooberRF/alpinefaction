@@ -80,6 +80,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `r_dynamiclightndotl` console command to configure N-L blending for dynamic lights (Direct3D 11 renderer only)
 - Update MP autodownloader to use new FactionFiles API, and revamp UI
 - Add `autodl_blur_background` console command to toggle the behaviour of the autodownload background
+- Add `cl_chat` and `spectate_cinematic_mode` console commands
 - Add `Hold Open` property to movers
 
 [@is-this-c](https://github.com/is-this-c)
@@ -135,6 +136,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix rare crash when maintaining freelook spectate through a level change
 - Fix `Set_Variable` event not correctly handling `bool2` for `Clone_Entity`, or `bool2` and `str2` for `AF_Teleport_Player`
 - Fix triangulated and ngon faces on breakable detail brushes not breaking properly in version >= 304 levels
+- Fix vertex lighting data not being properly built for debris static meshes
+- Fix `Max FPS` menu button not immediately applying the new value when set
 - Fix non-legacy translation movers maintaining velocity after stopping
 
 [@is-this-c](https://github.com/is-this-c)

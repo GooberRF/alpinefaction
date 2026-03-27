@@ -1145,7 +1145,7 @@ void multi_hud_render_local_player_spectators() {
         || multi_scoreboard_is_visible();
     if (show_spectators
         && !g_local_player_spectators.empty()
-        && !rf::hud_disabled
+        && !is_hud_effectively_hidden()
         && rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
         const rf::NetGameType game_type = rf::multi_get_game_type();
         const bool is_koth_or_dc = game_type == rf::NG_TYPE_KOTH
