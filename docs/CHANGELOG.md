@@ -135,6 +135,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix `Set_Variable` event not correctly handling `bool2` for `Clone_Entity`, or `bool2` and `str2` for `AF_Teleport_Player`
 - Fix triangulated and ngon faces on breakable detail brushes not breaking properly in version >= 304 levels
 - Fix vertex lighting data not being properly built for debris static meshes
+- Fix `Max FPS` menu button not immediately applying the new value when set
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
