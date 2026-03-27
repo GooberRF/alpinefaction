@@ -291,8 +291,9 @@ static void menu_nav_handle_cancel()
         if (current_state == rf::GS_MESSAGE_LOG) {
             rf::gameseq_set_state(rf::GS_GAMEPLAY, false);
             g_message_log_close_cooldown = 0.2f;
-        } else if (current_state == rf::GS_MULTI_LIMBO) {
-            // End-of-round screen: consume without opening new panels.
+        } else if (current_state == rf::GS_MULTI_LIMBO
+                || current_state == rf::GS_LEVEL_TRANSITION
+                || current_state == rf::GS_NEW_LEVEL) {
         } else {
             menu_nav_inject_key(rf::KEY_ESC);
         }
@@ -502,6 +503,7 @@ static bool is_gamepad_cancellable_menu_state(rf::GameState state)
         || state == rf::GS_SAVE_GAME_MENU
         || state == rf::GS_LOAD_GAME_MENU
         || state == rf::GS_MAIN_MENU
+        || state == rf::GS_LEVEL_TRANSITION
         || state == rf::GS_MULTI_LIMBO
         || state == rf::GS_FRAMERATE_TEST_END
         || state == rf::GS_CREDITS
@@ -595,9 +597,11 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
         menu_nav_handle_cancel();
     }
 
-    g_menu_nav.deferred_btn_down = ev.button;
+    bool in_menu_state = is_gamepad_menu_state();
+    if (in_menu_state)
+        g_menu_nav.deferred_btn_down = ev.button;
 
-    bool is_menu_nav_button = is_gamepad_menu_state()
+    bool is_menu_nav_button = in_menu_state
         && (ev.button == static_cast<int>(get_menu_confirm_button())
             || ev.button == static_cast<int>(get_menu_cancel_button()));
 
