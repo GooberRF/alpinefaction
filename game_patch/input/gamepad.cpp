@@ -995,13 +995,29 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     // entity, so fall back to plain joystick camera for both look and gyro.
     const bool is_spectator_camera = is_freelook;
 
-    if (g_alpine_game_config.gamepad_flickstick && !is_spectator_camera) {
+    bool is_scoped_or_scanning = has_player_entity
+        && (rf::player_fpgun_is_zoomed(rf::local_player) || rf::local_player->fpgun_data.scanning_for_target);
+
+    // If flickstick is enabled, stay in flickstick outside of spectator mode.
+    // While scope or scanner is active, use plain joystick camera for more consistent aim.
+    if (g_alpine_game_config.gamepad_flickstick && !is_spectator_camera && !is_scoped_or_scanning) {
         gamepad_apply_flickstick(cam_x, cam_y, current_yaw, current_pitch, yaw_delta, pitch_delta);
     } else {
         g_flickstick_yaw_delta_filtered = 0.0f;
         yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx;
         pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry;
     }
+
+    // Apply gamepad zoom sensitivity modifiers
+    float gamepad_zoom_sens = 1.0f;
+    if (has_player_entity) {
+        if (rf::local_player->fpgun_data.scanning_for_target)
+            gamepad_zoom_sens *= g_alpine_game_config.gamepad_scanner_sensitivity_modifier;
+        else if (rf::player_fpgun_is_zoomed(rf::local_player))
+            gamepad_zoom_sens *= g_alpine_game_config.gamepad_scope_sensitivity_modifier;
+    }
+    yaw_delta *= gamepad_zoom_sens;
+    pitch_delta *= gamepad_zoom_sens;
 
     bool allow_gyro = !is_spectator_camera
         && g_motion_sensors_active
@@ -1017,8 +1033,9 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
 
         constexpr float deg2rad = 3.14159265f / 180.0f;
         float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
-        yaw_delta   -= gyro_yaw   * deg2rad * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime;
-        pitch_delta += pitch_sign * gyro_pitch * deg2rad * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime;
+        float gyro_scale = gamepad_zoom_sens;
+        yaw_delta   -= gyro_yaw   * deg2rad * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime * gyro_scale;
+        pitch_delta += pitch_sign * gyro_pitch * deg2rad * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime * gyro_scale;
     }
 }
 
@@ -1195,6 +1212,26 @@ ConsoleCommand2 joy_look_deadzone_cmd{
     "joy_look_deadzone [value]",
 };
 
+ConsoleCommand2 joy_scope_sens_cmd{
+    "joy_scope_sens",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.set_gamepad_scope_sens_mod(val.value());
+        rf::console::print("Gamepad scope sensitivity modifier: {:.4f}", g_alpine_game_config.gamepad_scope_sensitivity_modifier);
+    },
+    "Set gamepad scope sensitivity modifier (default 0.25)",
+    "joy_scope_sens [value]",
+};
+
+ConsoleCommand2 joy_scanner_sens_cmd{
+    "joy_scanner_sens",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.set_gamepad_scanner_sens_mod(val.value());
+        rf::console::print("Gamepad scanner sensitivity modifier: {:.4f}", g_alpine_game_config.gamepad_scanner_sensitivity_modifier);
+    },
+    "Set gamepad scanner sensitivity modifier (default 0.25)",
+    "joy_scanner_sens [value]",
+};
+
 ConsoleCommand2 joy_flickstick_cmd{
     "joy_flickstick",
     [](std::optional<int> val) {
@@ -1273,6 +1310,26 @@ ConsoleCommand2 gyro_sens_cmd{
     },
     "Set gyro sensitivity 0-30 (default 2.5)",
     "gyro_sens [value]",
+};
+
+ConsoleCommand2 gyro_scope_sens_cmd{
+    "gyro_scope_sens",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.set_gamepad_scope_gyro_sens_mod(val.value());
+        rf::console::print("Gamepad scope gyro sensitivity modifier: {:.4f}", g_alpine_game_config.gamepad_scope_gyro_sensitivity_modifier);
+    },
+    "Set gamepad scope gyro sensitivity modifier (default 0.25)",
+    "gyro_scope_sens [value]",
+};
+
+ConsoleCommand2 gyro_scanner_sens_cmd{
+    "gyro_scanner_sens",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.set_gamepad_scanner_gyro_sens_mod(val.value());
+        rf::console::print("Gamepad scanner gyro sensitivity modifier: {:.4f}", g_alpine_game_config.gamepad_scanner_gyro_sensitivity_modifier);
+    },
+    "Set gamepad scanner gyro sensitivity modifier (default 0.25)",
+    "gyro_scanner_sens [value]",
 };
 
 ConsoleCommand2 input_prompts_cmd{
@@ -1687,6 +1744,10 @@ void gamepad_apply_patch()
     joy_sens_cmd.register_cmd();
     joy_move_deadzone_cmd.register_cmd();
     joy_look_deadzone_cmd.register_cmd();
+    joy_scope_sens_cmd.register_cmd();
+    joy_scanner_sens_cmd.register_cmd();
+    gyro_scope_sens_cmd.register_cmd();
+    gyro_scanner_sens_cmd.register_cmd();
     joy_flickstick_cmd.register_cmd();
     joy_flickstick_sweep_cmd.register_cmd();
     joy_flickstick_smoothing_cmd.register_cmd();

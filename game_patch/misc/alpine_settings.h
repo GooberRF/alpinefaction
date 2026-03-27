@@ -47,6 +47,30 @@ struct AlpineGameSettings
         scanner_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
     }
 
+    float gamepad_scope_sensitivity_modifier = 0.25f;
+    void set_gamepad_scope_sens_mod(float mod)
+    {
+        gamepad_scope_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
+    }
+
+    float gamepad_scanner_sensitivity_modifier = 0.25f;
+    void set_gamepad_scanner_sens_mod(float mod)
+    {
+        gamepad_scanner_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
+    }
+
+    float gamepad_scope_gyro_sensitivity_modifier = 0.25f;
+    void set_gamepad_scope_gyro_sens_mod(float mod)
+    {
+        gamepad_scope_gyro_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
+    }
+
+    float gamepad_scanner_gyro_sensitivity_modifier = 0.25f;
+    void set_gamepad_scanner_gyro_sens_mod(float mod)
+    {
+        gamepad_scanner_gyro_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
+    }
+
     float level_sound_volume = 1.0f;
     void set_level_sound_volume(float scale)
     {
