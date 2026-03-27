@@ -32,6 +32,9 @@
 #include "faction_files.h"
 #include "../misc/alpine_settings.h"
 
+// Resolution of the blurred edge-fill bitmap (box-filter downscale of the map image)
+constexpr int edge_fill_blur_size = 64;
+
 struct RotationAutodlReport
 {
     size_t unique_levels = 0;
@@ -336,8 +339,8 @@ private:
     int image_w_ = 0;
     int image_h_ = 0;
     int blur_bm_ = -1;
-    int blur_w_ = 0;
-    int blur_h_ = 0;
+    int avg_fade_v_bm_ = -1; // vertical gradient: avg color (opaque) → transparent
+    int avg_fade_h_bm_ = -1; // horizontal gradient: avg color (opaque) → transparent
     bool image_load_attempted_ = false;
 
 public:
@@ -369,6 +372,12 @@ public:
             }
             if (blur_bm_ != -1) {
                 rf::bm::release(blur_bm_);
+            }
+            if (avg_fade_v_bm_ != -1) {
+                rf::bm::release(avg_fade_v_bm_);
+            }
+            if (avg_fade_h_bm_ != -1) {
+                rf::bm::release(avg_fade_h_bm_);
             }
         }
     }
@@ -449,44 +458,84 @@ private:
         image_h_ = h;
         xlog::info("Created map image bitmap: {}x{}", w, h);
 
-        // 1/8 resolution blurred bitmap via box filter
-        blur_w_ = std::max(w / 8, 1);
-        blur_h_ = std::max(h / 8, 1);
-        std::vector<unsigned char> blurred(blur_w_ * blur_h_ * 4);
-
-        for (int by = 0; by < blur_h_; ++by) {
-            for (int bx = 0; bx < blur_w_; ++bx) {
-                int sx = bx * w / blur_w_;
-                int sy = by * h / blur_h_;
-                int sx_end = std::min((bx + 1) * w / blur_w_, w);
-                int sy_end = std::min((by + 1) * h / blur_h_, h);
+        // Tiny blurred version for edge fill bars (box filter downscale to 64×64)
+        std::vector<unsigned char> blurred(edge_fill_blur_size * edge_fill_blur_size * 4);
+        for (int by = 0; by < edge_fill_blur_size; ++by) {
+            for (int bx = 0; bx < edge_fill_blur_size; ++bx) {
+                int sx = bx * w / edge_fill_blur_size;
+                int sy = by * h / edge_fill_blur_size;
+                int sx_end = std::min((bx + 1) * w / edge_fill_blur_size, w);
+                int sy_end = std::min((by + 1) * h / edge_fill_blur_size, h);
                 int count = 0;
-                int r = 0, g = 0, b = 0, a = 0;
+                int r = 0, g = 0, b = 0;
                 for (int iy = sy; iy < sy_end; ++iy) {
                     for (int ix = sx; ix < sx_end; ++ix) {
                         const auto* p = pixels + (iy * w + ix) * 4;
-                        r += p[0];
-                        g += p[1];
-                        b += p[2];
-                        a += p[3];
+                        r += p[0]; g += p[1]; b += p[2];
                         count++;
                     }
                 }
-                auto* dst = blurred.data() + (by * blur_w_ + bx) * 4;
+                auto* dst = blurred.data() + (by * edge_fill_blur_size + bx) * 4;
                 dst[0] = static_cast<unsigned char>(r / count);
                 dst[1] = static_cast<unsigned char>(g / count);
                 dst[2] = static_cast<unsigned char>(b / count);
-                dst[3] = static_cast<unsigned char>(a / count);
+                dst[3] = 255;
             }
         }
+        blur_bm_ = create_game_bitmap(blurred.data(), edge_fill_blur_size, edge_fill_blur_size);
 
-        blur_bm_ = create_game_bitmap(blurred.data(), blur_w_, blur_h_);
-        if (blur_bm_ == -1) {
-            xlog::warn("Failed to create blurred bitmap for map image");
-        }
-        else {
-            xlog::info("Created blurred map image bitmap: {}x{}", blur_w_, blur_h_);
-        }
+        // Compute average edge colors from the blurred image for the fade gradients.
+        // Vertical fade (top/bottom bars): average the top and bottom edge rows.
+        // Horizontal fade (left/right bars): average the left and right edge columns.
+        constexpr int edge_rows = edge_fill_blur_size / 10; // ~10% from each edge
+        auto avg_edge = [&](bool vertical) -> std::tuple<unsigned char, unsigned char, unsigned char> {
+            int ar = 0, ag = 0, ab = 0, count = 0;
+            for (int by = 0; by < edge_fill_blur_size; ++by) {
+                for (int bx = 0; bx < edge_fill_blur_size; ++bx) {
+                    bool is_edge = vertical
+                        ? (by < edge_rows || by >= edge_fill_blur_size - edge_rows)
+                        : (bx < edge_rows || bx >= edge_fill_blur_size - edge_rows);
+                    if (!is_edge) continue;
+                    const auto* p = blurred.data() + (by * edge_fill_blur_size + bx) * 4;
+                    ar += p[0]; ag += p[1]; ab += p[2];
+                    count++;
+                }
+            }
+            return {
+                static_cast<unsigned char>(ar / count),
+                static_cast<unsigned char>(ag / count),
+                static_cast<unsigned char>(ab / count),
+            };
+        };
+
+        // Create square gradient bitmaps that fade from the edge average color to transparent.
+        constexpr int fade_res = 32;
+        auto make_avg_fade = [&](bool vertical) -> int {
+            auto [er, eg, eb] = avg_edge(vertical);
+            int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, fade_res, fade_res);
+            if (bm == -1) return -1;
+            rf::gr::LockInfo li;
+            if (!rf::gr::lock(bm, 0, &li, rf::gr::LOCK_WRITE_ONLY)) {
+                rf::bm::release(bm);
+                return -1;
+            }
+            for (int row = 0; row < fade_res; ++row) {
+                for (int col = 0; col < fade_res; ++col) {
+                    int grad_idx = vertical ? row : col;
+                    float t = static_cast<float>(grad_idx) / static_cast<float>(fade_res - 1);
+                    auto a = static_cast<unsigned char>(255 * (1.0f - t));
+                    auto* dst = li.data + row * li.stride_in_bytes + col * 4;
+                    dst[0] = eb; // B
+                    dst[1] = eg; // G
+                    dst[2] = er; // R
+                    dst[3] = a;  // A
+                }
+            }
+            rf::gr::unlock(&li);
+            return bm;
+        };
+        avg_fade_v_bm_ = make_avg_fade(true);
+        avg_fade_h_bm_ = make_avg_fade(false);
     }
 
 public:
@@ -535,14 +584,9 @@ public:
         return image_bm_;
     }
 
-    int get_blur_bitmap(int* out_w, int* out_h)
-    {
-        if (blur_bm_ != -1) {
-            *out_w = blur_w_;
-            *out_h = blur_h_;
-        }
-        return blur_bm_;
-    }
+    [[nodiscard]] int get_blur_bitmap() const { return blur_bm_; }
+    [[nodiscard]] int get_avg_fade_v_bitmap() const { return avg_fade_v_bm_; }
+    [[nodiscard]] int get_avg_fade_h_bitmap() const { return avg_fade_h_bm_; }
 
     [[nodiscard]] bool in_progress() const
     {
@@ -826,13 +870,6 @@ void multi_level_download_do_frame()
             rf::gr::set_color(255, 255, 255, 255);
 
             if (g_alpine_game_config.autodl_blur_background) {
-                // Draw blurred image stretched to fill background
-                int blur_w, blur_h;
-                int blur_bm = operation.get_blur_bitmap(&blur_w, &blur_h);
-                if (blur_bm != -1) {
-                    rf::gr::bitmap_scaled(blur_bm, 0, 0, scr_w, scr_h, 0, 0, blur_w, blur_h);
-                }
-
                 // Draw sharp image at correct aspect ratio, centered
                 float img_aspect = static_cast<float>(img_w) / static_cast<float>(img_h);
                 float scr_aspect = static_cast<float>(scr_w) / static_cast<float>(scr_h);
@@ -847,6 +884,60 @@ void multi_level_download_do_frame()
                 }
                 int draw_x = (scr_w - draw_w) / 2;
                 int draw_y = (scr_h - draw_h) / 2;
+
+                // Fill exposed bars using edge strips from the blurred image,
+                // with a fade to average edge color at the screen edges
+                int blur_bm = operation.get_blur_bitmap();
+                constexpr int bs = edge_fill_blur_size;
+                int edge_v = std::max(bs / 10, 1);
+                int edge_h = std::max(bs / 10, 1);
+                int fade_size = std::max(scr_w, scr_h) / 6;
+                constexpr int fade_res = 32;
+
+                if (draw_y > 0 && blur_bm != -1) {
+                    // Top bar: stretch top edge strip of blurred image
+                    rf::gr::bitmap_scaled(blur_bm, 0, 0, scr_w, draw_y,
+                        0, 0, bs, edge_v, false, false, rf::gr::bitmap_clamp_mode);
+                    // Bottom bar: stretch bottom edge strip of blurred image
+                    rf::gr::bitmap_scaled(blur_bm, 0, draw_y + draw_h, scr_w, scr_h - draw_y - draw_h,
+                        0, bs - edge_v, bs, edge_v, false, false, rf::gr::bitmap_clamp_mode);
+
+                    // Fade to average color at screen edges
+                    int avg_fade_v = operation.get_avg_fade_v_bitmap();
+                    if (avg_fade_v != -1) {
+                        rf::gr::set_color(255, 255, 255, 255);
+                        int ft = std::min(fade_size, draw_y);
+                        rf::gr::bitmap_scaled(avg_fade_v, 0, 0, scr_w, ft,
+                            0, 0, fade_res, fade_res, false, false, rf::gr::bitmap_clamp_mode);
+                        int fb = std::min(fade_size, scr_h - draw_y - draw_h);
+                        rf::gr::bitmap_scaled(avg_fade_v, 0, scr_h - fb, scr_w, fb,
+                            0, 0, fade_res, fade_res, false, true, rf::gr::bitmap_clamp_mode);
+                    }
+                }
+                else if (draw_x > 0 && blur_bm != -1) {
+                    // Left bar: stretch left edge strip of blurred image
+                    rf::gr::bitmap_scaled(blur_bm, 0, 0, draw_x, scr_h,
+                        0, 0, edge_h, bs, false, false, rf::gr::bitmap_clamp_mode);
+                    // Right bar: stretch right edge strip of blurred image
+                    rf::gr::bitmap_scaled(blur_bm, draw_x + draw_w, 0, scr_w - draw_x - draw_w, scr_h,
+                        bs - edge_h, 0, edge_h, bs, false, false, rf::gr::bitmap_clamp_mode);
+
+                    // Fade to average color at screen edges
+                    int avg_fade_h = operation.get_avg_fade_h_bitmap();
+                    if (avg_fade_h != -1) {
+                        rf::gr::set_color(255, 255, 255, 255);
+                        int fl = std::min(fade_size, draw_x);
+                        // Left screen edge: opaque avg at x=0, transparent toward image
+                        rf::gr::bitmap_scaled(avg_fade_h, 0, 0, fl, scr_h,
+                            0, 0, fade_res, fade_res, false, false, rf::gr::bitmap_clamp_mode);
+                        int fr = std::min(fade_size, scr_w - draw_x - draw_w);
+                        // Right screen edge: opaque avg at right, transparent toward image
+                        rf::gr::bitmap_scaled(avg_fade_h, scr_w - fr, 0, fr, scr_h,
+                            0, 0, fade_res, fade_res, true, false, rf::gr::bitmap_clamp_mode);
+                    }
+                }
+
+                rf::gr::set_color(255, 255, 255, 255);
                 rf::gr::bitmap_scaled(img_bm, draw_x, draw_y, draw_w, draw_h, 0, 0, img_w, img_h);
             }
             else {

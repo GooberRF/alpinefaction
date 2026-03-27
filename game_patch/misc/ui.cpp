@@ -733,6 +733,7 @@ void ao_maxfps_cbox_on_click_callback()
     try {
         unsigned new_fps = std::stoi(str);
         g_alpine_game_config.set_max_fps(new_fps);
+        apply_maximum_fps();
     }
     catch (const std::exception& e) {
         xlog::info("Invalid max FPS input: '{}', reason: {}", str, e.what());
