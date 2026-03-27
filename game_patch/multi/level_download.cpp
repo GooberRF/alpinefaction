@@ -904,7 +904,7 @@ void multi_level_download_do_frame()
         status_text = "Download failed";
     }
     else if (state == LevelDownloadState::finished) {
-        status_text = "Download complete";
+        status_text = "Loading...";
     }
 
     // Widget layout
@@ -940,17 +940,20 @@ void multi_level_download_do_frame()
     }
     content_y += medium_font_h + inner_gap;
 
-    // Progress bar
+    // Progress bar — stays at 100% through extraction and completion
     float progress = 0.0f;
-    if (state == LevelDownloadState::fetching_data) {
+    if (state == LevelDownloadState::fetching_data && operation.has_level_info()) {
         const FactionFilesClient::LevelInfo& info = operation.get_level_info();
         unsigned bytes_received = operation.get_bytes_received();
         progress = static_cast<float>(bytes_received) / static_cast<float>(info.size_in_bytes);
     }
+    else if (state == LevelDownloadState::extracting || state == LevelDownloadState::finished) {
+        progress = 1.0f;
+    }
     render_progress_bar(content_x, content_y, bar_w, bar_h, progress);
 
     // Progress text on top of the bar
-    if (state == LevelDownloadState::fetching_data) {
+    if (state == LevelDownloadState::fetching_data && operation.has_level_info()) {
         const FactionFilesClient::LevelInfo& info = operation.get_level_info();
         unsigned bytes_received = operation.get_bytes_received();
         float bytes_per_sec = operation.get_bytes_per_sec();
@@ -960,6 +963,17 @@ void multi_level_download_do_frame()
             bytes_received / 1000.0f / 1000.0f,
             info.size_in_bytes / 1000.0f / 1000.0f,
             bytes_per_sec / 1000.0f / 1000.0f);
+        int bar_center_x = content_x + bar_w / 2;
+        int progress_text_y = content_y + (bar_h - medium_font_h) / 2;
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, bar_center_x, progress_text_y, progress_str.c_str(), medium_font);
+    }
+    else if ((state == LevelDownloadState::extracting || state == LevelDownloadState::finished)
+        && operation.has_level_info()) {
+        const FactionFilesClient::LevelInfo& info = operation.get_level_info();
+        rf::gr::set_color(255, 255, 255, 255);
+        auto progress_str = std::format("{:.2f} MB / {:.2f} MB",
+            info.size_in_bytes / 1000.0f / 1000.0f,
+            info.size_in_bytes / 1000.0f / 1000.0f);
         int bar_center_x = content_x + bar_w / 2;
         int progress_text_y = content_y + (bar_h - medium_font_h) / 2;
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, bar_center_x, progress_text_y, progress_str.c_str(), medium_font);
