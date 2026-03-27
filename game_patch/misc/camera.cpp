@@ -184,6 +184,7 @@ CodeInjection free_camera_do_frame_patch{
 
                 if (!rf::is_multi) {
                     cep->info->acceleration = freelook_cam_base_accel; // `camera2` in SP ignores accel scale
+                    flush_freelook_gamepad_deltas();
                     return;
                 }
                 else {
@@ -204,6 +205,7 @@ CodeInjection free_camera_do_frame_patch{
                     }
 
                     cep->info->acceleration = freelook_cam_base_accel * freelook_cam_accel_scale;
+                    flush_freelook_gamepad_deltas();
                 }
             }
         }
@@ -397,7 +399,7 @@ CodeInjection linear_pitch_patch{
 
         // Add gamepad rotation deltas to the game's computed deltas
         float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
-        gamepad_get_camera(gamepad_pitch, gamepad_yaw);
+        consume_raw_gamepad_deltas(gamepad_pitch, gamepad_yaw);
         pitch_delta += gamepad_pitch;
         yaw_delta += gamepad_yaw;
 

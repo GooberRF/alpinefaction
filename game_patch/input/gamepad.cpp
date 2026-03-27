@@ -31,6 +31,16 @@
 static SDL_Gamepad* g_gamepad = nullptr;
 static bool g_motion_sensors_active = false; // true only when the connected gamepad has gyro+accel and is enabled
 
+// Raw gamepad camera delta accumulators.
+static float g_camera_gamepad_dx = 0.0f;
+static float g_camera_gamepad_dy = 0.0f;
+
+// Current scope/scanner sensitivity state.
+static float g_gamepad_scope_sensitivity_value = 0.25f;
+static float g_gamepad_scanner_sensitivity_value = 0.25f;
+static float g_gamepad_scope_gyro_sensitivity_value = 0.25f;
+static float g_gamepad_scanner_gyro_sensitivity_value = 0.25f;
+
 // Latest sensor samples — latched from SDL events, consumed once per frame.
 static float g_gyro_x = 0.0f, g_gyro_y = 0.0f, g_gyro_z = 0.0f;   // deg/s
 static float g_accel_x = 0.0f, g_accel_y = 0.0f, g_accel_z = 0.0f; // g-force
@@ -101,7 +111,16 @@ static bool is_gamepad_input_active()
 
 static bool is_freelook_camera()
 {
-    return rf::local_player && rf::local_player->cam && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
+    return rf::local_player && rf::local_player->cam
+        && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
+}
+
+static void update_gamepad_scoped_sensitivities()
+{
+    g_gamepad_scope_sensitivity_value = g_alpine_game_config.gamepad_scope_sensitivity_modifier;
+    g_gamepad_scanner_sensitivity_value = g_alpine_game_config.gamepad_scanner_sensitivity_modifier;
+    g_gamepad_scope_gyro_sensitivity_value = g_alpine_game_config.gamepad_scope_gyro_sensitivity_modifier;
+    g_gamepad_scanner_gyro_sensitivity_value = g_alpine_game_config.gamepad_scanner_gyro_sensitivity_modifier;
 }
 
 static bool is_menu_only_action(int action_idx)
@@ -142,6 +161,10 @@ static void reset_gamepad_input_state()
     g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
     g_accel_x = g_accel_y = g_accel_z = 0.0f;
     g_gyro_fresh = false;
+
+    // Camera deltas should reset when input state resets.
+    g_camera_gamepad_dx = 0.0f;
+    g_camera_gamepad_dy = 0.0f;
 
     // Action/button state
     memset(g_action_curr, 0, sizeof(g_action_curr));
@@ -302,8 +325,7 @@ static void menu_nav_handle_cancel()
     }
 
     if ((rf::local_player_entity && rf::entity_is_dying(rf::local_player_entity))
-        || (rf::local_player && rf::player_is_dead(rf::local_player))
-        || multi_spectate_is_spectating()) {
+        || (rf::local_player && rf::player_is_dead(rf::local_player))) {
         return;
     }
 
@@ -612,10 +634,11 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
     }
 
     bool in_menu_state = is_gamepad_menu_state();
+    bool in_spectate_state = multi_spectate_is_spectating();
     if (in_menu_state)
         g_menu_nav.deferred_btn_down = ev.button;
 
-    bool is_menu_nav_button = in_menu_state
+    bool is_menu_nav_button = in_menu_state && !in_spectate_state
         && (ev.button == static_cast<int>(get_menu_confirm_button())
             || ev.button == static_cast<int>(get_menu_cancel_button()));
 
@@ -714,7 +737,6 @@ void gamepad_sdl_poll()
     memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
     SDL_UpdateGamepads();
     // Flush SDL Gamepad events outside the gamepad range to prevent queue buildup.
-    // Keyboard and mouse input is handled via Win32 message dispatch and doesn't need flushing.
     SDL_FlushEvents(SDL_EVENT_FIRST,
         static_cast<SDL_EventType>(static_cast<Uint32>(SDL_EVENT_GAMEPAD_AXIS_MOTION) - 1u));
     SDL_FlushEvents(
@@ -955,7 +977,43 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
     pitch_delta = 0.0f;
 }
 
-void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
+static void gamepad_apply_joystick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y, float cam_dz,
+                                   float zoom_sens, float& yaw_delta, float& pitch_delta)
+{
+    float rx, ry;
+    get_axis_circular(cam_x, cam_y, cam_dz, rx, ry);
+
+    float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
+    g_flickstick_yaw_delta_filtered = 0.0f;
+    yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx * zoom_sens;
+    pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry * zoom_sens;
+}
+
+static void gamepad_apply_gyro(bool has_player_entity, float zoom_sens, float& yaw_delta, float& pitch_delta)
+{
+    float gyro_pitch, gyro_yaw;
+    gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
+    gyro_apply_tightening(gyro_pitch, gyro_yaw);
+    gyro_apply_smoothing(gyro_pitch, gyro_yaw);
+
+    constexpr float deg2rad = 3.14159265f / 180.0f;
+    float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
+    float sens = g_alpine_game_config.gamepad_gyro_sensitivity * deg2rad * rf::frametime;
+
+    // Apply separate scope/scanner modifiers for gyro path.
+    float gyro_zoom_sens = 1.0f;
+    if (has_player_entity) {
+        if (rf::local_player->fpgun_data.scanning_for_target)
+            gyro_zoom_sens *= g_gamepad_scanner_gyro_sensitivity_value;
+        else if (rf::player_fpgun_is_zoomed(rf::local_player))
+            gyro_zoom_sens *= g_gamepad_scope_gyro_sensitivity_value;
+    }
+
+    yaw_delta   -= gyro_yaw   * sens * gyro_zoom_sens;
+    pitch_delta += pitch_sign * gyro_pitch * sens * gyro_zoom_sens;
+}
+
+void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
 {
     pitch_delta = 0.0f;
     yaw_delta   = 0.0f;
@@ -980,44 +1038,36 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
     float cam_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
                                                                        : g_alpine_game_config.gamepad_look_deadzone;
 
-    // Circular (radial) deadzone for camera to preserve direction and avoid cross-shape snapping.
-    float rx, ry;
-    get_axis_circular(cam_x, cam_y, cam_dz, rx, ry);
-
-    float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
-
-    float current_yaw = rf::local_player_entity ? rf::local_player_entity->control_data.phb.y : 0.0f;
+    float current_yaw   = rf::local_player_entity ? rf::local_player_entity->control_data.phb.y   : 0.0f;
     float current_pitch = rf::local_player_entity ? rf::local_player_entity->control_data.eye_phb.x : 0.0f;
-    float stick_mag = std::hypot(rx, ry);
 
-    // Flickstick and gyro rely on entity orientation math that is only valid for the
-    // local player entity. During spectator/freelook camera mode there is no player
-    // entity, so fall back to plain joystick camera for both look and gyro.
+    // gyro and flickstick are disabled in spectator camera since it can be used for freelook.
     const bool is_spectator_camera = is_freelook;
 
     bool is_scoped_or_scanning = has_player_entity
         && (rf::player_fpgun_is_zoomed(rf::local_player) || rf::local_player->fpgun_data.scanning_for_target);
 
+    // Keep local static scoped sensitivity values in sync
+    update_gamepad_scoped_sensitivities();
+
+    // Compute joystick zoom sensitivity multiplier (gyro has its own inside gamepad_apply_gyro)
+    float gamepad_zoom_sens = 1.0f;
+    if (has_player_entity) {
+        if (rf::local_player->fpgun_data.scanning_for_target)
+            gamepad_zoom_sens *= g_gamepad_scanner_sensitivity_value;
+        else if (rf::player_fpgun_is_zoomed(rf::local_player))
+            gamepad_zoom_sens *= g_gamepad_scope_sensitivity_value;
+    }
+
     // If flickstick is enabled, stay in flickstick outside of spectator mode.
     // While scope or scanner is active, use plain joystick camera for more consistent aim.
     if (g_alpine_game_config.gamepad_flickstick && !is_spectator_camera && !is_scoped_or_scanning) {
         gamepad_apply_flickstick(cam_x, cam_y, current_yaw, current_pitch, yaw_delta, pitch_delta);
+        yaw_delta   *= gamepad_zoom_sens;
+        pitch_delta *= gamepad_zoom_sens;
     } else {
-        g_flickstick_yaw_delta_filtered = 0.0f;
-        yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx;
-        pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry;
+        gamepad_apply_joystick(cam_x, cam_y, cam_dz, gamepad_zoom_sens, yaw_delta, pitch_delta);
     }
-
-    // Apply gamepad zoom sensitivity modifiers
-    float gamepad_zoom_sens = 1.0f;
-    if (has_player_entity) {
-        if (rf::local_player->fpgun_data.scanning_for_target)
-            gamepad_zoom_sens *= g_alpine_game_config.gamepad_scanner_sensitivity_modifier;
-        else if (rf::player_fpgun_is_zoomed(rf::local_player))
-            gamepad_zoom_sens *= g_alpine_game_config.gamepad_scope_sensitivity_modifier;
-    }
-    yaw_delta *= gamepad_zoom_sens;
-    pitch_delta *= gamepad_zoom_sens;
 
     bool allow_gyro = !is_spectator_camera
         && g_motion_sensors_active
@@ -1025,18 +1075,34 @@ void gamepad_get_camera(float& pitch_delta, float& yaw_delta)
         && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
         && gyro_modifier_is_active();
 
-    if (allow_gyro) {
-        float gyro_pitch, gyro_yaw;
-        gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
-        gyro_apply_tightening(gyro_pitch, gyro_yaw);
-        gyro_apply_smoothing(gyro_pitch, gyro_yaw);
+    if (allow_gyro)
+        gamepad_apply_gyro(has_player_entity, gamepad_zoom_sens, yaw_delta, pitch_delta);
 
-        constexpr float deg2rad = 3.14159265f / 180.0f;
-        float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
-        float gyro_scale = gamepad_zoom_sens;
-        yaw_delta   -= gyro_yaw   * deg2rad * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime * gyro_scale;
-        pitch_delta += pitch_sign * gyro_pitch * deg2rad * g_alpine_game_config.gamepad_gyro_sensitivity * rf::frametime * gyro_scale;
-    }
+    // Accumulate and consume the gamepad raw angles in frame-similar style as mouse.
+    g_camera_gamepad_dx += pitch_delta;
+    g_camera_gamepad_dy += yaw_delta;
+    pitch_delta = g_camera_gamepad_dx;
+    yaw_delta = g_camera_gamepad_dy;
+    g_camera_gamepad_dx = 0.0f;
+    g_camera_gamepad_dy = 0.0f;
+}
+
+// apply gamepad deltas directly to freelook camera entity.
+void flush_freelook_gamepad_deltas()
+{
+    if (!is_freelook_camera() || !rf::local_player || !rf::local_player->cam)
+        return;
+    rf::Entity* cam_entity = rf::local_player->cam->camera_entity;
+    if (!cam_entity)
+        return;
+
+    float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
+    consume_raw_gamepad_deltas(gamepad_pitch, gamepad_yaw);
+    if (gamepad_pitch == 0.0f && gamepad_yaw == 0.0f)
+        return;
+
+    cam_entity->control_data.eye_phb.x += gamepad_pitch;
+    cam_entity->control_data.phb.y += gamepad_yaw;
 }
 
 // RF entity and input hooks
@@ -1666,7 +1732,6 @@ void gamepad_reset_to_defaults()
     g_button_map[SDL_GAMEPAD_BUTTON_EAST]           = rf::CC_ACTION_NEXT_WEAPON;
     g_button_map[SDL_GAMEPAD_BUTTON_WEST]           = rf::CC_ACTION_PREV_WEAPON;
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_LEFT]      = rf::CC_ACTION_HIDE_WEAPON;
-    g_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]     = rf::CC_ACTION_MESSAGES;
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]     = rf::CC_ACTION_MESSAGES;
     g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_DOWN] = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = rf::CC_ACTION_MP_STATS;

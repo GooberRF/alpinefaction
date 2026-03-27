@@ -3,7 +3,8 @@
 void gamepad_apply_patch();
 void gamepad_sdl_init();
 void gamepad_do_frame();
-void gamepad_get_camera(float& pitch_delta, float& yaw_delta);
+void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta);
+void flush_freelook_gamepad_deltas();
 bool gamepad_is_motionsensors_supported();
 bool gamepad_is_last_input_gamepad();
 void gamepad_set_last_input_keyboard();
