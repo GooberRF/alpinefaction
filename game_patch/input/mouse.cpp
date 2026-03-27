@@ -17,9 +17,10 @@
 #include "../multi/multi.h"
 #include "input.h"
 
-// Raw mouse delta accumulators — captured in mouse_get_delta_hook, consumed
-// in flush_raw_mouse_to_entity() which writes scaled values to the controlled
-// entity's input accumulators so RF's native control pipeline picks them up.
+// Raw mouse delta accumulators — captured in mouse_get_delta_hook, then consumed
+// by consume_raw_mouse_deltas() (via linear_pitch_patch for the player entity, or
+// directly for the freelook camera) which writes scaled values into RF's control
+// pipeline so the controlled entity/camera picks them up.
 static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
 
 static bool is_freelook_camera()
