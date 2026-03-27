@@ -16,6 +16,7 @@
 #include "../rf/player/camera.h"
 #include "../rf/player/control_config.h"
 #include "../rf/player/player_fpgun.h"
+#include "../rf/weapon.h"
 #include "../rf/vmesh.h"
 #include "../rf/entity.h"
 #include "../rf/os/frametime.h"
@@ -1112,14 +1113,44 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
     },
 };
 
+static bool fpgun_should_scale(rf::Player* player)
+{
+    if (player != rf::local_player || rf::is_multi)
+        return false;
+    if (!(g_move_mag > 0.001f && g_move_mag < 0.999f))
+        return false;
+    if (!(rf::player_fpgun_is_in_state_anim(player, rf::WS_IDLE)
+          || rf::player_fpgun_is_in_state_anim(player, rf::WS_RUN)))
+        return false;
+
+    // Only scale while idle/run state animation is active and nothing else (fire/reload/jump).
+    if (rf::player_fpgun_action_anim_is_playing(player, rf::WA_FIRE)
+        || rf::player_fpgun_action_anim_is_playing(player, rf::WA_ALT_FIRE)
+        || rf::player_fpgun_action_anim_is_playing(player, rf::WA_FIRE_FAIL)
+        || rf::player_fpgun_action_anim_is_playing(player, rf::WA_DRAW)
+        || rf::player_fpgun_action_anim_is_playing(player, rf::WA_HOLSTER)
+        || rf::player_fpgun_action_anim_is_playing(player, rf::WA_RELOAD)
+        || rf::player_fpgun_action_anim_is_playing(player, rf::WA_JUMP)
+        || rf::player_fpgun_action_anim_is_playing(player, rf::WA_CUSTOM_START)
+        || rf::player_fpgun_action_anim_is_playing(player, rf::WA_CUSTOM_LEAVE))
+    {
+        return false;
+    }
+
+    return true;
+}
+
 static FunHook<void(rf::Player*)> player_fpgun_process_hook{
     0x004AA6D0,
     [](rf::Player* player) {
-        bool scale = player == rf::local_player && !rf::is_multi
-            && g_move_mag > 0.001f && g_move_mag < 0.999f;
-        if (scale) g_scaling_fpgun_vmesh = true;
+        bool scale = fpgun_should_scale(player);
+        if (scale)
+            g_scaling_fpgun_vmesh = true;
+
         player_fpgun_process_hook.call_target(player);
-        if (scale) g_scaling_fpgun_vmesh = false;
+
+        if (scale)
+            g_scaling_fpgun_vmesh = false;
     },
 };
 
@@ -1734,4 +1765,3 @@ void gamepad_sdl_init()
     rf::os_add_msg_handler(gamepad_msg_handler);
     xlog::info("Gamepad support initialized");
 }
-
