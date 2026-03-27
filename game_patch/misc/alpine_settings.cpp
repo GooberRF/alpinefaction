@@ -1599,6 +1599,7 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
             player_settings_load_hook.call_target(player); // load players.cfg
 
             set_alpine_config_defaults();
+            gamepad_reset_to_defaults();
 
             // Display restart popup due to players.cfg import
             // players.cfg from legacy client version will import fine on first load, apart from Alpine controls

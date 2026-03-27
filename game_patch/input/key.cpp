@@ -23,6 +23,7 @@
 #include "../rf/os/os.h"
 #include "../multi/alpine_packets.h"
 #include "../os/console.h"
+#include <SDL3/SDL.h>
 #include "gamepad.h"
 #include "input.h"
 
@@ -209,18 +210,27 @@ FunHook<rf::Key()> key_get_hook{
 
         const rf::Key key = key_get_hook.call_target();
 
-        if (rf::close_app_req) {
-            goto MAYBE_CANCEL_BINK;
-        }
-
-        if ((key & rf::KEY_MASK) == rf::KEY_ESC
-            && key & rf::KEY_SHIFTED
+        if (!rf::close_app_req
+            && (key & rf::KEY_MASK) == rf::KEY_ESC
+            && (key & rf::KEY_SHIFTED)
             && g_alpine_game_config.quick_exit) {
             rf::gameseq_set_state(rf::GameState::GS_QUITING, false);
-        MAYBE_CANCEL_BINK:
-            // If we are playing a video, cancel it.
-            const int bink_handle = addr_as_ref<int>(0x018871E4);
-            return bink_handle ? rf::KEY_ESC : rf::KEY_NONE;
+        }
+
+        const int bink_handle = addr_as_ref<int>(0x018871E4);
+        if (bink_handle) {
+            if ((key & rf::KEY_MASK) == rf::KEY_ESC) {
+                return rf::KEY_ESC;
+            }
+            SDL_PumpEvents();
+            SDL_Event sdl_ev;
+            while (SDL_PeepEvents(&sdl_ev, 1, SDL_GETEVENT,
+                                  SDL_EVENT_GAMEPAD_BUTTON_DOWN,
+                                  SDL_EVENT_GAMEPAD_BUTTON_DOWN) > 0) {
+                if (sdl_ev.gbutton.button == SDL_GAMEPAD_BUTTON_START) {
+                    return rf::KEY_ESC;
+                }
+            }
         }
 
         return key;
@@ -326,7 +336,10 @@ CodeInjection control_config_init_patch{
         alpine_control_config_add_item(ccp, "Gyro Modifier (Hold Off)", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT);
         alpine_control_config_add_item(ccp, "Gyro Modifier (Toggle)", false, -1, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);      
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);
+
+        // Make sure gamepad defaults use the fully established Alpine action indices.
+        gamepad_reset_to_defaults();
     },
 };
 

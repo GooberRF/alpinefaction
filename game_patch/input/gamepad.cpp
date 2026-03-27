@@ -497,6 +497,7 @@ static bool is_gamepad_cancellable_menu_state(rf::GameState state)
         || state == rf::GS_OPTIONS_MENU
         || state == rf::GS_MULTI_MENU
         || state == rf::GS_HELP
+        || state == rf::GS_EXTRAS_MENU
         || state == rf::GS_MULTI_SERVER_LIST
         || state == rf::GS_SAVE_GAME_MENU
         || state == rf::GS_LOAD_GAME_MENU
@@ -504,8 +505,7 @@ static bool is_gamepad_cancellable_menu_state(rf::GameState state)
         || state == rf::GS_MULTI_LIMBO
         || state == rf::GS_FRAMERATE_TEST_END
         || state == rf::GS_CREDITS
-        || state == rf::GS_BOMB_DEFUSE
-        || state == rf::GS_INTRO_VIDEO;
+        || state == rf::GS_BOMB_DEFUSE;
 }
 
 static bool menu_nav_on_button_down(int btn)
@@ -774,7 +774,8 @@ static void menu_nav_tick_scroll()
     }
     g_menu_nav.scroll_timer -= rf::frametime;
     if (g_menu_nav.scroll_timer > 0.0f) return;
-    rf::mouse_dz = (ry < 0.0f) ? -1 : 1;
+    // +1 for up, -1 for down to match the rest of UI scroll behavior (mouse wheel up=1).
+    rf::mouse_dz = (ry < 0.0f) ? 1 : -1;
     if (rf::gameseq_get_state() == rf::GS_MESSAGE_LOG) {
         if (ry < 0.0f)
             rf::ui::message_log_up_on_click(-1, -1);
@@ -1561,11 +1562,11 @@ void gamepad_reset_to_defaults()
     g_button_map[SDL_GAMEPAD_BUTTON_WEST]           = rf::CC_ACTION_PREV_WEAPON;
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_LEFT]      = rf::CC_ACTION_HIDE_WEAPON;
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]     = rf::CC_ACTION_MESSAGES;
-
+    g_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]     = rf::CC_ACTION_MESSAGES;
+    g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_DOWN] = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = rf::CC_ACTION_MP_STATS;
 
     // Spectator / multiplayer-only actions
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_DOWN] = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_EAST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_WEST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_NORTH]     = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU));
