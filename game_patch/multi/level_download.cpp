@@ -380,6 +380,11 @@ public:
 
     [[nodiscard]] bool has_level_info() const
     {
+        // level_info is written before state leaves fetching_info, so check state first
+        auto state = shared_data_->state.load(std::memory_order_acquire);
+        if (state == LevelDownloadState::fetching_info) {
+            return false;
+        }
         return shared_data_->level_info.has_value();
     }
 
