@@ -41,7 +41,7 @@ static int frametime_hud_counter_line_gap()
 
 static bool frametime_speed_meter_visible()
 {
-    if (!g_alpine_game_config.speed_display || rf::hud_disabled || !rf::gameseq_in_gameplay()) {
+    if (!g_alpine_game_config.speed_display || is_hud_effectively_hidden() || !rf::gameseq_in_gameplay()) {
         return false;
     }
     rf::Player* const player = rf::local_player;
@@ -92,7 +92,7 @@ static void frametime_render_graph()
 
 static bool frametime_fps_counter_visible()
 {
-    return g_alpine_game_config.fps_counter && !rf::hud_disabled;
+    return g_alpine_game_config.fps_counter && !is_hud_effectively_hidden();
 }
 
 static void frametime_render_fps_counter(int y)
@@ -153,7 +153,7 @@ static void frametime_render_fps_counter(int y)
 
 static bool frametime_ping_display_visible()
 {
-    return g_alpine_game_config.ping_display && !rf::hud_disabled && rf::is_multi && !rf::is_server;
+    return g_alpine_game_config.ping_display && !is_hud_effectively_hidden() && rf::is_multi && !rf::is_server;
 }
 
 static void frametime_render_ping_display(int y)

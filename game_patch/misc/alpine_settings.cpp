@@ -987,6 +987,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.autodl_blur_background = std::stoi(settings["AutodlBlurBackground"]);
         processed_keys.insert("AutodlBlurBackground");
     }
+    if (settings.count("HideChat")) {
+        g_alpine_game_config.hide_chat = std::stoi(settings["HideChat"]);
+        processed_keys.insert("HideChat");
+    }
+    if (settings.count("SpectateCinematicMode")) {
+        g_alpine_game_config.spectate_cinematic_mode = std::stoi(settings["SpectateCinematicMode"]);
+        processed_keys.insert("SpectateCinematicMode");
+    }
 
     // Load input settings
     if (settings.count("MouseSensitivity")) {
@@ -1381,6 +1389,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
     file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
     file << "AutodlBlurBackground=" << g_alpine_game_config.autodl_blur_background << "\n";
+    file << "HideChat=" << g_alpine_game_config.hide_chat << "\n";
+    file << "SpectateCinematicMode=" << g_alpine_game_config.spectate_cinematic_mode << "\n";
 
     alpine_control_config_serialize(file, player->settings.controls);
 
