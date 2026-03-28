@@ -231,6 +231,9 @@ FunHook<void(bool)> level_init_post_hook{
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
 
+        // Cancel any in-flight AWP download from a previous map
+        cancel_awp_download();
+
         // Flow 2A: Bot clients — start async AWP download before waypoints_level_init
         // so it sees the pending flag and defers load_waypoints until download resolves
         if (rf::is_multi && client_bot_launch_enabled()) {

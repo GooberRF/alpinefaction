@@ -12,7 +12,7 @@ class FactionFilesClient
 public:
     struct AwpInfo
     {
-        int revision;
+        int revision = 0;
         std::string download_url;
     };
 

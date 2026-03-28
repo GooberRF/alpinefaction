@@ -8316,6 +8316,7 @@ void waypoints_level_reset()
     clear_waypoints();
     g_has_loaded_wpt = false;
     g_missing_awp_from_level_init = false;
+    g_awp_download_pending = false;
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
     waypoints_utils_level_reset();
