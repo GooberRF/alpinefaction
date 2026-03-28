@@ -338,8 +338,11 @@ CodeInjection control_config_init_patch{
         alpine_control_config_add_item(ccp, "Gyro Modifier (Toggle)", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);
 
-        // Make sure gamepad defaults use the fully established Alpine action indices.
-        gamepad_reset_to_defaults();
+        // Only reset gamepad defaults if settings were not loaded (first run / no settings file).
+        // If the user's settings file was already loaded, skip this reset to preserve saved bindings.
+        if (!g_loaded_alpine_settings_file) {
+            gamepad_reset_to_defaults();
+        }
     },
 };
 
