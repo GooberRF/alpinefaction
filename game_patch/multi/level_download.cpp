@@ -189,7 +189,10 @@ static bool try_download_and_extract_awp(const std::string& rfl_filename,
             FactionFilesClient ff_client;
             ff_client.download_map(temp_filename.c_str(), awp_info.download_url,
                 [abort_flag](unsigned, std::chrono::milliseconds) {
-                    return !abort_flag || !abort_flag->load();
+                    if (abort_flag && abort_flag->load()) {
+                        return false;
+                    }
+                    return true;
                 });
 
             bool extracted = gunzip_file(temp_filename.c_str(), awp_output_path.c_str());
@@ -273,8 +276,8 @@ bool download_level_if_missing(std::string filename)
         }
 
         // Download AWP file if available (non-fatal)
-        // Bot clients always download; others require the autodl_download_awps setting
-        if (level_info->awp_info.has_value()
+        // Bot clients always download; normal clients require the setting; dedis never auto-download
+        if (level_info->awp_info.has_value() && !rf::is_dedicated_server
             && (client_bot_launch_enabled() || g_alpine_game_config.autodl_download_awps)) {
             try {
                 if (try_download_and_extract_awp(filename, level_info->awp_info.value())) {
@@ -324,6 +327,7 @@ public:
         std::optional<FactionFilesClient::LevelInfo> level_info;
         std::vector<unsigned char> image_data;
         std::vector<std::string> result_packfiles;
+        std::atomic<bool> awp_downloading{false};
         std::atomic<bool> awp_downloaded{false};
         std::atomic<bool> awp_attempted{false};
         std::atomic<bool> work_done{false};
@@ -431,17 +435,20 @@ void LevelDownloadWorker::operator()()
             remove(temp_filename.c_str());
 
             // Download AWP file if available (non-fatal)
-            // Bot clients always download; others require the autodl_download_awps setting
+            // Bot clients always download; normal clients require the setting; dedis never auto-download
             if (!shared_data_->abort_flag && shared_data_->level_info->awp_info.has_value()
+                && !rf::is_dedicated_server
                 && (client_bot_launch_enabled() || g_alpine_game_config.autodl_download_awps)) {
                 shared_data_->awp_attempted = true;
+                shared_data_->awp_downloading = true;
                 try {
                     shared_data_->awp_downloaded =
                         try_download_and_extract_awp(level_filename_, shared_data_->level_info->awp_info.value());
                 }
                 catch (const std::exception& e) {
-                    xlog::warn("AWP download failed during level download: {}", e.what());
+                    xlog::error("AWP download failed during level download: {}", e.what());
                 }
+                shared_data_->awp_downloading = false;
             }
 
             xlog::trace("LevelDownloadWorker finished");
@@ -557,6 +564,11 @@ public:
     [[nodiscard]] unsigned get_bytes_received() const
     {
         return shared_data_->bytes_received;
+    }
+
+    [[nodiscard]] bool is_awp_downloading() const
+    {
+        return shared_data_->awp_downloading;
     }
 
 private:
@@ -1140,7 +1152,9 @@ void multi_level_download_do_frame()
         status_text = "Getting level info...";
     }
     else if (state == LevelDownloadState::extracting) {
-        status_text = "Extracting packfiles...";
+        status_text = operation.is_awp_downloading()
+            ? "Downloading waypoint file..."
+            : "Extracting packfiles...";
     }
     else if (state == LevelDownloadState::fetching_data) {
         status_text = "Downloading from FactionFiles...";
