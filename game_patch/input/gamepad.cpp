@@ -290,6 +290,15 @@ static void inject_action_key(int action, bool down)
         rf::key_process_event(sc, down ? 1 : 0, 0);
 }
 
+static void force_release_action_key(int action)
+{
+    if (!rf::local_player || action < 0 || action >= rf::local_player->settings.controls.num_bindings)
+        return;
+    int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
+    if (sc > 0)
+        rf::key_process_event(sc, 0, 0);
+}
+
 // Injection sink for menu nav keys.  This can be routed to real menu actions
 // later instead of raw key events.
 static void menu_nav_inject_key(int key)
@@ -407,7 +416,10 @@ static void update_trigger_actions()
     bool rt_down = rt > 0.5f;
 
     if (lt_down != g_lt_was_down) {
-        inject_action_key(g_trigger_action[0], lt_down);
+        if (lt_down)
+            inject_action_key(g_trigger_action[0], true);
+        else
+            force_release_action_key(g_trigger_action[0]);
         if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count)
             g_action_curr[g_trigger_action[0]] = lt_down;
         if (g_menu_trigger_action[0] >= 0 && g_menu_trigger_action[0] < k_action_count)
@@ -415,7 +427,10 @@ static void update_trigger_actions()
         sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER), lt_down, g_trigger_action[0]);
     }
     if (rt_down != g_rt_was_down) {
-        inject_action_key(g_trigger_action[1], rt_down);
+        if (rt_down)
+            inject_action_key(g_trigger_action[1], true);
+        else
+            force_release_action_key(g_trigger_action[1]);
         if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count)
             g_action_curr[g_trigger_action[1]] = rt_down;
         if (g_menu_trigger_action[1] >= 0 && g_menu_trigger_action[1] < k_action_count)
@@ -682,12 +697,12 @@ static void handle_gamepad_button_up(const SDL_GamepadButtonEvent& ev)
     if (ev.button < SDL_GAMEPAD_BUTTON_COUNT) {
         int mapped = g_button_map[ev.button];
         if (mapped >= 0) {
-            inject_action_key(mapped, false);
+            force_release_action_key(mapped);
             g_action_curr[mapped] = false;
         }
         int alt_mapped = g_button_map_alt[ev.button];
         if (alt_mapped >= 0) {
-            inject_action_key(alt_mapped, false);
+            force_release_action_key(alt_mapped);
             g_action_curr[alt_mapped] = false;
         }
         int menu_mapped = g_menu_button_map[ev.button];
