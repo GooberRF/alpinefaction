@@ -197,6 +197,7 @@ struct AlpineGameSettings
     bool apply_exposure_damage = true;
     bool killfeed_enabled = false;
     bool autodl_blur_background = true;
+    bool autodl_download_awps = false;
     bool hide_chat = false;
     bool spectate_cinematic_mode = false;
 

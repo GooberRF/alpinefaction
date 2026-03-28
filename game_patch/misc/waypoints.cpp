@@ -63,6 +63,7 @@ int g_waypoints_by_type_total = 0;
 bool g_has_loaded_wpt = false;
 int g_last_awp_source = 0; // 0=not_found, 1=user_maps, 2=vpp
 bool g_missing_awp_from_level_init = false;
+bool g_awp_download_pending = false;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
 std::vector<std::string> g_waypoint_authors{};
@@ -8284,10 +8285,18 @@ void waypoints_level_init()
 {
     g_missing_awp_from_level_init = false;
     if (is_waypoint_bot_mode_active()) {
-        g_has_loaded_wpt = load_waypoints(true);
-        g_missing_awp_from_level_init = !g_has_loaded_wpt;
-        if (!g_has_loaded_wpt) {
-            seed_waypoints_from_objects();
+        if (g_awp_download_pending) {
+            // AWP download is in progress — defer load_waypoints until it resolves
+            // via waypoints_on_awp_download_resolved()
+            clear_waypoints();
+            g_has_loaded_wpt = false;
+        }
+        else {
+            g_has_loaded_wpt = load_waypoints(true);
+            g_missing_awp_from_level_init = !g_has_loaded_wpt;
+            if (!g_has_loaded_wpt) {
+                seed_waypoints_from_objects();
+            }
         }
     }
     else {
@@ -8315,6 +8324,28 @@ void waypoints_level_reset()
 bool waypoints_missing_awp_from_level_init()
 {
     return g_missing_awp_from_level_init;
+}
+
+bool waypoints_awp_download_pending()
+{
+    return g_awp_download_pending;
+}
+
+void waypoints_set_awp_download_pending(bool pending)
+{
+    g_awp_download_pending = pending;
+}
+
+void waypoints_on_awp_download_resolved()
+{
+    g_awp_download_pending = false;
+    if (is_waypoint_bot_mode_active()) {
+        g_has_loaded_wpt = load_waypoints(true);
+        g_missing_awp_from_level_init = !g_has_loaded_wpt;
+        if (!g_has_loaded_wpt) {
+            seed_waypoints_from_objects();
+        }
+    }
 }
 
 void waypoints_on_limbo_enter()

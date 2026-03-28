@@ -78,7 +78,7 @@ bool bot_chat_send_message(
 
 void bot_chat_sync_sit_out_state()
 {
-    const bool missing_awp = waypoints_missing_awp_from_level_init();
+    const bool missing_awp = waypoints_missing_awp_from_level_init() && !waypoints_awp_download_pending();
     g_bot_chat_state.sit_out_for_missing_waypoints = missing_awp;
     if (!missing_awp) {
         g_bot_chat_state.missing_waypoint_status_sent = false;

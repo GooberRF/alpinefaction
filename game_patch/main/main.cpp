@@ -156,6 +156,7 @@ FunHook<int()> rf_do_frame_hook{
         maybe_autosave();
         debug_do_frame_post();
         multi_level_download_update();
+        poll_awp_download();
         waypoints_do_frame();
         return result;
     },
@@ -229,7 +230,21 @@ FunHook<void(bool)> level_init_post_hook{
     [](bool transition) {
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
+
+        // Flow 2A: Bot clients — start async AWP download before waypoints_level_init
+        // so it sees the pending flag and defers load_waypoints until download resolves
+        if (rf::is_multi && client_bot_launch_enabled()) {
+            waypoints_set_awp_download_pending(true);
+            start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3);
+        }
+
         waypoints_level_init();
+
+        // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download
+        if (rf::is_multi && !client_bot_launch_enabled() && !rf::is_dedicated_server
+            && g_alpine_game_config.autodl_download_awps) {
+            start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
+        }
 
         // Create corona objects (clutter + glare pairs) now that geometry is loaded
         alpine_corona_create_all();

@@ -3,12 +3,19 @@
 #include <string>
 #include <chrono>
 #include <functional>
+#include <optional>
 #include <vector>
 #include <common/HttpRequest.h>
 
 class FactionFilesClient
 {
 public:
+    struct AwpInfo
+    {
+        int revision;
+        std::string download_url;
+    };
+
     struct LevelInfo
     {
         std::string name;
@@ -17,6 +24,7 @@ public:
         unsigned size_in_bytes;
         std::string download_url;
         std::string image_url;
+        std::optional<AwpInfo> awp_info;
     };
 
     struct VoteInfo

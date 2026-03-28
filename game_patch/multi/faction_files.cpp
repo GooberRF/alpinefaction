@@ -54,6 +54,24 @@ std::optional<FactionFilesClient::LevelInfo> FactionFilesClient::parse_level_inf
     }
 
     info.image_url = file.value("image_url", "");
+
+    if (j.contains("alpine_waypoints") && !j["alpine_waypoints"].is_null()) {
+        auto& awp = j["alpine_waypoints"];
+        try {
+            FactionFilesClient::AwpInfo awp_info;
+            awp_info.revision = std::stoi(awp.at("revision").get<std::string>());
+            awp_info.download_url = awp.at("download_url").get<std::string>();
+            if (!awp_info.download_url.empty()) {
+                info.awp_info = std::move(awp_info);
+                xlog::debug("  awp_revision: {}", info.awp_info->revision);
+                xlog::debug("  awp_download_url: {}", info.awp_info->download_url);
+            }
+        }
+        catch (const std::exception& e) {
+            xlog::warn("Failed to parse alpine_waypoints: {}", e.what());
+        }
+    }
+
     xlog::debug("Parsed level info: '{}' by '{}', {} bytes", info.name, info.author, info.size_in_bytes);
     xlog::debug("  description: {}", info.description);
     xlog::debug("  download_url: {}", info.download_url);
