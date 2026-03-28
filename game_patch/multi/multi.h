@@ -124,7 +124,7 @@ void enforce_alpine_hard_reject_for_all_players_on_current_level();
 std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_status(const ClientVersionInfoProfile& info, bool check_level_version);
 void multi_level_download_update();
 bool download_level_if_missing(std::string level_filename);
-void start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force = false);
+bool start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force = false);
 void poll_awp_download();
 void cancel_awp_download();
 void multi_do_patch();

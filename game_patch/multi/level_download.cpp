@@ -1425,13 +1425,14 @@ void cancel_awp_download()
         g_awp_download_force = false;
         g_awp_download_target_map.clear();
     }
+    waypoints_set_awp_download_pending(false);
 }
 
-void start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force)
+bool start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force)
 {
     if (g_awp_download_active) {
         xlog::warn("AWP download already in progress, skipping new request for {}", rfl_filename);
-        return;
+        return false;
     }
 
     // Revision check on main thread to avoid calling rf::File (VPP) from a background thread.
@@ -1488,7 +1489,9 @@ void start_awp_download_for_installed_map(const std::string& rfl_filename, int m
         g_awp_download_active = false;
         g_awp_download_force = false;
         g_awp_download_target_map.clear();
+        return false;
     }
+    return true;
 }
 
 void poll_awp_download()

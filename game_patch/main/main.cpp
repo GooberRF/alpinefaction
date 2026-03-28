@@ -238,7 +238,9 @@ FunHook<void(bool)> level_init_post_hook{
         // so it sees the pending flag and defers load_waypoints until download resolves
         if (rf::is_multi && client_bot_launch_enabled()) {
             waypoints_set_awp_download_pending(true);
-            start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3);
+            if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
+                waypoints_set_awp_download_pending(false);
+            }
         }
 
         waypoints_level_init();
