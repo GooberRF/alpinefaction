@@ -27,6 +27,23 @@ Version 1.3.0 (Bakeapple): Not yet released
   - `Corona` for configuring custom glare effects in levels
   - `Note` for leaving important information in levels (editor only)
 
+[@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Controller Support
+> [!WARNING]
+> When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2025): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
+  - Full controller support via SDL3 Gamepad API
+  - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, and Steam Controller 2026)
+  - Dual-Analog support for movement and camera controls
+  - Gyro Aiming support
+    - Natural Sensitivity Scale / Real World Sensitivity support 
+    - Gyro Space orientation support for Yaw, Roll, Local Space, Player Space and World Space
+    - Gyro Autocalibration system 
+    - Gyro Modifier / Gyro Ratcheting support (via Game Action remapping)
+  - Simultaneous Contoller+Keyboard/Mouse / Mixed Input support
+    - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.5000`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
+  - Partial controller menu navigation support (Mouse controls are handled via Right Stick Input)
+  - Additional Controller settings are available in `alpine_settings.ini`and/or console commands, this includes experimental Flick Stick support, resetting gyro autocalibration systems and Gyro Vehicle Camera.
+
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Standardize user agent string format across all use cases
