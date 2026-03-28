@@ -216,10 +216,21 @@ static bool try_download_and_extract_awp(const std::string& rfl_filename,
             remove(temp_filename.c_str());
 
             if (extracted) {
-                remove(awp_output_path.c_str());
+                // Safely replace existing AWP: back up old, rename new in, delete backup.
+                // If rename fails, the backup restores the original file.
+                auto awp_backup_path = awp_output_path + ".bak";
+                remove(awp_backup_path.c_str());
+                bool had_existing = (rename(awp_output_path.c_str(), awp_backup_path.c_str()) == 0);
                 if (rename(awp_temp_path.c_str(), awp_output_path.c_str()) == 0) {
+                    if (had_existing) {
+                        remove(awp_backup_path.c_str());
+                    }
                     xlog::info("AWP downloaded and extracted: {}", awp_name);
                     return true;
+                }
+                // Rename failed — restore backup if we had one
+                if (had_existing) {
+                    rename(awp_backup_path.c_str(), awp_output_path.c_str());
                 }
                 xlog::error("Failed to rename AWP temp file to {}", awp_output_path);
             }
@@ -1540,7 +1551,7 @@ void poll_awp_download()
     std::string target_map = std::move(g_awp_download_target_map);
 
     // Check if this result is for the current level (may have changed during download)
-    bool is_current_level = (target_map == std::string{rf::level.filename.c_str()});
+    bool is_current_level = string_iequals(target_map, rf::level.filename.c_str());
 
     if (waypoints_awp_download_pending()) {
         if (is_current_level) {
