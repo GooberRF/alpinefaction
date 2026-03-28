@@ -1120,6 +1120,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_environmental_rumble_enabled = std::stoi(settings["GamepadEnvironmentalRumble"]) != 0;
         processed_keys.insert("GamepadEnvironmentalRumble");
     }
+    if (settings.count("GamepadTriggerRumble")) {
+        g_alpine_game_config.gamepad_trigger_rumble_enabled = std::stoi(settings["GamepadTriggerRumble"]) != 0;
+        processed_keys.insert("GamepadTriggerRumble");
+    }
     // Per-button gamepad bindings
     for (int b = 0; b < gamepad_get_button_count(); ++b) {
         std::string key = "GamepadBtn_" + std::to_string(b);
@@ -1312,6 +1316,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadRumble=" << g_alpine_game_config.gamepad_rumble_enabled << "\n";
     file << "GamepadWeaponRumble=" << g_alpine_game_config.gamepad_weapon_rumble_enabled << "\n";
     file << "GamepadEnvironmentalRumble=" << g_alpine_game_config.gamepad_environmental_rumble_enabled << "\n";
+    file << "GamepadTriggerRumble=" << g_alpine_game_config.gamepad_trigger_rumble_enabled << "\n";
 
     file << "\n[ActionBinds]\n";
     file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID},{GamepadScanCode},{GamepadScanCodeAlt}\n";

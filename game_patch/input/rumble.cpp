@@ -40,7 +40,7 @@ static void rumble_weapon_do_frame()
     // Drive its rumble from entity_weapon_is_on instead.
     if (rf::weapon_is_flamethrower(wt)) {
         if (rf::entity_weapon_is_on(lpe->handle, wt))
-            gamepad_rumble(0x2000, 0xC000, 90u);
+            gamepad_weapon_fire_rumble(0x2000, 0xC000, 0x6000, 90u);
         s_last_fired_ts = cur_fired;
         return;
     }
@@ -55,11 +55,12 @@ static void rumble_weapon_do_frame()
         bool continuous = (winfo.flags & (rf::WTF_CONTINUOUS_FIRE | rf::WTF_ALT_CONTINUOUS_FIRE)) != 0;
         bool burst      = (winfo.flags & rf::WTF_BURST_MODE) != 0;
 
-        uint32_t duration = continuous ? 70u : burst ? 55u : 100u;
-        uint16_t lo_motor = static_cast<uint16_t>(scale * 0x8000);
-        uint16_t hi_motor = static_cast<uint16_t>(scale * 0x6000);
+        uint32_t duration      = continuous ? 70u : burst ? 55u : 100u;
+        uint16_t lo_motor      = static_cast<uint16_t>(scale * 0x8000);
+        uint16_t hi_motor      = static_cast<uint16_t>(scale * 0x6000);
+        uint16_t trigger_motor = static_cast<uint16_t>(scale * 0xA000);
 
-        gamepad_rumble(lo_motor, hi_motor, duration);
+        gamepad_weapon_fire_rumble(lo_motor, hi_motor, trigger_motor, duration);
     }
 
     s_last_fired_ts = cur_fired;

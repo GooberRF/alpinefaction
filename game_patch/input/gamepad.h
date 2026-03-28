@@ -4,6 +4,7 @@
 void gamepad_apply_patch();
 void gamepad_sdl_init();
 void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms);
+void gamepad_weapon_fire_rumble(uint16_t lo_motor, uint16_t hi_motor, uint16_t trigger_motor, uint32_t duration_ms);
 void gamepad_do_frame();
 void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta);
 void flush_freelook_gamepad_deltas();

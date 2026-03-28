@@ -1412,6 +1412,23 @@ ConsoleCommand2 joy_rumble_environmental_cmd{
     "joy_rumble_environmental [0|1]",
 };
 
+ConsoleCommand2 joy_rumble_triggers_cmd{
+    "joy_rumble_triggers",
+    [](std::optional<int> val) {
+        if (val) {
+            bool enabling = val.value() != 0;
+            if (enabling && g_gamepad && !SDL_RumbleGamepadTriggers(g_gamepad, 0, 0, 0)) {
+                rf::console::print("Controller does not support Trigger Rumbles");
+                return;
+            }
+            g_alpine_game_config.gamepad_trigger_rumble_enabled = enabling;
+        }
+        rf::console::print("Trigger rumble: {}", g_alpine_game_config.gamepad_trigger_rumble_enabled ? "enabled" : "disabled");
+    },
+    "Enable/disable trigger haptic rumble for weapon fire (default 1, if supported by controller)",
+    "joy_rumble_triggers [0|1]",
+};
+
 ConsoleCommand2 gyro_camera_cmd{
     "gyro_camera",
     [](std::optional<int> val) {
@@ -1885,6 +1902,7 @@ void gamepad_apply_patch()
     joy_rumble_cmd.register_cmd();
     joy_rumble_weapon_cmd.register_cmd();
     joy_rumble_environmental_cmd.register_cmd();
+    joy_rumble_triggers_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();
@@ -1922,10 +1940,53 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
 {
     if (!g_gamepad)
         return;
-    // Controller Vibration filter becomes active IF Gyro Aiming is enabled 
+    // Controller Vibration filter: mute low-freq motor when gyro aiming is active to
+    // prevent rumble vibration from being picked up as unwanted camera input.
     if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled)
-        low_freq = static_cast<uint16_t>(low_freq * 0.0f);
+        low_freq = 0;
     SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
+}
+
+void gamepad_weapon_fire_rumble(uint16_t lo_motor, uint16_t hi_motor, uint16_t trigger_motor, uint32_t duration_ms)
+{
+    if (!g_gamepad)
+        return;
+
+    // If trigger rumble is off, fall back to standard body rumble.
+    if (!g_alpine_game_config.gamepad_trigger_rumble_enabled) {
+        gamepad_rumble(lo_motor, hi_motor, duration_ms);
+        return;
+    }
+
+    constexpr int primary_idx   = static_cast<int>(rf::CC_ACTION_PRIMARY_ATTACK);
+    constexpr int secondary_idx = static_cast<int>(rf::CC_ACTION_SECONDARY_ATTACK);
+
+    // Resolve which trigger (if any) each fire action is bound to.
+    // g_trigger_action[0] = Left Trigger,  g_trigger_action[1] = Right Trigger.
+    bool primary_on_lt   = g_trigger_action[0] == primary_idx;
+    bool primary_on_rt   = g_trigger_action[1] == primary_idx;
+    bool secondary_on_lt = g_trigger_action[0] == secondary_idx;
+    bool secondary_on_rt = g_trigger_action[1] == secondary_idx;
+
+    // Check which fire action is currently held.
+    bool primary_active   = primary_idx   < k_action_count && g_action_curr[primary_idx];
+    bool secondary_active = secondary_idx < k_action_count && g_action_curr[secondary_idx];
+
+    bool use_lt = (primary_active && primary_on_lt) || (secondary_active && secondary_on_lt);
+    bool use_rt = (primary_active && primary_on_rt) || (secondary_active && secondary_on_rt);
+
+    if (!use_lt && !use_rt) {
+        // No fire action is bound to a trigger — fall back to standard body rumble.
+        gamepad_rumble(lo_motor, hi_motor, duration_ms);
+        return;
+    }
+
+    // Route to the trigger motor(s) matching the active fire binding.
+    // If the hardware doesn't support trigger rumble, fall back to body rumble.
+    uint16_t lt_motor = use_lt ? trigger_motor : 0;
+    uint16_t rt_motor = use_rt ? trigger_motor : 0;
+    if (!SDL_RumbleGamepadTriggers(g_gamepad, lt_motor, rt_motor, duration_ms))
+        gamepad_rumble(lo_motor, hi_motor, duration_ms);
 }
 
 void gamepad_sdl_init()
@@ -1933,6 +1994,13 @@ void gamepad_sdl_init()
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
+    if (g_alpine_system_config.gamepad_rawinput_enabled) {
+        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
+        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT_CORRELATE_XINPUT, "1");
+    } else {
+        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
+        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT_CORRELATE_XINPUT, "0");
+    }
 
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
         xlog::error("Failed to initialize SDL gamepad subsystem: {}", SDL_GetError());

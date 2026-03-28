@@ -191,6 +191,7 @@ struct AlpineGameSettings
     bool gamepad_rumble_enabled = true;
     bool gamepad_weapon_rumble_enabled = true;
     bool gamepad_environmental_rumble_enabled = true;
+    bool gamepad_trigger_rumble_enabled = true;
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool scoreboard_split_simple = true;
