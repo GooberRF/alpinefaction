@@ -532,14 +532,14 @@ ConsoleCommand2 cl_footsteps_cmd{
 };
 
 // Footstep processing hook: injects missing triggers for attack_run state animations
-// and gates sound playback based on footstep preference (pistol always plays per stock behavior)
+// when the footstep fix is active, then always calls the original function to preserve stock behavior
 FunHook<void(rf::Entity*)> entity_footsteps_do_frame_hook{
     0x0042F940,
     [](rf::Entity* ep) {
         if (!ep || rf::entity_is_dying(ep)) return;
 
-        // Always inject missing footstep triggers (data fix, not a preference)
-        if (ep->current_state_anim == rf::ENTITY_STATE_ATTACK_RUN) {
+        // Inject missing footstep triggers only when feature is active
+        if (g_footsteps_active && ep->current_state_anim == rf::ENTITY_STATE_ATTACK_RUN) {
             auto* vmesh = ep->vmesh;
             if (vmesh && vmesh->type == rf::MESH_TYPE_CHARACTER) {
                 auto* ci = static_cast<rf::CharacterInstance*>(vmesh->instance);
@@ -552,10 +552,8 @@ FunHook<void(rf::Entity*)> entity_footsteps_do_frame_hook{
             }
         }
 
-        // Gate sound playback: pistol always plays (stock behavior), others require feature enabled
-        if (g_footsteps_active || rf::weapon_is_glock(ep->ai.current_primary_weapon)) {
-            entity_footsteps_do_frame_hook.call_target(ep);
-        }
+        // Always call original to preserve stock footstep behavior
+        entity_footsteps_do_frame_hook.call_target(ep);
     }
 };
 
