@@ -151,16 +151,30 @@ static bool gunzip_file(const char* gz_path, const char* output_path)
     int bytes_read;
     while ((bytes_read = gzread(gz, buf, sizeof(buf))) > 0) {
         out.write(buf, bytes_read);
+        if (out.fail()) {
+            xlog::error("Write failed during gunzip of: {}", gz_path);
+            gzclose(gz);
+            return false;
+        }
+    }
+
+    if (bytes_read < 0) {
+        int gz_err;
+        const char* gz_msg = gzerror(gz, &gz_err);
+        xlog::error("gzread failed for {}: {} (code {})", gz_path, gz_msg ? gz_msg : "unknown", gz_err);
+        gzclose(gz);
+        return false;
     }
 
     out.close();
-    bool success = (bytes_read == 0) && out.good(); // 0 = EOF, <0 = error; also check write success
-    if (!success) {
-        xlog::error("gzread failed for: {}", gz_path);
+    if (out.fail()) {
+        xlog::error("Failed to close/flush output file during gunzip of: {}", gz_path);
+        gzclose(gz);
+        return false;
     }
 
     gzclose(gz);
-    return success;
+    return true;
 }
 
 static bool try_download_and_extract_awp(const std::string& rfl_filename,
@@ -449,7 +463,8 @@ void LevelDownloadWorker::operator()()
                 shared_data_->awp_downloading = true;
                 try {
                     shared_data_->awp_downloaded =
-                        try_download_and_extract_awp(level_filename_, shared_data_->level_info->awp_info.value());
+                        try_download_and_extract_awp(level_filename_, shared_data_->level_info->awp_info.value(),
+                            1, &shared_data_->abort_flag);
                 }
                 catch (const std::exception& e) {
                     xlog::error("AWP download failed during level download: {}", e.what());
