@@ -1108,6 +1108,18 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_swap_sticks = std::stoi(settings["GamepadSwapSticks"]) != 0;
         processed_keys.insert("GamepadSwapSticks");
     }
+    if (settings.count("GamepadRumble")) {
+        g_alpine_game_config.gamepad_rumble_enabled = std::stoi(settings["GamepadRumble"]) != 0;
+        processed_keys.insert("GamepadRumble");
+    }
+    if (settings.count("GamepadWeaponRumble")) {
+        g_alpine_game_config.gamepad_weapon_rumble_enabled = std::stoi(settings["GamepadWeaponRumble"]) != 0;
+        processed_keys.insert("GamepadWeaponRumble");
+    }
+    if (settings.count("GamepadEnvironmentalRumble")) {
+        g_alpine_game_config.gamepad_environmental_rumble_enabled = std::stoi(settings["GamepadEnvironmentalRumble"]) != 0;
+        processed_keys.insert("GamepadEnvironmentalRumble");
+    }
     // Per-button gamepad bindings
     for (int b = 0; b < gamepad_get_button_count(); ++b) {
         std::string key = "GamepadBtn_" + std::to_string(b);
@@ -1297,6 +1309,9 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "InputPromptMode=" << g_alpine_game_config.input_prompt_override << "\n";
     file << "GamepadJoyInvertY=" << g_alpine_game_config.gamepad_joy_invert_y << "\n";
     file << "GamepadSwapSticks=" << g_alpine_game_config.gamepad_swap_sticks << "\n";
+    file << "GamepadRumble=" << g_alpine_game_config.gamepad_rumble_enabled << "\n";
+    file << "GamepadWeaponRumble=" << g_alpine_game_config.gamepad_weapon_rumble_enabled << "\n";
+    file << "GamepadEnvironmentalRumble=" << g_alpine_game_config.gamepad_environmental_rumble_enabled << "\n";
 
     file << "\n[ActionBinds]\n";
     file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID},{GamepadScanCode},{GamepadScanCodeAlt}\n";

@@ -1,5 +1,6 @@
 #include "gamepad.h"
 #include "gyro.h"
+#include "rumble.h"
 #include "input.h"
 #include "glyph.h"
 #include "../hud/multi_spectate.h"
@@ -914,6 +915,9 @@ void gamepad_do_frame()
                             g_accel_x, g_accel_y, g_accel_z, rf::frametime);
         g_gyro_fresh = false;
     }
+
+    if (g_gamepad)
+        rumble_do_frame();
 }
 
 static bool is_gamepad_controls_rebind_active()
@@ -1376,6 +1380,36 @@ ConsoleCommand2 joy_flickstick_release_deadzone_cmd{
     },
     "Set flick-stick release deadzone 0.0-0.9 (default 0.70)",
     "joy_flickstick_release_deadzone [value]",
+};
+
+ConsoleCommand2 joy_rumble_cmd{
+    "joy_rumble",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_rumble_enabled = val.value() != 0;
+        rf::console::print("Gamepad rumble: {}", g_alpine_game_config.gamepad_rumble_enabled ? "enabled" : "disabled");
+    },
+    "Enable/disable gamepad rumble globally (default 1)",
+    "joy_rumble [0|1]",
+};
+
+ConsoleCommand2 joy_rumble_weapon_cmd{
+    "joy_rumble_weapon",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_weapon_rumble_enabled = val.value() != 0;
+        rf::console::print("Weapon rumble: {}", g_alpine_game_config.gamepad_weapon_rumble_enabled ? "enabled" : "disabled");
+    },
+    "Enable/disable weapon rumble (default 1)",
+    "joy_rumble_weapon [0|1]",
+};
+
+ConsoleCommand2 joy_rumble_environmental_cmd{
+    "joy_rumble_environmental",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_environmental_rumble_enabled = val.value() != 0;
+        rf::console::print("Environmental rumble: {}", g_alpine_game_config.gamepad_environmental_rumble_enabled ? "enabled" : "disabled");
+    },
+    "Enable/disable environmental rumble (default 1)",
+    "joy_rumble_environmental [0|1]",
 };
 
 ConsoleCommand2 gyro_camera_cmd{
@@ -1848,6 +1882,9 @@ void gamepad_apply_patch()
     joy_flickstick_smoothing_cmd.register_cmd();
     joy_flickstick_deadzone_cmd.register_cmd();
     joy_flickstick_release_deadzone_cmd.register_cmd();
+    joy_rumble_cmd.register_cmd();
+    joy_rumble_weapon_cmd.register_cmd();
+    joy_rumble_environmental_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();
@@ -1879,6 +1916,16 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
         }
     }
     reset_gamepad_input_state();
+}
+
+void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
+{
+    if (!g_gamepad)
+        return;
+    // Controller Vibration filter becomes active IF Gyro Aiming is enabled 
+    if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled)
+        low_freq = static_cast<uint16_t>(low_freq * 0.0f);
+    SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
 }
 
 void gamepad_sdl_init()

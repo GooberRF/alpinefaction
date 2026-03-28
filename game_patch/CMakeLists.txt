@@ -103,6 +103,8 @@ set(SRCS
     input/key.cpp
     input/gamepad.cpp
     input/gamepad.h
+    input/rumble.cpp
+    input/rumble.h
     input/glyph.cpp
     input/glyph.h
     input/gyro.cpp
