@@ -283,6 +283,7 @@ static void try_open_gamepad(SDL_JoystickID id)
 static void inject_action_key(int action, bool down)
 {
     if (!rf::gameseq_in_gameplay()) return;
+    if (rf::console::console_is_visible()) return;
     if (!rf::local_player || action < 0 || action >= rf::local_player->settings.controls.num_bindings)
         return;
     int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
@@ -292,6 +293,7 @@ static void inject_action_key(int action, bool down)
 
 static void force_release_action_key(int action)
 {
+    if (rf::console::console_is_visible()) return;
     if (!rf::local_player || action < 0 || action >= rf::local_player->settings.controls.num_bindings)
         return;
     int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
@@ -303,6 +305,7 @@ static void force_release_action_key(int action)
 // later instead of raw key events.
 static void menu_nav_inject_key(int key)
 {
+    if (rf::console::console_is_visible()) return;
     rf::key_process_event(key, 1, 0);
     rf::key_process_event(key, 0, 0);
 }
