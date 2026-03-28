@@ -195,16 +195,22 @@ static bool try_download_and_extract_awp(const std::string& rfl_filename,
                     return true;
                 });
 
-            bool extracted = gunzip_file(temp_filename.c_str(), awp_output_path.c_str());
+            // Gunzip to a temp file in the waypoint directory, then rename on success.
+            // This avoids destroying an existing valid AWP on transient failure.
+            auto awp_temp_path = awp_output_path + ".tmp";
+            bool extracted = gunzip_file(temp_filename.c_str(), awp_temp_path.c_str());
             remove(temp_filename.c_str());
 
             if (extracted) {
-                xlog::info("AWP downloaded and extracted: {}", awp_name);
-                return true;
+                remove(awp_output_path.c_str());
+                if (rename(awp_temp_path.c_str(), awp_output_path.c_str()) == 0) {
+                    xlog::info("AWP downloaded and extracted: {}", awp_name);
+                    return true;
+                }
+                xlog::error("Failed to rename AWP temp file to {}", awp_output_path);
             }
 
-            // Gunzip failed — remove the corrupt output file
-            remove(awp_output_path.c_str());
+            remove(awp_temp_path.c_str());
             xlog::error("AWP gunzip failed for {}", awp_name);
         }
         catch (const std::exception& e) {

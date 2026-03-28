@@ -59,7 +59,10 @@ std::optional<FactionFilesClient::LevelInfo> FactionFilesClient::parse_level_inf
         auto& awp = j["alpine_waypoints"];
         try {
             FactionFilesClient::AwpInfo awp_info;
-            awp_info.revision = std::stoi(awp.at("revision").get<std::string>());
+            auto& rev = awp.at("revision");
+            awp_info.revision = rev.is_number_integer()
+                ? rev.get<int>()
+                : std::stoi(rev.get<std::string>());
             awp_info.download_url = awp.at("download_url").get<std::string>();
             if (!awp_info.download_url.empty()) {
                 info.awp_info = std::move(awp_info);
