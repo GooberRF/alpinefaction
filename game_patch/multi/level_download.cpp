@@ -283,7 +283,20 @@ bool download_level_if_missing(std::string filename)
     rf::console::print("----> Level {} is not installed. Trying to download it from FactionFiles...\n", filename);
 
     FactionFilesClient ff_client;
-    auto level_info = ff_client.find_map(filename.c_str());
+    std::optional<FactionFilesClient::LevelInfo> level_info;
+    try {
+        level_info = ff_client.find_map(filename.c_str());
+    }
+    catch (const std::exception& e) {
+        std::string msg = e.what();
+        if (msg.find("404") != std::string::npos) {
+            rf::console::print("Map {} was not found on FactionFiles\n", filename);
+        }
+        else {
+            rf::console::print("Failed to query FactionFiles for {}: {}\n", filename, e.what());
+        }
+        return false;
+    }
     if (!level_info) {
         rf::console::print("Map {} was not found on FactionFiles\n", filename);
         return false;
@@ -1419,7 +1432,7 @@ ConsoleCommand2 autodl_download_awps_cmd{
     "autodl_download_awps",
     []() {
         g_alpine_game_config.autodl_download_awps = !g_alpine_game_config.autodl_download_awps;
-        rf::console::print("Autodownload AWP waypoint files is {}",
+        rf::console::print("Autodownload AWP waypoint files: {}",
             g_alpine_game_config.autodl_download_awps ? "enabled" : "disabled");
     },
     "Toggle automatic AWP waypoint file downloading via autodl",
