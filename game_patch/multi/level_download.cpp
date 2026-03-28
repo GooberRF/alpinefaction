@@ -236,7 +236,9 @@ static bool try_download_and_extract_awp(const std::string& rfl_filename,
             }
 
             remove(awp_temp_path.c_str());
-            xlog::error("AWP gunzip failed for {}", awp_name);
+            if (!extracted) {
+                xlog::error("AWP gunzip failed for {}", awp_name);
+            }
         }
         catch (const std::exception& e) {
             remove(temp_filename.c_str());
@@ -1577,9 +1579,9 @@ void poll_awp_download()
             }
         }
         else {
-            // Stale result from a different map — just clear the pending flag
-            // and let waypoints_level_init run normally for the current map
-            waypoints_on_awp_download_resolved();
+            // Stale result from a different map — only clear the pending flag
+            // without reloading waypoints (they were already loaded for the current map)
+            waypoints_set_awp_download_pending(false);
             xlog::info("AWP download result discarded (map changed from {} to {})",
                 target_map, rf::level.filename.c_str());
         }
