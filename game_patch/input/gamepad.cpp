@@ -155,6 +155,14 @@ static bool is_gamepad_menu_state()
     return !rf::local_player_entity || rf::entity_is_dying(rf::local_player_entity);
 }
 
+static bool is_gamepad_menu_navigation_state()
+{
+    const rf::GameState state = rf::gameseq_get_state();
+    if (state == rf::GS_MULTI_LIMBO || state == rf::GS_LEVEL_TRANSITION || state == rf::GS_NEW_LEVEL)
+        return false;
+    return is_gamepad_menu_state();
+}
+
 static void reset_gamepad_input_state()
 {
     // Gyro/accel state
@@ -636,11 +644,12 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
     }
 
     bool in_menu_state = is_gamepad_menu_state();
+    bool in_menu_nav_state = is_gamepad_menu_navigation_state();
     bool in_spectate_state = multi_spectate_is_spectating();
-    if (in_menu_state)
+    if (in_menu_nav_state)
         g_menu_nav.deferred_btn_down = ev.button;
 
-    bool is_menu_nav_button = in_menu_state && !in_spectate_state
+    bool is_menu_nav_button = in_menu_nav_state && !in_spectate_state
         && (ev.button == static_cast<int>(get_menu_confirm_button())
             || ev.button == static_cast<int>(get_menu_cancel_button()));
 
@@ -667,7 +676,8 @@ static void handle_gamepad_button_up(const SDL_GamepadButtonEvent& ev)
 {
     if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
 
-    g_menu_nav.deferred_btn_up = ev.button;
+    if (is_gamepad_menu_navigation_state())
+        g_menu_nav.deferred_btn_up = ev.button;
 
     if (ev.button < SDL_GAMEPAD_BUTTON_COUNT) {
         int mapped = g_button_map[ev.button];
@@ -876,7 +886,7 @@ void gamepad_do_frame()
     update_trigger_actions();
     update_stick_movement();
 
-    if (is_gamepad_menu_state())
+    if (is_gamepad_menu_navigation_state())
         gamepad_do_menu_frame();
 
     g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
