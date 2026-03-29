@@ -498,6 +498,12 @@ static void update_stick_movement()
         return;
     }
 
+    // Suppress movement input while viewing a security camera
+    if (rf::local_player && rf::local_player->view_from_handle != -1) {
+        release_movement_keys();
+        return;
+    }
+
     SDL_GamepadAxis mov_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_RIGHTX : SDL_GAMEPAD_AXIS_LEFTX;
     SDL_GamepadAxis mov_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_RIGHTY : SDL_GAMEPAD_AXIS_LEFTY;
     float mov_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_look_deadzone
@@ -1022,6 +1028,12 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         return;
     }
     if (!has_player_entity && !is_freelook) {
+        reset_gamepad_input_state();
+        return;
+    }
+
+    // Suppress look input while viewing a security camera
+    if (rf::local_player && rf::local_player->view_from_handle != -1) {
         reset_gamepad_input_state();
         return;
     }

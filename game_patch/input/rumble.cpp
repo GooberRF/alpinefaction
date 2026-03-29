@@ -1,6 +1,7 @@
 #include "rumble.h"
 #include "gamepad.h"
 #include "../rf/entity.h"
+#include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "../misc/alpine_settings.h"
 #include <algorithm>
@@ -75,6 +76,13 @@ static void rumble_weapon_do_frame()
     // While on a turret the player entity's last_fired_timestamp never advances, so keep the
     // sentinel stale to avoid a spurious pulse on dismount.
     if (rf::entity_is_on_turret(lpe)) {
+        s_last_fired_ts = -2;
+        return;
+    }
+
+    // While viewing a security camera the player is not firing; keep the sentinel stale
+    // so there is no spurious rumble pulse when the camera view is dismissed.
+    if (lpe->local_player && lpe->local_player->view_from_handle != -1) {
         s_last_fired_ts = -2;
         return;
     }
