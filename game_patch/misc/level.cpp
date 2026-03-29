@@ -119,7 +119,6 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_props_chunk_id) {
             AlpineLevelProperties::instance().deserialize(file, chunk_len);
             set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
-
             regs.eip = 0x004608EF; // loop back to begin next chunk
         }
 
