@@ -375,6 +375,32 @@ struct WeaponStayExemptionConfig
     }
 };
 
+struct DelayedItemsConfig
+{
+    std::vector<std::string> items;
+
+    // =============================================
+
+    bool add(std::string_view name)
+    {
+        auto it = std::find(items.begin(), items.end(), name);
+        if (it != items.end())
+            return false;
+
+        int idx = rf::item_lookup_type(name.data());
+        if (idx < 0)
+            return false;
+
+        items.emplace_back(name);
+        return true;
+    }
+
+    bool contains(std::string_view name) const
+    {
+        return std::find(items.begin(), items.end(), name) != items.end();
+    }
+};
+
 struct AlpineRestrictConfig
 {
     bool advertise_alpine = true;
@@ -580,6 +606,7 @@ struct AlpineServerConfigRules
     WeaponStayExemptionConfig weapon_stay_exemptions;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
+    DelayedItemsConfig delayed_items;
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
     GunGameConfig gungame;

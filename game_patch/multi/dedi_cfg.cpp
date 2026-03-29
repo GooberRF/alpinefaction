@@ -616,6 +616,17 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         }
     }
 
+    if (auto arr = t["delayed_items"].as_array()) {
+        for (auto& node : *arr) {
+            if (auto tbl = node.as_table()) {
+                if (auto nameOpt = (*tbl)["item_name"].value<std::string>()) {
+                    if (!o.delayed_items.add(*nameOpt))
+                        xlog::warn("Invalid or duplicate delayed item '{}'", *nameOpt);
+                }
+            }
+        }
+    }
+
     if (auto sub = t["force_character"].as_table())
         o.force_character = parse_force_character_config(*sub, o.force_character);
 
@@ -1888,6 +1899,22 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
             if (base || !unchanged) {
                 std::string item_name_string = item + ":";
                 std::format_to(iter, "    {:<20}                 {} ms\n", item_name_string, ms);
+            }
+        }
+    }
+
+    // Delayed items
+    bool anyDelayedChanged = (rules.delayed_items.items != b.delayed_items.items);
+
+    if (base || anyDelayedChanged) {
+        if (!rules.delayed_items.items.empty()) {
+            std::format_to(iter, "  Delayed items:\n");
+            for (auto const& name : rules.delayed_items.items) {
+                bool unchanged = std::find(b.delayed_items.items.begin(),
+                    b.delayed_items.items.end(), name) != b.delayed_items.items.end();
+                if (base || !unchanged) {
+                    std::format_to(iter, "    {}\n", name);
+                }
             }
         }
     }
