@@ -120,6 +120,8 @@ CodeInjection after_full_game_init_hook{
 CodeInjection cleanup_game_hook{
     0x004B2821,
     []() {
+        // Set abort flag so AWP download future exits quickly and doesn't block static destruction
+        cancel_awp_download();
         debug_cleanup();
     },
 };

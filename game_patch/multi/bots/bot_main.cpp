@@ -115,6 +115,7 @@ void update_bot_spawn_state(const rf::Player& player)
         g_bot_info.spawn_allowed_by_server
         && !waypoints_missing_awp_from_level_init()
         && !waypoints_awp_download_pending()
+        && !waypoints_awp_load_retry_pending()
         && in_gameplay
         && !player.is_spawn_disabled
         && !is_alive

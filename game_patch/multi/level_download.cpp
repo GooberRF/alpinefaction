@@ -267,6 +267,15 @@ static bool g_awp_download_active = false;
 static bool g_awp_download_force = false;
 static std::string g_awp_download_target_map;
 
+// Queued AWP download request (used when cancel is non-blocking and old download is still aborting)
+struct AwpDownloadRequest
+{
+    std::string rfl_filename;
+    int max_retries;
+    bool force;
+};
+static std::optional<AwpDownloadRequest> g_awp_download_queued;
+
 static bool level_file_exists(const std::string& filename)
 {
     rf::File file;
@@ -1463,15 +1472,10 @@ ConsoleCommand2 download_awp_force_cmd{
 
 void cancel_awp_download()
 {
+    g_awp_download_queued.reset();
     if (g_awp_download_active) {
         g_awp_download_abort = true;
-        if (g_awp_download_future.valid()) {
-            g_awp_download_future.wait();
-        }
-        g_awp_download_active = false;
-        g_awp_download_abort = false;
-        g_awp_download_force = false;
-        g_awp_download_target_map.clear();
+        // Non-blocking: poll_awp_download() will reap the future and discard the stale result
     }
     waypoints_set_awp_download_pending(false);
 }
@@ -1479,8 +1483,10 @@ void cancel_awp_download()
 bool start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force)
 {
     if (g_awp_download_active) {
-        xlog::warn("AWP download already in progress, skipping new request for {}", rfl_filename);
-        return false;
+        // Previous download still aborting — queue this request for when it finishes
+        g_awp_download_queued = AwpDownloadRequest{rfl_filename, max_retries, force};
+        xlog::info("AWP download queued for {} (previous download still aborting)", rfl_filename);
+        return true;
     }
 
     // Revision check on main thread to avoid calling rf::File (VPP) from a background thread.
@@ -1545,6 +1551,16 @@ bool start_awp_download_for_installed_map(const std::string& rfl_filename, int m
 void poll_awp_download()
 {
     if (!g_awp_download_active) {
+        // If a queued request is waiting and no download is active, start it now
+        if (g_awp_download_queued) {
+            auto req = std::move(g_awp_download_queued.value());
+            g_awp_download_queued.reset();
+            if (!start_awp_download_for_installed_map(req.rfl_filename, req.max_retries, req.force)) {
+                // Download failed to start — resolve pending state so bots either
+                // load local waypoints or correctly sit out
+                waypoints_on_awp_download_resolved();
+            }
+        }
         return;
     }
 
@@ -1566,6 +1582,13 @@ void poll_awp_download()
     g_awp_download_abort = false;
     std::string target_map = std::move(g_awp_download_target_map);
 
+    // If there's a queued request, this result is stale — discard it and let the
+    // queued download start on the next poll cycle
+    if (g_awp_download_queued) {
+        xlog::info("Stale AWP download reaped, queued download will start next frame");
+        return;
+    }
+
     // Check if this result is for the current level (may have changed during download)
     bool is_current_level = string_iequals(target_map, rf::level.filename.c_str());
 
@@ -1577,6 +1600,9 @@ void poll_awp_download()
             }
             else if (result == AwpDownloadResult::failed) {
                 rf::console::print("AWP waypoint file download failed\n");
+            }
+            else if (result == AwpDownloadResult::map_not_found) {
+                rf::console::print("No AWP available: map was not found on FactionFiles\n");
             }
         }
         else {

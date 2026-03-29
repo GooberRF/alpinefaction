@@ -202,6 +202,7 @@ void waypoints_level_init();
 void waypoints_level_reset();
 bool waypoints_missing_awp_from_level_init();
 bool waypoints_awp_download_pending();
+bool waypoints_awp_load_retry_pending();
 void waypoints_set_awp_download_pending(bool pending);
 void waypoints_on_awp_download_resolved();
 void waypoints_on_limbo_enter();

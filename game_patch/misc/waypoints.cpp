@@ -8336,6 +8336,11 @@ bool waypoints_awp_download_pending()
     return g_awp_download_pending;
 }
 
+bool waypoints_awp_load_retry_pending()
+{
+    return g_awp_load_retries_remaining > 0;
+}
+
 void waypoints_set_awp_download_pending(bool pending)
 {
     g_awp_download_pending = pending;
