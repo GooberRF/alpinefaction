@@ -1947,14 +1947,14 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
     SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
 }
 
-void gamepad_weapon_fire_rumble(uint16_t lo_motor, uint16_t hi_motor, uint16_t trigger_motor, uint32_t duration_ms)
+void gamepad_play_rumble(const RumbleEffect& effect)
 {
     if (!g_gamepad)
         return;
 
-    // If trigger rumble is off, fall back to standard body rumble.
-    if (!g_alpine_game_config.gamepad_trigger_rumble_enabled) {
-        gamepad_rumble(lo_motor, hi_motor, duration_ms);
+    // No trigger motor requested — plain body rumble.
+    if (!effect.trigger_motor || !g_alpine_game_config.gamepad_trigger_rumble_enabled) {
+        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
         return;
     }
 
@@ -1977,16 +1977,16 @@ void gamepad_weapon_fire_rumble(uint16_t lo_motor, uint16_t hi_motor, uint16_t t
 
     if (!use_lt && !use_rt) {
         // No fire action is bound to a trigger — fall back to standard body rumble.
-        gamepad_rumble(lo_motor, hi_motor, duration_ms);
+        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
         return;
     }
 
     // Route to the trigger motor(s) matching the active fire binding.
     // If the hardware doesn't support trigger rumble, fall back to body rumble.
-    uint16_t lt_motor = use_lt ? trigger_motor : 0;
-    uint16_t rt_motor = use_rt ? trigger_motor : 0;
-    if (!SDL_RumbleGamepadTriggers(g_gamepad, lt_motor, rt_motor, duration_ms))
-        gamepad_rumble(lo_motor, hi_motor, duration_ms);
+    uint16_t lt_motor = use_lt ? effect.trigger_motor : 0;
+    uint16_t rt_motor = use_rt ? effect.trigger_motor : 0;
+    if (!SDL_RumbleGamepadTriggers(g_gamepad, lt_motor, rt_motor, effect.duration_ms))
+        gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
 }
 
 void gamepad_sdl_init()

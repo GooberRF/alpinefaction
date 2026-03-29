@@ -3,8 +3,19 @@
 
 void gamepad_apply_patch();
 void gamepad_sdl_init();
+
+
+struct RumbleEffect
+{
+    uint16_t lo_motor      = 0; // low-frequency (left) body motor
+    uint16_t hi_motor      = 0; // high-frequency (right) body motor
+    uint16_t trigger_motor = 0; // trigger motor strength (if supported by SDL_RumbleGamepadTriggers)
+    uint32_t duration_ms   = 0;
+};
+
 void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms);
-void gamepad_weapon_fire_rumble(uint16_t lo_motor, uint16_t hi_motor, uint16_t trigger_motor, uint32_t duration_ms);
+void gamepad_play_rumble(const RumbleEffect& effect);
+
 void gamepad_do_frame();
 void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta);
 void flush_freelook_gamepad_deltas();
