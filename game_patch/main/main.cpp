@@ -232,6 +232,7 @@ FunHook<void(bool)> level_init_post_hook{
     [](bool transition) {
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
+        gamepad_stop_rumble(); // ensure no rumble bleeds in from the previous level
         waypoints_level_init();
 
         // Create corona objects (clutter + glare pairs) now that geometry is loaded

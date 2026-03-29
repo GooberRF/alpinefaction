@@ -34,52 +34,36 @@ static bool g_motion_sensors_supported = false;
 static bool g_rumble_supported         = false;
 static bool g_trigger_rumble_supported = false;
 
-// Raw gamepad camera delta accumulators.
 static float g_camera_gamepad_dx = 0.0f;
 static float g_camera_gamepad_dy = 0.0f;
 
-// Current scope/scanner sensitivity state.
 static float g_gamepad_scope_sensitivity_value = 0.25f;
 static float g_gamepad_scanner_sensitivity_value = 0.25f;
 static float g_gamepad_scope_gyro_sensitivity_value = 0.25f;
 static float g_gamepad_scanner_gyro_sensitivity_value = 0.25f;
 
-// Latest sensor samples — latched from SDL events, consumed once per frame.
-static float g_gyro_x = 0.0f, g_gyro_y = 0.0f, g_gyro_z = 0.0f;   // deg/s
-static float g_accel_x = 0.0f, g_accel_y = 0.0f, g_accel_z = 0.0f; // g-force
-static bool g_gyro_fresh = false;
-
-// Button tp action mapping: indexed by SDL_GamepadButton, value is rf::ControlConfigAction, -1 = unbound.
+// g_button_map: primary gameplay action per SDL_GamepadButton, -1 = unbound.
 static int g_button_map[SDL_GAMEPAD_BUTTON_COUNT];
-
-// Secondary button map for extended-button (>= SDL_GAMEPAD_BUTTON_MISC1) secondary bindings.
-// An extended button can be assigned alongside a standard primary to assign the action
+// g_button_map_alt: secondary binding for extended buttons (>= SDL_GAMEPAD_BUTTON_MISC1), -1 = unbound.
 static int g_button_map_alt[SDL_GAMEPAD_BUTTON_COUNT];
-
-// Trigger action map: [0] = LT action index, [1] = RT action index, -1 = unbound.
+// g_trigger_action: [0] = LT action, [1] = RT action, -1 = unbound.
 static int g_trigger_action[2] = {rf::CC_ACTION_CROUCH, rf::CC_ACTION_SECONDARY_ATTACK};
 
-// Secondary button/trigger maps for menu-only AF actions (context-sensitive actions that can share a
-// button with gameplay actions without conflicting — e.g. spectate, vote, chat/taunt/command menus).
+// Menu-only maps for context-sensitive AF actions (spectate, vote, menus) that share buttons with gameplay.
 static int g_menu_button_map[SDL_GAMEPAD_BUTTON_COUNT];
 static int g_menu_trigger_action[2] = {-1, -1};
 
 static bool g_lt_was_down = false;
 static bool g_rt_was_down = false;
 
-// Per-frame action state
 static constexpr int k_action_count = 128;
 static bool g_action_prev[k_action_count] = {};
 static bool g_action_curr[k_action_count] = {};
 
-// Gamepad scan code captured during a rebind, or -1 if none pending.
-static int g_rebind_pending_sc = -1;
-
-// True when the last input (button/key press only) came from the gamepad.
+static int g_rebind_pending_sc = -1; // scan code captured during rebind, -1 = none pending
 static bool g_last_input_was_gamepad = false;
-static float g_message_log_close_cooldown = 0.0f; // seconds
+static float g_message_log_close_cooldown = 0.0f;
 
-// menu-navigation state
 struct MenuNavState {
     int   deferred_btn_down  = -1;   // SDL button queued from poll for button-down
     int   deferred_btn_up    = -1;   // SDL button queued from poll for button-up
@@ -101,14 +85,11 @@ static float g_flickstick_prev_stick_angle = 0.0f;
 static bool g_flickstick_prev_stick_valid = false;
 static float g_flickstick_yaw_delta_filtered = 0.0f;
 
-// VMesh animation-speed scaling state 
 static rf::VMesh* g_local_player_body_vmesh = nullptr;
 static bool g_scaling_fpgun_vmesh = false;
 
-
 static bool is_gamepad_input_active()
 {
-    // Use RF's own window focus flag 
     return g_gamepad && rf::is_main_wnd_active;
 }
 
@@ -129,12 +110,10 @@ static void update_gamepad_scoped_sensitivities()
 static bool is_menu_only_action(int action_idx)
 {
     if (action_idx < 0) return false;
-    // Stock CC actions that open an overlay UI and don't conflict with active gameplay inputs.
     if (action_idx == static_cast<int>(rf::CC_ACTION_CHAT)
      || action_idx == static_cast<int>(rf::CC_ACTION_TEAM_CHAT)
      || action_idx == static_cast<int>(rf::CC_ACTION_MP_STATS))
         return true;
-    // Alpine AF actions that are context-sensitive (spectate, vote, menus).
     using rf::AlpineControlConfigAction;
     return action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_VOTE_YES))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_VOTE_NO))
@@ -168,36 +147,18 @@ static bool is_gamepad_menu_navigation_state()
 
 static void reset_gamepad_input_state()
 {
-    // Gyro/accel state
-    g_gyro_x = g_gyro_y = g_gyro_z = 0.0f;
-    g_accel_x = g_accel_y = g_accel_z = 0.0f;
-    g_gyro_fresh = false;
-
-    // Camera deltas should reset when input state resets.
     g_camera_gamepad_dx = 0.0f;
     g_camera_gamepad_dy = 0.0f;
-
-    // Action/button state
     memset(g_action_curr, 0, sizeof(g_action_curr));
-
-    // Movement state
     g_move_lx = g_move_ly = 0.0f;
     g_move_mag = 0.0f;
-
-    // Menu navigation state
     g_menu_nav = {};
-
-    // Rebind state
     g_rebind_pending_sc = -1;
-
-    // Flick stick state
     g_flickstick_has_aim = false;
     g_flickstick_target_yaw = 0.0f;
     g_flickstick_target_pitch = 0.0f;
     g_flickstick_prev_stick_valid = false;
     g_flickstick_yaw_delta_filtered = 0.0f;
-
-    // Misc input tracking
     g_lt_was_down = false;
     g_rt_was_down = false;
     g_last_input_was_gamepad = false;
@@ -312,7 +273,6 @@ static void try_open_gamepad(SDL_JoystickID id)
     try_enable_gamepad_sensors();
 }
 
-// Injects the keyboard scan code bound to `action` — gameplay only, never into menus.
 static void inject_action_key(int action, bool down)
 {
     if (!rf::gameseq_in_gameplay()) return;
@@ -334,8 +294,6 @@ static void force_release_action_key(int action)
         rf::key_process_event(sc, 0, 0);
 }
 
-// Injection sink for menu nav keys.  This can be routed to real menu actions
-// later instead of raw key events.
 static void menu_nav_inject_key(int key)
 {
     if (rf::console::console_is_visible()) return;
@@ -343,7 +301,6 @@ static void menu_nav_inject_key(int key)
     rf::key_process_event(key, 0, 0);
 }
 
-// Forward declaration for menu nav functions
 static bool is_gamepad_cancellable_menu_state(rf::GameState state);
 
 static void menu_nav_handle_confirm()
@@ -385,8 +342,6 @@ static void menu_nav_handle_cancel()
     menu_nav_inject_key(rf::KEY_ESC);
 }
 
-// Sends WM_LBUTTONUP at the current cursor position and clears the held-click state.
-// Safe to call unconditionally — no-ops if no click is held.
 static void menu_nav_release_click()
 {
     if (!g_menu_nav.lclick_held) return;
@@ -397,8 +352,6 @@ static void menu_nav_release_click()
     g_menu_nav.lclick_held = false;
 }
 
-// Moves the OS cursor by (dx, dy) screen pixels, clamped to the RF window client area,
-// and delivers a synchronous WM_MOUSEMOVE so RF's UI updates hover state this frame.
 static void menu_nav_move_cursor(int dx, int dy)
 {
     POINT pt;
@@ -418,7 +371,6 @@ static void menu_nav_move_cursor(int dx, int dy)
     SendMessage(rf::main_wnd, WM_MOUSEMOVE, 0, MAKELPARAM(client.x, client.y));
 }
 
-// Maps a D-pad button to the RF keyboard nav scan code it should inject.
 static int dpad_btn_to_navkey(int btn)
 {
     switch (btn) {
@@ -430,7 +382,6 @@ static int dpad_btn_to_navkey(int btn)
     }
 }
 
-// Syncs g_action_curr for any binding whose scan_codes contain `sc`,
 static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_action)
 {
     if (!rf::local_player) return;
@@ -441,8 +392,6 @@ static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_a
             g_action_curr[i] = down;
     }
 }
-
-// Trigger actions
 
 static void update_trigger_actions()
 {
@@ -479,7 +428,6 @@ static void update_trigger_actions()
 }
 
 
-// Returns true if a gamepad button or trigger currently held maps to `action_idx`.
 static bool is_action_held_by_button(int action_idx)
 {
     if (!g_gamepad) return false;
@@ -570,7 +518,6 @@ static void update_stick_movement()
     set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, lx > 0.0f);
 }
 
-// face button menu nav
 static SDL_GamepadButton get_menu_confirm_button()
 {
     if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A)
@@ -618,7 +565,6 @@ static bool menu_nav_on_button_down(int btn)
         menu_nav_handle_cancel();
         return true;
     }
-    // D-pad: inject keyboard nav key and arm auto-repeat.
     switch (btn) {
     case SDL_GAMEPAD_BUTTON_DPAD_UP:
     case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
@@ -636,7 +582,6 @@ static bool menu_nav_on_button_down(int btn)
     }
 }
 
-// Clears D-pad auto-repeat and releases any held cursor click on confirm button-up.
 static void menu_nav_on_button_up(int btn)
 {
     if (btn == g_menu_nav.repeat_btn)
@@ -778,32 +723,15 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
         g_last_input_was_gamepad = true;
 }
 
-static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
-{
-    if (!g_motion_sensors_supported || !is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which)
-        return;
-
-    if (ev.sensor == SDL_SENSOR_GYRO) {
-        constexpr float rad2deg = 180.0f / 3.14159265f;
-        g_gyro_x = ev.data[0] * rad2deg;
-        g_gyro_y = ev.data[1] * rad2deg;
-        g_gyro_z = ev.data[2] * rad2deg;
-        g_gyro_fresh = true;
-    } else if (ev.sensor == SDL_SENSOR_ACCEL) {
-        g_accel_x = ev.data[0] / SDL_STANDARD_GRAVITY;
-        g_accel_y = ev.data[1] / SDL_STANDARD_GRAVITY;
-        g_accel_z = ev.data[2] / SDL_STANDARD_GRAVITY;
-    }
-}
-
-// SDL event polling
 void gamepad_sdl_poll()
 {
     memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
-    SDL_UpdateGamepads();
-    // Flush SDL Gamepad events outside the gamepad range to prevent queue buildup.
+    // SDL_PumpEvents() (called via sdl_input_poll()) already triggers SDL_UpdateGamepads().
+    // Flush everything outside or beyond the range we handle to avoid queue buildup during
+    // frame stalls (level loads, autosaves).
     SDL_FlushEvents(SDL_EVENT_FIRST,
         static_cast<SDL_EventType>(static_cast<Uint32>(SDL_EVENT_GAMEPAD_AXIS_MOTION) - 1u));
+    SDL_FlushEvents(SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN, SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED);
     SDL_FlushEvents(
         static_cast<SDL_EventType>(static_cast<Uint32>(SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED) + 1u),
         SDL_EVENT_LAST);
@@ -811,7 +739,7 @@ void gamepad_sdl_poll()
     int n;
     while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
                                SDL_GETEVENT, SDL_EVENT_GAMEPAD_AXIS_MOTION,
-                               SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED)) > 0) {
+                               SDL_EVENT_GAMEPAD_REMAPPED)) > 0) {
         for (int i = 0; i < n; ++i) {
             const SDL_Event& ev = events[i];
             switch (ev.type) {
@@ -830,9 +758,6 @@ void gamepad_sdl_poll()
             case SDL_EVENT_GAMEPAD_AXIS_MOTION:
                 handle_gamepad_axis_motion(ev.gaxis);
                 break;
-            case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
-                handle_gamepad_sensor_update(ev.gsensor);
-                break;
             default:
                 break;
             }
@@ -840,7 +765,6 @@ void gamepad_sdl_poll()
     }
 }
 
-// Advances cursor position from the left-stick each frame.
 static void menu_nav_handle_cursor_frame()
 {
     constexpr float k_menu_stick_deadzone = 0.24f;
@@ -857,7 +781,6 @@ static void menu_nav_handle_cursor_frame()
     g_last_input_was_gamepad = true;
 }
 
-// Fires the next D-pad auto-repeat key injection when the hold timer expires.
 static void menu_nav_tick_dpad_repeat()
 {
     if (g_menu_nav.repeat_btn < 0 || rf::ui::options_controls_waiting_for_key) return;
@@ -868,7 +791,6 @@ static void menu_nav_tick_dpad_repeat()
     }
 }
 
-// Drives right-stick scroll ticks, including message-log direct scroll callbacks.
 static void menu_nav_tick_scroll()
 {
     constexpr float k_scroll_deadzone = 0.24f;
@@ -879,7 +801,6 @@ static void menu_nav_tick_scroll()
     }
     g_menu_nav.scroll_timer -= rf::frametime;
     if (g_menu_nav.scroll_timer > 0.0f) return;
-    // +1 for up, -1 for down to match the rest of UI scroll behavior (mouse wheel up=1).
     rf::mouse_dz = (ry < 0.0f) ? 1 : -1;
     if (rf::gameseq_get_state() == rf::GS_MESSAGE_LOG) {
         if (ry < 0.0f)
@@ -945,9 +866,18 @@ void gamepad_do_frame()
     g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
 
     if (g_motion_sensors_supported) {
-        gyro_process_motion(g_gyro_x, g_gyro_y, g_gyro_z,
-                            g_accel_x, g_accel_y, g_accel_z, rf::frametime);
-        g_gyro_fresh = false;
+        // Poll directly each frame
+        constexpr float rad2deg = 180.0f / 3.14159265f;
+        float gyro_data[3] = {};
+        float accel_data[3] = {};
+        SDL_GetGamepadSensorData(g_gamepad, SDL_SENSOR_GYRO, gyro_data, 3);
+        SDL_GetGamepadSensorData(g_gamepad, SDL_SENSOR_ACCEL, accel_data, 3);
+        gyro_process_motion(
+            gyro_data[0] * rad2deg, gyro_data[1] * rad2deg, gyro_data[2] * rad2deg,
+            accel_data[0] / SDL_STANDARD_GRAVITY,
+            accel_data[1] / SDL_STANDARD_GRAVITY,
+            accel_data[2] / SDL_STANDARD_GRAVITY,
+            rf::frametime);
     }
 
     if (g_gamepad)
@@ -995,7 +925,7 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
     yaw_delta = 0.0f;
     pitch_delta = 0.0f;
 
-    // Raw axes — no deadzone remapping so flickstick angle math avoids quadrant snapping.
+    // Raw axes — no deadzone remapping to avoid quadrant snapping in the angle math.
     float rx = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_x) / static_cast<float>(SDL_MAX_SINT16) : 0.0f;
     float ry = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_y) / static_cast<float>(SDL_MAX_SINT16) : 0.0f;
 
@@ -1017,13 +947,11 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
     static constexpr float k_flickstick_retrigger_angle = 1.04719755f; // 60 degrees
 
     if (start_flick && (!g_flickstick_has_aim || flick_angle_change > k_flickstick_retrigger_angle)) {
-        // New flick event (either initial or quick direction change).
         g_flickstick_has_aim = true;
         g_flickstick_target_yaw = wrap_angle_pi(current_yaw + flick_angle);
         g_flickstick_target_pitch = current_pitch;
         yaw_delta = angle_diff(g_flickstick_target_yaw, current_yaw);
     } else if (g_flickstick_has_aim && start_flick) {
-        // Continue current flick with relative delta movement.
         yaw_delta = flick_turn_delta;
         g_flickstick_target_yaw = wrap_angle_pi(g_flickstick_target_yaw + flick_turn_delta);
     } else if (end_flick) {
@@ -1034,10 +962,8 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
         pitch_delta = 0.0f;
     }
 
-    // Apply sweep sensitivity multiplier.
     yaw_delta *= g_alpine_game_config.gamepad_flickstick_sweep;
 
-    // Flick-stick smoothing (optional, keep turn smooth while still responsive)
     float k_flickstick_smooth = std::clamp(g_alpine_game_config.gamepad_flickstick_smoothing, 0.0f, 1.0f);
     g_flickstick_yaw_delta_filtered = g_flickstick_yaw_delta_filtered * k_flickstick_smooth
         + yaw_delta * (1.0f - k_flickstick_smooth);
@@ -1068,7 +994,6 @@ static void gamepad_apply_gyro(bool has_player_entity, float zoom_sens, float& y
     float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
     float sens = g_alpine_game_config.gamepad_gyro_sensitivity * deg2rad * rf::frametime;
 
-    // Apply separate scope/scanner modifiers for gyro path.
     float gyro_zoom_sens = 1.0f;
     if (has_player_entity) {
         if (rf::local_player->fpgun_data.scanning_for_target)
@@ -1109,16 +1034,13 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     float current_yaw   = rf::local_player_entity ? rf::local_player_entity->control_data.phb.y   : 0.0f;
     float current_pitch = rf::local_player_entity ? rf::local_player_entity->control_data.eye_phb.x : 0.0f;
 
-    // gyro and flickstick are disabled in spectator camera since it can be used for freelook.
-    const bool is_spectator_camera = is_freelook;
+    const bool is_spectator_camera = is_freelook; // gyro/flickstick disabled in spectator freelook
 
     bool is_scoped_or_scanning = has_player_entity
         && (rf::player_fpgun_is_zoomed(rf::local_player) || rf::local_player->fpgun_data.scanning_for_target);
 
-    // Keep local static scoped sensitivity values in sync
     update_gamepad_scoped_sensitivities();
 
-    // Compute joystick zoom sensitivity multiplier (gyro has its own inside gamepad_apply_gyro)
     float gamepad_zoom_sens = 1.0f;
     if (has_player_entity) {
         if (rf::local_player->fpgun_data.scanning_for_target)
@@ -1127,8 +1049,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
             gamepad_zoom_sens *= g_gamepad_scope_sensitivity_value;
     }
 
-    // If flickstick is enabled, stay in flickstick outside of spectator mode.
-    // While scope or scanner is active, use plain joystick camera for more consistent aim.
+    // Use joystick camera while scoped/scanning for consistent aim; flickstick otherwise.
     if (g_alpine_game_config.gamepad_flickstick && !is_spectator_camera && !is_scoped_or_scanning) {
         gamepad_apply_flickstick(cam_x, cam_y, current_yaw, current_pitch, yaw_delta, pitch_delta);
         yaw_delta   *= gamepad_zoom_sens;
@@ -1146,7 +1067,6 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     if (allow_gyro)
         gamepad_apply_gyro(has_player_entity, gamepad_zoom_sens, yaw_delta, pitch_delta);
 
-    // Accumulate and consume the gamepad raw angles in frame-similar style as mouse.
     g_camera_gamepad_dx += pitch_delta;
     g_camera_gamepad_dy += yaw_delta;
     pitch_delta = g_camera_gamepad_dx;
@@ -1155,7 +1075,6 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     g_camera_gamepad_dy = 0.0f;
 }
 
-// apply gamepad deltas directly to freelook camera entity.
 void flush_freelook_gamepad_deltas()
 {
     if (!is_freelook_camera() || !rf::local_player || !rf::local_player->cam)
@@ -1173,7 +1092,6 @@ void flush_freelook_gamepad_deltas()
     cam_entity->control_data.phb.y += gamepad_yaw;
 }
 
-// RF entity and input hooks
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_down_hook{
     0x00430F40,
     [](rf::ControlConfig* ccp, rf::ControlConfigAction action) -> bool {
@@ -1200,7 +1118,6 @@ FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config
     },
 };
 
-// Returns true if `entity` is the vehicle that the local player is currently riding.
 static bool is_local_player_vehicle(rf::Entity* entity)
 {
     if (!rf::local_player_entity || !rf::entity_in_vehicle(rf::local_player_entity))
@@ -1226,11 +1143,8 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
             }
         }
 
-        // Pre-sim: inject gamepad stick + gyro into vehicle rotation input (ci.rot)
-        // ci.rot expects values in the range of keyboard input (±1.0).
-        // The vehicle's own turn rate and frametime scaling apply on top.
+        // Inject stick + gyro into vehicle rotation (ci.rot, range ±1.0 like keyboard input).
         if (is_gamepad_input_active() && is_local_player_vehicle(entity)) {
-            // Stick: raw axis (-1 to 1) maps directly to keyboard-like input
             SDL_GamepadAxis rot_x = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTX  : SDL_GAMEPAD_AXIS_RIGHTX;
             SDL_GamepadAxis rot_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTY  : SDL_GAMEPAD_AXIS_RIGHTY;
             float rot_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
@@ -1241,8 +1155,7 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
             entity->ai.ci.rot.y += rx;
             entity->ai.ci.rot.x += joy_pitch_sign * ry;
 
-            // Gyro: convert deg/s to ci.rot range (±1.0) with a fixed scale factor.
-            // 1/90 means 90 deg/s of gyro rotation equals full keyboard deflection.
+            // 1/90 scale: 90 deg/s gyro = full keyboard deflection.
             if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled
                 && g_alpine_game_config.gamepad_gyro_vehicle_camera
                 && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
@@ -1274,7 +1187,6 @@ static bool fpgun_should_scale(rf::Player* player)
           || rf::player_fpgun_is_in_state_anim(player, rf::WS_RUN)))
         return false;
 
-    // Only scale while idle/run state animation is active and nothing else (fire/reload/jump).
     if (rf::player_fpgun_action_anim_is_playing(player, rf::WA_FIRE)
         || rf::player_fpgun_action_anim_is_playing(player, rf::WA_ALT_FIRE)
         || rf::player_fpgun_action_anim_is_playing(player, rf::WA_FIRE_FAIL)
@@ -2024,6 +1936,15 @@ void gamepad_play_rumble(const RumbleEffect& effect)
     uint16_t rt_motor = use_rt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
     if (!SDL_RumbleGamepadTriggers(g_gamepad, lt_motor, rt_motor, effect.duration_ms))
         gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
+}
+
+void gamepad_stop_rumble()
+{
+    if (!g_gamepad)
+        return;
+    SDL_RumbleGamepad(g_gamepad, 0, 0, 0);
+    if (g_trigger_rumble_supported)
+        SDL_RumbleGamepadTriggers(g_gamepad, 0, 0, 0);
 }
 
 void gamepad_sdl_init()

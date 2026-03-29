@@ -12,6 +12,8 @@
 
 static GamepadMotion g_motion;
 static GamepadMotionHelpers::CalibrationMode g_last_calibration_mode = static_cast<GamepadMotionHelpers::CalibrationMode>(-1);
+static float g_smooth_pitch_prev = 0.0f;
+static float g_smooth_yaw_prev   = 0.0f;
 
 void gyro_update_calibration_mode()
 {
@@ -60,6 +62,8 @@ void gyro_reset()
 {
     g_motion.ResetContinuousCalibration();
     g_motion.ResetMotion();
+    g_smooth_pitch_prev = 0.0f;
+    g_smooth_yaw_prev   = 0.0f;
     gyro_update_calibration_mode();
 }
 
@@ -67,6 +71,8 @@ void gyro_reset_full()
 {
     g_motion.ResetContinuousCalibration();
     g_motion.ResetMotion();
+    g_smooth_pitch_prev = 0.0f;
+    g_smooth_yaw_prev   = 0.0f;
     // Invalidate the mode cache so gyro_update_calibration_mode() unconditionally
     g_last_calibration_mode = static_cast<GamepadMotionHelpers::CalibrationMode>(-1);
     gyro_update_calibration_mode();
@@ -183,9 +189,6 @@ void gyro_apply_tightening(float& pitch_dps, float& yaw_dps)
         }
     }
 }
-
-static float g_smooth_pitch_prev = 0.0f;
-static float g_smooth_yaw_prev   = 0.0f;
 
 void gyro_apply_smoothing(float& pitch_dps, float& yaw_dps)
 {
