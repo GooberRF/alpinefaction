@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -403,12 +404,10 @@ CodeInjection server_browser_idle_status_injection{
             return;
 
         int humans = std::max(0, static_cast<int>(entry.current_players) - extra->num_bots);
-        auto text = std::format("{} bot{} and {} human player{}",
+        std::snprintf(s_server_browser_status_buf, sizeof(s_server_browser_status_buf),
+            "%d bot%s and %d human player%s",
             extra->num_bots, extra->num_bots == 1 ? "" : "s",
             humans, humans == 1 ? "" : "s");
-
-        strncpy(s_server_browser_status_buf, text.c_str(), sizeof(s_server_browser_status_buf) - 1);
-        s_server_browser_status_buf[sizeof(s_server_browser_status_buf) - 1] = '\0';
     },
 };
 
