@@ -21,6 +21,10 @@
 #include "../rf/parse.h"
 #include "../rf/level.h"
 
+// Forward declarations (used by hold open init before definitions)
+static inline rf::MoverKeyframe* KF(const rf::Mover* m, int i);
+static inline int count_keyframes(const rf::Mover* m);
+
 // Hold Open runtime tracking — populated after level load from first-keyframe UIDs
 static std::unordered_set<int> g_hold_open_handles;
 static bool g_hold_open_needs_init = false;
@@ -50,6 +54,8 @@ static void alpine_mover_do_hold_open_init()
             continue;
 
         auto* mover = static_cast<rf::Mover*>(obj);
+        if (count_keyframes(mover) <= 0)
+            continue;
         auto* first_kf = KF(mover, 0);
         if (!first_kf)
             continue;
@@ -757,6 +763,7 @@ static void alpine_mover_process_pre(rf::Mover* mp)
         // retaining stale velocity from the last moving frame
         mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
         mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
+        mp->cur_vel = 0.0f;
         // pin position to current keyframe so next_pos doesn't remain stale
         const int cur = mp->start_at_keyframe;
         if (cur >= 0 && cur < count)
