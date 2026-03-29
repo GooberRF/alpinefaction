@@ -240,7 +240,8 @@ template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::true_type {};
 
 // Per-server extra data parsed from the AF game_info v2 extension
-struct AFGameInfoExtra {
+struct AFGameInfoExtra
+{
     uint8_t version_major = 0;
     uint8_t version_minor = 0;
     uint8_t version_patch = 0;

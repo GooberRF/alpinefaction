@@ -602,8 +602,12 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         // Parse AF extension from the stashed packet data
         if (!g_game_info_stashed.empty()) {
             AFGameInfoExtra extra{};
+            uint64_t key = addr_key(addr);
             if (parse_game_info_af_tail(g_game_info_stashed.data(), g_game_info_stashed.size(), extra)) {
-                g_server_browser_extra[addr_key(addr)] = std::move(extra);
+                g_server_browser_extra[key] = std::move(extra);
+            }
+            else {
+                g_server_browser_extra.erase(key);
             }
             g_game_info_stashed.clear();
         }
