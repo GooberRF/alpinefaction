@@ -20,7 +20,7 @@
 #include "../rf/parse.h"
 #include "../rf/level.h"
 
-// Hold Open runtime tracking — populated after level load from brush UIDs
+// Hold Open runtime tracking — populated after level load from first-keyframe UIDs
 static std::unordered_set<int> g_hold_open_handles;
 static bool g_hold_open_needs_init = false;
 
@@ -934,9 +934,9 @@ CodeInjection mover_interpolate_objects_force_orient_rot_patch{
 // We inject at the JZ to override: if mover_is_door was false but holds_open is true, don't skip.
 // Stock mover_process_pre door bounce: the sequence at 0x00469B8E is:
 //   PUSH ESI; CALL mover_is_door; ADD ESP,4; TEST AL,AL; JZ skip_bounce
-// The short JZ (0x74) can't be hooked directly, so we inject at the PUSH ESI and replace the
-// entire mover_is_door check. We call mover_is_door ourselves plus alpine_mover_holds_open,
-// then set eip to either proceed with bounce (0x469B9B) or skip it (0x469BCC).
+// The short JZ (0x74) can't be hooked directly, so we inject at the PUSH ESI.
+// If alpine_mover_holds_open is true, skip straight to the bounce checks (0x469B9B).
+// Otherwise, fall through to the trampoline which runs the stock mover_is_door path.
 CodeInjection mover_stock_door_bounce_hold_open_patch{
     0x00469B8E,
     [](auto& regs) {
