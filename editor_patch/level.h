@@ -553,7 +553,7 @@ struct AlpineLevelProperties
                 breakable_materials[i] = mat;
             }
 
-            // Hold open mover brush UIDs
+            // Hold open first-keyframe UIDs
             std::uint32_t ho_count = 0;
             if (!read_bytes(&ho_count, sizeof(ho_count)))
                 return;

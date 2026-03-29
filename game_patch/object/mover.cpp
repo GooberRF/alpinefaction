@@ -43,6 +43,7 @@ static void alpine_mover_do_hold_open_init()
         return;
 
     // Resolve keyframe UIDs to mover handles by matching against each mover's first keyframe UID
+    std::unordered_set<int32_t> target_uids(kf_uids.begin(), kf_uids.end());
     for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
         if (obj->type != rf::OT_MOVER)
             continue;
@@ -51,12 +52,8 @@ static void alpine_mover_do_hold_open_init()
         if (mover->keyframes.size() <= 0)
             continue;
 
-        int first_kf_uid = mover->keyframes[0]->uid;
-        for (int32_t target_uid : kf_uids) {
-            if (first_kf_uid == target_uid) {
-                g_hold_open_handles.insert(mover->handle);
-                break;
-            }
+        if (target_uids.count(mover->keyframes[0]->uid)) {
+            g_hold_open_handles.insert(mover->handle);
         }
     }
 }
@@ -739,7 +736,6 @@ static void alpine_mover_process_pre(rf::Mover* mp)
         // allows mover_interpolate_objects to ensure child brushes/objects also have their vel zeroed when paused
         // otherwise they would keep their last frame vel and players standing on them would be pushed
         mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
-
         mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
 
         const int loop_instance = mp->sound_instances[1];

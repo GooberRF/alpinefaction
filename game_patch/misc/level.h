@@ -153,7 +153,7 @@ struct AlpineLevelProperties
             }
             xlog::trace("[AlpineLevelProps] GAME: total breakable entries loaded={}", bcount);
 
-            // Hold open mover brush UIDs
+            // Hold open first-keyframe UIDs
             uint32_t ho_count = 0;
             if (!read_bytes(&ho_count, sizeof(ho_count)))
                 return;

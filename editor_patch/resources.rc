@@ -686,8 +686,8 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Preview", IDC_KF_PREVIEW, 117, 61, 48, 14
     AUTOCHECKBOX    "Force Orient", IDC_KF_FORCE_ORIENT, 183, 32, 61, 10
     AUTOCHECKBOX    "No Player Collide", IDC_KF_NO_PLAYER_COLLIDE, 183, 43, 72, 10
-    PUSHBUTTON      "Propogate Sounds", IDC_KF_PROPAGATE_SOUNDS, 260, 16, 74, 14
-    PUSHBUTTON      "Propogate Properties", IDC_KF_PROPAGATE_PROPS, 260, 33, 74, 14
+    PUSHBUTTON      "Propagate Sounds", IDC_KF_PROPAGATE_SOUNDS, 260, 16, 74, 14
+    PUSHBUTTON      "Propagate Properties", IDC_KF_PROPAGATE_PROPS, 260, 33, 74, 14
     PUSHBUTTON      "Stop Sounds", IDC_KF_STOP_SOUNDS, 260, 51, 50, 14
 
     // Alpine extension
