@@ -137,7 +137,7 @@ struct af_game_info_ext_v2
 {
     uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
     uint16_t ext_size = sizeof(af_game_info_ext_v2); // size of this fixed struct
-    uint8_t ext_version = 1;
+    uint8_t ext_version = 3; // matches gi_req_ext_ver that triggers this response
     uint8_t version_major = VERSION_MAJOR;
     uint8_t version_minor = VERSION_MINOR;
     uint8_t version_patch = VERSION_PATCH;
