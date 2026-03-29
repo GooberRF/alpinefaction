@@ -16,9 +16,10 @@ env:
 jobs:
   build-mingw:
     runs-on: ubuntu-24.04
-    # ubuntu-24.04 contains an outdated MinGW.
+    # GCC 14 MinGW required for C++23 deducing-this (game_patch targets cxx_std_23).
+    # Use mirror.gcr.io to avoid Docker Hub rate limits on shared GitHub runners.
     container:
-      image: debian:trixie
+      image: mirror.gcr.io/library/debian:trixie
 
     steps:
     - uses: actions/checkout@v4

@@ -83,6 +83,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `autodl_blur_background` console command to toggle the behaviour of the autodownload background
 - Add `cl_chat` and `spectate_cinematic_mode` console commands
 - Add `D3D11 Renderer` and `D3D8/9 Renderer` scope options to `Scope_Gate` event
+- Add `Hold Open` property to movers
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -139,6 +140,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix triangulated and ngon faces on breakable detail brushes not breaking properly in version >= 304 levels
 - Fix vertex lighting data not being properly built for debris static meshes
 - Fix `Max FPS` menu button not immediately applying the new value when set
+- Fix non-legacy translation movers maintaining velocity after stopping
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

@@ -586,10 +586,30 @@ CodeInjection CDedLevel_SaveLevel_patch{
         auto& level = *static_cast<CDedLevel*>(regs.edi);
         auto& file = *static_cast<rf::File*>(regs.esi);
 
-        // Compute room UIDs from brush UIDs before serializing
+        // Compute room UIDs and scrub stale data before serializing
         auto& alpine_level_props = level.GetAlpineLevelProperties();
         compute_geoable_room_uids(level, alpine_level_props);
         compute_breakable_room_uids(level, alpine_level_props);
+
+        // Scrub hold_open_keyframe_uids: remove entries that don't match any
+        // moving group's first keyframe (e.g. deleted movers, UID changes from undo)
+        {
+            std::unordered_set<int32_t> valid_kf_uids;
+            auto& mg = level.moving_groups;
+            for (int i = 0; i < mg.size; i++) {
+                auto* group = mg[i];
+                if (group && group->is_moving_group() && group->keyframes &&
+                    group->keyframes->size > 0) {
+                    DedObject* first_kf = (*group->keyframes)[0];
+                    if (first_kf)
+                        valid_kf_uids.insert(first_kf->uid);
+                }
+            }
+            auto& uids = alpine_level_props.hold_open_keyframe_uids;
+            uids.erase(std::remove_if(uids.begin(), uids.end(),
+                [&valid_kf_uids](int32_t uid) { return valid_kf_uids.find(uid) == valid_kf_uids.end(); }),
+                uids.end());
+        }
 
         auto start_pos = level.BeginRflSection(file, alpine_props_chunk_id);
         alpine_level_props.Serialize(file);

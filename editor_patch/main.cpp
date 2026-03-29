@@ -566,6 +566,10 @@ CodeInjection CFormView_PostCreate_injection{
     },
 };
 
+// Forward declarations for Keyframe Properties dialog hook (defined after group panel code)
+static HHOOK g_kf_props_msg_hook = nullptr;
+static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lParam);
+
 CodeInjection CDialog_DoModal_injection{
     0x0052F461,
     [](auto& regs) {
@@ -576,13 +580,18 @@ CodeInjection CDialog_DoModal_injection{
             lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_FACE_SPLIT) ||
-            lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MIRROR)
+            lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MIRROR) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_KEYFRAME_PROPERTIES)
         ) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
         }
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES)) {
             g_brush_props_msg_hook = SetWindowsHookExA(
                 WH_CALLWNDPROCRET, BrushPropsMsgHookProc, nullptr, GetCurrentThreadId());
+        }
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_KEYFRAME_PROPERTIES)) {
+            g_kf_props_msg_hook = SetWindowsHookExA(
+                WH_CALLWNDPROCRET, KfPropsMsgHookProc, nullptr, GetCurrentThreadId());
         }
     },
 };
@@ -997,6 +1006,124 @@ static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
         }
     }
     return CallWindowProcA(g_group_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+// Keyframe Properties dialog (280) — Alpine "Hold Open" checkbox integration
+// Uses the same WH_CALLWNDPROCRET + subclass pattern as the brush properties dialog.
+// g_kf_props_msg_hook is forward-declared before CDialog_DoModal_injection.
+static WNDPROC g_kf_props_orig_wndproc = nullptr;
+
+// Find the moving group being edited by matching CDedLevel::selection against group members.
+// When the keyframe properties dialog opens, the group's objects/keyframes are in the selection.
+static GroupEntry* find_moving_group_from_selection()
+{
+    auto* level = CDedLevel::Get();
+    if (!level)
+        return nullptr;
+
+    auto& sel = level->selection; // VArray<DedObject*> at +0x298
+    if (sel.size <= 0)
+        return nullptr;
+
+    DedObject* selected = sel[0];
+    if (!selected)
+        return nullptr;
+
+    // Match against moving groups: check if any group's objects or keyframes contain this DedObject
+    auto& mg = level->moving_groups;
+    for (int i = 0; i < mg.size; i++) {
+        auto* group = mg[i];
+        if (!group || !group->is_moving_group())
+            continue;
+
+        for (int j = 0; j < group->objects.size; j++) {
+            if (group->objects[j] == selected)
+                return group;
+        }
+
+        if (group->keyframes) {
+            for (int j = 0; j < group->keyframes->size; j++) {
+                if ((*group->keyframes)[j] == selected)
+                    return group;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+// Get the UID of the first keyframe in the moving group being edited.
+// Keyframe UIDs are stable between editor (DedObject::uid) and game (MoverKeyframe::uid).
+static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
+{
+    auto* group = find_moving_group_from_selection();
+    if (!group || !group->keyframes || group->keyframes->size <= 0)
+        return -1;
+
+    DedObject* first_kf = (*group->keyframes)[0];
+    return first_kf ? first_kf->uid : -1;
+}
+
+static LRESULT CALLBACK KfPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
+        // Read Hold Open checkbox state and update Alpine level properties
+        bool hold_open = (IsDlgButtonChecked(hwnd, IDC_KF_HOLD_OPEN) == BST_CHECKED);
+        int kf_uid = get_editing_group_first_keyframe_uid(hwnd);
+
+        if (kf_uid >= 0) {
+            auto* level = CDedLevel::Get();
+            if (level) {
+                auto& props = level->GetAlpineLevelProperties();
+                auto& uids = props.hold_open_keyframe_uids;
+                auto it = std::find(uids.begin(), uids.end(), static_cast<int32_t>(kf_uid));
+                if (hold_open && it == uids.end()) {
+                    uids.push_back(static_cast<int32_t>(kf_uid));
+                }
+                else if (!hold_open && it != uids.end()) {
+                    uids.erase(it);
+                }
+            }
+        }
+    }
+    return CallWindowProcA(g_kf_props_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION) {
+        auto* msg = reinterpret_cast<CWPRETSTRUCT*>(lParam);
+        if (msg->message == WM_INITDIALOG) {
+            // Always unhook — even if the control isn't found (resource override failed)
+            UnhookWindowsHookEx(g_kf_props_msg_hook);
+            g_kf_props_msg_hook = nullptr;
+
+            if (GetDlgItem(msg->hwnd, IDC_KF_HOLD_OPEN)) {
+                // Set checkbox state from Alpine level properties
+                int kf_uid = get_editing_group_first_keyframe_uid(msg->hwnd);
+                bool hold_open = false;
+
+                if (kf_uid >= 0) {
+                    auto* level = CDedLevel::Get();
+                    if (level) {
+                        auto& props = level->GetAlpineLevelProperties();
+                        auto& uids = props.hold_open_keyframe_uids;
+                        hold_open = std::find(uids.begin(), uids.end(),
+                                              static_cast<int32_t>(kf_uid)) != uids.end();
+                    }
+                }
+
+                CheckDlgButton(msg->hwnd, IDC_KF_HOLD_OPEN,
+                               hold_open ? BST_CHECKED : BST_UNCHECKED);
+
+                // Subclass to intercept OK
+                g_kf_props_orig_wndproc = reinterpret_cast<WNDPROC>(
+                    SetWindowLongPtrA(msg->hwnd, GWLP_WNDPROC,
+                                      reinterpret_cast<LONG_PTR>(KfPropsSubclassProc)));
+            }
+        }
+    }
+    return CallNextHookEx(g_kf_props_msg_hook, nCode, wParam, lParam);
 }
 
 // Inject after the CALL to CDedLevel::SetEditMode in the mode combobox handler

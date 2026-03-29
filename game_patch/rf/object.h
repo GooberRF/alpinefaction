@@ -70,6 +70,7 @@ namespace rf
         OF_WEAPON_ONLY_COLLIDE = 0x40000, // only collide with weapons (type 2)
         OF_IN_LIQUID = 0x80000,
         OF_HAS_ALPHA = 0x100000,
+        OF_WAS_TELEPORTED = 0x4000000, // forces physics/position update this frame
     };
 
     struct ObjInterp
