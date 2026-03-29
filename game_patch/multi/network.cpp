@@ -1299,14 +1299,15 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
             return send_game_info_packet_hook.call_target(addr, buf.get(), new_len);
         }
         else {
-            // Legacy client: no extension, copy buffer and remap gametype to avoid crashing
-            auto buf = std::make_unique<std::byte[]>(len);
-            std::memcpy(buf.get(), data, len);
-            if (uint8_t* gt = locate_game_type_field(reinterpret_cast<uint8_t*>(buf.get()), len)) {
-                if (*gt > 2)
-                    *gt = 2;
+            // Legacy client: no extension, remap gametype > 2 to avoid crashing
+            const uint8_t* gt = locate_game_type_field(reinterpret_cast<uint8_t*>(data), len);
+            if (gt && *gt > 2) {
+                auto buf = std::make_unique<std::byte[]>(len);
+                std::memcpy(buf.get(), data, len);
+                reinterpret_cast<uint8_t*>(buf.get())[gt - reinterpret_cast<uint8_t*>(data)] = 2;
+                return send_game_info_packet_hook.call_target(addr, buf.get(), len);
             }
-            return send_game_info_packet_hook.call_target(addr, buf.get(), len);
+            return send_game_info_packet_hook.call_target(addr, data, len);
         }
     },
 };

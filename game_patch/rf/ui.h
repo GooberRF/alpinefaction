@@ -313,10 +313,10 @@ namespace rf::ui
     static auto& join_game_server_list_up_on_click = addr_as_ref<void(int x, int y)>(0x0044B4C0);
     static auto& join_game_server_list_down_on_click = addr_as_ref<void(int x, int y)>(0x0044B520);
     static auto& join_game_current_gadget = addr_as_ref<int>(0x0063EE78);
-    static auto& server_browser_selected_index = addr_as_ref<int>(0x0063f644);
-    static auto& server_browser_display_count = addr_as_ref<int>(0x0063f578);
-    static auto& server_browser_sorted_indices = addr_as_ref<int*>(0x0063f634);
-    static auto& server_browser_server_list = addr_as_ref<ServerListEntry*>(0x0063f62c);
+    static auto& server_browser_selected_index = addr_as_ref<int>(0x0063F644);
+    static auto& server_browser_display_count = addr_as_ref<int>(0x0063F578);
+    static auto& server_browser_sorted_indices = addr_as_ref<int*>(0x0063F634);
+    static auto& server_browser_server_list = addr_as_ref<ServerListEntry*>(0x0063F62C);
 
     // load game
     static auto& load_game_up_on_click = addr_as_ref<void(int x, int y)>(0x0043F8C0);
