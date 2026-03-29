@@ -572,6 +572,9 @@ static bool parse_game_info_af_tail(const uint8_t* pkt, size_t pkt_len, AFGameIn
     out.version_type = ext->version_type;
     out.af_flags = ext->af_flags;
     out.num_bots = ext->num_bots;
+    out.num_human_players = ext->num_human_players;
+    out.num_browsers = ext->num_browsers;
+    out.num_total_clients = ext->num_total_clients;
 
     // level filename follows the fixed struct
     const uint8_t* fname_start = ext_start + ext_size;
@@ -1241,13 +1244,22 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
             af_game_info_ext_v2 ext{};
             ext.set_flags(g_game_info_server_flags);
 
-            // count bots
+            // count players by type
             uint8_t num_bots = 0;
+            uint8_t num_human_players = 0;
+            uint8_t num_browsers = 0;
             for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
-                if (p.is_bot)
+                if (p.is_browser)
+                    ++num_browsers;
+                else if (p.is_bot)
                     ++num_bots;
+                else
+                    ++num_human_players;
             }
             ext.num_bots = num_bots;
+            ext.num_human_players = num_human_players;
+            ext.num_browsers = num_browsers;
+            ext.num_total_clients = static_cast<uint8_t>(num_bots + num_human_players + num_browsers);
 
             // build tail: [ext][fname\0][AFFooter]
             size_t fname_actual = fname_len ? fname_len : 1;

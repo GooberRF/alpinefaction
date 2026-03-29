@@ -128,7 +128,7 @@ struct af_sign_packet_ext
 };
 
 // Appended to game_info packets (v2, sent to gi_req_ext_ver >= 3 clients)
-// Layout: [af_game_info_ext_v2][level_filename\0]
+// On-wire layout: [af_game_info_ext_v2][level_filename\0][AFFooter]
 // ext_size covers the fixed struct only; the variable-length filename follows after it.
 // Future versions can add fields to the struct (incrementing ext_version and ext_size),
 // and older parsers skip to offset ext_size to find the filename.
@@ -144,6 +144,9 @@ struct af_game_info_ext_v2
     uint8_t version_type = VERSION_TYPE;
     uint32_t af_flags = 0;
     uint8_t num_bots = 0;
+    uint8_t num_human_players = 0; // excludes bots and browsers
+    uint8_t num_browsers = 0;
+    uint8_t num_total_clients = 0; // bots + humans + browsers
 
     void set_flags(const AFGameInfoFlags& flags)
     {
@@ -151,7 +154,7 @@ struct af_game_info_ext_v2
     }
 };
 #pragma pack(pop)
-static_assert(sizeof(af_game_info_ext_v2) == 16, "unexpected af_game_info_ext_v2 size");
+static_assert(sizeof(af_game_info_ext_v2) == 19, "unexpected af_game_info_ext_v2 size");
 
 struct AlpineFactionJoinAcceptPacketExt
 {
@@ -245,6 +248,9 @@ struct AFGameInfoExtra {
     uint32_t af_flags = 0;
     std::string level_filename;
     uint8_t num_bots = 0;
+    uint8_t num_human_players = 0;
+    uint8_t num_browsers = 0;
+    uint8_t num_total_clients = 0;
 };
 
 // Look up AF extra data for a server by address. Returns nullptr if not found.

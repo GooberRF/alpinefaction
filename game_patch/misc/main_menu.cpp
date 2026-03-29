@@ -388,7 +388,9 @@ static char s_server_browser_status_buf[96];
 CodeInjection server_browser_idle_status_injection{
     0x0044dc6f,
     [](auto& regs) {
-        s_server_browser_status_buf[0] = '\0';
+        // default: preserve the stock idle text (e.g. "Pinging servers...")
+        static auto& stock_idle_buf = addr_as_ref<char[96]>(0x0063f6e4);
+        std::memcpy(s_server_browser_status_buf, stock_idle_buf, sizeof(s_server_browser_status_buf));
 
         if (rf::ui::server_browser_display_count == 0)
             clear_server_browser_extra();
@@ -403,11 +405,12 @@ CodeInjection server_browser_idle_status_injection{
         if (!extra)
             return;
 
-        int humans = std::max(0, static_cast<int>(entry.current_players) - extra->num_bots);
         std::snprintf(s_server_browser_status_buf, sizeof(s_server_browser_status_buf),
-            "%d bot%s and %d human player%s",
+            "%d client%s: %d human%s, %d bot%s, %d browser%s",
+            extra->num_total_clients, extra->num_total_clients == 1 ? "" : "s",
+            extra->num_human_players, extra->num_human_players == 1 ? "" : "s",
             extra->num_bots, extra->num_bots == 1 ? "" : "s",
-            humans, humans == 1 ? "" : "s");
+            extra->num_browsers, extra->num_browsers == 1 ? "" : "s");
     },
 };
 
