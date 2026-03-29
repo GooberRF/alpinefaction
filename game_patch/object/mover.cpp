@@ -66,10 +66,6 @@ static void alpine_mover_do_hold_open_init()
     }
 }
 
-void alpine_mover_init_hold_open()
-{
-    alpine_mover_do_hold_open_init();
-}
 
 bool alpine_mover_holds_open(const rf::Mover* mp)
 {
