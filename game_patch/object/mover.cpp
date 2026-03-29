@@ -13,6 +13,7 @@
 #include <xlog/xlog.h>
 #include "mover.h"
 #include "../misc/level.h"
+#include "../misc/misc.h"
 #include "../rf/os/frametime.h"
 #include "../rf/event.h"
 #include "../rf/mover.h"
@@ -39,7 +40,7 @@ static void alpine_mover_do_hold_open_init()
         return;
 
     // Hold Open data can only exist in v304+ levels with an Alpine props chunk
-    if (rf::level.version < 304)
+    if (!rfl_version_minimum(304))
         return;
 
     // Resolve keyframe UIDs to mover handles by matching against each mover's first keyframe UID
