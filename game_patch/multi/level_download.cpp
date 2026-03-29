@@ -1,10 +1,13 @@
 #include <stdexcept>
+#include <atomic>
 #include <future>
 #include <thread>
+#include <filesystem>
 #include <fstream>
 #include <format>
 #include <windows.h>
 #include <unzip.h>
+#include <zlib.h>
 #include <stb_image.h>
 #include <xlog/xlog.h>
 #include <unordered_set>
@@ -31,6 +34,7 @@
 #include "multi.h"
 #include "faction_files.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 
 // Resolution of the blurred edge-fill bitmap (box-filter downscale of the map image)
 constexpr int edge_fill_blur_size = 64;
@@ -129,6 +133,149 @@ static void load_packfiles(const std::vector<std::string>& packfiles)
     rf::vpackfile_set_loading_user_maps(false);
 }
 
+static bool gunzip_file(const char* gz_path, const char* output_path)
+{
+    gzFile gz = gzopen(gz_path, "rb");
+    if (!gz) {
+        xlog::error("gzopen failed: {}", gz_path);
+        return false;
+    }
+
+    std::ofstream out(output_path, std::ios::binary);
+    if (!out) {
+        xlog::error("Cannot open output file: {}", output_path);
+        gzclose(gz);
+        return false;
+    }
+
+    char buf[4096];
+    int bytes_read;
+    while ((bytes_read = gzread(gz, buf, sizeof(buf))) > 0) {
+        out.write(buf, bytes_read);
+        if (out.fail()) {
+            xlog::error("Write failed during gunzip of: {}", gz_path);
+            gzclose(gz);
+            return false;
+        }
+    }
+
+    if (bytes_read < 0) {
+        int gz_err;
+        const char* gz_msg = gzerror(gz, &gz_err);
+        xlog::error("gzread failed for {}: {} (code {})", gz_path, gz_msg ? gz_msg : "unknown", gz_err);
+        gzclose(gz);
+        return false;
+    }
+
+    out.close();
+    if (out.fail()) {
+        xlog::error("Failed to close/flush output file during gunzip of: {}", gz_path);
+        gzclose(gz);
+        return false;
+    }
+
+    gzclose(gz);
+    return true;
+}
+
+static bool try_download_and_extract_awp(const std::string& rfl_filename,
+    const FactionFilesClient::AwpInfo& awp_info, int max_retries = 1,
+    const std::atomic<bool>* abort_flag = nullptr)
+{
+    auto awp_name = std::string{get_filename_without_ext(rfl_filename.c_str())} + ".awp";
+    auto waypoint_dir = get_waypoint_dir();
+    if (!waypoint_dir) {
+        xlog::error("Failed to get waypoint directory for AWP extraction of {}", awp_name);
+        return false;
+    }
+
+    auto awp_output_path = std::format("{}\\{}", waypoint_dir.value(), awp_name);
+
+    for (int attempt = 1; attempt <= max_retries; ++attempt) {
+        if (abort_flag && abort_flag->load()) {
+            xlog::info("AWP download aborted for {}", awp_name);
+            return false;
+        }
+        auto temp_filename = get_temp_path_name("AF_AWP_");
+        try {
+            xlog::info("AWP download attempt {}/{} for {} (rev {})",
+                attempt, max_retries, awp_name, awp_info.revision);
+
+            FactionFilesClient ff_client;
+            ff_client.download_map(temp_filename.c_str(), awp_info.download_url,
+                [abort_flag](unsigned, std::chrono::milliseconds) {
+                    if (abort_flag && abort_flag->load()) {
+                        return false;
+                    }
+                    return true;
+                });
+
+            // Gunzip to a unique temp file in the waypoint directory, then rename on success.
+            // Unique temp names prevent races when multiple bot processes share the same directory.
+            auto awp_temp_name = get_temp_path_name("AF_AWP_");
+            auto awp_temp_path = std::format("{}\\{}", waypoint_dir.value(),
+                std::filesystem::path(awp_temp_name).filename().string());
+            remove(awp_temp_name.c_str()); // Clean up the zero-byte file created in %TEMP%
+            bool extracted = gunzip_file(temp_filename.c_str(), awp_temp_path.c_str());
+            remove(temp_filename.c_str());
+
+            if (extracted) {
+                // Atomically replace any existing AWP. MoveFileExA with MOVEFILE_REPLACE_EXISTING
+                // avoids the window where the file is missing, which matters when multiple bot
+                // processes share the same directory.
+                if (MoveFileExA(awp_temp_path.c_str(), awp_output_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+                    xlog::info("AWP downloaded and extracted: {}", awp_name);
+                    return true;
+                }
+                // Move failed — another process may have beaten us to it
+                remove(awp_temp_path.c_str());
+                if (std::ifstream{awp_output_path}.good()) {
+                    xlog::info("AWP file already placed by another process: {}", awp_name);
+                    return true;
+                }
+                xlog::error("Failed to move AWP temp file to {}", awp_output_path);
+            }
+
+            remove(awp_temp_path.c_str());
+            if (!extracted) {
+                xlog::error("AWP gunzip failed for {}", awp_name);
+            }
+        }
+        catch (const std::exception& e) {
+            remove(temp_filename.c_str());
+            xlog::error("AWP download attempt {}/{} failed for {}: {}",
+                attempt, max_retries, awp_name, e.what());
+        }
+    }
+
+    xlog::error("All AWP download attempts failed for {}", awp_name);
+    return false;
+}
+
+enum class AwpDownloadResult
+{
+    map_not_found = -2,
+    not_needed = -1,
+    failed = 0,
+    success = 1,
+};
+
+// Background AWP download state for Flow 2 (installed maps)
+static std::future<AwpDownloadResult> g_awp_download_future;
+static std::atomic<bool> g_awp_download_abort{false};
+static bool g_awp_download_active = false;
+static bool g_awp_download_force = false;
+static std::string g_awp_download_target_map;
+
+// Queued AWP download request (used when cancel is non-blocking and old download is still aborting)
+struct AwpDownloadRequest
+{
+    std::string rfl_filename;
+    int max_retries;
+    bool force;
+};
+static std::optional<AwpDownloadRequest> g_awp_download_queued;
+
 static bool level_file_exists(const std::string& filename)
 {
     rf::File file;
@@ -148,9 +295,22 @@ bool download_level_if_missing(std::string filename)
     rf::console::print("----> Level {} is not installed. Trying to download it from FactionFiles...\n", filename);
 
     FactionFilesClient ff_client;
-    auto level_info = ff_client.find_map(filename.c_str());
+    std::optional<FactionFilesClient::LevelInfo> level_info;
+    try {
+        level_info = ff_client.find_map(filename.c_str());
+    }
+    catch (const std::exception& e) {
+        std::string msg = e.what();
+        if (msg.find("404") != std::string::npos) {
+            rf::console::print("Map {} was not found on FactionFiles\n", filename);
+        }
+        else {
+            rf::console::print("Failed to query FactionFiles for {}: {}\n", filename, e.what());
+        }
+        return false;
+    }
     if (!level_info) {
-        rf::console::print("--> Level {} was not found on FactionFiles.\n", filename);
+        rf::console::print("Map {} was not found on FactionFiles\n", filename);
         return false;
     }
 
@@ -169,6 +329,23 @@ bool download_level_if_missing(std::string filename)
             xlog::error("--> No packfiles were found for level {}", filename);
             rf::console::print("\n");
             return false;
+        }
+
+        // Download AWP file if available (non-fatal)
+        // Bot clients always download; normal clients require the setting; dedis never auto-download
+        if (level_info->awp_info.has_value() && !rf::is_dedicated_server
+            && (client_bot_launch_enabled() || g_alpine_game_config.autodl_download_awps)) {
+            try {
+                if (try_download_and_extract_awp(filename, level_info->awp_info.value())) {
+                    rf::console::print("--> AWP waypoint file downloaded for {}\n", filename);
+                }
+                else {
+                    rf::console::print("--> AWP waypoint file download failed for {}\n", filename);
+                }
+            }
+            catch (const std::exception& e) {
+                rf::console::print("--> AWP download failed for {}: {}\n", filename, e.what());
+            }
         }
 
         rf::console::print("--> Installing downloaded level: {}\n", filename);
@@ -206,6 +383,9 @@ public:
         std::optional<FactionFilesClient::LevelInfo> level_info;
         std::vector<unsigned char> image_data;
         std::vector<std::string> result_packfiles;
+        std::atomic<bool> awp_downloading{false};
+        std::atomic<bool> awp_downloaded{false};
+        std::atomic<bool> awp_attempted{false};
         std::atomic<bool> work_done{false};
         std::string error;
     };
@@ -270,9 +450,21 @@ void LevelDownloadWorker::operator()()
         xlog::trace("LevelDownloadWorker started");
         shared_data_->state = LevelDownloadState::fetching_info;
         FactionFilesClient ff_client;
-        shared_data_->level_info = ff_client.find_map(level_filename_.c_str());
+        try {
+            shared_data_->level_info = ff_client.find_map(level_filename_.c_str());
+        }
+        catch (const std::exception& e) {
+            std::string msg = e.what();
+            if (msg.find("404") != std::string::npos) {
+                xlog::trace("Level not found on FactionFiles: {}", level_filename_);
+                shared_data_->state = LevelDownloadState::not_found;
+                shared_data_->work_done = true;
+                return;
+            }
+            throw;
+        }
         if (!shared_data_->level_info) {
-            xlog::warn("Level not found: {}", level_filename_);
+            xlog::trace("Level not found: {}", level_filename_);
             shared_data_->state = LevelDownloadState::not_found;
             shared_data_->work_done = true;
             return;
@@ -297,6 +489,24 @@ void LevelDownloadWorker::operator()()
             shared_data_->state = LevelDownloadState::extracting;
             shared_data_->result_packfiles = extract_archive(temp_filename.c_str());
             remove(temp_filename.c_str());
+
+            // Download AWP file if available (non-fatal)
+            // Bot clients always download; normal clients require the setting; dedis never auto-download
+            if (!shared_data_->abort_flag && shared_data_->level_info->awp_info.has_value()
+                && !rf::is_dedicated_server
+                && (client_bot_launch_enabled() || g_alpine_game_config.autodl_download_awps)) {
+                shared_data_->awp_attempted = true;
+                shared_data_->awp_downloading = true;
+                try {
+                    shared_data_->awp_downloaded =
+                        try_download_and_extract_awp(level_filename_, shared_data_->level_info->awp_info.value(),
+                            1, &shared_data_->abort_flag);
+                }
+                catch (const std::exception& e) {
+                    xlog::error("AWP download failed during level download: {}", e.what());
+                }
+                shared_data_->awp_downloading = false;
+            }
 
             xlog::trace("LevelDownloadWorker finished");
             shared_data_->state = LevelDownloadState::finished;
@@ -411,6 +621,11 @@ public:
     [[nodiscard]] unsigned get_bytes_received() const
     {
         return shared_data_->bytes_received;
+    }
+
+    [[nodiscard]] bool is_awp_downloading() const
+    {
+        return shared_data_->awp_downloading;
     }
 
 private:
@@ -630,6 +845,17 @@ public:
         else {
             xlog::trace("Loading packfiles");
             load_packfiles(packfiles);
+
+            // Report AWP download result on the main thread
+            if (shared_data_->awp_attempted) {
+                if (shared_data_->awp_downloaded) {
+                    rf::console::print("AWP waypoint file downloaded for this level\n");
+                }
+                else {
+                    rf::console::print("AWP waypoint file download failed for this level\n");
+                }
+            }
+
             if (listener_) {
                 listener_->on_finish(*this, true);
             }
@@ -793,7 +1019,7 @@ public:
     void on_finish(LevelDownloadOperation& operation, bool success) override
     {
         if (operation.get_state() == LevelDownloadState::not_found) {
-            rf::console::print("Level has not been found in FactionFiles.com database!");
+            rf::console::print("Map was not found on FactionFiles\n");
         }
         else {
             rf::console::print("Level download {}", success ? "succeeded" : "failed");
@@ -983,13 +1209,15 @@ void multi_level_download_do_frame()
         status_text = "Getting level info...";
     }
     else if (state == LevelDownloadState::extracting) {
-        status_text = "Extracting packfiles...";
+        status_text = operation.is_awp_downloading()
+            ? "Downloading waypoint file..."
+            : "Extracting packfiles...";
     }
     else if (state == LevelDownloadState::fetching_data) {
         status_text = "Downloading from FactionFiles...";
     }
     else if (state == LevelDownloadState::not_found) {
-        status_text = "Level not found on FactionFiles";
+        status_text = "Map not found on FactionFiles";
     }
     else if (state == LevelDownloadState::failed) {
         status_text = "Download failed";
@@ -1212,6 +1440,197 @@ ConsoleCommand2 autodl_blur_background_cmd{
     "autodl_blur_background",
 };
 
+ConsoleCommand2 autodl_download_awps_cmd{
+    "autodl_download_awps",
+    []() {
+        g_alpine_game_config.autodl_download_awps = !g_alpine_game_config.autodl_download_awps;
+        rf::console::print("Autodownload AWP waypoint files: {}",
+            g_alpine_game_config.autodl_download_awps ? "enabled" : "disabled");
+    },
+    "Toggle automatic AWP waypoint file downloading via autodl",
+    "autodl_download_awps",
+};
+
+ConsoleCommand2 download_awp_force_cmd{
+    "download_awp_force",
+    [](std::string filename) {
+        if (filename.rfind('.') == std::string::npos) {
+            filename += ".rfl";
+        }
+
+        if (g_awp_download_active) {
+            rf::console::print("AWP download already in progress\n");
+            return;
+        }
+
+        rf::console::print("Querying autodl for AWP: {}\n", filename);
+        start_awp_download_for_installed_map(filename, 1, true);
+    },
+    "Force download AWP waypoint file from autodl, ignoring revision and settings",
+    "download_awp_force <rfl_name>",
+};
+
+void cancel_awp_download()
+{
+    g_awp_download_queued.reset();
+    if (g_awp_download_active) {
+        g_awp_download_abort = true;
+        // Non-blocking: poll_awp_download() will reap the future and discard the stale result
+    }
+    waypoints_set_awp_download_pending(false);
+}
+
+bool start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force)
+{
+    if (g_awp_download_active) {
+        // Previous download still aborting — queue this request for when it finishes
+        g_awp_download_queued = AwpDownloadRequest{rfl_filename, max_retries, force};
+        xlog::info("AWP download queued for {} (previous download still aborting)", rfl_filename);
+        return true;
+    }
+
+    // Revision check on main thread to avoid calling rf::File (VPP) from a background thread.
+    // For force mode, use nullopt to skip the revision comparison entirely.
+    std::optional<int> local_rev;
+    if (!force) {
+        local_rev = get_local_awp_revision(rfl_filename);
+    }
+
+    g_awp_download_active = true;
+    g_awp_download_force = force;
+    g_awp_download_abort = false;
+    g_awp_download_target_map = rfl_filename;
+    try {
+        g_awp_download_future = std::async(std::launch::async,
+            [rfl_filename, max_retries, local_rev]() -> AwpDownloadResult {
+                try {
+                    if (g_awp_download_abort) return AwpDownloadResult::not_needed;
+
+                    FactionFilesClient ff_client;
+                    auto level_info = ff_client.find_map(rfl_filename.c_str());
+                    if (!level_info) {
+                        xlog::info("Map {} not found on FactionFiles", rfl_filename);
+                        return AwpDownloadResult::map_not_found;
+                    }
+                    if (!level_info->awp_info.has_value()) {
+                        xlog::info("No AWP available via autodl for {}", rfl_filename);
+                        return AwpDownloadResult::not_needed;
+                    }
+
+                    if (local_rev.has_value() && local_rev.value() >= level_info->awp_info->revision) {
+                        xlog::info("Local AWP for {} is up to date (rev {} >= {})",
+                            rfl_filename, local_rev.value(), level_info->awp_info->revision);
+                        return AwpDownloadResult::not_needed;
+                    }
+
+                    return try_download_and_extract_awp(rfl_filename, level_info->awp_info.value(),
+                        max_retries, &g_awp_download_abort)
+                        ? AwpDownloadResult::success : AwpDownloadResult::failed;
+                }
+                catch (const std::exception& e) {
+                    std::string msg = e.what();
+                    if (msg.find("404") != std::string::npos) {
+                        xlog::info("Map {} not found on FactionFiles", rfl_filename);
+                        return AwpDownloadResult::map_not_found;
+                    }
+                    xlog::error("AWP download for installed map {} failed: {}", rfl_filename, e.what());
+                    return AwpDownloadResult::failed;
+                }
+            });
+    }
+    catch (const std::exception& e) {
+        xlog::error("Failed to start AWP download thread: {}", e.what());
+        g_awp_download_active = false;
+        g_awp_download_force = false;
+        g_awp_download_target_map.clear();
+        return false;
+    }
+    return true;
+}
+
+void poll_awp_download()
+{
+    if (!g_awp_download_active) {
+        // If a queued request is waiting and no download is active, start it now
+        if (g_awp_download_queued) {
+            auto req = std::move(g_awp_download_queued.value());
+            g_awp_download_queued.reset();
+            if (!start_awp_download_for_installed_map(req.rfl_filename, req.max_retries, req.force)) {
+                // Download failed to start — resolve pending state so bots either
+                // load local waypoints or correctly sit out
+                waypoints_on_awp_download_resolved();
+            }
+        }
+        return;
+    }
+
+    if (g_awp_download_future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+        return;
+    }
+
+    auto result = AwpDownloadResult::failed;
+    try {
+        result = g_awp_download_future.get();
+    }
+    catch (const std::exception& e) {
+        xlog::error("AWP download future exception: {}", e.what());
+    }
+
+    g_awp_download_active = false;
+    bool was_force = g_awp_download_force;
+    g_awp_download_force = false;
+    g_awp_download_abort = false;
+    std::string target_map = std::move(g_awp_download_target_map);
+
+    // If there's a queued request, this result is stale — discard it and let the
+    // queued download start on the next poll cycle
+    if (g_awp_download_queued) {
+        xlog::info("Stale AWP download reaped, queued download will start next frame");
+        return;
+    }
+
+    // Check if this result is for the current level (may have changed during download)
+    bool is_current_level = string_iequals(target_map, rf::level.filename.c_str());
+
+    if (waypoints_awp_download_pending()) {
+        if (is_current_level) {
+            waypoints_on_awp_download_resolved();
+            if (result == AwpDownloadResult::success) {
+                rf::console::print("AWP waypoint file downloaded and loaded\n");
+            }
+            else if (result == AwpDownloadResult::failed) {
+                rf::console::print("AWP waypoint file download failed\n");
+            }
+            else if (result == AwpDownloadResult::map_not_found) {
+                rf::console::print("No AWP available: map was not found on FactionFiles\n");
+            }
+        }
+        else {
+            // Stale result from a different map — only clear the pending flag
+            // without reloading waypoints (they were already loaded for the current map)
+            waypoints_set_awp_download_pending(false);
+            xlog::info("AWP download result discarded (map changed from {} to {})",
+                target_map, rf::level.filename.c_str());
+        }
+    }
+    else {
+        if (result == AwpDownloadResult::success) {
+            rf::console::print("AWP waypoint file downloaded in background\n");
+        }
+        else if (result == AwpDownloadResult::failed) {
+            rf::console::print("AWP waypoint file download failed\n");
+        }
+        else if (was_force) {
+            if (result == AwpDownloadResult::map_not_found) {
+                rf::console::print("Map was not found on FactionFiles\n");
+            }
+            else if (result == AwpDownloadResult::not_needed) {
+                rf::console::print("No AWP available via autodl for this map\n");
+            }
+        }
+    }
+}
+
 void level_download_do_patch()
 {
     join_failed_injection.install();
@@ -1225,6 +1644,8 @@ void level_download_init()
     download_level_cmd.register_cmd();
     download_level_force_cmd.register_cmd();
     autodl_blur_background_cmd.register_cmd();
+    autodl_download_awps_cmd.register_cmd();
+    download_awp_force_cmd.register_cmd();
 }
 
 void multi_level_download_update()

@@ -63,6 +63,9 @@ int g_waypoints_by_type_total = 0;
 bool g_has_loaded_wpt = false;
 int g_last_awp_source = 0; // 0=not_found, 1=user_maps, 2=vpp
 bool g_missing_awp_from_level_init = false;
+bool g_awp_download_pending = false;
+int g_awp_load_retries_remaining = 0;
+rf::Timestamp g_awp_load_retry_timer;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
 std::vector<std::string> g_waypoint_authors{};
@@ -8284,10 +8287,18 @@ void waypoints_level_init()
 {
     g_missing_awp_from_level_init = false;
     if (is_waypoint_bot_mode_active()) {
-        g_has_loaded_wpt = load_waypoints(true);
-        g_missing_awp_from_level_init = !g_has_loaded_wpt;
-        if (!g_has_loaded_wpt) {
-            seed_waypoints_from_objects();
+        if (g_awp_download_pending) {
+            // AWP download is in progress — defer load_waypoints until it resolves
+            // via waypoints_on_awp_download_resolved()
+            clear_waypoints();
+            g_has_loaded_wpt = false;
+        }
+        else {
+            g_has_loaded_wpt = load_waypoints(true);
+            g_missing_awp_from_level_init = !g_has_loaded_wpt;
+            if (!g_has_loaded_wpt) {
+                seed_waypoints_from_objects();
+            }
         }
     }
     else {
@@ -8307,6 +8318,9 @@ void waypoints_level_reset()
     clear_waypoints();
     g_has_loaded_wpt = false;
     g_missing_awp_from_level_init = false;
+    g_awp_download_pending = false;
+    g_awp_load_retries_remaining = 0;
+    g_awp_load_retry_timer.invalidate();
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
     waypoints_utils_level_reset();
@@ -8315,6 +8329,41 @@ void waypoints_level_reset()
 bool waypoints_missing_awp_from_level_init()
 {
     return g_missing_awp_from_level_init;
+}
+
+bool waypoints_awp_download_pending()
+{
+    return g_awp_download_pending;
+}
+
+bool waypoints_awp_load_retry_pending()
+{
+    return g_awp_load_retries_remaining > 0;
+}
+
+void waypoints_set_awp_download_pending(bool pending)
+{
+    g_awp_download_pending = pending;
+}
+
+void waypoints_on_awp_download_resolved()
+{
+    g_awp_download_pending = false;
+    if (is_waypoint_bot_mode_active()) {
+        g_has_loaded_wpt = load_waypoints(true);
+        if (!g_has_loaded_wpt) {
+            // If load failed but the AWP file exists on disk (e.g., another process is
+            // mid-rename), schedule frame-based retries instead of blocking the main thread.
+            auto awp_path = get_waypoint_filename_for_rfl(std::string{rf::level.filename.c_str()});
+            if (std::filesystem::exists(awp_path)) {
+                g_awp_load_retries_remaining = 3;
+                g_awp_load_retry_timer.set(50);
+                return; // Don't set g_missing_awp_from_level_init yet — retries pending
+            }
+        }
+        g_missing_awp_from_level_init = !g_has_loaded_wpt;
+        // Don't seed from objects here — bots either load an AWP or sit out
+    }
 }
 
 void waypoints_on_limbo_enter()
@@ -8349,6 +8398,24 @@ void waypoints_do_frame()
         g_last_drop_waypoint_by_entity.clear();
         g_last_lift_uid_by_entity.clear();
         rf::console::print("Waypoint editing disabled while connected as multiplayer client.");
+    }
+
+    // Retry loading AWP if a previous attempt failed (e.g., file race between bot processes)
+    if (g_awp_load_retries_remaining > 0 && g_awp_load_retry_timer.valid() && g_awp_load_retry_timer.elapsed()) {
+        g_awp_load_retries_remaining--;
+        g_has_loaded_wpt = load_waypoints(true);
+        if (g_has_loaded_wpt) {
+            g_awp_load_retries_remaining = 0;
+            g_awp_load_retry_timer.invalidate();
+            g_missing_awp_from_level_init = false;
+        }
+        else if (g_awp_load_retries_remaining > 0) {
+            g_awp_load_retry_timer.set(50);
+        }
+        else {
+            g_awp_load_retry_timer.invalidate();
+            g_missing_awp_from_level_init = true;
+        }
     }
 
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {

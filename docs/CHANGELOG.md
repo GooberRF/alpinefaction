@@ -9,7 +9,8 @@ Version 1.3.0 (Bakeapple): Not yet released
   - Headless bot clients with server control
   - Bot profile customization
   - Integrated waypoint grid editor with autogeneration support for custom maps
-  - Waypoint grid files for all default maps included
+  - AWPs (waypoint grid files) for all default maps included
+  - FactionFiles autodownloader API support for AWPs
 - Promote Direct3D 11 renderer to recommended and add several notable improvements
   - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
   - Add full mesh shadows for entities, corpses, and items
