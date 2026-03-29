@@ -14,7 +14,6 @@
 #include "player.h"
 #include "../multi/server.h"
 #include "../object/alpine_corona.h"
-#include "alpine_settings.h"
 
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
@@ -120,14 +119,6 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_props_chunk_id) {
             AlpineLevelProperties::instance().deserialize(file, chunk_len);
             set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
-
-            // check if level requires d3d11 renderer (client-only, not on dedicated server)
-            if (AlpineLevelProperties::instance().requires_d3d11 && !rf::is_dedicated_server && !is_d3d11()) {
-                char* error_info = reinterpret_cast<char*>(static_cast<int32_t>(regs.ebp));
-                std::strcpy(error_info, "This level requires the Direct3D 11 renderer.\nYou can set your renderer in the settings panel (gear icon) of the Alpine Faction launcher.");
-                regs.eip = 0x004608CC; // level_read_data failure path
-                return;
-            }
 
             regs.eip = 0x004608EF; // loop back to begin next chunk
         }

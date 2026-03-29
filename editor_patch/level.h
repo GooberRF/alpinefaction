@@ -354,7 +354,6 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_brush_uids;
     std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
     std::vector<uint8_t> breakable_materials;  // material type per entry
-    bool requires_d3d11 = false;
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -378,7 +377,6 @@ struct AlpineLevelProperties
         override_static_mesh_ambient_light_modifier = false;
         static_mesh_ambient_light_modifier = 2.0f;
         rf2_style_geomod = false;
-        requires_d3d11 = false;
         geoable_brush_uids.clear();
         geoable_room_uids.clear();
         breakable_brush_uids.clear();
@@ -435,8 +433,6 @@ struct AlpineLevelProperties
             uint8_t mat = (i < breakable_materials.size()) ? breakable_materials[i] : 0;
             file.write<uint8_t>(mat);
         }
-        // requires_d3d11
-        file.write<std::uint8_t>(requires_d3d11 ? 1u : 0u);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -547,15 +543,6 @@ struct AlpineLevelProperties
                 if (!read_bytes(&mat, sizeof(mat)))
                     return;
                 breakable_materials[i] = mat;
-            }
-
-            // requires_d3d11
-            if (remaining >= 1) {
-                std::uint8_t u8 = 0;
-                if (!read_bytes(&u8, sizeof(u8)))
-                    return;
-                requires_d3d11 = (u8 != 0);
-                xlog::debug("[AlpineLevelProps] requires_d3d11 {}", requires_d3d11);
             }
         }
     }
