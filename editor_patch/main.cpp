@@ -567,7 +567,7 @@ CodeInjection CFormView_PostCreate_injection{
 };
 
 // Forward declarations for Keyframe Properties dialog hook (defined after group panel code)
-static HHOOK g_kf_props_msg_hook;
+static HHOOK g_kf_props_msg_hook = nullptr;
 static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lParam);
 
 CodeInjection CDialog_DoModal_injection{
