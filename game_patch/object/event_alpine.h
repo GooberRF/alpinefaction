@@ -29,6 +29,7 @@
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
 #include "../misc/level.h"
+#include "../misc/alpine_settings.h"
 
 void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale);
 rf::Vector3 rotate_velocity(const rf::Vector3& old_velocity, const rf::Matrix3& old_orient, const rf::Matrix3& new_orient);
@@ -106,7 +107,9 @@ namespace rf
         red_team_spawned,
         has_flag,
         blue_team,
-        red_team
+        red_team,
+        renderer_d3d11,
+        renderer_legacy
     };
 
     enum class GoalInsideCheckSubject : int
@@ -229,7 +232,7 @@ namespace rf
                 this_event->hostile_to_player = (value == "true");
             };
 
-            handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventCloneEntity*>(event);
                 this_event->find_player = (value == "true");
             };
@@ -1063,6 +1066,12 @@ namespace rf
             case ScopeGateTests::red_team:
                 pass = (local_player && (local_player->team == 0));
                 break;
+            case ScopeGateTests::renderer_d3d11:
+                pass = is_d3d11();
+                break;
+            case ScopeGateTests::renderer_legacy:
+                pass = !is_d3d11();
+                break;
             default:
                 break;
             }
@@ -1716,7 +1725,7 @@ namespace rf
                 this_event->reset_velocity = (value == "true");
             };
 
-            handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
                 this_event->force_exit_vehicle = (value == "true");
             };
@@ -1726,7 +1735,7 @@ namespace rf
                 this_event->entrance_vclip = value;
             };
 
-            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::str2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
                 this_event->exit_vclip = value;
             };

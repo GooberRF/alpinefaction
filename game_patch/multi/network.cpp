@@ -1517,6 +1517,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_geo_chunk_physics()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::geo_chunk_physics;
         }
+        if (server_allow_footsteps()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_footsteps;
+        }
         auto [buf, new_len] = extend_packet_bytes(data, len, &ext_data, sizeof(ext_data));
         //auto [new_data, new_len] = extend_packet_fixed(data, len, ext_data);
         return send_join_accept_packet_hook.call_target(addr, buf.get(), new_len);
@@ -1550,6 +1553,7 @@ CodeInjection process_join_accept_injection{
             server_info.location_pinging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::location_pinging);
             server_info.delayed_spawns = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::delayed_spawns);
             server_info.geo_chunk_physics = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::geo_chunk_physics);
+            server_info.allow_footsteps = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_footsteps);
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
@@ -1559,9 +1563,13 @@ CodeInjection process_join_accept_injection{
                 server_info.semi_auto_cooldown = ext_data.semi_auto_cooldown;
             }
             g_af_server_info = std::optional{server_info};
+
+            // Update footstep activation based on server permissions
+            evaluate_footsteps();
         }
         else {
             g_af_server_info.reset();
+            evaluate_footsteps();
         }
     },
 };
@@ -2204,7 +2212,11 @@ FunHook<void()> multi_stop_hook{
                 static_cast<PlayerAdditionalData*>(rf::local_player);
             *player_add_data = PlayerAdditionalData{};
         }
+
         multi_stop_hook.call_target();
+
+        // Re-evaluate footstep state after leaving multiplayer
+        evaluate_footsteps();
 
         // Auto-quit for bots when disconnected from server
         if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {

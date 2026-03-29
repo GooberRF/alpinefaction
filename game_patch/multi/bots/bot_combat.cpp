@@ -1715,7 +1715,8 @@ void bot_process_combat(
             aim_alignment
         );
     }
-    else if (has_move_target) {
+    else if (has_move_target
+             && !g_client_bot_state.freefall_suppress_aim) {
         rf::Vector3 aim_target = move_target;
         const float vertical_delta = std::abs(move_target.y - local_entity.eye_pos.y);
         if (vertical_delta <= kNavigationAimVerticalThreshold) {

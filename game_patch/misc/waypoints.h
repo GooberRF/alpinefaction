@@ -3,6 +3,7 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include "../rf/math/vector.h"
 #include "../rf/os/timestamp.h"
@@ -26,7 +27,7 @@ constexpr float kBridgeWaypointMaxGroundDistance = 1.5f;
 constexpr float kWaypointGenerateProbeAngleStepDeg = 15.0f;
 constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
 constexpr float kWaypointGenerateGroundOffset = 1.0f;
-constexpr float kWaypointGenerateMaxInclineDeg = 60.0f;
+constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
 constexpr float kWaypointGenerateWallClearance = 0.5f;
 constexpr float kWaypointGenerateEdgeClearance = 1.0f;
 constexpr float kWaypointGenerateMinHeadroom = 1.375f;
@@ -64,6 +65,7 @@ enum class WaypointType : int
     crater = 10,
     tele_entrance = 11,
     tele_exit = 12,
+    conveyer = 13,
 };
 
 enum class WaypointDroppedSubtype : int
@@ -193,11 +195,16 @@ struct WpCacheNode
 
 void waypoints_init();
 int get_local_awp_revision(const std::string& rfl_filename);
+std::optional<std::string> get_waypoint_dir();
 void waypoints_do_frame();
 void waypoints_render_debug();
 void waypoints_level_init();
 void waypoints_level_reset();
 bool waypoints_missing_awp_from_level_init();
+bool waypoints_awp_download_pending();
+bool waypoints_awp_load_retry_pending();
+void waypoints_set_awp_download_pending(bool pending);
+void waypoints_on_awp_download_resolved();
 void waypoints_on_limbo_enter();
 void waypoints_on_trigger_activated(int trigger_uid);
 void waypoints_on_glass_shattered(const rf::GFace* face);

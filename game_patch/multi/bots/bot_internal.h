@@ -460,6 +460,8 @@ struct ClientBotState
     rf::Vector3 contextual_goal_pos{};
     rf::Timestamp item_goal_contact_timer{};
     int item_goal_contact_handle = -1;
+    rf::Timestamp item_goal_approach_timer{};
+    int item_goal_approach_handle = -1;
 
     rf::Timestamp respawn_retry_timer{};
     rf::Timestamp respawn_gearup_timer{};
@@ -494,6 +496,14 @@ struct ClientBotState
     int recovery_anchor_waypoint = 0;
     int recovery_avoid_waypoint = 0;
     bool recovery_pending_reroute = false;
+    bool drop_link_route_locked = false;
+    bool freefall_suppress_aim = false;
+    bool drop_freefall_active = false;
+    bool jump_pad_landing_steer_active = false;
+    bool obstacle_crouch_active = false;
+    rf::Timestamp jump_pad_steer_delay_timer{};
+    rf::Vector3 jump_pad_landing_pos{};
+    bool jump_pad_landing_pos_valid = false;
     int pursuit_target_handle = -1;
     int pursuit_route_failures = 0;
     bool last_pursuit_route_was_fallback = false;

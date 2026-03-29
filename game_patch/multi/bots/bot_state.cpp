@@ -74,6 +74,8 @@ void bot_state_clear_item_goal_contact_tracking()
 {
     g_client_bot_state.item_goal_contact_timer.invalidate();
     g_client_bot_state.item_goal_contact_handle = -1;
+    g_client_bot_state.item_goal_approach_timer.invalidate();
+    g_client_bot_state.item_goal_approach_handle = -1;
 }
 
 static bool is_critical_fsm_state(const BotFsmState state)

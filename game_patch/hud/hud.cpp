@@ -52,10 +52,16 @@ rf::HudPoint hud_scale_coords(rf::HudPoint pt, float scale)
     };
 }
 
+bool is_hud_effectively_hidden()
+{
+    return rf::hud_disabled
+        || (g_alpine_game_config.spectate_cinematic_mode && multi_spectate_is_freelook());
+}
+
 FunHook<void()> hud_render_for_multi_hook{
     0x0046ECB0,
     []() {
-        if (!rf::hud_disabled) {
+        if (!is_hud_effectively_hidden()) {
             hud_render_for_multi_hook.call_target();
         }
     },
@@ -70,6 +76,16 @@ ConsoleCommand2 hud_cmd{
         rf::hud_disabled = !hud_visible;
     },
     "Show and hide HUD",
+};
+
+ConsoleCommand2 spectate_cinematic_mode_cmd{
+    "spectate_cinematic_mode",
+    []() {
+        g_alpine_game_config.spectate_cinematic_mode = !g_alpine_game_config.spectate_cinematic_mode;
+        rf::console::print("Spectate cinematic mode is {}",
+            g_alpine_game_config.spectate_cinematic_mode ? "enabled" : "disabled");
+    },
+    "Toggle HUD hiding during freelook spectate",
 };
 
 void hud_setup_positions(int width)
@@ -417,6 +433,7 @@ void hud_apply_patches()
     // Command for hidding the HUD
     hud_render_for_multi_hook.install();
     hud_cmd.register_cmd();
+    spectate_cinematic_mode_cmd.register_cmd();
 
     // Add some init code
     hud_init_hook.install();

@@ -2,6 +2,8 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
+#include <cstring>
+#include <string>
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
@@ -17,6 +19,11 @@
 #include "../rf/os/frametime.h"
 #include "../rf/os/os.h"
 #include "../rf/sound/sound.h"
+#include "../rf/object.h"
+#include "../rf/vmesh.h"
+#include "../rf/character.h"
+#include "../rf/math/vector.h"
+#include "../multi/multi.h"
 
 rf::Timestamp g_player_jump_timestamp;
 
@@ -437,6 +444,123 @@ void apply_entity_sim_distance() {
     rf::entity_sim_distance = g_alpine_game_config.entity_sim_distance;
 }
 
+// Fix for footstep audio bug in multiplayer where remote players' footsteps
+// only play when they have a pistol equipped. Only pistol walk/run animations
+// have footstep triggers defined in entity.tbl; other weapons lack them.
+// We inject trigger values into skeletons that have empty trigger names when the
+// entity is in the attack_run state, using VMVF time range data.
+
+bool g_footsteps_active = false;
+
+// Footstep trigger positions as percentages of animation duration
+static constexpr float footstep_run_left_pct = 0.12f;
+static constexpr float footstep_run_right_pct = 0.52f;
+
+// Inject footstep trigger data into a skeleton that has empty triggers
+static void inject_footstep_triggers(rf::Skeleton* skeleton)
+{
+    if (!skeleton || !skeleton->animation_data) return;
+    if (skeleton->triggers[0].name[0] != '\0' || skeleton->triggers[1].name[0] != '\0') return;
+
+    uint8_t* data = static_cast<uint8_t*>(skeleton->animation_data);
+    if (skeleton->data_size < 0x18) return;
+    if (data[0] != 'V' || data[1] != 'M' || data[2] != 'V' || data[3] != 'F') return;
+
+    int start_time = 0;
+    int end_time = 0;
+    std::memcpy(&start_time, data + 0x10, sizeof(start_time));
+    std::memcpy(&end_time, data + 0x14, sizeof(end_time));
+    int duration = end_time - start_time;
+    if (duration <= 0) return;
+
+    int left_trigger = start_time + static_cast<int>(duration * footstep_run_left_pct);
+    int right_trigger = start_time + static_cast<int>(duration * footstep_run_right_pct);
+
+    std::strncpy(skeleton->triggers[0].name, "footstep_left", 15);
+    skeleton->triggers[0].name[15] = '\0';
+    skeleton->triggers[0].value = left_trigger;
+
+    std::strncpy(skeleton->triggers[1].name, "footstep_right", 15);
+    skeleton->triggers[1].name[15] = '\0';
+    skeleton->triggers[1].value = right_trigger;
+
+    xlog::info("Footstep fix: {} injected left={} right={} (start={} end={} dur={})",
+        skeleton->mvf_filename, left_trigger, right_trigger, start_time, end_time, duration);
+}
+
+void evaluate_footsteps()
+{
+    // Check both client preference and server permission
+    bool client_wants_fix = g_alpine_game_config.footsteps;
+    bool server_allows_fix = false;
+
+    // Determine server permission:
+    // - Single-player: always allowed
+    // - Server (hosting): always allowed
+    // - Client on Alpine Faction server: check server permission
+    // - Client on legacy server: NOT allowed (compatibility)
+    if (!rf::is_multi) {
+        server_allows_fix = true;
+    }
+    else if (rf::is_server) {
+        server_allows_fix = true;
+    }
+    else {
+        // Client: only allow if Alpine Faction server permits it
+        const auto& server_info = get_af_server_info();
+        if (server_info.has_value()) {
+            server_allows_fix = server_info->allow_footsteps;
+        }
+    }
+
+    bool new_active = client_wants_fix && server_allows_fix;
+
+    g_footsteps_active = new_active;
+}
+
+ConsoleCommand2 cl_footsteps_cmd{
+    "cl_footsteps",
+    []() {
+        g_alpine_game_config.footsteps = !g_alpine_game_config.footsteps;
+        evaluate_footsteps();
+        rf::console::print("Footsteps: {} (active: {})",
+            g_alpine_game_config.footsteps ? "enabled" : "disabled",
+            g_footsteps_active ? "yes" : "no");
+    },
+    "Toggle third-person footstep audio for non-pistol weapons",
+    "cl_footsteps",
+};
+
+// Footstep processing hook: injects missing triggers for attack_run state animations
+// and gates sound playback based on footstep preference (pistol always plays per stock behavior)
+FunHook<void(rf::Entity*)> entity_footsteps_do_frame_hook{
+    0x0042F940,
+    [](rf::Entity* ep) {
+        if (!ep || rf::entity_is_dying(ep)) return;
+
+        // Always inject missing footstep triggers (data fix, not a preference)
+        if (ep->current_state_anim == rf::ENTITY_STATE_ATTACK_RUN) {
+            auto* vmesh = ep->vmesh;
+            if (vmesh && vmesh->type == rf::MESH_TYPE_CHARACTER) {
+                auto* ci = static_cast<rf::CharacterInstance*>(vmesh->instance);
+                if (ci && ci->base_character) {
+                    int anim_idx = ep->state_anims[rf::ENTITY_STATE_ATTACK_RUN].vmesh_anim_index;
+                    if (anim_idx >= 0 && anim_idx < ci->base_character->num_anims) {
+                        inject_footstep_triggers(ci->base_character->animations[anim_idx]);
+                    }
+                }
+            }
+        }
+
+        // Gate sound playback: local player and pistol always play (stock behavior),
+        // other entities require the footstep fix to be active
+        if (ep == rf::local_player_entity || g_footsteps_active || rf::weapon_is_glock(ep->ai.current_primary_weapon)) {
+            entity_footsteps_do_frame_hook.call_target(ep);
+        }
+    }
+};
+
+
 FunHook<void(rf::Entity*, float)> entity_maybe_play_pain_sound_hook{
     0x004196F0, [](rf::Entity* ep, float percent_damage) {
         if (g_alpine_game_config.entity_pain_sounds) {
@@ -512,6 +636,10 @@ void entity_do_patch()
 	// Restore cut stock game feature for entities and corpses exploding into chunks
 	entity_blood_throw_gibs_hook.install();
 
+    // Footstep fix: inject trigger frames for attack_run animations and mute dying entities
+    evaluate_footsteps();
+    entity_footsteps_do_frame_hook.install();
+
     // Commands
     sp_exposuredamage_cmd.register_cmd();
     cl_gorelevel_cmd.register_cmd();
@@ -519,4 +647,5 @@ void entity_do_patch()
     cl_gibvelocityscale_cmd.register_cmd();
     cl_giblifetimems_cmd.register_cmd();
     cl_painsounds_cmd.register_cmd();
+    cl_footsteps_cmd.register_cmd();
 }

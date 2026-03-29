@@ -19,6 +19,7 @@ cbuffer RenderModeBuffer : register(b0)
     float use_dynamic_lighting;
     float self_illumination;
     float light_scale;
+    float dynamic_light_ndotl;
 };
 
 struct PointLight {
@@ -218,11 +219,18 @@ float4 main(VsOutput input) : SV_TARGET
                 atten = sqrt(r);                // 3: sqrt
             }
             atten = max(atten, 0.0f);
-            float intensity = atten * ndotl_factor * spot_factor;
+            float intensity;
             if (use_dynamic_lighting > 0.5f) {
+                intensity = atten * ndotl_factor * spot_factor;
                 light_color += point_lights[i].color * intensity;
             } else {
-                light_color += point_lights[i].color * intensity * 1.5f;
+                // Non-dynamic-lighting path (e.g. lightmapped / pre-lit geometry).
+                // Emulates stock D3D8 behavior for dynamic lights on BSP faces,
+                // which uses pure distance attenuation (no N·L). r_dynamiclightndotl
+                // blends between stock (0.0) and full N·L (1.0).
+                float ndotl = lerp(1.0f, ndotl_factor, dynamic_light_ndotl);
+                intensity = atten * ndotl * spot_factor;
+                light_color += point_lights[i].color * intensity;
             }
         }
         if (use_dynamic_lighting > 0.5f) {

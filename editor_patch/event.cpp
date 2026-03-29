@@ -411,7 +411,9 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
                 "Red team (spawned)",
                 "Player that has flag",
                 "Blue team",
-                "Red team"
+                "Red team",
+                "D3D11 renderer",
+                "D3D8/9 renderer"
                 }
             }
         },

@@ -302,7 +302,8 @@ namespace df::gr::d3d11
         float use_dynamic_lighting;
         float self_illumination;
         float light_scale;
-        float _pad[2];
+        float dynamic_light_ndotl;
+        float _pad[1];
     };
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
@@ -393,6 +394,7 @@ namespace df::gr::d3d11
         } else {
             data.light_scale = 1.0f;
         }
+        data.dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

@@ -462,6 +462,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.entity_pain_sounds = std::stoi(settings["EntityPainSounds"]);
         processed_keys.insert("EntityPainSounds");
     }
+    if (settings.count("Footsteps")) {
+        g_alpine_game_config.footsteps = std::stoi(settings["Footsteps"]);
+        processed_keys.insert("Footsteps");
+    }
 
     // Load video settings
     if (settings.count("Gamma")) {
@@ -532,6 +536,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("VertexLighting")) {
         g_alpine_game_config.vertex_lighting = std::stoi(settings["VertexLighting"]);
         processed_keys.insert("VertexLighting");
+    }
+    if (settings.count("DynamicLightNdotL")) {
+        g_alpine_game_config.set_dynamic_light_ndotl(std::stof(settings["DynamicLightNdotL"]));
+        processed_keys.insert("DynamicLightNdotL");
     }
     if (settings.count("Picmip")) {
         g_alpine_game_config.set_picmip(std::stoi(settings["Picmip"]));
@@ -975,6 +983,22 @@ bool alpine_player_settings_load(rf::Player* player)
             );
         processed_keys.insert("RemoteServerCfgDisplayMode");
     }
+    if (settings.count("AutodlBlurBackground")) {
+        g_alpine_game_config.autodl_blur_background = std::stoi(settings["AutodlBlurBackground"]);
+        processed_keys.insert("AutodlBlurBackground");
+    }
+    if (settings.count("AutodlDownloadAwps")) {
+        g_alpine_game_config.autodl_download_awps = std::stoi(settings["AutodlDownloadAwps"]);
+        processed_keys.insert("AutodlDownloadAwps");
+    }
+    if (settings.count("HideChat")) {
+        g_alpine_game_config.hide_chat = std::stoi(settings["HideChat"]);
+        processed_keys.insert("HideChat");
+    }
+    if (settings.count("SpectateCinematicMode")) {
+        g_alpine_game_config.spectate_cinematic_mode = std::stoi(settings["SpectateCinematicMode"]);
+        processed_keys.insert("SpectateCinematicMode");
+    }
 
     // Load input settings
     if (settings.count("MouseSensitivity")) {
@@ -992,6 +1016,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("MouseLinearPitch")) {
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
         processed_keys.insert("MouseLinearPitch");
+    }
+    if (settings.count("MouseScale")) {
+        g_alpine_game_config.mouse_scale = std::clamp(std::stoi(settings["MouseScale"]), 0, 2);
+        processed_keys.insert("MouseScale");
     }
     if (settings.count("SwapARBinds")) {
         g_alpine_game_config.swap_ar_controls = std::stoi(settings["SwapARBinds"]);
@@ -1095,6 +1123,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "MouseYInvert=" << cc.axes[1].invert << "\n";
     file << "DirectInput=" << g_alpine_game_config.direct_input << "\n";
     file << "MouseLinearPitch=" << g_alpine_game_config.mouse_linear_pitch << "\n";
+    file << "MouseScale=" << g_alpine_game_config.mouse_scale << "\n";
     file << "SwapARBinds=" << g_alpine_game_config.swap_ar_controls << "\n";
     file << "SwapGNBinds=" << g_alpine_game_config.swap_gn_controls << "\n";
     file << "SwapSGBinds=" << g_alpine_game_config.swap_sg_controls << "\n";
@@ -1216,6 +1245,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "MessagesVolume=" << rf::snd_get_group_volume(2) << "\n";
     file << "LevelSoundVolume=" << g_alpine_game_config.level_sound_volume << "\n";
     file << "EntityPainSounds=" << g_alpine_game_config.entity_pain_sounds << "\n";
+    file << "Footsteps=" << g_alpine_game_config.footsteps << "\n";
 
     // Video
     file << "\n[VideoSettings]\n";
@@ -1236,6 +1266,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
     file << "VertexLighting=" << g_alpine_game_config.vertex_lighting << "\n";
+    file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
     file << "Picmip=" << g_alpine_game_config.picmip << "\n";
     file << "PrecacheRooms=" << g_alpine_game_config.precache_rooms << "\n";
     file << "ShadowCorpses=" << g_alpine_game_config.shadow_corpses << "\n";
@@ -1361,6 +1392,10 @@ void alpine_player_settings_save(rf::Player* player)
     file << "AlwaysShowSpectators=" << g_alpine_game_config.always_show_spectators << "\n";
     file << "RemoteServerCfgDisplayMode=" << static_cast<int>(g_alpine_game_config.remote_server_cfg_display_mode) << "\n";
     file << "SimpleServerChatMsgs=" << g_alpine_game_config.simple_server_chat_msgs << "\n";
+    file << "AutodlBlurBackground=" << g_alpine_game_config.autodl_blur_background << "\n";
+    file << "AutodlDownloadAwps=" << g_alpine_game_config.autodl_download_awps << "\n";
+    file << "HideChat=" << g_alpine_game_config.hide_chat << "\n";
+    file << "SpectateCinematicMode=" << g_alpine_game_config.spectate_cinematic_mode << "\n";
 
     alpine_control_config_serialize(file, player->settings.controls);
 
