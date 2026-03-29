@@ -1907,8 +1907,11 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     bool anyDelayedChanged = (rules.delayed_items.items != b.delayed_items.items);
 
     if (base || anyDelayedChanged) {
-        if (!rules.delayed_items.items.empty()) {
-            std::format_to(iter, "  Delayed items:\n");
+        std::format_to(iter, "  Delayed items:\n");
+        if (rules.delayed_items.items.empty()) {
+            std::format_to(iter, "    <none>\n");
+        }
+        else {
             for (auto const& name : rules.delayed_items.items) {
                 bool unchanged = std::find(b.delayed_items.items.begin(),
                     b.delayed_items.items.end(), name) != b.delayed_items.items.end();

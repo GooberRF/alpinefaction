@@ -105,7 +105,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
 - Add freelook/first person toggle bind in spectator mode
 - Implement enemy and teammate footstep audio for weapons other than pistol
-- Add delay items server config, enabling global and per-map delaying of specific item spawns at map start
+- Add delayed items server config option, enabling global and per-map delaying of specific item spawns at map start
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).

@@ -383,15 +383,17 @@ struct DelayedItemsConfig
 
     bool add(std::string_view name)
     {
-        auto it = std::find(items.begin(), items.end(), name);
+        std::string name_str{name};
+
+        auto it = std::find(items.begin(), items.end(), name_str);
         if (it != items.end())
             return false;
 
-        int idx = rf::item_lookup_type(name.data());
+        int idx = rf::item_lookup_type(name_str.c_str());
         if (idx < 0)
             return false;
 
-        items.emplace_back(name);
+        items.emplace_back(std::move(name_str));
         return true;
     }
 
