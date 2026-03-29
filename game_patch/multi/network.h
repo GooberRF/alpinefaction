@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <common/version/version.h>
 #include "server_internal.h"
 #include "../rf/multi.h"
@@ -110,7 +111,7 @@ static_assert(sizeof(RFCtfFlagDroppedPacket) == 15);
 static_assert(sizeof(RFCtfFlagSingleTeamPacket) == 1);
 static_assert(sizeof(RFCtfFlagPickedUpPacket) == 3);
 
-// Appended to game_info packets
+// Appended to game_info packets (legacy, sent to gi_req_ext_ver 1-2 clients)
 struct af_sign_packet_ext
 {
     uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
@@ -125,6 +126,32 @@ struct af_sign_packet_ext
         af_flags = flags.game_info_flags_to_uint32();
     }
 };
+
+// Appended to game_info packets (v2, sent to gi_req_ext_ver >= 3 clients)
+// Layout: [af_game_info_ext_v2][level_filename\0]
+// ext_size covers the fixed struct only; the variable-length filename follows after it.
+// Future versions can add fields to the struct (incrementing ext_version and ext_size),
+// and older parsers skip to offset ext_size to find the filename.
+#pragma pack(push, 1)
+struct af_game_info_ext_v2
+{
+    uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
+    uint16_t ext_size = sizeof(af_game_info_ext_v2); // size of this fixed struct
+    uint8_t ext_version = 1;
+    uint8_t version_major = VERSION_MAJOR;
+    uint8_t version_minor = VERSION_MINOR;
+    uint8_t version_patch = VERSION_PATCH;
+    uint8_t version_type = VERSION_TYPE;
+    uint32_t af_flags = 0;
+    uint8_t num_bots = 0;
+
+    void set_flags(const AFGameInfoFlags& flags)
+    {
+        af_flags = flags.game_info_flags_to_uint32();
+    }
+};
+#pragma pack(pop)
+static_assert(sizeof(af_game_info_ext_v2) == 16, "unexpected af_game_info_ext_v2 size");
 
 struct AlpineFactionJoinAcceptPacketExt
 {
@@ -207,6 +234,21 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
 };
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::true_type {};
+
+// Per-server extra data parsed from the AF game_info v2 extension
+struct AFGameInfoExtra {
+    uint8_t version_major = 0;
+    uint8_t version_minor = 0;
+    uint8_t version_patch = 0;
+    uint8_t version_type = 0;
+    uint32_t af_flags = 0;
+    std::string level_filename;
+    uint8_t num_bots = 0;
+};
+
+// Look up AF extra data for a server by address. Returns nullptr if not found.
+const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);
+void clear_server_browser_extra();
 
 bool packet_check_whitelist(int packet_type);
 void handle_vote_or_ready_up_msg(std::string_view msg);
