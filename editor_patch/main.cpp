@@ -1093,31 +1093,34 @@ static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lPar
 {
     if (nCode == HC_ACTION) {
         auto* msg = reinterpret_cast<CWPRETSTRUCT*>(lParam);
-        if (msg->message == WM_INITDIALOG && GetDlgItem(msg->hwnd, IDC_KF_HOLD_OPEN)) {
-            // Set checkbox state from Alpine level properties
-            int kf_uid = get_editing_group_first_keyframe_uid(msg->hwnd);
-            bool hold_open = false;
-
-            if (kf_uid >= 0) {
-                auto* level = CDedLevel::Get();
-                if (level) {
-                    auto& props = level->GetAlpineLevelProperties();
-                    auto& uids = props.hold_open_keyframe_uids;
-                    hold_open = std::find(uids.begin(), uids.end(),
-                                          static_cast<int32_t>(kf_uid)) != uids.end();
-                }
-            }
-
-            CheckDlgButton(msg->hwnd, IDC_KF_HOLD_OPEN,
-                           hold_open ? BST_CHECKED : BST_UNCHECKED);
-
-            // Subclass to intercept OK
-            g_kf_props_orig_wndproc = reinterpret_cast<WNDPROC>(
-                SetWindowLongPtrA(msg->hwnd, GWLP_WNDPROC,
-                                  reinterpret_cast<LONG_PTR>(KfPropsSubclassProc)));
-
+        if (msg->message == WM_INITDIALOG) {
+            // Always unhook — even if the control isn't found (resource override failed)
             UnhookWindowsHookEx(g_kf_props_msg_hook);
             g_kf_props_msg_hook = nullptr;
+
+            if (GetDlgItem(msg->hwnd, IDC_KF_HOLD_OPEN)) {
+                // Set checkbox state from Alpine level properties
+                int kf_uid = get_editing_group_first_keyframe_uid(msg->hwnd);
+                bool hold_open = false;
+
+                if (kf_uid >= 0) {
+                    auto* level = CDedLevel::Get();
+                    if (level) {
+                        auto& props = level->GetAlpineLevelProperties();
+                        auto& uids = props.hold_open_keyframe_uids;
+                        hold_open = std::find(uids.begin(), uids.end(),
+                                              static_cast<int32_t>(kf_uid)) != uids.end();
+                    }
+                }
+
+                CheckDlgButton(msg->hwnd, IDC_KF_HOLD_OPEN,
+                               hold_open ? BST_CHECKED : BST_UNCHECKED);
+
+                // Subclass to intercept OK
+                g_kf_props_orig_wndproc = reinterpret_cast<WNDPROC>(
+                    SetWindowLongPtrA(msg->hwnd, GWLP_WNDPROC,
+                                      reinterpret_cast<LONG_PTR>(KfPropsSubclassProc)));
+            }
         }
     }
     return CallNextHookEx(g_kf_props_msg_hook, nCode, wParam, lParam);

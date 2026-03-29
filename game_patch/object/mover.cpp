@@ -50,10 +50,11 @@ static void alpine_mover_do_hold_open_init()
             continue;
 
         auto* mover = static_cast<rf::Mover*>(obj);
-        if (mover->keyframes.size() <= 0)
+        auto* first_kf = KF(mover, 0);
+        if (!first_kf)
             continue;
 
-        if (target_uids.count(mover->keyframes[0]->uid)) {
+        if (target_uids.count(first_kf->uid)) {
             g_hold_open_handles.insert(mover->handle);
         }
     }
