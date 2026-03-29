@@ -39,31 +39,25 @@ static int frametime_hud_counter_line_gap()
     return g_alpine_game_config.big_hud ? 25 : 15;
 }
 
-static void frametime_render_speed_meter()
+static bool frametime_speed_meter_visible()
 {
-    if (!g_alpine_game_config.speed_display || rf::hud_disabled || !rf::gameseq_in_gameplay()) {
-        return;
+    if (!g_alpine_game_config.speed_display || is_hud_effectively_hidden() || !rf::gameseq_in_gameplay()) {
+        return false;
     }
-
     rf::Player* const player = rf::local_player;
     if (!player) {
-        return;
+        return false;
     }
+    return rf::entity_from_handle(player->entity_handle) != nullptr;
+}
 
-    rf::Entity* const entity = rf::entity_from_handle(player->entity_handle);
-    if (!entity) {
-        return;
-    }
-
+static void frametime_render_speed_meter(int y)
+{
+    rf::Entity* const entity = rf::entity_from_handle(rf::local_player->entity_handle);
     const rf::Vector3& velocity = entity->p_data.vel;
     float horizontal_speed = std::sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
     float speed_mps = std::clamp(horizontal_speed, 0.0f, 9999.9f);
     std::string text = std::format("{:.2f}", speed_mps);
-
-    int y = frametime_hud_counter_base_y();
-    if (g_alpine_game_config.fps_counter) {
-        y += frametime_hud_counter_line_gap();
-    }
 
     rf::gr::set_color(0, 255, 0, 255);
     const int value_anchor = rf::gr::screen_width() - 20;
@@ -96,93 +90,102 @@ static void frametime_render_graph()
     }
 }
 
-static void frametime_render_fps_counter()
+static bool frametime_fps_counter_visible()
 {
-    if (g_alpine_game_config.fps_counter && !rf::hud_disabled) {
-        const int fps_window_ms = g_alpine_game_config.fps_counter_average_ms;
-        std::string text;
+    return g_alpine_game_config.fps_counter && !is_hud_effectively_hidden();
+}
 
-        if (fps_window_ms <= 0) {
-            //text = std::format("FPS: {:.1f}", rf::current_fps);
-            g_fps_counter_state.display_fps = rf::current_fps;
+static void frametime_render_fps_counter(int y)
+{
+    const int fps_window_ms = g_alpine_game_config.fps_counter_average_ms;
+
+    if (fps_window_ms <= 0) {
+        g_fps_counter_state.display_fps = rf::current_fps;
+        g_fps_counter_state.accumulated_frames = 0;
+        g_fps_counter_state.accumulated_time = 0.0f;
+        g_fps_counter_state.last_window_ms = fps_window_ms;
+        g_fps_counter_state.window_timer.invalidate();
+    }
+    else {
+        if (g_fps_counter_state.last_window_ms != fps_window_ms) {
+            g_fps_counter_state.display_fps = 0.0f;
             g_fps_counter_state.accumulated_frames = 0;
             g_fps_counter_state.accumulated_time = 0.0f;
             g_fps_counter_state.last_window_ms = fps_window_ms;
             g_fps_counter_state.window_timer.invalidate();
         }
-        else {
-            if (g_fps_counter_state.last_window_ms != fps_window_ms) {
-                g_fps_counter_state.display_fps = 0.0f;
-                g_fps_counter_state.accumulated_frames = 0;
-                g_fps_counter_state.accumulated_time = 0.0f;
-                g_fps_counter_state.last_window_ms = fps_window_ms;
-                g_fps_counter_state.window_timer.invalidate();
-            }
 
-            if (g_fps_counter_state.display_fps == 0.0f) {
-                g_fps_counter_state.display_fps = rf::current_fps;
-            }
-            g_fps_counter_state.accumulated_frames++;
-            g_fps_counter_state.accumulated_time += rf::frametime;
+        if (g_fps_counter_state.display_fps == 0.0f) {
+            g_fps_counter_state.display_fps = rf::current_fps;
+        }
+        g_fps_counter_state.accumulated_frames++;
+        g_fps_counter_state.accumulated_time += rf::frametime;
 
-            if (!g_fps_counter_state.window_timer.valid()) {
-                g_fps_counter_state.window_timer.set(fps_window_ms);
-            }
-
-            if (g_fps_counter_state.window_timer.elapsed()) {
-                float averaged_fps = rf::current_fps;
-                if (g_fps_counter_state.accumulated_time > 0.0f) {
-                    averaged_fps = static_cast<float>(g_fps_counter_state.accumulated_frames) /
-                        g_fps_counter_state.accumulated_time;
-                }
-
-                g_fps_counter_state.display_fps = averaged_fps;
-                g_fps_counter_state.accumulated_frames = 0;
-                g_fps_counter_state.accumulated_time = 0.0f;
-                g_fps_counter_state.window_timer.set(fps_window_ms);
-            }
+        if (!g_fps_counter_state.window_timer.valid()) {
+            g_fps_counter_state.window_timer.set(fps_window_ms);
         }
 
-        float clamped_fps = std::clamp(g_fps_counter_state.display_fps, 0.0f, 99999.9f);
-        text = std::format("{:7.1f}", clamped_fps);
+        if (g_fps_counter_state.window_timer.elapsed()) {
+            float averaged_fps = rf::current_fps;
+            if (g_fps_counter_state.accumulated_time > 0.0f) {
+                averaged_fps = static_cast<float>(g_fps_counter_state.accumulated_frames) /
+                    g_fps_counter_state.accumulated_time;
+            }
 
-        rf::gr::set_color(0, 255, 0, 255);
-        const int value_anchor = rf::gr::screen_width() - 20;
-        const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
-        int y = frametime_hud_counter_base_y();
-
-        int font_id = hud_get_default_font();
-        const std::string_view fps_label = "FPS:";
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, y, fps_label.data(), font_id);
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
-    }
-
-    if (g_alpine_game_config.ping_display && !rf::hud_disabled && rf::is_multi && !rf::is_server) {
-        int clamped_ping = std::clamp(rf::local_player->net_data->ping, 0, 9999);
-        auto text = std::format("{}", clamped_ping);
-        rf::gr::set_color(0, 255, 0, 255);
-        const int value_anchor = rf::gr::screen_width() - 20;
-        const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
-        const int gap = 6;
-        int y = frametime_hud_counter_base_y();
-        int offset_lines = 0;
-        if (g_alpine_game_config.fps_counter) {
-            offset_lines++;
+            g_fps_counter_state.display_fps = averaged_fps;
+            g_fps_counter_state.accumulated_frames = 0;
+            g_fps_counter_state.accumulated_time = 0.0f;
+            g_fps_counter_state.window_timer.set(fps_window_ms);
         }
-        offset_lines++;
-        y += frametime_hud_counter_line_gap() * offset_lines;
-
-        int font_id = hud_get_default_font();
-        const std::string_view ping_label = "Ping:";
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, y, ping_label.data(), font_id);
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
     }
+
+    float clamped_fps = std::clamp(g_fps_counter_state.display_fps, 0.0f, 99999.9f);
+    auto text = std::format("{:7.1f}", clamped_fps);
+
+    rf::gr::set_color(0, 255, 0, 255);
+    const int value_anchor = rf::gr::screen_width() - 20;
+    const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
+    int font_id = hud_get_default_font();
+    const std::string_view fps_label = "FPS:";
+    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, y, fps_label.data(), font_id);
+    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
+}
+
+static bool frametime_ping_display_visible()
+{
+    return g_alpine_game_config.ping_display && !is_hud_effectively_hidden() && rf::is_multi && !rf::is_server;
+}
+
+static void frametime_render_ping_display(int y)
+{
+    int clamped_ping = std::clamp(rf::local_player->net_data->ping, 0, 9999);
+    auto text = std::format("{}", clamped_ping);
+    rf::gr::set_color(0, 255, 0, 255);
+    const int value_anchor = rf::gr::screen_width() - 20;
+    const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
+    int font_id = hud_get_default_font();
+    const std::string_view ping_label = "Ping:";
+    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, y, ping_label.data(), font_id);
+    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
 }
 
 void frametime_render_ui()
 {
-    frametime_render_fps_counter();
-    frametime_render_speed_meter();
+    int y = frametime_hud_counter_base_y();
+    int line_gap = frametime_hud_counter_line_gap();
+
+    if (frametime_fps_counter_visible()) {
+        frametime_render_fps_counter(y);
+        y += line_gap;
+    }
+    if (frametime_speed_meter_visible()) {
+        frametime_render_speed_meter(y);
+        y += line_gap;
+    }
+    if (frametime_ping_display_visible()) {
+        frametime_render_ping_display(y);
+    }
+
     frametime_render_graph();
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <limits>
 #include <numbers>
 #include <patch_common/MemUtils.h>
 #include "../os/os.h"
@@ -290,6 +291,34 @@ namespace rf
 
         bool operator==(const Vector2& other) const = default;
     };
+
+    struct ShortVector
+    {
+        int16_t x = 0;
+        int16_t y = 0;
+        int16_t z = 0;
+
+        ShortVector() = default;
+        ShortVector(int16_t x, int16_t y, int16_t z) : x(x), y(y), z(z) {}
+
+        static int16_t clamp16(float f)
+        {
+            int i = int(std::lroundf(f));
+            if (i > std::numeric_limits<int16_t>::max())
+                return std::numeric_limits<int16_t>::max();
+            if (i < std::numeric_limits<int16_t>::min())
+                return std::numeric_limits<int16_t>::min();
+            return int16_t(i);
+        }
+
+        static ShortVector from(const rf::Vector3& v)
+        {
+            return {clamp16(v.x), clamp16(v.y), clamp16(v.z)};
+        }
+
+        bool operator==(const ShortVector& other) const = default;
+    };
+    static_assert(sizeof(ShortVector) == 0x6);
 
     static auto& vec2_zero_vector = addr_as_ref<Vector2>(0x0173C370);
     static auto& vec_dist = addr_as_ref<float(const rf::Vector3*, const rf::Vector3*)>(0x004FAED0);

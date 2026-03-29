@@ -8,6 +8,7 @@
 #include "../misc/player.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints_utils.h"
 #include "../multi/multi.h"
 #include "../multi/endgame_votes.h"
 #include "../rf/input.h"
@@ -267,6 +268,10 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG);
         alpine_control_config_add_item(ccp, "Inspect Weapon", false, rf::KEY_I, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON);
+        alpine_control_config_add_item(ccp, "Cycle Spectate Modes", false, rf::KEY_PERIOD, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK);
+        alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
     },
 };
 
@@ -393,6 +398,15 @@ CodeInjection player_execute_action_patch3{
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
                 && is_server_minimum_af_version(1, 2)) {
                 g_remote_server_cfg_popup.toggle();
+            } else if (alpine_action_index
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK)
+                && !rf::is_dedicated_server
+                && multi_spectate_is_spectating()) {
+                multi_spectate_toggle_freelook();
+            } else if (alpine_action_index
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
+                && !rf::is_dedicated_server) {
+                multi_spectate_toggle();
             }
         }
     },
@@ -403,8 +417,6 @@ CodeInjection controls_process_patch{
     0x00430E4C,
     [](auto& regs) {
         int index = regs.edi;
-
-        // C++ doesn't have a way to dynamically get the last enum index, so just update this when adding new controls
         if (index >= starting_alpine_control_index &&
             index <= static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
             //xlog::warn("passing control {}", index);
@@ -416,11 +428,26 @@ CodeInjection controls_process_patch{
 CodeInjection controls_process_chat_menu_patch{
     0x00430E19,
     [](auto& regs) {
+        const bool chat_menu_numeric_capture_active =
+            get_chat_menu_is_active()
+            && !rf::console::console_is_visible()
+            && !rf::multi_chat_is_say_visible();
+        const bool waypoint_link_numeric_capture_active =
+            waypoints_utils_link_editor_text_input_active();
 
-        // only consume numline keys if a chat menu is active + chat box and console are hidden
-        if (get_chat_menu_is_active() && !rf::console::console_is_visible() && !rf::multi_chat_is_say_visible()) {
+        // Consume top-row number keys for active overlay input modes so they do
+        // not trigger gameplay bindings.
+        if (chat_menu_numeric_capture_active || waypoint_link_numeric_capture_active) {
             for (int key = rf::KEY_1; key <= rf::KEY_0; ++key) {
-                if (rf::key_get_and_reset_down_counter(static_cast<rf::Key>(key)) > 0) {
+                const int count =
+                    rf::key_get_and_reset_down_counter(static_cast<rf::Key>(key));
+                if (count <= 0) {
+                    continue;
+                }
+                if (waypoint_link_numeric_capture_active) {
+                    waypoints_utils_capture_numeric_key(key, count);
+                }
+                else {
                     chat_menu_action_handler(static_cast<rf::Key>(key));
                 }
             }

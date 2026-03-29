@@ -10,6 +10,7 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <format>
@@ -48,6 +49,7 @@
 #include "../rf/level.h"
 #include "../rf/collide.h"
 #include "../purefaction/pf.h"
+#include "bots/bot_personality.h"
 #include <common/utils/os-utils.h>
 
 bool g_dedicated_launched_from_ads = false; // was the server launched from an ads file?
@@ -541,6 +543,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.weapon_infinite_magazines = *v;
     if (auto v = t["drop_weapons"].value<bool>())
         o.drop_weapons = *v;
+    if (auto v = t["force_rail_reload"].value<bool>())
+        o.force_rail_reload = *v;
 
     if (auto sub = t["spawn_weapon"].as_table())
         o.default_player_weapon = parse_default_player_weapon(*sub, o.default_player_weapon);
@@ -1015,6 +1019,100 @@ static void apply_rules_preset_aliases(AlpineServerConfig& cfg, const toml::tabl
     }
 }
 
+static void parse_bot_config_table(ServerBotConfig& bot_cfg, const toml::table& tbl)
+{
+    if (auto v = tbl["player_name"].value<std::string>()) {
+        bot_cfg.player_name = *v;
+        rf::console::print("  Bot player name:                       {}\n", *v);
+    }
+    if (auto v = tbl["mp_character"].value<std::string>()) {
+        bot_cfg.mp_character = *v;
+        rf::console::print("  Bot MP character:                      {}\n", *v);
+    }
+    if (auto v = tbl["personality_preset"].value<std::string>()) {
+        bot_cfg.personality_preset = *v;
+        rf::console::print("  Bot personality preset:                {}\n", *v);
+    }
+    if (auto v = tbl["skill_preset"].value<std::string>()) {
+        bot_cfg.skill_preset = *v;
+        rf::console::print("  Bot skill preset:                      {}\n", *v);
+    }
+
+    if (const auto* overrides = tbl["personality_overrides"].as_table()) {
+        for (const auto& [k, val] : *overrides) {
+            const int field_id = bot_personality_field_id_from_name(std::string(k.str()).c_str());
+            if (field_id < 0) {
+                rf::console::print("  [WARN] Unknown bot personality field: {}\n", k.str());
+                continue;
+            }
+            float fval = 0.0f;
+            if (auto fv = val.value<double>()) {
+                fval = static_cast<float>(*fv);
+            }
+            else if (auto iv = val.value<int64_t>()) {
+                fval = static_cast<float>(*iv);
+            }
+            else {
+                rf::console::print("  [WARN] Bot personality field '{}' has unsupported type\n", k.str());
+                continue;
+            }
+            bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(field_id), fval});
+            rf::console::print("  Bot personality override: {} = {}\n", k.str(), fval);
+        }
+    }
+
+    if (const auto* overrides = tbl["skill_overrides"].as_table()) {
+        for (const auto& [k, val] : *overrides) {
+            const int field_id = bot_skill_field_id_from_name(std::string(k.str()).c_str());
+            if (field_id < 0) {
+                rf::console::print("  [WARN] Unknown bot skill field: {}\n", k.str());
+                continue;
+            }
+            float fval = 0.0f;
+            if (auto fv = val.value<double>()) {
+                fval = static_cast<float>(*fv);
+            }
+            else if (auto iv = val.value<int64_t>()) {
+                fval = static_cast<float>(*iv);
+            }
+            else {
+                rf::console::print("  [WARN] Bot skill field '{}' has unsupported type\n", k.str());
+                continue;
+            }
+            bot_cfg.skill_overrides.push_back({static_cast<uint8_t>(field_id), fval});
+            rf::console::print("  Bot skill override: {} = {}\n", k.str(), fval);
+        }
+    }
+
+    if (const auto* quirks = tbl["quirks"].as_table()) {
+        uint64_t mask = 0;
+        for (const auto& [k, val] : *quirks) {
+            const int bit = bot_quirk_bit_from_name(std::string(k.str()).c_str());
+            if (bit < 0) {
+                rf::console::print("  [WARN] Unknown bot quirk: {}\n", k.str());
+                continue;
+            }
+            auto bv = val.value<bool>();
+            if (!bv) {
+                rf::console::print("  [WARN] Bot quirk '{}' should be true or false\n", k.str());
+                continue;
+            }
+            if (*bv) {
+                mask |= (1ull << bit);
+                rf::console::print("  Bot quirk enabled: {}\n", k.str());
+            }
+        }
+        // Emit quirk_mask_low and quirk_mask_high overrides
+        uint32_t low = static_cast<uint32_t>(mask & 0xFFFFFFFFull);
+        uint32_t high = static_cast<uint32_t>((mask >> 32) & 0xFFFFFFFFull);
+        float flow, fhigh;
+        std::memcpy(&flow, &low, sizeof(flow));
+        std::memcpy(&fhigh, &high, sizeof(fhigh));
+        bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(af_personality_field::quirk_mask_low), flow});
+        bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(af_personality_field::quirk_mask_high), fhigh});
+    }
+}
+
 // apply base config single keys
 static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string& key, const toml::node& node)
 {
@@ -1082,6 +1180,10 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     else if (key == "allow_unlimited_fps") {
         if (auto v = node.value<bool>())
             cfg.allow_unlimited_fps = *v;
+    }
+    else if (key == "allow_footsteps") {
+        if (auto v = node.value<bool>())
+            cfg.allow_footsteps = *v;
     }
     else if (key == "use_sp_damage_calculation") {
         if (auto v = node.value<bool>())
@@ -1235,6 +1337,36 @@ static void apply_config_table_in_order(
             else if (key == "rcon_profiles") {
                 if (pass == ParsePass::Core)
                     apply_known_array_in_order(cfg, key, *arr, base_dir, allow_missing_levels);
+            }
+            else if (key == "bot_profiles") {
+                if (pass == ParsePass::Core) {
+                    for (const auto& elem : *arr) {
+                        auto profile_path_str = elem.value<std::string>();
+                        if (!profile_path_str) continue;
+
+                        fs::path resolved_path = base_dir / *profile_path_str;
+                        try {
+                            resolved_path = fs::weakly_canonical(resolved_path);
+                        }
+                        catch (const fs::filesystem_error& err) {
+                            rf::console::print("  [WARN] failed to canonicalize bot profile '{}': {}\n",
+                                *profile_path_str, err.what());
+                            resolved_path = fs::absolute(resolved_path);
+                        }
+
+                        try {
+                            toml::table profile_root = toml::parse_file(resolved_path.generic_string());
+                            ServerBotConfig bot_cfg;
+                            rf::console::print("  Loading bot profile: {}\n", resolved_path.generic_string());
+                            parse_bot_config_table(bot_cfg, profile_root);
+                            cfg.bot_configs.push_back(std::move(bot_cfg));
+                        }
+                        catch (const toml::parse_error& err) {
+                            rf::console::print("  [ERROR] failed to parse bot profile '{}': {}\n",
+                                resolved_path.generic_string(), err.description());
+                        }
+                    }
+                }
             }
             continue;
         }
@@ -1517,6 +1649,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Drop amps:                             {}\n", rules.drop_amps);
     if (base || rules.drop_weapons != b.drop_weapons)
         std::format_to(iter, "  Drop weapons:                          {}\n", rules.drop_weapons);
+    if (base || rules.force_rail_reload != b.force_rail_reload)
+        std::format_to(iter, "  Force rail reload before switch:        {}\n", rules.force_rail_reload);
     if (base || rules.no_player_collide != b.no_player_collide)
         std::format_to(iter, "  No player collide:                     {}\n", rules.no_player_collide);
     if (base || rules.location_pinging != b.location_pinging)
@@ -1872,6 +2006,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow lightmap only mode:              {}\n", cfg.allow_lightmaps_only);
     std::format_to(iter, "  Allow disable muzzle flash:            {}\n", cfg.allow_disable_muzzle_flash);
     std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
+    std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
 

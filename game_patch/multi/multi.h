@@ -102,6 +102,7 @@ struct AlpineFactionServerInfo
     bool delayed_spawns = false;
     int koth_score_limit = 0;
     int dc_score_limit = 0;
+    bool allow_footsteps = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t
@@ -123,8 +124,13 @@ void enforce_alpine_hard_reject_for_all_players_on_current_level();
 std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_status(const ClientVersionInfoProfile& info, bool check_level_version);
 void multi_level_download_update();
 bool download_level_if_missing(std::string level_filename);
+bool start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force = false);
+void poll_awp_download();
+void cancel_awp_download();
 void multi_do_patch();
 void multi_after_full_game_init();
+bool client_bot_launch_enabled();
+bool client_bot_headless_enabled();
 void multi_init_player(rf::Player* player);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();

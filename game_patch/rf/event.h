@@ -174,6 +174,14 @@ namespace rf
     };
     static_assert(sizeof(GenericEvent) == 0x2D0);
 
+    struct ContinuousDamageEvent : Event
+    {
+        char padding[3];
+        int damage_per_second;
+        int damage_type;
+    };
+    static_assert(sizeof(ContinuousDamageEvent) == 0x2C0);
+
     struct PersistentGoalEvent
     {
         rf::String name;

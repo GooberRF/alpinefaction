@@ -460,6 +460,9 @@ namespace df::gr::d3d11
             // Detect fullbright batches from CPU vertex colors.
             // The stock CPU code sets vertex colors to exactly (255,255,255) for self-illuminated
             // materials via max(computed_lighting, self_illumination * 255).
+            // Check ALL vertices in each chunk to avoid false positives from brightly-lit meshes
+            // where a few vertices happen to saturate to white. A truly self-illuminated batch
+            // will have every vertex at (255,255,255).
             // Only update batches that don't already have self_illumination set (from v3d_page_in
             // materials path) to avoid overwriting correct values with false positives.
             if (params.vertex_colors && lod_mesh->render_cache) {
@@ -470,9 +473,19 @@ namespace df::gr::d3d11
                     int vertex_offset = 0;
                     for (int ci = 0; ci < vif_mesh_lod->num_chunks && ci < static_cast<int>(batches.size()); ++ci) {
                         if (batches[ci].self_illumination == 0.0f) {
-                            const rf::ubyte* vc = params.vertex_colors + vertex_offset * 3;
-                            if (vc[0] == 255 && vc[1] == 255 && vc[2] == 255) {
-                                batches[ci].self_illumination = 1.0f;
+                            int num_vecs = vif_mesh_lod->chunks[ci].num_vecs;
+                            if (num_vecs > 0) {
+                                const rf::ubyte* vc = params.vertex_colors + vertex_offset * 3;
+                                bool all_white = true;
+                                for (int vi = 0; vi < num_vecs; ++vi) {
+                                    if (vc[vi * 3] != 255 || vc[vi * 3 + 1] != 255 || vc[vi * 3 + 2] != 255) {
+                                        all_white = false;
+                                        break;
+                                    }
+                                }
+                                if (all_white) {
+                                    batches[ci].self_illumination = 1.0f;
+                                }
                             }
                         }
                         vertex_offset += vif_mesh_lod->chunks[ci].num_vecs;

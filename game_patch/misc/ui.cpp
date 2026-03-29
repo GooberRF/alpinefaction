@@ -10,6 +10,8 @@
 #include "misc.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
+#include "../os/os.h"
+#include "../multi/multi.h"
 #include "../rf/ui.h"
 #include "../rf/sound/sound.h"
 #include "../rf/input.h"
@@ -91,6 +93,8 @@ static rf::ui::Checkbox ao_dinput_cbox;
 static rf::ui::Label ao_dinput_label;
 static rf::ui::Checkbox ao_linearpitch_cbox;
 static rf::ui::Label ao_linearpitch_label;
+static rf::ui::Checkbox ao_mousecamerascale_cbox;
+static char ao_mousecamerascale_butlabel_text[9];
 static rf::ui::Checkbox ao_bighud_cbox;
 static rf::ui::Label ao_bighud_label;
 static rf::ui::Checkbox ao_ctfwh_cbox;
@@ -461,6 +465,9 @@ static bool is_any_font_modded()
 FunHook<void()> menu_init_hook{
     0x00442BB0,
     []() {
+        if (client_bot_headless_enabled() || headless_bot_requested_from_raw_cmdline()) {
+            return;
+        }
         menu_init_hook.call_target();
 #if SHARP_UI_TEXT
         xlog::info("UI scale: {:.4f} {:.4f}", rf::ui::scale_x, rf::ui::scale_y);
@@ -665,6 +672,7 @@ void ao_maxfps_cbox_on_click_callback()
     try {
         unsigned new_fps = std::stoi(str);
         g_alpine_game_config.set_max_fps(new_fps);
+        apply_maximum_fps();
     }
     catch (const std::exception& e) {
         xlog::info("Invalid max FPS input: '{}', reason: {}", str, e.what());
@@ -1439,12 +1447,84 @@ CodeInjection handle_options_button_click_patch{
     },
 };
 
+// Mouse scale button toggle injected into the stock Controls panel (next to Mouse Y-Invert)
+static constexpr int CTRL_CAMSCALE_X = 306;
+static constexpr int CTRL_CAMSCALE_Y = 107;
+
+static bool g_ctrl_camscale_initialized = false;
+
+static constexpr const char* camscale_mode_names[] = {"Classic", "Raw", "Modern"};
+
+static void ctrl_camscale_on_click(int, int)
+{
+    g_alpine_game_config.mouse_scale = (g_alpine_game_config.mouse_scale + 1) % 3;
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[g_alpine_game_config.mouse_scale]);
+    ao_play_button_snd(g_alpine_game_config.mouse_scale != 0);
+}
+
+static void init_ctrl_camscale_btns()
+{
+    if (g_ctrl_camscale_initialized) return;
+    ao_mousecamerascale_cbox.create("ao_smbut1.tga", "ao_smbut1_hover.tga", "ao_tab.tga",
+        CTRL_CAMSCALE_X, CTRL_CAMSCALE_Y, 45, "106.26", 0);
+    ao_mousecamerascale_cbox.checked = false;
+    ao_mousecamerascale_cbox.on_click = ctrl_camscale_on_click;
+    ao_mousecamerascale_cbox.enabled = true;
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
+    g_ctrl_camscale_initialized = true;
+}
+
+static void render_ctrl_camscale_btns()
+{
+    init_ctrl_camscale_btns();
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
+    ao_mousecamerascale_cbox.x = CTRL_CAMSCALE_X + static_cast<int>(rf::ui::options_animated_offset);
+    ao_mousecamerascale_cbox.render();
+    int val_x = static_cast<int>((ao_mousecamerascale_cbox.x + 50) * rf::ui::scale_x);
+    int val_y = static_cast<int>((CTRL_CAMSCALE_Y + 6) * rf::ui::scale_y);
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, val_x, val_y, ao_mousecamerascale_butlabel_text, rf::ui::medium_font_0);
+    int name_x = static_cast<int>((ao_mousecamerascale_cbox.x + 87) * rf::ui::scale_x);
+    rf::gr::set_color(0, 0, 0, 255);
+    rf::gr::string(name_x, val_y, "Mouse scale", rf::ui::medium_font_0);
+}
+
+static void handle_ctrl_camscale_btns(int x, int y)
+{
+    if (!g_ctrl_camscale_initialized)
+        return;
+
+    // Use absolute position so hit-testing tracks parent panel offsets/animations.
+    int bx = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_x() * rf::ui::scale_x);
+    int by = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_y() * rf::ui::scale_y);
+    int bw = static_cast<int>(ao_mousecamerascale_cbox.w * rf::ui::scale_x);
+    int bh = static_cast<int>(ao_mousecamerascale_cbox.h * rf::ui::scale_y);
+
+    bool inside = (x >= bx && x < bx + bw && y >= by && y < by + bh);
+
+    // Keep hover state in sync with cursor position so the correct bitmap/state is rendered.
+    ao_mousecamerascale_cbox.highlighted = inside;
+
+    // Do not react to clicks while the controls panel is waiting for a key/mouse binding.
+    if (!inside || rf::ui::options_controls_waiting_for_key || !rf::mouse_was_button_pressed(0))
+        return;
+
+    ctrl_camscale_on_click(x, y);
+}
+
 // handle alpine options panel rendering
 CodeInjection options_render_alpine_panel_patch{
     0x0044F80B,
     []() {
         int index = rf::ui::options_current_panel;
         //xlog::warn("render index {}", index);
+
+        if (index == 3 && !rf::ui::options_controls_waiting_for_key) {
+            render_ctrl_camscale_btns();
+        }
 
         // render alpine options panel
         if (index == 4) {
@@ -1476,6 +1556,9 @@ CodeInjection options_handle_mouse_patch{
 
         if (index == 4) {
             alpine_options_panel_handle_mouse(x, y);
+        }
+        if (index == 3) {
+            handle_ctrl_camscale_btns(x, y);
         }
     },
 };

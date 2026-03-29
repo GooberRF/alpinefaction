@@ -2,6 +2,7 @@
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
+#include <shellapi.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -14,13 +15,16 @@
 #include "alpine_packets.h"
 #include "server_internal.h"
 #include "gametype.h"
+#include "bots/bot_chat_manager.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/file/file.h"
 #include "../rf/level.h"
+#include "../os/os.h"
 #include "../os/console.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 #include "../rf/os/os.h"
 #include "../rf/event.h"
 #include "../rf/gameseq.h"
@@ -34,6 +38,7 @@
 #include "../rf/localize.h"
 #include "../rf/ai.h"
 #include "../rf/item.h"
+#include "../rf/sound/sound.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
 
@@ -49,6 +54,112 @@ static rf::CmdLineParam& get_levelm_cmd_line_param()
 {
     static rf::CmdLineParam levelm_param{"-levelm", "", true};
     return levelm_param;
+}
+
+static rf::CmdLineParam& get_bot_cmd_line_param()
+{
+    static rf::CmdLineParam bot_param{"-bot", "", true};
+    return bot_param;
+}
+
+static rf::CmdLineParam& get_debugbot_cmd_line_param()
+{
+    static rf::CmdLineParam debugbot_param{"-debugbot", "", true};
+    return debugbot_param;
+}
+
+static rf::CmdLineParam& get_noquit_cmd_line_param()
+{
+    static rf::CmdLineParam noquit_param{"-noquit", "", false};
+    return noquit_param;
+}
+
+static bool g_client_bot_launch_enabled = false;
+static bool g_client_bot_debug_render_enabled = false;
+
+bool client_bot_launch_enabled()
+{
+    return g_client_bot_launch_enabled
+        || is_client_bot_requested_from_cmdline()
+        || is_client_debugbot_requested_from_cmdline();
+}
+
+bool client_bot_headless_enabled()
+{
+    return client_bot_launch_enabled()
+        && !(g_client_bot_debug_render_enabled || is_client_debugbot_requested_from_cmdline());
+}
+
+// Returns false if bot launch validation failed and the process should quit.
+static bool handle_bot_cmd_line_params()
+{
+    if (rf::is_dedicated_server) {
+        g_client_bot_launch_enabled = false;
+        g_client_bot_debug_render_enabled = false;
+        return true;
+    }
+
+    const bool has_bot_switch = is_client_bot_requested_from_cmdline();
+    const bool has_debugbot_switch = is_client_debugbot_requested_from_cmdline();
+    g_client_bot_launch_enabled = has_bot_switch || has_debugbot_switch;
+    g_client_bot_debug_render_enabled = has_debugbot_switch;
+
+    // Parse shared secret from -bot or -debugbot argument
+    auto parse_secret = [](rf::CmdLineParam& param) -> uint32_t {
+        if (!param.found()) return 0;
+        const char* arg = param.get_arg();
+        if (!arg || arg[0] == '\0') return 0;
+        try { return std::stoul(arg); }
+        catch (...) { return 0; }
+    };
+    if (has_bot_switch) {
+        g_alpine_game_config.bot_shared_secret = parse_secret(get_bot_cmd_line_param());
+    }
+    if (has_debugbot_switch && g_alpine_game_config.bot_shared_secret == 0) {
+        g_alpine_game_config.bot_shared_secret = parse_secret(get_debugbot_cmd_line_param());
+    }
+
+    // Parse -noquit flag
+    if (get_noquit_cmd_line_param().found() && client_bot_launch_enabled()) {
+        g_alpine_game_config.bot_quit_when_disconnected = false;
+    }
+
+    // Validate bot launch requirements
+    if (g_client_bot_launch_enabled) {
+        const bool has_url = get_url_cmd_line_param().found();
+        const bool has_secret = g_alpine_game_config.bot_shared_secret != 0;
+        if (!has_url || !has_secret) {
+            rf::console::print(
+                "Bot launch requires a server (-url <rf://IP:PORT>) and the correct shared secret (-bot <secret> or -debugbot <secret>)."
+            );
+            g_client_bot_launch_enabled = false;
+            g_alpine_game_config.rendering_enabled = false;
+            rf::sound_enabled = false;
+            rf::gameseq_set_state(rf::GS_QUITING, false);
+            return false;
+        }
+    }
+
+    if (client_bot_launch_enabled()) {
+        const bool headless = client_bot_headless_enabled();
+        g_alpine_game_config.rendering_enabled = !headless;
+        if (headless) {
+            rf::sound_enabled = false;
+        }
+        rf::console::print(
+            "Client bot mode enabled ({}).",
+            headless ? "headless" : "debug render"
+        );
+
+        // Set a consistent initial name for bot clients.
+        // The server will assign the real identity after connection.
+        if (rf::local_player) {
+            std::strncpy(rf::local_player->settings.name, "af_bot", sizeof(rf::local_player->settings.name) - 1);
+            rf::local_player->settings.name[sizeof(rf::local_player->settings.name) - 1] = '\0';
+            rf::local_player->name = "af_bot";
+        }
+    }
+    return true;
 }
 
 void handle_url_param()
@@ -143,9 +254,12 @@ FunHook<void()> multi_limbo_init{
         }
 
         rf::multi_limbo_timer.set(limbo_time);
+        waypoints_on_limbo_enter();
 
         if (!rf::local_player)
             return;
+
+        bot_chat_manager_on_limbo_enter(*rf::local_player);
 
         rf::camera_enter_random_fixed_pos();
         rf::camera_enter_fixed(rf::local_player->cam);
@@ -277,6 +391,16 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
     g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
 }
 
+static bool multi_is_rail_gun_on_cooldown(rf::Player* pp, rf::Entity* ep)
+{
+    if (ep->ai.current_primary_weapon != rf::rail_gun_weapon_type) {
+        return false;
+    }
+    bool fire_cooldown = ep->ai.next_fire_primary.valid() && !ep->ai.next_fire_primary.elapsed();
+    bool reloading = pp->rail_gun_reload_timer.valid() && !pp->rail_gun_reload_timer.elapsed();
+    return fire_cooldown || reloading;
+}
+
 FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hook{
     0x004858D0,
     [](rf::Player *pp, rf::Entity *ep, int weapon_type) {
@@ -307,6 +431,10 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             xlog::debug("Player {} attempted to select weapon {} while reloading weapon {}",
                 pp->name, weapon_type, ep->ai.current_primary_weapon);
         }
+        else if (g_alpine_server_config_active_rules.force_rail_reload &&
+            multi_is_rail_gun_on_cooldown(pp, ep)) {
+            xlog::debug("Player {} attempted to switch from rail_gun while on cooldown", pp->name);
+        }
         else {
             rf::player_make_weapon_current_selection(pp, weapon_type);
             ep->ai.current_primary_weapon = weapon_type;
@@ -331,7 +459,20 @@ void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
         xlog::debug("Player {} attempted to reload weapon {} while reloading it", pp->name, weapon_type);
     }
     else {
-        rf::entity_reload_current_primary(ep, false, false);
+        // action the reload
+        bool reloaded = rf::entity_reload_current_primary(ep, false, false);
+        if (reloaded && weapon_type == rf::rail_gun_weapon_type) {
+            float reload_secs = rf::weapon_types[weapon_type].clip_reload_time_secs;
+
+            // default rail reload time is 3 seconds, but the animation time isn't that long
+            // without this fix, the player is blocked from switching away from the rail for
+            // 500ms after the reload finishes
+            if (reload_secs == 3.0f) {
+                reload_secs = 2.5f;
+            }
+
+            pp->rail_gun_reload_timer.set(static_cast<int>(reload_secs * 1000.0f));
+        }
     }
 }
 
@@ -749,6 +890,21 @@ ConsoleCommand2 mapver_cmd{
     "dbg_mapver <filename>",
 };
 
+ConsoleCommand2 dbg_bot_cmd{
+    "dbg_bot",
+    [](std::optional<int> enabled) {
+        if (enabled.has_value()) {
+            g_alpine_game_config.dbg_bot = enabled.value() != 0;
+        }
+        rf::console::print(
+            "Bot debug console logging is {}.",
+            g_alpine_game_config.dbg_bot ? "enabled" : "disabled"
+        );
+    },
+    "Toggle bot debug console logging",
+    "dbg_bot [0|1]",
+};
+
 void mp_send_handicap_request(bool force) {
     if (force || g_alpine_game_config.desired_handicap > 0) {
         af_send_handicap_request(static_cast<uint8_t>(g_alpine_game_config.desired_handicap));
@@ -828,17 +984,32 @@ void multi_do_patch()
     // Init cmd line param
     get_url_cmd_line_param();
     get_levelm_cmd_line_param();
+    get_bot_cmd_line_param();
+    get_debugbot_cmd_line_param();
+    get_noquit_cmd_line_param();
+    g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
+    g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
+    if (g_client_bot_launch_enabled) {
+        g_alpine_game_config.rendering_enabled = !client_bot_headless_enabled();
+        if (client_bot_headless_enabled()) {
+            rf::sound_enabled = false;
+        }
+    }
 
     // console commands
     levelm_cmd.register_cmd();
     mapver_cmd.register_cmd();
     mapm_cmd.register_cmd();
     set_handicap_cmd.register_cmd();
+    dbg_bot_cmd.register_cmd();
 }
 
 void multi_after_full_game_init()
 {
     populate_gametype_table();
+    if (!handle_bot_cmd_line_params()) {
+        return; // bot launch validation failed, process is quitting
+    }
     handle_url_param();
     handle_levelm_param();
 }

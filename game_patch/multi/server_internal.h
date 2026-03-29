@@ -7,6 +7,7 @@
 #include <optional>
 #include <vector>
 #include <filesystem>
+#include <unordered_map>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/string.h"
@@ -574,6 +575,7 @@ struct AlpineServerConfigRules
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
     bool drop_weapons = true;
+    bool force_rail_reload = true;
     KillRewardConfig kill_rewards;
     WeaponStayExemptionConfig weapon_stay_exemptions;
     std::map<std::string, std::string> item_replacements;
@@ -667,6 +669,31 @@ struct AlpineRconProfile
     std::vector<std::string> allowed_commands;
 };
 
+struct BotConfigOverride {
+    uint8_t field_id;
+    float value;
+};
+
+struct ServerBotConfig {
+    std::string personality_preset = "balanced";
+    std::string skill_preset = "average";
+    std::string player_name;      // empty = randomize
+    std::string mp_character;     // empty = randomize
+    std::vector<BotConfigOverride> personality_overrides;
+    std::vector<BotConfigOverride> skill_overrides;
+};
+
+struct BotProfileSlotTracker {
+    std::unordered_map<const rf::Player*, int> assignments;
+
+    int assign_slot(const rf::Player* player, int num_profiles);
+    void release_slot(const rf::Player* player);
+    int get_slot(const rf::Player* player) const;
+    void clear();
+};
+
+extern BotProfileSlotTracker g_bot_profile_slots;
+
 struct AlpineServerConfig
 {
     std::string server_name = "Alpine Faction Server";
@@ -675,6 +702,7 @@ struct AlpineServerConfig
     std::string rcon_password = "";
     std::vector<AlpineRconProfile> rcon_profiles;
     uint32_t bot_shared_secret = 0;
+    std::vector<ServerBotConfig> bot_configs;
     bool upnp_enabled = false;
     bool require_client_mod = true;
     bool dynamic_rotation = false;
@@ -685,6 +713,7 @@ struct AlpineServerConfig
     bool allow_disable_screenshake = true;
     bool allow_disable_muzzle_flash = true;
     bool allow_unlimited_fps = false;
+    bool allow_footsteps = true;
     bool use_sp_damage_calculation = false;
     bool exclude_bots_from_player_count = false;
     AlpineRestrictConfig alpine_restricted_config;
