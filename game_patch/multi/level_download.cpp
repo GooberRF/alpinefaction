@@ -2,6 +2,7 @@
 #include <atomic>
 #include <future>
 #include <thread>
+#include <filesystem>
 #include <fstream>
 #include <format>
 #include <windows.h>
@@ -209,30 +210,30 @@ static bool try_download_and_extract_awp(const std::string& rfl_filename,
                     return true;
                 });
 
-            // Gunzip to a temp file in the waypoint directory, then rename on success.
-            // This avoids destroying an existing valid AWP on transient failure.
-            auto awp_temp_path = awp_output_path + ".tmp";
+            // Gunzip to a unique temp file in the waypoint directory, then rename on success.
+            // Unique temp names prevent races when multiple bot processes share the same directory.
+            auto awp_temp_name = get_temp_path_name("AF_AWP_");
+            auto awp_temp_path = std::format("{}\\{}", waypoint_dir.value(),
+                std::filesystem::path(awp_temp_name).filename().string());
+            remove(awp_temp_name.c_str()); // Clean up the zero-byte file created in %TEMP%
             bool extracted = gunzip_file(temp_filename.c_str(), awp_temp_path.c_str());
             remove(temp_filename.c_str());
 
             if (extracted) {
-                // Safely replace existing AWP: back up old, rename new in, delete backup.
-                // If rename fails, the backup restores the original file.
-                auto awp_backup_path = awp_output_path + ".bak";
-                remove(awp_backup_path.c_str());
-                bool had_existing = (rename(awp_output_path.c_str(), awp_backup_path.c_str()) == 0);
-                if (rename(awp_temp_path.c_str(), awp_output_path.c_str()) == 0) {
-                    if (had_existing) {
-                        remove(awp_backup_path.c_str());
-                    }
+                // Atomically replace any existing AWP. MoveFileExA with MOVEFILE_REPLACE_EXISTING
+                // avoids the window where the file is missing, which matters when multiple bot
+                // processes share the same directory.
+                if (MoveFileExA(awp_temp_path.c_str(), awp_output_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
                     xlog::info("AWP downloaded and extracted: {}", awp_name);
                     return true;
                 }
-                // Rename failed — restore backup if we had one
-                if (had_existing) {
-                    rename(awp_backup_path.c_str(), awp_output_path.c_str());
+                // Move failed — another process may have beaten us to it
+                remove(awp_temp_path.c_str());
+                if (std::ifstream{awp_output_path}.good()) {
+                    xlog::info("AWP file already placed by another process: {}", awp_name);
+                    return true;
                 }
-                xlog::error("Failed to rename AWP temp file to {}", awp_output_path);
+                xlog::error("Failed to move AWP temp file to {}", awp_output_path);
             }
 
             remove(awp_temp_path.c_str());
