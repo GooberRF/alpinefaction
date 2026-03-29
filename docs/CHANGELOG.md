@@ -82,6 +82,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Update MP autodownloader to use new FactionFiles API, and revamp UI
 - Add `autodl_blur_background` console command to toggle the behaviour of the autodownload background
 - Add `cl_chat` and `spectate_cinematic_mode` console commands
+- Add `D3D11 Renderer` and `D3D8/9 Renderer` scope options to `Scope_Gate` event
 - Add `Hold Open` property to movers
 
 [@is-this-c](https://github.com/is-this-c)
