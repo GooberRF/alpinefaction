@@ -620,8 +620,9 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         for (auto& node : *arr) {
             if (auto tbl = node.as_table()) {
                 if (auto nameOpt = (*tbl)["item_name"].value<std::string>()) {
-                    if (!o.delayed_items.add(*nameOpt))
-                        xlog::warn("Invalid or duplicate delayed item '{}'", *nameOpt);
+                    bool added = o.delayed_items.add(*nameOpt);
+                    if (!added && !o.delayed_items.contains(*nameOpt))
+                        xlog::warn("Invalid delayed item '{}'", *nameOpt);
                 }
             }
         }
@@ -1912,10 +1913,17 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
             std::format_to(iter, "    <none>\n");
         }
         else {
+            bool anyPrinted = false;
             for (auto const& name : rules.delayed_items.items) {
                 bool unchanged = std::find(b.delayed_items.items.begin(),
                     b.delayed_items.items.end(), name) != b.delayed_items.items.end();
                 if (base || !unchanged) {
+                    std::format_to(iter, "    {}\n", name);
+                    anyPrinted = true;
+                }
+            }
+            if (!base && anyDelayedChanged && !anyPrinted) {
+                for (auto const& name : rules.delayed_items.items) {
                     std::format_to(iter, "    {}\n", name);
                 }
             }
