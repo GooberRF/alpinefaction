@@ -1083,21 +1083,6 @@ static LRESULT CALLBACK KfPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, 
                 else if (!hold_open && it != uids.end()) {
                     uids.erase(it);
                 }
-
-                // Scrub stale entries: remove any UIDs that don't match a valid first-keyframe UID
-                auto& mg = level->moving_groups;
-                uids.erase(std::remove_if(uids.begin(), uids.end(), [&mg](int32_t uid) {
-                    for (int i = 0; i < mg.size; i++) {
-                        auto* group = mg[i];
-                        if (group && group->is_moving_group() && group->keyframes &&
-                            group->keyframes->size > 0) {
-                            DedObject* first_kf = (*group->keyframes)[0];
-                            if (first_kf && first_kf->uid == uid)
-                                return false; // valid, keep
-                        }
-                    }
-                    return true; // orphan, remove
-                }), uids.end());
             }
         }
     }
