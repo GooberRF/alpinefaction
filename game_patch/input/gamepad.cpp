@@ -30,7 +30,9 @@
 #include "../rf/os/os.h"
 
 static SDL_Gamepad* g_gamepad = nullptr;
-static bool g_motion_sensors_active = false; // true only when the connected gamepad has gyro+accel and is enabled
+static bool g_motion_sensors_supported = false;
+static bool g_rumble_supported         = false;
+static bool g_trigger_rumble_supported = false;
 
 // Raw gamepad camera delta accumulators.
 static float g_camera_gamepad_dx = 0.0f;
@@ -252,7 +254,7 @@ static bool try_enable_gamepad_sensors()
 
     if (!SDL_GamepadHasSensor(g_gamepad, SDL_SENSOR_GYRO) ||
         !SDL_GamepadHasSensor(g_gamepad, SDL_SENSOR_ACCEL)) {
-        xlog::info("Gamepad does not support motion sensor");
+        xlog::info("Motion sensors are not supported");
         return false;
     }
 
@@ -262,9 +264,37 @@ static bool try_enable_gamepad_sensors()
         return false;
     }
 
-    xlog::info("Motion sensors enabled");
-    g_motion_sensors_active = true;
+    xlog::info("Motion sensors are supported");
+    g_motion_sensors_supported = true;
     gyro_reset_full();
+    return true;
+}
+
+static bool try_enable_gamepad_rumble()
+{
+    if (!g_gamepad) return false;
+
+    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(g_gamepad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) {
+        xlog::info("Rumble is not supported");
+        return false;
+    }
+
+    xlog::info("Rumble is supported");
+    g_rumble_supported = true;
+    return true;
+}
+
+static bool try_enable_gamepad_trigger_rumble()
+{
+    if (!g_gamepad) return false;
+
+    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(g_gamepad), SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false)) {
+        xlog::info("Trigger rumble is not supported");
+        return false;
+    }
+
+    xlog::info("Trigger rumble is supported");
+    g_trigger_rumble_supported = true;
     return true;
 }
 
@@ -277,6 +307,8 @@ static void try_open_gamepad(SDL_JoystickID id)
     }
 
     xlog::info("Gamepad connected: {}", SDL_GetGamepadName(g_gamepad));
+    try_enable_gamepad_rumble();
+    try_enable_gamepad_trigger_rumble();
     try_enable_gamepad_sensors();
 }
 
@@ -634,8 +666,10 @@ static void handle_gamepad_removed(const SDL_GamepadDeviceEvent& ev)
     inject_action_key(g_trigger_action[1], false);
     menu_nav_release_click();
     SDL_CloseGamepad(g_gamepad);
-    g_gamepad               = nullptr;
-    g_motion_sensors_active = false;
+    g_gamepad                  = nullptr;
+    g_motion_sensors_supported = false;
+    g_rumble_supported         = false;
+    g_trigger_rumble_supported = false;
     reset_gamepad_input_state();
 }
 
@@ -746,7 +780,7 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
 
 static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
 {
-    if (!g_motion_sensors_active || !is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which)
+    if (!g_motion_sensors_supported || !is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which)
         return;
 
     if (ev.sensor == SDL_SENSOR_GYRO) {
@@ -910,7 +944,7 @@ void gamepad_do_frame()
 
     g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
 
-    if (g_motion_sensors_active) {
+    if (g_motion_sensors_supported) {
         gyro_process_motion(g_gyro_x, g_gyro_y, g_gyro_z,
                             g_accel_x, g_accel_y, g_accel_z, rf::frametime);
         g_gyro_fresh = false;
@@ -1104,7 +1138,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     }
 
     bool allow_gyro = !is_spectator_camera
-        && g_motion_sensors_active
+        && g_motion_sensors_supported
         && g_alpine_game_config.gamepad_gyro_enabled
         && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
         && gyro_modifier_is_active();
@@ -1209,7 +1243,7 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
 
             // Gyro: convert deg/s to ci.rot range (±1.0) with a fixed scale factor.
             // 1/90 means 90 deg/s of gyro rotation equals full keyboard deflection.
-            if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled
+            if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled
                 && g_alpine_game_config.gamepad_gyro_vehicle_camera
                 && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
                 && gyro_modifier_is_active()) {
@@ -1384,12 +1418,27 @@ ConsoleCommand2 joy_flickstick_release_deadzone_cmd{
 
 ConsoleCommand2 joy_rumble_cmd{
     "joy_rumble",
-    [](std::optional<int> val) {
-        if (val) g_alpine_game_config.gamepad_rumble_enabled = val.value() != 0;
-        rf::console::print("Gamepad rumble: {}", g_alpine_game_config.gamepad_rumble_enabled ? "enabled" : "disabled");
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.gamepad_rumble_intensity = std::clamp(val.value(), 0.0f, 1.0f);
+        rf::console::print("Gamepad rumble intensity: {:.2f}", g_alpine_game_config.gamepad_rumble_intensity);
     },
-    "Enable/disable gamepad rumble globally (default 1)",
-    "joy_rumble [0|1]",
+    "Set gamepad rumble intensity 0.0-1.0 (default 1.0)",
+    "joy_rumble [value]",
+};
+
+ConsoleCommand2 joy_rumble_triggers_cmd{
+    "joy_rumble_triggers",
+    [](std::optional<float> val) {
+        if (!g_trigger_rumble_supported) {
+            rf::console::print("Value blocked, gamepad does not support Trigger Rumbles");
+            return;
+        }
+        if (val)
+            g_alpine_game_config.gamepad_trigger_rumble_intensity = std::clamp(val.value(), 0.0f, 1.0f);
+        rf::console::print("Trigger rumble intensity: {:.2f}", g_alpine_game_config.gamepad_trigger_rumble_intensity);
+    },
+    "Set gamepad trigger rumble intensity 0.0-1.0 (default 1.0, if supported by controller)",
+    "joy_rumble_triggers [value]",
 };
 
 ConsoleCommand2 joy_rumble_weapon_cmd{
@@ -1410,23 +1459,6 @@ ConsoleCommand2 joy_rumble_environmental_cmd{
     },
     "Enable/disable environmental rumble (default 1)",
     "joy_rumble_environmental [0|1]",
-};
-
-ConsoleCommand2 joy_rumble_triggers_cmd{
-    "joy_rumble_triggers",
-    [](std::optional<int> val) {
-        if (val) {
-            bool enabling = val.value() != 0;
-            if (enabling && g_gamepad && !SDL_RumbleGamepadTriggers(g_gamepad, 0, 0, 0)) {
-                rf::console::print("Controller does not support Trigger Rumbles");
-                return;
-            }
-            g_alpine_game_config.gamepad_trigger_rumble_enabled = enabling;
-        }
-        rf::console::print("Trigger rumble: {}", g_alpine_game_config.gamepad_trigger_rumble_enabled ? "enabled" : "disabled");
-    },
-    "Enable/disable trigger haptic rumble for weapon fire (default 1, if supported by controller)",
-    "joy_rumble_triggers [0|1]",
 };
 
 ConsoleCommand2 gyro_camera_cmd{
@@ -1534,7 +1566,7 @@ int gamepad_get_alt_sc_for_primary_sc(int primary_sc)
 
 bool gamepad_is_motionsensors_supported()
 {
-    return g_motion_sensors_active;
+    return g_motion_sensors_supported;
 }
 
 bool gamepad_is_last_input_gamepad()
@@ -1862,7 +1894,7 @@ ConsoleCommand2 joy_reconnect_cmd{
         SDL_JoystickID prev_id = SDL_GetGamepadID(g_gamepad);
         SDL_CloseGamepad(g_gamepad);
         g_gamepad               = nullptr;
-        g_motion_sensors_active = false;
+        g_motion_sensors_supported = false;
         reset_gamepad_input_state();
 
         // Reopen the same device.
@@ -1900,9 +1932,9 @@ void gamepad_apply_patch()
     joy_flickstick_deadzone_cmd.register_cmd();
     joy_flickstick_release_deadzone_cmd.register_cmd();
     joy_rumble_cmd.register_cmd();
+    joy_rumble_triggers_cmd.register_cmd();
     joy_rumble_weapon_cmd.register_cmd();
     joy_rumble_environmental_cmd.register_cmd();
-    joy_rumble_triggers_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();
@@ -1938,11 +1970,16 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
 
 void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
 {
-    if (!g_gamepad)
+    if (!g_gamepad || !g_rumble_supported)
         return;
+    // Apply global rumble intensity multiplier
+    if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f)
+        return;
+    low_freq = static_cast<uint16_t>(low_freq * g_alpine_game_config.gamepad_rumble_intensity);
+    high_freq = static_cast<uint16_t>(high_freq * g_alpine_game_config.gamepad_rumble_intensity);
     // Controller Vibration filter: mute low-freq motor when gyro aiming is active to
     // prevent rumble vibration from being picked up as unwanted camera input.
-    if (g_motion_sensors_active && g_alpine_game_config.gamepad_gyro_enabled)
+    if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled)
         low_freq = 0;
     SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
 }
@@ -1953,7 +1990,7 @@ void gamepad_play_rumble(const RumbleEffect& effect)
         return;
 
     // No trigger motor requested — plain body rumble.
-    if (!effect.trigger_motor || !g_alpine_game_config.gamepad_trigger_rumble_enabled) {
+    if (!effect.trigger_motor || g_alpine_game_config.gamepad_trigger_rumble_intensity <= 0.0f) {
         gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
         return;
     }
@@ -1983,8 +2020,8 @@ void gamepad_play_rumble(const RumbleEffect& effect)
 
     // Route to the trigger motor(s) matching the active fire binding.
     // If the hardware doesn't support trigger rumble, fall back to body rumble.
-    uint16_t lt_motor = use_lt ? effect.trigger_motor : 0;
-    uint16_t rt_motor = use_rt ? effect.trigger_motor : 0;
+    uint16_t lt_motor = use_lt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
+    uint16_t rt_motor = use_rt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
     if (!SDL_RumbleGamepadTriggers(g_gamepad, lt_motor, rt_motor, effect.duration_ms))
         gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
 }

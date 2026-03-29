@@ -109,14 +109,14 @@ static void rumble_weapon_do_frame()
 
 void rumble_do_frame()
 {
-    if (!g_alpine_game_config.gamepad_rumble_enabled)
+    if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f)
         return;
     rumble_weapon_do_frame();
 }
 
 void rumble_on_player_hit(float damage, int damage_type)
 {
-    if (!g_alpine_game_config.gamepad_rumble_enabled)
+    if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f)
         return;
     if (!g_alpine_game_config.gamepad_environmental_rumble_enabled)
         return;
@@ -143,7 +143,7 @@ void rumble_on_player_hit(float damage, int damage_type)
 
 void rumble_on_turret_fire(rf::Entity* firer)
 {
-    if (!g_alpine_game_config.gamepad_rumble_enabled || !g_alpine_game_config.gamepad_weapon_rumble_enabled)
+    if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f || !g_alpine_game_config.gamepad_weapon_rumble_enabled)
         return;
     if (!rf::entity_is_turret(firer))
         return;

@@ -188,10 +188,10 @@ struct AlpineGameSettings
     int input_prompt_override = 0; // 0=Auto, 1=Controller, 2=Keyboard
     bool gamepad_joy_invert_y = false;
     bool gamepad_swap_sticks = false;
-    bool gamepad_rumble_enabled = true;
+    float gamepad_rumble_intensity = 1.0f;
     bool gamepad_weapon_rumble_enabled = true;
     bool gamepad_environmental_rumble_enabled = true;
-    bool gamepad_trigger_rumble_enabled = true;
+    float gamepad_trigger_rumble_intensity = 1.0f;
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool scoreboard_split_simple = true;

@@ -1109,7 +1109,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GamepadSwapSticks");
     }
     if (settings.count("GamepadRumble")) {
-        g_alpine_game_config.gamepad_rumble_enabled = std::stoi(settings["GamepadRumble"]) != 0;
+        g_alpine_game_config.gamepad_rumble_intensity = std::clamp(std::stof(settings["GamepadRumble"]), 0.0f, 1.0f);
         processed_keys.insert("GamepadRumble");
     }
     if (settings.count("GamepadWeaponRumble")) {
@@ -1121,7 +1121,7 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("GamepadEnvironmentalRumble");
     }
     if (settings.count("GamepadTriggerRumble")) {
-        g_alpine_game_config.gamepad_trigger_rumble_enabled = std::stoi(settings["GamepadTriggerRumble"]) != 0;
+        g_alpine_game_config.gamepad_trigger_rumble_intensity = std::clamp(std::stof(settings["GamepadTriggerRumble"]), 0.0f, 1.0f);
         processed_keys.insert("GamepadTriggerRumble");
     }
     // Per-button gamepad bindings
@@ -1313,10 +1313,10 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "InputPromptMode=" << g_alpine_game_config.input_prompt_override << "\n";
     file << "GamepadJoyInvertY=" << g_alpine_game_config.gamepad_joy_invert_y << "\n";
     file << "GamepadSwapSticks=" << g_alpine_game_config.gamepad_swap_sticks << "\n";
-    file << "GamepadRumble=" << g_alpine_game_config.gamepad_rumble_enabled << "\n";
+    file << "GamepadRumble=" << g_alpine_game_config.gamepad_rumble_intensity << "\n";
     file << "GamepadWeaponRumble=" << g_alpine_game_config.gamepad_weapon_rumble_enabled << "\n";
     file << "GamepadEnvironmentalRumble=" << g_alpine_game_config.gamepad_environmental_rumble_enabled << "\n";
-    file << "GamepadTriggerRumble=" << g_alpine_game_config.gamepad_trigger_rumble_enabled << "\n";
+    file << "GamepadTriggerRumble=" << g_alpine_game_config.gamepad_trigger_rumble_intensity << "\n";
 
     file << "\n[ActionBinds]\n";
     file << "; Format is Bind:{Name}={ID},{ScanCode0},{ScanCode1},{MouseButtonID},{GamepadScanCode},{GamepadScanCodeAlt}\n";

@@ -34,6 +34,8 @@ Version 1.3.0 (Bakeapple): Not yet released
   - Full controller support via SDL3 Gamepad API
   - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, and Steam Controller 2026)
   - Dual-Analog support for movement and camera controls
+  - Initial Rumble support
+    - Trigger Rumble/Impulse Triggers are also supported (requires enabling `GamepadRawInput` in `alpine_settings.ini`)
   - Gyro Aiming support
     - Natural Sensitivity Scale / Real World Sensitivity support 
     - Gyro Space orientation support for Yaw, Roll, Local Space, Player Space and World Space
@@ -125,6 +127,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
+- Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
