@@ -190,6 +190,56 @@
 #define ID_SELECT_OBJECTS          0x801D
 #define ID_HIDE_OBJECTS            0x8022
 
+// Stock Keyframe Properties dialog (moving group properties, dialog 280)
+#define IDD_KEYFRAME_PROPERTIES     280
+
+// Keyframe List Properties group — stock control IDs
+#define IDC_KF_IS_DOOR              1214  // 0x04BE checkbox
+#define IDC_KF_ROTATE_IN_PLACE      1215  // 0x04BF checkbox
+#define IDC_KF_USE_TRAV_AS_VEL      1216  // 0x04C0 checkbox
+#define IDC_KF_FORCE_ORIENT         1217  // 0x04C1 checkbox
+#define IDC_KF_NO_PLAYER_COLLIDE    1218  // 0x04C2 checkbox
+#define IDC_KF_MOVEMENT_TYPE        1457  // 0x05B1 combobox
+#define IDC_KF_STARTING_KEYFRAME    1522  // 0x05F2 static
+#define IDC_KF_PREVIEW              1569  // 0x0621 button
+#define IDC_KF_STARTS_BACKWARDS     1570  // 0x0622 checkbox
+#define IDC_KF_PROPAGATE_SOUNDS     1583  // 0x062F button
+#define IDC_KF_PROPAGATE_PROPS      1584  // 0x0630 button
+#define IDC_KF_STOP_SOUNDS          1658  // 0x067A button
+
+// Sound controls — stock control IDs
+#define IDC_KF_START_SOUND_EDIT     1571  // 0x0623
+#define IDC_KF_START_SOUND_BROWSE   1572  // 0x0624
+#define IDC_KF_START_SOUND_VOL      1524  // 0x05F4
+#define IDC_KF_START_SOUND_PREVIEW  1573  // 0x0625
+#define IDC_KF_LOOP_SOUND_EDIT      1574  // 0x0626
+#define IDC_KF_LOOP_SOUND_BROWSE    1575  // 0x0627
+#define IDC_KF_LOOP_SOUND_VOL       1525  // 0x05F5
+#define IDC_KF_LOOP_SOUND_PREVIEW   1576  // 0x0628
+#define IDC_KF_STOP_SOUND_EDIT      1577  // 0x0629
+#define IDC_KF_STOP_SOUND_BROWSE    1578  // 0x062A
+#define IDC_KF_STOP_SOUND_VOL       1526  // 0x05F6
+#define IDC_KF_STOP_SOUND_PREVIEW   1579  // 0x062B
+#define IDC_KF_CLOSE_SOUND_EDIT     1580  // 0x062C
+#define IDC_KF_CLOSE_SOUND_BROWSE   1581  // 0x062D
+#define IDC_KF_CLOSE_SOUND_VOL      1527  // 0x05F7
+#define IDC_KF_CLOSE_SOUND_PREVIEW  1582  // 0x062E
+
+// Per-keyframe properties — stock control IDs
+#define IDC_KF_SCRIPT_NAME          1042  // 0x0412
+#define IDC_KF_PAUSE_TIME           1521  // 0x05F1
+#define IDC_KF_DEPART_TRAVEL_TIME   1566  // 0x061E
+#define IDC_KF_RETURN_TRAVEL_TIME   1567  // 0x061F
+#define IDC_KF_ACCEL_TIME           1519  // 0x05EF
+#define IDC_KF_DECEL_TIME           1520  // 0x05F0
+#define IDC_KF_EVENT_UID            1523  // 0x05F3
+#define IDC_KF_ITEM_UID1            1529  // 0x05F9
+#define IDC_KF_ITEM_UID2            1530  // 0x05FA
+#define IDC_KF_DEGREES_ABOUT_AXIS   1528  // 0x05F8
+
+// Alpine extension
+#define IDC_KF_HOLD_OPEN            2050
+
 #define IDD_ALPINE_LEVEL_POPUP 3002
 #define ID_PLAY_MULTI 3003
 #define ID_PLAY_MULTI_CAMERA 3004

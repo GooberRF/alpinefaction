@@ -75,7 +75,7 @@ namespace rf
         MF_PAUSED_AT_KEYFRAME = 0x1,
         MF_DOOR = 0x2,
         MF_ROTATE_IN_PLACE = 0x4,
-        MF_UNK_8 = 0x8,
+        MF_PROCESSED_THIS_FRAME = 0x8, // set in process_pre, read by interpolate_objects + process_post, cleared in process_post
         MF_UNK_10 = 0x10,
         MF_UNK_20 = 0x20,
         MF_ACCEL_DECEL = 0x40,
