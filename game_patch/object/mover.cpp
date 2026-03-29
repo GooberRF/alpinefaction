@@ -755,6 +755,10 @@ static void alpine_mover_process_pre(rf::Mover* mp)
         // retaining stale velocity from the last moving frame
         mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
         mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
+        // pin position to current keyframe so next_pos doesn't remain stale
+        const int cur = mp->start_at_keyframe;
+        if (cur >= 0 && cur < count)
+            mp->p_data.next_pos = KF(mp, cur)->pos;
         return;
     }
 
