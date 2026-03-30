@@ -514,7 +514,13 @@ namespace df::gr::d3d11
     void Renderer::setup_3d(Projection proj)
     {
         render_context_->update_view_proj_transform(proj);
-        outline_renderer_->begin_frame();
+        // Only initialize outlines when rendering to the back buffer.
+        // The rail gun scanner calls setup_3d while rendering to a small texture;
+        // running begin_frame there would save the wrong projection and cause
+        // outlines to be queued (and potentially flushed) into the scanner texture.
+        if (render_target_bm_handle_ == -1) {
+            outline_renderer_->begin_frame();
+        }
     }
 
     void Renderer::set_far_clip(bool enabled)
@@ -591,6 +597,11 @@ namespace df::gr::d3d11
         dyn_geo_renderer_->flush();
         mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
 
+        // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
+        if (render_target_bm_handle_ != -1) {
+            return;
+        }
+
         // Queue outline for third-person weapon meshes.
         // The game renders weapon meshes (MRF_CUSTOM_AMBIENT_COLOR) immediately after
         // the owning character mesh, so current_character_outline tracks the association.
@@ -612,6 +623,12 @@ namespace df::gr::d3d11
     {
         dyn_geo_renderer_->flush();
         mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
+
+        // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
+        // Outlines use the main depth/stencil buffer and should only render to the back buffer.
+        if (render_target_bm_handle_ != -1) {
+            return;
+        }
 
         // Queue outline if this character needs one, and track for weapon meshes
         if (auto* info = outline_renderer_->lookup(ci)) {
