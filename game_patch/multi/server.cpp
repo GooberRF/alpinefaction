@@ -2448,7 +2448,7 @@ static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
     }
 
     const char* team_name = (new_team == rf::TEAM_RED) ? "Red" : "Blue";
-    af_broadcast_automated_chat_msg(std::format("Automatic team balancing moved {} to the {} team", player->name, team_name));
+    af_broadcast_automated_chat_msg(std::format("{} was moved to the {} team", player->name, team_name));
 }
 
 static void balance_teams()
@@ -2499,9 +2499,19 @@ static void balance_teams()
         return a->stats->score > b->stats->score;
     });
 
-    // Assign each bot to whichever team currently has fewer players
+    // Assign each bot to whichever team currently has fewer players,
+    // randomizing the tie-break to avoid systematic bias
     for (auto* bot : bots) {
-        rf::ubyte new_team = (red_count <= blue_count) ? rf::TEAM_RED : rf::TEAM_BLUE;
+        rf::ubyte new_team;
+        if (red_count < blue_count) {
+            new_team = rf::TEAM_RED;
+        }
+        else if (blue_count < red_count) {
+            new_team = rf::TEAM_BLUE;
+        }
+        else {
+            new_team = std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+        }
         assign_player_to_team(bot, new_team);
         if (new_team == rf::TEAM_RED) {
             ++red_count;
@@ -2516,7 +2526,8 @@ CodeInjection multi_balance_teams_injection{
     0x0048215D,
     [](auto& regs) {
         const rf::NetGameType current_game_type = rf::multi_get_game_type();
-        if (should_balance_teams(current_game_type)) {
+        if (should_balance_teams(current_game_type)
+            && !g_match_info.pre_match_active && !g_match_info.match_active) {
             balance_teams();
         }
         regs.eip = 0x004823ED; // always skip stock balance code
@@ -3469,7 +3480,7 @@ static void bot_decommission_check() {
 
     const bool is_team_mode = multi_is_team_game_type();
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser || player.is_spectator) {
+        if (player.is_browser) {
             continue;
         }
 
@@ -3483,6 +3494,15 @@ static void bot_decommission_check() {
                 disabled_candidates[team].push_back(&player);
             } else {
                 active_candidates[team].push_back(&player);
+            }
+        } else if (player.is_spectator) {
+            const auto now = std::chrono::steady_clock::now();
+            const bool just_entered_spectate = player.spectate_start_time
+                && now - *player.spectate_start_time
+                    < std::chrono::duration<float>(BOT_SPECTATE_WAIT_TIME_SEC);
+
+            if (just_entered_spectate) {
+                ++active_persons_per_team[team];
             }
         } else {
             const bool is_spawned = !rf::player_is_dead(&player)
