@@ -86,6 +86,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Hold Open` property to movers
 - Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
 - Display client types and counts when an AF v1.3 server is selected in the server list
+- Add `r_pixellightoverbright` console command for setting pixel light overbright allowance range
 - Make team balancing distribute bots evenly across teams and exclude spectators and browsers
 - Exclude spectators and browsers from bot decommission player count calculations
 - Exclude spectators and browsers when counting players for team selection for a newly joining player
@@ -113,6 +114,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
 - Add freelook/first person toggle bind in spectator mode
 - Implement enemy and teammate footstep audio for weapons other than pistol
+- Add delayed items server config option, enabling global and per-map delaying of specific item spawns at map start
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
