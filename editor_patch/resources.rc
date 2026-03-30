@@ -666,6 +666,91 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Mirror", IDC_GROUP_MIRROR, 11, 281, 50, 14
 }
 
+// Keyframe Properties dialog (stock dialog 280 + Hold Open checkbox)
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_KEYFRAME_PROPERTIES DIALOGEX 0, 0, 405, 330
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Keyframe Properties"
+FONT 8, "MS Sans Serif"
+{
+    // Keyframe List Properties group
+    GROUPBOX        "Keyframe List Properties", -1, 7, 7, 332, 148
+    AUTOCHECKBOX    "Is Door", IDC_KF_IS_DOOR, 14, 19, 39, 10
+    AUTOCHECKBOX    "Starts Moving Backwards", IDC_KF_STARTS_BACKWARDS, 77, 19, 97, 10
+    AUTOCHECKBOX    "Rotate in Place", IDC_KF_ROTATE_IN_PLACE, 14, 32, 61, 10
+    AUTOCHECKBOX    "Use Travel Time as Velocity", IDC_KF_USE_TRAV_AS_VEL, 77, 32, 101, 10
+    LTEXT           "Movement Type:", -1, 14, 47, 54, 8
+    COMBOBOX        IDC_KF_MOVEMENT_TYPE, 77, 44, 87, 133, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "Starting Keyframe:", -1, 14, 63, 58, 8
+    LTEXT           "Static", IDC_KF_STARTING_KEYFRAME, 77, 61, 36, 14
+    PUSHBUTTON      "Preview", IDC_KF_PREVIEW, 117, 61, 48, 14
+    AUTOCHECKBOX    "Force Orient", IDC_KF_FORCE_ORIENT, 183, 32, 61, 10
+    AUTOCHECKBOX    "No Player Collide", IDC_KF_NO_PLAYER_COLLIDE, 183, 43, 72, 10
+    PUSHBUTTON      "Propagate Sounds", IDC_KF_PROPAGATE_SOUNDS, 260, 16, 74, 14
+    PUSHBUTTON      "Propagate Properties", IDC_KF_PROPAGATE_PROPS, 260, 33, 74, 14
+    PUSHBUTTON      "Stop Sounds", IDC_KF_STOP_SOUNDS, 260, 51, 50, 14
+
+    // Alpine extension
+    AUTOCHECKBOX    "Hold Open", IDC_KF_HOLD_OPEN, 183, 19, 50, 10
+
+    // Sound controls
+    LTEXT           "Start Sound:", -1, 25, 83, 40, 8
+    EDITTEXT        IDC_KF_START_SOUND_EDIT, 70, 80, 96, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_KF_START_SOUND_BROWSE, 170, 80, 40, 14
+    GROUPBOX        "Volume", -1, 215, 70, 45, 81
+    LTEXT           "Static", IDC_KF_START_SOUND_VOL, 220, 80, 36, 14
+    PUSHBUTTON      "Preview", IDC_KF_START_SOUND_PREVIEW, 267, 80, 40, 14
+    LTEXT           "Looping Sound:", -1, 15, 101, 51, 8
+    EDITTEXT        IDC_KF_LOOP_SOUND_EDIT, 70, 98, 96, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_KF_LOOP_SOUND_BROWSE, 170, 98, 40, 14
+    LTEXT           "Static", IDC_KF_LOOP_SOUND_VOL, 220, 98, 36, 14
+    PUSHBUTTON      "Preview", IDC_KF_LOOP_SOUND_PREVIEW, 267, 98, 40, 14
+    LTEXT           "Stop Sound:", -1, 26, 119, 40, 8
+    EDITTEXT        IDC_KF_STOP_SOUND_EDIT, 70, 116, 96, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_KF_STOP_SOUND_BROWSE, 170, 116, 40, 14
+    LTEXT           "Static", IDC_KF_STOP_SOUND_VOL, 220, 116, 36, 14
+    PUSHBUTTON      "Preview", IDC_KF_STOP_SOUND_PREVIEW, 267, 116, 40, 14
+    LTEXT           "Close Sounds:", -1, 21, 135, 46, 8
+    EDITTEXT        IDC_KF_CLOSE_SOUND_EDIT, 70, 132, 96, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse...", IDC_KF_CLOSE_SOUND_BROWSE, 169, 132, 40, 14
+    LTEXT           "Static", IDC_KF_CLOSE_SOUND_VOL, 219, 132, 36, 14
+    PUSHBUTTON      "Preview", IDC_KF_CLOSE_SOUND_PREVIEW, 267, 132, 40, 14
+
+    // Keyframe Properties group
+    GROUPBOX        "Keyframe Properties", -1, 7, 160, 332, 161
+    LTEXT           "Script Name:", -1, 14, 174, 42, 8
+    EDITTEXT        IDC_KF_SCRIPT_NAME, 60, 172, 84, 14, ES_AUTOHSCROLL
+    LTEXT           "Pause Time:", -1, 14, 193, 40, 8
+    LTEXT           "Static", IDC_KF_PAUSE_TIME, 60, 190, 36, 14
+    LTEXT           "Seconds", -1, 100, 193, 29, 8
+    LTEXT           "Departing Travel Time:", -1, 15, 212, 73, 8
+    LTEXT           "Static", IDC_KF_DEPART_TRAVEL_TIME, 92, 209, 36, 14
+    LTEXT           "Seconds", -1, 132, 212, 29, 8
+    LTEXT           "Returning Travel Time:", -1, 16, 230, 73, 8
+    LTEXT           "Static", IDC_KF_RETURN_TRAVEL_TIME, 92, 228, 36, 14
+    LTEXT           "Seconds", -1, 132, 230, 29, 8
+    LTEXT           "Acceleration Time:", -1, 14, 249, 60, 8
+    LTEXT           "Static", IDC_KF_ACCEL_TIME, 78, 246, 36, 14
+    LTEXT           "Seconds", -1, 118, 249, 29, 8
+    LTEXT           "Deceleration Time:", -1, 14, 266, 60, 8
+    LTEXT           "Static", IDC_KF_DECEL_TIME, 78, 265, 36, 14
+    LTEXT           "Seconds", -1, 118, 268, 29, 8
+    LTEXT           "Trigger Event With UID:", -1, 13, 286, 77, 8
+    LTEXT           "Static", IDC_KF_EVENT_UID, 95, 284, 38, 14
+    LTEXT           "Contains Item UID(s):", -1, 13, 305, 68, 8
+    LTEXT           "Static", IDC_KF_ITEM_UID1, 95, 303, 38, 14
+    LTEXT           "Static", IDC_KF_ITEM_UID2, 146, 303, 38, 14
+
+    // Rotation Properties group
+    GROUPBOX        "Rotation Properties", -1, 211, 169, 122, 36
+    LTEXT           "Degrees about Axis:", -1, 215, 188, 64, 8
+    LTEXT           "", IDC_KF_DEGREES_ABOUT_AXIS, 287, 185, 40, 14
+
+    // OK / Cancel
+    DEFPUSHBUTTON   "OK", IDOK, 348, 290, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 348, 307, 50, 14
+}
+
 // Face split dialog
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
 IDD_FACE_SPLIT DIALOGEX 0, 0, 160, 80
