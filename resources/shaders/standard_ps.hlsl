@@ -21,6 +21,7 @@ cbuffer RenderModeBuffer : register(b0)
     float light_scale;
     float dynamic_light_ndotl;
     float pixel_light_overbright;
+    float emissive_override;
 };
 
 struct PointLight {
@@ -257,6 +258,12 @@ float4 main(VsOutput input) : SV_TARGET
     // Self-illumination sets a minimum brightness floor (matches stock engine behavior).
     if (self_illumination > 0.0f) {
         light_color = max(light_color, self_illumination);
+    }
+    // Emissive override: render at pure texture brightness, ignoring vertex color
+    // darkening and lighting. Used for monitor screens that should appear self-lit.
+    if (emissive_override > 0.5f) {
+        target.rgb = tex0_color.rgb * current_color.rgb;
+        light_color = float3(1.0f, 1.0f, 1.0f);
     }
 
     target.rgb *= light_color;

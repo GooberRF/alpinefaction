@@ -146,6 +146,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix vertex lighting data not being properly built for debris static meshes
 - Fix `Max FPS` menu button not immediately applying the new value when set
 - Fix non-legacy translation movers maintaining velocity after stopping
+- Fix mirror and security monitor screens not being fully self-illuminated (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

@@ -22,6 +22,7 @@
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
+#include "../../object/object.h"
 
 using namespace rf;
 
@@ -949,8 +950,13 @@ namespace df::gr::d3d11
                     self_illum = 1.0f;
                 }
             }
+            // Monitor screens are always fully self-illuminated.
+            bool emissive = is_monitor_screen_bitmap(texture);
+            if (emissive) {
+                self_illum = 1.0f;
+            }
 
-            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh);
+            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh, emissive);
             render_context_.set_textures(texture, -1);
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }
