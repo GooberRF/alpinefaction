@@ -4,6 +4,7 @@
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#include <ranges>
 #include <cstring>
 #include <cassert>
 #include <windows.h>
@@ -22,6 +23,8 @@
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
+#include <common/utils/list-utils.h>
+#include "../../rf/clutter.h"
 
 using namespace rf;
 
@@ -947,6 +950,17 @@ namespace df::gr::d3d11
                 self_illum = b.self_illumination;
                 if (b.mode.get_color_source() == gr::COLOR_SOURCE_TEXTURE) {
                     self_illum = 1.0f;
+                } else {
+                    // Monitors should not be lighted.
+                    if (std::ranges::any_of(
+                        DoublyLinkedList{rf::monitor_list},
+                        [=] (const rf::Monitor& mon) {
+                            return mon.user_bitmap == texture;
+                        }
+                    )) {
+                        render_context_.update_lights(true);
+                        gpu_dynamic_lighting = false;
+                    }
                 }
             }
 
