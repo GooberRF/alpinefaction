@@ -397,7 +397,7 @@ namespace df::gr::d3d11
             data.light_scale = 1.0f;
         }
         data.dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
-        data.pixel_light_overbright = g_alpine_game_config.pixel_light_overbright;
+        data.pixel_light_overbright = g_level_pixel_light_overbright;
         data.emissive_override = current_emissive_override_ ? 1.0f : 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;

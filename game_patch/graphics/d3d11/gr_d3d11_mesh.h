@@ -33,6 +33,11 @@ namespace df::gr::d3d11
         return g_level_vertex_lighting;
     }
 
+    // Cached pixel light overbright for the current level, updated at level load.
+    // Per-level TBL override takes precedence over the global setting.
+    extern float g_level_pixel_light_overbright;
+    void evaluate_pixel_light_overbright(const std::string& level_filename);
+
     void on_character_fullbright_state_changed();
     void on_static_vertex_color_state_changed(rf::VifLodMesh* changed_lod_mesh = nullptr);
 

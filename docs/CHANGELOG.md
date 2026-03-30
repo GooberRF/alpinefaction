@@ -86,7 +86,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Hold Open` property to movers
 - Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
 - Display client types and counts when an AF v1.3 server is selected in the server list
-- Add `r_pixellightoverbright` console command for setting pixel light overbright allowance range
+- Add `r_pixellightoverbright` console command and `$Pixel Lighting Overbright` `MAPNAME_info.tbl` option for setting pixel light overbright allowance range
 - Make team balancing distribute bots evenly across teams and exclude spectators and browsers
 - Exclude spectators and browsers from bot decommission player count calculations
 - Exclude spectators and browsers when counting players for team selection for a newly joining player
@@ -149,6 +149,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix vertex lighting data not being properly built for debris static meshes
 - Fix `Max FPS` menu button not immediately applying the new value when set
 - Fix non-legacy translation movers maintaining velocity after stopping
+- Fix crash in CTF when loading a level that has one flag but not both
+- Fix crash in CTF when attempting to capture a flag in a level that has no other flags
 - Fix mirror and security monitor screens not being fully self-illuminated (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)

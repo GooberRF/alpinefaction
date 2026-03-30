@@ -21,6 +21,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/os/frametime.h"
 #include "../../misc/alpine_settings.h"
+#include "../../hud/multi_spectate.h"
 
 using namespace rf;
 
@@ -438,12 +439,22 @@ namespace df::gr::d3d11
             local_entity_handle = rf::local_player->entity_handle;
         }
 
+        // Get spectated player entity handle to skip their shadow in first-person spectate
+        int spectate_entity_handle = -1;
+        if (multi_spectate_is_first_person()) {
+            rf::Player* spectate_target = multi_spectate_get_target_player();
+            if (spectate_target) {
+                spectate_entity_handle = spectate_target->entity_handle;
+            }
+        }
+
         int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
         float fade_end = shadow_distance_presets[dp].fade_end;
         float fade_end_sq = fade_end * fade_end;
 
         for (auto& entity : DoublyLinkedList{rf::entity_list}) {
             if (entity.handle == local_entity_handle) continue;
+            if (entity.handle == spectate_entity_handle) continue;
             if (entity.entity_flags2 & rf::EF2_NO_SHADOW) continue;
             if (entity.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
             if (!entity.vmesh) continue;
@@ -537,6 +548,15 @@ namespace df::gr::d3d11
         float fade_end = shadow_distance_presets[dp].fade_end;
         float fade_end_sq = fade_end * fade_end;
 
+        // Determine which player's carried CTF flag should have its shadow hidden
+        rf::Player* first_person_player = nullptr;
+        if (multi_spectate_is_first_person()) {
+            first_person_player = multi_spectate_get_target_player();
+        }
+        else if (rf::local_player) {
+            first_person_player = rf::local_player;
+        }
+
         for (auto& item : DoublyLinkedList{rf::item_list}) {
             if (item.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
             if (!item.vmesh) continue;
@@ -551,6 +571,13 @@ namespace df::gr::d3d11
                     string_iequals(cls, "keycard") ||
                     string_iequals(cls, "Demo_K000"))
                     continue;
+            }
+
+            // Skip CTF flag shadow if carried by the first-person player (self or spectated)
+            if (first_person_player &&
+                ((&item == rf::ctf_red_flag_item && rf::multi_ctf_get_red_flag_player() == first_person_player) ||
+                 (&item == rf::ctf_blue_flag_item && rf::multi_ctf_get_blue_flag_player() == first_person_player))) {
+                continue;
             }
 
             float dx = item.pos.x - current_camera_pos_.x;

@@ -230,9 +230,14 @@ ConsoleCommand2 pixel_light_overbright_cmd{
     [](std::optional<float> value_opt) {
         if (value_opt) {
             g_alpine_game_config.set_pixel_light_overbright(value_opt.value());
+            // Re-evaluate cached state so the change takes effect immediately
+            df::gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
         }
         rf::console::print("Pixel light overbright range: {:.2f}",
             g_alpine_game_config.pixel_light_overbright);
+        if (df::gr::d3d11::g_level_pixel_light_overbright != g_alpine_game_config.pixel_light_overbright) {
+            rf::console::print("Note: per-map override in mapname_info.tbl is active for this level");
+        }
     },
     "Set overbright range for pixel lighting compression (D3D11 only)",
     "r_pixellightoverbright <0.0-3.0>",
