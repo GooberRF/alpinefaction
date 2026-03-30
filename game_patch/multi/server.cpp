@@ -2404,16 +2404,117 @@ CodeInjection multi_level_init_injection{
     },
 };
 
+FunHook<int()> pick_team_for_new_player_hook{
+    0x004827E0,
+    []() {
+        if (!multi_is_team_game_type()) {
+            return 0;
+        }
+
+        int red_count = 0;
+        int blue_count = 0;
+        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            if (player.is_browser || player.is_spectator) {
+                continue;
+            }
+            if (player.team == rf::TEAM_RED) {
+                ++red_count;
+            }
+            else if (player.team == rf::TEAM_BLUE) {
+                ++blue_count;
+            }
+        }
+
+        if (red_count < blue_count) {
+            return 0; // red
+        }
+        if (blue_count < red_count) {
+            return 1; // blue
+        }
+        return std::rand() % 2; // tied — random
+    },
+};
+
+static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
+{
+    if (player->team == new_team) {
+        return;
+    }
+
+    player->team = new_team;
+
+    if (player->net_data) {
+        rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
+    }
+
+    const char* team_name = (new_team == rf::TEAM_RED) ? "Red" : "Blue";
+    af_broadcast_automated_chat_msg(std::format("Automatic team balancing moved {} to the {} team", player->name, team_name));
+}
+
+static void balance_teams()
+{
+    std::vector<rf::Player*> humans;
+    std::vector<rf::Player*> bots;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.is_spectator) {
+            continue;
+        }
+        if (player.is_bot) {
+            bots.push_back(&player);
+        }
+        else {
+            humans.push_back(&player);
+        }
+    }
+
+    // Sort humans by score descending and interleave across teams
+    std::sort(humans.begin(), humans.end(), [](const rf::Player* a, const rf::Player* b) {
+        return a->stats->score > b->stats->score;
+    });
+
+    for (size_t i = 0; i < humans.size(); ++i) {
+        assign_player_to_team(humans[i], static_cast<rf::ubyte>(i % 2));
+    }
+
+    // Count humans per team to distribute bots for even total team sizes
+    int red_count = 0;
+    int blue_count = 0;
+    for (const auto* p : humans) {
+        if (p->team == rf::TEAM_RED) {
+            ++red_count;
+        }
+        else {
+            ++blue_count;
+        }
+    }
+
+    // Sort bots by score descending for fairer distribution
+    std::sort(bots.begin(), bots.end(), [](const rf::Player* a, const rf::Player* b) {
+        return a->stats->score > b->stats->score;
+    });
+
+    // Assign each bot to whichever team currently has fewer players
+    for (auto* bot : bots) {
+        rf::ubyte new_team = (red_count <= blue_count) ? rf::TEAM_RED : rf::TEAM_BLUE;
+        assign_player_to_team(bot, new_team);
+        if (new_team == rf::TEAM_RED) {
+            ++red_count;
+        }
+        else {
+            ++blue_count;
+        }
+    }
+}
+
 CodeInjection multi_balance_teams_injection{
     0x0048215D,
     [](auto& regs) {
         const rf::NetGameType current_game_type = rf::multi_get_game_type();
         if (should_balance_teams(current_game_type)) {
-            regs.eip = 0x00482170; // balance teams
+            balance_teams();
         }
-        else {
-            regs.eip = 0x004823ED; // end function, no balancing
-        }
+        regs.eip = 0x004823ED; // always skip stock balance code
     },
 };
 
@@ -3232,6 +3333,9 @@ void server_init()
     // Ignore obj_update position for some time after teleportation
     process_obj_update_set_pos_injection.install();
 
+    // Exclude spectators and browsers from team selection when a new player joins
+    pick_team_for_new_player_hook.install();
+
     // Customized dedicated server console message when player joins
     multi_on_new_player_injection.install();
     AsmWriter(0x0047B061, 0x0047B064).add(asm_regs::esp, 0x14);
@@ -3351,7 +3455,7 @@ static void bot_decommission_check() {
 
     const bool is_team_mode = multi_is_team_game_type();
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser) {
+        if (player.is_browser || player.is_spectator) {
             continue;
         }
 
