@@ -2468,13 +2468,17 @@ static void balance_teams()
         }
     }
 
-    // Sort humans by score descending and interleave across teams
+    // Sort humans by score descending and interleave across teams, randomizing
+    // which team gets first pick to avoid systematic bias toward one team
     std::sort(humans.begin(), humans.end(), [](const rf::Player* a, const rf::Player* b) {
         return a->stats->score > b->stats->score;
     });
 
+    rf::ubyte first_team = std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+    rf::ubyte second_team = (first_team == rf::TEAM_RED) ? rf::TEAM_BLUE : rf::TEAM_RED;
+
     for (size_t i = 0; i < humans.size(); ++i) {
-        rf::ubyte team = (i % 2 == 0) ? rf::TEAM_RED : rf::TEAM_BLUE;
+        rf::ubyte team = (i % 2 == 0) ? first_team : second_team;
         assign_player_to_team(humans[i], team);
     }
 
