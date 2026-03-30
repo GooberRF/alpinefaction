@@ -148,6 +148,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix vertex lighting data not being properly built for debris static meshes
 - Fix `Max FPS` menu button not immediately applying the new value when set
 - Fix non-legacy translation movers maintaining velocity after stopping
+- Fix crash in CTF when loading a level that has one flag but not both
+- Fix crash in CTF when attempting to capture a flag in a level that has no other flags
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
