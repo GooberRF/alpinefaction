@@ -267,6 +267,8 @@ namespace rf
     static auto& ctf_blue_flag_pos = addr_as_ref<Vector3>(0x006C7510);
     static auto& multi_tdm_get_red_team_score = addr_as_ref<int()>(0x004828F0); // returns ubyte in vanilla game
     static auto& multi_tdm_get_blue_team_score = addr_as_ref<int()>(0x00482900); // returns ubyte in vanilla game
+    static auto& multi_send_team_change_packet =
+        addr_as_ref<void(Player* target_or_null, uint8_t player_id, uint8_t team)>(0x00482520);
     static auto& multi_num_players = addr_as_ref<int()>(0x00484830);
     static auto& multi_kick_player = addr_as_ref<void(Player *player)>(0x0047BF00);
     static auto& multi_ban_ip = addr_as_ref<void(const NetAddr& addr)>(0x0046D0F0);
