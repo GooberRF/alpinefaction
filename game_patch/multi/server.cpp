@@ -2404,34 +2404,68 @@ CodeInjection multi_level_init_injection{
     },
 };
 
+static int pick_weaker_team()
+{
+    int red_count = 0, blue_count = 0;
+    int red_bots = 0, blue_bots = 0;
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.is_spectator) {
+            continue;
+        }
+        if (player.team == rf::TEAM_RED) {
+            ++red_count;
+            if (player.is_bot) ++red_bots;
+        }
+        else if (player.team == rf::TEAM_BLUE) {
+            ++blue_count;
+            if (player.is_bot) ++blue_bots;
+        }
+    }
+
+    // Fewer players
+    if (red_count != blue_count) {
+        return (red_count < blue_count) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+
+    // Lower team score
+    int red_score = 0, blue_score = 0;
+    switch (rf::multi_get_game_type()) {
+    case rf::NG_TYPE_CTF:
+        red_score = rf::multi_ctf_get_red_team_score();
+        blue_score = rf::multi_ctf_get_blue_team_score();
+        break;
+    case rf::NG_TYPE_TEAMDM:
+        red_score = rf::multi_tdm_get_red_team_score();
+        blue_score = rf::multi_tdm_get_blue_team_score();
+        break;
+    case rf::NG_TYPE_DC:
+    case rf::NG_TYPE_KOTH:
+        red_score = multi_koth_get_red_team_score();
+        blue_score = multi_koth_get_blue_team_score();
+        break;
+    default:
+        break;
+    }
+    if (red_score != blue_score) {
+        return (red_score < blue_score) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+
+    // More bots (disadvantaged)
+    if (red_bots != blue_bots) {
+        return (red_bots > blue_bots) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+    
+    // Fully tied — random
+    return std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+}
+
 FunHook<int()> pick_team_for_new_player_hook{
     0x004827E0,
     []() {
         if (!multi_is_team_game_type()) {
             return static_cast<int>(rf::TEAM_RED);
         }
-
-        int red_count = 0;
-        int blue_count = 0;
-        for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            if (player.is_browser || player.is_spectator) {
-                continue;
-            }
-            if (player.team == rf::TEAM_RED) {
-                ++red_count;
-            }
-            else if (player.team == rf::TEAM_BLUE) {
-                ++blue_count;
-            }
-        }
-
-        if (red_count < blue_count) {
-            return static_cast<int>(rf::TEAM_RED);
-        }
-        if (blue_count < red_count) {
-            return static_cast<int>(rf::TEAM_BLUE);
-        }
-        return static_cast<int>(std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng));
+        return pick_weaker_team();
     },
 };
 
