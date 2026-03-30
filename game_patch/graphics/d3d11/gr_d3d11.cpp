@@ -566,13 +566,13 @@ namespace df::gr::d3d11
 
     void Renderer::render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room)
     {
-        // Flush outlines before water writes to the depth buffer.
-        // At this point walls and characters already have correct depth values but water has not
-        // yet written its depth, so outlines are occluded by walls but not by water.
-        // Water then alpha-blends on top of the outline pixels, making the outline visible
-        // through water without showing through solid geometry.
-        outline_renderer_->flush(*mesh_renderer_);
-        dyn_geo_renderer_->flush();
+        // Flush pending dyn_geo without triggering the outline pre-flush callback.
+        // Outlines must NOT render before the liquid writes to the depth buffer,
+        // otherwise the liquid alpha-blends on top of outline pixels (outlines use
+        // DepthWriteMask=ZERO so they don't block the liquid's depth test).
+        // By deferring outlines until after the liquid surface commits its depth,
+        // the outline depth test correctly occludes pixels behind the liquid.
+        dyn_geo_renderer_->flush_without_pre_callback();
         solid_renderer_->render_room_liquid_surface(solid, room);
     }
 

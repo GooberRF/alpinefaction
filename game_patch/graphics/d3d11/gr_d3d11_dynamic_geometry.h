@@ -24,6 +24,7 @@ namespace df::gr::d3d11
         void bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, gr::Mode mode);
         void set_pre_flush_callback(std::function<void()> callback);
         void flush();
+        void flush_without_pre_callback();
 
     private:
         struct State
@@ -55,6 +56,7 @@ namespace df::gr::d3d11
             return {gpu_verts, gpu_inds, base_vertex};
         }
 
+        void flush_impl(bool run_pre_callback);
         std::array<float, 4> convert_pos(const rf::gr::Vertex& v, bool is_3d);
 
         ComPtr<ID3D11Device> device_;
