@@ -103,6 +103,8 @@ struct AlpineFactionServerInfo
     int koth_score_limit = 0;
     int dc_score_limit = 0;
     bool allow_footsteps = false;
+    bool allow_outlines = false;
+    bool allow_outlines_xray = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

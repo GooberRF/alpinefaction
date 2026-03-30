@@ -150,6 +150,111 @@ namespace df::gr::d3d11
         return blend_state;
     }
 
+    ID3D11DepthStencilState* StateManager::get_outline_stencil_mark_state()
+    {
+        if (!outline_stencil_mark_state_) {
+            D3D11_DEPTH_STENCIL_DESC desc{};
+            desc.DepthEnable = TRUE;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            desc.DepthFunc = (gr::screen.depthbuffer_type == gr::DEPTHBUFFER_Z)
+                ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
+            desc.StencilEnable = TRUE;
+            desc.StencilReadMask = 0xFF;
+            desc.StencilWriteMask = 0xFF;
+            desc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+            desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_REPLACE;
+            desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.BackFace = desc.FrontFace;
+            check_hr(
+                device_->CreateDepthStencilState(&desc, &outline_stencil_mark_state_),
+                []() { xlog::error("Failed to create outline stencil mark state"); }
+            );
+        }
+        return outline_stencil_mark_state_;
+    }
+
+    ID3D11DepthStencilState* StateManager::get_outline_stencil_mark_xray_state()
+    {
+        if (!outline_stencil_mark_xray_state_) {
+            D3D11_DEPTH_STENCIL_DESC desc{};
+            desc.DepthEnable = FALSE;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            desc.StencilEnable = TRUE;
+            desc.StencilReadMask = 0xFF;
+            desc.StencilWriteMask = 0xFF;
+            desc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+            desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_REPLACE;
+            desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.BackFace = desc.FrontFace;
+            check_hr(
+                device_->CreateDepthStencilState(&desc, &outline_stencil_mark_xray_state_),
+                []() { xlog::error("Failed to create outline stencil mark xray state"); }
+            );
+        }
+        return outline_stencil_mark_xray_state_;
+    }
+
+    ID3D11DepthStencilState* StateManager::get_outline_depth_test_state()
+    {
+        if (!outline_depth_test_state_) {
+            D3D11_DEPTH_STENCIL_DESC desc{};
+            desc.DepthEnable = TRUE;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            desc.DepthFunc = (gr::screen.depthbuffer_type == gr::DEPTHBUFFER_Z)
+                ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
+            desc.StencilEnable = TRUE;
+            desc.StencilReadMask = 0xFF;
+            desc.StencilWriteMask = 0x00;
+            desc.FrontFace.StencilFunc = D3D11_COMPARISON_NOT_EQUAL;
+            desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.BackFace = desc.FrontFace;
+            check_hr(
+                device_->CreateDepthStencilState(&desc, &outline_depth_test_state_),
+                []() { xlog::error("Failed to create outline depth test state"); }
+            );
+        }
+        return outline_depth_test_state_;
+    }
+
+    ID3D11DepthStencilState* StateManager::get_outline_xray_state()
+    {
+        if (!outline_xray_state_) {
+            D3D11_DEPTH_STENCIL_DESC desc{};
+            desc.DepthEnable = FALSE;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            desc.StencilEnable = TRUE;
+            desc.StencilReadMask = 0xFF;
+            desc.StencilWriteMask = 0x00;
+            desc.FrontFace.StencilFunc = D3D11_COMPARISON_NOT_EQUAL;
+            desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.BackFace = desc.FrontFace;
+            check_hr(
+                device_->CreateDepthStencilState(&desc, &outline_xray_state_),
+                []() { xlog::error("Failed to create outline xray state"); }
+            );
+        }
+        return outline_xray_state_;
+    }
+
+    ID3D11BlendState* StateManager::get_no_color_write_blend_state()
+    {
+        if (!no_color_write_blend_state_) {
+            CD3D11_BLEND_DESC desc{D3D11_DEFAULT};
+            desc.RenderTarget[0].RenderTargetWriteMask = 0;
+            check_hr(
+                device_->CreateBlendState(&desc, &no_color_write_blend_state_),
+                []() { xlog::error("Failed to create no-color-write blend state"); }
+            );
+        }
+        return no_color_write_blend_state_;
+    }
+
     ComPtr<ID3D11DepthStencilState> StateManager::create_depth_stencil_state(gr::ZbufferType zbt)
     {
         CD3D11_DEPTH_STENCIL_DESC desc{CD3D11_DEFAULT()};

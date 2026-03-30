@@ -74,6 +74,13 @@ namespace df::gr::d3d11
             sampler_state_cache_.clear();
         }
 
+        // Outline rendering states
+        ID3D11DepthStencilState* get_outline_stencil_mark_state();
+        ID3D11DepthStencilState* get_outline_stencil_mark_xray_state();
+        ID3D11DepthStencilState* get_outline_depth_test_state();
+        ID3D11DepthStencilState* get_outline_xray_state();
+        ID3D11BlendState* get_no_color_write_blend_state();
+
     private:
         ComPtr<ID3D11RasterizerState> create_rasterizer_state(D3D11_CULL_MODE cull_mode, int depth_bias, bool depth_clip_enable);
         ComPtr<ID3D11SamplerState> create_sampler_state(rf::gr::TextureSource ts);
@@ -85,5 +92,12 @@ namespace df::gr::d3d11
         std::unordered_map<int, ComPtr<ID3D11BlendState>> blend_state_cache_;
         std::unordered_map<int, ComPtr<ID3D11DepthStencilState>> depth_stencil_state_cache_;
         std::map<std::tuple<D3D11_CULL_MODE, int, bool>, ComPtr<ID3D11RasterizerState>> rasterizer_state_cache_;
+
+        // Outline rendering states (lazily created)
+        ComPtr<ID3D11DepthStencilState> outline_stencil_mark_state_;
+        ComPtr<ID3D11DepthStencilState> outline_stencil_mark_xray_state_;
+        ComPtr<ID3D11DepthStencilState> outline_depth_test_state_;
+        ComPtr<ID3D11DepthStencilState> outline_xray_state_;
+        ComPtr<ID3D11BlendState> no_color_write_blend_state_;
     };
 }

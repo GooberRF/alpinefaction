@@ -33,6 +33,7 @@ namespace df::gr::d3d11
     class SolidRenderer;
     class MeshRenderer;
     class EntityShadowRenderer;
+    class OutlineRenderer;
 
     class Renderer
     {
@@ -112,6 +113,7 @@ namespace df::gr::d3d11
         std::unique_ptr<SolidRenderer> solid_renderer_;
         std::unique_ptr<MeshRenderer> mesh_renderer_;
         std::unique_ptr<EntityShadowRenderer> entity_shadow_renderer_;
+        std::unique_ptr<OutlineRenderer> outline_renderer_;
         int render_target_bm_handle_ = -1;
     };
 

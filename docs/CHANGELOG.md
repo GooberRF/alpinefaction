@@ -156,6 +156,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Sync animation state for crouched players in first person spectate view
 - Fix Alt+Enter crash in Direct3D 11 renderer
 - Fix premature idle transition in first person weapon running animations
+- Implement player outlines (D3D11 only)
+- Add `r_outlines`, `r_outlines_color_enemy`, `r_outlines_color_team`, `r_outlines_color_team_b`, `r_outlines_color_team_r` for customizing outline colors
+- Add `allow_outlines` and `allow_outlines_xray` dedicated server configuration options to permit or deny outline usage by clients.
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------

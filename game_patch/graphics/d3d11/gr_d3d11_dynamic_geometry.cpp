@@ -21,11 +21,22 @@ namespace df::gr::d3d11
         ui_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::ui);
     }
 
+    void DynamicGeometryRenderer::set_pre_flush_callback(std::function<void()> callback)
+    {
+        pre_flush_callback_ = std::move(callback);
+    }
+
     void DynamicGeometryRenderer::flush()
     {
         auto [start_vertex, num_vertex] = vertex_ring_buffer_.submit();
         if (num_vertex == 0) {
             return;
+        }
+        // Invoke pre-flush callback before drawing batched content.
+        // Used to flush outlines so they render behind transparent effects
+        // (smoke, particles) that were batched in the dyn_geo renderer.
+        if (pre_flush_callback_) {
+            pre_flush_callback_();
         }
         auto [start_index, num_index] = index_ring_buffer_.submit();
 
