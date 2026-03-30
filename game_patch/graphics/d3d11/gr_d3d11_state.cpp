@@ -201,7 +201,7 @@ namespace df::gr::d3d11
         if (!outline_depth_test_state_) {
             D3D11_DEPTH_STENCIL_DESC desc{};
             desc.DepthEnable = TRUE;
-            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
             desc.DepthFunc = (gr::screen.depthbuffer_type == gr::DEPTHBUFFER_Z)
                 ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
             desc.StencilEnable = TRUE;

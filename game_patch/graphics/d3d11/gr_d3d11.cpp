@@ -343,9 +343,10 @@ namespace df::gr::d3d11
         // so outlines must be rendered while scene depth data is still available.
         // Outlines are flushed first so that subsequently flushed dyn_geo draws
         // (player labels, crosshair, world HUD) always render on top of outlines.
-        // This is safe because outline states never write to the depth buffer
-        // (DepthWriteMask = ZERO), so the depth data used by 3D dyn_geo elements
-        // (bitmap_3d, etc.) is unaffected by the outline pass.
+        // The outline silhouette pass writes depth (DepthWriteMask = ALL) to prevent
+        // liquid surfaces from alpha-blending over outline pixels. This is safe here
+        // because the zbuffer is about to be cleared for the fpgun pass, and the
+        // written depth values are geometrically correct (at the character's depth).
         // Note: the scope overlay (a bitmap) is drawn
         // BEFORE zbuffer_clear, causing the scope to reach the framebuffer before
         // this flush via the dyn_geo batcher's automatic state-change flush. The
@@ -572,13 +573,13 @@ namespace df::gr::d3d11
 
     void Renderer::render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room)
     {
-        // Flush pending dyn_geo without triggering the outline pre-flush callback.
-        // Outlines must NOT render before the liquid writes to the depth buffer,
-        // otherwise the liquid alpha-blends on top of outline pixels (outlines use
-        // DepthWriteMask=ZERO so they don't block the liquid's depth test).
-        // By deferring outlines until after the liquid surface commits its depth,
-        // the outline depth test correctly occludes pixels behind the liquid.
-        dyn_geo_renderer_->flush_without_pre_callback();
+        // Flush outlines before liquid renders. The outline silhouette pass writes
+        // depth (DepthWriteMask=ALL), so outline pixels claim depth ownership.
+        // When the liquid subsequently depth-tests at those pixels, it fails
+        // (outline is closer than liquid), preventing liquid alpha-blend from
+        // contaminating outline colors.
+        outline_renderer_->flush(*mesh_renderer_);
+        dyn_geo_renderer_->flush();
         solid_renderer_->render_room_liquid_surface(solid, room);
     }
 
