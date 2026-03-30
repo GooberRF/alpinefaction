@@ -284,7 +284,8 @@ const std::unordered_map<std::string, LevelInfoMetadata> level_info_metadata = {
     {"$Chat Menu 8", {AlpineLevelInfoID::ChatMap8, parse_string_level}},
     {"$Chat Menu 9", {AlpineLevelInfoID::ChatMap9, parse_string_level}},
     {"$Crater Texture PPM", {AlpineLevelInfoID::CraterTexturePPM, parse_float_level}},
-    {"$Use Vertex Lighting", {AlpineLevelInfoID::UseVertexLighting, parse_bool_level}}
+    {"$Use Vertex Lighting", {AlpineLevelInfoID::UseVertexLighting, parse_bool_level}},
+    {"$Pixel Lighting Overbright", {AlpineLevelInfoID::PixelLightOverbright, parse_float_level}}
 };
 
 // Load level info from filename_info.tbl

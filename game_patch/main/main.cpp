@@ -215,6 +215,12 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
                 && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
                 rf::console::print("Applying legacy vertex lighting for {} (per override present in mapname_info.tbl)", level_filename);
             }
+
+            df::gr::d3d11::evaluate_pixel_light_overbright(level_filename);
+            if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
+                rf::console::print("Pixel light overbright set to {:.2f} for {} (per override present in mapname_info.tbl)",
+                    df::gr::d3d11::g_level_pixel_light_overbright, level_filename);
+            }
         }
 
         int ret = level_load_hook.call_target(level_filename, save_filename, error);

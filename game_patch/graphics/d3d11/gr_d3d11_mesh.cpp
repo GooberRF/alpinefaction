@@ -40,6 +40,19 @@ namespace df::gr::d3d11
         }
     }
 
+    float g_level_pixel_light_overbright = 0.5f;
+
+    void evaluate_pixel_light_overbright(const std::string& level_filename)
+    {
+        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
+            g_level_pixel_light_overbright = std::clamp(
+                get_level_info_value<float>(AlpineLevelInfoID::PixelLightOverbright), 0.0f, 3.0f);
+        }
+        else {
+            g_level_pixel_light_overbright = g_alpine_game_config.pixel_light_overbright;
+        }
+    }
+
     constexpr unsigned initial_vb_size = 6000;
     constexpr unsigned initial_ib_size = 10000;
 
