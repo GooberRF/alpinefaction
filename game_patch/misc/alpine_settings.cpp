@@ -300,11 +300,6 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("WorldHUDOverdraw");
         xlog::info("Successfully parsed legacy setting 'WorldHUDOverdraw' from loaded pre-v9 AFS file.");
     }
-    // MeshStaticLighting + VertexLighting replaced by MeshLightingMode in AFS v13
-    if (loaded_afs_version < 13) {
-        if (settings.count("MeshStaticLighting")) processed_keys.insert("MeshStaticLighting");
-        if (settings.count("VertexLighting")) processed_keys.insert("VertexLighting");
-    }
 
     // Load player settings
     if (settings.count("PlayerName")) {
@@ -1108,7 +1103,7 @@ bool alpine_player_settings_load(rf::Player* player)
     // Store orphaned settings
     for (const auto& [key, value] : settings) {
         if (processed_keys.find(key) == processed_keys.end() && !string_starts_with(key, "AFS")) {
-            xlog::warn("Saving unrecognized setting as orphaned: {}={}", key, value);
+            xlog::info("Saving unrecognized setting as orphaned: {}={}", key, value);
             orphaned_lines.push_back(key + "=" + value);
         }
     }
