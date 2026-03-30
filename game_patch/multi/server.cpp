@@ -2408,7 +2408,7 @@ FunHook<int()> pick_team_for_new_player_hook{
     0x004827E0,
     []() {
         if (!multi_is_team_game_type()) {
-            return 0;
+            return static_cast<int>(rf::TEAM_RED);
         }
 
         int red_count = 0;
@@ -2426,12 +2426,12 @@ FunHook<int()> pick_team_for_new_player_hook{
         }
 
         if (red_count < blue_count) {
-            return 0; // red
+            return static_cast<int>(rf::TEAM_RED);
         }
         if (blue_count < red_count) {
-            return 1; // blue
+            return static_cast<int>(rf::TEAM_BLUE);
         }
-        return std::rand() % 2; // tied — random
+        return static_cast<int>(std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng));
     },
 };
 
@@ -2474,7 +2474,8 @@ static void balance_teams()
     });
 
     for (size_t i = 0; i < humans.size(); ++i) {
-        assign_player_to_team(humans[i], static_cast<rf::ubyte>(i % 2));
+        rf::ubyte team = (i % 2 == 0) ? rf::TEAM_RED : rf::TEAM_BLUE;
+        assign_player_to_team(humans[i], team);
     }
 
     // Count humans per team to distribute bots for even total team sizes
