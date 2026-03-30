@@ -84,6 +84,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `cl_chat` and `spectate_cinematic_mode` console commands
 - Add `D3D11 Renderer` and `D3D8/9 Renderer` scope options to `Scope_Gate` event
 - Add `Hold Open` property to movers
+- Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
+- Display client types and counts when an AF v1.3 server is selected in the server list
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
