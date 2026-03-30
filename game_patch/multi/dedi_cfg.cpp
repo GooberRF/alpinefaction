@@ -1909,22 +1909,23 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     if (base || anyDelayedChanged) {
         std::format_to(iter, "  Delayed items:\n");
-        if (rules.delayed_items.items.empty()) {
+        if (rules.delayed_items.items.empty() && b.delayed_items.items.empty()) {
             std::format_to(iter, "    <none>\n");
         }
         else {
-            bool anyPrinted = false;
             for (auto const& name : rules.delayed_items.items) {
-                bool unchanged = std::find(b.delayed_items.items.begin(),
-                    b.delayed_items.items.end(), name) != b.delayed_items.items.end();
-                if (base || !unchanged) {
+                if (base) {
                     std::format_to(iter, "    {}\n", name);
-                    anyPrinted = true;
+                }
+                else if (b.delayed_items.items.count(name) == 0) {
+                    std::format_to(iter, "    + {}\n", name);
                 }
             }
-            if (!base && anyDelayedChanged && !anyPrinted) {
-                for (auto const& name : rules.delayed_items.items) {
-                    std::format_to(iter, "    {}\n", name);
+            if (!base) {
+                for (auto const& name : b.delayed_items.items) {
+                    if (rules.delayed_items.items.count(name) == 0) {
+                        std::format_to(iter, "    - {}\n", name);
+                    }
                 }
             }
         }

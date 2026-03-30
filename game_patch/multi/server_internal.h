@@ -8,6 +8,7 @@
 #include <vector>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/string.h"
@@ -377,7 +378,7 @@ struct WeaponStayExemptionConfig
 
 struct DelayedItemsConfig
 {
-    std::vector<std::string> items;
+    std::unordered_set<std::string> items;
 
     // =============================================
 
@@ -385,21 +386,20 @@ struct DelayedItemsConfig
     {
         std::string name_str{name};
 
-        auto it = std::find(items.begin(), items.end(), name_str);
-        if (it != items.end())
+        if (items.count(name_str))
             return false;
 
         int idx = rf::item_lookup_type(name_str.c_str());
         if (idx < 0)
             return false;
 
-        items.emplace_back(std::move(name_str));
+        items.emplace(std::move(name_str));
         return true;
     }
 
     bool contains(std::string_view name) const
     {
-        return std::find(items.begin(), items.end(), name) != items.end();
+        return items.count(std::string{name}) > 0;
     }
 };
 
