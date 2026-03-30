@@ -124,6 +124,11 @@ struct AlpineGameSettings
     {
         dynamic_light_ndotl = std::clamp(value, 0.0f, 1.0f);
     }
+    float pixel_light_overbright = 0.5f; // overbright range for pixel lighting compression: 0.0 = hard clamp, higher = more overbright
+    void set_pixel_light_overbright(float value)
+    {
+        pixel_light_overbright = std::clamp(value, 0.0f, 3.0f);
+    }
     bool show_glares = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;

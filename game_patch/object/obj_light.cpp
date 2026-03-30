@@ -223,6 +223,19 @@ ConsoleCommand2 dynamic_light_ndotl_cmd{
     "r_dynamiclightndotl <0.0-1.0>",
 };
 
+ConsoleCommand2 pixel_light_overbright_cmd{
+    "r_pixellightoverbright",
+    [](std::optional<float> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.set_pixel_light_overbright(value_opt.value());
+        }
+        rf::console::print("Pixel light overbright range: {:.2f}",
+            g_alpine_game_config.pixel_light_overbright);
+    },
+    "Set overbright range for pixel lighting compression (D3D11 only)",
+    "r_pixellightoverbright <0.0-3.0>",
+};
+
 CallHook<void(rf::Entity&)> entity_update_muzzle_flash_light_hook{
     0x0041E814,
     [](rf::Entity& ep) {
@@ -326,6 +339,7 @@ void obj_light_apply_patch()
     mesh_static_lighting_cmd.register_cmd();
     vertex_lighting_cmd.register_cmd();
     dynamic_light_ndotl_cmd.register_cmd();
+    pixel_light_overbright_cmd.register_cmd();
     muzzle_flash_cmd.register_cmd();
     fullbright_models_cmd.register_cmd();
 }

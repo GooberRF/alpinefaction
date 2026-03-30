@@ -86,6 +86,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Hold Open` property to movers
 - Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
 - Display client types and counts when an AF v1.3 server is selected in the server list
+- Add `r_pixellightoverbright` console command for setting pixel light overbright allowance range
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

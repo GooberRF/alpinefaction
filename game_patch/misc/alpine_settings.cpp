@@ -541,6 +541,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_dynamic_light_ndotl(std::stof(settings["DynamicLightNdotL"]));
         processed_keys.insert("DynamicLightNdotL");
     }
+    if (settings.count("PixelLightOverbright")) {
+        g_alpine_game_config.set_pixel_light_overbright(std::stof(settings["PixelLightOverbright"]));
+        processed_keys.insert("PixelLightOverbright");
+    }
     if (settings.count("Picmip")) {
         g_alpine_game_config.set_picmip(std::stoi(settings["Picmip"]));
         gr_update_texture_filtering();
@@ -1267,6 +1271,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
     file << "VertexLighting=" << g_alpine_game_config.vertex_lighting << "\n";
     file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
+    file << "PixelLightOverbright=" << g_alpine_game_config.pixel_light_overbright << "\n";
     file << "Picmip=" << g_alpine_game_config.picmip << "\n";
     file << "PrecacheRooms=" << g_alpine_game_config.precache_rooms << "\n";
     file << "ShadowCorpses=" << g_alpine_game_config.shadow_corpses << "\n";
