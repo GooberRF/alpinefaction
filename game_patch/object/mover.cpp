@@ -9,13 +9,68 @@
 #include <string>
 #include <algorithm>
 #include <sstream>
+#include <unordered_set>
+#include <xlog/xlog.h>
 #include "mover.h"
 #include "../misc/level.h"
+#include "../misc/misc.h"
 #include "../rf/os/frametime.h"
 #include "../rf/event.h"
 #include "../rf/mover.h"
+#include "../rf/object.h"
 #include "../rf/parse.h"
 #include "../rf/level.h"
+
+// Forward declarations (used by hold open init before definitions)
+static inline rf::MoverKeyframe* KF(const rf::Mover* m, int i);
+static inline int count_keyframes(const rf::Mover* m);
+
+// Hold Open runtime tracking — populated after level load from first-keyframe UIDs
+static std::unordered_set<int> g_hold_open_handles;
+static bool g_hold_open_needs_init = false;
+
+void alpine_mover_clear_hold_open()
+{
+    g_hold_open_handles.clear();
+    g_hold_open_needs_init = true;
+}
+
+static void alpine_mover_do_hold_open_init()
+{
+    g_hold_open_needs_init = false;
+    g_hold_open_handles.clear();
+    const auto& kf_uids = AlpineLevelProperties::instance().hold_open_keyframe_uids;
+    if (kf_uids.empty())
+        return;
+
+    // Hold Open data can only exist in v304+ levels with an Alpine props chunk
+    if (!rfl_version_minimum(304))
+        return;
+
+    // Resolve keyframe UIDs to mover handles by matching against each mover's first keyframe UID
+    std::unordered_set<int32_t> target_uids(kf_uids.begin(), kf_uids.end());
+    for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
+        if (obj->type != rf::OT_MOVER)
+            continue;
+
+        auto* mover = static_cast<rf::Mover*>(obj);
+        if (count_keyframes(mover) <= 0)
+            continue;
+        auto* first_kf = KF(mover, 0);
+        if (!first_kf)
+            continue;
+
+        if (target_uids.count(first_kf->uid)) {
+            g_hold_open_handles.insert(mover->handle);
+        }
+    }
+}
+
+
+bool alpine_mover_holds_open(const rf::Mover* mp)
+{
+    return mp && g_hold_open_handles.count(mp->handle) > 0;
+}
 
 rf::Mover* mover_find_by_mover_brush(const rf::MoverBrush* mover_brush)
 {
@@ -135,8 +190,8 @@ static bool alpine_mover_try_bounce_door_mid_segment(
     if (count < 2)
         return false;
 
-    // Must be a door, must be obstructed by an entity
-    if (!rf::mover_is_door(mp) ||
+    // Must be a door (or Hold Open), must be obstructed by an entity
+    if ((!rf::mover_is_door(mp) && !alpine_mover_holds_open(mp)) ||
         mp->keyframe_move_type == rf::MoverKeyframeMoveType::MKMT_ONE_WAY ||
         to != 0 ||
         !rf::mover_is_obstructed_by_entity(mp))
@@ -641,6 +696,9 @@ void alpine_mover_process_linear(rf::Mover* mp)
 
         // no longer have a next keyframe, fully stop
         if (!mover_is_moving(mp)) {
+            // zero velocity so mover_interpolate_objects doesn't impart stale velocity to riders
+            mp->cur_vel = 0.0f;
+            mp->p_data.vel = rf::Vector3{0.0f, 0.0f, 0.0f};
             if (!mover_paused_at_keyframe(mp)) {
                 rf::mover_play_stop_sound(mp);
             }
@@ -681,9 +739,8 @@ static void alpine_mover_process_pre(rf::Mover* mp)
         // treat mover as active with zero velocity
         // allows mover_interpolate_objects to ensure child brushes/objects also have their vel zeroed when paused
         // otherwise they would keep their last frame vel and players standing on them would be pushed
-        mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_UNK_8 | rf::MoverFlags::MF_UNK_4000));
-
-        mp->obj_flags = static_cast<rf::ObjectFlags>(static_cast<int>(mp->obj_flags) | 0x04000000);
+        mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
+        mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
 
         const int loop_instance = mp->sound_instances[1];
         if (loop_instance != -1) {
@@ -697,12 +754,22 @@ static void alpine_mover_process_pre(rf::Mover* mp)
     }
 
     if (!mover_is_moving(mp)) {
+        // same treatment as MF_PAUSED: set flags so mover_interpolate_objects
+        // processes this mover with zero velocity, preventing riders from
+        // retaining stale velocity from the last moving frame
+        mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
+        mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
+        mp->cur_vel = 0.0f;
+        // pin position to current keyframe so next_pos doesn't remain stale
+        const int cur = mp->start_at_keyframe;
+        if (cur >= 0 && cur < count)
+            mp->p_data.next_pos = KF(mp, cur)->pos;
         return;
     }
 
     // normal movement
-    mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_UNK_8 | rf::MoverFlags::MF_UNK_4000));
-    mp->obj_flags = static_cast<rf::ObjectFlags>(static_cast<int>(mp->obj_flags) | 0x04000000);
+    mp->mover_flags = static_cast<rf::MoverFlags>(mover_flags | (rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000));
+    mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
 
     const int loop_instance = mp->sound_instances[1];
     if (loop_instance != -1) {
@@ -711,7 +778,8 @@ static void alpine_mover_process_pre(rf::Mover* mp)
 
     // handle pause time
     if (mover_paused_at_keyframe(mp)) {
-        const bool blocked = (rf::mover_is_door(mp) && rf::mover_is_obstructed_by_entity(mp));
+        const bool blocked = ((rf::mover_is_door(mp) || alpine_mover_holds_open(mp))
+                               && rf::mover_is_obstructed_by_entity(mp));
 
         if (blocked || !mp->wait_timestamp.elapsed()) {
             const int cur = mp->start_at_keyframe;
@@ -735,6 +803,11 @@ FunHook<void(rf::Mover*)> mover_process_pre_hook{
     [](rf::Mover* mp) {
         if (!mp)
             return;
+
+        // Deferred hold-open init runs once after level load, regardless of legacy mode
+        if (g_hold_open_needs_init) {
+            alpine_mover_do_hold_open_init();
+        }
 
         if (AlpineLevelProperties::instance().legacy_movers) {
             mover_process_pre_hook.call_target(mp);
@@ -864,6 +937,26 @@ CodeInjection mover_interpolate_objects_force_orient_rot_patch{
     }
 };
 
+// Stock mover_process_pre: after mover_is_door() returns false at 0x00469B99,
+// also check alpine_mover_holds_open() to allow bounce-back for Hold Open movers.
+// Stock code: CALL mover_is_door; TEST AL,AL; JZ skip_bounce
+// We inject at the JZ to override: if mover_is_door was false but holds_open is true, don't skip.
+// Stock mover_process_pre door bounce: the sequence at 0x00469B8E is:
+//   PUSH ESI; CALL mover_is_door; ADD ESP,4; TEST AL,AL; JZ skip_bounce
+// The short JZ (0x74) can't be hooked directly, so we inject at the PUSH ESI.
+// If alpine_mover_holds_open is true, skip straight to the bounce checks (0x469B9B).
+// Otherwise, fall through to the trampoline which runs the stock mover_is_door path.
+CodeInjection mover_stock_door_bounce_hold_open_patch{
+    0x00469B8E,
+    [](auto& regs) {
+        rf::Mover* mp = regs.esi;
+        if (alpine_mover_holds_open(mp)) {
+            regs.eip = 0x00469B9B; // skip mover_is_door check, proceed with bounce
+        }
+        // otherwise: trampoline runs stock PUSH ESI + CALL mover_is_door normally
+    },
+};
+
 void mover_do_patch()
 {
     // Fix crash when skipping cutscene after robot kill in L7S4
@@ -882,4 +975,7 @@ void mover_do_patch()
     // Make "Force Orient" mover flag work properly
     mover_interpolate_objects_force_orient_trans_patch.install();
     mover_interpolate_objects_force_orient_rot_patch.install();
+
+    // Hold Open: patch stock door bounce check to also trigger for Hold Open movers
+    mover_stock_door_bounce_hold_open_patch.install();
 }

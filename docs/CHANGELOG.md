@@ -83,6 +83,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `autodl_blur_background` console command to toggle the behaviour of the autodownload background
 - Add `cl_chat` and `spectate_cinematic_mode` console commands
 - Add `D3D11 Renderer` and `D3D8/9 Renderer` scope options to `Scope_Gate` event
+- Add `Hold Open` property to movers
+- Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
+- Display client types and counts when an AF v1.3 server is selected in the server list
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -107,6 +110,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
 - Add freelook/first person toggle bind in spectator mode
 - Implement enemy and teammate footstep audio for weapons other than pistol
+- Add delayed items server config option, enabling global and per-map delaying of specific item spawns at map start
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
@@ -139,6 +143,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix triangulated and ngon faces on breakable detail brushes not breaking properly in version >= 304 levels
 - Fix vertex lighting data not being properly built for debris static meshes
 - Fix `Max FPS` menu button not immediately applying the new value when set
+- Fix non-legacy translation movers maintaining velocity after stopping
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
