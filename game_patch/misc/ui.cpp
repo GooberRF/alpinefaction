@@ -165,8 +165,10 @@ static rf::ui::Checkbox ao_fullbrightchar_cbox;
 static rf::ui::Label ao_fullbrightchar_label;
 static rf::ui::Checkbox ao_notex_cbox;
 static rf::ui::Label ao_notex_label;
-static rf::ui::Checkbox ao_meshstatic_cbox;
-static rf::ui::Label ao_meshstatic_label;
+static rf::ui::Checkbox ao_meshlight_cbox;
+static rf::ui::Label ao_meshlight_label;
+static rf::ui::Label ao_meshlight_butlabel;
+static char ao_meshlight_butlabel_text[9];
 static rf::ui::Checkbox ao_enemybullets_cbox;
 static rf::ui::Label ao_enemybullets_label;
 static rf::ui::Checkbox ao_togglecrouch_cbox;
@@ -981,11 +983,14 @@ void ao_notex_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.try_disable_textures);
 }
 
-void ao_meshstatic_cbox_on_click(int x, int y) {
-    g_alpine_game_config.mesh_static_lighting = !g_alpine_game_config.mesh_static_lighting;
-    ao_meshstatic_cbox.checked = g_alpine_game_config.mesh_static_lighting;
+static constexpr const char* meshlight_mode_names[] = {"Ambient", "Vertex", "Pixel"};
+
+void ao_meshlight_cbox_on_click(int x, int y) {
+    g_alpine_game_config.mesh_lighting_mode = (g_alpine_game_config.mesh_lighting_mode + 1) % 3;
     recalc_mesh_static_lighting();
-    ao_play_button_snd(g_alpine_game_config.mesh_static_lighting);
+    snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
+        meshlight_mode_names[g_alpine_game_config.mesh_lighting_mode]);
+    ao_play_button_snd(g_alpine_game_config.mesh_lighting_mode > 0);
 }
 
 void ao_enemybullets_cbox_on_click(int x, int y) {
@@ -1154,8 +1159,8 @@ void alpine_options_panel_init() {
         &ao_ricochet_cbox, &ao_ricochet_label, &alpine_options_panel0, ao_ricochet_cbox_on_click, g_alpine_game_config.multi_ricochet, 280, 84, "Ricochet FX (MP)");
     alpine_options_panel_checkbox_init(
         &ao_fullbrightchar_cbox, &ao_fullbrightchar_label, &alpine_options_panel0, ao_fullbrightchar_cbox_on_click, g_alpine_game_config.try_fullbright_characters, 280, 114, "Fullbright models");
-    alpine_options_panel_checkbox_init(
-        &ao_meshstatic_cbox, &ao_meshstatic_label, &alpine_options_panel0, ao_meshstatic_cbox_on_click, g_alpine_game_config.mesh_static_lighting, 280, 144, "Mesh static light");
+    alpine_options_panel_inputbox_init(
+        &ao_meshlight_cbox, &ao_meshlight_label, &ao_meshlight_butlabel, &alpine_options_panel0, ao_meshlight_cbox_on_click, 280, 144, "Mesh lighting");
     alpine_options_panel_checkbox_init(
         &ao_nearest_cbox, &ao_nearest_label, &alpine_options_panel0, ao_nearest_cbox_on_click, g_alpine_game_config.nearest_texture_filtering, 280, 174, "Nearest filtering");
     alpine_options_panel_checkbox_init(
@@ -1374,6 +1379,11 @@ void alpine_options_panel_do_frame(int x)
     // simulation dist
     snprintf(ao_simdist_butlabel_text, sizeof(ao_simdist_butlabel_text), "%6.2f", g_alpine_game_config.entity_sim_distance);
     ao_simdist_butlabel.text = ao_simdist_butlabel_text;
+
+    // mesh lighting
+    snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
+        meshlight_mode_names[std::clamp(g_alpine_game_config.mesh_lighting_mode, 0, 2)]);
+    ao_meshlight_butlabel.text = ao_meshlight_butlabel_text;
 
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {

@@ -117,8 +117,10 @@ struct AlpineGameSettings
     bool explosion_env_flash_lights = true;
     bool burning_entity_lights = true;
     bool death_bars = true;
-    bool mesh_static_lighting = true;
-    bool vertex_lighting = false;
+    // Mesh lighting mode: 0 = off (ambient only), 1 = vertex (legacy), 2 = pixel (D3D11 GPU)
+    int mesh_lighting_mode = 2;
+    bool mesh_lighting_use_static() const { return mesh_lighting_mode >= 1; }
+    bool mesh_lighting_use_vertex() const { return mesh_lighting_mode <= 1; }
     float dynamic_light_ndotl = 1.0f; // N·L blend for dynamic lights on BSP faces: 0.0 = none, 1.0 = full
     void set_dynamic_light_ndotl(float value)
     {

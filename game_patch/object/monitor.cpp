@@ -173,6 +173,9 @@ void monitor_do_patch()
     monitor_update_from_camera_begin_render_to_texture.install();
     AsmWriter{0x00412964}.nop(5);
 
+    // Make monitor screens fully self-illuminated (stock value is 0.7)
+    write_mem<float>(0x004125A0, 1.0f);
+
     // Render held corpse in monitor
     render_corpse_in_monitor_patch.install();
 }

@@ -293,12 +293,17 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("AFSFileVersion");
     }
 
-    // Load deprecated settings
-    // handle WorldHUDOverdraw setting (deprecated in AFS v9), parse into world_hud_flag_overdraw
+    // Discard deprecated settings
+    // WorldHUDOverdraw (deprecated in AFS v9), parse into world_hud_flag_overdraw
     if (settings.count("WorldHUDOverdraw") && loaded_afs_version < 9) {
         g_alpine_game_config.world_hud_flag_overdraw = std::stoi(settings["WorldHUDOverdraw"]);
         processed_keys.insert("WorldHUDOverdraw");
         xlog::info("Successfully parsed legacy setting 'WorldHUDOverdraw' from loaded pre-v9 AFS file.");
+    }
+    // MeshStaticLighting + VertexLighting replaced by MeshLightingMode in AFS v13
+    if (loaded_afs_version < 13) {
+        if (settings.count("MeshStaticLighting")) processed_keys.insert("MeshStaticLighting");
+        if (settings.count("VertexLighting")) processed_keys.insert("VertexLighting");
     }
 
     // Load player settings
@@ -528,14 +533,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.show_glares = std::stoi(settings["ShowGlares"]);
         processed_keys.insert("ShowGlares");
     }
-    if (settings.count("MeshStaticLighting")) {
-        g_alpine_game_config.mesh_static_lighting = std::stoi(settings["MeshStaticLighting"]);
+    if (settings.count("MeshLightingMode")) {
+        g_alpine_game_config.mesh_lighting_mode = std::clamp(std::stoi(settings["MeshLightingMode"]), 0, 2);
         recalc_mesh_static_lighting();
-        processed_keys.insert("MeshStaticLighting");
-    }
-    if (settings.count("VertexLighting")) {
-        g_alpine_game_config.vertex_lighting = std::stoi(settings["VertexLighting"]);
-        processed_keys.insert("VertexLighting");
+        processed_keys.insert("MeshLightingMode");
     }
     if (settings.count("DynamicLightNdotL")) {
         g_alpine_game_config.set_dynamic_light_ndotl(std::stof(settings["DynamicLightNdotL"]));
@@ -1268,8 +1269,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableTextures=" << g_alpine_game_config.try_disable_textures << "\n";
     file << "DisableMuzzleFlashLights=" << g_alpine_game_config.try_disable_muzzle_flash_lights << "\n";
     file << "ShowGlares=" << g_alpine_game_config.show_glares << "\n";
-    file << "MeshStaticLighting=" << g_alpine_game_config.mesh_static_lighting << "\n";
-    file << "VertexLighting=" << g_alpine_game_config.vertex_lighting << "\n";
+    file << "MeshLightingMode=" << g_alpine_game_config.mesh_lighting_mode << "\n";
     file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
     file << "PixelLightOverbright=" << g_alpine_game_config.pixel_light_overbright << "\n";
     file << "Picmip=" << g_alpine_game_config.picmip << "\n";

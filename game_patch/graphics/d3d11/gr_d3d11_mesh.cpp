@@ -29,14 +29,14 @@ namespace df::gr::d3d11
 {
     bool g_level_vertex_lighting = false;
 
-    void evaluate_vertex_lighting(const std::string& level_filename)
+    void evaluate_mesh_lighting(const std::string& level_filename)
     {
         if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
             && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
             g_level_vertex_lighting = true;
         }
         else {
-            g_level_vertex_lighting = g_alpine_game_config.vertex_lighting;
+            g_level_vertex_lighting = g_alpine_game_config.mesh_lighting_use_vertex();
         }
     }
 

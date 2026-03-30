@@ -26,7 +26,7 @@ namespace df::gr::d3d11
     // Cached vertex lighting state for the current level, updated at level load.
     // Avoids per-frame string comparisons and hash lookups in hot render paths.
     extern bool g_level_vertex_lighting;
-    void evaluate_vertex_lighting(const std::string& level_filename);
+    void evaluate_mesh_lighting(const std::string& level_filename);
 
     inline bool level_uses_vertex_lighting()
     {
