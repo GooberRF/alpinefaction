@@ -232,6 +232,14 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
             }
         }
 
+        // Suppress mouse look while viewing a security camera
+        if (rf::local_player && rf::local_player->view_from_handle != -1) {
+            reset_mouse_delta_accumulators();
+            dx = 0;
+            dy = 0;
+            return;
+        }
+
         // In Raw/Modern mode: capture raw deltas for centralized angle
         // computation and zero them so RF does not apply its own scaling.
         // Skip when in a vehicle (RF needs the deltas to steer), but scale
