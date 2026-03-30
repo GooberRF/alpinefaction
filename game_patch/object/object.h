@@ -19,6 +19,7 @@ namespace rf
 }
 
 void object_do_patch();
+bool is_monitor_screen_bitmap(int bitmap_handle);
 void obj_mesh_lighting_alloc_one(rf::Object *objp);
 void obj_mesh_lighting_free_one(rf::Object *objp);
 void obj_mesh_lighting_update_one(rf::Object *objp);

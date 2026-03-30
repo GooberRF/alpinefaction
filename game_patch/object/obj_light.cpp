@@ -60,13 +60,13 @@ void obj_mesh_lighting_update_one(rf::Object* objp)
     if (!objp->mesh_lighting_data)
         return;
 
-    if (g_alpine_game_config.mesh_static_lighting) {
+    if (g_alpine_game_config.mesh_lighting_use_static()) {
         gr_light_use_static(true);
     }
 
     rf::vmesh_update_lighting_data(objp->vmesh, objp->room, objp->pos, objp->orient, objp->mesh_lighting_data);
 
-    if (g_alpine_game_config.mesh_static_lighting)
+    if (g_alpine_game_config.mesh_lighting_use_static())
         gr_light_use_static(false);
 }
 
@@ -185,29 +185,31 @@ FunHook<void()> obj_light_free_hook{
     },
 };
 
-ConsoleCommand2 mesh_static_lighting_cmd{
+static const char* mesh_lighting_mode_name(int mode)
+{
+    switch (mode) {
+        case 0: return "ambient only";
+        case 1: return "vertex";
+        case 2: return "pixel";
+        default: return "unknown";
+    }
+}
+
+ConsoleCommand2 mesh_lighting_cmd{
     "r_meshlighting",
-    []() {
-        g_alpine_game_config.mesh_static_lighting = !g_alpine_game_config.mesh_static_lighting;
-        recalc_mesh_static_lighting();
-        rf::console::print("Mesh static lighting is {}", g_alpine_game_config.mesh_static_lighting ? "enabled" : "disabled");
-    },
-    "Toggle mesh static lighting calculation",
-};
-
-
-ConsoleCommand2 vertex_lighting_cmd{
-    "r_vertexlighting",
-    []() {
-        g_alpine_game_config.vertex_lighting = !g_alpine_game_config.vertex_lighting;
-        // Re-evaluate cached state so the change takes effect immediately
-        df::gr::d3d11::evaluate_vertex_lighting(rf::level.filename);
-        rf::console::print("Using {} lighting for meshes. (D3D11 only)", g_alpine_game_config.vertex_lighting ? "legacy vertex" : "modern pixel");
-        if (df::gr::d3d11::g_level_vertex_lighting != g_alpine_game_config.vertex_lighting) {
-            rf::console::print("Note: per-map override in mapname_info.tbl is active for this level");
+    [](std::optional<int> mode_opt) {
+        if (mode_opt) {
+            g_alpine_game_config.mesh_lighting_mode = std::clamp(mode_opt.value(), 0, 2);
+            recalc_mesh_static_lighting();
+            df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+        }
+        rf::console::print("Mesh lighting: {} (mode {})", mesh_lighting_mode_name(g_alpine_game_config.mesh_lighting_mode), g_alpine_game_config.mesh_lighting_mode);
+        if (g_alpine_game_config.mesh_lighting_mode == 2 && df::gr::d3d11::level_uses_vertex_lighting()) {
+            rf::console::print("Note: per-map override is forcing vertex lighting for this level");
         }
     },
-    "Toggle between legacy vertex lighting and modern pixel lighting for meshes (D3D11 only)",
+    "Set mesh lighting mode: 0 = ambient only, 1 = vertex (legacy), 2 = pixel (D3D11)",
+    "r_meshlighting <0-2>",
 };
 
 ConsoleCommand2 dynamic_light_ndotl_cmd{
@@ -341,8 +343,7 @@ void obj_light_apply_patch()
     entity_update_muzzle_flash_light_hook.install();
 
     // Commands
-    mesh_static_lighting_cmd.register_cmd();
-    vertex_lighting_cmd.register_cmd();
+    mesh_lighting_cmd.register_cmd();
     dynamic_light_ndotl_cmd.register_cmd();
     pixel_light_overbright_cmd.register_cmd();
     muzzle_flash_cmd.register_cmd();
