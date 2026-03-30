@@ -62,7 +62,7 @@ namespace df::gr::d3d11
         }
 
         // Pass 2: static lights (requires is_find_static_lights=true)
-        if (g_alpine_game_config.mesh_static_lighting) {
+        if (g_alpine_game_config.mesh_lighting_use_static()) {
             rf::gr::light_filter_reset();
             gr_light_use_static(true);
             rf::gr::light_filter_set_solid(rf::level.geometry, true, true);

@@ -22,6 +22,7 @@
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
+#include "../../object/object.h"
 
 using namespace rf;
 
@@ -29,14 +30,27 @@ namespace df::gr::d3d11
 {
     bool g_level_vertex_lighting = false;
 
-    void evaluate_vertex_lighting(const std::string& level_filename)
+    void evaluate_mesh_lighting(const std::string& level_filename)
     {
         if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
             && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
             g_level_vertex_lighting = true;
         }
         else {
-            g_level_vertex_lighting = g_alpine_game_config.vertex_lighting;
+            g_level_vertex_lighting = g_alpine_game_config.mesh_lighting_use_vertex();
+        }
+    }
+
+    float g_level_pixel_light_overbright = 0.5f;
+
+    void evaluate_pixel_light_overbright(const std::string& level_filename)
+    {
+        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
+            g_level_pixel_light_overbright = std::clamp(
+                get_level_info_value<float>(AlpineLevelInfoID::PixelLightOverbright), 0.0f, 3.0f);
+        }
+        else {
+            g_level_pixel_light_overbright = g_alpine_game_config.pixel_light_overbright;
         }
     }
 
@@ -997,8 +1011,13 @@ namespace df::gr::d3d11
                     self_illum = 1.0f;
                 }
             }
+            // Monitor screens are always fully self-illuminated.
+            bool emissive = is_monitor_screen_bitmap(texture);
+            if (emissive) {
+                self_illum = 1.0f;
+            }
 
-            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh);
+            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh, emissive);
             render_context_.set_textures(texture, -1);
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }

@@ -68,7 +68,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 - Add new and revised `Select Objects` and `Hide Objects` windows in level editor
 - Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
-- Add `r_vertexlighting` console command and `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
+- Add `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
 - In TDM match mode, made self kills reduce team score by 1 (floor of 0)
 - Add `-bot` command line argument to run a client in bot mode
@@ -86,7 +86,11 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Hold Open` property to movers
 - Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
 - Display client types and counts when an AF v1.3 server is selected in the server list
-- Add `r_pixellightoverbright` console command for setting pixel light overbright allowance range
+- Add `r_pixellightoverbright` console command and `$Pixel Lighting Overbright` `MAPNAME_info.tbl` option for setting pixel light overbright allowance range
+- Make team balancing distribute bots evenly across teams and exclude spectators and browsers
+- Exclude spectators and browsers from bot decommission player count calculations
+- Exclude spectators and browsers when counting players for team selection for a newly joining player
+- Consolidate mesh static lighting settings to `r_meshlighting [0-2]` console command
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -148,6 +152,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix vertex lighting data not being properly built for debris static meshes
 - Fix `Max FPS` menu button not immediately applying the new value when set
 - Fix non-legacy translation movers maintaining velocity after stopping
+- Fix crash in CTF when loading a level that has one flag but not both
+- Fix crash in CTF when attempting to capture a flag in a level that has no other flags
+- Fix mirror and security monitor screens not being fully self-illuminated (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
