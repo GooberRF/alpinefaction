@@ -43,6 +43,9 @@ static void reset_mouse_delta_accumulators()
     g_vehicle_mouse_dy_rem = 0.0f;
 }
 
+static float applied_static_sensitivity_value = 0.25f; // value written by AsmWriter
+static float applied_dynamic_sensitivity_value = 1.0f; // value written by AsmWriter
+
 // Converts accumulated raw mouse deltas to camera angle deltas (radians).
 // For the player entity, this is called from linear_pitch_patch inside the entity
 // control function where timing is guaranteed. For the freelook camera, it's called
@@ -69,10 +72,24 @@ void consume_raw_mouse_deltas(float& out_pitch, float& out_yaw, bool apply_scope
         : id_tech_deg_per_pixel * deg2rad;
 
     if (apply_scope_sens) {
-        if (rf::local_player->fpgun_data.scanning_for_target)
+        if (rf::local_player->fpgun_data.scanning_for_target) {
             sens *= scanner_sensitivity_value;
-        else if (rf::player_fpgun_is_zoomed(rf::local_player))
-            sens *= scope_sensitivity_value;
+        } else {
+            float zoom = rf::local_player->fpgun_data.zoom_factor;
+            if (zoom > 1.0f) {
+                if (g_alpine_game_config.scope_static_sensitivity) {
+                    // Static: flat multiplier regardless of zoom level
+                    sens *= scope_sensitivity_value;
+                } else {
+                    // Dynamic: proportional to zoom level, matches stock formula
+                    constexpr float zoom_scale = 30.0f;
+                    float divisor = (zoom - 1.0f) * applied_dynamic_sensitivity_value * zoom_scale;
+                    if (divisor > 1.0f) {
+                        sens /= divisor;
+                    }
+                }
+            }
+        }
     }
 
     float dy = static_cast<float>(g_camera_mouse_dy);
@@ -107,9 +124,6 @@ static void flush_freelook_mouse_deltas()
     cam_entity->control_data.eye_phb.x += pitch;
     cam_entity->control_data.phb.y += yaw;
 }
-
-static float applied_static_sensitivity_value = 0.25f; // value written by AsmWriter
-static float applied_dynamic_sensitivity_value = 1.0f; // value written by AsmWriter
 
 bool set_direct_input_enabled(bool enabled)
 {

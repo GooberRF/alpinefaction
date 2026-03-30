@@ -41,6 +41,8 @@ static float g_gamepad_scope_sensitivity_value = 0.25f;
 static float g_gamepad_scanner_sensitivity_value = 0.25f;
 static float g_gamepad_scope_gyro_sensitivity_value = 0.25f;
 static float g_gamepad_scanner_gyro_sensitivity_value = 0.25f;
+static float g_gamepad_scope_applied_dynamic_sensitivity_value = 1.0f;
+static float g_gamepad_scope_gyro_applied_dynamic_sensitivity_value = 1.0f;
 
 // g_button_map: primary gameplay action per SDL_GamepadButton, -1 = unbound.
 static int g_button_map[SDL_GAMEPAD_BUTTON_COUNT];
@@ -105,6 +107,10 @@ static void update_gamepad_scoped_sensitivities()
     g_gamepad_scanner_sensitivity_value = g_alpine_game_config.gamepad_scanner_sensitivity_modifier;
     g_gamepad_scope_gyro_sensitivity_value = g_alpine_game_config.gamepad_scope_gyro_sensitivity_modifier;
     g_gamepad_scanner_gyro_sensitivity_value = g_alpine_game_config.gamepad_scanner_gyro_sensitivity_modifier;
+    g_gamepad_scope_applied_dynamic_sensitivity_value =
+        (1.0f / (4.0f * g_alpine_game_config.gamepad_scope_sensitivity_modifier)) * rf::scope_sensitivity_constant;
+    g_gamepad_scope_gyro_applied_dynamic_sensitivity_value =
+        (1.0f / (4.0f * g_alpine_game_config.gamepad_scope_gyro_sensitivity_modifier)) * rf::scope_sensitivity_constant;
 }
 
 static bool is_menu_only_action(int action_idx)
@@ -1002,10 +1008,22 @@ static void gamepad_apply_gyro(bool has_player_entity, float zoom_sens, float& y
 
     float gyro_zoom_sens = 1.0f;
     if (has_player_entity) {
-        if (rf::local_player->fpgun_data.scanning_for_target)
+        if (rf::local_player->fpgun_data.scanning_for_target) {
             gyro_zoom_sens *= g_gamepad_scanner_gyro_sensitivity_value;
-        else if (rf::player_fpgun_is_zoomed(rf::local_player))
-            gyro_zoom_sens *= g_gamepad_scope_gyro_sensitivity_value;
+        } else {
+            float zoom = rf::local_player->fpgun_data.zoom_factor;
+            if (zoom > 1.0f) {
+                if (g_alpine_game_config.scope_static_sensitivity) {
+                    gyro_zoom_sens *= g_gamepad_scope_gyro_sensitivity_value;
+                } else {
+                    constexpr float zoom_scale = 30.0f;
+                    float divisor = (zoom - 1.0f) * g_gamepad_scope_gyro_applied_dynamic_sensitivity_value * zoom_scale;
+                    if (divisor > 1.0f) {
+                        gyro_zoom_sens /= divisor;
+                    }
+                }
+            }
+        }
     }
 
     yaw_delta   -= gyro_yaw   * sens * gyro_zoom_sens;
@@ -1055,10 +1073,22 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
 
     float gamepad_zoom_sens = 1.0f;
     if (has_player_entity) {
-        if (rf::local_player->fpgun_data.scanning_for_target)
+        if (rf::local_player->fpgun_data.scanning_for_target) {
             gamepad_zoom_sens *= g_gamepad_scanner_sensitivity_value;
-        else if (rf::player_fpgun_is_zoomed(rf::local_player))
-            gamepad_zoom_sens *= g_gamepad_scope_sensitivity_value;
+        } else {
+            float zoom = rf::local_player->fpgun_data.zoom_factor;
+            if (zoom > 1.0f) {
+                if (g_alpine_game_config.scope_static_sensitivity) {
+                    gamepad_zoom_sens *= g_gamepad_scope_sensitivity_value;
+                } else {
+                    constexpr float zoom_scale = 30.0f;
+                    float divisor = (zoom - 1.0f) * g_gamepad_scope_applied_dynamic_sensitivity_value * zoom_scale;
+                    if (divisor > 1.0f) {
+                        gamepad_zoom_sens /= divisor;
+                    }
+                }
+            }
+        }
     }
 
     // Use joystick camera while scoped/scanning for consistent aim; flickstick otherwise.
