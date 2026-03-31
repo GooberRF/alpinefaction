@@ -1415,6 +1415,16 @@ ConsoleCommand2 joy_rumble_environmental_cmd{
     "joy_rumble_environmental [0|1]",
 };
 
+ConsoleCommand2 joy_rumble_when_primary_cmd{
+    "joy_rumble_when_primary",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_rumble_when_primary = val.value() != 0;
+        rf::console::print("Gamepad rumble only when gamepad is primary input: {}", g_alpine_game_config.gamepad_rumble_when_primary ? "enabled" : "disabled");
+    },
+    "Enable/disable rumble only when gamepad is the primary input device (default 1)",
+    "joy_rumble_when_primary [0|1]",
+};
+
 ConsoleCommand2 joy_rumble_vibration_filter_cmd{
     "joy_rumble_vibration_filter",
     [](std::optional<int> val) {
@@ -1937,6 +1947,9 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
 void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
 {
     if (!g_gamepad || !g_rumble_supported)
+        return;
+    // Disable rumble when keyboard/mouse was last used, if auto-disable is enabled
+    if (g_alpine_game_config.gamepad_rumble_when_primary && !g_last_input_was_gamepad)
         return;
     // Apply global rumble intensity multiplier
     if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f)
