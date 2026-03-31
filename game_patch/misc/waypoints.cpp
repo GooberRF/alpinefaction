@@ -250,11 +250,17 @@ template<typename... Args>
 void waypoint_log(std::format_string<Args...> fmt, Args&&... args)
 {
     auto message = std::format(fmt, std::forward<Args>(args)...);
-    //rf::console::print("{}", message);
+
+    // log to console
+    rf::console::print("{}", message);
+
+    // log with xlog
     xlog::info("{}", message);
     if (is_waypoint_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
         return;
     }
+
+    // log to waypoint editor GUI
     waypoints_utils_log(message);
 }
 
