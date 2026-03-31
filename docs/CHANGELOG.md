@@ -68,7 +68,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 - Add new and revised `Select Objects` and `Hide Objects` windows in level editor
 - Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
-- Add `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
+- Add `$Use Vertex Lighting` `mapname_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
 - In TDM match mode, made self kills reduce team score by 1 (floor of 0)
 - Add `-bot` command line argument to run a client in bot mode
@@ -496,7 +496,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
 - Add `dbg_wh_mpspawns` command to draw multiplayer respawn point world HUD icons (supported in SP and as listen server)
 - Add compatibility table (lightmap clamp floor) for `dm-SpecialForces.rfl`
 - Add action binds for `Radio message menu`, `Taunt menu`, and `Command menu`
-- Add support for `$Chat Menu 1` (1 - 9) to `MAPNAME_info.tbl` (populates map chat menu on that map)
+- Add support for `$Chat Menu 1` (1 - 9) to `mapname_info.tbl` (populates map chat menu on that map)
 - Import settings from `players.cfg` on launch if `alpine_settings.ini` is not found
 - Support TC mods with new settings file approach - `alpine_settings_MODNAME.ini`
 - Prevent MP character from being permanently changed after spawning in a server with `$Force Player Character` configured
@@ -563,7 +563,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
 - Made lava and acid damage result in a self kill in multiplayer rather than a mysterious kill
 - Add radio message audio
 - Allow `Anchor_Marker_Orient` event as skybox eye anchor
-- Add support for `$Crater Texture PPM` to `MAPNAME_info.tbl`
+- Add support for `$Crater Texture PPM` to `mapname_info.tbl`
 - Add options to `af_ui.tbl` to set the Summoner Trailer button to load a specific level in TC mods
 - Add `r_fastanims` console command to toggle fast animations
 - Shift High Monitor Resolution config to MonitorResolutionScale, allowing for greater control
