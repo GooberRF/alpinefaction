@@ -163,6 +163,9 @@ struct AlpineGameSettings
     bool player_join_beep = false;
     bool full_range_lighting = true;
     bool always_clamp_official_lightmaps = false;
+    bool ignore_tbl_vertex_lighting = false;
+    bool ignore_tbl_pixel_light_overbright = false;
+    bool ignore_tbl_lightmap_clamping = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
     bool footsteps = true;

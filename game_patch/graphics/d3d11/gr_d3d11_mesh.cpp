@@ -32,7 +32,8 @@ namespace df::gr::d3d11
 
     void evaluate_mesh_lighting(const std::string& level_filename)
     {
-        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
+        if (!g_alpine_game_config.ignore_tbl_vertex_lighting
+            && g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
             && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
             g_level_vertex_lighting = true;
         }
@@ -45,7 +46,8 @@ namespace df::gr::d3d11
 
     void evaluate_pixel_light_overbright(const std::string& level_filename)
     {
-        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
+        if (!g_alpine_game_config.ignore_tbl_pixel_light_overbright
+            && g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
             g_level_pixel_light_overbright = std::clamp(
                 get_level_info_value<float>(AlpineLevelInfoID::PixelLightOverbright), 0.0f, 3.0f);
         }

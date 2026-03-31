@@ -283,7 +283,8 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         bool floor_clamp_defined = false;
 
         // Check if the level explicitly defines clamp floor
-        if (g_alpine_level_info_config
+        if (!g_alpine_game_config.ignore_tbl_lightmap_clamping
+            && g_alpine_level_info_config
             .is_option_loaded(
                 rf::level.filename,
                 AlpineLevelInfoID::LightmapClampFloor
@@ -297,7 +298,8 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         }
 
         // Check if the level explicitly defines clamp ceiling
-        if (g_alpine_level_info_config
+        if (!g_alpine_game_config.ignore_tbl_lightmap_clamping
+            && g_alpine_level_info_config
             .is_option_loaded(
                 rf::level.filename,
                 AlpineLevelInfoID::LightmapClampCeiling
@@ -372,10 +374,20 @@ ConsoleCommand2 lighting_color_range_cmd{
 ConsoleCommand2 clamp_official_lightmaps_cmd{
     "r_clampofficiallightmaps",
     []() {
-        g_alpine_game_config.always_clamp_official_lightmaps = !g_alpine_game_config.always_clamp_official_lightmaps;        
+        g_alpine_game_config.always_clamp_official_lightmaps = !g_alpine_game_config.always_clamp_official_lightmaps;
         rf::console::printf("Forced clamping of lightmaps in official levels is: %s", g_alpine_game_config.always_clamp_official_lightmaps ? "enabled" : "disabled");
     },
     "Toggle forced lightmap clamping for official Volition levels. Only affects new level loads. Only applicable if full range lighting is enabled.",
+};
+
+ConsoleCommand2 ignore_tbl_lightmap_clamping_cmd{
+    "cl_ignore_tbl_lightmap_clamping",
+    []() {
+        g_alpine_game_config.ignore_tbl_lightmap_clamping = !g_alpine_game_config.ignore_tbl_lightmap_clamping;
+        rf::console::printf("Ignore TBL lightmap clamping override: %s", g_alpine_game_config.ignore_tbl_lightmap_clamping ? "enabled" : "disabled");
+        rf::console::printf("Reload the level for this to take effect.");
+    },
+    "Toggle ignoring per-map lightmap clamping overrides from mapname_info.tbl. Only affects new level loads.",
 };
 
 CodeInjection shadow_render_one_injection{
@@ -756,4 +768,5 @@ void g_solid_do_patch()
     dbg_room_clip_wnd_cmd.register_cmd();
     lighting_color_range_cmd.register_cmd();
     clamp_official_lightmaps_cmd.register_cmd();
+    ignore_tbl_lightmap_clamping_cmd.register_cmd();
 }

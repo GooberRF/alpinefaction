@@ -91,6 +91,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Exclude spectators and browsers from bot decommission player count calculations
 - Exclude spectators and browsers when counting players for team selection for a newly joining player
 - Consolidate mesh static lighting settings to `r_meshlighting [0-2]` console command
+- Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `MAPNAME_info.tbl`
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
