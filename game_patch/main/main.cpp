@@ -213,13 +213,34 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
             df::gr::d3d11::evaluate_mesh_lighting(level_filename);
             if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
                 && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
-                rf::console::print("Applying legacy vertex lighting for {} (per override present in mapname_info.tbl)", level_filename);
+                if (g_alpine_game_config.ignore_tbl_vertex_lighting) {
+                    rf::console::print("Ignoring vertex lighting override in mapname_info.tbl for {} (cl_ignore_tbl_vertex_lighting is enabled)", level_filename);
+                }
+                else {
+                    rf::console::print("Applying legacy vertex lighting for {} (per override present in mapname_info.tbl)", level_filename);
+                }
             }
 
             df::gr::d3d11::evaluate_pixel_light_overbright(level_filename);
             if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
-                rf::console::print("Pixel light overbright set to {:.2f} for {} (per override present in mapname_info.tbl)",
-                    df::gr::d3d11::g_level_pixel_light_overbright, level_filename);
+                if (g_alpine_game_config.ignore_tbl_pixel_light_overbright) {
+                    rf::console::print("Ignoring pixel light overbright override in mapname_info.tbl for {} (cl_ignore_tbl_pixel_light_overbright is enabled)", level_filename);
+                }
+                else {
+                    rf::console::print("Pixel light overbright set to {:.2f} for {} (per override present in mapname_info.tbl)",
+                        df::gr::d3d11::g_level_pixel_light_overbright, level_filename);
+                }
+            }
+        }
+
+        // Notify about lightmap clamping TBL overrides
+        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::LightmapClampFloor)
+            || g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::LightmapClampCeiling)) {
+            if (g_alpine_game_config.ignore_tbl_lightmap_clamping) {
+                rf::console::print("Ignoring lightmap clamping override in mapname_info.tbl for {} (cl_ignore_tbl_lightmap_clamping is enabled)", level_filename);
+            }
+            else {
+                rf::console::print("Applying lightmap clamping for {} (per override present in mapname_info.tbl)", level_filename);
             }
         }
 

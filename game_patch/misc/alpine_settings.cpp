@@ -601,6 +601,18 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.always_clamp_official_lightmaps = std::stoi(settings["AlwaysClampOfficialLightmaps"]);
         processed_keys.insert("AlwaysClampOfficialLightmaps");
     }
+    if (settings.count("IgnoreTblVertexLighting")) {
+        g_alpine_game_config.ignore_tbl_vertex_lighting = std::stoi(settings["IgnoreTblVertexLighting"]);
+        processed_keys.insert("IgnoreTblVertexLighting");
+    }
+    if (settings.count("IgnoreTblPixelLightOverbright")) {
+        g_alpine_game_config.ignore_tbl_pixel_light_overbright = std::stoi(settings["IgnoreTblPixelLightOverbright"]);
+        processed_keys.insert("IgnoreTblPixelLightOverbright");
+    }
+    if (settings.count("IgnoreTblLightmapClamping")) {
+        g_alpine_game_config.ignore_tbl_lightmap_clamping = std::stoi(settings["IgnoreTblLightmapClamping"]);
+        processed_keys.insert("IgnoreTblLightmapClamping");
+    }
 
     // Load UI settings
     if (settings.count("BigHUD")) {
@@ -1281,6 +1293,9 @@ void alpine_player_settings_save(rf::Player* player)
     file << "SimulationDistance=" << g_alpine_game_config.entity_sim_distance << "\n";
     file << "FullRangeLighting=" << g_alpine_game_config.full_range_lighting << "\n";
     file << "AlwaysClampOfficialLightmaps=" << g_alpine_game_config.always_clamp_official_lightmaps << "\n";
+    file << "IgnoreTblVertexLighting=" << g_alpine_game_config.ignore_tbl_vertex_lighting << "\n";
+    file << "IgnoreTblPixelLightOverbright=" << g_alpine_game_config.ignore_tbl_pixel_light_overbright << "\n";
+    file << "IgnoreTblLightmapClamping=" << g_alpine_game_config.ignore_tbl_lightmap_clamping << "\n";
 
     // UI
     file << "\n[UISettings]\n";
