@@ -120,6 +120,8 @@ CodeInjection after_full_game_init_hook{
 CodeInjection cleanup_game_hook{
     0x004B2821,
     []() {
+        // Set abort flag so AWP download future exits quickly and doesn't block static destruction
+        cancel_awp_download();
         debug_cleanup();
     },
 };
@@ -156,6 +158,7 @@ FunHook<int()> rf_do_frame_hook{
         maybe_autosave();
         debug_do_frame_post();
         multi_level_download_update();
+        poll_awp_download();
         waypoints_do_frame();
         return result;
     },
@@ -207,10 +210,37 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
 
         // evaluate and cache vertex lighting mode for this level (D3D11 only)
         if (is_d3d11()) {
-            df::gr::d3d11::evaluate_vertex_lighting(level_filename);
+            df::gr::d3d11::evaluate_mesh_lighting(level_filename);
             if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
                 && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
-                rf::console::print("Applying legacy vertex lighting for {} (per override present in mapname_info.tbl)", level_filename);
+                if (g_alpine_game_config.ignore_tbl_vertex_lighting) {
+                    rf::console::print("Ignoring vertex lighting override in mapname_info.tbl for {} (cl_ignore_tbl_vertex_lighting is enabled)", level_filename);
+                }
+                else {
+                    rf::console::print("Applying legacy vertex lighting for {} (per override present in mapname_info.tbl)", level_filename);
+                }
+            }
+
+            df::gr::d3d11::evaluate_pixel_light_overbright(level_filename);
+            if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
+                if (g_alpine_game_config.ignore_tbl_pixel_light_overbright) {
+                    rf::console::print("Ignoring pixel light overbright override in mapname_info.tbl for {} (cl_ignore_tbl_pixel_light_overbright is enabled)", level_filename);
+                }
+                else {
+                    rf::console::print("Pixel light overbright set to {:.2f} for {} (per override present in mapname_info.tbl)",
+                        df::gr::d3d11::g_level_pixel_light_overbright, level_filename);
+                }
+            }
+        }
+
+        // Notify about lightmap clamping TBL overrides
+        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::LightmapClampFloor)
+            || g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::LightmapClampCeiling)) {
+            if (g_alpine_game_config.ignore_tbl_lightmap_clamping) {
+                rf::console::print("Ignoring lightmap clamping override in mapname_info.tbl for {} (cl_ignore_tbl_lightmap_clamping is enabled)", level_filename);
+            }
+            else {
+                rf::console::print("Applying lightmap clamping for {} (per override present in mapname_info.tbl)", level_filename);
             }
         }
 
@@ -229,7 +259,26 @@ FunHook<void(bool)> level_init_post_hook{
     [](bool transition) {
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
+
+        // Cancel any in-flight AWP download from a previous map
+        cancel_awp_download();
+
+        // Flow 2A: Bot clients — start async AWP download before waypoints_level_init
+        // so it sees the pending flag and defers load_waypoints until download resolves
+        if (rf::is_multi && client_bot_launch_enabled()) {
+            waypoints_set_awp_download_pending(true);
+            if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
+                waypoints_set_awp_download_pending(false);
+            }
+        }
+
         waypoints_level_init();
+
+        // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download
+        if (rf::is_multi && !client_bot_launch_enabled() && !rf::is_dedicated_server
+            && g_alpine_game_config.autodl_download_awps) {
+            start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
+        }
 
         // Create corona objects (clutter + glare pairs) now that geometry is loaded
         alpine_corona_create_all();

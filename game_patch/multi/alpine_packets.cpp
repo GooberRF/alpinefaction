@@ -1272,6 +1272,10 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_DELAYED_SPAWNS;
     if (g_alpine_server_config.allow_footsteps)
         af |= af_server_info_flags::SIF_ALLOW_FOOTSTEPS;
+    if (g_alpine_server_config.allow_outlines)
+        af |= af_server_info_flags::SIF_ALLOW_OUTLINES;
+    if (g_alpine_server_config.allow_outlines_xray)
+        af |= af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -1325,9 +1329,44 @@ void af_send_server_info_packet(rf::Player* player)
     af_server_info_packet pkt{};
     build_af_server_info_packet(pkt);
 
+    xlog::trace("af_server_info SENDING to player '{}': af_flags=0x{:08X}", player->name, pkt.af_flags);
+
     std::byte buf[sizeof(pkt)];
     std::memcpy(buf, &pkt, sizeof(pkt));
     af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
+}
+
+// Decode af_flags and semi_auto_cooldown from a server info packet into the
+// AlpineFactionServerInfo struct. Shared between the client packet handler
+// and the listen-server local application path.
+static void decode_af_server_info_flags(const af_server_info_packet& pkt, AlpineFactionServerInfo& server_info)
+{
+    server_info.saving_enabled = (pkt.af_flags & af_server_info_flags::SIF_POSITION_SAVING) != 0;
+    server_info.allow_fb_mesh = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FULLBRIGHT_MESHES) != 0;
+    server_info.allow_lmap = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_LIGHTMAPS_ONLY) != 0;
+    server_info.allow_no_ss = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_SCREENSHAKE) != 0;
+    server_info.no_player_collide = (pkt.af_flags & af_server_info_flags::SIF_NO_PLAYER_COLLIDE) != 0;
+    server_info.allow_no_mf = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT) != 0;
+    server_info.click_limit = (pkt.af_flags & af_server_info_flags::SIF_CLICK_LIMITER) != 0;
+    server_info.unlimited_fps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS) != 0;
+    server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
+    server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
+    server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
+    server_info.geo_chunk_physics = (pkt.af_flags & af_server_info_flags::SIF_GEO_CHUNK_PHYSICS) != 0;
+    server_info.allow_footsteps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FOOTSTEPS) != 0;
+    server_info.allow_outlines = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES) != 0;
+    server_info.allow_outlines_xray = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY) != 0;
+    server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
+}
+
+// Apply af_server_info_packet flags to the local server info (for listen server host)
+static void apply_server_info_packet_locally(const af_server_info_packet& pkt)
+{
+    auto& opt = get_af_server_info_mutable();
+    if (!opt.has_value())
+        return;
+
+    decode_af_server_info_flags(pkt, opt.value());
 }
 
 // todo: on join, level init, relevant svar change, sv_loadconfig
@@ -1349,10 +1388,16 @@ void af_send_server_info_packet_to_all()
             continue;
         af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
     }
+
+    // On a listen server, the local player has no net_data so the packet is never
+    // sent/received via the network. Apply the flags directly to keep local state in sync.
+    apply_server_info_packet_locally(pkt);
 }
 
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&)
 {
+    xlog::trace("af_server_info_packet RECEIVED: is_multi={}, is_server={}, len={}", rf::is_multi, rf::is_server, len);
+
     // Receive: client <- server
     if (!rf::is_multi || rf::is_server)
         return;
@@ -1375,6 +1420,8 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
         xlog::warn("af_server_info: missing initial server info from join");
         return; // server info is missing, how did you get this packet?
     }
+
+    xlog::trace("af_server_info: processing af_flags=0x{:08X}", pkt.af_flags);
 
     auto& server_info = get_af_server_info_mutable().value();
 
@@ -1431,25 +1478,11 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
         rf::netgame.flags &= ~rf::NetGameFlags::NG_FLAG_BALANCE_TEAMS;
 
     // af_flags
-    server_info.saving_enabled = (pkt.af_flags & af_server_info_flags::SIF_POSITION_SAVING) != 0;
-    server_info.allow_fb_mesh = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FULLBRIGHT_MESHES) != 0;
-    server_info.allow_lmap = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_LIGHTMAPS_ONLY) != 0;
-    server_info.allow_no_ss = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_SCREENSHAKE) != 0;
-    server_info.no_player_collide = (pkt.af_flags & af_server_info_flags::SIF_NO_PLAYER_COLLIDE) != 0;
-    server_info.allow_no_mf = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT) != 0;
-    server_info.click_limit = (pkt.af_flags & af_server_info_flags::SIF_CLICK_LIMITER) != 0;
-    server_info.unlimited_fps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS) != 0;
-    server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
-    server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
-    server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
-    server_info.geo_chunk_physics = (pkt.af_flags & af_server_info_flags::SIF_GEO_CHUNK_PHYSICS) != 0;
-    server_info.allow_footsteps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FOOTSTEPS) != 0;
+    decode_af_server_info_flags(pkt, server_info);
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();
     }
-
-    server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
 
     // Update footstep activation based on new server permissions
     evaluate_footsteps();
@@ -1530,6 +1563,12 @@ void af_process_spectate_start_packet(
     }
 
     spectator->spectatee = then_some(in_spectate, new_target);
+    if (!spectator->is_spectator && in_spectate) {
+        spectator->spectate_start_time = std::chrono::steady_clock::now();
+    }
+    else if (!in_spectate) {
+        spectator->spectate_start_time = std::nullopt;
+    }
     spectator->is_spectator = in_spectate;
 }
 

@@ -552,8 +552,9 @@ FunHook<void(rf::Entity*)> entity_footsteps_do_frame_hook{
             }
         }
 
-        // Gate sound playback: pistol always plays (stock behavior), others require feature enabled
-        if (g_footsteps_active || rf::weapon_is_glock(ep->ai.current_primary_weapon)) {
+        // Gate sound playback: local player and pistol always play (stock behavior),
+        // other entities require the footstep fix to be active
+        if (ep == rf::local_player_entity || g_footsteps_active || rf::weapon_is_glock(ep->ai.current_primary_weapon)) {
             entity_footsteps_do_frame_hook.call_target(ep);
         }
     }

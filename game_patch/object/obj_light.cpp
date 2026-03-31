@@ -15,6 +15,7 @@
 #include "../rf/item.h"
 #include "../rf/level.h"
 #include "../rf/clutter.h"
+#include "../rf/v3d.h"
 #include "../rf/gr/gr.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../rf/multi.h"
@@ -35,7 +36,7 @@ bool g_character_meshes_are_fullbright = false;
 
 void obj_mesh_lighting_alloc_one(rf::Object* objp)
 {
-    if ((objp->type != rf::OT_ITEM && objp->type != rf::OT_CLUTTER) ||
+    if ((objp->type != rf::OT_ITEM && objp->type != rf::OT_CLUTTER && objp->type != rf::OT_DEBRIS) ||
         !objp->vmesh ||
         (objp->obj_flags & rf::OF_DELAYED_DELETE) ||
         rf::vmesh_get_type(objp->vmesh) != rf::MESH_TYPE_STATIC) {
@@ -59,13 +60,13 @@ void obj_mesh_lighting_update_one(rf::Object* objp)
     if (!objp->mesh_lighting_data)
         return;
 
-    if (g_alpine_game_config.mesh_static_lighting) {
+    if (g_alpine_game_config.mesh_lighting_use_static()) {
         gr_light_use_static(true);
     }
 
     rf::vmesh_update_lighting_data(objp->vmesh, objp->room, objp->pos, objp->orient, objp->mesh_lighting_data);
 
-    if (g_alpine_game_config.mesh_static_lighting)
+    if (g_alpine_game_config.mesh_lighting_use_static())
         gr_light_use_static(false);
 }
 
@@ -184,29 +185,83 @@ FunHook<void()> obj_light_free_hook{
     },
 };
 
-ConsoleCommand2 mesh_static_lighting_cmd{
+static const char* mesh_lighting_mode_name(int mode)
+{
+    switch (mode) {
+        case 0: return "ambient only";
+        case 1: return "vertex";
+        case 2: return "pixel";
+        default: return "unknown";
+    }
+}
+
+ConsoleCommand2 mesh_lighting_cmd{
     "r_meshlighting",
-    []() {
-        g_alpine_game_config.mesh_static_lighting = !g_alpine_game_config.mesh_static_lighting;
-        recalc_mesh_static_lighting();
-        rf::console::print("Mesh static lighting is {}", g_alpine_game_config.mesh_static_lighting ? "enabled" : "disabled");
+    [](std::optional<int> mode_opt) {
+        if (mode_opt) {
+            g_alpine_game_config.mesh_lighting_mode = std::clamp(mode_opt.value(), 0, 2);
+            recalc_mesh_static_lighting();
+            df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+        }
+        rf::console::print("Mesh lighting: {} (mode {})", mesh_lighting_mode_name(g_alpine_game_config.mesh_lighting_mode), g_alpine_game_config.mesh_lighting_mode);
+        if (g_alpine_game_config.mesh_lighting_mode == 2 && df::gr::d3d11::level_uses_vertex_lighting()) {
+            rf::console::print("Note: per-map override is forcing vertex lighting for this level");
+        }
     },
-    "Toggle mesh static lighting calculation",
+    "Set mesh lighting mode: 0 = ambient only, 1 = vertex (legacy), 2 = pixel (D3D11)",
+    "r_meshlighting <0-2>",
 };
 
+ConsoleCommand2 dynamic_light_ndotl_cmd{
+    "r_dynamiclightndotl",
+    [](std::optional<float> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.set_dynamic_light_ndotl(value_opt.value());
+        }
+        rf::console::print("Dynamic light N·L on world geometry: {:.2f} (0.0 = stock, 1.0 = full N·L, D3D11 only)",
+            g_alpine_game_config.dynamic_light_ndotl);
+    },
+    "Set N·L blend factor for dynamic lights on world geometry (D3D11 only)",
+    "r_dynamiclightndotl <0.0-1.0>",
+};
 
-ConsoleCommand2 vertex_lighting_cmd{
-    "r_vertexlighting",
-    []() {
-        g_alpine_game_config.vertex_lighting = !g_alpine_game_config.vertex_lighting;
-        // Re-evaluate cached state so the change takes effect immediately
-        df::gr::d3d11::evaluate_vertex_lighting(rf::level.filename);
-        rf::console::print("Using {} lighting for meshes. (D3D11 only)", g_alpine_game_config.vertex_lighting ? "legacy vertex" : "modern pixel");
-        if (df::gr::d3d11::g_level_vertex_lighting != g_alpine_game_config.vertex_lighting) {
+ConsoleCommand2 pixel_light_overbright_cmd{
+    "r_pixellightoverbright",
+    [](std::optional<float> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.set_pixel_light_overbright(value_opt.value());
+            // Re-evaluate cached state so the change takes effect immediately
+            df::gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+        }
+        rf::console::print("Pixel light overbright range: {:.2f}",
+            g_alpine_game_config.pixel_light_overbright);
+        if (df::gr::d3d11::g_level_pixel_light_overbright != g_alpine_game_config.pixel_light_overbright) {
             rf::console::print("Note: per-map override in mapname_info.tbl is active for this level");
         }
     },
-    "Toggle between legacy vertex lighting and modern pixel lighting for meshes (D3D11 only)",
+    "Set overbright range for pixel lighting compression (D3D11 only)",
+    "r_pixellightoverbright <0.0-3.0>",
+};
+
+ConsoleCommand2 ignore_tbl_vertex_lighting_cmd{
+    "cl_ignore_tbl_vertex_lighting",
+    []() {
+        g_alpine_game_config.ignore_tbl_vertex_lighting = !g_alpine_game_config.ignore_tbl_vertex_lighting;
+        df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+        recalc_mesh_static_lighting();
+        rf::console::printf("Ignore TBL vertex lighting override: %s", g_alpine_game_config.ignore_tbl_vertex_lighting ? "enabled" : "disabled");
+    },
+    "Toggle ignoring per-map vertex lighting overrides from mapname_info.tbl.",
+};
+
+ConsoleCommand2 ignore_tbl_pixel_light_overbright_cmd{
+    "cl_ignore_tbl_pixel_light_overbright",
+    []() {
+        g_alpine_game_config.ignore_tbl_pixel_light_overbright = !g_alpine_game_config.ignore_tbl_pixel_light_overbright;
+        df::gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+        rf::console::printf("Ignore TBL pixel light overbright override: %s", g_alpine_game_config.ignore_tbl_pixel_light_overbright ? "enabled" : "disabled");
+    },
+    "Toggle ignoring per-map pixel light overbright overrides from mapname_info.tbl.",
 };
 
 CallHook<void(rf::Entity&)> entity_update_muzzle_flash_light_hook{
@@ -259,6 +314,18 @@ ConsoleCommand2 fullbright_models_cmd{
     "Toggle fullbright character meshes. In multiplayer, this is only available if the server allows it.",
 };
 
+CodeInjection debris_render_set_vertex_colors_patch{
+    0x00412E28,
+    [](auto& regs) {
+        auto* obj = reinterpret_cast<rf::Object*>(static_cast<uintptr_t>(regs.esi));
+        if (obj->mesh_lighting_data) {
+            // render_params is a stack local at ESP + 0xC in the debris render function
+            auto* params = reinterpret_cast<rf::MeshRenderParams*>(static_cast<uintptr_t>(regs.esp) + 0xC);
+            params->vertex_colors = static_cast<rf::ubyte*>(obj->mesh_lighting_data);
+        }
+    }
+};
+
 CodeInjection dynamic_light_load_patch{
     0x0045F500,
     [](auto& regs) {
@@ -275,6 +342,9 @@ void obj_light_apply_patch()
     AsmWriter{0x0052DB3E}.fld<float>(AsmRegMem(&g_character_ambient_light_r));
     AsmWriter{0x0052DB50}.fld<float>(AsmRegMem(&g_character_ambient_light_g));
     AsmWriter{0x0052DB62}.fld<float>(AsmRegMem(&g_character_ambient_light_b));
+
+    // Set vertex colors for debris meshes so they receive proper lighting instead of being fullbright
+    debris_render_set_vertex_colors_patch.install();
 
     // Allow dynamic lights in levels
     dynamic_light_load_patch.install(); // in LevelLight__load
@@ -294,8 +364,11 @@ void obj_light_apply_patch()
     entity_update_muzzle_flash_light_hook.install();
 
     // Commands
-    mesh_static_lighting_cmd.register_cmd();
-    vertex_lighting_cmd.register_cmd();
+    mesh_lighting_cmd.register_cmd();
+    dynamic_light_ndotl_cmd.register_cmd();
+    pixel_light_overbright_cmd.register_cmd();
+    ignore_tbl_vertex_lighting_cmd.register_cmd();
+    ignore_tbl_pixel_light_overbright_cmd.register_cmd();
     muzzle_flash_cmd.register_cmd();
     fullbright_models_cmd.register_cmd();
 }

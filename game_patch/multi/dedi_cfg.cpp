@@ -616,6 +616,18 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         }
     }
 
+    if (auto arr = t["delayed_items"].as_array()) {
+        for (auto& node : *arr) {
+            if (auto tbl = node.as_table()) {
+                if (auto nameOpt = (*tbl)["item_name"].value<std::string>()) {
+                    bool added = o.delayed_items.add(*nameOpt);
+                    if (!added && !o.delayed_items.contains(*nameOpt))
+                        xlog::warn("Invalid delayed item '{}'", *nameOpt);
+                }
+            }
+        }
+    }
+
     if (auto sub = t["force_character"].as_table())
         o.force_character = parse_force_character_config(*sub, o.force_character);
 
@@ -1192,6 +1204,14 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     else if (key == "exclude_bots_from_player_count") {
         if (auto v = node.value<bool>())
             cfg.exclude_bots_from_player_count = *v;
+    }
+    else if (key == "allow_outlines") {
+        if (auto v = node.value<bool>())
+            cfg.allow_outlines = *v;
+    }
+    else if (key == "allow_outlines_xray") {
+        if (auto v = node.value<bool>())
+            cfg.allow_outlines_xray = *v;
     }
 }
 
@@ -1892,6 +1912,33 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
+    // Delayed items
+    bool anyDelayedChanged = (rules.delayed_items.items != b.delayed_items.items);
+
+    if (base || anyDelayedChanged) {
+        std::format_to(iter, "  Delayed items:\n");
+        if (rules.delayed_items.items.empty() && b.delayed_items.items.empty()) {
+            std::format_to(iter, "    <none>\n");
+        }
+        else {
+            for (auto const& name : rules.delayed_items.items) {
+                if (base) {
+                    std::format_to(iter, "    {}\n", name);
+                }
+                else if (b.delayed_items.items.count(name) == 0) {
+                    std::format_to(iter, "    + {}\n", name);
+                }
+            }
+            if (!base) {
+                for (auto const& name : b.delayed_items.items) {
+                    if (rules.delayed_items.items.count(name) == 0) {
+                        std::format_to(iter, "    - {}\n", name);
+                    }
+                }
+            }
+        }
+    }
+
     // force character
     if (base || rules.force_character.enabled != b.force_character.enabled ||
         (rules.force_character.enabled && rules.force_character.character_index != b.force_character.character_index)) {
@@ -2009,6 +2056,8 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
+    std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
+    std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);

@@ -71,6 +71,12 @@ static size_t g_rx_len = 0;
 static std::unordered_map<uint64_t, AfGiReqSeen> g_af_gi_req_seen;
 static std::unordered_map<uint64_t, RconAccessEntry> g_rcon_access_by_addr;
 
+// Client-side: stashed game_info packet for AF extension parsing
+static std::vector<uint8_t> g_game_info_stashed;
+
+// Client-side: per-server extra data parsed from AF game_info extension
+static std::unordered_map<uint64_t, AFGameInfoExtra> g_server_browser_extra;
+
 std::optional<int> g_desired_multiplayer_character; // caches local mp character when forced by server
 
 using MultiIoPacketHandler = void(char* data, const rf::NetAddr& addr);
@@ -513,6 +519,74 @@ static void handle_rcon_request_packet(const uint8_t* pkt, size_t len, const rf:
     }
 }
 
+// Parse AF v2 extension from game_info packet tail using the AFFooter.
+// Tail layout: [stock fields...][af_game_info_ext_v2][level_filename\0][AFFooter]
+// The footer at the end of the payload lets us jump directly to the extension
+// without parsing the stock fields.
+static bool parse_game_info_af_tail(const uint8_t* pkt, size_t pkt_len, AFGameInfoExtra& out)
+{
+    if (!pkt || pkt_len < sizeof(RF_GamePacketHeader))
+        return false;
+
+    RF_GamePacketHeader gh;
+    std::memcpy(&gh, pkt, sizeof(gh));
+    const size_t payload_len = gh.size;
+    if (pkt_len < sizeof(gh) + payload_len)
+        return false;
+
+    const uint8_t* payload = pkt + sizeof(gh);
+    const uint8_t* end = payload + payload_len;
+
+    // read footer from the end of the payload
+    if (payload_len < sizeof(AFFooter))
+        return false;
+    AFFooter footer;
+    std::memcpy(&footer, end - sizeof(AFFooter), sizeof(AFFooter));
+    if (footer.magic != AF_FOOTER_MAGIC)
+        return false;
+
+    // locate the extension data using footer.total_len
+    const size_t core_len = footer.total_len;
+    const uint8_t* footer_start = end - sizeof(AFFooter);
+    if (core_len > payload_len - sizeof(AFFooter))
+        return false;
+    const uint8_t* ext_start = footer_start - core_len;
+    if (ext_start < payload)
+        return false;
+
+    // parse af_game_info_ext_v2 from the extension data
+    if (core_len < sizeof(af_game_info_ext_v2))
+        return false;
+
+    const auto* ext = reinterpret_cast<const af_game_info_ext_v2*>(ext_start);
+    if (ext->af_signature != ALPINE_FACTION_SIGNATURE)
+        return false;
+
+    const uint16_t ext_size = ext->ext_size;
+    if (ext_size < sizeof(af_game_info_ext_v2) || ext_size > core_len)
+        return false;
+
+    out.version_major = ext->version_major;
+    out.version_minor = ext->version_minor;
+    out.version_patch = ext->version_patch;
+    out.version_type = ext->version_type;
+    out.af_flags = ext->af_flags;
+    out.num_bots = ext->num_bots;
+    out.num_human_players = ext->num_human_players;
+    out.num_browsers = ext->num_browsers;
+    out.num_total_clients = ext->num_total_clients;
+
+    // level filename follows the fixed struct
+    const uint8_t* fname_start = ext_start + ext_size;
+    const uint8_t* p = fname_start;
+    while (p < footer_start && *p != '\0') ++p;
+    if (p >= footer_start)
+        return false;
+    out.level_filename.assign(reinterpret_cast<const char*>(fname_start), p - fname_start);
+
+    return true;
+}
+
 FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
     0x0047B2A0,
     [](char* data, const rf::NetAddr& addr) {
@@ -523,6 +597,19 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         const char* server_name = data + 1;
         if (addr == rf::netgame.server_addr) {
             rf::netgame.name = server_name;
+        }
+
+        // Parse AF extension from the stashed packet data
+        if (!g_game_info_stashed.empty()) {
+            AFGameInfoExtra extra{};
+            uint64_t key = addr_key(addr);
+            if (parse_game_info_af_tail(g_game_info_stashed.data(), g_game_info_stashed.size(), extra)) {
+                g_server_browser_extra[key] = std::move(extra);
+            }
+            else {
+                g_server_browser_extra.erase(key);
+            }
+            g_game_info_stashed.clear();
         }
     },
 };
@@ -1129,44 +1216,6 @@ static uint8_t* locate_game_type_field(uint8_t* pkt, size_t len)
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook{
     0x0047B287,
     [](const rf::NetAddr* addr, std::byte* data, size_t len) {
-        // core packet ext
-        af_sign_packet_ext ext{};
-        ext.af_signature = ALPINE_FACTION_SIGNATURE;
-        ext.version_major = VERSION_MAJOR;
-        ext.version_minor = VERSION_MINOR;
-        ext.version_patch = VERSION_PATCH;
-        ext.version_type = VERSION_TYPE;
-        ext.set_flags(g_game_info_server_flags);
-
-        // level filename
-        uint8_t fname[64] = {0};
-        size_t fname_len = 0;
-        if (rf::level.flags & rf::LEVEL_LOADED) {
-            auto s = rf::level.filename.substr(0, 63);
-            fname_len = s.size() + 1; // null terminator
-            std::memcpy(fname, s.c_str(), fname_len);
-        }
-
-        // build tail
-        std::vector<uint8_t> tail;
-        tail.reserve(sizeof(ext) + fname_len);
-        tail.insert(tail.end(), reinterpret_cast<const uint8_t*>(&ext), reinterpret_cast<const uint8_t*>(&ext) + sizeof(ext));
-
-        if (fname_len)
-            tail.insert(tail.end(), fname, fname + fname_len);
-
-        auto [buf, new_len] = extend_packet_bytes(data, len, tail.data(), tail.size());
-
-        // Only send new gametype IDs to compatible clients
-        // legacy clients will crash when they receive a game_info packet with
-        // gametype ID > 2. If the server is running a new gametype, we lie and tell
-        // legacy clients that it is gametype 2 (TDM) to avoid crashing them
-
-        // if recipient sent an AF game_info_req within 20 sec, consider it compatible
-        // there is a very small risk here that if the server is running a new gametype,
-        // a legacy client will crash if the user polled a server list on AF v1.2+ from
-        // the same port within this window, but that is extremely unlikely
-
         // purge stale recorded Alpine client game_info_req entries
         constexpr int seen_ttl_ms = 20000;
         const uint64_t key = addr_key(*addr);
@@ -1179,23 +1228,91 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
                 ++it;
         }
 
-        // check if a fresh Alpine client game_info_req entry was from this socket
-        bool is_af_capable = false;
+        // determine requester capability from their game_info_req
+        uint8_t req_ver = 0;
         if (auto it = g_af_gi_req_seen.find(key); it != g_af_gi_req_seen.end()) {
-            is_af_capable = (it->second.ver >= 1);
+            req_ver = it->second.ver;
         }
 
-        // game_info_req was from a legacy client, fall back to game_type 2 to avoid accidentally crashing them
-        if (!is_af_capable) {
-            if (uint8_t* gt = locate_game_type_field(reinterpret_cast<uint8_t*>(buf.get()), new_len)) {
-                if (*gt > 2) {
-                    xlog::debug("Legacy GI reply to {:x}:{}: mapping game_type {} -> 2", addr->ip_addr, addr->port, int(*gt));
-                    *gt = 2;
-                }
+        // level filename (null-terminated, used by AF extensions)
+        uint8_t fname[64] = {0};
+        size_t fname_len = 0;
+        if (rf::level.flags & rf::LEVEL_LOADED) {
+            auto s = rf::level.filename.substr(0, 63);
+            fname_len = s.size() + 1; // includes null terminator
+            std::memcpy(fname, s.c_str(), fname_len);
+        }
+
+        if (req_ver >= 3) {
+            // v2 extension for modern AF clients: [af_game_info_ext_v2][fname\0]
+            af_game_info_ext_v2 ext{};
+            ext.set_flags(g_game_info_server_flags);
+
+            // count players by type
+            uint8_t num_bots = 0;
+            uint8_t num_human_players = 0;
+            uint8_t num_browsers = 0;
+            for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+                if (p.is_browser)
+                    ++num_browsers;
+                else if (p.is_bot)
+                    ++num_bots;
+                else
+                    ++num_human_players;
             }
-        }
+            ext.num_bots = num_bots;
+            ext.num_human_players = num_human_players;
+            ext.num_browsers = num_browsers;
+            ext.num_total_clients = static_cast<uint8_t>(num_bots + num_human_players + num_browsers);
 
-        return send_game_info_packet_hook.call_target(addr, buf.get(), new_len);
+            // build tail: [ext][fname\0][AFFooter]
+            size_t fname_actual = fname_len ? fname_len : 1;
+            size_t core_len = sizeof(ext) + fname_actual;
+
+            AFFooter footer{};
+            footer.total_len = static_cast<uint16_t>(core_len);
+            footer.magic = AF_FOOTER_MAGIC;
+
+            std::vector<uint8_t> tail;
+            tail.reserve(core_len + sizeof(footer));
+            tail.insert(tail.end(), reinterpret_cast<const uint8_t*>(&ext),
+                reinterpret_cast<const uint8_t*>(&ext) + sizeof(ext));
+            if (fname_len)
+                tail.insert(tail.end(), fname, fname + fname_len);
+            else
+                tail.push_back(0);
+            tail.insert(tail.end(), reinterpret_cast<const uint8_t*>(&footer),
+                reinterpret_cast<const uint8_t*>(&footer) + sizeof(footer));
+
+            auto [buf, new_len] = extend_packet_bytes(data, len, tail.data(), tail.size());
+            return send_game_info_packet_hook.call_target(addr, buf.get(), new_len);
+        }
+        else if (req_ver >= 1) {
+            // v1 extension for older AF clients: [af_sign_packet_ext][fname\0]
+            af_sign_packet_ext ext{};
+            ext.set_flags(g_game_info_server_flags);
+
+            std::vector<uint8_t> tail;
+            tail.reserve(sizeof(ext) + fname_len);
+            tail.insert(tail.end(), reinterpret_cast<const uint8_t*>(&ext),
+                reinterpret_cast<const uint8_t*>(&ext) + sizeof(ext));
+            if (fname_len)
+                tail.insert(tail.end(), fname, fname + fname_len);
+
+            auto [buf, new_len] = extend_packet_bytes(data, len, tail.data(), tail.size());
+            return send_game_info_packet_hook.call_target(addr, buf.get(), new_len);
+        }
+        else {
+            // Legacy client: no extension, remap gametype > 2 to avoid crashing
+            const uint8_t* gt = locate_game_type_field(reinterpret_cast<uint8_t*>(data), len);
+            if (gt && *gt > 2) {
+                auto buf = std::make_unique<std::byte[]>(len);
+                std::memcpy(buf.get(), data, len);
+                reinterpret_cast<uint8_t*>(buf.get())[gt - reinterpret_cast<uint8_t*>(data)] = 2;
+                return send_game_info_packet_hook.call_target(addr, buf.get(), len);
+            }
+            return send_game_info_packet_hook.call_target(addr, data, len);
+        }
     },
 };
 
@@ -1225,8 +1342,8 @@ std::pair<std::unique_ptr<std::byte[]>, size_t> append_af_tail(const std::byte* 
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_req_packet_hook{
     0x0047B470,
     [](const rf::NetAddr* addr, std::byte* data, size_t len) {
-        AFGameInfoReq core{ALPINE_FACTION_SIGNATURE, 1};
-        // version 1 of gi_req extension, only used to identify non-legacy clients, unlikely this will need to increment
+        AFGameInfoReq core{ALPINE_FACTION_SIGNATURE, 3};
+        // version 3: server sends af_game_info_ext_v2 with bot count and proper versioning
         auto [buf, new_len] = append_af_tail(data, len, &core, sizeof(core));
         return send_game_info_req_packet_hook.call_target(addr, buf.get(), new_len);
     },
@@ -1421,6 +1538,12 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_allow_footsteps()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_footsteps;
         }
+        if (server_allow_outlines()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines;
+        }
+        if (server_allow_outlines_xray()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray;
+        }
         auto [buf, new_len] = extend_packet_bytes(data, len, &ext_data, sizeof(ext_data));
         //auto [new_data, new_len] = extend_packet_fixed(data, len, ext_data);
         return send_join_accept_packet_hook.call_target(addr, buf.get(), new_len);
@@ -1455,6 +1578,8 @@ CodeInjection process_join_accept_injection{
             server_info.delayed_spawns = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::delayed_spawns);
             server_info.geo_chunk_physics = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::geo_chunk_physics);
             server_info.allow_footsteps = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_footsteps);
+            server_info.allow_outlines = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines);
+            server_info.allow_outlines_xray = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray);
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
@@ -2381,6 +2506,13 @@ CodeInjection multi_io_process_packets_injection{
                 }
             }
         }
+        // client-side: stash game_info packet for AF extension parsing
+        if (!rf::is_server && packet_type == static_cast<int>(RF_GamePacketType::RF_GPT_GAME_INFO)) {
+            const auto* base = static_cast<const uint8_t*>(regs.ecx);
+            const int off = regs.ebp;
+            const int len = regs.edi;
+            g_game_info_stashed.assign(base + off, base + off + len);
+        }
     },
 };
 
@@ -2520,6 +2652,19 @@ FunHook<void()> multi_io_do_frame_hook{
         }
     },
 };
+
+const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr)
+{
+    auto it = g_server_browser_extra.find(addr_key(addr));
+    if (it != g_server_browser_extra.end())
+        return &it->second;
+    return nullptr;
+}
+
+void clear_server_browser_extra()
+{
+    g_server_browser_extra.clear();
+}
 
 void network_init()
 {

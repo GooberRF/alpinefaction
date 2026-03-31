@@ -29,6 +29,7 @@
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
 #include "../misc/level.h"
+#include "../misc/alpine_settings.h"
 
 extern void set_sky_room_uid_override(
     int room_uid,
@@ -114,7 +115,9 @@ enum class ScopeGateTests : int
     red_team_spawned,
     has_flag,
     blue_team,
-    red_team
+    red_team,
+    renderer_d3d11,
+    renderer_legacy
 };
 
 enum class GoalInsideCheckSubject : int
@@ -160,7 +163,7 @@ enum class GameplayRule : int
 
 // start alpine event structs
 // id 100
-struct EventSetVar : rf::Event
+struct EventSetVar : Event
 {
     SetVarOpts var;
     int value_int = 0;
@@ -1070,6 +1073,12 @@ struct EventScopeGate : rf::Event
             break;
         case ScopeGateTests::red_team:
             pass = (rf::local_player && (rf::local_player->team == 0));
+            break;
+        case ScopeGateTests::renderer_d3d11:
+            pass = is_d3d11();
+            break;
+        case ScopeGateTests::renderer_legacy:
+            pass = !is_d3d11();
             break;
         default:
             break;

@@ -378,6 +378,46 @@ CodeInjection ctf_flag_return_fix{
     },
 };
 
+// Vanilla multi_ctf_is_red/blue_flag_in_base functions crash if the ctf_initialized flag is set
+// but the corresponding flag item pointer is NULL. This can happen if a level has only one CTF flag
+// item (e.g. blue but not red). Return true (in base) when the pointer is NULL, matching the vanilla
+// behavior when CTF is uninitialized.
+// Same vulnerability exists in the CTF flag capture function (0x00473BA0) which directly
+// dereferences ctf_red/blue_flag_item pointers without NULL checks.
+CodeInjection ctf_flag_capture_red_null_check{
+    0x00473C17,
+    [](auto& regs) {
+        if (!rf::ctf_red_flag_item) {
+            regs.eip = 0x00473D2E;
+        }
+    },
+};
+
+CodeInjection ctf_flag_capture_blue_null_check{
+    0x00473CC2,
+    [](auto& regs) {
+        if (!rf::ctf_blue_flag_item) {
+            regs.eip = 0x00473D2E;
+        }
+    },
+};
+
+FunHook<bool()> multi_ctf_is_red_flag_in_base_hook{
+    0x00474E80,
+    []() -> bool {
+        if (!rf::ctf_red_flag_item) return true;
+        return multi_ctf_is_red_flag_in_base_hook.call_target();
+    },
+};
+
+FunHook<bool()> multi_ctf_is_blue_flag_in_base_hook{
+    0x00474EA0,
+    []() -> bool {
+        if (!rf::ctf_blue_flag_item) return true;
+        return multi_ctf_is_blue_flag_in_base_hook.call_target();
+    },
+};
+
 FunHook<void()> multi_ctf_level_init_hook{
     0x00472E30,
     []() {
@@ -977,6 +1017,12 @@ void multi_do_patch()
 
     // Check ammo server-side when handling weapon fire packets
     multi_process_remote_weapon_fire_hook.install();
+
+    // Prevent crash when CTF flag item pointers are NULL
+    multi_ctf_is_red_flag_in_base_hook.install();
+    multi_ctf_is_blue_flag_in_base_hook.install();
+    ctf_flag_capture_red_null_check.install();
+    ctf_flag_capture_blue_null_check.install();
 
     // Make sure CTF flag does not spin in new level if it was dropped in the previous level
     multi_ctf_level_init_hook.install();

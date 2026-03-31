@@ -96,6 +96,8 @@ set(SRCS
     graphics/d3d11/gr_d3d11_buffer.h
     graphics/d3d11/gr_d3d11_hooks.cpp
     graphics/d3d11/gr_d3d11_hooks.h
+    graphics/d3d11/gr_d3d11_outline.h
+    graphics/d3d11/gr_d3d11_outline.cpp
     input/input.h
     input/mouse.h
     input/mouse.cpp
@@ -296,6 +298,7 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
     ${CMAKE_SOURCE_DIR}/vendor/dds
     ${CMAKE_SOURCE_DIR}/vendor/toml++
+    ${CMAKE_SOURCE_DIR}/vendor/nlohmann
 )
 
 if(NOT MSVC)
@@ -328,4 +331,5 @@ target_link_libraries(AlpineFaction
     ws2_32
     freetype
     stb_vorbis
+    stb_image
 )

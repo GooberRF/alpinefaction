@@ -920,7 +920,7 @@ static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar
 }
 
 void multi_spectate_render() {
-    if (rf::hud_disabled
+    if (is_hud_effectively_hidden()
         || rf::gameseq_get_state() != rf::GS_GAMEPLAY)
     {
         return;

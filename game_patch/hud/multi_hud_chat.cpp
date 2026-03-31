@@ -59,7 +59,7 @@ void multi_hud_render_chat()
         fade_out = rf::chat_fade_out_timer.time_until() / 750.0f;
     }
 
-    if (g_remote_server_cfg_popup.is_active()) {
+    if (g_remote_server_cfg_popup.is_active() || g_alpine_game_config.hide_chat) {
         return;
     }
 
@@ -220,6 +220,15 @@ CodeInjection process_chat_line_packet_injection{
     },
 };
 
+ConsoleCommand2 hide_chat_cmd{
+    "cl_chat",
+    []() {
+        g_alpine_game_config.hide_chat = !g_alpine_game_config.hide_chat;
+        rf::console::print("Chat display is {}", g_alpine_game_config.hide_chat ? "hidden" : "visible");
+    },
+    "Toggle MP chat display",
+};
+
 ConsoleCommand2 mute_all_players_cmd{
     "mute_all_players",
     []() {
@@ -281,6 +290,7 @@ void multi_hud_chat_apply_patches()
     process_chat_line_packet_injection.install();
     mute_all_players_cmd.register_cmd();
     mute_player_cmd.register_cmd();
+    hide_chat_cmd.register_cmd();
 
     // Do not strip '%' characters from chat messages
     write_mem<u8>(0x004785FD, asm_opcodes::jmp_rel_short);

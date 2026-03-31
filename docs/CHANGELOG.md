@@ -9,9 +9,10 @@ Version 1.3.0 (Bakeapple): Not yet released
   - Headless bot clients with server control
   - Bot profile customization
   - Integrated waypoint grid editor with autogeneration support for custom maps
-  - Waypoint grid files for all default maps included
+  - AWPs (waypoint grid files) for all default maps included
+  - FactionFiles autodownloader API support for AWPs
 - Promote Direct3D 11 renderer to recommended and add several notable improvements
-  - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
+  - Add GPU accelerated realtime per-pixel lighting for meshes
   - Add full mesh shadows for entities, corpses, and items
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
   - Support movers, meshes, and mesh pixel lighting in skyboxes
@@ -67,7 +68,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 - Add new and revised `Select Objects` and `Hide Objects` windows in level editor
 - Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
-- Add `r_vertexlighting` console command and `$Use Vertex Lighting` `MAPNAME_info.tbl` option to restore legacy vertex lighting for meshes
+- Add `$Use Vertex Lighting` `mapname_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
 - In TDM match mode, made self kills reduce team score by 1 (floor of 0)
 - Add `-bot` command line argument to run a client in bot mode
@@ -77,6 +78,20 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add help strings to spectate UI in freelook spectate mode
 - Add dedicated control for entering/exiting spectate mode
 - Add `To Mesh Object` button when selecting clutter in level editor `Select Objects` window
+- Add `r_dynamiclightndotl` console command to configure N-L blending for dynamic lights (Direct3D 11 renderer only)
+- Update MP autodownloader to use new FactionFiles API, and revamp UI
+- Add `autodl_blur_background` console command to toggle the behaviour of the autodownload background
+- Add `cl_chat` and `spectate_cinematic_mode` console commands
+- Add `D3D11 Renderer` and `D3D8/9 Renderer` scope options to `Scope_Gate` event
+- Add `Hold Open` property to movers
+- Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
+- Display client types and counts when an AF v1.3 server is selected in the server list
+- Add `r_pixellightoverbright` console command and `$Pixel Lighting Overbright` `mapname_info.tbl` option for setting pixel light overbright allowance range
+- Make team balancing distribute bots evenly across teams and exclude spectators and browsers
+- Exclude spectators and browsers from bot decommission player count calculations
+- Exclude spectators and browsers when counting players for team selection for a newly joining player
+- Consolidate mesh static lighting settings to `r_meshlighting [0-2]` console command
+- Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -101,6 +116,10 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
 - Add freelook/first person toggle bind in spectator mode
 - Implement enemy and teammate footstep audio for weapons other than pistol
+- Add delayed items server config option, enabling global and per-map delaying of specific item spawns at map start
+- Implement player outlines (D3D11 only)
+- Add `r_outlines`, `r_outlines_spectator`, `r_outlines_team_xray`, `r_outlines_color`, `r_outlines_color_enemy`, `r_outlines_color_team`, `r_outlines_color_team_b`, `r_outlines_color_team_r` for customizing outline behavior and colors
+- Add `allow_outlines` and `allow_outlines_xray` dedicated server configuration options to permit or deny outline usage by clients.
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
@@ -131,6 +150,12 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix rare crash when maintaining freelook spectate through a level change
 - Fix `Set_Variable` event not correctly handling `bool2` for `Clone_Entity`, or `bool2` and `str2` for `AF_Teleport_Player`
 - Fix triangulated and ngon faces on breakable detail brushes not breaking properly in version >= 304 levels
+- Fix vertex lighting data not being properly built for debris static meshes
+- Fix `Max FPS` menu button not immediately applying the new value when set
+- Fix non-legacy translation movers maintaining velocity after stopping
+- Fix crash in CTF when loading a level that has one flag but not both
+- Fix crash in CTF when attempting to capture a flag in a level that has no other flags
+- Fix mirror and security monitor screens not being fully self-illuminated (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
@@ -474,7 +499,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
 - Add `dbg_wh_mpspawns` command to draw multiplayer respawn point world HUD icons (supported in SP and as listen server)
 - Add compatibility table (lightmap clamp floor) for `dm-SpecialForces.rfl`
 - Add action binds for `Radio message menu`, `Taunt menu`, and `Command menu`
-- Add support for `$Chat Menu 1` (1 - 9) to `MAPNAME_info.tbl` (populates map chat menu on that map)
+- Add support for `$Chat Menu 1` (1 - 9) to `mapname_info.tbl` (populates map chat menu on that map)
 - Import settings from `players.cfg` on launch if `alpine_settings.ini` is not found
 - Support TC mods with new settings file approach - `alpine_settings_MODNAME.ini`
 - Prevent MP character from being permanently changed after spawning in a server with `$Force Player Character` configured
@@ -541,7 +566,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
 - Made lava and acid damage result in a self kill in multiplayer rather than a mysterious kill
 - Add radio message audio
 - Allow `Anchor_Marker_Orient` event as skybox eye anchor
-- Add support for `$Crater Texture PPM` to `MAPNAME_info.tbl`
+- Add support for `$Crater Texture PPM` to `mapname_info.tbl`
 - Add options to `af_ui.tbl` to set the Summoner Trailer button to load a specific level in TC mods
 - Add `r_fastanims` console command to toggle fast animations
 - Shift High Monitor Resolution config to MonitorResolutionScale, allowing for greater control

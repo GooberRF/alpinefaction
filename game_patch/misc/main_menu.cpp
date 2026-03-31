@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +28,7 @@
 #include "../input/input.h"
 #include "misc.h"
 #include "alpine_settings.h"
+#include "../multi/network.h"
 
 constexpr int EGG_ANIM_ENTER_TIME = 2000;
 constexpr int EGG_ANIM_LEAVE_TIME = 2000;
@@ -208,26 +210,10 @@ CallHook<void()> main_menu_render_hook{
     },
 };
 
-struct ServerListEntry
-{
-    char name[32];
-    char level_name[32];
-    char mod_name[16];
-    int game_type;
-    rf::NetAddr addr;
-    char current_players;
-    char max_players;
-    int16_t ping;
-    int field_60;
-    char field_64;
-    int flags;
-};
-static_assert(sizeof(ServerListEntry) == 0x6C, "invalid size");
-
 FunHook<int(const int&, const int&)> server_list_cmp_func_hook{
     0x0044A6D0,
     [](const int& index1, const int& index2) {
-        auto* server_list = addr_as_ref<ServerListEntry*>(0x0063F62C);
+        auto* server_list = rf::ui::server_browser_server_list;
         bool has_ping1 = server_list[index1].ping >= 0;
         bool has_ping2 = server_list[index2].ping >= 0;
         if (has_ping1 != has_ping2) {
@@ -392,6 +378,42 @@ CodeInjection multi_join_server_do_frame_patch{
     },
 };
 
+// Server browser render: idle status text branch.
+// When a server is selected and we have AF extra data, show bot and human player counts
+// instead of the default idle text.
+// Injection point is at the start of the idle text branch in the server browser render function.
+// Original code: MOV EAX, [0x0063c064]; PUSH EAX; PUSH 0x63f6e4; ...
+static char s_server_browser_status_buf[96];
+
+CodeInjection server_browser_idle_status_injection{
+    0x0044dc6f,
+    [](auto& regs) {
+        // default: preserve the stock idle text (e.g. "Pinging servers...")
+        static auto& stock_idle_buf = addr_as_ref<char[96]>(0x0063f6e4);
+        std::memcpy(s_server_browser_status_buf, stock_idle_buf, sizeof(s_server_browser_status_buf));
+
+        if (rf::ui::server_browser_display_count == 0)
+            clear_server_browser_extra();
+
+        if (rf::ui::server_browser_selected_index < 0 ||
+            rf::ui::server_browser_selected_index >= rf::ui::server_browser_display_count)
+            return;
+
+        int actual_idx = rf::ui::server_browser_sorted_indices[rf::ui::server_browser_selected_index];
+        const auto& entry = rf::ui::server_browser_server_list[actual_idx];
+        const auto* extra = get_server_browser_extra(entry.addr);
+        if (!extra)
+            return;
+
+        std::snprintf(s_server_browser_status_buf, sizeof(s_server_browser_status_buf),
+            "%d client%s: %d human%s, %d bot%s, %d browser%s",
+            extra->num_total_clients, extra->num_total_clients == 1 ? "" : "s",
+            extra->num_human_players, extra->num_human_players == 1 ? "" : "s",
+            extra->num_bots, extra->num_bots == 1 ? "" : "s",
+            extra->num_browsers, extra->num_browsers == 1 ? "" : "s");
+    },
+};
+
 CodeInjection options_do_frame_patch{
     0x0044F211,
     [](auto& regs) {
@@ -544,4 +566,10 @@ void apply_main_menu_patches()
     game_load_do_frame_patch.install();
     game_save_do_frame_patch.install();
     message_log_do_frame_patch.install();
+
+    // Show bot and human player counts in server browser status bar
+    server_browser_idle_status_injection.install();
+    // Redirect the hardcoded PUSH 0x0063f6e4 at 0x0044dc76 to our own buffer
+    // so we don't corrupt the stock buffer (which overlaps the default mod name at +4)
+    write_mem<void*>(0x0044dc76, s_server_browser_status_buf);
 }

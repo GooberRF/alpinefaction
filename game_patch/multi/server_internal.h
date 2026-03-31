@@ -8,6 +8,7 @@
 #include <vector>
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/string.h"
@@ -375,6 +376,33 @@ struct WeaponStayExemptionConfig
     }
 };
 
+struct DelayedItemsConfig
+{
+    std::unordered_set<std::string> items;
+
+    // =============================================
+
+    bool add(std::string_view name)
+    {
+        std::string name_str{name};
+
+        if (items.count(name_str))
+            return false;
+
+        int idx = rf::item_lookup_type(name_str.c_str());
+        if (idx < 0)
+            return false;
+
+        items.emplace(std::move(name_str));
+        return true;
+    }
+
+    bool contains(std::string_view name) const
+    {
+        return items.count(std::string{name}) > 0;
+    }
+};
+
 struct AlpineRestrictConfig
 {
     bool advertise_alpine = true;
@@ -580,6 +608,7 @@ struct AlpineServerConfigRules
     WeaponStayExemptionConfig weapon_stay_exemptions;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
+    DelayedItemsConfig delayed_items;
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
     GunGameConfig gungame;
@@ -714,6 +743,8 @@ struct AlpineServerConfig
     bool allow_disable_muzzle_flash = true;
     bool allow_unlimited_fps = false;
     bool allow_footsteps = true;
+    bool allow_outlines = true;
+    bool allow_outlines_xray = true;
     bool use_sp_damage_calculation = false;
     bool exclude_bots_from_player_count = false;
     AlpineRestrictConfig alpine_restricted_config;
