@@ -1325,21 +1325,18 @@ void af_send_server_info_packet(rf::Player* player)
     af_server_info_packet pkt{};
     build_af_server_info_packet(pkt);
 
-    xlog::warn("af_server_info SENDING to player '{}': af_flags=0x{:08X}", player->name, pkt.af_flags);
+    xlog::trace("af_server_info SENDING to player '{}': af_flags=0x{:08X}", player->name, pkt.af_flags);
 
     std::byte buf[sizeof(pkt)];
     std::memcpy(buf, &pkt, sizeof(pkt));
     af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
 }
 
-// Apply af_server_info_packet flags to the local server info (for listen server host)
-static void apply_server_info_packet_locally(const af_server_info_packet& pkt)
+// Decode af_flags and semi_auto_cooldown from a server info packet into the
+// AlpineFactionServerInfo struct. Shared between the client packet handler
+// and the listen-server local application path.
+static void decode_af_server_info_flags(const af_server_info_packet& pkt, AlpineFactionServerInfo& server_info)
 {
-    auto& opt = get_af_server_info_mutable();
-    if (!opt.has_value())
-        return;
-
-    auto& server_info = opt.value();
     server_info.saving_enabled = (pkt.af_flags & af_server_info_flags::SIF_POSITION_SAVING) != 0;
     server_info.allow_fb_mesh = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FULLBRIGHT_MESHES) != 0;
     server_info.allow_lmap = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_LIGHTMAPS_ONLY) != 0;
@@ -1351,9 +1348,21 @@ static void apply_server_info_packet_locally(const af_server_info_packet& pkt)
     server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
     server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
     server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
+    server_info.geo_chunk_physics = (pkt.af_flags & af_server_info_flags::SIF_GEO_CHUNK_PHYSICS) != 0;
+    server_info.allow_footsteps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FOOTSTEPS) != 0;
     server_info.allow_outlines = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES) != 0;
     server_info.allow_outlines_xray = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY) != 0;
     server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
+}
+
+// Apply af_server_info_packet flags to the local server info (for listen server host)
+static void apply_server_info_packet_locally(const af_server_info_packet& pkt)
+{
+    auto& opt = get_af_server_info_mutable();
+    if (!opt.has_value())
+        return;
+
+    decode_af_server_info_flags(pkt, opt.value());
 }
 
 // todo: on join, level init, relevant svar change, sv_loadconfig
@@ -1383,7 +1392,7 @@ void af_send_server_info_packet_to_all()
 
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&)
 {
-    xlog::warn("af_server_info_packet RECEIVED: is_multi={}, is_server={}, len={}", rf::is_multi, rf::is_server, len);
+    xlog::trace("af_server_info_packet RECEIVED: is_multi={}, is_server={}, len={}", rf::is_multi, rf::is_server, len);
 
     // Receive: client <- server
     if (!rf::is_multi || rf::is_server)
@@ -1408,7 +1417,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
         return; // server info is missing, how did you get this packet?
     }
 
-    xlog::warn("af_server_info: processing af_flags=0x{:08X}", pkt.af_flags);
+    xlog::trace("af_server_info: processing af_flags=0x{:08X}", pkt.af_flags);
 
     auto& server_info = get_af_server_info_mutable().value();
 
@@ -1465,27 +1474,11 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
         rf::netgame.flags &= ~rf::NetGameFlags::NG_FLAG_BALANCE_TEAMS;
 
     // af_flags
-    server_info.saving_enabled = (pkt.af_flags & af_server_info_flags::SIF_POSITION_SAVING) != 0;
-    server_info.allow_fb_mesh = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FULLBRIGHT_MESHES) != 0;
-    server_info.allow_lmap = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_LIGHTMAPS_ONLY) != 0;
-    server_info.allow_no_ss = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_SCREENSHAKE) != 0;
-    server_info.no_player_collide = (pkt.af_flags & af_server_info_flags::SIF_NO_PLAYER_COLLIDE) != 0;
-    server_info.allow_no_mf = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT) != 0;
-    server_info.click_limit = (pkt.af_flags & af_server_info_flags::SIF_CLICK_LIMITER) != 0;
-    server_info.unlimited_fps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS) != 0;
-    server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
-    server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
-    server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
-    server_info.geo_chunk_physics = (pkt.af_flags & af_server_info_flags::SIF_GEO_CHUNK_PHYSICS) != 0;
-    server_info.allow_footsteps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FOOTSTEPS) != 0;
-    server_info.allow_outlines = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES) != 0;
-    server_info.allow_outlines_xray = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY) != 0;
+    decode_af_server_info_flags(pkt, server_info);
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();
     }
-
-    server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
 
     // Update footstep activation based on new server permissions
     evaluate_footsteps();

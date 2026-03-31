@@ -178,7 +178,7 @@ namespace df::gr::d3d11
             if (!entity->vmesh || entity->vmesh->type != rf::MESH_TYPE_CHARACTER) {
                 continue;
             }
-            auto* ci = static_cast<const rf::CharacterInstance*>(entity->vmesh->instance);
+            auto* ci = static_cast<rf::CharacterInstance*>(entity->vmesh->instance);
             if (!ci) {
                 continue;
             }
@@ -361,7 +361,7 @@ namespace df::gr::d3d11
                 // For portal-culled xray characters RF never called the bone transform
                 // computation function, so bone_transforms_final is stale (frozen pose).
                 // Recompute it here before rendering the outline.
-                rf::ci_update_bone_transforms(const_cast<rf::CharacterInstance*>(outline.ci));
+                rf::ci_update_bone_transforms(outline.ci);
                 render_outline(outline, mesh_renderer);
             }
             queue_.clear();

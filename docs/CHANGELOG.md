@@ -166,8 +166,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Sync animation state for crouched players in first person spectate view
 - Fix Alt+Enter crash in Direct3D 11 renderer
 - Fix premature idle transition in first person weapon running animations
-- Implement player outlines (D3D11 only)
-
 
 Version 1.2.2 (Willow): Released Jan-04-2026
 --------------------------------

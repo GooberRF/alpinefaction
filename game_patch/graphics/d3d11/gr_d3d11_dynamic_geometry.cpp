@@ -31,11 +31,6 @@ namespace df::gr::d3d11
         flush_impl(true);
     }
 
-    void DynamicGeometryRenderer::flush_without_pre_callback()
-    {
-        flush_impl(false);
-    }
-
     void DynamicGeometryRenderer::flush_impl(bool run_pre_callback)
     {
         auto [start_vertex, num_vertex] = vertex_ring_buffer_.submit();
@@ -45,8 +40,11 @@ namespace df::gr::d3d11
         // Invoke pre-flush callback before drawing batched content.
         // Used to flush outlines so they render behind transparent effects
         // (smoke, particles) that were batched in the dyn_geo renderer.
-        if (run_pre_callback && pre_flush_callback_) {
+        // Guard against reentrance in case the callback indirectly triggers a flush.
+        if (run_pre_callback && pre_flush_callback_ && !in_pre_flush_callback_) {
+            in_pre_flush_callback_ = true;
             pre_flush_callback_();
+            in_pre_flush_callback_ = false;
         }
         auto [start_index, num_index] = index_ring_buffer_.submit();
 
