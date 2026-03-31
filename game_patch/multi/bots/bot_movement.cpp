@@ -5,6 +5,7 @@
 #include "bot_navigation_routes.h"
 #include "../../main/main.h"
 #include "../../rf/collide.h"
+#include "../../rf/entity.h"
 #include "../../rf/level.h"
 #include <algorithm>
 #include <cstdint>
@@ -813,9 +814,11 @@ void bot_process_movement(
         && static_cast<WaypointType>(active_to_type_raw) == WaypointType::jump_pad;
     const bool active_link_involves_ladder =
         (has_active_from_type
-            && static_cast<WaypointType>(active_from_type_raw) == WaypointType::ladder)
+            && (static_cast<WaypointType>(active_from_type_raw) == WaypointType::ladder
+                || static_cast<WaypointType>(active_from_type_raw) == WaypointType::water))
         || (has_active_to_type
-            && static_cast<WaypointType>(active_to_type_raw) == WaypointType::ladder);
+            && (static_cast<WaypointType>(active_to_type_raw) == WaypointType::ladder
+                || static_cast<WaypointType>(active_to_type_raw) == WaypointType::water));
     const bool active_link_route_traversable =
         has_active_link
         && bot_nav_is_link_traversable_for_route(active_from_waypoint, active_to_waypoint);
@@ -855,11 +858,12 @@ void bot_process_movement(
     }
     rf::Vector3 climb_region_probe = local_entity.pos;
     const bool in_climb_region = rf::level_point_in_climb_region(&climb_region_probe) != nullptr;
+    const bool in_water = rf::entity_is_swimming(const_cast<rf::Entity*>(&local_entity));
     const bool ladder_traversal_active =
         g_client_bot_state.has_waypoint_target
         && has_active_link
         && active_link_involves_ladder
-        && in_climb_region;
+        && (in_climb_region || in_water);
     float ladder_move_y = 0.0f;
     if (ladder_traversal_active) {
         if (to_target.y > kLadderClimbVerticalThreshold) {

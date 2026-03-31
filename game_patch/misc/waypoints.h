@@ -35,6 +35,9 @@ constexpr float kWaypointGenerateStandingHeadroom = 2.0f;
 constexpr int kWaypointGenerateEdgeProbeCount = 8;
 constexpr int kWaypointGenerateEdgeUnsupportedThreshold = 3;
 constexpr float kWaypointGenerateLadderEdgeClearance = 0.25f;
+constexpr float kWaypointGenerateMinSwimmableDepth = 0.6f;
+constexpr float kWaypointGenerateWaterEdgeClearance = 0.5f;
+constexpr float kWaypointGenerateWaterSeedProximity = 5.0f;
 constexpr float kWaypointGenerateLinkPassThroughRadius = 1.0f;
 constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
 constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
@@ -66,6 +69,7 @@ enum class WaypointType : int
     tele_entrance = 11,
     tele_exit = 12,
     conveyer = 13,
+    water = 14,
 };
 
 enum class WaypointDroppedSubtype : int
