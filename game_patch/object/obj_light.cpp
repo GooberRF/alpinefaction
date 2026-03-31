@@ -243,6 +243,27 @@ ConsoleCommand2 pixel_light_overbright_cmd{
     "r_pixellightoverbright <0.0-3.0>",
 };
 
+ConsoleCommand2 ignore_tbl_vertex_lighting_cmd{
+    "cl_ignore_tbl_vertex_lighting",
+    []() {
+        g_alpine_game_config.ignore_tbl_vertex_lighting = !g_alpine_game_config.ignore_tbl_vertex_lighting;
+        df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+        recalc_mesh_static_lighting();
+        rf::console::printf("Ignore TBL vertex lighting override: %s", g_alpine_game_config.ignore_tbl_vertex_lighting ? "enabled" : "disabled");
+    },
+    "Toggle ignoring per-map vertex lighting overrides from mapname_info.tbl.",
+};
+
+ConsoleCommand2 ignore_tbl_pixel_light_overbright_cmd{
+    "cl_ignore_tbl_pixel_light_overbright",
+    []() {
+        g_alpine_game_config.ignore_tbl_pixel_light_overbright = !g_alpine_game_config.ignore_tbl_pixel_light_overbright;
+        df::gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+        rf::console::printf("Ignore TBL pixel light overbright override: %s", g_alpine_game_config.ignore_tbl_pixel_light_overbright ? "enabled" : "disabled");
+    },
+    "Toggle ignoring per-map pixel light overbright overrides from mapname_info.tbl.",
+};
+
 CallHook<void(rf::Entity&)> entity_update_muzzle_flash_light_hook{
     0x0041E814,
     [](rf::Entity& ep) {
@@ -346,6 +367,8 @@ void obj_light_apply_patch()
     mesh_lighting_cmd.register_cmd();
     dynamic_light_ndotl_cmd.register_cmd();
     pixel_light_overbright_cmd.register_cmd();
+    ignore_tbl_vertex_lighting_cmd.register_cmd();
+    ignore_tbl_pixel_light_overbright_cmd.register_cmd();
     muzzle_flash_cmd.register_cmd();
     fullbright_models_cmd.register_cmd();
 }
