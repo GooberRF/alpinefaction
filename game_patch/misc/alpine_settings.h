@@ -192,6 +192,7 @@ struct AlpineGameSettings
     bool gamepad_weapon_rumble_enabled = true;
     bool gamepad_environmental_rumble_enabled = true;
     float gamepad_trigger_rumble_intensity = 1.0f;
+    int gamepad_rumble_vibration_filter = 1; // 0=Off, 1=Auto (when gyro is active), 2=On
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool scoreboard_split_simple = true;

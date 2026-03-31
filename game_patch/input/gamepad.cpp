@@ -1415,6 +1415,18 @@ ConsoleCommand2 joy_rumble_environmental_cmd{
     "joy_rumble_environmental [0|1]",
 };
 
+ConsoleCommand2 joy_rumble_vibration_filter_cmd{
+    "joy_rumble_vibration_filter",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_rumble_vibration_filter = std::clamp(val.value(), 0, 2);
+        auto mode_name = g_alpine_game_config.gamepad_rumble_vibration_filter == 0 ? "Off" : 
+                        g_alpine_game_config.gamepad_rumble_vibration_filter == 1 ? "Auto (filter when gyro active)" : "On (always filter)";
+        rf::console::print("Gamepad rumble vibration filter: {} ({})", g_alpine_game_config.gamepad_rumble_vibration_filter, mode_name);
+    },
+    "Set vibration filter mode 0=Off, 1=Auto (default, only in gyro aim), 2=On",
+    "joy_rumble_vibration_filter [0|1|2]",
+};
+
 ConsoleCommand2 gyro_camera_cmd{
     "gyro_camera",
     [](std::optional<int> val) {
@@ -1931,9 +1943,10 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
         return;
     low_freq = static_cast<uint16_t>(low_freq * g_alpine_game_config.gamepad_rumble_intensity);
     high_freq = static_cast<uint16_t>(high_freq * g_alpine_game_config.gamepad_rumble_intensity);
-    // Controller Vibration filter: mute low-freq motor when gyro aiming is active to
-    // prevent rumble vibration from being picked up as unwanted camera input.
-    if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled)
+    // Controller Vibration filter: mute low-freq motor based on filter mode
+    // 0=Off (no filter), 1=Auto (filter when gyro active), 2=On (always filter)
+    int filter_mode = g_alpine_game_config.gamepad_rumble_vibration_filter;
+    if (filter_mode == 2 || (filter_mode == 1 && g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled))
         low_freq = 0;
     SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
 }
