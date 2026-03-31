@@ -102,34 +102,26 @@ namespace df::gr::d3d11
             return;
         }
 
-        // Check client setting
-        if (!g_alpine_game_config.try_outlines) {
-            // Even if outlines are off, spectator-only mode might be active
+        bool is_spectating = multi_spectate_is_spectating();
+
+        if (is_spectating) {
+            // Spectator outlines: client toggle only, no server permission needed
             if (!g_alpine_game_config.outlines_spectator_only) {
                 return;
             }
         }
-
-        // Spectator-only mode check
-        bool is_spectating = multi_spectate_is_spectating();
-        if (g_alpine_game_config.outlines_spectator_only && !is_spectating) {
+        else {
+            // Spawned player outlines: requires client toggle AND server permission
             if (!g_alpine_game_config.try_outlines) {
                 return;
             }
-        }
-
-        // Check server permissions (spectators always allowed)
-        if (!is_spectating) {
             auto& server_info = get_af_server_info();
-            if (server_info.has_value() && !server_info->allow_outlines) {
-                return;
-            }
-            if (!server_info.has_value()) {
+            if (!server_info.has_value() || !server_info->allow_outlines) {
                 return;
             }
         }
 
-        // Determine xray permission
+        // Determine xray permission (spectators always allowed)
         bool xray_allowed = true;
         if (!is_spectating) {
             auto& server_info = get_af_server_info();

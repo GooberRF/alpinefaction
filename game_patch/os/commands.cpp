@@ -491,24 +491,20 @@ ConsoleCommand2 r_outlines_cmd{
         warn_if_not_d3d11();
         alpine_core_config_save();
     },
-    "Toggle player outline rendering (Direct3D 11 renderer only).",
+    "Toggle player outlines during gameplay (Direct3D 11 renderer only).",
     "r_outlines",
 };
 
 ConsoleCommand2 r_outlines_spectator_cmd{
     "r_outlines_spectator",
-    [](std::optional<bool> value) {
-        if (!value) {
-            rf::console::print("r_outlines_spectator is {}", g_alpine_game_config.outlines_spectator_only ? "enabled" : "disabled");
-            return;
-        }
-        g_alpine_game_config.outlines_spectator_only = *value;
-        rf::console::print("Spectator-only outlines {}.", *value ? "enabled" : "disabled");
+    []() {
+        g_alpine_game_config.outlines_spectator_only = !g_alpine_game_config.outlines_spectator_only;
+        rf::console::print("Spectator outlines {}.", g_alpine_game_config.outlines_spectator_only ? "enabled" : "disabled");
         warn_if_not_d3d11();
         alpine_core_config_save();
     },
-    "Toggle player outlines in spectator mode only (Direct3D 11 renderer only).",
-    "r_outlines_spectator <true|false>",
+    "Toggle player outlines while spectating (Direct3D 11 renderer only).",
+    "r_outlines_spectator",
 };
 
 ConsoleCommand2 r_outlines_team_xray_cmd{
