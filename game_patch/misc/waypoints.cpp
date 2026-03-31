@@ -8713,6 +8713,7 @@ static void awpgen_do_frame()
         }
 
         g_awpgen.state = AwpgenState::idle;
+        g_awpgen_active = false;
         rf::gameseq_set_state(rf::GS_QUITING, false);
         return;
     }

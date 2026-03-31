@@ -218,13 +218,21 @@ void handle_levelm_param()
     start_levelm_load_sequence(level_filename);
 }
 
-void handle_awpgen_param()
+// Returns true if -awpgen was handled (caller should skip -levelm).
+bool handle_awpgen_param()
 {
     if (!get_awpgen_cmd_line_param().found()) {
-        return;
+        return false;
     }
 
-    std::string level_filename = get_awpgen_cmd_line_param().get_arg();
+    const char* arg = get_awpgen_cmd_line_param().get_arg();
+    if (!arg || arg[0] == '\0') {
+        xlog::error("-awpgen: missing level filename, quitting");
+        rf::gameseq_set_state(rf::GS_QUITING, false);
+        return true;
+    }
+
+    std::string level_filename = arg;
 
     // Normalize .rfl extension
     if (!string_iends_with(level_filename, ".rfl")) {
@@ -240,6 +248,7 @@ void handle_awpgen_param()
 
     waypoints_start_awpgen(level_filename);
     start_levelm_load_sequence(level_filename);
+    return true;
 }
 
 FunHook<void()> multi_limbo_init{
@@ -1089,6 +1098,7 @@ void multi_after_full_game_init()
         return; // bot launch validation failed, process is quitting
     }
     handle_url_param();
-    handle_awpgen_param();
-    handle_levelm_param();
+    if (!handle_awpgen_param()) {
+        handle_levelm_param();
+    }
 }
