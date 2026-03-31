@@ -2341,6 +2341,8 @@ int find_special_waypoint_in_radius(const rf::Vector3& pos)
         : closest_jump_pad;
 }
 
+bool get_mover_lift_path_delta(const rf::Mover& mover, rf::Vector3& out_delta);
+
 int find_lift_uid_below_waypoint(const rf::Vector3& pos)
 {
     constexpr float kLiftTraceDistance = 4.0f;
@@ -2366,6 +2368,15 @@ int find_lift_uid_below_waypoint(const rf::Vector3& pos)
     if (!mover) {
         return -1;
     }
+
+    // Only treat as a lift if the mover actually travels (has >= 2 keyframes with
+    // a meaningful path delta). A single-keyframe mover with no trigger is just
+    // static geometry — generating a lift_entrance on it creates a dead end.
+    rf::Vector3 delta{};
+    if (!get_mover_lift_path_delta(*mover, delta)) {
+        return -1;
+    }
+
     return mover->uid;
 }
 
@@ -4258,7 +4269,8 @@ int seed_water_room_waypoints(
 
     std::stable_sort(candidates.begin(), candidates.end(),
         [](const Candidate& a, const Candidate& b) {
-            if (a.y != b.y) return a.y > b.y; // highest Y first (near surface)
+            constexpr float epsilon = 0.001f;
+            if (std::abs(a.y - b.y) > epsilon) return a.y > b.y; // highest Y first (near surface)
             return a.horiz_dist_sq < b.horiz_dist_sq; // then closest to XZ center
         });
 
@@ -4671,12 +4683,6 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
 
             rf::Vector3 candidate_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
 
-            // Skip generating ground waypoints underwater — water waypoints
-            // are seeded separately after ground generation.
-            if (find_water_room_at_point(floor_pos, active_water_rooms)) {
-                continue;
-            }
-
             if (!waypoint_link_within_incline(source_pos, candidate_pos, kWaypointGenerateMaxInclineDeg)) {
 
                 continue;
@@ -4774,6 +4780,11 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
             int generated_subtype = 0;
             int generated_movement_subtype = static_cast<int>(WaypointDroppedSubtype::normal);
             int generated_identifier = -1;
+            // Skip generating ground waypoints underwater — water waypoints
+            // are seeded separately after ground generation.
+            if (find_water_room_at_point(candidate_pos, active_water_rooms)) {
+                continue;
+            }
             rf::Vector3 candidate_climb_query = candidate_pos;
             if (rf::level_point_in_climb_region(&candidate_climb_query)) {
                 continue;
@@ -8690,7 +8701,7 @@ static void awpgen_do_frame()
     if (g_awpgen.state == AwpgenState::waiting_for_level_load) {
         if (rf::level.flags & rf::LEVEL_LOADED) {
             g_awpgen.frames_since_level_loaded++;
-            if (g_awpgen.frames_since_level_loaded >= 3) {
+            if (g_awpgen.frames_since_level_loaded >= 10) {
                 g_awpgen.state = AwpgenState::ready_to_generate;
             }
         }

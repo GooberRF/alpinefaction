@@ -246,6 +246,10 @@ bool handle_awpgen_param()
         return true;
     }
 
+    // Disable rendering and sound for batch generation
+    g_alpine_game_config.rendering_enabled = false;
+    rf::sound_enabled = false;
+
     waypoints_start_awpgen(level_filename);
     start_levelm_load_sequence(level_filename);
     return true;
