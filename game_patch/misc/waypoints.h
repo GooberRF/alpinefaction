@@ -40,7 +40,7 @@ constexpr float kWaypointGenerateWaterEdgeClearance = 0.5f;
 constexpr float kWaypointGenerateWaterSeedProximity = 5.0f;
 constexpr float kWaypointGenerateLinkPassThroughRadius = 1.0f;
 constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
-constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
+constexpr int kWaypointGenerateMaxCreatedWaypoints = 80000;
 
 // Jump pad trajectory simulation constants.
 constexpr float kJumpPadTrajectoryTimeStep = 0.05f;

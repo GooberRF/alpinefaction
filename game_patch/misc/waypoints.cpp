@@ -6,12 +6,16 @@
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
+#include "../multi/network.h"
 #include "../os/console.h"
+#include "misc.h"
 #include <xlog/xlog.h>
 #include "../rf/collide.h"
 #include "../rf/entity.h"
 #include "../rf/event.h"
 #include "../rf/file/file.h"
+#include "../rf/gameseq.h"
+#include "../rf/misc.h"
 #include "../rf/geometry.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
@@ -4220,22 +4224,17 @@ int seed_water_room_waypoints(
     const float center_y = (water_min_y + water_max_y) * 0.5f;
     const float center_z = (water_min_z + water_max_z) * 0.5f;
 
-    // Verify the center point is in valid geometry and underwater.
-    const rf::Vector3 center_pos{center_x, center_y, center_z};
-    rf::Vector3 center_room_check = center_pos;
-    if (rf::find_room(rf::level.geometry, &center_room_check) == nullptr
-        || !find_water_room_at_point(center_pos, all_water_rooms)) {
-        return 0;
-    }
-
     const int count_x = ladder_axis_sample_count(extent_x, step);
     const int count_y = ladder_axis_sample_count(extent_y, step);
     const int count_z = ladder_axis_sample_count(extent_z, step);
 
-    // Generate candidates sorted by distance from center.
+    // Generate candidates sorted top-down (highest Y first, then by horizontal
+    // distance from center). This ensures surface-level water waypoints are placed
+    // first so they can link to ground waypoints at the water's edge.
     struct Candidate {
         rf::Vector3 pos;
-        float dist_sq;
+        float y;
+        float horiz_dist_sq;
     };
     std::vector<Candidate> candidates;
     candidates.reserve(count_x * count_y * count_z);
@@ -4248,18 +4247,19 @@ int seed_water_room_waypoints(
                 const float z = center_z + ladder_axis_sample_coordinate(extent_z, iz, count_z);
                 const rf::Vector3 pos{x, y, z};
                 const float dx = x - center_x;
-                const float dy = y - center_y;
                 const float dz = z - center_z;
-                candidates.push_back({pos, dx * dx + dy * dy + dz * dz});
+                candidates.push_back({pos, y, dx * dx + dz * dz});
             }
         }
     }
 
     std::stable_sort(candidates.begin(), candidates.end(),
-        [](const Candidate& a, const Candidate& b) { return a.dist_sq < b.dist_sq; });
+        [](const Candidate& a, const Candidate& b) {
+            if (a.y != b.y) return a.y > b.y; // highest Y first (near surface)
+            return a.horiz_dist_sq < b.horiz_dist_sq; // then closest to XZ center
+        });
 
-    // Place seed waypoints, starting from the center and expanding outward.
-    std::deque<int> frontier;
+    // Place seed waypoints, starting from near the surface and expanding downward.
     int created_waypoints = 0;
 
     for (const auto& candidate : candidates) {
@@ -4272,27 +4272,30 @@ int seed_water_room_waypoints(
             continue;
         }
 
-        // Verify point is inside the level geometry (room bbox can extend beyond actual room).
-        rf::Vector3 room_check = candidate.pos;
-        if (rf::find_room(rf::level.geometry, &room_check) == nullptr) {
-            continue;
+        // Verify point is inside the level geometry.
+        {
+            rf::Vector3 room_check = candidate.pos;
+            if (rf::find_room(rf::level.geometry, &room_check) == nullptr) {
+                continue;
+            }
         }
 
-        // Must not collide with geometry (e.g., pillars, structures in the water).
-        if (!can_link_waypoints(
-                rf::Vector3{center_x, center_y, center_z}, candidate.pos)
-            && find_nearest_waypoint(candidate.pos, step, 0) <= 0) {
-            // Can't trace from center — try tracing from any nearby water waypoint.
-            bool reachable = false;
-            for (int f : frontier) {
-                if (f > 0 && f < static_cast<int>(g_waypoints.size())
-                    && distance_sq(g_waypoints[f].pos, candidate.pos) <= water_link_radius * water_link_radius
-                    && can_link_waypoints(g_waypoints[f].pos, candidate.pos)) {
-                    reachable = true;
+        // Reject points inside detail brush bounding boxes
+        {
+            bool inside_detail = false;
+            for (int ri = 0; ri < rf::level.geometry->all_rooms.size(); ++ri) {
+                auto* dr = rf::level.geometry->all_rooms[ri];
+                if (!dr || !dr->is_detail) {
+                    continue;
+                }
+                if (candidate.pos.x >= dr->bbox_min.x && candidate.pos.x <= dr->bbox_max.x
+                    && candidate.pos.y >= dr->bbox_min.y && candidate.pos.y <= dr->bbox_max.y
+                    && candidate.pos.z >= dr->bbox_min.z && candidate.pos.z <= dr->bbox_max.z) {
+                    inside_detail = true;
                     break;
                 }
             }
-            if (!reachable) {
+            if (inside_detail) {
                 continue;
             }
         }
@@ -4314,12 +4317,42 @@ int seed_water_room_waypoints(
             true,
             static_cast<int>(WaypointDroppedSubtype::normal));
         if (wp_index > 0) {
-            frontier.push_back(wp_index);
             ++created_waypoints;
         }
     }
 
     return created_waypoints;
+}
+
+// Check if a ground waypoint could walk into the given water room.
+// A waypoint is considered walkable-into-water if it is horizontally within
+// or near the water room's XZ extent and vertically above or near the water surface.
+bool water_room_is_walkable_from_ground(const WaterRoomInfo& info, float proximity)
+{
+    const auto* room = info.room;
+    if (!room) {
+        return false;
+    }
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid || node.type == WaypointType::water) {
+            continue;
+        }
+        // Must be horizontally near the water room
+        if (node.pos.x < room->bbox_min.x - proximity
+            || node.pos.x > room->bbox_max.x + proximity
+            || node.pos.z < room->bbox_min.z - proximity
+            || node.pos.z > room->bbox_max.z + proximity) {
+            continue;
+        }
+        // Must be above or near the water surface (could walk/fall in)
+        if (node.pos.y < room->bbox_min.y - proximity
+            || node.pos.y > info.surface_y + proximity) {
+            continue;
+        }
+        return true;
+    }
+    return false;
 }
 
 int seed_water_waypoints_for_autogen(int max_new_waypoints)
@@ -4340,8 +4373,8 @@ int seed_water_waypoints_for_autogen(int max_new_waypoints)
             break;
         }
 
-        // Only generate water waypoints for rooms that have nearby navigable waypoints.
-        if (!water_room_has_nearby_waypoint(info, kWaypointGenerateWaterSeedProximity)) {
+        // Only generate water waypoints for rooms reachable from ground waypoints.
+        if (!water_room_is_walkable_from_ground(info, kWaypointGenerateWaterSeedProximity)) {
             continue;
         }
 
@@ -4634,6 +4667,13 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
             }
 
             rf::Vector3 candidate_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+
+            // Skip generating ground waypoints underwater — water waypoints
+            // are seeded separately after ground generation.
+            if (find_water_room_at_point(floor_pos, active_water_rooms)) {
+                continue;
+            }
+
             if (!waypoint_link_within_incline(source_pos, candidate_pos, kWaypointGenerateMaxInclineDeg)) {
 
                 continue;
@@ -4735,11 +4775,6 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
             if (rf::level_point_in_climb_region(&candidate_climb_query)) {
                 continue;
             }
-            // Skip generating ground waypoints underwater — water waypoints
-            // are seeded separately after ground generation.
-            if (find_water_room_at_point(candidate_pos, active_water_rooms)) {
-                continue;
-            }
             if (upward_clearance < kWaypointGenerateStandingHeadroom) {
                 generated_movement_subtype = static_cast<int>(WaypointDroppedSubtype::crouch_needed);
             }
@@ -4784,8 +4819,8 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
             kWaypointGenerateMaxCreatedWaypoints - created_waypoints);
     }
 
-    // Seed water waypoints from ground waypoints near water surfaces.
-    // Must run after ground generation so we have ground waypoints to seed from.
+    // Seed water waypoints for water rooms reachable from ground waypoints.
+    // Must run after ground generation so we have ground waypoints to check against.
     if (created_waypoints < kWaypointGenerateMaxCreatedWaypoints && !active_water_rooms.empty()) {
         created_waypoints += seed_water_waypoints_for_autogen(
             kWaypointGenerateMaxCreatedWaypoints - created_waypoints);
@@ -5220,6 +5255,13 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
                             continue;
                         }
 
+                        const bool ladder_pair =
+                            node_a.type == WaypointType::ladder && node_b.type == WaypointType::ladder;
+                        const bool water_pair =
+                            node_a.type == WaypointType::water && node_b.type == WaypointType::water;
+                        const bool water_transition =
+                            (node_a.type == WaypointType::water) != (node_b.type == WaypointType::water);
+
                         const auto through_opt =
                             find_waypoint_intersecting_link_segment(i, j, cell_map, kWaypointLinkRadius);
                         if (through_opt) {
@@ -5237,7 +5279,8 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
                                 }
                             };
 
-                            if (waypoint_link_within_incline(node_a.pos, node_b.pos, kWaypointGenerateMaxInclineDeg)) {
+                            if (ladder_pair || water_pair || water_transition
+                                || waypoint_link_within_incline(node_a.pos, node_b.pos, kWaypointGenerateMaxInclineDeg)) {
                                 link_split(i, j, stats.bidirectional_links);
                                 link_split(j, i, stats.bidirectional_links);
                             }
@@ -5250,12 +5293,6 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
                             continue;
                         }
 
-                        const bool ladder_pair =
-                            node_a.type == WaypointType::ladder && node_b.type == WaypointType::ladder;
-                        const bool water_pair =
-                            node_a.type == WaypointType::water && node_b.type == WaypointType::water;
-                        const bool water_transition =
-                            (node_a.type == WaypointType::water) != (node_b.type == WaypointType::water);
                         if (ladder_pair || water_pair || water_transition) {
                             if (link_waypoint_if_clear_no_replace(i, j)) {
                                 ++stats.bidirectional_links;
@@ -6578,8 +6615,15 @@ int generate_ledge_drop_links()
             rf::Vector3 landing_pos{};
 
             if (trace_ground_below_point(edge_probe, kLedgeDropMaxHeight, &landing_floor)) {
-                landing_pos = landing_floor
-                    + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+                // Check if the landing ground is underwater
+                if (const auto* water_info = find_water_room_at_point(landing_floor, cached_water_rooms)) {
+                    landing_pos = rf::Vector3{edge_probe.x, water_info->surface_y, edge_probe.z};
+                    landing_is_water = true;
+                }
+                else {
+                    landing_pos = landing_floor
+                        + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+                }
             }
             else {
                 // No floor found — check if there's a water surface below.
@@ -8590,6 +8634,188 @@ ConsoleCommand2 waypoint_delete_cmd{
     true,
 };
 
+// --- Bulk AWP generation state machine ---
+
+enum class BulkAwpState
+{
+    idle,
+    waiting_for_level_load,
+    ready_to_generate,
+    done,
+};
+
+struct BulkAwpContext
+{
+    BulkAwpState state = BulkAwpState::idle;
+    std::vector<std::string> rfl_filenames;
+    size_t current_index = 0;
+    int frames_since_level_loaded = 0;
+
+    void reset()
+    {
+        state = BulkAwpState::idle;
+        rfl_filenames.clear();
+        current_index = 0;
+        frames_since_level_loaded = 0;
+    }
+};
+
+static BulkAwpContext g_bulk_awp;
+
+static void bulk_awp_load_current_level()
+{
+    const auto& filename = g_bulk_awp.rfl_filenames[g_bulk_awp.current_index];
+    rf::console::print("Bulk AWP: loading level {}/{}: {}",
+        g_bulk_awp.current_index + 1, g_bulk_awp.rfl_filenames.size(), filename);
+
+    g_bulk_awp.state = BulkAwpState::waiting_for_level_load;
+    g_bulk_awp.frames_since_level_loaded = 0;
+
+    start_levelm_load_sequence(filename);
+    rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
+}
+
+static void bulk_awp_do_frame()
+{
+    if (g_bulk_awp.state == BulkAwpState::idle) {
+        return;
+    }
+
+    if (g_bulk_awp.state == BulkAwpState::waiting_for_level_load) {
+        if (rf::level.flags & rf::LEVEL_LOADED) {
+            // Wait a couple of frames after level load for objects to fully initialize
+            g_bulk_awp.frames_since_level_loaded++;
+            if (g_bulk_awp.frames_since_level_loaded >= 3) {
+                g_bulk_awp.state = BulkAwpState::ready_to_generate;
+            }
+        }
+        return;
+    }
+
+    if (g_bulk_awp.state == BulkAwpState::ready_to_generate) {
+        const auto& filename = g_bulk_awp.rfl_filenames[g_bulk_awp.current_index];
+        rf::console::print("Bulk AWP: generating waypoints for {}", filename);
+
+        // Generate waypoints (same as waypoints_generate command)
+        reset_waypoints_to_default_grid();
+
+        const auto seed_indices = collect_generation_seed_waypoint_indices();
+        if (seed_indices.empty()) {
+            rf::console::print("Bulk AWP: no seed waypoints found for {}, skipping", filename);
+        }
+        else {
+            const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
+            link_generated_waypoint_grid();
+            auto_link_special_waypoints_post_generation();
+            link_jump_pads_to_trajectory_destinations();
+            generate_ledge_drop_links();
+            generate_explosion_targets_for_autogen();
+            generate_shatter_targets_for_autogen();
+
+            rf::console::print("Bulk AWP: generated {} waypoints from {} seeds for {}",
+                generated_count, static_cast<int>(seed_indices.size()), filename);
+
+            // Save waypoints (same as waypoints_save command)
+            if (save_waypoints()) {
+                rf::console::print("Bulk AWP: saved waypoints for {}", filename);
+            }
+            else {
+                rf::console::print("Bulk AWP: failed to save waypoints for {}", filename);
+            }
+        }
+
+        // Advance to next level or finish
+        g_bulk_awp.current_index++;
+        if (g_bulk_awp.current_index < g_bulk_awp.rfl_filenames.size()) {
+            bulk_awp_load_current_level();
+        }
+        else {
+            rf::console::print("Bulk AWP: finished processing all {} levels",
+                g_bulk_awp.rfl_filenames.size());
+            g_bulk_awp.reset();
+            multi_disconnect_from_server();
+        }
+        return;
+    }
+}
+
+ConsoleCommand2 dbg_generate_bulk_awps_cmd{
+    "dbg_generate_bulk_awps",
+    [](std::string list_filename) {
+        if (g_bulk_awp.state != BulkAwpState::idle) {
+            rf::console::print("Bulk AWP generation is already in progress");
+            return;
+        }
+
+        // Read the level list file
+        std::ifstream file(list_filename);
+        if (!file.is_open()) {
+            rf::console::print("Failed to open file: {}", list_filename);
+            return;
+        }
+
+        if (!ensure_waypoint_command_enabled("dbg_generate_bulk_awps")) {
+            return;
+        }
+
+        std::vector<std::string> filenames;
+        std::string line;
+        while (std::getline(file, line)) {
+            // Trim whitespace
+            size_t start = line.find_first_not_of(" \t\r\n");
+            if (start == std::string::npos) {
+                continue;
+            }
+            size_t end = line.find_last_not_of(" \t\r\n");
+            std::string trimmed = line.substr(start, end - start + 1);
+            if (trimmed.empty()) {
+                continue;
+            }
+            // Normalize .rfl extension
+            if (!string_iends_with(trimmed, ".rfl")) {
+                trimmed += ".rfl";
+            }
+            // Validate level file is installed
+            if (rf::get_file_checksum(trimmed.c_str()) == 0) {
+                rf::console::print("Bulk AWP: skipping unknown level: {}", trimmed);
+                continue;
+            }
+            // Skip levels that already have an AWP accessible via user_maps or VPP
+            auto awp_disk_path = get_waypoint_filename_for_rfl(trimmed);
+            auto awp_bare_filename = get_awp_bare_filename(trimmed);
+            bool awp_in_vpp = false;
+            {
+                rf::File vpp_check;
+                if (vpp_check.open(awp_bare_filename.c_str()) == 0) {
+                    awp_in_vpp = true;
+                    vpp_check.close();
+                }
+            }
+            if (std::filesystem::exists(awp_disk_path) || awp_in_vpp) {
+                rf::console::print("Bulk AWP: skipping {} (AWP already exists)", trimmed);
+                continue;
+            }
+            filenames.push_back(trimmed);
+        }
+
+        if (filenames.empty()) {
+            rf::console::print("No valid level filenames found in {}", list_filename);
+            return;
+        }
+
+        rf::console::print("Bulk AWP: starting generation for {} levels from {}. This may take a long time, please leave the game alone during the process.",
+            filenames.size(), list_filename);
+
+        g_bulk_awp.rfl_filenames = std::move(filenames);
+        g_bulk_awp.current_index = 0;
+
+        // Start loading the first level
+        bulk_awp_load_current_level();
+    },
+    "Bulk generate and save AWP files for a list of RFLs from a text file. NOTE: This is an intensive operation which may take a long time to complete and cannot be cancelled",
+    "dbg_generate_bulk_awps <filename.txt>",
+};
+
 void waypoints_init()
 {
     glass_remove_floating_shards_hook.install();
@@ -8608,6 +8834,7 @@ void waypoints_init()
     waypoint_target_add_cmd.register_cmd();
     waypoint_target_list_cmd.register_cmd();
     waypoint_delete_cmd.register_cmd();
+    dbg_generate_bulk_awps_cmd.register_cmd();
 }
 
 void waypoints_level_init()
@@ -8718,6 +8945,10 @@ void waypoints_on_trigger_activated(int trigger_uid)
 
 void waypoints_do_frame()
 {
+    // Drive bulk AWP generation state machine (needs to run before level-loaded check
+    // since it monitors the level load transition)
+    bulk_awp_do_frame();
+
     if (!is_waypoint_bot_mode_active()
         && g_alpine_game_config.waypoints_edit_mode
         && is_multiplayer_client()) {
