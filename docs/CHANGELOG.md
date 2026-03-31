@@ -156,6 +156,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix crash in CTF when loading a level that has one flag but not both
 - Fix crash in CTF when attempting to capture a flag in a level that has no other flags
 - Fix mirror and security monitor screens not being fully self-illuminated (Direct3D 11 renderer only)
+- Fix `levelm` not being able to be used unless in main menu
+- Fix `disconnect` not disconnecting a listen server host
+- Fix second use of `levelm` during a game session incorrectly loading the level in single player
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

@@ -835,6 +835,11 @@ void start_level_in_multi(std::string filename) {
     auto [is_valid, valid_filename] = is_level_name_valid(filename);
 
     if (is_valid) {
+        // Clean up any previous game state so the level loader doesn't call game_shutdown
+        // after multi_start has already set up the new multiplayer session
+        rf::game_shutdown();
+
+        rf::netgame.levels.clear();
         rf::netgame.levels.add(valid_filename.c_str());
         rf::netgame.max_time_seconds = 3600.0f;
         rf::netgame.max_kills = 30;
@@ -871,16 +876,11 @@ CodeInjection multi_customize_listen_server_settings_patch {
 ConsoleCommand2 levelm_cmd{
     "levelm",
     [](std::string filename) {
-        if (rf::gameseq_get_state() == rf::GS_MAIN_MENU ||
-            rf::gameseq_get_state() == rf::GS_EXTRAS_MENU) {
-            start_level_in_multi(filename);
-            rf::console::print("Starting local multiplayer game on {}", filename);
-        }
-        else {
-            rf::console::print("You must run this command from the main menu!");
-        }
+        start_levelm_load_sequence(filename);
+        rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
+        rf::console::print("Starting local multiplayer game on {}", filename);
     },
-    "Start a local multiplayer game on the specified level",
+    "Start a new local multiplayer game on the specified level",
     "levelm <filename>",
 };
 

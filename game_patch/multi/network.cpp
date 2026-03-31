@@ -2258,10 +2258,6 @@ void multi_disconnect_from_server()
         rf::console::print("Not connected to a server");
         return;
     }
-    if (rf::is_server) {
-        rf::console::print("Cannot disconnect: you are the server host");
-        return;
-    }
     xlog::info("Disconnecting from server");
     rf::multi_stop();
     // multi_stop_hook may have already set GS_QUITING for bot auto-quit.
