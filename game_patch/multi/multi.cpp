@@ -243,7 +243,7 @@ bool handle_awpgen_param()
     if (rf::get_file_checksum(level_filename.c_str()) == 0) {
         xlog::error("-awpgen: unknown level {}, quitting", level_filename);
         rf::gameseq_set_state(rf::GS_QUITING, false);
-        return;
+        return true;
     }
 
     waypoints_start_awpgen(level_filename);
