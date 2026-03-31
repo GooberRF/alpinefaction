@@ -475,7 +475,6 @@ static void register_builtin_command(const char* name, const char* description, 
     builtin_commands.push_back(std::move(cmd));
 }
 
-// reuse the helpers from hud_colors.cpp
 static void warn_if_not_d3d11()
 {
     if (!is_d3d11()) {
@@ -516,6 +515,7 @@ ConsoleCommand2 r_outlines_team_xray_cmd{
         alpine_core_config_save();
     },
     "Toggle showing teammate outlines through walls (Direct3D 11 renderer only).",
+    "r_outlines_team_xray",
 };
 
 void console_commands_apply_patches()

@@ -319,8 +319,8 @@ namespace df::gr::d3d11
         {
             current_mode_.reset();
             // Re-bind constant buffers so that slots overwritten by the outline
-            // renderer (e.g. PS b2 = texture_scale) are restored to the correct
-            // buffers before normal rendering resumes.
+            // renderer (VS b4 = outline params, PS b2 = outline color) are
+            // restored to the correct buffers before normal rendering resumes.
             bind_cbuffers();
         }
 
