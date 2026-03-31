@@ -23,6 +23,10 @@ add_shader(transformed_vs transformed_vs.hlsl vs_4_0)
 add_shader(shadow_standard_vs shadow_standard_vs.hlsl vs_4_0)
 add_shader(shadow_character_vs shadow_character_vs.hlsl vs_4_0)
 
+add_shader(outline_character_vs outline_character_vs.hlsl vs_4_0)
+add_shader(outline_standard_vs outline_standard_vs.hlsl vs_4_0)
+
 add_shader(standard_ps standard_ps.hlsl ps_4_0)
 add_shader(ui_ps ui_ps.hlsl ps_4_0)
 add_shader(shadow_debug_ps shadow_debug_ps.hlsl ps_4_0)
+add_shader(outline_ps outline_ps.hlsl ps_4_0)

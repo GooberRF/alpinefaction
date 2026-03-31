@@ -266,9 +266,12 @@ add_packfile(alpinefaction.vpp
     transformed_vs:${CMAKE_BINARY_DIR}/shaders/transformed_vs.bin
     shadow_standard_vs:${CMAKE_BINARY_DIR}/shaders/shadow_standard_vs.bin
     shadow_character_vs:${CMAKE_BINARY_DIR}/shaders/shadow_character_vs.bin
+    outline_character_vs:${CMAKE_BINARY_DIR}/shaders/outline_character_vs.bin
+    outline_standard_vs:${CMAKE_BINARY_DIR}/shaders/outline_standard_vs.bin
     standard_ps:${CMAKE_BINARY_DIR}/shaders/standard_ps.bin
     ui_ps:${CMAKE_BINARY_DIR}/shaders/ui_ps.bin
     shadow_debug_ps:${CMAKE_BINARY_DIR}/shaders/shadow_debug_ps.bin
+    outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin
 )
 
 # Copy licensing-info.txt

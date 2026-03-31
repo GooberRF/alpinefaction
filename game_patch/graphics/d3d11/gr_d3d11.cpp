@@ -17,6 +17,7 @@
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_entity_shadow.h"
+#include "gr_d3d11_outline.h"
 
 using namespace rf;
 
@@ -43,6 +44,17 @@ namespace df::gr::d3d11
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
+        outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+
+        // Flush pending outlines before each dyn_geo draw. This ensures outlines
+        // render behind transparent effects (smoke, particles, explosions) that are
+        // batched in the dyn_geo renderer during scene rendering. Without this,
+        // the dyn_geo batcher can flush particles to the framebuffer mid-scene
+        // (on state changes or at explicit flush points like render_alpha_detail_room),
+        // and outlines would later render on top of those already-drawn particles.
+        dyn_geo_renderer_->set_pre_flush_callback([this]() {
+            outline_renderer_->flush(*mesh_renderer_);
+        });
 
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         render_context_->set_cull_mode(D3D11_CULL_BACK);
@@ -292,6 +304,15 @@ namespace df::gr::d3d11
 
     void Renderer::bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, gr::Mode mode)
     {
+        // Flush pending outlines before any 2D bitmap is committed to the framebuffer.
+        // RF draws the scope overlay as a bitmap during HUD rendering. Because the
+        // dyn_geo batcher flushes each batch when the texture/mode changes (see setup()),
+        // the scope can end up in the framebuffer before zbuffer_clear fires and flushes
+        // outlines — which would place outlines on top of the scope. By flushing outlines
+        // here (on the first bitmap after 3D scene rendering), outlines land in the
+        // framebuffer first, and subsequent bitmaps (scope etc.) commit on top of them.
+        // If outlines were already flushed in zbuffer_clear this is a no-op.
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->bitmap(bm_handle,
             static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h),
             static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sw), static_cast<float>(sh),
@@ -300,6 +321,7 @@ namespace df::gr::d3d11
 
     void Renderer::bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->bitmap(bm_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
     }
 
@@ -316,6 +338,21 @@ namespace df::gr::d3d11
 
     void Renderer::zbuffer_clear()
     {
+        // Flush queued outlines before clearing the depth buffer.
+        // The fpgun rendering clears zbuffer before its setup_3d call,
+        // so outlines must be rendered while scene depth data is still available.
+        // Outlines are flushed first so that subsequently flushed dyn_geo draws
+        // (player labels, crosshair, world HUD) always render on top of outlines.
+        // The outline silhouette pass writes depth (DepthWriteMask = ALL) to prevent
+        // liquid surfaces from alpha-blending over outline pixels. This is safe here
+        // because the zbuffer is about to be cleared for the fpgun pass, and the
+        // written depth values are geometrically correct (at the character's depth).
+        // Note: the scope overlay (a bitmap) is drawn
+        // BEFORE zbuffer_clear, causing the scope to reach the framebuffer before
+        // this flush via the dyn_geo batcher's automatic state-change flush. The
+        // bitmap() override handles that case by flushing outlines on the first
+        // bitmap call, so this flush here is then a no-op and that path is also safe.
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         render_context_->zbuffer_clear();
     }
@@ -328,6 +365,7 @@ namespace df::gr::d3d11
 
     void Renderer::flip()
     {
+        outline_renderer_->flush_forced_xray(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         entity_shadow_renderer_->render_debug_overlay(context_);
         entity_shadow_renderer_->unbind_shadow_resources(context_);
@@ -477,6 +515,13 @@ namespace df::gr::d3d11
     void Renderer::setup_3d(Projection proj)
     {
         render_context_->update_view_proj_transform(proj);
+        // Only initialize outlines when rendering to the back buffer.
+        // The rail gun scanner calls setup_3d while rendering to a small texture;
+        // running begin_frame there would save the wrong projection and cause
+        // outlines to be queued (and potentially flushed) into the scanner texture.
+        if (render_target_bm_handle_ == -1) {
+            outline_renderer_->begin_frame();
+        }
     }
 
     void Renderer::set_far_clip(bool enabled)
@@ -528,6 +573,12 @@ namespace df::gr::d3d11
 
     void Renderer::render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room)
     {
+        // Flush outlines before liquid renders. The outline silhouette pass writes
+        // depth (DepthWriteMask=ALL), so outline pixels claim depth ownership.
+        // When the liquid subsequently depth-tests at those pixels, it fails
+        // (outline is closer than liquid), preventing liquid alpha-blend from
+        // contaminating outline colors.
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         solid_renderer_->render_room_liquid_surface(solid, room);
     }
@@ -546,12 +597,56 @@ namespace df::gr::d3d11
     {
         dyn_geo_renderer_->flush();
         mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
+
+        // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
+        if (render_target_bm_handle_ != -1) {
+            return;
+        }
+
+        // Queue outline for third-person weapon meshes.
+        // The game renders weapon meshes (MRF_CUSTOM_AMBIENT_COLOR) immediately after
+        // the owning character mesh, so current_character_outline tracks the association.
+        if ((params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) &&
+            !(params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON)) {
+            if (auto* info = outline_renderer_->current_character_outline()) {
+                QueuedV3dOutline entry{};
+                entry.lod_mesh = lod_mesh;
+                entry.lod_index = lod_index;
+                entry.pos = pos;
+                entry.orient = orient;
+                entry.info = *info;
+                outline_renderer_->queue_v3d(std::move(entry));
+            }
+        }
     }
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
         mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
+
+        // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
+        // Outlines use the main depth/stencil buffer and should only render to the back buffer.
+        if (render_target_bm_handle_ != -1) {
+            return;
+        }
+
+        // Queue outline if this character needs one, and track for weapon meshes
+        if (auto* info = outline_renderer_->lookup(ci)) {
+            outline_renderer_->set_current_character_outline(info);
+
+            QueuedOutline entry{};
+            entry.lod_mesh = lod_mesh;
+            entry.lod_index = lod_index;
+            entry.pos = pos;
+            entry.orient = orient;
+            entry.ci = ci;
+            entry.info = *info;
+            outline_renderer_->queue(std::move(entry));
+        }
+        else {
+            outline_renderer_->set_current_character_outline(nullptr);
+        }
     }
 
     void Renderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)

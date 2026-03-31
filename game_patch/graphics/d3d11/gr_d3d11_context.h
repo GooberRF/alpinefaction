@@ -303,12 +303,25 @@ namespace df::gr::d3d11
             }
         }
 
-        void set_depth_stencil_state(ID3D11DepthStencilState* depth_stencil_state)
+        void set_depth_stencil_state(ID3D11DepthStencilState* depth_stencil_state, UINT stencil_ref = 0)
         {
-            if (current_depth_stencil_state_ != depth_stencil_state) {
+            if (current_depth_stencil_state_ != depth_stencil_state || current_stencil_ref_ != stencil_ref) {
                 current_depth_stencil_state_ = depth_stencil_state;
-                device_context_->OMSetDepthStencilState(depth_stencil_state, 0);
+                current_stencil_ref_ = stencil_ref;
+                device_context_->OMSetDepthStencilState(depth_stencil_state, stencil_ref);
             }
+        }
+
+        // Invalidate cached render mode so the next set_mode() call forces a full
+        // state reset. Call this after directly setting depth/blend/sampler states
+        // outside of set_mode() (e.g., outline rendering) to prevent stale caches.
+        void invalidate_mode()
+        {
+            current_mode_.reset();
+            // Re-bind constant buffers so that slots overwritten by the outline
+            // renderer (VS b4 = outline params, PS b2 = outline color) are
+            // restored to the correct buffers before normal rendering resumes.
+            bind_cbuffers();
         }
 
         void set_rasterizer_state(ID3D11RasterizerState* rasterizer_state)
@@ -536,6 +549,7 @@ namespace df::gr::d3d11
         std::array<ID3D11SamplerState*, 2> current_sampler_states_ = {nullptr, nullptr};
         ID3D11BlendState* current_blend_state_ = nullptr;
         ID3D11DepthStencilState* current_depth_stencil_state_ = nullptr;
+        UINT current_stencil_ref_ = 0;
         ID3D11RasterizerState* current_rasterizer_state_ = nullptr;
         int zbias_ = 0;
         bool zbias_changed_ = true;

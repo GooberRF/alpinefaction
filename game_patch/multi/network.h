@@ -178,6 +178,8 @@ struct AlpineFactionJoinAcceptPacketExt
         delayed_spawns      = 1u << 11,
         geo_chunk_physics   = 1u << 12,
         allow_footsteps     = 1u << 13,
+        allow_outlines      = 1u << 14,
+        allow_outlines_xray = 1u << 15,
     } flags = Flags::none;
 
     float max_fov;

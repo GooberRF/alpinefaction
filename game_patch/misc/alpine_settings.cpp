@@ -566,6 +566,53 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_shadow_quality(std::stoi(settings["ShadowQuality"]));
         processed_keys.insert("ShadowQuality");
     }
+    if (settings.count("Outlines")) {
+        g_alpine_game_config.try_outlines = std::stoi(settings["Outlines"]);
+        processed_keys.insert("Outlines");
+    }
+    if (settings.count("OutlinesSpectator")) {
+        g_alpine_game_config.outlines_spectator = std::stoi(settings["OutlinesSpectator"]);
+        processed_keys.insert("OutlinesSpectator");
+    }
+    if (settings.count("OutlinesTeamXray")) {
+        g_alpine_game_config.try_outlines_team_xray = std::stoi(settings["OutlinesTeamXray"]);
+        processed_keys.insert("OutlinesTeamXray");
+    }
+    if (settings.count("OutlinesColor")) {
+        auto c = parse_hex_color_string(settings["OutlinesColor"]);
+        if (c) {
+            g_alpine_game_config.outlines_color = *c;
+        }
+        processed_keys.insert("OutlinesColor");
+    }
+    if (settings.count("OutlinesColorTeamR")) {
+        auto c = parse_hex_color_string(settings["OutlinesColorTeamR"]);
+        if (c) {
+            g_alpine_game_config.outlines_color_team_r = *c;
+        }
+        processed_keys.insert("OutlinesColorTeamR");
+    }
+    if (settings.count("OutlinesColorTeamB")) {
+        auto c = parse_hex_color_string(settings["OutlinesColorTeamB"]);
+        if (c) {
+            g_alpine_game_config.outlines_color_team_b = *c;
+        }
+        processed_keys.insert("OutlinesColorTeamB");
+    }
+    if (settings.count("OutlinesColorEnemy")) {
+        auto c = parse_hex_color_string(settings["OutlinesColorEnemy"]);
+        if (c) {
+            g_alpine_game_config.outlines_color_enemy = c;
+        }
+        processed_keys.insert("OutlinesColorEnemy");
+    }
+    if (settings.count("OutlinesColorTeam")) {
+        auto c = parse_hex_color_string(settings["OutlinesColorTeam"]);
+        if (c) {
+            g_alpine_game_config.outlines_color_team = c;
+        }
+        processed_keys.insert("OutlinesColorTeam");
+    }
     if (settings.count("NearestTextureFiltering")) {
         g_alpine_game_config.nearest_texture_filtering = std::stoi(settings["NearestTextureFiltering"]);
         gr_update_texture_filtering();
@@ -1167,6 +1214,15 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     }
 }
 
+void alpine_player_settings_save(rf::Player* player);
+
+void alpine_core_config_save()
+{
+    if (rf::local_player) {
+        alpine_player_settings_save(rf::local_player);
+    }
+}
+
 void alpine_player_settings_save(rf::Player* player)
 {
     std::string filename = alpine_get_settings_filename();
@@ -1285,6 +1341,18 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShadowItems=" << g_alpine_game_config.shadow_items << "\n";
     file << "ShadowDistance=" << g_alpine_game_config.shadow_distance << "\n";
     file << "ShadowQuality=" << g_alpine_game_config.shadow_quality << "\n";
+    file << "Outlines=" << g_alpine_game_config.try_outlines << "\n";
+    file << "OutlinesSpectator=" << g_alpine_game_config.outlines_spectator << "\n";
+    file << "OutlinesTeamXray=" << g_alpine_game_config.try_outlines_team_xray << "\n";
+    file << "OutlinesColor=" << format_hex_color_string(g_alpine_game_config.outlines_color) << "\n";
+    file << "OutlinesColorTeamR=" << format_hex_color_string(g_alpine_game_config.outlines_color_team_r) << "\n";
+    file << "OutlinesColorTeamB=" << format_hex_color_string(g_alpine_game_config.outlines_color_team_b) << "\n";
+    if (g_alpine_game_config.outlines_color_enemy) {
+        file << "OutlinesColorEnemy=" << format_hex_color_string(*g_alpine_game_config.outlines_color_enemy) << "\n";
+    }
+    if (g_alpine_game_config.outlines_color_team) {
+        file << "OutlinesColorTeam=" << format_hex_color_string(*g_alpine_game_config.outlines_color_team) << "\n";
+    }
     file << "NearestTextureFiltering=" << g_alpine_game_config.nearest_texture_filtering << "\n";
     file << "FastAnimations=" << rf::g_fast_animations << "\n";
     file << "MonitorResolutionScale=" << g_alpine_game_config.monitor_resolution_scale << "\n";
