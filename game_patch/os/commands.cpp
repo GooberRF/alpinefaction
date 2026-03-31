@@ -498,8 +498,8 @@ ConsoleCommand2 r_outlines_cmd{
 ConsoleCommand2 r_outlines_spectator_cmd{
     "r_outlines_spectator",
     []() {
-        g_alpine_game_config.outlines_spectator_only = !g_alpine_game_config.outlines_spectator_only;
-        rf::console::print("Spectator outlines {}.", g_alpine_game_config.outlines_spectator_only ? "enabled" : "disabled");
+        g_alpine_game_config.outlines_spectator = !g_alpine_game_config.outlines_spectator;
+        rf::console::print("Spectator outlines {}.", g_alpine_game_config.outlines_spectator ? "enabled" : "disabled");
         warn_if_not_d3d11();
         alpine_core_config_save();
     },

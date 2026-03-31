@@ -106,7 +106,7 @@ namespace df::gr::d3d11
 
         if (is_spectating) {
             // Spectator outlines: client toggle only, no server permission needed
-            if (!g_alpine_game_config.outlines_spectator_only) {
+            if (!g_alpine_game_config.outlines_spectator) {
                 return;
             }
         }
