@@ -60,11 +60,9 @@ namespace df::gr::d3d11
     static void update_cbuffer(ID3D11DeviceContext* ctx, ID3D11Buffer* buffer, const T& data)
     {
         D3D11_MAPPED_SUBRESOURCE mapped{};
-        HRESULT hr = ctx->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-        if (SUCCEEDED(hr)) {
-            memcpy(mapped.pData, &data, sizeof(T));
-            ctx->Unmap(buffer, 0);
-        }
+        DF_GR_D3D11_CHECK_HR(ctx->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+        memcpy(mapped.pData, &data, sizeof(T));
+        ctx->Unmap(buffer, 0);
     }
 
     OutlineRenderer::OutlineRenderer(ID3D11Device* device, ShaderManager& shader_manager, StateManager& state_manager, RenderContext& render_context)
@@ -361,7 +359,10 @@ namespace df::gr::d3d11
                 // For portal-culled xray characters RF never called the bone transform
                 // computation function, so bone_transforms_final is stale (frozen pose).
                 // Recompute it here before rendering the outline.
-                rf::ci_update_bone_transforms(outline.ci);
+                // outline.ci is const because the normal render path receives it as const.
+                // The forced-xray path is the exception: RF never computed bone transforms
+                // for portal-culled characters, so we must mutate here.
+                rf::ci_update_bone_transforms(const_cast<rf::CharacterInstance*>(outline.ci));
                 render_outline(outline, mesh_renderer);
             }
             queue_.clear();

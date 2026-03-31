@@ -35,7 +35,7 @@ namespace df::gr::d3d11
         int lod_index;
         rf::Vector3 pos;
         rf::Matrix3 orient;
-        rf::CharacterInstance* ci;
+        const rf::CharacterInstance* ci;
         OutlineInfo info;
     };
 

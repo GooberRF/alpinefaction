@@ -4,7 +4,6 @@
 #include <common/config/BuildConfig.h>
 #include <common/version/version.h>
 #include <common/utils/list-utils.h>
-#include <common/utils/string-utils.h>
 #include <algorithm>
 #include <optional>
 #include "console.h"

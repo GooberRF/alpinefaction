@@ -117,7 +117,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Implement enemy and teammate footstep audio for weapons other than pistol
 - Add delayed items server config option, enabling global and per-map delaying of specific item spawns at map start
 - Implement player outlines (D3D11 only)
-- Add `r_outlines`, `r_outlines_color_enemy`, `r_outlines_color_team`, `r_outlines_color_team_b`, `r_outlines_color_team_r` for customizing outline colors
+- Add `r_outlines`, `r_outlines_spectator`, `r_outlines_team_xray`, `r_outlines_color`, `r_outlines_color_enemy`, `r_outlines_color_team`, `r_outlines_color_team_b`, `r_outlines_color_team_r` for customizing outline behavior and colors
 - Add `allow_outlines` and `allow_outlines_xray` dedicated server configuration options to permit or deny outline usage by clients.
 
 [@AL2009man](https://github.com/AL2009man)
