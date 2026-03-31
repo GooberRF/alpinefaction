@@ -6,16 +6,13 @@
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
-#include "../multi/network.h"
 #include "../os/console.h"
-#include "misc.h"
 #include <xlog/xlog.h>
 #include "../rf/collide.h"
 #include "../rf/entity.h"
 #include "../rf/event.h"
 #include "../rf/file/file.h"
 #include "../rf/gameseq.h"
-#include "../rf/misc.h"
 #include "../rf/geometry.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
@@ -8037,6 +8034,78 @@ ConsoleCommand2 waypoint_reset_cmd{
     "waypoints_reset",
 };
 
+// Run the full waypoint generation pipeline: reset grid, generate from seeds, link, and log results.
+// Returns the number of generated waypoints, or -1 if no seeds were found.
+int run_waypoint_generation_pipeline()
+{
+    reset_waypoints_to_default_grid();
+
+    const auto seed_indices = collect_generation_seed_waypoint_indices();
+    if (seed_indices.empty()) {
+        waypoint_log("No seed waypoints found for generation");
+        return -1;
+    }
+
+    const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
+    const auto link_stats = link_generated_waypoint_grid();
+    const int special_links_added = auto_link_special_waypoints_post_generation();
+    const int jump_pad_trajectory_links = link_jump_pads_to_trajectory_destinations();
+    const int ledge_drop_links = generate_ledge_drop_links();
+    const int generated_explosion_target_count = generate_explosion_targets_for_autogen();
+    const int generated_shatter_target_count = generate_shatter_targets_for_autogen();
+
+    if (generated_count >= kWaypointGenerateMaxCreatedWaypoints) {
+        waypoint_log(
+            "Waypoint generation hit creation cap of {} nodes",
+            kWaypointGenerateMaxCreatedWaypoints);
+    }
+    waypoint_log(
+        "Generated {} waypoints from {} ctf_flag/item/respawn/tele_exit seeds",
+        generated_count,
+        static_cast<int>(seed_indices.size()));
+    waypoint_log(
+        "Link pass added {} bidirectional links and {} downward links",
+        link_stats.bidirectional_links,
+        link_stats.downward_links);
+    if (link_stats.pass_through_links_rerouted > 0) {
+        waypoint_log(
+            "Link pass rerouted {} links through intermediate waypoints",
+            link_stats.pass_through_links_rerouted);
+    }
+    if (link_stats.redundant_links_pruned > 0) {
+        waypoint_log(
+            "Link pass pruned {} redundant direct links",
+            link_stats.redundant_links_pruned);
+    }
+    if (special_links_added > 0) {
+        waypoint_log(
+            "Special waypoint cleanup pass added {} links",
+            special_links_added);
+    }
+    if (jump_pad_trajectory_links > 0) {
+        waypoint_log(
+            "Jump pad trajectory pass added {} destination links",
+            jump_pad_trajectory_links);
+    }
+    if (ledge_drop_links > 0) {
+        waypoint_log(
+            "Ledge drop pass added {} downward links",
+            ledge_drop_links);
+    }
+    if (generated_explosion_target_count > 0) {
+        waypoint_log(
+            "Generated {} explosion targets from blocked waypoint pairs",
+            generated_explosion_target_count);
+    }
+    if (generated_shatter_target_count > 0) {
+        waypoint_log(
+            "Generated {} shatter targets from breakable-glass blocked waypoint pairs",
+            generated_shatter_target_count);
+    }
+
+    return generated_count;
+}
+
 ConsoleCommand2 waypoint_generate_cmd{
     "waypoints_generate",
     []() {
@@ -8047,71 +8116,7 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print("No level loaded");
             return;
         }
-
-        reset_waypoints_to_default_grid();
-
-        const auto seed_indices = collect_generation_seed_waypoint_indices();
-        if (seed_indices.empty()) {
-            rf::console::print("No seed waypoints found for generation");
-            return;
-        }
-
-        const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
-        const auto link_stats = link_generated_waypoint_grid();
-        const int special_links_added = auto_link_special_waypoints_post_generation();
-        const int jump_pad_trajectory_links = link_jump_pads_to_trajectory_destinations();
-        const int ledge_drop_links = generate_ledge_drop_links();
-        const int generated_explosion_target_count = generate_explosion_targets_for_autogen();
-        const int generated_shatter_target_count = generate_shatter_targets_for_autogen();
-
-        if (generated_count >= kWaypointGenerateMaxCreatedWaypoints) {
-            waypoint_log(
-                "Waypoint generation hit creation cap of {} nodes",
-                kWaypointGenerateMaxCreatedWaypoints);
-        }
-        waypoint_log(
-            "Generated {} waypoints from {} ctf_flag/item/respawn/tele_exit seeds",
-            generated_count,
-            static_cast<int>(seed_indices.size()));
-        waypoint_log(
-            "Link pass added {} bidirectional links and {} downward links",
-            link_stats.bidirectional_links,
-            link_stats.downward_links);
-        if (link_stats.pass_through_links_rerouted > 0) {
-            waypoint_log(
-                "Link pass rerouted {} links through intermediate waypoints",
-                link_stats.pass_through_links_rerouted);
-        }
-        if (link_stats.redundant_links_pruned > 0) {
-            waypoint_log(
-                "Link pass pruned {} redundant direct links",
-                link_stats.redundant_links_pruned);
-        }
-        if (special_links_added > 0) {
-            waypoint_log(
-                "Special waypoint cleanup pass added {} links",
-                special_links_added);
-        }
-        if (jump_pad_trajectory_links > 0) {
-            waypoint_log(
-                "Jump pad trajectory pass added {} destination links",
-                jump_pad_trajectory_links);
-        }
-        if (ledge_drop_links > 0) {
-            waypoint_log(
-                "Ledge drop pass added {} downward links",
-                ledge_drop_links);
-        }
-        if (generated_explosion_target_count > 0) {
-            waypoint_log(
-                "Generated {} explosion targets from blocked waypoint pairs",
-                generated_explosion_target_count);
-        }
-        if (generated_shatter_target_count > 0) {
-            waypoint_log(
-                "Generated {} shatter targets from breakable-glass blocked waypoint pairs",
-                generated_shatter_target_count);
-        }
+        run_waypoint_generation_pipeline();
     },
     "Generate a walk-probe waypoint grid from respawn/item waypoints",
     "waypoints_generate",
@@ -8634,187 +8639,84 @@ ConsoleCommand2 waypoint_delete_cmd{
     true,
 };
 
-// --- Bulk AWP generation state machine ---
+// --- Single-level AWP generation via -awpgen command line ---
 
-enum class BulkAwpState
+enum class AwpgenState
 {
     idle,
     waiting_for_level_load,
     ready_to_generate,
-    done,
 };
 
-struct BulkAwpContext
+struct AwpgenContext
 {
-    BulkAwpState state = BulkAwpState::idle;
-    std::vector<std::string> rfl_filenames;
-    size_t current_index = 0;
+    AwpgenState state = AwpgenState::idle;
+    std::string rfl_filename;
     int frames_since_level_loaded = 0;
-
-    void reset()
-    {
-        state = BulkAwpState::idle;
-        rfl_filenames.clear();
-        current_index = 0;
-        frames_since_level_loaded = 0;
-    }
+    int existing_revision = -1;
 };
 
-static BulkAwpContext g_bulk_awp;
+static AwpgenContext g_awpgen;
+static bool g_awpgen_active = false;
 
-static void bulk_awp_load_current_level()
+void waypoints_start_awpgen(const std::string& rfl_filename)
 {
-    const auto& filename = g_bulk_awp.rfl_filenames[g_bulk_awp.current_index];
-    rf::console::print("Bulk AWP: loading level {}/{}: {}",
-        g_bulk_awp.current_index + 1, g_bulk_awp.rfl_filenames.size(), filename);
+    g_awpgen_active = true;
+    g_awpgen.state = AwpgenState::waiting_for_level_load;
+    g_awpgen.rfl_filename = rfl_filename;
+    g_awpgen.frames_since_level_loaded = 0;
 
-    g_bulk_awp.state = BulkAwpState::waiting_for_level_load;
-    g_bulk_awp.frames_since_level_loaded = 0;
+    // Enable waypoint editing mode
+    g_alpine_game_config.waypoints_edit_mode = true;
 
-    start_levelm_load_sequence(filename);
-    rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
+    // Pre-load the revision from any existing AWP so save_waypoints writes revision+1
+    g_awpgen.existing_revision = get_local_awp_revision(rfl_filename);
+
+    xlog::info("-awpgen: queued generation for {}", rfl_filename);
 }
 
-static void bulk_awp_do_frame()
+static void awpgen_do_frame()
 {
-    if (g_bulk_awp.state == BulkAwpState::idle) {
+    if (g_awpgen.state == AwpgenState::idle) {
         return;
     }
 
-    if (g_bulk_awp.state == BulkAwpState::waiting_for_level_load) {
+    if (g_awpgen.state == AwpgenState::waiting_for_level_load) {
         if (rf::level.flags & rf::LEVEL_LOADED) {
-            // Wait a couple of frames after level load for objects to fully initialize
-            g_bulk_awp.frames_since_level_loaded++;
-            if (g_bulk_awp.frames_since_level_loaded >= 3) {
-                g_bulk_awp.state = BulkAwpState::ready_to_generate;
+            g_awpgen.frames_since_level_loaded++;
+            if (g_awpgen.frames_since_level_loaded >= 3) {
+                g_awpgen.state = AwpgenState::ready_to_generate;
             }
         }
         return;
     }
 
-    if (g_bulk_awp.state == BulkAwpState::ready_to_generate) {
-        const auto& filename = g_bulk_awp.rfl_filenames[g_bulk_awp.current_index];
-        rf::console::print("Bulk AWP: generating waypoints for {}", filename);
+    if (g_awpgen.state == AwpgenState::ready_to_generate) {
+        xlog::info("-awpgen: generating waypoints for {}", g_awpgen.rfl_filename);
 
-        // Generate waypoints (same as waypoints_generate command)
-        reset_waypoints_to_default_grid();
+        const int generated_count = run_waypoint_generation_pipeline();
 
-        const auto seed_indices = collect_generation_seed_waypoint_indices();
-        if (seed_indices.empty()) {
-            rf::console::print("Bulk AWP: no seed waypoints found for {}, skipping", filename);
+        // Restore the existing revision so save_waypoints writes revision+1
+        if (g_awpgen.existing_revision >= 0) {
+            g_waypoint_revision = g_awpgen.existing_revision;
+            xlog::info("-awpgen: existing AWP revision {}, will save as revision {}",
+                g_awpgen.existing_revision, g_awpgen.existing_revision + 1);
         }
-        else {
-            const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
-            link_generated_waypoint_grid();
-            auto_link_special_waypoints_post_generation();
-            link_jump_pads_to_trajectory_destinations();
-            generate_ledge_drop_links();
-            generate_explosion_targets_for_autogen();
-            generate_shatter_targets_for_autogen();
 
-            rf::console::print("Bulk AWP: generated {} waypoints from {} seeds for {}",
-                generated_count, static_cast<int>(seed_indices.size()), filename);
-
-            // Save waypoints (same as waypoints_save command)
+        if (generated_count > 0) {
             if (save_waypoints()) {
-                rf::console::print("Bulk AWP: saved waypoints for {}", filename);
+                xlog::info("-awpgen: saved waypoints for {}", g_awpgen.rfl_filename);
             }
             else {
-                rf::console::print("Bulk AWP: failed to save waypoints for {}", filename);
+                xlog::error("-awpgen: failed to save waypoints for {}", g_awpgen.rfl_filename);
             }
         }
 
-        // Advance to next level or finish
-        g_bulk_awp.current_index++;
-        if (g_bulk_awp.current_index < g_bulk_awp.rfl_filenames.size()) {
-            bulk_awp_load_current_level();
-        }
-        else {
-            rf::console::print("Bulk AWP: finished processing all {} levels",
-                g_bulk_awp.rfl_filenames.size());
-            g_bulk_awp.reset();
-            multi_disconnect_from_server();
-        }
+        g_awpgen.state = AwpgenState::idle;
+        rf::gameseq_set_state(rf::GS_QUITING, false);
         return;
     }
 }
-
-ConsoleCommand2 dbg_generate_bulk_awps_cmd{
-    "dbg_generate_bulk_awps",
-    [](std::string list_filename) {
-        if (g_bulk_awp.state != BulkAwpState::idle) {
-            rf::console::print("Bulk AWP generation is already in progress");
-            return;
-        }
-
-        // Read the level list file
-        std::ifstream file(list_filename);
-        if (!file.is_open()) {
-            rf::console::print("Failed to open file: {}", list_filename);
-            return;
-        }
-
-        if (!ensure_waypoint_command_enabled("dbg_generate_bulk_awps")) {
-            return;
-        }
-
-        std::vector<std::string> filenames;
-        std::string line;
-        while (std::getline(file, line)) {
-            // Trim whitespace
-            size_t start = line.find_first_not_of(" \t\r\n");
-            if (start == std::string::npos) {
-                continue;
-            }
-            size_t end = line.find_last_not_of(" \t\r\n");
-            std::string trimmed = line.substr(start, end - start + 1);
-            if (trimmed.empty()) {
-                continue;
-            }
-            // Normalize .rfl extension
-            if (!string_iends_with(trimmed, ".rfl")) {
-                trimmed += ".rfl";
-            }
-            // Validate level file is installed
-            if (rf::get_file_checksum(trimmed.c_str()) == 0) {
-                rf::console::print("Bulk AWP: skipping unknown level: {}", trimmed);
-                continue;
-            }
-            // Skip levels that already have an AWP accessible via user_maps or VPP
-            auto awp_disk_path = get_waypoint_filename_for_rfl(trimmed);
-            auto awp_bare_filename = get_awp_bare_filename(trimmed);
-            bool awp_in_vpp = false;
-            {
-                rf::File vpp_check;
-                if (vpp_check.open(awp_bare_filename.c_str()) == 0) {
-                    awp_in_vpp = true;
-                    vpp_check.close();
-                }
-            }
-            if (std::filesystem::exists(awp_disk_path) || awp_in_vpp) {
-                rf::console::print("Bulk AWP: skipping {} (AWP already exists)", trimmed);
-                continue;
-            }
-            filenames.push_back(trimmed);
-        }
-
-        if (filenames.empty()) {
-            rf::console::print("No valid level filenames found in {}", list_filename);
-            return;
-        }
-
-        rf::console::print("Bulk AWP: starting generation for {} levels from {}. This may take a long time, please leave the game alone during the process.",
-            filenames.size(), list_filename);
-
-        g_bulk_awp.rfl_filenames = std::move(filenames);
-        g_bulk_awp.current_index = 0;
-
-        // Start loading the first level
-        bulk_awp_load_current_level();
-    },
-    "Bulk generate and save AWP files for a list of RFLs from a text file. NOTE: This is an intensive operation which may take a long time to complete and cannot be cancelled",
-    "dbg_generate_bulk_awps <filename.txt>",
-};
 
 void waypoints_init()
 {
@@ -8834,7 +8736,6 @@ void waypoints_init()
     waypoint_target_add_cmd.register_cmd();
     waypoint_target_list_cmd.register_cmd();
     waypoint_delete_cmd.register_cmd();
-    dbg_generate_bulk_awps_cmd.register_cmd();
 }
 
 void waypoints_level_init()
@@ -8945,9 +8846,11 @@ void waypoints_on_trigger_activated(int trigger_uid)
 
 void waypoints_do_frame()
 {
-    // Drive bulk AWP generation state machine (needs to run before level-loaded check
+    // Drive -awpgen state machine (needs to run before level-loaded check
     // since it monitors the level load transition)
-    bulk_awp_do_frame();
+    if (g_awpgen_active) {
+        awpgen_do_frame();
+    }
 
     if (!is_waypoint_bot_mode_active()
         && g_alpine_game_config.waypoints_edit_mode
