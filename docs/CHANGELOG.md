@@ -86,12 +86,12 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Hold Open` property to movers
 - Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
 - Display client types and counts when an AF v1.3 server is selected in the server list
-- Add `r_pixellightoverbright` console command and `$Pixel Lighting Overbright` `MAPNAME_info.tbl` option for setting pixel light overbright allowance range
+- Add `r_pixellightoverbright` console command and `$Pixel Lighting Overbright` `mapname_info.tbl` option for setting pixel light overbright allowance range
 - Make team balancing distribute bots evenly across teams and exclude spectators and browsers
 - Exclude spectators and browsers from bot decommission player count calculations
 - Exclude spectators and browsers when counting players for team selection for a newly joining player
 - Consolidate mesh static lighting settings to `r_meshlighting [0-2]` console command
-- Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `MAPNAME_info.tbl`
+- Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

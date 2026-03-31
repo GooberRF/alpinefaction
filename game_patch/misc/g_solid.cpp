@@ -324,7 +324,7 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         }
 
         // Clamp lightmaps only if:
-        // - mapname_info.tbl says to (takes priority over all other config)
+        // - mapname_info.tbl says to (takes priority unless cl_ignore_tbl_lightmap_clamping is enabled)
         // - Is an official Volition map AND "Always clamp official lightmaps" is turned on
         // - Is a version 200 map, AF "Full range lights" is turned off, AND DF "Lightmaps full depth" is turned off (or not set)
 
