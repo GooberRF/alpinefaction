@@ -12,7 +12,7 @@ Version 1.3.0 (Bakeapple): Not yet released
   - AWPs (waypoint grid files) for all default maps included
   - FactionFiles autodownloader API support for AWPs
 - Promote Direct3D 11 renderer to recommended and add several notable improvements
-  - Add GPU accelerated per-pixel lighting for meshes (Direct3D 11 renderer only)
+  - Add GPU accelerated realtime per-pixel lighting for meshes
   - Add full mesh shadows for entities, corpses, and items
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
   - Support movers, meshes, and mesh pixel lighting in skyboxes
