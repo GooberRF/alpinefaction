@@ -163,7 +163,7 @@ enum class GameplayRule : int
 
 // start alpine event structs
 // id 100
-struct EventSetVar : Event
+struct EventSetVar : rf::Event
 {
     SetVarOpts var;
     int value_int = 0;
