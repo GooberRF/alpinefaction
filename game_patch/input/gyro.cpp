@@ -201,6 +201,17 @@ void gyro_apply_smoothing(float& pitch_dps, float& yaw_dps)
     yaw_dps   = g_smooth_yaw_prev;
 }
 
+void gyro_apply_vh_mixer(float& pitch_dps, float& yaw_dps)
+{
+    int raw = std::clamp(g_alpine_game_config.gamepad_gyro_vh_mixer, -100, 100);
+    if (raw == 0) return;
+    float mixer = raw / 100.0f;
+    float h_scale = mixer >= 0.0f ? (1.0f - mixer) : 1.0f;
+    float v_scale = mixer <= 0.0f ? (1.0f + mixer) : 1.0f;
+    yaw_dps   *= h_scale;
+    pitch_dps *= v_scale;
+}
+
 static bool gyro_action_has_binding(rf::ControlConfigAction action)
 {
     if (!rf::local_player) return false;
@@ -352,6 +363,16 @@ ConsoleCommand2 gyro_smoothing_cmd{
     "gyro_smoothing [value]",
 };
 
+ConsoleCommand2 gyro_vh_cmd{
+    "gyro_vh",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_gyro_vh_mixer = std::clamp(val.value(), -100, 100);
+        rf::console::print("Gyro V/H output mixer: {}", g_alpine_game_config.gamepad_gyro_vh_mixer);
+    },
+    "Set gyro V/H output mixer (-100 = reduce vertical, 0 = 1:1, 100 = reduce horizontal)",
+    "gyro_vh_mixer [-100 to 100]",
+};
+
 void gyro_apply_patch()
 {
     g_motion.Settings.MinStillnessCorrectionTime      = 1.0f; // default 2.0
@@ -365,5 +386,6 @@ void gyro_apply_patch()
     gyro_invert_y_cmd.register_cmd();
     gyro_tightening_cmd.register_cmd();
     gyro_smoothing_cmd.register_cmd();
+    gyro_vh_cmd.register_cmd();
     xlog::info("Gyro processing initialized");
 }

@@ -187,6 +187,7 @@ struct AlpineGameSettings
     bool gamepad_gyro_invert_y = false;
     float gamepad_gyro_tightening = 1.4f;
     float gamepad_gyro_smoothing = 7.0f;
+    int gamepad_gyro_vh_mixer = 0;  // -100 = reduce vertical, 0 = 1:1, +100 = reduce horizontal
     bool gamepad_joy_camera = false;
     float gamepad_flickstick_sweep = 1.0f;    
     float gamepad_flickstick_deadzone = 0.90f;

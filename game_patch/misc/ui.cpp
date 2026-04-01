@@ -284,6 +284,10 @@ static rf::ui::Checkbox ao_gyro_smoothing_cbox;
 static rf::ui::Label ao_gyro_smoothing_label;
 static rf::ui::Label ao_gyro_smoothing_butlabel;
 static char ao_gyro_smoothing_butlabel_text[9];
+static rf::ui::Checkbox ao_gyro_vh_mixer_cbox;
+static rf::ui::Label ao_gyro_vh_mixer_label;
+static rf::ui::Label ao_gyro_vh_mixer_butlabel;
+static char ao_gyro_vh_mixer_butlabel_text[9];
 static rf::ui::Checkbox ao_gyro_scannersens_cbox;
 static rf::ui::Label ao_gyro_scannersens_label;
 static rf::ui::Label ao_gyro_scannersens_butlabel;
@@ -1198,6 +1202,22 @@ void ao_gyro_smoothing_cbox_on_click(int x, int y) {
     rf::ui::popup_message("Enter new gyro smoothing value (0.0-100.0):", "", ao_gyro_smoothing_cbox_on_click_callback, 1);
 }
 
+void ao_gyro_vh_mixer_cbox_on_click_callback() {
+    char str_buffer[7] = "";
+    rf::ui::popup_get_input(str_buffer, sizeof(str_buffer));
+    std::string str = str_buffer;
+    try {
+        int val = std::stoi(str);
+        g_alpine_game_config.gamepad_gyro_vh_mixer = std::clamp(val, -100, 100);
+    }
+    catch (const std::exception& e) {
+        xlog::info("Invalid mixer input: '{}', reason: {}", str, e.what());
+    }
+}
+void ao_gyro_vh_mixer_cbox_on_click(int x, int y) {
+    rf::ui::popup_message("Enter Gyro V/H Mixer (Vertical: -100 to -1 , Horizontal: 1 to 100):", "", ao_gyro_vh_mixer_cbox_on_click_callback, 1);
+}
+
 void ao_joy_camera_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
     g_alpine_game_config.gamepad_joy_camera = !g_alpine_game_config.gamepad_joy_camera;
     ao_play_button_snd(true);
@@ -1841,6 +1861,9 @@ void alpine_options_panel_init() {
         &ao_gyro_smoothing_cbox, &ao_gyro_smoothing_label, &ao_gyro_smoothing_butlabel,
         &alpine_options_panel2, ao_gyro_smoothing_cbox_on_click, 280, 384, "Gyro smoothing");
     alpine_options_panel_inputbox_init(
+        &ao_gyro_vh_mixer_cbox, &ao_gyro_vh_mixer_label, &ao_gyro_vh_mixer_butlabel,
+        &alpine_options_panel2, ao_gyro_vh_mixer_cbox_on_click, 280, 414, "Gyro V/H mixer");
+    alpine_options_panel_inputbox_init(
         &ao_gyro_scannersens_cbox, &ao_gyro_scannersens_label, &ao_gyro_scannersens_butlabel,
         &alpine_options_panel2, ao_gyro_scannersens_cbox_on_click, 280, 414, "Gyro scanner mod");
     alpine_options_panel_inputbox_init(
@@ -2070,6 +2093,18 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_gyro_smoothing_butlabel_text, sizeof(ao_gyro_smoothing_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_gyro_smoothing);
     ao_gyro_smoothing_butlabel.text = ao_gyro_smoothing_butlabel_text;
 
+    {
+        int v = g_alpine_game_config.gamepad_gyro_vh_mixer;
+        if (v == 0)
+            snprintf(ao_gyro_vh_mixer_butlabel_text, sizeof(ao_gyro_vh_mixer_butlabel_text), "0%%");
+        else if (v > 0)
+            snprintf(ao_gyro_vh_mixer_butlabel_text, sizeof(ao_gyro_vh_mixer_butlabel_text), "%d%% H", v);
+        else
+            snprintf(ao_gyro_vh_mixer_butlabel_text, sizeof(ao_gyro_vh_mixer_butlabel_text), "%d%% V", v);
+    }
+    ao_gyro_vh_mixer_butlabel.text = ao_gyro_vh_mixer_butlabel_text;
+    ao_gyro_vh_mixer_butlabel.align = rf::gr::ALIGN_CENTER;
+
     snprintf(ao_joy_scannersens_butlabel_text, sizeof(ao_joy_scannersens_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_scanner_sensitivity_modifier);
     ao_joy_scannersens_butlabel.text = ao_joy_scannersens_butlabel_text;
 
@@ -2137,6 +2172,7 @@ void alpine_options_panel_do_frame(int x)
     ao_gamepad_icon_override_butlabel.x = 326 + 4;
     ao_input_prompt_mode_butlabel.x = 326 + 4;
     ao_rumble_filter_butlabel.x = 326 + 4;
+    ao_gyro_vh_mixer_butlabel.x = 326 + 4;
 
     // show/hide gyro ui if gamepad supports motion sensors and (for subcontrols) gyro aiming is enabled
     bool gyro_hw = gamepad_is_motionsensors_supported();
@@ -2166,6 +2202,9 @@ void alpine_options_panel_do_frame(int x)
     ao_gyro_smoothing_cbox.enabled       = gyro_enabled;
     ao_gyro_smoothing_label.enabled      = gyro_enabled;
     ao_gyro_smoothing_butlabel.enabled   = gyro_enabled;
+    ao_gyro_vh_mixer_cbox.enabled        = gyro_enabled;
+    ao_gyro_vh_mixer_label.enabled       = gyro_enabled;
+    ao_gyro_vh_mixer_butlabel.enabled    = gyro_enabled;
     ao_gyro_scannersens_cbox.enabled     = gyro_enabled;
     ao_gyro_scannersens_label.enabled    = gyro_enabled;
     ao_gyro_scannersens_butlabel.enabled = gyro_enabled;
@@ -2207,6 +2246,7 @@ void alpine_options_panel_do_frame(int x)
         rc.add_inputbox(ao_gyro_scannersens_cbox, ao_gyro_scannersens_label, ao_gyro_scannersens_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_tightening_cbox, ao_gyro_tightening_label, ao_gyro_tightening_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_smoothing_cbox, ao_gyro_smoothing_label, ao_gyro_smoothing_butlabel, gyro_enabled);
+        rc.add_inputbox(ao_gyro_vh_mixer_cbox, ao_gyro_vh_mixer_label, ao_gyro_vh_mixer_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_space_cbox, ao_gyro_space_label, ao_gyro_space_butlabel, gyro_enabled);
         rc.add_checkbox(ao_gyro_invert_y_cbox, ao_gyro_invert_y_label, gyro_enabled);
         rc.add_inputbox(ao_gyro_autocalibration_cbox, ao_gyro_autocalibration_label, ao_gyro_autocalibration_butlabel, gyro_enabled);

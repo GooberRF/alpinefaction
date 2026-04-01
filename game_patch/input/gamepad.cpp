@@ -1048,6 +1048,7 @@ static void gamepad_apply_gyro(bool has_player_entity, float zoom_sens, float& y
     gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
     gyro_apply_smoothing(gyro_pitch, gyro_yaw);
     gyro_apply_tightening(gyro_pitch, gyro_yaw);
+    gyro_apply_vh_mixer(gyro_pitch, gyro_yaw);
 
     constexpr float deg2rad = 3.14159265f / 180.0f;
     float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
@@ -1257,6 +1258,7 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
                 gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
                 gyro_apply_tightening(gyro_pitch, gyro_yaw);
                 gyro_apply_smoothing(gyro_pitch, gyro_yaw);
+                gyro_apply_vh_mixer(gyro_pitch, gyro_yaw);
 
                 constexpr float gyro_to_rot = 1.0f / 90.0f;
                 float sens = g_alpine_game_config.gamepad_gyro_sensitivity / k_default_sens;
