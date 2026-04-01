@@ -214,8 +214,12 @@ void handle_levelm_param()
 
     std::string level_filename = get_levelm_cmd_line_param().get_arg();
 
-    //rf::console::print("filename {}", level_filename);
-    start_levelm_load_sequence(level_filename);
+    auto [is_valid, valid_filename] = is_level_name_valid(level_filename);
+    if (!is_valid) {
+        xlog::warn("levelm: level '{}' is not available", level_filename);
+        return;
+    }
+    start_levelm_load_sequence(valid_filename);
 }
 
 // Returns true if -awpgen was handled (caller should skip -levelm).
@@ -916,9 +920,14 @@ CodeInjection multi_customize_listen_server_settings_patch {
 ConsoleCommand2 levelm_cmd{
     "levelm",
     [](std::string filename) {
-        start_levelm_load_sequence(filename);
+        auto [is_valid, valid_filename] = is_level_name_valid(filename);
+        if (!is_valid) {
+            rf::console::print("Level '{}' is not available!", filename);
+            return;
+        }
+        start_levelm_load_sequence(valid_filename);
         rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
-        rf::console::print("Starting local multiplayer game on {}", filename);
+        rf::console::print("Starting local multiplayer game on {}", valid_filename);
     },
     "Start a new local multiplayer game on the specified level",
     "levelm <filename>",
