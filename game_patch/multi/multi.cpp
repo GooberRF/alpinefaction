@@ -246,9 +246,6 @@ bool handle_awpgen_param()
         return true;
     }
 
-    // Disable for batch generation
-    rf::sound_enabled = false;
-
     waypoints_start_awpgen(level_filename);
     start_levelm_load_sequence(level_filename);
     return true;

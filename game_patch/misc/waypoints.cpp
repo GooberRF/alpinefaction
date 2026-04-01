@@ -1254,22 +1254,89 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
         return false;
     }
 
+    // Primary trace: collide_linesegment_world checks level solid + mover brushes.
     rf::Vector3 p0 = pos;
     rf::Vector3 p1 = pos - rf::Vector3{0.0f, max_downward_dist, 0.0f};
     rf::PCollisionOut collision{};
     collision.obj_handle = -1;
-    if (!rf::collide_linesegment_world(
-            p0,
-            p1,
-            kWaypointWorldTraceFlags,
-            &collision)) {
-        return false;
+    bool world_hit = rf::collide_linesegment_world(
+        p0, p1, kWaypointWorldTraceFlags, &collision);
+
+    // Supplemental check: test only INVISIBLE faces that the standard collision
+    // misses (e.g. detail brush ramps over staircases). Only accepts hits above
+    // the floor already found by the primary trace. Skips liquid faces.
+    if (rf::level.geometry) {
+        const float ray_top = pos.y;
+        const float ray_bot = pos.y - max_downward_dist;
+        const float px = pos.x;
+        const float pz = pos.z;
+        float best_y = world_hit ? collision.hit_point.y : ray_bot;
+
+        for (int ri = 0; ri < rf::level.geometry->all_rooms.size(); ++ri) {
+            auto* room = rf::level.geometry->all_rooms[ri];
+            if (!room) continue;
+
+            if (px < room->bbox_min.x || px > room->bbox_max.x
+                || pz < room->bbox_min.z || pz > room->bbox_max.z
+                || ray_bot > room->bbox_max.y || ray_top < room->bbox_min.y) {
+                continue;
+            }
+
+            for (auto* face = room->face_list.first(); face; face = room->face_list.next(face)) {
+                if (!face->attributes.is_invisible()) continue;
+                if (face->attributes.is_liquid()) continue;
+                if (face->plane.normal.y <= 0.0f) continue;
+
+                if (px < face->bounding_box_min.x || px > face->bounding_box_max.x
+                    || pz < face->bounding_box_min.z || pz > face->bounding_box_max.z
+                    || ray_bot > face->bounding_box_max.y || ray_top < face->bounding_box_min.y) {
+                    continue;
+                }
+
+                const float hit_y = (-face->plane.offset
+                    - face->plane.normal.x * px
+                    - face->plane.normal.z * pz) / face->plane.normal.y;
+
+                if (hit_y < ray_bot || hit_y > ray_top || hit_y <= best_y) continue;
+
+                if (!face->edge_loop) continue;
+                bool inside = false;
+                const auto* first_fv = face->edge_loop;
+                const auto* fv = first_fv;
+                do {
+                    const auto* next_fv = fv->next;
+                    const rf::Vector3& v0 = fv->vertex->pos;
+                    const rf::Vector3& v1 = next_fv->vertex->pos;
+                    if ((v0.z <= pz) != (v1.z <= pz)) {
+                        const float t = (pz - v0.z) / (v1.z - v0.z);
+                        if (px < v0.x + t * (v1.x - v0.x)) {
+                            inside = !inside;
+                        }
+                    }
+                    fv = next_fv;
+                } while (fv != first_fv);
+
+                if (inside) {
+                    best_y = hit_y;
+                    world_hit = true;
+                }
+            }
+        }
+
+        if (world_hit && out_hit_point) {
+            if (best_y > collision.hit_point.y || collision.obj_handle < 0) {
+                *out_hit_point = rf::Vector3{pos.x, best_y, pos.z};
+            } else {
+                *out_hit_point = collision.hit_point;
+            }
+            return true;
+        }
     }
 
-    if (out_hit_point) {
+    if (world_hit && out_hit_point) {
         *out_hit_point = collision.hit_point;
     }
-    return true;
+    return world_hit;
 }
 
 float trace_upward_clearance_from_floor_hit(
@@ -4645,13 +4712,20 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 0.0f,
                 std::sin(angle_rad),
             };
-            const rf::Vector3 probe_pos = source_pos + dir * kWaypointGenerateProbeStepDistance;
+            // Trace from an elevated start to catch invisible ramp faces that sit
+            // above stair step geometry. The extra height ensures the trace starts
+            // above any nearby invisible floor surfaces.
+            const rf::Vector3 probe_pos = source_pos + dir * kWaypointGenerateProbeStepDistance
+                + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
 
             rf::Vector3 floor_pos{};
-            if (!trace_ground_below_point(probe_pos, kBridgeWaypointMaxGroundDistance, &floor_pos)) {
+            if (!trace_ground_below_point(probe_pos,
+                    kBridgeWaypointMaxGroundDistance + kWaypointGenerateGroundOffset, &floor_pos)) {
 
                 continue;
             }
+
+
             const float upward_clearance = trace_upward_clearance_from_floor_hit(
                 floor_pos,
                 kWaypointGenerateStandingHeadroom
@@ -4671,12 +4745,12 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                         floor_pos = elevated_floor;
                     }
                     else {
-        
+
                         continue;
                     }
                 }
                 else {
-    
+
                     continue;
                 }
             }
