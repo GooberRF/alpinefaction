@@ -1313,7 +1313,7 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
         }
 
         if (world_hit && out_hit_point) {
-            if (best_y > collision.hit_point.y || collision.obj_handle < 0) {
+            if (collision.obj_handle < 0 || best_y > collision.hit_point.y) {
                 *out_hit_point = rf::Vector3{pos.x, best_y, pos.z};
             } else {
                 *out_hit_point = collision.hit_point;
