@@ -81,6 +81,10 @@ add_packfile(alpinefaction.vpp
     tables/DM-Catan-Pasture_info.tbl
     tables/DM-Catan-Forest_info.tbl
     tables/DM-RFU8-Catan_info.tbl
+    tables/DM_EuropaOneOutpostNS_info.tbl
+    tables/dm-RFU4-GraveyardRM_info.tbl
+    tables/dm_Galileo2Starliner1-2_info.tbl
+    tables/dm_Galileo2StarlinerNS_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
