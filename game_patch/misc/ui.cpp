@@ -1807,7 +1807,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_togglecrouch_cbox, &ao_togglecrouch_label, &alpine_options_panel2, ao_togglecrouch_cbox_on_click, rf::local_player->settings.toggle_crouch, 280, 174, "Toggle crouch");
     alpine_options_panel_inputbox_init(
-        &ao_joy_camera_cbox, &ao_joy_camera_label, &ao_joy_camera_butlabel, &alpine_options_panel2, ao_joy_camera_cbox_on_click, 112, 234, "Joy Cam Mode");
+        &ao_joy_camera_cbox, &ao_joy_camera_label, &ao_joy_camera_butlabel, &alpine_options_panel2, ao_joy_camera_cbox_on_click, 112, 234, "Joy cam modes");
     alpine_options_panel_inputbox_init(
         &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 234, "Joy sensitivity");
     alpine_options_panel_inputbox_init(
