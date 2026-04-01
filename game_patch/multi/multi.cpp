@@ -83,6 +83,7 @@ static rf::CmdLineParam& get_awpgen_cmd_line_param()
 
 static bool g_client_bot_launch_enabled = false;
 static bool g_client_bot_debug_render_enabled = false;
+static bool g_awpgen_mode = false;
 
 bool client_bot_launch_enabled()
 {
@@ -95,6 +96,16 @@ bool client_bot_headless_enabled()
 {
     return client_bot_launch_enabled()
         && !(g_client_bot_debug_render_enabled || is_client_debugbot_requested_from_cmdline());
+}
+
+bool is_awpgen_active()
+{
+    return g_awpgen_mode || awpgen_requested_from_raw_cmdline();
+}
+
+bool is_headless_mode()
+{
+    return client_bot_headless_enabled() || g_awpgen_mode || awpgen_requested_from_raw_cmdline();
 }
 
 // Returns false if bot launch validation failed and the process should quit.
@@ -1085,11 +1096,13 @@ void multi_do_patch()
     get_awpgen_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
-    if (g_client_bot_launch_enabled) {
-        g_alpine_game_config.rendering_enabled = !client_bot_headless_enabled();
-        if (client_bot_headless_enabled()) {
-            rf::sound_enabled = false;
-        }
+    g_awpgen_mode = get_awpgen_cmd_line_param().found();
+    if (is_headless_mode()) {
+        g_alpine_game_config.rendering_enabled = false;
+        rf::sound_enabled = false;
+    }
+    else if (g_client_bot_launch_enabled) {
+        g_alpine_game_config.rendering_enabled = true;
     }
 
     // console commands

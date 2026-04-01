@@ -107,7 +107,7 @@ CodeInjection after_full_game_init_hook{
         console_init();
         multi_after_full_game_init();
         debug_init();
-        if (!client_bot_headless_enabled()) {
+        if (!is_headless_mode()) {
             load_world_hud_assets();
         }
         execute_startup_scripts();
@@ -167,7 +167,7 @@ FunHook<int()> rf_do_frame_hook{
 CodeInjection after_level_render_hook{
     0x00432375,
     []() {
-        if (client_bot_headless_enabled()) {
+        if (is_headless_mode()) {
             return;
         }
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
@@ -183,7 +183,7 @@ CodeInjection after_level_render_hook{
 CodeInjection after_frame_render_hook{
     0x004B2DC2,
     []() {
-        if (!rf::is_dedicated_server && !client_bot_headless_enabled()) {
+        if (!rf::is_dedicated_server && !is_headless_mode()) {
             // Draw on top (after scene)
             frametime_render_ui();
             achievement_system_do_frame();
@@ -291,7 +291,7 @@ FunHook<void(bool)> level_init_post_hook{
         apply_geoable_flags();
         apply_breakable_materials();
 
-        if (!rf::is_dedicated_server && !client_bot_headless_enabled()) {
+        if (!rf::is_dedicated_server && !is_headless_mode()) {
             explosion_flash_lights_level_init();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();

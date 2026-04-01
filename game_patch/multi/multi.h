@@ -133,6 +133,8 @@ void multi_do_patch();
 void multi_after_full_game_init();
 bool client_bot_launch_enabled();
 bool client_bot_headless_enabled();
+bool is_awpgen_active();
+bool is_headless_mode();
 void multi_init_player(rf::Player* player);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
