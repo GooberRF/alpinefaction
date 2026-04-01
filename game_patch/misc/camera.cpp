@@ -37,6 +37,8 @@ bool server_side_restrict_disable_ss = false;
 
 static bool s_camera_resetting = false;
 static bool s_camera_reset_prev_down = false;
+static float s_camera_reset_start_pitch = 0.0f;
+static float s_camera_reset_elapsed = 0.0f;
 
 FunHook<void(rf::Camera*)> camera_update_shake_hook{
     0x0040DB70,
@@ -373,6 +375,39 @@ static float convert_pitch_delta_to_non_linear_space(
     return new_pitch_delta;
 }
 
+static void apply_camera_reset_to_horizon(rf::Entity* entity, float& pitch_delta)
+{
+    // Track button state every frame so a held button doesn't re-arm after completion.
+    if (rf::local_player) {
+        const auto action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
+        const bool down = rf::control_is_control_down(&rf::local_player->settings.controls, action);
+
+        if (!s_camera_resetting && down && !s_camera_reset_prev_down) {
+            // Rising edge: capture the starting pitch and begin the animation.
+            s_camera_resetting = true;
+            s_camera_reset_start_pitch = entity->control_data.eye_phb.x;
+            s_camera_reset_elapsed = 0.0f;
+        }
+
+        s_camera_reset_prev_down = down;
+    }
+
+    if (!s_camera_resetting)
+        return;
+
+    // Advance time and compute a smoothstep [0,1] parameter.
+    // Smoothstep has zero first-derivative at both endpoints, giving a natural ease-in/out feel.
+    constexpr float duration = 0.3f;
+    s_camera_reset_elapsed += rf::frametime;
+    const float t = std::min(s_camera_reset_elapsed / duration, 1.0f);
+    const float t_smooth = t * t * (3.0f - 2.0f * t);
+    const float target_pitch = s_camera_reset_start_pitch * (1.0f - t_smooth);
+    pitch_delta = target_pitch - entity->control_data.eye_phb.x;
+
+    if (t >= 1.0f)
+        s_camera_resetting = false;
+}
+
 // Applies raw/modern mouse deltas and linear pitch correction at the entity
 // control injection point. For the player entity, this is where accumulated raw
 // mouse deltas are consumed (freelook camera deltas are consumed earlier in
@@ -414,29 +449,9 @@ CodeInjection linear_pitch_patch{
                 yaw_delta
             );
         }
-
-        // Reset camera pitch to horizon on rising-edge press.
-        // Skip input poll while already resetting - re-arm only after completion.
-        if (!s_camera_resetting && rf::local_player) {
-            const auto reset_action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
-            bool down = rf::control_is_control_down(&rf::local_player->settings.controls, reset_action);
-            if (down && !s_camera_reset_prev_down)
-                s_camera_resetting = true;
-            s_camera_reset_prev_down = down;
-        }
-        if (s_camera_resetting) {
-            constexpr float lerp_rate = 12.0f; // exponential decay rate
-            constexpr float done_threshold = 0.02f; // ~1 degree — imperceptible snap
-            const float current_pitch = entity->control_data.eye_phb.x;
-            if (std::abs(current_pitch) < done_threshold) {
-                pitch_delta = -current_pitch; // snap the last sliver
-                s_camera_resetting = false;
-                s_camera_reset_prev_down = false; // re-arm edge detection
-            } else {
-                const float t = std::min(lerp_rate * rf::frametime, 1.0f);
-                pitch_delta = -current_pitch * t;
-            }
-        }
+        
+        // Apply camera reset to horizon if Center View action is pressed
+        apply_camera_reset_to_horizon(entity, pitch_delta);
     },
 };
 
