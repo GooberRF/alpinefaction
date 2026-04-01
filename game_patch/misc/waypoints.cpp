@@ -8125,7 +8125,7 @@ int run_waypoint_generation_pipeline()
             for (auto* face = room->face_list.first(); face; face = room->face_list.next(face)) {
                 if (face->attributes.is_invisible()
                     && !face->attributes.is_liquid()
-                    && face->plane.normal.y > 0.0f
+                    && face->plane.normal.y > 0.1f
                     && face->edge_loop) {
                     g_invisible_floor_faces.push_back(face);
                 }
@@ -8746,6 +8746,7 @@ struct AwpgenContext
     AwpgenState state = AwpgenState::idle;
     std::string rfl_filename;
     int frames_since_level_loaded = 0;
+    std::chrono::steady_clock::time_point start_time;
     int existing_revision = -1;
 };
 
@@ -8758,6 +8759,7 @@ void waypoints_start_awpgen(const std::string& rfl_filename)
     g_awpgen.state = AwpgenState::waiting_for_level_load;
     g_awpgen.rfl_filename = rfl_filename;
     g_awpgen.frames_since_level_loaded = 0;
+    g_awpgen.start_time = std::chrono::steady_clock::now();
 
     // Enable waypoint editing mode
     g_alpine_game_config.waypoints_edit_mode = true;
@@ -8771,6 +8773,15 @@ void waypoints_start_awpgen(const std::string& rfl_filename)
 static void awpgen_do_frame()
 {
     if (g_awpgen.state == AwpgenState::idle) {
+        return;
+    }
+
+    const auto elapsed = std::chrono::steady_clock::now() - g_awpgen.start_time;
+    if (elapsed > std::chrono::minutes(60)) {
+        xlog::error("-awpgen: timed out after 60 minutes, quitting");
+        g_awpgen.state = AwpgenState::idle;
+        g_awpgen_active = false;
+        rf::gameseq_set_state(rf::GS_QUITING, false);
         return;
     }
 
