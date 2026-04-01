@@ -4489,29 +4489,20 @@ int seed_water_room_waypoints(
             }
         }
 
-        // Reject points inside detail brush bounding boxes
-        {
-            bool inside_detail = false;
-            for (int ri = 0; ri < rf::level.geometry->all_rooms.size(); ++ri) {
-                auto* dr = rf::level.geometry->all_rooms[ri];
-                if (!dr || !dr->is_detail) {
-                    continue;
-                }
-                if (candidate.pos.x >= dr->bbox_min.x && candidate.pos.x <= dr->bbox_max.x
-                    && candidate.pos.y >= dr->bbox_min.y && candidate.pos.y <= dr->bbox_max.y
-                    && candidate.pos.z >= dr->bbox_min.z && candidate.pos.z <= dr->bbox_max.z) {
-                    inside_detail = true;
-                    break;
-                }
-            }
-            if (inside_detail) {
-                continue;
-            }
-        }
-
         // Skip if there's already a waypoint nearby.
         if (find_nearest_waypoint(candidate.pos, step, 0) > 0) {
             continue;
+        }
+
+        // Verify reachability: trace to the nearest existing waypoint to ensure
+        // this candidate isn't separated by invisible level boundaries.
+        // Candidates are sorted surface-first, so early placements link to ground
+        // waypoints and deeper ones link to already-placed water waypoints above.
+        {
+            const int nearest = find_nearest_waypoint(candidate.pos, water_link_radius, 0);
+            if (nearest <= 0 || !can_link_waypoints(candidate.pos, g_waypoints[nearest].pos)) {
+                continue;
+            }
         }
 
         const int wp_index = add_waypoint(
