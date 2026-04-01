@@ -1536,26 +1536,12 @@ static int ao_compute_max_scroll(rf::ui::Panel* subpanel)
 }
 
 void alpine_options_panel_handle_key(rf::Key* key){
+    // todo: more key support (tab, etc.)
     // close panel on escape
     if (*key == rf::Key::KEY_ESC) {
-        if (g_alpine_options_hud_dirty) {
-            hud_refresh_action_tokens();
-            g_alpine_options_hud_dirty = false;
-        }
         rf::ui::options_close_current_panel();
         rf::snd_play(43, 0, 0.0f, 1.0f);
         return;
-    }
-    // scroll with arrow / page keys
-    const int tab = alpine_options_panel_current_tab;
-    if (alpine_options_panel_scrollable[tab] && (*key == rf::Key::KEY_UP || *key == rf::Key::KEY_PAGEUP)) {
-        int step = (*key == rf::Key::KEY_PAGEUP) ? 3 * AO_SCROLL_STEP : AO_SCROLL_STEP;
-        alpine_options_scroll_offsets[tab] = std::max(0, alpine_options_scroll_offsets[tab] - step);
-    }
-    else if (alpine_options_panel_scrollable[tab] && (*key == rf::Key::KEY_DOWN || *key == rf::Key::KEY_PAGEDOWN)) {
-        int max_scroll = ao_compute_max_scroll(ao_get_active_subpanel());
-        int step = (*key == rf::Key::KEY_PAGEDOWN) ? 3 * AO_SCROLL_STEP : AO_SCROLL_STEP;
-        alpine_options_scroll_offsets[tab] = std::min(max_scroll, alpine_options_scroll_offsets[tab] + step);
     }
 }
 
