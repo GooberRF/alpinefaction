@@ -269,7 +269,6 @@ static void handle_required_color_command(
             target = *default_value;
             auto [r, g, b, a] = extract_color_components(target);
             rf::console::print("{} reset to default {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(target), r, g, b, a);
-            alpine_core_config_save();
         }
         else {
             rf::console::print("This color cannot be cleared. Specify a hex color RRGGBB or RRGGBBAA.");
@@ -287,7 +286,6 @@ static void handle_required_color_command(
     target = *parsed_color;
     auto [r, g, b, a] = extract_color_components(*parsed_color);
     rf::console::print("{} set to {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(*parsed_color), r, g, b, a);
-    alpine_core_config_save();
 }
 
 ConsoleCommand2 r_outlines_color_cmd{
@@ -324,9 +322,6 @@ ConsoleCommand2 r_outlines_color_enemy_cmd{
     "r_outlines_color_enemy",
     [](std::optional<std::string> color_opt) {
         handle_hex_color_console_command(color_opt, "Enemy outline color override", g_alpine_game_config.outlines_color_enemy);
-        if (color_opt) {
-            alpine_core_config_save();
-        }
         warn_outlines_if_not_d3d11();
     },
     "Override outline color for enemies (Direct3D 11 renderer only, clear to reset).",
@@ -337,9 +332,6 @@ ConsoleCommand2 r_outlines_color_team_cmd{
     "r_outlines_color_team",
     [](std::optional<std::string> color_opt) {
         handle_hex_color_console_command(color_opt, "Teammate outline color override", g_alpine_game_config.outlines_color_team);
-        if (color_opt) {
-            alpine_core_config_save();
-        }
         warn_outlines_if_not_d3d11();
     },
     "Override outline color for teammates (Direct3D 11 renderer only, clear to reset).",
