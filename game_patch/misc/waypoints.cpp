@@ -2724,6 +2724,142 @@ void seed_waypoints_from_teleport_events(
     }
 }
 
+// Seed teleporter waypoints from PF-style teleporter implementations
+// trigger (with TRIGGER_SOLO/TRIGGER_TELEPORT flags) -> mover -> keyframe event_uid -> Teleport_Player event
+void seed_waypoints_from_legacy_teleporters(
+    std::vector<int>* out_seeded_indices = nullptr, std::vector<int>* out_auto_link_source_indices = nullptr)
+{
+    constexpr char kTriggerPfFlagsPrefix = '\xAB';
+    constexpr uint8_t kTriggerSolo = 0x4;
+    constexpr uint8_t kTriggerTeleport = 0x8; // TRIGGER_TELEPORT in PF/Dash levels
+
+    std::unordered_map<int, int> tele_exit_by_event_uid{};
+    std::unordered_set<uint64_t> seeded_entrance_pairs{};
+
+    rf::Object* obj = rf::object_list.next_obj;
+    while (obj != &rf::object_list) {
+        if (obj->type != rf::OT_TRIGGER) {
+            obj = obj->next_obj;
+            continue;
+        }
+
+        auto* trigger = static_cast<rf::Trigger*>(obj);
+        obj = obj->next_obj;
+
+        // Must have TRIGGER_SOLO or TRIGGER_SOLO_IGNORE_RESET (TRIGGER_TELEPORT) flag
+        const char* trigger_name = trigger->name.c_str();
+        uint8_t ext_flags = trigger_name[0] == kTriggerPfFlagsPrefix
+            ? static_cast<uint8_t>(trigger_name[1]) : 0;
+        if ((ext_flags & (kTriggerSolo | kTriggerTeleport)) == 0) {
+            continue;
+        }
+
+        // Must have exactly 1 link
+        if (trigger->links.size() != 1) {
+            continue;
+        }
+
+        // The single link must resolve to a mover
+        const int linked_id = trigger->links[0];
+        rf::Object* linked_obj = rf::obj_from_handle(linked_id);
+        if (!linked_obj || linked_obj->type != rf::OT_MOVER) {
+            continue;
+        }
+
+        auto* mover = static_cast<rf::Mover*>(linked_obj);
+        const int keyframe_count = mover->keyframes.size();
+        if (keyframe_count < 1) {
+            continue;
+        }
+
+        // Check keyframe event_uid pattern:
+        // Case A: The first (and possibly only) keyframe has an event_uid -> Teleport_Player
+        // Case B: First keyframe is the start of a moving group where no keyframes have event_uids
+        //         except the last keyframe which has event_uid -> Teleport_Player
+        int teleport_event_uid = -1;
+        const rf::MoverKeyframe* first_kf = mover->keyframes[0];
+
+        if (first_kf) {
+            rf::Event* first_event = rf::event_lookup_from_uid(first_kf->event_uid);
+            if (first_event && first_event->event_type == rf::event_type_to_int(rf::EventType::Teleport_Player)) {
+                // Case A: first keyframe directly triggers Teleport_Player
+                teleport_event_uid = first_event->uid;
+            }
+            else if (!first_event && keyframe_count >= 2) {
+                // Case B: first keyframe has no event - check that no intermediate keyframes
+                // have events, and the last keyframe triggers Teleport_Player
+                bool intermediate_has_event = false;
+                for (int i = 1; i < keyframe_count - 1; ++i) {
+                    const rf::MoverKeyframe* kf = mover->keyframes[i];
+                    if (kf && rf::event_lookup_from_uid(kf->event_uid)) {
+                        intermediate_has_event = true;
+                        break;
+                    }
+                }
+
+                if (!intermediate_has_event) {
+                    const rf::MoverKeyframe* last_kf = mover->keyframes[keyframe_count - 1];
+                    if (last_kf) {
+                        rf::Event* last_event = rf::event_lookup_from_uid(last_kf->event_uid);
+                        if (last_event && last_event->event_type == rf::event_type_to_int(rf::EventType::Teleport_Player)) {
+                            teleport_event_uid = last_event->uid;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (teleport_event_uid < 0) {
+            continue;
+        }
+
+        // Deduplicate entrance pairs
+        const uint64_t pair_key =
+            (static_cast<uint64_t>(static_cast<uint32_t>(trigger->uid)) << 32)
+            | static_cast<uint32_t>(teleport_event_uid);
+        if (!seeded_entrance_pairs.insert(pair_key).second) {
+            continue;
+        }
+
+        // Seed tele_exit at the Teleport_Player event position (if not already seeded)
+        rf::Event* teleport_event = rf::event_lookup_from_uid(teleport_event_uid);
+        if (!teleport_event) {
+            continue;
+        }
+
+        int tele_exit_index;
+        auto exit_it = tele_exit_by_event_uid.find(teleport_event_uid);
+        if (exit_it != tele_exit_by_event_uid.end()) {
+            tele_exit_index = exit_it->second;
+        }
+        else {
+            tele_exit_index = add_waypoint(
+                teleport_event->pos, WaypointType::tele_exit, 0, false, true,
+                kWaypointLinkRadius, teleport_event_uid, teleport_event, true);
+            tele_exit_by_event_uid[teleport_event_uid] = tele_exit_index;
+            if (out_seeded_indices) {
+                out_seeded_indices->push_back(tele_exit_index);
+            }
+            if (out_auto_link_source_indices) {
+                out_auto_link_source_indices->push_back(tele_exit_index);
+            }
+        }
+
+        // Seed tele_entrance at the trigger position
+        const float link_radius = waypoint_link_radius_from_trigger(*trigger) + 1.0f;
+        const int tele_entrance_index = add_waypoint(
+            trigger->pos, WaypointType::tele_entrance, 0, false, true, link_radius, teleport_event_uid,
+            trigger, true);
+        if (out_seeded_indices) {
+            out_seeded_indices->push_back(tele_entrance_index);
+        }
+        if (out_auto_link_source_indices) {
+            out_auto_link_source_indices->push_back(tele_entrance_index);
+        }
+        link_waypoint(tele_entrance_index, tele_exit_index);
+    }
+}
+
 bool waypoint_has_link_to(int from, int to)
 {
     if (from <= 0 || to <= 0
@@ -3916,6 +4052,7 @@ void seed_waypoints_from_objects()
     }
 
     seed_waypoints_from_teleport_events(&seeded_indices, &auto_link_source_indices);
+    seed_waypoints_from_legacy_teleporters(&seeded_indices, &auto_link_source_indices);
     auto_link_default_seeded_waypoints(seeded_indices, auto_link_source_indices);
 }
 
