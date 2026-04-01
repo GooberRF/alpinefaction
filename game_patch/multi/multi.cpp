@@ -360,6 +360,46 @@ CodeInjection ctf_flag_return_fix{
     },
 };
 
+// Vanilla multi_ctf_is_red/blue_flag_in_base functions crash if the ctf_initialized flag is set
+// but the corresponding flag item pointer is NULL. This can happen if a level has only one CTF flag
+// item (e.g. blue but not red). Return true (in base) when the pointer is NULL, matching the vanilla
+// behavior when CTF is uninitialized.
+// Same vulnerability exists in the CTF flag capture function (0x00473BA0) which directly
+// dereferences ctf_red/blue_flag_item pointers without NULL checks.
+CodeInjection ctf_flag_capture_red_null_check{
+    0x00473C17,
+    [](auto& regs) {
+        if (!rf::ctf_red_flag_item) {
+            regs.eip = 0x00473D2E;
+        }
+    },
+};
+
+CodeInjection ctf_flag_capture_blue_null_check{
+    0x00473CC2,
+    [](auto& regs) {
+        if (!rf::ctf_blue_flag_item) {
+            regs.eip = 0x00473D2E;
+        }
+    },
+};
+
+FunHook<bool()> multi_ctf_is_red_flag_in_base_hook{
+    0x00474E80,
+    []() -> bool {
+        if (!rf::ctf_red_flag_item) return true;
+        return multi_ctf_is_red_flag_in_base_hook.call_target();
+    },
+};
+
+FunHook<bool()> multi_ctf_is_blue_flag_in_base_hook{
+    0x00474EA0,
+    []() -> bool {
+        if (!rf::ctf_blue_flag_item) return true;
+        return multi_ctf_is_blue_flag_in_base_hook.call_target();
+    },
+};
+
 FunHook<void()> multi_ctf_level_init_hook{
     0x00472E30,
     []() {
@@ -795,6 +835,11 @@ void start_level_in_multi(std::string filename) {
     auto [is_valid, valid_filename] = is_level_name_valid(filename);
 
     if (is_valid) {
+        // Clean up any previous game state so the level loader doesn't call game_shutdown
+        // after multi_start has already set up the new multiplayer session
+        rf::game_shutdown();
+
+        rf::netgame.levels.clear();
         rf::netgame.levels.add(valid_filename.c_str());
         rf::netgame.max_time_seconds = 3600.0f;
         rf::netgame.max_kills = 30;
@@ -831,16 +876,11 @@ CodeInjection multi_customize_listen_server_settings_patch {
 ConsoleCommand2 levelm_cmd{
     "levelm",
     [](std::string filename) {
-        if (rf::gameseq_get_state() == rf::GS_MAIN_MENU ||
-            rf::gameseq_get_state() == rf::GS_EXTRAS_MENU) {
-            start_level_in_multi(filename);
-            rf::console::print("Starting local multiplayer game on {}", filename);
-        }
-        else {
-            rf::console::print("You must run this command from the main menu!");
-        }
+        start_levelm_load_sequence(filename);
+        rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
+        rf::console::print("Starting local multiplayer game on {}", filename);
     },
-    "Start a local multiplayer game on the specified level",
+    "Start a new local multiplayer game on the specified level",
     "levelm <filename>",
 };
 
@@ -959,6 +999,12 @@ void multi_do_patch()
 
     // Check ammo server-side when handling weapon fire packets
     multi_process_remote_weapon_fire_hook.install();
+
+    // Prevent crash when CTF flag item pointers are NULL
+    multi_ctf_is_red_flag_in_base_hook.install();
+    multi_ctf_is_blue_flag_in_base_hook.install();
+    ctf_flag_capture_red_null_check.install();
+    ctf_flag_capture_blue_null_check.install();
 
     // Make sure CTF flag does not spin in new level if it was dropped in the previous level
     multi_ctf_level_init_hook.install();

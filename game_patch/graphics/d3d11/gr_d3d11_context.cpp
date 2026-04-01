@@ -68,7 +68,7 @@ namespace df::gr::d3d11
         // Note: original code clears clip rect only but it is not trivial in D3D11
         if (gr::screen.depthbuffer_type != gr::DEPTHBUFFER_NONE && depth_stencil_view_) {
             float depth = gr::screen.depthbuffer_type == gr::DEPTHBUFFER_Z ? 0.0f : 1.0f;
-            device_context_->ClearDepthStencilView(depth_stencil_view_, D3D11_CLEAR_DEPTH, depth, 0);
+            device_context_->ClearDepthStencilView(depth_stencil_view_, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, depth, 0);
         }
     }
 
@@ -303,7 +303,9 @@ namespace df::gr::d3d11
         float self_illumination;
         float light_scale;
         float dynamic_light_ndotl;
-        float _pad[1];
+        float pixel_light_overbright;
+        float emissive_override;
+        float _pad[3];
     };
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
@@ -395,6 +397,8 @@ namespace df::gr::d3d11
             data.light_scale = 1.0f;
         }
         data.dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
+        data.pixel_light_overbright = g_level_pixel_light_overbright;
+        data.emissive_override = current_emissive_override_ ? 1.0f : 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

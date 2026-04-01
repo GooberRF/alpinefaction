@@ -2160,6 +2160,8 @@ const char* waypoint_type_to_string(const WaypointType type)
             return "tele_entrance";
         case WaypointType::tele_exit:
             return "tele_exit";
+        case WaypointType::water:
+            return "water";
         default:
             return "unknown";
     }
@@ -2194,6 +2196,8 @@ rf::Color waypoint_debug_color(const WaypointType type)
             return {255, 140, 60, 150};
         case WaypointType::tele_exit:
             return {255, 80, 220, 150};
+        case WaypointType::water:
+            return {60, 140, 255, 150};
         default:
             return {200, 200, 200, 150};
     }

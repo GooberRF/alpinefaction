@@ -2380,6 +2380,8 @@ rf::Color debug_waypoint_color(WaypointType type)
             return {255, 80, 220, 150};
         case WaypointType::conveyer:
             return {180, 255, 100, 150};
+        case WaypointType::water:
+            return {60, 140, 255, 150};
         default:
             return {200, 200, 200, 150};
     }

@@ -20,6 +20,8 @@ cbuffer RenderModeBuffer : register(b0)
     float self_illumination;
     float light_scale;
     float dynamic_light_ndotl;
+    float pixel_light_overbright;
+    float emissive_override;
 };
 
 struct PointLight {
@@ -244,11 +246,10 @@ float4 main(VsOutput input) : SV_TARGET
             // with red > green get red compressed more, producing a green tint).
             // Instead, compress based on luminance and scale all channels equally.
             float lum = dot(light_color, float3(0.2126f, 0.7152f, 0.0722f));
-            if (lum > 0.0f) {
-                float shoulder = 1.0f;
-                float range = 0.5f;
-                float excess = max(lum - shoulder, 0.0f);
-                float compressed_lum = min(lum, shoulder) + excess * range / (excess + range);
+            if (lum > 1.0f) {
+                float range = pixel_light_overbright;
+                float excess = lum - 1.0f;
+                float compressed_lum = (range > 0.0f) ? 1.0f + excess * range / (excess + range) : 1.0f;
                 light_color *= compressed_lum / lum;
             }
         }
@@ -257,6 +258,12 @@ float4 main(VsOutput input) : SV_TARGET
     // Self-illumination sets a minimum brightness floor (matches stock engine behavior).
     if (self_illumination > 0.0f) {
         light_color = max(light_color, self_illumination);
+    }
+    // Emissive override: render at pure texture brightness, ignoring vertex color
+    // darkening and lighting. Used for monitor screens that should appear self-lit.
+    if (emissive_override > 0.5f) {
+        target.rgb = tex0_color.rgb * current_color.rgb;
+        light_color = float3(1.0f, 1.0f, 1.0f);
     }
 
     target.rgb *= light_color;

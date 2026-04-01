@@ -443,6 +443,8 @@ WaypointType waypoint_type_from_int(int raw_type)
             return WaypointType::tele_exit;
         case static_cast<int>(WaypointType::conveyer):
             return WaypointType::conveyer;
+        case static_cast<int>(WaypointType::water):
+            return WaypointType::water;
         default:
             return static_cast<WaypointType>(raw_type);
     }
@@ -488,6 +490,8 @@ std::string_view waypoint_type_name(WaypointType type)
             return "tele_exit";
         case WaypointType::conveyer:
             return "conveyer";
+        case WaypointType::water:
+            return "water";
         default:
             return "unknown";
     }
@@ -4087,6 +4091,271 @@ int seed_ladder_waypoints_for_autogen(int max_new_waypoints)
     return created_waypoints;
 }
 
+// Water waypoint autogen support
+
+struct WaterRoomInfo {
+    rf::GRoom* room;
+    float surface_y;    // bbox_min.y + liquid_depth
+};
+
+std::vector<WaterRoomInfo> collect_swimmable_water_rooms()
+{
+    std::vector<WaterRoomInfo> result;
+    if (!rf::level.geometry) {
+        return result;
+    }
+
+    for (int i = 0; i < rf::level.geometry->all_rooms.size(); ++i) {
+        auto* room = rf::level.geometry->all_rooms[i];
+        if (!room || room->uid < 0 || !room->contains_liquid) {
+            continue;
+        }
+        if (room->liquid_type != 1) {
+            continue; // Only water (1), skip lava (2) and acid (3)
+        }
+        if (room->liquid_depth < kWaypointGenerateMinSwimmableDepth) {
+            continue; // Too shallow — ground waypoints suffice
+        }
+
+        const float surface_y = room->bbox_min.y + room->liquid_depth;
+        result.push_back({room, surface_y});
+    }
+
+    return result;
+}
+
+// Check if a point is underwater in any of the given water rooms.
+// Returns the matching room info, or nullptr if not underwater.
+const WaterRoomInfo* find_water_room_at_point(
+    const rf::Vector3& pos,
+    const std::vector<WaterRoomInfo>& water_rooms)
+{
+    for (const auto& info : water_rooms) {
+        const auto* room = info.room;
+        if (pos.x < room->bbox_min.x || pos.x > room->bbox_max.x
+            || pos.y < room->bbox_min.y || pos.y > room->bbox_max.y
+            || pos.z < room->bbox_min.z || pos.z > room->bbox_max.z) {
+            continue;
+        }
+        if (pos.y < info.surface_y) {
+            return &info;
+        }
+    }
+    return nullptr;
+}
+
+int allocate_new_water_identifier()
+{
+    int max_identifier = -1;
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid || node.type != WaypointType::water || node.identifier < 0) {
+            continue;
+        }
+        max_identifier = std::max(max_identifier, node.identifier);
+    }
+    return max_identifier + 1;
+}
+
+// Check if any waypoint (of any type) is within proximity of a water room's bbox.
+bool water_room_has_nearby_waypoint(const WaterRoomInfo& info, float proximity)
+{
+    const auto* room = info.room;
+    if (!room) {
+        return false;
+    }
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid || node.type == WaypointType::water) {
+            continue;
+        }
+        // 3D proximity to room bbox (expanded by proximity distance).
+        if (node.pos.x < room->bbox_min.x - proximity
+            || node.pos.x > room->bbox_max.x + proximity
+            || node.pos.z < room->bbox_min.z - proximity
+            || node.pos.z > room->bbox_max.z + proximity
+            || node.pos.y < room->bbox_min.y - proximity
+            || node.pos.y > room->bbox_max.y + proximity) {
+            continue;
+        }
+        return true;
+    }
+    return false;
+}
+
+int seed_water_room_waypoints(
+    const WaterRoomInfo& info,
+    const std::vector<WaterRoomInfo>& all_water_rooms,
+    int water_identifier,
+    int max_new_waypoints)
+{
+    if (max_new_waypoints <= 0) {
+        return 0;
+    }
+
+    const auto* room = info.room;
+    // Water waypoints are spaced 3x further apart than standard waypoints.
+    constexpr float kWaterStepScale = 3.0f;
+    const float step = std::max(kWaypointGenerateProbeStepDistance * kWaterStepScale, kWaypointLinkRadiusEpsilon);
+    // Link radius must cover diagonal neighbors (step * sqrt(3) ≈ step * 1.74).
+    const float water_link_radius = step * 2.0f;
+
+    // Calculate the water volume bounds.
+    const float water_min_x = room->bbox_min.x + kWaypointGenerateWaterEdgeClearance;
+    const float water_max_x = room->bbox_max.x - kWaypointGenerateWaterEdgeClearance;
+    const float water_min_y = room->bbox_min.y + kWaypointGenerateWaterEdgeClearance;
+    const float water_max_y = info.surface_y - kWaypointGenerateWaterEdgeClearance;
+    const float water_min_z = room->bbox_min.z + kWaypointGenerateWaterEdgeClearance;
+    const float water_max_z = room->bbox_max.z - kWaypointGenerateWaterEdgeClearance;
+
+    if (water_min_x >= water_max_x || water_min_y >= water_max_y || water_min_z >= water_max_z) {
+        return 0; // Volume too small for waypoints.
+    }
+
+    // Build a grid of seed candidates within the water volume, center-out.
+    const float extent_x = (water_max_x - water_min_x) * 0.5f;
+    const float extent_y = (water_max_y - water_min_y) * 0.5f;
+    const float extent_z = (water_max_z - water_min_z) * 0.5f;
+    const float center_x = (water_min_x + water_max_x) * 0.5f;
+    const float center_y = (water_min_y + water_max_y) * 0.5f;
+    const float center_z = (water_min_z + water_max_z) * 0.5f;
+
+    // Verify the center point is in valid geometry and underwater.
+    const rf::Vector3 center_pos{center_x, center_y, center_z};
+    rf::Vector3 center_room_check = center_pos;
+    if (rf::find_room(rf::level.geometry, &center_room_check) == nullptr
+        || !find_water_room_at_point(center_pos, all_water_rooms)) {
+        return 0;
+    }
+
+    const int count_x = ladder_axis_sample_count(extent_x, step);
+    const int count_y = ladder_axis_sample_count(extent_y, step);
+    const int count_z = ladder_axis_sample_count(extent_z, step);
+
+    // Generate candidates sorted by distance from center.
+    struct Candidate {
+        rf::Vector3 pos;
+        float dist_sq;
+    };
+    std::vector<Candidate> candidates;
+    candidates.reserve(count_x * count_y * count_z);
+
+    for (int ix = 0; ix < count_x; ++ix) {
+        const float x = center_x + ladder_axis_sample_coordinate(extent_x, ix, count_x);
+        for (int iy = 0; iy < count_y; ++iy) {
+            const float y = center_y + ladder_axis_sample_coordinate(extent_y, iy, count_y);
+            for (int iz = 0; iz < count_z; ++iz) {
+                const float z = center_z + ladder_axis_sample_coordinate(extent_z, iz, count_z);
+                const rf::Vector3 pos{x, y, z};
+                const float dx = x - center_x;
+                const float dy = y - center_y;
+                const float dz = z - center_z;
+                candidates.push_back({pos, dx * dx + dy * dy + dz * dz});
+            }
+        }
+    }
+
+    std::stable_sort(candidates.begin(), candidates.end(),
+        [](const Candidate& a, const Candidate& b) { return a.dist_sq < b.dist_sq; });
+
+    // Place seed waypoints, starting from the center and expanding outward.
+    std::deque<int> frontier;
+    int created_waypoints = 0;
+
+    for (const auto& candidate : candidates) {
+        if (created_waypoints >= max_new_waypoints) {
+            break;
+        }
+
+        // Verify point is actually inside the water volume.
+        if (!find_water_room_at_point(candidate.pos, all_water_rooms)) {
+            continue;
+        }
+
+        // Verify point is inside the level geometry (room bbox can extend beyond actual room).
+        rf::Vector3 room_check = candidate.pos;
+        if (rf::find_room(rf::level.geometry, &room_check) == nullptr) {
+            continue;
+        }
+
+        // Must not collide with geometry (e.g., pillars, structures in the water).
+        if (!can_link_waypoints(
+                rf::Vector3{center_x, center_y, center_z}, candidate.pos)
+            && find_nearest_waypoint(candidate.pos, step, 0) <= 0) {
+            // Can't trace from center — try tracing from any nearby water waypoint.
+            bool reachable = false;
+            for (int f : frontier) {
+                if (f > 0 && f < static_cast<int>(g_waypoints.size())
+                    && distance_sq(g_waypoints[f].pos, candidate.pos) <= water_link_radius * water_link_radius
+                    && can_link_waypoints(g_waypoints[f].pos, candidate.pos)) {
+                    reachable = true;
+                    break;
+                }
+            }
+            if (!reachable) {
+                continue;
+            }
+        }
+
+        // Skip if there's already a waypoint nearby.
+        if (find_nearest_waypoint(candidate.pos, step, 0) > 0) {
+            continue;
+        }
+
+        const int wp_index = add_waypoint(
+            candidate.pos,
+            WaypointType::water,
+            0,
+            false,
+            true,
+            water_link_radius,
+            water_identifier,
+            nullptr,
+            true,
+            static_cast<int>(WaypointDroppedSubtype::normal));
+        if (wp_index > 0) {
+            frontier.push_back(wp_index);
+            ++created_waypoints;
+        }
+    }
+
+    return created_waypoints;
+}
+
+int seed_water_waypoints_for_autogen(int max_new_waypoints)
+{
+    if (max_new_waypoints <= 0) {
+        return 0;
+    }
+
+    const auto water_rooms = collect_swimmable_water_rooms();
+    if (water_rooms.empty()) {
+        return 0;
+    }
+
+    int created_waypoints = 0;
+
+    for (const auto& info : water_rooms) {
+        if (created_waypoints >= max_new_waypoints) {
+            break;
+        }
+
+        // Only generate water waypoints for rooms that have nearby navigable waypoints.
+        if (!water_room_has_nearby_waypoint(info, kWaypointGenerateWaterSeedProximity)) {
+            continue;
+        }
+
+        const int water_identifier = allocate_new_water_identifier();
+        created_waypoints += seed_water_room_waypoints(
+            info,
+            water_rooms,
+            water_identifier,
+            max_new_waypoints - created_waypoints);
+    }
+
+    return created_waypoints;
+}
+
 int find_most_central_waypoint_index(const std::vector<int>& waypoint_indices)
 {
     float center_x = 0.0f;
@@ -4292,6 +4561,7 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
     std::unordered_set<int> expanded_indices{};
     expanded_indices.reserve(seed_indices.size() * 2);
     std::unordered_map<int, std::vector<int>> lift_entrances_by_uid{};
+    const auto active_water_rooms = collect_swimmable_water_rooms();
     int created_waypoints = seed_ladder_waypoints_for_autogen(kWaypointGenerateMaxCreatedWaypoints);
     constexpr float kDegToRad = 0.01745329252f;
     const int direction_count = std::max(
@@ -4465,6 +4735,11 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
             if (rf::level_point_in_climb_region(&candidate_climb_query)) {
                 continue;
             }
+            // Skip generating ground waypoints underwater — water waypoints
+            // are seeded separately after ground generation.
+            if (find_water_room_at_point(candidate_pos, active_water_rooms)) {
+                continue;
+            }
             if (upward_clearance < kWaypointGenerateStandingHeadroom) {
                 generated_movement_subtype = static_cast<int>(WaypointDroppedSubtype::crouch_needed);
             }
@@ -4506,6 +4781,13 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
     if (created_waypoints < kWaypointGenerateMaxCreatedWaypoints) {
         created_waypoints += generate_lift_path_waypoints_for_autogen(
             lift_entrances_by_uid,
+            kWaypointGenerateMaxCreatedWaypoints - created_waypoints);
+    }
+
+    // Seed water waypoints from ground waypoints near water surfaces.
+    // Must run after ground generation so we have ground waypoints to seed from.
+    if (created_waypoints < kWaypointGenerateMaxCreatedWaypoints && !active_water_rooms.empty()) {
+        created_waypoints += seed_water_waypoints_for_autogen(
             kWaypointGenerateMaxCreatedWaypoints - created_waypoints);
     }
 
@@ -4930,7 +5212,8 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
                             continue;
                         }
 
-                        if (distance_sq(node_a.pos, node_b.pos) > link_radius_sq) {
+                        const float pair_link_radius = std::max(node_a.link_radius, node_b.link_radius);
+                        if (distance_sq(node_a.pos, node_b.pos) > pair_link_radius * pair_link_radius) {
                             continue;
                         }
                         if (!can_link_waypoints(node_a.pos, node_b.pos)) {
@@ -4969,7 +5252,11 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
 
                         const bool ladder_pair =
                             node_a.type == WaypointType::ladder && node_b.type == WaypointType::ladder;
-                        if (ladder_pair) {
+                        const bool water_pair =
+                            node_a.type == WaypointType::water && node_b.type == WaypointType::water;
+                        const bool water_transition =
+                            (node_a.type == WaypointType::water) != (node_b.type == WaypointType::water);
+                        if (ladder_pair || water_pair || water_transition) {
                             if (link_waypoint_if_clear_no_replace(i, j)) {
                                 ++stats.bidirectional_links;
                             }
@@ -6187,6 +6474,7 @@ int generate_ledge_drop_links()
     constexpr float kDegToRad = 0.01745329252f;
     const float angle_step = 360.0f / static_cast<float>(kLedgeDropDirectionCount);
     const float landing_search_sq = kLedgeDropLandingSearchRadius * kLedgeDropLandingSearchRadius;
+    const auto cached_water_rooms = collect_swimmable_water_rooms();
     int links_added = 0;
     int edges_found = 0;
     int landings_found = 0;
@@ -6286,12 +6574,37 @@ int generate_ledge_drop_links()
 
             // Ledge edge confirmed — trace down to find landing.
             rf::Vector3 landing_floor{};
-            if (!trace_ground_below_point(edge_probe, kLedgeDropMaxHeight, &landing_floor)) {
-                continue;
-            }
+            bool landing_is_water = false;
+            rf::Vector3 landing_pos{};
 
-            const rf::Vector3 landing_pos = landing_floor
-                + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+            if (trace_ground_below_point(edge_probe, kLedgeDropMaxHeight, &landing_floor)) {
+                landing_pos = landing_floor
+                    + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+            }
+            else {
+                // No floor found — check if there's a water surface below.
+                rf::Vector3 water_check = edge_probe;
+                water_check.y -= kLedgeDropMaxHeight;
+                const auto* water_info = find_water_room_at_point(water_check, cached_water_rooms);
+                if (!water_info) {
+                    // Also check at the edge probe position itself (might already be
+                    // above a water room within the max height).
+                    for (const auto& wr : cached_water_rooms) {
+                        if (edge_probe.x >= wr.room->bbox_min.x && edge_probe.x <= wr.room->bbox_max.x
+                            && edge_probe.z >= wr.room->bbox_min.z && edge_probe.z <= wr.room->bbox_max.z
+                            && edge_probe.y > wr.surface_y
+                            && edge_probe.y - wr.surface_y <= kLedgeDropMaxHeight) {
+                            water_info = &wr;
+                            break;
+                        }
+                    }
+                }
+                if (!water_info) {
+                    continue;
+                }
+                landing_pos = rf::Vector3{edge_probe.x, water_info->surface_y, edge_probe.z};
+                landing_is_water = true;
+            }
 
             // Must be a meaningful drop.
             const float drop_height = node.pos.y - landing_pos.y;
@@ -6328,16 +6641,30 @@ int generate_ledge_drop_links()
                     || cand_node.type == WaypointType::ladder) {
                     continue;
                 }
-                // Target must be on the same floor as the landing — reject if the
-                // height difference is too large (would be on a different floor).
-                const float height_diff = std::fabs(landing_pos.y - cand_node.pos.y);
-                if (height_diff > kLedgeDropMinHeight) {
-                    continue;
+                if (landing_is_water) {
+                    // For water landings, prefer the water waypoint closest to
+                    // the surface (highest Y) near the landing position.
+                    if (cand_node.type != WaypointType::water) {
+                        continue;
+                    }
+                    const float d = distance_sq(landing_pos, cand_node.pos);
+                    if (d < best_dist_sq) {
+                        best_dist_sq = d;
+                        best_target = candidate;
+                    }
                 }
-                const float d = distance_sq(landing_pos, cand_node.pos);
-                if (d < best_dist_sq) {
-                    best_dist_sq = d;
-                    best_target = candidate;
+                else {
+                    // Target must be on the same floor as the landing — reject if the
+                    // height difference is too large (would be on a different floor).
+                    const float height_diff = std::fabs(landing_pos.y - cand_node.pos.y);
+                    if (height_diff > kLedgeDropMinHeight) {
+                        continue;
+                    }
+                    const float d = distance_sq(landing_pos, cand_node.pos);
+                    if (d < best_dist_sq) {
+                        best_dist_sq = d;
+                        best_target = candidate;
+                    }
                 }
             }
 
