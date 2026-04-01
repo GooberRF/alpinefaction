@@ -1423,15 +1423,15 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_togglecrouch_cbox, &ao_togglecrouch_label, &alpine_options_panel2, ao_togglecrouch_cbox_on_click, rf::local_player->settings.toggle_crouch, 280, 174, "Toggle crouch");
     alpine_options_panel_inputbox_init(
-        &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 204, "Camera sens");
+        &ao_joy_sensitivity_cbox, &ao_joy_sensitivity_label, &ao_joy_sensitivity_butlabel, &alpine_options_panel2, ao_joy_sensitivity_cbox_on_click, 112, 204, "Joy sensitivity");
     alpine_options_panel_inputbox_init(
-        &ao_move_deadzone_cbox, &ao_move_deadzone_label, &ao_move_deadzone_butlabel, &alpine_options_panel2, ao_move_deadzone_cbox_on_click, 112, 234, "Move deadzone");
+        &ao_move_deadzone_cbox, &ao_move_deadzone_label, &ao_move_deadzone_butlabel, &alpine_options_panel2, ao_move_deadzone_cbox_on_click, 112, 234, "Joy Move deadzone");
     alpine_options_panel_inputbox_init(
-        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Cam deadzone");
+        &ao_look_deadzone_cbox, &ao_look_deadzone_label, &ao_look_deadzone_butlabel, &alpine_options_panel2, ao_look_deadzone_cbox_on_click, 112, 264, "Joy Cam deadzone");
     alpine_options_panel_checkbox_init(
-        &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 294, "Camera Y-Invert");
+        &ao_joy_invert_y_cbox, &ao_joy_invert_y_label, &alpine_options_panel2, ao_joy_invert_y_cbox_on_click, g_alpine_game_config.gamepad_joy_invert_y, 112, 294, "Joy Cam Y-Invert");
     alpine_options_panel_checkbox_init(
-        &ao_swap_sticks_cbox, &ao_swap_sticks_label, &alpine_options_panel2, ao_swap_sticks_cbox_on_click, g_alpine_game_config.gamepad_swap_sticks, 112, 324, "Swap Sticks");
+        &ao_swap_sticks_cbox, &ao_swap_sticks_label, &alpine_options_panel2, ao_swap_sticks_cbox_on_click, g_alpine_game_config.gamepad_swap_sticks, 112, 324, "Swap Joysticks");
     alpine_options_panel_checkbox_init(
         &ao_gyro_enabled_cbox, &ao_gyro_enabled_label, &alpine_options_panel2, ao_gyro_enabled_cbox_on_click, g_alpine_game_config.gamepad_gyro_enabled, 280, 204, "Gyro Aiming");
     alpine_options_panel_inputbox_init(
@@ -1860,8 +1860,8 @@ static void install_ctrl_gamepad_codes()
         int trig = gamepad_get_trigger_for_action(i);
         int16_t code = 0; // unbound
         if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
-        else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
-        else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
+        else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER);
+        else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
         cc.bindings[i].scan_codes[0] = code;
         cc.bindings[i].scan_codes[1] = (btn_alt >= 0)
             ? static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn_alt) : int16_t{0};
@@ -1883,8 +1883,8 @@ static void refresh_ctrl_gamepad_codes()
         int trig = gamepad_get_trigger_for_action(i);
         int16_t code = 0;
         if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
-        else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
-        else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
+        else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER);
+        else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
         cc.bindings[i].scan_codes[0] = code;
         cc.bindings[i].scan_codes[1] = (btn_alt >= 0)
             ? static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn_alt) : int16_t{0};
@@ -2024,7 +2024,7 @@ CodeInjection options_render_alpine_panel_patch{
             for (int i = 0; i < n && !defaults_hit; ++i) {
                 int16_t sc = cc.bindings[i].scan_codes[0];
                 bool is_gamepad = (sc >= static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE)
-                                && sc <= static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER));
+                                && sc <= static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER));
                 if (sc != 0 && sc != static_cast<int16_t>(CTRL_REBIND_SENTINEL) && !is_gamepad)
                     defaults_hit = true;
             }
@@ -2037,8 +2037,6 @@ CodeInjection options_render_alpine_panel_patch{
             }
         }
 
-        if (index == 4)
-            alpine_options_panel_do_frame(static_cast<int>(rf::ui::options_animated_offset));
         if (index == 3)
             render_ctrl_mode_btns();
     },

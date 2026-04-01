@@ -48,15 +48,15 @@ rf::String get_action_bind_name(int action)
             return gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + btn);
         }
         int trig = gamepad_get_trigger_for_action(action);
-        if (trig == 0) return gamepad_get_scan_code_name(CTRL_GAMEPAD_LEFT_TRGGER);
-        if (trig == 1) return gamepad_get_scan_code_name(CTRL_GAMEPAD_RIGHT_TRGGER);
+        if (trig == 0) return gamepad_get_scan_code_name(CTRL_GAMEPAD_LEFT_TRIGGER);
+        if (trig == 1) return gamepad_get_scan_code_name(CTRL_GAMEPAD_RIGHT_TRIGGER);
     }
 
     auto& config_item = rf::local_player->settings.controls.bindings[action];
     rf::String name;
     if (config_item.scan_codes[0] >= 0) {
         int sc = static_cast<int>(config_item.scan_codes[0]);
-        if (sc >= CTRL_GAMEPAD_SCAN_BASE && sc <= CTRL_GAMEPAD_RIGHT_TRGGER) {
+        if (sc >= CTRL_GAMEPAD_SCAN_BASE && sc <= CTRL_GAMEPAD_RIGHT_TRIGGER) {
             name = gamepad_get_scan_code_name(sc);
         } else {
             rf::control_config_get_key_name(&name, sc);
@@ -180,7 +180,7 @@ CodeInjection key_name_in_options_patch{
         static char buf[64];
         int key = regs.edx;
         // Gamepad scan codes installed by the CONTROLLER binding view.
-        if (key >= CTRL_GAMEPAD_SCAN_BASE && key <= CTRL_GAMEPAD_RIGHT_TRGGER) {
+        if (key >= CTRL_GAMEPAD_SCAN_BASE && key <= CTRL_GAMEPAD_RIGHT_TRIGGER) {
             int alt_sc = gamepad_get_alt_sc_for_primary_sc(key);
             if (alt_sc >= 0) {
                 std::snprintf(buf, std::size(buf), "%s / %s",

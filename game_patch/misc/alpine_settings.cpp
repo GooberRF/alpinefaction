@@ -1078,9 +1078,9 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.mouse_linear_pitch = std::stoi(settings["MouseLinearPitch"]);
         processed_keys.insert("MouseLinearPitch");
     }
-    if (settings.count("GamepadJoySensitivity")) {
-        g_alpine_game_config.gamepad_joy_sensitivity = std::max(0.0f, std::stof(settings["GamepadJoySensitivity"]));
-        processed_keys.insert("GamepadJoySensitivity");
+    if (settings.count("GamepadCameraSensitivity")) {
+        g_alpine_game_config.gamepad_joy_sensitivity = std::max(0.0f, std::stof(settings["GamepadCameraSensitivity"]));
+        processed_keys.insert("GamepadCameraSensitivity");
     }
     if (settings.count("GamepadScopeSensitivityModifier")) {
         g_alpine_game_config.set_gamepad_scope_sens_mod(std::stof(settings["GamepadScopeSensitivityModifier"]));
@@ -1102,9 +1102,9 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_look_deadzone = std::clamp(std::stof(settings["GamepadLookDeadzone"]), 0.0f, 0.9f);
         processed_keys.insert("GamepadLookDeadzone");
     }
-    if (settings.count("GamepadGyroSensitivity")) {
-        g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(std::stof(settings["GamepadGyroSensitivity"]), 0.0f, 30.0f);
-        processed_keys.insert("GamepadGyroSensitivity");
+    if (settings.count("GamepadGyroCameraSensitivity")) {
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(std::stof(settings["GamepadGyroCameraSensitivity"]), 0.0f, 30.0f);
+        processed_keys.insert("GamepadGyroCameraSensitivity");
     }
     if (settings.count("GamepadGyroEnabled")) {
         g_alpine_game_config.gamepad_gyro_enabled = std::stoi(settings["GamepadGyroEnabled"]) != 0;
@@ -1245,21 +1245,13 @@ bool alpine_player_settings_load(rf::Player* player)
         update_scanner_sensitivity();
         processed_keys.insert("ScannerSensitivityModifier");
     }
-    if (settings.count("GamepadScopeSensitivityModifier")) {
-        g_alpine_game_config.set_gamepad_scope_sens_mod(std::stof(settings["GamepadScopeSensitivityModifier"]));
-        processed_keys.insert("GamepadScopeSensitivityModifier");
+    if (settings.count("GamepadGyroScopeSensitivityModifier")) {
+        g_alpine_game_config.set_gamepad_scope_gyro_sens_mod(std::stof(settings["GamepadGyroScopeSensitivityModifier"]));
+        processed_keys.insert("GamepadGyroScopeSensitivityModifier");
     }
-    if (settings.count("GamepadScannerSensitivityModifier")) {
-        g_alpine_game_config.set_gamepad_scanner_sens_mod(std::stof(settings["GamepadScannerSensitivityModifier"]));
-        processed_keys.insert("GamepadScannerSensitivityModifier");
-    }
-    if (settings.count("GamepadScopeGyroSensitivityModifier")) {
-        g_alpine_game_config.set_gamepad_scope_gyro_sens_mod(std::stof(settings["GamepadScopeGyroSensitivityModifier"]));
-        processed_keys.insert("GamepadScopeGyroSensitivityModifier");
-    }
-    if (settings.count("GamepadScannerGyroSensitivityModifier")) {
-        g_alpine_game_config.set_gamepad_scanner_gyro_sens_mod(std::stof(settings["GamepadScannerGyroSensitivityModifier"]));
-        processed_keys.insert("GamepadScannerGyroSensitivityModifier");
+    if (settings.count("GamepadGyroScannerSensitivityModifier")) {
+        g_alpine_game_config.set_gamepad_scanner_gyro_sens_mod(std::stof(settings["GamepadGyroScannerSensitivityModifier"]));
+        processed_keys.insert("GamepadGyroScannerSensitivityModifier");
     }
 
     // Load binds
@@ -1290,9 +1282,9 @@ bool alpine_player_settings_load(rf::Player* player)
                         int offset = gp_sc - CTRL_GAMEPAD_SCAN_BASE;
                         if (offset >= 0 && offset < gamepad_get_button_count())
                             gamepad_set_button_binding(offset, bind_id);
-                        else if (gp_sc == CTRL_GAMEPAD_LEFT_TRGGER)
+                        else if (gp_sc == CTRL_GAMEPAD_LEFT_TRIGGER)
                             gamepad_set_trigger_action(0, bind_id);
-                        else if (gp_sc == CTRL_GAMEPAD_RIGHT_TRGGER)
+                        else if (gp_sc == CTRL_GAMEPAD_RIGHT_TRIGGER)
                             gamepad_set_trigger_action(1, bind_id);
                     }
 
@@ -1300,7 +1292,7 @@ bool alpine_player_settings_load(rf::Player* player)
                     std::string gp_sc_alt_str;
                     if (std::getline(bind_values, gp_sc_alt_str, ',') && !gp_sc_alt_str.empty()) {
                         int gp_sc_alt = std::stoi(gp_sc_alt_str);
-                        if (gp_sc_alt >= CTRL_GAMEPAD_EXTENDED_BASE && gp_sc_alt < CTRL_GAMEPAD_LEFT_TRGGER)
+                        if (gp_sc_alt >= CTRL_GAMEPAD_EXTENDED_BASE && gp_sc_alt < CTRL_GAMEPAD_LEFT_TRIGGER)
                             gamepad_set_button_alt_binding(gp_sc_alt - CTRL_GAMEPAD_SCAN_BASE, bind_id);
                     }
 
@@ -1360,7 +1352,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "ScopeSensitivityModifier=" << g_alpine_game_config.scope_sensitivity_modifier << "\n";
     file << "ScannerSensitivityModifier=" << g_alpine_game_config.scanner_sensitivity_modifier << "\n";
     file << "QuickExit=" << g_alpine_game_config.quick_exit << "\n";
-    file << "GamepadJoySensitivity=" << g_alpine_game_config.gamepad_joy_sensitivity << "\n";
+    file << "GamepadCameraSensitivity=" << g_alpine_game_config.gamepad_joy_sensitivity << "\n";
     file << "GamepadMoveDeadzone=" << g_alpine_game_config.gamepad_move_deadzone << "\n";
     file << "GamepadLookDeadzone=" << g_alpine_game_config.gamepad_look_deadzone << "\n";
     file << "GamepadScopeSensitivityModifier=" << g_alpine_game_config.gamepad_scope_sensitivity_modifier << "\n";
@@ -1372,9 +1364,9 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadFlickstickSmoothing=" << g_alpine_game_config.gamepad_flickstick_smoothing << "\n";
     file << "GamepadGyroEnabled=" << g_alpine_game_config.gamepad_gyro_enabled << "\n";
     file << "GamepadGyroVehicleEnabled=" << g_alpine_game_config.gamepad_gyro_vehicle_camera << "\n";
-    file << "GamepadGyroSensitivity=" << g_alpine_game_config.gamepad_gyro_sensitivity << "\n";
-    file << "GamepadScopeGyroSensitivityModifier=" << g_alpine_game_config.gamepad_scope_gyro_sensitivity_modifier << "\n";
-    file << "GamepadScannerGyroSensitivityModifier=" << g_alpine_game_config.gamepad_scanner_gyro_sensitivity_modifier << "\n";
+    file << "GamepadGyroCameraSensitivity=" << g_alpine_game_config.gamepad_gyro_sensitivity << "\n";
+    file << "GamepadGyroScopeSensitivityModifier=" << g_alpine_game_config.gamepad_scope_gyro_sensitivity_modifier << "\n";
+    file << "GamepadGyroScannerSensitivityModifier=" << g_alpine_game_config.gamepad_scanner_gyro_sensitivity_modifier << "\n";
     file << "GamepadGyroAutocalibrationMode=" << g_alpine_game_config.gamepad_gyro_autocalibration_mode << "\n";
     file << "GamepadGyroSpace=" << g_alpine_game_config.gamepad_gyro_space << "\n";
     file << "GamepadGyroInvertY=" << g_alpine_game_config.gamepad_gyro_invert_y << "\n";
@@ -1403,8 +1395,8 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
         int btn = gamepad_get_button_for_action(i);
         int trig = gamepad_get_trigger_for_action(i);
         if (btn >= 0) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
-        else if (trig == 0) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER);
-        else if (trig == 1) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
+        else if (trig == 0) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER);
+        else if (trig == 1) gp_sc = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
 
         int16_t gp_sc_alt = -1;
         int btn_alt = -1, btn_primary_unused = -1;

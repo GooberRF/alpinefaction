@@ -36,8 +36,8 @@ void        gamepad_sync_bindings_from_scan_codes();
 // Scan codes used while the CONTROLLER tab is active (unused gap in RF's key table)
 static constexpr int CTRL_GAMEPAD_SCAN_BASE    = 0x59; // SDL button 0
 static constexpr int CTRL_GAMEPAD_EXTENDED_BASE = CTRL_GAMEPAD_SCAN_BASE + 15; // SDL_GAMEPAD_BUTTON_MISC1 (0x68)
-static constexpr int CTRL_GAMEPAD_LEFT_TRGGER  = 0x73; // SCAN_BASE + 26
-static constexpr int CTRL_GAMEPAD_RIGHT_TRGGER = 0x74; // SCAN_BASE + 27
+static constexpr int CTRL_GAMEPAD_LEFT_TRIGGER  = 0x73; // SCAN_BASE + 26
+static constexpr int CTRL_GAMEPAD_RIGHT_TRIGGER = 0x74; // SCAN_BASE + 27
 
 // Per-binding get/set for save/load
 int  gamepad_get_button_binding(int button_idx);

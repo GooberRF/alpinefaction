@@ -298,7 +298,8 @@ ConsoleCommand2 gyro_reset_autocalibration_full_cmd{
     "gyro_reset_autocalibration_full",
     [](std::optional<int>) {
         g_motion.SetAutoCalibrationConfidence(0.0f);
-        g_motion.Reset();
+        g_motion.ResetContinuousCalibration();
+        g_motion.ResetMotion();
         gyro_update_calibration_mode();
         rf::console::print("Gyro auto-calibration full reset");
     },

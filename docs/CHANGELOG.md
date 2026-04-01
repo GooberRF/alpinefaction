@@ -42,7 +42,7 @@ Version 1.3.0 (Bakeapple): Not yet released
     - Gyro Space orientation support for Yaw, Roll, Local Space, Player Space and World Space
     - Gyro Autocalibration system 
     - Gyro Modifier / Gyro Ratcheting support (via Game Action remapping)
-  - Simultaneous Contoller+Keyboard/Mouse / Mixed Input support
+  - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
     - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.5000`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
   - Partial controller menu navigation support (Mouse controls are handled via Right Stick Input)
   - Additional Controller settings are available in `alpine_settings.ini`and/or console commands, this includes experimental Flick Stick support, resetting gyro autocalibration systems and Gyro Vehicle Camera.

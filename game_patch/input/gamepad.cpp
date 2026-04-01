@@ -444,7 +444,7 @@ static void update_trigger_actions()
             g_action_curr[g_trigger_action[0]] = lt_down;
         if (g_menu_trigger_action[0] >= 0 && g_menu_trigger_action[0] < k_action_count)
             g_action_curr[g_menu_trigger_action[0]] = lt_down;
-        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER), lt_down, g_trigger_action[0]);
+        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER), lt_down, g_trigger_action[0]);
     }
     if (rt_down != g_rt_was_down) {
         if (rt_down)
@@ -455,7 +455,7 @@ static void update_trigger_actions()
             g_action_curr[g_trigger_action[1]] = rt_down;
         if (g_menu_trigger_action[1] >= 0 && g_menu_trigger_action[1] < k_action_count)
             g_action_curr[g_menu_trigger_action[1]] = rt_down;
-        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER), rt_down, g_trigger_action[1]);
+        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER), rt_down, g_trigger_action[1]);
     }
 
     g_lt_was_down = lt_down;
@@ -897,11 +897,11 @@ void gamepad_do_frame()
         float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
         float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_MAX_SINT16);
         if (lt > 0.5f && !g_lt_was_down) {
-            g_rebind_pending_sc = CTRL_GAMEPAD_LEFT_TRGGER;
+            g_rebind_pending_sc = CTRL_GAMEPAD_LEFT_TRIGGER;
             rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
         }
         if (rt > 0.5f && !g_rt_was_down) {
-            g_rebind_pending_sc = CTRL_GAMEPAD_RIGHT_TRGGER;
+            g_rebind_pending_sc = CTRL_GAMEPAD_RIGHT_TRIGGER;
             rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
         }
     }
@@ -1596,9 +1596,9 @@ int gamepad_get_alt_sc_for_primary_sc(int primary_sc)
     int offset = primary_sc - CTRL_GAMEPAD_SCAN_BASE;
     if (offset >= 0 && offset < SDL_GAMEPAD_BUTTON_COUNT)
         action = g_button_map[offset];
-    else if (primary_sc == static_cast<int>(CTRL_GAMEPAD_LEFT_TRGGER))
+    else if (primary_sc == static_cast<int>(CTRL_GAMEPAD_LEFT_TRIGGER))
         action = g_trigger_action[0];
-    else if (primary_sc == static_cast<int>(CTRL_GAMEPAD_RIGHT_TRGGER))
+    else if (primary_sc == static_cast<int>(CTRL_GAMEPAD_RIGHT_TRIGGER))
         action = g_trigger_action[1];
 
     if (action < 0) return -1;
@@ -1700,11 +1700,11 @@ void gamepad_sync_bindings_from_scan_codes()
                         g_button_map[offset] = i;
                 }
             }
-            else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER)) {
+            else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)) {
                 if (menu_only) g_menu_trigger_action[0] = i;
                 else           g_trigger_action[0] = i;
             }
-            else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER)) {
+            else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER)) {
                 if (menu_only) g_menu_trigger_action[1] = i;
                 else           g_trigger_action[1] = i;
             }
@@ -1772,8 +1772,8 @@ void gamepad_apply_rebind()
                         primary_sc = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + existing_primary);
                     else
                         primary_sc = (existing_trigger == 0)
-                            ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRGGER)
-                            : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRGGER);
+                            ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)
+                            : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
                     // Restore sc[0] to the known primary and set sc[1] as secondary.
                     cc.bindings[i].scan_codes[0] = primary_sc;
                     cc.bindings[i].scan_codes[1] = new_code;
