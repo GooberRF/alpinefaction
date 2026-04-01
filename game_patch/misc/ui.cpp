@@ -624,7 +624,7 @@ static bool is_any_font_modded()
 FunHook<void()> menu_init_hook{
     0x00442BB0,
     []() {
-        if (client_bot_headless_enabled() || headless_bot_requested_from_raw_cmdline()) {
+        if (is_headless_mode() || headless_requested_from_raw_cmdline()) {
             return;
         }
         menu_init_hook.call_target();

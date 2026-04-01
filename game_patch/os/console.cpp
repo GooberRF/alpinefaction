@@ -318,7 +318,7 @@ void console_apply_patches()
 void console_init()
 {
     console_commands_init();
-    if (!client_bot_launch_enabled()) {
+    if (!client_bot_launch_enabled() && !is_headless_mode()) {
         print_fflink_info();
         initialize_achievement_manager();
     }

@@ -49,7 +49,7 @@ AlpineGameSettings g_alpine_game_config;
 
 bool is_d3d11() {
     return g_game_config.renderer == GameConfig::Renderer::d3d11
-        && !client_bot_headless_enabled();
+        && !is_headless_mode();
 }
 
 std::optional<uint32_t> parse_hex_color_string(const std::string& value)
@@ -1719,7 +1719,7 @@ void set_alpine_config_defaults() {
     apply_entity_sim_distance();
 }
 
-static void set_headless_bot_defaults()
+static void set_headless_defaults(rf::Player* player, const char* player_name, unsigned max_fps)
 {
     // Apply general defaults first, then override with headless-specific values
     set_alpine_config_defaults();
@@ -1732,17 +1732,28 @@ static void set_headless_bot_defaults()
     g_alpine_game_config.swap_sg_controls = false;
     g_alpine_game_config.direct_input = false;
     g_alpine_game_config.save_console_history = false;
-    g_alpine_game_config.set_max_fps(30);
+    g_alpine_game_config.set_max_fps(max_fps);
     g_alpine_game_config.dbg_bot = false;
     g_loaded_alpine_settings_file = true;
+
+    if (player) {
+        std::strncpy(player->settings.name, player_name, sizeof(player->settings.name) - 1);
+        player->settings.name[sizeof(player->settings.name) - 1] = '\0';
+        player->name = player_name;
+    }
 }
 
 CallHook<void(rf::Player*)> player_settings_load_hook{
     0x004B2726,
     [](rf::Player* player) {
-        // Headless bots skip all settings I/O
-        if (client_bot_headless_enabled()) {
-            set_headless_bot_defaults();
+        // Headless modes skip all settings I/O
+        if (is_headless_mode()) {
+            if (is_awpgen_active()) {
+                set_headless_defaults(player, "af_awpgen", AlpineGameSettings::max_fps_limit);
+            }
+            else {
+                set_headless_defaults(player, "af_bot", 30);
+            }
             return;
         }
 
@@ -1800,7 +1811,7 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
 FunHook<void(rf::Player*)> player_settings_save_hook{
     0x004A8F50,
     [](rf::Player* player) {
-        if (client_bot_launch_enabled()) {
+        if (client_bot_launch_enabled() || is_awpgen_active()) {
             return;
         }
         g_alpine_system_config.save();
@@ -1813,7 +1824,7 @@ CallHook<void(rf::Player*)> player_settings_save_quit_hook{
     [](rf::Player* player) {
         player_settings_save_quit_hook.call_target(player);
 
-        if (client_bot_launch_enabled()) {
+        if (client_bot_launch_enabled() || is_awpgen_active()) {
             return;
         }
 

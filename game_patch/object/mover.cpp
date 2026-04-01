@@ -20,6 +20,7 @@
 #include "../rf/object.h"
 #include "../rf/parse.h"
 #include "../rf/level.h"
+#include "../rf/sound/sound.h"
 
 // Forward declarations (used by hold open init before definitions)
 static inline rf::MoverKeyframe* KF(const rf::Mover* m, int i);
@@ -706,10 +707,6 @@ void alpine_mover_process_linear(rf::Mover* mp)
 
         rf::mover_update_item_status(mp);
     }
-    /* xlog::warn("mover {} seg {} -> {}, dir_fwd={}, use_trav_as_spd={}, "
-               "fwdA={}, revA={}, travel_param={}, travel={}, frametime={}",
-               mp->handle, from, to, dir_forward, (mp->mover_flags & rf::MoverFlags::MF_USE_TRAV_TIME_AS_SPD) != 0,
-               kfA->forward_time_seconds, kfA->reverse_time_seconds, travel_param, travel, rf::frametime);*/
 }
 
 static void alpine_mover_process_pre(rf::Mover* mp)
@@ -729,7 +726,8 @@ static void alpine_mover_process_pre(rf::Mover* mp)
     if (mp->door_room) {
         auto* door_room = static_cast<std::uint8_t*>(mp->door_room);
         door_room[0x40] = 0;
-        if (mp->start_at_keyframe == 0 && mp->stop_at_keyframe == -1)
+        if (mp->start_at_keyframe == 0 && mp->stop_at_keyframe == -1
+            && !alpine_mover_holds_open(mp))
             door_room[0x40] = 1;
     }
 
@@ -744,7 +742,7 @@ static void alpine_mover_process_pre(rf::Mover* mp)
 
         const int loop_instance = mp->sound_instances[1];
         if (loop_instance != -1) {
-            rf::snd_change_3d(loop_instance, mp->p_data.pos, rf::zero_vector, 1.0f);
+            rf::snd_change_3d(loop_instance, mp->pos, rf::zero_vector, 1.0f);
         }
 
         mp->p_data.vel = rf::Vector3{0.0f, 0.0f, 0.0f};
@@ -773,7 +771,7 @@ static void alpine_mover_process_pre(rf::Mover* mp)
 
     const int loop_instance = mp->sound_instances[1];
     if (loop_instance != -1) {
-        rf::snd_change_3d(loop_instance, mp->p_data.pos, rf::zero_vector, 1.0f);
+        rf::snd_change_3d(loop_instance, mp->pos, rf::zero_vector, 1.0f);
     }
 
     // handle pause time
@@ -957,6 +955,34 @@ CodeInjection mover_stock_door_bounce_hold_open_patch{
     },
 };
 
+// Stock mover_is_obstructed: at 0x0046A297 checks mover_is_door before allowing the
+// hold-open obstruction check. Skip the is_door gate for Hold Open movers so they
+// stay paused when obstructed (prevents stop sound playing every loop in legacy mode).
+// Injection covers PUSH ESI (1 byte) + CALL mover_is_door (5 bytes) = 6 bytes for trampoline.
+CodeInjection mover_stock_obstructed_hold_open_patch{
+    0x0046A297,
+    [](auto& regs) {
+        rf::Mover* mp = regs.esi;
+        if (alpine_mover_holds_open(mp)) {
+            regs.eip = 0x0046A2A8; // skip mover_is_door check, proceed with obstruction logic
+        }
+    },
+};
+
+// Stock mover_play_start_sound: at 0x0046A127 checks mover_is_door to decide close vs open sound.
+// For Hold Open movers heading to keyframe 0 (closing), set play_close = true and skip the
+// mover_is_door call. Injection covers PUSH ESI (1) + XOR BL,BL (2) + CALL (5) = 8 bytes.
+CodeInjection mover_stock_start_sound_hold_open_patch{
+    0x0046A127,
+    [](auto& regs) {
+        rf::Mover* mp = regs.esi;
+        if (alpine_mover_holds_open(mp) && mp->stop_at_keyframe == 0) {
+            regs.bl = static_cast<int8_t>(1); // play_close = true
+            regs.eip = 0x0046A142;  // skip to rotates_in_place check
+        }
+    },
+};
+
 void mover_do_patch()
 {
     // Fix crash when skipping cutscene after robot kill in L7S4
@@ -978,4 +1004,10 @@ void mover_do_patch()
 
     // Hold Open: patch stock door bounce check to also trigger for Hold Open movers
     mover_stock_door_bounce_hold_open_patch.install();
+
+    // Hold Open: allow obstruction check for Hold Open movers in legacy mode
+    mover_stock_obstructed_hold_open_patch.install();
+
+    // Hold Open: play close sound when closing, just like doors
+    mover_stock_start_sound_hold_open_patch.install();
 }
