@@ -1241,10 +1241,14 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
             float rx = get_axis(rot_x, rot_dz);
             float ry = get_axis(rot_y, rot_dz);
             float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
-            entity->ai.ci.rot.y += rx;
-            entity->ai.ci.rot.x += joy_pitch_sign * ry;
+            // Normalize so that the default sensitivity (2.5) produces 1:1 vehicle scale.
+            constexpr float k_default_sens = 2.5f;
+            float joy_sens = g_alpine_game_config.gamepad_joy_sensitivity / k_default_sens;
+            entity->ai.ci.rot.y += std::clamp(rx * joy_sens, -1.0f, 1.0f);
+            entity->ai.ci.rot.x += std::clamp(joy_pitch_sign * ry * joy_sens, -1.0f, 1.0f);
 
-            // 1/90 scale: 90 deg/s gyro = full keyboard deflection.
+            // 1/90 scale: 90 deg/s gyro = full keyboard deflection at default sensitivity.
+            // Normalized by k_default_sens so gyro and joystick sensitivity values are equivalent.
             if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled
                 && g_alpine_game_config.gamepad_gyro_vehicle_camera
                 && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
@@ -1255,10 +1259,10 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
                 gyro_apply_smoothing(gyro_pitch, gyro_yaw);
 
                 constexpr float gyro_to_rot = 1.0f / 90.0f;
-                float sens = g_alpine_game_config.gamepad_gyro_sensitivity;
+                float sens = g_alpine_game_config.gamepad_gyro_sensitivity / k_default_sens;
                 float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
-                entity->ai.ci.rot.y += -gyro_yaw * gyro_to_rot * sens;
-                entity->ai.ci.rot.x += pitch_sign * gyro_pitch * gyro_to_rot * sens;
+                entity->ai.ci.rot.y += std::clamp(-gyro_yaw * gyro_to_rot * sens, -1.0f, 1.0f);
+                entity->ai.ci.rot.x += std::clamp(pitch_sign * gyro_pitch * gyro_to_rot * sens, -1.0f, 1.0f);
             }
         }
 

@@ -251,6 +251,7 @@ static rf::ui::Checkbox ao_joy_sensitivity_cbox;
 static rf::ui::Label ao_joy_sensitivity_label;
 static rf::ui::Label ao_joy_sensitivity_butlabel;
 static char ao_joy_sensitivity_butlabel_text[9];
+static char ao_joy_sensitivity_label_text[17];
 static rf::ui::Checkbox ao_move_deadzone_cbox;
 static rf::ui::Label ao_move_deadzone_label;
 static rf::ui::Label ao_move_deadzone_butlabel;
@@ -2048,7 +2049,7 @@ void alpine_options_panel_do_frame(int x)
 
     // gamepad settings
     snprintf(ao_joy_camera_butlabel_text, sizeof(ao_joy_camera_butlabel_text), "%s",
-        g_alpine_game_config.gamepad_joy_camera ? "Flick Stick" : "Regular");
+        g_alpine_game_config.gamepad_joy_camera ? "Flick Stick" : "Normal");
     ao_joy_camera_butlabel.text = ao_joy_camera_butlabel_text;
     ao_joy_camera_butlabel.align = rf::gr::ALIGN_CENTER;
     ao_joy_camera_butlabel.x = 112 + 50;
@@ -2237,9 +2238,13 @@ void alpine_options_panel_do_frame(int x)
 
      // toggle regular stick vs flick stick controls, then reflow left column Y positions to avoid dead space
     bool flick_stick = g_alpine_game_config.gamepad_joy_camera;
-    ao_joy_sensitivity_cbox.enabled        = !flick_stick;
-    ao_joy_sensitivity_label.enabled       = !flick_stick;
-    ao_joy_sensitivity_butlabel.enabled    = !flick_stick;
+    // Joy sensitivity is always shown: as "Joy sensitivity" in joystick mode, "Joy sens (misc)" in flick-stick mode.
+    snprintf(ao_joy_sensitivity_label_text, sizeof(ao_joy_sensitivity_label_text), "%s",
+        flick_stick ? "Joy sens (misc)" : "Joy sensitivity");
+    ao_joy_sensitivity_label.text          = ao_joy_sensitivity_label_text;
+    ao_joy_sensitivity_cbox.enabled        = true;
+    ao_joy_sensitivity_label.enabled       = true;
+    ao_joy_sensitivity_butlabel.enabled    = true;
     ao_look_deadzone_cbox.enabled          = !flick_stick;
     ao_look_deadzone_label.enabled         = !flick_stick;
     ao_look_deadzone_butlabel.enabled      = !flick_stick;
@@ -2264,7 +2269,7 @@ void alpine_options_panel_do_frame(int x)
     {
         AoColumn lc{264};
         lc.add_inputbox(ao_flickstick_sweep_cbox, ao_flickstick_sweep_label, ao_flickstick_sweep_butlabel, flick_stick);
-        lc.add_inputbox(ao_joy_sensitivity_cbox, ao_joy_sensitivity_label, ao_joy_sensitivity_butlabel, !flick_stick);
+        lc.add_inputbox(ao_joy_sensitivity_cbox, ao_joy_sensitivity_label, ao_joy_sensitivity_butlabel);
         lc.add_inputbox(ao_flickstick_deadzone_cbox, ao_flickstick_deadzone_label, ao_flickstick_deadzone_butlabel, flick_stick);
         lc.add_inputbox(ao_flickstick_release_dz_cbox, ao_flickstick_release_dz_label, ao_flickstick_release_dz_butlabel, flick_stick);
         lc.add_inputbox(ao_flickstick_smoothing_cbox, ao_flickstick_smoothing_label, ao_flickstick_smoothing_butlabel, flick_stick);
