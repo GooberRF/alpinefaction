@@ -129,7 +129,7 @@ bool set_direct_input_enabled(bool enabled)
 {
     auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
 
-    if (client_bot_headless_enabled()) {
+    if (is_headless_mode()) {
         rf::direct_input_disabled = true;
         if (direct_input_initialized && rf::di_mouse) {
             rf::di_mouse->Unacquire();
@@ -158,7 +158,7 @@ bool set_direct_input_enabled(bool enabled)
 FunHook<void()> mouse_eval_deltas_hook{
     0x0051DC70,
     []() {
-        if (client_bot_headless_enabled()) {
+        if (is_headless_mode()) {
             return;
         }
 
@@ -172,7 +172,7 @@ FunHook<void()> mouse_eval_deltas_hook{
 FunHook<void()> mouse_eval_deltas_di_hook{
     0x0051DEB0,
     []() {
-        if (client_bot_headless_enabled()) {
+        if (is_headless_mode()) {
             rf::mouse_dz = 0;
             rf::mouse_old_z = rf::mouse_wheel_pos;
             return;
@@ -195,7 +195,7 @@ FunHook<void()> mouse_eval_deltas_di_hook{
 FunHook<void()> mouse_keep_centered_enable_hook{
     0x0051E690,
     []() {
-        if (client_bot_headless_enabled()) {
+        if (is_headless_mode()) {
             rf::keep_mouse_centered = false;
             set_direct_input_enabled(false);
             return;
@@ -210,7 +210,7 @@ FunHook<void()> mouse_keep_centered_enable_hook{
 FunHook<void()> mouse_keep_centered_disable_hook{
     0x0051E6A0,
     []() {
-        if (client_bot_headless_enabled()) {
+        if (is_headless_mode()) {
             rf::keep_mouse_centered = false;
             set_direct_input_enabled(false);
             return;
@@ -286,7 +286,7 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
 ConsoleCommand2 input_mode_cmd{
     "inputmode",
     []() {
-        if (client_bot_headless_enabled()) {
+        if (is_headless_mode()) {
             g_alpine_game_config.direct_input = false;
             set_direct_input_enabled(false);
             rf::console::print("DirectInput is disabled in headless bot mode");

@@ -44,7 +44,7 @@ namespace df::gr::d3d11
 
 bool should_bypass_graphics_init_for_headless_bot()
 {
-    return client_bot_headless_enabled() || headless_bot_requested_from_raw_cmdline();
+    return is_headless_mode() || headless_requested_from_raw_cmdline();
 }
 
 CodeInjection gr_init_stretched_window_injection{
@@ -312,7 +312,7 @@ ConsoleCommand2 disable_rendering_cmd{
 FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
     0x00431A00,
     [](rf::Player* pp, int flags) {
-        if (client_bot_headless_enabled() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
             return;
         }
 
@@ -324,7 +324,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
 FunHook<void()> gameplay_render_frame_pre_hook{
     0x00431820,
     []() {
-        if (client_bot_headless_enabled() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
             return;
         }
 

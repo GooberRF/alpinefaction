@@ -52,7 +52,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
 
     switch (msg) {
     case WM_ACTIVATE:
-        if (client_bot_headless_enabled()) {
+        if (is_headless_mode()) {
             // In headless mode, the console window will have focus and WM_ACTIVATE for the
             // hidden game window may report inactive. Keep active state pinned so client
             // simulation/network timing does not fall into background-throttled behavior.
@@ -78,7 +78,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         return 0; //DefWindowProcA(wnd_handle, msg, w_param, l_param);
 
     case WM_WINDOWPOSCHANGING:
-        if (client_bot_headless_enabled() && l_param) {
+        if (is_headless_mode() && l_param) {
             // Prevent any late startup/system path from re-showing the hidden client window.
             auto* wp = reinterpret_cast<WINDOWPOS*>(l_param);
             wp->flags &= ~SWP_SHOWWINDOW;
@@ -87,7 +87,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         return DefWindowProcA(wnd_handle, msg, w_param, l_param);
 
     case WM_SHOWWINDOW:
-        if (client_bot_headless_enabled() && w_param) {
+        if (is_headless_mode() && w_param) {
             return 0;
         }
         return DefWindowProcA(wnd_handle, msg, w_param, l_param);
@@ -113,7 +113,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
 static FunHook<void(const char *, const char *, bool, bool)> os_init_window_server_hook{
     0x00524B70,
     [](const char *wclass, const char *title, bool hooks, bool server_console) {
-        const bool bot_headless = client_bot_headless_enabled();
+        const bool bot_headless = is_headless_mode();
         win32_console_set_forced(bot_headless);
         if (server_console || bot_headless) {
             win32_console_init();
@@ -231,6 +231,16 @@ bool headless_bot_requested_from_raw_cmdline()
     const bool has_debugbot =
         raw_command_line_has_switch(L"-debugbot") || raw_command_line_has_switch(L"/debugbot");
     return has_bot && !has_debugbot;
+}
+
+bool awpgen_requested_from_raw_cmdline()
+{
+    return raw_command_line_has_switch(L"-awpgen") || raw_command_line_has_switch(L"/awpgen");
+}
+
+bool headless_requested_from_raw_cmdline()
+{
+    return headless_bot_requested_from_raw_cmdline() || awpgen_requested_from_raw_cmdline();
 }
 
 static FunHook<void()> os_close_hook{
