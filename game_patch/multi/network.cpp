@@ -2219,8 +2219,8 @@ void send_queues_rel_add_packet(
 FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
     0x0052A750,
     [] (int* const socket_id, const bool send_dis_conn_packet) {
-        if (socket_id && *socket_id >= 0 && *socket_id < std::size(g_send_queues_rel)) {
-            g_send_queues_rel[*socket_id].clear();
+        if (socket_id) {
+            send_queues_rel_clear_packets(*socket_id);
         }
         return psnet_rel_close_socket_hook.call_target(socket_id, send_dis_conn_packet);
     },
