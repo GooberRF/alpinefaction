@@ -73,6 +73,10 @@ std::vector<std::string> g_waypoint_authors{};
 
 int g_next_waypoint_target_uid = 1;
 
+// Cached list of invisible upward-facing faces for supplemental ground detection.
+// Built once at generation start to avoid per-trace room iteration overhead.
+std::vector<rf::GFace*> g_invisible_floor_faces;
+
 std::unordered_map<int, int> g_last_drop_waypoint_by_entity{};
 std::unordered_map<int, int> g_last_lift_uid_by_entity{};
 
@@ -1262,64 +1266,49 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
     bool world_hit = rf::collide_linesegment_world(
         p0, p1, kWaypointWorldTraceFlags, &collision);
 
-    // Supplemental check: test only INVISIBLE faces that the standard collision
+    // Supplemental check: test cached invisible faces that the standard collision
     // misses (e.g. detail brush ramps over staircases). Only accepts hits above
-    // the floor already found by the primary trace. Skips liquid faces.
-    if (rf::level.geometry) {
+    // the floor already found by the primary trace.
+    if (!g_invisible_floor_faces.empty()) {
         const float ray_top = pos.y;
         const float ray_bot = pos.y - max_downward_dist;
         const float px = pos.x;
         const float pz = pos.z;
         float best_y = world_hit ? collision.hit_point.y : ray_bot;
 
-        for (int ri = 0; ri < rf::level.geometry->all_rooms.size(); ++ri) {
-            auto* room = rf::level.geometry->all_rooms[ri];
-            if (!room) continue;
-
-            if (px < room->bbox_min.x || px > room->bbox_max.x
-                || pz < room->bbox_min.z || pz > room->bbox_max.z
-                || ray_bot > room->bbox_max.y || ray_top < room->bbox_min.y) {
+        for (auto* face : g_invisible_floor_faces) {
+            if (px < face->bounding_box_min.x || px > face->bounding_box_max.x
+                || pz < face->bounding_box_min.z || pz > face->bounding_box_max.z
+                || ray_bot > face->bounding_box_max.y || ray_top < face->bounding_box_min.y) {
                 continue;
             }
 
-            for (auto* face = room->face_list.first(); face; face = room->face_list.next(face)) {
-                if (!face->attributes.is_invisible()) continue;
-                if (face->attributes.is_liquid()) continue;
-                if (face->plane.normal.y <= 0.0f) continue;
+            const float hit_y = (-face->plane.offset
+                - face->plane.normal.x * px
+                - face->plane.normal.z * pz) / face->plane.normal.y;
 
-                if (px < face->bounding_box_min.x || px > face->bounding_box_max.x
-                    || pz < face->bounding_box_min.z || pz > face->bounding_box_max.z
-                    || ray_bot > face->bounding_box_max.y || ray_top < face->bounding_box_min.y) {
-                    continue;
-                }
+            if (hit_y < ray_bot || hit_y > ray_top || hit_y <= best_y) continue;
 
-                const float hit_y = (-face->plane.offset
-                    - face->plane.normal.x * px
-                    - face->plane.normal.z * pz) / face->plane.normal.y;
-
-                if (hit_y < ray_bot || hit_y > ray_top || hit_y <= best_y) continue;
-
-                if (!face->edge_loop) continue;
-                bool inside = false;
-                const auto* first_fv = face->edge_loop;
-                const auto* fv = first_fv;
-                do {
-                    const auto* next_fv = fv->next;
-                    const rf::Vector3& v0 = fv->vertex->pos;
-                    const rf::Vector3& v1 = next_fv->vertex->pos;
-                    if ((v0.z <= pz) != (v1.z <= pz)) {
-                        const float t = (pz - v0.z) / (v1.z - v0.z);
-                        if (px < v0.x + t * (v1.x - v0.x)) {
-                            inside = !inside;
-                        }
+            if (!face->edge_loop) continue;
+            bool inside = false;
+            const auto* first_fv = face->edge_loop;
+            const auto* fv = first_fv;
+            do {
+                const auto* next_fv = fv->next;
+                const rf::Vector3& v0 = fv->vertex->pos;
+                const rf::Vector3& v1 = next_fv->vertex->pos;
+                if ((v0.z <= pz) != (v1.z <= pz)) {
+                    const float t = (pz - v0.z) / (v1.z - v0.z);
+                    if (px < v0.x + t * (v1.x - v0.x)) {
+                        inside = !inside;
                     }
-                    fv = next_fv;
-                } while (fv != first_fv);
-
-                if (inside) {
-                    best_y = hit_y;
-                    world_hit = true;
                 }
+                fv = next_fv;
+            } while (fv != first_fv);
+
+            if (inside) {
+                best_y = hit_y;
+                world_hit = true;
             }
         }
 
@@ -3938,6 +3927,7 @@ void clear_waypoints()
     g_waypoint_targets.clear();
     g_waypoint_authors.clear();
     g_next_waypoint_target_uid = 1;
+    g_invisible_floor_faces.clear();
     invalidate_cache();
 }
 
@@ -4724,7 +4714,6 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
 
                 continue;
             }
-
 
             const float upward_clearance = trace_upward_clearance_from_floor_hit(
                 floor_pos,
@@ -8129,6 +8118,24 @@ ConsoleCommand2 waypoint_reset_cmd{
 // Returns the number of generated waypoints, or -1 if no seeds were found.
 int run_waypoint_generation_pipeline()
 {
+    // Build cache of invisible upward-facing faces for supplemental ground detection.
+    // These are faces the standard collision system misses (e.g. detail brush ramps).
+    g_invisible_floor_faces.clear();
+    if (rf::level.geometry) {
+        for (int ri = 0; ri < rf::level.geometry->all_rooms.size(); ++ri) {
+            auto* room = rf::level.geometry->all_rooms[ri];
+            if (!room) continue;
+            for (auto* face = room->face_list.first(); face; face = room->face_list.next(face)) {
+                if (face->attributes.is_invisible()
+                    && !face->attributes.is_liquid()
+                    && face->plane.normal.y > 0.0f
+                    && face->edge_loop) {
+                    g_invisible_floor_faces.push_back(face);
+                }
+            }
+        }
+    }
+
     reset_waypoints_to_default_grid();
 
     const auto seed_indices = collect_generation_seed_waypoint_indices();
