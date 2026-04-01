@@ -187,7 +187,7 @@ struct AlpineGameSettings
     bool gamepad_gyro_invert_y = false;
     float gamepad_gyro_tightening = 1.4f;
     float gamepad_gyro_smoothing = 7.0f;
-    bool gamepad_flickstick = false;
+    bool gamepad_joy_camera = false;
     float gamepad_flickstick_sweep = 1.0f;    
     float gamepad_flickstick_deadzone = 0.90f;
     float gamepad_flickstick_release_deadzone = 0.70f;

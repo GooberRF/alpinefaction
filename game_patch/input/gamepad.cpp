@@ -840,6 +840,8 @@ static void menu_nav_tick_dpad_repeat()
     }
 }
 
+static int g_pending_scroll_delta = 0;
+
 static void menu_nav_tick_scroll()
 {
     constexpr float k_scroll_deadzone = 0.24f;
@@ -851,6 +853,7 @@ static void menu_nav_tick_scroll()
     g_menu_nav.scroll_timer -= rf::frametime;
     if (g_menu_nav.scroll_timer > 0.0f) return;
     rf::mouse_dz = (ry < 0.0f) ? 1 : -1;
+    g_pending_scroll_delta = rf::mouse_dz;
     if (rf::gameseq_get_state() == rf::GS_MESSAGE_LOG) {
         if (ry < 0.0f)
             rf::ui::message_log_up_on_click(-1, -1);
@@ -858,6 +861,13 @@ static void menu_nav_tick_scroll()
             rf::ui::message_log_down_on_click(-1, -1);
     }
     g_menu_nav.scroll_timer = 0.12f;
+}
+
+int gamepad_consume_menu_scroll()
+{
+    int v = g_pending_scroll_delta;
+    g_pending_scroll_delta = 0;
+    return v;
 }
 
 static void gamepad_do_menu_frame()
@@ -1129,7 +1139,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     }
 
     // Use joystick camera while scoped/scanning for consistent aim; flickstick otherwise.
-    if (g_alpine_game_config.gamepad_flickstick && !is_spectator_camera && !is_scoped_or_scanning) {
+    if (g_alpine_game_config.gamepad_joy_camera && !is_spectator_camera && !is_scoped_or_scanning) {
         gamepad_apply_flickstick(cam_x, cam_y, current_yaw, current_pitch, yaw_delta, pitch_delta);
         yaw_delta   *= gamepad_zoom_sens;
         pitch_delta *= gamepad_zoom_sens;
@@ -1360,8 +1370,8 @@ ConsoleCommand2 joy_scanner_sens_cmd{
 ConsoleCommand2 joy_flickstick_cmd{
     "joy_flickstick",
     [](std::optional<int> val) {
-        if (val) g_alpine_game_config.gamepad_flickstick = val.value() != 0;
-        rf::console::print("Joy flick-stick: {}", g_alpine_game_config.gamepad_flickstick ? "enabled" : "disabled");
+        if (val) g_alpine_game_config.gamepad_joy_camera = val.value() != 0;
+        rf::console::print("Joy flick-stick: {}", g_alpine_game_config.gamepad_joy_camera ? "enabled" : "disabled");
     },
     "Enable/disable flick-stick mode (default 0)",
     "joy_flickstick [0|1]",
@@ -1613,6 +1623,11 @@ int gamepad_get_alt_sc_for_primary_sc(int primary_sc)
 bool gamepad_is_motionsensors_supported()
 {
     return g_motion_sensors_supported;
+}
+
+bool gamepad_is_trigger_rumble_supported()
+{
+    return g_trigger_rumble_supported;
 }
 
 bool gamepad_is_last_input_gamepad()

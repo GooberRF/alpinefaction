@@ -21,6 +21,7 @@ void gamepad_do_frame();
 void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta);
 void flush_freelook_gamepad_deltas();
 bool gamepad_is_motionsensors_supported();
+bool gamepad_is_trigger_rumble_supported();
 bool gamepad_is_last_input_gamepad();
 void gamepad_set_last_input_keyboard();
 
@@ -51,3 +52,6 @@ void gamepad_set_trigger_action(int trigger_idx, int action_idx);
 // rebind gamepad buttons/triggers
 void gamepad_apply_rebind();
 bool gamepad_has_pending_rebind(); // true if a gamepad button/trigger was captured for the current rebind
+
+// Returns and clears any pending scroll delta produced by the right-stick menu scroll tick (+1=up, -1=down, 0=none)
+int gamepad_consume_menu_scroll();
