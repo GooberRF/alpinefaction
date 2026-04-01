@@ -214,7 +214,7 @@ bool is_client_bot_requested_from_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    return raw_command_line_has_switch(L"-bot") || raw_command_line_has_switch(L"/bot");
+    return raw_command_line_has_switch(L"-bot");
 }
 
 bool is_client_debugbot_requested_from_cmdline()
@@ -222,20 +222,19 @@ bool is_client_debugbot_requested_from_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    return raw_command_line_has_switch(L"-debugbot") || raw_command_line_has_switch(L"/debugbot");
+    return raw_command_line_has_switch(L"-debugbot");
 }
 
 bool headless_bot_requested_from_raw_cmdline()
 {
-    const bool has_bot = raw_command_line_has_switch(L"-bot") || raw_command_line_has_switch(L"/bot");
-    const bool has_debugbot =
-        raw_command_line_has_switch(L"-debugbot") || raw_command_line_has_switch(L"/debugbot");
+    const bool has_bot = raw_command_line_has_switch(L"-bot");
+    const bool has_debugbot = raw_command_line_has_switch(L"-debugbot");
     return has_bot && !has_debugbot;
 }
 
 bool awpgen_requested_from_raw_cmdline()
 {
-    return raw_command_line_has_switch(L"-awpgen") || raw_command_line_has_switch(L"/awpgen");
+    return raw_command_line_has_switch(L"-awpgen");
 }
 
 bool headless_requested_from_raw_cmdline()
