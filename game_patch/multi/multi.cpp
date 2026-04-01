@@ -28,6 +28,7 @@
 #include "../rf/os/os.h"
 #include "../rf/event.h"
 #include "../rf/gameseq.h"
+#include "../rf/misc.h"
 #include "../rf/os/timer.h"
 #include "../rf/player/camera.h"
 #include "../rf/multi.h"
@@ -72,6 +73,12 @@ static rf::CmdLineParam& get_noquit_cmd_line_param()
 {
     static rf::CmdLineParam noquit_param{"-noquit", "", false};
     return noquit_param;
+}
+
+static rf::CmdLineParam& get_awpgen_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_param{"-awpgen", "", true};
+    return awpgen_param;
 }
 
 static bool g_client_bot_launch_enabled = false;
@@ -213,6 +220,39 @@ void handle_levelm_param()
         return;
     }
     start_levelm_load_sequence(valid_filename);
+}
+
+// Returns true if -awpgen was handled (caller should skip -levelm).
+bool handle_awpgen_param()
+{
+    if (!get_awpgen_cmd_line_param().found()) {
+        return false;
+    }
+
+    const char* arg = get_awpgen_cmd_line_param().get_arg();
+    if (!arg || arg[0] == '\0') {
+        xlog::error("-awpgen: missing level filename, quitting");
+        rf::gameseq_set_state(rf::GS_QUITING, false);
+        return true;
+    }
+
+    std::string level_filename = arg;
+
+    // Normalize .rfl extension
+    if (!string_iends_with(level_filename, ".rfl")) {
+        level_filename += ".rfl";
+    }
+
+    // Validate level file is installed
+    if (rf::get_file_checksum(level_filename.c_str()) == 0) {
+        xlog::error("-awpgen: unknown level {}, quitting", level_filename);
+        rf::gameseq_set_state(rf::GS_QUITING, false);
+        return true;
+    }
+
+    waypoints_start_awpgen(level_filename);
+    start_levelm_load_sequence(level_filename);
+    return true;
 }
 
 FunHook<void()> multi_limbo_init{
@@ -1042,6 +1082,7 @@ void multi_do_patch()
     get_bot_cmd_line_param();
     get_debugbot_cmd_line_param();
     get_noquit_cmd_line_param();
+    get_awpgen_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
     if (g_client_bot_launch_enabled) {
@@ -1066,5 +1107,7 @@ void multi_after_full_game_init()
         return; // bot launch validation failed, process is quitting
     }
     handle_url_param();
-    handle_levelm_param();
+    if (!handle_awpgen_param()) {
+        handle_levelm_param();
+    }
 }

@@ -40,7 +40,7 @@ constexpr float kWaypointGenerateWaterEdgeClearance = 0.5f;
 constexpr float kWaypointGenerateWaterSeedProximity = 5.0f;
 constexpr float kWaypointGenerateLinkPassThroughRadius = 1.0f;
 constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
-constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
+constexpr int kWaypointGenerateMaxCreatedWaypoints = 80000;
 
 // Jump pad trajectory simulation constants.
 constexpr float kJumpPadTrajectoryTimeStep = 0.05f;
@@ -256,3 +256,4 @@ bool link_waypoint_if_clear(int from, int to);
 bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b);
 int closest_waypoint(const rf::Vector3& pos, float radius);
 void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius = 0.0f);
+void waypoints_start_awpgen(const std::string& rfl_filename);
