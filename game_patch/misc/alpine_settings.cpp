@@ -1512,7 +1512,7 @@ void set_alpine_config_defaults() {
     apply_entity_sim_distance();
 }
 
-static void set_headless_defaults(const char* player_name, int max_fps)
+static void set_headless_defaults(rf::Player* player, const char* player_name, unsigned max_fps)
 {
     // Apply general defaults first, then override with headless-specific values
     set_alpine_config_defaults();
@@ -1529,10 +1529,10 @@ static void set_headless_defaults(const char* player_name, int max_fps)
     g_alpine_game_config.dbg_bot = false;
     g_loaded_alpine_settings_file = true;
 
-    if (rf::local_player) {
-        std::strncpy(rf::local_player->settings.name, player_name, sizeof(rf::local_player->settings.name) - 1);
-        rf::local_player->settings.name[sizeof(rf::local_player->settings.name) - 1] = '\0';
-        rf::local_player->name = player_name;
+    if (player) {
+        std::strncpy(player->settings.name, player_name, sizeof(player->settings.name) - 1);
+        player->settings.name[sizeof(player->settings.name) - 1] = '\0';
+        player->name = player_name;
     }
 }
 
@@ -1542,10 +1542,10 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
         // Headless modes skip all settings I/O
         if (is_headless_mode()) {
             if (is_awpgen_active()) {
-                set_headless_defaults("af_awpgen", 999999);
+                set_headless_defaults(player, "af_awpgen", AlpineGameSettings::max_fps_limit);
             }
             else {
-                set_headless_defaults("af_bot", 30);
+                set_headless_defaults(player, "af_bot", 30);
             }
             return;
         }

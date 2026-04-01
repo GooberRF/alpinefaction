@@ -1102,7 +1102,7 @@ void multi_do_patch()
         rf::sound_enabled = false;
     }
     else if (g_client_bot_launch_enabled) {
-        // debugbot: rendering stays enabled
+        g_alpine_game_config.rendering_enabled = true;
     }
 
     // console commands
