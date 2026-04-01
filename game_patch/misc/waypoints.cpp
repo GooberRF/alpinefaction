@@ -4702,15 +4702,10 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 0.0f,
                 std::sin(angle_rad),
             };
-            // Trace from an elevated start to catch invisible ramp faces that sit
-            // above stair step geometry. The extra height ensures the trace starts
-            // above any nearby invisible floor surfaces.
-            const rf::Vector3 probe_pos = source_pos + dir * kWaypointGenerateProbeStepDistance
-                + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+            const rf::Vector3 probe_pos = source_pos + dir * kWaypointGenerateProbeStepDistance;
 
             rf::Vector3 floor_pos{};
-            if (!trace_ground_below_point(probe_pos,
-                    kBridgeWaypointMaxGroundDistance + kWaypointGenerateGroundOffset, &floor_pos)) {
+            if (!trace_ground_below_point(probe_pos, kBridgeWaypointMaxGroundDistance, &floor_pos)) {
 
                 continue;
             }
@@ -8118,9 +8113,11 @@ ConsoleCommand2 waypoint_reset_cmd{
 // Returns the number of generated waypoints, or -1 if no seeds were found.
 int run_waypoint_generation_pipeline()
 {
+    reset_waypoints_to_default_grid();
+
     // Build cache of invisible upward-facing faces for supplemental ground detection.
     // These are faces the standard collision system misses (e.g. detail brush ramps).
-    g_invisible_floor_faces.clear();
+    // Must be built AFTER reset_waypoints_to_default_grid which clears the cache.
     if (rf::level.geometry) {
         for (int ri = 0; ri < rf::level.geometry->all_rooms.size(); ++ri) {
             auto* room = rf::level.geometry->all_rooms[ri];
@@ -8135,8 +8132,6 @@ int run_waypoint_generation_pipeline()
             }
         }
     }
-
-    reset_waypoints_to_default_grid();
 
     const auto seed_indices = collect_generation_seed_waypoint_indices();
     if (seed_indices.empty()) {
