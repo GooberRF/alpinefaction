@@ -69,13 +69,9 @@ void gyro_reset()
 
 void gyro_reset_full()
 {
-    g_motion.ResetContinuousCalibration();
-    g_motion.ResetMotion();
-    g_smooth_pitch_prev = 0.0f;
-    g_smooth_yaw_prev   = 0.0f;
-    // Invalidate the mode cache so gyro_update_calibration_mode() unconditionally
+    // Invalidate the mode cache so gyro_update_calibration_mode() unconditionally re-applies it.
     g_last_calibration_mode = static_cast<GamepadMotionHelpers::CalibrationMode>(-1);
-    gyro_update_calibration_mode();
+    gyro_reset();
 }
 
 void gyro_reset_motion_preserve_confidence()
@@ -86,6 +82,8 @@ void gyro_reset_motion_preserve_confidence()
     // Use targeted resets to avoid wiping custom Settings.
     g_motion.ResetContinuousCalibration();
     g_motion.ResetMotion();
+    g_smooth_pitch_prev = 0.0f;
+    g_smooth_yaw_prev   = 0.0f;
 
     // Restore the confidence so the autocalibration ease-in continues smoothly.
     g_motion.SetAutoCalibrationConfidence(confidence);

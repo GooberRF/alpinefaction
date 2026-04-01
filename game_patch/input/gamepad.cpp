@@ -29,14 +29,17 @@
 #include <SDL3/SDL.h>
 #include "../rf/os/os.h"
 
+// device 
 static SDL_Gamepad* g_gamepad = nullptr;
 static bool g_motion_sensors_supported = false;
 static bool g_rumble_supported         = false;
 static bool g_trigger_rumble_supported = false;
 
+//look accumulation
 static float g_camera_gamepad_dx = 0.0f;
 static float g_camera_gamepad_dy = 0.0f;
 
+// scope/scanner sensitivity cache
 static float g_gamepad_scope_sensitivity_value = 0.25f;
 static float g_gamepad_scanner_sensitivity_value = 0.25f;
 static float g_gamepad_scope_gyro_sensitivity_value = 0.25f;
@@ -44,6 +47,7 @@ static float g_gamepad_scanner_gyro_sensitivity_value = 0.25f;
 static float g_gamepad_scope_applied_dynamic_sensitivity_value = 1.0f;
 static float g_gamepad_scope_gyro_applied_dynamic_sensitivity_value = 1.0f;
 
+// binding maps
 // g_button_map: primary gameplay action per SDL_GamepadButton, -1 = unbound.
 static int g_button_map[SDL_GAMEPAD_BUTTON_COUNT];
 // g_button_map_alt: secondary binding for extended buttons (>= SDL_GAMEPAD_BUTTON_MISC1), -1 = unbound.
@@ -55,17 +59,21 @@ static int g_trigger_action[2] = {rf::CC_ACTION_CROUCH, rf::CC_ACTION_SECONDARY_
 static int g_menu_button_map[SDL_GAMEPAD_BUTTON_COUNT];
 static int g_menu_trigger_action[2] = {-1, -1};
 
+// trigger edge tracking
 static bool g_lt_was_down = false;
 static bool g_rt_was_down = false;
 
+// action state
 static constexpr int k_action_count = 128;
 static bool g_action_prev[k_action_count] = {};
 static bool g_action_curr[k_action_count] = {};
 
+// rebind / input mode
 static int g_rebind_pending_sc = -1; // scan code captured during rebind, -1 = none pending
 static bool g_last_input_was_gamepad = false;
 static float g_message_log_close_cooldown = 0.0f;
 
+// menu navigation
 struct MenuNavState {
     int   deferred_btn_down  = -1;   // SDL button queued from poll for button-down
     int   deferred_btn_up    = -1;   // SDL button queued from poll for button-up
@@ -77,9 +85,11 @@ struct MenuNavState {
 };
 static MenuNavState g_menu_nav;
 
+// movement
 static float g_move_lx = 0.0f, g_move_ly = 0.0f;
 static float g_move_mag = 0.0f;
 
+// flickstick
 static bool g_flickstick_has_aim = false;
 static float g_flickstick_target_yaw = 0.0f;
 static float g_flickstick_target_pitch = 0.0f;
@@ -87,6 +97,7 @@ static float g_flickstick_prev_stick_angle = 0.0f;
 static bool g_flickstick_prev_stick_valid = false;
 static float g_flickstick_yaw_delta_filtered = 0.0f;
 
+// render helpers
 static rf::VMesh* g_local_player_body_vmesh = nullptr;
 static bool g_scaling_fpgun_vmesh = false;
 
@@ -307,7 +318,25 @@ static void menu_nav_inject_key(int key)
     rf::key_process_event(key, 0, 0);
 }
 
-static bool is_gamepad_cancellable_menu_state(rf::GameState state);
+// Returns true if `state` is a UI overlay where Cancel should be handled by the gamepad menu
+// system (close/escape) rather than injecting a raw ESC into gameplay.
+static bool is_gamepad_cancellable_menu_state(rf::GameState state)
+{
+    return state == rf::GS_MESSAGE_LOG
+        || state == rf::GS_OPTIONS_MENU
+        || state == rf::GS_MULTI_MENU
+        || state == rf::GS_HELP
+        || state == rf::GS_EXTRAS_MENU
+        || state == rf::GS_MULTI_SERVER_LIST
+        || state == rf::GS_SAVE_GAME_MENU
+        || state == rf::GS_LOAD_GAME_MENU
+        || state == rf::GS_MAIN_MENU
+        || state == rf::GS_LEVEL_TRANSITION
+        || state == rf::GS_MULTI_LIMBO
+        || state == rf::GS_FRAMERATE_TEST_END
+        || state == rf::GS_CREDITS
+        || state == rf::GS_BOMB_DEFUSE;
+}
 
 static void menu_nav_handle_confirm()
 {
@@ -544,26 +573,6 @@ static SDL_GamepadButton get_menu_cancel_button()
     return SDL_GAMEPAD_BUTTON_EAST;
 }
 
-// Returns true if `state` is a UI overlay where Cancel should be handled by the gamepad menu
-// system (close/escape the state) rather than injecting a raw ESC into gameplay.
-static bool is_gamepad_cancellable_menu_state(rf::GameState state)
-{
-    return state == rf::GS_MESSAGE_LOG
-        || state == rf::GS_OPTIONS_MENU
-        || state == rf::GS_MULTI_MENU
-        || state == rf::GS_HELP
-        || state == rf::GS_EXTRAS_MENU
-        || state == rf::GS_MULTI_SERVER_LIST
-        || state == rf::GS_SAVE_GAME_MENU
-        || state == rf::GS_LOAD_GAME_MENU
-        || state == rf::GS_MAIN_MENU
-        || state == rf::GS_LEVEL_TRANSITION
-        || state == rf::GS_MULTI_LIMBO
-        || state == rf::GS_FRAMERATE_TEST_END
-        || state == rf::GS_CREDITS
-        || state == rf::GS_BOMB_DEFUSE;
-}
-
 static bool menu_nav_on_button_down(int btn)
 {
     const SDL_GamepadButton confirm_btn = get_menu_confirm_button();
@@ -602,18 +611,13 @@ static void menu_nav_on_button_up(int btn)
         menu_nav_release_click();
 }
 
-static void handle_gamepad_added(const SDL_GamepadDeviceEvent& ev)
+static void disconnect_active_gamepad()
 {
-    if (!g_gamepad)
-        try_open_gamepad(ev.which);
-}
-
-static void handle_gamepad_removed(const SDL_GamepadDeviceEvent& ev)
-{
-    if (!(g_gamepad && SDL_GetGamepadID(g_gamepad) == ev.which))
-        return;
-
-    xlog::info("Gamepad disconnected");
+    SDL_CloseGamepad(g_gamepad);
+    g_gamepad                  = nullptr;
+    g_motion_sensors_supported = false;
+    g_rumble_supported         = false;
+    g_trigger_rumble_supported = false;
     release_movement_keys();
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
         inject_action_key(g_button_map[b], false);
@@ -622,12 +626,45 @@ static void handle_gamepad_removed(const SDL_GamepadDeviceEvent& ev)
     inject_action_key(g_trigger_action[0], false);
     inject_action_key(g_trigger_action[1], false);
     menu_nav_release_click();
-    SDL_CloseGamepad(g_gamepad);
-    g_gamepad                  = nullptr;
-    g_motion_sensors_supported = false;
-    g_rumble_supported         = false;
-    g_trigger_rumble_supported = false;
     reset_gamepad_input_state();
+}
+
+static void handle_gamepad_added(const SDL_GamepadDeviceEvent& ev)
+{
+    if (!g_gamepad) {
+        try_open_gamepad(ev.which);
+        return;
+    }
+    if (SDL_GetGamepadID(g_gamepad) == ev.which)
+        return;
+    xlog::info("New gamepad connected, hotswapping from '{}' to '{}'",
+        SDL_GetGamepadName(g_gamepad), SDL_GetGamepadNameForID(ev.which));
+    disconnect_active_gamepad();
+    try_open_gamepad(ev.which);
+}
+
+static void handle_gamepad_removed(const SDL_GamepadDeviceEvent& ev)
+{
+    if (!(g_gamepad && SDL_GetGamepadID(g_gamepad) == ev.which))
+        return;
+
+    xlog::info("Gamepad disconnected");
+    disconnect_active_gamepad();
+
+    // Fall back to any remaining connected gamepad
+    int fallback_count = 0;
+    SDL_JoystickID* fallback_ids = SDL_GetGamepads(&fallback_count);
+    if (fallback_ids) {
+        for (int i = 0; i < fallback_count; ++i) {
+            if (fallback_ids[i] != ev.which) {
+                try_open_gamepad(fallback_ids[i]);
+                break;
+            }
+        }
+        SDL_free(fallback_ids);
+    }
+    if (g_gamepad)
+        xlog::info("Fell back to gamepad: '{}'", SDL_GetGamepadName(g_gamepad));
 }
 
 static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
@@ -999,8 +1036,8 @@ static void gamepad_apply_gyro(bool has_player_entity, float zoom_sens, float& y
 {
     float gyro_pitch, gyro_yaw;
     gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
-    gyro_apply_tightening(gyro_pitch, gyro_yaw);
     gyro_apply_smoothing(gyro_pitch, gyro_yaw);
+    gyro_apply_tightening(gyro_pitch, gyro_yaw);
 
     constexpr float deg2rad = 3.14159265f / 180.0f;
     float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
@@ -1517,6 +1554,39 @@ ConsoleCommand2 gamepad_prompts_cmd{
     "gamepad_prompts [0-10]",
 };
 
+ConsoleCommand2 joy_reconnect_cmd{
+    "joy_reset",
+    [](std::optional<int>) {
+        if (!g_gamepad) {
+            // No gamepad open — try to pick up any connected one.
+            if (SDL_HasGamepad()) {
+                int count = 0;
+                SDL_JoystickID* ids = SDL_GetGamepads(&count);
+                if (ids) {
+                    if (count > 0)
+                        try_open_gamepad(ids[0]);
+                    SDL_free(ids);
+                }
+            }
+            if (g_gamepad)
+                rf::console::print("Gamepad reset: opened {}", SDL_GetGamepadName(g_gamepad));
+            else
+                rf::console::print("Gamepad reset: no gamepad found");
+            return;
+        }
+
+        SDL_JoystickID prev_id = SDL_GetGamepadID(g_gamepad);
+        disconnect_active_gamepad();
+        try_open_gamepad(prev_id);
+
+        if (g_gamepad)
+            rf::console::print("Gamepad reset: reopened {}", SDL_GetGamepadName(g_gamepad));
+        else
+            rf::console::print("Gamepad reset: failed to reopen gamepad");
+    },
+    "Close and reopen the SDL gamepad (re-enables sensors, resets gyro state)",
+};
+
 // Returns the secondary (alt) scan code for the action bound to the given primary
 // scan code, or -1 if there is no secondary. Used by the binding list renderer.
 int gamepad_get_alt_sc_for_primary_sc(int primary_sc)
@@ -1835,55 +1905,6 @@ void gamepad_reset_to_defaults()
     g_trigger_action[1] = rf::CC_ACTION_SECONDARY_ATTACK;
 }
 
-// Initialization and message handling
-ConsoleCommand2 joy_reconnect_cmd{
-    "joy_reset",
-    [](std::optional<int>) {
-        if (!g_gamepad) {
-            // No gamepad open — try to pick up any connected one.
-            if (SDL_HasGamepad()) {
-                int count = 0;
-                SDL_JoystickID* ids = SDL_GetGamepads(&count);
-                if (ids) {
-                    if (count > 0)
-                        try_open_gamepad(ids[0]);
-                    SDL_free(ids);
-                }
-            }
-            if (g_gamepad)
-                rf::console::print("Gamepad reset: opened {}", SDL_GetGamepadName(g_gamepad));
-            else
-                rf::console::print("Gamepad reset: no gamepad found");
-            return;
-        }
-
-        // Release all held inputs before closing.
-        release_movement_keys();
-        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
-            inject_action_key(g_button_map[b], false);
-            inject_action_key(g_button_map_alt[b], false);
-        }
-        inject_action_key(g_trigger_action[0], false);
-        inject_action_key(g_trigger_action[1], false);
-        menu_nav_release_click();
-
-        SDL_JoystickID prev_id = SDL_GetGamepadID(g_gamepad);
-        SDL_CloseGamepad(g_gamepad);
-        g_gamepad               = nullptr;
-        g_motion_sensors_supported = false;
-        reset_gamepad_input_state();
-
-        // Reopen the same device.
-        try_open_gamepad(prev_id);
-
-        if (g_gamepad)
-            rf::console::print("Gamepad reset: reopened {}", SDL_GetGamepadName(g_gamepad));
-        else
-            rf::console::print("Gamepad reset: failed to reopen gamepad");
-    },
-    "Close and reopen the SDL gamepad (re-enables sensors, resets gyro state)",
-};
-
 void gamepad_apply_patch()
 {
     gamepad_reset_to_defaults();
@@ -2058,6 +2079,8 @@ void gamepad_sdl_init()
             SDL_free(ids);
         }
     }
+    // Flush ADDED events from subsystem init during gamepad connection
+    SDL_FlushEvents(SDL_EVENT_GAMEPAD_ADDED, SDL_EVENT_GAMEPAD_ADDED);
 
     rf::os_add_msg_handler(gamepad_msg_handler);
     xlog::info("Gamepad support initialized");
