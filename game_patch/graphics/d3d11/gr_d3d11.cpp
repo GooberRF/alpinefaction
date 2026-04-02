@@ -580,7 +580,11 @@ namespace df::gr::d3d11
         // contaminating outline colors.
         outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
+        // Disable shadows for liquid surfaces — shadows pass through water/lava
+        // and land on the solid geometry below
+        entity_shadow_renderer_->disable_shadow_rendering(context_);
         solid_renderer_->render_room_liquid_surface(solid, room);
+        entity_shadow_renderer_->bind_shadow_resources(context_);
     }
 
     void Renderer::clear_solid_cache()

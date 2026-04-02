@@ -762,6 +762,21 @@ namespace df::gr::d3d11
         context->PSSetShaderResources(2, 1, &null_srv);
     }
 
+    void EntityShadowRenderer::disable_shadow_rendering(ID3D11DeviceContext* context)
+    {
+        if (!shadow_cbuffer_) return;
+
+        // Set shadow_enabled to 0 in the constant buffer so the pixel shader
+        // skips shadow sampling entirely (no null SRV reads, no debug warnings)
+        ShadowConstantBuffer data{};
+        data.shadow_enabled = 0.0f;
+
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        DF_GR_D3D11_CHECK_HR(context->Map(shadow_cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+        std::memcpy(mapped.pData, &data, sizeof(data));
+        context->Unmap(shadow_cbuffer_, 0);
+    }
+
     bool EntityShadowRenderer::debug_enabled = false;
 
     void EntityShadowRenderer::render_debug_overlay(ID3D11DeviceContext* context)

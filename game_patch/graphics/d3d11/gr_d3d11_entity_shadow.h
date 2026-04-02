@@ -74,6 +74,7 @@ namespace df::gr::d3d11
         void generate_shadow_map(ID3D11DeviceContext* context, RenderContext& render_context, const rf::Vector3& camera_pos);
         void bind_shadow_resources(ID3D11DeviceContext* context);
         void unbind_shadow_resources(ID3D11DeviceContext* context);
+        void disable_shadow_rendering(ID3D11DeviceContext* context);
 
         void apply_quality(int quality);
         void render_debug_overlay(ID3D11DeviceContext* context);
