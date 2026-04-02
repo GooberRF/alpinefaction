@@ -1225,6 +1225,10 @@ void alpine_core_config_save()
 
 void alpine_player_settings_save(rf::Player* player)
 {
+    if (client_bot_launch_enabled() || is_awpgen_active()) {
+        return;
+    }
+
     std::string filename = alpine_get_settings_filename();
     std::ofstream file(filename);
 
