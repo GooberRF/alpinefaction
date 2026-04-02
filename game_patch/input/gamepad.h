@@ -14,7 +14,7 @@ struct RumbleEffect
 };
 
 void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms);
-void gamepad_play_rumble(const RumbleEffect& effect);
+void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire = false);
 void gamepad_stop_rumble(); // immediately silence all rumble motors
 
 void gamepad_do_frame();

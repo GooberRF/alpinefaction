@@ -200,8 +200,8 @@ struct AlpineGameSettings
     float gamepad_rumble_intensity = 1.0f;
     bool gamepad_weapon_rumble_enabled = true;
     bool gamepad_environmental_rumble_enabled = true;
-    float gamepad_trigger_rumble_intensity = 1.0f;
-    int gamepad_rumble_vibration_filter = 1; // 0=Off, 1=Auto (when gyro is active), 2=On
+    float gamepad_trigger_rumble_intensity = 0.5f;
+    int gamepad_rumble_vibration_filter = 1; // 0=Off, 1=Auto (reduce low-freq when gyro is active), 2=On (always reduce low-freq)
     bool gamepad_rumble_when_primary = true; // disable rumble when keyboard/mouse was last used
     bool scoreboard_anim = true;
     bool legacy_bob = false;

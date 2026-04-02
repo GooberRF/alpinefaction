@@ -1255,8 +1255,9 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
             SDL_GamepadAxis rot_y = g_alpine_game_config.gamepad_swap_sticks ? SDL_GAMEPAD_AXIS_LEFTY  : SDL_GAMEPAD_AXIS_RIGHTY;
             float rot_dz          = g_alpine_game_config.gamepad_swap_sticks ? g_alpine_game_config.gamepad_move_deadzone
                                                                               : g_alpine_game_config.gamepad_look_deadzone;
-            float rx = get_axis(rot_x, rot_dz);
-            float ry = get_axis(rot_y, rot_dz);
+            constexpr float k_vehicle_dz_multiplier = 1.2f;
+            float rx = get_axis(rot_x, rot_dz * k_vehicle_dz_multiplier);
+            float ry = get_axis(rot_y, rot_dz * k_vehicle_dz_multiplier);
             float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
             // Normalize so that the default sensitivity (2.5) produces 1:1 vehicle scale.
             constexpr float k_default_sens = 2.5f;
@@ -1499,10 +1500,10 @@ ConsoleCommand2 joy_rumble_vibration_filter_cmd{
     [](std::optional<int> val) {
         if (val) g_alpine_game_config.gamepad_rumble_vibration_filter = std::clamp(val.value(), 0, 2);
         auto mode_name = g_alpine_game_config.gamepad_rumble_vibration_filter == 0 ? "Off" : 
-                        g_alpine_game_config.gamepad_rumble_vibration_filter == 1 ? "Auto (filter when gyro active)" : "On (always filter)";
+                        g_alpine_game_config.gamepad_rumble_vibration_filter == 1 ? "Auto (reduces low-freq motor while gyro is active)" : "On (always reduce)";
         rf::console::print("Gamepad rumble vibration filter: {} ({})", g_alpine_game_config.gamepad_rumble_vibration_filter, mode_name);
     },
-    "Set vibration filter mode 0=Off, 1=Auto (default, only in gyro aim), 2=On",
+    "Set vibration filter mode 0=Off, 1=Auto (default, low-freq motor while gyro is active), 2=On (reduces low-freq motor)",
     "joy_rumble_vibration_filter [0|1|2]",
 };
 
@@ -2039,15 +2040,14 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
         return;
     low_freq = static_cast<uint16_t>(low_freq * g_alpine_game_config.gamepad_rumble_intensity);
     high_freq = static_cast<uint16_t>(high_freq * g_alpine_game_config.gamepad_rumble_intensity);
-    // Controller Vibration filter: mute low-freq motor based on filter mode
-    // 0=Off (no filter), 1=Auto (filter when gyro active), 2=On (always filter)
+    // Controller Vibration filter: reduce low-freq motor based on filter mode
     int filter_mode = g_alpine_game_config.gamepad_rumble_vibration_filter;
     if (filter_mode == 2 || (filter_mode == 1 && g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled))
-        low_freq = 0;
+        low_freq = static_cast<uint16_t>(low_freq * 0.25f);
     SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
 }
 
-void gamepad_play_rumble(const RumbleEffect& effect)
+void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire)
 {
     if (!g_gamepad)
         return;
@@ -2068,9 +2068,16 @@ void gamepad_play_rumble(const RumbleEffect& effect)
     bool secondary_on_lt = g_trigger_action[0] == secondary_idx;
     bool secondary_on_rt = g_trigger_action[1] == secondary_idx;
 
-    // Check which fire action is currently held.
-    bool primary_active   = primary_idx   < k_action_count && g_action_curr[primary_idx];
-    bool secondary_active = secondary_idx < k_action_count && g_action_curr[secondary_idx];
+    // Check which fire action is active this frame or was active last frame.
+    bool primary_active   = primary_idx   < k_action_count && (g_action_curr[primary_idx]   || g_action_prev[primary_idx]);
+    bool secondary_active;
+    if (is_alt_fire && (secondary_on_lt || secondary_on_rt)) {
+        // Alt-fire confirmed by next_fire_secondary advancement: the secondary attack action
+        // is responsible regardless of current button state.
+        secondary_active = true;
+    } else {
+        secondary_active = secondary_idx < k_action_count && (g_action_curr[secondary_idx] || g_action_prev[secondary_idx]);
+    }
 
     bool use_lt = (primary_active && primary_on_lt) || (secondary_active && secondary_on_lt);
     bool use_rt = (primary_active && primary_on_rt) || (secondary_active && secondary_on_rt);
@@ -2082,7 +2089,6 @@ void gamepad_play_rumble(const RumbleEffect& effect)
     }
 
     // Route to the trigger motor(s) matching the active fire binding.
-    // If the hardware doesn't support trigger rumble, fall back to body rumble.
     uint16_t lt_motor = use_lt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
     uint16_t rt_motor = use_rt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
     if (!SDL_RumbleGamepadTriggers(g_gamepad, lt_motor, rt_motor, effect.duration_ms))
