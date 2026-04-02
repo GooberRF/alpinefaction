@@ -1915,6 +1915,7 @@ void gamepad_reset_to_defaults()
     g_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]     = rf::CC_ACTION_MESSAGES;
     g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_DOWN] = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = rf::CC_ACTION_MP_STATS;
+    g_menu_button_map[SDL_GAMEPAD_BUTTON_BACK]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SKIP_CUTSCENE));
 
     // Spectator / multiplayer-only actions
     g_menu_button_map[SDL_GAMEPAD_BUTTON_EAST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK));
