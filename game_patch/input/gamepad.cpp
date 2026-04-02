@@ -90,12 +90,13 @@ static float g_move_lx = 0.0f, g_move_ly = 0.0f;
 static float g_move_mag = 0.0f;
 
 // flickstick
-static bool g_flickstick_has_aim = false;
-static float g_flickstick_target_yaw = 0.0f;
-static float g_flickstick_target_pitch = 0.0f;
-static float g_flickstick_prev_stick_angle = 0.0f;
-static bool g_flickstick_prev_stick_valid = false;
-static float g_flickstick_yaw_delta_filtered = 0.0f;
+static bool  g_flickstick_was_in_flick_zone = false; // stick was past the flick deadzone last frame
+static float g_flickstick_flick_progress    = 0.0f;  // seconds into the current flick animation
+static float g_flickstick_flick_size        = 0.0f;  // yaw to output over the flick animation (rad)
+static float g_flickstick_prev_stick_angle  = 0.0f;  // stick angle from the previous frame
+static constexpr int k_turn_smooth_buf_size = 5;     // ring buffer size for turn smoothing
+static float g_flickstick_turn_smooth_buf[k_turn_smooth_buf_size] = {};
+static int   g_flickstick_turn_smooth_idx   = 0;
 
 // render helpers
 static rf::VMesh* g_local_player_body_vmesh = nullptr;
@@ -171,11 +172,12 @@ static void reset_gamepad_input_state()
     g_move_mag = 0.0f;
     g_menu_nav = {};
     g_rebind_pending_sc = -1;
-    g_flickstick_has_aim = false;
-    g_flickstick_target_yaw = 0.0f;
-    g_flickstick_target_pitch = 0.0f;
-    g_flickstick_prev_stick_valid = false;
-    g_flickstick_yaw_delta_filtered = 0.0f;
+    g_flickstick_was_in_flick_zone = false;
+    g_flickstick_flick_progress    = 0.0f;
+    g_flickstick_flick_size        = 0.0f;
+    g_flickstick_prev_stick_angle  = 0.0f;
+    memset(g_flickstick_turn_smooth_buf, 0, sizeof(g_flickstick_turn_smooth_buf));
+    g_flickstick_turn_smooth_idx   = 0;
     g_lt_was_down = false;
     g_rt_was_down = false;
     g_last_input_was_gamepad = false;
@@ -978,7 +980,6 @@ FunHook<int(int)> mouse_was_button_pressed_hook{
 // Flick stick is based on GyroWiki documents
 // http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-2:the-flick-stick
 static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y,
-                                    float current_yaw, float current_pitch,
                                     float& yaw_delta, float& pitch_delta)
 {
     yaw_delta = 0.0f;
@@ -988,46 +989,51 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
     float rx = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_x) / static_cast<float>(SDL_MAX_SINT16) : 0.0f;
     float ry = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_y) / static_cast<float>(SDL_MAX_SINT16) : 0.0f;
 
-    float stick_mag = std::hypot(rx, ry);
-    bool start_flick = stick_mag > g_alpine_game_config.gamepad_flickstick_deadzone;
-    bool end_flick   = stick_mag <= g_alpine_game_config.gamepad_flickstick_release_deadzone;
+    float stick_mag      = std::hypot(rx, ry);
+    bool  in_flick_zone  = stick_mag >  g_alpine_game_config.gamepad_flickstick_deadzone;
+    bool  fully_released = stick_mag <= g_alpine_game_config.gamepad_flickstick_release_deadzone;
+    float smooth         = g_alpine_game_config.gamepad_flickstick_smoothing;
+    float sweep          = g_alpine_game_config.gamepad_flickstick_sweep;
 
-    float flick_angle     = std::atan2(rx, -ry);
-    float flick_turn_delta = 0.0f;
-    float flick_angle_change = 0.0f;
+    float flick_angle = std::atan2(rx, -ry);
 
-    if (g_flickstick_prev_stick_valid) {
-        flick_turn_delta = angle_diff(flick_angle, g_flickstick_prev_stick_angle);
-        flick_angle_change = std::abs(flick_turn_delta);
+    if (in_flick_zone) {
+        if (!g_flickstick_was_in_flick_zone) {
+            g_flickstick_flick_progress = 0.0f;
+            g_flickstick_flick_size     = flick_angle * sweep;
+        } else {
+            float turn_delta = angle_diff(flick_angle, g_flickstick_prev_stick_angle) * sweep;
+
+            if (smooth > 0.0f) {
+                constexpr float k_max_threshold = 0.3f;
+                float threshold2 = smooth * k_max_threshold;
+                float threshold1 = threshold2 * 0.5f;
+                float direct_weight = std::clamp((std::abs(turn_delta) - threshold1) / (threshold2 - threshold1), 0.0f, 1.0f);
+                g_flickstick_turn_smooth_idx = (g_flickstick_turn_smooth_idx + 1) % k_turn_smooth_buf_size;
+                g_flickstick_turn_smooth_buf[g_flickstick_turn_smooth_idx] = turn_delta * (1.0f - direct_weight);
+                float avg = 0.0f;
+                for (int i = 0; i < k_turn_smooth_buf_size; ++i) avg += g_flickstick_turn_smooth_buf[i];
+                turn_delta = turn_delta * direct_weight + avg / k_turn_smooth_buf_size;
+            }
+
+            yaw_delta += turn_delta;
+        }
+    } else if (fully_released && g_flickstick_was_in_flick_zone) {
+        memset(g_flickstick_turn_smooth_buf, 0, sizeof(g_flickstick_turn_smooth_buf));
+        g_flickstick_turn_smooth_idx = 0;
     }
-    g_flickstick_prev_stick_angle = flick_angle;
-    g_flickstick_prev_stick_valid = true;
 
-    static constexpr float k_flickstick_retrigger_angle = 1.04719755f; // 60 degrees
+    g_flickstick_prev_stick_angle  = flick_angle;
+    g_flickstick_was_in_flick_zone = in_flick_zone || (g_flickstick_was_in_flick_zone && !fully_released);
 
-    if (start_flick && (!g_flickstick_has_aim || flick_angle_change > k_flickstick_retrigger_angle)) {
-        g_flickstick_has_aim = true;
-        g_flickstick_target_yaw = wrap_angle_pi(current_yaw + flick_angle);
-        g_flickstick_target_pitch = current_pitch;
-        yaw_delta = angle_diff(g_flickstick_target_yaw, current_yaw);
-    } else if (g_flickstick_has_aim && start_flick) {
-        yaw_delta = flick_turn_delta;
-        g_flickstick_target_yaw = wrap_angle_pi(g_flickstick_target_yaw + flick_turn_delta);
-    } else if (end_flick) {
-        g_flickstick_has_aim = false;
-        g_flickstick_prev_stick_valid = false;
-    } else {
-        yaw_delta = 0.0f;
-        pitch_delta = 0.0f;
+    constexpr float k_flick_time = 0.1f;
+    if (g_flickstick_flick_progress < k_flick_time) {
+        float last_t = g_flickstick_flick_progress / k_flick_time;
+        g_flickstick_flick_progress = std::min(g_flickstick_flick_progress + rf::frametime, k_flick_time);
+        float this_t = g_flickstick_flick_progress / k_flick_time;
+        auto warp_ease_out = [](float t) -> float { float f = 1.0f - t; return 1.0f - f * f; };
+        yaw_delta += (warp_ease_out(this_t) - warp_ease_out(last_t)) * g_flickstick_flick_size;
     }
-
-    yaw_delta *= g_alpine_game_config.gamepad_flickstick_sweep;
-
-    float k_flickstick_smooth = std::clamp(g_alpine_game_config.gamepad_flickstick_smoothing, 0.0f, 1.0f);
-    g_flickstick_yaw_delta_filtered = g_flickstick_yaw_delta_filtered * k_flickstick_smooth
-        + yaw_delta * (1.0f - k_flickstick_smooth);
-    yaw_delta = g_flickstick_yaw_delta_filtered;
-    pitch_delta = 0.0f;
 }
 
 static void gamepad_apply_joystick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y, float cam_dz,
@@ -1037,7 +1043,11 @@ static void gamepad_apply_joystick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y,
     get_axis_circular(cam_x, cam_y, cam_dz, rx, ry);
 
     float joy_pitch_sign = g_alpine_game_config.gamepad_joy_invert_y ? 1.0f : -1.0f;
-    g_flickstick_yaw_delta_filtered = 0.0f;
+    // Reset flickstick state so switching back to flickstick always starts a fresh flick.
+    g_flickstick_was_in_flick_zone = false;
+    g_flickstick_flick_size        = 0.0f;
+    memset(g_flickstick_turn_smooth_buf, 0, sizeof(g_flickstick_turn_smooth_buf));
+    g_flickstick_turn_smooth_idx   = 0;
     yaw_delta   =              rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * rx * zoom_sens;
     pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry * zoom_sens;
 }
@@ -1142,7 +1152,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
 
     // Use joystick camera while scoped/scanning for consistent aim; flickstick otherwise.
     if (g_alpine_game_config.gamepad_joy_camera && !is_spectator_camera && !is_scoped_or_scanning) {
-        gamepad_apply_flickstick(cam_x, cam_y, current_yaw, current_pitch, yaw_delta, pitch_delta);
+        gamepad_apply_flickstick(cam_x, cam_y, yaw_delta, pitch_delta);
         yaw_delta   *= gamepad_zoom_sens;
         pitch_delta *= gamepad_zoom_sens;
     } else {
