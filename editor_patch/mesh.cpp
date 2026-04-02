@@ -708,7 +708,7 @@ static INT_PTR CALLBACK MeshDialogProc(HWND hdlg, UINT msg, WPARAM wparam, LPARA
             HWND mat_combo = GetDlgItem(hdlg, IDC_MESH_MATERIAL);
             static const char* material_names[] = {
                 "Default", "Rock", "Metal", "Flesh", "Water",
-                "Lava", "Solid", "Glass", "Sand", "Ice"
+                "Lava", "Solid", "Sand", "Ice", "Glass"
             };
             for (auto* name : material_names) {
                 SendMessageA(mat_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
