@@ -2058,7 +2058,7 @@ void alpine_options_panel_do_frame(int x)
 
     // gamepad settings
     snprintf(ao_joy_camera_butlabel_text, sizeof(ao_joy_camera_butlabel_text), "%s",
-        g_alpine_game_config.gamepad_joy_camera ? "Flick Stick" : "Normal");
+        g_alpine_game_config.gamepad_joy_camera ? "Flick Stick" : "Standard");
     ao_joy_camera_butlabel.text = ao_joy_camera_butlabel_text;
     ao_joy_camera_butlabel.align = rf::gr::ALIGN_CENTER;
     ao_joy_camera_butlabel.x = 112 + 50;

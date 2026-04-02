@@ -1058,10 +1058,8 @@ static void gamepad_apply_gyro(bool has_player_entity, float zoom_sens, float& y
     gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
     gyro_apply_smoothing(gyro_pitch, gyro_yaw);
     gyro_apply_tightening(gyro_pitch, gyro_yaw);
-    gyro_apply_vh_mixer(gyro_pitch, gyro_yaw);
 
     constexpr float deg2rad = 3.14159265f / 180.0f;
-    float pitch_sign = g_alpine_game_config.gamepad_gyro_invert_y ? -1.0f : 1.0f;
     float sens = g_alpine_game_config.gamepad_gyro_sensitivity * deg2rad * rf::frametime;
 
     float gyro_zoom_sens = 1.0f;
@@ -1084,8 +1082,15 @@ static void gamepad_apply_gyro(bool has_player_entity, float zoom_sens, float& y
         }
     }
 
-    yaw_delta   -= gyro_yaw   * sens * gyro_zoom_sens;
-    pitch_delta += pitch_sign * gyro_pitch * sens * gyro_zoom_sens;
+    float out_yaw   = -gyro_yaw   * sens * gyro_zoom_sens;
+    float out_pitch =  gyro_pitch * sens * gyro_zoom_sens;
+
+    if (g_alpine_game_config.gamepad_gyro_invert_y)
+        out_pitch = -out_pitch;
+    gyro_apply_vh_mixer(out_pitch, out_yaw);
+
+    yaw_delta   += out_yaw;
+    pitch_delta += out_pitch;
 }
 
 void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
