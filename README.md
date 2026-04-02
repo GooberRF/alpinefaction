@@ -43,6 +43,7 @@ Most important:
 * Support for any resolution and aspect ratio
 * Fullscreen, windowed, borderless window modes
 * Enhanced mouse input
+* Controller Support
 * Ability to skip cutscenes
 * Restored water/lava rising functionality in Geothermal Plant
 * Enhanced graphics options such as anti-aliasing and full color range lighting
