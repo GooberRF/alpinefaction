@@ -181,6 +181,7 @@ CodeInjection key_name_in_options_patch{
         int key = regs.edx;
         // Gamepad scan codes installed by the CONTROLLER binding view.
         if (key >= CTRL_GAMEPAD_SCAN_BASE && key <= CTRL_GAMEPAD_RIGHT_TRIGGER) {
+            // Gameplay action: may carry a combined "Primary / Secondary" name.
             int alt_sc = gamepad_get_alt_sc_for_primary_sc(key);
             if (alt_sc >= 0) {
                 std::snprintf(buf, std::size(buf), "%s / %s",
@@ -190,6 +191,10 @@ CodeInjection key_name_in_options_patch{
                 std::strncpy(buf, gamepad_get_scan_code_name(key), std::size(buf) - 1);
                 buf[std::size(buf) - 1] = '\0';
             }
+        } else if (key >= CTRL_GAMEPAD_MENU_BASE && key < CTRL_GAMEPAD_MENU_BASE + gamepad_get_button_count()) {
+            // Menu-only action: separate namespace, never carries a secondary binding.
+            std::strncpy(buf, gamepad_get_scan_code_name(key), std::size(buf) - 1);
+            buf[std::size(buf) - 1] = '\0';
         } else if (key == 0 && ui_ctrl_bindings_view_active()) {
             // Unbound action in CONTROLLER view — show placeholder
             std::strncpy(buf, "<none>", std::size(buf) - 1);

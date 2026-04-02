@@ -39,6 +39,12 @@ static constexpr int CTRL_GAMEPAD_SCAN_BASE    = 0x59; // SDL button 0
 static constexpr int CTRL_GAMEPAD_EXTENDED_BASE = CTRL_GAMEPAD_SCAN_BASE + 15; // SDL_GAMEPAD_BUTTON_MISC1 (0x68)
 static constexpr int CTRL_GAMEPAD_LEFT_TRIGGER  = 0x73; // SCAN_BASE + 26
 static constexpr int CTRL_GAMEPAD_RIGHT_TRIGGER = 0x74; // SCAN_BASE + 27
+// Separate scan-code namespace for menu-only actions (spectate, vote, menus).
+// Placed after the trigger slots so it never overlaps gameplay button codes.
+static constexpr int CTRL_GAMEPAD_MENU_BASE    = 0x75; // SCAN_BASE + 28
+
+// Returns true if an action index should live in g_menu_button_map
+bool gamepad_is_menu_only_action(int action_idx);
 
 // Per-binding get/set for save/load
 int  gamepad_get_button_binding(int button_idx);

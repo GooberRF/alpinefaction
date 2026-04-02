@@ -2525,15 +2525,19 @@ static void install_ctrl_gamepad_codes()
         g_saved_scan_codes[i]    = cc.bindings[i].scan_codes[0];
         g_saved_sc1[i]           = cc.bindings[i].scan_codes[1];
         g_saved_mouse_btn_ids[i] = cc.bindings[i].mouse_btn_id;
+        bool menu_only = gamepad_is_menu_only_action(i);
         int btn = -1, btn_alt = -1;
         gamepad_get_buttons_for_action(i, &btn, &btn_alt);
         int trig = gamepad_get_trigger_for_action(i);
         int16_t code = 0; // unbound
-        if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
+        if (btn >= 0)
+            code = menu_only ? static_cast<int16_t>(CTRL_GAMEPAD_MENU_BASE + btn)
+                             : static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
         else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER);
         else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
         cc.bindings[i].scan_codes[0] = code;
-        cc.bindings[i].scan_codes[1] = (btn_alt >= 0)
+        // Menu-only actions never have secondary bindings.
+        cc.bindings[i].scan_codes[1] = (!menu_only && btn_alt >= 0)
             ? static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn_alt) : int16_t{0};
         cc.bindings[i].mouse_btn_id  = -1; // no mouse binding in gamepad view
     }
@@ -2548,15 +2552,18 @@ static void refresh_ctrl_gamepad_codes()
     auto& cc = rf::local_player->settings.controls;
     int n = std::min(cc.num_bindings, static_cast<int>(std::size(g_saved_scan_codes)));
     for (int i = 0; i < n; ++i) {
+        bool menu_only = gamepad_is_menu_only_action(i);
         int btn = -1, btn_alt = -1;
         gamepad_get_buttons_for_action(i, &btn, &btn_alt);
         int trig = gamepad_get_trigger_for_action(i);
         int16_t code = 0;
-        if      (btn  >= 0) code = static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
+        if (btn >= 0)
+            code = menu_only ? static_cast<int16_t>(CTRL_GAMEPAD_MENU_BASE + btn)
+                             : static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn);
         else if (trig == 0) code = static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER);
         else if (trig == 1) code = static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
         cc.bindings[i].scan_codes[0] = code;
-        cc.bindings[i].scan_codes[1] = (btn_alt >= 0)
+        cc.bindings[i].scan_codes[1] = (!menu_only && btn_alt >= 0)
             ? static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + btn_alt) : int16_t{0};
     }
 }
@@ -2694,7 +2701,9 @@ CodeInjection options_render_alpine_panel_patch{
             for (int i = 0; i < n && !defaults_hit; ++i) {
                 int16_t sc = cc.bindings[i].scan_codes[0];
                 bool is_gamepad = (sc >= static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE)
-                                && sc <= static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER));
+                                && sc <= static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER))
+                               || (sc >= static_cast<int16_t>(CTRL_GAMEPAD_MENU_BASE)
+                                && sc <  static_cast<int16_t>(CTRL_GAMEPAD_MENU_BASE + gamepad_get_button_count()));
                 if (sc != 0 && sc != static_cast<int16_t>(CTRL_REBIND_SENTINEL) && !is_gamepad)
                     defaults_hit = true;
             }
