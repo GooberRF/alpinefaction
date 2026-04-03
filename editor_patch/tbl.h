@@ -106,6 +106,19 @@ struct TblTokenizer {
         if (pos < end) ++pos;
     }
 
+    // Read a token delimited by whitespace, commas, or closing parens.
+    // Useful for parsing flag lists like (flag1, flag2, flag3).
+    std::string read_token()
+    {
+        skip_ws();
+        // skip leading commas between tokens
+        while (pos < end && *pos == ',') { ++pos; skip_ws(); }
+        if (pos < end && *pos == '"') return read_string();
+        const char* start = pos;
+        while (pos < end && *pos > ' ' && *pos != ',' && *pos != ')' && *pos != '"') ++pos;
+        return std::string(start, pos);
+    }
+
     // Save/restore position
     [[nodiscard]] const char* save() const { return pos; }
     void restore(const char* p) { pos = p; }
@@ -121,7 +134,7 @@ std::vector<char> tbl_read_file(const char* filename);
 struct CaseInsensitiveHash {
     size_t operator()(const std::string& s) const {
         size_t h = 0;
-        for (char c : s) h = h * 31 + static_cast<unsigned char>(tolower(c));
+        for (unsigned char c : s) h = h * 31 + static_cast<unsigned char>(tolower(c));
         return h;
     }
 };

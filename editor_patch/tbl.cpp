@@ -118,7 +118,7 @@ static void parse_clutter_tbl()
             if (tok.match("(")) {
                 while (!tok.at_end()) {
                     if (tok.peek(")")) { tok.match(")"); break; }
-                    std::string flag_name = tok.read_string();
+                    std::string flag_name = tok.read_token();
                     if (!flag_name.empty()) {
                         current->flags |= parse_clutter_flag(flag_name);
                     }
@@ -170,9 +170,6 @@ const ClutterClassInfo* clutter_tbl_find(const char* class_name)
     parse_clutter_tbl();
     auto it = g_clutter_classes.find(class_name);
     if (it != g_clutter_classes.end()) {
-        xlog::info("clutter_tbl: found '{}' (life={}, material={}, debris='{}', corpse='{}')",
-            class_name, it->second.life, it->second.material,
-            it->second.debris_filename, it->second.corpse_class_name);
         return &it->second;
     }
     xlog::warn("clutter_tbl: class '{}' not found in {} entries", class_name, g_clutter_classes.size());
