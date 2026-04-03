@@ -566,6 +566,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_shadow_quality(std::stoi(settings["ShadowQuality"]));
         processed_keys.insert("ShadowQuality");
     }
+    if (settings.count("ShadowFrameLag")) {
+        g_alpine_game_config.set_shadow_frame_lag(std::stoi(settings["ShadowFrameLag"]));
+        processed_keys.insert("ShadowFrameLag");
+    }
     if (settings.count("Outlines")) {
         g_alpine_game_config.try_outlines = std::stoi(settings["Outlines"]);
         processed_keys.insert("Outlines");
@@ -1341,6 +1345,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShadowItems=" << g_alpine_game_config.shadow_items << "\n";
     file << "ShadowDistance=" << g_alpine_game_config.shadow_distance << "\n";
     file << "ShadowQuality=" << g_alpine_game_config.shadow_quality << "\n";
+    file << "ShadowFrameLag=" << g_alpine_game_config.shadow_frame_lag << "\n";
     file << "Outlines=" << g_alpine_game_config.try_outlines << "\n";
     file << "OutlinesSpectator=" << g_alpine_game_config.outlines_spectator << "\n";
     file << "OutlinesTeamXray=" << g_alpine_game_config.try_outlines_team_xray << "\n";
@@ -1741,6 +1746,21 @@ ConsoleCommand2 shadow_quality_cmd{
     "r_shadowquality <0-5>",
 };
 
+ConsoleCommand2 shadow_frame_lag_cmd{
+    "r_shadowupdateinterval",
+    [](std::optional<int> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.set_shadow_frame_lag(value_opt.value());
+        }
+        rf::console::print("Shadow update interval: {} (shadow map refreshes every {} frame{})",
+            g_alpine_game_config.shadow_frame_lag,
+            g_alpine_game_config.shadow_frame_lag,
+            g_alpine_game_config.shadow_frame_lag == 1 ? "" : "s");
+    },
+    "Set shadow map update interval in frames (1=every frame, 2-30=reuse cached shadow map)",
+    "r_shadowupdateinterval <1-30>",
+};
+
 ConsoleCommand2 load_settings_cmd{
     "dbg_loadsettings",
     []() {
@@ -1779,6 +1799,7 @@ void alpine_settings_apply_patch()
     shadow_items_cmd.register_cmd();
     shadow_distance_cmd.register_cmd();
     shadow_quality_cmd.register_cmd();
+    shadow_frame_lag_cmd.register_cmd();
     dbg_shadows_cmd.register_cmd();
 
     // Init cmd line
