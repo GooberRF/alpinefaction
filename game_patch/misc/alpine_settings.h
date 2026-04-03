@@ -397,6 +397,11 @@ struct AlpineGameSettings
     {
         shadow_quality = std::clamp(value, 0, 5);
     }
+    int shadow_frame_lag = 1; // 1=every frame (default), 2-30=refresh every N frames
+    void set_shadow_frame_lag(int value)
+    {
+        shadow_frame_lag = std::clamp(value, 1, 30);
+    }
 };
 
 struct FpsCounterState
