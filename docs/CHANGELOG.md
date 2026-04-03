@@ -67,7 +67,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 - Add new and revised `Select Objects` and `Hide Objects` windows in level editor
-- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
+- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, `r_shadowupdateinterval [1-30]`, and `dbg_shadows` console commands
 - Add `$Use Vertex Lighting` `mapname_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
 - In TDM match mode, made self kills reduce team score by 1 (floor of 0)
