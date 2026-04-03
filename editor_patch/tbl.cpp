@@ -51,6 +51,26 @@ int tbl_parse_damage_type(const std::string& name)
     return -1;
 }
 
+// Clutter flag name to bit mapping
+static int parse_clutter_flag(const std::string& name)
+{
+    static const struct { const char* name; int bit; } flags[] = {
+        {"collectable",     CLUTTER_FLAG_COLLECTABLE},
+        {"collide_weapon",  CLUTTER_FLAG_COLLIDE_WEAPON},
+        {"collide_object",  CLUTTER_FLAG_COLLIDE_OBJECT},
+        {"is_screen",       CLUTTER_FLAG_IS_SCREEN},
+        {"shatters",        CLUTTER_FLAG_SHATTERS},
+        {"has_alpha",       CLUTTER_FLAG_HAS_ALPHA},
+        {"is_switch",       CLUTTER_FLAG_IS_SWITCH},
+        {"can_carry",       CLUTTER_FLAG_CAN_CARRY},
+        {"is_clock",        CLUTTER_FLAG_IS_CLOCK},
+    };
+    for (auto& f : flags) {
+        if (_stricmp(name.c_str(), f.name) == 0) return f.bit;
+    }
+    return 0;
+}
+
 // ─── Clutter ────────────────────────────────────────────────────────────────
 
 static CaseInsensitiveMap<ClutterClassInfo> g_clutter_classes;
@@ -92,7 +112,20 @@ static void parse_clutter_tbl()
             continue;
         }
 
-        if (tok.match("$V3D Filename:")) {
+        if (tok.match("$Flags:")) {
+            // Format: (flag1, flag2, ...)
+            current->flags = 0;
+            if (tok.match("(")) {
+                while (!tok.at_end()) {
+                    if (tok.peek(")")) { tok.match(")"); break; }
+                    std::string flag_name = tok.read_string();
+                    if (!flag_name.empty()) {
+                        current->flags |= parse_clutter_flag(flag_name);
+                    }
+                }
+            }
+        }
+        else if (tok.match("$V3D Filename:")) {
             current->v3d_filename = tok.read_string();
         }
         else if (tok.match("$Life:")) {

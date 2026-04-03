@@ -145,17 +145,38 @@ int tbl_parse_damage_type(const std::string& name);
 
 // ─── Clutter ────────────────────────────────────────────────────────────────
 
+// Clutter flag bits (from $Flags: field in clutter.tbl)
+enum ClutterFlags : int {
+    CLUTTER_FLAG_COLLECTABLE     = 0x001,
+    CLUTTER_FLAG_COLLIDE_WEAPON  = 0x002,
+    CLUTTER_FLAG_COLLIDE_OBJECT  = 0x004,
+    CLUTTER_FLAG_IS_SCREEN       = 0x008,
+    CLUTTER_FLAG_SHATTERS        = 0x010,
+    CLUTTER_FLAG_HAS_ALPHA       = 0x020,
+    CLUTTER_FLAG_IS_SWITCH       = 0x040,
+    CLUTTER_FLAG_CAN_CARRY       = 0x080,
+    CLUTTER_FLAG_IS_CLOCK        = 0x100,
+};
+
 struct ClutterClassInfo {
     std::string class_name;
     std::string v3d_filename;
     float life = -1.0f;
     int material = 0; // 0=Default,1=Rock,2=Metal,3=Flesh,4=Water,5=Lava,6=Solid,7=Sand,8=Ice,9=Glass
+    int flags = 0;    // ClutterFlags bitmask
     std::string debris_filename;
     float debris_velocity = 10.0f;
     std::string explode_vclip;      // vclip name (not index)
     float explode_radius = 1.0f;
     std::string corpse_class_name;  // name of corpse class (looked up to get mesh/material)
     float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1};
+
+    // Derived collision mode: 0=None, 1=Only Weapons, 2=All
+    int collision_mode() const {
+        if (flags & CLUTTER_FLAG_COLLIDE_OBJECT) return 2;
+        if (flags & CLUTTER_FLAG_COLLIDE_WEAPON) return 1;
+        return 0;
+    }
 };
 
 // Look up clutter class info by name. Parses clutter.tbl on first call.

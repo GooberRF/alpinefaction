@@ -1083,7 +1083,6 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
                 mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
                 mesh->type = DedObjectType::DED_MESH;
-                mesh->collision_mode = 2;
                 mesh->pos = clutter->pos;
                 mesh->orient = clutter->orient;
                 mesh->script_name.assign_0(clutter->script_name.c_str());
@@ -1093,6 +1092,7 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 // Replicate clutter class properties
                 const char* cls = clutter->class_name.c_str();
                 auto* ci = clutter_tbl_find(cls);
+                mesh->collision_mode = ci ? ci->collision_mode() : 2;
                 if (ci) {
                     mesh->material = ci->material;
                     auto& cp = mesh->clutter_props;
