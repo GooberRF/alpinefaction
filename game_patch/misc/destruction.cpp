@@ -2365,6 +2365,62 @@ CallHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> geomod_so
     },
 };
 
+// CallHooks inside the real-time boolean packet receive handler (FUN_00476590).
+// When the server sends a boolean packet, the client processes it here — bypassing
+// geomod_create entirely (stock geomod_create returns early for multiplayer clients).
+// The packet handler creates rock debris and smoke emitters IMMEDIATELY, before the
+// boolean state machine confirms whether geometry was actually carved. For RF2-style
+// geomods this causes spurious effects when the crater is near but doesn't intersect
+// a geoable brush. These hooks mirror the suppression logic from geomod_create_hook.
+
+CallHook<int(rf::Vector3*, float, rf::Vector3*, int, int)> packet_rock_debris_defer_hook{
+    0x00476693,
+    [](rf::Vector3* pos, float scaled_radius, rf::Vector3* source_dir, int texture, int room_ptr) -> int {
+        bool rf2_enabled = AlpineLevelProperties::instance().rf2_style_geomod;
+        if (rf2_enabled && pos) {
+            bool in_geo_region = is_pos_in_any_geo_region(*pos);
+            if (!in_geo_region) {
+                auto overlapping = find_overlapping_detail_rooms(*pos);
+                if (!overlapping.empty()) {
+                    // RF2 geomod near geoable brush — defer debris until carving confirmed
+                    g_rf2_suppress_geomod_create_effects = true;
+                    g_rf2_deferred_debris.pending = true;
+                    g_rf2_deferred_debris.orientation = *pos;
+                    g_rf2_deferred_debris.scaled_radius = scaled_radius;
+                    g_rf2_deferred_debris.source_dir = *source_dir;
+                    g_rf2_deferred_debris.texture = texture;
+                    g_rf2_deferred_debris.room = room_ptr;
+                    return 0;
+                }
+            }
+        }
+        return packet_rock_debris_defer_hook.call_target(pos, scaled_radius, source_dir, texture, room_ptr);
+    },
+};
+
+CallHook<void(rf::GeomodParams*)> packet_emitter_save_params_hook{
+    0x0047669D,
+    [](rf::GeomodParams* params) {
+        int saved_default = rf::g_geomod_emitter_default_idx;
+        int saved_driller = rf::g_geomod_emitter_driller_idx;
+
+        if (g_rf2_suppress_geomod_create_effects) {
+            // Suppress smoke particle creation by nulling emitter indices.
+            // The emitter RECORD is still created (needed to trigger the state machine),
+            // but with null particle handles — matching the geomod_create_hook path.
+            rf::g_geomod_emitter_default_idx = -1;
+            rf::g_geomod_emitter_driller_idx = -1;
+            g_rf2_smoke_pending.push_back(*params);
+        }
+
+        packet_emitter_save_params_hook.call_target(params);
+
+        rf::g_geomod_emitter_default_idx = saved_default;
+        rf::g_geomod_emitter_driller_idx = saved_driller;
+        g_rf2_suppress_geomod_create_effects = false;
+    },
+};
+
 // Hook FUN_00437180 — the per-frame geomod processor. Process pending effects
 // from a clean call context (outside the state machine) before the stock logic runs.
 FunHook<void(float)> geomod_per_frame_hook{
@@ -2454,7 +2510,9 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
         int saved_driller_emitter = rf::g_geomod_emitter_driller_idx;
 
         if (is_rf2_geomod) {
-            g_rf2_deferred_debris.pending = false;
+            if (!rf::is_multi || rf::is_server) {
+                g_rf2_deferred_debris.pending = false;
+            }
             g_rf2_suppress_geomod_create_effects = true;
             rf::g_geomod_emitter_default_idx = -1;
             rf::g_geomod_emitter_driller_idx = -1;
@@ -2471,9 +2529,7 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
             if (result) {
                 g_rf2_geo_count++;
             }
-            else {
-                // Stock function failed — no state machine will run, so remove
-                // the smoke params entry to keep FIFO alignment.
+            else if (!rf::is_multi || rf::is_server) {
                 if (!g_rf2_smoke_pending.empty()) {
                     g_rf2_smoke_pending.pop_back();
                 }
@@ -2967,6 +3023,8 @@ void destruction_do_patch()
     geomod_emitter_save_params_hook.install();
     geomod_rock_debris_defer_hook.install();
     geomod_sound_defer_hook.install();
+    packet_rock_debris_defer_hook.install();
+    packet_emitter_save_params_hook.install();
     geomod_create_hook.install();
     geomod_init_hook.install();
     boolean_iterate_hook.install();
