@@ -213,6 +213,6 @@ private:
     }
 };
 
-constexpr int CMD_LIMIT = 256;
+constexpr int CMD_LIMIT = 512;
 
 extern rf::console::Command* g_commands_buffer[CMD_LIMIT];
