@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <cctype>
 #include <unordered_map>
 
 // ─── Generic .tbl tokenizer ─────────────────────────────────────────────────
