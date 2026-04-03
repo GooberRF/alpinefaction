@@ -76,7 +76,12 @@ struct TblTokenizer {
         const char* start = pos;
         if (pos < end && (*pos == '-' || *pos == '+')) ++pos;
         while (pos < end && ((*pos >= '0' && *pos <= '9') || *pos == '.')) ++pos;
-        return static_cast<float>(atof(start));
+        // atof needs null-terminated input; copy to a small buffer
+        char tmp[64];
+        size_t n = std::min<size_t>(pos - start, sizeof(tmp) - 1);
+        memcpy(tmp, start, n);
+        tmp[n] = '\0';
+        return static_cast<float>(atof(tmp));
     }
 
     // Skip to the next line
@@ -202,11 +207,11 @@ static void parse_clutter_tbl()
         else if (tok.match("$Debris Velocity:")) {
             current->debris_velocity = tok.read_float();
         }
-        else if (tok.match("$Explode Anim:")) {
-            current->explode_vclip = tok.read_string();
-        }
         else if (tok.match("$Explode Anim Radius:")) {
             current->explode_radius = tok.read_float();
+        }
+        else if (tok.match("$Explode Anim:")) {
+            current->explode_vclip = tok.read_string();
         }
         else if (tok.match("$Corpse Class Name:")) {
             current->corpse_class_name = tok.read_string();
