@@ -20,6 +20,7 @@
 #include "level.h"
 #include "vtypes.h"
 #include "resources.h"
+#include "tbl.h"
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
@@ -1082,12 +1083,48 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
                 mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
                 mesh->type = DedObjectType::DED_MESH;
-                mesh->collision_mode = 2;
                 mesh->pos = clutter->pos;
                 mesh->orient = clutter->orient;
                 mesh->script_name.assign_0(clutter->script_name.c_str());
                 mesh->mesh_filename.assign_0(filename_str.c_str());
                 mesh->uid = generate_uid();
+
+                // Replicate clutter class properties
+                const char* cls = clutter->class_name.c_str();
+                auto* ci = clutter_tbl_find(cls);
+                mesh->collision_mode = ci ? ci->collision_mode() : 2;
+                if (ci) {
+                    mesh->material = ci->material;
+                    auto& cp = mesh->clutter_props;
+                    cp.life = ci->life;
+                    cp.debris_filename = ci->debris_filename;
+                    replace_ext_if(cp.debris_filename, "v3d", "v3m");
+                    replace_ext_if(cp.debris_filename, "vcm", "v3c");
+                    cp.debris_velocity = ci->debris_velocity;
+                    cp.explosion_vclip = ci->explode_vclip;
+                    cp.explosion_radius = ci->explode_radius;
+                    for (int di = 0; di < 11; di++)
+                        cp.damage_type_factors[di] = ci->damage_type_factors[di];
+
+                    // Mark as destructible if life > -1
+                    if (ci->life > -1.0f) {
+                        cp.is_clutter = true;
+                    }
+
+                    // Resolve corpse class: look up its mesh filename and material
+                    if (!ci->corpse_class_name.empty()) {
+                        auto* corpse_ci = clutter_tbl_find(ci->corpse_class_name.c_str());
+                        if (corpse_ci) {
+                            std::string corpse_mesh = corpse_ci->v3d_filename;
+                            replace_ext_if(corpse_mesh, "v3d", "v3m");
+                            replace_ext_if(corpse_mesh, "vcm", "v3c");
+                            cp.corpse_filename = corpse_mesh;
+                            cp.corpse_material = static_cast<int8_t>(corpse_ci->material);
+                            // Corpse class inherits collision from base (All)
+                            cp.corpse_collision = 2;
+                        }
+                    }
+                }
 
                 level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
                 level->master_objects.add(static_cast<DedObject*>(mesh));

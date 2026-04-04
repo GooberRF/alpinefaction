@@ -44,6 +44,24 @@ namespace rf
             return AddrCaller{0x004CF9A0}.this_call<bool>(this, filename, path_id);
         }
 
+        // Opens a file with explicit mode (1=read, 2=write).
+        // Returns 0 on success, negative on failure.
+        int open_mode(const char* filename, int mode = 1, int path_id = 0x98967f)
+        {
+            return AddrCaller{0x004CFE50}.this_call<int>(this, filename, mode, path_id);
+        }
+
+        void close()
+        {
+            AddrCaller{0x004CFF60}.this_call(this);
+        }
+
+        // Returns the file size. Call after open.
+        int get_size(int unk1 = 0, int unk2 = 0x98967f)
+        {
+            return AddrCaller{0x004D0030}.this_call<int>(this, unk1, unk2);
+        }
+
         [[nodiscard]] bool check_version(int min_ver) const
         {
             return AddrCaller{0x004CF650}.this_call<bool>(this, min_ver);
