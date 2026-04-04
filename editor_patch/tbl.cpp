@@ -21,8 +21,12 @@ std::vector<char> tbl_read_file(const char* filename)
     }
 
     std::vector<char> buf(file_size);
-    file.read(buf.data(), file_size);
+    int bytes_read = file.read(buf.data(), file_size);
     file.close();
+    if (bytes_read != file_size) {
+        xlog::warn("tbl: '{}' short read ({}/{})", filename, bytes_read, file_size);
+        return {};
+    }
     return buf;
 }
 
