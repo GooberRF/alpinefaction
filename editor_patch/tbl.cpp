@@ -152,6 +152,9 @@ static void parse_clutter_tbl()
         else if (tok.match("$Corpse Class Name:")) {
             current->corpse_class_name = tok.read_string();
         }
+        else if (tok.match("$Glare:")) {
+            current->glare_name = tok.read_string();
+        }
         else if (tok.match("$Damage Type Factor:")) {
             std::string type_name = tok.read_string();
             float factor = tok.read_float();
@@ -176,5 +179,104 @@ const ClutterClassInfo* clutter_tbl_find(const char* class_name)
         return &it->second;
     }
     xlog::warn("clutter_tbl: class '{}' not found in {} entries", class_name, g_clutter_classes.size());
+    return nullptr;
+}
+
+// ─── Effects (Glares) ──────────────────────────────────────────────────────
+
+static CaseInsensitiveMap<GlareClassInfo> g_glare_classes;
+static bool g_glare_parsed = false;
+
+static void parse_effects_tbl()
+{
+    if (g_glare_parsed) return;
+    g_glare_parsed = true;
+
+    auto buf = tbl_read_file("effects.tbl");
+    if (buf.empty()) return;
+
+    TblTokenizer tok(buf.data(), buf.size());
+
+    // Find #Glares section
+    while (!tok.at_end()) {
+        if (tok.match("#Glares")) break;
+        tok.skip_line();
+    }
+
+    GlareClassInfo* current = nullptr;
+
+    while (!tok.at_end()) {
+        if (tok.peek("#End")) break;
+
+        if (tok.match("$Name:")) {
+            std::string name = tok.read_string();
+            if (!name.empty()) {
+                current = &g_glare_classes[name];
+                current->name = name;
+            }
+            continue;
+        }
+
+        if (!current) {
+            tok.skip_line();
+            continue;
+        }
+
+        if (tok.match("$Light Color:")) {
+            // Format: {R, G, B}
+            tok.match("{");
+            current->color_r = static_cast<uint8_t>(tok.read_int());
+            tok.match(",");
+            current->color_g = static_cast<uint8_t>(tok.read_int());
+            tok.match(",");
+            current->color_b = static_cast<uint8_t>(tok.read_int());
+            tok.match("}");
+        }
+        else if (tok.match("$Corona Bitmap:")) {
+            current->corona_bitmap = tok.read_string();
+        }
+        else if (tok.match("$Cone Angle:")) {
+            current->cone_angle = tok.read_float();
+        }
+        else if (tok.match("$Intensity:")) {
+            current->intensity = tok.read_float();
+        }
+        else if (tok.match("$Radius Distance Factor:")) {
+            current->radius_distance = tok.read_float();
+        }
+        else if (tok.match("$Radius Scale Factor:")) {
+            current->radius_scale = tok.read_float();
+        }
+        else if (tok.match("$Diminish Distance:")) {
+            current->diminish_distance = tok.read_float();
+        }
+        else if (tok.match("$Volumetric Bitmap:")) {
+            current->volumetric_bitmap = tok.read_string();
+        }
+        else if (tok.match("$Volumetric Height:")) {
+            current->volumetric_height = tok.read_float();
+        }
+        else if (tok.match("$Volumetric Length:")) {
+            current->volumetric_length = tok.read_float();
+        }
+        else if (tok.match("$Reflection Bitmap:")) {
+            tok.read_string(); // read and discard — DedCorona has no reflection field
+        }
+        else {
+            tok.skip_line();
+        }
+    }
+
+    xlog::info("effects_tbl: parsed {} glare entries", g_glare_classes.size());
+}
+
+const GlareClassInfo* glare_tbl_find(const char* glare_name)
+{
+    parse_effects_tbl();
+    auto it = g_glare_classes.find(glare_name);
+    if (it != g_glare_classes.end()) {
+        return &it->second;
+    }
+    xlog::warn("effects_tbl: glare '{}' not found in {} entries", glare_name, g_glare_classes.size());
     return nullptr;
 }

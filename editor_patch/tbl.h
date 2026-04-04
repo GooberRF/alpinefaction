@@ -184,6 +184,7 @@ struct ClutterClassInfo {
     float explode_radius = 1.0f;
     std::string corpse_class_name;  // name of corpse class (looked up to get mesh/material)
     float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1};
+    std::string glare_name;             // $Glare: name from effects.tbl (empty = none)
 
     // Derived collision mode: 0=None, 1=Only Weapons, 2=All
     int collision_mode() const {
@@ -195,3 +196,22 @@ struct ClutterClassInfo {
 
 // Look up clutter class info by name. Parses clutter.tbl on first call.
 const ClutterClassInfo* clutter_tbl_find(const char* class_name);
+
+// ─── Effects (Glares) ──────────────────────────────────────────────────────
+
+struct GlareClassInfo {
+    std::string name;
+    uint8_t color_r = 255, color_g = 255, color_b = 255;
+    std::string corona_bitmap;
+    float cone_angle = 90.0f;           // full angle in degrees
+    float intensity = 1.0f;
+    float radius_distance = 0.6f;
+    float radius_scale = 1.0f;
+    float diminish_distance = -0.05f;
+    std::string volumetric_bitmap;
+    float volumetric_height = 0.0f;
+    float volumetric_length = 0.0f;
+};
+
+// Look up glare info by name. Parses effects.tbl on first call.
+const GlareClassInfo* glare_tbl_find(const char* glare_name);

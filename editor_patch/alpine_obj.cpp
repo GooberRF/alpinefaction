@@ -1130,6 +1130,38 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 level->master_objects.add(static_cast<DedObject*>(mesh));
                 mesh_load_vmesh(mesh);
                 new_meshes.push_back(mesh);
+
+                // Create a corona object if the clutter class has a glare
+                if (ci && !ci->glare_name.empty()) {
+                    auto* gi = glare_tbl_find(ci->glare_name.c_str());
+                    if (gi && !gi->corona_bitmap.empty()) {
+                        auto* corona = new DedCorona();
+                        memset(static_cast<DedObject*>(corona), 0, sizeof(DedObject));
+                        corona->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
+                        corona->type = DedObjectType::DED_CORONA;
+                        corona->pos = clutter->pos;
+                        corona->orient = clutter->orient;
+                        corona->script_name.assign_0("Corona");
+                        corona->uid = generate_uid();
+
+                        corona->color_r = gi->color_r;
+                        corona->color_g = gi->color_g;
+                        corona->color_b = gi->color_b;
+                        corona->color_a = 255;
+                        corona->corona_bitmap = gi->corona_bitmap;
+                        corona->cone_angle = gi->cone_angle;
+                        corona->intensity = gi->intensity;
+                        corona->radius_distance = gi->radius_distance;
+                        corona->radius_scale = gi->radius_scale;
+                        corona->diminish_distance = gi->diminish_distance;
+                        corona->volumetric_bitmap = gi->volumetric_bitmap;
+                        corona->volumetric_height = gi->volumetric_height;
+                        corona->volumetric_length = gi->volumetric_length;
+
+                        level->GetAlpineLevelProperties().corona_objects.push_back(corona);
+                        level->master_objects.add(static_cast<DedObject*>(corona));
+                    }
+                }
             }
 
             // Delete original clutter and remove from level selection

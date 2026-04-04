@@ -483,9 +483,9 @@ void corona_render(CDedLevel* level)
             gr_render_billboard(&corona->pos, 0, 0.25f, cam_param);
         }
 
-        // Always draw direction arrow (cyan) along forward vector with volumetric length
-        if (corona->volumetric_length > 0.0f) {
-            float len = corona->volumetric_length;
+        // Always draw direction arrow (cyan) along forward vector (min 1m, or volumetric length)
+        {
+            float len = std::max(corona->volumetric_length, 1.0f);
             draw_3d_arrow(
                 corona->pos.x, corona->pos.y, corona->pos.z,
                 corona->pos.x + corona->orient.fvec.x * len,
