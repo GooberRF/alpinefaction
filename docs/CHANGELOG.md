@@ -162,6 +162,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix second use of `levelm` during a game session incorrectly loading the level in single player
 - Fix `levelm` attempting to load invalid level files
 - Fix `levelm` crashing the game when run from a dedicated server
+- Fix rare crash when morphing custom skeletal meshes
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
