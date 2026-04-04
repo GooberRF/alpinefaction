@@ -1164,11 +1164,9 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 }
             }
 
-            // Delete original clutter and remove from level selection
+            // Delete original clutter via the stock editor delete function
             for (auto* clutter : clutter_objs) {
-                remove_from_selection(level->selection, clutter);
-                level->clutter.remove_by_value(clutter);
-                level->master_objects.remove_by_value(clutter);
+                level->delete_object(clutter);
             }
 
             // Select the new mesh objects
