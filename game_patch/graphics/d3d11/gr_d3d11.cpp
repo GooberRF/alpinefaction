@@ -459,7 +459,7 @@ namespace df::gr::d3d11
                 project_vertex(v);
             }
             if (constant_sw) {
-                float unscaled_z = sw / matrix_scale.z;
+                float unscaled_z = std::max(sw / matrix_scale.z, 0.1f);
                 v->sw = render_context_->projection().project_z(unscaled_z);
             }
         }
