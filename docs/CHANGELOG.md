@@ -93,6 +93,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Consolidate mesh static lighting settings to `r_meshlighting [0-2]` console command
 - Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
 - Add `-awpgen` command line argument to generate an awp for a provided level filename
+- Colour kill notifications white if they involve a first person spectatee
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
