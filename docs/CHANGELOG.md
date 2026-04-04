@@ -93,7 +93,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Consolidate mesh static lighting settings to `r_meshlighting [0-2]` console command
 - Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
 - Add `-awpgen` command line argument to generate an awp for a provided level filename
-- Colour kill notifications white if they involve a first person spectatee
+- Color kill notifications white if they involve a first person spectatee
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -563,7 +563,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
   - High monitor resolution, Alpine branding, multiplayer tracker, fast animations
   - Max FPS, max server FPS, server netfps
   - Simulation distance, lod distance scale, disable MP character LOD
-  - Join beep, lighting colour range
+  - Join beep, lighting color range
 - Add `SkipCutsceneBindAlias` setting to `alpine_settings.ini`
 - Deprecate `IgnoreSwapAssaultRifleControls` and `IgnoreSwapGrenadeControls` in `af_game.tbl` (no longer needed)
 - Add `dbg_consolehistory` command to toggle whether console history persists between game launches
