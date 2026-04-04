@@ -123,9 +123,8 @@ static void parse_clutter_tbl()
                 while (!tok.at_end()) {
                     if (tok.peek(")")) { tok.match(")"); break; }
                     std::string flag_name = tok.read_token();
-                    if (!flag_name.empty()) {
-                        current->flags |= parse_clutter_flag(flag_name);
-                    }
+                    if (flag_name.empty()) break; // no progress possible
+                    current->flags |= parse_clutter_flag(flag_name);
                 }
             }
         }
