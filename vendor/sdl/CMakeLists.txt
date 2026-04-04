@@ -2,8 +2,8 @@
 # To upgrade, update SDL3_VERSION and SDL3_HASH to match the desired release tag.
 # Hash can be found at: https://github.com/libsdl-org/SDL/releases
 # See: https://wiki.libsdl.org/SDL3/README-cmake
-set(SDL3_VERSION "3.4.2")
-set(SDL3_HASH "ef39a2e3f9a8a78296c40da701967dd1b0d0d6e267e483863ce70f8a03b4050c")
+set(SDL3_VERSION "3.4.4")
+set(SDL3_HASH "ee712dbe6a89bb140bbfc2ce72358fb5ee5cc2240abeabd54855012db30b3864")
 
 include(FetchContent)
 FetchContent_Declare(
