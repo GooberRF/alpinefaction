@@ -269,82 +269,85 @@ float4 main(VsOutput input) : SV_TARGET
     target.rgb *= light_color;
 
     if (shadow_enabled > 0.5f) {
-        float3 world_pos = input.world_pos_and_depth.xyz;
-        float3 normal = normalize(input.norm);
+        // Early-out: skip all shadow work for fragments beyond the fade distance
+        float cam_dist = input.world_pos_and_depth.w;
+        float fade = 1.0f - saturate((cam_dist - shadow_fade_start) / (shadow_fade_end - shadow_fade_start));
 
-        // NdotL: how much the surface faces the light (light_dir points FROM light)
-        float NdotL = dot(normal, -shadow_light_dir);
+        if (fade > 0.0f) {
+            float3 world_pos = input.world_pos_and_depth.xyz;
+            float3 normal = normalize(input.norm);
 
-        // Smooth NdotL fade instead of hard cutoff
-        float ndotl_fade = saturate(NdotL * 5.0f);
+            // NdotL: how much the surface faces the light (light_dir points FROM light)
+            float NdotL = dot(normal, -shadow_light_dir);
 
-        if (ndotl_fade > 0.0f) {
-            // Normal offset bias scaled by angle to reduce self-shadowing
-            float bias_scale = saturate(1.0f - NdotL);
-            float3 biased_pos = world_pos + normal * shadow_normal_offset * (1.0f + bias_scale);
+            // Smooth NdotL fade instead of hard cutoff
+            float ndotl_fade = saturate(NdotL * 5.0f);
 
-            float4 shadow_pos = mul(float4(biased_pos, 1.0f), shadow_vp_mat);
-            float3 shadow_ndc = shadow_pos.xyz / shadow_pos.w;
-            float2 shadow_uv = shadow_ndc.xy * 0.5f + 0.5f;
-            shadow_uv.y = 1.0f - shadow_uv.y;
+            if (ndotl_fade > 0.0f) {
+                // Normal offset bias scaled by angle to reduce self-shadowing
+                float bias_scale = saturate(1.0f - NdotL);
+                float3 biased_pos = world_pos + normal * shadow_normal_offset * (1.0f + bias_scale);
 
-            float shadow_value = 1.0f;
-            float debug_proj_fade = 1.0f;
-            if (shadow_uv.x >= 0.0f && shadow_uv.x <= 1.0f && shadow_uv.y >= 0.0f && shadow_uv.y <= 1.0f) {
-                float spread = shadow_texel_size * 2.5f;
-                int extra_taps = (int)shadow_pcf_taps - 1;
+                float4 shadow_pos = mul(float4(biased_pos, 1.0f), shadow_vp_mat);
+                float3 shadow_ndc = shadow_pos.xyz / shadow_pos.w;
+                float2 shadow_uv = shadow_ndc.xy * 0.5f + 0.5f;
+                shadow_uv.y = 1.0f - shadow_uv.y;
 
-                // Receiver-side comparison bias
-                float z_compensation = shadow_normal_offset * (1.0f + bias_scale) * NdotL / shadow_depth_range;
-                float compare_depth = shadow_ndc.z + z_compensation;
+                float shadow_value = 1.0f;
+                float debug_proj_fade = 1.0f;
+                if (shadow_uv.x >= 0.0f && shadow_uv.x <= 1.0f && shadow_uv.y >= 0.0f && shadow_uv.y <= 1.0f) {
+                    float spread = shadow_texel_size * 2.5f;
+                    int extra_taps = (int)shadow_pcf_taps - 1;
 
-                // Per-pixel rotation angle to break up PCF banding on small shadows
-                float pcf_angle = frac(sin(dot(input.pos.xy * 0.5f, float2(12.9898f, 78.233f))) * 43758.5453f) * 6.28318530718f;
-                float pcf_cos = cos(pcf_angle);
-                float pcf_sin = sin(pcf_angle);
+                    // Receiver-side comparison bias
+                    float z_compensation = shadow_normal_offset * (1.0f + bias_scale) * NdotL / shadow_depth_range;
+                    float compare_depth = shadow_ndc.z + z_compensation;
 
-                float proj_fade_range = shadow_projection_fade_end - shadow_projection_fade_start;
+                    // Per-pixel rotation angle to break up PCF banding on small shadows
+                    float pcf_angle = frac(sin(dot(input.pos.xy * 0.5f, float2(12.9898f, 78.233f))) * 43758.5453f) * 6.28318530718f;
+                    float pcf_cos = cos(pcf_angle);
+                    float pcf_sin = sin(pcf_angle);
 
-                // Center tap
-                float center_depth = shadow_map.SampleLevel(shadow_depth_sampler, shadow_uv, 0).r;
-                float center_pd = saturate(shadow_ndc.z - center_depth) * shadow_depth_range;
-                float center_pf = 1.0f - saturate((center_pd - shadow_projection_fade_start) / proj_fade_range);
-                debug_proj_fade = center_pf;
-                float center_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, shadow_uv, compare_depth);
-                float shadow_sum = lerp(1.0f, lerp(shadow_strength, 1.0f, center_cmp), center_pf);
+                    float proj_fade_range = shadow_projection_fade_end - shadow_projection_fade_start;
 
-                // Early-out: skip extra taps if center is fully lit (no shadow nearby)
-                // Disabled when soft_edges is on (quality 5) for softer shadow boundaries
-                if (center_cmp >= 1.0f && extra_taps > 0 && shadow_soft_edges < 0.5f) {
-                    shadow_value = 1.0f;
-                } else {
-                    // Extra taps (PCF with Poisson disk + per-tap projection fade)
-                    for (int t = 0; t < extra_taps && t < 15; ++t) {
-                        float2 ofs = float2(pcf_offsets[t].x * pcf_cos - pcf_offsets[t].y * pcf_sin,
-                                            pcf_offsets[t].x * pcf_sin + pcf_offsets[t].y * pcf_cos);
-                        float2 tap_uv = shadow_uv + ofs * spread;
-                        float tap_depth = shadow_map.SampleLevel(shadow_depth_sampler, tap_uv, 0).r;
-                        float tap_pd = saturate(shadow_ndc.z - tap_depth) * shadow_depth_range;
-                        float tap_pf = 1.0f - saturate((tap_pd - shadow_projection_fade_start) / proj_fade_range);
-                        float tap_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, tap_uv, compare_depth);
-                        shadow_sum += lerp(1.0f, lerp(shadow_strength, 1.0f, tap_cmp), tap_pf);
+                    // Center tap
+                    float center_depth = shadow_map.SampleLevel(shadow_depth_sampler, shadow_uv, 0).r;
+                    float center_pd = saturate(shadow_ndc.z - center_depth) * shadow_depth_range;
+                    float center_pf = 1.0f - saturate((center_pd - shadow_projection_fade_start) / proj_fade_range);
+                    debug_proj_fade = center_pf;
+                    float center_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, shadow_uv, compare_depth);
+                    float shadow_sum = lerp(1.0f, lerp(shadow_strength, 1.0f, center_cmp), center_pf);
+
+                    // Early-out: skip extra taps if center is fully lit (no shadow nearby)
+                    // Disabled when soft_edges is on (quality 5) for softer shadow boundaries
+                    if (center_cmp >= 1.0f && extra_taps > 0 && shadow_soft_edges < 0.5f) {
+                        shadow_value = 1.0f;
+                    } else {
+                        // Extra taps (PCF with Poisson disk + per-tap projection fade)
+                        for (int t = 0; t < extra_taps && t < 15; ++t) {
+                            float2 ofs = float2(pcf_offsets[t].x * pcf_cos - pcf_offsets[t].y * pcf_sin,
+                                                pcf_offsets[t].x * pcf_sin + pcf_offsets[t].y * pcf_cos);
+                            float2 tap_uv = shadow_uv + ofs * spread;
+                            float tap_depth = shadow_map.SampleLevel(shadow_depth_sampler, tap_uv, 0).r;
+                            float tap_pd = saturate(shadow_ndc.z - tap_depth) * shadow_depth_range;
+                            float tap_pf = 1.0f - saturate((tap_pd - shadow_projection_fade_start) / proj_fade_range);
+                            float tap_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, tap_uv, compare_depth);
+                            shadow_sum += lerp(1.0f, lerp(shadow_strength, 1.0f, tap_cmp), tap_pf);
+                        }
+                        shadow_value = shadow_sum / shadow_pcf_taps;
                     }
-                    shadow_value = shadow_sum / shadow_pcf_taps;
                 }
-            }
 
-            float cam_dist = input.world_pos_and_depth.w;
-            float fade = 1.0f - saturate((cam_dist - shadow_fade_start) / (shadow_fade_end - shadow_fade_start));
-
-            if (shadow_debug > 0.5f) {
-                // Debug: Red = shadow darkening, Green = projection fade suppression (center tap)
-                float darken = (1.0f - shadow_value) * fade * ndotl_fade;
-                float proj_suppress = (1.0f - debug_proj_fade) * fade * ndotl_fade;
-                target.rgb *= 0.3f;
-                target.rgb += float3(darken * 1.5f, proj_suppress * 1.0f, 0.0f);
-            } else {
-                float final_shadow = lerp(1.0f, shadow_value, fade * ndotl_fade);
-                target.rgb *= final_shadow;
+                if (shadow_debug > 0.5f) {
+                    // Debug: Red = shadow darkening, Green = projection fade suppression (center tap)
+                    float darken = (1.0f - shadow_value) * fade * ndotl_fade;
+                    float proj_suppress = (1.0f - debug_proj_fade) * fade * ndotl_fade;
+                    target.rgb *= 0.3f;
+                    target.rgb += float3(darken * 1.5f, proj_suppress * 1.0f, 0.0f);
+                } else {
+                    float final_shadow = lerp(1.0f, shadow_value, fade * ndotl_fade);
+                    target.rgb *= final_shadow;
+                }
             }
         }
     }

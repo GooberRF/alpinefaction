@@ -859,7 +859,20 @@ void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* en
 void multi_spectate_level_init()
 {
     g_spawned_in_current_level = false;
+    g_spectate_mode_enabled = false;
+    g_spectate_mode_follow_killer = false;
+    g_old_target_camera = nullptr;
     g_spectate_freelook_saved_target = nullptr;
+
+    if (rf::local_player) {
+        rf::local_player->is_spectator = false;
+        g_spectate_mode_target = rf::local_player;
+
+        // Restore the camera's player pointer
+        if (rf::local_player->cam) {
+            rf::local_player->cam->player = rf::local_player;
+        }
+    }
 }
 
 template<typename F>

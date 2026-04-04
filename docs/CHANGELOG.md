@@ -67,7 +67,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 - Add new and revised `Select Objects` and `Hide Objects` windows in level editor
-- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
+- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, `r_shadowupdateinterval [1-30]`, and `dbg_shadows` console commands
 - Add `$Use Vertex Lighting` `mapname_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
 - In TDM match mode, made self kills reduce team score by 1 (floor of 0)
@@ -161,6 +161,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix `disconnect` not disconnecting a listen server host
 - Fix second use of `levelm` during a game session incorrectly loading the level in single player
 - Fix `levelm` attempting to load invalid level files
+- Fix `levelm` crashing the game when run from a dedicated server
+- Fix player camera being stuck in fixed position when spawning after joining a new server, if freelook spectate was active in the previous server
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
