@@ -313,6 +313,8 @@ static auto& d3d_device_ptr = addr_as_ref<void*>(0x0183b914);
 static auto& gr_flush_batch = addr_as_ref<void()>(0x004e99d0);
 static auto& gr_begin_batch = addr_as_ref<void(int, int)>(0x004e98e0);
 
+static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
+
 // Render mode and polygon submission
 static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
 static auto& gr_poly_render = addr_as_ref<uint32_t(int, void**, int, float, int, float)>(0x004CB1C0);
