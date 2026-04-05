@@ -62,16 +62,6 @@ static void register_custom_texture_subdirectories(void* texture_manager)
     auto* category_array = reinterpret_cast<VArray<TextureCategory*>*>(
         static_cast<char*>(texture_manager) + 0x7C);
 
-    // Find "Custom" category index so subcategories can be inserted right after it
-    int custom_idx = -1;
-    for (int i = 0; i < category_array->get_size(); i++) {
-        if (strcmp((*category_array)[i]->name.c_str(), "Custom") == 0) {
-            custom_idx = i;
-            break;
-        }
-    }
-    int old_size = category_array->get_size();
-
     for (const auto& dirname : subdirs) {
         std::string display_name = "Custom - " + dirname;
         std::string subdir_path = "user_maps\\textures\\" + dirname;
@@ -93,16 +83,6 @@ static void register_custom_texture_subdirectories(void* texture_manager)
         category_array->push_back(cat);
 
         xlog::info("Registered custom texture category: '{}' (path_handle={})", display_name, cat->path_handle);
-    }
-
-    // Reorder: move newly appended subcategories to right after "Custom"
-    if (custom_idx >= 0 && category_array->size > old_size) {
-        int insert_pos = custom_idx + 1;
-        std::rotate(
-            category_array->data_ptr + insert_pos,
-            category_array->data_ptr + old_size,
-            category_array->data_ptr + category_array->size
-        );
     }
 
     xlog::info("Registered {} custom texture subdirectories (total categories: {})",
@@ -213,6 +193,9 @@ CodeInjection texture_reverse_lookup_fix{
 
         for (int i = 0; i < cat_array->get_size(); i++) {
             TextureCategory* cat = (*cat_array)[i];
+            // Only match custom categories — stock categories' path_handle values
+            // are a different namespace that can numerically overlap with VFS path slots
+            if (strncmp(cat->name.c_str(), "Custom", 6) != 0) continue;
             if (cat->path_handle == found_path) {
                 // Update panel's path_handle so file enumeration at 0x445a92 uses
                 // the correct subdirectory
