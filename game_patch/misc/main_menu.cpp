@@ -420,9 +420,6 @@ CodeInjection server_browser_idle_status_injection{
         static auto& stock_idle_buf = addr_as_ref<char[96]>(0x0063f6e4);
         std::memcpy(s_server_browser_status_buf, stock_idle_buf, sizeof(s_server_browser_status_buf));
 
-        if (rf::ui::server_browser_display_count == 0)
-            clear_server_browser_extra();
-
         if (rf::ui::server_browser_selected_index < 0 ||
             rf::ui::server_browser_selected_index >= rf::ui::server_browser_display_count)
             return;
