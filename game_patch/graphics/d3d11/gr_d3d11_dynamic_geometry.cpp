@@ -26,6 +26,14 @@ namespace df::gr::d3d11
         pre_flush_callback_ = std::move(callback);
     }
 
+    void DynamicGeometryRenderer::set_cull_mode(D3D11_CULL_MODE cull_mode)
+    {
+        if (cull_mode_ != cull_mode) {
+            flush();
+            cull_mode_ = cull_mode;
+        }
+    }
+
     void DynamicGeometryRenderer::flush()
     {
         flush_impl(true);
@@ -57,7 +65,7 @@ namespace df::gr::d3d11
         render_context_.set_primitive_topology(state_.primitive_topology);
         render_context_.set_mode(state_.mode);
         render_context_.set_textures(state_.textures[0], state_.textures[1]);
-        render_context_.set_cull_mode(D3D11_CULL_NONE);
+        render_context_.set_cull_mode(cull_mode_);
 
         render_context_.draw_indexed(num_index, start_index, start_vertex);
     }
