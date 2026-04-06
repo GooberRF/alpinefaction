@@ -31,6 +31,7 @@ bool server_allow_outlines();
 bool server_allow_outlines_xray();
 bool server_gaussian_spread();
 bool server_geo_chunk_physics();
+bool server_clear_stale_movement_input();
 bool server_allow_footsteps();
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client();
 void server_reliable_socket_ready(rf::Player* player);

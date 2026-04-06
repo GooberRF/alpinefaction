@@ -718,11 +718,13 @@ namespace df::gr::d3d11
     {
         constexpr int decal_zbias = 1000;
         render_context_.set_zbias(decal_zbias);
+        dyn_geo_renderer_.set_cull_mode(D3D11_CULL_BACK);
     }
 
     void SolidRenderer::after_render_decals()
     {
         dyn_geo_renderer_.flush();
+        dyn_geo_renderer_.set_cull_mode(D3D11_CULL_NONE);
         render_context_.set_zbias(0);
     }
 

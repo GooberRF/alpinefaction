@@ -537,6 +537,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.location_pinging = *v;
     if (auto v = t["geo_chunk_physics"].value<bool>())
         o.geo_chunk_physics = *v;
+    if (auto v = t["clear_stale_movement_input"].value<bool>())
+        o.clear_stale_movement_input = *v;
     if (auto v = t["weapon_pickups_give_full_ammo"].value<bool>())
         o.weapon_items_give_full_ammo = *v;
     if (auto v = t["infinite_reloads"].value<bool>())
@@ -1201,10 +1203,6 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.use_sp_damage_calculation = *v;
     }
-    else if (key == "exclude_bots_from_player_count") {
-        if (auto v = node.value<bool>())
-            cfg.exclude_bots_from_player_count = *v;
-    }
     else if (key == "allow_outlines") {
         if (auto v = node.value<bool>())
             cfg.allow_outlines = *v;
@@ -1677,6 +1675,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Location pinging:                      {}\n", rules.location_pinging);
     if (base || rules.geo_chunk_physics != b.geo_chunk_physics)
         std::format_to(iter, "  GeoMod chunk physics:                  {}\n", rules.geo_chunk_physics);
+    if (base || rules.clear_stale_movement_input != b.clear_stale_movement_input)
+        std::format_to(iter, "  Clear stale movement input:            {}\n", rules.clear_stale_movement_input);
     if (base || rules.weapon_items_give_full_ammo != b.weapon_items_give_full_ammo)
         std::format_to(iter, "  Weapon pickups give full ammo:         {}\n", rules.weapon_items_give_full_ammo);
     if (base || rules.weapon_infinite_magazines != b.weapon_infinite_magazines)
@@ -2055,7 +2055,6 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
     std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
-    std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
     std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
     std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
 

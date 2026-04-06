@@ -37,7 +37,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add speedometer to HUD, bind to `ui_show_speed` console command
 - Make dedicated servers attempt to autodownload missing maps in their rotation from FactionFiles before launching
 - Add `-nodl` command line argument to make dedicated servers not attempt to autodownload missing maps
-- Add `exclude_bots_from_player_count` option to dedicated server config to exclude bots from player count reported to clients
 - Add `sv_loadpackfiles` console command to load packfiles newly added to `user_maps` after server was launched
 - Allow `GibEnemy` achievement to be awarded regardless of whether gore level allows the entity to actually gib
 - Support rcon profiles for dedicated servers
@@ -94,13 +93,16 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
 - Add `-awpgen` command line argument to generate an awp for a provided level filename
 - Color kill notifications white if they involve a first person spectatee
+- Add `clear_stale_movement_input` dedicated server config option
+- Display bot counts in `Players` column in server list
+- Make sorting on `Players` column in server list incorporate bot count
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add version and uptime to a server's printed config
 - Default gore level to 1
-- Default `gibbing` to disabled for dedicated servers
+- Default gibbing, outlines, fullbright skins, and lightmap mode to disabled for servers
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Sync animation state for crouched players in first person spectate view
@@ -167,6 +169,9 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix coronas and sprites flickering as you approach (Direct3D 11 renderer only)
 - Fix mesh backface and UV Unwrap dialog rendering breaking if a fullscreen D3D application is launched while level editor is running
 - Fix MP players being able to poke their head through overhead geometry when uncrouching
+- Fix backfaces not being culled for impact decals (Direct3D 11 renderer only)
+- Fix impact decals behaving weirdly and disappearing when viewed from a distance (Direct3D 11 renderer only)
+- Fix dedicated servers crashing when `Shake_Player` event is activated (e.g. community level `CTF-RFU3_SanFrancisco.rfl`)
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
