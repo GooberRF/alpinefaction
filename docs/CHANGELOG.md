@@ -166,6 +166,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix rare crash when morphing custom skeletal meshes
 - Fix coronas and sprites flickering as you approach (Direct3D 11 renderer only)
 - Fix mesh backface and UV Unwrap dialog rendering breaking if a fullscreen D3D application is launched while level editor is running
+- Fix MP players being able to poke their head through overhead geometry when uncrouching
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

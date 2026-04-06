@@ -147,12 +147,40 @@ CallHook<bool(rf::Object*)> entity_update_liquid_status_obj_is_player_hook{
 CallHook<bool(const rf::Vector3&, const rf::Vector3&, rf::PhysicsData*, rf::PCollisionOut*)> entity_maybe_stop_crouching_collide_spheres_world_hook{
     0x00428AB9,
     [](const rf::Vector3& p1, const rf::Vector3& p2, rf::PhysicsData* pd, rf::PCollisionOut* collision) {
-        // Temporarly disable collisions with liquid faces
+        // Temporarily disable collisions with liquid faces
         auto collision_flags = pd->collision_flags;
         pd->collision_flags &= ~0x1000;
         bool result = entity_maybe_stop_crouching_collide_spheres_world_hook.call_target(p1, p2, pd, collision);
         pd->collision_flags = collision_flags;
         return result;
+    },
+};
+
+// Fix RF bug in multi_obj_interp_add: the save/restore of pd->orient
+// around the physics prediction step has mismatched fields, causing the restore to write
+// uninitialized stack data into pd->orient. This corrupts collision sphere positioning on
+// MP clients, breaking the uncrouch geometry check. Fix: correctly save and restore both
+// pd->orient and pd->next_orient around the prediction step.
+static rf::Matrix3 interp_saved_orient;
+static rf::Matrix3 interp_saved_next_orient;
+
+CodeInjection multi_obj_interp_add_save_orient{
+    0x004838AD,
+    [](auto& regs) {
+        rf::Entity* entity = regs.edi;
+        interp_saved_orient = entity->p_data.orient;
+        interp_saved_next_orient = entity->p_data.next_orient;
+        regs.eip = 0x004838C0;
+    },
+};
+
+CodeInjection multi_obj_interp_add_restore_orient{
+    0x00483ABC,
+    [](auto& regs) {
+        rf::Entity* entity = regs.edi;
+        entity->p_data.orient = interp_saved_orient;
+        entity->p_data.next_orient = interp_saved_next_orient;
+        regs.eip = 0x00483ACF;
     },
 };
 
@@ -612,6 +640,15 @@ void entity_do_patch()
 
     // Fix entity staying in crouched state after entering liquid
     entity_maybe_stop_crouching_collide_spheres_world_hook.install();
+    
+    // Fix MP client uncrouch through geometry: entity_maybe_stop_crouching reads crouch_dist
+    // from entity->info, but on MP clients info may lack crouch data. Use info2 instead,
+    // which has correct data and is already used by entity_crouch.
+    AsmWriter(0x00428A7A).mov(asm_regs::ecx, *(asm_regs::edi + 0x29C));
+
+    // Fix RF bug: multi_obj_interp_add corrupts pd->orient
+    multi_obj_interp_add_save_orient.install();
+    multi_obj_interp_add_restore_orient.install();
 
     // Use local_player variable for weapon shell distance calculation instead of local_player_entity
     // in entity_eject_shell. Fixed debris pool being exhausted when local player is dead.
