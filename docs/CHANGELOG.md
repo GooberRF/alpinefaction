@@ -93,6 +93,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
 - Add `-awpgen` command line argument to generate an awp for a provided level filename
 - Color kill notifications white if they involve a first person spectatee
+- Add `clear_stale_movement_input` dedicated server config option
 - Display bot counts in `Players` column in server list
 - Make sorting on `Players` column in server list incorporate bot count
 

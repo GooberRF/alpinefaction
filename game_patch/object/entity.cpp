@@ -23,7 +23,9 @@
 #include "../rf/vmesh.h"
 #include "../rf/character.h"
 #include "../rf/math/vector.h"
+#include "../rf/gameseq.h"
 #include "../multi/multi.h"
+#include "../multi/server.h"
 
 rf::Timestamp g_player_jump_timestamp;
 
@@ -578,6 +580,38 @@ ConsoleCommand2 cl_painsounds_cmd{
     "Toggle pain sounds",
 };
 
+CodeInjection clear_stale_movement_input_injection{
+    0x0043331C,
+    []() {
+        if (!rf::is_multi || rf::is_dedicated_server || rf::gameseq_in_gameplay()) {
+            return;
+        }
+
+        bool enforce = false;
+        if (rf::is_server) {
+            enforce = server_clear_stale_movement_input();
+        }
+        else {
+            const auto& server_info = get_af_server_info();
+            if (server_info.has_value()) {
+                enforce = server_info->clear_stale_movement_input;
+            }
+        }
+
+        if (!enforce) {
+            return;
+        }
+
+        rf::Entity* ep = rf::local_player_entity;
+        if (ep) {
+            ep->ai.ci.rot = {0.0f, 0.0f, 0.0f};
+            ep->ai.ci.move = {0.0f, 0.0f, 0.0f};
+            ep->ai.ci.mouse_dh = 0.0f;
+            ep->ai.ci.mouse_dp = 0.0f;
+        }
+    },
+};
+
 void entity_do_patch()
 {
     //player_create_entity_patch.install(); // force team skin experiment
@@ -639,6 +673,9 @@ void entity_do_patch()
     // Footstep fix: inject trigger frames for attack_run animations and mute dying entities
     evaluate_footsteps();
     entity_footsteps_do_frame_hook.install();
+
+    // Cancel movement input when escape menu is open in multiplayer
+    clear_stale_movement_input_injection.install();
 
     // Commands
     sp_exposuredamage_cmd.register_cmd();
