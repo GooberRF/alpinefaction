@@ -18,6 +18,7 @@
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
+#include "gr_d3d11_gamma.h"
 
 using namespace rf;
 
@@ -45,6 +46,7 @@ namespace df::gr::d3d11
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
         outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        gamma_pass_ = std::make_unique<GammaPass>(device_, *shader_manager_);
 
         // Flush pending outlines before each dyn_geo draw. This ensures outlines
         // render behind transparent effects (smoke, particles, explosions) that are
@@ -102,6 +104,10 @@ namespace df::gr::d3d11
         // unref swapchain resources before calling ResizeBuffers
         context_->OMSetRenderTargets(0, nullptr, nullptr);
         back_buffer_.release();
+        back_buffer_rtv_.release();
+        scene_texture_.release();
+        scene_texture_rtv_.release();
+        scene_texture_srv_.release();
         default_render_target_.release();
         default_render_target_view_.release();
         DF_GR_D3D11_CHECK_HR(
@@ -251,7 +257,15 @@ namespace df::gr::d3d11
             swap_chain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<LPVOID*>(&back_buffer_))
         );
 
-        // Create a render-target view
+        // Always create back buffer RTV (used as gamma pass output)
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateRenderTargetView(back_buffer_, nullptr, &back_buffer_rtv_)
+        );
+
+        // Create intermediate scene texture for gamma post-processing
+        init_scene_texture();
+
+        // Create a render-target view for the main rendering pass
         if (g_game_config.msaa) {
             D3D11_TEXTURE2D_DESC desc;
             back_buffer_->GetDesc(&desc);
@@ -267,11 +281,31 @@ namespace df::gr::d3d11
             );
         }
         else {
-            default_render_target_ = back_buffer_;
+            // Without MSAA, render directly to the scene texture (gamma pass
+            // will copy it to the back buffer with gamma correction applied)
+            default_render_target_ = scene_texture_;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateRenderTargetView(default_render_target_, nullptr, &default_render_target_view_)
             );
         }
+    }
+
+    void Renderer::init_scene_texture()
+    {
+        D3D11_TEXTURE2D_DESC desc;
+        back_buffer_->GetDesc(&desc);
+        desc.SampleDesc.Count = 1;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateTexture2D(&desc, nullptr, &scene_texture_)
+        );
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateRenderTargetView(scene_texture_, nullptr, &scene_texture_rtv_)
+        );
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateShaderResourceView(scene_texture_, nullptr, &scene_texture_srv_)
+        );
     }
 
     void Renderer::init_depth_stencil_buffer()
@@ -369,8 +403,24 @@ namespace df::gr::d3d11
         dyn_geo_renderer_->flush();
         entity_shadow_renderer_->render_debug_overlay(context_);
         entity_shadow_renderer_->unbind_shadow_resources(context_);
-        if (msaa_render_target_) {
-            context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
+        if (rf::gr::gamma != 1.0f) {
+            if (msaa_render_target_) {
+                // Resolve MSAA to scene texture (gamma pass will copy to back buffer)
+                context_->ResolveSubresource(scene_texture_, 0, msaa_render_target_, 0, swap_chain_format);
+            }
+            // Apply gamma correction: sample scene_texture, write to back buffer
+            gamma_pass_->render(context_, scene_texture_srv_, back_buffer_rtv_, rf::gr::gamma);
+            // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
+            render_context_->invalidate_cached_state();
+        }
+        else {
+            // Gamma is identity — blit scene directly to back buffer, no shader pass needed
+            if (msaa_render_target_) {
+                context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
+            }
+            else {
+                context_->CopyResource(back_buffer_, scene_texture_);
+            }
         }
         xlog::trace("Presenting frame {}", rf::frame_count);
         UINT sync_interval = g_alpine_system_config.vsync ? 1 : 0;
