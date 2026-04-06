@@ -180,6 +180,7 @@ struct AlpineFactionJoinAcceptPacketExt
         allow_footsteps     = 1u << 13,
         allow_outlines      = 1u << 14,
         allow_outlines_xray = 1u << 15,
+        clear_stale_movement_input = 1u << 16,
     } flags = Flags::none;
 
     float max_fov;
