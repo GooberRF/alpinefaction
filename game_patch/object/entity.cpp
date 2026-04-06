@@ -640,7 +640,7 @@ void entity_do_patch()
 
     // Fix entity staying in crouched state after entering liquid
     entity_maybe_stop_crouching_collide_spheres_world_hook.install();
-    
+
     // Fix MP client uncrouch through geometry: entity_maybe_stop_crouching reads crouch_dist
     // from entity->info, but on MP clients info may lack crouch data. Use info2 instead,
     // which has correct data and is already used by entity_crouch.
