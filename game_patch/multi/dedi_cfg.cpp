@@ -537,6 +537,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.location_pinging = *v;
     if (auto v = t["geo_chunk_physics"].value<bool>())
         o.geo_chunk_physics = *v;
+    if (auto v = t["clear_stale_movement_input"].value<bool>())
+        o.clear_stale_movement_input = *v;
     if (auto v = t["weapon_pickups_give_full_ammo"].value<bool>())
         o.weapon_items_give_full_ammo = *v;
     if (auto v = t["infinite_reloads"].value<bool>())
@@ -1677,6 +1679,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Location pinging:                      {}\n", rules.location_pinging);
     if (base || rules.geo_chunk_physics != b.geo_chunk_physics)
         std::format_to(iter, "  GeoMod chunk physics:                  {}\n", rules.geo_chunk_physics);
+    if (base || rules.clear_stale_movement_input != b.clear_stale_movement_input)
+        std::format_to(iter, "  Clear stale movement input:            {}\n", rules.clear_stale_movement_input);
     if (base || rules.weapon_items_give_full_ammo != b.weapon_items_give_full_ammo)
         std::format_to(iter, "  Weapon pickups give full ammo:         {}\n", rules.weapon_items_give_full_ammo);
     if (base || rules.weapon_infinite_magazines != b.weapon_infinite_magazines)
