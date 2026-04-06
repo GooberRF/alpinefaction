@@ -169,6 +169,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix mesh backface and UV Unwrap dialog rendering breaking if a fullscreen D3D application is launched while level editor is running
 - Fix backfaces not being culled for impact decals (Direct3D 11 renderer only)
 - Fix impact decals behaving weirdly and disappearing when viewed from a distance (Direct3D 11 renderer only)
+- Fix dedicated servers crashing when `Shake_Player` event is activated (e.g. community level `CTF-RFU3_SanFrancisco.rfl`)
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
