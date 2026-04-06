@@ -101,7 +101,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add version and uptime to a server's printed config
 - Default gore level to 1
-- Default `gibbing` to disabled for dedicated servers
+- Default gibbing, outlines, fullbright skins, and lightmap mode to disabled for servers
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Sync animation state for crouched players in first person spectate view
