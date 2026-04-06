@@ -106,7 +106,6 @@ namespace df::gr::d3d11
         back_buffer_.release();
         back_buffer_rtv_.release();
         scene_texture_.release();
-        scene_texture_rtv_.release();
         scene_texture_srv_.release();
         default_render_target_.release();
         default_render_target_view_.release();
@@ -301,9 +300,6 @@ namespace df::gr::d3d11
             device_->CreateTexture2D(&desc, nullptr, &scene_texture_)
         );
         DF_GR_D3D11_CHECK_HR(
-            device_->CreateRenderTargetView(scene_texture_, nullptr, &scene_texture_rtv_)
-        );
-        DF_GR_D3D11_CHECK_HR(
             device_->CreateShaderResourceView(scene_texture_, nullptr, &scene_texture_srv_)
         );
     }
@@ -403,25 +399,15 @@ namespace df::gr::d3d11
         dyn_geo_renderer_->flush();
         entity_shadow_renderer_->render_debug_overlay(context_);
         entity_shadow_renderer_->unbind_shadow_resources(context_);
-        if (rf::gr::gamma != 1.0f) {
-            if (msaa_render_target_) {
-                // Resolve MSAA to scene texture (gamma pass will copy to back buffer)
-                context_->ResolveSubresource(scene_texture_, 0, msaa_render_target_, 0, swap_chain_format);
-            }
-            // Apply gamma correction: sample scene_texture, write to back buffer
-            gamma_pass_->render(context_, scene_texture_srv_, back_buffer_rtv_, rf::gr::gamma);
-            // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
-            render_context_->invalidate_cached_state();
+        if (msaa_render_target_) {
+            // Resolve MSAA to scene texture (gamma pass will copy to back buffer)
+            context_->ResolveSubresource(scene_texture_, 0, msaa_render_target_, 0, swap_chain_format);
         }
-        else {
-            // Gamma is identity — blit scene directly to back buffer, no shader pass needed
-            if (msaa_render_target_) {
-                context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
-            }
-            else {
-                context_->CopyResource(back_buffer_, scene_texture_);
-            }
-        }
+        // Always run the gamma pass — pow(color, 1/1.0) is identity and the shader
+        // cost is negligible, avoiding a CopyResource fallback and float comparison
+        gamma_pass_->render(context_, scene_texture_srv_, back_buffer_rtv_, rf::gr::gamma);
+        // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
+        render_context_->invalidate_cached_state();
         xlog::trace("Presenting frame {}", rf::frame_count);
         UINT sync_interval = g_alpine_system_config.vsync ? 1 : 0;
         DF_GR_D3D11_CHECK_HR(
@@ -556,10 +542,14 @@ namespace df::gr::d3d11
     bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)
     {
         dyn_geo_renderer_->flush();
+        // Resolve the current scene content into a readable texture.
+        // With MSAA the scene lives in msaa_render_target_; without MSAA it is
+        // already in scene_texture_ (which is also a non-MSAA texture).
         if (msaa_render_target_) {
             context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
+            return texture_manager_->read_back_buffer(back_buffer_, x, y, w, h, data);
         }
-        return texture_manager_->read_back_buffer(back_buffer_, x, y, w, h, data);
+        return texture_manager_->read_back_buffer(scene_texture_, x, y, w, h, data);
     }
 
     void Renderer::setup_3d(Projection proj)

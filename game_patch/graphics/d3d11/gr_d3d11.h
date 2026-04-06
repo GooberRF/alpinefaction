@@ -105,7 +105,6 @@ namespace df::gr::d3d11
         ComPtr<ID3D11Texture2D> back_buffer_;
         ComPtr<ID3D11RenderTargetView> back_buffer_rtv_;
         ComPtr<ID3D11Texture2D> scene_texture_;
-        ComPtr<ID3D11RenderTargetView> scene_texture_rtv_;
         ComPtr<ID3D11ShaderResourceView> scene_texture_srv_;
         ComPtr<ID3D11Texture2D> msaa_render_target_;
         ComPtr<ID3D11Texture2D> default_render_target_;
