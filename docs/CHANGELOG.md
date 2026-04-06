@@ -37,7 +37,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add speedometer to HUD, bind to `ui_show_speed` console command
 - Make dedicated servers attempt to autodownload missing maps in their rotation from FactionFiles before launching
 - Add `-nodl` command line argument to make dedicated servers not attempt to autodownload missing maps
-- Add `exclude_bots_from_player_count` option to dedicated server config to exclude bots from player count reported to clients
 - Add `sv_loadpackfiles` console command to load packfiles newly added to `user_maps` after server was launched
 - Allow `GibEnemy` achievement to be awarded regardless of whether gore level allows the entity to actually gib
 - Support rcon profiles for dedicated servers
@@ -94,6 +93,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
 - Add `-awpgen` command line argument to generate an awp for a provided level filename
 - Color kill notifications white if they involve a first person spectatee
+- Display bot counts in `Players` column in server list
+- Make sorting on `Players` column in server list incorporate bot count
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

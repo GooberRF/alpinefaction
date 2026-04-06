@@ -2548,7 +2548,6 @@ CallHook<int()> game_info_num_players_hook{
         auto player_list = SinglyLinkedList{rf::player_list};
         for (const auto& current_player : player_list) {
             if (current_player.version_info.software == ClientSoftware::Browser) continue;
-            if (g_alpine_server_config.exclude_bots_from_player_count && current_player.is_bot) continue;
             player_count++;
         }
         return player_count;
