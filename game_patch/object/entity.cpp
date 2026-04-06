@@ -582,7 +582,7 @@ ConsoleCommand2 cl_painsounds_cmd{
 
 CodeInjection clear_stale_movement_input_injection{
     0x0043331C,
-    [](auto& regs) {
+    []() {
         if (!rf::is_multi || rf::is_dedicated_server || rf::gameseq_in_gameplay()) {
             return;
         }
