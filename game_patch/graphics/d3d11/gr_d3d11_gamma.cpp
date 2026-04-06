@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "gr_d3d11_gamma.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_shader.h"
@@ -43,7 +44,7 @@ namespace df::gr::d3d11
             context->Map(gamma_cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)
         );
         auto* data = static_cast<GammaBufferData*>(mapped.pData);
-        data->gamma = gamma;
+        data->gamma = std::max(gamma, 0.01f);
         context->Unmap(gamma_cbuffer_, 0);
 
         // Set render target to back buffer (no depth testing)
