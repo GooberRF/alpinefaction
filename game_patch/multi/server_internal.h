@@ -737,13 +737,13 @@ struct AlpineServerConfig
     bool dynamic_rotation = false;
     bool gaussian_spread = true;
     bool stats_message_enabled = true;
-    bool allow_fullbright_meshes = true;
-    bool allow_lightmaps_only = true;
+    bool allow_fullbright_meshes = false;
+    bool allow_lightmaps_only = false;
     bool allow_disable_screenshake = true;
     bool allow_disable_muzzle_flash = true;
     bool allow_unlimited_fps = false;
     bool allow_footsteps = true;
-    bool allow_outlines = true;
+    bool allow_outlines = false;
     bool allow_outlines_xray = true;
     bool use_sp_damage_calculation = false;
     AlpineRestrictConfig alpine_restricted_config;
