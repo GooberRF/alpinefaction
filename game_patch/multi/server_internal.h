@@ -746,7 +746,6 @@ struct AlpineServerConfig
     bool allow_outlines = true;
     bool allow_outlines_xray = true;
     bool use_sp_damage_calculation = false;
-    bool exclude_bots_from_player_count = false;
     AlpineRestrictConfig alpine_restricted_config;
     InactivityConfig inactivity_config;
     DamageNotificationConfig damage_notification_config;
