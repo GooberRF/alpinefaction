@@ -4,8 +4,6 @@
 #include <string>
 #include <vector>
 
-// ─── V3D format types (see research/formats/v3m_v3c_format.h) ──────────────
-
 #pragma pack(push, 1)
 
 struct v3d_file_header
