@@ -1547,25 +1547,80 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_clear_stale_movement_input()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input;
         }
-        auto [buf, new_len] = extend_packet_bytes(data, len, &ext_data, sizeof(ext_data));
-        //auto [new_data, new_len] = extend_packet_fixed(data, len, ext_data);
+        // AF 1.3+ clients: use footer-based format for forward compatibility
+        // Older clients: use legacy raw struct (they don't know about the footer)
+        bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
+            && (g_joining_player_info.version_major > 1
+                || (g_joining_player_info.version_major == 1 && g_joining_player_info.version_minor >= 3));
+        auto [buf, new_len] = use_footer
+            ? append_af_tail(data, len, &ext_data, sizeof(ext_data))
+            : extend_packet_bytes(data, len, &ext_data, sizeof(ext_data));
         return send_join_accept_packet_hook.call_target(addr, buf.get(), new_len);
     },
 };
 
+// Parse AF extension from join_accept payload.
+// payload: points to start of payload (past 3-byte RF_GamePacketHeader)
+// payload_len: header.size field from the packet header
+// ext_offset: offset within payload where AF extension is expected (from stock field parsing)
+// Handles both footer-based (AF 1.3+) and legacy (pre-1.3) formats.
+static bool parse_join_accept_af_ext(const uint8_t* payload, size_t payload_len, size_t ext_offset,
+    AlpineFactionJoinAcceptPacketExt& out)
+{
+    std::memset(&out, 0, sizeof(out));
+    if (!payload || payload_len == 0)
+        return false;
+
+    const uint8_t* end = payload + payload_len;
+
+    // Try footer-based parsing first (AF 1.3+ server)
+    if (payload_len >= sizeof(AFFooter)) {
+        AFFooter footer;
+        std::memcpy(&footer, end - sizeof(AFFooter), sizeof(AFFooter));
+        if (footer.magic == AF_FOOTER_MAGIC) {
+            const size_t core_len = footer.total_len;
+            if (core_len <= payload_len - sizeof(AFFooter)) {
+                const uint8_t* core = end - sizeof(AFFooter) - core_len;
+                if (core >= payload) {
+                    size_t copy_len = std::min(sizeof(out), core_len);
+                    std::memcpy(&out, core, copy_len);
+                    return out.af_signature == ALPINE_FACTION_SIGNATURE;
+                }
+            }
+            return false; // footer present but malformed
+        }
+    }
+
+    // Fallback: legacy format (pre-1.3 server) — extension appended raw after stock fields
+    if (ext_offset >= payload_len) return false;
+    const uint8_t* p = payload + ext_offset;
+    size_t tail_len = end - p;
+    if (tail_len == 0) return false;
+
+    size_t copy_len = std::min(sizeof(out), tail_len);
+    std::memcpy(&out, p, copy_len);
+    return out.af_signature == ALPINE_FACTION_SIGNATURE;
+}
+
 CodeInjection process_join_accept_injection{
     0x0047A979,
     [](auto& regs) {
-        std::byte* packet = regs.ebp;
-        auto ext_offset = regs.esi + 5;
-        AlpineFactionJoinAcceptPacketExt ext_data;
-        std::copy(packet + ext_offset, packet + ext_offset + sizeof(AlpineFactionJoinAcceptPacketExt),
-            reinterpret_cast<std::byte*>(&ext_data));
-        xlog::debug("Checking for join_accept AF extension: {:08X}", ext_data.af_signature);
-        if (ext_data.af_signature == ALPINE_FACTION_SIGNATURE) {
+        AlpineFactionJoinAcceptPacketExt ext_data{}; // zeroed by parse_join_accept_af_ext before use
+        const uint8_t* payload = reinterpret_cast<const uint8_t*>(static_cast<std::byte*>(regs.ebp));
+        RF_GamePacketHeader hdr;
+        std::memcpy(&hdr, payload - sizeof(RF_GamePacketHeader), sizeof(hdr));
+        size_t payload_len = hdr.size;
+        size_t ext_offset = static_cast<size_t>(regs.esi) + 5;
+
+        bool parsed = parse_join_accept_af_ext(payload, payload_len, ext_offset, ext_data);
+
+        xlog::debug("Checking for join_accept AF extension: {:08X} (parsed: {})", ext_data.af_signature, parsed);
+        if (parsed) {
             AlpineFactionServerInfo server_info;
             server_info.version_major = ext_data.version_major;
             server_info.version_minor = ext_data.version_minor;
+            server_info.version_patch = ext_data.version_patch;
+            server_info.version_type = ext_data.version_type;
             xlog::debug("Got AF server info: {} {} {}", ext_data.version_major, ext_data.version_minor,
                 static_cast<int>(ext_data.flags));
             server_info.saving_enabled = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::saving_enabled);
