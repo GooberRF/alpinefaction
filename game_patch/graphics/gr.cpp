@@ -28,6 +28,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/item.h"
 #include "../rf/clutter.h"
+#include "../rf/ui.h"
 #include "gr.h"
 #include "gr_internal.h"
 #include "../misc/alpine_options.h"
