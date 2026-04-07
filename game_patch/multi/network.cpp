@@ -1567,6 +1567,7 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
 static bool parse_join_accept_af_ext(const uint8_t* payload, size_t payload_len, size_t ext_offset,
     AlpineFactionJoinAcceptPacketExt& out)
 {
+    std::memset(&out, 0, sizeof(out));
     if (!payload || payload_len == 0)
         return false;
 
