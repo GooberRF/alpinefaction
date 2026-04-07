@@ -131,7 +131,8 @@ static bool parse_submesh_textures(FILE* fp, std::vector<std::string>& out)
             int len = 0;
             do {
                 if (!fread_exact(&ch, 1, fp)) return false;
-            } while (ch != '\0' && ++len < 32);
+                if (++len > 32) return false;
+            } while (ch != '\0');
         }
     }
 
