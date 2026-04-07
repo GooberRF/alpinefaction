@@ -1605,7 +1605,7 @@ static bool parse_join_accept_af_ext(const uint8_t* payload, size_t payload_len,
 CodeInjection process_join_accept_injection{
     0x0047A979,
     [](auto& regs) {
-        AlpineFactionJoinAcceptPacketExt ext_data{}; // zero-initialized
+        AlpineFactionJoinAcceptPacketExt ext_data{}; // zeroed by parse_join_accept_af_ext before use
         const uint8_t* payload = reinterpret_cast<const uint8_t*>(static_cast<std::byte*>(regs.ebp));
         RF_GamePacketHeader hdr;
         std::memcpy(&hdr, payload - sizeof(RF_GamePacketHeader), sizeof(hdr));
