@@ -249,6 +249,8 @@ namespace rf::ui
     static auto& medium_font_1 = addr_as_ref<int>(0x0063C064);
     static auto& small_font = addr_as_ref<int>(0x0063C068);
 
+    static auto& video_gamma_slider = addr_as_ref<Slider>(0x00640C10);
+
     static auto& audio_options_panel = addr_as_ref<Panel>(0x006424D8);
     static auto& audio_sfx_slider = addr_as_ref<Slider>(0x00642418);
     static auto& audio_sfx_slider_on_click = addr_as_ref<void(int x, int y)>(0x00454070);
