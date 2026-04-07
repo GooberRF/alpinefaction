@@ -86,6 +86,8 @@ struct AlpineFactionServerInfo
 {
     uint8_t version_major = 0;
     uint8_t version_minor = 0;
+    uint8_t version_patch = 0; // unreliable if from < AF 1.3
+    uint8_t version_type = 0;  // unreliable if from < AF 1.3
     bool saving_enabled = false;
     std::optional<float> max_fov;
     bool allow_fb_mesh = false;
