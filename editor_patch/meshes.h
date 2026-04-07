@@ -51,6 +51,11 @@ struct v3d_material
 
 #pragma pack(pop)
 
+static_assert(sizeof(v3d_file_header) == 40, "v3d_file_header size mismatch");
+static_assert(sizeof(v3d_section_header) == 8, "v3d_section_header size mismatch");
+static_assert(sizeof(v3d_batch_info) == 18, "v3d_batch_info size mismatch");
+static_assert(sizeof(v3d_material) == 84, "v3d_material size mismatch");
+
 // ─── V3D format constants ──────────────────────────────────────────────────
 
 static constexpr int32_t V3M_SIGNATURE = 0x52463344; // 'RF3D'

@@ -175,8 +175,16 @@ std::vector<std::string> extract_v3d_texture_names(const char* filepath)
         return textures;
     }
     if (hdr.version != V3D_VERSION) { std::fclose(fp); return textures; }
+    if (hdr.num_submeshes < 0 || hdr.num_submeshes > V3D_MAX_SUBMESHES) {
+        std::fclose(fp);
+        return textures;
+    }
+    if (hdr.num_colspheres < 0 || hdr.num_colspheres > 1000) {
+        std::fclose(fp);
+        return textures;
+    }
 
-    // Walk sections (bounded by header counts + 1 for the V3D_END terminator)
+    // Walk sections (bounded by header counts + 2 for BONE section + V3D_END terminator)
     int max_sections = hdr.num_submeshes + hdr.num_colspheres + 2;
     for (int s = 0; s < max_sections; s++) {
         v3d_section_header sec;
