@@ -1606,8 +1606,9 @@ CodeInjection process_join_accept_injection{
     [](auto& regs) {
         AlpineFactionJoinAcceptPacketExt ext_data{}; // zero-initialized
         const uint8_t* payload = reinterpret_cast<const uint8_t*>(static_cast<std::byte*>(regs.ebp));
-        uint16_t payload_len;
-        std::memcpy(&payload_len, payload - 2, sizeof(payload_len));
+        RF_GamePacketHeader hdr;
+        std::memcpy(&hdr, payload - sizeof(RF_GamePacketHeader), sizeof(hdr));
+        size_t payload_len = hdr.size;
         size_t ext_offset = static_cast<size_t>(regs.esi) + 5;
 
         bool parsed = parse_join_accept_af_ext(payload, payload_len, ext_offset, ext_data);

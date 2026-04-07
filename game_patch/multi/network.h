@@ -187,7 +187,7 @@ struct AlpineFactionJoinAcceptPacketExt
     } flags = Flags::none;
 
     float max_fov = 0.0f;
-    int semi_auto_cooldown = 0;
+    int32_t semi_auto_cooldown = 0;
 
 };
 #pragma pack(pop)
