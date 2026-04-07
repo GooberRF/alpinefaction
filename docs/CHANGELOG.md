@@ -124,6 +124,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Implement player outlines (D3D11 only)
 - Add `r_outlines`, `r_outlines_spectator`, `r_outlines_team_xray`, `r_outlines_color`, `r_outlines_color_enemy`, `r_outlines_color_team`, `r_outlines_color_team_b`, `r_outlines_color_team_r` for customizing outline behavior and colors
 - Add `allow_outlines` and `allow_outlines_xray` dedicated server configuration options to permit or deny outline usage by clients.
+- Implement shader-based gamma control for D3D11 renderer
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
