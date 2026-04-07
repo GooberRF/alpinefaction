@@ -273,6 +273,7 @@ void multi_spectate_toggle_freelook()
         if (g_spectate_mode_target && g_spectate_mode_target != rf::local_player) {
             g_spectate_mode_target->cam = g_old_target_camera;
             g_old_target_camera = nullptr;
+            rf::local_player->cam->player = rf::local_player;
 
 #if SPECTATE_MODE_SHOW_WEAPON
             g_spectate_mode_target->flags &= ~(1u << 4);

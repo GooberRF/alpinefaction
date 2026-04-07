@@ -252,6 +252,18 @@ FunHook<void __fastcall(rf::Event *this_)> EventMessage__turn_on_hook{
     EventMessage__turn_on_new,
 };
 
+extern FunHook<void __fastcall(rf::Event *)> EventShakePlayer__turn_on_hook;
+void __fastcall EventShakePlayer__turn_on_new(rf::Event *this_)
+{
+    if (rf::local_player) {
+        EventShakePlayer__turn_on_hook.call_target(this_);
+    }
+}
+FunHook<void __fastcall(rf::Event *this_)> EventShakePlayer__turn_on_hook{
+    0x004BB660,
+    EventShakePlayer__turn_on_new,
+};
+
 CodeInjection event_activate_injection{
     0x004B8BF4,
     [](auto& regs) {
@@ -634,6 +646,9 @@ void apply_event_patches()
 
     // Fix Message event crash on dedicated server
     EventMessage__turn_on_hook.install();
+
+    // Fix Shake_Player event crash when local_player is null (e.g. dedicated server)
+    EventShakePlayer__turn_on_hook.install();
 
     // Level specific event fixes
     event_level_init_post_hook.install();

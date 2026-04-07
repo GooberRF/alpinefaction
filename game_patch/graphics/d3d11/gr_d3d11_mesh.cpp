@@ -678,7 +678,11 @@ namespace df::gr::d3d11
             int base_vertex = meshes_[0].batches[chunk_index].base_vertex;
             auto* gpu_vecs = reinterpret_cast<rf::Vector3*>(mapped_vb.pData) + base_vertex;
             rf::VifChunk& chunk = mesh->chunks[chunk_index];
-            std::vector<Vector3> morphed_vecs(chunk.vecs, chunk.vecs + chunk.num_vecs);
+            
+            // fixes heap corruption when v3c files have mismatched vertex layouts
+            int safe_size = std::max<int>(chunk.num_vecs, mesh->num_original_vecs);
+            std::vector<Vector3> morphed_vecs(safe_size);
+            std::memcpy(morphed_vecs.data(), chunk.vecs, chunk.num_vecs * sizeof(Vector3));
             skeleton->morph(morphed_vecs.data(), chunk.num_vecs, time, chunk.orig_map, mesh->num_original_vecs);
             for (int vert_index = 0; vert_index < chunk.num_vecs; ++vert_index) {
                 int pos_vert_offset = chunk.same_vertex_offsets[vert_index];

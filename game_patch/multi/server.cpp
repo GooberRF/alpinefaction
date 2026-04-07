@@ -3698,6 +3698,10 @@ bool server_geo_chunk_physics()
     return g_alpine_server_config_active_rules.geo_chunk_physics;
 }
 
+bool server_clear_stale_movement_input()
+{
+    return g_alpine_server_config_active_rules.clear_stale_movement_input;
+}
 
 bool server_allow_footsteps()
 {
@@ -3741,6 +3745,11 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
     if (!g_alpine_server_config_active_rules.geo_chunk_physics) {
         requires_alpine = true;
         hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 3);
+    }
+
+    if (g_alpine_server_config_active_rules.clear_stale_movement_input) {
+        requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 3);
     }
 

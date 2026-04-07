@@ -734,6 +734,11 @@ struct CDedLevel
     AlpineLevelProperties& GetAlpineLevelProperties();
 
 
+    void delete_object(DedObject* obj)
+    {
+        AddrCaller{0x0041be70}.this_call(this, obj);
+    }
+
     void deselect_all()
     {
         AddrCaller{0x0042C7A0}.this_call(this);

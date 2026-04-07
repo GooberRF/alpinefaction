@@ -931,6 +931,10 @@ CodeInjection multi_customize_listen_server_settings_patch {
 ConsoleCommand2 levelm_cmd{
     "levelm",
     [](std::string filename) {
+        if (rf::is_dedicated_server) {
+            rf::console::print("This command is not available on dedicated servers");
+            return;
+        }
         auto [is_valid, valid_filename] = is_level_name_valid(filename);
         if (!is_valid) {
             rf::console::print("Level '{}' is not available!", filename);

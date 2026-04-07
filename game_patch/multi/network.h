@@ -156,11 +156,14 @@ struct af_game_info_ext_v2
 #pragma pack(pop)
 static_assert(sizeof(af_game_info_ext_v2) == 19, "unexpected af_game_info_ext_v2 size");
 
+#pragma pack(push, 1)
 struct AlpineFactionJoinAcceptPacketExt
 {
     uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
     uint8_t version_major = VERSION_MAJOR;
     uint8_t version_minor = VERSION_MINOR;
+    uint8_t version_patch = VERSION_PATCH;
+    uint8_t version_type = VERSION_TYPE;
 
     enum class Flags : uint32_t {
         none                = 0,
@@ -180,12 +183,15 @@ struct AlpineFactionJoinAcceptPacketExt
         allow_footsteps     = 1u << 13,
         allow_outlines      = 1u << 14,
         allow_outlines_xray = 1u << 15,
+        clear_stale_movement_input = 1u << 16,
     } flags = Flags::none;
 
-    float max_fov;
-    int semi_auto_cooldown;
+    float max_fov = 0.0f;
+    int32_t semi_auto_cooldown = 0;
 
 };
+#pragma pack(pop)
+static_assert(sizeof(AlpineFactionJoinAcceptPacketExt) == 20, "unexpected AlpineFactionJoinAcceptPacketExt size");
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinAcceptPacketExt::Flags> : std::true_type {};
 

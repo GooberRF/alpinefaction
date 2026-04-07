@@ -74,6 +74,7 @@ namespace df::gr::d3d11
         void generate_shadow_map(ID3D11DeviceContext* context, RenderContext& render_context, const rf::Vector3& camera_pos);
         void bind_shadow_resources(ID3D11DeviceContext* context);
         void unbind_shadow_resources(ID3D11DeviceContext* context);
+        void disable_shadow_rendering(ID3D11DeviceContext* context);
 
         void apply_quality(int quality);
         void render_debug_overlay(ID3D11DeviceContext* context);
@@ -123,6 +124,8 @@ namespace df::gr::d3d11
         int current_quality_ = 2;
         int current_resolution_ = 1024;
         int last_frame_ = -1;
+        bool last_frame_had_casters_ = false;
+        int last_shadow_render_frame_ = -1;
 
         // Dynamic vertex buffer for VFX (MESH_TYPE_ANIM_FX) shadow geometry
         ComPtr<ID3D11Buffer> vfx_shadow_vb_;

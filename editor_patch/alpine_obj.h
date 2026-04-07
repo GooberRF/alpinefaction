@@ -65,9 +65,11 @@ inline void draw_wireframe_sphere(float cx, float cy, float cz, float radius, in
 
 namespace d3d8 {
     constexpr unsigned int RS_ZWRITEENABLE = 14;
+    constexpr unsigned int RS_CULLMODE = 22;
     constexpr unsigned int RS_ALPHABLENDENABLE = 27;
     constexpr unsigned int RS_SRCBLEND = 19;
     constexpr unsigned int RS_DESTBLEND = 20;
+    constexpr unsigned int CULL_NONE = 1;
     constexpr unsigned int BLEND_ONE = 2;
     constexpr unsigned int BLEND_SRCALPHA = 5;
     constexpr unsigned int BLEND_INVSRCALPHA = 6;

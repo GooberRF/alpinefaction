@@ -219,6 +219,34 @@ FunHook<int(const int&, const int&)> server_list_cmp_func_hook{
         if (has_ping1 != has_ping2) {
             return has_ping1 ? -1 : 1;
         }
+
+        // Custom player count sorting: use human count from AF 1.3+ servers
+        if (rf::ui::server_browser_sort_column == 4) {
+            const auto& e1 = server_list[index1];
+            const auto& e2 = server_list[index2];
+            const auto* extra1 = get_server_browser_extra(e1.addr);
+            const auto* extra2 = get_server_browser_extra(e2.addr);
+
+            if (extra1 && extra2) {
+                // Both AF 1.3+: compare by human players, then bots
+                auto key1 = std::pair(extra1->num_human_players, extra1->num_bots);
+                auto key2 = std::pair(extra2->num_human_players, extra2->num_bots);
+                if (key1 != key2)
+                    return key1 > key2 ? -1 : 1;
+            }
+            else if (extra1 || extra2) {
+                // AF 1.3+ vs legacy: include bots so AF total is comparable to legacy total
+                int val1 = extra1 ? extra1->num_human_players + extra1->num_bots
+                                  : static_cast<unsigned char>(e1.current_players);
+                int val2 = extra2 ? extra2->num_human_players + extra2->num_bots
+                                  : static_cast<unsigned char>(e2.current_players);
+                if (val1 != val2)
+                    return val1 > val2 ? -1 : 1;
+                // Equal counts: prefer the AF 1.3+ server
+                return extra1 ? -1 : 1;
+            }
+        }
+
         return server_list_cmp_func_hook.call_target(index1, index2);
     },
 };
@@ -392,9 +420,6 @@ CodeInjection server_browser_idle_status_injection{
         static auto& stock_idle_buf = addr_as_ref<char[96]>(0x0063f6e4);
         std::memcpy(s_server_browser_status_buf, stock_idle_buf, sizeof(s_server_browser_status_buf));
 
-        if (rf::ui::server_browser_display_count == 0)
-            clear_server_browser_extra();
-
         if (rf::ui::server_browser_selected_index < 0 ||
             rf::ui::server_browser_selected_index >= rf::ui::server_browser_display_count)
             return;
@@ -406,11 +431,44 @@ CodeInjection server_browser_idle_status_injection{
             return;
 
         std::snprintf(s_server_browser_status_buf, sizeof(s_server_browser_status_buf),
-            "%d client%s: %d human%s, %d bot%s, %d browser%s",
+            "%d client%s: %d player%s, %d bot%s, %d browser%s",
             extra->num_total_clients, extra->num_total_clients == 1 ? "" : "s",
             extra->num_human_players, extra->num_human_players == 1 ? "" : "s",
             extra->num_bots, extra->num_bots == 1 ? "" : "s",
             extra->num_browsers, extra->num_browsers == 1 ? "" : "s");
+    },
+};
+
+// Server browser scroll list: override the "%d/%d" player count column.
+// When we have AF 1.3+ game_info data, show "X+Y/Z" where X=humans, Y=bots, Z=max.
+static rf::ui::ServerListEntry* s_player_count_entry = nullptr;
+
+CodeInjection server_browser_player_count_pre{
+    0x0044C0A4,
+    [](auto& regs) {
+        s_player_count_entry = reinterpret_cast<rf::ui::ServerListEntry*>(
+            reinterpret_cast<uintptr_t>(rf::ui::server_browser_server_list) + static_cast<int>(regs.ebx));
+    },
+};
+
+CallHook<int(char*, const char*, int, int)> server_browser_player_count_hook{
+    0x0044C0C1,
+    [](char* buf, const char* fmt, int current_players, int max_players) -> int {
+        if (s_player_count_entry) {
+            const auto* extra = get_server_browser_extra(s_player_count_entry->addr);
+            if (extra) {
+                if (extra->num_bots > 0) {
+                    return std::sprintf(buf, "%d+%d/%d",
+                        static_cast<int>(extra->num_human_players),
+                        static_cast<int>(extra->num_bots),
+                        max_players);
+                }
+                return std::sprintf(buf, "%d/%d",
+                    static_cast<int>(extra->num_human_players),
+                    max_players);
+            }
+        }
+        return server_browser_player_count_hook.call_target(buf, fmt, current_players, max_players);
     },
 };
 
@@ -574,6 +632,9 @@ void apply_main_menu_patches()
 
     // Show bot and human player counts in server browser status bar
     server_browser_idle_status_injection.install();
+    // Show human(+bot) player counts in the server list scroll box for AF 1.3+ servers
+    server_browser_player_count_pre.install();
+    server_browser_player_count_hook.install();
     // Redirect the hardcoded PUSH 0x0063f6e4 at 0x0044dc76 to our own buffer
     // so we don't corrupt the stock buffer (which overlaps the default mod name at +4)
     write_mem<void*>(0x0044dc76, s_server_browser_status_buf);
