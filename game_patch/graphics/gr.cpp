@@ -35,6 +35,10 @@
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
 
+namespace rf {
+    struct UiSlider;
+}
+
 namespace df::gr::d3d11
 {
     bool set_render_target(int bm_handle);
@@ -221,12 +225,16 @@ ConsoleCommand2 gamma_cmd{
     "r_gamma",
     [](std::optional<float> value_opt) {
         if (value_opt) {
-            rf::gr::set_gamma(value_opt.value());
+            rf::gr::set_gamma(*value_opt);
+            auto& UiSlider_set_value =
+                addr_as_ref<void __thiscall(rf::UiSlider&, float)>(0x00457EB0);
+            rf::UiSlider& ui_gamma_slider = addr_as_ref<rf::UiSlider>(0x00640C10);
+            UiSlider_set_value(ui_gamma_slider, rf::gr::gamma);
         }
         rf::console::print("Gamma: {:.2f}", rf::gr::gamma);
     },
     "Sets gamma.",
-    "gamma [value]",
+    "gamma [value]",`
 };
 
 ConsoleCommand2 colorblind_cmd{
