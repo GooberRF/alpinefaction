@@ -613,6 +613,7 @@ struct AlpineServerConfigRules
     CriticalHitsConfig critical_hits;
     GunGameConfig gungame;
     bool geo_chunk_physics = true;
+    bool clear_stale_movement_input = false;
 
     // =============================================
     void set_time_limit(float count)

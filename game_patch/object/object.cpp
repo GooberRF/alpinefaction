@@ -440,10 +440,36 @@ FunHook<void(rf::Clutter*, float, int, int, rf::PCollisionOut*)> clutter_damage_
     },
 };
 
+// In v304+ levels, deregister collision when hiding objects and re-register when unhiding.
+FunHook<void(rf::Object*)> obj_hide_hook{
+    0x0048A570,
+    [](rf::Object* obj) {
+        obj_hide_hook.call_target(obj);
+        if (rfl_version_minimum(304) && (obj->p_data.flags & rf::PF_COLLIDE_OBJECTS)) {
+            rf::obj_collision_deregister(obj);
+        }
+    },
+};
+
+FunHook<void(rf::Object*)> obj_unhide_hook{
+    0x0048A660,
+    [](rf::Object* obj) {
+        bool had_collision = (obj->p_data.flags & rf::PF_COLLIDE_OBJECTS) != 0;
+        obj_unhide_hook.call_target(obj);
+        if (rfl_version_minimum(304) && had_collision) {
+            rf::obj_collision_register(obj);
+        }
+    },
+};
+
 void object_do_patch()
 {
     // Disable damage for the riot shield in multiplayer (needs fix)
     //clutter_damage_hook.install(); // disabled for now, makes riot shields persist after player leaves
+
+    // Deregister collision for hidden objects in v304+ levels
+    obj_hide_hook.install();
+    obj_unhide_hook.install();
 
     // Support AF_When_Dead events
     entity_on_dead_hook.install();

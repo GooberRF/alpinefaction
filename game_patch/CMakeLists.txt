@@ -98,6 +98,8 @@ set(SRCS
     graphics/d3d11/gr_d3d11_hooks.h
     graphics/d3d11/gr_d3d11_outline.h
     graphics/d3d11/gr_d3d11_outline.cpp
+    graphics/d3d11/gr_d3d11_gamma.h
+    graphics/d3d11/gr_d3d11_gamma.cpp
     input/input.h
     input/mouse.h
     input/mouse.cpp

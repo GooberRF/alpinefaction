@@ -1544,6 +1544,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_allow_outlines_xray()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray;
         }
+        if (server_clear_stale_movement_input()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1633,6 +1636,7 @@ CodeInjection process_join_accept_injection{
             server_info.allow_footsteps = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_footsteps);
             server_info.allow_outlines = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines);
             server_info.allow_outlines_xray = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray);
+            server_info.clear_stale_movement_input = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input);
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
