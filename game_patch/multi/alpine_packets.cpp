@@ -53,9 +53,7 @@ void af_send_packet(rf::Player* player, const void* data, int len, bool is_relia
     //xlog::info("Sending packet: player={}, size={}, reliable={}", player->name, len, is_reliable);
 
     if (is_reliable) {
-        rf::multi_io_send_buffered_reliable_packets(player);
         rf::multi_io_send_reliable(player, data, len, 0);
-        rf::multi_io_send_buffered_reliable_packets(player);
     }
     else {
         //rf::net_send(player->net_data->addr, data, len);
