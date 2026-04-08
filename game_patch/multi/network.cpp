@@ -674,8 +674,10 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
                 g_server_browser_extra.erase(key);
         }
         else {
-            // RF 1.0/1.1 (0x87): let stock handler deal with it
-            process_game_info_packet_hook.call_target(data, addr);
+            // RF 1.0/1.1 (0x87): display as incompatible
+            rf::multi_join_game_add_server(
+                addr.ip_addr, addr.port,
+                rf::strings::incompatible_version, "", "", 0, 0, 0, 0);
         }
 
         // Update netgame name if this is from the connected server
