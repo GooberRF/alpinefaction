@@ -2032,7 +2032,8 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
 {
     if (!g_gamepad || !g_rumble_supported)
         return;
-    // Disable rumble when keyboard/mouse was last used, if auto-disable is enabled
+    // If Gamepad Rumble is in priority: rumbles only kicks in when the last input was a gamepad
+    // otherwise, it can be overriden
     if (g_alpine_game_config.gamepad_rumble_when_primary && !g_last_input_was_gamepad)
         return;
     // Apply global rumble intensity multiplier
@@ -2040,10 +2041,10 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
         return;
     low_freq = static_cast<uint16_t>(low_freq * g_alpine_game_config.gamepad_rumble_intensity);
     high_freq = static_cast<uint16_t>(high_freq * g_alpine_game_config.gamepad_rumble_intensity);
-    // Controller Vibration filter: reduce low-freq motor based on filter mode
+    // Controller Vibration filter: reduce low-freq motor based on whenever the gyro is enabled or by the end-user.
     int filter_mode = g_alpine_game_config.gamepad_rumble_vibration_filter;
     if (filter_mode == 2 || (filter_mode == 1 && g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled))
-        low_freq = static_cast<uint16_t>(low_freq * 0.25f);
+        low_freq = static_cast<uint16_t>(low_freq * 0.02f);
     SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
 }
 

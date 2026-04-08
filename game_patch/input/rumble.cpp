@@ -36,7 +36,7 @@ static constexpr WeaponRumbleProfile k_wp_shotgun { &k_rumble_shotgun_blast,  0,
 static constexpr WeaponRumbleProfile k_wp_smg     { &k_rumble_smg_shot,       0,      0,      0      }; // machine pistol
 static constexpr WeaponRumbleProfile k_wp_sniper  { &k_rumble_sniper_shot,    0,      0,      0      }; // sniper / precision rifle
 static constexpr WeaponRumbleProfile k_wp_ar      { nullptr,                  0x7800, 0x5C00, 0x9400 }; // assault rifle
-static constexpr WeaponRumbleProfile k_wp_pistol  { nullptr,                  0x9000, 0x7000, 0xB000 }; // pistol
+static constexpr WeaponRumbleProfile k_wp_pistol  { nullptr,                  0x4200, 0x3300, 0x5100 }; // pistol
 static constexpr WeaponRumbleProfile k_wp_default { nullptr,                  0x8000, 0x6000, 0xA000 }; // all other weapons
 
 static const WeaponRumbleProfile& get_weapon_profile(int wt)
