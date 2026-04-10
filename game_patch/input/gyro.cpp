@@ -45,15 +45,12 @@ void gyro_update_calibration_mode()
         return;
     g_last_calibration_mode = desired;
 
-
     // Preserve calibrated offset and confidence across mode changes.
     float ox, oy, oz;
     g_motion.GetCalibrationOffset(ox, oy, oz);
     float confidence = g_motion.GetAutoCalibrationConfidence();
 
     g_motion.SetCalibrationMode(desired);
-
-    // Restore offset and confidence that may have been cleared by SetCalibrationMode.
     g_motion.SetCalibrationOffset(ox, oy, oz, 1);
     g_motion.SetAutoCalibrationConfidence(confidence);
 }
@@ -76,7 +73,6 @@ void gyro_reset_full()
 
 void gyro_reset_motion_preserve_confidence()
 {
-    // Save current confidence before wiping AutoCalibration state.
     float confidence = g_motion.GetAutoCalibrationConfidence();
 
     // Use targeted resets to avoid wiping custom Settings.
@@ -85,7 +81,6 @@ void gyro_reset_motion_preserve_confidence()
     g_smooth_pitch_prev = 0.0f;
     g_smooth_yaw_prev   = 0.0f;
 
-    // Restore the confidence so the autocalibration ease-in continues smoothly.
     g_motion.SetAutoCalibrationConfidence(confidence);
 
     gyro_update_calibration_mode();
@@ -156,7 +151,7 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
         break;
     case GyroSpace::LocalSpace: {
         // Local Space code is based on http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained
-        // This one combines a bit of Gravity Vector inorder to avoid Axis conflict
+        // Combines the gravity vector to avoid axis conflict
         float gx, gy, gz;
         g_motion.GetCalibratedGyro(x, y, z);
         g_motion.GetGravity(gx, gy, gz);
@@ -172,7 +167,7 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
     }
 }
 
-// Gyro Tighting is based on GyroWiki documents
+// Gyro tightening is based on GyroWiki documents
 // http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-1:the-gyro-is-a-mouse#toc9
 void gyro_apply_tightening(float& pitch_dps, float& yaw_dps)
 {
@@ -253,7 +248,6 @@ bool gyro_modifier_is_active()
 
     auto& cc = local_player->settings.controls;
 
-    // Toggle:
     if (toggle_bound) {
         bool down = control_is_control_down(&cc, toggle_action);
         if (down && !g_gyro_toggle_prev_down)

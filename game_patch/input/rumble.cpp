@@ -29,7 +29,6 @@ struct WeaponRumbleProfile {
     uint16_t tr_mul = 0;
 };
 
-//                                                 preset                     lo      hi      trigger
 static constexpr WeaponRumbleProfile k_wp_rocket  { &k_rumble_rocket_launch,  0,      0,      0      };
 static constexpr WeaponRumbleProfile k_wp_railgun { &k_rumble_railgun_shot,   0,      0,      0      };
 static constexpr WeaponRumbleProfile k_wp_shotgun { &k_rumble_shotgun_blast,  0,      0,      0      };
@@ -59,14 +58,9 @@ static const WeaponRumbleProfile& get_weapon_profile(int wt)
     return k_wp_default;
 }
 
-// Environmental / damage: melee
-static constexpr RumbleEffect k_rumble_hit_melee_max{ 0x3000, 0x8000, 0, 120u };
-
-// Environmental / damage: explosive
+static constexpr RumbleEffect k_rumble_hit_melee_max    { 0x3000, 0x8000, 0, 120u };
 static constexpr RumbleEffect k_rumble_hit_explosive_max{ 0xC000, 0xA000, 0, 300u };
-
-// Environmental / damage: fire
-static constexpr RumbleEffect k_rumble_hit_fire_max{ 0x3000, 0x9000, 0, 150u };
+static constexpr RumbleEffect k_rumble_hit_fire_max     { 0x3000, 0x9000, 0, 150u };
 
 // Scale a body-only preset by [0,1]. trigger_motor stays 0.
 static RumbleEffect rumble_scale(const RumbleEffect& base, float scale)
