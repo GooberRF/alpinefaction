@@ -41,3 +41,5 @@ void chat_menu_action_handler(rf::Key key);
 void build_local_player_spectators_strings();
 std::string_view multi_hud_get_random_taunt_message();
 bool multi_hud_send_taunt_chat_message(std::string_view taunt_text);
+
+extern int g_hud_cp_strip_y;

@@ -59,6 +59,7 @@ static rf::Color time_left_string_color = {0, 255, 0, 255};
 static rf::TimestampRealtime g_run_life_start_timestamp;
 static bool g_run_timer_reset_by_respawn_key = false;
 static bool g_run_timer_fade_active = false;
+int g_hud_cp_strip_y = 0;
 
 void multi_hud_update_timer_color()
 {
@@ -617,6 +618,8 @@ static void hud_render_cp_strip_koth_dc_fullwidth(int anchor_x, int anchor_y, in
         }
     }
 
+    g_hud_cp_strip_y = y0;
+
     // draw from top row to bottom, stacked
     int cur_y = y0;
     for (int i = 0; i < count; ++i) {
@@ -804,10 +807,10 @@ void multi_hud_render_team_scores()
     rf::gr::set_color(0, 0, 0, 150);
 
     const auto game_type = rf::multi_get_game_type();
-    const bool is_koth_dc = (game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC);
-    const bool is_esc = (game_type == rf::NG_TYPE_ESC);
-    const bool is_rev = (game_type == rf::NG_TYPE_REV);
-    const bool is_run = (game_type == rf::NG_TYPE_RUN);
+    const bool is_koth_dc = game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC;
+    const bool is_esc = game_type == rf::NG_TYPE_ESC;
+    const bool is_rev = game_type == rf::NG_TYPE_REV;
+    const bool is_run = game_type == rf::NG_TYPE_RUN;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
@@ -961,7 +964,7 @@ void multi_hud_render_team_scores()
     }
 
     // render capture point bars
-    if (is_koth_dc || is_rev || is_esc) {
+    if (is_hill_score) {
         hud_render_cp_strip_koth_dc_fullwidth(box_x, box_y, box_w);
     }
 }
