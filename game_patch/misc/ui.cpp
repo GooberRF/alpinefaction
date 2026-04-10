@@ -64,11 +64,11 @@ static constexpr int AO_CONTENT_BOTTOM = 344;
 static constexpr int AO_SCROLL_STEP    = 30;
 
 // scrollbar geometry cached each frame for hit-testing
-static int  s_sb_x = 0, s_sb_y = 0, s_sb_pw = 0, s_sb_ph = 0;
-static int  s_sb_thumb_y = 0, s_sb_thumb_h = 0;
-static bool s_sb_visible  = false;
-static bool s_sb_dragging = false;
-static int  s_sb_drag_origin_y = 0, s_sb_drag_origin_scroll = 0;
+static int  g_sb_x = 0, g_sb_y = 0, g_sb_pw = 0, g_sb_ph = 0;
+static int  g_sb_thumb_y = 0, g_sb_thumb_h = 0;
+static bool g_sb_visible  = false;
+static bool g_sb_dragging = false;
+static int  g_sb_drag_origin_y = 0, g_sb_drag_origin_scroll = 0;
 
 // Column layout packer: assigns Y positions to gadget rows in order,
 // advancing by AO_SCROLL_STEP for each visible row.  Construct with the
@@ -1578,16 +1578,16 @@ void alpine_options_panel_handle_mouse(int x, int y) {
     for (auto* gadget : alpine_options_panel_settings)
         if (gadget) gadget->highlighted = false;
 
-    if (s_sb_dragging) {
+    if (g_sb_dragging) {
         if (!rf::mouse_button_is_down(0)) {
-            s_sb_dragging = false;
+            g_sb_dragging = false;
         } else {
-            if (s_sb_visible && s_sb_ph > s_sb_thumb_h) {
+            if (g_sb_visible && g_sb_ph > g_sb_thumb_h) {
                 const int tab = alpine_options_panel_current_tab;
                 int max_scroll = ao_compute_max_scroll(ao_get_active_subpanel());
-                int drag_delta = y - s_sb_drag_origin_y;
-                int scroll_range_px = s_sb_ph - s_sb_thumb_h;
-                int raw = s_sb_drag_origin_scroll + drag_delta * max_scroll / scroll_range_px;
+                int drag_delta = y - g_sb_drag_origin_y;
+                int scroll_range_px = g_sb_ph - g_sb_thumb_h;
+                int raw = g_sb_drag_origin_scroll + drag_delta * max_scroll / scroll_range_px;
                 int snapped = (raw / AO_SCROLL_STEP) * AO_SCROLL_STEP;
                 alpine_options_scroll_offsets[tab] = std::clamp(snapped, 0, max_scroll);
             }
@@ -1595,19 +1595,19 @@ void alpine_options_panel_handle_mouse(int x, int y) {
         }
     }
 
-    if (s_sb_visible && rf::mouse_was_button_pressed(0)) {
-        const bool in_track = (x >= s_sb_x && x < s_sb_x + s_sb_pw
-                            && y >= s_sb_y && y < s_sb_y + s_sb_ph);
+    if (g_sb_visible && rf::mouse_was_button_pressed(0)) {
+        const bool in_track = (x >= g_sb_x && x < g_sb_x + g_sb_pw
+                            && y >= g_sb_y && y < g_sb_y + g_sb_ph);
         if (in_track) {
-            const bool in_thumb = (y >= s_sb_thumb_y && y < s_sb_thumb_y + s_sb_thumb_h);
+            const bool in_thumb = (y >= g_sb_thumb_y && y < g_sb_thumb_y + g_sb_thumb_h);
             if (in_thumb) {
-                s_sb_dragging           = true;
-                s_sb_drag_origin_y      = y;
-                s_sb_drag_origin_scroll = alpine_options_scroll_offsets[alpine_options_panel_current_tab];
+                g_sb_dragging           = true;
+                g_sb_drag_origin_y      = y;
+                g_sb_drag_origin_scroll = alpine_options_scroll_offsets[alpine_options_panel_current_tab];
             } else {
                 const int tab = alpine_options_panel_current_tab;
                 int max_scroll = ao_compute_max_scroll(ao_get_active_subpanel());
-                int step = (y < s_sb_thumb_y) ? -(AO_SCROLL_STEP * 5) : (AO_SCROLL_STEP * 5);
+                int step = (y < g_sb_thumb_y) ? -(AO_SCROLL_STEP * 5) : (AO_SCROLL_STEP * 5);
                 alpine_options_scroll_offsets[tab] = std::clamp(
                     alpine_options_scroll_offsets[tab] + step, 0, max_scroll);
             }
@@ -2379,7 +2379,7 @@ void alpine_options_panel_do_frame(int x)
         }
     }
 
-    s_sb_visible = false;
+    g_sb_visible = false;
     if (alpine_options_panel_scrollable[alpine_options_panel_current_tab] && max_scroll > 0) {
         constexpr int   sb_width     = 6;
         constexpr int   sb_margin    = 39;
@@ -2405,10 +2405,10 @@ void alpine_options_panel_do_frame(int x)
         rf::gr::set_color(0, 200, 210, 255);
         rf::gr::rect(sb_x, thumb_y, sb_pw, thumb_h);
 
-        s_sb_x = sb_x;       s_sb_y = sb_y;
-        s_sb_pw = sb_pw;     s_sb_ph = sb_ph;
-        s_sb_thumb_y = thumb_y; s_sb_thumb_h = thumb_h;
-        s_sb_visible = true;
+        g_sb_x = sb_x;       g_sb_y = sb_y;
+        g_sb_pw = sb_pw;     g_sb_ph = sb_ph;
+        g_sb_thumb_y = thumb_y; g_sb_thumb_h = thumb_h;
+        g_sb_visible = true;
     }
 }
 
