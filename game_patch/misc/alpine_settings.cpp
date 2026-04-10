@@ -900,6 +900,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.apply_exposure_damage = std::stoi(settings["ExposureDamage"]);
         processed_keys.insert("ExposureDamage");
     }
+    if (settings.count("ClimbFix")) {
+        g_alpine_game_config.climb_fix = std::stoi(settings["ClimbFix"]);
+        processed_keys.insert("ClimbFix");
+    }
 
     // Load multiplayer settings
     if (settings.count("MultiplayerCharacter")) {
@@ -1654,6 +1658,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "Autosave=" << g_alpine_game_config.autosave << "\n";
     file << "StaticBombCode=" << g_alpine_game_config.static_bomb_code << "\n";
     file << "ExposureDamage=" << g_alpine_game_config.apply_exposure_damage << "\n";
+    file << "ClimbFix=" << g_alpine_game_config.climb_fix << "\n";
 
     // Multiplayer
     file << "\n[MultiplayerSettings]\n";

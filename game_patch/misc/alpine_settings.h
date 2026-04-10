@@ -258,6 +258,7 @@ struct AlpineGameSettings
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
+    bool climb_fix = true;
     bool killfeed_enabled = false;
     bool autodl_blur_background = true;
     bool autodl_download_awps = false;
