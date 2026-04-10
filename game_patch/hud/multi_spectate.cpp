@@ -993,9 +993,12 @@ void multi_spectate_render() {
             );
             std::string hint_text = "Press " + spectate_bind_text + " to enter Spectate Mode";
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-            const int bottom_death_bar_y = rf::gr::screen_height()
-                - static_cast<int>(rf::gr::screen_height() * .125f);
-            const int y = bottom_death_bar_y - rf::gr::get_font_height(medium_font) - 5;
+            int y = rf::gr::screen_height()
+                - 10
+                - rf::gr::get_font_height(medium_font);
+            if (g_alpine_game_config.death_bars || multi_is_team_game_type()) {
+                y -= static_cast<int>(rf::gr::screen_height() * .125f);
+            }
             rf::gr::string(10, y, hint_text.c_str(), medium_font);
         }
         return;

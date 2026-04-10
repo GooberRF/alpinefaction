@@ -556,16 +556,20 @@ void draw_scoreboard_internal_new(bool draw) {
         progress_h = std::clamp(progress_h, 0.1f, 1.0f);
     }
 
-    int w;
-    float scale;
-    // Note: fit_scoreboard_string does not support providing font by argument so default font must be changed
+    const int min_space_w = static_cast<int>(rf::gr::clip_width() / 1280.f * 40.f);
+    const int max_scoreboard_w = rf::gr::clip_width() - min_space_w;
+
+    int w = 0;
+    float scale = 0.f;
     if (g_big_scoreboard) {
+        // Note: fit_scoreboard_string does not support providing font by argument so 
+        // default font must be changed
         rf::gr::set_default_font(hud_get_default_font_name(true));
-        w = std::min(!split_columns ? 900 : 1400, rf::gr::clip_width() - 10);
-        scale = 2.0f;
+        w = std::min(split_columns ? 1400 : 900, max_scoreboard_w);
+        scale = 2.f;
     } else {
-        w = std::min(!split_columns ? 450 : 700, rf::gr::clip_width() - 10);
-        scale = 1.0f;
+        w = std::min(split_columns ? 700 : 450, max_scoreboard_w);
+        scale = 1.f;
     }
 
     int left_padding = static_cast<int>(10 * scale);
