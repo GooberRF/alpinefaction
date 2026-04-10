@@ -59,7 +59,7 @@ static rf::Color time_left_string_color = {0, 255, 0, 255};
 static rf::TimestampRealtime g_run_life_start_timestamp;
 static bool g_run_timer_reset_by_respawn_key = false;
 static bool g_run_timer_fade_active = false;
-int g_hud_cp_strip_y = 0;
+int g_multi_hud_cp_strip_y = 0;
 
 void multi_hud_update_timer_color()
 {
@@ -618,7 +618,7 @@ static void hud_render_cp_strip_koth_dc_fullwidth(int anchor_x, int anchor_y, in
         }
     }
 
-    g_hud_cp_strip_y = y0;
+    g_multi_hud_cp_strip_y = y0;
 
     // draw from top row to bottom, stacked
     int cur_y = y0;

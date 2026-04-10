@@ -1012,8 +1012,8 @@ void multi_spectate_render() {
                     - static_cast<int>(rf::gr::clip_height() * .125f);
                 if (is_koth || is_dc || is_esc || is_rev) {
                     return g_alpine_game_config.death_bars
-                        ? std::min(g_hud_cp_strip_y, low_death_bar_y)
-                        : g_hud_cp_strip_y;
+                        ? std::min(g_multi_hud_cp_strip_y, low_death_bar_y)
+                        : g_multi_hud_cp_strip_y;
                 } else if (is_run) {
                     const int y = rf::gr::clip_height()
                         - 10
