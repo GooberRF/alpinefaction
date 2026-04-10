@@ -224,43 +224,62 @@ static bool g_gyro_toggle_state = true;
 static bool g_gyro_toggle_prev_down = false;
 
 // Returns whether gyro input should be applied this frame.
-// - None of the three modifier bindings assigned  -> always active.
-// - Gyro Modifier (Hold On)    -> active while held.
-// - Gyro Modifier (Hold Off)   -> active while NOT held.
-// - Gyro Modifier (Toggle)     -> button press flips on/off (starts on).
-// If multiple bindings are assigned, any active condition enables gyro (OR).
+// If Gyro Modifier is unbound -> always active.
+// Behavior while bound is determined by gamepad_gyro_modifier_mode:
+//   0 = Always  -> always active regardless of binding
+//   1 = HoldOff -> active while NOT held
+//   2 = HoldOn  -> active while held
+//   3 = Toggle  -> button press flips on/off (starts on)
 bool gyro_modifier_is_active()
 {
     using namespace rf;
 
     if (!local_player) return true;
 
-    const auto hold_action        = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD);
-    const auto hold_invert_action = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT);
-    const auto toggle_action      = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);
+    const auto action = get_af_control(AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER);
 
-    const bool hold_bound        = gyro_action_has_binding(hold_action);
-    const bool hold_invert_bound = gyro_action_has_binding(hold_invert_action);
-    const bool toggle_bound      = gyro_action_has_binding(toggle_action);
+    int mode = std::clamp(g_alpine_game_config.gamepad_gyro_modifier_mode, 0, 3);
 
-    if (!hold_bound && !hold_invert_bound && !toggle_bound)
+    if (mode == 0) // Always
+        return true;
+
+    if (!gyro_action_has_binding(action))
         return true; // no modifier bound — gyro always on
 
     auto& cc = local_player->settings.controls;
 
-    if (toggle_bound) {
-        bool down = control_is_control_down(&cc, toggle_action);
+    bool down = control_is_control_down(&cc, action);
+
+    if (mode == 3) { // Toggle
         if (down && !g_gyro_toggle_prev_down)
             g_gyro_toggle_state = !g_gyro_toggle_state;
         g_gyro_toggle_prev_down = down;
+        return g_gyro_toggle_state;
     }
 
-    bool active = false;
-    if (hold_bound)        active |= control_is_control_down(&cc, hold_action);
-    if (hold_invert_bound) active |= !control_is_control_down(&cc, hold_invert_action);
-    if (toggle_bound)      active |= g_gyro_toggle_state;
-    return active;
+    g_gyro_toggle_prev_down = down;
+
+    if (mode == 1) // HoldOff
+        return !down;
+
+    return down; // HoldOn (mode == 2)
 }
+
+ConsoleCommand2 gyro_modifier_mode_cmd{
+    "gyro_modifier_mode",
+    [](std::optional<int> val) {
+        if (val) {
+            g_alpine_game_config.gamepad_gyro_modifier_mode = std::clamp(val.value(), 0, 3);
+            g_gyro_toggle_state = true;
+            g_gyro_toggle_prev_down = false;
+        }
+        int mode = g_alpine_game_config.gamepad_gyro_modifier_mode;
+        static const char* mode_names[] = {"Always", "Hold Off", "Hold On", "Toggle"};
+        rf::console::print("Gyro modifier mode: {} ({})", mode_names[mode], mode);
+    },
+    "Set gyro modifier mode: 0=Always, 1=Hold Off, 2=Hold On, 3=Toggle (default 0)",
+    "gyro_modifier_mode [0|1|2|3]",
+};
 
 ConsoleCommand2 gyro_autocalibration_cmd{
     "gyro_autocalibration",
@@ -373,6 +392,7 @@ void gyro_apply_patch()
     g_motion.Settings.StillnessCalibrationEaseInTime  = 1.5f; // default 3.0
 
     gyro_update_calibration_mode();
+    gyro_modifier_mode_cmd.register_cmd();
     gyro_autocalibration_cmd.register_cmd();
     gyro_reset_autocalibration_partial_cmd.register_cmd();
     gyro_reset_autocalibration_full_cmd.register_cmd();

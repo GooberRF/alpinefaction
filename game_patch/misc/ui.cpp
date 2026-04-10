@@ -274,6 +274,10 @@ static rf::ui::Checkbox ao_gyro_autocalibration_cbox;
 static rf::ui::Label ao_gyro_autocalibration_label;
 static rf::ui::Label ao_gyro_autocalibration_butlabel;
 static char ao_gyro_autocalibration_butlabel_text[16];
+static rf::ui::Checkbox ao_gyro_modifier_mode_cbox;
+static rf::ui::Label ao_gyro_modifier_mode_label;
+static rf::ui::Label ao_gyro_modifier_mode_butlabel;
+static char ao_gyro_modifier_mode_butlabel_text[12];
 static rf::ui::Checkbox ao_gyro_space_cbox;
 static rf::ui::Label ao_gyro_space_label;
 static rf::ui::Label ao_gyro_space_butlabel;
@@ -1092,6 +1096,11 @@ void ao_gyro_autocalibration_cbox_on_click([[maybe_unused]] int x, [[maybe_unuse
     ao_play_button_snd(true);
 }
 
+void ao_gyro_modifier_mode_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+    g_alpine_game_config.gamepad_gyro_modifier_mode = (g_alpine_game_config.gamepad_gyro_modifier_mode + 1) % 4;
+    ao_play_button_snd(true);
+}
+
 void ao_gyro_space_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
     g_alpine_game_config.gamepad_gyro_space = (g_alpine_game_config.gamepad_gyro_space + 1) % 5;
     ao_play_button_snd(true);
@@ -1873,6 +1882,9 @@ void alpine_options_panel_init() {
         &ao_gyro_autocalibration_cbox, &ao_gyro_autocalibration_label, &ao_gyro_autocalibration_butlabel,
         &alpine_options_panel2, ao_gyro_autocalibration_cbox_on_click, 280, 324, "Gyro auto-calib");
     alpine_options_panel_inputbox_init(
+        &ao_gyro_modifier_mode_cbox, &ao_gyro_modifier_mode_label, &ao_gyro_modifier_mode_butlabel,
+        &alpine_options_panel2, ao_gyro_modifier_mode_cbox_on_click, 280, 354, "Gyro modifier");
+    alpine_options_panel_inputbox_init(
         &ao_gyro_tightening_cbox, &ao_gyro_tightening_label, &ao_gyro_tightening_butlabel,
         &alpine_options_panel2, ao_gyro_tightening_cbox_on_click, 280, 354, "Gyro tightening");
     alpine_options_panel_inputbox_init(
@@ -2151,6 +2163,12 @@ void alpine_options_panel_do_frame(int x)
     ao_gyro_autocalibration_butlabel.text  = ao_gyro_autocalibration_butlabel_text;
     ao_gyro_autocalibration_butlabel.align = rf::gr::ALIGN_CENTER;
 
+    static const char* gyro_modifier_mode_names[] = {"Always", "Hold (Off)", "Hold (On)", "Toggle"};
+    snprintf(ao_gyro_modifier_mode_butlabel_text, sizeof(ao_gyro_modifier_mode_butlabel_text), "%s",
+        gyro_modifier_mode_names[std::clamp(g_alpine_game_config.gamepad_gyro_modifier_mode, 0, 3)]);
+    ao_gyro_modifier_mode_butlabel.text  = ao_gyro_modifier_mode_butlabel_text;
+    ao_gyro_modifier_mode_butlabel.align = rf::gr::ALIGN_CENTER;
+
     snprintf(ao_gyro_space_butlabel_text, sizeof(ao_gyro_space_butlabel_text), "%s", gyro_get_space_name(g_alpine_game_config.gamepad_gyro_space));
     ao_gyro_space_butlabel.text  = ao_gyro_space_butlabel_text;
     ao_gyro_space_butlabel.align = rf::gr::ALIGN_CENTER;
@@ -2187,10 +2205,11 @@ void alpine_options_panel_do_frame(int x)
     ao_input_prompt_mode_butlabel.text = ao_input_prompt_mode_butlabel_text;
     ao_input_prompt_mode_butlabel.align = rf::gr::ALIGN_CENTER;
 
-    ao_joy_camera_butlabel.x            = 112 + 50;
+    ao_joy_camera_butlabel.x             = 112 + 50;
     ao_gyro_vh_mixer_butlabel.x          = 280 + 50;
     ao_gyro_space_butlabel.x             = 280 + 50;
     ao_gyro_autocalibration_butlabel.x   = 280 + 50;
+    ao_gyro_modifier_mode_butlabel.x     = 280 + 50;
     ao_rumble_filter_butlabel.x          = 280 + 50;
     ao_gamepad_icon_override_butlabel.x  = 280 + 50;
     ao_input_prompt_mode_butlabel.x      = 280 + 50;
@@ -2209,6 +2228,10 @@ void alpine_options_panel_do_frame(int x)
     ao_gyro_autocalibration_cbox.enabled   = gyro_enabled;
     ao_gyro_autocalibration_label.enabled  = gyro_enabled;
     ao_gyro_autocalibration_butlabel.enabled = gyro_enabled;
+
+    ao_gyro_modifier_mode_cbox.enabled     = gyro_enabled;
+    ao_gyro_modifier_mode_label.enabled    = gyro_enabled;
+    ao_gyro_modifier_mode_butlabel.enabled = gyro_enabled;
 
     ao_gyro_invert_y_cbox.enabled        = gyro_enabled;
     ao_gyro_invert_y_label.enabled       = gyro_enabled;
@@ -2271,6 +2294,7 @@ void alpine_options_panel_do_frame(int x)
         rc.add_inputbox(ao_gyro_space_cbox, ao_gyro_space_label, ao_gyro_space_butlabel, gyro_enabled);
         rc.add_checkbox(ao_gyro_invert_y_cbox, ao_gyro_invert_y_label, gyro_enabled);
         rc.add_inputbox(ao_gyro_autocalibration_cbox, ao_gyro_autocalibration_label, ao_gyro_autocalibration_butlabel, gyro_enabled);
+        rc.add_inputbox(ao_gyro_modifier_mode_cbox, ao_gyro_modifier_mode_label, ao_gyro_modifier_mode_butlabel, gyro_enabled);
         rc.add_inputbox(ao_rumble_intensity_cbox, ao_rumble_intensity_label, ao_rumble_intensity_butlabel);
         rc.add_inputbox(ao_rumble_trigger_cbox, ao_rumble_trigger_label, ao_rumble_trigger_butlabel, trigger_rumble_hw);
         rc.add_checkbox(ao_rumble_primary_cbox, ao_rumble_primary_label);

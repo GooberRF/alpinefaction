@@ -1857,19 +1857,6 @@ void gamepad_apply_rebind()
         if (new_code == -1)
             cc.bindings[i].scan_codes[1] = -1;
 
-        // Gyro modifier actions are mutually exclusive, so if one of them is bound, it unbinds the other two.
-        if (new_code != -1) {
-            const int hold_idx     = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD));
-            const int hold_inv_idx = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT));
-            const int toggle_idx   = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE));
-            if (i == hold_idx || i == hold_inv_idx || i == toggle_idx) {
-                for (int k = 0; k < cc.num_bindings; ++k) {
-                    if (k != i && (k == hold_idx || k == hold_inv_idx || k == toggle_idx))
-                        cc.bindings[k].scan_codes[0] = -1;
-                }
-            }
-        }
-
         break;
     }
 }

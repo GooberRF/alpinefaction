@@ -336,12 +336,8 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
         alpine_control_config_add_item(ccp, "Center View", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
-        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold On)", false, -1, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD);
-        alpine_control_config_add_item(ccp, "Gyro Modifier (Hold Off)", false, -1, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_HOLD_INVERT);
-        alpine_control_config_add_item(ccp, "Gyro Modifier (Toggle)", false, -1, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER_TOGGLE);
+        alpine_control_config_add_item(ccp, "Gyro Modifier", false, -1, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_GYRO_MODIFIER);
 
         // Only reset gamepad defaults if settings were not loaded (first run / no settings file).
         // If the user's settings file was already loaded, skip this reset to preserve saved bindings.
