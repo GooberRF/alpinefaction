@@ -58,11 +58,17 @@ std::vector<rf::ui::Label*> alpine_options_panel_tab_labels;
 
 // scroll state and content-area bounds for the scrollable settings panels
 static int  alpine_options_scroll_offsets[4]  = {0, 0, 0, 0};
-// per-tab scroll opt-in: set to true to enable scroll for that tab (Visual=0, Interface=1, Input=2, Misc=3)
 static bool alpine_options_panel_scrollable[4] = {false, false, true, false};
-static constexpr int AO_CONTENT_TOP    = 44;   // top of scrollable area in sub-panel coords
-static constexpr int AO_CONTENT_BOTTOM = 344;  // bottom of scrollable area (above panel border)
-static constexpr int AO_SCROLL_STEP    = 30;   // pixels per scroll step
+static constexpr int AO_CONTENT_TOP    = 44;
+static constexpr int AO_CONTENT_BOTTOM = 344;
+static constexpr int AO_SCROLL_STEP    = 30;
+
+// scrollbar geometry cached each frame for hit-testing
+static int  s_sb_x = 0, s_sb_y = 0, s_sb_pw = 0, s_sb_ph = 0;
+static int  s_sb_thumb_y = 0, s_sb_thumb_h = 0;
+static bool s_sb_visible  = false;
+static bool s_sb_dragging = false;
+static int  s_sb_drag_origin_y = 0, s_sb_drag_origin_scroll = 0;
 
 // Column layout packer: assigns Y positions to gadget rows in order,
 // advancing by AO_SCROLL_STEP for each visible row.  Construct with the
@@ -1535,8 +1541,6 @@ static rf::ui::Panel* ao_get_active_subpanel()
     }
 }
 
-// Returns how many pixels of scroll are possible for a given sub-panel,
-// based on the lowest gadget it contains versus the visible content window.
 static int ao_compute_max_scroll(rf::ui::Panel* subpanel)
 {
     if (!subpanel) return 0;
@@ -1545,19 +1549,15 @@ static int ao_compute_max_scroll(rf::ui::Panel* subpanel)
         if (g && g->enabled && g->parent == subpanel)
             max_bottom = std::max(max_bottom, g->y + g->h);
     }
-    // also account for label-only content (e.g. fflink labels in panel 3)
     for (auto* l : alpine_options_panel_labels) {
         if (l && l->enabled && l->parent == subpanel)
             max_bottom = std::max(max_bottom, l->y + l->h);
     }
-    // snap to row grid so the item layout is symmetric at both scroll extremes
     int raw_max = std::max(0, max_bottom - AO_CONTENT_BOTTOM);
     return (raw_max / AO_SCROLL_STEP) * AO_SCROLL_STEP;
 }
 
 void alpine_options_panel_handle_key(rf::Key* key){
-    // todo: more key support (tab, etc.)
-    // close panel on escape
     if (*key == rf::Key::KEY_ESC) {
         rf::ui::options_close_current_panel();
         rf::snd_play(43, 0, 0.0f, 1.0f);
@@ -1566,19 +1566,55 @@ void alpine_options_panel_handle_key(rf::Key* key){
 }
 
 void alpine_options_panel_handle_mouse(int x, int y) {
-    // handle mouse wheel / gamepad right-stick scrolling
-    {
-        int dx = 0, dy = 0, dz = 0;
-        rf::mouse_get_delta(dx, dy, dz);
-        // also pick up any right-stick scroll tick that gamepad produced this frame
-        if (dz == 0)
-            dz = gamepad_consume_menu_scroll();
-        if (dz != 0 && alpine_options_panel_scrollable[alpine_options_panel_current_tab]) {
-            const int tab = alpine_options_panel_current_tab;
-            int step = (dz > 0) ? -AO_SCROLL_STEP : AO_SCROLL_STEP;
-            int max_scroll = ao_compute_max_scroll(ao_get_active_subpanel());
-            alpine_options_scroll_offsets[tab] = std::clamp(alpine_options_scroll_offsets[tab] + step, 0, max_scroll);
+    for (auto* gadget : alpine_options_panel_settings)
+        if (gadget) gadget->highlighted = false;
+
+    if (s_sb_dragging) {
+        if (!rf::mouse_button_is_down(0)) {
+            s_sb_dragging = false;
+        } else {
+            if (s_sb_visible && s_sb_ph > s_sb_thumb_h) {
+                const int tab = alpine_options_panel_current_tab;
+                int max_scroll = ao_compute_max_scroll(ao_get_active_subpanel());
+                int drag_delta = y - s_sb_drag_origin_y;
+                int scroll_range_px = s_sb_ph - s_sb_thumb_h;
+                int raw = s_sb_drag_origin_scroll + drag_delta * max_scroll / scroll_range_px;
+                int snapped = (raw / AO_SCROLL_STEP) * AO_SCROLL_STEP;
+                alpine_options_scroll_offsets[tab] = std::clamp(snapped, 0, max_scroll);
+            }
+            return;
         }
+    }
+
+    if (s_sb_visible && rf::mouse_was_button_pressed(0)) {
+        const bool in_track = (x >= s_sb_x && x < s_sb_x + s_sb_pw
+                            && y >= s_sb_y && y < s_sb_y + s_sb_ph);
+        if (in_track) {
+            const bool in_thumb = (y >= s_sb_thumb_y && y < s_sb_thumb_y + s_sb_thumb_h);
+            if (in_thumb) {
+                s_sb_dragging           = true;
+                s_sb_drag_origin_y      = y;
+                s_sb_drag_origin_scroll = alpine_options_scroll_offsets[alpine_options_panel_current_tab];
+            } else {
+                const int tab = alpine_options_panel_current_tab;
+                int max_scroll = ao_compute_max_scroll(ao_get_active_subpanel());
+                int step = (y < s_sb_thumb_y) ? -(AO_SCROLL_STEP * 5) : (AO_SCROLL_STEP * 5);
+                alpine_options_scroll_offsets[tab] = std::clamp(
+                    alpine_options_scroll_offsets[tab] + step, 0, max_scroll);
+            }
+            return;
+        }
+    }
+
+    int dx = 0, dy = 0, dz = 0;
+    rf::mouse_get_delta(dx, dy, dz);
+    if (dz == 0)
+        dz = gamepad_consume_menu_scroll();
+    if (dz != 0 && alpine_options_panel_scrollable[alpine_options_panel_current_tab]) {
+        const int tab = alpine_options_panel_current_tab;
+        int step = (dz > 0) ? -AO_SCROLL_STEP : AO_SCROLL_STEP;
+        int max_scroll = ao_compute_max_scroll(ao_get_active_subpanel());
+        alpine_options_scroll_offsets[tab] = std::clamp(alpine_options_scroll_offsets[tab] + step, 0, max_scroll);
     }
 
     rf::ui::Panel* active_subpanel = ao_get_active_subpanel();
@@ -1586,7 +1622,6 @@ void alpine_options_panel_handle_mouse(int x, int y) {
 
     int hovered_index = -1;
 
-    // Check which gadget is being hovered over (accounting for scroll offset)
     for (size_t i = 0; i < alpine_options_panel_settings.size(); ++i) {
         auto* gadget = alpine_options_panel_settings[i];
         if (gadget && gadget->enabled) {
@@ -1603,30 +1638,13 @@ void alpine_options_panel_handle_mouse(int x, int y) {
             }
         }
     }
-    //xlog::warn("hovered {}", hovered_index);
     if (hovered_index >= 0) {
         auto* gadget = alpine_options_panel_settings[hovered_index];
-
-        if (gadget) {
-            if (rf::mouse_was_button_pressed(0)) { // Left mouse button pressed
-                //xlog::warn("Clicked on gadget index {}", hovered_index);
-
-                // Call on_click if assigned
-                if (gadget->on_click) {
-                    gadget->on_click(x, y);
-                }
-            }
-            else if (rf::mouse_button_is_down(0) && gadget->on_mouse_btn_down) {
-                // Handle mouse button being held down
-                gadget->on_mouse_btn_down(x, y);
-            }
-        }
-    }
-
-    // Update all gadgets
-    for (auto* gadget : alpine_options_panel_settings) {
-        if (gadget) {
-            gadget->highlighted = false;
+        if (rf::mouse_was_button_pressed(0)) {
+            if (gadget->on_click)
+                gadget->on_click(x, y);
+        } else if (rf::mouse_button_is_down(0) && gadget->on_mouse_btn_down) {
+            gadget->on_mouse_btn_down(x, y);
         }
     }
 
@@ -2059,9 +2077,8 @@ void alpine_options_panel_do_frame(int x)
     // gamepad settings
     snprintf(ao_joy_camera_butlabel_text, sizeof(ao_joy_camera_butlabel_text), "%s",
         g_alpine_game_config.gamepad_joy_camera ? "Flick Stick" : "Standard");
-    ao_joy_camera_butlabel.text = ao_joy_camera_butlabel_text;
+    ao_joy_camera_butlabel.text  = ao_joy_camera_butlabel_text;
     ao_joy_camera_butlabel.align = rf::gr::ALIGN_CENTER;
-    ao_joy_camera_butlabel.x = 112 + 50;
 
     snprintf(ao_flickstick_sweep_butlabel_text, sizeof(ao_flickstick_sweep_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_flickstick_sweep);
     ao_flickstick_sweep_butlabel.text = ao_flickstick_sweep_butlabel_text;
@@ -2131,10 +2148,12 @@ void alpine_options_panel_do_frame(int x)
     }
 
     snprintf(ao_gyro_autocalibration_butlabel_text, sizeof(ao_gyro_autocalibration_butlabel_text), "%s", mode_name);
-    ao_gyro_autocalibration_butlabel.text = ao_gyro_autocalibration_butlabel_text;
+    ao_gyro_autocalibration_butlabel.text  = ao_gyro_autocalibration_butlabel_text;
+    ao_gyro_autocalibration_butlabel.align = rf::gr::ALIGN_CENTER;
 
     snprintf(ao_gyro_space_butlabel_text, sizeof(ao_gyro_space_butlabel_text), "%s", gyro_get_space_name(g_alpine_game_config.gamepad_gyro_space));
-    ao_gyro_space_butlabel.text = ao_gyro_space_butlabel_text;
+    ao_gyro_space_butlabel.text  = ao_gyro_space_butlabel_text;
+    ao_gyro_space_butlabel.align = rf::gr::ALIGN_CENTER;
 
     snprintf(ao_rumble_intensity_butlabel_text, sizeof(ao_rumble_intensity_butlabel_text), "%6.4f", g_alpine_game_config.gamepad_rumble_intensity);
     ao_rumble_intensity_butlabel.text = ao_rumble_intensity_butlabel_text;
@@ -2168,11 +2187,13 @@ void alpine_options_panel_do_frame(int x)
     ao_input_prompt_mode_butlabel.text = ao_input_prompt_mode_butlabel_text;
     ao_input_prompt_mode_butlabel.align = rf::gr::ALIGN_CENTER;
 
-    // shift all button text a little so it better fits inside the button area
-    ao_gamepad_icon_override_butlabel.x = 326 + 4;
-    ao_input_prompt_mode_butlabel.x = 326 + 4;
-    ao_rumble_filter_butlabel.x = 326 + 4;
-    ao_gyro_vh_mixer_butlabel.x = 326 + 4;
+    ao_joy_camera_butlabel.x            = 112 + 50;
+    ao_gyro_vh_mixer_butlabel.x          = 280 + 50;
+    ao_gyro_space_butlabel.x             = 280 + 50;
+    ao_gyro_autocalibration_butlabel.x   = 280 + 50;
+    ao_rumble_filter_butlabel.x          = 280 + 50;
+    ao_gamepad_icon_override_butlabel.x  = 280 + 50;
+    ao_input_prompt_mode_butlabel.x      = 280 + 50;
 
     // show/hide gyro ui if gamepad supports motion sensors and (for subcontrols) gyro aiming is enabled
     bool gyro_hw = gamepad_is_motionsensors_supported();
@@ -2318,13 +2339,14 @@ void alpine_options_panel_do_frame(int x)
     const int max_scroll = ao_compute_max_scroll(active_subpanel);
     current_scroll = std::clamp(current_scroll, 0, max_scroll);
 
-    // render button labels; content labels get the same Y scroll offset applied
     for (auto* ui_label : alpine_options_panel_labels) {
         if (!ui_label || !ui_label->enabled) continue;
         if (active_subpanel && ui_label->parent == active_subpanel) {
-            int scrolled_y = ui_label->y - current_scroll;
-            if (scrolled_y < AO_CONTENT_TOP || scrolled_y >= AO_CONTENT_BOTTOM)
+            // clip against row base (label y is item_y+6) so labels never orphan at viewport edges
+            if ((ui_label->y - 6 - current_scroll) < AO_CONTENT_TOP ||
+                (ui_label->y - 6 - current_scroll) >= AO_CONTENT_BOTTOM)
                 continue;
+            int scrolled_y = ui_label->y - current_scroll;
             ui_label->y = scrolled_y;
             ui_label->render();
             ui_label->y = scrolled_y + current_scroll;
@@ -2333,27 +2355,23 @@ void alpine_options_panel_do_frame(int x)
         }
     }
 
-    // draw scrollbar when this tab is scrollable and there is overflow
+    s_sb_visible = false;
     if (alpine_options_panel_scrollable[alpine_options_panel_current_tab] && max_scroll > 0) {
-        constexpr int sb_width       = 6;    // logical px wide
-        constexpr int sb_margin      = 10;   // logical px from the right edge of the sub-panel
-        constexpr int AO_PANEL_W     = 512;  // all sub-panel TGAs are 512 logical px wide
+        constexpr int   sb_width     = 6;
+        constexpr int   sb_margin    = 39;
+        constexpr int   AO_PANEL_W   = 512;
+        constexpr int   sb_y_offset  = 10;
         constexpr float viewport_h_l = static_cast<float>(AO_CONTENT_BOTTOM - AO_CONTENT_TOP);
         const float total_h          = static_cast<float>(max_scroll) + viewport_h_l;
 
-        // x (do_frame param) is the logical x of alpine_options_panel (= animated_offset).
-        // alpine_options_panel.y is the static logical y set at init time.
-        // Sub-panels are at (0,0) relative to the parent, so these give their absolute logical coords.
         const int sb_x  = static_cast<int>((x + AO_PANEL_W - sb_margin - sb_width) * rf::ui::scale_x);
-        const int sb_y  = static_cast<int>((alpine_options_panel.y + AO_CONTENT_TOP)  * rf::ui::scale_y);
+        const int sb_y  = static_cast<int>((alpine_options_panel.y + AO_CONTENT_TOP + sb_y_offset) * rf::ui::scale_y);
         const int sb_pw = static_cast<int>(sb_width      * rf::ui::scale_x);
         const int sb_ph = static_cast<int>(viewport_h_l  * rf::ui::scale_y);
 
-        // track
         rf::gr::set_color(40, 40, 40, 180);
         rf::gr::rect(sb_x, sb_y, sb_pw, sb_ph);
 
-        // thumb — proportional height, slides within the track
         const float thumb_h_f    = viewport_h_l * (viewport_h_l / total_h);
         const float scroll_ratio = static_cast<float>(current_scroll) / static_cast<float>(max_scroll);
         const int thumb_y = sb_y + static_cast<int>(scroll_ratio * (sb_ph - thumb_h_f * rf::ui::scale_y));
@@ -2362,6 +2380,11 @@ void alpine_options_panel_do_frame(int x)
 
         rf::gr::set_color(0, 200, 210, 255);
         rf::gr::rect(sb_x, thumb_y, sb_pw, thumb_h);
+
+        s_sb_x = sb_x;       s_sb_y = sb_y;
+        s_sb_pw = sb_pw;     s_sb_ph = sb_ph;
+        s_sb_thumb_y = thumb_y; s_sb_thumb_h = thumb_h;
+        s_sb_visible = true;
     }
 }
 
