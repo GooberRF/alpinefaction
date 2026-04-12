@@ -21,7 +21,6 @@ static constexpr RumbleEffect k_rumble_sniper_shot{ 0x9000, 0xFFFF, 0xFFFF, 180u
 // Turret shot: strong body-only pulse (no trigger routing for turrets)
 static constexpr RumbleEffect k_rumble_turret_shot{ 0xA800, 0x8C00, 0, 120u };
 
-
 struct WeaponRumbleProfile {
     const RumbleEffect* preset = nullptr;
     uint16_t lo_mul = 0;
