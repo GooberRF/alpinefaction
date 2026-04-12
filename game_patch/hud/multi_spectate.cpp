@@ -988,16 +988,57 @@ void multi_spectate_render() {
     if (!g_spectate_mode_enabled) {
         if (rf::player_is_dead(rf::local_player)
             && !g_remote_server_cfg_popup.is_active()) {
-            std::string spectate_bind_text = get_action_bind_name(
+            const std::string spectate_bind_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
             );
-            std::string hint_text = "Press " + spectate_bind_text + " to enter Spectate Mode";
+            const std::string hint_text =
+                "Press "
+                + spectate_bind_text
+                + " to enter Spectate Mode";
+
+            const rf::NetGameType game_type = rf::multi_get_game_type();
+            const bool is_ctf = game_type == rf::NG_TYPE_CTF;
+            const bool is_tdm = game_type == rf::NG_TYPE_TEAMDM;
+            const bool is_koth = game_type == rf::NG_TYPE_KOTH;
+            const bool is_dc = game_type == rf::NG_TYPE_DC;
+            const bool is_esc = game_type == rf::NG_TYPE_ESC;
+            const bool is_rev = game_type == rf::NG_TYPE_REV;
+            const bool is_run = game_type == rf::NG_TYPE_RUN;
+
+            const int font_h = rf::gr::get_font_height(medium_font);
+            const int y = std::invoke([&] {
+                const int low_death_bar_y =
+                    rf::gr::clip_height()
+                    - static_cast<int>(rf::gr::clip_height() * .125f);
+                if (is_koth || is_dc || is_esc || is_rev) {
+                    return g_alpine_game_config.death_bars
+                        ? std::min(g_multi_hud_cp_strip_y, low_death_bar_y)
+                        : g_multi_hud_cp_strip_y;
+                } else if (is_run) {
+                    const int y = rf::gr::clip_height()
+                        - 10
+                        - (g_alpine_game_config.big_hud ? 60 : 40);
+                    return g_alpine_game_config.death_bars
+                        ? std::min(y, low_death_bar_y)
+                        : y;
+                } else if (is_ctf || is_tdm) {
+                    const int y = rf::gr::clip_height()
+                        - 10
+                        - (g_alpine_game_config.big_hud ? 80 : 55);
+                    return g_alpine_game_config.death_bars
+                        ? std::min(y, low_death_bar_y)
+                        : y;
+                } else {
+                    return g_alpine_game_config.death_bars
+                        ? low_death_bar_y
+                        : rf::gr::clip_height();
+                }
+            });
+
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-            const int bottom_death_bar_y = rf::gr::screen_height()
-                - static_cast<int>(rf::gr::screen_height() * .125f);
-            const int y = bottom_death_bar_y - rf::gr::get_font_height(medium_font) - 5;
-            rf::gr::string(10, y, hint_text.c_str(), medium_font);
+            rf::gr::string(10, y - 10 - font_h, hint_text.c_str(), medium_font);
         }
+
         return;
     }
 
