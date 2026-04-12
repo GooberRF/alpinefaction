@@ -199,11 +199,14 @@ std::vector<std::string> extract_v3d_texture_names(const char* filepath)
 
         if (sec.type != V3D_SUBMESH) {
             // BONE, COLSPHERE, etc. — skip using section size
-            if (sec.size > 0) fskip(fp, sec.size);
+            if (sec.size > 0 && !fskip(fp, sec.size)) break;
             continue;
         }
 
-        if (!parse_submesh_textures(fp, textures)) break;
+        if (!parse_submesh_textures(fp, textures)) {
+            xlog::warn("V3D: Failed to parse submesh textures in '{}'", filepath);
+            break;
+        }
     }
 
     std::fclose(fp);
