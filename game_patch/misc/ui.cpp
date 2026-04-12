@@ -2288,13 +2288,13 @@ void alpine_options_panel_do_frame(int x)
         rc.add_inputbox(ao_gyro_sensitivity_cbox, ao_gyro_sensitivity_label, ao_gyro_sensitivity_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_scopesens_cbox, ao_gyro_scopesens_label, ao_gyro_scopesens_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_scannersens_cbox, ao_gyro_scannersens_label, ao_gyro_scannersens_butlabel, gyro_enabled);
+        rc.add_inputbox(ao_gyro_modifier_mode_cbox, ao_gyro_modifier_mode_label, ao_gyro_modifier_mode_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_tightening_cbox, ao_gyro_tightening_label, ao_gyro_tightening_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_smoothing_cbox, ao_gyro_smoothing_label, ao_gyro_smoothing_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_vh_mixer_cbox, ao_gyro_vh_mixer_label, ao_gyro_vh_mixer_butlabel, gyro_enabled);
         rc.add_inputbox(ao_gyro_space_cbox, ao_gyro_space_label, ao_gyro_space_butlabel, gyro_enabled);
         rc.add_checkbox(ao_gyro_invert_y_cbox, ao_gyro_invert_y_label, gyro_enabled);
         rc.add_inputbox(ao_gyro_autocalibration_cbox, ao_gyro_autocalibration_label, ao_gyro_autocalibration_butlabel, gyro_enabled);
-        rc.add_inputbox(ao_gyro_modifier_mode_cbox, ao_gyro_modifier_mode_label, ao_gyro_modifier_mode_butlabel, gyro_enabled);
         rc.add_inputbox(ao_rumble_intensity_cbox, ao_rumble_intensity_label, ao_rumble_intensity_butlabel);
         rc.add_inputbox(ao_rumble_trigger_cbox, ao_rumble_trigger_label, ao_rumble_trigger_butlabel, trigger_rumble_hw);
         rc.add_checkbox(ao_rumble_primary_cbox, ao_rumble_primary_label);
