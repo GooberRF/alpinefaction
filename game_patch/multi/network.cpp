@@ -557,16 +557,25 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         const auto* payload = reinterpret_cast<const uint8_t*>(data);
         uint64_t key = addr_key(addr);
 
+        // Clear stale AF extra on any parse failure
+        auto clear_extra = [&]() { g_server_browser_extra.erase(key); };
+
         // Read payload length from the sub-packet header immediately before the payload
         uint16_t payload_len;
         std::memcpy(&payload_len, data - 2, sizeof(payload_len));
         const uint8_t* end = payload + payload_len;
 
-        if (payload_len < 1)
-            return;
+        if (payload_len < 1) { clear_extra(); return; }
 
         const uint8_t* r = payload;
         uint8_t version = *r++;
+        if (version != RF_VER_10_11 && version != RF_VER_12 && version != RF_VER_13) {
+            rf::multi_join_game_add_server(
+                addr.ip_addr, addr.port,
+                rf::strings::incompatible_version, "", "", 0, 0, 0, 0);
+            clear_extra();
+            return;
+        }
 
         // Helper: read a null-terminated string safely into dst, advance r past the terminator
         auto read_string = [&](char* dst, size_t dst_size) -> bool {
@@ -580,13 +589,9 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
             return true;
         };
 
-        // On any parse failure after this point, clear stale AF extra for this address
-        auto clear_extra = [&]() { g_server_browser_extra.erase(key); };
-
         // Parse stock fields: name\0 + game_type(1) + players(1) + max_players(1) + level\0 + mod\0 + flags(1)
         char name[256]{};
-        if (!read_string(name, sizeof(name)))
-            return;
+        if (!read_string(name, sizeof(name))) { clear_extra(); return; }
         if (end - r < 3) { clear_extra(); return; }
         uint8_t game_type = std::clamp<uint8_t>(*r++, 0, 7);
         uint8_t players = *r++;
