@@ -570,6 +570,8 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         const uint8_t* r = payload;
         uint8_t version = *r++;
         if (version != RF_VER_10_11 && version != RF_VER_12 && version != RF_VER_13) {
+            // use <incompatible version> for any servers that don't match
+            // rf 1.0, 1.1, 1.2, or 1.3 protocol version (should never happen)
             rf::multi_join_game_add_server(
                 addr.ip_addr, addr.port,
                 rf::strings::incompatible_version, "", "", 0, 0, 0, 0);
