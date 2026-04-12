@@ -287,7 +287,7 @@ namespace rf
     static auto& multi_kill_local_player = addr_as_ref<void()>(0x004757A0);
     static auto& send_game_info_req_packet = addr_as_ref<void(const NetAddr& addr)>(0x0047B450);
     static auto& multi_join_game_add_server = addr_as_ref<void __cdecl(
-        uint32_t ip, uint32_t port, const char* name, const char* level,
+        uint32_t ip, uint16_t port, const char* name, const char* level,
         const char* mod, int players, int max_players, int game_type, int flags)>(0x0044DD50);
     static auto& multi_entity_is_female = addr_as_ref<bool(int mp_character_idx)>(0x004762C0);
     static auto& multi_powerup_has_player = addr_as_ref<bool(Player* pp, int powerup_type)>(0x004802B0);
