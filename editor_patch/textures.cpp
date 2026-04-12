@@ -11,6 +11,7 @@
 #include "mfc_types.h"
 #include "level.h"
 #include "textures.h"
+#include "meshes.h"
 #include "event.h"
 
 // Subdirectory names registered during init, used by VPP packing fix
@@ -338,6 +339,37 @@ CodeInjection vpp_skip_missing_file_injection{
     }
 };
 
+// ─── Mesh file VPP helpers ──────────────────────────────────────────────────
+
+// Add a mesh file to the global VPP file list (0x006c9ba8) if it exists on disk.
+static void add_mesh_to_vpp_list(const char* filename)
+{
+    std::string full_path = find_mesh_on_disk(filename);
+    if (full_path.empty()) return;
+
+    VString str;
+    str.assign_0(full_path.c_str());
+    int ml = str.max_len;
+    char* b = str.buf;
+    str.max_len = 0;
+    str.buf = nullptr;
+    AddrCaller{0x00438640}.this_call<int>(reinterpret_cast<void*>(0x006c9ba8), ml, b);
+    xlog::info("VPP: Added mesh file '{}'", full_path);
+}
+
+// Find a V3M/V3C mesh file on disk and add its referenced textures to the VPP pack list.
+static void add_mesh_textures_to_pack_list(void* temp_list, const char* filename)
+{
+    std::string path = find_mesh_on_disk(filename);
+    if (path.empty()) return;
+
+    auto tex_names = extract_v3d_texture_names(path.c_str());
+    for (const auto& name : tex_names) {
+        add_texture_to_pack_list(temp_list, name.c_str());
+        xlog::info("VPP: Added texture '{}' from mesh '{}'", name, filename);
+    }
+}
+
 // Stock VPP packing (FUN_004482c0) gathers textures from geometry, particle emitters,
 // and decals, but misses bolt emitters, room effect liquid surfaces,
 // Display_Fullscreen_Image events, and the geomod default crater texture.
@@ -351,97 +383,46 @@ CodeInjection vpp_extra_textures_injection{
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<int>(regs.ebx));
         auto* temp_list = reinterpret_cast<void*>(static_cast<int>(regs.esp) + 0x30);
 
-        // Bolt Emitter textures (VString at +0xC4)
-        for (int i = 0; i < level->bolt_emitters.get_size(); i++) {
-            auto* obj = static_cast<DedBoltEmitter*>(level->bolt_emitters[i]);
-            add_texture_to_pack_list(temp_list, obj->bitmap.c_str());
-        }
+        // Iterate master_objects to find assets to add to the packfile
+        for (int i = 0; i < level->master_objects.get_size(); i++) {
+            auto* obj = level->master_objects[i];
 
-        // Room Effect liquid surface textures (VString at +0xA8, type 2 = Liquid Room)
-        for (int i = 0; i < level->room_effects.get_size(); i++) {
-            auto* obj = static_cast<DedRoomEffect*>(level->room_effects[i]);
-            if (obj->effect_type == static_cast<int>(DedRoomEffectType::Liquid)) {
-                add_texture_to_pack_list(temp_list, obj->liquid_bitmap.c_str());
+            if (obj->type == DedObjectType::DED_BOLT_EMITTER) {
+                auto* bolt = static_cast<DedBoltEmitter*>(obj);
+                add_texture_to_pack_list(temp_list, bolt->bitmap.c_str());
             }
-        }
-
-        // Event textures
-        for (int i = 0; i < level->events.get_size(); i++) {
-            auto* evt = static_cast<DedEvent*>(level->events[i]);
-            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image)) {
-                add_texture_to_pack_list(temp_list, evt->str1.c_str());
+            else if (obj->type == DedObjectType::DED_ROOM_EFFECT) {
+                auto* room = static_cast<DedRoomEffect*>(obj);
+                if (room->effect_type == static_cast<int>(DedRoomEffectType::Liquid)) {
+                    add_texture_to_pack_list(temp_list, room->liquid_bitmap.c_str());
+                }
             }
-            else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Swap_Textures)) {
-                add_texture_to_pack_list(temp_list, evt->str1.c_str());
-                add_texture_to_pack_list(temp_list, evt->str2.c_str());
+            else if (obj->type == DedObjectType::DED_EVENT) {
+                auto* evt = static_cast<DedEvent*>(obj);
+                if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Swap_Textures)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                    add_texture_to_pack_list(temp_list, evt->str2.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+                    add_mesh_textures_to_pack_list(temp_list, evt->str1.c_str());
+                }
             }
         }
 
         // Geomod default crater texture (VString at CDedLevel+0x24)
         add_texture_to_pack_list(temp_list, level->geomod_texture.c_str());
-    }
-};
 
-// ─── Mesh file VPP packing ──────────────────────────────────────────────────
-//
-// The stock VPP packing function only gathers textures. Custom mesh files
-// (.v3m, .v3c, .vfx, .rfa) referenced by Mesh objects and events also need
-// to be included. We inject right before the VPP is written (0x004485e2) and
-// add mesh file paths to the global file list at 0x006c9ba8.
-
-static const char* mesh_search_dirs[] = {
-    "user_maps\\meshes\\",
-    "red\\meshes\\",
-};
-
-static bool has_mesh_extension(const char* filename)
-{
-    if (!filename || !filename[0]) return false;
-    const char* ext = strrchr(filename, '.');
-    if (!ext) return false;
-    return (_stricmp(ext, ".v3m") == 0 ||
-            _stricmp(ext, ".v3c") == 0 ||
-            _stricmp(ext, ".vfx") == 0 ||
-            _stricmp(ext, ".rfa") == 0);
-}
-
-// Add a mesh file to the global VPP file list (0x006c9ba8) if it exists on disk
-// in one of the mesh search directories. Stock meshes only exist inside VPP archives
-// and won't be found as loose files, so this naturally filters them out.
-static void add_mesh_to_vpp_list(const char* filename)
-{
-    if (!has_mesh_extension(filename)) return;
-
-    // Strip any path prefix to get bare filename
-    const char* bare = std::strrchr(filename, '\\');
-    if (!bare) bare = std::strrchr(filename, '/');
-    bare = bare ? bare + 1 : filename;
-    if (!bare[0]) return;
-
-    // Get exe directory for constructing absolute paths
-    char exe_dir[MAX_PATH];
-    DWORD len = GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) return;
-    char* last_sep = std::strrchr(exe_dir, '\\');
-    if (last_sep) *(last_sep + 1) = '\0';
-
-    for (const char* search_dir : mesh_search_dirs) {
-        std::string full_path = std::string(exe_dir) + search_dir + bare;
-        if (GetFileAttributesA(full_path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            // File exists on disk — add absolute path to VPP file list
-            // (matches stock texture path format used by the VPP writer)
-            VString str;
-            str.assign_0(full_path.c_str());
-            int ml = str.max_len;
-            char* b = str.buf;
-            str.max_len = 0;
-            str.buf = nullptr;
-            AddrCaller{0x00438640}.this_call<int>(reinterpret_cast<void*>(0x006c9ba8), ml, b);
-            xlog::info("VPP: Added mesh file '{}'", full_path);
-            return;
+        // Textures referenced by custom mesh files (.v3m/.v3c)
+        for (auto* mesh : level->GetAlpineLevelProperties().mesh_objects) {
+            add_mesh_textures_to_pack_list(temp_list, mesh->mesh_filename.c_str());
+            add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.debris_filename.c_str());
+            add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.corpse_filename.c_str());
         }
     }
-}
+};
 
 CodeInjection vpp_mesh_files_injection{
     0x004485e2,
@@ -460,8 +441,10 @@ CodeInjection vpp_mesh_files_injection{
 
         // Events: Switch_Model (str1=mesh), Play_Animation (str1=anim),
         // Mesh_Animate (str1=anim)
-        for (int i = 0; i < level->events.get_size(); i++) {
-            auto* evt = static_cast<DedEvent*>(level->events[i]);
+        for (int i = 0; i < level->master_objects.get_size(); i++) {
+            auto* obj = level->master_objects[i];
+            if (obj->type != DedObjectType::DED_EVENT) continue;
+            auto* evt = static_cast<DedEvent*>(obj);
             if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
                 add_mesh_to_vpp_list(evt->str1.c_str());
             }
