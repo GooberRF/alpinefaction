@@ -118,6 +118,27 @@ CallHook<void(rf::Entity&)> entity_make_run_after_climbing_patch{
     },
 };
 
+CallHook<bool(rf::Entity*)> entity_make_run_uncrouch_hook{
+    0x004280DB,
+    [](rf::Entity* entity) {
+        bool uncrouched = entity_make_run_uncrouch_hook.call_target(entity);
+        if (!uncrouched && (rf::is_multi || g_alpine_game_config.climb_fix)) {
+            return true;
+        }
+        return uncrouched;
+    },
+};
+
+ConsoleCommand2 sp_climbfix_cmd{
+    "sp_climbfix",
+    []() {
+        g_alpine_game_config.climb_fix = !g_alpine_game_config.climb_fix;
+        rf::console::print("Climb region crouch fix is {}", g_alpine_game_config.climb_fix ? "enabled" : "disabled");
+    },
+    "Toggle SP fix for getting stuck climbing after leaving a climb region while crouched",
+    "sp_climbfix"
+};
+
 FunHook<void(rf::EntityFireInfo&, int)> entity_fire_switch_parent_to_corpse_hook{
     0x0042F510,
     [](rf::EntityFireInfo& fire_info, int corpse_handle) {
@@ -661,6 +682,10 @@ void entity_do_patch()
     AsmWriter(0x0042809F, 0x004280A9).nop();
     entity_on_land_hook.install();
     entity_make_run_after_climbing_patch.install();
+
+    // Fix crouched player staying in climbing state after leaving a climb region
+    entity_make_run_uncrouch_hook.install();
+    sp_climbfix_cmd.register_cmd();
 
     // Control whether exposure damage is applied when player is outside without armor
     entity_maybe_apply_exposure_damage_hook.install();

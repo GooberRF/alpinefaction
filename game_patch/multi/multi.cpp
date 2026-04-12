@@ -883,6 +883,11 @@ void configure_custom_gametype_listen_server_settings() {
     apply_defaults_for_game_type(rules.game_type, rules);
     rules.set_koth_score_limit(3600);
     rules.set_dc_score_limit(3600);
+
+    // Enable on listen servers based on the host's local config
+    if (rf::game_get_gore_level() >= 2) {
+        rules.gibbing.enabled = true;
+    }
 }
 
 void start_level_in_multi(std::string filename) {
