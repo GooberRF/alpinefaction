@@ -1307,12 +1307,11 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_packet_hook
             std::memcpy(fname, s.c_str(), fname_len);
         }
 
-        if (req_ver >= 3) {
-            // v2 extension for modern AF clients
+        // extension for modern AF clients (v1.3+)
+        if (req_ver >= 4) {
             af_game_info_ext_v2 ext{};
             ext.set_flags(g_game_info_server_flags);
 
-            // count players by type
             uint8_t num_bots = 0;
             uint8_t num_human_players = 0;
             uint8_t num_browsers = 0;
@@ -1391,8 +1390,8 @@ std::pair<std::unique_ptr<std::byte[]>, size_t> append_af_tail(const std::byte* 
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_req_packet_hook{
     0x0047B470,
     [](const rf::NetAddr* addr, std::byte* data, size_t len) {
-        AFGameInfoReq core{ALPINE_FACTION_SIGNATURE, 3};
-        // version 3: server sends v2 extension with bot counts and proper versioning
+        // version 4: server sends extension with bot counts and proper versioning
+        AFGameInfoReq core{ALPINE_FACTION_SIGNATURE, 4};
         auto [buf, new_len] = append_af_tail(data, len, &core, sizeof(core));
         return send_game_info_req_packet_hook.call_target(addr, buf.get(), new_len);
     },
