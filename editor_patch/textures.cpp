@@ -383,32 +383,32 @@ CodeInjection vpp_extra_textures_injection{
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<int>(regs.ebx));
         auto* temp_list = reinterpret_cast<void*>(static_cast<int>(regs.esp) + 0x30);
 
-        // Bolt Emitter textures (VString at +0xC4)
-        for (int i = 0; i < level->bolt_emitters.get_size(); i++) {
-            auto* obj = static_cast<DedBoltEmitter*>(level->bolt_emitters[i]);
-            add_texture_to_pack_list(temp_list, obj->bitmap.c_str());
-        }
+        // Iterate master_objects to find assets to add to the packfile
+        for (int i = 0; i < level->master_objects.get_size(); i++) {
+            auto* obj = level->master_objects[i];
 
-        // Room Effect liquid surface textures (VString at +0xA8, type 2 = Liquid Room)
-        for (int i = 0; i < level->room_effects.get_size(); i++) {
-            auto* obj = static_cast<DedRoomEffect*>(level->room_effects[i]);
-            if (obj->effect_type == static_cast<int>(DedRoomEffectType::Liquid)) {
-                add_texture_to_pack_list(temp_list, obj->liquid_bitmap.c_str());
+            if (obj->type == DedObjectType::DED_BOLT_EMITTER) {
+                auto* bolt = static_cast<DedBoltEmitter*>(obj);
+                add_texture_to_pack_list(temp_list, bolt->bitmap.c_str());
             }
-        }
-
-        // Event textures and mesh-referenced textures from Switch_Model events
-        for (int i = 0; i < level->events.get_size(); i++) {
-            auto* evt = static_cast<DedEvent*>(level->events[i]);
-            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image)) {
-                add_texture_to_pack_list(temp_list, evt->str1.c_str());
+            else if (obj->type == DedObjectType::DED_ROOM_EFFECT) {
+                auto* room = static_cast<DedRoomEffect*>(obj);
+                if (room->effect_type == static_cast<int>(DedRoomEffectType::Liquid)) {
+                    add_texture_to_pack_list(temp_list, room->liquid_bitmap.c_str());
+                }
             }
-            else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Swap_Textures)) {
-                add_texture_to_pack_list(temp_list, evt->str1.c_str());
-                add_texture_to_pack_list(temp_list, evt->str2.c_str());
-            }
-            else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
-                add_mesh_textures_to_pack_list(temp_list, evt->str1.c_str());
+            else if (obj->type == DedObjectType::DED_EVENT) {
+                auto* evt = static_cast<DedEvent*>(obj);
+                if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Swap_Textures)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                    add_texture_to_pack_list(temp_list, evt->str2.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+                    add_mesh_textures_to_pack_list(temp_list, evt->str1.c_str());
+                }
             }
         }
 
@@ -441,8 +441,10 @@ CodeInjection vpp_mesh_files_injection{
 
         // Events: Switch_Model (str1=mesh), Play_Animation (str1=anim),
         // Mesh_Animate (str1=anim)
-        for (int i = 0; i < level->events.get_size(); i++) {
-            auto* evt = static_cast<DedEvent*>(level->events[i]);
+        for (int i = 0; i < level->master_objects.get_size(); i++) {
+            auto* obj = level->master_objects[i];
+            if (obj->type != DedObjectType::DED_EVENT) continue;
+            auto* evt = static_cast<DedEvent*>(obj);
             if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
                 add_mesh_to_vpp_list(evt->str1.c_str());
             }
