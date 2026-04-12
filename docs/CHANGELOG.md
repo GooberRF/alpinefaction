@@ -176,6 +176,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix collision not updating properly when objects are hidden and unhidden
 - Fix clients disconnecting when a piercing weapon (e.g. rail gun) gibs multiple players in a single shot
 - Fix players getting stuck climbing if unable to uncrouch when leaving a climbing region (subject to `sp_climbfix` console command in SP)
+- Fix debris not being created when clutter is destroyed, if the clutter also played an explosion vclip
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

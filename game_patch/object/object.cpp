@@ -520,6 +520,9 @@ void object_do_patch()
     // Zero memory allocated from GPool dynamically
     GPool_allocate_new_hook.install();
 
+    // Allow both debris and explosion vclip to fire on clutter death
+    AsmWriter(0x0041021B, 0x0041021D).nop();
+
     // Sort objects by mesh name to improve rendering performance
     sort_clutter_patch.install();
 
