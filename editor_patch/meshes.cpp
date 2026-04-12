@@ -168,13 +168,18 @@ std::vector<std::string> extract_v3d_texture_names(const char* filepath)
     if (!fp) return textures;
 
     v3d_file_header hdr;
-    if (!fread_exact(&hdr, sizeof(hdr), fp)) { std::fclose(fp); return textures; }
-
+    if (!fread_exact(&hdr, sizeof(hdr), fp)) {
+        std::fclose(fp);
+        return textures;
+    }
     if (hdr.signature != V3M_SIGNATURE && hdr.signature != V3C_SIGNATURE) {
         std::fclose(fp);
         return textures;
     }
-    if (hdr.version != V3D_VERSION) { std::fclose(fp); return textures; }
+    if (hdr.version != V3D_VERSION) {
+        std::fclose(fp);
+        return textures;
+    }
     if (hdr.num_submeshes < 0 || hdr.num_submeshes > V3D_MAX_SUBMESHES) {
         std::fclose(fp);
         return textures;
@@ -184,8 +189,8 @@ std::vector<std::string> extract_v3d_texture_names(const char* filepath)
         return textures;
     }
 
-    // Walk sections (bounded by header counts + 2 for BONE section + V3D_END terminator)
-    int max_sections = hdr.num_submeshes + hdr.num_colspheres + 2;
+    // Total sections: submeshes + colspheres + bone(0-1) + V3D_END + margin for unknown types
+    int max_sections = hdr.num_submeshes + hdr.num_colspheres + 4;
     for (int s = 0; s < max_sections; s++) {
         v3d_section_header sec;
         if (!fread_exact(&sec, sizeof(sec), fp)) break;
