@@ -555,6 +555,7 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
     0x0047B2A0,
     [](char* data, const rf::NetAddr& addr) {
         const auto* payload = reinterpret_cast<const uint8_t*>(data);
+        uint64_t key = addr_key(addr);
 
         // Read payload length from the sub-packet header immediately before the payload
         uint16_t payload_len;
@@ -579,106 +580,99 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
             return true;
         };
 
-        // Server name is always present
+        // On any parse failure after this point, clear stale AF extra for this address
+        auto clear_extra = [&]() { g_server_browser_extra.erase(key); };
+
+        // Parse stock fields: name\0 + game_type(1) + players(1) + max_players(1) + level\0 + mod\0 + flags(1)
         char name[256]{};
         if (!read_string(name, sizeof(name)))
             return;
+        if (end - r < 3) { clear_extra(); return; }
+        uint8_t game_type = std::clamp<uint8_t>(*r++, 0, 7);
+        uint8_t players = *r++;
+        uint8_t max_players = *r++;
 
-        if (version >= 0x89) {
-            // Full field set: game_type(1) + players(1) + max_players(1) + level\0 + mod\0 + flags(1)
-            if (end - r < 3) return;
-            uint8_t game_type = std::clamp<uint8_t>(*r++, 0, 7);
-            uint8_t players = *r++;
-            uint8_t max_players = *r++;
+        char level_name[256]{};
+        char mod_name[256]{};
+        if (!read_string(level_name, sizeof(level_name))) { clear_extra(); return; }
+        if (!read_string(mod_name, sizeof(mod_name))) { clear_extra(); return; }
+        if (r >= end) { clear_extra(); return; }
+        uint8_t flags = *r++;
 
-            char level_name[256]{};
-            char mod_name[256]{};
-            if (!read_string(level_name, sizeof(level_name))) return;
-            if (!read_string(mod_name, sizeof(mod_name))) return;
-            if (r >= end) return;
-            uint8_t flags = *r++;
+        rf::multi_join_game_add_server(
+            addr.ip_addr, addr.port,
+            name, level_name, mod_name,
+            players, max_players, game_type, flags);
 
-            rf::multi_join_game_add_server(
-                addr.ip_addr, addr.port,
-                name, level_name, mod_name,
-                players, max_players, game_type, flags);
+        // Parse AF extension if present: [sig][ver*4][af_flags][filename\0][bot_counts*4]
+        constexpr size_t pre_sz = af_game_info_ext_v2::wire_pre_fname_size;
+        constexpr size_t post_sz = af_game_info_ext_v2::wire_post_fname_size;
+        bool parsed = false;
 
-            // Parse AF extension if present: [sig][ver*4][af_flags][filename\0][bot_counts*4]
-            constexpr size_t pre_sz = af_game_info_ext_v2::wire_pre_fname_size;
-            constexpr size_t post_sz = af_game_info_ext_v2::wire_post_fname_size;
-            uint64_t key = addr_key(addr);
-            bool parsed = false;
+        if (static_cast<size_t>(end - r) >= pre_sz + 1 + post_sz) {
+            uint32_t sig;
+            std::memcpy(&sig, r, sizeof(sig));
 
-            if (static_cast<size_t>(end - r) >= pre_sz + 1 + post_sz) {
-                uint32_t sig;
-                std::memcpy(&sig, r, sizeof(sig));
+            // r[4] = 19 matches the deprecated AF 1.3 beta format
+            if (sig == ALPINE_FACTION_SIGNATURE && r[4] != 19) {
+                AFGameInfoExtra extra{};
+                const uint8_t* ext_r = r + sizeof(sig);
+                extra.version_major = *ext_r++;
+                extra.version_minor = *ext_r++;
+                extra.version_patch = *ext_r++;
+                extra.version_type = *ext_r++;
+                std::memcpy(&extra.af_flags, ext_r, sizeof(extra.af_flags));
+                ext_r += sizeof(extra.af_flags);
 
-                // r[4] = 19 matches the deprecated AF 1.3 beta format
-                if (sig == ALPINE_FACTION_SIGNATURE && r[4] != 19) {
-                    AFGameInfoExtra extra{};
-                    const uint8_t* ext_r = r + sizeof(sig);
-                    extra.version_major = *ext_r++;
-                    extra.version_minor = *ext_r++;
-                    extra.version_patch = *ext_r++;
-                    extra.version_type = *ext_r++;
-                    std::memcpy(&extra.af_flags, ext_r, sizeof(extra.af_flags));
-                    ext_r += sizeof(extra.af_flags);
-
-                    const uint8_t* fname_start = ext_r;
-                    const uint8_t* fname_limit = end - post_sz;
-                    while (ext_r < fname_limit && *ext_r != '\0') ++ext_r;
-                    if (ext_r < fname_limit) {
-                        extra.level_filename.assign(
-                            reinterpret_cast<const char*>(fname_start), ext_r - fname_start);
-                        ++ext_r;
-                        extra.num_bots = *ext_r++;
-                        extra.num_human_players = *ext_r++;
-                        extra.num_browsers = *ext_r++;
-                        extra.num_total_clients = *ext_r++;
-                        g_server_browser_extra[key] = std::move(extra);
-                        parsed = true;
-                    }
-                }
-            }
-
-            // DEPRECATED: AF 1.3 beta compat
-            // Old wire format: [sig][ext_size(2)][ext_version(1)][ver*4][af_flags][bot_counts*4][filename\0][AFFooter]
-            if (!parsed && static_cast<size_t>(end - r) >= 19 + 1 + sizeof(AFFooter)) {
-                uint32_t sig;
-                std::memcpy(&sig, r, sizeof(sig));
-                if (sig == ALPINE_FACTION_SIGNATURE && r[4] == 19) {
-                    AFGameInfoExtra extra{};
-                    const uint8_t* ext_r = r + sizeof(sig);
-                    ext_r += 3; // skip ext_size(2) + ext_version(1)
-                    extra.version_major = *ext_r++;
-                    extra.version_minor = *ext_r++;
-                    extra.version_patch = *ext_r++;
-                    extra.version_type = *ext_r++;
-                    std::memcpy(&extra.af_flags, ext_r, sizeof(extra.af_flags));
-                    ext_r += sizeof(extra.af_flags);
+                const uint8_t* fname_start = ext_r;
+                const uint8_t* fname_limit = end - post_sz;
+                while (ext_r < fname_limit && *ext_r != '\0') ++ext_r;
+                if (ext_r < fname_limit) {
+                    extra.level_filename.assign(
+                        reinterpret_cast<const char*>(fname_start), ext_r - fname_start);
+                    ++ext_r;
                     extra.num_bots = *ext_r++;
                     extra.num_human_players = *ext_r++;
                     extra.num_browsers = *ext_r++;
                     extra.num_total_clients = *ext_r++;
-                    const uint8_t* fname_start = ext_r;
-                    while (ext_r < end && *ext_r != '\0') ++ext_r;
-                    if (ext_r < end)
-                        extra.level_filename.assign(
-                            reinterpret_cast<const char*>(fname_start), ext_r - fname_start);
                     g_server_browser_extra[key] = std::move(extra);
                     parsed = true;
                 }
             }
+        }
 
-            if (!parsed)
-                g_server_browser_extra.erase(key);
+        // DEPRECATED: AF 1.3 beta compat — remove when no 1.3 beta servers remain.
+        // Old wire format: [sig][ext_size(2)][ext_version(1)][ver*4][af_flags][bot_counts*4][filename\0][AFFooter]
+        if (!parsed && static_cast<size_t>(end - r) >= 19 + 1 + sizeof(AFFooter)) {
+            uint32_t sig;
+            std::memcpy(&sig, r, sizeof(sig));
+            if (sig == ALPINE_FACTION_SIGNATURE && r[4] == 19) {
+                AFGameInfoExtra extra{};
+                const uint8_t* ext_r = r + sizeof(sig);
+                ext_r += 3; // skip ext_size(2) + ext_version(1)
+                extra.version_major = *ext_r++;
+                extra.version_minor = *ext_r++;
+                extra.version_patch = *ext_r++;
+                extra.version_type = *ext_r++;
+                std::memcpy(&extra.af_flags, ext_r, sizeof(extra.af_flags));
+                ext_r += sizeof(extra.af_flags);
+                extra.num_bots = *ext_r++;
+                extra.num_human_players = *ext_r++;
+                extra.num_browsers = *ext_r++;
+                extra.num_total_clients = *ext_r++;
+                const uint8_t* fname_start = ext_r;
+                const uint8_t* footer_start = end - sizeof(AFFooter);
+                while (ext_r < footer_start && *ext_r != '\0') ++ext_r;
+                if (ext_r < footer_start)
+                    extra.level_filename.assign(
+                        reinterpret_cast<const char*>(fname_start), ext_r - fname_start);
+                g_server_browser_extra[key] = std::move(extra);
+                parsed = true;
+            }
         }
-        else {
-            // RF 1.0/1.1 (0x87): display as incompatible
-            rf::multi_join_game_add_server(
-                addr.ip_addr, addr.port,
-                rf::strings::incompatible_version, "", "", 0, 0, 0, 0);
-        }
+
+        if (!parsed)
+            clear_extra();
 
         // Update netgame name if this is from the connected server
         if (addr == rf::netgame.server_addr) {
