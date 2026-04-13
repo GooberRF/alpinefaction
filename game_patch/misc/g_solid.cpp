@@ -763,6 +763,43 @@ void g_solid_do_patch()
     // Set PPM for geo crater texture based on its resolution instead of static value of 32.0
     levelmod_do_blast_autotexture_ppm_patch.install();
 
+    // Fix lightmap surface group ID overflow: face+0x36 (surface_index) is a signed short.
+    // When >32767 lightmap surface groups exist, the signed short wraps negative.
+    // Fix raises the limit from 32767 to 65535 groups.
+
+    // Note: FUN_004d4c60 (0x004d4cf6) and FUN_00561650 (0x005619dd) are additional D3D8 rendering
+    // functions with 32-bit sentinel guards (TEST EAX,EAX and CMP EAX,-1) that fail when
+    // MOVZX produces 65535 instead of -1. Left unpatched, D3D11 renderer doesn't use them,
+    // and D3D8 can't render such levels anyway.
+    write_mem<u8>(0x004e4d50, 0xB7); // FUN_004e4a60: lightmap surface grouping
+    write_mem<u8>(0x004e4d79, 0xB7);
+    write_mem<u8>(0x004e4d96, 0xB7);
+    write_mem<u8>(0x004e4ded, 0xB7);
+    write_mem<u8>(0x004e4f56, 0xB7);
+    write_mem<u8>(0x004e51a9, 0xB7); // FUN_004e5040: batch lightmap calculator
+    write_mem<u8>(0x004e51da, 0xB7);
+    write_mem<u8>(0x004eeb41, 0xB7); // FUN_004ee550: lightmap surface setup
+    write_mem<u8>(0x004f3471, 0xB7); // FUN_004f3390: shadow geometry
+    write_mem<u8>(0x004f34aa, 0xB7);
+    write_mem<u8>(0x004f449c, 0xB7); // FUN_004f4280: shadow calculation
+    write_mem<u8>(0x004f496a, 0xB7); // FUN_004f4590: shadow calculation
+    write_mem<u8>(0x004f4a4f, 0xB7);
+    write_mem<u8>(0x004f4f7e, 0xB7);
+
+    // MOVSX -> MOVZX for face+0x36 reads from register (3 sites)
+    write_mem<u8>(0x0047f0f2, 0xB7); // surface container lookup
+    write_mem<u8>(0x0047f277, 0xB7);
+    write_mem<u8>(0x004ed772, 0xB7); // FUN_004ed520: solid_read
+
+    // Fix sentinel checks: JLE -> JE (0x7E -> 0x74)
+    // Original: CMP AX,0xFFFF; JLE skip — skips all negative values (wrong for groups > 32767)
+    // Fixed: CMP AX,0xFFFF; JE skip — skips only the 0xFFFF "no group" sentinel
+    write_mem<u8>(0x004d8b71, 0x74); // FUN_004d86d0: surface container lookup
+    write_mem<u8>(0x004d8c48, 0x74);
+    write_mem<u8>(0x004edf5e, 0x74); // FUN_004ed520: solid_read
+    write_mem<u8>(0x004eebe5, 0x74); // FUN_004ee550: lightmap surface setup
+    write_mem<u8>(0x0047f274, 0x74); // surface container lookup
+
     // Commands
     max_decals_cmd.register_cmd();
     dbg_room_clip_wnd_cmd.register_cmd();
