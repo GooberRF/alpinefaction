@@ -1962,6 +1962,8 @@ void gamepad_apply_patch()
     joy_rumble_triggers_cmd.register_cmd();
     joy_rumble_weapon_cmd.register_cmd();
     joy_rumble_environmental_cmd.register_cmd();
+    joy_rumble_when_primary_cmd.register_cmd();
+    joy_rumble_vibration_filter_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();
