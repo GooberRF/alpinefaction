@@ -1412,7 +1412,7 @@ static void add_cap_faces_from_loop(
 
     rf::GFaceAttributes attrs{};
     attrs.bitmap_id = bitmap_id;
-    attrs.surface_index = -1;
+    attrs.surface_index = 0xFFFF; // no surface/lightmap sentinel
 
     // UV mapping: project relative to loop centroid
     auto compute_uv = [&](rf::GVertex* v) -> std::pair<float, float> {

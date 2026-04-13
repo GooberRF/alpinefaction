@@ -589,26 +589,32 @@ void ApplyLightmapPatches()
     write_mem<u8>(0x004ae73a, 0xB7); // FUN_004ae360: shadow calculation
     write_mem<u8>(0x004ae81f, 0xB7);
     write_mem<u8>(0x004aed4e, 0xB7);
-    write_mem<u8>(0x004a45b1, 0xB7); // solid_write: level file export
-
-    // MOVSX -> MOVZX for face+0x36 reads from register (5 sites)
-    // These follow 16-bit MOV AX,[face+0x36] and sign-extend AX to 32-bit before use as index
+    write_mem<u8>(0x004a45b1, 0xB7); // solid_write: MOVSX→MOVZX (sentinel 0xFFFF→65535 in file, truncated back to 0xFFFF by reader's 16-bit store)
+    write_mem<u8>(0x004a4655, 0x74); // solid_write: JLE->JE for lightmap UV write decision
+    write_mem<u8>(0x004a39ce, 0x74); // solid_read: JLE->JE for lightmap UV read decision
     write_mem<u8>(0x0048778b, 0xB7); // FUN_004872e0: lightmap surface container lookup
     write_mem<u8>(0x00487862, 0xB7);
-    write_mem<u8>(0x0049b955, 0xB7); // FUN_0049b550: geo-cache build
-    write_mem<u8>(0x0049bea0, 0xB7);
-    write_mem<u8>(0x0049bed3, 0xB7);
 
     // Fix sentinel checks: JLE -> JE (0x7E -> 0x74)
     // Original: CMP AX,0xFFFF; JLE skip — skips all negative values (wrong for groups > 32767)
     // Fixed: CMP AX,0xFFFF; JE skip — skips only the 0xFFFF "no group" sentinel
     write_mem<u8>(0x00487781, 0x74); // FUN_004872e0
     write_mem<u8>(0x00487858, 0x74);
-    write_mem<u8>(0x0049b94b, 0x74); // FUN_0049b550
 
-    // Note: CMP AX,BX; JLE at 0x0049be96 and 0x0049bec9 left as signed — BX can be
-    // 0xFFFF ("no batch" sentinel), and unsigned JBE would cause all faces to be skipped.
-    // Signed comparison is correct for group IDs 0-32767 and safe for the sentinel case.
+    // Fix signed "< 0" checks that destroy valid surface indices > 32767 during geometry build.
+    // FUN_004a8660 and FUN_004a9270 reset faces with negative (signed) surface_index to 0xFFFF.
+    // This destroys valid high indices when loading an RFL with >32767 surface groups.
+    write_mem<u8>(0x004a8fa9, 0xFF); // FUN_004a8660: CMP word, 0 → CMP word, -1
+    write_mem<u8>(0x004a8faa, 0x75); //   JGE → JNE (only sentinel triggers reset)
+    write_mem<u8>(0x004a9294, 0xFF); // FUN_004a9270: CMP word, 0 → CMP word, -1
+    write_mem<u8>(0x004a9295, 0x75); //   JGE → JNE
+
+    // Note: The editor's D3D8 viewport rendering has additional signed surface_index checks
+    // in the geo-cache build (FUN_0049b550) and rendering functions (FUN_005040b0,
+    // FUN_00493570, FUN_00494d70, FUN_00496a30, etc.) that cause fullbright on faces with
+    // surface_index > 32767. The D3D8 rendering path also has architectural batch count limitations
+    // for rooms with many unique surface groups. The D3D11 game renderer handles all of this
+    // correctly. Editor viewport fullbright on high-surface-count levels is a known limitation.
 
     // -smoothlights: experimental lightmap seam fix at portal boundaries
     // Note: GetCommandLineA() is used instead of argv/argc because this runs during DLL

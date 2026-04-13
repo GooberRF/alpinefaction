@@ -282,7 +282,7 @@ namespace rf
         };
         int bitmap_id;
         short portal_id; // portal index + 2 or 0
-        short surface_index;
+        unsigned short surface_index; // 0xFFFF = no surface/lightmap (sentinel)
         int face_id;
         int smoothing_groups; // bitfield of smoothing groups
 
