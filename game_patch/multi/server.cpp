@@ -2347,6 +2347,20 @@ void server_reliable_socket_ready(rf::Player* player)
 {
     // Send bot config once the reliable connection is ready.
     if (player->is_bot) {
+        // Refuse to give a profile if there are already enough bots for the ideal player count
+        const int ideal = g_alpine_server_config_active_rules.ideal_player_count;
+        int bot_count = 0;
+        for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (p.is_bot && &p != player) {
+                ++bot_count;
+            }
+        }
+        if (bot_count >= ideal) {
+            rf::console::print("Bot initialization was rejected because bot count already meets ideal player count of {}\n", ideal);
+            af_send_bot_control_simple(player, af_bot_control_type::disconnect_bot);
+            return;
+        }
+
         const auto& configs = g_alpine_server_config.bot_configs;
         if (!configs.empty()) {
             const int slot = g_bot_profile_slots.assign_slot(player, static_cast<int>(configs.size()));

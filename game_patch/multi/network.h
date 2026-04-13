@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include <common/version/version.h>
 #include "server_internal.h"
 #include "../rf/multi.h"
@@ -127,24 +128,25 @@ struct af_sign_packet_ext
     }
 };
 
-// Appended to game_info packets (v2, sent to gi_req_ext_ver >= 3 clients)
-// On-wire layout: [af_game_info_ext_v2][level_filename\0][AFFooter]
-// ext_size covers the fixed struct only; the variable-length filename follows after it.
-// Future versions can add fields to the struct (incrementing ext_version and ext_size),
-// and older parsers skip to offset ext_size to find the filename.
-#pragma pack(push, 1)
+// In-memory representation of the AF game_info v2 extension.
+// On-wire layout: [sig][ver*4][flags][filename\0][bot_counts*4]
+// The wire format is built by serialize_to_wire(); it does not match the in-memory layout.
 struct af_game_info_ext_v2
 {
+    // on-wire size of fields before the filename (sig + ver*4 + flags)
+    static constexpr size_t wire_pre_fname_size = 12;
+    // on-wire size of fields after the filename (bot_counts*4)
+    static constexpr size_t wire_post_fname_size = 4;
+
     uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
-    uint16_t ext_size = sizeof(af_game_info_ext_v2); // size of this fixed struct
-    uint8_t ext_version = 3; // matches gi_req_ext_ver that triggers this response
     uint8_t version_major = VERSION_MAJOR;
     uint8_t version_minor = VERSION_MINOR;
     uint8_t version_patch = VERSION_PATCH;
     uint8_t version_type = VERSION_TYPE;
     uint32_t af_flags = 0;
+    std::string level_filename;
     uint8_t num_bots = 0;
-    uint8_t num_human_players = 0; // excludes bots and browsers
+    uint8_t num_human_players = 0;
     uint8_t num_browsers = 0;
     uint8_t num_total_clients = 0; // bots + humans + browsers
 
@@ -152,9 +154,10 @@ struct af_game_info_ext_v2
     {
         af_flags = flags.game_info_flags_to_uint32();
     }
+
+    // Build the wire representation: [sig][ver*4][flags][filename\0][bot_counts*4]
+    std::vector<uint8_t> serialize_to_wire() const;
 };
-#pragma pack(pop)
-static_assert(sizeof(af_game_info_ext_v2) == 19, "unexpected af_game_info_ext_v2 size");
 
 #pragma pack(push, 1)
 struct AlpineFactionJoinAcceptPacketExt

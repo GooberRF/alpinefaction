@@ -28,6 +28,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/item.h"
 #include "../rf/clutter.h"
+#include "../rf/ui.h"
 #include "gr.h"
 #include "gr_internal.h"
 #include "../misc/alpine_options.h"
@@ -219,9 +220,10 @@ ConsoleCommand2 fov_cmd{
 
 ConsoleCommand2 gamma_cmd{
     "r_gamma",
-    [](std::optional<float> value_opt) {
-        if (value_opt) {
-            rf::gr::set_gamma(value_opt.value());
+    [] (const std::optional<float> gamma) {
+        if (gamma) {
+            rf::gr::set_gamma(*gamma);
+            rf::ui::video_gamma_slider.set_value(*gamma);
         }
         rf::console::print("Gamma: {:.2f}", rf::gr::gamma);
     },
