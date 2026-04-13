@@ -479,32 +479,6 @@ CodeInjection lightmap_per_texel_ambient_nolights_injection{
 };
 
 
-// Guard against invalid dropped-axis value in the baked lightmap rendering path.
-// FUN_004ac470 at 0x004acbc8 does: CALL dword ptr [EAX*4 + 0x57ce68]
-// where EAX = surface->dropped (0=X, 1=Y, 2=Z). The function pointer table only
-// has valid entries for indices 0-2. A corrupt dropped value would read a null or
-// garbage pointer and CALL to address 0, crashing with an all-zero context dump.
-// This injection runs right after MOV EAX,[ESI+0x5c] loads the dropped value.
-CodeInjection lightmap_dropped_axis_guard{
-    0x004acbbb, // LEA ECX,[ESP+0x44] — first instruction after MOV EAX,[ESI+0x5c]
-    [](auto& regs) {
-        auto dropped = static_cast<unsigned>(regs.eax);
-        if (dropped > 2) {
-            xlog::error("Lightmap crash prevented: invalid dropped axis {} for surface at 0x{:x} "
-                        "(flags=0x{:x}, width={}, height={}, room_index={}, surface_index={}, lm=0x{:x})",
-                        static_cast<int>(regs.eax),
-                        static_cast<uintptr_t>(regs.esi),
-                        static_cast<unsigned>(*reinterpret_cast<uint8_t*>(regs.esi + 0x8)),
-                        *reinterpret_cast<int*>(regs.esi + 0x18),
-                        *reinterpret_cast<int*>(regs.esi + 0x1c),
-                        *reinterpret_cast<int*>(regs.esi + 0x68),
-                        *reinterpret_cast<short*>(regs.esi + 0x00), // surface group id at start
-                        *reinterpret_cast<uintptr_t*>(regs.esi + 0xC));
-            regs.eax = 0; // clamp to valid index to prevent crash
-        }
-    },
-};
-
 void ApplyLightmapPatches()
 {
     // Fix pink lightmaps when a face is affected by >= 64 lights
@@ -518,9 +492,6 @@ void ApplyLightmapPatches()
     // Prevents corruption on handle=-1, which occurs when trying to add/edit lights after max_scene_lights
     // Original: ptr = pool_base + handle * 0x10C (no validation)
     light_handle_to_pointer_injection.install();
-
-    // Guard against invalid dropped-axis index in baked lightmap rendering
-    lightmap_dropped_axis_guard.install();
 
     // Replace the >= 64 limit check with new limit
     lightmap_light_limit_injection.install();
@@ -566,49 +537,6 @@ void ApplyLightmapPatches()
     write_mem<uint32_t>(0x00487A41, max_scene_lights);
     // Update zeroing loop count
     write_mem<uint32_t>(0x00487077, max_scene_lights * light_entry_size / 4);
-
-    // Fix lightmap surface group ID overflow crash (face+0x36 is a signed short)
-    // When >32767 lightmap surface groups exist (typically >~45000 faces), the signed
-    // short wraps negative. MOVSX sign-extends it to a negative 32-bit index, causing
-    // out-of-bounds array access and heap corruption.
-    // Fix: patch all MOVSX reads of face+0x36 to MOVZX (0x0FBF -> 0x0FB7), raising the
-    // limit from 32767 to 65535 groups. Also fix sentinel checks and group comparisons.
-
-    // MOVSX -> MOVZX for face+0x36 reads from memory (14 sites)
-    // Each MOVSX word ptr [reg+0x36] is encoded 0F BF; change second byte to B7 for MOVZX
-    write_mem<u8>(0x004aa900, 0xB7); // FUN_004aa610: lightmap surface grouping
-    write_mem<u8>(0x004aa929, 0xB7);
-    write_mem<u8>(0x004aa946, 0xB7);
-    write_mem<u8>(0x004aa99d, 0xB7);
-    write_mem<u8>(0x004aab06, 0xB7);
-    write_mem<u8>(0x004aad59, 0xB7); // FUN_004aabf0: batch lightmap calculator
-    write_mem<u8>(0x004aad8a, 0xB7);
-    write_mem<u8>(0x004ad241, 0xB7); // FUN_004ad160: shadow geometry
-    write_mem<u8>(0x004ad27a, 0xB7);
-    write_mem<u8>(0x004ae26c, 0xB7); // FUN_004ae050: shadow calculation
-    write_mem<u8>(0x004ae73a, 0xB7); // FUN_004ae360: shadow calculation
-    write_mem<u8>(0x004ae81f, 0xB7);
-    write_mem<u8>(0x004aed4e, 0xB7);
-    write_mem<u8>(0x004a45b1, 0xB7); // solid_write: level file export
-
-    // MOVSX -> MOVZX for face+0x36 reads from register (5 sites)
-    // These follow 16-bit MOV AX,[face+0x36] and sign-extend AX to 32-bit before use as index
-    write_mem<u8>(0x0048778b, 0xB7); // FUN_004872e0: lightmap surface container lookup
-    write_mem<u8>(0x00487862, 0xB7);
-    write_mem<u8>(0x0049b955, 0xB7); // FUN_0049b550: geo-cache build
-    write_mem<u8>(0x0049bea0, 0xB7);
-    write_mem<u8>(0x0049bed3, 0xB7);
-
-    // Fix sentinel checks: JLE -> JE (0x7E -> 0x74)
-    // Original: CMP AX,0xFFFF; JLE skip — skips all negative values (wrong for groups > 32767)
-    // Fixed: CMP AX,0xFFFF; JE skip — skips only the 0xFFFF "no group" sentinel
-    write_mem<u8>(0x00487781, 0x74); // FUN_004872e0
-    write_mem<u8>(0x00487858, 0x74);
-    write_mem<u8>(0x0049b94b, 0x74); // FUN_0049b550
-
-    // Note: CMP AX,BX; JLE at 0x0049be96 and 0x0049bec9 left as signed — BX can be
-    // 0xFFFF ("no batch" sentinel), and unsigned JBE would cause all faces to be skipped.
-    // Signed comparison is correct for group IDs 0-32767 and safe for the sentinel case.
 
     // -smoothlights: experimental lightmap seam fix at portal boundaries
     // Note: GetCommandLineA() is used instead of argv/argc because this runs during DLL
