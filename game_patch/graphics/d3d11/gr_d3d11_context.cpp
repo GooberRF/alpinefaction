@@ -365,7 +365,7 @@ namespace df::gr::d3d11
             current_color_.blue / 255.0f,
             current_color_.alpha / 255.0f,
         };
-        data.alpha_test = current_alpha_test_ ? 0.1f : 0.0f;
+        data.alpha_test = current_alpha_test_ ? (1.0f / 255.0f) : 0.0f;
         if (!current_fog_allowed_ || !gr::screen.fog_mode) {
             data.fog_far = std::numeric_limits<float>::infinity();
             data.fog_color = {0.0f, 0.0f, 0.0f};
