@@ -291,7 +291,7 @@ CodeInjection alpine_delete_mode_patch{
     },
 };
 
-// Hook FUN_0041be70 to handle Alpine objects during cut finalization and delete.
+// Clean up Alpine object data and remove from Alpine obj vectors so they don't get orphaned
 CodeInjection alpine_paste_finalize_patch{
     0x0041be70,
     [](auto& regs) {
@@ -299,22 +299,68 @@ CodeInjection alpine_paste_finalize_patch{
         auto* obj = reinterpret_cast<DedObject*>(
             *reinterpret_cast<uintptr_t*>(esp_val + 4));
         if (obj && obj->type == DedObjectType::DED_MESH) {
-            if (g_alpine_delete_mode || g_alpine_cut_mode) {
-                mesh_handle_delete_or_cut(obj);
-            }
+            mesh_handle_delete_or_cut(obj);
         }
         else if (obj && obj->type == DedObjectType::DED_NOTE) {
-            if (g_alpine_delete_mode || g_alpine_cut_mode) {
-                note_handle_delete_or_cut(obj);
-            }
+            note_handle_delete_or_cut(obj);
         }
         else if (obj && obj->type == DedObjectType::DED_CORONA) {
-            if (g_alpine_delete_mode || g_alpine_cut_mode) {
-                corona_handle_delete_or_cut(obj);
+            corona_handle_delete_or_cut(obj);
+        }
+    },
+};
+
+// Restore Alpine vector entries on an undo/redo that restores an Alpine object type
+// Stock code re-adds objects to type-specific VArray and master_objects
+CodeInjection alpine_undo_readd_patch{
+    0x004157c1,
+    [](auto& regs) {
+        auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.ebx));
+        if (!obj) return;
+        auto* level = CDedLevel::Get();
+        if (!level) return;
+        auto& props = level->GetAlpineLevelProperties();
+        if (obj->type == DedObjectType::DED_MESH) {
+            auto* mesh = static_cast<DedMesh*>(obj);
+            if (std::find(props.mesh_objects.begin(), props.mesh_objects.end(), mesh)
+                == props.mesh_objects.end()) {
+                props.mesh_objects.push_back(mesh);
+                mesh_load_vmesh(mesh);
+            }
+        }
+        else if (obj->type == DedObjectType::DED_NOTE) {
+            auto* note = static_cast<DedNote*>(obj);
+            if (std::find(props.note_objects.begin(), props.note_objects.end(), note)
+                == props.note_objects.end()) {
+                props.note_objects.push_back(note);
+            }
+        }
+        else if (obj->type == DedObjectType::DED_CORONA) {
+            auto* corona = static_cast<DedCorona*>(obj);
+            if (std::find(props.corona_objects.begin(), props.corona_objects.end(), corona)
+                == props.corona_objects.end()) {
+                props.corona_objects.push_back(corona);
             }
         }
     },
 };
+
+// Check if an object is the sole non-keyframe member of a moving group
+static bool is_sole_moving_group_member(CDedLevel* level, DedObject* obj)
+{
+    auto& mg = level->moving_groups;
+    for (int i = 0; i < mg.size; i++) {
+        auto* group = mg.data_ptr[i];
+        if (!group || !group->is_moving_group())
+            continue;
+        for (int j = 0; j < group->objects.size; j++) {
+            if (group->objects.data_ptr[j] == obj) {
+                return group->objects.size == 1 && group->brushes.size == 0;
+            }
+        }
+    }
+    return false;
+}
 
 // Hook the delete command handler (command ID 0x8018) at 0x00448690.
 // Before stock code runs, remove Alpine objects from the selection and delete them.
@@ -1164,9 +1210,27 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 }
             }
 
-            // Delete original clutter via the stock editor delete function
+            // Delete original clutter, but skip sole moving group members
+            std::vector<int> skipped_uids;
             for (auto* clutter : clutter_objs) {
+                if (is_sole_moving_group_member(level, clutter)) {
+                    skipped_uids.push_back(clutter->uid);
+                    continue;
+                }
                 level->delete_object(clutter);
+            }
+
+            // Build popup message
+            std::string skipped_msg;
+            if (!skipped_uids.empty()) {
+                std::string uid_list;
+                for (int uid : skipped_uids) {
+                    if (!uid_list.empty()) uid_list += ", ";
+                    uid_list += std::to_string(uid);
+                }
+                skipped_msg = "The following clutter UIDs were not deleted during "
+                    "this operation because it would have resulted in empty moving "
+                    "groups: " + uid_list;
             }
 
             // Select the new mesh objects
@@ -1175,11 +1239,16 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 level->add_to_selection(static_cast<DedObject*>(mesh));
             level->update_console_display();
 
-            // Save filter state and close
+            // Save filter state and close dialog first
             for (int i = 0; i < g_num_type_filters; i++)
                 g_filter_states[i] = SendMessage(data->filter_cbs[i], BM_GETCHECK, 0, 0) == BST_CHECKED;
             data->result_objects.clear(); // prevent IDOK from overwriting selection
             EndDialog(hwnd, IDCANCEL);    // use IDCANCEL so caller doesn't re-apply selection
+
+            // Show popup after dialog is closed
+            if (!skipped_msg.empty())
+                MessageBoxA(GetMainFrameHandle(), skipped_msg.c_str(), "To Mesh Object", MB_OK | MB_ICONINFORMATION);
+
             return TRUE;
         }
         case IDC_TYPE_FILTER_CHECK_ALL:
@@ -1650,6 +1719,7 @@ void ApplyAlpineObjectPatches()
     AsmWriter(0x00448659).jmp(alpine_paste_wrapper);
     alpine_delete_mode_patch.install();
     alpine_paste_finalize_patch.install();
+    alpine_undo_readd_patch.install();
     alpine_delete_patch.install();
     alpine_object_tree_patch.install();
     alpine_factory_hook.install();
