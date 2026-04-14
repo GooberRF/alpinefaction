@@ -1,3 +1,4 @@
+#include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -35,6 +36,14 @@ constexpr int EGG_ANIM_LEAVE_TIME = 2000;
 constexpr int EGG_ANIM_IDLE_TIME = 3000;
 
 constexpr double PI = 3.14159265358979323846;
+
+enum class ServerBrowserFilter {
+    All = 0,
+    Alpine = 1,
+    Unmodded = 2,
+    Modded = 3,
+    MatchMode = 4,
+};
 
 static int g_version_click_counter = 0;
 static uint64_t g_egg_anim_start;
@@ -472,6 +481,57 @@ CallHook<int(char*, const char*, int, int)> server_browser_player_count_hook{
     },
 };
 
+FunHook<bool(int)> server_browser_filter_hook{
+    0x0044A9F0,
+    [](int server_index) -> bool {
+        auto filter = static_cast<ServerBrowserFilter>(rf::ui::server_browser_filter_type);
+        const auto& entry = rf::ui::server_browser_server_list[server_index];
+        switch (filter) {
+            case ServerBrowserFilter::All:
+                return true;
+            case ServerBrowserFilter::Alpine:
+                return get_server_browser_extra(entry.addr) != nullptr;
+            case ServerBrowserFilter::Unmodded: {
+                if (entry.mod_name[0] != '\0') return false;
+                const auto* extra = get_server_browser_extra(entry.addr);
+                if (extra && (extra->af_flags & (1u << 0))) return false;
+                return true;
+            }
+            case ServerBrowserFilter::Modded: {
+                if (entry.mod_name[0] != '\0') return true;
+                const auto* extra = get_server_browser_extra(entry.addr);
+                return extra != nullptr && (extra->af_flags & (1u << 0));
+            }
+            case ServerBrowserFilter::MatchMode: {
+                const auto* extra = get_server_browser_extra(entry.addr);
+                return extra != nullptr && (extra->af_flags & (1u << 5));
+            }
+        }
+        return true;
+    },
+};
+
+CodeInjection server_browser_cycler_init_injection{
+    0x0044C776,
+    [](auto& regs) {
+        for (int i = 0; i < rf::ui::server_browser_filter_cycler.num_items; ++i) {
+            free(rf::ui::server_browser_filter_cycler.items_text[i]);
+        }
+        rf::ui::server_browser_filter_cycler.num_items = 0;
+
+        static const char* filter_labels[] = {"All", "Alpine", "Unmodded", "Modded", "Match Mode"};
+        for (const char* label : filter_labels) {
+            int idx = rf::ui::server_browser_filter_cycler.num_items;
+            rf::ui::server_browser_filter_cycler.items_text[idx] = strdup(label);
+            rf::ui::server_browser_filter_cycler.items_font[idx] = rf::ui::medium_font_1;
+            ++rf::ui::server_browser_filter_cycler.num_items;
+        }
+
+        rf::ui::server_browser_filter_cycler.current_item = 0;
+        regs.eip = 0x0044c77b;
+    },
+};
+
 CodeInjection options_do_frame_patch{
     0x0044F211,
     [](auto& regs) {
@@ -633,4 +693,9 @@ void apply_main_menu_patches()
     // Redirect the hardcoded PUSH 0x0063f6e4 at 0x0044dc76 to our own buffer
     // so we don't corrupt the stock buffer (which overlaps the default mod name at +4)
     write_mem<void*>(0x0044dc76, s_server_browser_status_buf);
+
+    // Replace server browser game type filter with mod/mode filter
+    server_browser_filter_hook.install();
+    server_browser_cycler_init_injection.install();
+    AsmWriter{0x0044C1D7}.nop(2); // always show game type prefix for TC modded servers in game type column
 }

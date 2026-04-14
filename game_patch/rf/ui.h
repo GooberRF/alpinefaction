@@ -320,6 +320,8 @@ namespace rf::ui
     static auto& server_browser_sorted_indices = addr_as_ref<int*>(0x0063F634);
     static auto& server_browser_server_list = addr_as_ref<ServerListEntry*>(0x0063F62C);
     static auto& server_browser_sort_column = addr_as_ref<int>(0x00599D20);
+    static auto& server_browser_filter_type = addr_as_ref<int>(0x0063F22C);
+    static auto& server_browser_filter_cycler = addr_as_ref<Cycler>(0x0063F0C0);
 
     // load game
     static auto& load_game_up_on_click = addr_as_ref<void(int x, int y)>(0x0043F8C0);
