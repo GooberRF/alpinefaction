@@ -66,30 +66,9 @@ void gyro_reset()
 
 void gyro_reset_full()
 {
-    // Invalidate the mode cache so gyro_update_calibration_mode() unconditionally re-applies it.
+    // Invalidate the mode cache so Gyro Autocalibration modes unconditionally re-applies it.
     g_last_calibration_mode = static_cast<GamepadMotionHelpers::CalibrationMode>(-1);
     gyro_reset();
-}
-
-void gyro_reset_motion_preserve_confidence()
-{
-    float confidence = g_motion.GetAutoCalibrationConfidence();
-
-    // Use targeted resets to avoid wiping custom Settings.
-    g_motion.ResetContinuousCalibration();
-    g_motion.ResetMotion();
-    g_smooth_pitch_prev = 0.0f;
-    g_smooth_yaw_prev   = 0.0f;
-
-    g_motion.SetAutoCalibrationConfidence(confidence);
-
-    gyro_update_calibration_mode();
-}
-
-void gyro_set_autocalibration(bool enable)
-{
-    g_alpine_game_config.gamepad_gyro_autocalibration_mode = enable ? 2 : 0;
-    gyro_update_calibration_mode();
 }
 
 void gyro_set_autocalibration_mode(int mode)
@@ -113,11 +92,6 @@ void gyro_process_motion(float gyro_x, float gyro_y, float gyro_z,
                          float accel_x, float accel_y, float accel_z, float delta_time)
 {
     g_motion.ProcessMotion(gyro_x, gyro_y, gyro_z, accel_x, accel_y, accel_z, delta_time);
-}
-
-void gyro_get_calibrated(float& x, float& y, float& z)
-{
-    g_motion.GetCalibratedGyro(x, y, z);
 }
 
 static const char* gyro_space_names[] = { "Yaw", "Roll", "Local", "Player", "World" };

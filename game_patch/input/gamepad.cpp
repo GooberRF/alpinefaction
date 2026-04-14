@@ -62,6 +62,7 @@ static bool g_action_curr[k_action_count] = {};
 static int g_rebind_pending_sc = -1; // scan code captured during rebind, -1 = none pending
 static bool g_last_input_was_gamepad = false;
 static float g_message_log_close_cooldown = 0.0f;
+static int g_pending_scroll_delta = 0;
 
 struct MenuNavState {
     int   deferred_btn_down  = -1;   // SDL button queued from poll for button-down
@@ -87,6 +88,11 @@ static int   g_flickstick_turn_smooth_idx   = 0;
 
 static rf::VMesh* g_local_player_body_vmesh = nullptr;
 static bool g_scaling_fpgun_vmesh = false;
+
+static Uint64 g_sensor_last_gyro_ts  = 0;
+static Uint64 g_sensor_last_accel_ts = 0;
+static float  g_sensor_accel[3]      = {};
+static float  g_sensor_gyro[3]       = {};
 
 static bool is_gamepad_input_active()
 {
@@ -167,15 +173,19 @@ static void reset_gamepad_input_state()
     g_lt_was_down = false;
     g_rt_was_down = false;
     g_last_input_was_gamepad = false;
+    g_sensor_last_gyro_ts  = 0;
+    g_sensor_last_accel_ts = 0;
+    memset(g_sensor_accel, 0, sizeof(g_sensor_accel));
+    memset(g_sensor_gyro,  0, sizeof(g_sensor_gyro));
+    g_pending_scroll_delta = 0;
 }
-
 
 // Normalize an axis value, strip the deadzone band, and rescale the remainder to [-1, 1].
 // Per-axis (cross-shaped) deadzone: each axis is independently deadzoned and rescaled.
 static float get_axis(SDL_GamepadAxis axis, float deadzone)
 {
     if (!g_gamepad) return 0.0f;
-    float v = SDL_GetGamepadAxis(g_gamepad, axis) / (float)SDL_MAX_SINT16;
+    float v = SDL_GetGamepadAxis(g_gamepad, axis) / static_cast<float>(SDL_MAX_SINT16);
     if (v >  deadzone) return (v - deadzone) / (1.0f - deadzone);
     if (v < -deadzone) return (v + deadzone) / (1.0f - deadzone);
     return 0.0f;
@@ -418,8 +428,8 @@ static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_a
 
 static void update_trigger_actions()
 {
-    float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / (float)SDL_MAX_SINT16;
-    float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / (float)SDL_MAX_SINT16;
+    float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_MAX_SINT16);
+    float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
     bool lt_down = lt > 0.5f;
     bool rt_down = rt > 0.5f;
 
@@ -677,7 +687,6 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
         menu_nav_inject_key(rf::KEY_ESC);
     }
 
-    bool in_menu_state = is_gamepad_menu_state();
     bool in_menu_nav_state = is_gamepad_menu_navigation_state();
     bool in_spectate_state = multi_spectate_is_spectating();
     if (in_menu_nav_state)
@@ -759,31 +768,57 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
         g_last_input_was_gamepad = true;
 }
 
+static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
+{
+    if (!g_motion_sensors_supported) return;
+    if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+
+    constexpr float rad2deg = 180.0f / 3.14159265f;
+
+    switch (ev.sensor) {
+    case SDL_SENSOR_GYRO:
+        g_sensor_gyro[0] = ev.data[0] * rad2deg;
+        g_sensor_gyro[1] = ev.data[1] * rad2deg;
+        g_sensor_gyro[2] = ev.data[2] * rad2deg;
+        break;
+    case SDL_SENSOR_ACCEL:
+        g_sensor_accel[0] = ev.data[0] / SDL_STANDARD_GRAVITY;
+        g_sensor_accel[1] = ev.data[1] / SDL_STANDARD_GRAVITY;
+        g_sensor_accel[2] = ev.data[2] / SDL_STANDARD_GRAVITY;
+        g_sensor_last_accel_ts = ev.sensor_timestamp;
+        break;
+    default:
+        break;
+    }
+
+    if (ev.sensor == SDL_SENSOR_GYRO && g_sensor_last_gyro_ts && g_sensor_last_accel_ts) {
+        float dt = static_cast<float>(ev.sensor_timestamp - g_sensor_last_gyro_ts) * 1e-9f;
+        if (dt > 0.0f && dt < 0.1f) {
+            gyro_process_motion(
+                g_sensor_gyro[0], g_sensor_gyro[1], g_sensor_gyro[2],
+                g_sensor_accel[0], g_sensor_accel[1], g_sensor_accel[2],
+                dt);
+        }
+    }
+
+    if (ev.sensor == SDL_SENSOR_GYRO)
+        g_sensor_last_gyro_ts = ev.sensor_timestamp;
+}
+
 void gamepad_sdl_poll()
 {
     memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
-    // SDL_PumpEvents() (called via sdl_input_poll()) already triggers SDL_UpdateGamepads().
-    // Flush everything outside or beyond the range we handle to avoid queue buildup during
-    // frame stalls (level loads, autosaves).
-    SDL_FlushEvents(SDL_EVENT_FIRST,
-        static_cast<SDL_EventType>(static_cast<Uint32>(SDL_EVENT_GAMEPAD_AXIS_MOTION) - 1u));
-    SDL_FlushEvents(SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN, SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED);
-    SDL_FlushEvents(
-        static_cast<SDL_EventType>(static_cast<Uint32>(SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED) + 1u),
-        SDL_EVENT_LAST);
-    SDL_Event events[16];
+
+    SDL_Event events[64];
     int n;
     while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
                                SDL_GETEVENT, SDL_EVENT_GAMEPAD_AXIS_MOTION,
-                               SDL_EVENT_GAMEPAD_REMAPPED)) > 0) {
+                               SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED)) > 0) {
         for (int i = 0; i < n; ++i) {
             const SDL_Event& ev = events[i];
             switch (ev.type) {
-            case SDL_EVENT_GAMEPAD_ADDED:
-                handle_gamepad_added(ev.gdevice);
-                break;
-            case SDL_EVENT_GAMEPAD_REMOVED:
-                handle_gamepad_removed(ev.gdevice);
+            case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+                handle_gamepad_axis_motion(ev.gaxis);
                 break;
             case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
                 handle_gamepad_button_down(ev.gbutton);
@@ -791,14 +826,29 @@ void gamepad_sdl_poll()
             case SDL_EVENT_GAMEPAD_BUTTON_UP:
                 handle_gamepad_button_up(ev.gbutton);
                 break;
-            case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-                handle_gamepad_axis_motion(ev.gaxis);
+            case SDL_EVENT_GAMEPAD_ADDED:
+                handle_gamepad_added(ev.gdevice);
+                break;
+            case SDL_EVENT_GAMEPAD_REMOVED:
+                handle_gamepad_removed(ev.gdevice);
+                break;
+            case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+                handle_gamepad_sensor_update(ev.gsensor);
                 break;
             default:
                 break;
             }
         }
     }
+    if (n < 0)
+        xlog::warn("SDL Events error: {}", SDL_GetError());
+
+    // Discard non-gamepad SDL events that accumulated in the queue.
+    SDL_FlushEvents(SDL_EVENT_FIRST,
+        static_cast<SDL_EventType>(SDL_EVENT_GAMEPAD_AXIS_MOTION - 1));
+    SDL_FlushEvents(
+        static_cast<SDL_EventType>(SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED + 1),
+        SDL_EVENT_LAST);
 }
 
 static void menu_nav_handle_cursor_frame()
@@ -826,8 +876,6 @@ static void menu_nav_tick_dpad_repeat()
         g_menu_nav.repeat_timer = 0.12f;
     }
 }
-
-static int g_pending_scroll_delta = 0;
 
 static void menu_nav_tick_scroll()
 {
@@ -910,21 +958,6 @@ void gamepad_do_frame()
         gamepad_do_menu_frame();
 
     g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
-
-    if (g_motion_sensors_supported) {
-        // Poll directly each frame
-        constexpr float rad2deg = 180.0f / 3.14159265f;
-        float gyro_data[3] = {};
-        float accel_data[3] = {};
-        SDL_GetGamepadSensorData(g_gamepad, SDL_SENSOR_GYRO, gyro_data, 3);
-        SDL_GetGamepadSensorData(g_gamepad, SDL_SENSOR_ACCEL, accel_data, 3);
-        gyro_process_motion(
-            gyro_data[0] * rad2deg, gyro_data[1] * rad2deg, gyro_data[2] * rad2deg,
-            accel_data[0] / SDL_STANDARD_GRAVITY,
-            accel_data[1] / SDL_STANDARD_GRAVITY,
-            accel_data[2] / SDL_STANDARD_GRAVITY,
-            rf::frametime);
-    }
 
     if (g_gamepad)
         rumble_do_frame();
@@ -1135,7 +1168,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         }
     }
 
-    // Use joystick camera while scoped/scanning for consistent aim; flickstick otherwise.
+    // Use flickstick when not scoped/scanning; joystick while scoped/scanning for consistent aim.
     if (g_alpine_game_config.gamepad_joy_camera && !is_freelook && !is_scoped_or_scanning) {
         gamepad_apply_flickstick(cam_x, cam_y, yaw_delta, pitch_delta);
         yaw_delta   *= gamepad_zoom_sens;
@@ -1253,8 +1286,8 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
                 && gyro_modifier_is_active()) {
                 float gyro_pitch, gyro_yaw;
                 gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
-                gyro_apply_tightening(gyro_pitch, gyro_yaw);
                 gyro_apply_smoothing(gyro_pitch, gyro_yaw);
+                gyro_apply_tightening(gyro_pitch, gyro_yaw);
                 gyro_apply_vh_mixer(gyro_pitch, gyro_yaw);
 
                 constexpr float gyro_to_rot = 1.0f / 90.0f;
