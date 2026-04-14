@@ -75,7 +75,9 @@ enum class AlpineDedEventID : int
     When_Round_Ends,
     Mesh_Animate,
     Mesh_Set_Texture,
-    Mesh_Set_Collision
+    Mesh_Set_Collision,
+    AF_Fullscreen_Image,
+    AF_Fullscreen_Color
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept

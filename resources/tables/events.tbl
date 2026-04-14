@@ -397,6 +397,12 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Mesh_Set_Collision"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "AF_Fullscreen_Image"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "AF_Fullscreen_Color"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------

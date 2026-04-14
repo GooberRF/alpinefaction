@@ -187,6 +187,7 @@ CodeInjection after_frame_render_hook{
             // Draw on top (after scene)
             frametime_render_ui();
             achievement_system_do_frame();
+            fullscreen_overlay_do_frame();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
             experimental_render();
 #endif
@@ -286,6 +287,7 @@ FunHook<void(bool)> level_init_post_hook{
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
         populate_world_hud_sprite_events();
+        populate_fullscreen_overlay_events();
         reset_achievement_state_info();
         multi_level_init_post_gametypes();
         apply_geoable_flags();
