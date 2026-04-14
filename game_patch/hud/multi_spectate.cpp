@@ -223,6 +223,10 @@ static void spectate_next_player(const bool dir, const bool try_alive_players_fi
     if (try_alive_players_first) {
         spectate_next_player(dir, false);
     }
+    else if (!g_spectate_mode_enabled) {
+        // No other players to spectate - fall back to freelook
+        multi_spectate_enter_freelook();
+    }
 }
 
 void multi_spectate_enter_freelook()
