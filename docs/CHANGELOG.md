@@ -96,6 +96,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `clear_stale_movement_input` dedicated server config option
 - Display bot counts in `Players` column in server list
 - Make sorting on `Players` column in server list incorporate bot count
+- Add `AF_Fullscreen_Image`, `AF_Fullscreen_Color`, `Unhide_Glare` events
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
