@@ -1109,7 +1109,7 @@ void multi_spectate_render() {
         rf::gr::get_string_size(spectating_label, small_font);
     auto [target_name_w, target_name_h] =
         rf::gr::get_string_size(target_name, large_font);
-    const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", large_font);
+    const auto [bot_w, bot_h] = rf::gr::get_string_size(" BOT", small_font);
     const bool is_bot = g_spectate_mode_target->is_bot;
     if (is_bot) {
         target_name_w += bot_w;
@@ -1162,7 +1162,8 @@ void multi_spectate_render() {
     if (is_bot) {
         const rf::gr::Color saved_color = rf::gr::screen.current_color;
         rf::gr::set_color(255, 250, 205, 255);
-        rf::gr::string(rf::gr::current_string_x, name_y, " bot", large_font);
+        int bot_y = name_y + (rf::gr::get_font_height(large_font) - rf::gr::get_font_height(small_font)) / 2;
+        rf::gr::string(rf::gr::current_string_x, bot_y, " BOT", small_font);
         rf::gr::set_color(saved_color);
     }
 
