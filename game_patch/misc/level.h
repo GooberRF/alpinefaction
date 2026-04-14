@@ -232,8 +232,7 @@ void alpine_mesh_clear_state();
 // Mesh event helpers
 namespace rf { struct Object; }
 const std::string* alpine_mesh_get_corpse_filename(int handle);
-bool alpine_mesh_is_corpse(int handle);
-void alpine_mesh_apply_corpse(rf::Object* obj, const std::string& corpse_filename);
+bool alpine_mesh_spawn_corpse(rf::Object* obj);
 void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);

@@ -405,22 +405,10 @@ CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
         rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
 
         // Check for alpine mesh corpse: if this is an alpine mesh (info_index == -1)
-        // with a corpse filename, swap to corpse model instead of removing the object.
-        // Also skip killing if corpse was already applied (the death processing function
-        // calls obj_flag_dead multiple times — we must block all subsequent calls).
+        // with a corpse filename, spawn a separate corpse object and let the original die.
         if (cp->info_index == -1) {
-            if (alpine_mesh_is_corpse(objp->handle)) {
-                return;
-            }
-            const std::string* corpse = alpine_mesh_get_corpse_filename(objp->handle);
-            if (corpse && !corpse->empty()) {
-                std::string corpse_copy = *corpse;
-                alpine_mesh_apply_corpse(objp, corpse_copy);
-                if (alpine_mesh_is_corpse(objp->handle)) {
-                    return; // Corpse applied successfully, don't kill
-                }
-                // Corpse mesh failed to load — fall through to normal death
-            }
+            alpine_mesh_spawn_corpse(objp);
+            // Fall through to kill the original regardless of whether corpse spawned
         }
 
         obj_flag_dead_clutter_hook.call_target(objp);
@@ -437,6 +425,48 @@ FunHook<void(rf::Clutter*, float, int, int, rf::PCollisionOut*)> clutter_damage_
         }
 
         clutter_damage_hook.call_target(damaged_cp, damage, responsible_entity_handle, damage_type, collide_out);
+    },
+};
+
+static void client_alpine_mesh_on_death(rf::Object* objp)
+{
+    rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
+    if (cp->info_index == -1) {
+        rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
+        alpine_mesh_spawn_corpse(objp);
+    }
+}
+
+FunHook<void(void*)> process_clutter_kill_packet_hook{
+    0x0047F380,
+    [](void* data) {
+        if (rf::is_multi && !rf::is_server) {
+            // Packet format: [uint32 uid, uint32 damage_type]
+            int uid = *reinterpret_cast<int*>(data);
+
+            // Walk the clutter list to find the matching object by UID
+            rf::Clutter* cp = rf::clutter_list.next;
+            while (cp != &rf::clutter_list) {
+                rf::Object* objp = reinterpret_cast<rf::Object*>(cp);
+                if (objp->uid == uid) {
+                    client_alpine_mesh_on_death(objp);
+                    break;
+                }
+                cp = cp->next;
+            }
+        }
+
+        process_clutter_kill_packet_hook.call_target(data);
+    },
+};
+
+CallHook<void(rf::Object*)> clutter_state_sync_death_hook{
+    0x0047F2C3,
+    [](rf::Object* objp) {
+        if (!rf::is_server) {
+            client_alpine_mesh_on_death(objp);
+        }
+        clutter_state_sync_death_hook.call_target(objp);
     },
 };
 
@@ -474,6 +504,10 @@ void object_do_patch()
     // Support AF_When_Dead events
     entity_on_dead_hook.install();
     obj_flag_dead_clutter_hook.install();
+
+    // Hook client-side clutter_kill and clutter_udate packets for alpine mesh corpse + event support
+    process_clutter_kill_packet_hook.install();
+    clutter_state_sync_death_hook.install();
 
     // Allow Anchor_Marker events to drag lights, particle emitters, and push regions on movers
     mover_process_post_patch.install();
