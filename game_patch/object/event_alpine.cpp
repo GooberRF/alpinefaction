@@ -96,6 +96,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"Mesh_Set_Collision", 147},
                 {"AF_Fullscreen_Image", 148},
                 {"AF_Fullscreen_Color", 149},
+                {"Unhide_Glare", 150},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -171,6 +172,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {147, []() { return new rf::EventMeshSetCollision(); }},
                 {148, []() { return new rf::EventFullscreenImage(); }},
                 {149, []() { return new rf::EventFullscreenColor(); }},
+                {150, []() { return new rf::EventUnhideGlare(); }},
             };
 
             // find type and allocate
@@ -250,6 +252,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {147, [](rf::Event* e) { delete static_cast<rf::EventMeshSetCollision*>(e); }},
                 {148, [](rf::Event* e) { delete static_cast<rf::EventFullscreenImage*>(e); }},
                 {149, [](rf::Event* e) { delete static_cast<rf::EventFullscreenColor*>(e); }},
+                {150, [](rf::Event* e) { delete static_cast<rf::EventUnhideGlare*>(e); }},
             };
 
             // find type and deallocate
@@ -300,7 +303,8 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Mesh_Set_Texture,
         rf::EventType::Mesh_Set_Collision,
         rf::EventType::AF_Fullscreen_Image,
-        rf::EventType::AF_Fullscreen_Color
+        rf::EventType::AF_Fullscreen_Color,
+        rf::EventType::Unhide_Glare
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300

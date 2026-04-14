@@ -28,6 +28,7 @@
 #include "../rf/os/timestamp.h"
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
+#include "../rf/glare.h"
 #include "../graphics/gr.h"
 #include "../misc/level.h"
 #include "../misc/alpine_settings.h"
@@ -2844,6 +2845,32 @@ namespace rf
                 gr::FOG_NOT_ALLOWED,
             };
             gr::rect(0, 0, gr::screen.max_w, gr::screen.max_h, mode);
+        }
+    };
+
+    // id 150
+    struct EventUnhideGlare : Event
+    {
+        static void set_glares_enabled(const VArray<int>& links, bool enabled)
+        {
+            for (Glare* g = glare_list.next; g != &glare_list; g = g->next) {
+                for (const int link : links) {
+                    if (g->parent_handle == link) {
+                        g->enabled = enabled;
+                        break;
+                    }
+                }
+            }
+        }
+
+        void turn_on() override
+        {
+            set_glares_enabled(this->links, true);
+        }
+
+        void turn_off() override
+        {
+            set_glares_enabled(this->links, false);
         }
     };
 

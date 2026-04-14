@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 51; // must be 1 higher than actual count
+constexpr int new_event_count = 52; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -91,6 +91,7 @@ const char* additional_event_names[new_event_count] = {
     "Mesh_Set_Collision",
     "AF_Fullscreen_Image",
     "AF_Fullscreen_Color",
+    "Unhide_Glare",
     "_dummy"
 };
 
