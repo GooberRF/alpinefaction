@@ -1117,6 +1117,12 @@ void populate_fullscreen_overlay_events()
     }
 }
 
+void hud_world_level_unload()
+{
+    world_hud_sprite_events.clear();
+    fullscreen_overlay_events.clear();
+}
+
 void fullscreen_overlay_do_frame()
 {
     if (!rf::gameseq_in_gameplay()) return;

@@ -709,7 +709,7 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         {FIELD_STR1, FIELD_FLOAT1, FIELD_FLOAT2, FIELD_INT1, FIELD_INT2},
         {
             {FIELD_STR1, "Image filename (str1):"},
-            {FIELD_FLOAT1, "Hold seconds (0=infinite) (float1):"},
+            {FIELD_FLOAT1, "Hold seconds (0 = forever) (float1):"},
             {FIELD_FLOAT2, "Transition seconds (float2):"},
             {FIELD_INT1, "Transition type (int1):"},
             {FIELD_INT2, "Alpha at max (int2):"}
@@ -725,7 +725,7 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         {FIELD_STR1, FIELD_FLOAT1, FIELD_FLOAT2, FIELD_INT1, FIELD_INT2},
         {
             {FIELD_STR1, "RGB color (str1):"},
-            {FIELD_FLOAT1, "Hold seconds (0=infinite) (float1):"},
+            {FIELD_FLOAT1, "Hold seconds (0 = forever) (float1):"},
             {FIELD_FLOAT2, "Transition seconds (float2):"},
             {FIELD_INT1, "Transition type (int1):"},
             {FIELD_INT2, "Alpha at max (int2):"}

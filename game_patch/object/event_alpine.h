@@ -2700,12 +2700,14 @@ namespace rf
                 float trans = transition_time;
                 if (trans <= 0.0f) return true;
                 int fadeout_elapsed_ms = fadeout_start_ts.time_since();
+                if (fadeout_elapsed_ms < 0) fadeout_elapsed_ms = 0;
                 return fadeout_elapsed_ms >= static_cast<int>(trans * 1000.0f);
             }
 
             if (duration <= 0.0f) return false; // infinite hold
 
             int elapsed_ms = start_ts.time_since();
+            if (elapsed_ms < 0) elapsed_ms = 0;
             float elapsed = static_cast<float>(elapsed_ms) / 1000.0f;
             float fade_in_time = has_fade_in() ? transition_time : 0.0f;
             float fade_out_time = has_fade_out() ? transition_time : 0.0f;
