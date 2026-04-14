@@ -2819,6 +2819,7 @@ namespace rf
 
         void turn_on() override
         {
+            parsed_color = {0, 0, 0, 255};
             if (!color_string.empty()) {
                 try {
                     parsed_color = gr::Color::from_rgb_string(color_string);
