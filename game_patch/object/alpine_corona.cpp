@@ -18,8 +18,14 @@ static constexpr float cone_angle_factor = 0.5f;
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
 
-// Pending corona data parsed from chunk (geometry not loaded yet during chunk parsing)
-static std::vector<AlpineCoronaInfo> g_pending_coronas;
+// Corona data with associated clutter handle (clutter created during chunk loading,
+// glare deferred to level_init_post when geometry is available for room assignment)
+struct PendingCorona {
+    AlpineCoronaInfo info;
+    int clutter_handle;
+};
+
+static std::vector<PendingCorona> g_pending_coronas;
 
 // Tracking for cleanup
 static std::vector<int> g_corona_clutter_handles;
@@ -102,22 +108,8 @@ void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len)
             if (!read_bytes(&info.volumetric_length, sizeof(float))) return;
         }
 
-        g_pending_coronas.push_back(std::move(info));
-    }
-}
-
-// ─── Object Creation ─────────────────────────────────────────────────────────
-
-// Called from level_init_post after geometry is loaded.
-// Creates OT_CLUTTER (anchor) + OT_GLARE (visual) pairs for each pending corona.
-void alpine_corona_create_all()
-{
-    if (g_pending_coronas.empty()) return;
-
-    rf::GSolid* solid = rf::g_level_solid;
-
-    for (const auto& info : g_pending_coronas) {
-        // --- Create anchor clutter (no mesh) ---
+        // Create anchor clutter immediately so it exists before the stock link
+        // resolver runs. This lets event→corona link UIDs resolve to handles
         rf::ObjectCreateInfo oci{};
         oci.pos = info.pos;
         oci.orient = info.orient;
@@ -162,9 +154,27 @@ void alpine_corona_create_all()
             static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
         );
 
-        // Find room
-        if (solid) {
-            obj->room = solid->find_room(nullptr, &obj->pos, &obj->pos, nullptr);
+        g_corona_clutter_handles.push_back(obj->handle);
+        g_pending_coronas.push_back({std::move(info), obj->handle});
+    }
+}
+
+// ─── Glare Creation ─────────────────────────────────────────────────────────
+
+// Called from level_init_post after geometry is loaded.
+// Creates OT_GLARE children for each corona clutter that was created during chunk loading.
+void alpine_corona_create_all()
+{
+    if (g_pending_coronas.empty()) return;
+
+    for (const auto& pending : g_pending_coronas) {
+        const auto& info = pending.info;
+
+        // Look up the clutter we created during chunk loading
+        rf::Object* obj = rf::obj_from_handle(pending.clutter_handle);
+        if (!obj) {
+            xlog::warn("[AlpineCorona] Clutter handle {:#x} no longer valid for corona uid={}", pending.clutter_handle, info.uid);
+            continue;
         }
 
         // --- Create child glare ---
@@ -175,7 +185,6 @@ void alpine_corona_create_all()
         rf::Object* glare_obj = rf::obj_create(rf::OT_GLARE, -1, obj->handle, &glare_oci, 0x30000, nullptr);
         if (!glare_obj) {
             xlog::warn("[AlpineCorona] Failed to create glare for corona uid={}", info.uid);
-            g_corona_clutter_handles.push_back(obj->handle);
             continue;
         }
 
@@ -227,9 +236,6 @@ void alpine_corona_create_all()
         glare->is_rod = false;
         glare->parent_player = nullptr;
 
-        // Set glare room to match parent clutter
-        glare_obj->room = obj->room;
-
         // Insert into glare linked list
         rf::Glare* tail = rf::glare_list_tail;
         glare->prev = tail;
@@ -237,7 +243,6 @@ void alpine_corona_create_all()
         tail->next = glare;
         rf::glare_list_tail = glare;
 
-        g_corona_clutter_handles.push_back(obj->handle);
         g_corona_glare_infos.push_back(gi);
 
         xlog::trace("[AlpineCorona] Created corona uid={} pos=({:.2f},{:.2f},{:.2f}) room={:#010x} clutter={:#x} glare={:#x}",
@@ -246,7 +251,7 @@ void alpine_corona_create_all()
             obj->handle, glare_obj->handle);
     }
 
-    xlog::info("[AlpineCorona] Created {} corona(s)", g_corona_clutter_handles.size());
+    xlog::info("[AlpineCorona] Created {} corona(s)", g_pending_coronas.size());
     g_pending_coronas.clear();
 }
 

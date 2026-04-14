@@ -399,7 +399,8 @@ CodeInjection vpp_extra_textures_injection{
             }
             else if (obj->type == DedObjectType::DED_EVENT) {
                 auto* evt = static_cast<DedEvent*>(obj);
-                if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image)) {
+                if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image) ||
+                    evt->event_type == af_ded_event_to_int(AlpineDedEventID::AF_Fullscreen_Image)) {
                     add_texture_to_pack_list(temp_list, evt->str1.c_str());
                 }
                 else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Swap_Textures)) {

@@ -97,6 +97,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Display bot counts in `Players` column in server list
 - Make sorting on `Players` column in server list incorporate bot count
 - Add server browser filters for `Alpine`, `Unmodded`, `Modded`, `Match Mode`
+- Add `AF_Fullscreen_Image`, `AF_Fullscreen_Color`, `Unhide_Glare` events
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
