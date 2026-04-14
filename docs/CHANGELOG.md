@@ -142,7 +142,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix some string errors when compiled using mingw
 - Fix rare crash when loading skeletons
 - Fix level editor geometry rebuild sometimes reusing stale data from previous builds
-- Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
 - Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
@@ -179,6 +178,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix players getting stuck climbing if unable to uncrouch when leaving a climbing region (subject to `sp_climbfix` console command in SP)
 - Fix debris not being created when clutter is destroyed, if the clutter also played an explosion vclip
 - Fix hard cutoff lines on fullbright gradient alpha textures (Direct3D 11 renderer only)
+- Fix level editor autosave causing teleportation during edit operations
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `DM-Blunderscannon~~.rfl`
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

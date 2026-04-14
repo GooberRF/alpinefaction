@@ -917,6 +917,26 @@ static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void*
     object_rotation_update_hook.call_target(self, 0, param);
 }
 
+static bool is_edit_key_held()
+{
+    return g_dinput_keys[DIK_R]
+        || g_dinput_keys[DIK_M]
+        || g_dinput_keys[DIK_S]
+        || g_dinput_keys[DIK_LSHIFT];
+}
+
+CodeInjection autosave_defer_during_edit_injection{
+    0x00483061,
+    [](auto& regs) {
+        if (is_edit_key_held()) {
+            regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
+        }
+        else {
+            xlog::info("Autosave saving");
+        }
+    },
+};
+
 // Face mode panel (dialog 178) subclass
 static WNDPROC g_face_panel_orig_wndproc = nullptr;
 static HWND g_face_panel_hwnd = nullptr;
@@ -1784,6 +1804,9 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Fix crash when rotating objects with null sub-object pointer at +0xA4
     object_rotation_update_hook.install();
+
+    // Defer autosave while an edit operation is in progress to prevent teleporting
+    autosave_defer_during_edit_injection.install();
 
     // Subclass face mode panel for Delete/Delete Ext./Split button handling
     face_panel_subclass_injection.install();

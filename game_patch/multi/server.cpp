@@ -2495,8 +2495,6 @@ static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
         rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
     }
 
-    const char* team_name = (new_team == rf::TEAM_RED) ? "Red" : "Blue";
-    af_broadcast_automated_chat_msg(std::format("{} was moved to the {} team", player->name, team_name));
 }
 
 static void balance_teams()
