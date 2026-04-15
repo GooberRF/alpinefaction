@@ -441,7 +441,8 @@ float4 main(VsOutput input) : SV_TARGET
                     dot(ray_dir, gas_regions[gi].orient_r0),
                     dot(ray_dir, gas_regions[gi].orient_r1),
                     dot(ray_dir, gas_regions[gi].orient_r2));
-                local_dir = (abs(local_dir) < 1e-8f) ? 1e-8f : local_dir;
+                float3 dir_sign = (local_dir >= 0.0f) ? 1.0f : -1.0f;
+                local_dir = dir_sign * max(abs(local_dir), 1e-8f);
                 float3 inv_dir = 1.0f / local_dir;
                 float3 t0 = (-gas_regions[gi].extents - local_origin) * inv_dir;
                 float3 t1 = ( gas_regions[gi].extents - local_origin) * inv_dir;
