@@ -16,6 +16,7 @@ Version 1.3.0 (Bakeapple): Not yet released
   - Add full mesh shadows for entities, corpses, and items
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
   - Support movers, meshes, and mesh pixel lighting in skyboxes
+  - Support gas regions
 - Expanded destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true

@@ -22,6 +22,7 @@ cbuffer RenderModeBuffer : register(b0)
     float dynamic_light_ndotl;
     float pixel_light_overbright;
     float emissive_override;
+    float gas_fog_allowed;
 };
 
 struct PointLight {
@@ -70,6 +71,29 @@ cbuffer ShadowBuffer : register(b3)
     float shadow_debug;
     float shadow_soft_edges;
     float shadow_pad;
+};
+
+struct GasRegionData
+{
+    float3 center;    float density;
+    float3 color;     float shape;       // 0=sphere, 1=box
+    float3 extents;   float _pad0;
+    float3 orient_r0; float _pad1;       // transpose row 0 (for world-to-local)
+    float3 orient_r1; float _pad2;       // transpose row 1
+    float3 orient_r2; float _pad3;       // transpose row 2
+};
+
+#define MAX_GAS_REGIONS 32
+
+cbuffer GasRegionBuffer : register(b4)
+{
+    float3 gas_eye_pos;
+    int num_gas_regions;
+    float3 gas_cam_right;   float gas_proj_sx;
+    float3 gas_cam_up;      float gas_proj_sy;
+    float3 gas_cam_forward; float gas_viewport_w;
+    float gas_viewport_h;   float3 _gas_header_pad;
+    GasRegionData gas_regions[MAX_GAS_REGIONS];
 };
 
 Texture2D tex0;
@@ -356,6 +380,157 @@ float4 main(VsOutput input) : SV_TARGET
 
     float fog = saturate(input.world_pos_and_depth.w / fog_far);
     target.rgb = fog * fog_color + (1 - fog) * target.rgb;
+
+    // Gas region volumetric fog — front-to-back compositing with distance sorting
+    // Detect pre-transformed vertices via dummy normal (transformed_vs outputs norm=(0,0,0)).
+    // For those, reconstruct world pos if fog is allowed (dynamic decals); skip if not (particles).
+    float3 gas_world_pos = input.world_pos_and_depth.xyz;
+    bool is_pretransformed = dot(input.norm, input.norm) == 0.0f;
+    bool can_reconstruct = is_pretransformed && gas_fog_allowed > 0.5f && input.world_pos_and_depth.w > 0.0f;
+    int gas_count = min(num_gas_regions, MAX_GAS_REGIONS);
+    if (gas_count > 0 && (!is_pretransformed || can_reconstruct)) {
+        // Reconstruct world position for pre-transformed vertices (dynamic decals, etc.)
+        if (can_reconstruct) {
+            float depth = input.world_pos_and_depth.w;
+            float ndc_x = (input.pos.x / gas_viewport_w) * 2.0f - 1.0f;
+            float ndc_y = (input.pos.y / gas_viewport_h) * -2.0f + 1.0f;
+            float view_x = ndc_x * depth / gas_proj_sx;
+            float view_y = ndc_y * depth / gas_proj_sy;
+            gas_world_pos = gas_eye_pos
+                + gas_cam_right * view_x
+                + gas_cam_up * view_y
+                + gas_cam_forward * depth;
+        }
+        float3 ray_origin = gas_eye_pos;
+        float3 to_pixel = gas_world_pos - ray_origin;
+        float ray_len = length(to_pixel);
+        float3 ray_dir = to_pixel / max(ray_len, 0.0001f);
+
+        // Collect all ray-volume intersections
+        float hit_t_enter[MAX_GAS_REGIONS];
+        float hit_t_exit[MAX_GAS_REGIONS];
+        float3 hit_color[MAX_GAS_REGIONS];
+        float hit_density[MAX_GAS_REGIONS];
+        int num_hits = 0;
+
+        for (int gi = 0; gi < gas_count; gi++) {
+            float t_enter, t_exit;
+            bool hit = false;
+
+            if (gas_regions[gi].shape < 0.5f) {
+                // Sphere: analytical ray-sphere intersection
+                float3 oc = ray_origin - gas_regions[gi].center;
+                float r = gas_regions[gi].extents.x;
+                float b = dot(oc, ray_dir);
+                float c = dot(oc, oc) - r * r;
+                float disc = b * b - c;
+                if (disc > 0.0f) {
+                    float sq = sqrt(disc);
+                    t_enter = max(-b - sq, 0.0f);
+                    t_exit = min(-b + sq, ray_len);
+                    hit = (t_exit > t_enter);
+                }
+            } else {
+                // OBB: transform ray to local space, then ray-AABB
+                float3 delta = ray_origin - gas_regions[gi].center;
+                float3 local_origin = float3(
+                    dot(delta, gas_regions[gi].orient_r0),
+                    dot(delta, gas_regions[gi].orient_r1),
+                    dot(delta, gas_regions[gi].orient_r2));
+                float3 local_dir = float3(
+                    dot(ray_dir, gas_regions[gi].orient_r0),
+                    dot(ray_dir, gas_regions[gi].orient_r1),
+                    dot(ray_dir, gas_regions[gi].orient_r2));
+                float3 dir_sign = (local_dir >= 0.0f) ? 1.0f : -1.0f;
+                local_dir = dir_sign * max(abs(local_dir), 1e-8f);
+                float3 inv_dir = 1.0f / local_dir;
+                float3 t0 = (-gas_regions[gi].extents - local_origin) * inv_dir;
+                float3 t1 = ( gas_regions[gi].extents - local_origin) * inv_dir;
+                float3 tmin_v = min(t0, t1);
+                float3 tmax_v = max(t0, t1);
+                t_enter = max(max(tmin_v.x, tmin_v.y), max(tmin_v.z, 0.0f));
+                t_exit = min(min(tmax_v.x, tmax_v.y), min(tmax_v.z, ray_len));
+                hit = (t_exit > t_enter);
+            }
+
+            if (hit) {
+                hit_t_enter[num_hits] = t_enter;
+                hit_t_exit[num_hits] = t_exit;
+                hit_color[num_hits] = gas_regions[gi].color;
+                hit_density[num_hits] = gas_regions[gi].density;
+                num_hits++;
+            }
+        }
+
+        // Build sorted event timeline from all enter/exit boundaries
+        // Each hit produces 2 events: enter (+) and exit (-)
+        float evt_t[MAX_GAS_REGIONS * 2];
+        int evt_id[MAX_GAS_REGIONS * 2];  // >= 0: enter region i, < 0: exit region (-id - 1)
+        int num_events = 0;
+
+        for (int i = 0; i < num_hits; i++) {
+            evt_t[num_events] = hit_t_enter[i];
+            evt_id[num_events] = i;
+            num_events++;
+            evt_t[num_events] = hit_t_exit[i];
+            evt_id[num_events] = -(i + 1);
+            num_events++;
+        }
+
+        // Sort events by t (insertion sort)
+        for (int si = 1; si < num_events; si++) {
+            float et = evt_t[si];
+            int eid = evt_id[si];
+            int sj;
+            for (sj = si; sj > 0; sj--) {
+                if (evt_t[sj - 1] <= et) break;
+                evt_t[sj] = evt_t[sj - 1];
+                evt_id[sj] = evt_id[sj - 1];
+            }
+            evt_t[sj] = et;
+            evt_id[sj] = eid;
+        }
+
+        // Walk timeline with active-region tracking (bitmask, max 32 regions)
+        float3 gas_accumulated = float3(0, 0, 0);
+        float gas_transmittance = 1.0f;
+        uint active_mask = 0u;
+        float prev_t = 0.0f;
+
+        for (int e = 0; e < num_events; e++) {
+            float cur_t = evt_t[e];
+
+            // Process segment [prev_t, cur_t] with current active set
+            if (cur_t > prev_t && active_mask != 0u) {
+                float seg_len = cur_t - prev_t;
+                float max_dens = 0.0f;
+                float3 blended_color = float3(0, 0, 0);
+                float total_weight = 0.0f;
+                for (int r = 0; r < num_hits; r++) {
+                    if (active_mask & (1u << r)) {
+                        max_dens = max(max_dens, hit_density[r]);
+                        blended_color += hit_color[r] * hit_density[r];
+                        total_weight += hit_density[r];
+                    }
+                }
+                if (total_weight > 0.0f) blended_color /= total_weight;
+                float seg_t = exp(-max_dens * seg_len);
+                gas_accumulated += gas_transmittance * blended_color * (1.0f - seg_t);
+                gas_transmittance *= seg_t;
+            }
+
+            // Update active set
+            int eid = evt_id[e];
+            if (eid >= 0) {
+                active_mask |= (1u << eid);
+            } else {
+                active_mask &= ~(1u << ((-eid) - 1));
+            }
+            prev_t = cur_t;
+        }
+
+        target.rgb = target.rgb * gas_transmittance + gas_accumulated;
+    }
 
     if (colorblind_mode > 0.5f) {
         target.rgb = saturate(apply_colorblind(target.rgb));

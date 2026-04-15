@@ -17,6 +17,8 @@
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 
+static std::vector<GasRegionInfo> g_gas_regions;
+
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
     [](auto& regs) {
@@ -106,6 +108,7 @@ CodeInjection level_load_init_patch{
         DashLevelProps::instance() = {};
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
+        gas_region_clear_state();
         alpine_mover_clear_hold_open();
         hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
@@ -194,6 +197,74 @@ CodeInjection level_load_hardness_zero_patch{
     },
 };
 
+FunHook<void(rf::File*)> gas_region_load_hook{
+    0x00462CA0,
+    [](rf::File* file) {
+        if (rf::level.version < 304) {
+            gas_region_load_hook.call_target(file);
+            return;
+        }
+
+        int count = file->read_int(0, 0);
+        if (count <= 0) return;
+        if (count > 10000) count = 10000;
+
+        xlog::debug("[GasRegion] Loading {} gas region(s)", count);
+        g_gas_regions.reserve(count);
+
+        for (int i = 0; i < count; i++) {
+            GasRegionInfo info;
+            rf::String tmp_str;
+
+            info.uid = file->read_int(0, 0);
+            // class_name (discard)
+            file->read_string(&tmp_str, 0, nullptr);
+            // pos
+            file->read_vector(&info.pos, 0, &rf::file_default_vector);
+            // orient
+            file->read_matrix(&info.orient, 0, &rf::file_default_matrix);
+            // script_name (discard)
+            file->read_string(&tmp_str, 0, nullptr);
+            // hidden_in_editor (discard)
+            file->read_bool(0, true);
+            // shape
+            info.shape = file->read_int(0, 0);
+            // shape-conditional dimensions
+            if (info.shape == 1) { // sphere
+                info.radius = file->read_float(0, 0.0f);
+            } else if (info.shape == 2) { // box
+                info.height = file->read_float(0, 0.0f);
+                info.width = file->read_float(0, 0.0f);
+                info.depth = file->read_float(0, 0.0f);
+            }
+            // color (RGBA, 4 bytes)
+            file->read(&info.color, 4);
+            // density
+            info.density = file->read_float(0, 0.0f);
+
+            g_gas_regions.push_back(std::move(info));
+        }
+    },
+};
+
+void gas_region_clear_state()
+{
+    g_gas_regions.clear();
+}
+
+const std::vector<GasRegionInfo>& gas_region_get_all()
+{
+    return g_gas_regions;
+}
+
+GasRegionInfo* gas_region_get_by_uid(int uid)
+{
+    for (auto& region : g_gas_regions) {
+        if (region.uid == uid) return &region;
+    }
+    return nullptr;
+}
+
 void level_apply_patch()
 {
     // Add checking if restoring game state from save file failed during level loading
@@ -218,4 +289,7 @@ void level_apply_patch()
 
     // Allow level hardness 0 for version 304+ levels
     level_load_hardness_zero_patch.install();
+
+    // Hook stock gas region loader to capture gas region data for volumetric fog
+    gas_region_load_hook.install();
 }

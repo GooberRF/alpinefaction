@@ -323,6 +323,11 @@ CodeInjection mover_process_post_patch{
                             static_cast<rf::PushRegion*>(rf::level_get_push_region_from_uid(linked_uid))) {
                         push_region->pos = event->pos;
                     }
+
+                    // check for a gas region
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        gas_region->pos = event->pos;
+                    }
                 }
             }
 
@@ -363,6 +368,12 @@ CodeInjection mover_process_post_patch{
                         push_region->pos = event->pos;
 
                         push_region->orient = event->orient;
+                    }
+
+                    // check for a gas region
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        gas_region->pos = event->pos;
+                        gas_region->orient = event->orient;
                     }
                 }
             }

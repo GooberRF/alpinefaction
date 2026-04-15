@@ -561,17 +561,12 @@ bool __cdecl adjacency_test_hooked(GFace* face1, GFace* face2)
     return true;                        // same isolated brush: allow
 }
 
-// Skip "objects outside of level" bounds check for Alpine object types (DED_MESH, DED_NOTE).
-// The stock save validator (FUN_0041d4c0) iterates master_objects and checks if each object
-// is inside a room. Alpine objects won't be in any room since they're not stock types, so
-// they'd always trigger a false warning. At 0x0041d7c0, EDX = DedObject*, and the code reads
-// obj->type at offset 0x5c. We intercept before the switch and skip to the next iteration
-// (0x0041dcfa) for our custom types.
+// Skip "objects outside of level" bounds check for some object types
 CodeInjection skip_alpine_objects_bounds_check{
     0x0041d7c0,
     [](auto& regs) {
         auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.edx));
-        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE || obj->type == DedObjectType::DED_CORONA) {
+        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE || obj->type == DedObjectType::DED_CORONA || obj->type == DedObjectType::DED_GAS_REGION) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -840,6 +835,6 @@ void ApplyLevelPatches()
     // Allow creating multiple links in a single operation
     CDedLevel_DoLink_hook.install();
 
-    // Skip "objects outside of level" bounds check for alpine object types
+    // Skip "objects outside of level" bounds check for some object types
     skip_alpine_objects_bounds_check.install();
 }
