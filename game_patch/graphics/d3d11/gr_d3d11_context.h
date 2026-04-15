@@ -178,6 +178,23 @@ namespace df::gr::d3d11
         float current_v_scale_ = 1.0f;
     };
 
+    class GasRegionBuffer
+    {
+    public:
+        static constexpr int max_gas_regions = 32;
+
+        GasRegionBuffer(ID3D11Device* device);
+        void update(ID3D11DeviceContext* device_context, const Projection& projection);
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        ComPtr<ID3D11Buffer> buffer_;
+    };
+
     class RenderContext
     {
     public:
@@ -359,6 +376,7 @@ namespace df::gr::d3d11
         void update_per_frame_constants()
         {
             per_frame_buffer_.update(device_context_);
+            gas_region_buffer_.update(device_context_, projection_);
         }
 
         void fog_set()
@@ -534,6 +552,7 @@ namespace df::gr::d3d11
         RenderModeBuffer render_mode_cbuffer_;
         PerFrameBuffer per_frame_buffer_;
         TextureScaleBuffer texture_scale_cbuffer_;
+        GasRegionBuffer gas_region_buffer_;
 
         ID3D11RenderTargetView* render_target_view_ = nullptr;
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;

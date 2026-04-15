@@ -260,6 +260,24 @@ struct AlpineCoronaInfo {
 void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len);
 void alpine_corona_clear_state();
 
+// Gas region info, loaded from stock RFL chunk 0xB00
+struct GasRegionInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    int32_t shape = 1;       // 1=sphere, 2=box
+    float radius = 1.0f;     // sphere only
+    float height = 1.0f;     // box only
+    float width = 1.0f;      // box only
+    float depth = 1.0f;      // box only
+    uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
+    float density = 1.0f;
+};
+
+void gas_region_clear_state();
+const std::vector<GasRegionInfo>& gas_region_get_all();
+GasRegionInfo* gas_region_get_by_uid(int uid);
+
 // used by RF2-style geomod
 struct RF2AnchorInfo {
     rf::GRoom* room;

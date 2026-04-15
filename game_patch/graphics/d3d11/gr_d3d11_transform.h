@@ -69,6 +69,9 @@ namespace df::gr::d3d11
         {
             return zf_;
         }
+
+        float scale_x() const { return sx_; }
+        float scale_y() const { return sy_; }
     };
 
     inline GpuMatrix4x4 build_identity_matrix()

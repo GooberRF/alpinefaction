@@ -63,6 +63,17 @@ namespace rf
     };
     static_assert(sizeof(GeoRegion) == 0x50);
 
+    struct GasRegion
+    {
+        int shape;          // 1=sphere, 2=box
+        Vector3 pos;
+        Matrix3 orient;
+        float radius;       // sphere only
+        Vector3 extents;    // box half-extents (width/2, height/2, depth/2)
+        Color color;
+        float density;
+    };
+
     enum PushRegionFlags
     {
         PRF_MASS_INDEPENDENT = 0x1,
