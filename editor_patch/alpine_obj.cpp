@@ -38,6 +38,169 @@ static void remove_from_selection(VArray<DedObject*>& sel, DedObject* obj)
     }
 }
 
+// ─── Copy/Paste Link Snapshot ───────────────────────────────────────────────
+// snapshot all link relationships at copy time, then after paste creates
+// all new objects (stock + alpine), add any links the stock paste missed.
+
+struct CopyLinkEntry {
+    int original_uid;
+    std::vector<int> original_links;
+};
+
+// Separate lists matching clipboard paste order (stock first, then mesh, note, corona)
+static std::vector<CopyLinkEntry> g_copy_stock_entries;
+static std::vector<CopyLinkEntry> g_copy_mesh_entries;
+static std::vector<CopyLinkEntry> g_copy_note_entries;
+static std::vector<CopyLinkEntry> g_copy_corona_entries;
+
+// Set of all UIDs that were part of the copied selection (for filtering external links)
+static std::set<int> g_copy_all_uids;
+
+static bool is_alpine_type(DedObjectType type)
+{
+    return type == DedObjectType::DED_MESH ||
+           type == DedObjectType::DED_NOTE ||
+           type == DedObjectType::DED_CORONA;
+}
+
+// Capture link snapshot from the current selection before copy processes it.
+// Called at the start of the copy function, when the selection still contains
+// the original objects with their original links.
+static void capture_copy_link_snapshot()
+{
+    g_copy_stock_entries.clear();
+    g_copy_mesh_entries.clear();
+    g_copy_note_entries.clear();
+    g_copy_corona_entries.clear();
+    g_copy_all_uids.clear();
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+
+    auto& sel = level->selection;
+
+    // First pass: collect all UIDs in the selection
+    for (int i = 0; i < sel.size; i++) {
+        auto* obj = sel.data_ptr[i];
+        if (!obj) continue;
+        if (obj->type == DedObjectType::DED_KEYFRAME) continue;
+        g_copy_all_uids.insert(obj->uid);
+    }
+
+    // Second pass: save link entries, categorized by type, in selection order
+    for (int i = 0; i < sel.size; i++) {
+        auto* obj = sel.data_ptr[i];
+        if (!obj) continue;
+        if (obj->type == DedObjectType::DED_KEYFRAME) continue;
+
+        CopyLinkEntry entry;
+        entry.original_uid = obj->uid;
+        for (int j = 0; j < obj->links.size; j++) {
+            int link_uid = obj->links.data_ptr[j];
+            // Only keep links to other objects in the selection
+            if (g_copy_all_uids.count(link_uid))
+                entry.original_links.push_back(link_uid);
+        }
+
+        switch (obj->type) {
+            case DedObjectType::DED_MESH:
+                g_copy_mesh_entries.push_back(std::move(entry));
+                break;
+            case DedObjectType::DED_NOTE:
+                g_copy_note_entries.push_back(std::move(entry));
+                break;
+            case DedObjectType::DED_CORONA:
+                g_copy_corona_entries.push_back(std::move(entry));
+                break;
+            default:
+                g_copy_stock_entries.push_back(std::move(entry));
+                break;
+        }
+    }
+}
+
+// After paste creates all new objects, add any links that the stock paste missed.
+// Stock paste handles stock→stock links. This adds:
+//   - stock→alpine links
+//   - alpine→stock links
+//   - alpine→alpine links
+static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
+                            int note_count, int corona_count)
+{
+    // Verify counts match the snapshot (mismatch means the clipboard state diverged).
+    // This is the safety guard for the selection-ordering assumption: if anything is
+    // out of sync, we bail rather than risk mapping links to the wrong objects.
+    if (stock_count != static_cast<int>(g_copy_stock_entries.size()) ||
+        mesh_count != static_cast<int>(g_copy_mesh_entries.size()) ||
+        note_count != static_cast<int>(g_copy_note_entries.size()) ||
+        corona_count != static_cast<int>(g_copy_corona_entries.size())) {
+        xlog::warn("[AlpineObj] Paste link fixup skipped: count mismatch "
+            "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{})",
+            stock_count, g_copy_stock_entries.size(),
+            mesh_count, g_copy_mesh_entries.size(),
+            note_count, g_copy_note_entries.size(),
+            corona_count, g_copy_corona_entries.size());
+        return;
+    }
+
+    // Nothing to fix if there are no alpine objects involved
+    bool has_alpine = (mesh_count + note_count + corona_count) > 0;
+    if (!has_alpine) return;
+
+    auto& sel = level->selection;
+    int total = stock_count + mesh_count + note_count + corona_count;
+    if (sel.size < total) return;
+
+    // Build old_uid → new_uid mapping from all four entry lists.
+    // Selection order after paste: stock objects first, then meshes, notes, coronas.
+    std::map<int, int> uid_map;
+    int idx = 0;
+    for (int i = 0; i < stock_count; i++, idx++)
+        uid_map[g_copy_stock_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < mesh_count; i++, idx++)
+        uid_map[g_copy_mesh_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < note_count; i++, idx++)
+        uid_map[g_copy_note_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < corona_count; i++, idx++)
+        uid_map[g_copy_corona_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+
+    // Apply links from the snapshot to each pasted object
+    auto apply_links = [&](const std::vector<CopyLinkEntry>& entries, int count, int& sel_idx) {
+        for (int i = 0; i < count; i++, sel_idx++) {
+            auto* obj = sel.data_ptr[sel_idx];
+            const auto& entry = entries[i];
+
+            for (int orig_link_uid : entry.original_links) {
+                auto it = uid_map.find(orig_link_uid);
+                if (it == uid_map.end()) continue;
+
+                int new_link_uid = it->second;
+
+                // Check if stock paste already added this link (stock→stock case)
+                bool already_exists = false;
+                for (int k = 0; k < obj->links.size; k++) {
+                    if (obj->links.data_ptr[k] == new_link_uid) {
+                        already_exists = true;
+                        break;
+                    }
+                }
+                if (!already_exists) {
+                    obj->links.push_back(new_link_uid);
+                }
+            }
+        }
+    };
+
+    idx = 0;
+    apply_links(g_copy_stock_entries, stock_count, idx);
+    apply_links(g_copy_mesh_entries, mesh_count, idx);
+    apply_links(g_copy_note_entries, note_count, idx);
+    apply_links(g_copy_corona_entries, corona_count, idx);
+
+    xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona objects",
+        stock_count, mesh_count, note_count, corona_count);
+}
+
 // ─── UID Generation ─────────────────────────────────────────────────────────
 
 // Hook stock UID generator so it also considers Alpine object UIDs.
@@ -224,13 +387,15 @@ CodeInjection alpine_click_pick_patch{
 
 // ─── Copy / Paste ───────────────────────────────────────────────────────────
 
-// Hook the start of FUN_00412e20 to clear all Alpine clipboards.
+// Hook the start of FUN_00412e20 to clear all Alpine clipboards and capture
+// the link snapshot before stock copy processes the selection.
 CodeInjection alpine_copy_begin_hook{
     0x00412e20,
     [](auto& /*regs*/) {
         mesh_clear_clipboard();
         note_clear_clipboard();
         corona_clear_clipboard();
+        capture_copy_link_snapshot();
     },
 };
 
@@ -260,16 +425,29 @@ CodeInjection alpine_copy_hook{
 };
 
 // Wrapper for the paste function (FUN_00413050, called from Ctrl+V via thunk at 0x00448650).
-// After the stock paste function processes clones, we create Alpine clones from clipboards.
 static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*/)
 {
     auto* level = reinterpret_cast<CDedLevel*>(ecx_level);
     if (!level) return;
 
+    // Stock paste: clones stock clipboard entries, assigns new UIDs, remaps stock→stock links.
+    // After this, selection contains newly pasted stock objects in clipboard order.
     level->paste_objects();
+    int stock_count = level->selection.size;
+
+    // Alpine paste: clone from alpine-specific clipboards and add to selection.
+    // Order: all meshes, then all notes, then all coronas.
     mesh_paste_objects(level);
+    int mesh_count = level->selection.size - stock_count;
+
     note_paste_objects(level);
+    int note_count = level->selection.size - stock_count - mesh_count;
+
     corona_paste_objects(level);
+    int corona_count = level->selection.size - stock_count - mesh_count - note_count;
+
+    // Fix links that the stock paste missed (involving alpine object types)
+    fix_paste_links(level, stock_count, mesh_count, note_count, corona_count);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
