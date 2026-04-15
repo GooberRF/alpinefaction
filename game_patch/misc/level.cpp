@@ -15,6 +15,7 @@
 #include "../multi/server.h"
 #include "../object/alpine_corona.h"
 #include "../object/mover.h"
+#include "../hud/hud_world.h"
 
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
@@ -107,6 +108,7 @@ CodeInjection level_load_init_patch{
         alpine_corona_clear_state();
         gas_region_clear_state();
         alpine_mover_clear_hold_open();
+        hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
     },
 };

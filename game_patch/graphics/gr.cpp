@@ -586,6 +586,9 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
         df::gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
+        if (is_sky_fix_level(level_filename)) {
+            rf::console::print("Applying sky fix to known affected level {}", level_filename);
+        }
     }
 }
 

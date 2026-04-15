@@ -23,6 +23,7 @@
 #include "../rf/os/timer.h"
 #include "../os/console.h"
 #include "../main/main.h"
+#include "hud.h"
 #include "hud_internal.h"
 #include "../graphics/gr.h"
 #include "../misc/player.h"
@@ -382,8 +383,9 @@ int draw_scoreboard_players(
             std::string player_name_stripped = player->name;
             const auto [space_w, space_h] = rf::gr::get_char_size(' ', -1);
             const bool is_bot = player->is_bot;
+            const int bot_font = hud_get_small_font();
             if (is_bot) {
-                const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", -1);
+                const auto [bot_w, bot_h] = rf::gr::get_string_size(" BOT", bot_font);
                 gr_fit_string(
                     player_name_stripped,
                     name_w - bot_w - space_w
@@ -398,7 +400,8 @@ int draw_scoreboard_players(
             if (is_bot) {
                 rf::gr::string(name_x, y, player_name_stripped.c_str());
                 rf::gr::set_color(255, 250, 205, 255);
-                rf::gr::string(rf::gr::current_string_x, y, " bot");
+                int bot_y = y + (rf::gr::get_font_height(-1) - rf::gr::get_font_height(bot_font)) / 2;
+                rf::gr::string(rf::gr::current_string_x, bot_y, " BOT", bot_font);
                 if (is_local_player) {
                     rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
                 } else {

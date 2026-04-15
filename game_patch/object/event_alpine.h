@@ -28,6 +28,8 @@
 #include "../rf/os/timestamp.h"
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
+#include "../rf/glare.h"
+#include "../graphics/gr.h"
 #include "../misc/level.h"
 #include "../misc/alpine_settings.h"
 
@@ -151,6 +153,14 @@ namespace rf
     enum class GameplayRule : int
     {
         player_has_headlamp,
+    };
+
+    enum class FullscreenTransitionType : int
+    {
+        disappear = 0,           // instant on, instant off
+        fade_in_disappear = 1,   // fade in, instant off
+        fade_in_fade_out = 2,    // fade in, fade out
+        appear_fade_out = 3      // instant on, fade out
     };
 
     // start alpine event structs
@@ -2582,6 +2592,288 @@ namespace rf
                     xlog::warn("[EventMeshSetCollision] link[{}]: handle={} -> NULL", i, link_handle);
                 }
             }
+        }
+    };
+
+    // Base class for fullscreen overlay events
+    struct EventFullscreenOverlayBase : Event
+    {
+        float duration = 0.0f;
+        float transition_time = 0.0f;
+        FullscreenTransitionType transition_type = FullscreenTransitionType::disappear;
+        int max_alpha_raw = 0; // 0 means 255 (full opacity)
+
+        // Runtime state (not serialized)
+        bool active = false;
+        bool fading_out_early = false;
+        Timestamp start_ts;
+        Timestamp fadeout_start_ts;
+        float fadeout_start_alpha = 1.0f;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenOverlayBase*>(event);
+                e->duration = std::stof(value);
+            };
+            handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenOverlayBase*>(event);
+                e->transition_time = std::max(0.0f, std::stof(value));
+            };
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenOverlayBase*>(event);
+                int raw = std::stoi(value);
+                if (raw < 0 || raw > 3) raw = 0;
+                e->transition_type = static_cast<FullscreenTransitionType>(raw);
+            };
+            handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenOverlayBase*>(event);
+                e->max_alpha_raw = std::stoi(value);
+            };
+        }
+
+        float effective_max_alpha() const
+        {
+            return (max_alpha_raw <= 0 || max_alpha_raw > 255) ? 1.0f : static_cast<float>(max_alpha_raw) / 255.0f;
+        }
+
+        bool has_fade_in() const
+        {
+            return transition_type == FullscreenTransitionType::fade_in_disappear ||
+                   transition_type == FullscreenTransitionType::fade_in_fade_out;
+        }
+
+        bool has_fade_out() const
+        {
+            return transition_type == FullscreenTransitionType::fade_in_fade_out ||
+                   transition_type == FullscreenTransitionType::appear_fade_out;
+        }
+
+        float compute_alpha() const
+        {
+            float trans = transition_time;
+            float max_a = effective_max_alpha();
+
+            // Early fade-out override
+            if (fading_out_early) {
+                int fadeout_elapsed_ms = fadeout_start_ts.time_since();
+                if (fadeout_elapsed_ms < 0) fadeout_elapsed_ms = 0;
+                float fadeout_elapsed = static_cast<float>(fadeout_elapsed_ms) / 1000.0f;
+                if (trans <= 0.0f) return 0.0f;
+                float progress = fadeout_elapsed / trans;
+                if (progress >= 1.0f) return 0.0f;
+                return fadeout_start_alpha * (1.0f - progress);
+            }
+
+            int elapsed_ms = start_ts.time_since();
+            if (elapsed_ms < 0) elapsed_ms = 0;
+            float elapsed = static_cast<float>(elapsed_ms) / 1000.0f;
+            bool infinite = (duration <= 0.0f);
+
+            // Fade-in phase
+            if (has_fade_in() && trans > 0.0f && elapsed < trans) {
+                return (elapsed / trans) * max_a;
+            }
+
+            // Hold phase
+            float after_fadein = elapsed - (has_fade_in() ? trans : 0.0f);
+            if (infinite || after_fadein < duration) {
+                return max_a;
+            }
+
+            // Fade-out phase
+            if (has_fade_out() && trans > 0.0f) {
+                float fadeout_elapsed = after_fadein - duration;
+                float progress = fadeout_elapsed / trans;
+                if (progress >= 1.0f) return 0.0f;
+                return (1.0f - progress) * max_a;
+            }
+
+            return 0.0f;
+        }
+
+        bool is_finished() const
+        {
+            if (fading_out_early) {
+                float trans = transition_time;
+                if (trans <= 0.0f) return true;
+                int fadeout_elapsed_ms = fadeout_start_ts.time_since();
+                if (fadeout_elapsed_ms < 0) fadeout_elapsed_ms = 0;
+                return fadeout_elapsed_ms >= static_cast<int>(trans * 1000.0f);
+            }
+
+            if (duration <= 0.0f) return false; // infinite hold
+
+            int elapsed_ms = start_ts.time_since();
+            if (elapsed_ms < 0) elapsed_ms = 0;
+            float elapsed = static_cast<float>(elapsed_ms) / 1000.0f;
+            float fade_in_time = has_fade_in() ? transition_time : 0.0f;
+            float fade_out_time = has_fade_out() ? transition_time : 0.0f;
+            float total_time = fade_in_time + duration + fade_out_time;
+            return elapsed >= total_time;
+        }
+
+        void turn_on() override
+        {
+            active = true;
+            fading_out_early = false;
+            start_ts.set(0);
+        }
+
+        void turn_off() override
+        {
+            if (!active) return;
+
+            if (has_fade_out() && transition_time > 0.0f && !fading_out_early) {
+                fadeout_start_alpha = compute_alpha(); // capture before setting fading_out_early
+                fading_out_early = true;
+                fadeout_start_ts.set(0);
+            }
+            else {
+                active = false;
+            }
+        }
+
+        virtual void render(float alpha) = 0;
+    };
+
+    // id 148
+    struct EventFullscreenImage : EventFullscreenOverlayBase
+    {
+        std::string filename;
+        int bitmap_handle = -1;
+        int bm_w = 0;
+        int bm_h = 0;
+
+        void register_variable_handlers() override
+        {
+            EventFullscreenOverlayBase::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenImage*>(event);
+                e->filename = value;
+            };
+        }
+
+        void turn_on() override
+        {
+            bitmap_handle = -1;
+            bm_w = 0;
+            bm_h = 0;
+            if (filename.empty()) {
+                xlog::warn("AF_Fullscreen_Image ({}): no filename set", this->uid);
+            }
+            else {
+                bitmap_handle = bm::load(filename.c_str(), -1, true);
+                if (bitmap_handle < 0) {
+                    xlog::warn("AF_Fullscreen_Image ({}): failed to load '{}'", this->uid, filename);
+                }
+                else {
+                    bm::get_dimensions(bitmap_handle, &bm_w, &bm_h);
+                }
+            }
+            EventFullscreenOverlayBase::turn_on();
+        }
+
+        void render(float alpha) override
+        {
+            if (bitmap_handle < 0 || bm_w <= 0 || bm_h <= 0) return;
+            int a = static_cast<int>(alpha * 255.0f);
+            if (a <= 0) return;
+            if (a > 255) a = 255;
+
+            gr::set_color(255, 255, 255, a);
+            static gr::Mode mode{
+                gr::TEXTURE_SOURCE_CLAMP,
+                gr::COLOR_SOURCE_TEXTURE,
+                gr::ALPHA_SOURCE_VERTEX_TIMES_TEXTURE,
+                gr::ALPHA_BLEND_ALPHA,
+                gr::ZBUFFER_TYPE_NONE,
+                gr::FOG_NOT_ALLOWED,
+            };
+            gr_bitmap_scaled_float(bitmap_handle, 0.0f, 0.0f,
+                static_cast<float>(gr::screen.max_w), static_cast<float>(gr::screen.max_h),
+                0.0f, 0.0f, static_cast<float>(bm_w), static_cast<float>(bm_h),
+                false, false, mode);
+        }
+    };
+
+    // id 149
+    struct EventFullscreenColor : EventFullscreenOverlayBase
+    {
+        std::string color_string;
+        gr::Color parsed_color{0, 0, 0, 255};
+
+        void register_variable_handlers() override
+        {
+            EventFullscreenOverlayBase::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenColor*>(event);
+                e->color_string = value;
+            };
+        }
+
+        void turn_on() override
+        {
+            parsed_color = {0, 0, 0, 255};
+            if (!color_string.empty()) {
+                try {
+                    parsed_color = gr::Color::from_rgb_string(color_string);
+                }
+                catch (const std::exception& e) {
+                    xlog::error("AF_Fullscreen_Color ({}) failed to parse color '{}': {}",
+                        this->uid, color_string, e.what());
+                }
+            }
+            EventFullscreenOverlayBase::turn_on();
+        }
+
+        void render(float alpha) override
+        {
+            int a = static_cast<int>(alpha * 255.0f);
+            if (a <= 0) return;
+            if (a > 255) a = 255;
+
+            gr::set_color(parsed_color.red, parsed_color.green, parsed_color.blue, a);
+            static gr::Mode mode{
+                gr::TEXTURE_SOURCE_NONE,
+                gr::COLOR_SOURCE_VERTEX,
+                gr::ALPHA_SOURCE_VERTEX,
+                gr::ALPHA_BLEND_ALPHA,
+                gr::ZBUFFER_TYPE_NONE,
+                gr::FOG_NOT_ALLOWED,
+            };
+            gr::rect(0, 0, gr::screen.max_w, gr::screen.max_h, mode);
+        }
+    };
+
+    // id 150
+    struct EventUnhideGlare : Event
+    {
+        static void set_glares_enabled(const VArray<int>& links, bool enabled)
+        {
+            for (Glare* g = glare_list.next; g != &glare_list; g = g->next) {
+                for (const int link : links) {
+                    if (g->parent_handle == link) {
+                        g->enabled = enabled;
+                        break;
+                    }
+                }
+            }
+        }
+
+        void turn_on() override
+        {
+            set_glares_enabled(this->links, true);
+        }
+
+        void turn_off() override
+        {
+            set_glares_enabled(this->links, false);
         }
     };
 

@@ -97,6 +97,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `clear_stale_movement_input` dedicated server config option
 - Display bot counts in `Players` column in server list
 - Make sorting on `Players` column in server list incorporate bot count
+- Add server browser filters for `Alpine`, `Unmodded`, `Modded`, `Match Mode`
+- Add `AF_Fullscreen_Image`, `AF_Fullscreen_Color`, `Unhide_Glare` events
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -178,6 +180,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix players getting stuck climbing if unable to uncrouch when leaving a climbing region (subject to `sp_climbfix` console command in SP)
 - Fix debris not being created when clutter is destroyed, if the clutter also played an explosion vclip
 - Fix hard cutoff lines on fullbright gradient alpha textures (Direct3D 11 renderer only)
+- Fix level editor autosave causing teleportation during edit operations
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `DM-Blunderscannon~~.rfl`
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

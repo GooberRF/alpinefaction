@@ -101,6 +101,9 @@ namespace rf
     static auto& clutter_list = addr_as_ref<Clutter>(0x005C9360);
     static auto& clutter_list_tail = addr_as_ref<Clutter*>(0x005C95F0);
     static auto& clutter_count = addr_as_ref<int>(0x005C9358);
+    static auto& clutter_killable_count = addr_as_ref<int>(0x005AFB84);
+    static constexpr int clutter_killable_max = 0xC80; // 3200
+    static auto& clutter_killable_bitset = addr_as_ref<BitSet>(0x005C97E8);
 
     // Shared dummy ClutterInfo for alpine objects that don't need clutter behavior.
     inline ClutterInfo& get_dummy_clutter_info()

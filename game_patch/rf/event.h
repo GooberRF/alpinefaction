@@ -351,7 +351,10 @@ namespace rf
         When_Round_Ends,
         Mesh_Animate,
         Mesh_Set_Texture,
-        Mesh_Set_Collision
+        Mesh_Set_Collision,
+        AF_Fullscreen_Image,
+        AF_Fullscreen_Color,
+        Unhide_Glare
     };
 
     // int to EventType

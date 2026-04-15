@@ -106,6 +106,9 @@ void hud_world_do_frame();
 void load_world_hud_assets();
 void clear_koth_name_textures();
 void populate_world_hud_sprite_events();
+void populate_fullscreen_overlay_events();
+void fullscreen_overlay_do_frame();
+void hud_world_level_unload();
 void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name, int player_id);
 void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, uint16_t damage, bool died);
 void do_render_world_hud_sprite(rf::Vector3 pos, float base_scale, int bitmap_handle, WorldHUDRenderMode render_mode,
