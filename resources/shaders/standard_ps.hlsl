@@ -382,12 +382,15 @@ float4 main(VsOutput input) : SV_TARGET
     target.rgb = fog * fog_color + (1 - fog) * target.rgb;
 
     // Gas region volumetric fog — front-to-back compositing with distance sorting
-    // gas_fog_allowed filters out particles/sprites (FOG_NOT_ALLOWED), but includes decals (FOG_ALLOWED)
+    // Apply to all geometry with valid world positions (standard_vs path),
+    // plus pre-transformed geometry (dynamic decals) when fog is allowed.
+    // Skip particles/sprites which have world_pos = (0,0,0) and FOG_NOT_ALLOWED.
     float3 gas_world_pos = input.world_pos_and_depth.xyz;
-    if (num_gas_regions > 0 && gas_fog_allowed > 0.5f) {
+    bool has_world_pos = dot(gas_world_pos, gas_world_pos) > 0.0f;
+    bool can_reconstruct = !has_world_pos && gas_fog_allowed > 0.5f && input.world_pos_and_depth.w > 0.0f;
+    if (num_gas_regions > 0 && (has_world_pos || can_reconstruct)) {
         // Reconstruct world position for pre-transformed vertices (dynamic decals, etc.)
-        // These have world_pos = (0,0,0) but carry valid view-space depth in .w
-        if (dot(gas_world_pos, gas_world_pos) == 0.0f && input.world_pos_and_depth.w > 0.0f) {
+        if (can_reconstruct) {
             float depth = input.world_pos_and_depth.w;
             float ndc_x = (input.pos.x / gas_viewport_w) * 2.0f - 1.0f;
             float ndc_y = (input.pos.y / gas_viewport_h) * -2.0f + 1.0f;
@@ -457,35 +460,71 @@ float4 main(VsOutput input) : SV_TARGET
             }
         }
 
-        // Sort hits front-to-back by t_enter (insertion sort)
-        for (int i = 1; i < num_hits; i++) {
-            float te = hit_t_enter[i];
-            float tx = hit_t_exit[i];
-            float3 hc = hit_color[i];
-            float hd = hit_density[i];
-            int j;
-            for (j = i; j > 0; j--) {
-                if (hit_t_enter[j - 1] <= te) break;
-                hit_t_enter[j] = hit_t_enter[j - 1];
-                hit_t_exit[j] = hit_t_exit[j - 1];
-                hit_color[j] = hit_color[j - 1];
-                hit_density[j] = hit_density[j - 1];
-            }
-            hit_t_enter[j] = te;
-            hit_t_exit[j] = tx;
-            hit_color[j] = hc;
-            hit_density[j] = hd;
+        // Build sorted event timeline from all enter/exit boundaries
+        // Each hit produces 2 events: enter (+) and exit (-)
+        float evt_t[MAX_GAS_REGIONS * 2];
+        int evt_id[MAX_GAS_REGIONS * 2];  // >= 0: enter region i, < 0: exit region (-id - 1)
+        int num_events = 0;
+
+        for (int i = 0; i < num_hits; i++) {
+            evt_t[num_events] = hit_t_enter[i];
+            evt_id[num_events] = i;
+            num_events++;
+            evt_t[num_events] = hit_t_exit[i];
+            evt_id[num_events] = -(i + 1);
+            num_events++;
         }
 
-        // Front-to-back compositing: closer fog attenuates further fog
+        // Sort events by t (insertion sort)
+        for (int si = 1; si < num_events; si++) {
+            float et = evt_t[si];
+            int eid = evt_id[si];
+            int sj;
+            for (sj = si; sj > 0; sj--) {
+                if (evt_t[sj - 1] <= et) break;
+                evt_t[sj] = evt_t[sj - 1];
+                evt_id[sj] = evt_id[sj - 1];
+            }
+            evt_t[sj] = et;
+            evt_id[sj] = eid;
+        }
+
+        // Walk timeline with active-region tracking (bitmask, max 32 regions)
         float3 gas_accumulated = float3(0, 0, 0);
         float gas_transmittance = 1.0f;
+        uint active_mask = 0u;
+        float prev_t = 0.0f;
 
-        for (int hi = 0; hi < num_hits; hi++) {
-            float dist = hit_t_exit[hi] - hit_t_enter[hi];
-            float seg_t = exp(-hit_density[hi] * dist);
-            gas_accumulated += gas_transmittance * hit_color[hi] * (1.0f - seg_t);
-            gas_transmittance *= seg_t;
+        for (int e = 0; e < num_events; e++) {
+            float cur_t = evt_t[e];
+
+            // Process segment [prev_t, cur_t] with current active set
+            if (cur_t > prev_t && active_mask != 0u) {
+                float seg_len = cur_t - prev_t;
+                float max_dens = 0.0f;
+                float3 blended_color = float3(0, 0, 0);
+                float total_weight = 0.0f;
+                for (int r = 0; r < num_hits; r++) {
+                    if (active_mask & (1u << r)) {
+                        max_dens = max(max_dens, hit_density[r]);
+                        blended_color += hit_color[r] * hit_density[r];
+                        total_weight += hit_density[r];
+                    }
+                }
+                if (total_weight > 0.0f) blended_color /= total_weight;
+                float seg_t = exp(-max_dens * seg_len);
+                gas_accumulated += gas_transmittance * blended_color * (1.0f - seg_t);
+                gas_transmittance *= seg_t;
+            }
+
+            // Update active set
+            int eid = evt_id[e];
+            if (eid >= 0) {
+                active_mask |= (1u << eid);
+            } else {
+                active_mask &= ~(1u << ((-eid) - 1));
+            }
+            prev_t = cur_t;
         }
 
         target.rgb = target.rgb * gas_transmittance + gas_accumulated;
