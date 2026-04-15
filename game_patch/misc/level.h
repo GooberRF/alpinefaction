@@ -269,7 +269,7 @@ struct GasRegionInfo {
     float height = 1.0f;     // box only
     float width = 1.0f;      // box only
     float depth = 1.0f;      // box only
-    uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
+    rf::Color color{255, 255, 255, 255};
     float density = 1.0f;
 };
 

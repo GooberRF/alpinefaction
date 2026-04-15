@@ -382,13 +382,13 @@ float4 main(VsOutput input) : SV_TARGET
     target.rgb = fog * fog_color + (1 - fog) * target.rgb;
 
     // Gas region volumetric fog — front-to-back compositing with distance sorting
-    // Apply to all geometry with valid world positions (standard_vs path),
-    // plus pre-transformed geometry (dynamic decals) when fog is allowed.
-    // Skip particles/sprites which have world_pos = (0,0,0) and FOG_NOT_ALLOWED.
+    // Detect pre-transformed vertices via dummy normal (transformed_vs outputs norm=(0,0,0)).
+    // For those, reconstruct world pos if fog is allowed (dynamic decals); skip if not (particles).
     float3 gas_world_pos = input.world_pos_and_depth.xyz;
-    bool has_world_pos = dot(gas_world_pos, gas_world_pos) > 0.0f;
-    bool can_reconstruct = !has_world_pos && gas_fog_allowed > 0.5f && input.world_pos_and_depth.w > 0.0f;
-    if (num_gas_regions > 0 && (has_world_pos || can_reconstruct)) {
+    bool is_pretransformed = dot(input.norm, input.norm) == 0.0f;
+    bool can_reconstruct = is_pretransformed && gas_fog_allowed > 0.5f && input.world_pos_and_depth.w > 0.0f;
+    int gas_count = min(num_gas_regions, MAX_GAS_REGIONS);
+    if (gas_count > 0 && (!is_pretransformed || can_reconstruct)) {
         // Reconstruct world position for pre-transformed vertices (dynamic decals, etc.)
         if (can_reconstruct) {
             float depth = input.world_pos_and_depth.w;
@@ -413,7 +413,7 @@ float4 main(VsOutput input) : SV_TARGET
         float hit_density[MAX_GAS_REGIONS];
         int num_hits = 0;
 
-        for (int gi = 0; gi < num_gas_regions; gi++) {
+        for (int gi = 0; gi < gas_count; gi++) {
             float t_enter, t_exit;
             bool hit = false;
 
@@ -441,6 +441,7 @@ float4 main(VsOutput input) : SV_TARGET
                     dot(ray_dir, gas_regions[gi].orient_r0),
                     dot(ray_dir, gas_regions[gi].orient_r1),
                     dot(ray_dir, gas_regions[gi].orient_r2));
+                local_dir = (abs(local_dir) < 1e-8f) ? 1e-8f : local_dir;
                 float3 inv_dir = 1.0f / local_dir;
                 float3 t0 = (-gas_regions[gi].extents - local_origin) * inv_dir;
                 float3 t1 = ( gas_regions[gi].extents - local_origin) * inv_dir;

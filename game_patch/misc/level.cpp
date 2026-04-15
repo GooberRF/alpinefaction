@@ -17,6 +17,8 @@
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 
+static std::vector<GasRegionInfo> g_gas_regions;
+
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
     [](auto& regs) {
@@ -195,17 +197,10 @@ CodeInjection level_load_hardness_zero_patch{
     },
 };
 
-// ─── Gas Region Loading ─────────────────────────────────────────────────────
-
-static std::vector<GasRegionInfo> g_gas_regions;
-
-// Hook the stock gas region loader at 0x00462CA0 (called from Loop 2 of level loading)
-// Stock signature: void __cdecl(rf::File* file)
 FunHook<void(rf::File*)> gas_region_load_hook{
     0x00462CA0,
     [](rf::File* file) {
         if (rf::level.version < 304) {
-            // Let the stock loader consume the chunk data
             gas_region_load_hook.call_target(file);
             return;
         }
@@ -214,23 +209,23 @@ FunHook<void(rf::File*)> gas_region_load_hook{
         if (count <= 0) return;
         if (count > 10000) count = 10000;
 
-        xlog::info("[GasRegion] Loading {} gas region(s)", count);
+        xlog::debug("[GasRegion] Loading {} gas region(s)", count);
+        g_gas_regions.reserve(count);
 
         for (int i = 0; i < count; i++) {
             GasRegionInfo info;
             rf::String tmp_str;
 
-            // uid (stock reads this via read_int at 0x0052C910)
             info.uid = file->read_int(0, 0);
             // class_name (discard)
             file->read_string(&tmp_str, 0, nullptr);
             // pos
             file->read_vector(&info.pos, 0, &rf::file_default_vector);
-            // orient (mat3: forward, right, up -> rvec, uvec, fvec in memory)
+            // orient
             file->read_matrix(&info.orient, 0, &rf::file_default_matrix);
             // script_name (discard)
             file->read_string(&tmp_str, 0, nullptr);
-            // hidden_in_editor
+            // hidden_in_editor (discard)
             file->read_bool(0, true);
             // shape
             info.shape = file->read_int(0, 0);
@@ -243,7 +238,7 @@ FunHook<void(rf::File*)> gas_region_load_hook{
                 info.depth = file->read_float(0, 0.0f);
             }
             // color (RGBA, 4 bytes)
-            file->read(&info.color_r, 4);
+            file->read(&info.color, 4);
             // density
             info.density = file->read_float(0, 0.0f);
 

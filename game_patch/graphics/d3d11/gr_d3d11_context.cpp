@@ -421,7 +421,7 @@ namespace df::gr::d3d11
 
             dst.center = {src.pos.x, src.pos.y, src.pos.z};
             dst.density = src.density;
-            dst.color = {src.color_r / 255.0f, src.color_g / 255.0f, src.color_b / 255.0f};
+            dst.color = {src.color.red / 255.0f, src.color.green / 255.0f, src.color.blue / 255.0f};
             dst.shape = (src.shape == 2) ? 1.0f : 0.0f; // 0=sphere, 1=box
 
             if (src.shape == 1) { // sphere
