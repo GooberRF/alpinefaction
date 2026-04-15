@@ -1,5 +1,6 @@
 #include <cassert>
 #include <cstring>
+#include <xlog/xlog.h>
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/multi.h"
@@ -404,6 +405,14 @@ namespace df::gr::d3d11
         GasRegionBufferData data{};
         data.eye_pos = {rf::gr::eye_pos.x, rf::gr::eye_pos.y, rf::gr::eye_pos.z};
         data.num_gas_regions = std::min(static_cast<int>(gas_regions.size()), max_gas_regions);
+        if (static_cast<int>(gas_regions.size()) > max_gas_regions) {
+            static bool warned = false;
+            if (!warned) {
+                xlog::warn("[GasRegion] Level has {} gas regions but GPU limit is {}; excess will not render",
+                    gas_regions.size(), max_gas_regions);
+                warned = true;
+            }
+        }
 
         // Camera orientation for world pos reconstruction from pre-transformed vertices
         const auto& m = rf::gr::eye_matrix;
