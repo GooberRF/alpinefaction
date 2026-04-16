@@ -810,7 +810,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
                 event->duration = params.float1;
                 event->transition_time = std::max(0.0f, params.float2);
                 int tt = params.int1;
-                event->transition_type = static_cast<rf::FullscreenTransitionType>(tt >= 0 && tt <= 3 ? tt : 0);
+                event->transition_type = static_cast<FullscreenTransitionType>(tt >= 0 && tt <= 3 ? tt : 0);
                 event->max_alpha_raw = params.int2;
             }
             return event;
@@ -826,7 +826,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
                 event->duration = params.float1;
                 event->transition_time = std::max(0.0f, params.float2);
                 int tt = params.int1;
-                event->transition_type = static_cast<rf::FullscreenTransitionType>(tt >= 0 && tt <= 3 ? tt : 0);
+                event->transition_type = static_cast<FullscreenTransitionType>(tt >= 0 && tt <= 3 ? tt : 0);
                 event->max_alpha_raw = params.int2;
             }
             return event;
