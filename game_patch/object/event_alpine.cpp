@@ -804,7 +804,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     {
         rf::EventType::AF_Fullscreen_Image, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Fullscreen_Image));
-            auto* event = dynamic_cast<rf::EventFullscreenImage*>(base_event);
+            auto* event = dynamic_cast<EventFullscreenImage*>(base_event);
             if (event) {
                 event->filename = params.str1;
                 event->duration = params.float1;
@@ -820,7 +820,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     {
         rf::EventType::AF_Fullscreen_Color, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Fullscreen_Color));
-            auto* event = dynamic_cast<rf::EventFullscreenColor*>(base_event);
+            auto* event = dynamic_cast<EventFullscreenColor*>(base_event);
             if (event) {
                 event->color_string = params.str1;
                 event->duration = params.float1;
