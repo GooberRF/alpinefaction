@@ -262,7 +262,7 @@ void apply_maximum_fps()
     }
     else if (rf::is_multi) {
         const auto& server_info_opt = get_af_server_info();
-        if (server_info_opt && server_info_opt->unlimited_fps) {
+        if (rf::is_server || (server_info_opt && server_info_opt->unlimited_fps)) {
             max_fps = g_alpine_game_config.max_fps;
         }
         else {
