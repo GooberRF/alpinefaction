@@ -99,6 +99,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Make sorting on `Players` column in server list incorporate bot count
 - Add server browser filters for `Alpine`, `Unmodded`, `Modded`, `Match Mode`
 - Add `AF_Fullscreen_Image`, `AF_Fullscreen_Color`, `Unhide_Glare` events
+- Exclude `Shotgun` from gaussian spread
+- Exclude `Precision Rifle` and `Sniper Rifle` from first shot accuracy
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
