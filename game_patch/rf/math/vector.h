@@ -218,7 +218,7 @@ namespace rf
             }
         }
 
-        static Vector3 from_string(const std::string& str, const Vector3& fallback = {})
+        static Vector3 from_string(const std::string& str, const Vector3& fallback = Vector3{})
         {
             // normalize: strip <>, replace commas with spaces
             // supports: "5 10 5", "<5.5, 10.1, 5.0>", "5, 10, 5", "5,10,5"
