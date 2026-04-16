@@ -26,6 +26,7 @@
 #include "../multi/gametype.h"
 #include "../rf/player/player.h"
 #include "../rf/os/timestamp.h"
+#include "../os/os.h"
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/glare.h"
@@ -2606,8 +2607,8 @@ namespace rf
         // Runtime state (not serialized)
         bool active = false;
         bool fading_out_early = false;
-        Timestamp start_ts;
-        Timestamp fadeout_start_ts;
+        HighResTimer main_timer;
+        HighResTimer fadeout_timer;
         float fadeout_start_alpha = 1.0f;
 
         void register_variable_handlers() override
@@ -2658,18 +2659,11 @@ namespace rf
 
             // Early fade-out override
             if (fading_out_early) {
-                int fadeout_elapsed_ms = fadeout_start_ts.time_since();
-                if (fadeout_elapsed_ms < 0) fadeout_elapsed_ms = 0;
-                float fadeout_elapsed = static_cast<float>(fadeout_elapsed_ms) / 1000.0f;
                 if (trans <= 0.0f) return 0.0f;
-                float progress = fadeout_elapsed / trans;
-                if (progress >= 1.0f) return 0.0f;
-                return fadeout_start_alpha * (1.0f - progress);
+                return fadeout_start_alpha * (1.0f - fadeout_timer.elapsed_frac());
             }
 
-            int elapsed_ms = start_ts.time_since();
-            if (elapsed_ms < 0) elapsed_ms = 0;
-            float elapsed = static_cast<float>(elapsed_ms) / 1000.0f;
+            float elapsed = main_timer.time_since_sec();
             bool infinite = (duration <= 0.0f);
 
             // Fade-in phase
@@ -2697,29 +2691,23 @@ namespace rf
         bool is_finished() const
         {
             if (fading_out_early) {
-                float trans = transition_time;
-                if (trans <= 0.0f) return true;
-                int fadeout_elapsed_ms = fadeout_start_ts.time_since();
-                if (fadeout_elapsed_ms < 0) fadeout_elapsed_ms = 0;
-                return fadeout_elapsed_ms >= static_cast<int>(trans * 1000.0f);
+                if (transition_time <= 0.0f) return true;
+                return fadeout_timer.elapsed();
             }
 
             if (duration <= 0.0f) return false; // infinite hold
 
-            int elapsed_ms = start_ts.time_since();
-            if (elapsed_ms < 0) elapsed_ms = 0;
-            float elapsed = static_cast<float>(elapsed_ms) / 1000.0f;
-            float fade_in_time = has_fade_in() ? transition_time : 0.0f;
-            float fade_out_time = has_fade_out() ? transition_time : 0.0f;
-            float total_time = fade_in_time + duration + fade_out_time;
-            return elapsed >= total_time;
+            return main_timer.elapsed();
         }
 
         void turn_on() override
         {
             active = true;
             fading_out_early = false;
-            start_ts.set(0);
+            float fade_in_time = has_fade_in() ? transition_time : 0.0f;
+            float fade_out_time = has_fade_out() ? transition_time : 0.0f;
+            float total_time = fade_in_time + duration + fade_out_time;
+            main_timer.set_sec(total_time);
         }
 
         void turn_off() override
@@ -2729,7 +2717,7 @@ namespace rf
             if (has_fade_out() && transition_time > 0.0f && !fading_out_early) {
                 fadeout_start_alpha = compute_alpha(); // capture before setting fading_out_early
                 fading_out_early = true;
-                fadeout_start_ts.set(0);
+                fadeout_timer.set_sec(transition_time);
             }
             else {
                 active = false;
