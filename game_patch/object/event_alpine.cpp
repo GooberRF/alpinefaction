@@ -802,7 +802,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // AF_Fullscreen_Image
     {
-        rf::EventType::AF_Fullscreen_Image, [](const rf::EventCreateParams& params) {
+        rf::EventType::AF_Fullscreen_Image, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Fullscreen_Image));
             auto* event = dynamic_cast<rf::EventFullscreenImage*>(base_event);
             if (event) {
@@ -818,7 +818,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // AF_Fullscreen_Color
     {
-        rf::EventType::AF_Fullscreen_Color, [](const rf::EventCreateParams& params) {
+        rf::EventType::AF_Fullscreen_Color, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Fullscreen_Color));
             auto* event = dynamic_cast<rf::EventFullscreenColor*>(base_event);
             if (event) {
