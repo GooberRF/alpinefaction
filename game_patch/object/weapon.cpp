@@ -20,6 +20,18 @@
 static std::array<uint8_t, 64U> weapon_reticle_custom_mask{}; // bit 0 = _0, bit 1 = _1
 static std::pair<bool, bool> rocket_locked_custom_reticle = {false, false};
 
+static bool weapon_is_excluded_from_gaussian_rng(int weapon_type)
+{
+    return weapon_type == rf::shotgun_weapon_type;
+}
+
+static bool weapon_is_excluded_from_first_shot_accuracy(int weapon_type)
+{
+    return weapon_type == rf::shotgun_weapon_type
+        || weapon_type == rf::sniper_rifle_weapon_type
+        || weapon_type == rf::scope_assault_rifle_weapon_type;
+}
+
 CodeInjection weapons_tbl_buffer_overflow_fix_1{
     0x004C6855,
     [](auto& regs) {
@@ -297,7 +309,7 @@ CodeInjection entity_fire_primary_weapon_semi_auto_patch {
         if (should_use_gaussian_spread()) {
             int fire_wait2 = regs.eax;
             if (rf::obj_is_player(entity)){
-                if (!rf::weapon_is_shotgun(weapon_type) && entity->last_fired_timestamp.time_since() > (fire_wait2 * 2)) {
+                if (!weapon_is_excluded_from_first_shot_accuracy(weapon_type) && entity->last_fired_timestamp.time_since() > (fire_wait2 * 2)) {
                     entity->rapid_fire_spread_modifier = 0.0f;
                 }
                 else {
@@ -308,18 +320,20 @@ CodeInjection entity_fire_primary_weapon_semi_auto_patch {
     },
 };
 
-using Vector3_rand_around_dir = void __fastcall(rf::Vector3*, rf::Vector3, float);
-extern CallHook<Vector3_rand_around_dir> Vector3_rand_around_dir_hook;
-void __fastcall Vector3_rand_around_dir_new (rf::Vector3* self, rf::Vector3 dir, float dotfactor)
-{
-    if (should_use_gaussian_spread()) {
-        self->rand_around_dir_gaussian(dir, dotfactor); // replace stock RNG function
-    }
-    else {
-        Vector3_rand_around_dir_hook.call_target(self, dir, dotfactor); // maintain stock behaviour
-    }
-}
-CallHook<Vector3_rand_around_dir> Vector3_rand_around_dir_hook{0x00426639, Vector3_rand_around_dir_new};
+CodeInjection weapon_spread_gaussian_rng_patch{
+    0x00426639,
+    [](auto& regs) {
+        int weapon_type = regs.ebx;
+        if (should_use_gaussian_spread() && !weapon_is_excluded_from_gaussian_rng(weapon_type)) {
+            auto self = reinterpret_cast<rf::Vector3*>(static_cast<void*>(regs.ecx));
+            auto& dir = *reinterpret_cast<rf::Vector3*>(static_cast<void*>(regs.esp));
+            float dotfactor = *reinterpret_cast<float*>(regs.esp + 12);
+            self->rand_around_dir_gaussian(dir, dotfactor);
+            regs.esp += 0x10;
+            regs.eip = 0x0042663E;
+        }
+    },
+};
 
 CodeInjection entity_get_weapon_spread_first_shot_patch {
     0x0042D0C2,
@@ -357,7 +371,7 @@ void apply_weapon_patches()
     autoswitch_empty_weapon_patch.install();
 
     // Apply new spread method using gaussian distribution and first shot accuracy
-    Vector3_rand_around_dir_hook.install();
+    weapon_spread_gaussian_rng_patch.install();
     entity_get_weapon_spread_first_shot_patch.install();
 
     // Apply fire wait to semi auto weapons and adjust values to be reasonable

@@ -94,6 +94,9 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"Mesh_Animate", 145},
                 {"Mesh_Set_Texture", 146},
                 {"Mesh_Set_Collision", 147},
+                {"AF_Fullscreen_Image", 148},
+                {"AF_Fullscreen_Color", 149},
+                {"Unhide_Glare", 150},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -167,6 +170,9 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {145, []() { return new EventMeshAnimate(); }},
                 {146, []() { return new EventMeshSetTexture(); }},
                 {147, []() { return new EventMeshSetCollision(); }},
+                {148, []() { return new EventFullscreenImage(); }},
+                {149, []() { return new EventFullscreenColor(); }},
+                {150, []() { return new EventUnhideGlare(); }},
             };
 
             // find type and allocate
@@ -245,6 +251,9 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {145, [](rf::Event* e) { delete static_cast<EventMeshAnimate*>(e); }},
                 {146, [](rf::Event* e) { delete static_cast<EventMeshSetTexture*>(e); }},
                 {147, [](rf::Event* e) { delete static_cast<EventMeshSetCollision*>(e); }},
+                {148, [](rf::Event* e) { delete static_cast<EventFullscreenImage*>(e); }},
+                {149, [](rf::Event* e) { delete static_cast<EventFullscreenColor*>(e); }},
+                {150, [](rf::Event* e) { delete static_cast<EventUnhideGlare*>(e); }},
             };
 
             // find type and deallocate
@@ -293,7 +302,10 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::When_Round_Ends,
         rf::EventType::Mesh_Animate,
         rf::EventType::Mesh_Set_Texture,
-        rf::EventType::Mesh_Set_Collision
+        rf::EventType::Mesh_Set_Collision,
+        rf::EventType::AF_Fullscreen_Image,
+        rf::EventType::AF_Fullscreen_Color,
+        rf::EventType::Unhide_Glare
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
@@ -784,6 +796,38 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
             auto* event = dynamic_cast<EventMeshSetCollision*>(base_event);
             if (event) {
                 event->collision_type = params.int1;
+            }
+            return event;
+        }
+    },
+    // AF_Fullscreen_Image
+    {
+        rf::EventType::AF_Fullscreen_Image, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Fullscreen_Image));
+            auto* event = dynamic_cast<rf::EventFullscreenImage*>(base_event);
+            if (event) {
+                event->filename = params.str1;
+                event->duration = params.float1;
+                event->transition_time = std::max(0.0f, params.float2);
+                int tt = params.int1;
+                event->transition_type = static_cast<rf::FullscreenTransitionType>(tt >= 0 && tt <= 3 ? tt : 0);
+                event->max_alpha_raw = params.int2;
+            }
+            return event;
+        }
+    },
+    // AF_Fullscreen_Color
+    {
+        rf::EventType::AF_Fullscreen_Color, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::AF_Fullscreen_Color));
+            auto* event = dynamic_cast<rf::EventFullscreenColor*>(base_event);
+            if (event) {
+                event->color_string = params.str1;
+                event->duration = params.float1;
+                event->transition_time = std::max(0.0f, params.float2);
+                int tt = params.int1;
+                event->transition_type = static_cast<rf::FullscreenTransitionType>(tt >= 0 && tt <= 3 ? tt : 0);
+                event->max_alpha_raw = params.int2;
             }
             return event;
         }

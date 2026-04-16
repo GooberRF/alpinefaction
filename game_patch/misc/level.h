@@ -232,8 +232,7 @@ void alpine_mesh_clear_state();
 // Mesh event helpers
 namespace rf { struct Object; }
 const std::string* alpine_mesh_get_corpse_filename(int handle);
-bool alpine_mesh_is_corpse(int handle);
-void alpine_mesh_apply_corpse(rf::Object* obj, const std::string& corpse_filename);
+bool alpine_mesh_spawn_corpse(rf::Object* obj);
 void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);
@@ -259,6 +258,24 @@ struct AlpineCoronaInfo {
 
 void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len);
 void alpine_corona_clear_state();
+
+// Gas region info, loaded from stock RFL chunk 0xB00
+struct GasRegionInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    int32_t shape = 1;       // 1=sphere, 2=box
+    float radius = 1.0f;     // sphere only
+    float height = 1.0f;     // box only
+    float width = 1.0f;      // box only
+    float depth = 1.0f;      // box only
+    rf::Color color{255, 255, 255, 255};
+    float density = 1.0f;
+};
+
+void gas_region_clear_state();
+const std::vector<GasRegionInfo>& gas_region_get_all();
+GasRegionInfo* gas_region_get_by_uid(int uid);
 
 // used by RF2-style geomod
 struct RF2AnchorInfo {

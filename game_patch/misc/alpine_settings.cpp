@@ -47,7 +47,7 @@ AlpineGameSettings g_alpine_game_config;
 
 bool is_d3d11() {
     return g_game_config.renderer == GameConfig::Renderer::d3d11
-        && !client_bot_headless_enabled();
+        && !is_headless_mode();
 }
 
 std::optional<uint32_t> parse_hex_color_string(const std::string& value)
@@ -566,6 +566,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_shadow_quality(std::stoi(settings["ShadowQuality"]));
         processed_keys.insert("ShadowQuality");
     }
+    if (settings.count("ShadowFrameLag")) {
+        g_alpine_game_config.set_shadow_frame_lag(std::stoi(settings["ShadowFrameLag"]));
+        processed_keys.insert("ShadowFrameLag");
+    }
     if (settings.count("Outlines")) {
         g_alpine_game_config.try_outlines = std::stoi(settings["Outlines"]);
         processed_keys.insert("Outlines");
@@ -898,6 +902,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.apply_exposure_damage = std::stoi(settings["ExposureDamage"]);
         processed_keys.insert("ExposureDamage");
     }
+    if (settings.count("ClimbFix")) {
+        g_alpine_game_config.climb_fix = std::stoi(settings["ClimbFix"]);
+        processed_keys.insert("ClimbFix");
+    }
 
     // Load multiplayer settings
     if (settings.count("MultiplayerCharacter")) {
@@ -1225,6 +1233,10 @@ void alpine_core_config_save()
 
 void alpine_player_settings_save(rf::Player* player)
 {
+    if (client_bot_launch_enabled() || is_awpgen_active()) {
+        return;
+    }
+
     std::string filename = alpine_get_settings_filename();
     std::ofstream file(filename);
 
@@ -1341,6 +1353,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShadowItems=" << g_alpine_game_config.shadow_items << "\n";
     file << "ShadowDistance=" << g_alpine_game_config.shadow_distance << "\n";
     file << "ShadowQuality=" << g_alpine_game_config.shadow_quality << "\n";
+    file << "ShadowFrameLag=" << g_alpine_game_config.shadow_frame_lag << "\n";
     file << "Outlines=" << g_alpine_game_config.try_outlines << "\n";
     file << "OutlinesSpectator=" << g_alpine_game_config.outlines_spectator << "\n";
     file << "OutlinesTeamXray=" << g_alpine_game_config.try_outlines_team_xray << "\n";
@@ -1438,6 +1451,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "Autosave=" << g_alpine_game_config.autosave << "\n";
     file << "StaticBombCode=" << g_alpine_game_config.static_bomb_code << "\n";
     file << "ExposureDamage=" << g_alpine_game_config.apply_exposure_damage << "\n";
+    file << "ClimbFix=" << g_alpine_game_config.climb_fix << "\n";
 
     // Multiplayer
     file << "\n[MultiplayerSettings]\n";
@@ -1512,7 +1526,7 @@ void set_alpine_config_defaults() {
     apply_entity_sim_distance();
 }
 
-static void set_headless_bot_defaults()
+static void set_headless_defaults(rf::Player* player, const char* player_name, unsigned max_fps)
 {
     // Apply general defaults first, then override with headless-specific values
     set_alpine_config_defaults();
@@ -1525,17 +1539,28 @@ static void set_headless_bot_defaults()
     g_alpine_game_config.swap_sg_controls = false;
     g_alpine_game_config.direct_input = false;
     g_alpine_game_config.save_console_history = false;
-    g_alpine_game_config.set_max_fps(30);
+    g_alpine_game_config.set_max_fps(max_fps);
     g_alpine_game_config.dbg_bot = false;
     g_loaded_alpine_settings_file = true;
+
+    if (player) {
+        std::strncpy(player->settings.name, player_name, sizeof(player->settings.name) - 1);
+        player->settings.name[sizeof(player->settings.name) - 1] = '\0';
+        player->name = player_name;
+    }
 }
 
 CallHook<void(rf::Player*)> player_settings_load_hook{
     0x004B2726,
     [](rf::Player* player) {
-        // Headless bots skip all settings I/O
-        if (client_bot_headless_enabled()) {
-            set_headless_bot_defaults();
+        // Headless modes skip all settings I/O
+        if (is_headless_mode()) {
+            if (is_awpgen_active()) {
+                set_headless_defaults(player, "af_awpgen", AlpineGameSettings::max_fps_limit);
+            }
+            else {
+                set_headless_defaults(player, "af_bot", 30);
+            }
             return;
         }
 
@@ -1589,7 +1614,7 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
 FunHook<void(rf::Player*)> player_settings_save_hook{
     0x004A8F50,
     [](rf::Player* player) {
-        if (client_bot_launch_enabled()) {
+        if (client_bot_launch_enabled() || is_awpgen_active()) {
             return;
         }
         g_alpine_system_config.save();
@@ -1602,7 +1627,7 @@ CallHook<void(rf::Player*)> player_settings_save_quit_hook{
     [](rf::Player* player) {
         player_settings_save_quit_hook.call_target(player);
 
-        if (client_bot_launch_enabled()) {
+        if (client_bot_launch_enabled() || is_awpgen_active()) {
             return;
         }
 
@@ -1730,6 +1755,21 @@ ConsoleCommand2 shadow_quality_cmd{
     "r_shadowquality <0-5>",
 };
 
+ConsoleCommand2 shadow_frame_lag_cmd{
+    "r_shadowupdateinterval",
+    [](std::optional<int> value_opt) {
+        if (value_opt) {
+            g_alpine_game_config.set_shadow_frame_lag(value_opt.value());
+        }
+        rf::console::print("Shadow update interval: {} (shadow map refreshes every {} frame{})",
+            g_alpine_game_config.shadow_frame_lag,
+            g_alpine_game_config.shadow_frame_lag,
+            g_alpine_game_config.shadow_frame_lag == 1 ? "" : "s");
+    },
+    "Set shadow map update interval in frames (1=every frame, 2-30=reuse cached shadow map)",
+    "r_shadowupdateinterval <1-30>",
+};
+
 ConsoleCommand2 load_settings_cmd{
     "dbg_loadsettings",
     []() {
@@ -1768,6 +1808,7 @@ void alpine_settings_apply_patch()
     shadow_items_cmd.register_cmd();
     shadow_distance_cmd.register_cmd();
     shadow_quality_cmd.register_cmd();
+    shadow_frame_lag_cmd.register_cmd();
     dbg_shadows_cmd.register_cmd();
 
     // Init cmd line

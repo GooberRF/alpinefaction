@@ -36,6 +36,7 @@ namespace df::gr::d3d11
     class MeshRenderer;
     class EntityShadowRenderer;
     class OutlineRenderer;
+    class GammaPass;
 
     class Renderer
     {
@@ -95,6 +96,7 @@ namespace df::gr::d3d11
         void init_device();
         void init_swap_chain(HWND hwnd);
         void init_back_buffer();
+        void init_scene_texture();
         void init_depth_stencil_buffer();
 
         HWND hwnd_;
@@ -103,6 +105,9 @@ namespace df::gr::d3d11
         ComPtr<IDXGISwapChain> swap_chain_;
         ComPtr<ID3D11DeviceContext> context_;
         ComPtr<ID3D11Texture2D> back_buffer_;
+        ComPtr<ID3D11RenderTargetView> back_buffer_rtv_;
+        ComPtr<ID3D11Texture2D> scene_texture_;
+        ComPtr<ID3D11ShaderResourceView> scene_texture_srv_;
         ComPtr<ID3D11Texture2D> msaa_render_target_;
         ComPtr<ID3D11Texture2D> default_render_target_;
         ComPtr<ID3D11RenderTargetView> default_render_target_view_;
@@ -116,6 +121,7 @@ namespace df::gr::d3d11
         std::unique_ptr<MeshRenderer> mesh_renderer_;
         std::unique_ptr<EntityShadowRenderer> entity_shadow_renderer_;
         std::unique_ptr<OutlineRenderer> outline_renderer_;
+        std::unique_ptr<GammaPass> gamma_pass_;
         int render_target_bm_handle_ = -1;
     };
 

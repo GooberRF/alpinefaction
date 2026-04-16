@@ -676,7 +676,7 @@ void misc_init()
 
     // If speed reduction in background is not wanted disable that code in RF.
     // Headless bot clients should always bypass this throttle to keep net/sim stable.
-    if (!g_game_config.reduced_speed_in_background || client_bot_headless_enabled()) {
+    if (!g_game_config.reduced_speed_in_background || is_headless_mode()) {
         write_mem<u8>(0x004353CC, asm_opcodes::jmp_rel_short);
     }
 

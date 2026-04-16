@@ -168,6 +168,21 @@ namespace rf
     };
     static_assert(sizeof(VArray_String<>) == 0xC);
 
+#pragma pack(push, 1)
+    struct BitSet
+    {
+        void* buf;
+        int size_in_bytes;
+        bool is_buffer_allocated;
+
+        void set(int index, int value)
+        {
+            AddrCaller{0x0050EA00}.this_call(this, index, value);
+        }
+    };
+#pragma pack(pop)
+    static_assert(sizeof(BitSet) == 0x9);
+
     template<typename T, int N>
     class FArray
     {

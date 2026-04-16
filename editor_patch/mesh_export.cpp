@@ -14,20 +14,6 @@
 #include "meshes.h"
 #include "mesh.h"
 
-// ─── V3M format constants ───────────────────────────────────────────────────
-
-static constexpr int32_t V3M_SIGNATURE = 0x52463344; // 'RF3D'
-static constexpr int32_t V3D_VERSION = 0x40000;
-static constexpr int32_t V3D_SECTION_SUBMESH = 0x5355424D; // 'SUBM'
-static constexpr int32_t V3D_SECTION_END = 0x00000000;
-static constexpr uint32_t V3D_LOD_TRIANGLE_PLANES = 0x20;
-static constexpr int V3D_ALIGNMENT = 16;
-
-// v3d_batch_info stores positions_size as uint16_t (num_vertices * 12, aligned to 16).
-// 5461 * 12 = 65532, which aligns up to 65536 and overflows uint16_t.
-// 5460 * 12 = 65520, already 16-byte aligned, fits in uint16_t.
-static constexpr size_t MAX_BATCH_VERTICES = 5460;
-
 // ─── Export options (persisted across dialog invocations) ────────────────────
 
 static bool g_opt_drop_mesh_object = false;
@@ -142,7 +128,7 @@ static GatherResult gather_brush_geometry(BrushNode* brush, const Vector3& origi
         Vector3 normal = rotate_vector(orient, face->plane.normal);
 
         size_t vert_count = batch.vertices.size() + face_verts.size();
-        if (vert_count > MAX_BATCH_VERTICES) {
+        if (vert_count > V3D_MAX_BATCH_VERTICES) {
             return GatherResult::vertex_limit;
         }
 
@@ -256,9 +242,6 @@ struct SubmeshData
     std::string name;
     std::vector<ExportBatch> batches;
 };
-
-static constexpr int V3D_MAX_TEXTURES_PER_LOD = 7;
-static constexpr int V3D_MAX_SUBMESHES = 8192;
 
 static void write_submesh_section(BinaryWriter& out, const SubmeshData& submesh)
 {
@@ -416,7 +399,7 @@ static void write_submesh_section(BinaryWriter& out, const SubmeshData& submesh)
     // ── Write section ──
 
     // v3d_section_header
-    out.write_i32(V3D_SECTION_SUBMESH);
+    out.write_i32(V3D_SUBMESH);
     out.write_i32(0);
 
     // v3d_submesh
@@ -503,7 +486,7 @@ static bool write_v3m(const char* filepath, const std::vector<SubmeshData>& subm
     }
 
     // V3D_END
-    out.write_i32(V3D_SECTION_END);
+    out.write_i32(V3D_END);
     out.write_i32(0);
 
     FILE* fp = std::fopen(filepath, "wb");
@@ -709,7 +692,7 @@ void handle_brush_convert()
             std::snprintf(msg, sizeof(msg),
                 "Brush %d has too many vertices sharing a single texture (limit is %zu per texture batch). "
                 "Split the brush or use more distinct textures.",
-                static_cast<int>(si + 1), MAX_BATCH_VERTICES);
+                static_cast<int>(si + 1), V3D_MAX_BATCH_VERTICES);
             show_error_message(msg);
             return;
         }

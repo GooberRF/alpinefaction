@@ -100,6 +100,40 @@ namespace df::gr::d3d11
             total = write;
         }
 
+        // Cull lights that can't reach the mesh (zero attenuation guaranteed).
+        // Without this, the shader evaluates all 32 light slots per pixel even
+        // for lights far beyond their radius, wasting GPU ALU on zero contributions.
+        // Spotlights use a conservative sphere test; the shader handles cone rejection.
+        // Tube lights check distance to nearest point on the segment.
+        {
+            int write = 0;
+            for (int read = 0; read < total; ++read) {
+                const auto* light = gathered_lights[read];
+                float combined_radius = light->rad_2 + mesh_radius;
+                float combined_sq = combined_radius * combined_radius;
+                float dist_sq;
+                if (light->type == rf::gr::LT_TUBE) {
+                    rf::Vector3 seg = light->vec2 - light->vec;
+                    rf::Vector3 delta = pos - light->vec;
+                    float seg_len_sq = seg.len_sq();
+                    if (seg_len_sq > 0.0001f) {
+                        float t = delta.dot_prod(seg) / seg_len_sq;
+                        t = std::clamp(t, 0.0f, 1.0f);
+                        rf::Vector3 closest = light->vec + seg * t;
+                        dist_sq = (pos - closest).len_sq();
+                    } else {
+                        dist_sq = delta.len_sq();
+                    }
+                } else {
+                    dist_sq = (light->vec - pos).len_sq();
+                }
+                if (dist_sq <= combined_sq) {
+                    gathered_lights[write++] = gathered_lights[read];
+                }
+            }
+            total = write;
+        }
+
         // Priority sorting for the 32-light GPU limit.
         // Three tiers, each stable-partitioned to the front:
         //   1. Dynamic lights whose sphere overlaps the mesh (muzzle flashes, explosions, fire)

@@ -280,6 +280,8 @@ namespace rf
     static auto& shoulder_cannon_weapon_type = addr_as_ref<int>(0x0087244C);
     static auto& rail_gun_weapon_type = addr_as_ref<int>(0x00872124);
     static auto& assault_rifle_weapon_type = addr_as_ref<int>(0x00872470);
+    static auto& sniper_rifle_weapon_type = addr_as_ref<int>(0x00872440);
+    static auto& scope_assault_rifle_weapon_type = addr_as_ref<int>(0x0087245C);
     static auto& hide_enemy_bullets = addr_as_ref<bool>(0x005A24D0);
 
     static auto& weapon_lookup_type = addr_as_ref<int(const char*)>(0x004C81F0);

@@ -2368,6 +2368,20 @@ void server_reliable_socket_ready(rf::Player* player)
 {
     // Send bot config once the reliable connection is ready.
     if (player->is_bot) {
+        // Refuse to give a profile if there are already enough bots for the ideal player count
+        const int ideal = g_alpine_server_config_active_rules.ideal_player_count;
+        int bot_count = 0;
+        for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (p.is_bot && &p != player) {
+                ++bot_count;
+            }
+        }
+        if (bot_count >= ideal) {
+            rf::console::print("Bot initialization was rejected because bot count already meets ideal player count of {}\n", ideal);
+            af_send_bot_control_simple(player, af_bot_control_type::disconnect_bot);
+            return;
+        }
+
         const auto& configs = g_alpine_server_config.bot_configs;
         if (!configs.empty()) {
             const int slot = g_bot_profile_slots.assign_slot(player, static_cast<int>(configs.size()));
@@ -2508,8 +2522,6 @@ static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
         rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
     }
 
-    const char* team_name = (new_team == rf::TEAM_RED) ? "Red" : "Blue";
-    af_broadcast_automated_chat_msg(std::format("{} was moved to the {} team", player->name, team_name));
 }
 
 static void balance_teams()
@@ -3719,6 +3731,10 @@ bool server_geo_chunk_physics()
     return g_alpine_server_config_active_rules.geo_chunk_physics;
 }
 
+bool server_clear_stale_movement_input()
+{
+    return g_alpine_server_config_active_rules.clear_stale_movement_input;
+}
 
 bool server_allow_footsteps()
 {
@@ -3762,6 +3778,11 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
     if (!g_alpine_server_config_active_rules.geo_chunk_physics) {
         requires_alpine = true;
         hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 3);
+    }
+
+    if (g_alpine_server_config_active_rules.clear_stale_movement_input) {
+        requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 3);
     }
 

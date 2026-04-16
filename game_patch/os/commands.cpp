@@ -488,7 +488,6 @@ ConsoleCommand2 r_outlines_cmd{
         g_alpine_game_config.try_outlines = !g_alpine_game_config.try_outlines;
         rf::console::print("Player outlines {}.", g_alpine_game_config.try_outlines ? "enabled" : "disabled");
         warn_if_not_d3d11();
-        alpine_core_config_save();
     },
     "Toggle player outlines during gameplay (Direct3D 11 renderer only).",
     "r_outlines",
@@ -500,7 +499,6 @@ ConsoleCommand2 r_outlines_spectator_cmd{
         g_alpine_game_config.outlines_spectator = !g_alpine_game_config.outlines_spectator;
         rf::console::print("Spectator outlines {}.", g_alpine_game_config.outlines_spectator ? "enabled" : "disabled");
         warn_if_not_d3d11();
-        alpine_core_config_save();
     },
     "Toggle player outlines while spectating (Direct3D 11 renderer only).",
     "r_outlines_spectator",
@@ -512,7 +510,6 @@ ConsoleCommand2 r_outlines_team_xray_cmd{
         g_alpine_game_config.try_outlines_team_xray = !g_alpine_game_config.try_outlines_team_xray;
         rf::console::print("Teammate outline x-ray {}.", g_alpine_game_config.try_outlines_team_xray ? "enabled" : "disabled");
         warn_if_not_d3d11();
-        alpine_core_config_save();
     },
     "Toggle showing teammate outlines through walls (Direct3D 11 renderer only).",
     "r_outlines_team_xray",

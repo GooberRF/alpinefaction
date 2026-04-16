@@ -28,6 +28,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/item.h"
 #include "../rf/clutter.h"
+#include "../rf/ui.h"
 #include "gr.h"
 #include "gr_internal.h"
 #include "../misc/alpine_options.h"
@@ -44,7 +45,7 @@ namespace df::gr::d3d11
 
 bool should_bypass_graphics_init_for_headless_bot()
 {
-    return client_bot_headless_enabled() || headless_bot_requested_from_raw_cmdline();
+    return is_headless_mode() || headless_requested_from_raw_cmdline();
 }
 
 CodeInjection gr_init_stretched_window_injection{
@@ -219,9 +220,10 @@ ConsoleCommand2 fov_cmd{
 
 ConsoleCommand2 gamma_cmd{
     "r_gamma",
-    [](std::optional<float> value_opt) {
-        if (value_opt) {
-            rf::gr::set_gamma(value_opt.value());
+    [] (const std::optional<float> gamma) {
+        if (gamma) {
+            rf::gr::set_gamma(*gamma);
+            rf::ui::video_gamma_slider.set_value(*gamma);
         }
         rf::console::print("Gamma: {:.2f}", rf::gr::gamma);
     },
@@ -312,7 +314,7 @@ ConsoleCommand2 disable_rendering_cmd{
 FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
     0x00431A00,
     [](rf::Player* pp, int flags) {
-        if (client_bot_headless_enabled() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
             return;
         }
 
@@ -324,7 +326,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
 FunHook<void()> gameplay_render_frame_pre_hook{
     0x00431820,
     []() {
-        if (client_bot_headless_enabled() || !g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
             return;
         }
 
@@ -584,6 +586,9 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
         df::gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
+        if (is_sky_fix_level(level_filename)) {
+            rf::console::print("Applying sky fix to known affected level {}", level_filename);
+        }
     }
 }
 

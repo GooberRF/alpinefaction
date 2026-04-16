@@ -53,9 +53,7 @@ void af_send_packet(rf::Player* player, const void* data, int len, bool is_relia
     //xlog::info("Sending packet: player={}, size={}, reliable={}", player->name, len, is_reliable);
 
     if (is_reliable) {
-        rf::multi_io_send_buffered_reliable_packets(player);
         rf::multi_io_send_reliable(player, data, len, 0);
-        rf::multi_io_send_buffered_reliable_packets(player);
     }
     else {
         //rf::net_send(player->net_data->addr, data, len);
@@ -1276,6 +1274,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_ALLOW_OUTLINES;
     if (g_alpine_server_config.allow_outlines_xray)
         af |= af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY;
+    if (g_alpine_server_config_active_rules.clear_stale_movement_input)
+        af |= af_server_info_flags::SIF_CLEAR_STALE_MOVEMENT_INPUT;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -1356,6 +1356,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.allow_footsteps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_FOOTSTEPS) != 0;
     server_info.allow_outlines = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES) != 0;
     server_info.allow_outlines_xray = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY) != 0;
+    server_info.clear_stale_movement_input = (pkt.af_flags & af_server_info_flags::SIF_CLEAR_STALE_MOVEMENT_INPUT) != 0;
     server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
 }
 

@@ -125,7 +125,7 @@ void enable_sound_after_cutscene_skip()
 
 void set_sound_enabled(bool enabled)
 {
-    if (client_bot_headless_enabled()) {
+    if (is_headless_mode()) {
         rf::sound_enabled = false;
         return;
     }
@@ -419,7 +419,7 @@ void sound_test_do_frame()
 FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_update_sounds_hook{
      0x00505EC0,
     [](const rf::Vector3& camera_pos, const rf::Vector3& camera_vel, const rf::Matrix3& camera_orient) {
-        if (client_bot_headless_enabled()) {
+        if (is_headless_mode()) {
             rf::sound_enabled = false;
             return;
         }
@@ -619,7 +619,7 @@ void gamesound_parse_custom_sounds()
 CodeInjection gamesound_parse_sounds_table_patch{
     0x00434708,
     []() {
-        if (!rf::is_dedicated_server && !client_bot_headless_enabled()) {
+        if (!rf::is_dedicated_server && !is_headless_mode()) {
             gamesound_parse_custom_sounds();
         }
     },

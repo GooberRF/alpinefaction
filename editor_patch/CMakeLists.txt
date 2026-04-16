@@ -16,6 +16,8 @@ set(SRCS
     textures.cpp
     meshes.cpp
     meshes.h
+    tbl.cpp
+    tbl.h
     trigger.cpp
     vtypes.h
     resources.rc

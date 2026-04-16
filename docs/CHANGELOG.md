@@ -16,6 +16,7 @@ Version 1.3.0 (Bakeapple): Not yet released
   - Add full mesh shadows for entities, corpses, and items
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
   - Support movers, meshes, and mesh pixel lighting in skyboxes
+  - Support gas regions
 - Expanded destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
@@ -37,7 +38,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add speedometer to HUD, bind to `ui_show_speed` console command
 - Make dedicated servers attempt to autodownload missing maps in their rotation from FactionFiles before launching
 - Add `-nodl` command line argument to make dedicated servers not attempt to autodownload missing maps
-- Add `exclude_bots_from_player_count` option to dedicated server config to exclude bots from player count reported to clients
 - Add `sv_loadpackfiles` console command to load packfiles newly added to `user_maps` after server was launched
 - Allow `GibEnemy` achievement to be awarded regardless of whether gore level allows the entity to actually gib
 - Support rcon profiles for dedicated servers
@@ -67,7 +67,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
 - Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
 - Add new and revised `Select Objects` and `Hide Objects` windows in level editor
-- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, and `dbg_shadows` console commands
+- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, `r_shadowupdateinterval [1-30]`, and `dbg_shadows` console commands
 - Add `$Use Vertex Lighting` `mapname_info.tbl` option to restore legacy vertex lighting for meshes
 - Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
 - In TDM match mode, made self kills reduce team score by 1 (floor of 0)
@@ -92,13 +92,22 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Exclude spectators and browsers when counting players for team selection for a newly joining player
 - Consolidate mesh static lighting settings to `r_meshlighting [0-2]` console command
 - Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
+- Add `-awpgen` command line argument to generate an awp for a provided level filename
+- Color kill notifications white if they involve a first person spectatee
+- Add `clear_stale_movement_input` dedicated server config option
+- Display bot counts in `Players` column in server list
+- Make sorting on `Players` column in server list incorporate bot count
+- Add server browser filters for `Alpine`, `Unmodded`, `Modded`, `Match Mode`
+- Add `AF_Fullscreen_Image`, `AF_Fullscreen_Color`, `Unhide_Glare` events
+- Exclude `Shotgun` from gaussian spread
+- Exclude `Precision Rifle` and `Sniper Rifle` from first shot accuracy
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add version and uptime to a server's printed config
 - Default gore level to 1
-- Default `gibbing` to disabled for dedicated servers
+- Default gibbing, outlines, fullbright skins, and lightmap mode to disabled for servers
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Sync animation state for crouched players in first person spectate view
@@ -120,6 +129,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Implement player outlines (D3D11 only)
 - Add `r_outlines`, `r_outlines_spectator`, `r_outlines_team_xray`, `r_outlines_color`, `r_outlines_color_enemy`, `r_outlines_color_team`, `r_outlines_color_team_b`, `r_outlines_color_team_r` for customizing outline behavior and colors
 - Add `allow_outlines` and `allow_outlines_xray` dedicated server configuration options to permit or deny outline usage by clients.
+- Implement shader-based gamma control for D3D11 renderer
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
@@ -136,7 +146,6 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix some string errors when compiled using mingw
 - Fix rare crash when loading skeletons
 - Fix level editor geometry rebuild sometimes reusing stale data from previous builds
-- Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
 - Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
@@ -156,6 +165,26 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix crash in CTF when loading a level that has one flag but not both
 - Fix crash in CTF when attempting to capture a flag in a level that has no other flags
 - Fix mirror and security monitor screens not being fully self-illuminated (Direct3D 11 renderer only)
+- Fix `levelm` not being able to be used unless in main menu
+- Fix `disconnect` not disconnecting a listen server host
+- Fix second use of `levelm` during a game session incorrectly loading the level in single player
+- Fix `levelm` attempting to load invalid level files
+- Fix `levelm` crashing the game when run from a dedicated server
+- Fix rare crash when morphing custom skeletal meshes
+- Fix coronas and sprites flickering as you approach (Direct3D 11 renderer only)
+- Fix mesh backface and UV Unwrap dialog rendering breaking if a fullscreen D3D application is launched while level editor is running
+- Fix MP players being able to poke their head through overhead geometry when uncrouching
+- Fix backfaces not being culled for impact decals (Direct3D 11 renderer only)
+- Fix impact decals behaving weirdly and disappearing when viewed from a distance (Direct3D 11 renderer only)
+- Fix dedicated servers crashing when `Shake_Player` event is activated (e.g. community level `CTF-RFU3_SanFrancisco.rfl`)
+- Fix collision not updating properly when objects are hidden and unhidden
+- Fix clients disconnecting when a piercing weapon (e.g. rail gun) gibs multiple players in a single shot
+- Fix players getting stuck climbing if unable to uncrouch when leaving a climbing region (subject to `sp_climbfix` console command in SP)
+- Fix debris not being created when clutter is destroyed, if the clutter also played an explosion vclip
+- Fix hard cutoff lines on fullbright gradient alpha textures (Direct3D 11 renderer only)
+- Fix level editor autosave causing teleportation during edit operations
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `DM-Blunderscannon~~.rfl`
+- Fix clutter death achievement progress and `AF_When_Dead` not working on all clutter death paths
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
@@ -554,7 +583,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
   - High monitor resolution, Alpine branding, multiplayer tracker, fast animations
   - Max FPS, max server FPS, server netfps
   - Simulation distance, lod distance scale, disable MP character LOD
-  - Join beep, lighting colour range
+  - Join beep, lighting color range
 - Add `SkipCutsceneBindAlias` setting to `alpine_settings.ini`
 - Deprecate `IgnoreSwapAssaultRifleControls` and `IgnoreSwapGrenadeControls` in `af_game.tbl` (no longer needed)
 - Add `dbg_consolehistory` command to toggle whether console history persists between game launches

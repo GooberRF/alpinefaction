@@ -25,6 +25,7 @@ namespace rf
         static const auto &player_name = array[835];
         static const auto &exiting_game = array[884];
         static const auto &usage = array[886];
+        static const auto &incompatible_version = array[891];
         static const auto &level_name = array[920];
         static const auto &level_time = array[922];
         static const auto &days = array[923];

@@ -16,6 +16,7 @@
 #include <common/utils/list-utils.h>
 #include "../../os/console.h"
 #include "../../misc/misc.h"
+#include "../../misc/alpine_options.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_shader.h"
@@ -246,6 +247,7 @@ namespace df::gr::d3d11
         std::map<FaceBatchKey, std::vector<GFace*>> batched_faces_;
         std::map<DecalPolyBatchKey, std::vector<DecalPoly*>> batched_decal_polys_;
         bool is_sky_ = false;
+        bool is_sky_fix_ = is_sky_fix_level(rf::level.filename);
 
     public:
         void add_solid(GSolid* solid);
@@ -331,8 +333,8 @@ namespace df::gr::d3d11
 
     void GRenderCacheBuilder::add_face(GFace* face, GSolid* solid)
     {
-        // HACKFIX: fix skybox rendering issue in dm-rfu-friday.rfl caused by "Show Sky" flag being set on skybox faces
-        if (is_sky_ && face->attributes.is_show_sky() && string_iequals(rf::level.filename, "dm-rfu-friday.rfl")) {
+        // Drop "Show Sky" flag from skybox faces in levels where it causes issues
+        if (is_sky_ && face->attributes.is_show_sky() && is_sky_fix_) {
             face->attributes.flags &= ~FACE_SHOW_SKY;
         }
         if (!should_render_face(face)) {
@@ -718,11 +720,13 @@ namespace df::gr::d3d11
     {
         constexpr int decal_zbias = 1000;
         render_context_.set_zbias(decal_zbias);
+        dyn_geo_renderer_.set_cull_mode(D3D11_CULL_BACK);
     }
 
     void SolidRenderer::after_render_decals()
     {
         dyn_geo_renderer_.flush();
+        dyn_geo_renderer_.set_cull_mode(D3D11_CULL_NONE);
         render_context_.set_zbias(0);
     }
 

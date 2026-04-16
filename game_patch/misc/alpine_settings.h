@@ -206,6 +206,7 @@ struct AlpineGameSettings
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
+    bool climb_fix = true;
     bool killfeed_enabled = false;
     bool autodl_blur_background = true;
     bool autodl_download_awps = false;
@@ -396,6 +397,11 @@ struct AlpineGameSettings
     void set_shadow_quality(int value)
     {
         shadow_quality = std::clamp(value, 0, 5);
+    }
+    int shadow_frame_lag = 1; // 1=every frame (default), 2-30=refresh every N frames
+    void set_shadow_frame_lag(int value)
+    {
+        shadow_frame_lag = std::clamp(value, 1, 30);
     }
 };
 

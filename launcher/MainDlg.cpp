@@ -466,18 +466,18 @@ bool MainDlg::ShouldShowWhatsNew()
 std::string MainDlg::FetchWhatsNewContent()
 {
     constexpr std::string_view content = R"(
-Thanks for updating, and welcome to Alpine Faction v1.2.2!
+Thanks for updating, and welcome to Alpine Faction v1.3.0!
 
 Highlights from this release are listed below. This is not a complete changelog.
 
-Changes:
-- New event for use in custom maps: When_Round_Ends
-- Add dynamic light flashes from explosions
-- Add dynamic light glows from burning entities
-
-Fixes:
-- Fix crash when gibbing corpses in single player
-- Fix crash when loading extremely complex levels using Direct3D 11 renderer
+- New advanced multiplayer bots system
+- Realtime shadows and pixel lighting for meshes
+- New level autodownloader GUI
+- New FF Link workflow in launcher
+- Vastly improved spectator mode
+- Player outlines and footsteps
+- Expanded destruction capabilities for designers
+- Many stability and performance improvements
 
 If you run into issues, have questions, or just want to join the active community, click the Discord icon in the main launcher window to drop by the Red Faction Community Discord.
 )";
