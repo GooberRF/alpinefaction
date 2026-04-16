@@ -102,6 +102,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Exclude `Shotgun` from gaussian spread
 - Exclude `Precision Rifle` and `Sniper Rifle` from first shot accuracy
 - Add `Gas_Region_State`, `Modify_Gas_Region`, `Resize_Gas_Region` events
+- Add `require_d3d11` to dedicated server config
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

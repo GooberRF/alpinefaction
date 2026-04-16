@@ -115,7 +115,8 @@ enum class AlpineRestrictVerdict : uint8_t
     ok = 0,
     need_alpine = 1,
     need_release = 2,
-    need_update = 3
+    need_update = 3,
+    need_d3d11 = 4,
 };
 
 extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
