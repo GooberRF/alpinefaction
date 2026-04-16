@@ -1104,14 +1104,14 @@ void populate_fullscreen_overlay_events()
 
     auto image_events = rf::find_all_events_by_type(rf::EventType::AF_Fullscreen_Image);
     for (rf::Event* event : image_events) {
-        if (auto* overlay = dynamic_cast<rf::EventFullscreenOverlayBase*>(event)) {
+        if (auto* overlay = dynamic_cast<EventFullscreenOverlayBase*>(event)) {
             fullscreen_overlay_events.insert(overlay);
         }
     }
 
     auto color_events = rf::find_all_events_by_type(rf::EventType::AF_Fullscreen_Color);
     for (rf::Event* event : color_events) {
-        if (auto* overlay = dynamic_cast<rf::EventFullscreenOverlayBase*>(event)) {
+        if (auto* overlay = dynamic_cast<EventFullscreenOverlayBase*>(event)) {
             fullscreen_overlay_events.insert(overlay);
         }
     }

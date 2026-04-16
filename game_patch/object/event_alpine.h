@@ -460,12 +460,12 @@ struct EventHUDMessage : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventHUDMessage*>(event);
             this_event->message = value;
         };
 
-        handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventHUDMessage*>(event);
             this_event->duration = std::stof(value);
         };
@@ -492,7 +492,7 @@ struct EventPlayVideo : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventPlayVideo*>(event);
             this_event->filename = value;
         };
@@ -514,7 +514,7 @@ struct EventSetLevelHardness : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetLevelHardness*>(event);
             this_event->hardness = std::stoi(value);
         };
@@ -536,7 +536,7 @@ struct EventSequence : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSequence*>(event);
             this_event->next_link_index = std::stoi(value);
         };
@@ -591,7 +591,7 @@ struct EventRemoveLink : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventRemoveLink*>(event);
             this_event->remove_all = (value == "true");
         };
@@ -635,17 +635,17 @@ struct EventRouteNode : rf::Event
 
         auto& handlers = variable_handler_storage[this];
 
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventRouteNode*>(event);
             this_event->behaviour = static_cast<RouteNodeBehavior>(std::stoi(value));
         };
 
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventRouteNode*>(event);
             this_event->fixed = (value == "true");
         };
 
-        handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventRouteNode*>(event);
             this_event->clear_trigger_info = (value == "true");
         };
@@ -664,12 +664,12 @@ struct EventAddLink : rf::Event
 
         auto& handlers = variable_handler_storage[this];
 
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAddLink*>(event);
             this_event->subject_uid = std::stoi(value);
         };
 
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAddLink*>(event);
             this_event->inbound = (value == "true");
         };
@@ -710,7 +710,7 @@ struct EventValidGate : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventValidGate*>(event);
             this_event->check_uid = std::stoi(value);
         };
@@ -755,17 +755,17 @@ struct EventGoalMath : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventGoalMath*>(event);
             this_event->goal = value;
         };
 
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventGoalMath*>(event);
             this_event->operation = static_cast<GoalMathOperation>(std::stoi(value));
         };
 
-        handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventGoalMath*>(event);
             this_event->operation_value = std::stoi(value);
         };
@@ -904,17 +904,17 @@ struct EventGoalGate : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventGoalGate*>(event);
             this_event->goal = value;
         };
 
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventGoalGate*>(event);
             this_event->test_type = static_cast<GoalGateTests>(std::stoi(value));
         };
 
-        handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventGoalGate*>(event);
             this_event->test_value = std::stoi(value);
         };
@@ -1040,7 +1040,7 @@ struct EventScopeGate : rf::Event
 
         auto& handlers = variable_handler_storage[this];
 
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventScopeGate*>(event);
             this_event->scope = static_cast<ScopeGateTests>(std::stoi(value));
         };
@@ -1111,12 +1111,12 @@ struct EventInsideGate : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventInsideGate*>(event);
             this_event->check_uid = std::stoi(value);
         };
 
-        handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventInsideGate*>(event);
             this_event->subject_type = static_cast<GoalInsideCheckSubject>(std::stoi(value));
         };
@@ -1240,7 +1240,7 @@ struct EventSetDifficulty : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetDifficulty*>(event);
             this_event->difficulty = static_cast<rf::GameDifficultyLevel>(std::stoi(value));
         };
@@ -1262,7 +1262,7 @@ struct EventSetFogFarClip : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetFogFarClip*>(event);
             this_event->far_clip = std::stof(value);
         };
@@ -1284,7 +1284,7 @@ struct EventAFWhenDead : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFWhenDead*>(event);
             this_event->any_dead = (value == "true");
         };
@@ -1376,7 +1376,7 @@ struct EventGametypeGate : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventGametypeGate*>(event);
             this_event->gametype = static_cast<rf::NetGameType>(std::stoi(value));
         };
@@ -1447,22 +1447,22 @@ struct EventSetSkybox : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetSkybox*>(event);
             this_event->new_sky_room_uid = std::stoi(value);
         };
 
-        handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetSkybox*>(event);
             this_event->new_sky_room_anchor_uid = std::stoi(value);
         };
 
-        handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetSkybox*>(event);
             this_event->position_scale = std::stof(value);
         };
 
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetSkybox*>(event);
             this_event->relative_position = (value == "true");
         };
@@ -1490,7 +1490,7 @@ struct EventSetLife : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetLife*>(event);
             this_event->new_life = std::stof(value);
         };
@@ -1522,27 +1522,27 @@ struct EventSetDebris : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetDebris*>(event);
             this_event->debris_filename = value;
         };
 
-        handlers[SetVarOpts::str2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetDebris*>(event);
             this_event->debris_sound_set = value;
         };
 
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetDebris*>(event);
             this_event->explode_anim_vclip = std::stoi(value);
         };
 
-        handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetDebris*>(event);
             this_event->explode_anim_radius = std::stof(value);
         };
 
-        handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetDebris*>(event);
             this_event->debris_velocity = std::stof(value);
         };
@@ -1584,7 +1584,7 @@ struct EventSetFogColor : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetFogColor*>(event);
             this_event->fog_color = value;
         };
@@ -1612,7 +1612,7 @@ struct EventSetEntityFlag : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetEntityFlag*>(event);
             this_event->flag = static_cast<SetEntityFlagOption>(std::stoi(value));
         };
@@ -1738,22 +1738,22 @@ struct EventAFTeleportPlayer : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
             this_event->reset_velocity = (value == "true");
         };
 
-        handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
             this_event->force_exit_vehicle = (value == "true");
         };
 
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
             this_event->entrance_vclip = value;
         };
 
-        handlers[SetVarOpts::str2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
             this_event->exit_vclip = value;
         };
@@ -1837,7 +1837,7 @@ struct EventSetItemDrop : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetItemDrop*>(event);
             this_event->item_name = value;
         };
@@ -1873,22 +1873,22 @@ struct EventAFHeal : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFHeal*>(event);
             this_event->amount = std::stoi(value);
         };
 
-        handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFHeal*>(event);
             this_event->target = static_cast<AFHealTargetOption>(std::stoi(value));
         };
 
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFHeal*>(event);
             this_event->apply_to_armor = (value == "true");
         };
 
-        handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventAFHeal*>(event);
             this_event->super = (value == "true");
         };
@@ -2102,12 +2102,12 @@ struct EventSetLightColor : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetLightColor*>(event);
             this_event->light_color = value;
         };
 
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetLightColor*>(event);
             this_event->randomize = (value == "true");
         };
@@ -2158,17 +2158,17 @@ struct EventCapturePointHandler : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventCapturePointHandler*>(event);
             this_event->name = value;
         };
 
-        handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventCapturePointHandler*>(event);
             this_event->outline_offset = std::stof(value);
         };
 
-        handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventCapturePointHandler*>(event);
             this_event->capture_rate = std::stof(value);
         };
@@ -2218,12 +2218,12 @@ struct EventModifyRespawnPoint : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventModifyRespawnPoint*>(event);
             this_event->red = (value == "true");
         };
 
-        handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::bool2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventModifyRespawnPoint*>(event);
             this_event->blue = (value == "true");
         };
@@ -2299,7 +2299,7 @@ struct EventSetCapturePointOwner : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetCapturePointOwner*>(event);
             this_event->owner = std::stoi(value);
         };
@@ -2357,12 +2357,12 @@ struct EventOwnerGate : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventOwnerGate*>(event);
             this_event->handler_uid = std::stoi(value);
         };
 
-        handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventOwnerGate*>(event);
             this_event->required_owner = std::stoi(value);
         };
@@ -2418,7 +2418,7 @@ struct EventSetGameplayRule : rf::Event
         rf::Event::register_variable_handlers();
 
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* this_event = static_cast<EventSetGameplayRule*>(event);
             this_event->rule = static_cast<GameplayRule>(std::stoi(value));
         };
@@ -2498,15 +2498,15 @@ struct EventMeshAnimate : rf::Event
     {
         rf::Event::register_variable_handlers();
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshAnimate*>(event);
             e->animate_type = std::stoi(value);
         };
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshAnimate*>(event);
             e->anim_filename = value;
         };
-        handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshAnimate*>(event);
             e->blend_weight = std::stof(value);
         };
@@ -2540,11 +2540,11 @@ struct EventMeshSetTexture : rf::Event
     {
         rf::Event::register_variable_handlers();
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshSetTexture*>(event);
             e->texture_slot = std::stoi(value);
         };
-        handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshSetTexture*>(event);
             e->texture_filename = value;
         };
@@ -2581,7 +2581,7 @@ struct EventMeshSetCollision : rf::Event
     {
         rf::Event::register_variable_handlers();
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventMeshSetCollision*>(event);
             e->collision_type = std::stoi(value);
         };
@@ -2620,23 +2620,23 @@ struct EventFullscreenOverlayBase : rf::Event
 
     void register_variable_handlers() override
     {
-        Event::register_variable_handlers();
+        rf::Event::register_variable_handlers();
         auto& handlers = variable_handler_storage[this];
-        handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventFullscreenOverlayBase*>(event);
             e->duration = std::stof(value);
         };
-        handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::float2] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventFullscreenOverlayBase*>(event);
             e->transition_time = std::max(0.0f, std::stof(value));
         };
-        handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventFullscreenOverlayBase*>(event);
             int raw = std::stoi(value);
             if (raw < 0 || raw > 3) raw = 0;
             e->transition_type = static_cast<FullscreenTransitionType>(raw);
         };
-        handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
             auto* e = static_cast<EventFullscreenOverlayBase*>(event);
             e->max_alpha_raw = std::stoi(value);
         };
