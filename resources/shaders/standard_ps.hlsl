@@ -383,10 +383,13 @@ float4 main(VsOutput input) : SV_TARGET
 
     // Gas region volumetric fog — front-to-back compositing with distance sorting
     // Detect pre-transformed vertices via dummy normal (transformed_vs outputs norm=(0,0,0)).
-    // For those, reconstruct world pos if fog is allowed (dynamic decals); skip if not (particles).
+    // For those, reconstruct world pos from depth (particles, sprites, dynamic decals, etc.).
+    // Transmittance (dimming) is always applied so sprites behind gas appear occluded.
+    // Gas color accumulation is only added when fog is allowed, to avoid artifacts with
+    // additive blending (e.g. muzzle flash) where the background already contains the gas color.
     float3 gas_world_pos = input.world_pos_and_depth.xyz;
     bool is_pretransformed = dot(input.norm, input.norm) == 0.0f;
-    bool can_reconstruct = is_pretransformed && gas_fog_allowed > 0.5f && input.world_pos_and_depth.w > 0.0f;
+    bool can_reconstruct = is_pretransformed && input.world_pos_and_depth.w > 0.0f;
     int gas_count = min(num_gas_regions, MAX_GAS_REGIONS);
     if (gas_count > 0 && (!is_pretransformed || can_reconstruct)) {
         // Reconstruct world position for pre-transformed vertices (dynamic decals, etc.)
@@ -529,7 +532,10 @@ float4 main(VsOutput input) : SV_TARGET
             prev_t = cur_t;
         }
 
-        target.rgb = target.rgb * gas_transmittance + gas_accumulated;
+        target.rgb = target.rgb * gas_transmittance;
+        if (!can_reconstruct || gas_fog_allowed > 0.5f) {
+            target.rgb += gas_accumulated;
+        }
     }
 
     if (colorblind_mode > 0.5f) {
