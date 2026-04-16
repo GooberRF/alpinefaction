@@ -182,6 +182,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix hard cutoff lines on fullbright gradient alpha textures (Direct3D 11 renderer only)
 - Fix level editor autosave causing teleportation during edit operations
 - Fix skybox rendering issues with Direct3D 11 renderer on community level `DM-Blunderscannon~~.rfl`
+- Fix clutter death achievement progress and `AF_When_Dead` not working on all clutter death paths
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

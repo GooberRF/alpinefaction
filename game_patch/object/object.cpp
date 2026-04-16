@@ -397,6 +397,25 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
     },
 };
 
+// Catch clutter deaths from all code paths
+FunHook<void(rf::Object*)> obj_flag_dead_hook{
+    0x0048AB40,
+    [](rf::Object* objp) {
+        if (objp->type == rf::OT_CLUTTER && !(objp->obj_flags & rf::OF_DELAYED_DELETE)) {
+            rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
+
+            if (!rf::is_multi && is_achievement_system_initialized()) {
+                achievement_check_clutter_death(cp);
+            }
+
+            rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
+        }
+
+        obj_flag_dead_hook.call_target(objp);
+    },
+};
+
+// Corpse spawn for alpine meshes
 CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
     {
         0x0040FE31,
@@ -405,15 +424,7 @@ CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
         0x004101F4
     },
     [](rf::Object* objp) {
-        //xlog::warn("killing clutter UID {}, name {}", objp->uid, objp->name);
-
         rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
-
-        if (!rf::is_multi && is_achievement_system_initialized() && cp) {
-            achievement_check_clutter_death(cp);
-        }
-
-        rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
 
         // Check for alpine mesh corpse: if this is an alpine mesh (info_index == -1)
         // with a corpse filename, spawn a separate corpse object and let the original die.
@@ -443,7 +454,6 @@ static void client_alpine_mesh_on_death(rf::Object* objp)
 {
     rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
     if (cp->info_index == -1) {
-        rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
         alpine_mesh_spawn_corpse(objp);
     }
 }
@@ -512,8 +522,9 @@ void object_do_patch()
     obj_hide_hook.install();
     obj_unhide_hook.install();
 
-    // Support AF_When_Dead events
+    // Support AF_When_Dead events and achievement checks for clutter deaths
     entity_on_dead_hook.install();
+    obj_flag_dead_hook.install();
     obj_flag_dead_clutter_hook.install();
 
     // Hook client-side clutter_kill and clutter_udate packets for alpine mesh corpse + event support
