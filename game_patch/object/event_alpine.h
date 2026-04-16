@@ -2978,7 +2978,7 @@ namespace rf
                             gas_region->radius = sphere_radius;
                         }
                         else if (shape == 2) { // box - parsed as "H W D"
-                            auto dims = Vector3::from_string(box_dimensions, {1.0f, 1.0f, 1.0f});
+                            auto dims = Vector3::from_string(box_dimensions, Vector3{1.0f, 1.0f, 1.0f});
                             gas_region->height = dims.x;
                             gas_region->width = dims.y;
                             gas_region->depth = dims.z;
