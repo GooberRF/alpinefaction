@@ -406,6 +406,15 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Unhide_Glare"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "Gas_Region_State"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Modify_Gas_Region"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Resize_Gas_Region"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------

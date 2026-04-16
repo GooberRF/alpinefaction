@@ -78,7 +78,10 @@ enum class AlpineDedEventID : int
     Mesh_Set_Collision,
     AF_Fullscreen_Image,
     AF_Fullscreen_Color,
-    Unhide_Glare
+    Unhide_Glare,
+    Gas_Region_State,
+    Modify_Gas_Region,
+    Resize_Gas_Region
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept

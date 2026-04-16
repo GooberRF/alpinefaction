@@ -97,6 +97,9 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"AF_Fullscreen_Image", 148},
                 {"AF_Fullscreen_Color", 149},
                 {"Unhide_Glare", 150},
+                {"Gas_Region_State", 151},
+                {"Modify_Gas_Region", 152},
+                {"Resize_Gas_Region", 153},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -173,6 +176,9 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {148, []() { return new rf::EventFullscreenImage(); }},
                 {149, []() { return new rf::EventFullscreenColor(); }},
                 {150, []() { return new rf::EventUnhideGlare(); }},
+                {151, []() { return new rf::EventGasRegionState(); }},
+                {152, []() { return new rf::EventModifyGasRegion(); }},
+                {153, []() { return new rf::EventResizeGasRegion(); }},
             };
 
             // find type and allocate
@@ -253,6 +259,9 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {148, [](rf::Event* e) { delete static_cast<rf::EventFullscreenImage*>(e); }},
                 {149, [](rf::Event* e) { delete static_cast<rf::EventFullscreenColor*>(e); }},
                 {150, [](rf::Event* e) { delete static_cast<rf::EventUnhideGlare*>(e); }},
+                {151, [](rf::Event* e) { delete static_cast<rf::EventGasRegionState*>(e); }},
+                {152, [](rf::Event* e) { delete static_cast<rf::EventModifyGasRegion*>(e); }},
+                {153, [](rf::Event* e) { delete static_cast<rf::EventResizeGasRegion*>(e); }},
             };
 
             // find type and deallocate
@@ -304,7 +313,10 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Mesh_Set_Collision,
         rf::EventType::AF_Fullscreen_Image,
         rf::EventType::AF_Fullscreen_Color,
-        rf::EventType::Unhide_Glare
+        rf::EventType::Unhide_Glare,
+        rf::EventType::Gas_Region_State,
+        rf::EventType::Modify_Gas_Region,
+        rf::EventType::Resize_Gas_Region
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
@@ -827,6 +839,31 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
                 int tt = params.int1;
                 event->transition_type = static_cast<rf::FullscreenTransitionType>(tt >= 0 && tt <= 3 ? tt : 0);
                 event->max_alpha_raw = params.int2;
+            }
+            return event;
+        }
+    },
+    // Modify_Gas_Region
+    {
+        rf::EventType::Modify_Gas_Region, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Modify_Gas_Region));
+            auto* event = dynamic_cast<rf::EventModifyGasRegion*>(base_event);
+            if (event) {
+                event->color_string = params.str1;
+                event->density = params.float1;
+            }
+            return event;
+        }
+    },
+    // Resize_Gas_Region
+    {
+        rf::EventType::Resize_Gas_Region, [](const rf::EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Resize_Gas_Region));
+            auto* event = dynamic_cast<rf::EventResizeGasRegion*>(base_event);
+            if (event) {
+                event->shape = params.int1 + 1; // dropdown index counts from 0, must be incremented
+                event->sphere_radius = params.float1;
+                event->box_dimensions = params.str1;
             }
             return event;
         }

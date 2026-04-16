@@ -2877,4 +2877,119 @@ namespace rf
         }
     };
 
+    // id 151
+    struct EventGasRegionState : Event
+    {
+        void turn_on() override
+        {
+            for (const auto& linked_uid : this->links) {
+                if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                    gas_region->enabled = true;
+                }
+            }
+        }
+
+        void turn_off() override
+        {
+            for (const auto& linked_uid : this->links) {
+                if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                    gas_region->enabled = false;
+                }
+            }
+        }
+    };
+
+    // id 152
+    struct EventModifyGasRegion : Event
+    {
+        std::string color_string;
+        float density = 1.0f;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventModifyGasRegion*>(event);
+                this_event->color_string = value;
+            };
+
+            handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventModifyGasRegion*>(event);
+                this_event->density = std::stof(value);
+            };
+        }
+
+        void turn_on() override
+        {
+            try {
+                Color color = Color::from_rgb_string(color_string);
+
+                for (const auto& linked_uid : this->links) {
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        gas_region->color = color;
+                        gas_region->density = density;
+                    }
+                }
+            }
+            catch (const std::exception& e) {
+                xlog::error("Modify_Gas_Region ({}) failed: {}", this->uid, e.what());
+            }
+        }
+    };
+
+    // id 153
+    struct EventResizeGasRegion : Event
+    {
+        int shape = 1; // 1=sphere, 2=box
+        float sphere_radius = 1.0f;
+        std::string box_dimensions; // HWD
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventResizeGasRegion*>(event);
+                this_event->shape = std::stoi(value);
+            };
+
+            handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventResizeGasRegion*>(event);
+                this_event->sphere_radius = std::stof(value);
+            };
+
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventResizeGasRegion*>(event);
+                this_event->box_dimensions = value;
+            };
+        }
+
+        void turn_on() override
+        {
+            try {
+                for (const auto& linked_uid : this->links) {
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        gas_region->shape = shape;
+
+                        if (shape == 1) { // sphere
+                            gas_region->radius = sphere_radius;
+                        }
+                        else if (shape == 2) { // box - parsed as "H W D"
+                            auto dims = Vector3::from_string(box_dimensions, {1.0f, 1.0f, 1.0f});
+                            gas_region->height = dims.x;
+                            gas_region->width = dims.y;
+                            gas_region->depth = dims.z;
+                        }
+                    }
+                }
+            }
+            catch (const std::exception& e) {
+                xlog::error("Resize_Gas_Region ({}) failed: {}", this->uid, e.what());
+            }
+        }
+    };
+
 } // namespace rf

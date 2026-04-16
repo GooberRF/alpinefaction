@@ -101,6 +101,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `AF_Fullscreen_Image`, `AF_Fullscreen_Color`, `Unhide_Glare` events
 - Exclude `Shotgun` from gaussian spread
 - Exclude `Precision Rifle` and `Sniper Rifle` from first shot accuracy
+- Add `Gas_Region_State`, `Modify_Gas_Region`, `Resize_Gas_Region` events
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

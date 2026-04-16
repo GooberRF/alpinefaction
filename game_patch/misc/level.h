@@ -271,6 +271,7 @@ struct GasRegionInfo {
     float depth = 1.0f;      // box only
     rf::Color color{255, 255, 255, 255};
     float density = 1.0f;
+    bool enabled = true;
 };
 
 void gas_region_clear_state();

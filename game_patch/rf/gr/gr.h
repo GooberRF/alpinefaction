@@ -44,9 +44,13 @@ namespace rf::gr
 
         static Color from_rgb_string(const std::string& rgb_string, ubyte alpha = 255)
         {
+            if (rgb_string.empty()) {
+                return Color(255, 255, 255, alpha);
+            }
+
             // remove < and > if present (for compatibility with format from level properties)
             std::string cleaned_string = rgb_string;
-            if (rgb_string.front() == '<' && rgb_string.back() == '>') {
+            if (cleaned_string.front() == '<' && cleaned_string.back() == '>') {
                 cleaned_string = rgb_string.substr(1, rgb_string.size() - 2);
             }
 
@@ -60,6 +64,7 @@ namespace rf::gr
 
             return Color(values[0], values[1], values[2], alpha);
         }
+
     };
 
     struct BaseVertex
