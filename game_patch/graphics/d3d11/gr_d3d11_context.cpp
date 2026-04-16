@@ -404,15 +404,6 @@ namespace df::gr::d3d11
 
         GasRegionBufferData data{};
         data.eye_pos = {rf::gr::eye_pos.x, rf::gr::eye_pos.y, rf::gr::eye_pos.z};
-        data.num_gas_regions = std::min(static_cast<int>(gas_regions.size()), max_gas_regions);
-        if (static_cast<int>(gas_regions.size()) > max_gas_regions) {
-            static bool warned = false;
-            if (!warned) {
-                xlog::warn("[GasRegion] Level has {} gas regions but GPU limit is {}; excess will not render",
-                    gas_regions.size(), max_gas_regions);
-                warned = true;
-            }
-        }
 
         // Camera orientation for world pos reconstruction from pre-transformed vertices
         const auto& m = rf::gr::eye_matrix;
@@ -424,9 +415,13 @@ namespace df::gr::d3d11
         data.viewport_w = static_cast<float>(rf::gr::screen.clip_width);
         data.viewport_h = static_cast<float>(rf::gr::screen.clip_height);
 
-        for (int i = 0; i < data.num_gas_regions; i++) {
+        int gpu_index = 0;
+        for (size_t i = 0; i < gas_regions.size() && gpu_index < max_gas_regions; i++) {
             const auto& src = gas_regions[i];
-            auto& dst = data.regions[i];
+            if (!src.enabled) {
+                continue;
+            }
+            auto& dst = data.regions[gpu_index];
 
             dst.center = {src.pos.x, src.pos.y, src.pos.z};
             dst.density = src.density;
@@ -446,7 +441,10 @@ namespace df::gr::d3d11
             dst.orient_r0 = {o.rvec.x, o.uvec.x, o.fvec.x};
             dst.orient_r1 = {o.rvec.y, o.uvec.y, o.fvec.y};
             dst.orient_r2 = {o.rvec.z, o.uvec.z, o.fvec.z};
+
+            gpu_index++;
         }
+        data.num_gas_regions = gpu_index;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
