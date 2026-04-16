@@ -325,8 +325,8 @@ CodeInjection weapon_spread_gaussian_rng_patch{
     [](auto& regs) {
         int weapon_type = regs.ebx;
         if (should_use_gaussian_spread() && !weapon_is_excluded_from_gaussian_rng(weapon_type)) {
-            auto self = reinterpret_cast<rf::Vector3*>(regs.ecx);
-            auto& dir = *reinterpret_cast<rf::Vector3*>(regs.esp);
+            auto self = reinterpret_cast<rf::Vector3*>(static_cast<void*>(regs.ecx));
+            auto& dir = *reinterpret_cast<rf::Vector3*>(static_cast<void*>(regs.esp));
             float dotfactor = *reinterpret_cast<float*>(regs.esp + 12);
             self->rand_around_dir_gaussian(dir, dotfactor);
             regs.esp += 0x10;
