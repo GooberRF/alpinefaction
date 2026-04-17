@@ -38,6 +38,11 @@ namespace df::gr::d3d11
     extern float g_level_pixel_light_overbright;
     void evaluate_pixel_light_overbright(const std::string& level_filename);
 
+    // Alpha test threshold for ZBUFFER_TYPE_FULL_ALPHA_TEST, updated at level load.
+    // Stock D3D8 value is 16/255; default is 1/255 for better gradient rendering.
+    extern float g_alpha_test_threshold;
+    void evaluate_alpha_test_threshold(const std::string& level_filename);
+
     void on_character_fullbright_state_changed();
     void on_static_vertex_color_state_changed(rf::VifLodMesh* changed_lod_mesh = nullptr);
 

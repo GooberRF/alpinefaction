@@ -17,6 +17,7 @@
 #include "../../rf/character.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
+#include "../../misc/alpine_options.h"
 #include "../../rf/level.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
@@ -43,6 +44,17 @@ namespace df::gr::d3d11
     }
 
     float g_level_pixel_light_overbright = 0.5f;
+    float g_alpha_test_threshold = 1.0f / 255.0f;
+
+    void evaluate_alpha_test_threshold(const std::string& level_filename)
+    {
+        if (is_stock_alpha_test_level(level_filename)) {
+            g_alpha_test_threshold = 16.0f / 255.0f;
+        }
+        else {
+            g_alpha_test_threshold = 1.0f / 255.0f;
+        }
+    }
 
     void evaluate_pixel_light_overbright(const std::string& level_filename)
     {

@@ -233,6 +233,11 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
                         df::gr::d3d11::g_level_pixel_light_overbright, level_filename);
                 }
             }
+
+            df::gr::d3d11::evaluate_alpha_test_threshold(level_filename);
+            if (is_stock_alpha_test_level(level_filename)) {
+                rf::console::print("Applying stock alpha test threshold to known affected level {}", level_filename);
+            }
         }
 
         // Notify about lightmap clamping TBL overrides
