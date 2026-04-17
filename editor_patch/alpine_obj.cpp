@@ -1365,6 +1365,26 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                         corona->type = DedObjectType::DED_CORONA;
                         corona->pos = clutter->pos;
                         corona->orient = clutter->orient;
+                        auto* vm = static_cast<EditorVMesh*>(clutter->vmesh);
+                        if (vm) {
+                            int tag_idx = vmesh_find_tag_by_name(vm, "corona");
+                            if (tag_idx >= 0) {
+                                Vector3 tp;
+                                Matrix3 to;
+                                vmesh_get_tag_local_transform(vm, &tp, &to, tag_idx);
+                                auto& m = clutter->orient;
+                                auto xform_vec = [&](const Vector3& v) -> Vector3 {
+                                    return {
+                                        m.rvec.x * v.x + m.uvec.x * v.y + m.fvec.x * v.z,
+                                        m.rvec.y * v.x + m.uvec.y * v.y + m.fvec.y * v.z,
+                                        m.rvec.z * v.x + m.uvec.z * v.y + m.fvec.z * v.z,
+                                    };
+                                };
+                                auto wp = xform_vec(tp);
+                                corona->pos = {clutter->pos.x + wp.x, clutter->pos.y + wp.y, clutter->pos.z + wp.z};
+                                corona->orient = {xform_vec(to.rvec), xform_vec(to.uvec), xform_vec(to.fvec)};
+                            }
+                        }
                         corona->script_name.assign_0("Corona");
                         corona->uid = generate_uid();
 
