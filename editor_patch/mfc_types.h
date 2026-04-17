@@ -154,6 +154,8 @@ struct Vector3
 
     Vector3() = default;
     Vector3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+
+    Vector3 operator+(const Vector3& b) const { return {x + b.x, y + b.y, z + b.z}; }
 };
 static_assert(sizeof(Vector3) == 0xC, "Vector3 size mismatch!");
 
@@ -165,6 +167,20 @@ struct Matrix3
 
     Matrix3() = default;
     Matrix3(const Vector3& r, const Vector3& u, const Vector3& f) : rvec(r), uvec(u), fvec(f) {}
+
+    // Matrix * vector (column multiply)
+    Vector3 operator*(const Vector3& v) const {
+        return {
+            rvec.x * v.x + uvec.x * v.y + fvec.x * v.z,
+            rvec.y * v.x + uvec.y * v.y + fvec.y * v.z,
+            rvec.z * v.x + uvec.z * v.y + fvec.z * v.z,
+        };
+    }
+
+    // Matrix * matrix
+    Matrix3 operator*(const Matrix3& b) const {
+        return {*this * b.rvec, *this * b.uvec, *this * b.fvec};
+    }
 };
 static_assert(sizeof(Matrix3) == 0x24, "Matrix3 size mismatch!");
 
