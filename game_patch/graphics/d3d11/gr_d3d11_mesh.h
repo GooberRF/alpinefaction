@@ -174,6 +174,7 @@ namespace df::gr::d3d11
         VertexShaderAndLayout standard_vertex_shader_;
         VertexShaderAndLayout character_vertex_shader_;
         ComPtr<ID3D11PixelShader> pixel_shader_;
+        ComPtr<ID3D11PixelShader> pixel_shader_no_gas_;
         BufferWrapper v3d_vb_;
         BufferWrapper v3d_ib_;
         uint64_t last_static_vertex_color_generation_ = 0;

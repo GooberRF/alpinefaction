@@ -67,6 +67,7 @@ namespace df::gr::d3d11
         RingBuffer<rf::ushort> index_ring_buffer_;
         VertexShaderAndLayout vertex_shader_;
         ComPtr<ID3D11PixelShader> std_pixel_shader_;
+        ComPtr<ID3D11PixelShader> std_pixel_shader_no_gas_;
         ComPtr<ID3D11PixelShader> ui_pixel_shader_;
         State state_;
         std::function<void()> pre_flush_callback_;

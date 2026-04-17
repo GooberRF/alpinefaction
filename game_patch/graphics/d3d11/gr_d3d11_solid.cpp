@@ -631,6 +631,7 @@ namespace df::gr::d3d11
     {
         vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::standard);
         pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
+        pixel_shader_no_gas_ = shader_manager.get_pixel_shader(PixelShaderId::standard_no_gas);
     }
 
     SolidRenderer::~SolidRenderer()
@@ -950,7 +951,7 @@ namespace df::gr::d3d11
     void SolidRenderer::before_render(const rf::Vector3& pos, const rf::Matrix3& orient)
     {
         render_context_.set_vertex_shader(vertex_shader_);
-        render_context_.set_pixel_shader(pixel_shader_);
+        render_context_.set_pixel_shader(render_context_.has_gas_regions() ? pixel_shader_ : pixel_shader_no_gas_);
         render_context_.set_model_transform(pos, orient);
         render_context_.set_cull_mode(D3D11_CULL_BACK);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);

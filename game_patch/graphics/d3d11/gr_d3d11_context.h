@@ -186,6 +186,11 @@ namespace df::gr::d3d11
         GasRegionBuffer(ID3D11Device* device);
         void update(ID3D11DeviceContext* device_context, const Projection& projection);
 
+        bool has_gas_regions() const
+        {
+            return current_gas_count_ > 0;
+        }
+
         operator ID3D11Buffer*() const
         {
             return buffer_;
@@ -193,6 +198,7 @@ namespace df::gr::d3d11
 
     private:
         ComPtr<ID3D11Buffer> buffer_;
+        int current_gas_count_ = 0;
     };
 
     class RenderContext
@@ -377,6 +383,11 @@ namespace df::gr::d3d11
         {
             per_frame_buffer_.update(device_context_);
             gas_region_buffer_.update(device_context_, projection_);
+        }
+
+        bool has_gas_regions() const
+        {
+            return gas_region_buffer_.has_gas_regions();
         }
 
         void fog_set()
