@@ -188,6 +188,7 @@ CodeInjection after_frame_render_hook{
             frametime_render_ui();
             achievement_system_do_frame();
             fullscreen_overlay_do_frame();
+            gas_region_transition_do_frame();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
             experimental_render();
 #endif

@@ -741,24 +741,26 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         }
     }},
     {AlpineDedEventID::Modify_Gas_Region, {
-        {FIELD_STR1, FIELD_FLOAT1},
+        {FIELD_STR1, FIELD_FLOAT1, FIELD_FLOAT2},
         {
             {FIELD_STR1, "RGB color (str1):"},
-            {FIELD_FLOAT1, "Density (float1):"}
+            {FIELD_FLOAT1, "Density (float1):"},
+            {FIELD_FLOAT2, "Transition time (float2):"}
         }
     }},
     {AlpineDedEventID::Resize_Gas_Region, {
-        {FIELD_INT1, FIELD_FLOAT1, FIELD_STR1},
+        {FIELD_INT1, FIELD_FLOAT1, FIELD_STR1, FIELD_FLOAT2},
         {
             {FIELD_INT1, "Shape (int1):"},
             {FIELD_FLOAT1, "Sphere radius (float1):"},
-            {FIELD_STR1, "Box size HWD (str1):"}
+            {FIELD_STR1, "Box size HWD (str1):"},
+            {FIELD_FLOAT2, "Transition time (float2):"}
         },
         {
             {FIELD_INT1, {"Sphere", "Box"}}
         },
         {
-            {FIELD_INT1, false}
+            {FIELD_INT1, true}
         }
     }},
 };

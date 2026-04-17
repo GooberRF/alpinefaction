@@ -1,6 +1,7 @@
 #pragma once
 
 #include <patch_common/MemUtils.h>
+#include <algorithm>
 #include <string>
 #include <sstream>
 #include "../bmpman.h"
@@ -40,6 +41,19 @@ namespace rf::gr
             ubyte a = has_alpha ? (hex_color & 0xFF) : 255;
 
             return Color(r, g, b, a);
+        }
+
+        static Color lerp(const Color& a, const Color& b, float t)
+        {
+            auto ch = [](float v) -> ubyte {
+                return static_cast<ubyte>(std::clamp(v, 0.0f, 255.0f));
+            };
+            return Color(
+                ch(a.red + (b.red - a.red) * t),
+                ch(a.green + (b.green - a.green) * t),
+                ch(a.blue + (b.blue - a.blue) * t),
+                ch(a.alpha + (b.alpha - a.alpha) * t)
+            );
         }
 
         static Color from_rgb_string(const std::string& rgb_string, ubyte alpha = 255)

@@ -851,6 +851,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
             if (event) {
                 event->color_string = params.str1;
                 event->density = params.float1;
+                event->transition_time = std::max(0.0f, params.float2);
             }
             return event;
         }
@@ -864,6 +865,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
                 event->shape = params.int1 + 1; // dropdown index counts from 0, must be incremented
                 event->sphere_radius = params.float1;
                 event->box_dimensions = params.str1;
+                event->transition_time = std::max(0.0f, params.float2);
             }
             return event;
         }
