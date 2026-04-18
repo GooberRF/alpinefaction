@@ -412,7 +412,9 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
         msg = rf::String::format("{}{}!", mui_msg, killed_player->name);
     }
     else {
-        color_id = rf::ChatMsgColor::default_;
+        rf::Player* spectate_target = multi_spectate_is_first_person() ? multi_spectate_get_target_player() : nullptr;
+        color_id = (killed_player == spectate_target || killer_player == spectate_target)
+            ? rf::ChatMsgColor::white_white : rf::ChatMsgColor::default_;
         if (killer_player == killed_player) {
             if (rf::multi_entity_is_female(killed_player->settings.multi_character))
                 mui_msg = null_to_empty(rf::strings::was_killed_by_her_own_hand);
@@ -431,7 +433,9 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
 
     if (g_alpine_game_config.killfeed_enabled) {
         bool is_team_mode = multi_is_team_game_type();
-        bool is_local = (killed_player == rf::local_player || killer_player == rf::local_player);
+        rf::Player* spectate_target = multi_spectate_is_first_person() ? multi_spectate_get_target_player() : nullptr;
+        bool is_local = (killed_player == rf::local_player || killer_player == rf::local_player
+                         || killed_player == spectate_target || killer_player == spectate_target);
 
         if (is_local) {
             // Local player involved: show full message in white

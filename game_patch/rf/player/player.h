@@ -18,6 +18,7 @@
 
 constexpr float BOT_LEVEL_START_WAIT_TIME_SEC = 5.f;
 constexpr float BOT_OPPONENT_DEATH_WAIT_TIME_SEC = 5.f;
+constexpr float BOT_SPECTATE_WAIT_TIME_SEC = 5.f;
 
 struct PlayerNetGameSaveData {
     rf::Vector3 pos{};
@@ -39,6 +40,7 @@ struct ClientVersionInfoProfile {
     uint8_t patch = 0;
     uint8_t type = 0;
     uint32_t max_rfl_ver = 200;
+    bool is_d3d11 = false;
 };
 
 struct PlayerAdditionalData {
@@ -58,6 +60,7 @@ struct PlayerAdditionalData {
     bool in_grace_period = true;
     ClientVersionInfoProfile version_info{};
     std::optional<std::chrono::steady_clock::time_point> death_time{};
+    std::optional<std::chrono::steady_clock::time_point> spectate_start_time{};
 
     std::optional<int64_t> last_hit_sound_ms{};
     std::optional<int64_t> last_critical_sound_ms{};

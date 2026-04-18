@@ -360,9 +360,10 @@ static float convert_pitch_delta_to_non_linear_space(
     return new_pitch_delta;
 }
 
-// Applies camera rotation and linear pitch correction at the entity control
-// injection point. Mouse angles are computed by mouse_get_camera 
-// rather than by RF's own sensitivity pipeline.
+// Applies raw/modern mouse deltas and linear pitch correction at the entity
+// control injection point. For the player entity, this is where accumulated raw
+// mouse deltas are consumed (freelook camera deltas are consumed earlier in
+// mouse_get_delta_hook since the freelook camera has a separate control path).
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
@@ -374,14 +375,13 @@ CodeInjection linear_pitch_patch{
             return;
         }
 
-        // Mouse camera contribution: raw pixel deltas converted to radians.
-        // Only active when mouse_scale mode is non-Classic; otherwise RF's own
-        // pipeline has already applied sensitivity and pitch_delta/yaw_delta are populated.
+        // Consume accumulated raw mouse deltas (Raw/Modern mode only).
+        // In Classic mode the accumulators are empty and this is a no-op.
         if (g_alpine_game_config.mouse_scale != 0) {
             float mouse_pitch = 0.0f, mouse_yaw = 0.0f;
-            mouse_get_camera(mouse_pitch, mouse_yaw);
+            consume_raw_mouse_deltas(mouse_pitch, mouse_yaw, true);
             pitch_delta += mouse_pitch;
-            yaw_delta   += mouse_yaw;
+            yaw_delta += mouse_yaw;
         }
 
         // Apply linear pitch correction to combined delta

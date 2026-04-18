@@ -120,6 +120,14 @@ namespace rf
 
     static auto& g_fast_animations = addr_as_ref<bool>(0x005A4459);
 
+    // Compute bone_transforms_combined and bone_transforms_final for a CharacterInstance.
+    // RF calls this just before rendering; culled characters never get it called.
+    // __thiscall: ECX=ci, 6 ignored stack args, RET 0x18.
+    static inline void ci_update_bone_transforms(CharacterInstance* ci)
+    {
+        AddrCaller{0x0051BA00}.this_call(ci, 0, 0, 0, 0, 0, 0);
+    }
+
     static auto& skeleton_link_base = addr_as_ref<Skeleton *__cdecl(const char *filename)>(0x00539D00);
     static auto& skeleton_unlink_base = addr_as_ref<void __cdecl(Skeleton *s, bool force_unload)>(0x00539D20);
     static auto& skeleton_page_in = addr_as_ref<bool __cdecl(const char *filename, void *data_block)>(0x0053A980);

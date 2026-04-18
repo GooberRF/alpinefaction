@@ -50,6 +50,26 @@ namespace df::gr::d3d11
         return {std::move(vertex_shader), std::move(input_layout)};
     }
 
+    ComPtr<ID3D11VertexShader> ShaderManager::load_vertex_shader_only(const char* filename)
+    {
+        rf::File file;
+        if (file.open(filename) != 0) {
+            xlog::error("Cannot open vertex shader file {}", filename);
+            return {};
+        }
+        int size = file.size();
+        auto shader_data = std::make_unique<std::byte[]>(size);
+        [[maybe_unused]] int bytes_read = file.read(shader_data.get(), size);
+        assert(bytes_read == size);
+
+        xlog::debug("Loading vertex shader (no layout) {} size {}", filename, size);
+        ComPtr<ID3D11VertexShader> vertex_shader;
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateVertexShader(shader_data.get(), size, nullptr, &vertex_shader)
+        );
+        return vertex_shader;
+    }
+
     ComPtr<ID3D11PixelShader> ShaderManager::load_pixel_shader(const char* filename)
     {
         rf::File file;

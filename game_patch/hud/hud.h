@@ -16,6 +16,9 @@ enum class ChatMenuType : int
     Spectate
 };
 
+// Returns true if HUD should be hidden (cl_hud off, or cinematic spectate freelook)
+bool is_hud_effectively_hidden();
+
 void hud_apply_patches();
 int hud_get_small_font();
 int hud_get_default_font();
@@ -38,3 +41,5 @@ void chat_menu_action_handler(rf::Key key);
 void build_local_player_spectators_strings();
 std::string_view multi_hud_get_random_taunt_message();
 bool multi_hud_send_taunt_chat_message(std::string_view taunt_text);
+
+extern int g_multi_hud_cp_strip_y;

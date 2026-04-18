@@ -44,6 +44,24 @@ namespace rf
             return AddrCaller{0x004CF9A0}.this_call<bool>(this, filename, path_id);
         }
 
+        // Opens a file with explicit mode (1=read, 2=write).
+        // Returns 0 on success, negative on failure.
+        int open_mode(const char* filename, int mode = 1, int path_id = 0x98967f)
+        {
+            return AddrCaller{0x004CFE50}.this_call<int>(this, filename, mode, path_id);
+        }
+
+        void close()
+        {
+            AddrCaller{0x004CFF60}.this_call(this);
+        }
+
+        // Returns the file size. Call after open.
+        int get_size(int unk1 = 0, int unk2 = 0x98967f)
+        {
+            return AddrCaller{0x004D0030}.this_call<int>(this, unk1, unk2);
+        }
+
         [[nodiscard]] bool check_version(int min_ver) const
         {
             return AddrCaller{0x004CF650}.this_call<bool>(this, min_ver);
@@ -168,6 +186,8 @@ static auto& vmesh_process = addr_as_ref<void(EditorVMesh* vmesh, float time, in
 static auto& vmesh_anim_init = addr_as_ref<void(EditorVMesh* vmesh, int start_frame, float speed)>(0x004C0740);
 static auto& vmesh_get_type = addr_as_ref<EditorVMeshType(EditorVMesh* vmesh)>(0x004BFEB0);
 static auto& vmesh_stop_all_actions = addr_as_ref<void(EditorVMesh* vmesh)>(0x004C07B0);
+static auto& vmesh_find_tag_by_name = addr_as_ref<int(EditorVMesh* vmesh, const char* tag_name)>(0x004C05D0);
+static auto& vmesh_get_tag_local_transform = addr_as_ref<void(EditorVMesh* vmesh, Vector3* out_pos, Matrix3* out_orient, int tag_index)>(0x004C05E0);
 static auto& editor_vmesh_get_materials_array = addr_as_ref<void(EditorVMesh* vmesh, int* num_out, EditorMeshMaterial** materials_out)>(0x004C0A00);
 
 // Bitmap load: loads a texture file, returns handle (or -1 on failure)
@@ -294,6 +314,8 @@ static auto& d3d_device_ptr = addr_as_ref<void*>(0x0183b914);
 // Batch management
 static auto& gr_flush_batch = addr_as_ref<void()>(0x004e99d0);
 static auto& gr_begin_batch = addr_as_ref<void(int, int)>(0x004e98e0);
+
+static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
 
 // Render mode and polygon submission
 static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);

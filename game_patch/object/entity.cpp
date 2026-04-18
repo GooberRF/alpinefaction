@@ -23,7 +23,9 @@
 #include "../rf/vmesh.h"
 #include "../rf/character.h"
 #include "../rf/math/vector.h"
+#include "../rf/gameseq.h"
 #include "../multi/multi.h"
+#include "../multi/server.h"
 
 rf::Timestamp g_player_jump_timestamp;
 
@@ -116,6 +118,27 @@ CallHook<void(rf::Entity&)> entity_make_run_after_climbing_patch{
     },
 };
 
+CallHook<bool(rf::Entity*)> entity_make_run_uncrouch_hook{
+    0x004280DB,
+    [](rf::Entity* entity) {
+        bool uncrouched = entity_make_run_uncrouch_hook.call_target(entity);
+        if (!uncrouched && (rf::is_multi || g_alpine_game_config.climb_fix)) {
+            return true;
+        }
+        return uncrouched;
+    },
+};
+
+ConsoleCommand2 sp_climbfix_cmd{
+    "sp_climbfix",
+    []() {
+        g_alpine_game_config.climb_fix = !g_alpine_game_config.climb_fix;
+        rf::console::print("Climb region crouch fix is {}", g_alpine_game_config.climb_fix ? "enabled" : "disabled");
+    },
+    "Toggle SP fix for getting stuck climbing after leaving a climb region while crouched",
+    "sp_climbfix"
+};
+
 FunHook<void(rf::EntityFireInfo&, int)> entity_fire_switch_parent_to_corpse_hook{
     0x0042F510,
     [](rf::EntityFireInfo& fire_info, int corpse_handle) {
@@ -147,12 +170,40 @@ CallHook<bool(rf::Object*)> entity_update_liquid_status_obj_is_player_hook{
 CallHook<bool(const rf::Vector3&, const rf::Vector3&, rf::PhysicsData*, rf::PCollisionOut*)> entity_maybe_stop_crouching_collide_spheres_world_hook{
     0x00428AB9,
     [](const rf::Vector3& p1, const rf::Vector3& p2, rf::PhysicsData* pd, rf::PCollisionOut* collision) {
-        // Temporarly disable collisions with liquid faces
+        // Temporarily disable collisions with liquid faces
         auto collision_flags = pd->collision_flags;
         pd->collision_flags &= ~0x1000;
         bool result = entity_maybe_stop_crouching_collide_spheres_world_hook.call_target(p1, p2, pd, collision);
         pd->collision_flags = collision_flags;
         return result;
+    },
+};
+
+// Fix RF bug in multi_obj_interp_add: the save/restore of pd->orient
+// around the physics prediction step has mismatched fields, causing the restore to write
+// uninitialized stack data into pd->orient. This corrupts collision sphere positioning on
+// MP clients, breaking the uncrouch geometry check. Fix: correctly save and restore both
+// pd->orient and pd->next_orient around the prediction step.
+static rf::Matrix3 interp_saved_orient;
+static rf::Matrix3 interp_saved_next_orient;
+
+CodeInjection multi_obj_interp_add_save_orient{
+    0x004838AD,
+    [](auto& regs) {
+        rf::Entity* entity = regs.edi;
+        interp_saved_orient = entity->p_data.orient;
+        interp_saved_next_orient = entity->p_data.next_orient;
+        regs.eip = 0x004838C0;
+    },
+};
+
+CodeInjection multi_obj_interp_add_restore_orient{
+    0x00483ABC,
+    [](auto& regs) {
+        rf::Entity* entity = regs.edi;
+        entity->p_data.orient = interp_saved_orient;
+        entity->p_data.next_orient = interp_saved_next_orient;
+        regs.eip = 0x00483ACF;
     },
 };
 
@@ -552,8 +603,9 @@ FunHook<void(rf::Entity*)> entity_footsteps_do_frame_hook{
             }
         }
 
-        // Gate sound playback: pistol always plays (stock behavior), others require feature enabled
-        if (g_footsteps_active || rf::weapon_is_glock(ep->ai.current_primary_weapon)) {
+        // Gate sound playback: local player and pistol always play (stock behavior),
+        // other entities require the footstep fix to be active
+        if (ep == rf::local_player_entity || g_footsteps_active || rf::weapon_is_glock(ep->ai.current_primary_weapon)) {
             entity_footsteps_do_frame_hook.call_target(ep);
         }
     }
@@ -575,6 +627,38 @@ ConsoleCommand2 cl_painsounds_cmd{
         rf::console::print("Entity pain sounds are {}", g_alpine_game_config.entity_pain_sounds ? "enabled" : "disabled");
     },
     "Toggle pain sounds",
+};
+
+CodeInjection clear_stale_movement_input_injection{
+    0x0043331C,
+    []() {
+        if (!rf::is_multi || rf::is_dedicated_server || rf::gameseq_in_gameplay()) {
+            return;
+        }
+
+        bool enforce = false;
+        if (rf::is_server) {
+            enforce = server_clear_stale_movement_input();
+        }
+        else {
+            const auto& server_info = get_af_server_info();
+            if (server_info.has_value()) {
+                enforce = server_info->clear_stale_movement_input;
+            }
+        }
+
+        if (!enforce) {
+            return;
+        }
+
+        rf::Entity* ep = rf::local_player_entity;
+        if (ep) {
+            ep->ai.ci.rot = {0.0f, 0.0f, 0.0f};
+            ep->ai.ci.move = {0.0f, 0.0f, 0.0f};
+            ep->ai.ci.mouse_dh = 0.0f;
+            ep->ai.ci.mouse_dp = 0.0f;
+        }
+    },
 };
 
 void entity_do_patch()
@@ -599,6 +683,10 @@ void entity_do_patch()
     entity_on_land_hook.install();
     entity_make_run_after_climbing_patch.install();
 
+    // Fix crouched player staying in climbing state after leaving a climb region
+    entity_make_run_uncrouch_hook.install();
+    sp_climbfix_cmd.register_cmd();
+
     // Control whether exposure damage is applied when player is outside without armor
     entity_maybe_apply_exposure_damage_hook.install();
     player_exposure_damage_sound_patch.install();
@@ -611,6 +699,15 @@ void entity_do_patch()
 
     // Fix entity staying in crouched state after entering liquid
     entity_maybe_stop_crouching_collide_spheres_world_hook.install();
+
+    // Fix MP client uncrouch through geometry: entity_maybe_stop_crouching reads crouch_dist
+    // from entity->info, but on MP clients info may lack crouch data. Use info2 instead,
+    // which has correct data and is already used by entity_crouch.
+    AsmWriter(0x00428A7A).mov(asm_regs::ecx, *(asm_regs::edi + 0x29C));
+
+    // Fix RF bug: multi_obj_interp_add corrupts pd->orient
+    multi_obj_interp_add_save_orient.install();
+    multi_obj_interp_add_restore_orient.install();
 
     // Use local_player variable for weapon shell distance calculation instead of local_player_entity
     // in entity_eject_shell. Fixed debris pool being exhausted when local player is dead.
@@ -638,6 +735,9 @@ void entity_do_patch()
     // Footstep fix: inject trigger frames for attack_run animations and mute dying entities
     evaluate_footsteps();
     entity_footsteps_do_frame_hook.install();
+
+    // Cancel movement input when escape menu is open in multiplayer
+    clear_stale_movement_input_injection.install();
 
     // Commands
     sp_exposuredamage_cmd.register_cmd();

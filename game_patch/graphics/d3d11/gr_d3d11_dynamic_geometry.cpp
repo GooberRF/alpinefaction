@@ -18,14 +18,42 @@ namespace df::gr::d3d11
     {
         vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::transformed);
         std_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
+        std_pixel_shader_no_gas_ = shader_manager.get_pixel_shader(PixelShaderId::standard_no_gas);
         ui_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::ui);
+    }
+
+    void DynamicGeometryRenderer::set_pre_flush_callback(std::function<void()> callback)
+    {
+        pre_flush_callback_ = std::move(callback);
+    }
+
+    void DynamicGeometryRenderer::set_cull_mode(D3D11_CULL_MODE cull_mode)
+    {
+        if (cull_mode_ != cull_mode) {
+            flush();
+            cull_mode_ = cull_mode;
+        }
     }
 
     void DynamicGeometryRenderer::flush()
     {
+        flush_impl(true);
+    }
+
+    void DynamicGeometryRenderer::flush_impl(bool run_pre_callback)
+    {
         auto [start_vertex, num_vertex] = vertex_ring_buffer_.submit();
         if (num_vertex == 0) {
             return;
+        }
+        // Invoke pre-flush callback before drawing batched content.
+        // Used to flush outlines so they render behind transparent effects
+        // (smoke, particles) that were batched in the dyn_geo renderer.
+        // Guard against reentrance in case the callback indirectly triggers a flush.
+        if (run_pre_callback && pre_flush_callback_ && !in_pre_flush_callback_) {
+            in_pre_flush_callback_ = true;
+            pre_flush_callback_();
+            in_pre_flush_callback_ = false;
         }
         auto [start_index, num_index] = index_ring_buffer_.submit();
 
@@ -38,7 +66,7 @@ namespace df::gr::d3d11
         render_context_.set_primitive_topology(state_.primitive_topology);
         render_context_.set_mode(state_.mode);
         render_context_.set_textures(state_.textures[0], state_.textures[1]);
-        render_context_.set_cull_mode(D3D11_CULL_NONE);
+        render_context_.set_cull_mode(cull_mode_);
 
         render_context_.draw_indexed(num_index, start_index, start_vertex);
     }
@@ -104,7 +132,7 @@ namespace df::gr::d3d11
             D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
             normalized_tex_handles,
             mode,
-            std_pixel_shader_,
+            render_context_.has_gas_regions() ? std_pixel_shader_ : std_pixel_shader_no_gas_,
         };
         auto [gpu_verts, gpu_ind_ptr, base_vertex] = setup(nv, num_index, new_state);
 
@@ -157,7 +185,7 @@ namespace df::gr::d3d11
             D3D11_PRIMITIVE_TOPOLOGY_LINELIST,
             {-1, -1},
             mode,
-            is_3d ? std_pixel_shader_ : ui_pixel_shader_,
+            is_3d ? (render_context_.has_gas_regions() ? std_pixel_shader_ : std_pixel_shader_no_gas_) : ui_pixel_shader_,
         };
         auto [gpu_verts, gpu_ind_ptr, base_vertex] = setup(num_verts, num_inds, new_state);
 

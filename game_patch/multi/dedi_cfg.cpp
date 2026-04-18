@@ -537,6 +537,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.location_pinging = *v;
     if (auto v = t["geo_chunk_physics"].value<bool>())
         o.geo_chunk_physics = *v;
+    if (auto v = t["clear_stale_movement_input"].value<bool>())
+        o.clear_stale_movement_input = *v;
     if (auto v = t["weapon_pickups_give_full_ammo"].value<bool>())
         o.weapon_items_give_full_ammo = *v;
     if (auto v = t["infinite_reloads"].value<bool>())
@@ -612,6 +614,18 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
                 auto ms = (*tbl)["respawn_ms"].value_or<int>(0);
                 if (!o.set_item_respawn_time(name, ms))
                     xlog::warn("Invalid respawn override for '{}'", name);
+            }
+        }
+    }
+
+    if (auto arr = t["delayed_items"].as_array()) {
+        for (auto& node : *arr) {
+            if (auto tbl = node.as_table()) {
+                if (auto nameOpt = (*tbl)["item_name"].value<std::string>()) {
+                    bool added = o.delayed_items.add(*nameOpt);
+                    if (!added && !o.delayed_items.contains(*nameOpt))
+                        xlog::warn("Invalid delayed item '{}'", *nameOpt);
+                }
             }
         }
     }
@@ -796,6 +810,8 @@ static AlpineRestrictConfig parse_alpine_restrict_config(const toml::table &t)
             o.reject_non_alpine_clients = *v;
         if (auto v = t["alpine_require_release_build"].value<bool>())
             o.alpine_require_release_build = *v;
+        if (auto v = t["require_d3d11"].value<bool>())
+            o.require_d3d11 = *v;
     }
     return o;
 }
@@ -1189,9 +1205,13 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.use_sp_damage_calculation = *v;
     }
-    else if (key == "exclude_bots_from_player_count") {
+    else if (key == "allow_outlines") {
         if (auto v = node.value<bool>())
-            cfg.exclude_bots_from_player_count = *v;
+            cfg.allow_outlines = *v;
+    }
+    else if (key == "allow_outlines_xray") {
+        if (auto v = node.value<bool>())
+            cfg.allow_outlines_xray = *v;
     }
 }
 
@@ -1657,6 +1677,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Location pinging:                      {}\n", rules.location_pinging);
     if (base || rules.geo_chunk_physics != b.geo_chunk_physics)
         std::format_to(iter, "  GeoMod chunk physics:                  {}\n", rules.geo_chunk_physics);
+    if (base || rules.clear_stale_movement_input != b.clear_stale_movement_input)
+        std::format_to(iter, "  Clear stale movement input:            {}\n", rules.clear_stale_movement_input);
     if (base || rules.weapon_items_give_full_ammo != b.weapon_items_give_full_ammo)
         std::format_to(iter, "  Weapon pickups give full ammo:         {}\n", rules.weapon_items_give_full_ammo);
     if (base || rules.weapon_infinite_magazines != b.weapon_infinite_magazines)
@@ -1892,6 +1914,33 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
+    // Delayed items
+    bool anyDelayedChanged = (rules.delayed_items.items != b.delayed_items.items);
+
+    if (base || anyDelayedChanged) {
+        std::format_to(iter, "  Delayed items:\n");
+        if (rules.delayed_items.items.empty() && b.delayed_items.items.empty()) {
+            std::format_to(iter, "    <none>\n");
+        }
+        else {
+            for (auto const& name : rules.delayed_items.items) {
+                if (base) {
+                    std::format_to(iter, "    {}\n", name);
+                }
+                else if (b.delayed_items.items.count(name) == 0) {
+                    std::format_to(iter, "    + {}\n", name);
+                }
+            }
+            if (!base) {
+                for (auto const& name : b.delayed_items.items) {
+                    if (rules.delayed_items.items.count(name) == 0) {
+                        std::format_to(iter, "    - {}\n", name);
+                    }
+                }
+            }
+        }
+    }
+
     // force character
     if (base || rules.force_character.enabled != b.force_character.enabled ||
         (rules.force_character.enabled && rules.force_character.character_index != b.force_character.character_index)) {
@@ -2008,7 +2057,8 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
     std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
-    std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
+    std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
+    std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);
@@ -2041,6 +2091,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     if (cfg.alpine_restricted_config.clients_require_alpine) {
         std::format_to(iter, "    Reject non-Alpine clients:           {}\n", cfg.alpine_restricted_config.reject_non_alpine_clients);
         std::format_to(iter, "    Require release build:               {}\n", cfg.alpine_restricted_config.alpine_require_release_build);
+        std::format_to(iter, "    Require Direct3D 11 renderer:        {}\n", cfg.alpine_restricted_config.require_d3d11);
     }
 
     // votes

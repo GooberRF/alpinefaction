@@ -3,6 +3,7 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include "../rf/math/vector.h"
 #include "../rf/os/timestamp.h"
@@ -34,9 +35,12 @@ constexpr float kWaypointGenerateStandingHeadroom = 2.0f;
 constexpr int kWaypointGenerateEdgeProbeCount = 8;
 constexpr int kWaypointGenerateEdgeUnsupportedThreshold = 3;
 constexpr float kWaypointGenerateLadderEdgeClearance = 0.25f;
+constexpr float kWaypointGenerateMinSwimmableDepth = 0.6f;
+constexpr float kWaypointGenerateWaterEdgeClearance = 0.5f;
+constexpr float kWaypointGenerateWaterSeedProximity = 5.0f;
 constexpr float kWaypointGenerateLinkPassThroughRadius = 1.0f;
 constexpr float kWaypointGeneratePassThroughEndpointEpsilon = 0.05f;
-constexpr int kWaypointGenerateMaxCreatedWaypoints = 20000;
+constexpr int kWaypointGenerateMaxCreatedWaypoints = 80000;
 
 // Jump pad trajectory simulation constants.
 constexpr float kJumpPadTrajectoryTimeStep = 0.05f;
@@ -65,6 +69,7 @@ enum class WaypointType : int
     tele_entrance = 11,
     tele_exit = 12,
     conveyer = 13,
+    water = 14,
 };
 
 enum class WaypointDroppedSubtype : int
@@ -194,11 +199,16 @@ struct WpCacheNode
 
 void waypoints_init();
 int get_local_awp_revision(const std::string& rfl_filename);
+std::optional<std::string> get_waypoint_dir();
 void waypoints_do_frame();
 void waypoints_render_debug();
 void waypoints_level_init();
 void waypoints_level_reset();
 bool waypoints_missing_awp_from_level_init();
+bool waypoints_awp_download_pending();
+bool waypoints_awp_load_retry_pending();
+void waypoints_set_awp_download_pending(bool pending);
+void waypoints_on_awp_download_resolved();
 void waypoints_on_limbo_enter();
 void waypoints_on_trigger_activated(int trigger_uid);
 void waypoints_on_glass_shattered(const rf::GFace* face);
@@ -246,3 +256,4 @@ bool link_waypoint_if_clear(int from, int to);
 bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b);
 int closest_waypoint(const rf::Vector3& pos, float radius);
 void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius = 0.0f);
+void waypoints_start_awpgen(const std::string& rfl_filename);

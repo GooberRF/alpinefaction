@@ -23,6 +23,7 @@
 #include "../rf/os/timer.h"
 #include "../os/console.h"
 #include "../main/main.h"
+#include "hud.h"
 #include "hud_internal.h"
 #include "../graphics/gr.h"
 #include "../misc/player.h"
@@ -382,8 +383,9 @@ int draw_scoreboard_players(
             std::string player_name_stripped = player->name;
             const auto [space_w, space_h] = rf::gr::get_char_size(' ', -1);
             const bool is_bot = player->is_bot;
+            const int bot_font = hud_get_small_font();
             if (is_bot) {
-                const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", -1);
+                const auto [bot_w, bot_h] = rf::gr::get_string_size(" BOT", bot_font);
                 gr_fit_string(
                     player_name_stripped,
                     name_w - bot_w - space_w
@@ -398,7 +400,8 @@ int draw_scoreboard_players(
             if (is_bot) {
                 rf::gr::string(name_x, y, player_name_stripped.c_str());
                 rf::gr::set_color(255, 250, 205, 255);
-                rf::gr::string(rf::gr::current_string_x, y, " bot");
+                int bot_y = y + (rf::gr::get_font_height(-1) - rf::gr::get_font_height(bot_font)) / 2;
+                rf::gr::string(rf::gr::current_string_x, bot_y, " BOT", bot_font);
                 if (is_local_player) {
                     rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
                 } else {
@@ -556,16 +559,20 @@ void draw_scoreboard_internal_new(bool draw) {
         progress_h = std::clamp(progress_h, 0.1f, 1.0f);
     }
 
-    int w;
-    float scale;
-    // Note: fit_scoreboard_string does not support providing font by argument so default font must be changed
+    const int min_space_w = static_cast<int>(rf::gr::clip_width() / 1280.f * 40.f);
+    const int max_scoreboard_w = rf::gr::clip_width() - min_space_w;
+
+    int w = 0;
+    float scale = 0.f;
     if (g_big_scoreboard) {
+        // Note: fit_scoreboard_string does not support providing font by argument so 
+        // default font must be changed
         rf::gr::set_default_font(hud_get_default_font_name(true));
-        w = std::min(!split_columns ? 900 : 1400, rf::gr::clip_width() - 10);
-        scale = 2.0f;
+        w = std::min(split_columns ? 1400 : 900, max_scoreboard_w);
+        scale = 2.f;
     } else {
-        w = std::min(!split_columns ? 450 : 700, rf::gr::clip_width() - 10);
-        scale = 1.0f;
+        w = std::min(split_columns ? 700 : 450, max_scoreboard_w);
+        scale = 1.f;
     }
 
     int left_padding = static_cast<int>(10 * scale);

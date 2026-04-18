@@ -13,6 +13,7 @@
 #include "resources.h"
 #include "vtypes.h"
 #include "alpine_obj.h"
+#include "tbl.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -483,9 +484,9 @@ void corona_render(CDedLevel* level)
             gr_render_billboard(&corona->pos, 0, 0.25f, cam_param);
         }
 
-        // Always draw direction arrow (cyan) along forward vector with volumetric length
-        if (corona->volumetric_length > 0.0f) {
-            float len = corona->volumetric_length;
+        // Always draw direction arrow (cyan) along forward vector (min 1m, or volumetric length)
+        {
+            float len = std::max(corona->volumetric_length, 1.0f);
             draw_3d_arrow(
                 corona->pos.x, corona->pos.y, corona->pos.z,
                 corona->pos.x + corona->orient.fvec.x * len,
@@ -630,4 +631,76 @@ void corona_ensure_uid(int& uid)
     for (auto* c : level->GetAlpineLevelProperties().corona_objects) {
         if (c->uid >= uid) uid = c->uid + 1;
     }
+}
+
+// ─── Corona creation from mesh tag points ───────────────────────────────────
+
+static DedCorona* create_corona_from_glare(const GlareClassInfo* gi,
+                                           const Vector3& world_pos,
+                                           const Matrix3& world_orient)
+{
+    auto* corona = new DedCorona();
+    memset(static_cast<DedObject*>(corona), 0, sizeof(DedObject));
+    corona->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
+    corona->type = DedObjectType::DED_CORONA;
+    corona->pos = world_pos;
+    corona->orient = world_orient;
+    corona->script_name.assign_0("Corona");
+    corona->uid = generate_uid();
+
+    corona->color_r = gi->color_r;
+    corona->color_g = gi->color_g;
+    corona->color_b = gi->color_b;
+    corona->color_a = 255;
+    corona->corona_bitmap = gi->corona_bitmap;
+    corona->cone_angle = gi->cone_angle;
+    corona->intensity = gi->intensity;
+    corona->radius_distance = gi->radius_distance;
+    corona->radius_scale = gi->radius_scale;
+    corona->diminish_distance = gi->diminish_distance;
+    corona->volumetric_bitmap = gi->volumetric_bitmap;
+    corona->volumetric_height = gi->volumetric_height;
+    corona->volumetric_length = gi->volumetric_length;
+
+    return corona;
+}
+
+std::vector<DedCorona*> corona_create_from_mesh_tags(
+    CDedLevel* level, EditorVMesh* vmesh,
+    const Vector3& obj_pos, const Matrix3& obj_orient,
+    const std::vector<std::string>& glare_names)
+{
+    std::vector<DedCorona*> result;
+    if (!level || !vmesh || glare_names.empty()) return result;
+
+    auto& props = level->GetAlpineLevelProperties();
+
+    // Iterate corona_1, corona_2, ... tag points in the mesh
+    for (int i = 0; ; i++) {
+        char tag_name[32];
+        snprintf(tag_name, sizeof(tag_name), "corona_%d", i + 1);
+        int tag_idx = vmesh_find_tag_by_name(vmesh, tag_name);
+        if (tag_idx < 0) break;
+
+        // Pick the glare for this tag: per-tag if available, otherwise first entry
+        const auto& gname = (i < static_cast<int>(glare_names.size()))
+            ? glare_names[i] : glare_names[0];
+        auto* gi = glare_tbl_find(gname.c_str());
+        if (!gi || gi->corona_bitmap.empty()) continue;
+
+        // Get tag transform and compose with object world transform
+        Vector3 tag_pos;
+        Matrix3 tag_orient;
+        vmesh_get_tag_local_transform(vmesh, &tag_pos, &tag_orient, tag_idx);
+
+        Vector3 world_pos = obj_pos + obj_orient * tag_pos;
+        Matrix3 world_orient = obj_orient * tag_orient;
+
+        auto* corona = create_corona_from_glare(gi, world_pos, world_orient);
+        props.corona_objects.push_back(corona);
+        level->master_objects.add(static_cast<DedObject*>(corona));
+        result.push_back(corona);
+    }
+
+    return result;
 }

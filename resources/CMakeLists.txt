@@ -81,6 +81,10 @@ add_packfile(alpinefaction.vpp
     tables/DM-Catan-Pasture_info.tbl
     tables/DM-Catan-Forest_info.tbl
     tables/DM-RFU8-Catan_info.tbl
+    tables/DM_EuropaOneOutpostNS_info.tbl
+    tables/dm-RFU4-GraveyardRM_info.tbl
+    tables/dm_Galileo2Starliner1-2_info.tbl
+    tables/dm_Galileo2StarlinerNS_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
@@ -266,9 +270,15 @@ add_packfile(alpinefaction.vpp
     transformed_vs:${CMAKE_BINARY_DIR}/shaders/transformed_vs.bin
     shadow_standard_vs:${CMAKE_BINARY_DIR}/shaders/shadow_standard_vs.bin
     shadow_character_vs:${CMAKE_BINARY_DIR}/shaders/shadow_character_vs.bin
+    outline_character_vs:${CMAKE_BINARY_DIR}/shaders/outline_character_vs.bin
+    outline_standard_vs:${CMAKE_BINARY_DIR}/shaders/outline_standard_vs.bin
     standard_ps:${CMAKE_BINARY_DIR}/shaders/standard_ps.bin
+    standard_nogas_ps:${CMAKE_BINARY_DIR}/shaders/standard_nogas_ps.bin
     ui_ps:${CMAKE_BINARY_DIR}/shaders/ui_ps.bin
     shadow_debug_ps:${CMAKE_BINARY_DIR}/shaders/shadow_debug_ps.bin
+    outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin
+    gamma_vs:${CMAKE_BINARY_DIR}/shaders/gamma_vs.bin
+    gamma_ps:${CMAKE_BINARY_DIR}/shaders/gamma_ps.bin
 )
 
 # Copy licensing-info.txt

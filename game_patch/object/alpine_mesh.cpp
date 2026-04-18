@@ -56,9 +56,6 @@ struct CorpseData {
 };
 static std::unordered_map<int, CorpseData> g_alpine_corpse_data;
 
-// Set of object handles that have had corpse mesh applied. Used to prevent subsequent
-// obj_flag_dead calls in the same death processing function from killing the corpse object.
-static std::unordered_set<int> g_alpine_corpse_applied;
 
 // Original texture handles saved before overrides are applied.
 // Key: (obj_handle << 32 | slot), Value: original tex_handle.
@@ -360,7 +357,7 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
     clutter->current_skin_index = 0;
     clutter->already_spawned_glass = false;
     clutter->use_sound = -1;
-    clutter->killable_index = 0xFFFF;
+    clutter->killable_index = 0xFFFF; // default: not killable
     *reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(clutter) + 0x2D0) = -1;
 
     clutter->prev = rf::clutter_list_tail;
@@ -382,6 +379,14 @@ static void alpine_mesh_create_object(const AlpineMeshInfo& info)
             obj->obj_flags = static_cast<rf::ObjectFlags>(
                 static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
             );
+        }
+
+        // Register in the stock killable clutter system
+        if (info.clutter.life >= 0.0f
+            && rf::clutter_killable_count < rf::clutter_killable_max) {
+            clutter->killable_index = static_cast<uint16_t>(rf::clutter_killable_count);
+            rf::clutter_killable_bitset.set(rf::clutter_killable_count, 1);
+            rf::clutter_killable_count++;
         }
     } else {
         // Non-clutter mesh: invulnerable with default life
@@ -564,7 +569,6 @@ void alpine_mesh_clear_state()
     g_mesh_anim_states.clear();
     g_event_animated_meshes.clear();
     g_alpine_corpse_data.clear();
-    g_alpine_corpse_applied.clear();
     g_original_tex_handles.clear();
     // Free per-mesh ClutterInfo objects
     for (auto* ci : g_mesh_clutter_infos) {
@@ -590,81 +594,99 @@ const std::string* alpine_mesh_get_corpse_filename(int handle)
     return data ? &data->filename : nullptr;
 }
 
-bool alpine_mesh_is_corpse(int handle)
-{
-    return g_alpine_corpse_applied.count(handle) > 0;
-}
 
-void alpine_mesh_apply_corpse(rf::Object* obj, const std::string& corpse_filename)
+bool alpine_mesh_spawn_corpse(rf::Object* obj)
 {
-    // Copy corpse data before erasing
-    CorpseData corpse_data;
     auto* data = alpine_mesh_get_corpse_data(obj->handle);
-    if (data) corpse_data = *data;
+    if (!data || data->filename.empty()) {
+        return false;
+    }
 
+    // Copy and erase corpse data so a second call for the same handle is a no-op
+    CorpseData corpse_data = *data;
     g_alpine_corpse_data.erase(obj->handle);
 
-    // Remove from animation state lists
-    g_mesh_anim_states.erase(
-        std::remove_if(g_mesh_anim_states.begin(), g_mesh_anim_states.end(),
-            [&](const AlpineMeshAnimState& a) { return a.obj_handle == obj->handle; }),
-        g_mesh_anim_states.end());
-    g_event_animated_meshes.erase(
-        std::remove_if(g_event_animated_meshes.begin(), g_event_animated_meshes.end(),
-            [&](const EventAnimatedMesh& e) { return e.obj_handle == obj->handle; }),
-        g_event_animated_meshes.end());
+    auto vtype = determine_vmesh_type(corpse_data.filename);
 
-    // Clear stale original-texture entries for this object before destroying the old vmesh
-    for (auto it = g_original_tex_handles.begin(); it != g_original_tex_handles.end(); ) {
-        if ((it->first >> 32) == static_cast<uint64_t>(static_cast<uint32_t>(obj->handle)))
-            it = g_original_tex_handles.erase(it);
-        else
-            ++it;
+    rf::ObjectCreateInfo oci{};
+    oci.v3d_filename = corpse_data.filename.c_str();
+    oci.v3d_type = vtype;
+    oci.material = (corpse_data.material >= 0 && corpse_data.material <= 9)
+                       ? corpse_data.material : obj->material;
+    oci.pos = obj->pos;
+    oci.orient = obj->orient;
+    if (corpse_data.collision > 0) {
+        oci.physics_flags = rf::PF_COLLIDE_OBJECTS;
     }
 
-    // Delete old vmesh
-    rf::obj_delete_mesh(obj);
-
-    // Load corpse mesh with type determined by extension
-    auto vtype = determine_vmesh_type(corpse_filename);
-    rf::VMesh* new_mesh = rf::obj_create_mesh(obj, corpse_filename.c_str(), vtype);
-
-    if (!new_mesh) {
-        xlog::warn("[AlpineMesh] Corpse mesh '{}' failed to load for handle {}", corpse_filename, obj->handle);
-        return;
+    rf::Object* corpse_obj = rf::obj_create(rf::OT_CLUTTER, -1, 0, &oci, 0, nullptr);
+    if (!corpse_obj) {
+        xlog::warn("[AlpineMesh] Failed to create corpse object for handle {}", obj->handle);
+        return false;
     }
 
-    // Mark as corpsed — prevents subsequent obj_flag_dead calls in the same
-    // death processing function from killing this object
-    g_alpine_corpse_applied.insert(obj->handle);
+    auto* corpse_clutter = reinterpret_cast<rf::Clutter*>(corpse_obj);
 
-    // Make invulnerable with positive life so the stock clutter process doesn't
-    // re-enter the death handler each frame (it checks life <= 0)
-    obj->life = 1.0f;
-    obj->obj_flags = static_cast<rf::ObjectFlags>(
-        static_cast<int>(obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
+    // Use shared dummy info — corpse is always invulnerable
+    corpse_clutter->info = &rf::get_dummy_clutter_info();
+    corpse_clutter->info_index = -1;
+    corpse_clutter->corpse_index = -1;
+    corpse_clutter->sound_handle = -1;
+    corpse_clutter->delayed_kill_sound = -1;
+    corpse_clutter->dmg_type_that_killed_me = 0;
+    corpse_clutter->corpse_vmesh_handle = nullptr;
+    corpse_clutter->current_skin_index = 0;
+    corpse_clutter->already_spawned_glass = false;
+    corpse_clutter->use_sound = -1;
+    corpse_clutter->killable_index = 0xFFFF;
+    *reinterpret_cast<int*>(reinterpret_cast<uint8_t*>(corpse_clutter) + 0x2D0) = -1;
+
+    // Insert into clutter linked list
+    corpse_clutter->prev = rf::clutter_list_tail;
+    corpse_clutter->next = reinterpret_cast<rf::Clutter*>(&rf::clutter_list);
+    rf::clutter_list_tail->next = corpse_clutter;
+    rf::clutter_list_tail = corpse_clutter;
+    rf::clutter_count++;
+
+    // Invulnerable with positive life
+    corpse_obj->life = 100.0f;
+    corpse_obj->obj_flags = static_cast<rf::ObjectFlags>(
+        static_cast<int>(corpse_obj->obj_flags) | static_cast<int>(rf::OF_INVULNERABLE)
     );
 
-    // Clear replacement materials (texture overrides) — corpse uses its own textures
-    if (obj->vmesh) {
-        obj->vmesh->use_replacement_materials = 0;
-        obj->vmesh->replacement_materials = nullptr;
-    }
+    // Set up collision
+    if (corpse_data.collision > 0) {
+        float r = corpse_obj->radius;
+        corpse_obj->p_data.radius = r;
+        corpse_obj->p_data.mass = 10000.0f;
+        corpse_obj->p_data.cspheres.clear();
+        rf::PCollisionSphere sphere{};
+        sphere.center = {0.0f, 0.0f, 0.0f};
+        sphere.radius = r;
+        corpse_obj->p_data.cspheres.add(sphere);
+        corpse_obj->p_data.bbox_min = {corpse_obj->pos.x - r, corpse_obj->pos.y - r, corpse_obj->pos.z - r};
+        corpse_obj->p_data.bbox_max = {corpse_obj->pos.x + r, corpse_obj->pos.y + r, corpse_obj->pos.z + r};
 
-    // Apply corpse collision mode
-    alpine_mesh_set_collision(obj, corpse_data.collision);
+        if (corpse_data.collision == 1) {
+            corpse_obj->obj_flags = static_cast<rf::ObjectFlags>(
+                static_cast<int>(corpse_obj->obj_flags) | static_cast<int>(rf::OF_WEAPON_ONLY_COLLIDE)
+            );
+        }
 
-    // Apply corpse material if not automatic (-1 means inherit from base mesh)
-    if (corpse_data.material >= 0 && corpse_data.material <= 9) {
-        obj->material = corpse_data.material;
+        rf::obj_collision_register(corpse_obj);
     }
 
     // Start corpse state anim if specified (v3c only)
     if (!corpse_data.state_anim.empty() && vtype == rf::MESH_TYPE_CHARACTER) {
-        // Use state anim type (2) with full weight
-        alpine_mesh_animate(obj, 2, corpse_data.state_anim, 1.0f);
+        alpine_mesh_animate(corpse_obj, 2, corpse_data.state_anim, 1.0f);
     }
 
+    g_alpine_mesh_handles.push_back(corpse_obj->handle);
+
+    xlog::debug("[AlpineMesh] Spawned corpse object: handle={} file='{}' at ({:.2f},{:.2f},{:.2f})",
+        corpse_obj->handle, corpse_data.filename, corpse_obj->pos.x, corpse_obj->pos.y, corpse_obj->pos.z);
+
+    return true;
 }
 
 // ─── Event Helper Functions ─────────────────────────────────────────────────

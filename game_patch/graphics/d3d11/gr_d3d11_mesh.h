@@ -26,12 +26,22 @@ namespace df::gr::d3d11
     // Cached vertex lighting state for the current level, updated at level load.
     // Avoids per-frame string comparisons and hash lookups in hot render paths.
     extern bool g_level_vertex_lighting;
-    void evaluate_vertex_lighting(const std::string& level_filename);
+    void evaluate_mesh_lighting(const std::string& level_filename);
 
     inline bool level_uses_vertex_lighting()
     {
         return g_level_vertex_lighting;
     }
+
+    // Cached pixel light overbright for the current level, updated at level load.
+    // Per-level TBL override takes precedence over the global setting.
+    extern float g_level_pixel_light_overbright;
+    void evaluate_pixel_light_overbright(const std::string& level_filename);
+
+    // Alpha test threshold for ZBUFFER_TYPE_FULL_ALPHA_TEST, updated at level load.
+    // Stock D3D8 value is 16/255; default is 1/255 for better gradient rendering.
+    extern float g_alpha_test_threshold;
+    void evaluate_alpha_test_threshold(const std::string& level_filename);
 
     void on_character_fullbright_state_changed();
     void on_static_vertex_color_state_changed(rf::VifLodMesh* changed_lod_mesh = nullptr);
@@ -147,6 +157,19 @@ namespace df::gr::d3d11
                                         const rf::CharacterInstance* ci, const VertexShaderAndLayout& shadow_vs,
                                         ID3D11DeviceContext* context);
 
+        // Outline support: prepare character mesh for drawing without actually rendering.
+        // Sets up model transform, bone transforms, binds vertex/index buffers, and returns batches.
+        const std::vector<BaseMeshRenderCache::Batch>* prepare_character_for_draw(
+            rf::VifLodMesh* lod_mesh, int lod_index,
+            const rf::Vector3& pos, const rf::Matrix3& orient,
+            const rf::CharacterInstance* ci);
+
+        // Outline support: prepare static (v3d) mesh for drawing without actually rendering.
+        // Sets up model transform, binds vertex/index buffers, and returns batches.
+        const std::vector<BaseMeshRenderCache::Batch>* prepare_v3d_for_draw(
+            rf::VifLodMesh* lod_mesh, int lod_index,
+            const rf::Vector3& pos, const rf::Matrix3& orient);
+
     private:
         void draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& render_cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache = false);
 
@@ -156,6 +179,7 @@ namespace df::gr::d3d11
         VertexShaderAndLayout standard_vertex_shader_;
         VertexShaderAndLayout character_vertex_shader_;
         ComPtr<ID3D11PixelShader> pixel_shader_;
+        ComPtr<ID3D11PixelShader> pixel_shader_no_gas_;
         BufferWrapper v3d_vb_;
         BufferWrapper v3d_ib_;
         uint64_t last_static_vertex_color_generation_ = 0;

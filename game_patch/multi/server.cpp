@@ -894,6 +894,8 @@ static std::string describe_alpine_restrict_verdict(const std::pair<AlpineRestri
         return verdict.second.empty() ? "requires an official AF release" : std::format("requires release build ({})", verdict.second);
     case AlpineRestrictVerdict::need_update:
         return verdict.second.empty() ? "needs a newer AF build" : std::format("needs update ({})", verdict.second);
+    case AlpineRestrictVerdict::need_d3d11:
+        return verdict.second.empty() ? "requires D3D11 renderer" : std::format("requires D3D11 ({})", verdict.second);
     }
 
     return "unknown status";
@@ -906,6 +908,7 @@ static void print_alpine_restrict_status_summary()
     const bool reject_non_alpine = cfg.reject_non_alpine_clients || hard_reject;
     const bool require_alpine = cfg.clients_require_alpine || auto_require_alpine;
     const bool enforce_release = cfg.alpine_require_release_build || auto_require_release;
+    const bool require_d3d11 = require_alpine && cfg.require_d3d11;
     const auto level_version = get_level_file_version(rf::level.filename.c_str()).value_or(0);
     const auto game_type = rf::multi_get_game_type();
 
@@ -917,7 +920,9 @@ static void print_alpine_restrict_status_summary()
     rf::console::print("  Server config requires Alpine: {}", cfg.clients_require_alpine ? "yes" : "no");
     rf::console::print("  Non-Alpine clients rejected: {}", reject_non_alpine ? "yes" : "no");
     rf::console::print("  Require stable AF build: {}", enforce_release ? "yes" : "no");
+    rf::console::print("  Require D3D11: {}", require_d3d11 ? "yes" : "no");
 
+    const uint32_t alpine_v130_max_rfl = 304u;
     const uint32_t alpine_v122_max_rfl = 303u;
     const uint32_t alpine_v120_max_rfl = 302u;
     const uint32_t alpine_v110_max_rfl = 301u;
@@ -929,6 +934,8 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl, true}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.2", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 2u, VERSION_TYPE_RELEASE, alpine_v122_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v120_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v120_max_rfl}));
@@ -1966,6 +1973,11 @@ std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_st
         }
     }
 
+    if (cfg.require_d3d11 && !info.is_d3d11
+        && info.software != ClientSoftware::Browser) {
+        return {AlpineRestrictVerdict::need_d3d11, "D3D11 renderer required", false};
+    }
+
     return {AlpineRestrictVerdict::ok, {}, reject_non_alpine};
 }
 
@@ -2022,6 +2034,9 @@ bool check_can_player_spawn(rf::Player* player)
         return false;
     case AlpineRestrictVerdict::need_update:
         af_send_automated_chat_msg("This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com", player);
+        return false;
+    case AlpineRestrictVerdict::need_d3d11:
+        af_send_automated_chat_msg("This server requires the Direct3D 11 renderer. Enable it in the Alpine Faction launcher settings panel.", player);
         return false;
     }
     return false;
@@ -2341,6 +2356,20 @@ void server_reliable_socket_ready(rf::Player* player)
 {
     // Send bot config once the reliable connection is ready.
     if (player->is_bot) {
+        // Refuse to give a profile if there are already enough bots for the ideal player count
+        const int ideal = g_alpine_server_config_active_rules.ideal_player_count;
+        int bot_count = 0;
+        for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (p.is_bot && &p != player) {
+                ++bot_count;
+            }
+        }
+        if (bot_count >= ideal) {
+            rf::console::print("Bot initialization was rejected because bot count already meets ideal player count of {}\n", ideal);
+            af_send_bot_control_simple(player, af_bot_control_type::disconnect_bot);
+            return;
+        }
+
         const auto& configs = g_alpine_server_config.bot_configs;
         if (!configs.empty()) {
             const int slot = g_bot_profile_slots.assign_slot(player, static_cast<int>(configs.size()));
@@ -2404,16 +2433,165 @@ CodeInjection multi_level_init_injection{
     },
 };
 
+static int pick_weaker_team()
+{
+    int red_count = 0, blue_count = 0;
+    int red_bots = 0, blue_bots = 0;
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.is_spectator) {
+            continue;
+        }
+        if (player.team == rf::TEAM_RED) {
+            ++red_count;
+            if (player.is_bot) ++red_bots;
+        }
+        else if (player.team == rf::TEAM_BLUE) {
+            ++blue_count;
+            if (player.is_bot) ++blue_bots;
+        }
+    }
+
+    // Fewer players
+    if (red_count != blue_count) {
+        return (red_count < blue_count) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+
+    // Lower team score
+    int red_score = 0, blue_score = 0;
+    switch (rf::multi_get_game_type()) {
+    case rf::NG_TYPE_CTF:
+        red_score = rf::multi_ctf_get_red_team_score();
+        blue_score = rf::multi_ctf_get_blue_team_score();
+        break;
+    case rf::NG_TYPE_TEAMDM:
+        red_score = rf::multi_tdm_get_red_team_score();
+        blue_score = rf::multi_tdm_get_blue_team_score();
+        break;
+    case rf::NG_TYPE_DC:
+    case rf::NG_TYPE_KOTH:
+        red_score = multi_koth_get_red_team_score();
+        blue_score = multi_koth_get_blue_team_score();
+        break;
+    default:
+        break;
+    }
+    if (red_score != blue_score) {
+        return (red_score < blue_score) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+
+    // More bots (disadvantaged)
+    if (red_bots != blue_bots) {
+        return (red_bots > blue_bots) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+    
+    // Fully tied — random
+    return std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+}
+
+FunHook<int()> pick_team_for_new_player_hook{
+    0x004827E0,
+    []() {
+        if (!multi_is_team_game_type()) {
+            return static_cast<int>(rf::TEAM_RED);
+        }
+        return pick_weaker_team();
+    },
+};
+
+static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
+{
+    if (player->team == new_team) {
+        return;
+    }
+
+    player->team = new_team;
+
+    if (player->net_data) {
+        rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
+    }
+
+}
+
+static void balance_teams()
+{
+    std::vector<rf::Player*> humans;
+    std::vector<rf::Player*> bots;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.is_spectator) {
+            continue;
+        }
+        if (player.is_bot) {
+            bots.push_back(&player);
+        }
+        else {
+            humans.push_back(&player);
+        }
+    }
+
+    // Sort humans by score descending and interleave across teams, randomizing
+    // which team gets first pick to avoid systematic bias toward one team
+    std::sort(humans.begin(), humans.end(), [](const rf::Player* a, const rf::Player* b) {
+        return a->stats->score > b->stats->score;
+    });
+
+    rf::ubyte first_team = std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+    rf::ubyte second_team = (first_team == rf::TEAM_RED) ? rf::TEAM_BLUE : rf::TEAM_RED;
+
+    for (size_t i = 0; i < humans.size(); ++i) {
+        rf::ubyte team = (i % 2 == 0) ? first_team : second_team;
+        assign_player_to_team(humans[i], team);
+    }
+
+    // Count humans per team to distribute bots for even total team sizes
+    int red_count = 0;
+    int blue_count = 0;
+    for (const auto* p : humans) {
+        if (p->team == rf::TEAM_RED) {
+            ++red_count;
+        }
+        else {
+            ++blue_count;
+        }
+    }
+
+    // Sort bots by score descending for fairer distribution
+    std::sort(bots.begin(), bots.end(), [](const rf::Player* a, const rf::Player* b) {
+        return a->stats->score > b->stats->score;
+    });
+
+    // Assign each bot to whichever team currently has fewer players,
+    // randomizing the tie-break to avoid systematic bias
+    for (auto* bot : bots) {
+        rf::ubyte new_team;
+        if (red_count < blue_count) {
+            new_team = rf::TEAM_RED;
+        }
+        else if (blue_count < red_count) {
+            new_team = rf::TEAM_BLUE;
+        }
+        else {
+            new_team = std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+        }
+        assign_player_to_team(bot, new_team);
+        if (new_team == rf::TEAM_RED) {
+            ++red_count;
+        }
+        else {
+            ++blue_count;
+        }
+    }
+}
+
 CodeInjection multi_balance_teams_injection{
     0x0048215D,
     [](auto& regs) {
         const rf::NetGameType current_game_type = rf::multi_get_game_type();
-        if (should_balance_teams(current_game_type)) {
-            regs.eip = 0x00482170; // balance teams
+        if (should_balance_teams(current_game_type)
+            && !g_match_info.pre_match_active && !g_match_info.match_active) {
+            balance_teams();
         }
-        else {
-            regs.eip = 0x004823ED; // end function, no balancing
-        }
+        regs.eip = 0x004823ED; // always skip stock balance code
     },
 };
 
@@ -2964,8 +3142,17 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
             }
         }
 
-        return item_create_hook.call_target(
+        rf::Item* item = item_create_hook.call_target(
             type, name, count, parent_handle, pos, orient, respawn_time, permanent, from_packet);
+
+        if (item && item->respawn_time_ms > 0 &&
+            (rf::is_server || rf::is_dedicated_server) &&
+            g_alpine_server_config_active_rules.delayed_items.contains(name)) {
+            rf::obj_hide(item);
+            item->respawn_next.set(item->respawn_time_ms);
+        }
+
+        return item;
     }
 };
 
@@ -3232,6 +3419,9 @@ void server_init()
     // Ignore obj_update position for some time after teleportation
     process_obj_update_set_pos_injection.install();
 
+    // Exclude spectators and browsers from team selection when a new player joins
+    pick_team_for_new_player_hook.install();
+
     // Customized dedicated server console message when player joins
     multi_on_new_player_injection.install();
     AsmWriter(0x0047B061, 0x0047B064).add(asm_regs::esp, 0x14);
@@ -3365,6 +3555,15 @@ static void bot_decommission_check() {
                 disabled_candidates[team].push_back(&player);
             } else {
                 active_candidates[team].push_back(&player);
+            }
+        } else if (player.is_spectator) {
+            const auto now = std::chrono::steady_clock::now();
+            const bool just_entered_spectate = player.spectate_start_time
+                && now - *player.spectate_start_time
+                    < std::chrono::duration<float>(BOT_SPECTATE_WAIT_TIME_SEC);
+
+            if (just_entered_spectate) {
+                ++active_persons_per_team[team];
             }
         } else {
             const bool is_spawned = !rf::player_is_dead(&player)
@@ -3500,6 +3699,16 @@ bool server_allow_unlimited_fps()
     return g_alpine_server_config.allow_unlimited_fps;
 }
 
+bool server_allow_outlines()
+{
+    return g_alpine_server_config.allow_outlines;
+}
+
+bool server_allow_outlines_xray()
+{
+    return g_alpine_server_config.allow_outlines_xray;
+}
+
 bool server_gaussian_spread()
 {
     return g_alpine_server_config.gaussian_spread;
@@ -3510,6 +3719,10 @@ bool server_geo_chunk_physics()
     return g_alpine_server_config_active_rules.geo_chunk_physics;
 }
 
+bool server_clear_stale_movement_input()
+{
+    return g_alpine_server_config_active_rules.clear_stale_movement_input;
+}
 
 bool server_allow_footsteps()
 {
@@ -3553,6 +3766,16 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
     if (!g_alpine_server_config_active_rules.geo_chunk_physics) {
         requires_alpine = true;
         hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 3);
+    }
+
+    if (g_alpine_server_config_active_rules.clear_stale_movement_input) {
+        requires_alpine = true;
+        min_minor_version = std::max(min_minor_version, 3);
+    }
+
+    if (g_alpine_server_config.alpine_restricted_config.require_d3d11) {
+        requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 3);
     }
 

@@ -186,6 +186,9 @@ enum af_server_info_flags : uint32_t {
     SIF_SERVER_CFG_CHANGED = 1u << 12,
     SIF_GEO_CHUNK_PHYSICS = 1u << 13,
     SIF_ALLOW_FOOTSTEPS = 1u << 14,
+    SIF_ALLOW_OUTLINES = 1u << 15,
+    SIF_ALLOW_OUTLINES_XRAY = 1u << 16,
+    SIF_CLEAR_STALE_MOVEMENT_INPUT = 1u << 17,
 };
 
 // Subset of `rf::NetGameFlags`.

@@ -3,19 +3,28 @@
 #include <string>
 #include <chrono>
 #include <functional>
+#include <optional>
 #include <vector>
 #include <common/HttpRequest.h>
 
 class FactionFilesClient
 {
 public:
+    struct AwpInfo
+    {
+        int revision = 0;
+        std::string download_url;
+    };
+
     struct LevelInfo
     {
         std::string name;
         std::string author;
         std::string description;
         unsigned size_in_bytes;
-        int ticket_id;
+        std::string download_url;
+        std::string image_url;
+        std::optional<AwpInfo> awp_info;
     };
 
     struct VoteInfo
@@ -30,11 +39,12 @@ public:
     FactionFilesClient();
     std::optional<LevelInfo> find_map(const char* file_name);
     std::vector<bool> check_maps(const std::vector<std::string>& file_names);
-    void download_map(const char* tmp_filename, int ticket_id,
+    void download_map(const char* tmp_filename, const std::string& download_url,
         std::function<bool(unsigned bytes_received, std::chrono::milliseconds duration)> callback);
+    std::vector<unsigned char> fetch_image(const std::string& image_url);
 
 private:
     HttpSession session_;
 
-    static std::optional<LevelInfo> parse_level_info(const char* buf);
+    static std::optional<LevelInfo> parse_level_info(const std::string& response);
 };

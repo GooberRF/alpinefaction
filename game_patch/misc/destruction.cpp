@@ -24,6 +24,9 @@
 #include "../rf/sound/sound.h"
 #include "../rf/weapon.h"
 #include "../rf/object.h"
+#include "../rf/entity.h"
+#include "../rf/player/player.h"
+#include "../rf/player/camera.h"
 #include "../os/console.h"
 #include "destruction.h"
 #include "level.h"
@@ -36,6 +39,53 @@ static bool g_rf2_style_boolean_active = false;
 // -1 = unlimited (default), 0 = disabled, >0 = specific limit.
 static int g_rf2_geo_limit = -1;
 static int g_rf2_geo_count = 0;
+
+// Tracks whether the boolean engine actually modified any detail room faces.
+// Set in boolean State 5 when a detail room appears in the affected rooms list.
+// Cleared at the start of each geomod (in geomod_init_hook).
+// Used to suppress geomod effects when the crater didn't intersect any geometry.
+static bool g_rf2_boolean_modified_detail = false;
+
+// When true, suppresses geomod_create's visual effects via CallHooks so they
+// can be deferred until carving is confirmed.
+static bool g_rf2_suppress_geomod_create_effects = false;
+
+// Rock debris saved params — single global, replayed directly in State 3.
+// If two RF2 geomods overlap on the same frame, second overwrites first (acceptable).
+struct DeferredRockDebris {
+    bool pending = false;
+    rf::Vector3 orientation;
+    float scaled_radius;
+    rf::Vector3 source_dir;
+    int texture;
+    int room;
+};
+static DeferredRockDebris g_rf2_deferred_debris;
+
+// Geomod sound saved params — single global, played at earliest carving confirmation
+// (boolean State 5). The stock code resolves weapon_type.geomod_foley_id into a
+// random subsound handle before calling snd_play_3d; we save the resolved handle.
+struct DeferredGeomodSound {
+    bool pending = false;
+    int handle = -1;
+    rf::Vector3 pos;
+};
+static DeferredGeomodSound g_rf2_deferred_sound;
+
+// Smoke emitter GeomodParams — two-stage FIFO:
+// "pending" is populated during geomod_create. State 3 either moves front entry
+// to "confirmed" (if carving happened) or discards it (near-miss).
+// Per-frame hook only processes "confirmed" entries.
+static std::deque<rf::GeomodParams> g_rf2_smoke_pending;
+static std::deque<rf::GeomodParams> g_rf2_smoke_confirmed;
+
+// Pointer(s) to entry_data of smoke-only emitter records.
+static std::vector<void*> g_rf2_smoke_record_ptrs;
+
+// Saved copy of the State 0 GDecalCreateInfo for g_decal_add.
+// Only one state machine runs at a time, so a single global is safe.
+static bool g_rf2_decal_deferred = false;
+static rf::GDecalCreateInfo g_rf2_deferred_decal_info;
 
 // Per-room targeting: when RF2-style is active, the boolean engine only processes
 // faces from ONE specific detail room at a time. This prevents crashes and incorrect
@@ -2241,14 +2291,165 @@ static std::vector<rf::GRoom*> find_overlapping_detail_rooms(const rf::Vector3& 
     return result;
 }
 
-// Hook FUN_00467020 — the master "create geomod" function called by the explosion system.
-// This is the earliest point where we can gate geomod: it creates visual effects (particle
-// emitters for rock debris, geomod explosion vclip, geomod sound) AND queues the boolean
-// request. Returning 0 from here prevents ALL geomod visuals and processing from starting.
-// param_4 (4th parameter) is the explosion position (rf::Vector3*).
-FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned int)> geomod_create_hook{
+// Replay geomod camera shake for nearby players.
+static void replay_geomod_camera_shake()
+{
+    if (rf::is_dedicated_server || rf::is_multi) return;
+
+    rf::Player* player = rf::local_player;
+    if (!player || !player->cam) return;
+
+    rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
+    if (!entity) return;
+
+    float dx = entity->pos.x - rf::g_geomod_pos.x;
+    float dy = entity->pos.y - rf::g_geomod_pos.y;
+    float dz = entity->pos.z - rf::g_geomod_pos.z;
+    float dist_sq = dx * dx + dy * dy + dz * dz;
+
+    if (dist_sq < rf::g_geomod_shake_threshold_sq) {
+        rf::camera_shake(player->cam, 0.003f, 0.75f);
+    }
+}
+
+// Replay geomod entity proximity effects (pushes nearby entities).
+static void replay_geomod_entity_proximity()
+{
+    rf::geomod_push_nearby_entities(&rf::g_geomod_pos);
+}
+
+// Process confirmed smoke emitter replay from a clean call context.
+// Called from geomod_per_frame_hook (outside the state machine) because FUN_00437230
+// creates emitter records that interact with FUN_00437180's linked list lifecycle.
+static void process_pending_geomod_effects()
+{
+    // Smoke emitters: replay FUN_00437230 with saved crater params.
+    // Must run from per-frame hook (not State 3) because FUN_00437230 creates
+    // emitter records that interact with FUN_00437180's linked list lifecycle.
+    while (!g_rf2_smoke_confirmed.empty()) {
+        rf::geomod_queue_add(&g_rf2_smoke_confirmed.front());
+        g_rf2_smoke_record_ptrs.push_back(&rf::g_geomod_pending_list.prev->parameters);
+        g_rf2_smoke_confirmed.pop_front();
+    }
+}
+
+// CallHooks inside geomod_create (FUN_00467020).
+// Rock debris: saves params to a global for replay in State 3.
+// Sound: suppresses (replayed from globals directly in State 3).
+CallHook<int(rf::Vector3*, float, rf::Vector3*, int, int)> geomod_rock_debris_defer_hook{
+    0x004673d8,
+    [](rf::Vector3* orientation, float scaled_radius, rf::Vector3* source_dir, int texture, int room_ptr) -> int {
+        if (g_rf2_suppress_geomod_create_effects) {
+            g_rf2_deferred_debris.pending = true;
+            g_rf2_deferred_debris.orientation = *orientation;
+            g_rf2_deferred_debris.scaled_radius = scaled_radius;
+            g_rf2_deferred_debris.source_dir = *source_dir;
+            g_rf2_deferred_debris.texture = texture;
+            g_rf2_deferred_debris.room = room_ptr;
+            return 0;
+        }
+        return geomod_rock_debris_defer_hook.call_target(orientation, scaled_radius, source_dir, texture, room_ptr);
+    },
+};
+
+CallHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> geomod_sound_defer_hook{
+    0x00467494,
+    [](int handle, const rf::Vector3& pos, float vol_scale, const rf::Vector3& unused, int group) -> int {
+        if (g_rf2_suppress_geomod_create_effects) {
+            g_rf2_deferred_sound.pending = true;
+            g_rf2_deferred_sound.handle = handle;
+            g_rf2_deferred_sound.pos = pos;
+            return -1;
+        }
+        return geomod_sound_defer_hook.call_target(handle, pos, vol_scale, unused, group);
+    },
+};
+
+// CallHooks inside the real-time boolean packet receive handler (FUN_00476590).
+// When the server sends a boolean packet, the client processes it here — bypassing
+// geomod_create entirely (stock geomod_create returns early for multiplayer clients).
+// The packet handler creates rock debris and smoke emitters IMMEDIATELY, before the
+// boolean state machine confirms whether geometry was actually carved. For RF2-style
+// geomods this causes spurious effects when the crater is near but doesn't intersect
+// a geoable brush. These hooks mirror the suppression logic from geomod_create_hook.
+
+CallHook<int(rf::Vector3*, float, rf::Vector3*, int, int)> packet_rock_debris_defer_hook{
+    0x00476693,
+    [](rf::Vector3* pos, float scaled_radius, rf::Vector3* source_dir, int texture, int room_ptr) -> int {
+        bool rf2_enabled = AlpineLevelProperties::instance().rf2_style_geomod;
+        if (rf2_enabled && pos) {
+            bool in_geo_region = is_pos_in_any_geo_region(*pos);
+            if (!in_geo_region) {
+                auto overlapping = find_overlapping_detail_rooms(*pos);
+                if (!overlapping.empty()) {
+                    // RF2 geomod near geoable brush — defer debris until carving confirmed
+                    g_rf2_suppress_geomod_create_effects = true;
+                    g_rf2_deferred_debris.pending = true;
+                    g_rf2_deferred_debris.orientation = *pos;
+                    g_rf2_deferred_debris.scaled_radius = scaled_radius;
+                    g_rf2_deferred_debris.source_dir = *source_dir;
+                    g_rf2_deferred_debris.texture = texture;
+                    g_rf2_deferred_debris.room = room_ptr;
+                    return 0;
+                }
+            }
+        }
+        return packet_rock_debris_defer_hook.call_target(pos, scaled_radius, source_dir, texture, room_ptr);
+    },
+};
+
+CallHook<void(rf::GeomodParams*)> packet_emitter_save_params_hook{
+    0x0047669D,
+    [](rf::GeomodParams* params) {
+        int saved_default = rf::g_geomod_emitter_default_idx;
+        int saved_driller = rf::g_geomod_emitter_driller_idx;
+
+        if (g_rf2_suppress_geomod_create_effects) {
+            // Suppress smoke particle creation by nulling emitter indices.
+            // The emitter RECORD is still created (needed to trigger the state machine),
+            // but with null particle handles — matching the geomod_create_hook path.
+            rf::g_geomod_emitter_default_idx = -1;
+            rf::g_geomod_emitter_driller_idx = -1;
+            g_rf2_smoke_pending.push_back(*params);
+        }
+
+        packet_emitter_save_params_hook.call_target(params);
+
+        rf::g_geomod_emitter_default_idx = saved_default;
+        rf::g_geomod_emitter_driller_idx = saved_driller;
+        g_rf2_suppress_geomod_create_effects = false;
+    },
+};
+
+// Hook FUN_00437180 — the per-frame geomod processor. Process pending effects
+// from a clean call context (outside the state machine) before the stock logic runs.
+FunHook<void(float)> geomod_per_frame_hook{
+    0x00437180,
+    [](float dt) {
+        process_pending_geomod_effects();
+        geomod_per_frame_hook.call_target(dt);
+    },
+};
+
+// Hook geomod_queue_add call at 0x0046727a inside geomod_create (FUN_00467020).
+// Always passes through (the emitter record is needed to trigger the state machine),
+// but saves the GeomodParams into the FIFO queue for smoke emitter replay.
+CallHook<void(rf::GeomodParams*)> geomod_emitter_save_params_hook{
+    0x0046727a,
+    [](rf::GeomodParams* params) {
+        if (g_rf2_suppress_geomod_create_effects) {
+            g_rf2_smoke_pending.push_back(*params);
+        }
+        geomod_emitter_save_params_hook.call_target(params);
+    },
+};
+
+// Hook level_mod (0x00467020) — the master "create geomod" function called by the
+// explosion system. Creates visual effects (emitters, rock debris, sound) AND queues
+// the boolean request. Returning false prevents all geomod visuals and processing.
+FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geomod_create_hook{
     0x00467020,
-    [](float radius, void* param2, int param3, rf::Vector3* pos, void* param5, unsigned int crater_idx, unsigned int flags) -> uint8_t {
+    [](float radius, int parent_handle, rf::GRoom* src_room, rf::Vector3* pos, rf::Vector3* hit_normal, int shape_index, int flags) -> bool {
         bool rf2_enabled = AlpineLevelProperties::instance().rf2_style_geomod;
         bool is_rf2_geomod = false;
 
@@ -2259,10 +2460,10 @@ FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned i
 
                 // Check RF2 geo limit
                 if (g_rf2_geo_limit == 0) {
-                    return 0; // RF2 geomods disabled
+                    return false; // RF2 geomods disabled
                 }
                 if (g_rf2_geo_limit > 0 && g_rf2_geo_count >= g_rf2_geo_limit) {
-                    return 0; // RF2 limit reached
+                    return false; // RF2 limit reached
                 }
 
                 // Effects gate: check if explosion is near any geoable detail room
@@ -2270,7 +2471,7 @@ FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned i
                 // concave brushes and touching detail brushes.
                 auto overlapping = find_overlapping_detail_rooms(*pos);
                 if (overlapping.empty()) {
-                    return 0; // skip entire geomod (no effects, no boolean, no state machine)
+                    return false; // skip entire geomod (no effects, no boolean, no state machine)
                 }
             }
         }
@@ -2297,14 +2498,48 @@ FunHook<uint8_t(float, void*, int, rf::Vector3*, void*, unsigned int, unsigned i
             stock_limit += g_rf2_geo_count;
         }
 
-        auto result = geomod_create_hook.call_target(radius, param2, param3, pos, param5, crater_idx, flags);
+        // Suppress immediate visual effects for RF2-style geomods.
+        // All effects are recreated from globals in State 3 if carving is confirmed.
+        // - Smoke emitters: suppressed by temporarily setting emitter indices to -1.
+        //   FUN_00437230 still creates the emitter RECORD (needed to trigger the state
+        //   machine via FUN_00437180), but with null particle handles. The crater params
+        //   are saved to a FIFO queue by geomod_emitter_save_params_hook for replay.
+        // - Rock debris: saved via CallHook, replayed directly in State 3.
+        // - Sound: saved via CallHook, replayed at earliest carving confirmation (boolean State 5).
+        int saved_default_emitter = rf::g_geomod_emitter_default_idx;
+        int saved_driller_emitter = rf::g_geomod_emitter_driller_idx;
+
+        if (is_rf2_geomod) {
+            if (!rf::is_multi || rf::is_server) {
+                g_rf2_deferred_debris.pending = false;
+            }
+            g_rf2_suppress_geomod_create_effects = true;
+            rf::g_geomod_emitter_default_idx = -1;
+            rf::g_geomod_emitter_driller_idx = -1;
+        }
+
+        auto result = geomod_create_hook.call_target(radius, parent_handle, src_room, pos, hit_normal, shape_index, flags);
         stock_limit = saved_limit;
+        g_rf2_suppress_geomod_create_effects = false;
+        rf::g_geomod_emitter_default_idx = saved_default_emitter;
+        rf::g_geomod_emitter_driller_idx = saved_driller_emitter;
 
         if (is_rf2_geomod) {
             rf::g_num_geomods_this_level = saved_crater_count;
             if (result) {
                 g_rf2_geo_count++;
             }
+            else if (!rf::is_multi || rf::is_server) {
+                if (!g_rf2_smoke_pending.empty()) {
+                    g_rf2_smoke_pending.pop_back();
+                }
+                g_rf2_deferred_debris.pending = false;
+            }
+            // Return false to the caller so normal explosion effects (decal, camera shake)
+            // are NOT suppressed. The geomod still runs internally (the emitter record
+            // created by geomod_queue_add triggers the state machine via FUN_00437180).
+            // For successful carves, geomod-specific effects are recreated in State 3.
+            return false;
         }
 
         return result;
@@ -2345,10 +2580,23 @@ static bool should_enable_geo_chunk_physics()
 // so overlapping should always be non-empty when RF2-style is active.
 // Both server and client deterministically derive this from position + level properties,
 // so the pregame boolean packet (which omits the flags field) works correctly.
-FunHook<void(void*)> geomod_init_hook{
+FunHook<void(rf::GeomodParams*)> geomod_init_hook{
     0x00466B00,
-    [](void* entry_data) {
-        geomod_init_hook.call_target(entry_data);
+    [](rf::GeomodParams* params) {
+        // Skip levelmod_do_blast_begin for smoke-only emitter records replayed by our effects queue.
+        {
+            auto it = std::find(g_rf2_smoke_record_ptrs.begin(),
+                                g_rf2_smoke_record_ptrs.end(), static_cast<void*>(params));
+            if (it != g_rf2_smoke_record_ptrs.end()) {
+                g_rf2_smoke_record_ptrs.erase(it);
+                return; // skip — FUN_004370d0 will destroy the record + emitters
+            }
+        }
+
+        geomod_init_hook.call_target(params);
+
+        // Clear the modification flag at the start of each geomod.
+        g_rf2_boolean_modified_detail = false;
 
         // Override separated solids physics flag based on the geo chunk physics option.
         // When disabled, isolated chunks disappear instead of falling as physics objects.
@@ -2470,6 +2718,21 @@ static void invalidate_rf2_render_caches()
         }
     }
 }
+
+// Hook g_decal_add call at 0x00466d2f in State 0 of the geomod state machine.
+// Creates the blastmark02 geomod decal before the boolean runs. For RF2-style,
+// save the GDecalCreateInfo and skip; replay in State 3 if carving is confirmed.
+CallHook<rf::GDecal*(rf::GDecalCreateInfo*)> state0_decal_defer_hook{
+    0x00466d2f,
+    [](rf::GDecalCreateInfo* dci) -> rf::GDecal* {
+        if (g_rf2_style_boolean_active) {
+            g_rf2_deferred_decal_info = *dci;
+            g_rf2_decal_deferred = true;
+            return nullptr; // skip decal creation
+        }
+        return state0_decal_defer_hook.call_target(dci);
+    },
+};
 
 // Hook at the START of outer State 2 (0x00466dcd) in the geomod state machine.
 // State 2 runs after the boolean completes (State 1). It detects disconnected face
@@ -2598,16 +2861,50 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
             return;
         }
 
-        // No more pending rooms — check if any geoable room was actually targeted.
-        // When g_rf2_target_detail_room is nullptr, no geoable detail rooms overlapped
-        // the crater, so the boolean produced no visible geometry change. Skip ALL
-        // State 3 effects (rock debris, decal updates, crater decals, foley sound).
-        if (g_rf2_target_detail_room == nullptr) {
-            rf::g_geomod_outer_state = -1; // mark geomod as done (no geoable room targeted)
-            regs.eip = 0x00466fb5;   // jump to cleanup/exit
+        // No more pending rooms — check if geometry was actually carved.
+        // Skip ALL State 3 effects (debris, decals, impact effects, foley, camera shake)
+        // when either no geoable room was targeted or the boolean didn't modify any faces.
+        if (g_rf2_target_detail_room == nullptr || !g_rf2_boolean_modified_detail) {
+            rf::g_geomod_outer_state = -1; // mark geomod as done
+            if (!g_rf2_smoke_pending.empty()) g_rf2_smoke_pending.pop_front();
+            g_rf2_deferred_debris.pending = false;
+            g_rf2_deferred_sound.pending = false;
+            g_rf2_decal_deferred = false;
+            regs.eip = 0x00466fb5;   // jump past all State 3 effects
             return;
         }
-        // State 3 proceeds normally — all effects fire for the successfully carved room(s)
+
+        // Boolean carved geometry — replay suppressed effects.
+
+        // Direct replay in State 3 (safe — these were working here before):
+        replay_geomod_camera_shake();
+        replay_geomod_entity_proximity();
+
+        if (g_rf2_decal_deferred) {
+            rf::g_decal_add(&g_rf2_deferred_decal_info);
+            g_rf2_decal_deferred = false;
+        }
+
+        if (g_rf2_deferred_debris.pending) {
+            rf::geomod_create_rock_debris(
+                &g_rf2_deferred_debris.orientation,
+                g_rf2_deferred_debris.scaled_radius,
+                &g_rf2_deferred_debris.source_dir,
+                g_rf2_deferred_debris.texture,
+                g_rf2_deferred_debris.room);
+            g_rf2_deferred_debris.pending = false;
+        }
+
+        // Geomod sound: already played in boolean State 5 (earliest carving confirmation).
+        // Clear the flag in case it wasn't consumed (e.g., dedicated server).
+        g_rf2_deferred_sound.pending = false;
+        // Move smoke params from pending to confirmed — per-frame hook will process
+        if (!g_rf2_smoke_pending.empty()) {
+            g_rf2_smoke_confirmed.push_back(g_rf2_smoke_pending.front());
+            g_rf2_smoke_pending.pop_front();
+        }
+
+        // State 3 proceeds normally — stock effects fire for the carved room(s)
     },
 };
 
@@ -2640,6 +2937,20 @@ CodeInjection boolean_state5_protect_detail_cache_for_rf2{
         rf::GCache* cache = room->geo_cache;
 
         if (g_rf2_style_boolean_active && room->is_detail) {
+            // A detail room appeared in the boolean's affected rooms list, confirming
+            // that the crater actually intersected and modified detail brush geometry.
+            if (!g_rf2_boolean_modified_detail) {
+                xlog::debug("[RF2] boolean State 5: detail room modified (uid={}, index={})",
+                    room->uid, room->room_index);
+                // Play geomod sound at the earliest confirmation of carving
+                // (during boolean inner State 5, several frames before outer State 3).
+                if (g_rf2_deferred_sound.pending) {
+                    rf::snd_play_3d(g_rf2_deferred_sound.handle, g_rf2_deferred_sound.pos,
+                        1.0f, rf::Vector3{0.0f, 0.0f, 0.0f}, 0);
+                    g_rf2_deferred_sound.pending = false;
+                }
+            }
+            g_rf2_boolean_modified_detail = true;
             // Return null so the stock code skips the write to geo_cache + 0x20
             regs.eax = static_cast<int32_t>(0);
         } else {
@@ -2654,14 +2965,12 @@ CodeInjection boolean_state5_protect_detail_cache_for_rf2{
 // RF2-style geomod: conditionally suppress crater decal effects.
 // FUN_00492400 is called from geomod state machine State 3 to apply crater marks
 // at the explosion point. It has only one caller (the geomod state machine).
-// When RF2-style is active and a geoable room was carved, allow crater decals
-// (they mark nearby world surfaces around the detail brush crater).
-// When no geoable room was targeted, suppress them (no visible geometry change occurred).
+// Suppress when the boolean didn't actually modify any detail room geometry.
 FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
     0x00492400,
     [](rf::Vector3* pos, float radius) {
-        if (g_rf2_style_boolean_active && g_rf2_target_detail_room == nullptr) {
-            return; // suppress crater decals when no geoable room was targeted
+        if (g_rf2_style_boolean_active && !g_rf2_boolean_modified_detail) {
+            return;
         }
         geomod_crater_decals_hook.call_target(pos, radius);
     },
@@ -2669,9 +2978,7 @@ FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
 
 // RF2-style geomod: conditionally suppress impact effects.
 // FUN_00490900 is called from geomod state machine State 3 (at 0x00466f89) to update
-// decal states near the explosion point. When RF2-style is active and a geoable room
-// was carved, allow impact effects (they update decals on nearby world surfaces).
-// When no geoable room was targeted, suppress them.
+// decal states near the explosion point. Suppress when no geometry was actually carved.
 //
 // Uses CallHook instead of FunHook because
 // SubHook cannot decode the x87 FPU instruction (opcode 0xd8) at 0x490904, making it
@@ -2679,8 +2986,8 @@ FunHook<void(rf::Vector3*, float)> geomod_crater_decals_hook{
 CallHook<void(rf::Vector3*, float)> geomod_impact_effects_hook{
     0x00466f89,
     [](rf::Vector3* pos, float radius) {
-        if (g_rf2_style_boolean_active && g_rf2_target_detail_room == nullptr) {
-            return; // suppress impact effects when no geoable room was targeted
+        if (g_rf2_style_boolean_active && !g_rf2_boolean_modified_detail) {
+            return; // suppress impact effects when no geometry was carved
         }
         geomod_impact_effects_hook.call_target(pos, radius);
     },
@@ -2693,6 +3000,14 @@ void destruction_level_cleanup()
     g_rf2_pending_detail_rooms.clear();
     g_rf2_geo_count = 0;
     g_rf2_anchor_info.clear();
+    g_rf2_boolean_modified_detail = false;
+    g_rf2_suppress_geomod_create_effects = false;
+    g_rf2_deferred_debris.pending = false;
+    g_rf2_deferred_sound.pending = false;
+    g_rf2_smoke_pending.clear();
+    g_rf2_smoke_confirmed.clear();
+    g_rf2_smoke_record_ptrs.clear();
+    g_rf2_decal_deferred = false;
     AlpineLevelProperties::instance().geoable_room_uids.clear();
 }
 
@@ -2704,6 +3019,12 @@ void g_solid_set_rf2_geo_limit(int limit)
 void destruction_do_patch()
 {
     // RF2-style geomod: geoable detail brush only mode
+    geomod_per_frame_hook.install();
+    geomod_emitter_save_params_hook.install();
+    geomod_rock_debris_defer_hook.install();
+    geomod_sound_defer_hook.install();
+    packet_rock_debris_defer_hook.install();
+    packet_emitter_save_params_hook.install();
     geomod_create_hook.install();
     geomod_init_hook.install();
     boolean_iterate_hook.install();
@@ -2717,6 +3038,7 @@ void destruction_do_patch()
     boolean_skip_non_detail_faces_for_rf2.install();
     boolean_state5_allow_detail_for_rf2.install();
     boolean_state5_protect_detail_cache_for_rf2.install();
+    state0_decal_defer_hook.install();
     state2_rf2_separated_solids_injection.install();
     geomod_state3_clear_detail_caches_injection.install();
     geomod_crater_decals_hook.install();

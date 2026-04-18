@@ -354,6 +354,7 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_brush_uids;
     std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
     std::vector<uint8_t> breakable_materials;  // material type per entry
+    std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of moving groups with "Hold Open"
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -382,6 +383,7 @@ struct AlpineLevelProperties
         breakable_brush_uids.clear();
         breakable_room_uids.clear();
         breakable_materials.clear();
+        hold_open_keyframe_uids.clear();
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -432,6 +434,12 @@ struct AlpineLevelProperties
             file.write<int32_t>(room_uid);
             uint8_t mat = (i < breakable_materials.size()) ? breakable_materials[i] : 0;
             file.write<uint8_t>(mat);
+        }
+        // Write hold open first-keyframe UIDs
+        std::uint32_t ho_count = static_cast<std::uint32_t>(hold_open_keyframe_uids.size());
+        file.write<std::uint32_t>(ho_count);
+        for (std::uint32_t i = 0; i < ho_count; i++) {
+            file.write<int32_t>(hold_open_keyframe_uids[i]);
         }
     }
 
@@ -543,6 +551,19 @@ struct AlpineLevelProperties
                 if (!read_bytes(&mat, sizeof(mat)))
                     return;
                 breakable_materials[i] = mat;
+            }
+
+            // Hold open first-keyframe UIDs
+            std::uint32_t ho_count = 0;
+            if (!read_bytes(&ho_count, sizeof(ho_count)))
+                return;
+            if (ho_count > 10000) ho_count = 10000;
+            hold_open_keyframe_uids.resize(ho_count);
+            for (std::uint32_t i = 0; i < ho_count; i++) {
+                int32_t uid = 0;
+                if (!read_bytes(&uid, sizeof(uid)))
+                    return;
+                hold_open_keyframe_uids[i] = uid;
             }
         }
     }
@@ -713,6 +734,11 @@ struct CDedLevel
     AlpineLevelProperties& GetAlpineLevelProperties();
 
 
+    void delete_object(DedObject* obj)
+    {
+        AddrCaller{0x0041be70}.this_call(this, obj);
+    }
+
     void deselect_all()
     {
         AddrCaller{0x0042C7A0}.this_call(this);
@@ -827,6 +853,15 @@ static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...
 
 // FUN_00453200: sync DedLight properties (pos, orient, color, etc.) to its internal level_light
 static auto& DedLight_UpdateLevelLight = addr_as_ref<void __fastcall(void* this_)>(0x00453200);
+
+// DirectInput keyboard state buffer, non-zero value at [scancode] means the key is held
+static auto& g_dinput_keys = addr_as_ref<uint8_t[256]>(0x0147ce8c);
+
+// DirectInput scan codes for edit operation hold-keys
+constexpr uint8_t DIK_R = 0x13;     // rotate
+constexpr uint8_t DIK_M = 0x32;     // move
+constexpr uint8_t DIK_S = 0x1F;     // scale
+constexpr uint8_t DIK_LSHIFT = 0x2A;
 
 // Editor app globals
 void* GetMainFrame();

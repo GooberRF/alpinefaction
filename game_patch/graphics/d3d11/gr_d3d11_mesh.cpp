@@ -17,11 +17,13 @@
 #include "../../rf/character.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
+#include "../../misc/alpine_options.h"
 #include "../../rf/level.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
+#include "../../object/object.h"
 
 using namespace rf;
 
@@ -29,14 +31,40 @@ namespace df::gr::d3d11
 {
     bool g_level_vertex_lighting = false;
 
-    void evaluate_vertex_lighting(const std::string& level_filename)
+    void evaluate_mesh_lighting(const std::string& level_filename)
     {
-        if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
+        if (!g_alpine_game_config.ignore_tbl_vertex_lighting
+            && g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
             && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
             g_level_vertex_lighting = true;
         }
         else {
-            g_level_vertex_lighting = g_alpine_game_config.vertex_lighting;
+            g_level_vertex_lighting = g_alpine_game_config.mesh_lighting_use_vertex();
+        }
+    }
+
+    float g_level_pixel_light_overbright = 0.5f;
+    float g_alpha_test_threshold = 1.0f / 255.0f;
+
+    void evaluate_alpha_test_threshold(const std::string& level_filename)
+    {
+        if (is_stock_alpha_test_level(level_filename)) {
+            g_alpha_test_threshold = 16.0f / 255.0f;
+        }
+        else {
+            g_alpha_test_threshold = 1.0f / 255.0f;
+        }
+    }
+
+    void evaluate_pixel_light_overbright(const std::string& level_filename)
+    {
+        if (!g_alpine_game_config.ignore_tbl_pixel_light_overbright
+            && g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
+            g_level_pixel_light_overbright = std::clamp(
+                get_level_info_value<float>(AlpineLevelInfoID::PixelLightOverbright), 0.0f, 3.0f);
+        }
+        else {
+            g_level_pixel_light_overbright = g_alpine_game_config.pixel_light_overbright;
         }
     }
 
@@ -662,7 +690,11 @@ namespace df::gr::d3d11
             int base_vertex = meshes_[0].batches[chunk_index].base_vertex;
             auto* gpu_vecs = reinterpret_cast<rf::Vector3*>(mapped_vb.pData) + base_vertex;
             rf::VifChunk& chunk = mesh->chunks[chunk_index];
-            std::vector<Vector3> morphed_vecs(chunk.vecs, chunk.vecs + chunk.num_vecs);
+            
+            // fixes heap corruption when v3c files have mismatched vertex layouts
+            int safe_size = std::max<int>(chunk.num_vecs, mesh->num_original_vecs);
+            std::vector<Vector3> morphed_vecs(safe_size);
+            std::memcpy(morphed_vecs.data(), chunk.vecs, chunk.num_vecs * sizeof(Vector3));
             skeleton->morph(morphed_vecs.data(), chunk.num_vecs, time, chunk.orig_map, mesh->num_original_vecs);
             for (int vert_index = 0; vert_index < chunk.num_vecs; ++vert_index) {
                 int pos_vert_offset = chunk.same_vertex_offsets[vert_index];
@@ -686,6 +718,7 @@ namespace df::gr::d3d11
         standard_vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::standard);
         character_vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::character);
         pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
+        pixel_shader_no_gas_ = shader_manager.get_pixel_shader(PixelShaderId::standard_no_gas);
 
         mesh_renderers.push_back(this);
     }
@@ -703,7 +736,7 @@ namespace df::gr::d3d11
         page_in_v3d_mesh(lod_mesh);
 
         render_context_.set_vertex_shader(standard_vertex_shader_);
-        render_context_.set_pixel_shader(pixel_shader_);
+        render_context_.set_pixel_shader(render_context_.has_gas_regions() ? pixel_shader_ : pixel_shader_no_gas_);
         render_context_.set_model_transform(pos, orient);
         render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex));
         render_context_.set_index_buffer(v3d_ib_.buffer());
@@ -719,7 +752,7 @@ namespace df::gr::d3d11
         auto render_cache = reinterpret_cast<CharacterMeshRenderCache*>(lod_mesh->render_cache);
 
         render_context_.set_vertex_shader(character_vertex_shader_);
-        render_context_.set_pixel_shader(pixel_shader_);
+        render_context_.set_pixel_shader(render_context_.has_gas_regions() ? pixel_shader_ : pixel_shader_no_gas_);
         render_context_.set_model_transform(pos, orient);
 
         bool morphed = false;
@@ -739,6 +772,54 @@ namespace df::gr::d3d11
         render_cache->bind_buffers(render_context_, morphed);
 
         draw_cached_mesh(lod_mesh, *render_cache, params, lod_index, skip_ambient_cache);
+    }
+
+    const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::prepare_character_for_draw(
+        rf::VifLodMesh* lod_mesh, int lod_index,
+        const rf::Vector3& pos, const rf::Matrix3& orient,
+        const rf::CharacterInstance* ci)
+    {
+        page_in_character_mesh(lod_mesh);
+        auto render_cache = reinterpret_cast<CharacterMeshRenderCache*>(lod_mesh->render_cache);
+        if (!render_cache) {
+            return nullptr;
+        }
+
+        render_context_.set_model_transform(pos, orient);
+
+        bool morphed = false;
+        if (lod_index == 0) {
+            for (int i = 0; i < ci->num_active_anims; ++i) {
+                const rf::CiAnimInfo& anim_info = ci->active_anims[i];
+                rf::Skeleton* skeleton = ci->base_character->animations[anim_info.anim_index];
+                if (skeleton->has_morph_vertices()) {
+                    morphed = true;
+                    render_cache->update_morphed_vertices_buffer(skeleton, anim_info.cur_time, render_context_);
+                    break;
+                }
+            }
+        }
+        render_cache->update_bone_transforms_buffer(ci, render_context_);
+        render_cache->bind_buffers(render_context_, morphed);
+
+        return &render_cache->get_batches(lod_index);
+    }
+
+    const std::vector<BaseMeshRenderCache::Batch>* MeshRenderer::prepare_v3d_for_draw(
+        rf::VifLodMesh* lod_mesh, int lod_index,
+        const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        page_in_v3d_mesh(lod_mesh);
+        auto render_cache = reinterpret_cast<MeshRenderCache*>(lod_mesh->render_cache);
+        if (!render_cache) {
+            return nullptr;
+        }
+
+        render_context_.set_model_transform(pos, orient);
+        render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex));
+        render_context_.set_index_buffer(v3d_ib_.buffer());
+
+        return &render_cache->get_batches(lod_index);
     }
 
     void MeshRenderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
@@ -949,8 +1030,13 @@ namespace df::gr::d3d11
                     self_illum = 1.0f;
                 }
             }
+            // Monitor screens are always fully self-illuminated.
+            bool emissive = is_monitor_screen_bitmap(texture);
+            if (emissive) {
+                self_illum = 1.0f;
+            }
 
-            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh);
+            render_context_.set_mode(forced_mode.value_or(b.mode), color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh, emissive);
             render_context_.set_textures(texture, -1);
             render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
         }

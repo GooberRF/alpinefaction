@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+#include <vector>
 #include <common/version/version.h>
 #include "server_internal.h"
 #include "../rf/multi.h"
@@ -110,7 +112,7 @@ static_assert(sizeof(RFCtfFlagDroppedPacket) == 15);
 static_assert(sizeof(RFCtfFlagSingleTeamPacket) == 1);
 static_assert(sizeof(RFCtfFlagPickedUpPacket) == 3);
 
-// Appended to game_info packets
+// Appended to game_info packets (legacy, sent to gi_req_ext_ver 1-2 clients)
 struct af_sign_packet_ext
 {
     uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
@@ -126,11 +128,45 @@ struct af_sign_packet_ext
     }
 };
 
+// In-memory representation of the AF game_info v2 extension.
+// On-wire layout: [sig][ver*4][flags][filename\0][bot_counts*4]
+// The wire format is built by serialize_to_wire(); it does not match the in-memory layout.
+struct af_game_info_ext_v2
+{
+    // on-wire size of fields before the filename (sig + ver*4 + flags)
+    static constexpr size_t wire_pre_fname_size = 12;
+    // on-wire size of fields after the filename (bot_counts*4)
+    static constexpr size_t wire_post_fname_size = 4;
+
+    uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
+    uint8_t version_major = VERSION_MAJOR;
+    uint8_t version_minor = VERSION_MINOR;
+    uint8_t version_patch = VERSION_PATCH;
+    uint8_t version_type = VERSION_TYPE;
+    uint32_t af_flags = 0;
+    std::string level_filename;
+    uint8_t num_bots = 0;
+    uint8_t num_human_players = 0;
+    uint8_t num_browsers = 0;
+    uint8_t num_total_clients = 0; // bots + humans + browsers
+
+    void set_flags(const AFGameInfoFlags& flags)
+    {
+        af_flags = flags.game_info_flags_to_uint32();
+    }
+
+    // Build the wire representation: [sig][ver*4][flags][filename\0][bot_counts*4]
+    std::vector<uint8_t> serialize_to_wire() const;
+};
+
+#pragma pack(push, 1)
 struct AlpineFactionJoinAcceptPacketExt
 {
     uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
     uint8_t version_major = VERSION_MAJOR;
     uint8_t version_minor = VERSION_MINOR;
+    uint8_t version_patch = VERSION_PATCH;
+    uint8_t version_type = VERSION_TYPE;
 
     enum class Flags : uint32_t {
         none                = 0,
@@ -148,12 +184,17 @@ struct AlpineFactionJoinAcceptPacketExt
         delayed_spawns      = 1u << 11,
         geo_chunk_physics   = 1u << 12,
         allow_footsteps     = 1u << 13,
+        allow_outlines      = 1u << 14,
+        allow_outlines_xray = 1u << 15,
+        clear_stale_movement_input = 1u << 16,
     } flags = Flags::none;
 
-    float max_fov;
-    int semi_auto_cooldown;
+    float max_fov = 0.0f;
+    int32_t semi_auto_cooldown = 0;
 
 };
+#pragma pack(pop)
+static_assert(sizeof(AlpineFactionJoinAcceptPacketExt) == 20, "unexpected AlpineFactionJoinAcceptPacketExt size");
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinAcceptPacketExt::Flags> : std::true_type {};
 
@@ -195,6 +236,7 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
     {
         none = 0,
         client_bot = 1u << 0,
+        client_d3d11 = 1u << 1,
     };
 
     uint32_t af_signature = 0u;
@@ -208,6 +250,25 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
 };
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::true_type {};
+
+// Per-server extra data parsed from the AF game_info v2 extension
+struct AFGameInfoExtra
+{
+    uint8_t version_major = 0;
+    uint8_t version_minor = 0;
+    uint8_t version_patch = 0;
+    uint8_t version_type = 0;
+    uint32_t af_flags = 0;
+    std::string level_filename;
+    uint8_t num_bots = 0;
+    uint8_t num_human_players = 0;
+    uint8_t num_browsers = 0;
+    uint8_t num_total_clients = 0;
+};
+
+// Look up AF extra data for a server by address. Returns nullptr if not found.
+const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);
+void clear_server_browser_extra();
 
 bool packet_check_whitelist(int packet_type);
 void handle_vote_or_ready_up_msg(std::string_view msg);

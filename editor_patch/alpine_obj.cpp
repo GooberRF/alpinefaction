@@ -20,6 +20,7 @@
 #include "level.h"
 #include "vtypes.h"
 #include "resources.h"
+#include "tbl.h"
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
@@ -35,6 +36,169 @@ static void remove_from_selection(VArray<DedObject*>& sel, DedObject* obj)
             return;
         }
     }
+}
+
+// ─── Copy/Paste Link Snapshot ───────────────────────────────────────────────
+// snapshot all link relationships at copy time, then after paste creates
+// all new objects (stock + alpine), add any links the stock paste missed.
+
+struct CopyLinkEntry {
+    int original_uid;
+    std::vector<int> original_links;
+};
+
+// Separate lists matching clipboard paste order (stock first, then mesh, note, corona)
+static std::vector<CopyLinkEntry> g_copy_stock_entries;
+static std::vector<CopyLinkEntry> g_copy_mesh_entries;
+static std::vector<CopyLinkEntry> g_copy_note_entries;
+static std::vector<CopyLinkEntry> g_copy_corona_entries;
+
+// Set of all UIDs that were part of the copied selection (for filtering external links)
+static std::set<int> g_copy_all_uids;
+
+static bool is_alpine_type(DedObjectType type)
+{
+    return type == DedObjectType::DED_MESH ||
+           type == DedObjectType::DED_NOTE ||
+           type == DedObjectType::DED_CORONA;
+}
+
+// Capture link snapshot from the current selection before copy processes it.
+// Called at the start of the copy function, when the selection still contains
+// the original objects with their original links.
+static void capture_copy_link_snapshot()
+{
+    g_copy_stock_entries.clear();
+    g_copy_mesh_entries.clear();
+    g_copy_note_entries.clear();
+    g_copy_corona_entries.clear();
+    g_copy_all_uids.clear();
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+
+    auto& sel = level->selection;
+
+    // First pass: collect all UIDs in the selection
+    for (int i = 0; i < sel.size; i++) {
+        auto* obj = sel.data_ptr[i];
+        if (!obj) continue;
+        if (obj->type == DedObjectType::DED_KEYFRAME) continue;
+        g_copy_all_uids.insert(obj->uid);
+    }
+
+    // Second pass: save link entries, categorized by type, in selection order
+    for (int i = 0; i < sel.size; i++) {
+        auto* obj = sel.data_ptr[i];
+        if (!obj) continue;
+        if (obj->type == DedObjectType::DED_KEYFRAME) continue;
+
+        CopyLinkEntry entry;
+        entry.original_uid = obj->uid;
+        for (int j = 0; j < obj->links.size; j++) {
+            int link_uid = obj->links.data_ptr[j];
+            // Only keep links to other objects in the selection
+            if (g_copy_all_uids.count(link_uid))
+                entry.original_links.push_back(link_uid);
+        }
+
+        switch (obj->type) {
+            case DedObjectType::DED_MESH:
+                g_copy_mesh_entries.push_back(std::move(entry));
+                break;
+            case DedObjectType::DED_NOTE:
+                g_copy_note_entries.push_back(std::move(entry));
+                break;
+            case DedObjectType::DED_CORONA:
+                g_copy_corona_entries.push_back(std::move(entry));
+                break;
+            default:
+                g_copy_stock_entries.push_back(std::move(entry));
+                break;
+        }
+    }
+}
+
+// After paste creates all new objects, add any links that the stock paste missed.
+// Stock paste handles stock→stock links. This adds:
+//   - stock→alpine links
+//   - alpine→stock links
+//   - alpine→alpine links
+static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
+                            int note_count, int corona_count)
+{
+    // Verify counts match the snapshot (mismatch means the clipboard state diverged).
+    // This is the safety guard for the selection-ordering assumption: if anything is
+    // out of sync, we bail rather than risk mapping links to the wrong objects.
+    if (stock_count != static_cast<int>(g_copy_stock_entries.size()) ||
+        mesh_count != static_cast<int>(g_copy_mesh_entries.size()) ||
+        note_count != static_cast<int>(g_copy_note_entries.size()) ||
+        corona_count != static_cast<int>(g_copy_corona_entries.size())) {
+        xlog::warn("[AlpineObj] Paste link fixup skipped: count mismatch "
+            "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{})",
+            stock_count, g_copy_stock_entries.size(),
+            mesh_count, g_copy_mesh_entries.size(),
+            note_count, g_copy_note_entries.size(),
+            corona_count, g_copy_corona_entries.size());
+        return;
+    }
+
+    // Nothing to fix if there are no alpine objects involved
+    bool has_alpine = (mesh_count + note_count + corona_count) > 0;
+    if (!has_alpine) return;
+
+    auto& sel = level->selection;
+    int total = stock_count + mesh_count + note_count + corona_count;
+    if (sel.size < total) return;
+
+    // Build old_uid → new_uid mapping from all four entry lists.
+    // Selection order after paste: stock objects first, then meshes, notes, coronas.
+    std::map<int, int> uid_map;
+    int idx = 0;
+    for (int i = 0; i < stock_count; i++, idx++)
+        uid_map[g_copy_stock_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < mesh_count; i++, idx++)
+        uid_map[g_copy_mesh_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < note_count; i++, idx++)
+        uid_map[g_copy_note_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < corona_count; i++, idx++)
+        uid_map[g_copy_corona_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+
+    // Apply links from the snapshot to each pasted object
+    auto apply_links = [&](const std::vector<CopyLinkEntry>& entries, int count, int& sel_idx) {
+        for (int i = 0; i < count; i++, sel_idx++) {
+            auto* obj = sel.data_ptr[sel_idx];
+            const auto& entry = entries[i];
+
+            for (int orig_link_uid : entry.original_links) {
+                auto it = uid_map.find(orig_link_uid);
+                if (it == uid_map.end()) continue;
+
+                int new_link_uid = it->second;
+
+                // Check if stock paste already added this link (stock→stock case)
+                bool already_exists = false;
+                for (int k = 0; k < obj->links.size; k++) {
+                    if (obj->links.data_ptr[k] == new_link_uid) {
+                        already_exists = true;
+                        break;
+                    }
+                }
+                if (!already_exists) {
+                    obj->links.push_back(new_link_uid);
+                }
+            }
+        }
+    };
+
+    idx = 0;
+    apply_links(g_copy_stock_entries, stock_count, idx);
+    apply_links(g_copy_mesh_entries, mesh_count, idx);
+    apply_links(g_copy_note_entries, note_count, idx);
+    apply_links(g_copy_corona_entries, corona_count, idx);
+
+    xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona objects",
+        stock_count, mesh_count, note_count, corona_count);
 }
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
@@ -223,13 +387,15 @@ CodeInjection alpine_click_pick_patch{
 
 // ─── Copy / Paste ───────────────────────────────────────────────────────────
 
-// Hook the start of FUN_00412e20 to clear all Alpine clipboards.
+// Hook the start of FUN_00412e20 to clear all Alpine clipboards and capture
+// the link snapshot before stock copy processes the selection.
 CodeInjection alpine_copy_begin_hook{
     0x00412e20,
     [](auto& /*regs*/) {
         mesh_clear_clipboard();
         note_clear_clipboard();
         corona_clear_clipboard();
+        capture_copy_link_snapshot();
     },
 };
 
@@ -259,16 +425,29 @@ CodeInjection alpine_copy_hook{
 };
 
 // Wrapper for the paste function (FUN_00413050, called from Ctrl+V via thunk at 0x00448650).
-// After the stock paste function processes clones, we create Alpine clones from clipboards.
 static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*/)
 {
     auto* level = reinterpret_cast<CDedLevel*>(ecx_level);
     if (!level) return;
 
+    // Stock paste: clones stock clipboard entries, assigns new UIDs, remaps stock→stock links.
+    // After this, selection contains newly pasted stock objects in clipboard order.
     level->paste_objects();
+    int stock_count = level->selection.size;
+
+    // Alpine paste: clone from alpine-specific clipboards and add to selection.
+    // Order: all meshes, then all notes, then all coronas.
     mesh_paste_objects(level);
+    int mesh_count = level->selection.size - stock_count;
+
     note_paste_objects(level);
+    int note_count = level->selection.size - stock_count - mesh_count;
+
     corona_paste_objects(level);
+    int corona_count = level->selection.size - stock_count - mesh_count - note_count;
+
+    // Fix links that the stock paste missed (involving alpine object types)
+    fix_paste_links(level, stock_count, mesh_count, note_count, corona_count);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -290,7 +469,7 @@ CodeInjection alpine_delete_mode_patch{
     },
 };
 
-// Hook FUN_0041be70 to handle Alpine objects during cut finalization and delete.
+// Clean up Alpine object data and remove from Alpine obj vectors so they don't get orphaned
 CodeInjection alpine_paste_finalize_patch{
     0x0041be70,
     [](auto& regs) {
@@ -298,22 +477,68 @@ CodeInjection alpine_paste_finalize_patch{
         auto* obj = reinterpret_cast<DedObject*>(
             *reinterpret_cast<uintptr_t*>(esp_val + 4));
         if (obj && obj->type == DedObjectType::DED_MESH) {
-            if (g_alpine_delete_mode || g_alpine_cut_mode) {
-                mesh_handle_delete_or_cut(obj);
-            }
+            mesh_handle_delete_or_cut(obj);
         }
         else if (obj && obj->type == DedObjectType::DED_NOTE) {
-            if (g_alpine_delete_mode || g_alpine_cut_mode) {
-                note_handle_delete_or_cut(obj);
-            }
+            note_handle_delete_or_cut(obj);
         }
         else if (obj && obj->type == DedObjectType::DED_CORONA) {
-            if (g_alpine_delete_mode || g_alpine_cut_mode) {
-                corona_handle_delete_or_cut(obj);
+            corona_handle_delete_or_cut(obj);
+        }
+    },
+};
+
+// Restore Alpine vector entries on an undo/redo that restores an Alpine object type
+// Stock code re-adds objects to type-specific VArray and master_objects
+CodeInjection alpine_undo_readd_patch{
+    0x004157c1,
+    [](auto& regs) {
+        auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.ebx));
+        if (!obj) return;
+        auto* level = CDedLevel::Get();
+        if (!level) return;
+        auto& props = level->GetAlpineLevelProperties();
+        if (obj->type == DedObjectType::DED_MESH) {
+            auto* mesh = static_cast<DedMesh*>(obj);
+            if (std::find(props.mesh_objects.begin(), props.mesh_objects.end(), mesh)
+                == props.mesh_objects.end()) {
+                props.mesh_objects.push_back(mesh);
+                mesh_load_vmesh(mesh);
+            }
+        }
+        else if (obj->type == DedObjectType::DED_NOTE) {
+            auto* note = static_cast<DedNote*>(obj);
+            if (std::find(props.note_objects.begin(), props.note_objects.end(), note)
+                == props.note_objects.end()) {
+                props.note_objects.push_back(note);
+            }
+        }
+        else if (obj->type == DedObjectType::DED_CORONA) {
+            auto* corona = static_cast<DedCorona*>(obj);
+            if (std::find(props.corona_objects.begin(), props.corona_objects.end(), corona)
+                == props.corona_objects.end()) {
+                props.corona_objects.push_back(corona);
             }
         }
     },
 };
+
+// Check if an object is the sole non-keyframe member of a moving group
+static bool is_sole_moving_group_member(CDedLevel* level, DedObject* obj)
+{
+    auto& mg = level->moving_groups;
+    for (int i = 0; i < mg.size; i++) {
+        auto* group = mg.data_ptr[i];
+        if (!group || !group->is_moving_group())
+            continue;
+        for (int j = 0; j < group->objects.size; j++) {
+            if (group->objects.data_ptr[j] == obj) {
+                return group->objects.size == 1 && group->brushes.size == 0;
+            }
+        }
+    }
+    return false;
+}
 
 // Hook the delete command handler (command ID 0x8018) at 0x00448690.
 // Before stock code runs, remove Alpine objects from the selection and delete them.
@@ -750,13 +975,13 @@ static LRESULT CALLBACK ListViewDragSelectProc(HWND hwnd, UINT msg, WPARAM wpara
     return CallWindowProc(g_orig_listview_proc, hwnd, msg, wparam, lparam);
 }
 
-// Update "To Mesh Object" button: enabled only when all selected items are clutter
+// Update "To Mesh Object" button: enabled when all selected items are clutter or entity
 static void update_to_mesh_button(HWND hwnd, TypeFilterDialogData* data)
 {
     if (!data || !data->to_mesh_btn) return;
     HWND list = GetDlgItem(hwnd, IDC_TYPE_FILTER_LIST);
     bool any_selected = false;
-    bool all_clutter = true;
+    bool all_convertible = true;
     int idx = -1;
     while ((idx = ListView_GetNextItem(list, idx, LVNI_SELECTED)) >= 0) {
         any_selected = true;
@@ -766,13 +991,14 @@ static void update_to_mesh_button(HWND hwnd, TypeFilterDialogData* data)
         ListView_GetItem(list, &lvi);
         if (lvi.lParam) {
             auto* obj = reinterpret_cast<DedObject*>(lvi.lParam);
-            if (obj->type != DedObjectType::DED_CLUTTER) {
-                all_clutter = false;
+            if (obj->type != DedObjectType::DED_CLUTTER &&
+                obj->type != DedObjectType::DED_ENTITY) {
+                all_convertible = false;
                 break;
             }
         }
     }
-    EnableWindow(data->to_mesh_btn, any_selected && all_clutter);
+    EnableWindow(data->to_mesh_btn, any_selected && all_convertible);
 }
 
 static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -1043,9 +1269,9 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             return TRUE;
         }
         case IDC_TYPE_FILTER_TO_MESH: {
-            // Convert selected clutter objects to mesh objects
+            // Convert selected clutter/entity objects to mesh objects
             HWND list = GetDlgItem(hwnd, IDC_TYPE_FILTER_LIST);
-            std::vector<DedObject*> clutter_objs;
+            std::vector<DedObject*> source_objs;
             int idx = -1;
             while ((idx = ListView_GetNextItem(list, idx, LVNI_SELECTED)) >= 0) {
                 LVITEM lvi = {};
@@ -1054,20 +1280,40 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 ListView_GetItem(list, &lvi);
                 if (lvi.lParam) {
                     auto* obj = reinterpret_cast<DedObject*>(lvi.lParam);
-                    if (obj->type == DedObjectType::DED_CLUTTER)
-                        clutter_objs.push_back(obj);
+                    if (obj->type == DedObjectType::DED_CLUTTER ||
+                        obj->type == DedObjectType::DED_ENTITY)
+                        source_objs.push_back(obj);
                 }
             }
-            if (clutter_objs.empty()) return TRUE;
+            if (source_objs.empty()) return TRUE;
 
             auto* level = data->level;
             std::vector<DedMesh*> new_meshes;
 
-            for (auto* clutter : clutter_objs) {
-                // Get mesh filename from the loaded vmesh
+            for (auto* obj : source_objs) {
+                const char* cls = obj->class_name.c_str();
+
+                // Look up class info and collect glare names
+                const ClutterClassInfo* ci = nullptr;
+                const EntityClassInfo* ei = nullptr;
+                std::vector<std::string> glare_names;
+
+                if (obj->type == DedObjectType::DED_CLUTTER) {
+                    ci = clutter_tbl_find(cls);
+                }
+                else if (obj->type == DedObjectType::DED_ENTITY) {
+                    ei = entity_tbl_find(cls);
+                }
+
+                // Get mesh filename: .tbl is authoritative (has extension),
+                // vmesh filename is fallback (stock entities lack extensions)
                 std::string filename_str;
-                if (clutter->vmesh) {
-                    auto* vm = static_cast<EditorVMesh*>(clutter->vmesh);
+                if (ci && !ci->v3d_filename.empty())
+                    filename_str = ci->v3d_filename;
+                else if (ei && !ei->v3d_filename.empty())
+                    filename_str = ei->v3d_filename;
+                if (filename_str.empty() && obj->vmesh) {
+                    auto* vm = static_cast<EditorVMesh*>(obj->vmesh);
                     if (vm->filename[0] != '\0')
                         filename_str = vm->filename;
                 }
@@ -1082,24 +1328,145 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
                 mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
                 mesh->type = DedObjectType::DED_MESH;
-                mesh->collision_mode = 2;
-                mesh->pos = clutter->pos;
-                mesh->orient = clutter->orient;
-                mesh->script_name.assign_0(clutter->script_name.c_str());
+                mesh->pos = obj->pos;
+                mesh->orient = obj->orient;
+                mesh->script_name.assign_0(obj->script_name.c_str());
                 mesh->mesh_filename.assign_0(filename_str.c_str());
                 mesh->uid = generate_uid();
+                mesh->collision_mode = 2; // default: All (overridden below if class found)
+
+                if (ci) {
+                    mesh->collision_mode = ci->collision_mode();
+                    mesh->material = ci->material;
+                    auto& cp = mesh->clutter_props;
+                    cp.life = ci->life;
+                    cp.debris_filename = ci->debris_filename;
+                    replace_ext_if(cp.debris_filename, "v3d", "v3m");
+                    replace_ext_if(cp.debris_filename, "vcm", "v3c");
+                    cp.debris_velocity = ci->debris_velocity;
+                    cp.explosion_vclip = ci->explode_vclip;
+                    cp.explosion_radius = ci->explode_radius;
+                    for (int di = 0; di < 11; di++)
+                        cp.damage_type_factors[di] = ci->damage_type_factors[di];
+
+                    if (ci->life > -1.0f)
+                        cp.is_clutter = true;
+
+                    if (!ci->corpse_class_name.empty()) {
+                        auto* corpse_ci = clutter_tbl_find(ci->corpse_class_name.c_str());
+                        if (corpse_ci) {
+                            std::string corpse_mesh = corpse_ci->v3d_filename;
+                            replace_ext_if(corpse_mesh, "v3d", "v3m");
+                            replace_ext_if(corpse_mesh, "vcm", "v3c");
+                            cp.corpse_filename = corpse_mesh;
+                            cp.corpse_material = static_cast<int8_t>(corpse_ci->material);
+                            cp.corpse_collision = 2;
+                        }
+                    }
+
+                    if (!ci->glare_name.empty())
+                        glare_names.push_back(ci->glare_name);
+                }
+                else if (ei) {
+                    mesh->collision_mode = ei->collision_mode();
+                    mesh->material = ei->material;
+                    auto& cp = mesh->clutter_props;
+                    if (ei->life > -1.0f) {
+                        cp.life = ei->life;
+                        cp.is_clutter = true;
+                    }
+                    cp.debris_filename = ei->debris_filename;
+                    replace_ext_if(cp.debris_filename, "v3d", "v3m");
+                    replace_ext_if(cp.debris_filename, "vcm", "v3c");
+                    cp.explosion_vclip = ei->explode_vclip;
+                    cp.explosion_radius = ei->explode_radius;
+                    for (int di = 0; di < 11; di++)
+                        cp.damage_type_factors[di] = ei->damage_type_factors[di];
+                    if (!ei->corpse_v3d_filename.empty()) {
+                        std::string corpse_mesh = ei->corpse_v3d_filename;
+                        replace_ext_if(corpse_mesh, "v3d", "v3m");
+                        replace_ext_if(corpse_mesh, "vcm", "v3c");
+                        cp.corpse_filename = corpse_mesh;
+                        cp.corpse_material = -1; // inherit from base
+                        cp.corpse_collision = 2;
+                    }
+                    glare_names = ei->corona_glare_names;
+
+                    // Set stand animation so the mesh displays in idle pose
+                    if (!ei->stand_anim.empty()) {
+                        std::string anim = ei->stand_anim;
+                        replace_ext_if(anim, "mvf", "rfa");
+                        mesh->state_anim.assign_0(anim.c_str());
+                    }
+                }
 
                 level->GetAlpineLevelProperties().mesh_objects.push_back(mesh);
                 level->master_objects.add(static_cast<DedObject*>(mesh));
                 mesh_load_vmesh(mesh);
                 new_meshes.push_back(mesh);
+
+                // Create child objects from mesh tag points
+                auto* vm = static_cast<EditorVMesh*>(obj->vmesh);
+                if (vm) {
+                    // Coronas from corona_N tags
+                    if (!glare_names.empty())
+                        corona_create_from_mesh_tags(level, vm, obj->pos, obj->orient, glare_names);
+
+                    // Thruster VFX meshes from thruster_N tags
+                    if (ei && !ei->thruster_vfx_names.empty()) {
+                        for (int ti = 0; ; ti++) {
+                            char tag_name[32];
+                            snprintf(tag_name, sizeof(tag_name), "thruster_%d", ti + 1);
+                            int tag_idx = vmesh_find_tag_by_name(vm, tag_name);
+                            if (tag_idx < 0) break;
+
+                            const auto& vfx_name = (ti < static_cast<int>(ei->thruster_vfx_names.size()))
+                                ? ei->thruster_vfx_names[ti] : ei->thruster_vfx_names.back();
+
+                            Vector3 tag_pos;
+                            Matrix3 tag_orient;
+                            vmesh_get_tag_local_transform(vm, &tag_pos, &tag_orient, tag_idx);
+
+                            auto* tmesh = new DedMesh();
+                            memset(static_cast<DedObject*>(tmesh), 0, sizeof(DedObject));
+                            tmesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
+                            tmesh->type = DedObjectType::DED_MESH;
+                            tmesh->pos = obj->pos + obj->orient * tag_pos;
+                            tmesh->orient = obj->orient * tag_orient;
+                            tmesh->script_name.assign_0("Thruster");
+                            tmesh->mesh_filename.assign_0(vfx_name.c_str());
+                            tmesh->uid = generate_uid();
+
+                            level->GetAlpineLevelProperties().mesh_objects.push_back(tmesh);
+                            level->master_objects.add(static_cast<DedObject*>(tmesh));
+                            mesh_load_vmesh(tmesh);
+                            new_meshes.push_back(tmesh);
+                        }
+                    }
+                }
             }
 
-            // Delete original clutter and remove from level selection
-            for (auto* clutter : clutter_objs) {
-                remove_from_selection(level->selection, clutter);
-                level->clutter.remove_by_value(clutter);
-                level->master_objects.remove_by_value(clutter);
+            // Delete originals, but skip sole moving group members
+            std::vector<int> skipped_uids;
+            for (auto* obj : source_objs) {
+                if (is_sole_moving_group_member(level, obj)) {
+                    skipped_uids.push_back(obj->uid);
+                    continue;
+                }
+                level->delete_object(obj);
+            }
+
+            // Build popup message
+            std::string skipped_msg;
+            if (!skipped_uids.empty()) {
+                std::string uid_list;
+                for (int uid : skipped_uids) {
+                    if (!uid_list.empty()) uid_list += ", ";
+                    uid_list += std::to_string(uid);
+                }
+                skipped_msg = "The following object UIDs were not deleted during "
+                    "this operation because it would have resulted in empty moving "
+                    "groups: " + uid_list;
             }
 
             // Select the new mesh objects
@@ -1108,11 +1475,16 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 level->add_to_selection(static_cast<DedObject*>(mesh));
             level->update_console_display();
 
-            // Save filter state and close
+            // Save filter state and close dialog first
             for (int i = 0; i < g_num_type_filters; i++)
                 g_filter_states[i] = SendMessage(data->filter_cbs[i], BM_GETCHECK, 0, 0) == BST_CHECKED;
             data->result_objects.clear(); // prevent IDOK from overwriting selection
             EndDialog(hwnd, IDCANCEL);    // use IDCANCEL so caller doesn't re-apply selection
+
+            // Show popup after dialog is closed
+            if (!skipped_msg.empty())
+                MessageBoxA(GetMainFrameHandle(), skipped_msg.c_str(), "To Mesh Object", MB_OK | MB_ICONINFORMATION);
+
             return TRUE;
         }
         case IDC_TYPE_FILTER_CHECK_ALL:
@@ -1583,6 +1955,7 @@ void ApplyAlpineObjectPatches()
     AsmWriter(0x00448659).jmp(alpine_paste_wrapper);
     alpine_delete_mode_patch.install();
     alpine_paste_finalize_patch.install();
+    alpine_undo_readd_patch.install();
     alpine_delete_patch.install();
     alpine_object_tree_patch.install();
     alpine_factory_hook.install();

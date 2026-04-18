@@ -28,6 +28,7 @@
 #include "../rf/os/os.h"
 #include "../rf/event.h"
 #include "../rf/gameseq.h"
+#include "../rf/misc.h"
 #include "../rf/os/timer.h"
 #include "../rf/player/camera.h"
 #include "../rf/multi.h"
@@ -74,8 +75,15 @@ static rf::CmdLineParam& get_noquit_cmd_line_param()
     return noquit_param;
 }
 
+static rf::CmdLineParam& get_awpgen_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_param{"-awpgen", "", true};
+    return awpgen_param;
+}
+
 static bool g_client_bot_launch_enabled = false;
 static bool g_client_bot_debug_render_enabled = false;
+static bool g_awpgen_mode = false;
 
 bool client_bot_launch_enabled()
 {
@@ -88,6 +96,16 @@ bool client_bot_headless_enabled()
 {
     return client_bot_launch_enabled()
         && !(g_client_bot_debug_render_enabled || is_client_debugbot_requested_from_cmdline());
+}
+
+bool is_awpgen_active()
+{
+    return g_awpgen_mode || awpgen_requested_from_raw_cmdline();
+}
+
+bool is_headless_mode()
+{
+    return client_bot_headless_enabled() || g_awpgen_mode || awpgen_requested_from_raw_cmdline();
 }
 
 // Returns false if bot launch validation failed and the process should quit.
@@ -207,8 +225,45 @@ void handle_levelm_param()
 
     std::string level_filename = get_levelm_cmd_line_param().get_arg();
 
-    //rf::console::print("filename {}", level_filename);
+    auto [is_valid, valid_filename] = is_level_name_valid(level_filename);
+    if (!is_valid) {
+        xlog::warn("levelm: level '{}' is not available", level_filename);
+        return;
+    }
+    start_levelm_load_sequence(valid_filename);
+}
+
+// Returns true if -awpgen was handled (caller should skip -levelm).
+bool handle_awpgen_param()
+{
+    if (!get_awpgen_cmd_line_param().found()) {
+        return false;
+    }
+
+    const char* arg = get_awpgen_cmd_line_param().get_arg();
+    if (!arg || arg[0] == '\0') {
+        xlog::error("-awpgen: missing level filename, quitting");
+        rf::gameseq_set_state(rf::GS_QUITING, false);
+        return true;
+    }
+
+    std::string level_filename = arg;
+
+    // Normalize .rfl extension
+    if (!string_iends_with(level_filename, ".rfl")) {
+        level_filename += ".rfl";
+    }
+
+    // Validate level file is installed
+    if (rf::get_file_checksum(level_filename.c_str()) == 0) {
+        xlog::error("-awpgen: unknown level {}, quitting", level_filename);
+        rf::gameseq_set_state(rf::GS_QUITING, false);
+        return true;
+    }
+
+    waypoints_start_awpgen(level_filename);
     start_levelm_load_sequence(level_filename);
+    return true;
 }
 
 FunHook<void()> multi_limbo_init{
@@ -357,6 +412,46 @@ CodeInjection ctf_flag_return_fix{
         else {
             regs.eip = 0x00473822;
         }
+    },
+};
+
+// Vanilla multi_ctf_is_red/blue_flag_in_base functions crash if the ctf_initialized flag is set
+// but the corresponding flag item pointer is NULL. This can happen if a level has only one CTF flag
+// item (e.g. blue but not red). Return true (in base) when the pointer is NULL, matching the vanilla
+// behavior when CTF is uninitialized.
+// Same vulnerability exists in the CTF flag capture function (0x00473BA0) which directly
+// dereferences ctf_red/blue_flag_item pointers without NULL checks.
+CodeInjection ctf_flag_capture_red_null_check{
+    0x00473C17,
+    [](auto& regs) {
+        if (!rf::ctf_red_flag_item) {
+            regs.eip = 0x00473D2E;
+        }
+    },
+};
+
+CodeInjection ctf_flag_capture_blue_null_check{
+    0x00473CC2,
+    [](auto& regs) {
+        if (!rf::ctf_blue_flag_item) {
+            regs.eip = 0x00473D2E;
+        }
+    },
+};
+
+FunHook<bool()> multi_ctf_is_red_flag_in_base_hook{
+    0x00474E80,
+    []() -> bool {
+        if (!rf::ctf_red_flag_item) return true;
+        return multi_ctf_is_red_flag_in_base_hook.call_target();
+    },
+};
+
+FunHook<bool()> multi_ctf_is_blue_flag_in_base_hook{
+    0x00474EA0,
+    []() -> bool {
+        if (!rf::ctf_blue_flag_item) return true;
+        return multi_ctf_is_blue_flag_in_base_hook.call_target();
     },
 };
 
@@ -788,6 +883,17 @@ void configure_custom_gametype_listen_server_settings() {
     apply_defaults_for_game_type(rules.game_type, rules);
     rules.set_koth_score_limit(3600);
     rules.set_dc_score_limit(3600);
+
+    // Enable on listen servers based on the host's local config
+    if (rf::game_get_gore_level() >= 2) {
+        rules.gibbing.enabled = true;
+    }
+
+    // Always allow these visual options on listen servers
+    g_alpine_server_config.allow_fullbright_meshes = true;
+    g_alpine_server_config.allow_lightmaps_only = true;
+    g_alpine_server_config.allow_unlimited_fps = true;
+    g_alpine_server_config.allow_outlines = true;
 }
 
 void start_level_in_multi(std::string filename) {
@@ -795,6 +901,11 @@ void start_level_in_multi(std::string filename) {
     auto [is_valid, valid_filename] = is_level_name_valid(filename);
 
     if (is_valid) {
+        // Clean up any previous game state so the level loader doesn't call game_shutdown
+        // after multi_start has already set up the new multiplayer session
+        rf::game_shutdown();
+
+        rf::netgame.levels.clear();
         rf::netgame.levels.add(valid_filename.c_str());
         rf::netgame.max_time_seconds = 3600.0f;
         rf::netgame.max_kills = 30;
@@ -831,16 +942,20 @@ CodeInjection multi_customize_listen_server_settings_patch {
 ConsoleCommand2 levelm_cmd{
     "levelm",
     [](std::string filename) {
-        if (rf::gameseq_get_state() == rf::GS_MAIN_MENU ||
-            rf::gameseq_get_state() == rf::GS_EXTRAS_MENU) {
-            start_level_in_multi(filename);
-            rf::console::print("Starting local multiplayer game on {}", filename);
+        if (rf::is_dedicated_server) {
+            rf::console::print("This command is not available on dedicated servers");
+            return;
         }
-        else {
-            rf::console::print("You must run this command from the main menu!");
+        auto [is_valid, valid_filename] = is_level_name_valid(filename);
+        if (!is_valid) {
+            rf::console::print("Level '{}' is not available!", filename);
+            return;
         }
+        start_levelm_load_sequence(valid_filename);
+        rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
+        rf::console::print("Starting local multiplayer game on {}", valid_filename);
     },
-    "Start a local multiplayer game on the specified level",
+    "Start a new local multiplayer game on the specified level",
     "levelm <filename>",
 };
 
@@ -960,6 +1075,12 @@ void multi_do_patch()
     // Check ammo server-side when handling weapon fire packets
     multi_process_remote_weapon_fire_hook.install();
 
+    // Prevent crash when CTF flag item pointers are NULL
+    multi_ctf_is_red_flag_in_base_hook.install();
+    multi_ctf_is_blue_flag_in_base_hook.install();
+    ctf_flag_capture_red_null_check.install();
+    ctf_flag_capture_blue_null_check.install();
+
     // Make sure CTF flag does not spin in new level if it was dropped in the previous level
     multi_ctf_level_init_hook.install();
 
@@ -987,13 +1108,16 @@ void multi_do_patch()
     get_bot_cmd_line_param();
     get_debugbot_cmd_line_param();
     get_noquit_cmd_line_param();
+    get_awpgen_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
-    if (g_client_bot_launch_enabled) {
-        g_alpine_game_config.rendering_enabled = !client_bot_headless_enabled();
-        if (client_bot_headless_enabled()) {
-            rf::sound_enabled = false;
-        }
+    g_awpgen_mode = get_awpgen_cmd_line_param().found();
+    if (is_headless_mode()) {
+        g_alpine_game_config.rendering_enabled = false;
+        rf::sound_enabled = false;
+    }
+    else if (g_client_bot_launch_enabled) {
+        g_alpine_game_config.rendering_enabled = true;
     }
 
     // console commands
@@ -1011,5 +1135,7 @@ void multi_after_full_game_init()
         return; // bot launch validation failed, process is quitting
     }
     handle_url_param();
-    handle_levelm_param();
+    if (!handle_awpgen_param()) {
+        handle_levelm_param();
+    }
 }

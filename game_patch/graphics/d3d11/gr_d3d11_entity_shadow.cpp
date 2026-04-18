@@ -21,6 +21,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/os/frametime.h"
 #include "../../misc/alpine_settings.h"
+#include "../../hud/multi_spectate.h"
 
 using namespace rf;
 
@@ -377,9 +378,78 @@ namespace df::gr::d3d11
         // Check if quality changed (e.g. via console command)
         if (quality != current_quality_) {
             apply_quality(quality);
+            last_shadow_render_frame_ = -1; // force re-render after texture recreation
         }
 
         current_camera_pos_ = camera_pos;
+
+        // Quick pre-scan: skip entire shadow pass if no casters are in range.
+        // Mirrors the same filters used by the actual render functions to avoid
+        // false positives (e.g. local player entity is always at distance 0).
+        {
+            int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
+            float fade_end = shadow_distance_presets[dp].fade_end;
+            float fade_end_sq = fade_end * fade_end;
+            bool found_caster = false;
+
+            // Determine which entities to skip (matches render_entity_shadow)
+            int local_entity_handle = -1;
+            if (rf::local_player) {
+                local_entity_handle = rf::local_player->entity_handle;
+            }
+            int spectate_entity_handle = -1;
+            if (multi_spectate_is_first_person()) {
+                rf::Player* spectate_target = multi_spectate_get_target_player();
+                if (spectate_target) {
+                    spectate_entity_handle = spectate_target->entity_handle;
+                }
+            }
+
+            for (auto& entity : DoublyLinkedList{rf::entity_list}) {
+                if (entity.handle == local_entity_handle) continue;
+                if (entity.handle == spectate_entity_handle) continue;
+                if (entity.entity_flags2 & rf::EF2_NO_SHADOW) continue;
+                if (entity.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+                if (!entity.vmesh) continue;
+                float dx = entity.pos.x - camera_pos.x;
+                float dy = entity.pos.y - camera_pos.y;
+                float dz = entity.pos.z - camera_pos.z;
+                if (dx * dx + dy * dy + dz * dz <= fade_end_sq) { found_caster = true; break; }
+            }
+
+            if (!found_caster && g_alpine_game_config.shadow_corpses) {
+                for (auto& corpse : DoublyLinkedList{rf::corpse_list}) {
+                    if (corpse.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+                    if (!corpse.vmesh) continue;
+                    float dx = corpse.pos.x - camera_pos.x;
+                    float dy = corpse.pos.y - camera_pos.y;
+                    float dz = corpse.pos.z - camera_pos.z;
+                    if (dx * dx + dy * dy + dz * dz <= fade_end_sq) { found_caster = true; break; }
+                }
+            }
+
+            if (!found_caster && g_alpine_game_config.shadow_items) {
+                for (auto& item : DoublyLinkedList{rf::item_list}) {
+                    if (item.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+                    if (!item.vmesh) continue;
+                    float dx = item.pos.x - camera_pos.x;
+                    float dy = item.pos.y - camera_pos.y;
+                    float dz = item.pos.z - camera_pos.z;
+                    if (dx * dx + dy * dy + dz * dz <= fade_end_sq) { found_caster = true; break; }
+                }
+            }
+
+            last_frame_had_casters_ = found_caster;
+            if (!found_caster) return;
+        }
+
+        // Frame lag: reuse the cached shadow map (and its VP matrix) if rendered recently enough
+        int frame_lag = std::clamp(g_alpine_game_config.shadow_frame_lag, 1, 30);
+        if (last_shadow_render_frame_ >= 0 &&
+            (rf::frame_count - last_shadow_render_frame_) < frame_lag) {
+            return;
+        }
+        last_shadow_render_frame_ = rf::frame_count;
 
         build_shadow_view_proj(context, camera_pos);
 
@@ -438,12 +508,22 @@ namespace df::gr::d3d11
             local_entity_handle = rf::local_player->entity_handle;
         }
 
+        // Get spectated player entity handle to skip their shadow in first-person spectate
+        int spectate_entity_handle = -1;
+        if (multi_spectate_is_first_person()) {
+            rf::Player* spectate_target = multi_spectate_get_target_player();
+            if (spectate_target) {
+                spectate_entity_handle = spectate_target->entity_handle;
+            }
+        }
+
         int dp = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
         float fade_end = shadow_distance_presets[dp].fade_end;
         float fade_end_sq = fade_end * fade_end;
 
         for (auto& entity : DoublyLinkedList{rf::entity_list}) {
             if (entity.handle == local_entity_handle) continue;
+            if (entity.handle == spectate_entity_handle) continue;
             if (entity.entity_flags2 & rf::EF2_NO_SHADOW) continue;
             if (entity.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
             if (!entity.vmesh) continue;
@@ -537,6 +617,15 @@ namespace df::gr::d3d11
         float fade_end = shadow_distance_presets[dp].fade_end;
         float fade_end_sq = fade_end * fade_end;
 
+        // Determine which player's carried CTF flag should have its shadow hidden
+        rf::Player* first_person_player = nullptr;
+        if (multi_spectate_is_first_person()) {
+            first_person_player = multi_spectate_get_target_player();
+        }
+        else if (rf::local_player) {
+            first_person_player = rf::local_player;
+        }
+
         for (auto& item : DoublyLinkedList{rf::item_list}) {
             if (item.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
             if (!item.vmesh) continue;
@@ -551,6 +640,13 @@ namespace df::gr::d3d11
                     string_iequals(cls, "keycard") ||
                     string_iequals(cls, "Demo_K000"))
                     continue;
+            }
+
+            // Skip CTF flag shadow if carried by the first-person player (self or spectated)
+            if (first_person_player &&
+                ((&item == rf::ctf_red_flag_item && rf::multi_ctf_get_red_flag_player() == first_person_player) ||
+                 (&item == rf::ctf_blue_flag_item && rf::multi_ctf_get_blue_flag_player() == first_person_player))) {
+                continue;
             }
 
             float dx = item.pos.x - current_camera_pos_.x;
@@ -682,6 +778,11 @@ namespace df::gr::d3d11
             shadows_active = false;
         }
 
+        // No casters were found in the pre-scan — disable shadow sampling
+        if (!last_frame_had_casters_) {
+            shadows_active = false;
+        }
+
         // Compute normalized light direction for PS normal bias
         float ld_x = light_dir_x, ld_y = light_dir_y, ld_z = light_dir_z;
         normalize_vec3(ld_x, ld_y, ld_z);
@@ -733,6 +834,21 @@ namespace df::gr::d3d11
     {
         ID3D11ShaderResourceView* null_srv = nullptr;
         context->PSSetShaderResources(2, 1, &null_srv);
+    }
+
+    void EntityShadowRenderer::disable_shadow_rendering(ID3D11DeviceContext* context)
+    {
+        if (!shadow_cbuffer_) return;
+
+        // Set shadow_enabled to 0 in the constant buffer so the pixel shader
+        // skips shadow sampling entirely (no null SRV reads, no debug warnings)
+        ShadowConstantBuffer data{};
+        data.shadow_enabled = 0.0f;
+
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        DF_GR_D3D11_CHECK_HR(context->Map(shadow_cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
+        std::memcpy(mapped.pData, &data, sizeof(data));
+        context->Unmap(shadow_cbuffer_, 0);
     }
 
     bool EntityShadowRenderer::debug_enabled = false;

@@ -85,6 +85,7 @@ bool waypoint_type_allows_special_vertical_route(const WaypointType type)
         case WaypointType::lift_entrance:
         case WaypointType::lift_body:
         case WaypointType::ladder:
+        case WaypointType::water:
             return true;
         default:
             return false;
@@ -680,6 +681,11 @@ float compute_waypoint_path_special_penalty(const std::vector<int>& path)
                 break;
             case WaypointType::ladder:
                 penalty += 0.30f;
+                break;
+            case WaypointType::water:
+                // Mild penalty — bots can navigate water but prefer dry routes
+                // when alternatives are similar in length.
+                penalty += 0.50f;
                 break;
             case WaypointType::crater:
                 penalty += is_enemy_goal ? 0.08f : 0.35f;

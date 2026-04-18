@@ -10,6 +10,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/player/player_fpgun.h"
+#include "../../rf/entity.h"
 #include "../../rf/weapon.h"
 #include <xlog/xlog.h>
 #include <algorithm>
@@ -455,8 +456,40 @@ bool bot_weapon_is_switch_blocked(const int weapon_type)
     return false;
 }
 
+// Only certain weapons work underwater: handgun/pistol, remote charges, grenades,
+// and riot stick (primary fire). Bots should not try to fire anything else.
+bool weapon_works_underwater(int weapon_type)
+{
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return false;
+    }
+
+    struct UnderwaterWeaponEntry
+    {
+        const char* name = nullptr;
+        int weapon_type = -2;
+    };
+    static std::array<UnderwaterWeaponEntry, 4> underwater_weapons{{
+        {"12mm Handgun", -2},
+        {"Remote Charge", -2},
+        {"Grenade", -2},
+        {"Riot Stick", -2},
+    }};
+
+    for (auto& entry : underwater_weapons) {
+        if (entry.weapon_type == -2) {
+            entry.weapon_type = rf::weapon_lookup_type(entry.name);
+        }
+        if (weapon_type == entry.weapon_type) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int select_best_weapon(rf::Player& player, rf::Entity& entity, const float desired_distance = -1.0f)
 {
+    const bool underwater = rf::entity_is_swimming(&entity);
     int best_weapon = -1;
     float best_score = -1.0f;
 
@@ -469,6 +502,10 @@ int select_best_weapon(rf::Player& player, rf::Entity& entity, const float desir
         }
 
         if (rf::weapon_is_detonator(weapon_type)) {
+            continue;
+        }
+
+        if (underwater && !weapon_works_underwater(weapon_type)) {
             continue;
         }
 
@@ -1799,8 +1836,10 @@ void bot_process_combat(
         g_client_bot_state.firing.target_acquisition_timer.invalidate();
     }
 
+    const bool bot_is_underwater = rf::entity_is_swimming(&local_entity);
     if ((enemy_target || crater_goal_active || shatter_goal_active)
-        && local_entity.ai.current_primary_weapon >= 0) {
+        && local_entity.ai.current_primary_weapon >= 0
+        && (!bot_is_underwater || weapon_works_underwater(local_entity.ai.current_primary_weapon))) {
         const int weapon_type = local_entity.ai.current_primary_weapon;
         const rf::Vector3 fire_target_pos = (crater_goal_active || shatter_goal_active)
             ? g_client_bot_state.goal_target_pos

@@ -36,8 +36,10 @@
 AlpineOptionsConfig g_alpine_options_config;
 AlpineLevelInfoConfig g_alpine_level_info_config;
 
-static std::unordered_set<std::string> g_p2t_fix_levels; // list of levels to apply power2tex fix
-static std::unordered_set<std::string> g_known_run_levels; // list of run mode levels manually added
+static std::unordered_set<std::string> g_p2t_fix_levels; // apply pow2tex fix
+static std::unordered_set<std::string> g_known_run_levels; // manually add to listen server map list
+static std::unordered_set<std::string> g_sky_fix_levels; // strip Show Sky flag from skybox faces
+static std::unordered_set<std::string> g_stock_alpha_test_levels; // use stock D3D8 alpha test threshold
 static std::string af_default_player_entity = "miner1";
 static std::string af_suit_player_entity = "parker_suit";
 static std::string af_sci_player_entity = "parker_sci";
@@ -45,6 +47,16 @@ static std::string af_sci_player_entity = "parker_sci";
 bool is_p2t_fix_level(const std::string& filename)
 {
     return g_p2t_fix_levels.contains(string_to_lower(filename));
+}
+
+bool is_sky_fix_level(const std::string& filename)
+{
+    return g_sky_fix_levels.contains(string_to_lower(filename));
+}
+
+bool is_stock_alpha_test_level(const std::string& filename)
+{
+    return g_stock_alpha_test_levels.contains(string_to_lower(filename));
 }
 
 bool is_known_run_level(const std::string& filename)
@@ -284,7 +296,8 @@ const std::unordered_map<std::string, LevelInfoMetadata> level_info_metadata = {
     {"$Chat Menu 8", {AlpineLevelInfoID::ChatMap8, parse_string_level}},
     {"$Chat Menu 9", {AlpineLevelInfoID::ChatMap9, parse_string_level}},
     {"$Crater Texture PPM", {AlpineLevelInfoID::CraterTexturePPM, parse_float_level}},
-    {"$Use Vertex Lighting", {AlpineLevelInfoID::UseVertexLighting, parse_bool_level}}
+    {"$Use Vertex Lighting", {AlpineLevelInfoID::UseVertexLighting, parse_bool_level}},
+    {"$Pixel Lighting Overbright", {AlpineLevelInfoID::PixelLightOverbright, parse_float_level}}
 };
 
 // Load level info from filename_info.tbl
@@ -810,7 +823,7 @@ void load_single_af_options_file(const std::string& file_name)
 
         // Handle af_level_quirks.tbl
         if (file_name == "af_level_quirks.tbl" &&
-            (option_name == "$P2T Fix" || option_name == "$Known Run Maps")) {
+            (option_name == "$P2T Fix" || option_name == "$Known Run Maps" || option_name == "$Sky Fix" || option_name == "$Stock Alpha Test")) {
             std::regex filename_pattern("\\\"([^\"]+)\\\"");
             auto begin = std::sregex_iterator(option_value.begin(), option_value.end(), filename_pattern);
             auto end = std::sregex_iterator();
@@ -824,6 +837,13 @@ void load_single_af_options_file(const std::string& file_name)
                 else if (option_name == "$Known Run Maps") {
                     g_known_run_levels.insert(string_to_lower(filename));
                     //xlog::warn("Run mode level added: {}", filename);
+                }
+                else if (option_name == "$Sky Fix") {
+                    g_sky_fix_levels.insert(string_to_lower(filename));
+                    //xlog::warn("Sky Fix level added: {}", filename);
+                }
+                else if (option_name == "$Stock Alpha Test") {
+                    g_stock_alpha_test_levels.insert(string_to_lower(filename));
                 }
             }
 

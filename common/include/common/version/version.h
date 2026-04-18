@@ -27,12 +27,12 @@
 #define VERSION_MINOR          3
 #define VERSION_PATCH          0
 #define VERSION_TYPE           VERSION_TYPE_DEV
-#define VERSION_TYPE_REVISION  2
+#define VERSION_TYPE_REVISION  3
 #define VERSION_CODE           "Bakeapple"
 
 // Version used for Alpine settings files
 #define ADS_VERSION            2      // .toml dedicated server config files
-#define AFS_VERSION            12     // alpine_settings.ini
+#define AFS_VERSION            13     // alpine_settings.ini
 #define AFCC_VERSION           1      // alpine_system.ini
 
 // Increment only when absolutely necessary! Will break level compatibility for older clients.

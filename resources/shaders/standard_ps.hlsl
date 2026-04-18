@@ -19,6 +19,10 @@ cbuffer RenderModeBuffer : register(b0)
     float use_dynamic_lighting;
     float self_illumination;
     float light_scale;
+    float dynamic_light_ndotl;
+    float pixel_light_overbright;
+    float emissive_override;
+    float gas_fog_allowed;
 };
 
 struct PointLight {
@@ -68,6 +72,35 @@ cbuffer ShadowBuffer : register(b3)
     float shadow_soft_edges;
     float shadow_pad;
 };
+
+#ifndef MAX_GAS_REGIONS
+#define MAX_GAS_REGIONS 32
+#endif
+
+#if MAX_GAS_REGIONS > 0
+
+struct GasRegionData
+{
+    float3 center;    float density;
+    float3 color;     float shape;       // 0=sphere, 1=box
+    float3 extents;   float _pad0;
+    float3 orient_r0; float _pad1;       // transpose row 0 (for world-to-local)
+    float3 orient_r1; float _pad2;       // transpose row 1
+    float3 orient_r2; float _pad3;       // transpose row 2
+};
+
+cbuffer GasRegionBuffer : register(b4)
+{
+    float3 gas_eye_pos;
+    int num_gas_regions;
+    float3 gas_cam_right;   float gas_proj_sx;
+    float3 gas_cam_up;      float gas_proj_sy;
+    float3 gas_cam_forward; float gas_viewport_w;
+    float gas_viewport_h;   float3 _gas_header_pad;
+    GasRegionData gas_regions[MAX_GAS_REGIONS];
+};
+
+#endif
 
 Texture2D tex0;
 Texture2D tex1;
@@ -218,11 +251,18 @@ float4 main(VsOutput input) : SV_TARGET
                 atten = sqrt(r);                // 3: sqrt
             }
             atten = max(atten, 0.0f);
-            float intensity = atten * ndotl_factor * spot_factor;
+            float intensity;
             if (use_dynamic_lighting > 0.5f) {
+                intensity = atten * ndotl_factor * spot_factor;
                 light_color += point_lights[i].color * intensity;
             } else {
-                light_color += point_lights[i].color * intensity * 1.5f;
+                // Non-dynamic-lighting path (e.g. lightmapped / pre-lit geometry).
+                // Emulates stock D3D8 behavior for dynamic lights on BSP faces,
+                // which uses pure distance attenuation (no N·L). r_dynamiclightndotl
+                // blends between stock (0.0) and full N·L (1.0).
+                float ndotl = lerp(1.0f, ndotl_factor, dynamic_light_ndotl);
+                intensity = atten * ndotl * spot_factor;
+                light_color += point_lights[i].color * intensity;
             }
         }
         if (use_dynamic_lighting > 0.5f) {
@@ -236,11 +276,10 @@ float4 main(VsOutput input) : SV_TARGET
             // with red > green get red compressed more, producing a green tint).
             // Instead, compress based on luminance and scale all channels equally.
             float lum = dot(light_color, float3(0.2126f, 0.7152f, 0.0722f));
-            if (lum > 0.0f) {
-                float shoulder = 1.0f;
-                float range = 0.5f;
-                float excess = max(lum - shoulder, 0.0f);
-                float compressed_lum = min(lum, shoulder) + excess * range / (excess + range);
+            if (lum > 1.0f) {
+                float range = pixel_light_overbright;
+                float excess = lum - 1.0f;
+                float compressed_lum = (range > 0.0f) ? 1.0f + excess * range / (excess + range) : 1.0f;
                 light_color *= compressed_lum / lum;
             }
         }
@@ -250,86 +289,95 @@ float4 main(VsOutput input) : SV_TARGET
     if (self_illumination > 0.0f) {
         light_color = max(light_color, self_illumination);
     }
+    // Emissive override: render at pure texture brightness, ignoring vertex color
+    // darkening and lighting. Used for monitor screens that should appear self-lit.
+    if (emissive_override > 0.5f) {
+        target.rgb = tex0_color.rgb * current_color.rgb;
+        light_color = float3(1.0f, 1.0f, 1.0f);
+    }
 
     target.rgb *= light_color;
 
     if (shadow_enabled > 0.5f) {
-        float3 world_pos = input.world_pos_and_depth.xyz;
-        float3 normal = normalize(input.norm);
+        // Early-out: skip all shadow work for fragments beyond the fade distance
+        float cam_dist = input.world_pos_and_depth.w;
+        float fade = 1.0f - saturate((cam_dist - shadow_fade_start) / (shadow_fade_end - shadow_fade_start));
 
-        // NdotL: how much the surface faces the light (light_dir points FROM light)
-        float NdotL = dot(normal, -shadow_light_dir);
+        if (fade > 0.0f) {
+            float3 world_pos = input.world_pos_and_depth.xyz;
+            float3 normal = normalize(input.norm);
 
-        // Smooth NdotL fade instead of hard cutoff
-        float ndotl_fade = saturate(NdotL * 5.0f);
+            // NdotL: how much the surface faces the light (light_dir points FROM light)
+            float NdotL = dot(normal, -shadow_light_dir);
 
-        if (ndotl_fade > 0.0f) {
-            // Normal offset bias scaled by angle to reduce self-shadowing
-            float bias_scale = saturate(1.0f - NdotL);
-            float3 biased_pos = world_pos + normal * shadow_normal_offset * (1.0f + bias_scale);
+            // Smooth NdotL fade instead of hard cutoff
+            float ndotl_fade = saturate(NdotL * 5.0f);
 
-            float4 shadow_pos = mul(float4(biased_pos, 1.0f), shadow_vp_mat);
-            float3 shadow_ndc = shadow_pos.xyz / shadow_pos.w;
-            float2 shadow_uv = shadow_ndc.xy * 0.5f + 0.5f;
-            shadow_uv.y = 1.0f - shadow_uv.y;
+            if (ndotl_fade > 0.0f) {
+                // Normal offset bias scaled by angle to reduce self-shadowing
+                float bias_scale = saturate(1.0f - NdotL);
+                float3 biased_pos = world_pos + normal * shadow_normal_offset * (1.0f + bias_scale);
 
-            float shadow_value = 1.0f;
-            float debug_proj_fade = 1.0f;
-            if (shadow_uv.x >= 0.0f && shadow_uv.x <= 1.0f && shadow_uv.y >= 0.0f && shadow_uv.y <= 1.0f) {
-                float spread = shadow_texel_size * 2.5f;
-                int extra_taps = (int)shadow_pcf_taps - 1;
+                float4 shadow_pos = mul(float4(biased_pos, 1.0f), shadow_vp_mat);
+                float3 shadow_ndc = shadow_pos.xyz / shadow_pos.w;
+                float2 shadow_uv = shadow_ndc.xy * 0.5f + 0.5f;
+                shadow_uv.y = 1.0f - shadow_uv.y;
 
-                // Receiver-side comparison bias
-                float z_compensation = shadow_normal_offset * (1.0f + bias_scale) * NdotL / shadow_depth_range;
-                float compare_depth = shadow_ndc.z + z_compensation;
+                float shadow_value = 1.0f;
+                float debug_proj_fade = 1.0f;
+                if (shadow_uv.x >= 0.0f && shadow_uv.x <= 1.0f && shadow_uv.y >= 0.0f && shadow_uv.y <= 1.0f) {
+                    float spread = shadow_texel_size * 2.5f;
+                    int extra_taps = (int)shadow_pcf_taps - 1;
 
-                // Per-pixel rotation angle to break up PCF banding on small shadows
-                float pcf_angle = frac(sin(dot(input.pos.xy * 0.5f, float2(12.9898f, 78.233f))) * 43758.5453f) * 6.28318530718f;
-                float pcf_cos = cos(pcf_angle);
-                float pcf_sin = sin(pcf_angle);
+                    // Receiver-side comparison bias
+                    float z_compensation = shadow_normal_offset * (1.0f + bias_scale) * NdotL / shadow_depth_range;
+                    float compare_depth = shadow_ndc.z + z_compensation;
 
-                float proj_fade_range = shadow_projection_fade_end - shadow_projection_fade_start;
+                    // Per-pixel rotation angle to break up PCF banding on small shadows
+                    float pcf_angle = frac(sin(dot(input.pos.xy * 0.5f, float2(12.9898f, 78.233f))) * 43758.5453f) * 6.28318530718f;
+                    float pcf_cos = cos(pcf_angle);
+                    float pcf_sin = sin(pcf_angle);
 
-                // Center tap
-                float center_depth = shadow_map.SampleLevel(shadow_depth_sampler, shadow_uv, 0).r;
-                float center_pd = saturate(shadow_ndc.z - center_depth) * shadow_depth_range;
-                float center_pf = 1.0f - saturate((center_pd - shadow_projection_fade_start) / proj_fade_range);
-                debug_proj_fade = center_pf;
-                float center_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, shadow_uv, compare_depth);
-                float shadow_sum = lerp(1.0f, lerp(shadow_strength, 1.0f, center_cmp), center_pf);
+                    float proj_fade_range = shadow_projection_fade_end - shadow_projection_fade_start;
 
-                // Early-out: skip extra taps if center is fully lit (no shadow nearby)
-                // Disabled when soft_edges is on (quality 5) for softer shadow boundaries
-                if (center_cmp >= 1.0f && extra_taps > 0 && shadow_soft_edges < 0.5f) {
-                    shadow_value = 1.0f;
-                } else {
-                    // Extra taps (PCF with Poisson disk + per-tap projection fade)
-                    for (int t = 0; t < extra_taps && t < 15; ++t) {
-                        float2 ofs = float2(pcf_offsets[t].x * pcf_cos - pcf_offsets[t].y * pcf_sin,
-                                            pcf_offsets[t].x * pcf_sin + pcf_offsets[t].y * pcf_cos);
-                        float2 tap_uv = shadow_uv + ofs * spread;
-                        float tap_depth = shadow_map.SampleLevel(shadow_depth_sampler, tap_uv, 0).r;
-                        float tap_pd = saturate(shadow_ndc.z - tap_depth) * shadow_depth_range;
-                        float tap_pf = 1.0f - saturate((tap_pd - shadow_projection_fade_start) / proj_fade_range);
-                        float tap_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, tap_uv, compare_depth);
-                        shadow_sum += lerp(1.0f, lerp(shadow_strength, 1.0f, tap_cmp), tap_pf);
+                    // Center tap
+                    float center_depth = shadow_map.SampleLevel(shadow_depth_sampler, shadow_uv, 0).r;
+                    float center_pd = saturate(shadow_ndc.z - center_depth) * shadow_depth_range;
+                    float center_pf = 1.0f - saturate((center_pd - shadow_projection_fade_start) / proj_fade_range);
+                    debug_proj_fade = center_pf;
+                    float center_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, shadow_uv, compare_depth);
+                    float shadow_sum = lerp(1.0f, lerp(shadow_strength, 1.0f, center_cmp), center_pf);
+
+                    // Early-out: skip extra taps if center is fully lit (no shadow nearby)
+                    // Disabled when soft_edges is on (quality 5) for softer shadow boundaries
+                    if (center_cmp >= 1.0f && extra_taps > 0 && shadow_soft_edges < 0.5f) {
+                        shadow_value = 1.0f;
+                    } else {
+                        // Extra taps (PCF with Poisson disk + per-tap projection fade)
+                        for (int t = 0; t < extra_taps && t < 15; ++t) {
+                            float2 ofs = float2(pcf_offsets[t].x * pcf_cos - pcf_offsets[t].y * pcf_sin,
+                                                pcf_offsets[t].x * pcf_sin + pcf_offsets[t].y * pcf_cos);
+                            float2 tap_uv = shadow_uv + ofs * spread;
+                            float tap_depth = shadow_map.SampleLevel(shadow_depth_sampler, tap_uv, 0).r;
+                            float tap_pd = saturate(shadow_ndc.z - tap_depth) * shadow_depth_range;
+                            float tap_pf = 1.0f - saturate((tap_pd - shadow_projection_fade_start) / proj_fade_range);
+                            float tap_cmp = shadow_map.SampleCmpLevelZero(shadow_sampler, tap_uv, compare_depth);
+                            shadow_sum += lerp(1.0f, lerp(shadow_strength, 1.0f, tap_cmp), tap_pf);
+                        }
+                        shadow_value = shadow_sum / shadow_pcf_taps;
                     }
-                    shadow_value = shadow_sum / shadow_pcf_taps;
                 }
-            }
 
-            float cam_dist = input.world_pos_and_depth.w;
-            float fade = 1.0f - saturate((cam_dist - shadow_fade_start) / (shadow_fade_end - shadow_fade_start));
-
-            if (shadow_debug > 0.5f) {
-                // Debug: Red = shadow darkening, Green = projection fade suppression (center tap)
-                float darken = (1.0f - shadow_value) * fade * ndotl_fade;
-                float proj_suppress = (1.0f - debug_proj_fade) * fade * ndotl_fade;
-                target.rgb *= 0.3f;
-                target.rgb += float3(darken * 1.5f, proj_suppress * 1.0f, 0.0f);
-            } else {
-                float final_shadow = lerp(1.0f, shadow_value, fade * ndotl_fade);
-                target.rgb *= final_shadow;
+                if (shadow_debug > 0.5f) {
+                    // Debug: Red = shadow darkening, Green = projection fade suppression (center tap)
+                    float darken = (1.0f - shadow_value) * fade * ndotl_fade;
+                    float proj_suppress = (1.0f - debug_proj_fade) * fade * ndotl_fade;
+                    target.rgb *= 0.3f;
+                    target.rgb += float3(darken * 1.5f, proj_suppress * 1.0f, 0.0f);
+                } else {
+                    float final_shadow = lerp(1.0f, shadow_value, fade * ndotl_fade);
+                    target.rgb *= final_shadow;
+                }
             }
         }
     }
@@ -338,6 +386,95 @@ float4 main(VsOutput input) : SV_TARGET
 
     float fog = saturate(input.world_pos_and_depth.w / fog_far);
     target.rgb = fog * fog_color + (1 - fog) * target.rgb;
+
+    // Gas region volumetric fog — per-region compositing (Beer-Lambert)
+    // Detect pre-transformed vertices via dummy normal (transformed_vs outputs norm=(0,0,0)).
+    // For those, reconstruct world pos from depth (particles, sprites, dynamic decals, etc.).
+    // Transmittance (dimming) is always applied so sprites behind gas appear occluded.
+    // Gas color accumulation is only added when fog is allowed, to avoid artifacts with
+    // additive blending (e.g. muzzle flash) where the background already contains the gas color.
+#if MAX_GAS_REGIONS > 0
+    float3 gas_world_pos = input.world_pos_and_depth.xyz;
+    bool is_pretransformed = dot(input.norm, input.norm) == 0.0f;
+    bool can_reconstruct = is_pretransformed && input.world_pos_and_depth.w > 0.0f;
+    int gas_count = min(num_gas_regions, MAX_GAS_REGIONS);
+    if (gas_count > 0 && (!is_pretransformed || can_reconstruct)) {
+        // Reconstruct world position for pre-transformed vertices (dynamic decals, etc.)
+        if (can_reconstruct) {
+            float depth = input.world_pos_and_depth.w;
+            float ndc_x = (input.pos.x / gas_viewport_w) * 2.0f - 1.0f;
+            float ndc_y = (input.pos.y / gas_viewport_h) * -2.0f + 1.0f;
+            float view_x = ndc_x * depth / gas_proj_sx;
+            float view_y = ndc_y * depth / gas_proj_sy;
+            gas_world_pos = gas_eye_pos
+                + gas_cam_right * view_x
+                + gas_cam_up * view_y
+                + gas_cam_forward * depth;
+        }
+        float3 ray_origin = gas_eye_pos;
+        float3 to_pixel = gas_world_pos - ray_origin;
+        float ray_len = length(to_pixel);
+        float3 ray_dir = to_pixel / max(ray_len, 0.0001f);
+
+        // Composite each region independently via Beer-Lambert extinction.
+        // For overlapping regions this is physically correct (optical depths add).
+        float3 gas_accumulated = float3(0, 0, 0);
+        float gas_transmittance = 1.0f;
+
+        for (int gi = 0; gi < gas_count; gi++) {
+            float t_enter, t_exit;
+            bool hit = false;
+
+            if (gas_regions[gi].shape < 0.5f) {
+                // Sphere: analytical ray-sphere intersection
+                float3 oc = ray_origin - gas_regions[gi].center;
+                float r = gas_regions[gi].extents.x;
+                float b = dot(oc, ray_dir);
+                float c = dot(oc, oc) - r * r;
+                float disc = b * b - c;
+                if (disc > 0.0f) {
+                    float sq = sqrt(disc);
+                    t_enter = max(-b - sq, 0.0f);
+                    t_exit = min(-b + sq, ray_len);
+                    hit = (t_exit > t_enter);
+                }
+            } else {
+                // OBB: transform ray to local space, then ray-AABB
+                float3 delta = ray_origin - gas_regions[gi].center;
+                float3 local_origin = float3(
+                    dot(delta, gas_regions[gi].orient_r0),
+                    dot(delta, gas_regions[gi].orient_r1),
+                    dot(delta, gas_regions[gi].orient_r2));
+                float3 local_dir = float3(
+                    dot(ray_dir, gas_regions[gi].orient_r0),
+                    dot(ray_dir, gas_regions[gi].orient_r1),
+                    dot(ray_dir, gas_regions[gi].orient_r2));
+                float3 dir_sign = (local_dir >= 0.0f) ? 1.0f : -1.0f;
+                local_dir = dir_sign * max(abs(local_dir), 1e-8f);
+                float3 inv_dir = 1.0f / local_dir;
+                float3 t0 = (-gas_regions[gi].extents - local_origin) * inv_dir;
+                float3 t1 = ( gas_regions[gi].extents - local_origin) * inv_dir;
+                float3 tmin_v = min(t0, t1);
+                float3 tmax_v = max(t0, t1);
+                t_enter = max(max(tmin_v.x, tmin_v.y), max(tmin_v.z, 0.0f));
+                t_exit = min(min(tmax_v.x, tmax_v.y), min(tmax_v.z, ray_len));
+                hit = (t_exit > t_enter);
+            }
+
+            if (hit) {
+                float seg_len = t_exit - t_enter;
+                float seg_t = exp(-gas_regions[gi].density * seg_len);
+                gas_accumulated += gas_transmittance * gas_regions[gi].color * (1.0f - seg_t);
+                gas_transmittance *= seg_t;
+            }
+        }
+
+        target.rgb = target.rgb * gas_transmittance;
+        if (!can_reconstruct || gas_fog_allowed > 0.5f) {
+            target.rgb += gas_accumulated;
+        }
+    }
+#endif
 
     if (colorblind_mode > 0.5f) {
         target.rgb = saturate(apply_colorblind(target.rgb));
