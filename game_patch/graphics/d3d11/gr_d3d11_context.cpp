@@ -459,12 +459,12 @@ namespace df::gr::d3d11
             }
 
             // Store orient transpose (inverse for orthonormal) for world-to-local transform
-            // Matrix3 memory layout: rvec (row0), uvec (row1), fvec (row2)
-            // Transpose: column i of original = row i of transpose
+            // Matrix3 columns: rvec (local X), uvec (local Y), fvec (local Z) in world space
+            // Transpose rows = original columns
             const auto& o = src.orient;
-            dst.orient_r0 = {o.rvec.x, o.uvec.x, o.fvec.x};
-            dst.orient_r1 = {o.rvec.y, o.uvec.y, o.fvec.y};
-            dst.orient_r2 = {o.rvec.z, o.uvec.z, o.fvec.z};
+            dst.orient_r0 = {o.rvec.x, o.rvec.y, o.rvec.z};
+            dst.orient_r1 = {o.uvec.x, o.uvec.y, o.uvec.z};
+            dst.orient_r2 = {o.fvec.x, o.fvec.y, o.fvec.z};
 
             gpu_index++;
         }
