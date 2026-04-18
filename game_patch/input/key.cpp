@@ -69,7 +69,6 @@ FunHook<int(int16_t)> key_to_ascii_hook{
         }
 
         if (g_alpine_game_config.input_mode == 2) {
-            // SDL keyboard mode
             SDL_Keymod sdl_mods = SDL_GetModState();
 
             // Treat pure Ctrl shortcuts as non-text, but allow AltGr (often Ctrl+Alt or SDL_KMOD_MODE)
@@ -111,7 +110,6 @@ FunHook<int(int16_t)> key_to_ascii_hook{
 
             return static_cast<int>(kc);
         } else {
-            // Legacy/DirectInput keyboard modes (0 and 1): use Win32 APIs
             // Note: broken on Wine with non-US layout (MAPVK_VSC_TO_VK_EX mapping issue)
             if (GetKeyState(VK_NUMLOCK) & 1) {
                 switch (key & KEY_MASK) {
@@ -307,7 +305,7 @@ void keyboard_sdl_poll()
         for (int i = 0; i < n; ++i) {
             const auto& evt = events[i];
             if (evt.type != SDL_EVENT_KEY_DOWN && evt.type != SDL_EVENT_KEY_UP)
-                continue; // only key state changes are relevant; discard text editing events
+                continue;
             if (evt.key.repeat)
                 continue; // ignore OS key repeat; RF tracks state itself
             const bool down = (evt.type == SDL_EVENT_KEY_DOWN);
@@ -357,7 +355,6 @@ int get_key_name(int key, char* buf, size_t buf_len)
         return n > 0 ? n : 0;
     }
     if (g_alpine_game_config.input_mode == 2) {
-        // SDL mode: use SDL key names
         SDL_Scancode sc = rf_key_to_sdl_scancode(key);
         if (sc == SDL_SCANCODE_UNKNOWN) {
             buf[0] = '\0';
@@ -810,7 +807,5 @@ void key_apply_patch()
     // Support suppress autoswitch bind
     item_touch_weapon_autoswitch_patch.install();
 
-    // Route keyboard events: Win32 WM_KEY* messages for modes 0/1 (with numpad KF_EXTENDED fix),
-    // blocked for mode 2 where SDL feeds keyboard events via keyboard_sdl_poll.
     key_msg_handler_hook.install();
 }

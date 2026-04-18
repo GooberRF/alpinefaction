@@ -16,11 +16,11 @@
 #include "../rf/ui.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
+#include "../os/os.h"
 #include "mouse.h"
 #include "../multi/multi.h"
 
 // SDL window and mouse motion state (used in SDL input mode only)
-static SDL_Window* g_sdl_window = nullptr;
 static bool g_relative_mouse_mode_window_missing_logged = false;
 static float g_sdl_mouse_dx_rem = 0.0f, g_sdl_mouse_dy_rem = 0.0f;
 static float g_sdl_mouse_wheel_rem = 0.0f; // sub-notch accumulator for smooth-scroll devices
@@ -38,12 +38,8 @@ static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
 static bool is_freelook_camera()
 {
     return rf::local_player && rf::local_player->cam
-        && rf::local_player->cam->mode == rf::CAMERA_FREELOOK;
+        && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
 }
-
-// Per-frame raw mouse deltas captured for centralized camera angle computation.
-// Populated by mouse_get_delta_hook during gameplay; consumed by mouse_get_camera.
-static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
 
 // Sub-pixel remainder accumulators for vehicle mouse sensitivity scaling.
 static float g_vehicle_mouse_dx_rem = 0.0f, g_vehicle_mouse_dy_rem = 0.0f;
@@ -179,9 +175,11 @@ void set_input_mode(int mode)
     g_alpine_game_config.input_mode = mode;
 
     if (!rf::is_dedicated_server) {
-        // Handle SDL relative mouse mode
         if (g_sdl_window) {
-            SDL_SetWindowRelativeMouseMode(g_sdl_window, mode == 2 && rf::keep_mouse_centered);
+            if (rf::keep_mouse_centered)
+                SDL_SetWindowRelativeMouseMode(g_sdl_window, mode == 2);
+            else
+                SDL_SetWindowMouseGrab(g_sdl_window, g_game_config.wnd_mode == GameConfig::STRETCHED);
         }
 
         // Handle DirectInput transitions
@@ -222,22 +220,16 @@ FunHook<void()> mouse_eval_deltas_hook{
         }
 
         if (!rf::os_foreground() && !g_alpine_game_config.background_mouse) {
-            // Discard any SDL motion that accumulated while unfocused
             g_sdl_mouse_dx_rem = 0.0f;
             g_sdl_mouse_dy_rem = 0.0f;
             return;
         }
 
         if (g_alpine_game_config.input_mode == 2) {
-            // SDL mode: accumulate SDL motion events into integer deltas for this frame
             g_sdl_mouse_dx = static_cast<int>(g_sdl_mouse_dx_rem);
             g_sdl_mouse_dy = static_cast<int>(g_sdl_mouse_dy_rem);
             g_sdl_mouse_dx_rem -= g_sdl_mouse_dx;
             g_sdl_mouse_dy_rem -= g_sdl_mouse_dy;
-            // Do NOT touch mouse_old_z here — mouse_eval_deltas_di_hook uses the
-            // difference between mouse_wheel_pos (updated by SDL poll) and mouse_old_z
-            // (from the previous frame) to compute mouse_dz. Setting it here before
-            // call_target() would zero out the delta every frame.
         }
 
         mouse_eval_deltas_hook.call_target();
@@ -249,14 +241,11 @@ FunHook<void()> mouse_eval_deltas_hook{
             POINT pt{rect.right / 2, rect.bottom / 2};
             ClientToScreen(rf::main_wnd, &pt);
             SetCursorPos(pt.x, pt.y);
-            SDL_PumpEvents();
             SDL_FlushEvents(SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_MOTION);
         }
     },
 };
 
-// Handles scroll-wheel delta fix and Win32 cursor centering for Legacy/DInput modes (0 and 1).
-// In SDL mode (2) this hook fires but we skip its extra work — SDL manages it instead.
 FunHook<void()> mouse_eval_deltas_di_hook{
     0x0051DEB0,
     []() {
@@ -274,8 +263,6 @@ FunHook<void()> mouse_eval_deltas_di_hook{
             return;
         }
 
-        // In SDL menu mode, allow the original code path to continue so UI cursor behavior works.
-
         // Fix invalid mouse scroll delta when DirectInput is not active (mode 0 or SDL menu mode)
         if (g_alpine_game_config.input_mode != 1)
             rf::mouse_old_z = rf::mouse_wheel_pos;
@@ -285,6 +272,19 @@ FunHook<void()> mouse_eval_deltas_di_hook{
             POINT pt{rf::gr::screen_width() / 2, rf::gr::screen_height() / 2};
             ClientToScreen(rf::main_wnd, &pt);
             SetCursorPos(pt.x, pt.y);
+        }
+    },
+};
+
+FunHook<void(bool)> mouse_set_visible_hook{
+    0x0051E680,
+    [](bool visible) {
+        mouse_set_visible_hook.call_target(visible);
+        if (g_sdl_window) {
+            if (visible)
+                SDL_ShowCursor();
+            else
+                SDL_HideCursor();
         }
     },
 };
@@ -302,6 +302,9 @@ FunHook<void()> mouse_keep_centered_enable_hook{
 
         // keep_mouse_centered is still false here; call_target sets it
         if (!rf::keep_mouse_centered && !rf::is_dedicated_server) {
+            // Release menu grab when entering gameplay; only set in stretched (borderless) mode.
+            if (g_sdl_window && g_game_config.wnd_mode == GameConfig::STRETCHED)
+                SDL_SetWindowMouseGrab(g_sdl_window, false);
             switch (g_alpine_game_config.input_mode) {
             case 1: // DirectInput mouse
                 set_direct_input_enabled(true);
@@ -346,6 +349,9 @@ FunHook<void()> mouse_keep_centered_disable_hook{
                 }
                 break;
             }
+            // Confine cursor in stretched (borderless) mode; SDL cursor navigation is active in all input modes.
+            if (g_sdl_window && g_game_config.wnd_mode == GameConfig::STRETCHED)
+                SDL_SetWindowMouseGrab(g_sdl_window, true);
             reset_mouse_delta_accumulators();
         }
         mouse_keep_centered_disable_hook.call_target();
@@ -358,13 +364,10 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
 
         if (g_alpine_game_config.input_mode == 2 && g_sdl_window) {
-            // SDL mode: override dx/dy with SDL-sourced deltas when SDL window is available
             dx = g_sdl_mouse_dx;
             dy = g_sdl_mouse_dy;
             g_sdl_mouse_dx = 0;
             g_sdl_mouse_dy = 0;
-
-            // Also pass through wheel delta for weapon switching/menu scroll actions.
             dz = rf::mouse_dz;
         }
 
@@ -556,9 +559,6 @@ CodeInjection static_zoom_sensitivity_patch2 {
     },
 };
 
-// Handle an SDL extra mouse button event (Mouse 4-8).
-// Maps SDL button indices to custom scan codes and injects them into RF's key layer.
-// Only active in SDL input mode (mode 2).
 static void handle_extra_mouse_button(const SDL_Event& ev)
 {
     if (g_alpine_game_config.input_mode != 2)
@@ -577,7 +577,6 @@ static void handle_extra_mouse_button(const SDL_Event& ev)
         g_pending_mouse_extra_btn_rebind = rf_btn;
         rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
     } else {
-        // Inject our custom scan code directly into RF's key state.
         int scan_code = CTRL_EXTRA_MOUSE_SCAN_BASE + (rf_btn - 3);
         rf::key_process_event(scan_code, ev.button.down ? 1 : 0, 0);
     }
@@ -598,15 +597,13 @@ void mouse_sdl_poll()
             switch (ev.type) {
             case SDL_EVENT_MOUSE_MOTION:
                 if (ev.motion.which == SDL_TOUCH_MOUSEID || ev.motion.which == SDL_PEN_MOUSEID) {
-                    // Touch/pen: move the Win32 cursor to the contact point in menus.
-                    // Works in all input modes; ignored during gameplay
+                    // Touch/pen: sync Win32 cursor position in menus.
                     if (!rf::keep_mouse_centered) {
                         POINT pt{static_cast<LONG>(ev.motion.x), static_cast<LONG>(ev.motion.y)};
                         ClientToScreen(rf::main_wnd, &pt);
                         SetCursorPos(pt.x, pt.y);
                     }
-                } else if (g_alpine_game_config.input_mode == 2) {
-                    // Real mouse: accumulate relative deltas for the camera (SDL mode only).
+                } else if (g_alpine_game_config.input_mode == 2 && rf::os_foreground()) {
                     g_sdl_mouse_dx_rem += ev.motion.xrel;
                     g_sdl_mouse_dy_rem += ev.motion.yrel;
                 }
@@ -614,10 +611,8 @@ void mouse_sdl_poll()
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP:
                 if (ev.button.which == SDL_TOUCH_MOUSEID || ev.button.which == SDL_PEN_MOUSEID) {
-                    // Touch/pen taps: synthesise a left-click in menus; ignored during gameplay.
-                    // Works in all input modes; not part of the binding system.
+                    // Touch/pen taps: synthesise a left-click at the tap position in menus.
                     if (!rf::keep_mouse_centered && ev.button.button == SDL_BUTTON_LEFT) {
-                        // Sync cursor to the exact tap position first.
                         POINT pt{static_cast<LONG>(ev.button.x), static_cast<LONG>(ev.button.y)};
                         ClientToScreen(rf::main_wnd, &pt);
                         SetCursorPos(pt.x, pt.y);
@@ -632,7 +627,6 @@ void mouse_sdl_poll()
                 break;
             case SDL_EVENT_MOUSE_WHEEL:
                 // Feed scroll into rf::mouse_wheel_pos (120 units per notch, matching Win32/DInput).
-                // SDL y > 0 = scroll up = positive delta, same sign as RF expects.
                 if (g_alpine_game_config.input_mode == 2
                     && ev.wheel.which != SDL_TOUCH_MOUSEID
                     && ev.wheel.which != SDL_PEN_MOUSEID) {
@@ -660,15 +654,31 @@ int mouse_take_pending_rebind()
     return btn;
 }
 
-void mouse_init_sdl_window()
+void mouse_on_focus_changed(bool focused)
 {
-    SDL_PropertiesID props = SDL_CreateProperties();
-    SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER, rf::main_wnd);
-    g_sdl_window = SDL_CreateWindowWithProperties(props);
-    SDL_DestroyProperties(props);
-    if (!g_sdl_window) {
-        xlog::error("SDL_CreateWindowWithProperties failed: {}", SDL_GetError());
+    if (!g_sdl_window)
         return;
+
+    // Reset SDL delta accumulators on focus change to prevent stale deltas replaying.
+    g_sdl_mouse_dx = 0;
+    g_sdl_mouse_dy = 0;
+    g_sdl_mouse_dx_rem = 0.0f;
+    g_sdl_mouse_dy_rem = 0.0f;
+
+    if (focused) {
+        // Gameplay (mode 2): re-enable relative mouse mode; SDL3 may have cleared it on focus loss.
+        if (g_alpine_game_config.input_mode == 2 && rf::keep_mouse_centered)
+            SDL_SetWindowRelativeMouseMode(g_sdl_window, true);
+        // Menu: confine cursor in stretched (borderless) mode to prevent escape to other monitors.
+        if (!rf::keep_mouse_centered && g_game_config.wnd_mode == GameConfig::STRETCHED)
+            SDL_SetWindowMouseGrab(g_sdl_window, true);
+        SDL_FlushEvents(SDL_EVENT_MOUSE_MOTION, SDL_EVENT_MOUSE_MOTION);
+    } else {
+        // Show cursor so it's visible in other applications after alt-tab.
+        SDL_ShowCursor();
+        // Only release grab in stretched (borderless) mode; fullscreen conflicts with D3D11's exclusive swap chain.
+        if (g_game_config.wnd_mode == GameConfig::STRETCHED)
+            SDL_SetWindowMouseGrab(g_sdl_window, false);
     }
 }
 
@@ -687,6 +697,9 @@ void mouse_apply_patch()
 
     // Scroll-wheel fix and Win32 cursor centering for Legacy/DInput modes (0 and 1)
     mouse_eval_deltas_di_hook.install();
+
+    // Sync SDL cursor visibility with the game's own cursor show/hide calls
+    mouse_set_visible_hook.install();
 
     // Mouse mode hooks (DInput or SDL depending on input_mode)
     mouse_keep_centered_enable_hook.install();

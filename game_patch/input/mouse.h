@@ -6,7 +6,7 @@ static constexpr int CTRL_EXTRA_MOUSE_SCAN_BASE  = 0x75; // scan code for rf_btn
 static constexpr int CTRL_EXTRA_MOUSE_SCAN_COUNT = 5;    // covers Mouse 4-8 (rf indices 3-7)
 
 void mouse_apply_patch();
-void mouse_init_sdl_window();
+void mouse_on_focus_changed(bool focused);
 int  mouse_take_pending_rebind();
 void mouse_sdl_poll();
 void consume_raw_mouse_deltas(float& out_pitch, float& out_yaw, bool apply_scope_sens);

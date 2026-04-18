@@ -2,6 +2,7 @@
 
 // RF uses DirectInput 8
 #define DIRECTINPUT_VERSION 0x0800
+
 #include <dinput.h>
 #include <patch_common/MemUtils.h>
 

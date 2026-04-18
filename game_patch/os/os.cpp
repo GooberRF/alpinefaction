@@ -21,6 +21,7 @@
 const char* get_win_msg_name(UINT msg);
 
 static bool g_sdl_video_initialized = false;
+SDL_Window* g_sdl_window = nullptr;
 
 FunHook<void()> os_poll_hook{
     0x00524B60,
@@ -40,9 +41,6 @@ FunHook<void()> os_poll_hook{
             win32_console_poll_input();
         }
 
-        // Always pump SDL events to avoid a backlog even when the
-        // window is unfocused; lower-level input handling is responsible
-        // for ignoring or clamping deltas when background input is disabled.
         if (g_sdl_video_initialized) {
             sdl_input_poll();
         }
@@ -72,25 +70,8 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
             return 0;
         }
 
-        if (!rf::is_dedicated_server) {
-            // Show cursor if window is not active
-            if (w_param) {
-                if (g_sdl_video_initialized) {
-                    SDL_HideCursor();
-                }
-                ShowCursor(FALSE);
-                while (ShowCursor(FALSE) >= 0)
-                    ;
-            }
-            else {
-                if (g_sdl_video_initialized) {
-                    SDL_ShowCursor();
-                }
-                ShowCursor(TRUE);
-                while (ShowCursor(TRUE) < 0)
-                    ;
-            }
-        }
+        if (g_sdl_video_initialized)
+            mouse_on_focus_changed(w_param != 0);
 
         rf::is_main_wnd_active = w_param;
         return 0; //DefWindowProcA(wnd_handle, msg, w_param, l_param);
@@ -339,22 +320,43 @@ void wait_for(const float ms, const WaitableTimer& timer) {
     }
 }
 
+void os_init_sdl_video()
+{
+    if (rf::is_dedicated_server)
+        return;
+    g_sdl_video_initialized = SDL_Init(SDL_INIT_VIDEO);
+    if (!g_sdl_video_initialized)
+        xlog::error("SDL_Init(SDL_INIT_VIDEO) failed: {}", SDL_GetError());
+}
+
+void os_init_sdl_window()
+{
+    // Deferred after D3D device creation so SDL's hidden helper window does not
+    // interfere with exclusive fullscreen acquisition.
+    os_init_sdl_video();
+
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER, rf::main_wnd);
+    g_sdl_window = SDL_CreateWindowWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (!g_sdl_window) {
+        xlog::error("SDL_CreateWindowWithProperties failed: {}", SDL_GetError());
+        return;
+    }
+}
+
 void os_apply_patch()
 {
-    // Lock to DPI_AWARENESS_CONTEXT_UNAWARE so the legacy D3D renderer's bitmap-scaling
-    // virtualisation stays active.
-    if (auto* set_dpi_ctx = reinterpret_cast<BOOL(WINAPI*)(HANDLE)>(
-            GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext"))) {
-        set_dpi_ctx(reinterpret_cast<HANDLE>(-1)); // DPI_AWARENESS_CONTEXT_UNAWARE
-    }
-
-    if (!rf::is_dedicated_server) {
-        if (SDL_Init(SDL_INIT_VIDEO)) {
-            g_sdl_video_initialized = true;
-        } else {
-            xlog::error("SDL_Init(SDL_INIT_VIDEO) failed: {}", SDL_GetError());
+    if (!is_d3d11()) {
+        // Fix bitmap scaling on legacy D3D8/9 renderer
+        if (auto* set_dpi_ctx = reinterpret_cast<BOOL(WINAPI*)(HANDLE)>(
+                GetProcAddress(GetModuleHandleA("user32.dll"), "SetProcessDpiAwarenessContext"))) {
+            set_dpi_ctx(reinterpret_cast<HANDLE>(-1)); // DPI_AWARENESS_CONTEXT_UNAWARE
         }
     }
+
+    // SDL video and window init is deferred to os_init_sdl_window, after D3D device creation,
+    // to avoid SDL's hidden helper window interfering with exclusive fullscreen acquisition.
 
     // Process messages in the same thread as DX processing (alternative: D3DCREATE_MULTITHREADED)
     AsmWriter(0x00524C48, 0x00524C83).nop(); // disable msg loop thread
