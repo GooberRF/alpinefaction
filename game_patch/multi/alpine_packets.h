@@ -132,6 +132,32 @@ struct af_just_spawned_info_packet
     uint8_t data[];     // type-specific payload
 };
 
+enum af_player_info_flags : uint8_t
+{
+    AF_PLAYER_FLAG_BOT       = 1 << 0,
+    AF_PLAYER_FLAG_BROWSER   = 1 << 1,
+    AF_PLAYER_FLAG_SPECTATOR = 1 << 2,
+    AF_PLAYER_FLAG_IDLE      = 1 << 3,
+    AF_PLAYER_FLAG_TEAM_BLUE = 1 << 4,
+};
+
+// Wire format per player entry (variable length):
+//   uint8_t flags
+//   int16_t score
+//   char name[] (null-terminated)
+
+struct af_player_info_packet
+{
+    RF_GamePacketHeader hdr; // type = pf_packet_type::players (0xA1)
+    uint8_t version;        // 2
+    uint8_t response_id;
+    uint8_t sequence;
+    uint8_t total_segments;
+    // player entries follow
+};
+
+constexpr uint8_t af_player_info_packet_version = 2;
+
 struct af_koth_hill_state_packet
 {
     RF_GamePacketHeader header;
@@ -370,3 +396,6 @@ void af_send_bot_control_update_identity(rf::Player* player, const std::string& 
 void af_send_bot_config(rf::Player* player, const ServerBotConfig& config,
                         const std::string& resolved_name, int32_t resolved_character);
 void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAddr& addr);
+
+// player info response (sent to online server browsers)
+void af_send_player_info_response(const rf::NetAddr& addr);
