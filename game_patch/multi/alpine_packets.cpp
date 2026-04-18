@@ -2353,6 +2353,8 @@ void af_send_player_info_response(const rf::NetAddr& addr)
             std::memcpy(packet_buf + header_size, players_data + payload_offset, payload_len);
         }
 
+        // cannot use af_send_packet because packet is sent to
+        // online rfsb, not a connected client
         rf::net_send(addr, packet_buf, header_size + payload_len);
     }
 
