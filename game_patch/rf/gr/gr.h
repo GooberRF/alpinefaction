@@ -44,20 +44,23 @@ namespace rf::gr
             return Color(r, g, b, a);
         }
 
+        static float srgb_to_linear(ubyte v)
+        {
+            return std::pow(v / 255.0f, 2.2f);
+        }
+
+        static ubyte linear_to_srgb(float v)
+        {
+            if (v <= 0.0f) return 0;
+            return static_cast<ubyte>(std::clamp(std::pow(v, 1.0f / 2.2f) * 255.0f + 0.5f, 0.0f, 255.0f));
+        }
+
         static Color lerp(const Color& a, const Color& b, float t)
         {
-            constexpr float gamma = 2.2f;
-            constexpr float inv_gamma = 1.0f / 2.2f;
-            auto to_linear = [](ubyte v) -> float {
-                return std::pow(v / 255.0f, gamma);
-            };
-            auto to_srgb = [](float v) -> ubyte {
-                return static_cast<ubyte>(std::clamp(std::pow(v, inv_gamma) * 255.0f + 0.5f, 0.0f, 255.0f));
-            };
             return Color(
-                to_srgb(std::lerp(to_linear(a.red), to_linear(b.red), t)),
-                to_srgb(std::lerp(to_linear(a.green), to_linear(b.green), t)),
-                to_srgb(std::lerp(to_linear(a.blue), to_linear(b.blue), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.red), srgb_to_linear(b.red), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.green), srgb_to_linear(b.green), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.blue), srgb_to_linear(b.blue), t)),
                 static_cast<ubyte>(std::clamp(std::lerp(static_cast<float>(a.alpha), static_cast<float>(b.alpha), t) + 0.5f, 0.0f, 255.0f))
             );
         }
