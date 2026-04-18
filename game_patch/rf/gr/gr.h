@@ -52,7 +52,7 @@ namespace rf::gr
         static ubyte linear_to_srgb(float v)
         {
             if (v <= 0.0f) return 0;
-            return static_cast<ubyte>(std::clamp(std::pow(v, 1.0f / 2.2f) * 255.0f + 0.5f, 0.0f, 255.0f));
+            return static_cast<ubyte>(std::clamp(std::lround(std::pow(v, 1.0f / 2.2f) * 255.0f), 0L, 255L));
         }
 
         static Color lerp(const Color& a, const Color& b, float t)
@@ -61,7 +61,7 @@ namespace rf::gr
                 linear_to_srgb(std::lerp(srgb_to_linear(a.red), srgb_to_linear(b.red), t)),
                 linear_to_srgb(std::lerp(srgb_to_linear(a.green), srgb_to_linear(b.green), t)),
                 linear_to_srgb(std::lerp(srgb_to_linear(a.blue), srgb_to_linear(b.blue), t)),
-                static_cast<ubyte>(std::clamp(std::lerp(static_cast<float>(a.alpha), static_cast<float>(b.alpha), t) + 0.5f, 0.0f, 255.0f))
+                static_cast<ubyte>(std::clamp(std::lround(std::lerp(static_cast<float>(a.alpha), static_cast<float>(b.alpha), t)), 0L, 255L))
             );
         }
 
