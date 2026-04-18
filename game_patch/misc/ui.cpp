@@ -1,4 +1,5 @@
 #include <cstring>
+#include <SDL3/SDL.h>
 #include <xlog/xlog.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
@@ -377,6 +378,8 @@ void __fastcall UiInputBox_create(rf::ui::InputBox& this_, int, rf::ui::Gadget *
 }
 FunHook UiInputBox_create_hook{0x00456FE0, UiInputBox_create};
 
+auto UiInputBox_add_char = reinterpret_cast<bool (__thiscall*)(void *this_, char c)>(0x00457260);
+
 void __fastcall UiInputBox_render(rf::ui::InputBox& this_, void*)
 {
     if (this_.enabled && this_.highlighted) {
@@ -402,6 +405,25 @@ void __fastcall UiInputBox_render(rf::ui::InputBox& this_, void*)
         }
     }
     rf::gr::set_clip(clip_x, clip_y, clip_w, clip_h);
+
+    static const rf::ui::InputBox* s_text_input_owner = nullptr;
+    if (this_.enabled && this_.highlighted && g_sdl_window && SDL_HasScreenKeyboardSupport()) {
+        if (s_text_input_owner != &this_) {
+            SDL_PropertiesID props = SDL_CreateProperties();
+            SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_TYPE_NUMBER, SDL_TEXTINPUT_TYPE_NUMBER);
+            SDL_StartTextInputWithProperties(g_sdl_window, props);
+            SDL_DestroyProperties(props);
+            s_text_input_owner = &this_;
+        }
+        auto pending = keyboard_take_pending_text();
+        for (char c : pending)
+            UiInputBox_add_char(&this_, c);
+    } else if (s_text_input_owner == &this_) {
+        keyboard_take_pending_text();
+        if (g_sdl_window)
+            SDL_StopTextInput(g_sdl_window);
+        s_text_input_owner = nullptr;
+    }
 
     debug_ui_layout(this_);
 }
@@ -494,8 +516,6 @@ FunHook<void()> menu_init_hook{
 #endif
     },
 };
-
-auto UiInputBox_add_char = reinterpret_cast<bool (__thiscall*)(void *this_, char c)>(0x00457260);
 
 extern FunHook<bool __fastcall(void*, int, rf::Key)> UiInputBox_process_key_hook;
 bool __fastcall UiInputBox_process_key_new(void *this_, int edx, rf::Key key)

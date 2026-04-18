@@ -1,4 +1,5 @@
 #include <cctype>
+#include <string>
 #include <SDL3/SDL.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -27,6 +28,7 @@
 
 static int starting_alpine_control_index = -1;
 static int g_pending_extra_key_rebind = -1; // pending scan code for sentinel rebind pattern
+static std::string g_sdl_pending_text;
 
 rf::String get_action_bind_name(int action)
 {
@@ -300,10 +302,15 @@ void keyboard_sdl_poll()
     int n;
     while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
                                SDL_GETEVENT, SDL_EVENT_KEY_DOWN, SDL_EVENT_TEXT_EDITING_CANDIDATES)) > 0) {
-        if (g_alpine_game_config.input_mode != 2)
-            continue; // drain without processing; Win32 keyboard handles input in modes 0/1
         for (int i = 0; i < n; ++i) {
             const auto& evt = events[i];
+            // Always buffer text input events — on-screen keyboard works in all input modes
+            if (evt.type == SDL_EVENT_TEXT_INPUT) {
+                g_sdl_pending_text += evt.text.text;
+                continue;
+            }
+            if (g_alpine_game_config.input_mode != 2)
+                continue; // Win32 keyboard handles key events in modes 0/1
             if (evt.type != SDL_EVENT_KEY_DOWN && evt.type != SDL_EVENT_KEY_UP)
                 continue;
             if (evt.key.repeat)
@@ -335,6 +342,11 @@ int key_take_pending_extra_rebind()
     int sc = g_pending_extra_key_rebind;
     g_pending_extra_key_rebind = -1;
     return sc;
+}
+
+std::string keyboard_take_pending_text()
+{
+    return std::exchange(g_sdl_pending_text, {});
 }
 
 int get_key_name(int key, char* buf, size_t buf_len)

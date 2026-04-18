@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include "../rf/player/control_config.h"
 #include "mouse.h"
 
@@ -32,6 +33,7 @@ rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_cont
 rf::String get_action_bind_name(int action);
 void keyboard_sdl_poll();
 int  key_take_pending_extra_rebind();
+std::string keyboard_take_pending_text();
 void sdl_input_poll();
 void key_apply_patch();
 void set_input_mode(int mode);
