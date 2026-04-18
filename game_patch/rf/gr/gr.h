@@ -2,6 +2,7 @@
 
 #include <patch_common/MemUtils.h>
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <sstream>
 #include "../bmpman.h"
@@ -45,14 +46,19 @@ namespace rf::gr
 
         static Color lerp(const Color& a, const Color& b, float t)
         {
-            auto ch = [](float v) -> ubyte {
-                return static_cast<ubyte>(std::clamp(v, 0.0f, 255.0f));
+            constexpr float gamma = 2.2f;
+            constexpr float inv_gamma = 1.0f / 2.2f;
+            auto to_linear = [](ubyte v) -> float {
+                return std::pow(v / 255.0f, gamma);
+            };
+            auto to_srgb = [](float v) -> ubyte {
+                return static_cast<ubyte>(std::clamp(std::pow(v, inv_gamma) * 255.0f + 0.5f, 0.0f, 255.0f));
             };
             return Color(
-                ch(a.red + (b.red - a.red) * t),
-                ch(a.green + (b.green - a.green) * t),
-                ch(a.blue + (b.blue - a.blue) * t),
-                ch(a.alpha + (b.alpha - a.alpha) * t)
+                to_srgb(std::lerp(to_linear(a.red), to_linear(b.red), t)),
+                to_srgb(std::lerp(to_linear(a.green), to_linear(b.green), t)),
+                to_srgb(std::lerp(to_linear(a.blue), to_linear(b.blue), t)),
+                static_cast<ubyte>(std::clamp(std::lerp(static_cast<float>(a.alpha), static_cast<float>(b.alpha), t) + 0.5f, 0.0f, 255.0f))
             );
         }
 
