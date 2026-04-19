@@ -87,6 +87,12 @@ static std::vector<void*> g_rf2_smoke_record_ptrs;
 static bool g_rf2_decal_deferred = false;
 static rf::GDecalCreateInfo g_rf2_deferred_decal_info;
 
+// Face snapshot taken before each boolean pass. Used by remap_components_by_anchor_status
+// to distinguish pre-existing disconnected components (e.g. interior faces of a hollow box)
+// from components created by the crater split. Only components with at least one NEW face
+// (not in this set) are eligible for extraction as debris.
+static std::unordered_set<rf::GFace*> g_rf2_pre_boolean_faces;
+
 // Per-room targeting: when RF2-style is active, the boolean engine only processes
 // faces from ONE specific detail room at a time. This prevents crashes and incorrect
 // face classification that occur when the boolean engine tries to process faces from
@@ -2174,6 +2180,12 @@ static int remap_components_by_anchor_status(int total_components)
     // A component is anchored if ANY face in it is an anchor face (coplanar with and
     // overlapping a normal world geometry face). This represents genuine structural
     // contact — the face is flush against a wall/floor/ceiling.
+    //
+    // A component made entirely of PRE-EXISTING faces (all in g_rf2_pre_boolean_faces)
+    // is also treated as anchored. These are disconnected components that existed before
+    // the geomod — e.g. interior faces of a hollow box that don't share edges with
+    // exterior faces. They're part of the original brush, not debris broken off by
+    // the crater.
     struct CompInfo {
         int original_id;
         bool is_anchored;
@@ -2188,6 +2200,21 @@ static int remap_components_by_anchor_status(int total_components)
                 break;
             }
         }
+
+        // Don't extract pre-existing disconnected components
+        if (!anchored && !g_rf2_pre_boolean_faces.empty()) {
+            bool has_new_face = false;
+            for (rf::GFace* face : faces) {
+                if (!g_rf2_pre_boolean_faces.count(face)) {
+                    has_new_face = true;
+                    break;
+                }
+            }
+            if (!has_new_face) {
+                anchored = true; // all faces pre-existing → treat as anchored
+            }
+        }
+
         comp_list.push_back({id, anchored, static_cast<int>(faces.size())});
     }
 
@@ -2671,7 +2698,21 @@ static void clear_corrupted_detail_rooms()
 FunHook<int()> boolean_iterate_hook{
     0x004dbc50,
     []() -> int {
+        if (g_rf2_style_boolean_active && rf::g_boolean_inner_state == 0) {
+            // Snapshot target room's faces before the boolean modifies them.
+            // Used by remap_components_by_anchor_status to avoid extracting
+            // pre-existing disconnected components (e.g. interior faces of hollow boxes
+            // where interior and exterior faces don't share edges).
+            g_rf2_pre_boolean_faces.clear();
+            if (g_rf2_target_detail_room) {
+                for (rf::GFace& face : g_rf2_target_detail_room->face_list) {
+                    g_rf2_pre_boolean_faces.insert(&face);
+                }
+            }
+        }
+
         int result = boolean_iterate_hook.call_target();
+
         if (g_rf2_style_boolean_active) {
             // Clear corrupted detail_rooms after EVERY inner state, not just when done.
             // This ensures the renderer never sees corrupted detail_rooms between frames.
@@ -3000,6 +3041,7 @@ void destruction_level_cleanup()
     g_rf2_pending_detail_rooms.clear();
     g_rf2_geo_count = 0;
     g_rf2_anchor_info.clear();
+    g_rf2_pre_boolean_faces.clear();
     g_rf2_boolean_modified_detail = false;
     g_rf2_suppress_geomod_create_effects = false;
     g_rf2_deferred_debris.pending = false;
