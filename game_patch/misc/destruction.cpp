@@ -2716,6 +2716,7 @@ FunHook<int()> boolean_iterate_hook{
             // where interior and exterior faces don't share edges).
             g_rf2_pre_boolean_faces.clear();
             if (g_rf2_target_detail_room) {
+                g_rf2_pre_boolean_faces.reserve(g_rf2_target_detail_room->face_list.size());
                 for (rf::GFace& face : g_rf2_target_detail_room->face_list) {
                     g_rf2_pre_boolean_faces.insert(&face);
                 }
