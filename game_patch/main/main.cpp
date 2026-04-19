@@ -188,6 +188,7 @@ CodeInjection after_frame_render_hook{
             frametime_render_ui();
             achievement_system_do_frame();
             fullscreen_overlay_do_frame();
+            gas_region_transition_do_frame();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
             experimental_render();
 #endif
@@ -231,6 +232,11 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
                     rf::console::print("Pixel light overbright set to {:.2f} for {} (per override present in mapname_info.tbl)",
                         df::gr::d3d11::g_level_pixel_light_overbright, level_filename);
                 }
+            }
+
+            df::gr::d3d11::evaluate_alpha_test_threshold(level_filename);
+            if (is_stock_alpha_test_level(level_filename)) {
+                rf::console::print("Applying stock alpha test threshold to known affected level {}", level_filename);
             }
         }
 

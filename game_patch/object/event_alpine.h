@@ -2892,6 +2892,7 @@ namespace rf
     {
         std::string color_string;
         float density = 1.0f;
+        float transition_time = 0.0f;
 
         void register_variable_handlers() override
         {
@@ -2907,6 +2908,11 @@ namespace rf
                 auto* this_event = static_cast<EventModifyGasRegion*>(event);
                 this_event->density = std::stof(value);
             };
+
+            handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventModifyGasRegion*>(event);
+                this_event->transition_time = std::max(0.0f, std::stof(value));
+            };
         }
 
         void turn_on() override
@@ -2916,8 +2922,13 @@ namespace rf
 
                 for (const auto& linked_uid : this->links) {
                     if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
-                        gas_region->color = color;
-                        gas_region->density = density;
+                        if (transition_time > 0.0f) {
+                            gas_region_add_modify_transition(linked_uid, color, density, transition_time);
+                        }
+                        else {
+                            gas_region->color = color;
+                            gas_region->density = density;
+                        }
                     }
                 }
             }
@@ -2933,6 +2944,7 @@ namespace rf
         int shape = 1; // 1=sphere, 2=box
         float sphere_radius = 1.0f;
         std::string box_dimensions; // HWD
+        float transition_time = 0.0f;
 
         void register_variable_handlers() override
         {
@@ -2941,7 +2953,7 @@ namespace rf
             auto& handlers = variable_handler_storage[this];
             handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventResizeGasRegion*>(event);
-                this_event->shape = std::stoi(value);
+                this_event->shape = std::stoi(value) + 1; // 0->sphere(1), 1->box(2)
             };
 
             handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
@@ -2953,23 +2965,35 @@ namespace rf
                 auto* this_event = static_cast<EventResizeGasRegion*>(event);
                 this_event->box_dimensions = value;
             };
+
+            handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventResizeGasRegion*>(event);
+                this_event->transition_time = std::max(0.0f, std::stof(value));
+            };
         }
 
         void turn_on() override
         {
             try {
+                auto dims = Vector3::from_string(box_dimensions, Vector3{1.0f, 1.0f, 1.0f});
+
                 for (const auto& linked_uid : this->links) {
                     if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
-                        gas_region->shape = shape;
-
-                        if (shape == 1) { // sphere
-                            gas_region->radius = sphere_radius;
+                        if (transition_time > 0.0f) {
+                            gas_region_add_resize_transition(linked_uid, shape,
+                                sphere_radius, dims.x, dims.y, dims.z, transition_time);
                         }
-                        else if (shape == 2) { // box - parsed as "H W D"
-                            auto dims = Vector3::from_string(box_dimensions, Vector3{1.0f, 1.0f, 1.0f});
-                            gas_region->height = dims.x;
-                            gas_region->width = dims.y;
-                            gas_region->depth = dims.z;
+                        else {
+                            gas_region->shape = shape;
+
+                            if (shape == 1) { // sphere
+                                gas_region->radius = sphere_radius;
+                            }
+                            else if (shape == 2) { // box - parsed as "H W D"
+                                gas_region->height = dims.x;
+                                gas_region->width = dims.y;
+                                gas_region->depth = dims.z;
+                            }
                         }
                     }
                 }

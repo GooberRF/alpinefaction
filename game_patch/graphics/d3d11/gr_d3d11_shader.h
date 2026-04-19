@@ -31,6 +31,7 @@ namespace df::gr::d3d11
     enum class PixelShaderId
     {
         standard,
+        standard_no_gas,
         ui,
         shadow_debug,
         outline,
@@ -88,6 +89,8 @@ namespace df::gr::d3d11
         switch (pixel_shader_id) {
             case PixelShaderId::standard:
                 return "standard_ps.bin";
+            case PixelShaderId::standard_no_gas:
+                return "standard_nogas_ps.bin";
             case PixelShaderId::ui:
                 return "ui_ps.bin";
             case PixelShaderId::shadow_debug:

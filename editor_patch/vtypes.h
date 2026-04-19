@@ -186,6 +186,8 @@ static auto& vmesh_process = addr_as_ref<void(EditorVMesh* vmesh, float time, in
 static auto& vmesh_anim_init = addr_as_ref<void(EditorVMesh* vmesh, int start_frame, float speed)>(0x004C0740);
 static auto& vmesh_get_type = addr_as_ref<EditorVMeshType(EditorVMesh* vmesh)>(0x004BFEB0);
 static auto& vmesh_stop_all_actions = addr_as_ref<void(EditorVMesh* vmesh)>(0x004C07B0);
+static auto& vmesh_find_tag_by_name = addr_as_ref<int(EditorVMesh* vmesh, const char* tag_name)>(0x004C05D0);
+static auto& vmesh_get_tag_local_transform = addr_as_ref<void(EditorVMesh* vmesh, Vector3* out_pos, Matrix3* out_orient, int tag_index)>(0x004C05E0);
 static auto& editor_vmesh_get_materials_array = addr_as_ref<void(EditorVMesh* vmesh, int* num_out, EditorMeshMaterial** materials_out)>(0x004C0A00);
 
 // Bitmap load: loads a texture file, returns handle (or -1 on failure)

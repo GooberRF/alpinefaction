@@ -10,7 +10,7 @@ function(add_shader TARGET_NAME SRC_FILE TARGET_LEVEL)
     file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/shaders")
     add_custom_command(
         OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${SHADER_COMPILER} -O3 -t ${TARGET_LEVEL} ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE} -o ${SHADER_OUTPUT}
+        COMMAND ${SHADER_COMPILER} -O3 -t ${TARGET_LEVEL} ${ARGN} ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE} -o ${SHADER_OUTPUT}
         MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/${SRC_FILE}
     )
     add_custom_target(${TARGET_NAME} ALL DEPENDS ${SHADER_OUTPUT})
@@ -27,6 +27,7 @@ add_shader(outline_character_vs outline_character_vs.hlsl vs_4_0)
 add_shader(outline_standard_vs outline_standard_vs.hlsl vs_4_0)
 
 add_shader(standard_ps standard_ps.hlsl ps_4_0)
+add_shader(standard_nogas_ps standard_ps.hlsl ps_4_0 -DMAX_GAS_REGIONS=0)
 add_shader(ui_ps ui_ps.hlsl ps_4_0)
 add_shader(shadow_debug_ps shadow_debug_ps.hlsl ps_4_0)
 add_shader(outline_ps outline_ps.hlsl ps_4_0)

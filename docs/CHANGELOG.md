@@ -103,6 +103,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Exclude `Precision Rifle` and `Sniper Rifle` from first shot accuracy
 - Add `Gas_Region_State`, `Modify_Gas_Region`, `Resize_Gas_Region` events
 - Add `require_d3d11` to dedicated server config
+- Add `$Stock Alpha Test` to `af_level_quirks.tbl` and use to restore stock alpha test only on known affected levels
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -187,6 +188,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor autosave causing teleportation during edit operations
 - Fix skybox rendering issues with Direct3D 11 renderer on community level `DM-Blunderscannon~~.rfl`
 - Fix clutter death achievement progress and `AF_When_Dead` not working on all clutter death paths
+- Fix level editor crash when manipulating decals in levels with > 127 decals
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

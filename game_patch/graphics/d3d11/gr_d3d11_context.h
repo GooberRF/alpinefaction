@@ -89,7 +89,8 @@ namespace df::gr::d3d11
             int colorblind_mode = g_alpine_game_config.colorblind_mode;
             float dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
             float pixel_light_overbright = g_level_pixel_light_overbright;
-            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright) {
+            float alpha_test_threshold = g_alpha_test_threshold;
+            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
                 current_alpha_test_ = alpha_test;
                 current_fog_allowed_ = fog_allowed;
                 current_color_ = color;
@@ -101,6 +102,7 @@ namespace df::gr::d3d11
                 current_emissive_override_ = emissive_override;
                 current_dynamic_light_ndotl_ = dynamic_light_ndotl;
                 current_pixel_light_overbright_ = pixel_light_overbright;
+                current_alpha_test_threshold_ = alpha_test_threshold;
                 force_update_ = false;
                 update_buffer(device_context);
             }
@@ -134,6 +136,7 @@ namespace df::gr::d3d11
         bool current_emissive_override_ = false;
         float current_dynamic_light_ndotl_ = 0.0f;
         float current_pixel_light_overbright_ = 0.5f;
+        float current_alpha_test_threshold_ = 1.0f / 255.0f;
     };
 
     class PerFrameBuffer
@@ -186,6 +189,11 @@ namespace df::gr::d3d11
         GasRegionBuffer(ID3D11Device* device);
         void update(ID3D11DeviceContext* device_context, const Projection& projection);
 
+        bool has_gas_regions() const
+        {
+            return current_gas_count_ > 0;
+        }
+
         operator ID3D11Buffer*() const
         {
             return buffer_;
@@ -193,6 +201,7 @@ namespace df::gr::d3d11
 
     private:
         ComPtr<ID3D11Buffer> buffer_;
+        int current_gas_count_ = 0;
     };
 
     class RenderContext
@@ -377,6 +386,11 @@ namespace df::gr::d3d11
         {
             per_frame_buffer_.update(device_context_);
             gas_region_buffer_.update(device_context_, projection_);
+        }
+
+        bool has_gas_regions() const
+        {
+            return gas_region_buffer_.has_gas_regions();
         }
 
         void fog_set()

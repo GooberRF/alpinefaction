@@ -1,3 +1,4 @@
+#include <cmath>
 #include <xlog/xlog.h>
 #include <patch_common/AsmOpcodes.h>
 #include <patch_common/AsmWriter.h>
@@ -18,6 +19,7 @@
 #include "../hud/hud_world.h"
 
 static std::vector<GasRegionInfo> g_gas_regions;
+static std::vector<GasRegionTransition> g_gas_region_transitions;
 
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
@@ -250,6 +252,7 @@ FunHook<void(rf::File*)> gas_region_load_hook{
 void gas_region_clear_state()
 {
     g_gas_regions.clear();
+    g_gas_region_transitions.clear();
 }
 
 const std::vector<GasRegionInfo>& gas_region_get_all()
@@ -263,6 +266,107 @@ GasRegionInfo* gas_region_get_by_uid(int uid)
         if (region.uid == uid) return &region;
     }
     return nullptr;
+}
+
+
+void gas_region_add_modify_transition(int32_t region_uid, rf::Color target_color, float target_density, float duration_sec)
+{
+    auto* region = gas_region_get_by_uid(region_uid);
+    if (!region) return;
+
+    // Remove any existing transition for this region that has modify
+    std::erase_if(g_gas_region_transitions, [&](const GasRegionTransition& t) {
+        return t.region_uid == region_uid && t.has_modify;
+    });
+
+    GasRegionTransition transition;
+    transition.region_uid = region_uid;
+    transition.has_modify = true;
+    transition.start_color = region->color;
+    transition.target_color = target_color;
+    transition.start_density = region->density;
+    transition.target_density = target_density;
+    transition.timer.set_sec(duration_sec);
+    g_gas_region_transitions.push_back(std::move(transition));
+}
+
+void gas_region_add_resize_transition(int32_t region_uid, int target_shape, float target_radius,
+                                       float target_height, float target_width, float target_depth, float duration_sec)
+{
+    auto* region = gas_region_get_by_uid(region_uid);
+    if (!region) return;
+
+    // Remove any existing transition for this region that has resize
+    std::erase_if(g_gas_region_transitions, [&](const GasRegionTransition& t) {
+        return t.region_uid == region_uid && t.has_resize;
+    });
+
+    GasRegionTransition transition;
+    transition.region_uid = region_uid;
+    transition.has_resize = true;
+    transition.target_shape = target_shape;
+    transition.start_radius = region->radius;
+    transition.target_radius = target_radius;
+    transition.start_height = region->height;
+    transition.target_height = target_height;
+    transition.start_width = region->width;
+    transition.target_width = target_width;
+    transition.start_depth = region->depth;
+    transition.target_depth = target_depth;
+    transition.timer.set_sec(duration_sec);
+
+    // Set the shape immediately
+    region->shape = target_shape;
+
+    g_gas_region_transitions.push_back(std::move(transition));
+}
+
+void gas_region_transition_do_frame()
+{
+    auto it = g_gas_region_transitions.begin();
+    while (it != g_gas_region_transitions.end()) {
+        auto* region = gas_region_get_by_uid(it->region_uid);
+        if (!region) {
+            it = g_gas_region_transitions.erase(it);
+            continue;
+        }
+
+        float t = it->timer.elapsed_frac();
+        bool finished = it->timer.elapsed();
+
+        if (it->has_modify) {
+            if (finished) {
+                region->color = it->target_color;
+                region->density = it->target_density;
+            }
+            else {
+                region->color = rf::Color::lerp(it->start_color, it->target_color, t);
+                region->density = std::lerp(it->start_density, it->target_density, t);
+            }
+        }
+
+        if (it->has_resize) {
+            if (finished) {
+                region->radius = it->target_radius;
+                region->height = it->target_height;
+                region->width = it->target_width;
+                region->depth = it->target_depth;
+            }
+            else {
+                region->radius = std::lerp(it->start_radius, it->target_radius, t);
+                region->height = std::lerp(it->start_height, it->target_height, t);
+                region->width = std::lerp(it->start_width, it->target_width, t);
+                region->depth = std::lerp(it->start_depth, it->target_depth, t);
+            }
+        }
+
+        if (finished) {
+            it = g_gas_region_transitions.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
 }
 
 void level_apply_patch()

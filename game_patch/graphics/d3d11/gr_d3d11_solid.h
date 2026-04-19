@@ -61,6 +61,7 @@ namespace df::gr::d3d11
         ComPtr<ID3D11DeviceContext> context_;
         VertexShaderAndLayout vertex_shader_;
         ComPtr<ID3D11PixelShader> pixel_shader_;
+        ComPtr<ID3D11PixelShader> pixel_shader_no_gas_;
         DynamicGeometryRenderer& dyn_geo_renderer_;
         RenderContext& render_context_;
         std::vector<std::unique_ptr<RoomRenderCache>> room_cache_;

@@ -1,5 +1,8 @@
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/frametime.h"
@@ -402,6 +405,27 @@ namespace df::gr::d3d11
     {
         const auto& gas_regions = gas_region_get_all();
 
+        // Count enabled regions to allow early-out and shader variant selection
+        int enabled_count = 0;
+        for (const auto& r : gas_regions) {
+            if (r.enabled) ++enabled_count;
+        }
+        current_gas_count_ = enabled_count;
+
+        if (enabled_count == 0) {
+            // Write num_gas_regions=0 so stale gas data never renders if the shader
+            // variant selection and buffer update are momentarily out of sync.
+            // WRITE_DISCARD invalidates the entire buffer, but the shader checks
+            // num_gas_regions before accessing any region data.
+            D3D11_MAPPED_SUBRESOURCE mapped_subres;
+            DF_GR_D3D11_CHECK_HR(
+                device_context->Map(buffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
+            );
+            std::memset(mapped_subres.pData, 0, sizeof(int) * 4); // zero first float4 (includes num_gas_regions)
+            device_context->Unmap(buffer_, 0);
+            return;
+        }
+
         GasRegionBufferData data{};
         data.eye_pos = {rf::gr::eye_pos.x, rf::gr::eye_pos.y, rf::gr::eye_pos.z};
 
@@ -435,16 +459,58 @@ namespace df::gr::d3d11
             }
 
             // Store orient transpose (inverse for orthonormal) for world-to-local transform
-            // Matrix3 memory layout: rvec (row0), uvec (row1), fvec (row2)
-            // Transpose: column i of original = row i of transpose
+            // Matrix3 columns: rvec (local X), uvec (local Y), fvec (local Z) in world space
+            // Transpose rows = original columns
             const auto& o = src.orient;
-            dst.orient_r0 = {o.rvec.x, o.uvec.x, o.fvec.x};
-            dst.orient_r1 = {o.rvec.y, o.uvec.y, o.fvec.y};
-            dst.orient_r2 = {o.rvec.z, o.uvec.z, o.fvec.z};
+            dst.orient_r0 = {o.rvec.x, o.rvec.y, o.rvec.z};
+            dst.orient_r1 = {o.uvec.x, o.uvec.y, o.uvec.z};
+            dst.orient_r2 = {o.fvec.x, o.fvec.y, o.fvec.z};
 
             gpu_index++;
         }
         data.num_gas_regions = gpu_index;
+
+        // Sort regions front-to-back by signed distance from camera to nearest
+        // surface so the pixel shader's sequential compositing layers correctly.
+        // Signed distance: positive = camera outside (distance to surface),
+        // negative = camera inside (penetration depth). This gives a natural
+        // tiebreak when inside multiple overlapping regions: deeper inside sorts first.
+        auto signed_surface_dist = [&](const GasRegionGPUData& r) -> float {
+            if (r.shape < 0.5f) {
+                // Sphere: dist_to_center - radius (negative when inside)
+                float dist_sq = 0.0f;
+                for (int k = 0; k < 3; k++) {
+                    float v = r.center[k] - data.eye_pos[k];
+                    dist_sq += v * v;
+                }
+                return std::sqrt(dist_sq) - r.extents[0];
+            } else {
+                // OBB: project camera into local space. If outside, return distance
+                // to nearest surface. If inside, return negative penetration depth.
+                float delta[3];
+                for (int k = 0; k < 3; k++)
+                    delta[k] = data.eye_pos[k] - r.center[k];
+                const float* rows[3] = {r.orient_r0.data(), r.orient_r1.data(), r.orient_r2.data()};
+                float outside_dist_sq = 0.0f;
+                float min_penetration = std::numeric_limits<float>::max();
+                bool is_inside = true;
+                for (int axis = 0; axis < 3; axis++) {
+                    float proj = delta[0] * rows[axis][0] + delta[1] * rows[axis][1] + delta[2] * rows[axis][2];
+                    float excess = std::abs(proj) - r.extents[axis];
+                    if (excess > 0.0f) {
+                        is_inside = false;
+                        outside_dist_sq += excess * excess;
+                    } else {
+                        min_penetration = std::min(min_penetration, -excess);
+                    }
+                }
+                return is_inside ? -min_penetration : std::sqrt(outside_dist_sq);
+            }
+        };
+        std::sort(data.regions, data.regions + gpu_index,
+            [&](const GasRegionGPUData& a, const GasRegionGPUData& b) {
+                return signed_surface_dist(a) < signed_surface_dist(b);
+            });
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(
@@ -463,7 +529,7 @@ namespace df::gr::d3d11
             current_color_.blue / 255.0f,
             current_color_.alpha / 255.0f,
         };
-        data.alpha_test = current_alpha_test_ ? (1.0f / 255.0f) : 0.0f;
+        data.alpha_test = current_alpha_test_ ? current_alpha_test_threshold_ : 0.0f;
         if (!current_fog_allowed_ || !gr::screen.fog_mode) {
             data.fog_far = std::numeric_limits<float>::infinity();
             data.fog_color = {0.0f, 0.0f, 0.0f};
