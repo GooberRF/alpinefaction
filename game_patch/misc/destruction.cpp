@@ -91,6 +91,17 @@ static rf::GDecalCreateInfo g_rf2_deferred_decal_info;
 // to distinguish pre-existing disconnected components (e.g. interior faces of a hollow box)
 // from components created by the crater split. Only components with at least one NEW face
 // (not in this set) are eligible for extraction as debris.
+//
+// Tracked by raw GFace* (not face_id) intentionally: when the boolean splits a pre-existing
+// face, the split sub-faces typically inherit the parent's face_id but are new GFace objects
+// with new addresses. Pointer tracking correctly treats them as new (so crater-created
+// disconnected pieces can fall). A face_id-based approach would treat the sub-faces as
+// pre-existing and prevent valid debris from falling.
+//
+// Pool allocator can theoretically reuse a deleted face's address for a new face within the
+// same boolean pass, causing the new face to be mis-identified as pre-existing. This would
+// force a component to stay anchored instead of falling — a safe-direction error (geometry
+// stays attached) that is rare in practice and not worth the complexity to guard against.
 static std::unordered_set<rf::GFace*> g_rf2_pre_boolean_faces;
 
 // Per-room targeting: when RF2-style is active, the boolean engine only processes

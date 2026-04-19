@@ -510,13 +510,18 @@ static void isolate_marked_rooms(GSolid* solid)
 // Merge all rooms belonging to the same geoable brush into a single room.
 // A concave geoable brush (e.g. a hollow box) produces disconnected face groups
 // in the flood-fill: exterior faces form one room, interior faces another.
-// All faces from one brush must be in one room so geomod treats the brush as
-// a single solid. The even-odd ray-casting containment test handles concave
-// topology correctly (hollow boxes, L-shapes, etc.).
+// Rooms are grouped by brush UID via face_id lookup in g_isolated_face_map,
+// then faces from secondary rooms are moved into the primary via add_face.
+//
+// This merge is necessary because compute_geoable_room_uids uses
+// find_room_by_face_ids (first-match) — without merging, only the first room
+// of a multi-room brush would be flagged geoable in-game.
 //
 // Emptied secondary rooms are kept as detail in all_rooms (preserving indices
 // for serialization). A code injection at 0x485f1a skips empty detail rooms
-// in loop 2 to prevent the null face_list crash at 0x485f44.
+// in loop 2 to prevent the null face_list crash at 0x485f44. We don't set
+// is_detail = false on emptied rooms because that makes their faces behave as
+// world geometry and get carved by the boolean engine during adjacent geomods.
 static void merge_geoable_interior_rooms(GSolid* solid)
 {
     auto* level = CDedLevel::Get();
