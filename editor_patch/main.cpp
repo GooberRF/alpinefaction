@@ -899,11 +899,7 @@ static bool __cdecl line_aabb_intersect(
 FunHook<bool __cdecl(const Vector3*, const Vector3*, const Vector3*, const Vector3*, Vector3*)>
     line_aabb_intersect_hook{0x004c9af0, line_aabb_intersect};
 
-// Fix crash when moving/rotating/undoing decal objects (DED_DECAL, type 0x12).
-// FUN_0042a460 case 0x12 calls FUN_0044e9a0 which dereferences the sub-object pointer at +0xA4
-// without a null check. The sub-object is created by FUN_00494390, which returns NULL if the
-// decal count exceeds 127 or allocation fails. Moving/rotating/undoing such a decal crashes
-// in FUN_00494400 when it dereferences NULL+0x34 etc.
+// Fix crashes when moving/rotating/undoing/applying properties to decal objects
 static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void* param);
 FunHook<decltype(object_rotation_update_new)> object_rotation_update_hook{
     0x0044e9a0, object_rotation_update_new};
@@ -915,6 +911,45 @@ static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void*
         return;
     }
     object_rotation_update_hook.call_target(self, 0, param);
+}
+
+static void __fastcall decal_orient_update_new(void* self, int /*edx*/, int p1, int p2, int p3);
+FunHook<decltype(decal_orient_update_new)> decal_orient_update_hook{
+    0x0044e9f0, decal_orient_update_new};
+static void __fastcall decal_orient_update_new(void* self, int /*edx*/, int p1, int p2, int p3)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal orient update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_orient_update_hook.call_target(self, 0, p1, p2, p3);
+}
+
+static void __fastcall decal_angles_update_new(void* self, int /*edx*/, int p1);
+FunHook<decltype(decal_angles_update_new)> decal_angles_update_hook{
+    0x0044ea40, decal_angles_update_new};
+static void __fastcall decal_angles_update_new(void* self, int /*edx*/, int p1)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal angles update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_angles_update_hook.call_target(self, 0, p1);
+}
+
+static void __fastcall decal_geometry_update_new(void* self, int /*edx*/, int p1);
+FunHook<decltype(decal_geometry_update_new)> decal_geometry_update_hook{
+    0x0044ea90, decal_geometry_update_new};
+static void __fastcall decal_geometry_update_new(void* self, int /*edx*/, int p1)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal geometry update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_geometry_update_hook.call_target(self, 0, p1);
 }
 
 static bool is_edit_key_held()
@@ -1802,8 +1837,11 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Fix clip tool sometimes doing nothing on diagonal clip lines
     line_aabb_intersect_hook.install();
 
-    // Fix crash when rotating objects with null sub-object pointer at +0xA4
+    // Fix crash when accessing decal objects with null sub-object pointer at +0xA4
     object_rotation_update_hook.install();
+    decal_orient_update_hook.install();
+    decal_angles_update_hook.install();
+    decal_geometry_update_hook.install();
 
     // Defer autosave while an edit operation is in progress to prevent teleporting
     autosave_defer_during_edit_injection.install();

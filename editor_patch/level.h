@@ -157,6 +157,7 @@ static_assert(offsetof(GRoom, bbox_min) == 0x08);
 static_assert(offsetof(GRoom, bbox_max) == 0x14);
 static_assert(offsetof(GRoom, room_index) == 0x20);
 static_assert(offsetof(GRoom, uid) == 0x24);
+static_assert(offsetof(GRoom, _face_list) == 0x28);
 static_assert(offsetof(GRoom, is_cold) == 0x41);
 static_assert(offsetof(GRoom, ambient_light_defined) == 0x45);
 static_assert(offsetof(GRoom, ambient_light) == 0x46);

@@ -1,3 +1,4 @@
+#include <cmath>
 #include <xlog/xlog.h>
 #include <patch_common/AsmOpcodes.h>
 #include <patch_common/AsmWriter.h>
@@ -267,10 +268,6 @@ GasRegionInfo* gas_region_get_by_uid(int uid)
     return nullptr;
 }
 
-static float lerp(float a, float b, float t)
-{
-    return a + (b - a) * t;
-}
 
 void gas_region_add_modify_transition(int32_t region_uid, rf::Color target_color, float target_density, float duration_sec)
 {
@@ -344,7 +341,7 @@ void gas_region_transition_do_frame()
             }
             else {
                 region->color = rf::Color::lerp(it->start_color, it->target_color, t);
-                region->density = lerp(it->start_density, it->target_density, t);
+                region->density = std::lerp(it->start_density, it->target_density, t);
             }
         }
 
@@ -356,10 +353,10 @@ void gas_region_transition_do_frame()
                 region->depth = it->target_depth;
             }
             else {
-                region->radius = lerp(it->start_radius, it->target_radius, t);
-                region->height = lerp(it->start_height, it->target_height, t);
-                region->width = lerp(it->start_width, it->target_width, t);
-                region->depth = lerp(it->start_depth, it->target_depth, t);
+                region->radius = std::lerp(it->start_radius, it->target_radius, t);
+                region->height = std::lerp(it->start_height, it->target_height, t);
+                region->width = std::lerp(it->start_width, it->target_width, t);
+                region->depth = std::lerp(it->start_depth, it->target_depth, t);
             }
         }
 
