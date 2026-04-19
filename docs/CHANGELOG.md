@@ -152,7 +152,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
-- Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
+- Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, `Corona` objects, and geomod crater textures
 - Fix rare level editor crash when transforming decal objects in a level with a large number of decals
 - Fix level editor clip tool silently failing on certain brush orientations
 - Fix P2T Fix not working properly on Direct3D 11 renderer
