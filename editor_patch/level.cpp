@@ -132,6 +132,16 @@ CodeInjection CDedLevel_LoadLevel_patch2{
     },
 };
 
+// Get the head of the room's face list (VList<GFace, FACE_LIST_ROOM>).
+// GRoom models the face_list as `char _face_list[8]` (head ptr + count); we read
+// the head pointer via offsetof so the layout is compile-time verified.
+// Faces are linked via GFace::next_room (+0x5C).
+static inline GFace* get_room_face_head(GRoom* room)
+{
+    return *reinterpret_cast<GFace**>(
+        reinterpret_cast<char*>(room) + offsetof(GRoom, _face_list));
+}
+
 // At save time, match geoable brush UIDs to compiled room UIDs via position.
 // For each geoable brush, find the detail room whose bbox contains the brush position.
 // Find the compiled room that contains a brush's faces by matching face_ids.
@@ -202,6 +212,9 @@ static GRoom* find_room_by_position(const CDedLevel& level, int32_t brush_uid)
     for (int j = 0; j < all_rooms.get_size(); j++) {
         GRoom* room = all_rooms.data_ptr[j];
         if (!room || !room->is_detail) continue;
+        // Skip empty rooms (e.g. secondary rooms emptied by merge_geoable_interior_rooms).
+        // Their bbox is stale and would cause false-positive position matches.
+        if (!get_room_face_head(room)) continue;
         if (brush_pos.x >= room->bbox_min.x - tolerance && brush_pos.x <= room->bbox_max.x + tolerance &&
             brush_pos.y >= room->bbox_min.y - tolerance && brush_pos.y <= room->bbox_max.y + tolerance &&
             brush_pos.z >= room->bbox_min.z - tolerance && brush_pos.z <= room->bbox_max.z + tolerance) {
@@ -400,14 +413,6 @@ static void populate_isolated_face_map()
 // association loop (loop 2).  This ensures:
 //   - new rooms are properly associated with parent non-detail rooms (loop 2)
 //   - spatial data is rebuilt for all rooms including new ones (final loop)
-// Get the head of the room's face list (VList<GFace, FACE_LIST_ROOM> at +0x28).
-// GRoom doesn't expose face_list directly in the editor-side struct, so we read
-// the head pointer via raw offset. Faces are linked via GFace::next_room (+0x5C).
-static inline GFace* get_room_face_head(GRoom* room)
-{
-    return *reinterpret_cast<GFace**>(reinterpret_cast<char*>(room) + 0x28);
-}
-
 // Recompute a room's bbox_min/bbox_max from its current face list.
 // GRoom::add_face only expands the bbox and removing faces does not shrink it,
 // so after splitting faces out we must recompute from scratch.
