@@ -603,6 +603,13 @@ static void merge_geoable_interior_rooms(GSolid* solid)
             // is_detail = false — that makes its faces behave as world geometry,
             // causing the boolean engine to carve them during adjacent geomods.
             // The skip_empty_detail_rooms injection prevents the loop 2 crash.
+            //
+            // Zero out the bbox so future bbox-based spatial queries don't treat
+            // this now-empty room as having its old spatial footprint (the stock
+            // bbox would still reflect the moved-out faces' positions).
+            r->bbox_min = {0.0f, 0.0f, 0.0f};
+            r->bbox_max = {0.0f, 0.0f, 0.0f};
+
             merges++;
         }
 
