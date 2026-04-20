@@ -105,6 +105,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `require_d3d11` to dedicated server config
 - Add `$Stock Alpha Test` to `af_level_quirks.tbl` and use to restore stock alpha test only on known affected levels
 - Support 8-bit greyscale TGA textures (types 3 and 11) in editor and game
+- Add experimental D3D11 performance settings `D3D11_LowFrameLatency`, `D3D11_AllowTearing`, and `D3D11_SkipGammaPass`
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

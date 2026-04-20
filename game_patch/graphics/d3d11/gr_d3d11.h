@@ -89,6 +89,7 @@ namespace df::gr::d3d11
         void clear_mesh_lights();
         void set_pow2_tex_active(bool active);
         float z_far() const;
+        bool supports_exclusive_fullscreen() const;
 
     private:
         void init_device();
@@ -121,6 +122,11 @@ namespace df::gr::d3d11
         std::unique_ptr<OutlineRenderer> outline_renderer_;
         std::unique_ptr<GammaPass> gamma_pass_;
         int render_target_bm_handle_ = -1;
+        bool skip_gamma_pass_ = false;
+        bool low_frame_latency_ = false;
+        HANDLE frame_latency_wait_handle_ = nullptr;
+        UINT swap_chain_flags_ = 0;
+        bool allow_tearing_ = false;
     };
 
     void init_error(ID3D11Device* device);

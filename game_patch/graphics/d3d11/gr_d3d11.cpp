@@ -1,5 +1,6 @@
 #include <cassert>
 #include <dxgi1_4.h>
+#include <dxgi1_5.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
@@ -25,7 +26,6 @@ using namespace rf;
 namespace df::gr::d3d11
 {
     constexpr DXGI_FORMAT swap_chain_format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    constexpr UINT swap_chain_flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
     Renderer::Renderer(HWND hwnd) : hwnd_{hwnd}, d3d11_lib_{L"d3d11.dll"}
     {
@@ -33,6 +33,12 @@ namespace df::gr::d3d11
             RF_DEBUG_ERROR("Failed to load d3d11.dll");
         }
         init_device();
+        // Snapshot settings that must stay consistent across the swap chain / back buffer
+        // setup and the flip() path. Changes require a restart to take effect, so the
+        // user doesn't end up with a half-applied state mid-session.
+        low_frame_latency_ = g_alpine_system_config.low_frame_latency;
+        skip_gamma_pass_ = g_alpine_system_config.skip_gamma_pass;
+        allow_tearing_ = g_alpine_system_config.allow_tearing;
         init_swap_chain(hwnd);
         init_back_buffer();
         init_depth_stencil_buffer();
@@ -76,6 +82,10 @@ namespace df::gr::d3d11
         if (gr::screen.window_mode == gr::FULLSCREEN) {
             swap_chain_->SetFullscreenState(FALSE, nullptr);
         }
+        if (frame_latency_wait_handle_) {
+            CloseHandle(frame_latency_wait_handle_);
+            frame_latency_wait_handle_ = nullptr;
+        }
     }
 
     void Renderer::window_active()
@@ -110,7 +120,7 @@ namespace df::gr::d3d11
         default_render_target_.release();
         default_render_target_view_.release();
         DF_GR_D3D11_CHECK_HR(
-            swap_chain_->ResizeBuffers(0, gr::screen.max_w, gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags)
+            swap_chain_->ResizeBuffers(0, gr::screen.max_w, gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags_)
         );
         // get back buffer from the swap chain after it has been resized
         init_back_buffer();
@@ -186,6 +196,52 @@ namespace df::gr::d3d11
         dxgi_factory->QueryInterface(&dxgi_factory3);
         dxgi_factory->QueryInterface(&dxgi_factory4);
 
+        swap_chain_flags_ = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        // Both features require IDXGIFactory2 (flip-model swap chains). Without it
+        // we're on the legacy CreateSwapChain path; clear the snapshots so flip()
+        // doesn't later pass DXGI_PRESENT_ALLOW_TEARING to a non-tearing swap chain.
+        if (!dxgi_factory2) {
+            if (low_frame_latency_ || allow_tearing_) {
+                xlog::warn("LowFrameLatency and AllowTearing require IDXGIFactory2; disabled");
+            }
+            low_frame_latency_ = false;
+            allow_tearing_ = false;
+        }
+        if (low_frame_latency_) {
+            if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
+                low_frame_latency_ = false;
+                xlog::warn("LowFrameLatency requires windowed or stretched window mode; disabled in fullscreen");
+            }
+            else {
+                swap_chain_flags_ |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+            }
+        }
+        if (allow_tearing_) {
+            if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
+                allow_tearing_ = false;
+                xlog::warn("AllowTearing requires windowed or stretched window mode; disabled in fullscreen");
+            }
+            else {
+                ComPtr<IDXGIFactory5> dxgi_factory5;
+                if (SUCCEEDED(dxgi_factory->QueryInterface(&dxgi_factory5))) {
+                    BOOL tearing_supported = FALSE;
+                    if (SUCCEEDED(dxgi_factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                            &tearing_supported, sizeof(tearing_supported))) && tearing_supported) {
+                        swap_chain_flags_ |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+                        xlog::info("D3D11 ALLOW_TEARING enabled");
+                    }
+                    else {
+                        allow_tearing_ = false;
+                        xlog::warn("ALLOW_TEARING requested but the system does not support it; disabled");
+                    }
+                }
+                else {
+                    allow_tearing_ = false;
+                    xlog::warn("ALLOW_TEARING requires IDXGIFactory5; disabled");
+                }
+            }
+        }
+
         if (dxgi_factory2) {
             DXGI_SWAP_CHAIN_DESC1 sc_desc1;
             ZeroMemory(&sc_desc1, sizeof(sc_desc1));
@@ -207,7 +263,7 @@ namespace df::gr::d3d11
                 sc_desc1.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
             }
             xlog::info("D3D11 swap effect: {}", static_cast<int>(sc_desc1.SwapEffect));
-            sc_desc1.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+            sc_desc1.Flags = swap_chain_flags_;
 
             DXGI_SWAP_CHAIN_FULLSCREEN_DESC sc_fs_desc;
             ZeroMemory(&sc_fs_desc, sizeof(sc_fs_desc));
@@ -218,6 +274,21 @@ namespace df::gr::d3d11
                 dxgi_factory2->CreateSwapChainForHwnd(device_, hwnd, &sc_desc1, &sc_fs_desc, nullptr, &swap_chain1)
             );
             DF_GR_D3D11_CHECK_HR(swap_chain1->QueryInterface(&swap_chain_));
+
+            // Configure the low-latency waitable-object pattern. This is the flip-model-correct
+            // way to cap queued frames; the device-level SetMaximumFrameLatency API has known
+            // pacing problems on flip-model swap chains with some drivers.
+            if (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
+                ComPtr<IDXGISwapChain2> swap_chain2;
+                if (SUCCEEDED(swap_chain_->QueryInterface(&swap_chain2))) {
+                    swap_chain2->SetMaximumFrameLatency(1);
+                    frame_latency_wait_handle_ = swap_chain2->GetFrameLatencyWaitableObject();
+                    xlog::info("D3D11 low-latency waitable object acquired");
+                }
+                else {
+                    xlog::warn("IDXGISwapChain2 not available; low frame latency disabled this session");
+                }
+            }
         }
         else {
             DXGI_SWAP_CHAIN_DESC sd;
@@ -233,7 +304,7 @@ namespace df::gr::d3d11
             sd.SampleDesc.Count = 1;
             sd.SampleDesc.Quality = 0;
             sd.Windowed = rf::gr::screen.window_mode == rf::gr::WINDOWED;
-            sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+            sd.Flags = swap_chain_flags_;
 
             DF_GR_D3D11_CHECK_HR(
                 dxgi_factory->CreateSwapChain(device_, &sd, &swap_chain_)
@@ -256,12 +327,16 @@ namespace df::gr::d3d11
             swap_chain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<LPVOID*>(&back_buffer_))
         );
 
-        // Always create back buffer RTV (used as gamma pass output)
+        // Always create back buffer RTV (used as gamma pass output, or as the main
+        // render target when the gamma pass is skipped)
         DF_GR_D3D11_CHECK_HR(
             device_->CreateRenderTargetView(back_buffer_, nullptr, &back_buffer_rtv_)
         );
 
-        // Create intermediate scene texture for gamma post-processing
+        // Scene texture is always created: it is the gamma-pass source when the
+        // pass is active, and the readback source (for screenshots, etc.) in
+        // either mode. FLIP_DISCARD makes back_buffer_ contents undefined after
+        // Present, so callers of read_back_buffer must hit a stable texture.
         init_scene_texture();
 
         // Create a render-target view for the main rendering pass
@@ -280,8 +355,9 @@ namespace df::gr::d3d11
             );
         }
         else {
-            // Without MSAA, render directly to the scene texture (gamma pass
-            // will copy it to the back buffer with gamma correction applied)
+            // Without MSAA, render directly to the scene texture. Final output to
+            // back_buffer_ happens in flip() — either via the gamma pass, or via
+            // a CopyResource when the gamma pass is skipped.
             default_render_target_ = scene_texture_;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateRenderTargetView(default_render_target_, nullptr, &default_render_target_view_)
@@ -395,23 +471,50 @@ namespace df::gr::d3d11
 
     void Renderer::flip()
     {
+        // Pace the CPU against the GPU's presentation queue before we do any
+        // end-of-frame work. This is the canonical placement for the frame-latency
+        // waitable object (MSFT samples wait at frame-start); it gates Present()
+        // on the swap chain being ready to accept the next frame. The handle is
+        // auto-reset and starts signaled, so the first wait returns immediately.
+        if (frame_latency_wait_handle_) {
+            DWORD wait_result = WaitForSingleObject(frame_latency_wait_handle_, 1000);
+            if (wait_result == WAIT_TIMEOUT) {
+                xlog::warn("Frame-latency wait timed out after 1000 ms; GPU may be stalled");
+            }
+        }
         outline_renderer_->flush_forced_xray(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         entity_shadow_renderer_->render_debug_overlay(context_);
         entity_shadow_renderer_->unbind_shadow_resources(context_);
         if (msaa_render_target_) {
-            // Resolve MSAA to scene texture (gamma pass will copy to back buffer)
+            // Resolve MSAA into scene_texture_ unconditionally. The final copy to
+            // back_buffer_ happens below — either via the gamma pass, or via a
+            // CopyResource when the gamma pass is skipped.
             context_->ResolveSubresource(scene_texture_, 0, msaa_render_target_, 0, swap_chain_format);
         }
-        // Always run the gamma pass — pow(color, 1/1.0) is identity and the shader
-        // cost is negligible, avoiding a CopyResource fallback and float comparison
-        gamma_pass_->render(context_, scene_texture_srv_, back_buffer_rtv_, rf::gr::gamma);
-        // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
-        render_context_->invalidate_cached_state();
+        if (skip_gamma_pass_) {
+            // Straight copy into the back buffer; cheaper than the gamma pixel shader
+            // and avoids the state invalidate, while keeping scene_texture_ stable
+            // for read_back_buffer.
+            context_->CopyResource(back_buffer_, scene_texture_);
+        }
+        else {
+            // pow(color, 1/1.0) is identity and the shader cost is negligible,
+            // avoiding a CopyResource fallback and float comparison
+            gamma_pass_->render(context_, scene_texture_srv_, back_buffer_rtv_, rf::gr::gamma);
+            // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
+            render_context_->invalidate_cached_state();
+        }
         xlog::trace("Presenting frame {}", rf::frame_count);
         UINT sync_interval = g_alpine_system_config.vsync ? 1 : 0;
+        // DXGI_PRESENT_ALLOW_TEARING can only be combined with sync_interval 0, and only
+        // works when the swap chain was created with DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.
+        UINT present_flags = 0;
+        if (allow_tearing_ && sync_interval == 0) {
+            present_flags |= DXGI_PRESENT_ALLOW_TEARING;
+        }
         DF_GR_D3D11_CHECK_HR(
-            swap_chain_->Present(sync_interval, 0)
+            swap_chain_->Present(sync_interval, present_flags)
         );
         // Flip swap effect clears render target after Present call
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
@@ -742,6 +845,16 @@ namespace df::gr::d3d11
     float Renderer::z_far() const
     {
         return render_context_->projection().z_far();
+    }
+
+    bool Renderer::supports_exclusive_fullscreen() const
+    {
+        // ALLOW_TEARING and FRAME_LATENCY_WAITABLE_OBJECT are both incompatible with
+        // exclusive fullscreen swap chains. If either flag is set, SetFullscreenState(TRUE)
+        // may fail. Callers should check this before initiating a fullscreen transition.
+        constexpr UINT incompatible = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING |
+                                      DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        return (swap_chain_flags_ & incompatible) == 0;
     }
 
     void Renderer::set_pow2_tex_active(bool active)
