@@ -283,7 +283,7 @@ namespace df::gr::d3d11
                 if (SUCCEEDED(swap_chain_->QueryInterface(&swap_chain2))) {
                     HRESULT max_latency_hr = swap_chain2->SetMaximumFrameLatency(1);
                     if (FAILED(max_latency_hr)) {
-                        xlog::warn("SetMaximumFrameLatency failed (hr=0x{:x}); low frame latency disabled", static_cast<unsigned>(max_latency_hr));
+                        xlog::warn("SetMaximumFrameLatency failed (hr=0x{:x}); low frame latency inactive", static_cast<unsigned>(max_latency_hr));
                     }
                     else {
                         frame_latency_wait_handle_ = swap_chain2->GetFrameLatencyWaitableObject();
@@ -291,12 +291,20 @@ namespace df::gr::d3d11
                             xlog::info("D3D11 low-latency waitable object acquired");
                         }
                         else {
-                            xlog::warn("GetFrameLatencyWaitableObject returned null; low frame latency disabled");
+                            xlog::warn("GetFrameLatencyWaitableObject returned null; low frame latency inactive");
                         }
                     }
                 }
                 else {
-                    xlog::warn("IDXGISwapChain2 not available; low frame latency disabled this session");
+                    xlog::warn("IDXGISwapChain2 not available; low frame latency inactive");
+                }
+                // The FRAME_LATENCY_WAITABLE_OBJECT flag is baked into the swap chain at
+                // creation; we can't strip it after the fact. If we didn't end up with a
+                // usable wait handle, fullscreen stays blocked until the user disables
+                // D3D11_LowFrameLatency and restarts.
+                if (!frame_latency_wait_handle_) {
+                    xlog::warn("Exclusive fullscreen will remain unavailable this session; "
+                               "set D3D11_LowFrameLatency=0 in alpine_system.ini and restart to restore");
                 }
             }
         }
