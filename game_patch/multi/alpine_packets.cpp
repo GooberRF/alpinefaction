@@ -9,6 +9,7 @@
 #include <common/rfproto.h>
 #include <xlog/xlog.h>
 #include "../rf/multi.h"
+#include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "multi.h"
@@ -2258,6 +2259,36 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     static uint8_t next_response_id = 0;
     uint8_t response_id = next_response_id++;
 
+    uint32_t time_left_seconds = 0;
+    if (rf::multi_time_limit > 0.0f) {
+        float remaining = rf::multi_time_limit - rf::level.time;
+        if (remaining > 0.0f) {
+            time_left_seconds = static_cast<uint32_t>(remaining);
+        }
+    }
+
+    uint16_t red_score = 0;
+    uint16_t blue_score = 0;
+    if (multi_is_team_game_type()) {
+        switch (rf::netgame.type) {
+            case rf::NetGameType::NG_TYPE_CTF:
+                red_score = static_cast<uint16_t>(rf::multi_ctf_get_red_team_score());
+                blue_score = static_cast<uint16_t>(rf::multi_ctf_get_blue_team_score());
+                break;
+            case rf::NetGameType::NG_TYPE_TEAMDM:
+                red_score = static_cast<uint16_t>(rf::multi_tdm_get_red_team_score());
+                blue_score = static_cast<uint16_t>(rf::multi_tdm_get_blue_team_score());
+                break;
+            case rf::NetGameType::NG_TYPE_KOTH:
+            case rf::NetGameType::NG_TYPE_DC:
+                red_score = static_cast<uint16_t>(multi_koth_get_red_team_score());
+                blue_score = static_cast<uint16_t>(multi_koth_get_blue_team_score());
+                break;
+            default:
+                break;
+        }
+    }
+
     // Serialize all player entries into a flat buffer.
     // Per player: flags (1) + score (2) + name (len+1)
     // Name cannot realistically be longer than 20 characters,
@@ -2347,6 +2378,9 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         hdr.response_id = response_id;
         hdr.sequence = static_cast<uint8_t>(seg);
         hdr.total_segments = static_cast<uint8_t>(total_segments);
+        hdr.red_score = red_score;
+        hdr.blue_score = blue_score;
+        hdr.time_left_seconds = time_left_seconds;
 
         std::memcpy(packet_buf, &hdr, header_size);
         if (payload_len > 0) {

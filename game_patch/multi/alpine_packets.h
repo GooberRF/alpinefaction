@@ -153,6 +153,9 @@ struct af_player_info_packet
     uint8_t response_id;
     uint8_t sequence;
     uint8_t total_segments;
+    uint16_t red_score;     // 0 in non-team game types
+    uint16_t blue_score;    // 0 in non-team game types
+    uint32_t time_left_seconds; // 0 if no time limit or time expired
     // player entries follow
 };
 
