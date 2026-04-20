@@ -528,8 +528,10 @@ namespace df::gr::d3d11
             context_->CopyResource(back_buffer_, scene_texture_);
         }
         else {
-            // pow(color, 1/1.0) is identity and the shader cost is negligible,
-            // avoiding a CopyResource fallback and float comparison
+            // Gamma-corrects scene_texture_ into the back buffer. Runs unconditionally
+            // even at gamma == 1.0 (where the shader degenerates to a copy) because
+            // the per-frame cost is negligible and skipping the float comparison keeps
+            // the hot path branchless.
             gamma_pass_->render(context_, scene_texture_srv_, back_buffer_rtv_, rf::gr::gamma);
             // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
             render_context_->invalidate_cached_state();
