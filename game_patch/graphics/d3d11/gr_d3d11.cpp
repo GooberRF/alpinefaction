@@ -521,7 +521,10 @@ namespace df::gr::d3d11
         if (skip_gamma_pass_) {
             // Straight copy into the back buffer; cheaper than the gamma pixel shader
             // and avoids the state invalidate, while keeping scene_texture_ stable
-            // for read_back_buffer.
+            // for read_back_buffer. CopyResource forbids src/dst being bound as RTV,
+            // and in the no-MSAA path scene_texture_ is bound via default_render_target_view_,
+            // so unbind before the copy. set_render_target at end of flip() rebinds.
+            context_->OMSetRenderTargets(0, nullptr, nullptr);
             context_->CopyResource(back_buffer_, scene_texture_);
         }
         else {
