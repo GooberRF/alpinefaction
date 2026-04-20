@@ -281,9 +281,19 @@ namespace df::gr::d3d11
             if (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
                 ComPtr<IDXGISwapChain2> swap_chain2;
                 if (SUCCEEDED(swap_chain_->QueryInterface(&swap_chain2))) {
-                    swap_chain2->SetMaximumFrameLatency(1);
-                    frame_latency_wait_handle_ = swap_chain2->GetFrameLatencyWaitableObject();
-                    xlog::info("D3D11 low-latency waitable object acquired");
+                    HRESULT max_latency_hr = swap_chain2->SetMaximumFrameLatency(1);
+                    if (FAILED(max_latency_hr)) {
+                        xlog::warn("SetMaximumFrameLatency failed (hr=0x{:x}); low frame latency disabled", static_cast<unsigned>(max_latency_hr));
+                    }
+                    else {
+                        frame_latency_wait_handle_ = swap_chain2->GetFrameLatencyWaitableObject();
+                        if (frame_latency_wait_handle_) {
+                            xlog::info("D3D11 low-latency waitable object acquired");
+                        }
+                        else {
+                            xlog::warn("GetFrameLatencyWaitableObject returned null; low frame latency disabled");
+                        }
+                    }
                 }
                 else {
                     xlog::warn("IDXGISwapChain2 not available; low frame latency disabled this session");
@@ -476,12 +486,18 @@ namespace df::gr::d3d11
         if (frame_latency_wait_handle_) {
             DWORD wait_result = WaitForSingleObject(frame_latency_wait_handle_, 1000);
             if (wait_result == WAIT_TIMEOUT) {
-                xlog::warn("Frame-latency wait timed out after 1000 ms; GPU may be stalled");
+                if (!frame_latency_stall_logged_) {
+                    xlog::warn("Frame-latency wait timed out after 1000 ms; GPU may be stalled");
+                    frame_latency_stall_logged_ = true;
+                }
             }
             else if (wait_result == WAIT_FAILED) {
                 xlog::warn("Frame-latency wait failed (GetLastError={}); disabling", GetLastError());
                 CloseHandle(frame_latency_wait_handle_);
                 frame_latency_wait_handle_ = nullptr;
+            }
+            else {
+                frame_latency_stall_logged_ = false;
             }
         }
         outline_renderer_->flush_forced_xray(*mesh_renderer_);

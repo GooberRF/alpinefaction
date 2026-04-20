@@ -124,9 +124,10 @@ namespace df::gr::d3d11
         int render_target_bm_handle_ = -1;
         bool skip_gamma_pass_ = false;
         bool low_frame_latency_ = false;
+        bool allow_tearing_ = false;
+        bool frame_latency_stall_logged_ = false;
         HANDLE frame_latency_wait_handle_ = nullptr;
         UINT swap_chain_flags_ = 0;
-        bool allow_tearing_ = false;
     };
 
     void init_error(ID3D11Device* device);
