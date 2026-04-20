@@ -155,7 +155,7 @@ struct af_player_info_packet
     uint8_t total_segments;
     uint16_t red_score;     // 0 in non-team game types
     uint16_t blue_score;    // 0 in non-team game types
-    uint32_t time_left_seconds; // 0 if no time limit or time expired
+    uint32_t time_left_seconds; // UINT32_MAX if no time limit, 0 if time expired
     // player entries follow
 };
 

@@ -2259,12 +2259,13 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     static uint8_t next_response_id = 0;
     uint8_t response_id = next_response_id++;
 
-    uint32_t time_left_seconds = 0;
-    if (rf::multi_time_limit > 0.0f) {
+    uint32_t time_left_seconds;
+    if (rf::multi_time_limit <= 0.0f) {
+        time_left_seconds = UINT32_MAX; // no time limit
+    }
+    else {
         float remaining = rf::multi_time_limit - rf::level.time;
-        if (remaining > 0.0f) {
-            time_left_seconds = static_cast<uint32_t>(remaining);
-        }
+        time_left_seconds = remaining > 0.0f ? static_cast<uint32_t>(remaining) : 0;
     }
 
     uint16_t red_score = 0;
