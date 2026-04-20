@@ -104,6 +104,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `Gas_Region_State`, `Modify_Gas_Region`, `Resize_Gas_Region` events
 - Add `require_d3d11` to dedicated server config
 - Add `$Stock Alpha Test` to `af_level_quirks.tbl` and use to restore stock alpha test only on known affected levels
+- Support 8-bit greyscale TGA textures (types 3 and 11) in editor and game
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas

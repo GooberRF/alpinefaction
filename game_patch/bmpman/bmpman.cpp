@@ -166,30 +166,49 @@ FunHook<void(int)> bm_free_entry_hook{
 };
 
 // Fix greyscale TGA files (image types 3 and 11) not loading.
-// The TGA loader validates types 3/11 but the pixel loading dispatch only handles
-// types 1/2 (uncompressed) and 9/10 (RLE), so greyscale pixel data is never read.
-// Additionally, 8-bit greyscale is classified as FORMAT_8_PALETTED but has no palette.
-// Fix: generate a linear greyscale palette and remap types 3->2, 11->10.
+// The pixel-loading dispatch only handles types 1/2 (uncompressed) and 9/10 (RLE);
+// the validation accepts types 3/11 but they fall through the dispatch with no pixel
+// copy performed. Additionally, 8-bit greyscale is classified as FORMAT_8_PALETTED
+// but the loader never generates a palette for it.
 CodeInjection tga_greyscale_fix{
-    0x0055a95e,
+    0x0055A95E,
     [](auto& regs) {
-        auto esp = static_cast<uintptr_t>(regs.esp);
-        uint8_t image_type = static_cast<uint8_t>(regs.bl);
-
-        if (image_type == 3 || image_type == 11) {
-            auto* palette = *reinterpret_cast<uint8_t**>(esp + 0x36C);
-            if (palette) {
-                for (int i = 0; i < 256; i++) {
-                    palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
-                        static_cast<uint8_t>(i);
-                }
-            }
-            regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
         }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x36c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
 
-        // Replaced: MOV AL, [ESP+0x1c]; TEST AL, AL; then JBE 0x0055a9a7
-        uint8_t id_length = *reinterpret_cast<uint8_t*>(esp + 0x1c);
-        regs.eip = (id_length == 0) ? 0x0055a9a7u : 0x0055a966u;
+CodeInjection tga_greyscale_fix_mipmap{
+    0x0055AEAE,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x3e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x37c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
     },
 };
 
@@ -239,6 +258,7 @@ void bm_apply_patch()
 
     // Fix greyscale TGA files not loading (types 3 and 11)
     tga_greyscale_fix.install();
+    tga_greyscale_fix_mipmap.install();
 
     // Fix crash when loading very big TGA files
     load_tga_alloc_fail_fix.install();
