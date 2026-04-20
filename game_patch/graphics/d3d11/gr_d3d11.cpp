@@ -333,10 +333,7 @@ namespace df::gr::d3d11
             device_->CreateRenderTargetView(back_buffer_, nullptr, &back_buffer_rtv_)
         );
 
-        // Scene texture is always created: it is the gamma-pass source when the
-        // pass is active, and the readback source (for screenshots, etc.) in
-        // either mode. FLIP_DISCARD makes back_buffer_ contents undefined after
-        // Present, so callers of read_back_buffer must hit a stable texture.
+        // Create intermediate scene texture for gamma post-processing
         init_scene_texture();
 
         // Create a render-target view for the main rendering pass
@@ -480,6 +477,11 @@ namespace df::gr::d3d11
             DWORD wait_result = WaitForSingleObject(frame_latency_wait_handle_, 1000);
             if (wait_result == WAIT_TIMEOUT) {
                 xlog::warn("Frame-latency wait timed out after 1000 ms; GPU may be stalled");
+            }
+            else if (wait_result == WAIT_FAILED) {
+                xlog::warn("Frame-latency wait failed (GetLastError={}); disabling", GetLastError());
+                CloseHandle(frame_latency_wait_handle_);
+                frame_latency_wait_handle_ = nullptr;
             }
         }
         outline_renderer_->flush_forced_xray(*mesh_renderer_);
