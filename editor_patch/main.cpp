@@ -899,6 +899,32 @@ static bool __cdecl line_aabb_intersect(
 FunHook<bool __cdecl(const Vector3*, const Vector3*, const Vector3*, const Vector3*, Vector3*)>
     line_aabb_intersect_hook{0x004c9af0, line_aabb_intersect};
 
+// Fix greyscale TGA files (image types 3 and 11) not loading.
+// Same bug as in the game - the TGA loader validates these types but never loads their pixel data,
+// and 8-bit greyscale is classified as paletted with no palette generated.
+CodeInjection tga_greyscale_fix{
+    0x004f3b9e,
+    [](auto& regs) {
+        auto esp = static_cast<uintptr_t>(regs.esp);
+        uint8_t image_type = static_cast<uint8_t>(regs.bl);
+
+        if (image_type == 3 || image_type == 11) {
+            auto* palette = *reinterpret_cast<uint8_t**>(esp + 0x36C);
+            if (palette) {
+                for (int i = 0; i < 256; i++) {
+                    palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                        static_cast<uint8_t>(i);
+                }
+            }
+            regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+        }
+
+        // Replaced: MOV AL, [ESP+0x1c]; TEST AL, AL; then JBE 0x004f3be7
+        uint8_t id_length = *reinterpret_cast<uint8_t*>(esp + 0x1c);
+        regs.eip = (id_length == 0) ? 0x004f3be7u : 0x004f3ba6u;
+    },
+};
+
 // Fix crashes when moving/rotating/undoing/applying properties to decal objects
 static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void* param);
 FunHook<decltype(object_rotation_update_new)> object_rotation_update_hook{
@@ -1833,6 +1859,9 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Disable red background if geometry limits are crossed
     AsmWriter{0x0043A528, 0x0043A546}.nop();
+
+    // Fix greyscale TGA files not loading (types 3 and 11)
+    tga_greyscale_fix.install();
 
     // Fix clip tool sometimes doing nothing on diagonal clip lines
     line_aabb_intersect_hook.install();
