@@ -2290,17 +2290,31 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         }
     }
 
-    // Serialize all player entries into a flat buffer.
+    // Serialize the logical payload into a flat buffer:
+    //   [payload_header][player entry 0][player entry 1]...
+    // which is then sliced into segments. The receiver reassembles by
+    // response_id and parses the header + entries.
     // Per player: flags (1) + score (2) + name (len+1)
     // Name cannot realistically be longer than 20 characters,
     // but wire protocol allows 31, so account for it
-    constexpr size_t max_players_data = 32 * (1 + 2 + 32);
+    constexpr size_t preamble_size = sizeof(af_player_info_payload_header);
+    constexpr size_t max_players_data = preamble_size + 32 * (1 + 2 + 32);
     std::byte players_data[max_players_data];
     int players_data_len = 0;
 
-    // Track where each player entry starts so we can chunk without splitting entries
-    int entry_offsets[33]; // max 32 players + sentinel
-    int entry_count = 0;
+    // Chunk 0 is the payload header; chunks 1..entry_count are player entries.
+    // The chunker keeps chunks intact per segment, so the preamble always lands
+    // entirely in segment 0.
+    int entry_offsets[34]; // preamble + max 32 players + sentinel
+    entry_offsets[0] = 0;
+    int entry_count = 1;
+
+    af_player_info_payload_header preamble{};
+    preamble.red_score = red_score;
+    preamble.blue_score = blue_score;
+    preamble.time_left_seconds = time_left_seconds;
+    std::memcpy(players_data, &preamble, preamble_size);
+    players_data_len = static_cast<int>(preamble_size);
 
     constexpr int max_players = 32;
     auto player_list = SinglyLinkedList(rf::player_list);
@@ -2308,7 +2322,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         int name_len = player.name.size();
         int entry_size = 1 + 2 + name_len + 1; // flags + score + name + null
 
-        if (entry_count >= max_players ||
+        if (entry_count - 1 >= max_players ||
             players_data_len + entry_size > static_cast<int>(sizeof(players_data))) {
                 break;
         }
@@ -2334,7 +2348,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     constexpr int header_size = static_cast<int>(sizeof(af_player_info_packet));
     constexpr int max_payload = static_cast<int>(rf::max_packet_size) - header_size;
 
-    int seg_boundaries[max_players + 1]; // start index of each segment + sentinel
+    int seg_boundaries[max_players + 2]; // preamble + entries + sentinel
     int total_segments = 0;
     {
         int seg_start = 0;
@@ -2346,18 +2360,13 @@ void af_send_player_info_response(const rf::NetAddr& addr)
                 ++seg_end;
             }
             if (seg_end == seg_start) {
-                // Single entry too large (should never happen)
+                // Single chunk too large (should never happen)
                 ++seg_end;
             }
             seg_start = seg_end;
         }
     }
     seg_boundaries[total_segments] = entry_count; // sentinel
-    if (total_segments == 0) {
-        total_segments = 1; // send one empty segment
-        seg_boundaries[0] = 0;
-        seg_boundaries[1] = 0;
-    }
 
     // Build and send each segment
     std::byte packet_buf[rf::max_packet_size];
@@ -2379,9 +2388,6 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         hdr.response_id = response_id;
         hdr.sequence = static_cast<uint8_t>(seg);
         hdr.total_segments = static_cast<uint8_t>(total_segments);
-        hdr.red_score = red_score;
-        hdr.blue_score = blue_score;
-        hdr.time_left_seconds = time_left_seconds;
 
         std::memcpy(packet_buf, &hdr, header_size);
         if (payload_len > 0) {

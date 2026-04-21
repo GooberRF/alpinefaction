@@ -141,11 +141,9 @@ enum af_player_info_flags : uint8_t
     AF_PLAYER_FLAG_TEAM_BLUE = 1 << 4,
 };
 
-// Wire format per player entry (variable length):
-//   uint8_t flags
-//   int16_t score
-//   char name[] (null-terminated)
-
+// Per-segment framing. The payload bytes of each segment are concatenated in
+// `sequence` order (grouped by `response_id`) to form one logical payload
+// described by `af_player_info_payload_header` below.
 struct af_player_info_packet
 {
     RF_GamePacketHeader hdr; // type = pf_packet_type::players (0xA1)
@@ -153,10 +151,20 @@ struct af_player_info_packet
     uint8_t response_id;
     uint8_t sequence;
     uint8_t total_segments;
+    // segmented payload follows
+};
+
+// Reassembled payload layout:
+//   af_player_info_payload_header preamble
+//   player entries (variable length per entry):
+//     uint8_t flags
+//     int16_t score
+//     char name[] (null-terminated)
+struct af_player_info_payload_header
+{
     uint16_t red_score;     // 0 in non-team game types
     uint16_t blue_score;    // 0 in non-team game types
     uint32_t time_left_seconds; // UINT32_MAX if no time limit, 0 if time expired
-    // player entries follow
 };
 
 constexpr uint8_t af_player_info_packet_version = 2;
