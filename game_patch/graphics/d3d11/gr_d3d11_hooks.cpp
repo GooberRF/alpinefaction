@@ -680,7 +680,14 @@ namespace df::gr::d3d11
 
     void update_window_mode()
     {
-        renderer->set_fullscreen_state(rf::gr::screen.window_mode == rf::gr::FULLSCREEN);
+        bool want_fullscreen = rf::gr::screen.window_mode == rf::gr::FULLSCREEN;
+        if (want_fullscreen && !renderer->supports_exclusive_fullscreen()) {
+            xlog::error("Cannot enter exclusive fullscreen while D3D11_LowFrameLatency or D3D11_AllowTearing are enabled in alpine_system.ini.");
+            rf::gr::screen.window_mode = rf::gr::WINDOWED;
+            renderer->set_fullscreen_state(false);
+            return;
+        }
+        renderer->set_fullscreen_state(want_fullscreen);
     }
 
     rf::ubyte project_vertex_new(Vertex* v)

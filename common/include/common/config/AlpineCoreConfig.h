@@ -13,6 +13,11 @@ public:
     // Configurable fields
     bool vsync = false;
 
+    // Experimental settings
+    bool low_frame_latency = false;
+    bool allow_tearing = false;
+    bool skip_gamma_pass = false;
+
     std::vector<std::string> orphaned_lines;
     bool load(const std::string& filename = "alpine_system.ini");
     void save(const std::string& filename = "alpine_system.ini") const;
