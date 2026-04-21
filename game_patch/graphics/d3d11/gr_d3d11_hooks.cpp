@@ -808,82 +808,82 @@ namespace gr::d3d11
             obj_shadow_render_all_hook.call_target();
         },
     };
-}
 
-ConsoleCommand2 r_antialiasing_mode_cmd{
-    "r_antialiasing_mode",
-    [] (const std::string_view mode) {
-        if (!g_antialiasing) {
-            rf::console::print("Anti-aliasing is not enabled");
-        } else {
-            constexpr auto CHANGE_MSAA_CFG = [] (
-                const uint32_t msaa_level
-            ) {
-                g_game_config.msaa = msaa_level;
-                g_game_config.save();
-            };
-            constexpr std::string_view MSAA_PREFIX = "msaax";
-            if (string_iequals(mode, "none")) {
-                if (g_game_config.msaa) {
-                    CHANGE_MSAA_CFG(0);
-                    gr::d3d11::renderer->flush_render_targets();
-                    rf::console::print("Anti-aliasing mode is none");
-                } else {
-                    rf::console::print("Anti-aliasing mode is already none");
-                }
-            } else if (string_istarts_with(mode, MSAA_PREFIX)) {
-                int value = 0;
-                const auto [ptr, err] = std::from_chars(
-                    mode.data() + MSAA_PREFIX.size(),
-                    mode.data() + mode.size(),
-                    value
-                );
-                if (err != std::errc{} || ptr != mode.data() + mode.size()) {
-                    rf::console::print("Invalid value!");
-                    return;
-                } else if (value != 2 && value != 4 && value != 8) {
-                    rf::console::print("MSAA level must be 2, 4, or 8");
-                    return;
-                }
-                if (value != g_game_config.msaa) {
-                    if (!gr::d3d11::renderer->is_sample_count_valid(value)) {
-                        rf::console::print("MSAAx{} is an unsupported mode!", value);
-                    } else {
-                        CHANGE_MSAA_CFG(value);
+    ConsoleCommand2 r_antialiasing_mode_cmd{
+        "r_antialiasing_mode",
+        [] (const std::string_view mode) {
+            if (!g_antialiasing) {
+                rf::console::print("Anti-aliasing is not enabled");
+            } else {
+                constexpr auto CHANGE_MSAA_CFG = [] (
+                    const uint32_t msaa_level
+                ) {
+                    g_game_config.msaa = msaa_level;
+                    g_game_config.save();
+                };
+                constexpr std::string_view MSAA_PREFIX = "msaax";
+                if (string_iequals(mode, "none")) {
+                    if (g_game_config.msaa) {
+                        CHANGE_MSAA_CFG(0);
                         gr::d3d11::renderer->flush_render_targets();
-                        rf::console::print("Anti-aliasing mode is MSAAx{}", value);
+                        rf::console::print("Anti-aliasing mode is none");
+                    } else {
+                        rf::console::print("Anti-aliasing mode is already none");
                     }
-                } else {
-                    rf::console::print(
-                        "Anti-aliasing mode is already MSAAx{}",
+                } else if (string_istarts_with(mode, MSAA_PREFIX)) {
+                    int value = 0;
+                    const auto [ptr, err] = std::from_chars(
+                        mode.data() + MSAA_PREFIX.size(),
+                        mode.data() + mode.size(),
                         value
                     );
+                    if (err != std::errc{} || ptr != mode.data() + mode.size()) {
+                        rf::console::print("Invalid value!");
+                        return;
+                    } else if (value != 2 && value != 4 && value != 8) {
+                        rf::console::print("MSAA level must be 2, 4, or 8");
+                        return;
+                    }
+                    if (value != g_game_config.msaa) {
+                        if (!gr::d3d11::renderer->is_sample_count_valid(value)) {
+                            rf::console::print("MSAAx{} is an unsupported mode!", value);
+                        } else {
+                            CHANGE_MSAA_CFG(value);
+                            gr::d3d11::renderer->flush_render_targets();
+                            rf::console::print("Anti-aliasing mode is MSAAx{}", value);
+                        }
+                    } else {
+                        rf::console::print(
+                            "Anti-aliasing mode is already MSAAx{}",
+                            value
+                        );
+                    }
+                } else {
+                    rf::console::print("Invalid value!");
                 }
-            } else {
-                rf::console::print("Invalid value!");
             }
-        }
-    },
-    "Sets anti-aliasing mode",
-    "r_antialiasing_mode <none|msaax{2,4,8}>",
-};
+        },
+        "Sets anti-aliasing mode",
+        "r_antialiasing_mode <none|msaax{2,4,8}>",
+    };
 
-ConsoleCommand2 r_antialiasing_cmd{
-    "r_antialiasing",
-    [] {
-        if (!g_game_config.msaa) {
-            rf::console::print("Anti-aliasing is not set or supported");
-        } else {
-            g_antialiasing = !g_antialiasing;
-            gr::d3d11::renderer->flush_render_targets();
-            rf::console::print(
-                "Anti-aliasing is {} until exit",
-                g_antialiasing ? "enabled" : "disabled"
-            );
-        }
-    },
-    "Toggles anti-aliasing",
-};
+    ConsoleCommand2 r_antialiasing_cmd{
+        "r_antialiasing",
+        [] {
+            if (!g_game_config.msaa) {
+                rf::console::print("Anti-aliasing is not set or supported");
+            } else {
+                g_antialiasing = !g_antialiasing;
+                gr::d3d11::renderer->flush_render_targets();
+                rf::console::print(
+                    "Anti-aliasing is {} until exit",
+                    g_antialiasing ? "enabled" : "disabled"
+                );
+            }
+        },
+        "Toggles anti-aliasing",
+    };
+}
 
 void gr_d3d11_apply_patch()
 {
