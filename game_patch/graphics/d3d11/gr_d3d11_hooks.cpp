@@ -678,7 +678,7 @@ namespace gr::d3d11
         renderer->set_fullscreen_state(rf::gr::screen.window_mode == rf::gr::FULLSCREEN);
     }
 
-    rf::ubyte project_vertex_new(Vertex* v)
+    rf::ubyte project_vertex_new(rf::gr::Vertex* v)
     {
         renderer->project_vertex(v);
         return v->flags;
@@ -702,8 +702,8 @@ namespace gr::d3d11
     static CodeInjection gr_d3d_setup_3d_injection{
         0x005473E4,
         []() {
-            float sx = matrix_scale.x / matrix_scale.z;
-            float sy = matrix_scale.y / matrix_scale.z;
+            float sx = rf::gr::matrix_scale.x / rf::gr::matrix_scale.z;
+            float sy = rf::gr::matrix_scale.y / rf::gr::matrix_scale.z;
             static auto& zm = addr_as_ref<float>(0x005A7DD8);
             float zn = 0.1f; // static near plane (RF uses: zm / matrix_scale.z)
             zm = 1.0f; // let's not use zm at all to simplify software projections

@@ -21,8 +21,6 @@
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11_gamma.h"
 
-using namespace rf;
-
 namespace gr::d3d11
 {
     constexpr DXGI_FORMAT swap_chain_format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -62,7 +60,7 @@ namespace gr::d3d11
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         render_context_->set_cull_mode(D3D11_CULL_BACK);
 
-        gr::screen.depthbuffer_type = gr::DEPTHBUFFER_Z;
+        rf::gr::screen.depthbuffer_type = rf::gr::DEPTHBUFFER_Z;
 
         // Disable software vertex clipping
         auto& gr_needs_software_clipping = addr_as_ref<bool>(0x005A445A);
@@ -74,14 +72,14 @@ namespace gr::d3d11
         if (context_) {
             context_->ClearState();
         }
-        if (gr::screen.window_mode == gr::FULLSCREEN) {
+        if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
             swap_chain_->SetFullscreenState(FALSE, nullptr);
         }
     }
 
     void Renderer::window_active()
     {
-        if (rf::gr::screen.window_mode == gr::FULLSCREEN) {
+        if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
             xlog::info("Entering full screen");
             ShowWindow(hwnd_, SW_RESTORE);
             set_fullscreen_state(true);
@@ -90,7 +88,7 @@ namespace gr::d3d11
 
     void Renderer::window_inactive()
     {
-        if (rf::gr::screen.window_mode == gr::FULLSCREEN) {
+        if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
             xlog::info("Exiting full screen");
             set_fullscreen_state(false);
             ShowWindow(hwnd_, SW_MINIMIZE);
@@ -111,7 +109,7 @@ namespace gr::d3d11
         default_render_target_.release();
         default_render_target_view_.release();
         DF_GR_D3D11_CHECK_HR(
-            swap_chain_->ResizeBuffers(0, gr::screen.max_w, gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags)
+            swap_chain_->ResizeBuffers(0, rf::gr::screen.max_w, rf::gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags)
         );
         // get back buffer from the swap chain after it has been resized
         init_back_buffer(g_game_config.msaa);
@@ -223,7 +221,7 @@ namespace gr::d3d11
         else {
             DXGI_SWAP_CHAIN_DESC sd;
             ZeroMemory(&sd, sizeof(sd));
-            sd.BufferCount = rf::gr::screen.window_mode == gr::FULLSCREEN ? 2 : 1;
+            sd.BufferCount = rf::gr::screen.window_mode == rf::gr::FULLSCREEN ? 2 : 1;
             sd.BufferDesc.Width = rf::gr::screen.max_w;
             sd.BufferDesc.Height = rf::gr::screen.max_h;
             sd.BufferDesc.Format = swap_chain_format;
@@ -349,7 +347,7 @@ namespace gr::d3d11
                 return true;
             case 2:
             case 4:
-            case 8:
+            case 8: {
                 UINT num_quality_levels = 0;
                 const HRESULT hr = device_->CheckMultisampleQualityLevels(
                     swap_chain_format,
@@ -357,6 +355,7 @@ namespace gr::d3d11
                     &num_quality_levels
                 );
                 return SUCCEEDED(hr) && num_quality_levels > 0;
+            }
             default:
                 return false;
         }
@@ -368,7 +367,7 @@ namespace gr::d3d11
         init_depth_stencil_buffer(g_game_config.msaa);
     }
 
-    void Renderer::bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, gr::Mode mode)
+    void Renderer::bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
         // Flush pending outlines before any 2D bitmap is committed to the framebuffer.
         // RF draws the scope overlay as a bitmap during HUD rendering. Because the
@@ -502,7 +501,7 @@ namespace gr::d3d11
 
     void Renderer::tmapper(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, rf::gr::Mode mode)
     {
-        std::array<int, 2> tex_handles{gr::screen.current_texture_1, gr::screen.current_texture_2};
+        std::array<int, 2> tex_handles{rf::gr::screen.current_texture_1, rf::gr::screen.current_texture_2};
         dyn_geo_renderer_->add_poly(nv, vertices, vertex_attributes, tex_handles, mode);
     }
 
@@ -531,7 +530,7 @@ namespace gr::d3d11
                 project_vertex(v);
             }
             if (constant_sw) {
-                float unscaled_z = std::max(sw / matrix_scale.z, 0.1f);
+                float unscaled_z = std::max(sw / rf::gr::matrix_scale.z, 0.1f);
                 v->sw = render_context_->projection().project_z(unscaled_z);
             }
         }
@@ -545,11 +544,11 @@ namespace gr::d3d11
             return;
         }
 
-        rf::Vector3 unscaled_world_pos = v->world_pos / matrix_scale;
+        rf::Vector3 unscaled_world_pos = v->world_pos / rf::gr::matrix_scale;
         auto& proj = render_context_->projection();
         auto proj_pos = proj.project(unscaled_world_pos);
-        v->sx = screen.clip_width / 2.0f * (proj_pos.x + 1.0f) + screen.offset_x;
-        v->sy = screen.clip_height / 2.0f * (1.0f - proj_pos.y) + screen.offset_y;
+        v->sx = rf::gr::screen.clip_width / 2.0f * (proj_pos.x + 1.0f) + rf::gr::screen.offset_x;
+        v->sy = rf::gr::screen.clip_height / 2.0f * (1.0f - proj_pos.y) + rf::gr::screen.offset_y;
         v->sw = proj_pos.z;
 
         v->flags |= rf::gr::VF_PROJECTED;
@@ -575,7 +574,7 @@ namespace gr::d3d11
         return true;
     }
 
-    bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)
+    rf::bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)
     {
         dyn_geo_renderer_->flush();
         // Resolve the current scene content into a readable texture.

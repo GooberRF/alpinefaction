@@ -18,11 +18,6 @@ namespace rf
     struct CharacterInstance;
 }
 
-namespace gr
-{
-    using namespace rf::gr;
-}
-
 namespace gr::d3d11
 {
     class StateManager;

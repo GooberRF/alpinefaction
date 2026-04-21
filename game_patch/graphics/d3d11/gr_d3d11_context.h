@@ -82,10 +82,10 @@ namespace gr::d3d11
     public:
         RenderModeBuffer(ID3D11Device* device);
 
-        void update(gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, ID3D11DeviceContext* device_context)
+        void update(rf::gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, ID3D11DeviceContext* device_context)
         {
-            bool alpha_test = mode.get_zbuffer_type() == gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
-            bool fog_allowed = mode.get_fog_type() != gr::FOG_NOT_ALLOWED;
+            bool alpha_test = mode.get_zbuffer_type() == rf::gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
+            bool fog_allowed = mode.get_fog_type() != rf::gr::FOG_NOT_ALLOWED;
             int colorblind_mode = g_alpine_game_config.colorblind_mode;
             float dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
             float pixel_light_overbright = g_level_pixel_light_overbright;
@@ -288,7 +288,7 @@ namespace gr::d3d11
             }
         }
 
-        void set_mode(gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false)
+        void set_mode(rf::gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false)
         {
             render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, device_context_);
             if (!current_mode_ || current_mode_.value() != mode) {
@@ -578,7 +578,7 @@ namespace gr::d3d11
         D3D11_PRIMITIVE_TOPOLOGY current_primitive_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
         std::array<int, 2> current_tex_handles_ = {-2, -2};
         D3D11_CULL_MODE current_cull_mode_ = D3D11_CULL_NONE;
-        std::optional<gr::Mode> current_mode_;
+        std::optional<rf::gr::Mode> current_mode_;
         std::array<ID3D11SamplerState*, 2> current_sampler_states_ = {nullptr, nullptr};
         ID3D11BlendState* current_blend_state_ = nullptr;
         ID3D11DepthStencilState* current_depth_stencil_state_ = nullptr;

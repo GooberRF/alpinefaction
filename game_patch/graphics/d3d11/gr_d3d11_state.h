@@ -26,13 +26,13 @@ namespace gr::d3d11
 
         ID3D11SamplerState* lookup_sampler_state(rf::gr::TextureSource ts, int slot)
         {
-            if (ts == gr::TEXTURE_SOURCE_NONE) {
+            if (ts == rf::gr::TEXTURE_SOURCE_NONE) {
                 // we are binding a dummy white textures
-                ts = gr::TEXTURE_SOURCE_CLAMP;
+                ts = rf::gr::TEXTURE_SOURCE_CLAMP;
             }
 
             if (slot == 1) {
-                ts = gr::TEXTURE_SOURCE_CLAMP;
+                ts = rf::gr::TEXTURE_SOURCE_CLAMP;
             }
 
             int key = static_cast<int>(ts);
@@ -57,9 +57,9 @@ namespace gr::d3d11
             return p.first->second;
         }
 
-        ID3D11DepthStencilState* lookup_depth_stencil_state(gr::ZbufferType zbt)
+        ID3D11DepthStencilState* lookup_depth_stencil_state(rf::gr::ZbufferType zbt)
         {
-            int key = static_cast<int>(zbt) | (static_cast<int>(gr::screen.depthbuffer_type) << 8);
+            int key = static_cast<int>(zbt) | (static_cast<int>(rf::gr::screen.depthbuffer_type) << 8);
             auto it = depth_stencil_state_cache_.find(key);
             if (it != depth_stencil_state_cache_.end()) {
                 return it->second;
@@ -85,7 +85,7 @@ namespace gr::d3d11
         ComPtr<ID3D11RasterizerState> create_rasterizer_state(D3D11_CULL_MODE cull_mode, int depth_bias, bool depth_clip_enable);
         ComPtr<ID3D11SamplerState> create_sampler_state(rf::gr::TextureSource ts);
         ComPtr<ID3D11BlendState> create_blend_state(rf::gr::AlphaBlend ab);
-        ComPtr<ID3D11DepthStencilState> create_depth_stencil_state(gr::ZbufferType zbt);
+        ComPtr<ID3D11DepthStencilState> create_depth_stencil_state(rf::gr::ZbufferType zbt);
 
         ComPtr<ID3D11Device> device_;
         std::unordered_map<int, ComPtr<ID3D11SamplerState>> sampler_state_cache_;
