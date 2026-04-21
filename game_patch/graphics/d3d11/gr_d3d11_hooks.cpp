@@ -312,6 +312,13 @@ namespace df::gr::d3d11
         renderer->texture_flush_cache(force);
     }
 
+    void texture_flush_non_user_cache()
+    {
+        if (renderer) {
+            renderer->texture_flush_non_user_cache();
+        }
+    }
+
     void texture_mark_dirty(int bm_handle)
     {
         renderer->texture_mark_dirty(bm_handle);

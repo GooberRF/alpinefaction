@@ -837,6 +837,9 @@ namespace df::gr::d3d11
 
     void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
     {
+        // Mesh textures are world-surface textures that r_picmip should scale down.
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
+
         const int* tex_handles = get_tex_handles(lod_mesh, params, lod_index);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 

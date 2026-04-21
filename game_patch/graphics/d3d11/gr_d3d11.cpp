@@ -429,6 +429,11 @@ namespace df::gr::d3d11
         texture_manager_->flush_cache(force);
     }
 
+    void Renderer::texture_flush_non_user_cache()
+    {
+        texture_manager_->flush_non_user_cache();
+    }
+
     void Renderer::texture_mark_dirty(int bm_handle)
     {
         texture_manager_->mark_dirty(bm_handle);

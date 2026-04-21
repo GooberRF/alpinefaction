@@ -54,6 +54,7 @@ namespace df::gr::d3d11
         void flip();
         void texture_save_cache();
         void texture_flush_cache(bool force);
+        void texture_flush_non_user_cache();
         void texture_mark_dirty(int bm_handle);
         void texture_add_ref(int bm_handle);
         void texture_remove_ref(int bm_handle);

@@ -191,6 +191,7 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix skybox rendering issues with Direct3D 11 renderer on community level `DM-Blunderscannon~~.rfl`
 - Fix clutter death achievement progress and `AF_When_Dead` not working on all clutter death paths
 - Fix level editor crash when manipulating decals in levels with > 127 decals
+- Fix `r_picmip` not properly applying to all mesh textures
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer
