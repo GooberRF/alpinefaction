@@ -807,6 +807,9 @@ static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
 
 void gamepad_sdl_poll()
 {
+    if (SDL_IsMainThread())
+        SDL_PumpEvents();
+
     memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
 
     SDL_Event events[64];

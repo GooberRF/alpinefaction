@@ -12,8 +12,6 @@
 #include "../multi/multi.h"
 #include "os.h"
 #include "win32_console.h"
-#include "../input/input.h"
-#include <xlog/xlog.h>
 #include <timeapi.h>
 
 const char* get_win_msg_name(UINT msg);
@@ -35,8 +33,6 @@ FunHook<void()> os_poll_hook{
         if (win32_console_is_enabled()) {
             win32_console_poll_input();
         }
-
-        sdl_input_poll();
     },
 };
 
