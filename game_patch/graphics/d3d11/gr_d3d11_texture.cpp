@@ -142,9 +142,9 @@ namespace df::gr::d3d11
 
     TextureManager::Texture TextureManager::create_render_target(int bm_handle, int w, int h)
     {
-        ComPtr<ID3D11Texture2D> gpu_ss_texture;
-        ComPtr<ID3D11Texture2D> gpu_ms_texture;
-        ComPtr<ID3D11RenderTargetView> render_target_view;
+        ComPtr<ID3D11Texture2D> gpu_ss_texture{};
+        ComPtr<ID3D11Texture2D> gpu_ms_texture{};
+        ComPtr<ID3D11RenderTargetView> render_target_view{};
 
         CD3D11_TEXTURE2D_DESC tex_desc{
             DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -154,14 +154,16 @@ namespace df::gr::d3d11
             1, // mipLevels
         };
 
-        if (g_game_config.msaa) {
-            tex_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        const bool use_msaa = g_antialiasing
+            && g_game_config.msaa >= 2
+            && g_game_config.msaa <= 32;
+        if (use_msaa) {
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&tex_desc, nullptr, &gpu_ss_texture)
             );
 
             tex_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
-            tex_desc.SampleDesc.Count = g_game_config.msaa.value();
+            tex_desc.SampleDesc.Count = g_game_config.msaa;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&tex_desc, nullptr, &gpu_ms_texture)
             );
@@ -169,9 +171,8 @@ namespace df::gr::d3d11
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateRenderTargetView(gpu_ms_texture, nullptr, &render_target_view)
             );
-        }
-        else {
-            tex_desc.BindFlags = D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
+        } else {
+            tex_desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&tex_desc, nullptr, &gpu_ss_texture)
             );
@@ -181,14 +182,20 @@ namespace df::gr::d3d11
             );
         }
 
-        Texture texture{bm_handle, tex_desc.Format, std::move(gpu_ss_texture), std::move(render_target_view)};
+        Texture texture{
+            bm_handle,
+            tex_desc.Format,
+            std::move(gpu_ss_texture),
+            std::move(render_target_view)
+        };
         texture.gpu_ms_texture = std::move(gpu_ms_texture);
+
         return texture;
     }
 
     TextureManager::Texture TextureManager::load_texture(int bm_handle, bool staging)
     {
-        xlog::trace("Creating texture for bitmap {} handle {} format {}", bm::get_filename(bm_handle), bm_handle, bm::get_format(bm_handle));
+        xlog::trace("Creating texture for bitmap {} handle {} format {}", bm::get_filename(bm_handle), bm_handle, std::to_underlying(bm::get_format(bm_handle)));
 
         int w, h, num_pixels, mip_levels;
         bm::get_mipmap_info(bm_handle, &w, &h, &num_pixels, &mip_levels);

@@ -8,6 +8,7 @@
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/alpine_settings.h"
+#include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
@@ -34,8 +35,8 @@ namespace df::gr::d3d11
         }
         init_device();
         init_swap_chain(hwnd);
-        init_back_buffer();
-        init_depth_stencil_buffer();
+        init_back_buffer(g_game_config.msaa);
+        init_depth_stencil_buffer(g_game_config.msaa);
 
         state_manager_ = std::make_unique<StateManager>(device_);
         shader_manager_ = std::make_unique<ShaderManager>(device_);
@@ -113,7 +114,7 @@ namespace df::gr::d3d11
             swap_chain_->ResizeBuffers(0, gr::screen.max_w, gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags)
         );
         // get back buffer from the swap chain after it has been resized
-        init_back_buffer();
+        init_back_buffer(g_game_config.msaa);
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
 
@@ -249,12 +250,14 @@ namespace df::gr::d3d11
         dxgi_factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     }
 
-    void Renderer::init_back_buffer()
+    void Renderer::init_back_buffer(const uint32_t sample_count)
     {
         // Get a pointer to the back buffer
         DF_GR_D3D11_CHECK_HR(
             swap_chain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<LPVOID*>(&back_buffer_))
         );
+
+        msaa_render_target_.release();
 
         // Always create back buffer RTV (used as gamma pass output)
         DF_GR_D3D11_CHECK_HR(
@@ -265,10 +268,10 @@ namespace df::gr::d3d11
         init_scene_texture();
 
         // Create a render-target view for the main rendering pass
-        if (g_game_config.msaa) {
+        if (g_antialiasing && sample_count >= 2 && sample_count <= 32) {
             D3D11_TEXTURE2D_DESC desc;
             back_buffer_->GetDesc(&desc);
-            desc.SampleDesc.Count = g_game_config.msaa;
+            desc.SampleDesc.Count = sample_count;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&desc, nullptr, &msaa_render_target_)
             );
@@ -304,7 +307,7 @@ namespace df::gr::d3d11
         );
     }
 
-    void Renderer::init_depth_stencil_buffer()
+    void Renderer::init_depth_stencil_buffer(const uint32_t sample_count)
     {
         D3D11_TEXTURE2D_DESC depth_stencil_desc;
         ZeroMemory(&depth_stencil_desc, sizeof(depth_stencil_desc));
@@ -313,7 +316,12 @@ namespace df::gr::d3d11
         depth_stencil_desc.MipLevels = 1;
         depth_stencil_desc.ArraySize = 1;
         depth_stencil_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        depth_stencil_desc.SampleDesc.Count = std::max(g_game_config.msaa.value(), 1u);
+        const bool use_msaa = g_antialiasing && sample_count >= 2 && sample_count <= 32;
+        if (use_msaa) {
+             depth_stencil_desc.SampleDesc.Count = sample_count;
+        } else {
+             depth_stencil_desc.SampleDesc.Count = 1;
+        }
         depth_stencil_desc.SampleDesc.Quality = 0;
         depth_stencil_desc.Usage = D3D11_USAGE_DEFAULT;
         depth_stencil_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
@@ -323,13 +331,41 @@ namespace df::gr::d3d11
             device_->CreateTexture2D(&depth_stencil_desc, nullptr, &depth_stencil)
         );
 
-        D3D11_DEPTH_STENCIL_VIEW_DESC view_desc;
-        ZeroMemory(&view_desc, sizeof(view_desc));
-        view_desc.ViewDimension = g_game_config.msaa ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+        D3D11_DEPTH_STENCIL_VIEW_DESC view_desc{};
+        view_desc.ViewDimension = use_msaa
+            ? D3D11_DSV_DIMENSION_TEXTURE2DMS
+            : D3D11_DSV_DIMENSION_TEXTURE2D;
 
         DF_GR_D3D11_CHECK_HR(
             device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_)
         );
+    }
+
+    bool Renderer::is_sample_count_valid(const uint32_t sample_count) {
+        switch (sample_count) {
+            case 0:
+                return false;
+            case 1:
+                return true;
+            case 2:
+            case 4:
+            case 8:
+                UINT num_quality_levels = 0;
+                const HRESULT hr = device_->CheckMultisampleQualityLevels(
+                    swap_chain_format,
+                    sample_count,
+                    &num_quality_levels
+                );
+                return SUCCEEDED(hr) && num_quality_levels > 0;
+            default:
+                return false;
+        }
+    }
+
+    void Renderer::flush_render_targets() {
+        texture_manager_->flush_render_targets();
+        init_back_buffer(g_game_config.msaa);
+        init_depth_stencil_buffer(g_game_config.msaa);
     }
 
     void Renderer::bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, gr::Mode mode)
@@ -523,13 +559,13 @@ namespace df::gr::d3d11
     {
         dyn_geo_renderer_->flush();
         if (bm_handle != -1) {
-            ID3D11RenderTargetView* render_target_view = texture_manager_->lookup_render_target(bm_handle);
+            ID3D11RenderTargetView* const render_target_view =
+                texture_manager_->lookup_render_target(bm_handle);
             if (!render_target_view) {
                 return false;
             }
             render_context_->set_render_target(render_target_view, depth_stencil_view_);
-        }
-        else {
+        } else {
             render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         }
         if (render_target_bm_handle_ != -1) {
