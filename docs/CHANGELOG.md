@@ -107,6 +107,8 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Support 8-bit greyscale TGA textures (types 3 and 11) in editor and game
 
 [@is-this-c](https://github.com/is-this-c)
+- Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
+- Rename `antialiasing` console command to `r_antialiasing`
 - Use 64-bit integers for time deltas
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add version and uptime to a server's printed config
