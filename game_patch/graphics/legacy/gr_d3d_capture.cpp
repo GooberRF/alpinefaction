@@ -14,20 +14,26 @@
 #include "../../bmpman/bmpman.h"
 #include "../gr_internal.h"
 #include "gr_d3d_internal.h"
+#include "../gr.h"
 
-static ComPtr<IDirect3DSurface8> g_capture_tmp_surface;
-static ComPtr<IDirect3DSurface8> g_depth_stencil_surface;
+static ComPtr<IDirect3DSurface8> g_capture_tmp_surface{};
+static ComPtr<IDirect3DSurface8> g_depth_stencil_surface{};
 
-bool g_render_to_texture_active = false;
-ComPtr<IDirect3DSurface8> g_orig_render_target;
-ComPtr<IDirect3DSurface8> g_orig_depth_stencil_surface;
+static int g_render_to_texture_bm_h = -1;
+static ComPtr<IDirect3DSurface8> g_orig_render_target{};
+static ComPtr<IDirect3DSurface8> g_orig_depth_stencil_surface{};
 
-IDirect3DSurface8* get_cached_depth_stencil_surface()
-{
+IDirect3DSurface8* get_cached_depth_stencil_surface() {
     if (!g_depth_stencil_surface) {
-        auto hr = rf::gr::d3d::device->CreateDepthStencilSurface(
-            rf::gr::d3d::pp.BackBufferWidth, rf::gr::d3d::pp.BackBufferHeight, rf::gr::d3d::pp.AutoDepthStencilFormat,
-            D3DMULTISAMPLE_NONE, &g_depth_stencil_surface);
+        const HRESULT hr = rf::gr::d3d::device->CreateDepthStencilSurface(
+            rf::gr::d3d::pp.BackBufferWidth,
+            rf::gr::d3d::pp.BackBufferHeight,
+            rf::gr::d3d::pp.AutoDepthStencilFormat,
+            g_antialiasing && g_game_config.msaa >= 2 && g_game_config.msaa <= 16
+                ? static_cast<D3DMULTISAMPLE_TYPE>(g_game_config.msaa.value())
+                : D3DMULTISAMPLE_NONE,
+            &g_depth_stencil_surface
+        );
         if (FAILED(hr)) {
             ERR_ONCE("IDirect3DDevice8::CreateDepthStencilSurface failed: {}", get_d3d_error_str(hr));
             return nullptr;
@@ -42,8 +48,28 @@ bool gr_d3d_set_render_target(int bmh)
         rf::gr::d3d::flush_buffers();
     }
 
+    if (g_render_to_texture_bm_h != -1
+        && g_render_to_texture_bm_h != bmh
+        && g_d3d_msaa_surfaces.contains(g_render_to_texture_bm_h)) {
+        const ComPtr<IDirect3DSurface8> msaa_render_target =
+            g_d3d_msaa_surfaces[g_render_to_texture_bm_h];
+        IDirect3DTexture8* const texture =
+            rf::gr::d3d::get_texture(g_render_to_texture_bm_h);
+        ComPtr<IDirect3DSurface8> surface{};
+        const HRESULT hr = texture->GetSurfaceLevel(0, &surface);
+        if (SUCCEEDED(hr)) {
+            rf::gr::d3d::device->CopyRects(
+                msaa_render_target,
+                nullptr,
+                0,
+                surface,
+                nullptr
+            );
+        }
+    }
+
     if (bmh == -1) {
-        if (!g_render_to_texture_active) {
+        if (g_render_to_texture_bm_h == -1) {
             return true;
         }
         auto hr = rf::gr::d3d::device->SetRenderTarget(g_orig_render_target, g_orig_depth_stencil_surface);
@@ -52,7 +78,7 @@ bool gr_d3d_set_render_target(int bmh)
         }
         g_orig_render_target.release();
         g_orig_depth_stencil_surface.release();
-        g_render_to_texture_active = false;
+        g_render_to_texture_bm_h = -1;
         return true;
     }
 
@@ -66,7 +92,7 @@ bool gr_d3d_set_render_target(int bmh)
     ComPtr<IDirect3DSurface8> orig_render_target;
     ComPtr<IDirect3DSurface8> orig_depth_stencil_surface;
 
-    if (!g_render_to_texture_active) {
+    if (g_render_to_texture_bm_h == -1) {
         auto hr = rf::gr::d3d::device->GetRenderTarget(&orig_render_target);
         if (FAILED(hr)) {
             ERR_ONCE("IDirect3DDevice8::GetRenderTarget failed: {}", get_d3d_error_str(hr));
@@ -80,25 +106,29 @@ bool gr_d3d_set_render_target(int bmh)
         }
     }
 
-    ComPtr<IDirect3DSurface8> tex_surface;
-    auto hr = d3d_tex->GetSurfaceLevel(0, &tex_surface);
-    if (FAILED(hr)) {
-        ERR_ONCE("IDirect3DTexture8::GetSurfaceLevel failed: {}", get_d3d_error_str(hr));
-        return false;
+    ComPtr<IDirect3DSurface8> tex_surface{};
+    if (g_d3d_msaa_surfaces.contains(bmh)) {
+        tex_surface = g_d3d_msaa_surfaces[bmh];
+    } else {
+        const HRESULT hr = d3d_tex->GetSurfaceLevel(0, &tex_surface);
+        if (FAILED(hr)) {
+            ERR_ONCE("IDirect3DTexture8::GetSurfaceLevel failed: {}", get_d3d_error_str(hr));
+            return false;
+        }
     }
 
     IDirect3DSurface8* depth_stencil = get_cached_depth_stencil_surface();
-    hr = rf::gr::d3d::device->SetRenderTarget(tex_surface, depth_stencil);
+    const HRESULT hr = rf::gr::d3d::device->SetRenderTarget(tex_surface, depth_stencil);
     if (FAILED(hr)) {
         ERR_ONCE("IDirect3DDevice8::SetRenderTarget failed: {}", get_d3d_error_str(hr));
         return false;
     }
 
-    if (!g_render_to_texture_active) {
+    if (g_render_to_texture_bm_h == -1) {
         g_orig_render_target = orig_render_target;
         g_orig_depth_stencil_surface = orig_depth_stencil_surface;
-        g_render_to_texture_active = true;
     }
+    g_render_to_texture_bm_h = bmh;
     return true;
 }
 

@@ -42,6 +42,8 @@ namespace rf::gr::d3d
     static auto& d3d = addr_as_ref<IDirect3D8*>(0x01CFCBE0);
     static auto& device = addr_as_ref<IDirect3DDevice8*>(0x01CFCBE4);
     static auto& pp = addr_as_ref<D3DPRESENT_PARAMETERS>(0x01CFCA18);
+    static auto& vertex_buffer = addr_as_ref<IDirect3DVertexBuffer8*>(0x01CFCBD0);
+    static auto& index_buffer = addr_as_ref<IDirect3DIndexBuffer8*>(0x01CFCBD4);
 #elif defined(DIRECT3D_VERSION)
     static auto& d3d = addr_as_ref<IUnknown*>(0x01CFCBE0);
     static auto& device = addr_as_ref<IUnknown*>(0x01CFCBE4);
