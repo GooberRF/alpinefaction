@@ -48,6 +48,22 @@ namespace df::gr::d3d11
 
     void clear_entity_ambient_cache();
 
+    // RAII guard: while one of these is alive, the mesh drawn by the stock render
+    // function it wraps opts out of r_picmip
+    class [[nodiscard]] ScopedPicmipSkipObject
+    {
+    public:
+        ScopedPicmipSkipObject() noexcept { ++depth_; }
+        ~ScopedPicmipSkipObject() noexcept { --depth_; }
+        ScopedPicmipSkipObject(const ScopedPicmipSkipObject&) = delete;
+        ScopedPicmipSkipObject& operator=(const ScopedPicmipSkipObject&) = delete;
+
+        static bool active() noexcept { return depth_ > 0; }
+
+    private:
+        static inline int depth_ = 0;
+    };
+
     class BaseMeshRenderCache
     {
     public:
