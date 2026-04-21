@@ -212,7 +212,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
 
         // evaluate and cache vertex lighting mode for this level (D3D11 only)
         if (is_d3d11()) {
-            df::gr::d3d11::evaluate_mesh_lighting(level_filename);
+            gr::d3d11::evaluate_mesh_lighting(level_filename);
             if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
                 && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
                 if (g_alpine_game_config.ignore_tbl_vertex_lighting) {
@@ -223,18 +223,18 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
                 }
             }
 
-            df::gr::d3d11::evaluate_pixel_light_overbright(level_filename);
+            gr::d3d11::evaluate_pixel_light_overbright(level_filename);
             if (g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
                 if (g_alpine_game_config.ignore_tbl_pixel_light_overbright) {
                     rf::console::print("Ignoring pixel light overbright override in mapname_info.tbl for {} (cl_ignore_tbl_pixel_light_overbright is enabled)", level_filename);
                 }
                 else {
                     rf::console::print("Pixel light overbright set to {:.2f} for {} (per override present in mapname_info.tbl)",
-                        df::gr::d3d11::g_level_pixel_light_overbright, level_filename);
+                        gr::d3d11::g_level_pixel_light_overbright, level_filename);
                 }
             }
 
-            df::gr::d3d11::evaluate_alpha_test_threshold(level_filename);
+            gr::d3d11::evaluate_alpha_test_threshold(level_filename);
             if (is_stock_alpha_test_level(level_filename)) {
                 rf::console::print("Applying stock alpha test threshold to known affected level {}", level_filename);
             }

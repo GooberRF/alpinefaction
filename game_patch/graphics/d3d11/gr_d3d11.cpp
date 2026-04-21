@@ -23,7 +23,7 @@
 
 using namespace rf;
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     constexpr DXGI_FORMAT swap_chain_format = DXGI_FORMAT_B8G8R8A8_UNORM;
     constexpr UINT swap_chain_flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;

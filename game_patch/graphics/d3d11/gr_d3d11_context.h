@@ -12,7 +12,7 @@
 #include "../../rf/gr/gr.h"
 #include "gr_d3d11_mesh.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
 
     class StateManager;

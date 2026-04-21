@@ -28,7 +28,7 @@
 
 void gr_light_use_static(bool use_static);
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     // Gather both dynamic and static lights for GPU-lit meshes.
     // is_find_static_lights controls which linked list the internal light search
@@ -826,7 +826,7 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
             if (string_iequals(mode, "none")) {
                 if (g_game_config.msaa) {
                     CHANGE_MSAA_CFG(0);
-                    df::gr::d3d11::renderer->flush_render_targets();
+                    gr::d3d11::renderer->flush_render_targets();
                     rf::console::print("Anti-aliasing mode is none");
                 } else {
                     rf::console::print("Anti-aliasing mode is already none");
@@ -846,11 +846,11 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
                     return;
                 }
                 if (value != g_game_config.msaa) {
-                    if (!df::gr::d3d11::renderer->is_sample_count_valid(value)) {
+                    if (!gr::d3d11::renderer->is_sample_count_valid(value)) {
                         rf::console::print("MSAAx{} is an unsupported mode!", value);
                     } else {
                         CHANGE_MSAA_CFG(value);
-                        df::gr::d3d11::renderer->flush_render_targets();
+                        gr::d3d11::renderer->flush_render_targets();
                         rf::console::print("Anti-aliasing mode is MSAAx{}", value);
                     }
                 } else {
@@ -875,7 +875,7 @@ ConsoleCommand2 r_antialiasing_cmd{
             rf::console::print("Anti-aliasing is not set or supported");
         } else {
             g_antialiasing = !g_antialiasing;
-            df::gr::d3d11::renderer->flush_render_targets();
+            gr::d3d11::renderer->flush_render_targets();
             rf::console::print(
                 "Anti-aliasing is {} until exit",
                 g_antialiasing ? "enabled" : "disabled"
@@ -887,7 +887,7 @@ ConsoleCommand2 r_antialiasing_cmd{
 
 void gr_d3d11_apply_patch()
 {
-    using namespace df::gr::d3d11;
+    using namespace gr::d3d11;
 
     g_render_room_objects_render_liquid_injection.install();
     gr_d3d_setup_3d_injection.install();

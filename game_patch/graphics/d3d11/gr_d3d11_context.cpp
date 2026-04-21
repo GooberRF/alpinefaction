@@ -16,7 +16,7 @@
 
 using namespace rf;
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     RenderContext::RenderContext(
         ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> device_context,

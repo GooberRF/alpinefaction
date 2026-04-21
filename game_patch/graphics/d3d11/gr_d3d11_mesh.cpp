@@ -27,7 +27,7 @@
 
 using namespace rf;
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     bool g_level_vertex_lighting = false;
 

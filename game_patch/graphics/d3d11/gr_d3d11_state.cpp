@@ -6,7 +6,7 @@
 
 using namespace rf;
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     StateManager::StateManager(ComPtr<ID3D11Device> device) :
         device_{std::move(device)}

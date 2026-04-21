@@ -12,7 +12,7 @@ namespace rf::gr::d3d {
 
 using namespace rf;
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     static int next_power_of_2(int v)
     {

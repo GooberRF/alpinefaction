@@ -25,7 +25,7 @@
 
 using namespace rf;
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     // ViewProjTransform buffer data layout (must match b1 layout used by shadow VS)
     struct alignas(16) ShadowViewProjData

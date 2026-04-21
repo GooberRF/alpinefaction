@@ -6,7 +6,7 @@
 
 using namespace rf;
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     constexpr int batch_max_vertex = 6000;
     constexpr int batch_max_index = 10000;

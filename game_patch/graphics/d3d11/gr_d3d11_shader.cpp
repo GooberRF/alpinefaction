@@ -4,7 +4,7 @@
 #include "../../rf/file/file.h"
 #include "gr_d3d11_context.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     ShaderManager::ShaderManager(ComPtr<ID3D11Device> device) : device_{device}
     {

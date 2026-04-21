@@ -8,7 +8,7 @@
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_buffer.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     struct GpuTransformedVertex;
     class RenderContext;
