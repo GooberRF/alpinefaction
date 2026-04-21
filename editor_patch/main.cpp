@@ -899,6 +899,49 @@ static bool __cdecl line_aabb_intersect(
 FunHook<bool __cdecl(const Vector3*, const Vector3*, const Vector3*, const Vector3*, Vector3*)>
     line_aabb_intersect_hook{0x004c9af0, line_aabb_intersect};
 
+// Fix greyscale TGA files (image types 3 and 11) not loading.
+CodeInjection tga_greyscale_fix{
+    0x004F3B9E,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x36c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
+
+CodeInjection tga_greyscale_fix_mipmap{
+    0x004F40EE,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x3e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x37c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
+
 // Fix crashes when moving/rotating/undoing/applying properties to decal objects
 static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void* param);
 FunHook<decltype(object_rotation_update_new)> object_rotation_update_hook{
@@ -1833,6 +1876,10 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Disable red background if geometry limits are crossed
     AsmWriter{0x0043A528, 0x0043A546}.nop();
+
+    // Fix greyscale TGA files not loading (types 3 and 11)
+    tga_greyscale_fix.install();
+    tga_greyscale_fix_mipmap.install();
 
     // Fix clip tool sometimes doing nothing on diagonal clip lines
     line_aabb_intersect_hook.install();
