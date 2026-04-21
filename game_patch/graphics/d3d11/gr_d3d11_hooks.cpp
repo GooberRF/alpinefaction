@@ -820,6 +820,30 @@ namespace df::gr::d3d11
             obj_shadow_render_all_hook.call_target();
         },
     };
+
+    static FunHook<void(void*)> item_render_hook{
+        0x00458F80,
+        [](void* item) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard;
+                item_render_hook.call_target(item);
+            } else {
+                item_render_hook.call_target(item);
+            }
+        },
+    };
+
+    static FunHook<void(void*)> entity_render_weapon_in_hands_hook{
+        0x00421C40,
+        [](void* entity) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard;
+                entity_render_weapon_in_hands_hook.call_target(entity);
+            } else {
+                entity_render_weapon_in_hands_hook.call_target(entity);
+            }
+        },
+    };
 }
 
 void gr_d3d11_apply_patch()
@@ -919,6 +943,9 @@ void gr_d3d11_apply_patch()
 
     // Hook blob shadow rendering: skip when D3D11 shadow mapping is active (quality > 0)
     obj_shadow_render_all_hook.install();
+    
+    item_render_hook.install();
+    entity_render_weapon_in_hands_hook.install();
 
     // Change size of standard structures
     write_mem<int8_t>(0x00569884 + 1, sizeof(rf::VifMesh));
