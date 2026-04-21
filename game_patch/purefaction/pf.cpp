@@ -12,6 +12,7 @@
 #include "pf_ac.h"
 #include "../misc/player.h"
 #include "../multi/server.h"
+#include "../multi/alpine_packets.h"
 
 void pf_send_reliable_packet(rf::Player* player, const void* data, int len)
 {
@@ -154,38 +155,6 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
     }
 }
 
-static void process_pf_players_request_packet([[ maybe_unused ]] const void* data, [[ maybe_unused ]] size_t len, const rf::NetAddr& addr)
-{
-    xlog::trace("PF players_request packet");
-
-    // Receive: server <- client (can be non-joined)
-    if (!rf::is_server) {
-        return;
-    }
-
-    pf_players_packet players_packet{};
-    players_packet.hdr.type = static_cast<uint8_t>(pf_packet_type::players);
-    players_packet.version = 1;
-    players_packet.show_ip = 0;
-
-    std::byte packet_buf[rf::max_packet_size];
-    int packet_len = sizeof(players_packet);
-    auto player_list = SinglyLinkedList(rf::player_list);
-    for (auto& player : player_list) {
-        int name_len = player.name.size();
-        if (packet_len + name_len + 1 > static_cast<int>(sizeof(packet_buf))) {
-            xlog::warn("PF players packet is too big! Skipping some players...");
-            break;
-        }
-        std::memcpy(packet_buf + packet_len, player.name.c_str(), name_len + 1);
-        packet_len += name_len + 1;
-    }
-
-    players_packet.hdr.size = packet_len - sizeof(players_packet.hdr);
-    std::memcpy(packet_buf, &players_packet, sizeof(players_packet));
-    rf::net_send(addr, packet_buf, packet_len);
-}
-
 bool pf_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player)
 {
     if (pf_ac_process_packet(data, len, addr, player)) {
@@ -223,10 +192,9 @@ bool pf_process_raw_unreliable_packet(const void* data, int len, const rf::NetAd
     std::memcpy(&header, data, sizeof(header));
     auto packet_type = static_cast<pf_packet_type>(header.type);
 
+    // sent by online rfsb, not connected clients
     if (packet_type == pf_packet_type::players_request) {
-        // Note: this packet can be sent by clients that do not join the server (e.g. online server browser)
-        // Because of that it must be handled here and not in pf_process_packet
-        process_pf_players_request_packet(data, len, addr);
+        af_send_player_info_response(addr);
         return true;
     }
     return false;

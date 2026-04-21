@@ -4,6 +4,7 @@
 #include "gr_d3d11_texture.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
+#include "../../misc/alpine_settings.h"
 // Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
 #include <patch_common/MemUtils.h>
 namespace rf::gr::d3d {
@@ -140,6 +141,72 @@ namespace df::gr::d3d11
         }
     }
 
+    TextureManager::Texture TextureManager::create_texture_auto_mips(int bm_handle, bm::Format fmt, int w, int h, ubyte* bits, ubyte* pal)
+    {
+        // Use the same narrower-format selection as the stock path (e.g. B5G6R5 for
+        // 565 sources) so 16bpp content stays 16bpp in VRAM. Then probe whether the
+        // chosen DXGI format supports RENDER_TARGET + MIP_AUTOGEN — both are required
+        // for GenerateMips. If the narrower format lacks that combination on this
+        // driver, fall back to 8888 so we still get the mip chain.
+        auto [dxgi_format, supported_fmt] = get_supported_texture_format(fmt);
+        UINT format_support = 0;
+        device_->CheckFormatSupport(dxgi_format, &format_support);
+        constexpr UINT required_support =
+            D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN;
+        if ((format_support & required_support) != required_support) {
+            bool has_alpha = dxgi_format == DXGI_FORMAT_B5G5R5A1_UNORM
+                || dxgi_format == DXGI_FORMAT_B4G4R4A4_UNORM
+                || dxgi_format == DXGI_FORMAT_B8G8R8A8_UNORM;
+            dxgi_format = has_alpha ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_B8G8R8X8_UNORM;
+            supported_fmt = bm::FORMAT_8888_ARGB;
+        }
+
+        CD3D11_TEXTURE2D_DESC desc{
+            dxgi_format,
+            static_cast<UINT>(w),
+            static_cast<UINT>(h),
+            1, // arraySize
+            0, // mipLevels = full chain
+            D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
+            D3D11_USAGE_DEFAULT,
+            0,
+        };
+        desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+
+        ComPtr<ID3D11Texture2D> d3d_texture;
+        HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &d3d_texture);
+        if (FAILED(hr)) {
+            xlog::warn("Auto-mip texture creation failed ({}x{}), falling back to single mip", w, h);
+            return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
+        }
+
+        std::unique_ptr<ubyte[]> converted_bits;
+        ubyte* upload_bits = bits;
+        int upload_pitch = bm_calculate_pitch(w, fmt);
+        if (fmt != supported_fmt) {
+            int dst_pitch = bm_calculate_pitch(w, supported_fmt);
+            converted_bits = std::make_unique<ubyte[]>(dst_pitch * h);
+            ::bm_convert_format(converted_bits.get(), supported_fmt, bits, fmt, w, h, dst_pitch, upload_pitch, pal);
+            upload_bits = converted_bits.get();
+            upload_pitch = dst_pitch;
+        }
+
+        device_context_->UpdateSubresource(d3d_texture, 0, nullptr, upload_bits, upload_pitch, 0);
+
+        ComPtr<ID3D11ShaderResourceView> srv;
+        hr = device_->CreateShaderResourceView(d3d_texture, nullptr, &srv);
+        if (FAILED(hr)) {
+            xlog::warn("Auto-mip SRV creation failed ({}x{}), falling back to single mip", w, h);
+            return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
+        }
+        device_context_->GenerateMips(srv);
+
+        Texture texture{bm_handle, dxgi_format, {}};
+        texture.gpu_texture = std::move(d3d_texture);
+        texture.shader_resource_view = std::move(srv);
+        return texture;
+    }
+
     TextureManager::Texture TextureManager::create_render_target(int bm_handle, int w, int h)
     {
         ComPtr<ID3D11Texture2D> gpu_ss_texture;
@@ -245,8 +312,22 @@ namespace df::gr::d3d11
             }
         }
 
-        xlog::trace("Creating normal texture: handle {}", bm_handle);
-        auto texture = create_texture(bm_handle, fmt, tex_w, tex_h, bm_bits, bm_pal, mip_levels, staging, w, h);
+        // When r_picmip > 1, auto-generate a full mip chain for every eligible texture so
+        // the geometry sampler's MinLOD clamp has lower mips to sample from. Sprites/UI are
+        // unaffected because they're drawn with a separate sampler that forces mip 0.
+        // Skip: pow2-padded (zero-bleed), BC-compressed (can't be render target), tiny dims,
+        // staging use, and textures that already have a mip chain.
+        bool auto_mips = g_alpine_game_config.picmip > 1
+            && !staging
+            && mip_levels == 1
+            && u_scale == 1.0f && v_scale == 1.0f
+            && !is_block_compressed_format(fmt)
+            && std::min(tex_w, tex_h) >= 4;
+
+        xlog::trace("Creating normal texture: handle {} auto_mips {}", bm_handle, auto_mips);
+        auto texture = auto_mips
+            ? create_texture_auto_mips(bm_handle, fmt, tex_w, tex_h, bm_bits, bm_pal)
+            : create_texture(bm_handle, fmt, tex_w, tex_h, bm_bits, bm_pal, mip_levels, staging, w, h);
         texture.u_scale = u_scale;
         texture.v_scale = v_scale;
 
@@ -295,6 +376,34 @@ namespace df::gr::d3d11
                     continue;
                 }
                 ++it;
+            }
+        }
+    }
+
+    void TextureManager::flush_non_user_cache()
+    {
+        // Used by the r_picmip transition flush to force non-USER textures to re-upload
+        // with (or without) auto-generated mip chains. Two classes of entries are kept:
+        //   1. TYPE_USER bitmaps (font glyph atlases, HUD overlays, other dynamically-
+        //      written textures) — their pixel data is written INTO the D3D11 texture
+        //      by external code via gr::lock; destroying the texture would leave the
+        //      next lookup with an empty SRV and the writer has no way to know it must
+        //      re-upload.
+        //   2. Entries with ref_count > 0 — the engine holds a logical ref via
+        //      gr_d3d_texture_add_ref. Erasing would desync refcount bookkeeping: a
+        //      later remove_ref against a freshly re-loaded entry (ref_count=0) would
+        //      underflow. Those textures keep their current mip state until released
+        //      and re-added, at which point the new picmip setting takes effect.
+        auto it = texture_cache_.begin();
+        while (it != texture_cache_.end()) {
+            const Texture& texture = it->second;
+            bool is_user = texture.bm_handle >= 0
+                && rf::bm::get_type(texture.bm_handle) == rf::bm::TYPE_USER;
+            if (is_user || texture.ref_count > 0) {
+                ++it;
+            }
+            else {
+                it = texture_cache_.erase(it);
             }
         }
     }
