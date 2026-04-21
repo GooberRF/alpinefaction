@@ -2330,9 +2330,10 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     players_data[players_data_len++] = std::byte{0};
 
     constexpr int max_players = 32;
+    constexpr int max_name_len = 31; // wire protocol cap
     auto player_list = SinglyLinkedList(rf::player_list);
     for (auto& player : player_list) {
-        int name_len = player.name.size();
+        int name_len = std::min<int>(player.name.size(), max_name_len);
         int entry_size = 1 + 2 + 2 + 2 + 2 + name_len + 1; // flags + score + kills + deaths + caps + name + null
 
         if (entry_count - 1 >= max_players ||
@@ -2368,9 +2369,10 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         std::memcpy(players_data + players_data_len, &caps, sizeof(caps));
         players_data_len += sizeof(caps);
 
-        // name (null-terminated)
-        std::memcpy(players_data + players_data_len, player.name.c_str(), name_len + 1);
-        players_data_len += name_len + 1;
+        // name (null-terminated; clamped to max_name_len)
+        std::memcpy(players_data + players_data_len, player.name.c_str(), name_len);
+        players_data_len += name_len;
+        players_data[players_data_len++] = std::byte{0};
     }
     entry_offsets[entry_count] = players_data_len; // sentinel
 
@@ -2398,6 +2400,19 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     }
     seg_boundaries[total_segments] = entry_count; // sentinel
 
+    // Verify all segments fit before sending anything. Chunk-size invariants
+    // (preamble+filename <= ~269 B, per-entry <= 41 B, max_payload ~= 505 B)
+    // guarantee this in practice, but a silent partial send would leave the
+    // receiver waiting on a missing segment forever.
+    for (int seg = 0; seg < total_segments; ++seg) {
+        int payload_len = entry_offsets[seg_boundaries[seg + 1]] - entry_offsets[seg_boundaries[seg]];
+        if (payload_len > max_payload) {
+            xlog::error("af_send_player_info_response: segment {} payload {} > max {}; aborting response",
+                seg, payload_len, max_payload);
+            return;
+        }
+    }
+
     // Build and send each segment
     std::byte packet_buf[rf::max_packet_size];
     for (int seg = 0; seg < total_segments; ++seg) {
@@ -2406,10 +2421,6 @@ void af_send_player_info_response(const rf::NetAddr& addr)
 
         int payload_offset = entry_offsets[first_entry];
         int payload_len = entry_offsets[end_entry] - payload_offset;
-
-        if (payload_len > max_payload) {
-            continue;
-        }
 
         af_player_info_packet hdr{};
         hdr.hdr.type = static_cast<uint8_t>(pf_packet_type::players);
