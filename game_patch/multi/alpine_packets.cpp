@@ -2241,13 +2241,21 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         return;
     }
 
+    // Placeholder filename used when no level is loaded
+    static constexpr const char* kNoLevelFilename = "No level loaded";
+
     // Rate limit: one response per IP per second to reduce UDP amplification exposure
+    static constexpr size_t kMaxRecentResponses = 16384;
     static std::unordered_map<uint32_t, HighResTimer> recent_responses;
 
-    // Sweep expired entries
+    // Sweep expired entries first
     std::erase_if(recent_responses, [](const auto& entry) {
         return entry.second.elapsed();
     });
+
+    if (recent_responses.size() >= kMaxRecentResponses) {
+        return;
+    }
 
     auto [it, inserted] = recent_responses.try_emplace(addr.ip_addr);
     if (!inserted) {
@@ -2265,7 +2273,9 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     }
     else {
         float remaining = rf::multi_time_limit - rf::level.time;
-        time_left_seconds = remaining > 0.0f ? static_cast<uint32_t>(remaining) : 0;
+        time_left_seconds = remaining > 0.0f
+            ? static_cast<uint32_t>(std::min(remaining, static_cast<float>(UINT32_MAX)))
+            : 0;
     }
 
     uint16_t red_score = 0;
@@ -2298,7 +2308,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     // Name cannot realistically be longer than 20 characters,
     // but wire protocol allows 31, so account for it
     constexpr size_t preamble_size = sizeof(af_player_info_payload_header);
-    constexpr size_t max_filename_size = 256; // level.filename + null
+    constexpr size_t max_filename_size = RF_MAX_LEVEL_NAME_LEN + 1;
     constexpr size_t max_players_data = preamble_size + max_filename_size + 32 * (1 + 2 + 2 + 2 + 2 + 32);
     std::byte players_data[max_players_data];
     int players_data_len = 0;
@@ -2319,13 +2329,18 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     std::memcpy(players_data, &preamble, preamble_size);
     players_data_len = static_cast<int>(preamble_size);
 
-    // level filename (null-terminated), clamped to max_filename_size - 1 bytes
+    // level filename (null-terminated), clamped to max_filename_size - 1 bytes.
+    // Falls back to a placeholder when no level has been loaded yet.
+    const char* filename_src = rf::level.filename.c_str();
     int filename_len = rf::level.filename.size();
-    if (filename_len < 0) filename_len = 0;
+    if (filename_len <= 0) {
+        filename_src = kNoLevelFilename;
+        filename_len = static_cast<int>(std::strlen(kNoLevelFilename));
+    }
     if (filename_len >= static_cast<int>(max_filename_size)) {
         filename_len = static_cast<int>(max_filename_size) - 1;
     }
-    std::memcpy(players_data + players_data_len, rf::level.filename.c_str(), filename_len);
+    std::memcpy(players_data + players_data_len, filename_src, filename_len);
     players_data_len += filename_len;
     players_data[players_data_len++] = std::byte{0};
 
@@ -2401,7 +2416,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     seg_boundaries[total_segments] = entry_count; // sentinel
 
     // Verify all segments fit before sending anything. Chunk-size invariants
-    // (preamble+filename <= ~269 B, per-entry <= 41 B, max_payload ~= 505 B)
+    // (preamble+filename <= ~273 B, per-entry <= 41 B, max_payload ~= 505 B)
     // guarantee this in practice, but a silent partial send would leave the
     // receiver waiting on a missing segment forever.
     for (int seg = 0; seg < total_segments; ++seg) {
