@@ -2291,21 +2291,22 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     }
 
     // Serialize the logical payload into a flat buffer:
-    //   [payload_header][player entry 0][player entry 1]...
+    //   [payload_header][level_filename\0][player entry 0][player entry 1]...
     // which is then sliced into segments. The receiver reassembles by
-    // response_id and parses the header + entries.
-    // Per player: flags (1) + score (2) + name (len+1)
+    // response_id and parses the header + filename + entries.
+    // Per player: flags (1) + score (2) + kills (2) + deaths (2) + caps (2) + name (len+1)
     // Name cannot realistically be longer than 20 characters,
     // but wire protocol allows 31, so account for it
     constexpr size_t preamble_size = sizeof(af_player_info_payload_header);
-    constexpr size_t max_players_data = preamble_size + 32 * (1 + 2 + 32);
+    constexpr size_t max_filename_size = 256; // level.filename + null
+    constexpr size_t max_players_data = preamble_size + max_filename_size + 32 * (1 + 2 + 2 + 2 + 2 + 32);
     std::byte players_data[max_players_data];
     int players_data_len = 0;
 
-    // Chunk 0 is the payload header; chunks 1..entry_count are player entries.
-    // The chunker keeps chunks intact per segment, so the preamble always lands
-    // entirely in segment 0.
-    int entry_offsets[34]; // preamble + max 32 players + sentinel
+    // Chunk 0 is the payload header + level filename; chunks 1..entry_count are
+    // player entries. The chunker keeps chunks intact per segment, so chunk 0
+    // always lands entirely in segment 0.
+    int entry_offsets[34]; // preamble+filename + max 32 players + sentinel
     entry_offsets[0] = 0;
     int entry_count = 1;
 
@@ -2313,14 +2314,26 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     preamble.red_score = red_score;
     preamble.blue_score = blue_score;
     preamble.time_left_seconds = time_left_seconds;
+    preamble.af_flags = server_get_game_info_flags().game_info_flags_to_uint32();
+    preamble.game_type = static_cast<uint8_t>(rf::netgame.type);
     std::memcpy(players_data, &preamble, preamble_size);
     players_data_len = static_cast<int>(preamble_size);
+
+    // level filename (null-terminated), clamped to max_filename_size - 1 bytes
+    int filename_len = rf::level.filename.size();
+    if (filename_len < 0) filename_len = 0;
+    if (filename_len >= static_cast<int>(max_filename_size)) {
+        filename_len = static_cast<int>(max_filename_size) - 1;
+    }
+    std::memcpy(players_data + players_data_len, rf::level.filename.c_str(), filename_len);
+    players_data_len += filename_len;
+    players_data[players_data_len++] = std::byte{0};
 
     constexpr int max_players = 32;
     auto player_list = SinglyLinkedList(rf::player_list);
     for (auto& player : player_list) {
         int name_len = player.name.size();
-        int entry_size = 1 + 2 + name_len + 1; // flags + score + name + null
+        int entry_size = 1 + 2 + 2 + 2 + 2 + name_len + 1; // flags + score + kills + deaths + caps + name + null
 
         if (entry_count - 1 >= max_players ||
             players_data_len + entry_size > static_cast<int>(sizeof(players_data))) {
@@ -2329,14 +2342,31 @@ void af_send_player_info_response(const rf::NetAddr& addr)
 
         entry_offsets[entry_count++] = players_data_len;
 
+        const auto* stats = static_cast<const PlayerStatsNew*>(player.stats);
+
         // flags
         players_data[players_data_len] = static_cast<std::byte>(build_player_info_flags(player));
         players_data_len += 1;
 
         // score
-        int16_t score = player.stats ? player.stats->score : 0;
+        int16_t score = stats ? stats->score : 0;
         std::memcpy(players_data + players_data_len, &score, sizeof(score));
         players_data_len += sizeof(score);
+
+        // kills
+        uint16_t kills = stats ? stats->num_kills : 0;
+        std::memcpy(players_data + players_data_len, &kills, sizeof(kills));
+        players_data_len += sizeof(kills);
+
+        // deaths
+        uint16_t deaths = stats ? stats->num_deaths : 0;
+        std::memcpy(players_data + players_data_len, &deaths, sizeof(deaths));
+        players_data_len += sizeof(deaths);
+
+        // caps
+        uint16_t caps = stats ? static_cast<uint16_t>(std::max<int16_t>(stats->caps, 0)) : 0;
+        std::memcpy(players_data + players_data_len, &caps, sizeof(caps));
+        players_data_len += sizeof(caps);
 
         // name (null-terminated)
         std::memcpy(players_data + players_data_len, player.name.c_str(), name_len + 1);

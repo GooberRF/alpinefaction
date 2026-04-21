@@ -156,15 +156,21 @@ struct af_player_info_packet
 
 // Reassembled payload layout:
 //   af_player_info_payload_header preamble
+//   char level_filename[] (null-terminated)
 //   player entries (variable length per entry):
-//     uint8_t flags
-//     int16_t score
-//     char name[] (null-terminated)
+//     uint8_t  flags
+//     int16_t  score
+//     uint16_t kills
+//     uint16_t deaths
+//     uint16_t caps
+//     char     name[] (null-terminated)
 struct af_player_info_payload_header
 {
     uint16_t red_score;     // 0 in non-team game types
     uint16_t blue_score;    // 0 in non-team game types
     uint32_t time_left_seconds; // UINT32_MAX if no time limit, 0 if time expired
+    uint32_t af_flags;      // af_server_info_flags bitfield
+    uint8_t  game_type;     // rf::NetGameType
 };
 
 constexpr uint8_t af_player_info_packet_version = 2;
