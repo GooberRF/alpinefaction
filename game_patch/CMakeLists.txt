@@ -101,7 +101,6 @@ set(SRCS
     graphics/d3d11/gr_d3d11_gamma.h
     graphics/d3d11/gr_d3d11_gamma.cpp
     input/input.h
-    input/input.cpp
     input/mouse.cpp
     input/mouse.h
     input/key.cpp

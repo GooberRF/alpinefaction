@@ -586,9 +586,11 @@ void mouse_sdl_poll()
 {
     if (!g_sdl_window) return;
 
+    if (SDL_IsMainThread())
+        SDL_PumpEvents();
+
     SDL_Event events[16];
     int n;
-    // Consume motion, button, and wheel events; leave device-change events in the queue.
     while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
                                SDL_GETEVENT, SDL_EVENT_MOUSE_MOTION,
                                SDL_EVENT_MOUSE_WHEEL)) > 0) {
@@ -645,6 +647,8 @@ void mouse_sdl_poll()
             }
         }
     }
+    if (n < 0)
+        xlog::warn("SDL Events error: {}", SDL_GetError());
 }
 
 int mouse_take_pending_rebind()
