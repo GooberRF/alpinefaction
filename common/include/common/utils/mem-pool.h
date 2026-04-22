@@ -22,7 +22,7 @@ class MemPool {
         }
     };
 
-    std::vector<Slot*> free_slots;
+    std::vector<T*> free_slots;
     std::vector<std::unique_ptr<Slot[]>> pages;
 
 public:
