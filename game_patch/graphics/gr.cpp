@@ -515,7 +515,7 @@ ConsoleCommand2 picmip_cmd{
             bool was_on = old_divisor > 1;
             bool now_on = g_alpine_game_config.picmip > 1;
             if (was_on != now_on) {
-                df::gr::d3d11::texture_flush_non_user_cache();
+                gr::d3d11::texture_flush_non_user_cache();
             }
         }
         rf::console::print(

@@ -183,13 +183,13 @@ FunHook<int(rf::bm::Format, int, int, int, IDirect3DTexture8**)> gr_d3d_create_v
             usage = D3DUSAGE_RENDERTARGET;
 
             g_d3d_msaa_surfaces.erase(g_currently_creating_texture_for_bitmap);
-            if (g_antialiasing && g_game_config.msaa >= 2 && g_game_config.msaa <= 16) {
+            if (g_antialiasing && g_game_config.msaa_level >= 2 && g_game_config.msaa_level <= 8) {
                 ComPtr<IDirect3DSurface8> msaa_render_target{};
-                const auto hr = rf::gr::d3d::device->CreateRenderTarget(
+                const HRESULT hr = rf::gr::d3d::device->CreateRenderTarget(
                     width, 
                     height,
                     d3d_format,
-                    static_cast<D3DMULTISAMPLE_TYPE>(g_game_config.msaa.value()),
+                    static_cast<D3DMULTISAMPLE_TYPE>(g_game_config.msaa_level.value()),
                     FALSE,
                     &msaa_render_target
                 );

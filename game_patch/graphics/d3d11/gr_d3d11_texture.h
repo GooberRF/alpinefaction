@@ -92,10 +92,14 @@ namespace gr::d3d11
         }
 
         void flush_render_targets() {
+            std::vector<int> render_targets{};
             for (const auto& [bm_index, texture] : texture_cache_) {
                 if (texture.render_target_view) {
-                    mark_dirty(texture.bm_handle);
+                    render_targets.push_back(texture.bm_handle);
                 }
+            }
+            for (const int bm_handle : render_targets) {
+                mark_dirty(bm_handle);
             }
         }
 

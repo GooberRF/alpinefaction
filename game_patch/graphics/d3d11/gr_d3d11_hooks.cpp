@@ -832,12 +832,12 @@ namespace gr::d3d11
                 constexpr auto CHANGE_MSAA_CFG = [] (
                     const uint32_t msaa_level
                 ) {
-                    g_game_config.msaa = msaa_level;
+                    g_game_config.msaa_level = msaa_level;
                     g_game_config.save();
                 };
                 constexpr std::string_view MSAA_PREFIX = "msaax";
                 if (string_iequals(mode, "none")) {
-                    if (g_game_config.msaa) {
+                    if (g_game_config.msaa_level) {
                         CHANGE_MSAA_CFG(0);
                         gr::d3d11::renderer->flush_render_targets();
                         rf::console::print("Anti-aliasing mode is none");
@@ -858,7 +858,7 @@ namespace gr::d3d11
                         rf::console::print("MSAA level must be 2, 4, or 8");
                         return;
                     }
-                    if (value != g_game_config.msaa) {
+                    if (value != g_game_config.msaa_level) {
                         if (!gr::d3d11::renderer->is_sample_count_valid(value)) {
                             rf::console::print("MSAAx{} is an unsupported mode!", value);
                         } else {
@@ -884,7 +884,7 @@ namespace gr::d3d11
     ConsoleCommand2 r_antialiasing_cmd{
         "r_antialiasing",
         [] {
-            if (!g_game_config.msaa) {
+            if (!g_game_config.msaa_level) {
                 rf::console::print("Anti-aliasing is not set or supported");
             } else {
                 g_antialiasing = !g_antialiasing;
@@ -910,7 +910,7 @@ namespace gr::d3d11
         },
     };
 
-    FunHook<void((rf::Entity*)> entity_render_weapon_in_hands_hook{
+    FunHook<void(rf::Entity*)> entity_render_weapon_in_hands_hook{
         0x00421C40,
         [] (rf::Entity* const entity) {
             if (g_alpine_game_config.picmip > 1) {

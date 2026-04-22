@@ -29,8 +29,8 @@ IDirect3DSurface8* get_cached_depth_stencil_surface() {
             rf::gr::d3d::pp.BackBufferWidth,
             rf::gr::d3d::pp.BackBufferHeight,
             rf::gr::d3d::pp.AutoDepthStencilFormat,
-            g_antialiasing && g_game_config.msaa >= 2 && g_game_config.msaa <= 16
-                ? static_cast<D3DMULTISAMPLE_TYPE>(g_game_config.msaa.value())
+            g_antialiasing && g_game_config.msaa_level >= 2 && g_game_config.msaa_level <= 8
+                ? static_cast<D3DMULTISAMPLE_TYPE>(g_game_config.msaa_level.value())
                 : D3DMULTISAMPLE_NONE,
             &g_depth_stencil_surface
         );

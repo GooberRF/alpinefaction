@@ -141,7 +141,7 @@ namespace gr::d3d11
         }
     }
 
-    TextureManager::Texture TextureManager::create_texture_auto_mips(int bm_handle, bm::Format fmt, int w, int h, ubyte* bits, ubyte* pal)
+    TextureManager::Texture TextureManager::create_texture_auto_mips(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal)
     {
         // Use the same narrower-format selection as the stock path (e.g. B5G6R5 for
         // 565 sources) so 16bpp content stays 16bpp in VRAM. Then probe whether the
@@ -158,7 +158,7 @@ namespace gr::d3d11
                 || dxgi_format == DXGI_FORMAT_B4G4R4A4_UNORM
                 || dxgi_format == DXGI_FORMAT_B8G8R8A8_UNORM;
             dxgi_format = has_alpha ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_B8G8R8X8_UNORM;
-            supported_fmt = bm::FORMAT_8888_ARGB;
+            supported_fmt = rf::bm::FORMAT_8888_ARGB;
         }
 
         CD3D11_TEXTURE2D_DESC desc{
@@ -180,12 +180,12 @@ namespace gr::d3d11
             return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
         }
 
-        std::unique_ptr<ubyte[]> converted_bits;
-        ubyte* upload_bits = bits;
+        std::unique_ptr<rf::ubyte[]> converted_bits;
+        rf::ubyte* upload_bits = bits;
         int upload_pitch = bm_calculate_pitch(w, fmt);
         if (fmt != supported_fmt) {
             int dst_pitch = bm_calculate_pitch(w, supported_fmt);
-            converted_bits = std::make_unique<ubyte[]>(dst_pitch * h);
+            converted_bits = std::make_unique<rf::ubyte[]>(dst_pitch * h);
             ::bm_convert_format(converted_bits.get(), supported_fmt, bits, fmt, w, h, dst_pitch, upload_pitch, pal);
             upload_bits = converted_bits.get();
             upload_pitch = dst_pitch;
@@ -222,15 +222,15 @@ namespace gr::d3d11
         };
 
         const bool use_msaa = g_antialiasing
-            && g_game_config.msaa >= 2
-            && g_game_config.msaa <= 32;
+            && g_game_config.msaa_level >= 2
+            && g_game_config.msaa_level <= 8;
         if (use_msaa) {
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&tex_desc, nullptr, &gpu_ss_texture)
             );
 
             tex_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
-            tex_desc.SampleDesc.Count = g_game_config.msaa;
+            tex_desc.SampleDesc.Count = g_game_config.msaa_level;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&tex_desc, nullptr, &gpu_ms_texture)
             );

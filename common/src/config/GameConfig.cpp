@@ -153,7 +153,7 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= alpine_faction_key.is_open();
     result &= visitor(alpine_faction_key, "Window Mode", wnd_mode);
     result &= visitor(alpine_faction_key, "Anisotropic Filtering", anisotropic_filtering);
-    result &= visitor(alpine_faction_key, "MSAA", msaa);
+    result &= visitor(alpine_faction_key, "MSAA", msaa_level);
     result &= visitor(alpine_faction_key, "High Scanner Resolution", high_scanner_res);
     result &= visitor(alpine_faction_key, "True Color Textures", true_color_textures);
     result &= visitor(alpine_faction_key, "Renderer", renderer);

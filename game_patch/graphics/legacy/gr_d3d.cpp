@@ -178,7 +178,7 @@ D3DFORMAT determine_depth_buffer_format(D3DFORMAT adapter_format)
     return D3DFMT_D16;
 }
 
-static bool set_msaa_level(const uint32_t msaa_level) {
+static bool try_set_msaa_level(const uint32_t msaa_level) {
     const D3DMULTISAMPLE_TYPE multi_sample_type =
         static_cast<D3DMULTISAMPLE_TYPE>(msaa_level);
     if (multi_sample_type == D3DMULTISAMPLE_NONE) {
@@ -223,8 +223,8 @@ CodeInjection update_pp_hook{
         xlog::info("D3D Raster Caps: {:x}", rf::gr::d3d::device_caps.RasterCaps);
         xlog::info("Max texture size: {}x{}", rf::gr::d3d::device_caps.MaxTextureWidth, rf::gr::d3d::device_caps.MaxTextureHeight);
 
-        if (g_game_config.msaa) {
-            set_msaa_level(g_game_config.msaa);
+        if (g_game_config.msaa_level) {
+            try_set_msaa_level(g_game_config.msaa_level);
         }
 
         // remove D3DPRESENTFLAG_LOCKABLE_BACKBUFFER flag
@@ -370,13 +370,13 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
             constexpr auto CHANGE_MSAA_CFG = [] (
                 const uint32_t msaa_level
             ) {
-                g_game_config.msaa = msaa_level;
+                g_game_config.msaa_level = msaa_level;
                 g_game_config.save();
             };
             constexpr std::string_view MSAA_PREFIX = "msaax";
             if (string_iequals(mode, "none")) {
-                if (g_game_config.msaa) {
-                    set_msaa_level(0);
+                if (g_game_config.msaa_level) {
+                    try_set_msaa_level(0);
                     CHANGE_MSAA_CFG(0);
                     g_reset_device_req = true;
                     rf::console::print("Anti-aliasing mode is none");
@@ -397,8 +397,8 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
                     rf::console::print("MSAA level must be 2, 4, or 8");
                     return;
                 }
-                if (value != g_game_config.msaa) {
-                    if (!set_msaa_level(value)) {
+                if (value != g_game_config.msaa_level) {
+                    if (!try_set_msaa_level(value)) {
                         rf::console::print("MSAAx{} is an unsupported mode!", value);
                     } else {
                         CHANGE_MSAA_CFG(value);
@@ -423,12 +423,12 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
 ConsoleCommand2 r_antialiasing_cmd{
     "r_antialiasing",
     [] {
-        if (!g_game_config.msaa) {
+        if (!g_game_config.msaa_level) {
             rf::console::print("Anti-aliasing is not set or supported");
         } else {
             g_antialiasing = !g_antialiasing;
-            set_msaa_level(
-                g_antialiasing ? g_game_config.msaa : D3DMULTISAMPLE_NONE
+            try_set_msaa_level(
+                g_antialiasing ? g_game_config.msaa_level : D3DMULTISAMPLE_NONE
             );
             g_reset_device_req = true;
             rf::console::print(

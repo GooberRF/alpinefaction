@@ -39,8 +39,8 @@ namespace gr::d3d11
         skip_gamma_pass_ = g_alpine_system_config.skip_gamma_pass;
         allow_tearing_ = g_alpine_system_config.allow_tearing;
         init_swap_chain(hwnd);
-        init_back_buffer(g_game_config.msaa);
-        init_depth_stencil_buffer(g_game_config.msaa);
+        init_back_buffer(g_game_config.msaa_level);
+        init_depth_stencil_buffer(g_game_config.msaa_level);
 
         state_manager_ = std::make_unique<StateManager>(device_);
         shader_manager_ = std::make_unique<ShaderManager>(device_);
@@ -122,7 +122,7 @@ namespace gr::d3d11
             swap_chain_->ResizeBuffers(0, rf::gr::screen.max_w, rf::gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags_)
         );
         // get back buffer from the swap chain after it has been resized
-        init_back_buffer(g_game_config.msaa);
+        init_back_buffer(g_game_config.msaa_level);
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
 
@@ -337,7 +337,7 @@ namespace gr::d3d11
         dxgi_factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     }
 
-    void Renderer::init_back_buffer(const uint32_t sample_count)
+    void Renderer::init_back_buffer(const uint32_t msaa_level)
     {
         // Get a pointer to the back buffer
         DF_GR_D3D11_CHECK_HR(
@@ -356,10 +356,10 @@ namespace gr::d3d11
         init_scene_texture();
 
         // Create a render-target view for the main rendering pass
-        if (g_antialiasing && sample_count >= 2 && sample_count <= 32) {
+        if (g_antialiasing && msaa_level >= 2 && msaa_level <= 8) {
             D3D11_TEXTURE2D_DESC desc;
             back_buffer_->GetDesc(&desc);
-            desc.SampleDesc.Count = sample_count;
+            desc.SampleDesc.Count = msaa_level;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&desc, nullptr, &msaa_render_target_)
             );
@@ -367,16 +367,23 @@ namespace gr::d3d11
 
             CD3D11_RENDER_TARGET_VIEW_DESC view_desc{D3D11_RTV_DIMENSION_TEXTURE2DMS};
             DF_GR_D3D11_CHECK_HR(
-                device_->CreateRenderTargetView(default_render_target_, &view_desc, &default_render_target_view_)
+                device_->CreateRenderTargetView(
+                    default_render_target_,
+                    &view_desc,
+                    &default_render_target_view_
+                )
             );
-        }
-        else {
+        } else {
             // Without MSAA, render directly to the scene texture. Final output to
             // back_buffer_ happens in flip() — either via the gamma pass, or via
             // a CopyResource when the gamma pass is skipped.
             default_render_target_ = scene_texture_;
             DF_GR_D3D11_CHECK_HR(
-                device_->CreateRenderTargetView(default_render_target_, nullptr, &default_render_target_view_)
+                device_->CreateRenderTargetView(
+                    default_render_target_,
+                    nullptr,
+                    &default_render_target_view_
+                )
             );
         }
     }
@@ -396,7 +403,7 @@ namespace gr::d3d11
         );
     }
 
-    void Renderer::init_depth_stencil_buffer(const uint32_t sample_count)
+    void Renderer::init_depth_stencil_buffer(const uint32_t msaa_level)
     {
         D3D11_TEXTURE2D_DESC depth_stencil_desc;
         ZeroMemory(&depth_stencil_desc, sizeof(depth_stencil_desc));
@@ -405,9 +412,9 @@ namespace gr::d3d11
         depth_stencil_desc.MipLevels = 1;
         depth_stencil_desc.ArraySize = 1;
         depth_stencil_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        const bool use_msaa = g_antialiasing && sample_count >= 2 && sample_count <= 32;
+        const bool use_msaa = g_antialiasing && msaa_level >= 2 && msaa_level <= 8;
         if (use_msaa) {
-             depth_stencil_desc.SampleDesc.Count = sample_count;
+             depth_stencil_desc.SampleDesc.Count = msaa_level;
         } else {
              depth_stencil_desc.SampleDesc.Count = 1;
         }
@@ -454,8 +461,10 @@ namespace gr::d3d11
 
     void Renderer::flush_render_targets() {
         texture_manager_->flush_render_targets();
-        init_back_buffer(g_game_config.msaa);
-        init_depth_stencil_buffer(g_game_config.msaa);
+        init_back_buffer(g_game_config.msaa_level);
+        init_depth_stencil_buffer(g_game_config.msaa_level);
+        render_context_
+            ->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
 
     void Renderer::bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, rf::gr::Mode mode)

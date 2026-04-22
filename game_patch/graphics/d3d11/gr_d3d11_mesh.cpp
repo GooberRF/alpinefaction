@@ -838,7 +838,7 @@ namespace gr::d3d11
     {
         bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         // picmip does not apply to game objects (entities, items, held weapons, fpgun)
-        bool is_fp_weapon = (params.flags & MRF_FIRST_PERSON) != 0;
+        bool is_fp_weapon = (params.flags & rf::MRF_FIRST_PERSON) != 0;
         bool is_object_mesh = is_character_mesh || is_fp_weapon || ScopedPicmipSkipObject::active();
         RenderContext::ScopedPicmipActive picmip_scope{render_context_, !is_object_mesh};
 
