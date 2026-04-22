@@ -847,7 +847,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Modify_Gas_Region
     {
-        rf::EventType::Modify_Gas_Region, [](const rf::EventCreateParams& params) {
+        rf::EventType::Modify_Gas_Region, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Modify_Gas_Region));
             auto* event = dynamic_cast<EventModifyGasRegion*>(base_event);
             if (event) {
@@ -860,7 +860,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     },
     // Resize_Gas_Region
     {
-        rf::EventType::Resize_Gas_Region, [](const rf::EventCreateParams& params) {
+        rf::EventType::Resize_Gas_Region, [](const EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Resize_Gas_Region));
             auto* event = dynamic_cast<EventResizeGasRegion*>(base_event);
             if (event) {
