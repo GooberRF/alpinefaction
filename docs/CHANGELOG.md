@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.3.0 (Bakeapple): Not yet released
+Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
