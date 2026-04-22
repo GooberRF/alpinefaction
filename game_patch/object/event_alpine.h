@@ -2765,6 +2765,7 @@ struct EventFullscreenImage : EventFullscreenOverlayBase
             bitmap_handle = rf::bm::load(filename.c_str(), -1, true);
             if (bitmap_handle < 0) {
                 xlog::warn("AF_Fullscreen_Image ({}): failed to load '{}'", this->uid, filename);
+            }
             if (has_fade_out() && transition_time > 0.0f && !fading_out_early) {
                 fadeout_start_alpha = compute_alpha(); // capture before setting fading_out_early
                 fading_out_early = true;
