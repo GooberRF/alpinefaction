@@ -6,14 +6,14 @@
 template <typename T, size_t N>
 class MemPool {
     struct Slot {
-        alignas(T) std::byte buf[sizeof(T)];
+        alignas(T) char buf[sizeof(T)];
     };
 
     class Delete {
-        MemPool* pool{};
+        MemPool* pool;
 
     public:
-        explicit Delete(MemPool* pool)
+        explicit Delete(MemPool* const pool)
             : pool(pool) {
         }
 
@@ -22,8 +22,8 @@ class MemPool {
         }
     };
 
-    std::vector<Slot*> free_slots{};
-    std::vector<std::unique_ptr<Slot[]>> pages{};
+    std::vector<Slot*> free_slots;
+    std::vector<std::unique_ptr<Slot[]>> pages;
 
 public:
     using Pointer = std::unique_ptr<T, Delete>;
@@ -43,8 +43,8 @@ private:
 
         self.free_slots.reserve(self.free_slots.size() + N);
         for (std::size_t i = 0; i < N; ++i) {
-            Slot& slot = page[i];
-            self.free_slots.push_back(&slot);
+            T* const ptr = reinterpret_cast<T*>(page[i].buf);
+            self.free_slots.push_back(ptr);
         }
     }
 
@@ -52,15 +52,13 @@ private:
         if (self.free_slots.empty()) {
             self.alloc_page();
         }
-        Slot* const slot = self.free_slots.back();
+        T* const ptr = self.free_slots.back();
         self.free_slots.pop_back();
-        T* const ptr = reinterpret_cast<T*>(slot->buf);
         return std::construct_at(ptr);
     }
 
     void release(this MemPool& self, T* const ptr) {
         std::destroy_at(ptr);
-        Slot* const slot = reinterpret_cast<Slot*>(ptr);
-        self.free_slots.push_back(slot);
+        self.free_slots.push_back(ptr);
     }
 };
