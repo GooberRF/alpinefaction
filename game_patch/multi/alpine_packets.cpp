@@ -3,11 +3,13 @@
 #include <cassert>
 #include <array>
 #include <ranges>
+#include <unordered_map>
 #include <common/utils/bool-utils.h>
 #include <common/utils/list-utils.h>
 #include <common/rfproto.h>
 #include <xlog/xlog.h>
 #include "../rf/multi.h"
+#include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "multi.h"
@@ -25,6 +27,8 @@
 #include "bots/bot_state.h"
 #include "../object/object_private.h"
 #include "../misc/misc.h"
+#include "../purefaction/pf_packets.h"
+#include "../os/os.h"
 
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable)
 {
@@ -2217,4 +2221,243 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
             xlog::debug("af_process_bot_control_packet: unknown subtype {}", static_cast<int>(subtype));
             break;
     }
+}
+
+static uint8_t build_player_info_flags(const rf::Player& player)
+{
+    uint8_t flags = 0;
+    if (player.is_bot)
+        flags |= AF_PLAYER_FLAG_BOT;
+    if (player.is_browser)
+        flags |= AF_PLAYER_FLAG_BROWSER;
+    if (player.is_spectator)
+        flags |= AF_PLAYER_FLAG_SPECTATOR;
+    if (player_is_idle(&player))
+        flags |= AF_PLAYER_FLAG_IDLE;
+    if (player.team == rf::TEAM_BLUE)
+        flags |= AF_PLAYER_FLAG_TEAM_BLUE;
+    return flags;
+}
+
+void af_send_player_info_response(const rf::NetAddr& addr)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    // Placeholder filename used when no level is loaded
+    static constexpr const char* kNoLevelFilename = "No level loaded";
+
+    // Rate limit: one response per IP per second to reduce UDP amplification exposure
+    static constexpr size_t kMaxRecentResponses = 16384;
+    static std::unordered_map<uint32_t, HighResTimer> recent_responses;
+
+    // Sweep expired entries first
+    std::erase_if(recent_responses, [](const auto& entry) {
+        return entry.second.elapsed();
+    });
+
+    if (recent_responses.size() >= kMaxRecentResponses) {
+        return;
+    }
+
+    auto [it, inserted] = recent_responses.try_emplace(addr.ip_addr);
+    if (!inserted) {
+        // Already responded to this IP within the last second
+        return;
+    }
+    it->second.set(std::chrono::seconds(1));
+
+    static uint8_t next_response_id = 0;
+    uint8_t response_id = next_response_id++;
+
+    uint32_t time_left_seconds;
+    if (rf::multi_time_limit <= 0.0f) {
+        time_left_seconds = UINT32_MAX; // no time limit
+    }
+    else {
+        float remaining = rf::multi_time_limit - rf::level.time;
+        time_left_seconds = remaining > 0.0f
+            ? static_cast<uint32_t>(std::min(remaining, static_cast<float>(UINT32_MAX)))
+            : 0;
+    }
+
+    uint16_t red_score = 0;
+    uint16_t blue_score = 0;
+    if (multi_is_team_game_type()) {
+        switch (rf::netgame.type) {
+            case rf::NetGameType::NG_TYPE_CTF:
+                red_score = static_cast<uint16_t>(rf::multi_ctf_get_red_team_score());
+                blue_score = static_cast<uint16_t>(rf::multi_ctf_get_blue_team_score());
+                break;
+            case rf::NetGameType::NG_TYPE_TEAMDM:
+                red_score = static_cast<uint16_t>(rf::multi_tdm_get_red_team_score());
+                blue_score = static_cast<uint16_t>(rf::multi_tdm_get_blue_team_score());
+                break;
+            case rf::NetGameType::NG_TYPE_KOTH:
+            case rf::NetGameType::NG_TYPE_DC:
+                red_score = static_cast<uint16_t>(multi_koth_get_red_team_score());
+                blue_score = static_cast<uint16_t>(multi_koth_get_blue_team_score());
+                break;
+            default:
+                break;
+        }
+    }
+
+    // Serialize the logical payload into a flat buffer:
+    //   [payload_header][level_filename\0][player entry 0][player entry 1]...
+    // which is then sliced into segments. The receiver reassembles by
+    // response_id and parses the header + filename + entries.
+    // Per player: flags (1) + score (2) + kills (2) + deaths (2) + caps (2) + name (len+1)
+    // Name cannot realistically be longer than 20 characters,
+    // but wire protocol allows 31, so account for it
+    constexpr size_t preamble_size = sizeof(af_player_info_payload_header);
+    constexpr size_t max_filename_size = RF_MAX_LEVEL_NAME_LEN + 1;
+    constexpr size_t max_players_data = preamble_size + max_filename_size + 32 * (1 + 2 + 2 + 2 + 2 + 32);
+    std::byte players_data[max_players_data];
+    int players_data_len = 0;
+
+    // Chunk 0 is the payload header + level filename; chunks 1..entry_count are
+    // player entries. The chunker keeps chunks intact per segment, so chunk 0
+    // always lands entirely in segment 0.
+    int entry_offsets[34]; // preamble+filename + max 32 players + sentinel
+    entry_offsets[0] = 0;
+    int entry_count = 1;
+
+    af_player_info_payload_header preamble{};
+    preamble.red_score = red_score;
+    preamble.blue_score = blue_score;
+    preamble.time_left_seconds = time_left_seconds;
+    preamble.af_flags = server_get_game_info_flags().game_info_flags_to_uint32();
+    preamble.game_type = static_cast<uint8_t>(rf::netgame.type);
+    std::memcpy(players_data, &preamble, preamble_size);
+    players_data_len = static_cast<int>(preamble_size);
+
+    // level filename (null-terminated), clamped to max_filename_size - 1 bytes.
+    // Falls back to a placeholder when no level has been loaded yet.
+    const char* filename_src = rf::level.filename.c_str();
+    int filename_len = rf::level.filename.size();
+    if (filename_len <= 0) {
+        filename_src = kNoLevelFilename;
+        filename_len = static_cast<int>(std::strlen(kNoLevelFilename));
+    }
+    if (filename_len >= static_cast<int>(max_filename_size)) {
+        filename_len = static_cast<int>(max_filename_size) - 1;
+    }
+    std::memcpy(players_data + players_data_len, filename_src, filename_len);
+    players_data_len += filename_len;
+    players_data[players_data_len++] = std::byte{0};
+
+    constexpr int max_players = 32;
+    constexpr int max_name_len = 31; // wire protocol cap
+    auto player_list = SinglyLinkedList(rf::player_list);
+    for (auto& player : player_list) {
+        int name_len = std::min<int>(player.name.size(), max_name_len);
+        int entry_size = 1 + 2 + 2 + 2 + 2 + name_len + 1; // flags + score + kills + deaths + caps + name + null
+
+        if (entry_count - 1 >= max_players ||
+            players_data_len + entry_size > static_cast<int>(sizeof(players_data))) {
+                break;
+        }
+
+        entry_offsets[entry_count++] = players_data_len;
+
+        const auto* stats = static_cast<const PlayerStatsNew*>(player.stats);
+
+        // flags
+        players_data[players_data_len] = static_cast<std::byte>(build_player_info_flags(player));
+        players_data_len += 1;
+
+        // score
+        int16_t score = stats ? stats->score : 0;
+        std::memcpy(players_data + players_data_len, &score, sizeof(score));
+        players_data_len += sizeof(score);
+
+        // kills
+        uint16_t kills = stats ? stats->num_kills : 0;
+        std::memcpy(players_data + players_data_len, &kills, sizeof(kills));
+        players_data_len += sizeof(kills);
+
+        // deaths
+        uint16_t deaths = stats ? stats->num_deaths : 0;
+        std::memcpy(players_data + players_data_len, &deaths, sizeof(deaths));
+        players_data_len += sizeof(deaths);
+
+        // caps
+        uint16_t caps = stats ? static_cast<uint16_t>(std::max<int16_t>(stats->caps, 0)) : 0;
+        std::memcpy(players_data + players_data_len, &caps, sizeof(caps));
+        players_data_len += sizeof(caps);
+
+        // name (null-terminated; clamped to max_name_len)
+        std::memcpy(players_data + players_data_len, player.name.c_str(), name_len);
+        players_data_len += name_len;
+        players_data[players_data_len++] = std::byte{0};
+    }
+    entry_offsets[entry_count] = players_data_len; // sentinel
+
+    // Compute segment boundaries (each segment fits within max_packet_size)
+    constexpr int header_size = static_cast<int>(sizeof(af_player_info_packet));
+    constexpr int max_payload = static_cast<int>(rf::max_packet_size) - header_size;
+
+    int seg_boundaries[max_players + 2]; // preamble + entries + sentinel
+    int total_segments = 0;
+    {
+        int seg_start = 0;
+        while (seg_start < entry_count) {
+            seg_boundaries[total_segments++] = seg_start;
+            int seg_end = seg_start;
+            while (seg_end < entry_count &&
+                   entry_offsets[seg_end + 1] - entry_offsets[seg_start] <= max_payload) {
+                ++seg_end;
+            }
+            if (seg_end == seg_start) {
+                // Single chunk too large (should never happen)
+                ++seg_end;
+            }
+            seg_start = seg_end;
+        }
+    }
+    seg_boundaries[total_segments] = entry_count; // sentinel
+
+    // Verify all segments fit before sending anything. Chunk-size invariants
+    // (preamble+filename <= ~273 B, per-entry <= 41 B, max_payload ~= 505 B)
+    // guarantee this in practice, but a silent partial send would leave the
+    // receiver waiting on a missing segment forever.
+    for (int seg = 0; seg < total_segments; ++seg) {
+        int payload_len = entry_offsets[seg_boundaries[seg + 1]] - entry_offsets[seg_boundaries[seg]];
+        if (payload_len > max_payload) {
+            xlog::error("af_send_player_info_response: segment {} payload {} > max {}; aborting response",
+                seg, payload_len, max_payload);
+            return;
+        }
+    }
+
+    // Build and send each segment
+    std::byte packet_buf[rf::max_packet_size];
+    for (int seg = 0; seg < total_segments; ++seg) {
+        int first_entry = seg_boundaries[seg];
+        int end_entry = seg_boundaries[seg + 1];
+
+        int payload_offset = entry_offsets[first_entry];
+        int payload_len = entry_offsets[end_entry] - payload_offset;
+
+        af_player_info_packet hdr{};
+        hdr.hdr.type = static_cast<uint8_t>(pf_packet_type::players);
+        hdr.hdr.size = static_cast<uint16_t>(payload_len + header_size - sizeof(hdr.hdr));
+        hdr.version = af_player_info_packet_version;
+        hdr.response_id = response_id;
+        hdr.sequence = static_cast<uint8_t>(seg);
+        hdr.total_segments = static_cast<uint8_t>(total_segments);
+
+        std::memcpy(packet_buf, &hdr, header_size);
+        if (payload_len > 0) {
+            std::memcpy(packet_buf + header_size, players_data + payload_offset, payload_len);
+        }
+
+        // cannot use af_send_packet because packet is sent to
+        // online rfsb, not a connected client
+        rf::net_send(addr, packet_buf, header_size + payload_len);
+    }
+
+    //xlog::trace("af_send_player_info_response: sent {} segments, {} players", total_segments, entry_count);
 }

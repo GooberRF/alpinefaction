@@ -40,6 +40,7 @@ struct ClientVersionInfoProfile {
     uint8_t patch = 0;
     uint8_t type = 0;
     uint32_t max_rfl_ver = 200;
+    bool is_d3d11 = false;
 };
 
 struct PlayerAdditionalData {

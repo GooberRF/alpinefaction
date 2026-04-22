@@ -1,6 +1,8 @@
 #pragma once
 
 #include <patch_common/MemUtils.h>
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <sstream>
 #include "../bmpman.h"
@@ -42,11 +44,36 @@ namespace rf::gr
             return Color(r, g, b, a);
         }
 
+        static float srgb_to_linear(ubyte v)
+        {
+            return std::pow(v / 255.0f, 2.2f);
+        }
+
+        static ubyte linear_to_srgb(float v)
+        {
+            if (v <= 0.0f) return 0;
+            return static_cast<ubyte>(std::clamp(std::lround(std::pow(v, 1.0f / 2.2f) * 255.0f), 0L, 255L));
+        }
+
+        static Color lerp(const Color& a, const Color& b, float t)
+        {
+            return Color(
+                linear_to_srgb(std::lerp(srgb_to_linear(a.red), srgb_to_linear(b.red), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.green), srgb_to_linear(b.green), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.blue), srgb_to_linear(b.blue), t)),
+                static_cast<ubyte>(std::clamp(std::lround(std::lerp(static_cast<float>(a.alpha), static_cast<float>(b.alpha), t)), 0L, 255L))
+            );
+        }
+
         static Color from_rgb_string(const std::string& rgb_string, ubyte alpha = 255)
         {
+            if (rgb_string.empty()) {
+                return Color(255, 255, 255, alpha);
+            }
+
             // remove < and > if present (for compatibility with format from level properties)
             std::string cleaned_string = rgb_string;
-            if (rgb_string.front() == '<' && rgb_string.back() == '>') {
+            if (cleaned_string.front() == '<' && cleaned_string.back() == '>') {
                 cleaned_string = rgb_string.substr(1, rgb_string.size() - 2);
             }
 
@@ -60,6 +87,7 @@ namespace rf::gr
 
             return Color(values[0], values[1], values[2], alpha);
         }
+
     };
 
     struct BaseVertex

@@ -236,6 +236,7 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
     {
         none = 0,
         client_bot = 1u << 0,
+        client_d3d11 = 1u << 1,
     };
 
     uint32_t af_signature = 0u;

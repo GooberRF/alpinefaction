@@ -6,6 +6,7 @@
 #include <xlog/xlog.h>
 #include "../rf/geometry.h"
 #include "../rf/file/file.h"
+#include "../os/os.h"
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int dash_level_props_chunk_id = 0xDA58FA00;
@@ -271,11 +272,38 @@ struct GasRegionInfo {
     float depth = 1.0f;      // box only
     rf::Color color{255, 255, 255, 255};
     float density = 1.0f;
+    bool enabled = true;
 };
 
 void gas_region_clear_state();
 const std::vector<GasRegionInfo>& gas_region_get_all();
 GasRegionInfo* gas_region_get_by_uid(int uid);
+
+// Gas region transitions (smooth interpolation over time)
+struct GasRegionTransition {
+    int32_t region_uid;
+    HighResTimer timer;
+
+    // Modify transition fields
+    bool has_modify = false;
+    rf::Color start_color{};
+    rf::Color target_color{};
+    float start_density = 0.0f;
+    float target_density = 0.0f;
+
+    // Resize transition fields
+    bool has_resize = false;
+    int target_shape = 0;
+    float start_radius = 0.0f;
+    float target_radius = 0.0f;
+    float start_height = 0.0f, start_width = 0.0f, start_depth = 0.0f;
+    float target_height = 0.0f, target_width = 0.0f, target_depth = 0.0f;
+};
+
+void gas_region_add_modify_transition(int32_t region_uid, rf::Color target_color, float target_density, float duration_sec);
+void gas_region_add_resize_transition(int32_t region_uid, int target_shape, float target_radius,
+                                       float target_height, float target_width, float target_depth, float duration_sec);
+void gas_region_transition_do_frame();
 
 // used by RF2-style geomod
 struct RF2AnchorInfo {

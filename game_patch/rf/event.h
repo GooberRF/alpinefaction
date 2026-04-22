@@ -351,7 +351,10 @@ namespace rf
         Mesh_Set_Collision,
         AF_Fullscreen_Image,
         AF_Fullscreen_Color,
-        Unhide_Glare
+        Unhide_Glare,
+        Gas_Region_State,
+        Modify_Gas_Region,
+        Resize_Gas_Region
     };
 
     // int to EventType

@@ -1471,6 +1471,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
         if (session_client_bot_mode) {
             ext_data.flags |= static_cast<uint32_t>(AlpineFactionJoinReqPacketExt::Flags::client_bot);
         }
+        if (is_d3d11()) {
+            ext_data.flags |= static_cast<uint32_t>(AlpineFactionJoinReqPacketExt::Flags::client_d3d11);
+        }
 
         std::vector<uint8_t> tlvs{};
         tlvs.reserve(32);
@@ -1955,7 +1958,10 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                     .minor = g_joining_player_info.version_minor,
                     .patch = g_joining_player_info.version_patch,
                     .type = g_joining_player_info.version_type,
-                    .max_rfl_ver = g_joining_player_info.max_rfl_version
+                    .max_rfl_ver = g_joining_player_info.max_rfl_version,
+                    .is_d3d11 = (g_joining_player_info.flags
+                        & AlpineFactionJoinReqPacketExt::Flags::client_d3d11)
+                        != AlpineFactionJoinReqPacketExt::Flags::none,
                 };
 
                 const bool bot_mode_requested =

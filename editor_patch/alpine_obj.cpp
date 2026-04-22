@@ -975,13 +975,13 @@ static LRESULT CALLBACK ListViewDragSelectProc(HWND hwnd, UINT msg, WPARAM wpara
     return CallWindowProc(g_orig_listview_proc, hwnd, msg, wparam, lparam);
 }
 
-// Update "To Mesh Object" button: enabled only when all selected items are clutter
+// Update "To Mesh Object" button: enabled when all selected items are clutter or entity
 static void update_to_mesh_button(HWND hwnd, TypeFilterDialogData* data)
 {
     if (!data || !data->to_mesh_btn) return;
     HWND list = GetDlgItem(hwnd, IDC_TYPE_FILTER_LIST);
     bool any_selected = false;
-    bool all_clutter = true;
+    bool all_convertible = true;
     int idx = -1;
     while ((idx = ListView_GetNextItem(list, idx, LVNI_SELECTED)) >= 0) {
         any_selected = true;
@@ -991,13 +991,14 @@ static void update_to_mesh_button(HWND hwnd, TypeFilterDialogData* data)
         ListView_GetItem(list, &lvi);
         if (lvi.lParam) {
             auto* obj = reinterpret_cast<DedObject*>(lvi.lParam);
-            if (obj->type != DedObjectType::DED_CLUTTER) {
-                all_clutter = false;
+            if (obj->type != DedObjectType::DED_CLUTTER &&
+                obj->type != DedObjectType::DED_ENTITY) {
+                all_convertible = false;
                 break;
             }
         }
     }
-    EnableWindow(data->to_mesh_btn, any_selected && all_clutter);
+    EnableWindow(data->to_mesh_btn, any_selected && all_convertible);
 }
 
 static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -1268,9 +1269,9 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
             return TRUE;
         }
         case IDC_TYPE_FILTER_TO_MESH: {
-            // Convert selected clutter objects to mesh objects
+            // Convert selected clutter/entity objects to mesh objects
             HWND list = GetDlgItem(hwnd, IDC_TYPE_FILTER_LIST);
-            std::vector<DedObject*> clutter_objs;
+            std::vector<DedObject*> source_objs;
             int idx = -1;
             while ((idx = ListView_GetNextItem(list, idx, LVNI_SELECTED)) >= 0) {
                 LVITEM lvi = {};
@@ -1279,20 +1280,40 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 ListView_GetItem(list, &lvi);
                 if (lvi.lParam) {
                     auto* obj = reinterpret_cast<DedObject*>(lvi.lParam);
-                    if (obj->type == DedObjectType::DED_CLUTTER)
-                        clutter_objs.push_back(obj);
+                    if (obj->type == DedObjectType::DED_CLUTTER ||
+                        obj->type == DedObjectType::DED_ENTITY)
+                        source_objs.push_back(obj);
                 }
             }
-            if (clutter_objs.empty()) return TRUE;
+            if (source_objs.empty()) return TRUE;
 
             auto* level = data->level;
             std::vector<DedMesh*> new_meshes;
 
-            for (auto* clutter : clutter_objs) {
-                // Get mesh filename from the loaded vmesh
+            for (auto* obj : source_objs) {
+                const char* cls = obj->class_name.c_str();
+
+                // Look up class info and collect glare names
+                const ClutterClassInfo* ci = nullptr;
+                const EntityClassInfo* ei = nullptr;
+                std::vector<std::string> glare_names;
+
+                if (obj->type == DedObjectType::DED_CLUTTER) {
+                    ci = clutter_tbl_find(cls);
+                }
+                else if (obj->type == DedObjectType::DED_ENTITY) {
+                    ei = entity_tbl_find(cls);
+                }
+
+                // Get mesh filename: .tbl is authoritative (has extension),
+                // vmesh filename is fallback (stock entities lack extensions)
                 std::string filename_str;
-                if (clutter->vmesh) {
-                    auto* vm = static_cast<EditorVMesh*>(clutter->vmesh);
+                if (ci && !ci->v3d_filename.empty())
+                    filename_str = ci->v3d_filename;
+                else if (ei && !ei->v3d_filename.empty())
+                    filename_str = ei->v3d_filename;
+                if (filename_str.empty() && obj->vmesh) {
+                    auto* vm = static_cast<EditorVMesh*>(obj->vmesh);
                     if (vm->filename[0] != '\0')
                         filename_str = vm->filename;
                 }
@@ -1307,17 +1328,15 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
                 mesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
                 mesh->type = DedObjectType::DED_MESH;
-                mesh->pos = clutter->pos;
-                mesh->orient = clutter->orient;
-                mesh->script_name.assign_0(clutter->script_name.c_str());
+                mesh->pos = obj->pos;
+                mesh->orient = obj->orient;
+                mesh->script_name.assign_0(obj->script_name.c_str());
                 mesh->mesh_filename.assign_0(filename_str.c_str());
                 mesh->uid = generate_uid();
+                mesh->collision_mode = 2; // default: All (overridden below if class found)
 
-                // Replicate clutter class properties
-                const char* cls = clutter->class_name.c_str();
-                auto* ci = clutter_tbl_find(cls);
-                mesh->collision_mode = ci ? ci->collision_mode() : 2;
                 if (ci) {
+                    mesh->collision_mode = ci->collision_mode();
                     mesh->material = ci->material;
                     auto& cp = mesh->clutter_props;
                     cp.life = ci->life;
@@ -1330,12 +1349,9 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                     for (int di = 0; di < 11; di++)
                         cp.damage_type_factors[di] = ci->damage_type_factors[di];
 
-                    // Mark as destructible if life > -1
-                    if (ci->life > -1.0f) {
+                    if (ci->life > -1.0f)
                         cp.is_clutter = true;
-                    }
 
-                    // Resolve corpse class: look up its mesh filename and material
                     if (!ci->corpse_class_name.empty()) {
                         auto* corpse_ci = clutter_tbl_find(ci->corpse_class_name.c_str());
                         if (corpse_ci) {
@@ -1344,9 +1360,43 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                             replace_ext_if(corpse_mesh, "vcm", "v3c");
                             cp.corpse_filename = corpse_mesh;
                             cp.corpse_material = static_cast<int8_t>(corpse_ci->material);
-                            // Corpse class inherits collision from base (All)
                             cp.corpse_collision = 2;
                         }
+                    }
+
+                    if (!ci->glare_name.empty())
+                        glare_names.push_back(ci->glare_name);
+                }
+                else if (ei) {
+                    mesh->collision_mode = ei->collision_mode();
+                    mesh->material = ei->material;
+                    auto& cp = mesh->clutter_props;
+                    if (ei->life > -1.0f) {
+                        cp.life = ei->life;
+                        cp.is_clutter = true;
+                    }
+                    cp.debris_filename = ei->debris_filename;
+                    replace_ext_if(cp.debris_filename, "v3d", "v3m");
+                    replace_ext_if(cp.debris_filename, "vcm", "v3c");
+                    cp.explosion_vclip = ei->explode_vclip;
+                    cp.explosion_radius = ei->explode_radius;
+                    for (int di = 0; di < 11; di++)
+                        cp.damage_type_factors[di] = ei->damage_type_factors[di];
+                    if (!ei->corpse_v3d_filename.empty()) {
+                        std::string corpse_mesh = ei->corpse_v3d_filename;
+                        replace_ext_if(corpse_mesh, "v3d", "v3m");
+                        replace_ext_if(corpse_mesh, "vcm", "v3c");
+                        cp.corpse_filename = corpse_mesh;
+                        cp.corpse_material = -1; // inherit from base
+                        cp.corpse_collision = 2;
+                    }
+                    glare_names = ei->corona_glare_names;
+
+                    // Set stand animation so the mesh displays in idle pose
+                    if (!ei->stand_anim.empty()) {
+                        std::string anim = ei->stand_anim;
+                        replace_ext_if(anim, "mvf", "rfa");
+                        mesh->state_anim.assign_0(anim.c_str());
                     }
                 }
 
@@ -1355,47 +1405,55 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 mesh_load_vmesh(mesh);
                 new_meshes.push_back(mesh);
 
-                // Create a corona object if the clutter class has a glare
-                if (ci && !ci->glare_name.empty()) {
-                    auto* gi = glare_tbl_find(ci->glare_name.c_str());
-                    if (gi && !gi->corona_bitmap.empty()) {
-                        auto* corona = new DedCorona();
-                        memset(static_cast<DedObject*>(corona), 0, sizeof(DedObject));
-                        corona->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
-                        corona->type = DedObjectType::DED_CORONA;
-                        corona->pos = clutter->pos;
-                        corona->orient = clutter->orient;
-                        corona->script_name.assign_0("Corona");
-                        corona->uid = generate_uid();
+                // Create child objects from mesh tag points
+                auto* vm = static_cast<EditorVMesh*>(obj->vmesh);
+                if (vm) {
+                    // Coronas from corona_N tags
+                    if (!glare_names.empty())
+                        corona_create_from_mesh_tags(level, vm, obj->pos, obj->orient, glare_names);
 
-                        corona->color_r = gi->color_r;
-                        corona->color_g = gi->color_g;
-                        corona->color_b = gi->color_b;
-                        corona->color_a = 255;
-                        corona->corona_bitmap = gi->corona_bitmap;
-                        corona->cone_angle = gi->cone_angle;
-                        corona->intensity = gi->intensity;
-                        corona->radius_distance = gi->radius_distance;
-                        corona->radius_scale = gi->radius_scale;
-                        corona->diminish_distance = gi->diminish_distance;
-                        corona->volumetric_bitmap = gi->volumetric_bitmap;
-                        corona->volumetric_height = gi->volumetric_height;
-                        corona->volumetric_length = gi->volumetric_length;
+                    // Thruster VFX meshes from thruster_N tags
+                    if (ei && !ei->thruster_vfx_names.empty()) {
+                        for (int ti = 0; ; ti++) {
+                            char tag_name[32];
+                            snprintf(tag_name, sizeof(tag_name), "thruster_%d", ti + 1);
+                            int tag_idx = vmesh_find_tag_by_name(vm, tag_name);
+                            if (tag_idx < 0) break;
 
-                        level->GetAlpineLevelProperties().corona_objects.push_back(corona);
-                        level->master_objects.add(static_cast<DedObject*>(corona));
+                            const auto& vfx_name = (ti < static_cast<int>(ei->thruster_vfx_names.size()))
+                                ? ei->thruster_vfx_names[ti] : ei->thruster_vfx_names.back();
+
+                            Vector3 tag_pos;
+                            Matrix3 tag_orient;
+                            vmesh_get_tag_local_transform(vm, &tag_pos, &tag_orient, tag_idx);
+
+                            auto* tmesh = new DedMesh();
+                            memset(static_cast<DedObject*>(tmesh), 0, sizeof(DedObject));
+                            tmesh->vtbl = reinterpret_cast<void*>(ded_object_vtbl_addr);
+                            tmesh->type = DedObjectType::DED_MESH;
+                            tmesh->pos = obj->pos + obj->orient * tag_pos;
+                            tmesh->orient = obj->orient * tag_orient;
+                            tmesh->script_name.assign_0("Thruster");
+                            tmesh->mesh_filename.assign_0(vfx_name.c_str());
+                            tmesh->uid = generate_uid();
+
+                            level->GetAlpineLevelProperties().mesh_objects.push_back(tmesh);
+                            level->master_objects.add(static_cast<DedObject*>(tmesh));
+                            mesh_load_vmesh(tmesh);
+                            new_meshes.push_back(tmesh);
+                        }
                     }
                 }
             }
 
-            // Delete original clutter, but skip sole moving group members
+            // Delete originals, but skip sole moving group members
             std::vector<int> skipped_uids;
-            for (auto* clutter : clutter_objs) {
-                if (is_sole_moving_group_member(level, clutter)) {
-                    skipped_uids.push_back(clutter->uid);
+            for (auto* obj : source_objs) {
+                if (is_sole_moving_group_member(level, obj)) {
+                    skipped_uids.push_back(obj->uid);
                     continue;
                 }
-                level->delete_object(clutter);
+                level->delete_object(obj);
             }
 
             // Build popup message
@@ -1406,7 +1464,7 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                     if (!uid_list.empty()) uid_list += ", ";
                     uid_list += std::to_string(uid);
                 }
-                skipped_msg = "The following clutter UIDs were not deleted during "
+                skipped_msg = "The following object UIDs were not deleted during "
                     "this operation because it would have resulted in empty moving "
                     "groups: " + uid_list;
             }

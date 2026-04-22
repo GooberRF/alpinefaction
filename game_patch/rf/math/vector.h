@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <numbers>
+#include <string>
 #include <patch_common/MemUtils.h>
 #include "../os/os.h"
 #include "../../main/main.h"
@@ -214,6 +216,24 @@ namespace rf
                 y = 0.0f;
                 z = 0.0f;
             }
+        }
+
+        static Vector3 from_string(const std::string& str) { return from_string(str, Vector3{}); }
+
+        static Vector3 from_string(const std::string& str, const Vector3& fallback)
+        {
+            // normalize: strip <>, replace commas with spaces
+            // supports: "5 10 5", "<5.5, 10.1, 5.0>", "5, 10, 5", "5,10,5"
+            std::string cleaned = str;
+            for (char& c : cleaned) {
+                if (c == ',' || c == '<' || c == '>') {
+                    c = ' ';
+                }
+            }
+
+            Vector3 result = fallback;
+            std::sscanf(cleaned.c_str(), "%f %f %f", &result.x, &result.y, &result.z);
+            return result;
         }
 
         void rand_quick()

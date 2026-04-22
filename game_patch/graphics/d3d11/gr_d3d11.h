@@ -56,6 +56,7 @@ namespace df::gr::d3d11
         void flip();
         void texture_save_cache();
         void texture_flush_cache(bool force);
+        void texture_flush_non_user_cache();
         void texture_mark_dirty(int bm_handle);
         void texture_add_ref(int bm_handle);
         void texture_remove_ref(int bm_handle);
@@ -91,6 +92,7 @@ namespace df::gr::d3d11
         void clear_mesh_lights();
         void set_pow2_tex_active(bool active);
         float z_far() const;
+        bool supports_exclusive_fullscreen() const;
 
     private:
         void init_device();
@@ -123,6 +125,12 @@ namespace df::gr::d3d11
         std::unique_ptr<OutlineRenderer> outline_renderer_;
         std::unique_ptr<GammaPass> gamma_pass_;
         int render_target_bm_handle_ = -1;
+        bool skip_gamma_pass_ = false;
+        bool low_frame_latency_ = false;
+        bool allow_tearing_ = false;
+        bool frame_latency_stall_logged_ = false;
+        HANDLE frame_latency_wait_handle_ = nullptr;
+        UINT swap_chain_flags_ = 0;
     };
 
     void set_dbg_breaks(ID3D11Device* device);

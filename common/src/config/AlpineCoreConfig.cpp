@@ -38,6 +38,18 @@ bool AlpineCoreConfig::load(const std::string& filename)
         vsync = string_to_bool(settings["VerticalSync"]);
         processed.insert("VerticalSync");
     }
+    if (settings.count("D3D11_LowFrameLatency")) {
+        low_frame_latency = string_to_bool(settings["D3D11_LowFrameLatency"]);
+        processed.insert("D3D11_LowFrameLatency");
+    }
+    if (settings.count("D3D11_AllowTearing")) {
+        allow_tearing = string_to_bool(settings["D3D11_AllowTearing"]);
+        processed.insert("D3D11_AllowTearing");
+    }
+    if (settings.count("D3D11_SkipGammaPass")) {
+        skip_gamma_pass = string_to_bool(settings["D3D11_SkipGammaPass"]);
+        processed.insert("D3D11_SkipGammaPass");
+    }
 
     for (const auto& [key, value] : settings) {
         if (!processed.contains(key) && key.rfind("AFCC", 0) == std::string::npos) {
@@ -85,6 +97,13 @@ void AlpineCoreConfig::save(const std::string& filename) const
 
     file << "\n[Configuration]\n";
     file << "VerticalSync=" << bool_to_string(vsync) << "\n";
+
+    file << "\n[Experimental]\n";
+    file << "; These settings may cause crashes or other drawbacks on certain system configurations.\n";
+    file << "; Always leave these at the defaults unless you have a very good reason to change them.\n";
+    file << "D3D11_LowFrameLatency=" << bool_to_string(low_frame_latency) << "\n";
+    file << "D3D11_AllowTearing=" << bool_to_string(allow_tearing) << "\n";
+    file << "D3D11_SkipGammaPass=" << bool_to_string(skip_gamma_pass) << "\n";
 
     file.close();
     xlog::info("Saved Alpine core config to {}", filename);

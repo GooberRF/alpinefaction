@@ -26,6 +26,7 @@
 #include "../multi/gametype.h"
 #include "../rf/player/player.h"
 #include "../rf/os/timestamp.h"
+#include "../os/os.h"
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/glare.h"
@@ -2675,10 +2676,12 @@ struct EventFullscreenOverlayBase : rf::Event
             return fadeout_start_alpha * (1.0f - progress);
         }
 
-        int elapsed_ms = start_ts.time_since();
-        if (elapsed_ms < 0) elapsed_ms = 0;
-        float elapsed = static_cast<float>(elapsed_ms) / 1000.0f;
-        bool infinite = (duration <= 0.0f);
+        // Runtime state (not serialized)
+        bool active = false;
+        bool fading_out_early = false;
+        HighResTimer main_timer;
+        HighResTimer fadeout_timer;
+        float fadeout_start_alpha = 1.0f;
 
         // Fade-in phase
         if (has_fade_in() && trans > 0.0f && elapsed < trans) {
@@ -2706,13 +2709,16 @@ struct EventFullscreenOverlayBase : rf::Event
     {
         if (fading_out_early) {
             float trans = transition_time;
-            if (trans <= 0.0f) return true;
-            int fadeout_elapsed_ms = fadeout_start_ts.time_since();
-            if (fadeout_elapsed_ms < 0) fadeout_elapsed_ms = 0;
-            return fadeout_elapsed_ms >= static_cast<int>(trans * 1000.0f);
-        }
+            float max_a = effective_max_alpha();
 
-        if (duration <= 0.0f) return false; // infinite hold
+            // Early fade-out override
+            if (fading_out_early) {
+                if (trans <= 0.0f) return 0.0f;
+                return fadeout_start_alpha * (1.0f - fadeout_timer.elapsed_frac());
+            }
+
+            float elapsed = main_timer.time_since_sec();
+            bool infinite = (duration <= 0.0f);
 
         int elapsed_ms = start_ts.time_since();
         if (elapsed_ms < 0) elapsed_ms = 0;
@@ -2742,6 +2748,18 @@ struct EventFullscreenOverlayBase : rf::Event
         else {
             active = false;
         }
+    }
+
+    bool is_finished() const
+    {
+        if (fading_out_early) {
+            if (transition_time <= 0.0f) return true;
+            return fadeout_timer.elapsed();
+        }
+
+        if (duration <= 0.0f) return false; // infinite hold
+
+        return main_timer.elapsed();
     }
 
     virtual void render(float alpha) = 0;
@@ -2777,6 +2795,10 @@ struct EventFullscreenImage : EventFullscreenOverlayBase
             bitmap_handle = rf::bm::load(filename.c_str(), -1, true);
             if (bitmap_handle < 0) {
                 xlog::warn("AF_Fullscreen_Image ({}): failed to load '{}'", this->uid, filename);
+            if (has_fade_out() && transition_time > 0.0f && !fading_out_early) {
+                fadeout_start_alpha = compute_alpha(); // capture before setting fading_out_early
+                fading_out_early = true;
+                fadeout_timer.set_sec(transition_time);
             }
             else {
                 rf::bm::get_dimensions(bitmap_handle, &bm_w, &bm_h);
@@ -2882,5 +2904,144 @@ struct EventUnhideGlare : rf::Event
     void turn_off() override
     {
         set_glares_enabled(this->links, false);
+    }
+};
+
+// id 151
+struct EventGasRegionState : rf::Event
+{
+    void turn_on() override
+    {
+        for (const auto& linked_uid : this->links) {
+            if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                gas_region->enabled = true;
+            }
+        }
+    }
+
+    void turn_off() override
+    {
+        for (const auto& linked_uid : this->links) {
+            if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                gas_region->enabled = false;
+            }
+        }
+    }
+};
+
+// id 152
+struct EventModifyGasRegion : rf::Event
+{
+    std::string color_string;
+    float density = 1.0f;
+    float transition_time = 0.0f;
+
+    void register_variable_handlers() override
+    {
+        rf::Event::register_variable_handlers();
+
+        auto& handlers = variable_handler_storage[this];
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
+            auto* this_event = static_cast<EventModifyGasRegion*>(event);
+            this_event->color_string = value;
+        };
+
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
+            auto* this_event = static_cast<EventModifyGasRegion*>(event);
+            this_event->density = std::stof(value);
+        };
+
+        handlers[SetVarOpts::float2] = [](rf::Event* event, const std::string& value) {
+            auto* this_event = static_cast<EventModifyGasRegion*>(event);
+            this_event->transition_time = std::max(0.0f, std::stof(value));
+        };
+    }
+
+    void turn_on() override
+    {
+        try {
+            rf::Color color = rf::Color::from_rgb_string(color_string);
+
+            for (const auto& linked_uid : this->links) {
+                if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                    if (transition_time > 0.0f) {
+                        gas_region_add_modify_transition(linked_uid, color, density, transition_time);
+                    }
+                    else {
+                        gas_region->color = color;
+                        gas_region->density = density;
+                    }
+                }
+            }
+        }
+        catch (const std::exception& e) {
+            xlog::error("Modify_Gas_Region ({}) failed: {}", this->uid, e.what());
+        }
+    }
+};
+
+// id 153
+struct EventResizeGasRegion : rf::Event
+{
+    int shape = 1; // 1=sphere, 2=box
+    float sphere_radius = 1.0f;
+    std::string box_dimensions; // HWD
+    float transition_time = 0.0f;
+
+    void register_variable_handlers() override
+    {
+        rf::Event::register_variable_handlers();
+
+        auto& handlers = variable_handler_storage[this];
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
+            auto* this_event = static_cast<EventResizeGasRegion*>(event);
+            this_event->shape = std::stoi(value) + 1; // 0->sphere(1), 1->box(2)
+        };
+
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
+            auto* this_event = static_cast<EventResizeGasRegion*>(event);
+            this_event->sphere_radius = std::stof(value);
+        };
+
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
+            auto* this_event = static_cast<EventResizeGasRegion*>(event);
+            this_event->box_dimensions = value;
+        };
+
+        handlers[SetVarOpts::float2] = [](rf::Event* event, const std::string& value) {
+            auto* this_event = static_cast<EventResizeGasRegion*>(event);
+            this_event->transition_time = std::max(0.0f, std::stof(value));
+        };
+    }
+
+    void turn_on() override
+    {
+        try {
+            auto dims = rf::Vector3::from_string(box_dimensions, rf::Vector3{1.0f, 1.0f, 1.0f});
+
+            for (const auto& linked_uid : this->links) {
+                if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                    if (transition_time > 0.0f) {
+                        gas_region_add_resize_transition(linked_uid, shape,
+                            sphere_radius, dims.x, dims.y, dims.z, transition_time);
+                    }
+                    else {
+                        gas_region->shape = shape;
+
+                        if (shape == 1) { // sphere
+                            gas_region->radius = sphere_radius;
+                        }
+                        else if (shape == 2) { // box - parsed as "H W D"
+                            gas_region->height = dims.x;
+                            gas_region->width = dims.y;
+                            gas_region->depth = dims.z;
+                        }
+                    }
+                }
+            }
+        }
+        catch (const std::exception& e) {
+            xlog::error("Resize_Gas_Region ({}) failed: {}", this->uid, e.what());
+        }
     }
 };

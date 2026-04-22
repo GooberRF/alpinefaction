@@ -906,6 +906,12 @@ void configure_custom_gametype_listen_server_settings() {
     if (rf::game_get_gore_level() >= 2) {
         rules.gibbing.enabled = true;
     }
+
+    // Always allow these visual options on listen servers
+    g_alpine_server_config.allow_fullbright_meshes = true;
+    g_alpine_server_config.allow_lightmaps_only = true;
+    g_alpine_server_config.allow_unlimited_fps = true;
+    g_alpine_server_config.allow_outlines = true;
 }
 
 void start_level_in_multi(std::string filename) {
