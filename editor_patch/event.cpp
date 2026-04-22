@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 49; // must be 1 higher than actual count
+constexpr int new_event_count = 55; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -89,6 +89,12 @@ const char* additional_event_names[new_event_count] = {
     "Mesh_Animate",
     "Mesh_Set_Texture",
     "Mesh_Set_Collision",
+    "AF_Fullscreen_Image",
+    "AF_Fullscreen_Color",
+    "Unhide_Glare",
+    "Gas_Region_State",
+    "Modify_Gas_Region",
+    "Resize_Gas_Region",
     "_dummy"
 };
 
@@ -697,6 +703,61 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         },
         {
             {FIELD_INT1, {"None", "Only Weapons", "All"}}
+        },
+        {
+            {FIELD_INT1, true}
+        }
+    }},
+    {AlpineDedEventID::AF_Fullscreen_Image, {
+        {FIELD_STR1, FIELD_FLOAT1, FIELD_FLOAT2, FIELD_INT1, FIELD_INT2},
+        {
+            {FIELD_STR1, "Image filename (str1):"},
+            {FIELD_FLOAT1, "Hold seconds (0 = forever) (float1):"},
+            {FIELD_FLOAT2, "Transition seconds (float2):"},
+            {FIELD_INT1, "Transition type (int1):"},
+            {FIELD_INT2, "Alpha at max (int2):"}
+        },
+        {
+            {FIELD_INT1, {"Instant", "Fade In + Instant Out", "Fade In + Fade Out", "Instant In + Fade Out"}}
+        },
+        {
+            {FIELD_INT1, true}
+        }
+    }},
+    {AlpineDedEventID::AF_Fullscreen_Color, {
+        {FIELD_STR1, FIELD_FLOAT1, FIELD_FLOAT2, FIELD_INT1, FIELD_INT2},
+        {
+            {FIELD_STR1, "RGB color (str1):"},
+            {FIELD_FLOAT1, "Hold seconds (0 = forever) (float1):"},
+            {FIELD_FLOAT2, "Transition seconds (float2):"},
+            {FIELD_INT1, "Transition type (int1):"},
+            {FIELD_INT2, "Alpha at max (int2):"}
+        },
+        {
+            {FIELD_INT1, {"Instant", "Fade In + Instant Out", "Fade In + Fade Out", "Instant In + Fade Out"}}
+        },
+        {
+            {FIELD_INT1, true}
+        }
+    }},
+    {AlpineDedEventID::Modify_Gas_Region, {
+        {FIELD_STR1, FIELD_FLOAT1, FIELD_FLOAT2},
+        {
+            {FIELD_STR1, "RGB color (str1):"},
+            {FIELD_FLOAT1, "Density (float1):"},
+            {FIELD_FLOAT2, "Transition time (float2):"}
+        }
+    }},
+    {AlpineDedEventID::Resize_Gas_Region, {
+        {FIELD_INT1, FIELD_FLOAT1, FIELD_STR1, FIELD_FLOAT2},
+        {
+            {FIELD_INT1, "Shape (int1):"},
+            {FIELD_FLOAT1, "Sphere radius (float1):"},
+            {FIELD_STR1, "Box size HWD (str1):"},
+            {FIELD_FLOAT2, "Transition time (float2):"}
+        },
+        {
+            {FIELD_INT1, {"Sphere", "Box"}}
         },
         {
             {FIELD_INT1, true}

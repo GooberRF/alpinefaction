@@ -1,12 +1,9 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.4.0 (TBA)
-note: this is a placeholder list, actual patch notes will be added for the next release candidate
+Version 1.4.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
-
-[@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Controller Support
 > [!WARNING]
 > When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2025): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
@@ -33,7 +30,9 @@ note: this is a placeholder list, actual patch notes will be added for the next 
 - Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
 - Add the ability to scroll thought Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
 
-Version 1.3.0 (Bakeapple): Not yet released
+### Bug fixes
+
+Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
@@ -48,6 +47,7 @@ Version 1.3.0 (Bakeapple): Not yet released
   - Add full mesh shadows for entities, corpses, and items
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
   - Support movers, meshes, and mesh pixel lighting in skyboxes
+  - Support gas regions
 - Expanded destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
@@ -128,6 +128,16 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `clear_stale_movement_input` dedicated server config option
 - Display bot counts in `Players` column in server list
 - Make sorting on `Players` column in server list incorporate bot count
+- Add server browser filters for `Alpine`, `Unmodded`, `Modded`, `Match Mode`
+- Add `AF_Fullscreen_Image`, `AF_Fullscreen_Color`, `Unhide_Glare` events
+- Exclude `Shotgun` from gaussian spread
+- Exclude `Precision Rifle` and `Sniper Rifle` from first shot accuracy
+- Add `Gas_Region_State`, `Modify_Gas_Region`, `Resize_Gas_Region` events
+- Add `require_d3d11` to dedicated server config
+- Add `$Stock Alpha Test` to `af_level_quirks.tbl` and use to restore stock alpha test only on known affected levels
+- Serve detailed player and server info in `players_request` packet response (for online FF RFSB)
+- Support 8-bit greyscale TGA textures (types 3 and 11) in editor and game
+- Add experimental D3D11 performance settings `D3D11_LowFrameLatency`, `D3D11_AllowTearing`, and `D3D11_SkipGammaPass`
 
 [@is-this-c](https://github.com/is-this-c)
 - Use 64-bit integers for time deltas
@@ -173,11 +183,10 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix some string errors when compiled using mingw
 - Fix rare crash when loading skeletons
 - Fix level editor geometry rebuild sometimes reusing stale data from previous builds
-- Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
 - Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
-- Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
+- Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, `Corona` objects, and geomod crater textures
 - Fix rare level editor crash when transforming decal objects in a level with a large number of decals
 - Fix level editor clip tool silently failing on certain brush orientations
 - Fix P2T Fix not working properly on Direct3D 11 renderer
@@ -209,6 +218,12 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Fix clients disconnecting when a piercing weapon (e.g. rail gun) gibs multiple players in a single shot
 - Fix players getting stuck climbing if unable to uncrouch when leaving a climbing region (subject to `sp_climbfix` console command in SP)
 - Fix debris not being created when clutter is destroyed, if the clutter also played an explosion vclip
+- Fix hard cutoff lines on fullbright gradient alpha textures (Direct3D 11 renderer only)
+- Fix level editor autosave causing teleportation during edit operations
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `DM-Blunderscannon~~.rfl`
+- Fix clutter death achievement progress and `AF_When_Dead` not working on all clutter death paths
+- Fix level editor crash when manipulating decals in levels with > 127 decals
+- Fix `r_picmip` not properly applying to all mesh textures
 
 [@is-this-c](https://github.com/is-this-c)
 - Fix parse of `flag_return_time` to be as a float instead of an integer

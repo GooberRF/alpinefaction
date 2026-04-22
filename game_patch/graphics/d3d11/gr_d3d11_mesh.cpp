@@ -17,6 +17,7 @@
 #include "../../rf/character.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
+#include "../../misc/alpine_options.h"
 #include "../../rf/level.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
@@ -43,6 +44,17 @@ namespace df::gr::d3d11
     }
 
     float g_level_pixel_light_overbright = 0.5f;
+    float g_alpha_test_threshold = 1.0f / 255.0f;
+
+    void evaluate_alpha_test_threshold(const std::string& level_filename)
+    {
+        if (is_stock_alpha_test_level(level_filename)) {
+            g_alpha_test_threshold = 16.0f / 255.0f;
+        }
+        else {
+            g_alpha_test_threshold = 1.0f / 255.0f;
+        }
+    }
 
     void evaluate_pixel_light_overbright(const std::string& level_filename)
     {
@@ -706,6 +718,7 @@ namespace df::gr::d3d11
         standard_vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::standard);
         character_vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::character);
         pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
+        pixel_shader_no_gas_ = shader_manager.get_pixel_shader(PixelShaderId::standard_no_gas);
 
         mesh_renderers.push_back(this);
     }
@@ -723,7 +736,7 @@ namespace df::gr::d3d11
         page_in_v3d_mesh(lod_mesh);
 
         render_context_.set_vertex_shader(standard_vertex_shader_);
-        render_context_.set_pixel_shader(pixel_shader_);
+        render_context_.set_pixel_shader(render_context_.has_gas_regions() ? pixel_shader_ : pixel_shader_no_gas_);
         render_context_.set_model_transform(pos, orient);
         render_context_.set_vertex_buffer(v3d_vb_.buffer(), sizeof(GpuVertex));
         render_context_.set_index_buffer(v3d_ib_.buffer());
@@ -739,7 +752,7 @@ namespace df::gr::d3d11
         auto render_cache = reinterpret_cast<CharacterMeshRenderCache*>(lod_mesh->render_cache);
 
         render_context_.set_vertex_shader(character_vertex_shader_);
-        render_context_.set_pixel_shader(pixel_shader_);
+        render_context_.set_pixel_shader(render_context_.has_gas_regions() ? pixel_shader_ : pixel_shader_no_gas_);
         render_context_.set_model_transform(pos, orient);
 
         bool morphed = false;
@@ -824,6 +837,12 @@ namespace df::gr::d3d11
 
     void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
     {
+        bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
+        // picmip does not apply to game objects (entities, items, held weapons, fpgun)
+        bool is_fp_weapon = (params.flags & MRF_FIRST_PERSON) != 0;
+        bool is_object_mesh = is_character_mesh || is_fp_weapon || ScopedPicmipSkipObject::active();
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, !is_object_mesh};
+
         const int* tex_handles = get_tex_handles(lod_mesh, params, lod_index);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -856,7 +875,6 @@ namespace df::gr::d3d11
             return sum;
         };
 
-        bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         bool gpu_dynamic_lighting = false;
         bool use_vtx_lighting = level_uses_vertex_lighting();
         if (!ir_scanner) {

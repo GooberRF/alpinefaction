@@ -18,6 +18,7 @@ namespace df::gr::d3d11
     {
         vertex_shader_ = shader_manager.get_vertex_shader(VertexShaderId::transformed);
         std_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
+        std_pixel_shader_no_gas_ = shader_manager.get_pixel_shader(PixelShaderId::standard_no_gas);
         ui_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::ui);
     }
 
@@ -131,7 +132,7 @@ namespace df::gr::d3d11
             D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
             normalized_tex_handles,
             mode,
-            std_pixel_shader_,
+            render_context_.has_gas_regions() ? std_pixel_shader_ : std_pixel_shader_no_gas_,
         };
         auto [gpu_verts, gpu_ind_ptr, base_vertex] = setup(nv, num_index, new_state);
 
@@ -184,7 +185,7 @@ namespace df::gr::d3d11
             D3D11_PRIMITIVE_TOPOLOGY_LINELIST,
             {-1, -1},
             mode,
-            is_3d ? std_pixel_shader_ : ui_pixel_shader_,
+            is_3d ? (render_context_.has_gas_regions() ? std_pixel_shader_ : std_pixel_shader_no_gas_) : ui_pixel_shader_,
         };
         auto [gpu_verts, gpu_ind_ptr, base_vertex] = setup(num_verts, num_inds, new_state);
 

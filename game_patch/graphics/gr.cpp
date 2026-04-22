@@ -495,12 +495,28 @@ ConsoleCommand2 picmip_cmd{
     "r_picmip",
     [](std::optional<int> picmip_opt) {
         if (picmip_opt) {
+            if (rf::gr::screen.mode != rf::gr::DIRECT3D || !is_d3d11()) {
+                rf::console::print("r_picmip is supported only by the Direct3D 11 renderer");
+                return;
+            }
+            int old_divisor = g_alpine_game_config.picmip;
             int divisor = picmip_opt.value();
             if (divisor < 1) {
                 divisor = 1;
             }
             g_alpine_game_config.set_picmip(divisor);
             gr_update_texture_filtering();
+            // Auto-mip gen happens at texture upload and is gated on picmip > 1. When the
+            // gate crosses, already-cached textures have the wrong mip chain state; evict
+            // them so they re-upload on next use. Critically, we skip TYPE_USER bitmaps
+            // (fonts, HUD glyph atlases, dynamically-written textures) — their pixel data
+            // lives inside the D3D11 texture and is written externally via gr::lock; a
+            // force flush would leave them blank forever.
+            bool was_on = old_divisor > 1;
+            bool now_on = g_alpine_game_config.picmip > 1;
+            if (was_on != now_on) {
+                df::gr::d3d11::texture_flush_non_user_cache();
+            }
         }
         rf::console::print(
             "Texture resolution divisor is set to {} (Direct3D 11 renderer only, 1 = full resolution)",
@@ -586,6 +602,9 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
         df::gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
+        if (is_sky_fix_level(level_filename)) {
+            rf::console::print("Applying sky fix to known affected level {}", level_filename);
+        }
     }
 }
 

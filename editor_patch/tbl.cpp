@@ -280,3 +280,132 @@ const GlareClassInfo* glare_tbl_find(const char* glare_name)
     xlog::warn("effects_tbl: glare '{}' not found in {} entries", glare_name, g_glare_classes.size());
     return nullptr;
 }
+
+// ─── Entities ──────────────────────────────────────────────────────────────
+
+static CaseInsensitiveMap<EntityClassInfo> g_entity_classes;
+static bool g_entity_parsed = false;
+
+static void parse_entity_tbl()
+{
+    if (g_entity_parsed) return;
+    g_entity_parsed = true;
+
+    auto buf = tbl_read_file("entity.tbl");
+    if (buf.empty()) return;
+
+    TblTokenizer tok(buf.data(), buf.size());
+
+    // Find #Entity Classes section
+    while (!tok.at_end()) {
+        if (tok.match("#Entity Classes")) break;
+        tok.skip_line();
+    }
+
+    EntityClassInfo* current = nullptr;
+
+    while (!tok.at_end()) {
+        if (tok.peek("#End")) break;
+
+        if (tok.match("$Name:")) {
+            std::string name = tok.read_string();
+            if (!name.empty()) {
+                current = &g_entity_classes[name];
+                current->class_name = name;
+            }
+            continue;
+        }
+
+        if (!current) {
+            tok.skip_line();
+            continue;
+        }
+
+        if (tok.match("$V3D Filename:")) {
+            current->v3d_filename = tok.read_string();
+        }
+        else if (tok.match("$Flags:") || tok.match("$Flags2:")) {
+            // Parse flag list: ("flag1" "flag2" ...)
+            if (tok.match("(")) {
+                while (!tok.at_end()) {
+                    if (tok.peek(")")) { tok.match(")"); break; }
+                    std::string flag = tok.read_string();
+                    if (flag.empty()) { tok.skip_line(); break; }
+                    if (_stricmp(flag.c_str(), "no_collide") == 0)
+                        current->no_collide = true;
+                    else if (_stricmp(flag.c_str(), "collide_player") == 0)
+                        current->collide_player = true;
+                }
+            }
+        }
+        else if (tok.match("$Life:")) {
+            current->life = tok.read_float();
+        }
+        else if (tok.match("$Material:")) {
+            current->material = tbl_parse_material(tok.read_string());
+        }
+        else if (tok.match("$Debris Filename:")) {
+            current->debris_filename = tok.read_string();
+        }
+        else if (tok.match("$Explode Anim Radius:")) {
+            current->explode_radius = tok.read_float();
+        }
+        else if (tok.match("$Explode Anim:")) {
+            current->explode_vclip = tok.read_string();
+        }
+        else if (tok.match("$Corpse V3D Filename:")) {
+            current->corpse_v3d_filename = tok.read_string();
+        }
+        else if (tok.match("$Damage Type Factor:")) {
+            std::string type_name = tok.read_string();
+            float factor = tok.read_float();
+            int idx = tbl_parse_damage_type(type_name);
+            if (idx >= 0 && idx < 11) {
+                current->damage_type_factors[idx] = factor;
+            }
+        }
+        else if (tok.match("$Thruster VFX")) {
+            // Format: $Thruster VFX N: filename.vfx
+            tok.read_int(); // consume N
+            tok.match(":");
+            std::string vfx = tok.read_string();
+            if (!vfx.empty()) {
+                current->thruster_vfx_names.push_back(vfx);
+            }
+        }
+        else if (tok.match("$Corona (Glare)")) {
+            // Format: $Corona (Glare) N: glare_name
+            // Skip the number and colon, read the glare name
+            tok.read_int(); // consume N
+            tok.match(":");
+            std::string glare_name = tok.read_string();
+            if (!glare_name.empty()) {
+                current->corona_glare_names.push_back(glare_name);
+            }
+        }
+        else if (tok.match("+State:")) {
+            // Format: +State: "state_name" "anim_filename"
+            std::string state_name = tok.read_string();
+            std::string anim_file = tok.read_string();
+            if (_stricmp(state_name.c_str(), "stand") == 0 && current->stand_anim.empty()) {
+                current->stand_anim = anim_file;
+            }
+        }
+        else {
+            tok.skip_line();
+        }
+    }
+
+    xlog::info("entity_tbl: parsed {} entity classes", g_entity_classes.size());
+}
+
+const EntityClassInfo* entity_tbl_find(const char* class_name)
+{
+    parse_entity_tbl();
+    auto it = g_entity_classes.find(class_name);
+    if (it != g_entity_classes.end()) {
+        return &it->second;
+    }
+    xlog::warn("entity_tbl: class '{}' not found in {} entries", class_name, g_entity_classes.size());
+    return nullptr;
+}

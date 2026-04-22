@@ -895,6 +895,8 @@ static std::string describe_alpine_restrict_verdict(const std::pair<AlpineRestri
         return verdict.second.empty() ? "requires an official AF release" : std::format("requires release build ({})", verdict.second);
     case AlpineRestrictVerdict::need_update:
         return verdict.second.empty() ? "needs a newer AF build" : std::format("needs update ({})", verdict.second);
+    case AlpineRestrictVerdict::need_d3d11:
+        return verdict.second.empty() ? "requires D3D11 renderer" : std::format("requires D3D11 ({})", verdict.second);
     }
 
     return "unknown status";
@@ -907,6 +909,7 @@ static void print_alpine_restrict_status_summary()
     const bool reject_non_alpine = cfg.reject_non_alpine_clients || hard_reject;
     const bool require_alpine = cfg.clients_require_alpine || auto_require_alpine;
     const bool enforce_release = cfg.alpine_require_release_build || auto_require_release;
+    const bool require_d3d11 = require_alpine && cfg.require_d3d11;
     const auto level_version = get_level_file_version(rf::level.filename.c_str()).value_or(0);
     const auto game_type = rf::multi_get_game_type();
 
@@ -918,7 +921,9 @@ static void print_alpine_restrict_status_summary()
     rf::console::print("  Server config requires Alpine: {}", cfg.clients_require_alpine ? "yes" : "no");
     rf::console::print("  Non-Alpine clients rejected: {}", reject_non_alpine ? "yes" : "no");
     rf::console::print("  Require stable AF build: {}", enforce_release ? "yes" : "no");
+    rf::console::print("  Require D3D11: {}", require_d3d11 ? "yes" : "no");
 
+    const uint32_t alpine_v130_max_rfl = 304u;
     const uint32_t alpine_v122_max_rfl = 303u;
     const uint32_t alpine_v120_max_rfl = 302u;
     const uint32_t alpine_v110_max_rfl = 301u;
@@ -930,6 +935,8 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl, true}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.2", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 2u, VERSION_TYPE_RELEASE, alpine_v122_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v120_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v120_max_rfl}));
@@ -1972,6 +1979,11 @@ std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_st
         }
     }
 
+    if (cfg.require_d3d11 && !info.is_d3d11
+        && info.software != ClientSoftware::Browser) {
+        return {AlpineRestrictVerdict::need_d3d11, "D3D11 renderer required", false};
+    }
+
     return {AlpineRestrictVerdict::ok, {}, reject_non_alpine};
 }
 
@@ -2028,6 +2040,9 @@ bool check_can_player_spawn(rf::Player* player)
         return false;
     case AlpineRestrictVerdict::need_update:
         af_send_automated_chat_msg("This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com", player);
+        return false;
+    case AlpineRestrictVerdict::need_d3d11:
+        af_send_automated_chat_msg("This server requires the Direct3D 11 renderer. Enable it in the Alpine Faction launcher settings panel.", player);
         return false;
     }
     return false;
@@ -2501,8 +2516,6 @@ static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
         rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
     }
 
-    const char* team_name = (new_team == rf::TEAM_RED) ? "Red" : "Blue";
-    af_broadcast_automated_chat_msg(std::format("{} was moved to the {} team", player->name, team_name));
 }
 
 static void balance_teams()
@@ -3763,6 +3776,11 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
     }
 
     if (g_alpine_server_config_active_rules.clear_stale_movement_input) {
+        requires_alpine = true;
+        min_minor_version = std::max(min_minor_version, 3);
+    }
+
+    if (g_alpine_server_config.alpine_restricted_config.require_d3d11) {
         requires_alpine = true;
         min_minor_version = std::max(min_minor_version, 3);
     }

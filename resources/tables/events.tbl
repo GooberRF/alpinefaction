@@ -397,6 +397,24 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Mesh_Set_Collision"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "AF_Fullscreen_Image"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "AF_Fullscreen_Color"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Unhide_Glare"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Gas_Region_State"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Modify_Gas_Region"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Resize_Gas_Region"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------

@@ -1,7 +1,9 @@
 #include <cstring>
+#include <cctype>
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <unordered_set>
 #include <windows.h>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
@@ -229,6 +231,95 @@ CodeInjection texture_reverse_lookup_index_fix{
         }
     }
 };
+// Sorted splice merge of temp into master by filename (strcmp matches stock comparator).
+static void merge_sorted_into_master(TextureListSentinel* master, TextureListSentinel* temp)
+{
+    auto* master_end = reinterpret_cast<TextureListNode*>(master);
+    auto* temp_end = reinterpret_cast<TextureListNode*>(temp);
+    TextureListNode* mp = master->head;
+    TextureListNode* tp = temp->head;
+
+    while (mp != master_end && tp != temp_end) {
+        if (std::strcmp(tp->name, mp->name) < 0) {
+            TextureListNode* next_tp = tp->next;
+            tp->next = mp;
+            tp->prev = mp->prev;
+            mp->prev->next = tp;
+            mp->prev = tp;
+            tp = next_tp;
+        } else {
+            mp = mp->next;
+        }
+    }
+
+    if (tp != temp_end) {
+        TextureListNode* temp_last = temp->tail;
+        master->tail->next = tp;
+        tp->prev = master->tail;
+        temp_last->next = master_end;
+        master->tail = temp_last;
+    }
+}
+
+// Drop any node whose lowercased filename was already seen. Sentinel layout means
+// node->next->prev rewrites automatically update master->tail when unlinking the tail.
+static void dedup_master_by_name(TextureListSentinel* master)
+{
+    auto* master_end = reinterpret_cast<TextureListNode*>(master);
+    std::unordered_set<std::string> seen;
+    TextureListNode* node = master->head;
+    while (node != master_end) {
+        TextureListNode* next_node = node->next;
+        std::string key = node->name;
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (!seen.insert(std::move(key)).second) {
+            node->prev->next = node->next;
+            node->next->prev = node->prev;
+            editor_free(node);
+        }
+        node = next_node;
+    }
+}
+
+CodeInjection texture_refresh_all_iterate_custom_injection{
+    0x0046feee,
+    [](auto& regs) {
+        auto* panel = reinterpret_cast<TextureBrowserPanel*>(
+            static_cast<uintptr_t>(regs.ebx));
+
+        // Skip the stock single-category scan/merge block (0x0046feee … 0x0046fffd)
+        regs.eip = 0x00470134;
+
+        uint8_t flags = texture_browser_get_scan_flags(panel);
+        auto* cat_array = texture_browser_categories(panel);
+
+        for (int i = 0; i < cat_array->get_size(); i++) {
+            TextureCategory* cat = (*cat_array)[i];
+            if (std::strncmp(cat->name.c_str(), "Custom", 6) != 0) continue;
+
+            TextureListSentinel temp;
+            temp.head = reinterpret_cast<TextureListNode*>(&temp);
+            temp.tail = reinterpret_cast<TextureListNode*>(&temp);
+
+            texture_browser_scan_path(&temp, cat->path_handle, "*.*",
+                                      flags, texture_browser_validator);
+
+            if (temp.head != reinterpret_cast<TextureListNode*>(&temp)) {
+                merge_sorted_into_master(&panel->master_list, &temp);
+            }
+        }
+    }
+};
+
+CodeInjection texture_refresh_dedup_master_injection{
+    0x00470134,
+    [](auto& regs) {
+        auto* panel = reinterpret_cast<TextureBrowserPanel*>(
+            static_cast<uintptr_t>(regs.ebx));
+        dedup_master_by_name(&panel->master_list);
+    }
+};
 
 // VPP packfile creation (FUN_004482c0) constructs custom texture paths by combining a
 // fixed base directory ("user_maps\textures\") with the bare filename via FUN_004b6ee0.
@@ -399,7 +490,8 @@ CodeInjection vpp_extra_textures_injection{
             }
             else if (obj->type == DedObjectType::DED_EVENT) {
                 auto* evt = static_cast<DedEvent*>(obj);
-                if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image)) {
+                if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image) ||
+                    evt->event_type == af_ded_event_to_int(AlpineDedEventID::AF_Fullscreen_Image)) {
                     add_texture_to_pack_list(temp_list, evt->str1.c_str());
                 }
                 else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Swap_Textures)) {
@@ -420,6 +512,12 @@ CodeInjection vpp_extra_textures_injection{
             add_mesh_textures_to_pack_list(temp_list, mesh->mesh_filename.c_str());
             add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.debris_filename.c_str());
             add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.corpse_filename.c_str());
+        }
+
+        // Corona bitmaps (corona sprite + optional volumetric bitmap)
+        for (auto* corona : level->GetAlpineLevelProperties().corona_objects) {
+            add_texture_to_pack_list(temp_list, corona->corona_bitmap.c_str());
+            add_texture_to_pack_list(temp_list, corona->volumetric_bitmap.c_str());
         }
     }
 };
@@ -587,4 +685,6 @@ void ApplyTexturesPatches() {
     vpp_clear_log_injection.install();
     vpp_mesh_files_injection.install();
     config_save_skip_custom_subdirs.install();
+    texture_refresh_all_iterate_custom_injection.install();
+    texture_refresh_dedup_master_injection.install();
 }

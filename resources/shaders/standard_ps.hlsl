@@ -22,6 +22,7 @@ cbuffer RenderModeBuffer : register(b0)
     float dynamic_light_ndotl;
     float pixel_light_overbright;
     float emissive_override;
+    float gas_fog_allowed;
 };
 
 struct PointLight {
@@ -71,6 +72,35 @@ cbuffer ShadowBuffer : register(b3)
     float shadow_soft_edges;
     float shadow_pad;
 };
+
+#ifndef MAX_GAS_REGIONS
+#define MAX_GAS_REGIONS 32
+#endif
+
+#if MAX_GAS_REGIONS > 0
+
+struct GasRegionData
+{
+    float3 center;    float density;
+    float3 color;     float shape;       // 0=sphere, 1=box
+    float3 extents;   float _pad0;
+    float3 orient_r0; float _pad1;       // transpose row 0 (for world-to-local)
+    float3 orient_r1; float _pad2;       // transpose row 1
+    float3 orient_r2; float _pad3;       // transpose row 2
+};
+
+cbuffer GasRegionBuffer : register(b4)
+{
+    float3 gas_eye_pos;
+    int num_gas_regions;
+    float3 gas_cam_right;   float gas_proj_sx;
+    float3 gas_cam_up;      float gas_proj_sy;
+    float3 gas_cam_forward; float gas_viewport_w;
+    float gas_viewport_h;   float3 _gas_header_pad;
+    GasRegionData gas_regions[MAX_GAS_REGIONS];
+};
+
+#endif
 
 Texture2D tex0;
 Texture2D tex1;
@@ -356,6 +386,95 @@ float4 main(VsOutput input) : SV_TARGET
 
     float fog = saturate(input.world_pos_and_depth.w / fog_far);
     target.rgb = fog * fog_color + (1 - fog) * target.rgb;
+
+    // Gas region volumetric fog — per-region compositing (Beer-Lambert)
+    // Detect pre-transformed vertices via dummy normal (transformed_vs outputs norm=(0,0,0)).
+    // For those, reconstruct world pos from depth (particles, sprites, dynamic decals, etc.).
+    // Transmittance (dimming) is always applied so sprites behind gas appear occluded.
+    // Gas color accumulation is only added when fog is allowed, to avoid artifacts with
+    // additive blending (e.g. muzzle flash) where the background already contains the gas color.
+#if MAX_GAS_REGIONS > 0
+    float3 gas_world_pos = input.world_pos_and_depth.xyz;
+    bool is_pretransformed = dot(input.norm, input.norm) == 0.0f;
+    bool can_reconstruct = is_pretransformed && input.world_pos_and_depth.w > 0.0f;
+    int gas_count = min(num_gas_regions, MAX_GAS_REGIONS);
+    if (gas_count > 0 && (!is_pretransformed || can_reconstruct)) {
+        // Reconstruct world position for pre-transformed vertices (dynamic decals, etc.)
+        if (can_reconstruct) {
+            float depth = input.world_pos_and_depth.w;
+            float ndc_x = (input.pos.x / gas_viewport_w) * 2.0f - 1.0f;
+            float ndc_y = (input.pos.y / gas_viewport_h) * -2.0f + 1.0f;
+            float view_x = ndc_x * depth / gas_proj_sx;
+            float view_y = ndc_y * depth / gas_proj_sy;
+            gas_world_pos = gas_eye_pos
+                + gas_cam_right * view_x
+                + gas_cam_up * view_y
+                + gas_cam_forward * depth;
+        }
+        float3 ray_origin = gas_eye_pos;
+        float3 to_pixel = gas_world_pos - ray_origin;
+        float ray_len = length(to_pixel);
+        float3 ray_dir = to_pixel / max(ray_len, 0.0001f);
+
+        // Composite each region independently via Beer-Lambert extinction.
+        // For overlapping regions this is physically correct (optical depths add).
+        float3 gas_accumulated = float3(0, 0, 0);
+        float gas_transmittance = 1.0f;
+
+        for (int gi = 0; gi < gas_count; gi++) {
+            float t_enter, t_exit;
+            bool hit = false;
+
+            if (gas_regions[gi].shape < 0.5f) {
+                // Sphere: analytical ray-sphere intersection
+                float3 oc = ray_origin - gas_regions[gi].center;
+                float r = gas_regions[gi].extents.x;
+                float b = dot(oc, ray_dir);
+                float c = dot(oc, oc) - r * r;
+                float disc = b * b - c;
+                if (disc > 0.0f) {
+                    float sq = sqrt(disc);
+                    t_enter = max(-b - sq, 0.0f);
+                    t_exit = min(-b + sq, ray_len);
+                    hit = (t_exit > t_enter);
+                }
+            } else {
+                // OBB: transform ray to local space, then ray-AABB
+                float3 delta = ray_origin - gas_regions[gi].center;
+                float3 local_origin = float3(
+                    dot(delta, gas_regions[gi].orient_r0),
+                    dot(delta, gas_regions[gi].orient_r1),
+                    dot(delta, gas_regions[gi].orient_r2));
+                float3 local_dir = float3(
+                    dot(ray_dir, gas_regions[gi].orient_r0),
+                    dot(ray_dir, gas_regions[gi].orient_r1),
+                    dot(ray_dir, gas_regions[gi].orient_r2));
+                float3 dir_sign = (local_dir >= 0.0f) ? 1.0f : -1.0f;
+                local_dir = dir_sign * max(abs(local_dir), 1e-8f);
+                float3 inv_dir = 1.0f / local_dir;
+                float3 t0 = (-gas_regions[gi].extents - local_origin) * inv_dir;
+                float3 t1 = ( gas_regions[gi].extents - local_origin) * inv_dir;
+                float3 tmin_v = min(t0, t1);
+                float3 tmax_v = max(t0, t1);
+                t_enter = max(max(tmin_v.x, tmin_v.y), max(tmin_v.z, 0.0f));
+                t_exit = min(min(tmax_v.x, tmax_v.y), min(tmax_v.z, ray_len));
+                hit = (t_exit > t_enter);
+            }
+
+            if (hit) {
+                float seg_len = t_exit - t_enter;
+                float seg_t = exp(-gas_regions[gi].density * seg_len);
+                gas_accumulated += gas_transmittance * gas_regions[gi].color * (1.0f - seg_t);
+                gas_transmittance *= seg_t;
+            }
+        }
+
+        target.rgb = target.rgb * gas_transmittance;
+        if (!can_reconstruct || gas_fog_allowed > 0.5f) {
+            target.rgb += gas_accumulated;
+        }
+    }
+#endif
 
     if (colorblind_mode > 0.5f) {
         target.rgb = saturate(apply_colorblind(target.rgb));

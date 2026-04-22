@@ -1,5 +1,9 @@
+#include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <cstring>
+#include <limits>
+#include <xlog/xlog.h>
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/multi.h"
@@ -26,7 +30,8 @@ namespace df::gr::d3d11
         lights_buffer_{device_},
         render_mode_cbuffer_{device_},
         per_frame_buffer_{device_},
-        texture_scale_cbuffer_{device_}
+        texture_scale_cbuffer_{device_},
+        gas_region_buffer_{device_}
     {
         bind_cbuffers();
     }
@@ -47,6 +52,10 @@ namespace df::gr::d3d11
             texture_scale_cbuffer_,
         };
         device_context_->PSSetConstantBuffers(0, std::size(ps_cbuffers), ps_cbuffers);
+
+        // Gas region buffer at b4 (b3 is used by shadow renderer)
+        ID3D11Buffer* gas_cbuffer = gas_region_buffer_;
+        device_context_->PSSetConstantBuffers(4, 1, &gas_cbuffer);
     }
 
     void RenderContext::clear()
@@ -305,7 +314,8 @@ namespace df::gr::d3d11
         float dynamic_light_ndotl;
         float pixel_light_overbright;
         float emissive_override;
-        float _pad[3];
+        float gas_fog_allowed;
+        float _pad[2];
     };
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
@@ -356,6 +366,160 @@ namespace df::gr::d3d11
         device_context->Unmap(buffer_, 0);
     }
 
+    struct alignas(16) GasRegionGPUData
+    {
+        std::array<float, 3> center;  float density;        // 1 float4
+        std::array<float, 3> color;   float shape;          // 1 float4 (0=sphere, 1=box)
+        std::array<float, 3> extents; float _pad0;          // 1 float4
+        std::array<float, 3> orient_r0; float _pad1;        // 1 float4 (transpose row 0)
+        std::array<float, 3> orient_r1; float _pad2;        // 1 float4 (transpose row 1)
+        std::array<float, 3> orient_r2; float _pad3;        // 1 float4 (transpose row 2)
+    };
+    static_assert(sizeof(GasRegionGPUData) == 96);
+    static_assert(sizeof(GasRegionGPUData) % 16 == 0);
+
+    struct alignas(16) GasRegionBufferData
+    {
+        std::array<float, 3> eye_pos; int num_gas_regions;          // 1 float4
+        // Camera params for reconstructing world pos from screen pos + view depth
+        std::array<float, 3> cam_right;   float proj_scale_x;      // 1 float4
+        std::array<float, 3> cam_up;      float proj_scale_y;      // 1 float4
+        std::array<float, 3> cam_forward; float viewport_w;        // 1 float4
+        float viewport_h; float _header_pad[3];                     // 1 float4
+        GasRegionGPUData regions[GasRegionBuffer::max_gas_regions];
+    };
+    static_assert(sizeof(GasRegionBufferData) % 16 == 0);
+
+    GasRegionBuffer::GasRegionBuffer(ID3D11Device* device)
+    {
+        CD3D11_BUFFER_DESC desc{
+            sizeof(GasRegionBufferData),
+            D3D11_BIND_CONSTANT_BUFFER,
+            D3D11_USAGE_DYNAMIC,
+            D3D11_CPU_ACCESS_WRITE,
+        };
+        DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, nullptr, &buffer_));
+    }
+
+    void GasRegionBuffer::update(ID3D11DeviceContext* device_context, const Projection& projection)
+    {
+        const auto& gas_regions = gas_region_get_all();
+
+        // Count enabled regions to allow early-out and shader variant selection
+        int enabled_count = 0;
+        for (const auto& r : gas_regions) {
+            if (r.enabled) ++enabled_count;
+        }
+        current_gas_count_ = enabled_count;
+
+        if (enabled_count == 0) {
+            // Write num_gas_regions=0 so stale gas data never renders if the shader
+            // variant selection and buffer update are momentarily out of sync.
+            // WRITE_DISCARD invalidates the entire buffer, but the shader checks
+            // num_gas_regions before accessing any region data.
+            D3D11_MAPPED_SUBRESOURCE mapped_subres;
+            DF_GR_D3D11_CHECK_HR(
+                device_context->Map(buffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
+            );
+            std::memset(mapped_subres.pData, 0, sizeof(int) * 4); // zero first float4 (includes num_gas_regions)
+            device_context->Unmap(buffer_, 0);
+            return;
+        }
+
+        GasRegionBufferData data{};
+        data.eye_pos = {rf::gr::eye_pos.x, rf::gr::eye_pos.y, rf::gr::eye_pos.z};
+
+        // Camera orientation for world pos reconstruction from pre-transformed vertices
+        const auto& m = rf::gr::eye_matrix;
+        data.cam_right = {m.rvec.x, m.rvec.y, m.rvec.z};
+        data.cam_up = {m.uvec.x, m.uvec.y, m.uvec.z};
+        data.cam_forward = {m.fvec.x, m.fvec.y, m.fvec.z};
+        data.proj_scale_x = projection.scale_x();
+        data.proj_scale_y = projection.scale_y();
+        data.viewport_w = static_cast<float>(rf::gr::screen.clip_width);
+        data.viewport_h = static_cast<float>(rf::gr::screen.clip_height);
+
+        int gpu_index = 0;
+        for (size_t i = 0; i < gas_regions.size() && gpu_index < max_gas_regions; i++) {
+            const auto& src = gas_regions[i];
+            if (!src.enabled) {
+                continue;
+            }
+            auto& dst = data.regions[gpu_index];
+
+            dst.center = {src.pos.x, src.pos.y, src.pos.z};
+            dst.density = src.density;
+            dst.color = {src.color.red / 255.0f, src.color.green / 255.0f, src.color.blue / 255.0f};
+            dst.shape = (src.shape == 2) ? 1.0f : 0.0f; // 0=sphere, 1=box
+
+            if (src.shape == 1) { // sphere
+                dst.extents = {src.radius, src.radius, src.radius};
+            } else { // box: RFL stores height, width, depth
+                dst.extents = {src.width / 2.0f, src.height / 2.0f, src.depth / 2.0f};
+            }
+
+            // Store orient transpose (inverse for orthonormal) for world-to-local transform
+            // Matrix3 columns: rvec (local X), uvec (local Y), fvec (local Z) in world space
+            // Transpose rows = original columns
+            const auto& o = src.orient;
+            dst.orient_r0 = {o.rvec.x, o.rvec.y, o.rvec.z};
+            dst.orient_r1 = {o.uvec.x, o.uvec.y, o.uvec.z};
+            dst.orient_r2 = {o.fvec.x, o.fvec.y, o.fvec.z};
+
+            gpu_index++;
+        }
+        data.num_gas_regions = gpu_index;
+
+        // Sort regions front-to-back by signed distance from camera to nearest
+        // surface so the pixel shader's sequential compositing layers correctly.
+        // Signed distance: positive = camera outside (distance to surface),
+        // negative = camera inside (penetration depth). This gives a natural
+        // tiebreak when inside multiple overlapping regions: deeper inside sorts first.
+        auto signed_surface_dist = [&](const GasRegionGPUData& r) -> float {
+            if (r.shape < 0.5f) {
+                // Sphere: dist_to_center - radius (negative when inside)
+                float dist_sq = 0.0f;
+                for (int k = 0; k < 3; k++) {
+                    float v = r.center[k] - data.eye_pos[k];
+                    dist_sq += v * v;
+                }
+                return std::sqrt(dist_sq) - r.extents[0];
+            } else {
+                // OBB: project camera into local space. If outside, return distance
+                // to nearest surface. If inside, return negative penetration depth.
+                float delta[3];
+                for (int k = 0; k < 3; k++)
+                    delta[k] = data.eye_pos[k] - r.center[k];
+                const float* rows[3] = {r.orient_r0.data(), r.orient_r1.data(), r.orient_r2.data()};
+                float outside_dist_sq = 0.0f;
+                float min_penetration = std::numeric_limits<float>::max();
+                bool is_inside = true;
+                for (int axis = 0; axis < 3; axis++) {
+                    float proj = delta[0] * rows[axis][0] + delta[1] * rows[axis][1] + delta[2] * rows[axis][2];
+                    float excess = std::abs(proj) - r.extents[axis];
+                    if (excess > 0.0f) {
+                        is_inside = false;
+                        outside_dist_sq += excess * excess;
+                    } else {
+                        min_penetration = std::min(min_penetration, -excess);
+                    }
+                }
+                return is_inside ? -min_penetration : std::sqrt(outside_dist_sq);
+            }
+        };
+        std::sort(data.regions, data.regions + gpu_index,
+            [&](const GasRegionGPUData& a, const GasRegionGPUData& b) {
+                return signed_surface_dist(a) < signed_surface_dist(b);
+            });
+
+        D3D11_MAPPED_SUBRESOURCE mapped_subres;
+        DF_GR_D3D11_CHECK_HR(
+            device_context->Map(buffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
+        );
+        std::memcpy(mapped_subres.pData, &data, sizeof(data));
+        device_context->Unmap(buffer_, 0);
+    }
+
     void RenderModeBuffer::update_buffer(ID3D11DeviceContext* device_context)
     {
         RenderModeBufferData data{};
@@ -365,7 +529,7 @@ namespace df::gr::d3d11
             current_color_.blue / 255.0f,
             current_color_.alpha / 255.0f,
         };
-        data.alpha_test = current_alpha_test_ ? 0.1f : 0.0f;
+        data.alpha_test = current_alpha_test_ ? current_alpha_test_threshold_ : 0.0f;
         if (!current_fog_allowed_ || !gr::screen.fog_mode) {
             data.fog_far = std::numeric_limits<float>::infinity();
             data.fog_color = {0.0f, 0.0f, 0.0f};
@@ -399,6 +563,7 @@ namespace df::gr::d3d11
         data.dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
         data.pixel_light_overbright = g_level_pixel_light_overbright;
         data.emissive_override = current_emissive_override_ ? 1.0f : 0.0f;
+        data.gas_fog_allowed = current_fog_allowed_ ? 1.0f : 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 #include "mfc_types.h"
 #include "level.h"
+
+struct GlareClassInfo;
 
 // Corona serialization (called from level.cpp injection points)
 void corona_serialize_chunk(CDedLevel& level, rf::File& file);
@@ -29,3 +32,12 @@ void corona_clear_clipboard();
 void corona_handle_delete_or_cut(DedObject* obj);
 void corona_handle_delete_selection(CDedLevel* level);
 void corona_ensure_uid(int& uid);
+
+// Create corona objects for all "corona_N" tag points found in a vmesh.
+// Each tag gets a corona using the corresponding glare from the glare_names list.
+// If glare_names has one entry, it applies to all tags (clutter convention).
+// Returns the newly created coronas (already added to level).
+std::vector<DedCorona*> corona_create_from_mesh_tags(
+    CDedLevel* level, EditorVMesh* vmesh,
+    const Vector3& obj_pos, const Matrix3& obj_orient,
+    const std::vector<std::string>& glare_names);

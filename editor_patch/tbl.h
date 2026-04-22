@@ -216,3 +216,32 @@ struct GlareClassInfo {
 
 // Look up glare info by name. Parses effects.tbl on first call.
 const GlareClassInfo* glare_tbl_find(const char* glare_name);
+
+// ─── Entities ──────────────────────────────────────────────────────────────
+
+struct EntityClassInfo {
+    std::string class_name;
+    std::string v3d_filename;
+    float life = -1.0f;
+    int material = 0;
+    bool no_collide = false;                      // "no_collide" from $Flags:
+    bool collide_player = false;                  // "collide_player" from $Flags2:
+
+    // Derived collision mode: 0=None, 1=Only Weapons, 2=All
+    int collision_mode() const {
+        if (no_collide) return 0;
+        if (collide_player) return 2;
+        return 1;
+    }
+    std::string debris_filename;
+    std::string explode_vclip;
+    float explode_radius = 1.0f;
+    std::string corpse_v3d_filename;
+    float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1};
+    std::vector<std::string> corona_glare_names;  // per-corona glare effect names
+    std::vector<std::string> thruster_vfx_names;  // per-thruster VFX filenames
+    std::string stand_anim;                       // "stand" state animation filename
+};
+
+// Look up entity class info by name. Parses entity.tbl on first call.
+const EntityClassInfo* entity_tbl_find(const char* class_name);

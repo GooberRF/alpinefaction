@@ -1,3 +1,4 @@
+#include <cmath>
 #include <xlog/xlog.h>
 #include <patch_common/AsmOpcodes.h>
 #include <patch_common/AsmWriter.h>
@@ -15,6 +16,10 @@
 #include "../multi/server.h"
 #include "../object/alpine_corona.h"
 #include "../object/mover.h"
+#include "../hud/hud_world.h"
+
+static std::vector<GasRegionInfo> g_gas_regions;
+static std::vector<GasRegionTransition> g_gas_region_transitions;
 
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
@@ -105,7 +110,9 @@ CodeInjection level_load_init_patch{
         DashLevelProps::instance() = {};
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
+        gas_region_clear_state();
         alpine_mover_clear_hold_open();
+        hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
     },
 };
@@ -192,6 +199,176 @@ CodeInjection level_load_hardness_zero_patch{
     },
 };
 
+FunHook<void(rf::File*)> gas_region_load_hook{
+    0x00462CA0,
+    [](rf::File* file) {
+        if (rf::level.version < 304) {
+            gas_region_load_hook.call_target(file);
+            return;
+        }
+
+        int count = file->read_int(0, 0);
+        if (count <= 0) return;
+        if (count > 10000) count = 10000;
+
+        xlog::debug("[GasRegion] Loading {} gas region(s)", count);
+        g_gas_regions.reserve(count);
+
+        for (int i = 0; i < count; i++) {
+            GasRegionInfo info;
+            rf::String tmp_str;
+
+            info.uid = file->read_int(0, 0);
+            // class_name (discard)
+            file->read_string(&tmp_str, 0, nullptr);
+            // pos
+            file->read_vector(&info.pos, 0, &rf::file_default_vector);
+            // orient
+            file->read_matrix(&info.orient, 0, &rf::file_default_matrix);
+            // script_name (discard)
+            file->read_string(&tmp_str, 0, nullptr);
+            // hidden_in_editor (discard)
+            file->read_bool(0, true);
+            // shape
+            info.shape = file->read_int(0, 0);
+            // shape-conditional dimensions
+            if (info.shape == 1) { // sphere
+                info.radius = file->read_float(0, 0.0f);
+            } else if (info.shape == 2) { // box
+                info.height = file->read_float(0, 0.0f);
+                info.width = file->read_float(0, 0.0f);
+                info.depth = file->read_float(0, 0.0f);
+            }
+            // color (RGBA, 4 bytes)
+            file->read(&info.color, 4);
+            // density
+            info.density = file->read_float(0, 0.0f);
+
+            g_gas_regions.push_back(std::move(info));
+        }
+    },
+};
+
+void gas_region_clear_state()
+{
+    g_gas_regions.clear();
+    g_gas_region_transitions.clear();
+}
+
+const std::vector<GasRegionInfo>& gas_region_get_all()
+{
+    return g_gas_regions;
+}
+
+GasRegionInfo* gas_region_get_by_uid(int uid)
+{
+    for (auto& region : g_gas_regions) {
+        if (region.uid == uid) return &region;
+    }
+    return nullptr;
+}
+
+
+void gas_region_add_modify_transition(int32_t region_uid, rf::Color target_color, float target_density, float duration_sec)
+{
+    auto* region = gas_region_get_by_uid(region_uid);
+    if (!region) return;
+
+    // Remove any existing transition for this region that has modify
+    std::erase_if(g_gas_region_transitions, [&](const GasRegionTransition& t) {
+        return t.region_uid == region_uid && t.has_modify;
+    });
+
+    GasRegionTransition transition;
+    transition.region_uid = region_uid;
+    transition.has_modify = true;
+    transition.start_color = region->color;
+    transition.target_color = target_color;
+    transition.start_density = region->density;
+    transition.target_density = target_density;
+    transition.timer.set_sec(duration_sec);
+    g_gas_region_transitions.push_back(std::move(transition));
+}
+
+void gas_region_add_resize_transition(int32_t region_uid, int target_shape, float target_radius,
+                                       float target_height, float target_width, float target_depth, float duration_sec)
+{
+    auto* region = gas_region_get_by_uid(region_uid);
+    if (!region) return;
+
+    // Remove any existing transition for this region that has resize
+    std::erase_if(g_gas_region_transitions, [&](const GasRegionTransition& t) {
+        return t.region_uid == region_uid && t.has_resize;
+    });
+
+    GasRegionTransition transition;
+    transition.region_uid = region_uid;
+    transition.has_resize = true;
+    transition.target_shape = target_shape;
+    transition.start_radius = region->radius;
+    transition.target_radius = target_radius;
+    transition.start_height = region->height;
+    transition.target_height = target_height;
+    transition.start_width = region->width;
+    transition.target_width = target_width;
+    transition.start_depth = region->depth;
+    transition.target_depth = target_depth;
+    transition.timer.set_sec(duration_sec);
+
+    // Set the shape immediately
+    region->shape = target_shape;
+
+    g_gas_region_transitions.push_back(std::move(transition));
+}
+
+void gas_region_transition_do_frame()
+{
+    auto it = g_gas_region_transitions.begin();
+    while (it != g_gas_region_transitions.end()) {
+        auto* region = gas_region_get_by_uid(it->region_uid);
+        if (!region) {
+            it = g_gas_region_transitions.erase(it);
+            continue;
+        }
+
+        float t = it->timer.elapsed_frac();
+        bool finished = it->timer.elapsed();
+
+        if (it->has_modify) {
+            if (finished) {
+                region->color = it->target_color;
+                region->density = it->target_density;
+            }
+            else {
+                region->color = rf::Color::lerp(it->start_color, it->target_color, t);
+                region->density = std::lerp(it->start_density, it->target_density, t);
+            }
+        }
+
+        if (it->has_resize) {
+            if (finished) {
+                region->radius = it->target_radius;
+                region->height = it->target_height;
+                region->width = it->target_width;
+                region->depth = it->target_depth;
+            }
+            else {
+                region->radius = std::lerp(it->start_radius, it->target_radius, t);
+                region->height = std::lerp(it->start_height, it->target_height, t);
+                region->width = std::lerp(it->start_width, it->target_width, t);
+                region->depth = std::lerp(it->start_depth, it->target_depth, t);
+            }
+        }
+
+        if (finished) {
+            it = g_gas_region_transitions.erase(it);
+        }
+        else {
+            ++it;
+        }
+    }
+}
+
 void level_apply_patch()
 {
     // Add checking if restoring game state from save file failed during level loading
@@ -216,4 +393,7 @@ void level_apply_patch()
 
     // Allow level hardness 0 for version 304+ levels
     level_load_hardness_zero_patch.install();
+
+    // Hook stock gas region loader to capture gas region data for volumetric fog
+    gas_region_load_hook.install();
 }

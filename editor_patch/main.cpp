@@ -899,11 +899,50 @@ static bool __cdecl line_aabb_intersect(
 FunHook<bool __cdecl(const Vector3*, const Vector3*, const Vector3*, const Vector3*, Vector3*)>
     line_aabb_intersect_hook{0x004c9af0, line_aabb_intersect};
 
-// Fix crash when moving/rotating/undoing decal objects (DED_DECAL, type 0x12).
-// FUN_0042a460 case 0x12 calls FUN_0044e9a0 which dereferences the sub-object pointer at +0xA4
-// without a null check. The sub-object is created by FUN_00494390, which returns NULL if the
-// decal count exceeds 127 or allocation fails. Moving/rotating/undoing such a decal crashes
-// in FUN_00494400 when it dereferences NULL+0x34 etc.
+// Fix greyscale TGA files (image types 3 and 11) not loading.
+CodeInjection tga_greyscale_fix{
+    0x004F3B9E,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x36c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
+
+CodeInjection tga_greyscale_fix_mipmap{
+    0x004F40EE,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x3e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x37c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
+
+// Fix crashes when moving/rotating/undoing/applying properties to decal objects
 static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void* param);
 FunHook<decltype(object_rotation_update_new)> object_rotation_update_hook{
     0x0044e9a0, object_rotation_update_new};
@@ -916,6 +955,65 @@ static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void*
     }
     object_rotation_update_hook.call_target(self, 0, param);
 }
+
+static void __fastcall decal_orient_update_new(void* self, int /*edx*/, int p1, int p2, int p3);
+FunHook<decltype(decal_orient_update_new)> decal_orient_update_hook{
+    0x0044e9f0, decal_orient_update_new};
+static void __fastcall decal_orient_update_new(void* self, int /*edx*/, int p1, int p2, int p3)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal orient update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_orient_update_hook.call_target(self, 0, p1, p2, p3);
+}
+
+static void __fastcall decal_angles_update_new(void* self, int /*edx*/, int p1);
+FunHook<decltype(decal_angles_update_new)> decal_angles_update_hook{
+    0x0044ea40, decal_angles_update_new};
+static void __fastcall decal_angles_update_new(void* self, int /*edx*/, int p1)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal angles update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_angles_update_hook.call_target(self, 0, p1);
+}
+
+static void __fastcall decal_geometry_update_new(void* self, int /*edx*/, int p1);
+FunHook<decltype(decal_geometry_update_new)> decal_geometry_update_hook{
+    0x0044ea90, decal_geometry_update_new};
+static void __fastcall decal_geometry_update_new(void* self, int /*edx*/, int p1)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal geometry update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_geometry_update_hook.call_target(self, 0, p1);
+}
+
+static bool is_edit_key_held()
+{
+    return g_dinput_keys[DIK_R]
+        || g_dinput_keys[DIK_M]
+        || g_dinput_keys[DIK_S]
+        || g_dinput_keys[DIK_LSHIFT];
+}
+
+CodeInjection autosave_defer_during_edit_injection{
+    0x00483061,
+    [](auto& regs) {
+        if (is_edit_key_held()) {
+            regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
+        }
+        else {
+            xlog::info("Autosave saving");
+        }
+    },
+};
 
 // Face mode panel (dialog 178) subclass
 static WNDPROC g_face_panel_orig_wndproc = nullptr;
@@ -1779,11 +1877,21 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Disable red background if geometry limits are crossed
     AsmWriter{0x0043A528, 0x0043A546}.nop();
 
+    // Fix greyscale TGA files not loading (types 3 and 11)
+    tga_greyscale_fix.install();
+    tga_greyscale_fix_mipmap.install();
+
     // Fix clip tool sometimes doing nothing on diagonal clip lines
     line_aabb_intersect_hook.install();
 
-    // Fix crash when rotating objects with null sub-object pointer at +0xA4
+    // Fix crash when accessing decal objects with null sub-object pointer at +0xA4
     object_rotation_update_hook.install();
+    decal_orient_update_hook.install();
+    decal_angles_update_hook.install();
+    decal_geometry_update_hook.install();
+
+    // Defer autosave while an edit operation is in progress to prevent teleporting
+    autosave_defer_during_edit_injection.install();
 
     // Subclass face mode panel for Delete/Delete Ext./Split button handling
     face_panel_subclass_injection.install();

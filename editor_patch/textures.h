@@ -23,6 +23,65 @@ static_assert(offsetof(TextureModePanel, category_index) == 0x94);
 static_assert(offsetof(TextureModePanel, custom_path_handle) == 0x98);
 static_assert(offsetof(TextureModePanel, texture_manager) == 0xA4);
 
+// ─── Texture browser modal panel (FUN_0046fd10 — refresh-list dialog) ──────
+
+struct TextureListNode {
+    TextureListNode* next;      // 0x00
+    TextureListNode* prev;      // 0x04
+    char name[0x27];            // 0x08 — inline filename (strncpy cap = 39, NUL-terminated)
+    uint8_t flag;               // 0x2f
+    uint32_t attr_flags;        // 0x30 — bit1 = read-only, bit2 = hidden (from WIN32_FIND_DATA)
+    uint32_t file_size;         // 0x34 — secondary sort key in sort-by-size mode
+};
+static_assert(sizeof(TextureListNode) == 0x38);
+static_assert(offsetof(TextureListNode, name) == 0x08);
+static_assert(offsetof(TextureListNode, file_size) == 0x34);
+
+// Sentinel for the intrusive list. Layout matches a node ({next, prev}) so that
+// node->prev == &sentinel works as the "begin" indicator and unlink-at-tail
+// auto-updates `tail` through node->next->prev rewrites.
+struct TextureListSentinel {
+    TextureListNode* head;      // = &self when empty
+    TextureListNode* tail;      // = &self when empty
+};
+
+struct TextureBrowserPanel {
+    char pad_0[0x278];
+    TextureListSentinel master_list;    // 0x278 — currently-displayed entries
+    char pad_280[0x34];
+    void* category_holder;              // 0x2b4 — VArray<TextureCategory*> at +0x7C
+    char pad_2b8[0x04];
+    uint8_t listbox_dirty;              // 0x2bc — non-zero forces listbox repaint
+};
+static_assert(offsetof(TextureBrowserPanel, master_list) == 0x278);
+static_assert(offsetof(TextureBrowserPanel, category_holder) == 0x2b4);
+static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
+
+inline VArray<TextureCategory*>* texture_browser_categories(TextureBrowserPanel* panel)
+{
+    return reinterpret_cast<VArray<TextureCategory*>*>(
+        static_cast<char*>(panel->category_holder) + 0x7C);
+}
+
+// FUN_004712d0: __thiscall returning the file-scan flags byte (5 or 6) for this panel.
+// Bit 0 selects sort-by-name; passed straight to texture_browser_scan_path.
+inline uint8_t texture_browser_get_scan_flags(TextureBrowserPanel* panel)
+{
+    return AddrCaller{0x004712d0}.this_call<uint8_t>(panel);
+}
+
+// per-entry validator (filename substring filter, ext checks, etc.).
+// Stock browser-refresh always passes this thunk to the disk-enumerate helper.
+using TextureScanValidator = bool(__cdecl*)(void* entry);
+static auto& texture_browser_validator = addr_as_ref<bool __cdecl(void* entry)>(0x00470330);
+
+// enumerate `path_handle` directory matching `pattern`, run each entry
+// through `validator`, allocate a node per accepted entry, and splice into `out_list`
+// (sorted by name when flags bit 0 is set).
+static auto& texture_browser_scan_path = addr_as_ref<void __cdecl(
+    TextureListSentinel* out_list, int path_handle, const char* pattern,
+    uint8_t flags, TextureScanValidator validator)>(0x004c3ec0);
+
 // ─── Bitmap manager (RED.exe bmpman) ────────────────────────────────────────
 
 struct BitmapEntry {

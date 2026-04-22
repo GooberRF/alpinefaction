@@ -810,6 +810,8 @@ static AlpineRestrictConfig parse_alpine_restrict_config(const toml::table &t)
             o.reject_non_alpine_clients = *v;
         if (auto v = t["alpine_require_release_build"].value<bool>())
             o.alpine_require_release_build = *v;
+        if (auto v = t["require_d3d11"].value<bool>())
+            o.require_d3d11 = *v;
     }
     return o;
 }
@@ -2089,6 +2091,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     if (cfg.alpine_restricted_config.clients_require_alpine) {
         std::format_to(iter, "    Reject non-Alpine clients:           {}\n", cfg.alpine_restricted_config.reject_non_alpine_clients);
         std::format_to(iter, "    Require release build:               {}\n", cfg.alpine_restricted_config.alpine_require_release_build);
+        std::format_to(iter, "    Require Direct3D 11 renderer:        {}\n", cfg.alpine_restricted_config.require_d3d11);
     }
 
     // votes

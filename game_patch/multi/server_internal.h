@@ -412,6 +412,7 @@ struct AlpineRestrictConfig
     // below options are only used if clients_require_alpine = true
     bool reject_non_alpine_clients = false;
     bool alpine_require_release_build = false;
+    bool require_d3d11 = false;
 };
 
 struct SpawnLifeConfig

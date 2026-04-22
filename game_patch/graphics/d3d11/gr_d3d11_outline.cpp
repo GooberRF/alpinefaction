@@ -114,15 +114,17 @@ namespace df::gr::d3d11
             if (!g_alpine_game_config.try_outlines) {
                 return;
             }
-            auto& server_info = get_af_server_info();
-            if (!server_info.has_value() || !server_info->allow_outlines) {
-                return;
+            if (!rf::is_server) {
+                auto& server_info = get_af_server_info();
+                if (!server_info.has_value() || !server_info->allow_outlines) {
+                    return;
+                }
             }
         }
 
-        // Determine xray permission (spectators always allowed)
+        // Determine xray permission (spectators always allowed, servers always allowed)
         bool xray_allowed = true;
-        if (!is_spectating) {
+        if (!is_spectating && !rf::is_server) {
             auto& server_info = get_af_server_info();
             if (!server_info.has_value() || !server_info->allow_outlines_xray) {
                 xray_allowed = false;

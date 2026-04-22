@@ -89,7 +89,8 @@ namespace df::gr::d3d11
             int colorblind_mode = g_alpine_game_config.colorblind_mode;
             float dynamic_light_ndotl = g_alpine_game_config.dynamic_light_ndotl;
             float pixel_light_overbright = g_level_pixel_light_overbright;
-            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright) {
+            float alpha_test_threshold = g_alpha_test_threshold;
+            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
                 current_alpha_test_ = alpha_test;
                 current_fog_allowed_ = fog_allowed;
                 current_color_ = color;
@@ -101,6 +102,7 @@ namespace df::gr::d3d11
                 current_emissive_override_ = emissive_override;
                 current_dynamic_light_ndotl_ = dynamic_light_ndotl;
                 current_pixel_light_overbright_ = pixel_light_overbright;
+                current_alpha_test_threshold_ = alpha_test_threshold;
                 force_update_ = false;
                 update_buffer(device_context);
             }
@@ -134,6 +136,7 @@ namespace df::gr::d3d11
         bool current_emissive_override_ = false;
         float current_dynamic_light_ndotl_ = 0.0f;
         float current_pixel_light_overbright_ = 0.5f;
+        float current_alpha_test_threshold_ = 1.0f / 255.0f;
     };
 
     class PerFrameBuffer
@@ -176,6 +179,29 @@ namespace df::gr::d3d11
         ComPtr<ID3D11Buffer> buffer_;
         float current_u_scale_ = 1.0f;
         float current_v_scale_ = 1.0f;
+    };
+
+    class GasRegionBuffer
+    {
+    public:
+        static constexpr int max_gas_regions = 32;
+
+        GasRegionBuffer(ID3D11Device* device);
+        void update(ID3D11DeviceContext* device_context, const Projection& projection);
+
+        bool has_gas_regions() const
+        {
+            return current_gas_count_ > 0;
+        }
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        ComPtr<ID3D11Buffer> buffer_;
+        int current_gas_count_ = 0;
     };
 
     class RenderContext
@@ -262,16 +288,45 @@ namespace df::gr::d3d11
             }
         }
 
+        void set_picmip_active(bool active)
+        {
+            // Clamp to false when r_picmip is disabled
+            picmip_active_ = active && g_alpine_game_config.picmip > 1;
+        }
+
+        bool picmip_active() const { return picmip_active_; }
+
+        // RAII: set picmip_active for the lifetime of the guard, restore on destruction.
+        // Use at the top of geometry-rendering functions (mesh/CSG draws) so r_picmip's
+        // MinLOD clamp bites on those draws and not on sprite/UI draws that follow.
+        class ScopedPicmipActive
+        {
+        public:
+            ScopedPicmipActive(RenderContext& ctx, bool active) :
+                ctx_{ctx}, prev_{ctx.picmip_active_}
+            {
+                ctx_.set_picmip_active(active);
+            }
+            ~ScopedPicmipActive() { ctx_.picmip_active_ = prev_; }
+            ScopedPicmipActive(const ScopedPicmipActive&) = delete;
+            ScopedPicmipActive& operator=(const ScopedPicmipActive&) = delete;
+        private:
+            RenderContext& ctx_;
+            bool prev_;
+        };
+
         void set_mode(gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false)
         {
             render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, device_context_);
-            if (!current_mode_ || current_mode_.value() != mode) {
-                if (!current_mode_ || current_mode_.value().get_texture_source() != mode.get_texture_source()) {
+            if (!current_mode_ || current_mode_.value() != mode || current_picmip_active_ != picmip_active_) {
+                if (!current_mode_ || current_mode_.value().get_texture_source() != mode.get_texture_source() || current_picmip_active_ != picmip_active_) {
                     std::array<ID3D11SamplerState*, 2> sampler_states = {
-                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 0),
-                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 1),
+                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 0, picmip_active_),
+                        // Slot 1 is the lightmap, r_picmip should scale diffuse textures only
+                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 1, false),
                     };
                     set_sampler_states(sampler_states);
+                    current_picmip_active_ = picmip_active_;
                 }
                 if (!current_mode_ || current_mode_.value().get_alpha_blend() != mode.get_alpha_blend()) {
                     ID3D11BlendState* blend_state =
@@ -359,6 +414,12 @@ namespace df::gr::d3d11
         void update_per_frame_constants()
         {
             per_frame_buffer_.update(device_context_);
+            gas_region_buffer_.update(device_context_, projection_);
+        }
+
+        bool has_gas_regions() const
+        {
+            return gas_region_buffer_.has_gas_regions();
         }
 
         void fog_set()
@@ -480,6 +541,7 @@ namespace df::gr::d3d11
             current_tex_handles_ = {-2, -2};
             current_cull_mode_ = D3D11_CULL_NONE;
             current_mode_.reset();
+            current_picmip_active_ = false;
             current_sampler_states_ = {nullptr, nullptr};
             current_blend_state_ = nullptr;
             current_depth_stencil_state_ = nullptr;
@@ -534,6 +596,7 @@ namespace df::gr::d3d11
         RenderModeBuffer render_mode_cbuffer_;
         PerFrameBuffer per_frame_buffer_;
         TextureScaleBuffer texture_scale_cbuffer_;
+        GasRegionBuffer gas_region_buffer_;
 
         ID3D11RenderTargetView* render_target_view_ = nullptr;
         ID3D11DepthStencilView* depth_stencil_view_ = nullptr;
@@ -546,6 +609,8 @@ namespace df::gr::d3d11
         std::array<int, 2> current_tex_handles_ = {-2, -2};
         D3D11_CULL_MODE current_cull_mode_ = D3D11_CULL_NONE;
         std::optional<gr::Mode> current_mode_;
+        bool picmip_active_ = false;
+        bool current_picmip_active_ = false;
         std::array<ID3D11SamplerState*, 2> current_sampler_states_ = {nullptr, nullptr};
         ID3D11BlendState* current_blend_state_ = nullptr;
         ID3D11DepthStencilState* current_depth_stencil_state_ = nullptr;

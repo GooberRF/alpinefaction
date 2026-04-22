@@ -157,6 +157,7 @@ static_assert(offsetof(GRoom, bbox_min) == 0x08);
 static_assert(offsetof(GRoom, bbox_max) == 0x14);
 static_assert(offsetof(GRoom, room_index) == 0x20);
 static_assert(offsetof(GRoom, uid) == 0x24);
+static_assert(offsetof(GRoom, _face_list) == 0x28);
 static_assert(offsetof(GRoom, is_cold) == 0x41);
 static_assert(offsetof(GRoom, ambient_light_defined) == 0x45);
 static_assert(offsetof(GRoom, ambient_light) == 0x46);
@@ -853,6 +854,15 @@ static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...
 
 // FUN_00453200: sync DedLight properties (pos, orient, color, etc.) to its internal level_light
 static auto& DedLight_UpdateLevelLight = addr_as_ref<void __fastcall(void* this_)>(0x00453200);
+
+// DirectInput keyboard state buffer, non-zero value at [scancode] means the key is held
+static auto& g_dinput_keys = addr_as_ref<uint8_t[256]>(0x0147ce8c);
+
+// DirectInput scan codes for edit operation hold-keys
+constexpr uint8_t DIK_R = 0x13;     // rotate
+constexpr uint8_t DIK_M = 0x32;     // move
+constexpr uint8_t DIK_S = 0x1F;     // scale
+constexpr uint8_t DIK_LSHIFT = 0x2A;
 
 // Editor app globals
 void* GetMainFrame();
