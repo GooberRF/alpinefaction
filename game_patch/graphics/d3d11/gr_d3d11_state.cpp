@@ -27,7 +27,7 @@ namespace gr::d3d11
         return rasterizer_state;
     }
 
-    ComPtr<ID3D11SamplerState> StateManager::create_sampler_state(rf::gr::TextureSource ts)
+    ComPtr<ID3D11SamplerState> StateManager::create_sampler_state(rf::gr::TextureSource ts, bool picmip_active)
     {
         CD3D11_SAMPLER_DESC desc{CD3D11_DEFAULT()};
         switch (ts) {
@@ -62,17 +62,39 @@ namespace gr::d3d11
         }
 
         desc.MipLODBias = 0.0f;
+        desc.MinLOD = 0.0f;
         int divisor = g_alpine_game_config.picmip;
         if (divisor < 1) {
             divisor = 1;
         }
-        desc.MinLOD = divisor > 1 ? std::log2(static_cast<float>(divisor)) : 0.0f;
+
+        // Only diverge from stock sampler state when picmip is actually enabled
+        if (divisor > 1) {
+            if (picmip_active) {
+                // Geometry sampler: clamp sampling to mip >= log2(divisor). Requires
+                // textures to have been uploaded with a mip chain (handled at load time).
+                desc.MinLOD = std::log2(static_cast<float>(divisor));
+            }
+            else {
+                // Sprite/UI sampler: forbid the GPU from touching anything but mip 0 so
+                // that auto-generated mips on sprite textures can't alter their
+                // appearance.
+                desc.MaxLOD = 0.0f;
+            }
+        }
+
         if (g_alpine_game_config.nearest_texture_filtering) {
             desc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
         }
         else if (g_game_config.anisotropic_filtering && desc.Filter != D3D11_FILTER_MIN_MAG_MIP_POINT) {
             desc.Filter = D3D11_FILTER_ANISOTROPIC;
             desc.MaxAnisotropy = 16;
+        }
+
+        // Anisotropic filter + MaxLOD=0
+        if (divisor > 1 && !picmip_active && desc.Filter == D3D11_FILTER_ANISOTROPIC) {
+            desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+            desc.MaxAnisotropy = 1;
         }
 
         ComPtr<ID3D11SamplerState> sampler_state;

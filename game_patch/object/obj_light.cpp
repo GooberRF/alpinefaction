@@ -218,10 +218,10 @@ ConsoleCommand2 dynamic_light_ndotl_cmd{
         if (value_opt) {
             g_alpine_game_config.set_dynamic_light_ndotl(value_opt.value());
         }
-        rf::console::print("Dynamic light N·L on world geometry: {:.2f} (0.0 = stock, 1.0 = full N·L, D3D11 only)",
+        rf::console::print("Dynamic light N-L on world geometry: {:.2f} (0.0 = stock, 1.0 = full N-L, D3D11 only)",
             g_alpine_game_config.dynamic_light_ndotl);
     },
-    "Set N·L blend factor for dynamic lights on world geometry (D3D11 only)",
+    "Set N-L blend factor for dynamic lights on world geometry (D3D11 only)",
     "r_dynamiclightndotl <0.0-1.0>",
 };
 

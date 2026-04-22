@@ -836,6 +836,12 @@ namespace gr::d3d11
 
     void MeshRenderer::draw_cached_mesh(rf::VifLodMesh *lod_mesh, BaseMeshRenderCache& cache, const rf::MeshRenderParams& params, int lod_index, bool skip_ambient_cache)
     {
+        bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
+        // picmip does not apply to game objects (entities, items, held weapons, fpgun)
+        bool is_fp_weapon = (params.flags & MRF_FIRST_PERSON) != 0;
+        bool is_object_mesh = is_character_mesh || is_fp_weapon || ScopedPicmipSkipObject::active();
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, !is_object_mesh};
+
         const int* tex_handles = get_tex_handles(lod_mesh, params, lod_index);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
@@ -868,7 +874,6 @@ namespace gr::d3d11
             return sum;
         };
 
-        bool is_character_mesh = dynamic_cast<const CharacterMeshRenderCache*>(&cache) != nullptr;
         bool gpu_dynamic_lighting = false;
         bool use_vtx_lighting = level_uses_vertex_lighting();
         if (!ir_scanner) {

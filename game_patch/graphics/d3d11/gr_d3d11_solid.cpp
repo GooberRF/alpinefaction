@@ -820,6 +820,9 @@ namespace gr::d3d11
 
     void SolidRenderer::render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient)
     {
+        // Sky room; picmip applies.
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
+
         xlog::trace("Rendering sky room {} cache {}", room->room_index, room->geo_cache);
         render_context_.update_lights(true);
 
@@ -863,6 +866,9 @@ namespace gr::d3d11
 
     void SolidRenderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
     {
+        // Mover brush geometry; picmip applies.
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
+
         xlog::trace("Rendering movable solid {}", solid);
         // Upload gathered lights so the pixel shader can apply point lighting to movers
         render_context_.update_lights();
@@ -871,6 +877,8 @@ namespace gr::d3d11
         cache->render(FaceRenderType::opaque, render_context_);
         cache->render(FaceRenderType::alpha, render_context_);
         if (decals_enabled) {
+            // Decals on mover brushes; picmip doesn't apply.
+            RenderContext::ScopedPicmipActive decal_scope{render_context_, false};
             render_movable_solid_dynamic_decals(solid, pos, orient);
         }
     }
@@ -891,6 +899,9 @@ namespace gr::d3d11
 
     void SolidRenderer::render_alpha_detail(rf::GRoom *room, rf::GSolid *solid)
     {
+        // Alpha-detail CSG geometry; picmip applies.
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
+
         xlog::trace("Rendering alpha detail room {}", room->room_index);
         if (room->face_list.empty()) {
             // Happens when glass is killed
@@ -903,18 +914,26 @@ namespace gr::d3d11
         before_render(rf::zero_vector, rf::identity_matrix);
         render_detail(solid, room, true);
         if (decals_enabled) {
+            // Decals on alpha detail geometry; picmip doesn't apply.
+            RenderContext::ScopedPicmipActive decal_scope{render_context_, false};
             render_alpha_detail_dynamic_decals(room);
         }
     }
 
     void SolidRenderer::render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room)
     {
+        // Liquid surfaces; picmip applies.
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
+
         before_render(rf::zero_vector, rf::identity_matrix);
         render_room_faces(solid, room, FaceRenderType::liquid);
     }
 
     void SolidRenderer::render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
     {
+        // CSG level geometry; picmip applies.
+        RenderContext::ScopedPicmipActive picmip_scope{render_context_, true};
+
         xlog::trace("Rendering level solid");
         rf::gr::light_filter_set_solid(solid, 1, 0);
         render_context_.update_lights();
@@ -940,6 +959,8 @@ namespace gr::d3d11
         }
 
         if (decals_enabled) {
+            // Decals on level geometry; picmip doesn't apply.
+            RenderContext::ScopedPicmipActive decal_scope{render_context_, false};
             render_dynamic_decals(rooms, num_rooms);
         }
 

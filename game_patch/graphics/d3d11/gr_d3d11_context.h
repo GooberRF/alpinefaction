@@ -288,16 +288,46 @@ namespace gr::d3d11
             }
         }
 
+        void set_picmip_active(bool active)
+        {
+            // Clamp to false when r_picmip is disabled
+            picmip_active_ = active && g_alpine_game_config.picmip > 1;
+        }
+
+        bool picmip_active() const { return picmip_active_; }
+
+        // RAII: set picmip_active for the lifetime of the guard, restore on destruction.
+        // Use at the top of geometry-rendering functions (mesh/CSG draws) so r_picmip's
+        // MinLOD clamp bites on those draws and not on sprite/UI draws that follow.
+        class ScopedPicmipActive
+        {
+        public:
+            ScopedPicmipActive(RenderContext& ctx, bool active)
+                : ctx_{ctx}
+                , prev_{ctx.picmip_active_}
+            {
+                ctx_.set_picmip_active(active);
+            }
+            ~ScopedPicmipActive() { ctx_.picmip_active_ = prev_; }
+            ScopedPicmipActive(const ScopedPicmipActive&) = delete;
+            ScopedPicmipActive& operator=(const ScopedPicmipActive&) = delete;
+        private:
+            RenderContext& ctx_;
+            bool prev_;
+        };
+
         void set_mode(rf::gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false)
         {
             render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, device_context_);
-            if (!current_mode_ || current_mode_.value() != mode) {
-                if (!current_mode_ || current_mode_.value().get_texture_source() != mode.get_texture_source()) {
+            if (!current_mode_ || current_mode_.value() != mode || current_picmip_active_ != picmip_active_) {
+                if (!current_mode_ || current_mode_.value().get_texture_source() != mode.get_texture_source() || current_picmip_active_ != picmip_active_) {
                     std::array<ID3D11SamplerState*, 2> sampler_states = {
-                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 0),
-                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 1),
+                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 0, picmip_active_),
+                        // Slot 1 is the lightmap, r_picmip should scale diffuse textures only
+                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 1, false),
                     };
                     set_sampler_states(sampler_states);
+                    current_picmip_active_ = picmip_active_;
                 }
                 if (!current_mode_ || current_mode_.value().get_alpha_blend() != mode.get_alpha_blend()) {
                     ID3D11BlendState* blend_state =
@@ -512,6 +542,7 @@ namespace gr::d3d11
             current_tex_handles_ = {-2, -2};
             current_cull_mode_ = D3D11_CULL_NONE;
             current_mode_.reset();
+            current_picmip_active_ = false;
             current_sampler_states_ = {nullptr, nullptr};
             current_blend_state_ = nullptr;
             current_depth_stencil_state_ = nullptr;
@@ -579,6 +610,8 @@ namespace gr::d3d11
         std::array<int, 2> current_tex_handles_ = {-2, -2};
         D3D11_CULL_MODE current_cull_mode_ = D3D11_CULL_NONE;
         std::optional<rf::gr::Mode> current_mode_;
+        bool picmip_active_ = false;
+        bool current_picmip_active_ = false;
         std::array<ID3D11SamplerState*, 2> current_sampler_states_ = {nullptr, nullptr};
         ID3D11BlendState* current_blend_state_ = nullptr;
         ID3D11DepthStencilState* current_depth_stencil_state_ = nullptr;

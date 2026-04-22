@@ -4,6 +4,7 @@
 #include <map>
 #include <d3d11.h>
 #include <common/ComPtr.h>
+#include "../../misc/alpine_settings.h"
 
 namespace gr::d3d11
 {
@@ -24,7 +25,7 @@ namespace gr::d3d11
             return p.first->second;
         }
 
-        ID3D11SamplerState* lookup_sampler_state(rf::gr::TextureSource ts, int slot)
+        ID3D11SamplerState* lookup_sampler_state(rf::gr::TextureSource ts, int slot, bool picmip_active = false)
         {
             if (ts == rf::gr::TEXTURE_SOURCE_NONE) {
                 // we are binding a dummy white textures
@@ -35,13 +36,17 @@ namespace gr::d3d11
                 ts = rf::gr::TEXTURE_SOURCE_CLAMP;
             }
 
-            int key = static_cast<int>(ts);
+            // At r_picmip == 1 the two variants are identical — collapse the key so we
+            // don't allocate duplicate D3D11 samplers and don't cause no-op PSSetSamplers
+            // calls when geometry scopes toggle picmip_active.
+            bool needs_variant = picmip_active && g_alpine_game_config.picmip > 1;
+            int key = static_cast<int>(ts) | (needs_variant ? 0x10000 : 0);
             auto it = sampler_state_cache_.find(key);
             if (it != sampler_state_cache_.end()) {
                 return it->second;
             }
 
-            auto p = sampler_state_cache_.emplace(key, create_sampler_state(ts));
+            auto p = sampler_state_cache_.emplace(key, create_sampler_state(ts, needs_variant));
             return p.first->second;
         }
 
@@ -83,7 +88,7 @@ namespace gr::d3d11
 
     private:
         ComPtr<ID3D11RasterizerState> create_rasterizer_state(D3D11_CULL_MODE cull_mode, int depth_bias, bool depth_clip_enable);
-        ComPtr<ID3D11SamplerState> create_sampler_state(rf::gr::TextureSource ts);
+        ComPtr<ID3D11SamplerState> create_sampler_state(rf::gr::TextureSource ts, bool picmip_active);
         ComPtr<ID3D11BlendState> create_blend_state(rf::gr::AlphaBlend ab);
         ComPtr<ID3D11DepthStencilState> create_depth_stencil_state(rf::gr::ZbufferType zbt);
 

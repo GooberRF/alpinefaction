@@ -314,6 +314,13 @@ namespace gr::d3d11
         renderer->texture_flush_cache(force);
     }
 
+    void texture_flush_non_user_cache()
+    {
+        if (renderer) {
+            renderer->texture_flush_non_user_cache();
+        }
+    }
+
     void texture_mark_dirty(int bm_handle)
     {
         renderer->texture_mark_dirty(bm_handle);
@@ -675,7 +682,14 @@ namespace gr::d3d11
 
     void update_window_mode()
     {
-        renderer->set_fullscreen_state(rf::gr::screen.window_mode == rf::gr::FULLSCREEN);
+        bool want_fullscreen = rf::gr::screen.window_mode == rf::gr::FULLSCREEN;
+        if (want_fullscreen && !renderer->supports_exclusive_fullscreen()) {
+            xlog::error("Cannot enter exclusive fullscreen while D3D11_LowFrameLatency or D3D11_AllowTearing are enabled in alpine_system.ini.");
+            rf::gr::screen.window_mode = rf::gr::WINDOWED;
+            renderer->set_fullscreen_state(false);
+            return;
+        }
+        renderer->set_fullscreen_state(want_fullscreen);
     }
 
     rf::ubyte project_vertex_new(rf::gr::Vertex* v)
@@ -883,6 +897,30 @@ namespace gr::d3d11
         },
         "Toggles anti-aliasing",
     };
+  
+    FunHook<void(rf::Item*)> item_render_hook{
+        0x00458F80,
+        [] (rf::Item* const item) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard{};
+                item_render_hook.call_target(item);
+            } else {
+                item_render_hook.call_target(item);
+            }
+        },
+    };
+
+    FunHook<void((rf::Entity*)> entity_render_weapon_in_hands_hook{
+        0x00421C40,
+        [] (rf::Entity* const entity) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard{};
+                entity_render_weapon_in_hands_hook.call_target(entity);
+            } else {
+                entity_render_weapon_in_hands_hook.call_target(entity);
+            }
+        },
+    };
 }
 
 void gr_d3d11_apply_patch()
@@ -982,6 +1020,9 @@ void gr_d3d11_apply_patch()
 
     // Hook blob shadow rendering: skip when D3D11 shadow mapping is active (quality > 0)
     obj_shadow_render_all_hook.install();
+    
+    item_render_hook.install();
+    entity_render_weapon_in_hands_hook.install();
 
     // Change size of standard structures
     write_mem<int8_t>(0x00569884 + 1, sizeof(rf::VifMesh));
