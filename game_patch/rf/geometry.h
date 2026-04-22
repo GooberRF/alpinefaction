@@ -666,7 +666,6 @@ namespace rf
     static auto& compress_vector3 = addr_as_ref<int(GSolid* solid, Vector3* in_vec, ShortVector* out_vec)>(0x004B5820);
 
     static auto& g_decal_get_list = addr_as_ref<void(GDecal** decal_list, int *out_num)>(0x004D7640);
-    static auto& g_decal_add = addr_as_ref<GDecal*(GDecalCreateInfo* dci)>(0x004D52E0);
 
     static auto& material_find_impact_sound_set = addr_as_ref<ImpactSoundSet*(const char* name)>(0x004689A0);
 
@@ -680,9 +679,6 @@ namespace rf
 
     static auto& glass_delete_room = addr_as_ref<void(GRoom* room)>(0x004921F0);
     static auto& glass_shatter_face_with_weapon = addr_as_ref<void(GFace* face, Vector3* hit_point, Vector3* dir, bool from_packet)>(0x00491ED0);
-
-    static auto& decompress_vector3 = addr_as_ref<GSolid*(GSolid* solid, const ShortVector* in_vec, Vector3* out_vec)>(0x004B5900);
-    static auto& compress_vector3 = addr_as_ref<int(GSolid* solid, Vector3* in_vec, ShortVector* out_vec)>(0x004B5820);
 
     static auto& bbox_intersect = addr_as_ref<bool(const Vector3& bbox1_min, const Vector3& bbox1_max, const Vector3& bbox2_min, const Vector3& bbox2_max)>(0x0046C340);
 
