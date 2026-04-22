@@ -1496,7 +1496,8 @@ CodeInjection multi_on_new_player_injection{
         if (!g_dedicated_launched_from_ads) {
             const rf::Player* const player = regs.esi;
             rf::console::print(
-                "{}{} ({})", player->name,
+                "{}{} ({})",
+                player->name,
                 rf::strings::has_joined,
                 net_addr_to_string(player->net_data->addr.ip_addr)
             );
