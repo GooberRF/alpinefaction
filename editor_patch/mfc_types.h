@@ -140,7 +140,10 @@ enum class DedObjectType : int
     DED_BOLT_EMITTER = 0x13,
     DED_TARGET = 0x14,
     DED_KEYFRAME = 0x15,
-    DED_PUSH_REGION = 0x16
+    DED_PUSH_REGION = 0x16,
+    DED_MESH = 0x17,   // Alpine 1.3
+    DED_NOTE = 0x18,   // Alpine 1.3
+    DED_CORONA = 0x19  // Alpine 1.3
 };
 
 struct Vector3
@@ -151,6 +154,8 @@ struct Vector3
 
     Vector3() = default;
     Vector3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+
+    Vector3 operator+(const Vector3& b) const { return {x + b.x, y + b.y, z + b.z}; }
 };
 static_assert(sizeof(Vector3) == 0xC, "Vector3 size mismatch!");
 
@@ -162,8 +167,32 @@ struct Matrix3
 
     Matrix3() = default;
     Matrix3(const Vector3& r, const Vector3& u, const Vector3& f) : rvec(r), uvec(u), fvec(f) {}
+
+    // Matrix * vector (column multiply)
+    Vector3 operator*(const Vector3& v) const {
+        return {
+            rvec.x * v.x + uvec.x * v.y + fvec.x * v.z,
+            rvec.y * v.x + uvec.y * v.y + fvec.y * v.z,
+            rvec.z * v.x + uvec.z * v.y + fvec.z * v.z,
+        };
+    }
+
+    // Matrix * matrix
+    Matrix3 operator*(const Matrix3& b) const {
+        return {*this * b.rvec, *this * b.uvec, *this * b.fvec};
+    }
 };
 static_assert(sizeof(Matrix3) == 0x24, "Matrix3 size mismatch!");
+
+struct Plane
+{
+    Vector3 normal;
+    float dist = 0.0f;
+
+    Plane() = default;
+    Plane(const Vector3& n, float d) : normal(n), dist(d) {}
+};
+static_assert(sizeof(Plane) == 0x10, "Plane size mismatch!");
 
 template<typename T>
 struct VArray
@@ -207,6 +236,38 @@ struct VArray
     {
         return add_if_not_exists_raw(reinterpret_cast<void*>(value));
     }
+
+    void remove_at(int index)
+    {
+        if (index < 0 || index >= size) return;
+        for (int i = index; i < size - 1; i++) {
+            data_ptr[i] = data_ptr[i + 1];
+        }
+        size--;
+    }
+
+    // Add element (delegates to stock add-if-not-exists, works for pointers and ints)
+    void add(T value)
+    {
+        add_if_not_exists_raw(reinterpret_cast<void*>(value));
+    }
+
+    // FUN_00491020: unconditional append (always adds, no dedup check)
+    void push_back(T value)
+    {
+        AddrCaller{0x00491020}.this_call(this, value);
+    }
+
+    // Remove first occurrence of value
+    void remove_by_value(T value)
+    {
+        for (int i = 0; i < size; i++) {
+            if (data_ptr[i] == value) {
+                remove_at(i);
+                return;
+            }
+        }
+    }
 };
 static_assert(sizeof(VArray<int>) == 0xC, "VArray size mismatch!");
 
@@ -247,6 +308,12 @@ struct VString
         return buf ? buf : "";
     }
 
+    // Free the buffer using the stock allocator
+    void free()
+    {
+        AddrCaller{0x004B6710}.this_call(this);
+    }
+
     // Check if the string is empty
     bool empty() const
     {
@@ -280,6 +347,9 @@ struct Color
     Color(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha = 255) : r(red), g(green), b(blue), a(alpha) {}
 };
 static_assert(sizeof(Color) == 0x4, "Color size mismatch!");
+
+// Stock DedObject vtable (used by all object types in the editor)
+static constexpr uintptr_t ded_object_vtbl_addr = 0x55712C;
 
 struct DedObject
 {
@@ -331,6 +401,60 @@ struct DedRoomEffect : DedObject
     char pad_B0[0xD4 - 0xB0];
 };
 static_assert(sizeof(DedRoomEffect) == 0xD4, "DedRoomEffect size mismatch");
+
+// Per-slot texture override for editor mesh objects
+struct EditorTextureOverride {
+    uint8_t slot;
+    std::string filename;
+};
+
+// Clutter behavior properties for mesh objects (applied when is_clutter is true)
+struct MeshClutterProps {
+    bool is_clutter = false;
+    float life = -1.0f;            // hit points (-1 = invulnerable)
+    std::string debris_filename;   // debris mesh (.v3m) spawned on destruction
+    std::string explosion_vclip;   // explosion vclip name
+    float explosion_radius = 1.0f; // explosion visual radius
+    float debris_velocity = 10.0f; // debris fragment velocity
+    std::string corpse_filename;       // mesh to swap to on death (empty = remove on death)
+    std::string corpse_state_anim;     // state anim for corpse mesh (v3c only)
+    uint8_t corpse_collision = 2;      // corpse collision mode: 0=None, 1=Only Weapons, 2=All
+    int8_t corpse_material = -1;       // corpse material: -1=Automatic (inherit from base), 0-9=specific material
+    float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1}; // per-damage-type multipliers
+};
+
+struct DedMesh : DedObject
+{
+    VString mesh_filename;          // .v3m / .v3c / .vfx path
+    VString state_anim;             // animation name (for .v3c skeletal meshes)
+    uint8_t collision_mode;         // 0=None, 1=Only Weapons, 2=All
+    bool vmesh_load_failed;         // true if vmesh load was attempted and failed
+    char padding_mesh[2];
+    std::vector<EditorTextureOverride> texture_overrides;
+    bool simulate_in_editor = false;   // v3c only: play animation continuously instead of freezing frame 0
+    int material = 0;                  // material type for impact sounds (0=default, applies to all meshes)
+    MeshClutterProps clutter_props;
+};
+
+struct DedNote : DedObject
+{
+    std::vector<std::string> notes;
+};
+
+struct DedCorona : DedObject
+{
+    uint8_t color_r = 200, color_g = 154, color_b = 228, color_a = 255;
+    std::string corona_bitmap = "LightCorona04.tga";
+    float cone_angle = 83.0f;        // degrees
+    float intensity = 0.5f;
+    float radius_distance = 0.6f;
+    float radius_scale = 0.8f;
+    float diminish_distance = -0.05f;
+    std::string volumetric_bitmap = "LightBeam02.tga";
+    float volumetric_height = 1.6f;
+    float volumetric_length = 3.2f;
+    bool show_in_editor = false;       // not serialized — local editor toggle
+};
 
 struct DedBoltEmitter : DedObject
 {
@@ -586,7 +710,7 @@ struct VFile
 
     int get_version()
     {
-        AddrCaller{0x004CF680}.this_call(this);
+        return AddrCaller{0x004CF680}.this_call<int>(this);
     }
 };
 static_assert(sizeof(VFile) == 0x114);
@@ -594,4 +718,48 @@ static_assert(sizeof(VFile) == 0x114);
 bool get_is_saving_af_version();
 
 static auto& editor_file_default_matrix = *reinterpret_cast<Matrix3*>(0x01642060);
-static auto& g_main_frame = addr_as_ref<CWnd*>(0x006F9E68);
+
+struct CFrameWnd : CWnd
+{
+    char padding_frame[0x80]; // 0xBC - 0x3C = 0x80
+};
+static_assert(sizeof(CFrameWnd) == 0xBC);
+
+struct CMainFrame : CFrameWnd
+{
+    void* views[4];
+    void* unk_view;
+    CDocument* doc;
+    VString field_D4;
+    char dialog_bar[0x88]; // CDialogBar
+    char status_bar[0x7C]; // CStatusBar
+    char splitter[0x26C]; // CDedSplitterWnd
+    float grid_size_available_values[12];
+    float rotate_by_available_vals[8];
+    int texture_grid_size_available_values[8];
+    int grid_size_index;
+    int rotate_by_index;
+    int texture_grid_size_index;
+    float camera_speed_allowed_values[6];
+    int camera_speed_index;
+    float grid_brightness;
+    int custom_colors[16];
+    int favorite_textures[8];
+    bool play_no_tnl;
+    char padding_tail[3];
+    void* preferences_dlg;
+
+    void MaximizeActiveViewport()
+    {
+        AddrCaller{0x004476E0}.this_call(this);
+    }
+
+    void RestoreAllViewports()
+    {
+        AddrCaller{0x00447670}.this_call(this);
+    }
+};
+static_assert(sizeof(CMainFrame) == 0x550);
+
+static auto& g_main_frame = addr_as_ref<CMainFrame*>(0x006F9E68);
+static auto& g_maximized_viewport = addr_as_ref<int>(0x0057B9C0);

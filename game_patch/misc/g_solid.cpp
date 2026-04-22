@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -5,10 +7,12 @@
 #include <xlog/xlog.h>
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/multi.h"
 #include "../main/main.h"
 #include "../misc/misc.h"
 #include "../rf/geometry.h"
 #include "../rf/level.h"
+#include "../rf/bmpman.h"
 #include "../rf/event.h"
 #include "../rf/mover.h"
 #include "../rf/file/file.h"
@@ -20,6 +24,7 @@
 #include "../os/console.h"
 #include "../bmpman/bmpman.h"
 #include "../bmpman/fmt_conv_templates.h"
+#include "destruction.h"
 #include "level.h"
 
 constexpr auto reference_fps = 30.0f;
@@ -27,6 +32,7 @@ constexpr auto reference_frametime = 1.0f / reference_fps;
 static int g_max_decals = 512;
 static float g_crater_autotexture_ppm = 32.0f;
 static bool g_show_room_clip_wnd = false;
+
 std::optional<int> g_sky_room_uid_override;
 std::optional<rf::Object*> g_sky_room_eye_anchor;
 std::optional<float> g_sky_room_eye_offset_scale;
@@ -277,7 +283,8 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         bool floor_clamp_defined = false;
 
         // Check if the level explicitly defines clamp floor
-        if (g_alpine_level_info_config
+        if (!g_alpine_game_config.ignore_tbl_lightmap_clamping
+            && g_alpine_level_info_config
             .is_option_loaded(
                 rf::level.filename,
                 AlpineLevelInfoID::LightmapClampFloor
@@ -291,7 +298,8 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         }
 
         // Check if the level explicitly defines clamp ceiling
-        if (g_alpine_level_info_config
+        if (!g_alpine_game_config.ignore_tbl_lightmap_clamping
+            && g_alpine_level_info_config
             .is_option_loaded(
                 rf::level.filename,
                 AlpineLevelInfoID::LightmapClampCeiling
@@ -316,7 +324,7 @@ CodeInjection level_load_lightmaps_color_conv_patch{
         }
 
         // Clamp lightmaps only if:
-        // - mapname_info.tbl says to (takes priority over all other config)
+        // - mapname_info.tbl says to (takes priority unless cl_ignore_tbl_lightmap_clamping is enabled)
         // - Is an official Volition map AND "Always clamp official lightmaps" is turned on
         // - Is a version 200 map, AF "Full range lights" is turned off, AND DF "Lightmaps full depth" is turned off (or not set)
 
@@ -366,10 +374,20 @@ ConsoleCommand2 lighting_color_range_cmd{
 ConsoleCommand2 clamp_official_lightmaps_cmd{
     "r_clampofficiallightmaps",
     []() {
-        g_alpine_game_config.always_clamp_official_lightmaps = !g_alpine_game_config.always_clamp_official_lightmaps;        
+        g_alpine_game_config.always_clamp_official_lightmaps = !g_alpine_game_config.always_clamp_official_lightmaps;
         rf::console::printf("Forced clamping of lightmaps in official levels is: %s", g_alpine_game_config.always_clamp_official_lightmaps ? "enabled" : "disabled");
     },
     "Toggle forced lightmap clamping for official Volition levels. Only affects new level loads. Only applicable if full range lighting is enabled.",
+};
+
+ConsoleCommand2 ignore_tbl_lightmap_clamping_cmd{
+    "cl_ignore_tbl_lightmap_clamping",
+    []() {
+        g_alpine_game_config.ignore_tbl_lightmap_clamping = !g_alpine_game_config.ignore_tbl_lightmap_clamping;
+        rf::console::printf("Ignore TBL lightmap clamping override: %s", g_alpine_game_config.ignore_tbl_lightmap_clamping ? "enabled" : "disabled");
+        rf::console::printf("Reload the level for this to take effect.");
+    },
+    "Toggle ignoring per-map lightmap clamping overrides from mapname_info.tbl. Only affects new level loads.",
 };
 
 CodeInjection shadow_render_one_injection{
@@ -505,19 +523,26 @@ ConsoleCommand2 max_decals_cmd{
     },
 };
 
-static void render_rooms_clip_wnds()
-{
-    rf::GRoom** rooms;
-    int num_rooms;
+static void render_rooms_clip_wnds() {
+    rf::GRoom** rooms = nullptr;
+    int num_rooms = 0;
     rf::g_get_room_render_list(&rooms, &num_rooms);
     rf::gr::set_color(255, 255, 255, 255);
     for (int i = 0; i < num_rooms; ++i) {
-        rf::GRoom* room = rooms[i];
+        const rf::GRoom* const room = rooms[i];
         char buf[256];
         std::snprintf(buf, sizeof(buf), "room %d", room->room_index);
-        rf::gr::string(room->clip_wnd.left, room->clip_wnd.top, buf);
-        rf::gr::rect_border(room->clip_wnd.left, room->clip_wnd.top,
-            room->clip_wnd.right - room->clip_wnd.left, room->clip_wnd.bot - room->clip_wnd.top);
+        rf::gr::string(
+            std::lround(room->clip_wnd.left),
+            std::lround(room->clip_wnd.top),
+            buf
+        );
+        rf::gr::rect_border(
+            std::lround(room->clip_wnd.left),
+            std::lround(room->clip_wnd.top),
+            std::lround(room->clip_wnd.right - room->clip_wnd.left),
+            std::lround(room->clip_wnd.bot - room->clip_wnd.top)
+        );
     }
 }
 
@@ -529,25 +554,6 @@ static ConsoleCommand2 dbg_room_clip_wnd_cmd{
     },
 };
 
-ConsoleCommand2 dbg_num_geomods_cmd{
-    "dbg_numgeos",
-    []() {
-        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
-            rf::console::print("No level loaded!");
-            return;
-        }
-
-        if (rf::is_multi && !rf::is_server) {
-            rf::console::print("In multiplayer, this command can only be run by the server.");
-            return;
-        }
-
-        int max_geos = rf::is_multi ? rf::netgame.geomod_limit : 128;
-
-        rf::console::print("{} craters in the current level out of a maximum of {}", rf::g_num_geomods_this_level, max_geos);
-    },
-    "Count the number of geomod craters in the current level",
-};
 
 void g_solid_render_ui()
 {
@@ -681,11 +687,12 @@ CodeInjection sky_room_eye_position_patch{
     },
 };
 
-// clean up sky room overrides when shutting down level
+// clean up sky room overrides and destruction state when shutting down level
 CodeInjection level_release_sky_room_shutdown_patch{
     0x0045CAF9,
     [](auto& regs) {
         set_sky_room_uid_override(-1, -1, false, -1);
+        destruction_level_cleanup();
     },
 };
 
@@ -759,7 +766,7 @@ void g_solid_do_patch()
     // Commands
     max_decals_cmd.register_cmd();
     dbg_room_clip_wnd_cmd.register_cmd();
-    dbg_num_geomods_cmd.register_cmd();
     lighting_color_range_cmd.register_cmd();
     clamp_official_lightmaps_cmd.register_cmd();
+    ignore_tbl_lightmap_clamping_cmd.register_cmd();
 }

@@ -9,6 +9,7 @@
 #include "gametype.h"
 #include "multi.h"
 #include "alpine_packets.h"
+#include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../sound/sound.h"
 #include "../rf/os/timestamp.h"
@@ -153,6 +154,11 @@ void multi_koth_set_blue_team_score(int score) // KOTH and DC
     return;
 }
 
+int koth_get_hill_handler_uid(const HillInfo& hill)
+{
+    return hill.handler ? hill.handler->uid : -1;
+}
+
 void multi_koth_reset_scores() // KOTH and DC
 {
     g_koth_info.red_team_score = 0;
@@ -253,11 +259,57 @@ HillInfo* koth_find_hill_by_handler(const rf::EventCapturePointHandler* handler)
     return nullptr;
 }
 
-float cylinder_radius_for_box_inscribed(const rf::Trigger* t)
+HillInfo* koth_find_hill_by_handler_uid(const int handler_uid)
 {
+    if (handler_uid < 0) {
+        return nullptr;
+    }
+
+    for (auto& hill : g_koth_info.hills) {
+        if (hill.handler && hill.handler->uid == handler_uid) {
+            return &hill;
+        }
+    }
+
+    return nullptr;
+}
+
+float koth_box_cylinder_radius(const rf::Trigger* t)
+{
+    if (!t) {
+        return 0.0f;
+    }
+
     const float hx = 0.5f * std::fabs(t->box_size.x);
     const float hz = 0.5f * std::fabs(t->box_size.z);
     return std::min(hx, hz);
+}
+
+bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid)
+{
+    if (handler_uid >= 0) {
+        if (HillInfo* hill = koth_find_hill_by_handler_uid(handler_uid);
+            hill && hill->handler) {
+            return hill->handler->sphere_to_cylinder;
+        }
+
+        if (rf::Event* event = rf::event_lookup_from_uid(handler_uid);
+            event
+            && event->event_type == rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+            auto* handler = static_cast<rf::EventCapturePointHandler*>(event);
+            return handler->sphere_to_cylinder;
+        }
+    }
+
+    if (trigger_uid >= 0) {
+        for (const auto& hill : g_koth_info.hills) {
+            if (hill.trigger_uid == trigger_uid && hill.handler) {
+                return hill.handler->sphere_to_cylinder;
+            }
+        }
+    }
+
+    return false;
 }
 
 static inline bool trigger_oriented_cylinder_check_if_activated(const rf::Trigger* tp, const rf::Object* objp, float radius,
@@ -338,7 +390,7 @@ bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p)
 
     if (h.trigger->type == 1 && h.handler->sphere_to_cylinder) {
         const rf::Trigger* t = h.trigger;
-        const float radius = cylinder_radius_for_box_inscribed(t);
+        const float radius = koth_box_cylinder_radius(t);
         const float half_h = 0.5f * std::fabs(t->box_size.y);
         const rf::Vector3 u = t->orient.uvec;
         const rf::Vector3 r = t->orient.rvec;
@@ -543,6 +595,7 @@ void koth_local_announce_hill_captured(const HillInfo* h, HillOwner new_owner, c
     if (new_owner == HillOwner::HO_Blue)
         color_id = rf::ChatMsgColor::blue_blue;
 
+    killfeed_route_next_message();
     rf::multi_chat_print(msg, color_id, {});
 
     const int sfx = capture_sfx_for_local(new_owner);
@@ -1579,12 +1632,12 @@ void koth_do_frame() // fires every frame on both server and client
 
     // server tick
     if (rf::is_dedicated_server || rf::is_server) {
-        static int last_srv = rf::timer_get(1000);
-        const int now_srv = rf::timer_get(1000);
-        int dt_srv = now_srv - last_srv;
+        static int64_t last_srv = timer::get_i64(1000);
+        const int64_t now_srv = timer::get_i64(1000);
+        const int64_t dt_srv = now_srv - last_srv;
         if (dt_srv > 0) {
             last_srv = now_srv;
-            const int dt_ms = std::clamp(dt_srv, 0, 250);
+            const int dt_ms = static_cast<int>(std::min(dt_srv, 250LL));
 
             for (auto& h : g_koth_info.hills) {
                 // Only need to update hills if they are available
@@ -1606,12 +1659,12 @@ void koth_do_frame() // fires every frame on both server and client
 
     // client prediction tick
     if (!rf::is_server && !rf::is_dedicated_server) {
-        static int last_cli = rf::timer_get(1000);
-        const int now_cli = rf::timer_get(1000);
-        int dt_cli = now_cli - last_cli;
+        static int64_t last_cli = timer::get_i64(1000);
+        const int64_t now_cli = timer::get_i64(1000);
+        const int64_t dt_cli = now_cli - last_cli;
         if (dt_cli > 0) {
             last_cli = now_cli;
-            const int dt_ms = std::clamp(dt_cli, 0, 250);
+            const int dt_ms = static_cast<int>(std::min(dt_cli, 250LL));
             koth_client_predict_tick(dt_ms);
         }
     }

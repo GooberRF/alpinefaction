@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include "../../rf/gr/gr.h"
@@ -21,6 +22,8 @@ namespace df::gr::d3d11
         void line_3d(const rf::gr::Vertex& v0, const rf::gr::Vertex& v1, rf::gr::Mode mode);
         void line_2d(float x1, float y1, float x2, float y2, rf::gr::Mode mode);
         void bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, gr::Mode mode);
+        void set_pre_flush_callback(std::function<void()> callback);
+        void set_cull_mode(D3D11_CULL_MODE cull_mode);
         void flush();
 
     private:
@@ -53,15 +56,20 @@ namespace df::gr::d3d11
             return {gpu_verts, gpu_inds, base_vertex};
         }
 
+        void flush_impl(bool run_pre_callback);
+        bool in_pre_flush_callback_ = false;
         std::array<float, 4> convert_pos(const rf::gr::Vertex& v, bool is_3d);
 
         ComPtr<ID3D11Device> device_;
         RenderContext& render_context_;
+        D3D11_CULL_MODE cull_mode_ = D3D11_CULL_NONE;
         RingBuffer<GpuTransformedVertex> vertex_ring_buffer_;
         RingBuffer<rf::ushort> index_ring_buffer_;
         VertexShaderAndLayout vertex_shader_;
         ComPtr<ID3D11PixelShader> std_pixel_shader_;
+        ComPtr<ID3D11PixelShader> std_pixel_shader_no_gas_;
         ComPtr<ID3D11PixelShader> ui_pixel_shader_;
         State state_;
+        std::function<void()> pre_flush_callback_;
     };
 }

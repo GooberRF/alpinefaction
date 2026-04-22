@@ -1,10 +1,17 @@
 #pragma once
 
+#include <string>
+#include <vector>
+#include <unordered_set>
 #include <xlog/xlog.h>
+#include "../rf/geometry.h"
 #include "../rf/file/file.h"
+#include "../os/os.h"
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int dash_level_props_chunk_id = 0xDA58FA00;
+constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
+constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
@@ -19,6 +26,14 @@ struct AlpineLevelProperties
     // v3
     bool override_static_mesh_ambient_light_modifier = false;
     float static_mesh_ambient_light_modifier = 2.0f;
+    // v4
+    bool rf2_style_geomod = false;
+    // std::vector<int32_t> geoable_brush_uids; // unnecessary in game
+    std::vector<int32_t> geoable_room_uids;
+    // std::vector<int32_t> breakable_brush_uids; // unnecessary in game
+    std::vector<int32_t> breakable_room_uids;
+    std::vector<uint8_t> breakable_materials;
+    std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of movers with "Hold Open"
 
     static AlpineLevelProperties& instance()
     {
@@ -30,30 +45,16 @@ struct AlpineLevelProperties
     {
         std::size_t remaining = chunk_len;
 
-        // scope-exit: always skip any unread tail (forward compatibility for unknown newer fields)
-        struct Tail
-        {
-            rf::File& f;
-            std::size_t& rem;
-            bool active = true;
-            ~Tail()
-            {
-                if (active && rem) {
-                    f.seek(static_cast<int>(rem), rf::File::seek_cur);
-                }
-            }
-            void dismiss()
-            {
-                active = false;
-            }
-        } tail{file, remaining};
+        rf::File::ChunkGuard chunk_guard{file, remaining};
 
         auto read_bytes = [&](void* dst, std::size_t n) -> bool {
             if (remaining < n)
                 return false;
             int got = file.read(dst, n);
-            if (got != static_cast<int>(n) || file.error())
+            if (got != static_cast<int>(n) || file.error()) {
+                if (got > 0) remaining -= got;
                 return false;
+            }
             remaining -= n;
             return true;
         };
@@ -101,6 +102,72 @@ struct AlpineLevelProperties
                 return;
             xlog::debug("[AlpineLevelProps] static_mesh_ambient_light_modifier {}", static_mesh_ambient_light_modifier);
         }
+
+        if (version >= 4) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            rf2_style_geomod = (u8 != 0);
+            xlog::debug("[AlpineLevelProps] rf2_style_geomod {}", rf2_style_geomod);
+
+            // Geoable entries as (brush_uid, room_uid) pairs
+            uint32_t count = 0;
+            if (!read_bytes(&count, sizeof(count)))
+                return;
+            if (count > 10000) count = 10000;
+            geoable_room_uids.resize(count);
+            for (uint32_t i = 0; i < count; i++) {
+                int32_t brush_uid = 0; // editor-only, skip
+                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                    return;
+                int32_t room_uid = 0;
+                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                    return;
+                geoable_room_uids[i] = room_uid;
+                xlog::debug("[AlpineLevelProps] geoable entry: brush_uid={} room_uid={}", brush_uid, room_uid);
+            }
+            xlog::debug("[AlpineLevelProps] geoable_room_uids count={}", count);
+
+            // Breakable material entries as (brush_uid, room_uid, material) triples
+            uint32_t bcount = 0;
+            if (!read_bytes(&bcount, sizeof(bcount))) {
+                xlog::warn("[AlpineLevelProps] GAME: failed to read breakable count (remaining={})", remaining);
+                return;
+            }
+            xlog::trace("[AlpineLevelProps] GAME: breakable count raw={}", bcount);
+            if (bcount > 10000) bcount = 10000;
+            breakable_room_uids.resize(bcount);
+            breakable_materials.resize(bcount);
+            for (uint32_t i = 0; i < bcount; i++) {
+                int32_t brush_uid = 0; // editor-only, skip
+                if (!read_bytes(&brush_uid, sizeof(brush_uid)))
+                    return;
+                int32_t room_uid = 0;
+                if (!read_bytes(&room_uid, sizeof(room_uid)))
+                    return;
+                breakable_room_uids[i] = room_uid;
+                uint8_t mat = 0;
+                if (!read_bytes(&mat, sizeof(mat)))
+                    return;
+                breakable_materials[i] = mat;
+                xlog::trace("[AlpineLevelProps] GAME: breakable[{}] brush_uid={} room_uid={} material={}", i, brush_uid, room_uid, mat);
+            }
+            xlog::trace("[AlpineLevelProps] GAME: total breakable entries loaded={}", bcount);
+
+            // Hold open first-keyframe UIDs
+            uint32_t ho_count = 0;
+            if (!read_bytes(&ho_count, sizeof(ho_count)))
+                return;
+            if (ho_count > 10000) ho_count = 10000;
+            hold_open_keyframe_uids.resize(ho_count);
+            for (uint32_t i = 0; i < ho_count; i++) {
+                int32_t uid = 0;
+                if (!read_bytes(&uid, sizeof(uid)))
+                    return;
+                hold_open_keyframe_uids[i] = uid;
+            }
+            xlog::debug("[AlpineLevelProps] hold_open count={}", ho_count);
+        }
     }
 };
 
@@ -122,4 +189,124 @@ struct DashLevelProps
         xlog::debug("[DashLevelProps] lightmaps_full_depth {}", lightmaps_full_depth);
         chunk_version = 1u; // latest supported version
     }
+};
+
+// Per-slot texture override for mesh objects
+struct MeshTextureOverride {
+    uint8_t slot;
+    std::string filename;
+};
+
+// Clutter behavior properties for mesh objects
+struct MeshClutterInfo {
+    bool is_clutter = false;
+    float life = -1.0f;
+    std::string debris_filename;
+    std::string explosion_vclip;
+    float explosion_radius = 1.0f;
+    float debris_velocity = 10.0f;
+    std::string corpse_filename;
+    std::string corpse_state_anim;
+    uint8_t corpse_collision = 2;      // 0=None, 1=Only Weapons, 2=All
+    int8_t corpse_material = -1;       // -1=Automatic (inherit from base), 0-9=specific material
+    float damage_type_factors[11] = {1,1,1,1,1,1,1,1,1,1,1};
+};
+
+// Alpine mesh object info, loaded from RFL
+struct AlpineMeshInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    std::string script_name;
+    std::string mesh_filename;
+    std::string state_anim;
+    uint8_t collision_mode = 2;     // 0=None, 1=Only Weapons, 2=All
+    std::vector<MeshTextureOverride> texture_overrides;
+    int material = 0;               // material type for impact sounds
+    MeshClutterInfo clutter;
+};
+
+void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len);
+void alpine_mesh_do_frame();
+void alpine_mesh_clear_state();
+
+// Mesh event helpers
+namespace rf { struct Object; }
+const std::string* alpine_mesh_get_corpse_filename(int handle);
+bool alpine_mesh_spawn_corpse(rf::Object* obj);
+void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_filename, float blend_weight);
+void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
+void alpine_mesh_clear_texture(rf::Object* obj, int slot);
+void alpine_mesh_set_collision(rf::Object* obj, int collision_type);
+
+// Alpine corona object info, loaded from RFL
+struct AlpineCoronaInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    std::string script_name;
+    uint8_t color_r = 255, color_g = 255, color_b = 255, color_a = 255;
+    std::string corona_bitmap;
+    float cone_angle = 0.0f;         // degrees (multiplied by 0.5 at creation, matching effects.tbl)
+    float intensity = 1.0f;
+    float radius_distance = 100.0f;
+    float radius_scale = 1.0f;
+    float diminish_distance = 200.0f;
+    std::string volumetric_bitmap;
+    float volumetric_height = 0.0f;
+    float volumetric_length = 0.0f;
+};
+
+void alpine_corona_load_chunk(rf::File& file, std::size_t chunk_len);
+void alpine_corona_clear_state();
+
+// Gas region info, loaded from stock RFL chunk 0xB00
+struct GasRegionInfo {
+    int32_t uid = -1;
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+    int32_t shape = 1;       // 1=sphere, 2=box
+    float radius = 1.0f;     // sphere only
+    float height = 1.0f;     // box only
+    float width = 1.0f;      // box only
+    float depth = 1.0f;      // box only
+    rf::Color color{255, 255, 255, 255};
+    float density = 1.0f;
+    bool enabled = true;
+};
+
+void gas_region_clear_state();
+const std::vector<GasRegionInfo>& gas_region_get_all();
+GasRegionInfo* gas_region_get_by_uid(int uid);
+
+// Gas region transitions (smooth interpolation over time)
+struct GasRegionTransition {
+    int32_t region_uid;
+    HighResTimer timer;
+
+    // Modify transition fields
+    bool has_modify = false;
+    rf::Color start_color{};
+    rf::Color target_color{};
+    float start_density = 0.0f;
+    float target_density = 0.0f;
+
+    // Resize transition fields
+    bool has_resize = false;
+    int target_shape = 0;
+    float start_radius = 0.0f;
+    float target_radius = 0.0f;
+    float start_height = 0.0f, start_width = 0.0f, start_depth = 0.0f;
+    float target_height = 0.0f, target_width = 0.0f, target_depth = 0.0f;
+};
+
+void gas_region_add_modify_transition(int32_t region_uid, rf::Color target_color, float target_density, float duration_sec);
+void gas_region_add_resize_transition(int32_t region_uid, int target_shape, float target_radius,
+                                       float target_height, float target_width, float target_depth, float duration_sec);
+void gas_region_transition_do_frame();
+
+// used by RF2-style geomod
+struct RF2AnchorInfo {
+    rf::GRoom* room;
+    std::unordered_set<rf::GFace*> anchor_faces;
 };

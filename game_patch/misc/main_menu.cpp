@@ -1,3 +1,4 @@
+#include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -6,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -27,6 +29,7 @@
 #include "../input/input.h"
 #include "misc.h"
 #include "alpine_settings.h"
+#include "../multi/network.h"
 
 constexpr int EGG_ANIM_ENTER_TIME = 2000;
 constexpr int EGG_ANIM_LEAVE_TIME = 2000;
@@ -34,8 +37,16 @@ constexpr int EGG_ANIM_IDLE_TIME = 3000;
 
 constexpr double PI = 3.14159265358979323846;
 
+enum class ServerBrowserFilter {
+    All = 0,
+    Alpine = 1,
+    Unmodded = 2,
+    Modded = 3,
+    MatchMode = 4,
+};
+
 static int g_version_click_counter = 0;
-static int g_egg_anim_start;
+static uint64_t g_egg_anim_start;
 static int g_game_music_sig_to_restore = -1;
 static int g_game_music_start_sig = -1;
 
@@ -164,8 +175,9 @@ CallHook<void()> main_menu_process_mouse_hook{
             if (matched == 0) {
                 xlog::trace("Version clicked");
                 ++g_version_click_counter;
-                if (g_version_click_counter == 3)
-                    g_egg_anim_start = GetTickCount();
+                if (g_version_click_counter == 3) {
+                    g_egg_anim_start = GetTickCount64();
+                }
             }
         }
     },
@@ -173,64 +185,77 @@ CallHook<void()> main_menu_process_mouse_hook{
 
 int initiate_garden_king()
 {
-    int hbm = rf::bm::load("radar_dish.tga", -1, true);
+    const int hbm = rf::bm::load("radar_dish.tga", -1, true);
     return hbm == -1 ? -1 : hbm;
 }
 
 CallHook<void()> main_menu_render_hook{
     0x00443802,
-    []() {
+    [] {
         main_menu_render_hook.call_target();
         if (g_version_click_counter >= 3) {
-            static int img = initiate_garden_king();
-            if (img == -1)
+            static const int img = initiate_garden_king();
+            if (img == -1) {
                 return;
-            int w, h;
+            }
+            int w = 0, h = 0;
             rf::bm::get_dimensions(img, &w, &h);
-            int anim_delta_time = GetTickCount() - g_egg_anim_start;
-            int pos_x = (rf::gr::screen_width() - w) / 2;
+            const uint64_t anim_delta_time = GetTickCount64() - g_egg_anim_start;
+            const int pos_x = (rf::gr::screen_width() - w) / 2;
             int pos_y = rf::gr::screen_height() - h;
             if (anim_delta_time < EGG_ANIM_ENTER_TIME) {
-                float enter_progress = anim_delta_time / static_cast<float>(EGG_ANIM_ENTER_TIME);
+                const float enter_progress = anim_delta_time / static_cast<float>(EGG_ANIM_ENTER_TIME);
                 pos_y += h - static_cast<int>(sinf(enter_progress * static_cast<float>(PI) / 2.0f) * h);
-            }
-            else if (anim_delta_time > EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME) {
-                int leave_delta = anim_delta_time - (EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME);
-                float leave_progress = leave_delta / static_cast<float>(EGG_ANIM_LEAVE_TIME);
+            } else if (anim_delta_time > EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME) {
+                const uint64_t leave_delta = anim_delta_time - (EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME);
+                const float leave_progress = leave_delta / static_cast<float>(EGG_ANIM_LEAVE_TIME);
                 pos_y += static_cast<int>((1.0f - cosf(leave_progress * static_cast<float>(PI) / 2.0f)) * h);
-                if (leave_delta > EGG_ANIM_LEAVE_TIME)
+                if (leave_delta > EGG_ANIM_LEAVE_TIME) {
                     g_version_click_counter = 0;
+                }
             }
             rf::gr::bitmap(img, pos_x, pos_y, rf::gr::bitmap_clamp_mode);
         }
     },
 };
 
-struct ServerListEntry
-{
-    char name[32];
-    char level_name[32];
-    char mod_name[16];
-    int game_type;
-    rf::NetAddr addr;
-    char current_players;
-    char max_players;
-    int16_t ping;
-    int field_60;
-    char field_64;
-    int flags;
-};
-static_assert(sizeof(ServerListEntry) == 0x6C, "invalid size");
-
 FunHook<int(const int&, const int&)> server_list_cmp_func_hook{
     0x0044A6D0,
     [](const int& index1, const int& index2) {
-        auto* server_list = addr_as_ref<ServerListEntry*>(0x0063F62C);
+        auto* server_list = rf::ui::server_browser_server_list;
         bool has_ping1 = server_list[index1].ping >= 0;
         bool has_ping2 = server_list[index2].ping >= 0;
         if (has_ping1 != has_ping2) {
             return has_ping1 ? -1 : 1;
         }
+
+        // Custom player count sorting: use human count from AF 1.3+ servers
+        if (rf::ui::server_browser_sort_column == 4) {
+            const auto& e1 = server_list[index1];
+            const auto& e2 = server_list[index2];
+            const auto* extra1 = get_server_browser_extra(e1.addr);
+            const auto* extra2 = get_server_browser_extra(e2.addr);
+
+            if (extra1 && extra2) {
+                // Both AF 1.3+: compare by human players, then bots
+                auto key1 = std::pair(extra1->num_human_players, extra1->num_bots);
+                auto key2 = std::pair(extra2->num_human_players, extra2->num_bots);
+                if (key1 != key2)
+                    return key1 > key2 ? -1 : 1;
+            }
+            else if (extra1 || extra2) {
+                // AF 1.3+ vs legacy: include bots so AF total is comparable to legacy total
+                int val1 = extra1 ? extra1->num_human_players + extra1->num_bots
+                                  : static_cast<unsigned char>(e1.current_players);
+                int val2 = extra2 ? extra2->num_human_players + extra2->num_bots
+                                  : static_cast<unsigned char>(e2.current_players);
+                if (val1 != val2)
+                    return val1 > val2 ? -1 : 1;
+                // Equal counts: prefer the AF 1.3+ server
+                return extra1 ? -1 : 1;
+            }
+        }
+
         return server_list_cmp_func_hook.call_target(index1, index2);
     },
 };
@@ -390,6 +415,123 @@ CodeInjection multi_join_server_do_frame_patch{
     },
 };
 
+// Server browser render: idle status text branch.
+// When a server is selected and we have AF extra data, show bot and human player counts
+// instead of the default idle text.
+// Injection point is at the start of the idle text branch in the server browser render function.
+// Original code: MOV EAX, [0x0063c064]; PUSH EAX; PUSH 0x63f6e4; ...
+static char s_server_browser_status_buf[96];
+
+CodeInjection server_browser_idle_status_injection{
+    0x0044dc6f,
+    [](auto& regs) {
+        // default: preserve the stock idle text (e.g. "Pinging servers...")
+        static auto& stock_idle_buf = addr_as_ref<char[96]>(0x0063f6e4);
+        std::memcpy(s_server_browser_status_buf, stock_idle_buf, sizeof(s_server_browser_status_buf));
+
+        if (rf::ui::server_browser_selected_index < 0 ||
+            rf::ui::server_browser_selected_index >= rf::ui::server_browser_display_count)
+            return;
+
+        int actual_idx = rf::ui::server_browser_sorted_indices[rf::ui::server_browser_selected_index];
+        const auto& entry = rf::ui::server_browser_server_list[actual_idx];
+        const auto* extra = get_server_browser_extra(entry.addr);
+        if (!extra)
+            return;
+
+        std::snprintf(s_server_browser_status_buf, sizeof(s_server_browser_status_buf),
+            "%d client%s: %d player%s, %d bot%s, %d browser%s",
+            extra->num_total_clients, extra->num_total_clients == 1 ? "" : "s",
+            extra->num_human_players, extra->num_human_players == 1 ? "" : "s",
+            extra->num_bots, extra->num_bots == 1 ? "" : "s",
+            extra->num_browsers, extra->num_browsers == 1 ? "" : "s");
+    },
+};
+
+// Server browser scroll list: override the "%d/%d" player count column.
+// When we have AF 1.3+ game_info data, show "X+Y/Z" where X=humans, Y=bots, Z=max.
+static rf::ui::ServerListEntry* s_player_count_entry = nullptr;
+
+CodeInjection server_browser_player_count_pre{
+    0x0044C0A4,
+    [](auto& regs) {
+        s_player_count_entry = reinterpret_cast<rf::ui::ServerListEntry*>(
+            reinterpret_cast<uintptr_t>(rf::ui::server_browser_server_list) + static_cast<int>(regs.ebx));
+    },
+};
+
+CallHook<int(char*, const char*, int, int)> server_browser_player_count_hook{
+    0x0044C0C1,
+    [](char* buf, const char* fmt, int current_players, int max_players) -> int {
+        if (s_player_count_entry) {
+            const auto* extra = get_server_browser_extra(s_player_count_entry->addr);
+            if (extra) {
+                if (extra->num_bots > 0) {
+                    return std::sprintf(buf, "%d+%d/%d",
+                        static_cast<int>(extra->num_human_players),
+                        static_cast<int>(extra->num_bots),
+                        max_players);
+                }
+                return std::sprintf(buf, "%d/%d",
+                    static_cast<int>(extra->num_human_players),
+                    max_players);
+            }
+        }
+        return server_browser_player_count_hook.call_target(buf, fmt, current_players, max_players);
+    },
+};
+
+FunHook<bool(int)> server_browser_filter_hook{
+    0x0044A9F0,
+    [](int server_index) -> bool {
+        auto filter = static_cast<ServerBrowserFilter>(rf::ui::server_browser_filter_type);
+        const auto& entry = rf::ui::server_browser_server_list[server_index];
+        switch (filter) {
+            case ServerBrowserFilter::All:
+                return true;
+            case ServerBrowserFilter::Alpine:
+                return get_server_browser_extra(entry.addr) != nullptr;
+            case ServerBrowserFilter::Unmodded: {
+                if (entry.mod_name[0] != '\0') return false;
+                const auto* extra = get_server_browser_extra(entry.addr);
+                if (extra && (extra->af_flags & (1u << 0))) return false;
+                return true;
+            }
+            case ServerBrowserFilter::Modded: {
+                if (entry.mod_name[0] != '\0') return true;
+                const auto* extra = get_server_browser_extra(entry.addr);
+                return extra != nullptr && (extra->af_flags & (1u << 0));
+            }
+            case ServerBrowserFilter::MatchMode: {
+                const auto* extra = get_server_browser_extra(entry.addr);
+                return extra != nullptr && (extra->af_flags & (1u << 5));
+            }
+        }
+        return true;
+    },
+};
+
+CodeInjection server_browser_cycler_init_injection{
+    0x0044C776,
+    [](auto& regs) {
+        for (int i = 0; i < rf::ui::server_browser_filter_cycler.num_items; ++i) {
+            free(rf::ui::server_browser_filter_cycler.items_text[i]);
+        }
+        rf::ui::server_browser_filter_cycler.num_items = 0;
+
+        static const char* filter_labels[] = {"All", "Alpine", "Unmodded", "Modded", "Match Mode"};
+        for (const char* label : filter_labels) {
+            int idx = rf::ui::server_browser_filter_cycler.num_items;
+            rf::ui::server_browser_filter_cycler.items_text[idx] = strdup(label);
+            rf::ui::server_browser_filter_cycler.items_font[idx] = rf::ui::medium_font_1;
+            ++rf::ui::server_browser_filter_cycler.num_items;
+        }
+
+        rf::ui::server_browser_filter_cycler.current_item = 0;
+        regs.eip = 0x0044c77b;
+    },
+};
+
 CodeInjection options_do_frame_patch{
     0x0044F211,
     [](auto& regs) {
@@ -542,4 +684,18 @@ void apply_main_menu_patches()
     game_load_do_frame_patch.install();
     game_save_do_frame_patch.install();
     message_log_do_frame_patch.install();
+
+    // Show bot and human player counts in server browser status bar
+    server_browser_idle_status_injection.install();
+    // Show human(+bot) player counts in the server list scroll box for AF 1.3+ servers
+    server_browser_player_count_pre.install();
+    server_browser_player_count_hook.install();
+    // Redirect the hardcoded PUSH 0x0063f6e4 at 0x0044dc76 to our own buffer
+    // so we don't corrupt the stock buffer (which overlaps the default mod name at +4)
+    write_mem<void*>(0x0044dc76, s_server_browser_status_buf);
+
+    // Replace server browser game type filter with mod/mode filter
+    server_browser_filter_hook.install();
+    server_browser_cycler_init_injection.install();
+    AsmWriter{0x0044C1D7}.nop(2); // always show game type prefix for TC modded servers in game type column
 }

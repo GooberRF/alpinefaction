@@ -267,6 +267,8 @@ namespace rf
     static auto& ctf_blue_flag_pos = addr_as_ref<Vector3>(0x006C7510);
     static auto& multi_tdm_get_red_team_score = addr_as_ref<int()>(0x004828F0); // returns ubyte in vanilla game
     static auto& multi_tdm_get_blue_team_score = addr_as_ref<int()>(0x00482900); // returns ubyte in vanilla game
+    static auto& multi_send_team_change_packet =
+        addr_as_ref<void(Player* target_or_null, uint8_t player_id, uint8_t team)>(0x00482520);
     static auto& multi_num_players = addr_as_ref<int()>(0x00484830);
     static auto& multi_kick_player = addr_as_ref<void(Player *player)>(0x0047BF00);
     static auto& multi_ban_ip = addr_as_ref<void(const NetAddr& addr)>(0x0046D0F0);
@@ -284,6 +286,9 @@ namespace rf
     static auto& multi_io_process_packets = addr_as_ref<MultiIoProcessPackets_Type>(0x004790D0);
     static auto& multi_kill_local_player = addr_as_ref<void()>(0x004757A0);
     static auto& send_game_info_req_packet = addr_as_ref<void(const NetAddr& addr)>(0x0047B450);
+    static auto& multi_join_game_add_server = addr_as_ref<void __cdecl(
+        uint32_t ip, uint16_t port, const char* name, const char* level,
+        const char* mod, int players, int max_players, int game_type, int flags)>(0x0044DD50);
     static auto& multi_entity_is_female = addr_as_ref<bool(int mp_character_idx)>(0x004762C0);
     static auto& multi_powerup_has_player = addr_as_ref<bool(Player* pp, int powerup_type)>(0x004802B0);
     static auto& multi_powerup_get_time_until = addr_as_ref<int(Player* pp, int powerup_type)>(0x004802D0);
@@ -329,6 +334,7 @@ namespace rf
     static auto& scoreboard_render_internal = addr_as_ref<void(bool netgame_scoreboard)>(0x00470880);
     static auto& multiplayer_walk_speed = addr_as_ref<float>(0x0059458C);
     static auto& multiplayer_crouch_walk_speed = addr_as_ref<float>(0x00594590);
+    static auto& send_glass_kill_packet = addr_as_ref<void(int room_uid, Vector3* break_pos, Vector3* explosion_pos, bool explosion)>(0x00472250);
 
     constexpr int multi_max_player_id = 256;
 }

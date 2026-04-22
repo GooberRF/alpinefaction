@@ -5,6 +5,7 @@
 #include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/crt.h"
+#include "../rf/os/string.h"
 #include "server.h"
 #include "multi.h"
 #include <patch_common/AsmWriter.h>

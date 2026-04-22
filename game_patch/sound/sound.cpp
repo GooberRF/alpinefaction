@@ -11,6 +11,7 @@
 #include "../rf/entity.h"
 #include "../rf/multi.h"
 #include "../rf/os/frametime.h"
+#include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 #include "../os/console.h"
@@ -124,6 +125,11 @@ void enable_sound_after_cutscene_skip()
 
 void set_sound_enabled(bool enabled)
 {
+    if (is_headless_mode()) {
+        rf::sound_enabled = false;
+        return;
+    }
+
     if (!g_alpine_game_config.sound_enabled) {
         rf::sound_enabled = false;
         return;
@@ -413,6 +419,11 @@ void sound_test_do_frame()
 FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_update_sounds_hook{
      0x00505EC0,
     [](const rf::Vector3& camera_pos, const rf::Vector3& camera_vel, const rf::Matrix3& camera_orient) {
+        if (is_headless_mode()) {
+            rf::sound_enabled = false;
+            return;
+        }
+
         player_fpgun_move_sounds(camera_pos, camera_vel);
 
 #ifdef DEBUG
@@ -608,7 +619,7 @@ void gamesound_parse_custom_sounds()
 CodeInjection gamesound_parse_sounds_table_patch{
     0x00434708,
     []() {
-        if (!rf::is_dedicated_server) {
+        if (!rf::is_dedicated_server && !is_headless_mode()) {
             gamesound_parse_custom_sounds();
         }
     },
@@ -775,6 +786,7 @@ void play_chat_sound(const std::string_view msg, const bool is_taunt) {
 }
 
 extern void snd_ds_apply_patch();
+extern void sound_foley_apply_patches();
 
 void apply_sound_patches()
 {
@@ -815,6 +827,9 @@ void apply_sound_patches()
 
     // Apply patch for DirectSound specific code
     snd_ds_apply_patch();
+
+    // Apply foley and impact sound set patches
+    sound_foley_apply_patches();
 
     // eax_ks_property_set should not call Release, since it is a weak pointer.
     AsmWriter{0x00527EE0, 0x00527EE4}.nop();

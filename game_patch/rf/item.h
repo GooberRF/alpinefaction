@@ -34,6 +34,18 @@ namespace rf
         IIF_SPINS_IN_MULTI = 0x2,
     };
 
+    enum ItemFlags
+    {
+        IF_NO_PICKUP       = 0x01,  // copied from ItemInfo flags on create
+        IF_DROPPED         = 0x08,  // item was dropped by a player
+        IF_PERMANENT       = 0x10,  // item persists (won't respawn/delete)
+        IF_RED_FLAG        = 0x20,  // CTF red flag
+        IF_BLUE_FLAG       = 0x40,  // CTF blue flag
+        IF_RED_BASE        = 0x80,  // CTF red base
+        IF_BLUE_BASE       = 0x100, // CTF blue base
+        IF_CTF_FLAG        = 0x200, // item is a CTF flag (red or blue)
+    };
+
     struct Item : Object
     {
         struct Item *next;

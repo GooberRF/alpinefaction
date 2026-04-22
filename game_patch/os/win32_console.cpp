@@ -14,6 +14,7 @@
 #include "../rf/os/os.h"
 
 static bool win32_console_enabled = false;
+static bool win32_console_forced = false;
 static bool win32_console_input_line_printed = false;
 static HANDLE win32_console_input_handle;
 static HANDLE win32_console_output_handle;
@@ -23,6 +24,11 @@ static bool win32_console_is_input_redirected = false;
 bool win32_console_is_enabled()
 {
     return win32_console_enabled;
+}
+
+void win32_console_set_forced(bool forced)
+{
+    win32_console_forced = forced;
 }
 
 static void reset_console_cursor_column(bool clear)
@@ -89,7 +95,7 @@ void win32_console_pre_init()
 
 void win32_console_init()
 {
-    win32_console_enabled = get_win32_console_cmd_line_param().found();
+    win32_console_enabled = win32_console_forced || get_win32_console_cmd_line_param().found();
     if (!win32_console_enabled) {
         return;
     }

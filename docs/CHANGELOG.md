@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.3.0 (Bakeapple): Not yet released
+Version 1.4.0 (Bakeapple): Not yet released
 --------------------------------
 ### Major features
 [@GooberRF](https://github.com/GooberRF)
@@ -18,16 +18,46 @@ Version 1.3.0 (Bakeapple): Not yet released
     - Add support for `Require Alpine Savegame Format` in `af_game.tbl` for TC mods that want to force the modern format
 
 ### Minor features, changes, and enhancements
+
+### Bug fixes
+
+Version 1.3.0 (Bakeapple): Released Apr-22-2026
+--------------------------------
+### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Advanced multiplayer bots system
+  - Headless bot clients with server control
+  - Bot profile customization
+  - Integrated waypoint grid editor with autogeneration support for custom maps
+  - AWPs (waypoint grid files) for all default maps included
+  - FactionFiles autodownloader API support for AWPs
+- Promote Direct3D 11 renderer to recommended and add several notable improvements
+  - Add GPU accelerated realtime per-pixel lighting for meshes
+  - Add full mesh shadows for entities, corpses, and items
+  - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
+  - Support movers, meshes, and mesh pixel lighting in skyboxes
+  - Support gas regions
+- Expanded destruction capabilities available to developers
+  - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
+  - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
+  - `Is Geoable` flag added to brush properties
+  - Support for rock, wood, cement, metal, and ice breakable detail brushes
+  - Add dynamic debris generation from breakable detail brushes
+  - `No Debris` flag added to brush properties for breakable detail brushes
+- Added new object types
+  - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
+  - `Corona` for configuring custom glare effects in levels
+  - `Note` for leaving important information in levels (editor only)
+
+### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Standardize user agent string format across all use cases
 - Bump RFL version to 304
-- Support `Alpha` field in `Decal` objects placed in version >= 304 levels (Direct3D 11 renderer only)
 - Improve output of object create failure log message
 - Add `Players in linked triggers` application setting for `AF_Heal` events
 - Add speedometer to HUD, bind to `ui_show_speed` console command
 - Make dedicated servers attempt to autodownload missing maps in their rotation from FactionFiles before launching
 - Add `-nodl` command line argument to make dedicated servers not attempt to autodownload missing maps
-- Add `exclude_bots_from_player_count` option to dedicated server config to exclude bots from player count reported to clients
 - Add `sv_loadpackfiles` console command to load packfiles newly added to `user_maps` after server was launched
 - Allow `GibEnemy` achievement to be awarded regardless of whether gore level allows the entity to actually gib
 - Support rcon profiles for dedicated servers
@@ -40,18 +70,70 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Add `-script` command line argument to execute a startup script after the game launches
 - Add support for `script` console command to execute a script on-demand
 - Add `/coinflip` chat command
+- Allow level hardness to be set to 0 in version >= 304 levels
+- Add `sp_geochunkphysics` console command to toggle isolated geo chunks falling down in single player
+- Add `geo_chunk_physics` rule to ADS config to toggle isolated geo chunks falling down in multiplayer
 - Raise limit on lights per level from 1100 to 8192
 - Raise level editor limit on lights projecting on a single face from 64 to 1024
 - Raise level editor geo_cache limits: face list 16384 to 65536, batch count 512 to 1024, memory pool 8 MB to 32 MB
 - Raise level editor detail rooms limit from 256 to 8192
 - Add `-smoothlights` level editor command line argument to use experimental lightmap baking method
 - Add level editor support for custom texture subdirectories under `user_maps\textures`
+- Add level editor `Mirror` tool for brushes in brush mode and for brushes and objects in group mode
+- Add level editor `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` tools for faces in face mode
+- Add level editor `Delete` and `Bridge` tools for vertices in vertex mode
+- Add `Mesh_Animate`, `Mesh_Set_Texture`, and `Mesh_Set_Collision` events
+- Add `Reload Meshes` and `Reload Textures` options to level editor `Tools` menu, to scan for new assets in `\user_maps\`
+- Add `To Mesh` tool for converting brushes to `.v3m` static meshes directly in the level editor
+- Improve level editor packfile creation process to include meshes and animations from `Mesh` objects and `Switch_Model`, `Play_Animation`, and `Mesh_Animate` events
+- Add new and revised `Select Objects` and `Hide Objects` windows in level editor
+- Add `r_shadowquality [0-5]`, `r_shadowdistance [0-5]`, `r_shadowitems`, `r_shadowcorpses`, `r_shadowupdateinterval [1-30]`, and `dbg_shadows` console commands
+- Add `$Use Vertex Lighting` `mapname_info.tbl` option to restore legacy vertex lighting for meshes
+- Alias `TAB` in level editor to toggle maximized viewport (stock hotkeys `F4`/`F5`)
+- In TDM match mode, made self kills reduce team score by 1 (floor of 0)
+- Add `-bot` command line argument to run a client in bot mode
+- Add `disconnect` console command
+- Suppress pointless warnings for file `tech_gren_attack.rfa` which is missing from but referenced by stock game files
+- Add `force_rail_reload` dedicated server config option, to force reloading the rail before being able to switch weapons
+- Add help strings to spectate UI in freelook spectate mode
+- Add dedicated control for entering/exiting spectate mode
+- Add `To Mesh Object` button when selecting clutter in level editor `Select Objects` window
+- Add `r_dynamiclightndotl` console command to configure N-L blending for dynamic lights (Direct3D 11 renderer only)
+- Update MP autodownloader to use new FactionFiles API, and revamp UI
+- Add `autodl_blur_background` console command to toggle the behaviour of the autodownload background
+- Add `cl_chat` and `spectate_cinematic_mode` console commands
+- Add `D3D11 Renderer` and `D3D8/9 Renderer` scope options to `Scope_Gate` event
+- Add `Hold Open` property to movers
+- Update `af_game_info_ext` packet extension to include bot, human, browser, and client counts
+- Display client types and counts when an AF v1.3 server is selected in the server list
+- Add `r_pixellightoverbright` console command and `$Pixel Lighting Overbright` `mapname_info.tbl` option for setting pixel light overbright allowance range
+- Make team balancing distribute bots evenly across teams and exclude spectators and browsers
+- Exclude spectators and browsers from bot decommission player count calculations
+- Exclude spectators and browsers when counting players for team selection for a newly joining player
+- Consolidate mesh static lighting settings to `r_meshlighting [0-2]` console command
+- Add `cl_ignore_tbl_vertex_lighting`, `cl_ignore_tbl_pixel_light_overbright`, and `cl_ignore_tbl_lightmap_clamping` console commands to override per-map settings from `mapname_info.tbl`
+- Add `-awpgen` command line argument to generate an awp for a provided level filename
+- Color kill notifications white if they involve a first person spectatee
+- Add `clear_stale_movement_input` dedicated server config option
+- Display bot counts in `Players` column in server list
+- Make sorting on `Players` column in server list incorporate bot count
+- Add server browser filters for `Alpine`, `Unmodded`, `Modded`, `Match Mode`
+- Add `AF_Fullscreen_Image`, `AF_Fullscreen_Color`, `Unhide_Glare` events
+- Exclude `Shotgun` from gaussian spread
+- Exclude `Precision Rifle` and `Sniper Rifle` from first shot accuracy
+- Add `Gas_Region_State`, `Modify_Gas_Region`, `Resize_Gas_Region` events
+- Add `require_d3d11` to dedicated server config
+- Add `$Stock Alpha Test` to `af_level_quirks.tbl` and use to restore stock alpha test only on known affected levels
+- Serve detailed player and server info in `players_request` packet response (for online FF RFSB)
+- Support 8-bit greyscale TGA textures (types 3 and 11) in editor and game
+- Add experimental D3D11 performance settings `D3D11_LowFrameLatency`, `D3D11_AllowTearing`, and `D3D11_SkipGammaPass`
 
 [@is-this-c](https://github.com/is-this-c)
+- Use 64-bit integers for time deltas
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add version and uptime to a server's printed config
 - Default gore level to 1
-- Default `gibbing` to disabled for dedicated servers
+- Default gibbing, outlines, fullbright skins, and lightmap mode to disabled for servers
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Sync animation state for crouched players in first person spectate view
@@ -65,31 +147,81 @@ Version 1.3.0 (Bakeapple): Not yet released
 - Make jump control move freelook camera up
 - Add `cl_legacy_bob` to restore legacy first person weapon running animation behavior
 - Show powerup icons in spectator mode
+- Improve presented damage calculations for stats and damage numbers
+- Add `ui_gamefeed` toggle to separate game events (kills, flag steals, hill captures, etc) from the chat to a separate HUD element
+- Add freelook/first person toggle bind in spectator mode
+- Implement enemy and teammate footstep audio for weapons other than pistol
+- Add delayed items server config option, enabling global and per-map delaying of specific item spawns at map start
+- Implement player outlines (D3D11 only)
+- Add `r_outlines`, `r_outlines_spectator`, `r_outlines_team_xray`, `r_outlines_color`, `r_outlines_color_enemy`, `r_outlines_color_team`, `r_outlines_color_team_b`, `r_outlines_color_team_r` for customizing outline behavior and colors
+- Add `allow_outlines` and `allow_outlines_xray` dedicated server configuration options to permit or deny outline usage by clients.
+- Implement shader-based gamma control for D3D11 renderer
+
+[@AL2009man](https://github.com/AL2009man)
+- Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
+- Fix pings of zero after 24 days of uptime
 - Fix `AF_Heal` event forwarding received messages
 - Fix rare crash when shooting at alpha-masked surfaces in Direct3D 11 renderer
 - Fix overflow fix for `emitters.tbl` entries not being correctly applied
 - Fix some string errors when compiled using mingw
 - Fix rare crash when loading skeletons
 - Fix level editor geometry rebuild sometimes reusing stale data from previous builds
-- Fix level editor geometry sometimes not properly rendering after rebuilding
-- Fix level editor crash when calculating lightmaps on levels with more than ~45000 faces
 - Fix level editor lightmap seam at portal boundaries where split faces meet (subject to `-smoothlights` switch)
 - Fix level editor per-room ambient lights creating hard color transitions (subject to `-smoothlights` switch)
 - Fix level editor packfile creation to skip missing files gracefully instead of erroring and creating 0KB packfiles
-- Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, and geomod crater textures
+- Fix level editor packfile creation process to include textures from bolt emitters, liquid surfaces, `Display_Fullscreen_Image` events, `Swap_Textures` events, `Corona` objects, and geomod crater textures
+- Fix rare level editor crash when transforming decal objects in a level with a large number of decals
+- Fix level editor clip tool silently failing on certain brush orientations
+- Fix P2T Fix not working properly on Direct3D 11 renderer
+- Fix level editor crash when maximizing the bottom right viewport
+- Fix bots not always spawning correctly when `ideal_player_count` is 32
+- Fix possible crash in substring handling
+- Fix rare crash when maintaining freelook spectate through a level change
+- Fix `Set_Variable` event not correctly handling `bool2` for `Clone_Entity`, or `bool2` and `str2` for `AF_Teleport_Player`
+- Fix triangulated and ngon faces on breakable detail brushes not breaking properly in version >= 304 levels
+- Fix vertex lighting data not being properly built for debris static meshes
+- Fix `Max FPS` menu button not immediately applying the new value when set
+- Fix non-legacy translation movers maintaining velocity after stopping
+- Fix crash in CTF when loading a level that has one flag but not both
+- Fix crash in CTF when attempting to capture a flag in a level that has no other flags
+- Fix mirror and security monitor screens not being fully self-illuminated (Direct3D 11 renderer only)
+- Fix `levelm` not being able to be used unless in main menu
+- Fix `disconnect` not disconnecting a listen server host
+- Fix second use of `levelm` during a game session incorrectly loading the level in single player
+- Fix `levelm` attempting to load invalid level files
+- Fix `levelm` crashing the game when run from a dedicated server
+- Fix rare crash when morphing custom skeletal meshes
+- Fix coronas and sprites flickering as you approach (Direct3D 11 renderer only)
+- Fix mesh backface and UV Unwrap dialog rendering breaking if a fullscreen D3D application is launched while level editor is running
+- Fix MP players being able to poke their head through overhead geometry when uncrouching
+- Fix backfaces not being culled for impact decals (Direct3D 11 renderer only)
+- Fix impact decals behaving weirdly and disappearing when viewed from a distance (Direct3D 11 renderer only)
+- Fix dedicated servers crashing when `Shake_Player` event is activated (e.g. community level `CTF-RFU3_SanFrancisco.rfl`)
+- Fix collision not updating properly when objects are hidden and unhidden
+- Fix clients disconnecting when a piercing weapon (e.g. rail gun) gibs multiple players in a single shot
+- Fix players getting stuck climbing if unable to uncrouch when leaving a climbing region (subject to `sp_climbfix` console command in SP)
+- Fix debris not being created when clutter is destroyed, if the clutter also played an explosion vclip
+- Fix hard cutoff lines on fullbright gradient alpha textures (Direct3D 11 renderer only)
+- Fix level editor autosave causing teleportation during edit operations
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `DM-Blunderscannon~~.rfl`
+- Fix clutter death achievement progress and `AF_When_Dead` not working on all clutter death paths
+- Fix level editor crash when manipulating decals in levels with > 127 decals
+- Fix `r_picmip` not properly applying to all mesh textures
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix parse of `flag_return_time` to be as a float instead of an integer
 - Fix faulty cull in fpgun infrared scanners
 - Fix stale weapon selection time stamps
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Optimize network performance for `af_obj_update` packets and bot decommission logic
+- Sync animation state for crouched players in first person spectate view
 - Fix Alt+Enter crash in Direct3D 11 renderer
 - Fix premature idle transition in first person weapon running animations
 
@@ -424,7 +556,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
 - Add `dbg_wh_mpspawns` command to draw multiplayer respawn point world HUD icons (supported in SP and as listen server)
 - Add compatibility table (lightmap clamp floor) for `dm-SpecialForces.rfl`
 - Add action binds for `Radio message menu`, `Taunt menu`, and `Command menu`
-- Add support for `$Chat Menu 1` (1 - 9) to `MAPNAME_info.tbl` (populates map chat menu on that map)
+- Add support for `$Chat Menu 1` (1 - 9) to `mapname_info.tbl` (populates map chat menu on that map)
 - Import settings from `players.cfg` on launch if `alpine_settings.ini` is not found
 - Support TC mods with new settings file approach - `alpine_settings_MODNAME.ini`
 - Prevent MP character from being permanently changed after spawning in a server with `$Force Player Character` configured
@@ -479,7 +611,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
   - High monitor resolution, Alpine branding, multiplayer tracker, fast animations
   - Max FPS, max server FPS, server netfps
   - Simulation distance, lod distance scale, disable MP character LOD
-  - Join beep, lighting colour range
+  - Join beep, lighting color range
 - Add `SkipCutsceneBindAlias` setting to `alpine_settings.ini`
 - Deprecate `IgnoreSwapAssaultRifleControls` and `IgnoreSwapGrenadeControls` in `af_game.tbl` (no longer needed)
 - Add `dbg_consolehistory` command to toggle whether console history persists between game launches
@@ -491,7 +623,7 @@ Version 1.1.0 (Tamarack): Released Apr-19-2025
 - Made lava and acid damage result in a self kill in multiplayer rather than a mysterious kill
 - Add radio message audio
 - Allow `Anchor_Marker_Orient` event as skybox eye anchor
-- Add support for `$Crater Texture PPM` to `MAPNAME_info.tbl`
+- Add support for `$Crater Texture PPM` to `mapname_info.tbl`
 - Add options to `af_ui.tbl` to set the Summoner Trailer button to load a specific level in TC mods
 - Add `r_fastanims` console command to toggle fast animations
 - Shift High Monitor Resolution config to MonitorResolutionScale, allowing for greater control

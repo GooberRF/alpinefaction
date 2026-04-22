@@ -7,6 +7,8 @@
 #include <optional>
 #include <vector>
 #include <filesystem>
+#include <unordered_map>
+#include <unordered_set>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/string.h"
@@ -374,6 +376,33 @@ struct WeaponStayExemptionConfig
     }
 };
 
+struct DelayedItemsConfig
+{
+    std::unordered_set<std::string> items;
+
+    // =============================================
+
+    bool add(std::string_view name)
+    {
+        std::string name_str{name};
+
+        if (items.count(name_str))
+            return false;
+
+        int idx = rf::item_lookup_type(name_str.c_str());
+        if (idx < 0)
+            return false;
+
+        items.emplace(std::move(name_str));
+        return true;
+    }
+
+    bool contains(std::string_view name) const
+    {
+        return items.count(std::string{name}) > 0;
+    }
+};
+
 struct AlpineRestrictConfig
 {
     bool advertise_alpine = true;
@@ -383,6 +412,7 @@ struct AlpineRestrictConfig
     // below options are only used if clients_require_alpine = true
     bool reject_non_alpine_clients = false;
     bool alpine_require_release_build = false;
+    bool require_d3d11 = false;
 };
 
 struct SpawnLifeConfig
@@ -547,6 +577,7 @@ struct AlpineServerConfigRules
     int koth_score_limit = 100;
     int dc_score_limit = 300;
     int geo_limit = 64;
+    int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
     bool fall_damage = false;
     bool weapons_stay = false;
@@ -573,13 +604,17 @@ struct AlpineServerConfigRules
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
     bool drop_weapons = true;
+    bool force_rail_reload = true;
     KillRewardConfig kill_rewards;
     WeaponStayExemptionConfig weapon_stay_exemptions;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
+    DelayedItemsConfig delayed_items;
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
     GunGameConfig gungame;
+    bool geo_chunk_physics = true;
+    bool clear_stale_movement_input = false;
 
     // =============================================
     void set_time_limit(float count)
@@ -609,6 +644,10 @@ struct AlpineServerConfigRules
     void set_geo_limit(int count)
     {
         geo_limit = std::clamp(count, 0, 128);
+    }
+    void set_rf2_geo_limit(int count)
+    {
+        rf2_geo_limit = std::max(count, -1);
     }
     void set_ideal_player_count(int count)
     {
@@ -661,6 +700,31 @@ struct AlpineRconProfile
     std::vector<std::string> allowed_commands;
 };
 
+struct BotConfigOverride {
+    uint8_t field_id;
+    float value;
+};
+
+struct ServerBotConfig {
+    std::string personality_preset = "balanced";
+    std::string skill_preset = "average";
+    std::string player_name;      // empty = randomize
+    std::string mp_character;     // empty = randomize
+    std::vector<BotConfigOverride> personality_overrides;
+    std::vector<BotConfigOverride> skill_overrides;
+};
+
+struct BotProfileSlotTracker {
+    std::unordered_map<const rf::Player*, int> assignments;
+
+    int assign_slot(const rf::Player* player, int num_profiles);
+    void release_slot(const rf::Player* player);
+    int get_slot(const rf::Player* player) const;
+    void clear();
+};
+
+extern BotProfileSlotTracker g_bot_profile_slots;
+
 struct AlpineServerConfig
 {
     std::string server_name = "Alpine Faction Server";
@@ -669,18 +733,21 @@ struct AlpineServerConfig
     std::string rcon_password = "";
     std::vector<AlpineRconProfile> rcon_profiles;
     uint32_t bot_shared_secret = 0;
+    std::vector<ServerBotConfig> bot_configs;
     bool upnp_enabled = false;
     bool require_client_mod = true;
     bool dynamic_rotation = false;
     bool gaussian_spread = true;
     bool stats_message_enabled = true;
-    bool allow_fullbright_meshes = true;
-    bool allow_lightmaps_only = true;
+    bool allow_fullbright_meshes = false;
+    bool allow_lightmaps_only = false;
     bool allow_disable_screenshake = true;
     bool allow_disable_muzzle_flash = true;
     bool allow_unlimited_fps = false;
+    bool allow_footsteps = true;
+    bool allow_outlines = false;
+    bool allow_outlines_xray = true;
     bool use_sp_damage_calculation = false;
-    bool exclude_bots_from_player_count = false;
     AlpineRestrictConfig alpine_restricted_config;
     InactivityConfig inactivity_config;
     DamageNotificationConfig damage_notification_config;

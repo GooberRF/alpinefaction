@@ -10,6 +10,7 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <format>
@@ -28,6 +29,7 @@
 #include "../os/console.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/misc.h"
 #include "../main/main.h"
 #include "../misc/achievements.h"
 #include "../rf/file/file.h"
@@ -47,6 +49,7 @@
 #include "../rf/level.h"
 #include "../rf/collide.h"
 #include "../purefaction/pf.h"
+#include "bots/bot_personality.h"
 #include <common/utils/os-utils.h>
 
 bool g_dedicated_launched_from_ads = false; // was the server launched from an ads file?
@@ -501,6 +504,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.set_dc_score_limit(*v);
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
+    if (auto v = t["rf2_geo_limit"].value<int>())
+        o.set_rf2_geo_limit(*v);
 
     if (auto v = t["team_damage"].value<bool>())
         o.team_damage   = *v;
@@ -520,7 +525,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.flag_dropping = *v;
     if (auto v = t["flag_captures_while_stolen"].value<bool>())
         o.flag_captures_while_stolen = *v;
-    if (auto v = t["flag_return_time"].value<int>())
+    if (auto v = t["flag_return_time"].value<float>())
         o.set_flag_return_time(*v);
     if (auto v = t["pvp_damage_modifier"].value<float>())
         o.set_pvp_damage_modifier(*v);
@@ -530,12 +535,18 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.no_player_collide = *v;
     if (auto v = t["location_pinging"].value<bool>())
         o.location_pinging = *v;
+    if (auto v = t["geo_chunk_physics"].value<bool>())
+        o.geo_chunk_physics = *v;
+    if (auto v = t["clear_stale_movement_input"].value<bool>())
+        o.clear_stale_movement_input = *v;
     if (auto v = t["weapon_pickups_give_full_ammo"].value<bool>())
         o.weapon_items_give_full_ammo = *v;
     if (auto v = t["infinite_reloads"].value<bool>())
         o.weapon_infinite_magazines = *v;
     if (auto v = t["drop_weapons"].value<bool>())
         o.drop_weapons = *v;
+    if (auto v = t["force_rail_reload"].value<bool>())
+        o.force_rail_reload = *v;
 
     if (auto sub = t["spawn_weapon"].as_table())
         o.default_player_weapon = parse_default_player_weapon(*sub, o.default_player_weapon);
@@ -603,6 +614,18 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
                 auto ms = (*tbl)["respawn_ms"].value_or<int>(0);
                 if (!o.set_item_respawn_time(name, ms))
                     xlog::warn("Invalid respawn override for '{}'", name);
+            }
+        }
+    }
+
+    if (auto arr = t["delayed_items"].as_array()) {
+        for (auto& node : *arr) {
+            if (auto tbl = node.as_table()) {
+                if (auto nameOpt = (*tbl)["item_name"].value<std::string>()) {
+                    bool added = o.delayed_items.add(*nameOpt);
+                    if (!added && !o.delayed_items.contains(*nameOpt))
+                        xlog::warn("Invalid delayed item '{}'", *nameOpt);
+                }
             }
         }
     }
@@ -787,6 +810,8 @@ static AlpineRestrictConfig parse_alpine_restrict_config(const toml::table &t)
             o.reject_non_alpine_clients = *v;
         if (auto v = t["alpine_require_release_build"].value<bool>())
             o.alpine_require_release_build = *v;
+        if (auto v = t["require_d3d11"].value<bool>())
+            o.require_d3d11 = *v;
     }
     return o;
 }
@@ -1010,6 +1035,100 @@ static void apply_rules_preset_aliases(AlpineServerConfig& cfg, const toml::tabl
     }
 }
 
+static void parse_bot_config_table(ServerBotConfig& bot_cfg, const toml::table& tbl)
+{
+    if (auto v = tbl["player_name"].value<std::string>()) {
+        bot_cfg.player_name = *v;
+        rf::console::print("  Bot player name:                       {}\n", *v);
+    }
+    if (auto v = tbl["mp_character"].value<std::string>()) {
+        bot_cfg.mp_character = *v;
+        rf::console::print("  Bot MP character:                      {}\n", *v);
+    }
+    if (auto v = tbl["personality_preset"].value<std::string>()) {
+        bot_cfg.personality_preset = *v;
+        rf::console::print("  Bot personality preset:                {}\n", *v);
+    }
+    if (auto v = tbl["skill_preset"].value<std::string>()) {
+        bot_cfg.skill_preset = *v;
+        rf::console::print("  Bot skill preset:                      {}\n", *v);
+    }
+
+    if (const auto* overrides = tbl["personality_overrides"].as_table()) {
+        for (const auto& [k, val] : *overrides) {
+            const int field_id = bot_personality_field_id_from_name(std::string(k.str()).c_str());
+            if (field_id < 0) {
+                rf::console::print("  [WARN] Unknown bot personality field: {}\n", k.str());
+                continue;
+            }
+            float fval = 0.0f;
+            if (auto fv = val.value<double>()) {
+                fval = static_cast<float>(*fv);
+            }
+            else if (auto iv = val.value<int64_t>()) {
+                fval = static_cast<float>(*iv);
+            }
+            else {
+                rf::console::print("  [WARN] Bot personality field '{}' has unsupported type\n", k.str());
+                continue;
+            }
+            bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(field_id), fval});
+            rf::console::print("  Bot personality override: {} = {}\n", k.str(), fval);
+        }
+    }
+
+    if (const auto* overrides = tbl["skill_overrides"].as_table()) {
+        for (const auto& [k, val] : *overrides) {
+            const int field_id = bot_skill_field_id_from_name(std::string(k.str()).c_str());
+            if (field_id < 0) {
+                rf::console::print("  [WARN] Unknown bot skill field: {}\n", k.str());
+                continue;
+            }
+            float fval = 0.0f;
+            if (auto fv = val.value<double>()) {
+                fval = static_cast<float>(*fv);
+            }
+            else if (auto iv = val.value<int64_t>()) {
+                fval = static_cast<float>(*iv);
+            }
+            else {
+                rf::console::print("  [WARN] Bot skill field '{}' has unsupported type\n", k.str());
+                continue;
+            }
+            bot_cfg.skill_overrides.push_back({static_cast<uint8_t>(field_id), fval});
+            rf::console::print("  Bot skill override: {} = {}\n", k.str(), fval);
+        }
+    }
+
+    if (const auto* quirks = tbl["quirks"].as_table()) {
+        uint64_t mask = 0;
+        for (const auto& [k, val] : *quirks) {
+            const int bit = bot_quirk_bit_from_name(std::string(k.str()).c_str());
+            if (bit < 0) {
+                rf::console::print("  [WARN] Unknown bot quirk: {}\n", k.str());
+                continue;
+            }
+            auto bv = val.value<bool>();
+            if (!bv) {
+                rf::console::print("  [WARN] Bot quirk '{}' should be true or false\n", k.str());
+                continue;
+            }
+            if (*bv) {
+                mask |= (1ull << bit);
+                rf::console::print("  Bot quirk enabled: {}\n", k.str());
+            }
+        }
+        // Emit quirk_mask_low and quirk_mask_high overrides
+        uint32_t low = static_cast<uint32_t>(mask & 0xFFFFFFFFull);
+        uint32_t high = static_cast<uint32_t>((mask >> 32) & 0xFFFFFFFFull);
+        float flow, fhigh;
+        std::memcpy(&flow, &low, sizeof(flow));
+        std::memcpy(&fhigh, &high, sizeof(fhigh));
+        bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(af_personality_field::quirk_mask_low), flow});
+        bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(af_personality_field::quirk_mask_high), fhigh});
+    }
+}
+
 // apply base config single keys
 static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string& key, const toml::node& node)
 {
@@ -1078,13 +1197,21 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.allow_unlimited_fps = *v;
     }
+    else if (key == "allow_footsteps") {
+        if (auto v = node.value<bool>())
+            cfg.allow_footsteps = *v;
+    }
     else if (key == "use_sp_damage_calculation") {
         if (auto v = node.value<bool>())
             cfg.use_sp_damage_calculation = *v;
     }
-    else if (key == "exclude_bots_from_player_count") {
+    else if (key == "allow_outlines") {
         if (auto v = node.value<bool>())
-            cfg.exclude_bots_from_player_count = *v;
+            cfg.allow_outlines = *v;
+    }
+    else if (key == "allow_outlines_xray") {
+        if (auto v = node.value<bool>())
+            cfg.allow_outlines_xray = *v;
     }
 }
 
@@ -1230,6 +1357,36 @@ static void apply_config_table_in_order(
             else if (key == "rcon_profiles") {
                 if (pass == ParsePass::Core)
                     apply_known_array_in_order(cfg, key, *arr, base_dir, allow_missing_levels);
+            }
+            else if (key == "bot_profiles") {
+                if (pass == ParsePass::Core) {
+                    for (const auto& elem : *arr) {
+                        auto profile_path_str = elem.value<std::string>();
+                        if (!profile_path_str) continue;
+
+                        fs::path resolved_path = base_dir / *profile_path_str;
+                        try {
+                            resolved_path = fs::weakly_canonical(resolved_path);
+                        }
+                        catch (const fs::filesystem_error& err) {
+                            rf::console::print("  [WARN] failed to canonicalize bot profile '{}': {}\n",
+                                *profile_path_str, err.what());
+                            resolved_path = fs::absolute(resolved_path);
+                        }
+
+                        try {
+                            toml::table profile_root = toml::parse_file(resolved_path.generic_string());
+                            ServerBotConfig bot_cfg;
+                            rf::console::print("  Loading bot profile: {}\n", resolved_path.generic_string());
+                            parse_bot_config_table(bot_cfg, profile_root);
+                            cfg.bot_configs.push_back(std::move(bot_cfg));
+                        }
+                        catch (const toml::parse_error& err) {
+                            rf::console::print("  [ERROR] failed to parse bot profile '{}': {}\n",
+                                resolved_path.generic_string(), err.description());
+                        }
+                    }
+                }
             }
             continue;
         }
@@ -1483,6 +1640,9 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
         std::format_to(iter, "  Geomod crater limit:                   {}\n", rules.geo_limit);
+    if (base || rules.rf2_geo_limit != b.rf2_geo_limit)
+        std::format_to(iter, "  RF2-style geomod limit:                {}\n",
+            rules.rf2_geo_limit < 0 ? std::string("unlimited") : std::to_string(rules.rf2_geo_limit));
     if (base || rules.team_damage != b.team_damage)
         std::format_to(iter, "  Team damage:                           {}\n", rules.team_damage);
     if (base || rules.fall_damage != b.fall_damage)
@@ -1509,10 +1669,16 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Drop amps:                             {}\n", rules.drop_amps);
     if (base || rules.drop_weapons != b.drop_weapons)
         std::format_to(iter, "  Drop weapons:                          {}\n", rules.drop_weapons);
+    if (base || rules.force_rail_reload != b.force_rail_reload)
+        std::format_to(iter, "  Force rail reload before switch:        {}\n", rules.force_rail_reload);
     if (base || rules.no_player_collide != b.no_player_collide)
         std::format_to(iter, "  No player collide:                     {}\n", rules.no_player_collide);
     if (base || rules.location_pinging != b.location_pinging)
         std::format_to(iter, "  Location pinging:                      {}\n", rules.location_pinging);
+    if (base || rules.geo_chunk_physics != b.geo_chunk_physics)
+        std::format_to(iter, "  GeoMod chunk physics:                  {}\n", rules.geo_chunk_physics);
+    if (base || rules.clear_stale_movement_input != b.clear_stale_movement_input)
+        std::format_to(iter, "  Clear stale movement input:            {}\n", rules.clear_stale_movement_input);
     if (base || rules.weapon_items_give_full_ammo != b.weapon_items_give_full_ammo)
         std::format_to(iter, "  Weapon pickups give full ammo:         {}\n", rules.weapon_items_give_full_ammo);
     if (base || rules.weapon_infinite_magazines != b.weapon_infinite_magazines)
@@ -1748,6 +1914,33 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
+    // Delayed items
+    bool anyDelayedChanged = (rules.delayed_items.items != b.delayed_items.items);
+
+    if (base || anyDelayedChanged) {
+        std::format_to(iter, "  Delayed items:\n");
+        if (rules.delayed_items.items.empty() && b.delayed_items.items.empty()) {
+            std::format_to(iter, "    <none>\n");
+        }
+        else {
+            for (auto const& name : rules.delayed_items.items) {
+                if (base) {
+                    std::format_to(iter, "    {}\n", name);
+                }
+                else if (b.delayed_items.items.count(name) == 0) {
+                    std::format_to(iter, "    + {}\n", name);
+                }
+            }
+            if (!base) {
+                for (auto const& name : b.delayed_items.items) {
+                    if (rules.delayed_items.items.count(name) == 0) {
+                        std::format_to(iter, "    - {}\n", name);
+                    }
+                }
+            }
+        }
+    }
+
     // force character
     if (base || rules.force_character.enabled != b.force_character.enabled ||
         (rules.force_character.enabled && rules.force_character.character_index != b.force_character.character_index)) {
@@ -1807,7 +2000,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "\n---- Core configuration ----\n");
     std::format_to(iter, "  Port:                                  {} - UDP\n", netgame.server_addr.port);
     std::format_to(iter, "  Name:                                  {}\n", netgame.name);
-    std::format_to(iter, "  Version:                               {} - {}\n", VERSION_STR, __DATE__);
+    std::format_to(iter, "  Version:                               {} - {}\n", VERSION_STR, get_build_date());
     if (!remote) {
         std::format_to(iter, "  Uptime:                                {}\n", get_uptime_from(g_process_startup_time));
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
@@ -1862,8 +2055,10 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow lightmap only mode:              {}\n", cfg.allow_lightmaps_only);
     std::format_to(iter, "  Allow disable muzzle flash:            {}\n", cfg.allow_disable_muzzle_flash);
     std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
+    std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
-    std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
+    std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
+    std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);
@@ -1896,6 +2091,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     if (cfg.alpine_restricted_config.clients_require_alpine) {
         std::format_to(iter, "    Reject non-Alpine clients:           {}\n", cfg.alpine_restricted_config.reject_non_alpine_clients);
         std::format_to(iter, "    Require release build:               {}\n", cfg.alpine_restricted_config.alpine_require_release_build);
+        std::format_to(iter, "    Require Direct3D 11 renderer:        {}\n", cfg.alpine_restricted_config.require_d3d11);
     }
 
     // votes
@@ -1993,6 +2189,7 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
     }
 
     netgame.geomod_limit = r.geo_limit;
+    g_solid_set_rf2_geo_limit(r.rf2_geo_limit);
 
     netgame.flags &= ~(rf::NG_FLAG_TEAM_DAMAGE
                      | rf::NG_FLAG_FALL_DAMAGE

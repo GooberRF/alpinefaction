@@ -5,6 +5,7 @@
 #include <common/version/version.h>
 #include <common/utils/list-utils.h>
 #include <algorithm>
+#include <optional>
 #include "console.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_savegame.h"
@@ -502,6 +503,46 @@ static void register_builtin_command(const char* name, const char* description, 
     builtin_commands.push_back(std::move(cmd));
 }
 
+static void warn_if_not_d3d11()
+{
+    if (!is_d3d11()) {
+        rf::console::print("Warning: player outlines require the Direct3D 11 renderer.");
+    }
+}
+
+ConsoleCommand2 r_outlines_cmd{
+    "r_outlines",
+    []() {
+        g_alpine_game_config.try_outlines = !g_alpine_game_config.try_outlines;
+        rf::console::print("Player outlines {}.", g_alpine_game_config.try_outlines ? "enabled" : "disabled");
+        warn_if_not_d3d11();
+    },
+    "Toggle player outlines during gameplay (Direct3D 11 renderer only).",
+    "r_outlines",
+};
+
+ConsoleCommand2 r_outlines_spectator_cmd{
+    "r_outlines_spectator",
+    []() {
+        g_alpine_game_config.outlines_spectator = !g_alpine_game_config.outlines_spectator;
+        rf::console::print("Spectator outlines {}.", g_alpine_game_config.outlines_spectator ? "enabled" : "disabled");
+        warn_if_not_d3d11();
+    },
+    "Toggle player outlines while spectating (Direct3D 11 renderer only).",
+    "r_outlines_spectator",
+};
+
+ConsoleCommand2 r_outlines_team_xray_cmd{
+    "r_outlines_team_xray",
+    []() {
+        g_alpine_game_config.try_outlines_team_xray = !g_alpine_game_config.try_outlines_team_xray;
+        rf::console::print("Teammate outline x-ray {}.", g_alpine_game_config.try_outlines_team_xray ? "enabled" : "disabled");
+        warn_if_not_d3d11();
+    },
+    "Toggle showing teammate outlines through walls (Direct3D 11 renderer only).",
+    "r_outlines_team_xray",
+};
+
 void console_commands_apply_patches()
 {
     // Allow 'level' command outside of multiplayer game
@@ -617,6 +658,9 @@ void console_commands_init()
     autosave_cmd.register_cmd();
     new_savegame_format_cmd.register_cmd();
     speedrun_savegame_mode_cmd.register_cmd();
+    r_outlines_cmd.register_cmd();
+    r_outlines_spectator_cmd.register_cmd();
+    r_outlines_team_xray_cmd.register_cmd();
 
     // Hooks for builtin commands
     camera1_cmd_hook.install();

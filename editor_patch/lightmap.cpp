@@ -6,6 +6,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/MemUtils.h>
 #include <patch_common/ShortTypes.h>
+#include <xlog/xlog.h>
 
 
 // Max lights that can be processed per face (shadow mask buffer limit).
@@ -50,7 +51,19 @@ CodeInjection lightmap_light_limit_injection{
     0x004AC608,
     [](auto& regs) {
         int light_count = regs.edi;
-        if (light_count >= max_shadow_masks) {
+
+        // Also check that the surface texel count fits in the shadow mask buffer (0x1000 bytes).
+        // With -smoothlights, surface groups can merge across rooms and potentially exceed the
+        // 64x64 texel limit, which would overflow the shadow mask buffer and corrupt heap memory.
+        int width = *reinterpret_cast<int*>(regs.esi + 0x18);
+        int height = *reinterpret_cast<int*>(regs.esi + 0x1c);
+        if (width * height > 0x1000) {
+            xlog::error("Lightmap: surface texel count {}x{}={} exceeds shadow mask buffer size 4096! "
+                        "Falling back to pink fill for surface at 0x{:x}",
+                        width, height, width * height, static_cast<uintptr_t>(regs.esi));
+            regs.eip = 0x004AC9E4; // pink fill safety fallback
+        }
+        else if (light_count >= max_shadow_masks) {
             regs.eip = 0x004AC9E4; // pink fill safety fallback
         }
         else {
@@ -352,15 +365,15 @@ static void get_ambient_at(float wx, float wy, float wz,
 CodeInjection lightmap_per_texel_ambient_fill_injection{
     0x004ac68b, // MOV EAX,[ESI+0x1c] — start of ambient fill section
     [](auto& regs) {
-        if (s_ambient_room_count == 0) return; // no custom ambient rooms, use original fill
+        if (s_ambient_room_count == 0) return; // no custom ambient rooms, use original fill (trampoline OK here)
 
         uintptr_t surface = regs.esi;
         int width = *reinterpret_cast<int*>(surface + 0x18);
         int height = *reinterpret_cast<int*>(surface + 0x1c);
-        if (width <= 0 || height <= 0) return; // let original code handle degenerate case
+        if (width <= 0 || height <= 0) return; // trampoline OK at this address
 
         SurfaceUVParams p;
-        if (!init_surface_uv_params(surface, p)) return; // can't compute, let original handle
+        if (!init_surface_uv_params(surface, p)) return; // trampoline OK at this address
 
         auto* buf_r = reinterpret_cast<float*>(0x0138a620);
         auto* buf_g = reinterpret_cast<float*>(0x0140ac20);
@@ -390,15 +403,52 @@ CodeInjection lightmap_per_texel_ambient_fill_injection{
 CodeInjection lightmap_per_texel_ambient_nolights_injection{
     0x004ac563, // FLD [ESP+0x78] — start of ambient byte conversion
     [](auto& regs) {
-        if (s_ambient_room_count == 0) return; // no custom ambient rooms, use original fill
+        // NOTE: trampoline is null here (SubHook can't decode FPU opcode 0xD8 at 0x4ac567).
+        // Every code path MUST set regs.eip before returning.
 
         uintptr_t surface = regs.esi;
         int width = *reinterpret_cast<int*>(surface + 0x18);
         int height = *reinterpret_cast<int*>(surface + 0x1c);
-        if (width <= 0 || height <= 0) return; // let original code handle degenerate case
+        if (width <= 0 || height <= 0) {
+            regs.eip = 0x004aca40;
+            return;
+        }
 
         SurfaceUVParams p;
-        if (!init_surface_uv_params(surface, p)) return;
+        if (!init_surface_uv_params(surface, p)) {
+            regs.eip = 0x004aca40;
+            return;
+        }
+
+        if (s_ambient_room_count == 0) {
+            // No custom ambient rooms — replicate original uniform byte fill inline.
+            // Cannot fall through to original code because trampoline is null at this address.
+            float ar = *reinterpret_cast<float*>(0x0057c968);
+            float ag = *reinterpret_cast<float*>(0x0057c96c);
+            float ab = *reinterpret_cast<float*>(0x0057c970);
+            int br = static_cast<int>(ar * 128.0f);
+            int bg = static_cast<int>(ag * 128.0f);
+            int bb = static_cast<int>(ab * 128.0f);
+            if (br > 255) br = 255;
+            if (bg > 255) bg = 255;
+            if (bb > 255) bb = 255;
+
+            uintptr_t lm = *reinterpret_cast<uintptr_t*>(surface + 0xC);
+            auto* buf = reinterpret_cast<uint8_t*>(*reinterpret_cast<uintptr_t*>(lm + 0xC));
+            int stride = *reinterpret_cast<int*>(lm + 4);
+
+            for (int row = 0; row < height; row++) {
+                for (int col = 0; col < width; col++) {
+                    int off = ((p.ystart + row) * stride + (p.xstart + col)) * 3;
+                    buf[off]     = static_cast<uint8_t>(br);
+                    buf[off + 1] = static_cast<uint8_t>(bg);
+                    buf[off + 2] = static_cast<uint8_t>(bb);
+                }
+            }
+
+            regs.eip = 0x004aca40;
+            return;
+        }
 
         uintptr_t lm = *reinterpret_cast<uintptr_t*>(surface + 0xC);
         auto* buf = reinterpret_cast<uint8_t*>(*reinterpret_cast<uintptr_t*>(lm + 0xC));
@@ -487,49 +537,6 @@ void ApplyLightmapPatches()
     write_mem<uint32_t>(0x00487A41, max_scene_lights);
     // Update zeroing loop count
     write_mem<uint32_t>(0x00487077, max_scene_lights * light_entry_size / 4);
-
-    // Fix lightmap surface group ID overflow crash (face+0x36 is a signed short)
-    // When >32767 lightmap surface groups exist (typically >~45000 faces), the signed
-    // short wraps negative. MOVSX sign-extends it to a negative 32-bit index, causing
-    // out-of-bounds array access and heap corruption.
-    // Fix: patch all MOVSX reads of face+0x36 to MOVZX (0x0FBF -> 0x0FB7), raising the
-    // limit from 32767 to 65535 groups. Also fix sentinel checks and group comparisons.
-
-    // MOVSX -> MOVZX for face+0x36 reads from memory (14 sites)
-    // Each MOVSX word ptr [reg+0x36] is encoded 0F BF; change second byte to B7 for MOVZX
-    write_mem<u8>(0x004aa900, 0xB7); // FUN_004aa610: lightmap surface grouping
-    write_mem<u8>(0x004aa929, 0xB7);
-    write_mem<u8>(0x004aa946, 0xB7);
-    write_mem<u8>(0x004aa99d, 0xB7);
-    write_mem<u8>(0x004aab06, 0xB7);
-    write_mem<u8>(0x004aad59, 0xB7); // FUN_004aabf0: batch lightmap calculator
-    write_mem<u8>(0x004aad8a, 0xB7);
-    write_mem<u8>(0x004ad241, 0xB7); // FUN_004ad160: shadow geometry
-    write_mem<u8>(0x004ad27a, 0xB7);
-    write_mem<u8>(0x004ae26c, 0xB7); // FUN_004ae050: shadow calculation
-    write_mem<u8>(0x004ae73a, 0xB7); // FUN_004ae360: shadow calculation
-    write_mem<u8>(0x004ae81f, 0xB7);
-    write_mem<u8>(0x004aed4e, 0xB7);
-    write_mem<u8>(0x004a45b1, 0xB7); // solid_write: level file export
-
-    // MOVSX -> MOVZX for face+0x36 reads from register (5 sites)
-    // These follow 16-bit MOV AX,[face+0x36] and sign-extend AX to 32-bit before use as index
-    write_mem<u8>(0x0048778d, 0xB7); // FUN_004872e0: lightmap surface container lookup
-    write_mem<u8>(0x00487864, 0xB7);
-    write_mem<u8>(0x0049b955, 0xB7); // FUN_0049b550: geo-cache build
-    write_mem<u8>(0x0049bea0, 0xB7);
-    write_mem<u8>(0x0049bed3, 0xB7);
-
-    // Fix sentinel checks: JLE -> JE (0x7E -> 0x74)
-    // Original: CMP AX,0xFFFF; JLE skip — skips all negative values (wrong for groups > 32767)
-    // Fixed: CMP AX,0xFFFF; JE skip — skips only the 0xFFFF "no group" sentinel
-    write_mem<u8>(0x00487781, 0x74); // FUN_004872e0
-    write_mem<u8>(0x00487858, 0x74);
-    write_mem<u8>(0x0049b94b, 0x74); // FUN_0049b550
-
-    // Note: CMP AX,BX; JLE at 0x0049be96 and 0x0049bec9 left as signed — BX can be
-    // 0xFFFF ("no batch" sentinel), and unsigned JBE would cause all faces to be skipped.
-    // Signed comparison is correct for group IDs 0-32767 and safe for the sentinel case.
 
     // -smoothlights: experimental lightmap seam fix at portal boundaries
     // Note: GetCommandLineA() is used instead of argv/argc because this runs during DLL

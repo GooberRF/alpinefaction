@@ -5339,7 +5339,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
         auto do_transition_load = [&](int slot_idx) -> bool {
             using namespace rf;
             // pause the game timer
-            timer_inc_game_paused();
+            timer::inc_game_paused();
 
             auto& hdr = g_save_data.header;
             auto& lvl = g_save_data.levels[slot_idx];
@@ -5368,7 +5368,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
                     }
                 }
                 if (!player_blk || !load_player(&g_save_data.common.player, pp, player_blk)) {
-                    timer_dec_game_paused();
+                    timer::dec_game_paused();
                     return false;
                 }
                 asg::resolve_delayed_handles();
@@ -5384,7 +5384,7 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
 
             // final touches
             trigger_disable_all_unless_linked_to_specific_events();
-            timer_dec_game_paused();
+            timer::dec_game_paused();
             return true;
         };
 

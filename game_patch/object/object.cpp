@@ -22,6 +22,7 @@
 #include "event_alpine.h"
 #include "object.h"
 #include "object_private.h"
+#include "../misc/level.h"
 
 std::string get_object_type_string(int type) {
     switch (type) {
@@ -322,6 +323,11 @@ CodeInjection mover_process_post_patch{
                             static_cast<rf::PushRegion*>(rf::level_get_push_region_from_uid(linked_uid))) {
                         push_region->pos = event->pos;
                     }
+
+                    // check for a gas region
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        gas_region->pos = event->pos;
+                    }
                 }
             }
 
@@ -363,6 +369,12 @@ CodeInjection mover_process_post_patch{
 
                         push_region->orient = event->orient;
                     }
+
+                    // check for a gas region
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        gas_region->pos = event->pos;
+                        gas_region->orient = event->orient;
+                    }
                 }
             }
         }
@@ -385,6 +397,25 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
     },
 };
 
+// Catch clutter deaths from all code paths
+FunHook<void(rf::Object*)> obj_flag_dead_hook{
+    0x0048AB40,
+    [](rf::Object* objp) {
+        if (objp->type == rf::OT_CLUTTER && !(objp->obj_flags & rf::OF_DELAYED_DELETE)) {
+            rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
+
+            if (!rf::is_multi && is_achievement_system_initialized()) {
+                achievement_check_clutter_death(cp);
+            }
+
+            rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
+        }
+
+        obj_flag_dead_hook.call_target(objp);
+    },
+};
+
+// Corpse spawn for alpine meshes
 CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
     {
         0x0040FE31,
@@ -393,15 +424,14 @@ CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
         0x004101F4
     },
     [](rf::Object* objp) {
-        //xlog::warn("killing clutter UID {}, name {}", objp->uid, objp->name);
-
         rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
 
-        if (!rf::is_multi && is_achievement_system_initialized() && cp) {
-            achievement_check_clutter_death(cp);
+        // Check for alpine mesh corpse: if this is an alpine mesh (info_index == -1)
+        // with a corpse filename, spawn a separate corpse object and let the original die.
+        if (cp->info_index == -1) {
+            alpine_mesh_spawn_corpse(objp);
+            // Fall through to kill the original regardless of whether corpse spawned
         }
-
-        rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
 
         obj_flag_dead_clutter_hook.call_target(objp);
     },
@@ -420,14 +450,86 @@ FunHook<void(rf::Clutter*, float, int, int, rf::PCollisionOut*)> clutter_damage_
     },
 };
 
+static void client_alpine_mesh_on_death(rf::Object* objp)
+{
+    rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
+    if (cp->info_index == -1) {
+        alpine_mesh_spawn_corpse(objp);
+    }
+}
+
+FunHook<void(void*)> process_clutter_kill_packet_hook{
+    0x0047F380,
+    [](void* data) {
+        if (rf::is_multi && !rf::is_server) {
+            // Packet format: [uint32 uid, uint32 damage_type]
+            int uid = *reinterpret_cast<int*>(data);
+
+            // Walk the clutter list to find the matching object by UID
+            rf::Clutter* cp = rf::clutter_list.next;
+            while (cp != &rf::clutter_list) {
+                rf::Object* objp = reinterpret_cast<rf::Object*>(cp);
+                if (objp->uid == uid) {
+                    client_alpine_mesh_on_death(objp);
+                    break;
+                }
+                cp = cp->next;
+            }
+        }
+
+        process_clutter_kill_packet_hook.call_target(data);
+    },
+};
+
+CallHook<void(rf::Object*)> clutter_state_sync_death_hook{
+    0x0047F2C3,
+    [](rf::Object* objp) {
+        if (!rf::is_server) {
+            client_alpine_mesh_on_death(objp);
+        }
+        clutter_state_sync_death_hook.call_target(objp);
+    },
+};
+
+// In v304+ levels, deregister collision when hiding objects and re-register when unhiding.
+FunHook<void(rf::Object*)> obj_hide_hook{
+    0x0048A570,
+    [](rf::Object* obj) {
+        obj_hide_hook.call_target(obj);
+        if (rfl_version_minimum(304) && (obj->p_data.flags & rf::PF_COLLIDE_OBJECTS)) {
+            rf::obj_collision_deregister(obj);
+        }
+    },
+};
+
+FunHook<void(rf::Object*)> obj_unhide_hook{
+    0x0048A660,
+    [](rf::Object* obj) {
+        bool had_collision = (obj->p_data.flags & rf::PF_COLLIDE_OBJECTS) != 0;
+        obj_unhide_hook.call_target(obj);
+        if (rfl_version_minimum(304) && had_collision) {
+            rf::obj_collision_register(obj);
+        }
+    },
+};
+
 void object_do_patch()
 {
     // Disable damage for the riot shield in multiplayer (needs fix)
     //clutter_damage_hook.install(); // disabled for now, makes riot shields persist after player leaves
 
-    // Support AF_When_Dead events
+    // Deregister collision for hidden objects in v304+ levels
+    obj_hide_hook.install();
+    obj_unhide_hook.install();
+
+    // Support AF_When_Dead events and achievement checks for clutter deaths
     entity_on_dead_hook.install();
+    obj_flag_dead_hook.install();
     obj_flag_dead_clutter_hook.install();
+
+    // Hook client-side clutter_kill and clutter_udate packets for alpine mesh corpse + event support
+    process_clutter_kill_packet_hook.install();
+    clutter_state_sync_death_hook.install();
 
     // Allow Anchor_Marker events to drag lights, particle emitters, and push regions on movers
     mover_process_post_patch.install();
@@ -473,6 +575,9 @@ void object_do_patch()
 
     // Zero memory allocated from GPool dynamically
     GPool_allocate_new_hook.install();
+
+    // Allow both debris and explosion vclip to fire on clutter death
+    AsmWriter(0x0041021B, 0x0041021D).nop();
 
     // Sort objects by mesh name to improve rendering performance
     sort_clutter_patch.install();

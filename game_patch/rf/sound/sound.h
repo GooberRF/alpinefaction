@@ -55,12 +55,18 @@ namespace rf
     };
     static_assert(sizeof(AmbientSound) == 0x18);
 
+    // Custom Sound Set from foley.tbl "#Custom Sound Sets" section.
+    // sounds[] is organized as [10][4]: 10 material types × max 4 sound handles each.
+    // Per-material: sounds[mat * 4 + i], count = num_material_sounds[mat].
+    // If is_all_sounds is set, all materials use sounds[0..num_material_sounds[0]-1].
+    static constexpr int iss_max_sounds_per_material = 4;
+    static constexpr int iss_num_material_types = 10;
     struct ImpactSoundSet
     {
-        int sounds[40];
-        int num_material_sounds[10];
-        int is_all_sounds;
-        String name;
+        int sounds[iss_num_material_types * iss_max_sounds_per_material]; // +0x00
+        int num_material_sounds[iss_num_material_types];                  // +0xA0
+        int is_all_sounds;                                                // +0xC8
+        String name;                                                      // +0xCC
     };
     static_assert(sizeof(ImpactSoundSet) == 0xD4);
 
@@ -123,4 +129,7 @@ namespace rf
     static auto snd_pc_calculate_pan = addr_as_ref<float(const Vector3& pos)>(0x00543EA0);
 
     static auto& level_get_ambient_sound_from_uid = addr_as_ref<AmbientSound*(int uid)>(0x0045AFE0);
+
+    static auto& foley_lookup_by_name = addr_as_ref<int(const char* name)>(0x00434CB0);
+    static auto& foley_get_sound_handle = addr_as_ref<int(int foley_id)>(0x00434DA0);
 }

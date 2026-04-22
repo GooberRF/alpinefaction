@@ -1,5 +1,6 @@
 #pragma once
 
+#include <expected>
 #include <optional>
 #include <string>
 #include <utility>
@@ -85,6 +86,8 @@ struct AlpineFactionServerInfo
 {
     uint8_t version_major = 0;
     uint8_t version_minor = 0;
+    uint8_t version_patch = 0; // unreliable if from < AF 1.3
+    uint8_t version_type = 0;  // unreliable if from < AF 1.3
     bool saving_enabled = false;
     std::optional<float> max_fov;
     bool allow_fb_mesh = false;
@@ -96,10 +99,15 @@ struct AlpineFactionServerInfo
     std::optional<int> semi_auto_cooldown;
     bool unlimited_fps = false;
     bool gaussian_spread = false;
+    bool geo_chunk_physics = false;
     bool location_pinging = false;
     bool delayed_spawns = false;
     int koth_score_limit = 0;
     int dc_score_limit = 0;
+    bool allow_footsteps = false;
+    bool allow_outlines = false;
+    bool allow_outlines_xray = false;
+    bool clear_stale_movement_input = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t
@@ -107,7 +115,8 @@ enum class AlpineRestrictVerdict : uint8_t
     ok = 0,
     need_alpine = 1,
     need_release = 2,
-    need_update = 3
+    need_update = 3,
+    need_d3d11 = 4,
 };
 
 extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
@@ -121,8 +130,15 @@ void enforce_alpine_hard_reject_for_all_players_on_current_level();
 std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_status(const ClientVersionInfoProfile& info, bool check_level_version);
 void multi_level_download_update();
 bool download_level_if_missing(std::string level_filename);
+bool start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force = false);
+void poll_awp_download();
+void cancel_awp_download();
 void multi_do_patch();
 void multi_after_full_game_init();
+bool client_bot_launch_enabled();
+bool client_bot_headless_enabled();
+bool is_awpgen_active();
+bool is_headless_mode();
 void multi_init_player(rf::Player* player);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
@@ -132,7 +148,7 @@ void multi_level_download_abort();
 bool rotation_autodl_in_progress();
 void rotation_autodl_start(size_t levels_count, std::vector<std::string> unique_levels);
 void multi_ban_apply_patch();
-int get_level_file_version(const std::string& file_name);
+std::expected<uint32_t, std::errc> get_level_file_version(const std::string& file_name);
 void print_player_info(rf::Player* player, bool new_join);
 void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
 void start_level_in_multi(std::string filename);

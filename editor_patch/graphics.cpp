@@ -9,6 +9,8 @@
 #include <d3d8.h>
 #include <algorithm>
 #include <cmath>
+#include "vtypes.h"
+#include "alpine_obj.h"
 
 HWND GetMainFrameHandle();
 
@@ -352,6 +354,29 @@ FunHook<void(HWND)> gr_d3d_set_viewport_wnd_hook{
     },
 };
 
+// After a fullscreen application runs while the editor is open, the D3D device enters
+// a "lost" state. gr_d3d_flip detects D3DERR_DEVICENOTRESET and calls Reset(), which
+// reverts ALL render states to D3D defaults. The engine caches render state and skips
+// redundant Set calls, but these caches are not invalidated after Reset(), so the engine
+// never re-sends them. This breaks backface culling (D3DRS_CULLMODE defaults to CCW) and
+// the UV Unwrap viewport (textured quad is backface-culled, texture stage state stale).
+CallHook<void()> gr_d3d_device_reset_state_recovery{
+    0x004EBBA5,
+    []() {
+        gr_d3d_device_reset_state_recovery.call_target();
+
+        auto setRS = d3d8::get_set_render_state();
+        if (setRS) {
+            setRS(d3d_device_ptr, d3d8::RS_CULLMODE, d3d8::CULL_NONE);
+        }
+
+        // Invalidate the render mode cache so gr_d3d_setup_render_state re-applies
+        // all texture stage states and render states on the next render pass
+        gr_d3d_render_mode_cache = -1;
+    },
+};
+
+
 void ApplyGraphicsPatches()
 {
 #if D3D_HW_VERTEX_PROCESSING
@@ -403,16 +428,6 @@ void ApplyGraphicsPatches()
 
     // Reset render cache pool after geometry rebuild so stale geo_cache pointers are detected
     geo_build_reset_render_cache.install();
-
-    // Fix: In FUN_00485990's secondary phase, the "detail room" check (FUN_0048bd90) calls
-    // FUN_00486a10(1) which sets room->field_0 = 1 (outdoor flag). The subsequent call to
-    // FUN_00426210 reads room->field_0, now seeing "outdoor" instead of the original value.
-    // This causes the indoor room to permanently stay in world+0xa8 (outdoor container)
-    // instead of world+0x9c (indoor/visibility container), making it invisible to the renderer.
-    // The bug is latent in the stock engine but manifests on second+ builds when FUN_0048bd90
-    // returns true due to slight face count variations in the rebuilt world geometry.
-    // Fix: change JNZ to JMP at 0x00485e02 to skip the detail check entirely.
-    write_mem<u8>(0x00485e02, 0xEB); // JNZ 0x00485e1b → JMP 0x00485e1b
 
     // Expand detail rooms array from 256 entries (0x010cee5c)
     // Array base references
@@ -497,4 +512,7 @@ void ApplyGraphicsPatches()
     write_mem_ptr(0x0049c026, editor_geo_vertex_chain);
     write_mem_ptr(0x0049c034, editor_geo_vertex_chain);
     write_mem_ptr(0x0049c226, editor_geo_vertex_chain);
+
+    // Restore render state after D3D device Reset()
+    gr_d3d_device_reset_state_recovery.install();
 }

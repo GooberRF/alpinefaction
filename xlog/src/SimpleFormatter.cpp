@@ -1,16 +1,17 @@
 #include <xlog/SimpleFormatter.h>
 #include <string>
 #include <string_view>
+#include <cstdint>
 #include <windows.h>
 
 std::string xlog::SimpleFormatter::prepare(xlog::Level level, const std::string& logger_name) const
 {
-    static auto start_ticks = GetTickCount();
+    static const uint64_t start_ticks = GetTickCount64();
     std::string buf;
     buf.reserve(64);
 
     if (include_time_) {
-        auto ticks = (GetTickCount() - start_ticks) / 1000.0f;
+        const double ticks = (GetTickCount64() - start_ticks) / 1000.;
         std::format_to(std::back_inserter(buf), "[{:7.2f}] ", ticks);
     }
 

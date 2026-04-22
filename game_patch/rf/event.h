@@ -221,6 +221,14 @@ namespace rf
         Timestamp next_fire_timestamp;
         int send_count;
     };
+    
+    struct ContinuousDamageEvent : Event
+    {
+        char padding[3];
+        int damage_per_second;
+        int damage_type;
+    };
+    static_assert(sizeof(ContinuousDamageEvent) == 0x2C0);
 
     struct PersistentGoalEvent
     {
@@ -388,7 +396,16 @@ namespace rf
         Set_Capture_Point_Owner,
         Owner_Gate,
         Set_Gameplay_Rule,
-        When_Round_Ends
+        When_Round_Ends,
+        Mesh_Animate,
+        Mesh_Set_Texture,
+        Mesh_Set_Collision,
+        AF_Fullscreen_Image,
+        AF_Fullscreen_Color,
+        Unhide_Glare,
+        Gas_Region_State,
+        Modify_Gas_Region,
+        Resize_Gas_Region
     };
 
     // int to EventType

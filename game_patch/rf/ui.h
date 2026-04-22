@@ -3,6 +3,7 @@
 #include <patch_common/MemUtils.h>
 #include "gr/gr_font.h"
 #include "gr/gr.h"
+#include "multi.h"
 
 namespace rf::ui
 {
@@ -248,6 +249,8 @@ namespace rf::ui
     static auto& medium_font_1 = addr_as_ref<int>(0x0063C064);
     static auto& small_font = addr_as_ref<int>(0x0063C068);
 
+    static auto& video_gamma_slider = addr_as_ref<Slider>(0x00640C10);
+
     static auto& audio_options_panel = addr_as_ref<Panel>(0x006424D8);
     static auto& audio_sfx_slider = addr_as_ref<Slider>(0x00642418);
     static auto& audio_sfx_slider_on_click = addr_as_ref<void(int x, int y)>(0x00454070);
@@ -292,10 +295,33 @@ namespace rf::ui
     static auto& create_game_options_current_gadget = addr_as_ref<int>(0x0063CA8C);
     static auto& create_game_current_tab = addr_as_ref<int>(0x0063F850);
 
-    // multi -> join server
+    // multi -> join server (server browser)
+    struct ServerListEntry
+    {
+        char name[32];
+        char level_name[32];
+        char mod_name[16];
+        int game_type;
+        rf::NetAddr addr;
+        char current_players;
+        char max_players;
+        int16_t ping;
+        int field_60;
+        char field_64;
+        int flags;
+    };
+    static_assert(sizeof(ServerListEntry) == 0x6C, "invalid size");
+
     static auto& join_game_server_list_up_on_click = addr_as_ref<void(int x, int y)>(0x0044B4C0);
     static auto& join_game_server_list_down_on_click = addr_as_ref<void(int x, int y)>(0x0044B520);
     static auto& join_game_current_gadget = addr_as_ref<int>(0x0063EE78);
+    static auto& server_browser_selected_index = addr_as_ref<int>(0x0063F644);
+    static auto& server_browser_display_count = addr_as_ref<int>(0x0063F578);
+    static auto& server_browser_sorted_indices = addr_as_ref<int*>(0x0063F634);
+    static auto& server_browser_server_list = addr_as_ref<ServerListEntry*>(0x0063F62C);
+    static auto& server_browser_sort_column = addr_as_ref<int>(0x00599D20);
+    static auto& server_browser_filter_type = addr_as_ref<int>(0x0063F22C);
+    static auto& server_browser_filter_cycler = addr_as_ref<Cycler>(0x0063F0C0);
 
     // load game
     static auto& load_game_up_on_click = addr_as_ref<void(int x, int y)>(0x0043F8C0);

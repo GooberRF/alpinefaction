@@ -11,6 +11,13 @@ namespace df::gr::d3d11
     public:
         TextureManager(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> device_context);
 
+        struct TextureLookupResult
+        {
+            ID3D11ShaderResourceView* srv = nullptr;
+            float u_scale = 1.0f;
+            float v_scale = 1.0f;
+        };
+
         ID3D11ShaderResourceView* lookup_texture(int bm_handle)
         {
             if (bm_handle < 0) {
@@ -18,6 +25,15 @@ namespace df::gr::d3d11
             }
             Texture& texture = get_or_load_texture(bm_handle, false);
             return texture.get_or_create_texture_view(device_, device_context_);
+        }
+
+        TextureLookupResult lookup_texture_with_scale(int bm_handle)
+        {
+            if (bm_handle < 0) {
+                return {};
+            }
+            Texture& texture = get_or_load_texture(bm_handle, false);
+            return {texture.get_or_create_texture_view(device_, device_context_), texture.u_scale, texture.v_scale};
         }
 
         ID3D11RenderTargetView* lookup_render_target(int bm_handle)
@@ -32,6 +48,7 @@ namespace df::gr::d3d11
         void finish_render_target(int bm_handle);
         void save_cache();
         void flush_cache(bool force);
+        void flush_non_user_cache();
         void add_ref(int bm_handle);
         void remove_ref(int bm_handle);
         void mark_dirty(int bm_handle);
@@ -59,6 +76,20 @@ namespace df::gr::d3d11
         void page_in(int bm_handle)
         {
             lookup_texture(bm_handle);
+        }
+
+        void flush_pow2_padded_textures()
+        {
+            auto it = texture_cache_.begin();
+            while (it != texture_cache_.end()) {
+                Texture& texture = it->second;
+                if (texture.u_scale != 1.0f || texture.v_scale != 1.0f) {
+                    it = texture_cache_.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
         }
 
     private:
@@ -95,6 +126,8 @@ namespace df::gr::d3d11
             ComPtr<ID3D11Texture2D> gpu_ms_texture;
             ComPtr<ID3D11RenderTargetView> render_target_view;
             ComPtr<ID3D11ShaderResourceView> shader_resource_view;
+            float u_scale = 1.0f;
+            float v_scale = 1.0f;
             short save_cache_count = 0;
             short ref_count = 0;
 
@@ -116,7 +149,8 @@ namespace df::gr::d3d11
             return insert_result.first->second;
         }
 
-        Texture create_texture(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal, int mip_levels, bool staging);
+        Texture create_texture(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal, int mip_levels, bool staging, int src_w = 0, int src_h = 0);
+        Texture create_texture_auto_mips(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal);
         Texture create_render_target(int bm_handle, int w, int h);
         Texture load_texture(int bm_handle, bool staging);
         std::pair<DXGI_FORMAT, rf::bm::Format> determine_supported_texture_format(rf::bm::Format fmt);

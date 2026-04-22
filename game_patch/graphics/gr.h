@@ -2,8 +2,10 @@
 
 #include "../rf/bmpman.h"
 #include "../rf/gr/gr.h"
+#include "../rf/os/string.h"
 
 void gr_apply_patch();
+void evaluate_pow2tex(const rf::String& level_filename);
 void evaluate_lightmaps_only();
 int gr_font_get_default();
 void gr_font_set_default(int font_id);
@@ -21,6 +23,24 @@ inline constexpr rf::gr::Mode overdraw_colorized_3d_bitmap{
         rf::gr::ALPHA_SOURCE_TEXTURE,
         rf::gr::ALPHA_BLEND_ALPHA,
         rf::gr::ZBUFFER_TYPE_NONE,
+        rf::gr::FOG_NOT_ALLOWED
+    };
+
+inline constexpr rf::gr::Mode no_overdraw_2d_line{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_ALPHA,
+        rf::gr::ZBUFFER_TYPE_FULL,
+        rf::gr::FOG_NOT_ALLOWED
+    };
+
+inline constexpr rf::gr::Mode no_overdraw_2d_text{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_ALPHA,
+        rf::gr::ZBUFFER_TYPE_READ,
         rf::gr::FOG_NOT_ALLOWED
     };
 

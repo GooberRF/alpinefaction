@@ -1,8 +1,6 @@
 #pragma once
-#include "../rf/math/vector.h"
-#include "../rf/math/matrix.h"
+#include "../rf/mover.h"
 
-namespace rf
-{
-    
-}
+rf::Mover* mover_find_by_mover_brush(const rf::MoverBrush* mover_brush);
+bool alpine_mover_holds_open(const rf::Mover* mp);
+void alpine_mover_clear_hold_open();

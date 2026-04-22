@@ -52,6 +52,32 @@ namespace rf
 #pragma pack(pop)
     static_assert(sizeof(PushRegion) == 0x69);
 
+    struct GeoRegion
+    {
+        int shape;
+        int hardness;
+        bool use_shallow_geomods;
+        bool is_ice;
+        char padding[2];
+        float shallow_geomod_depth;
+        Vector3 pos;
+        Matrix3 orient;
+        float radius;
+        Vector3 extents;
+    };
+    static_assert(sizeof(GeoRegion) == 0x50);
+
+    enum PushRegionFlags
+    {
+        PRF_MASS_INDEPENDENT = 0x1,
+        PRF_GROUNDED = 0x2,
+        PRF_GROWS_TOWARDS_CENTER = 0x4,
+        PRF_GROWS_TOWARDS_BOUNDARIES = 0x8,
+        PRF_RADIAL = 0x10,
+        PRF_DOESNT_AFFECT_PLAYER = 0x20,
+        PRF_JUMP_PAD = 0x40
+    };
+
     struct EmitterPair
     {
         ParticleEmitter *pemitter;
@@ -124,6 +150,8 @@ namespace rf
     static auto& level = addr_as_ref<LevelInfo>(0x00645FD8);
     static auto& level_filename_to_load = addr_as_ref<String>(0x00646140);
     static auto& level_get_push_region_from_uid = addr_as_ref<PushRegion*(int uid)>(0x0045D6D0);
+    static auto& level_point_in_climb_region = addr_as_ref<ClimbRegion*(Vector3* pos)>(0x0045CCA0);
+    static auto& geo_region_test_point = addr_as_ref<bool(const Vector3& pos, GeoRegion* region)>(0x0045d520);
 
     static auto& push_region_list = addr_as_ref<VArray<PushRegion*>>(0x006460BC);
 

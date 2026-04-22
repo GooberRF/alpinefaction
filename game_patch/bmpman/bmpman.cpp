@@ -165,6 +165,53 @@ FunHook<void(int)> bm_free_entry_hook{
     },
 };
 
+// Fix greyscale TGA files (image types 3 and 11) not loading.
+// The pixel-loading dispatch only handles types 1/2 (uncompressed) and 9/10 (RLE);
+// the validation accepts types 3/11 but they fall through the dispatch with no pixel
+// copy performed. Additionally, 8-bit greyscale is classified as FORMAT_8_PALETTED
+// but the loader never generates a palette for it.
+CodeInjection tga_greyscale_fix{
+    0x0055A95E,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x36c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
+
+CodeInjection tga_greyscale_fix_mipmap{
+    0x0055AEAE,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x3e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x37c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
+
 CodeInjection load_tga_alloc_fail_fix{
     0x0051095D,
     [](auto& regs) {
@@ -208,6 +255,10 @@ void bm_apply_patch()
     bm_lock_hook.install();
     bm_has_alpha_hook.install();
     bm_free_entry_hook.install();
+
+    // Fix greyscale TGA files not loading (types 3 and 11)
+    tga_greyscale_fix.install();
+    tga_greyscale_fix_mipmap.install();
 
     // Fix crash when loading very big TGA files
     load_tga_alloc_fail_fix.install();

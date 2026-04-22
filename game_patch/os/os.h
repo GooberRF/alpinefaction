@@ -1,17 +1,65 @@
 #pragma once
 
+#include <cstddef>
 #include <chrono>
 #include <optional>
 #include <algorithm>
+#include <windows.h>
+#include <xlog/xlog.h>
 
 void os_apply_patch();
 void frametime_render_ui();
 float get_maximum_fps();
 void apply_maximum_fps();
-void wait_for(float ms);
+bool cmdline_token_equals_ci(const wchar_t* token_begin, std::size_t token_len, const wchar_t* expected);
+bool cmdline_has_switch_token(const wchar_t* cmdline, const wchar_t* switch_name);
+bool raw_command_line_has_switch(const wchar_t* switch_name);
+bool is_client_bot_requested_from_cmdline();
+bool is_client_debugbot_requested_from_cmdline();
+bool headless_bot_requested_from_raw_cmdline();
+bool awpgen_requested_from_raw_cmdline();
+bool headless_requested_from_raw_cmdline();
+
+struct WaitableTimer {
+    HANDLE handle;
+
+    WaitableTimer()
+        // Should be a resolution of 500 us.
+        : handle(CreateWaitableTimerExA(
+            nullptr,
+            nullptr,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            TIMER_MODIFY_STATE | SYNCHRONIZE
+        )) {
+        if (!handle) {
+            ERR_ONCE(
+                "`CreateWaitableTimerExA` in `WaitableTimer::WaitableTimer` failed ({})",
+                GetLastError()
+            );
+        }
+    }
+
+    ~WaitableTimer() {
+        if (handle) {
+            CloseHandle(handle);
+        }
+    }
+
+    WaitableTimer(const WaitableTimer&) = delete;
+    WaitableTimer& operator=(const WaitableTimer&) = delete;
+};
+
+// `timer` should be cached in hot paths.
+void wait_for(float ms, const WaitableTimer& timer = WaitableTimer{});
+
+namespace timer {
+    int64_t get_i64(int scale);
+}
+
+inline LARGE_INTEGER g_qpc_frequency{};
 
 class HighResTimer {
-    using clock = std::chrono::high_resolution_clock;
+    using clock = std::chrono::steady_clock;
 
     std::optional<clock::time_point> _start_time{};
     std::chrono::nanoseconds _duration{0};

@@ -1,5 +1,13 @@
 #pragma once
 
+#ifndef RC_INVOKED
+#include <functional>
+#include <format>
+#include <string>
+#include <cstdio>
+#include <string_view>
+#endif
+
 #ifndef TOSTRING
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
@@ -16,16 +24,16 @@
 // Variables to be modified during the release process
 #define PRODUCT_NAME           "Alpine Faction"
 #define VERSION_MAJOR          1
-#define VERSION_MINOR          3
+#define VERSION_MINOR          4
 #define VERSION_PATCH          0
 #define VERSION_TYPE           VERSION_TYPE_DEV
-#define VERSION_TYPE_REVISION  2
-#define VERSION_CODE           "Bakeapple"
+#define VERSION_TYPE_REVISION  0
+#define VERSION_CODE           "TBD"
 
 // Version used for Alpine settings files
 #define ADS_VERSION            2      // .toml dedicated server config files
-#define AFS_VERSION            12     // alpine_settings.ini
-#define AFCC_VERSION           1      // alpine_system.ini
+#define AFS_VERSION            14     // alpine_settings.ini
+#define AFCC_VERSION           2      // alpine_system.ini
 #define ASG_VERSION            1      // .asg savegame files
 
 // Increment only when absolutely necessary! Will break level compatibility for older clients.
@@ -59,3 +67,29 @@
 #define VERSION_STR TOSTRING(VERSION_MAJOR) "." TOSTRING(VERSION_MINOR) "." TOSTRING(VERSION_PATCH) VERSION_SUFFIX
 #define PRODUCT_NAME_VERSION PRODUCT_NAME " " VERSION_STR
 #define AF_USER_AGENT_SUFFIX(suffix) PRODUCT_NAME " v" VERSION_STR " " suffix
+
+#ifndef RC_INVOKED
+inline const std::string& get_build_date() {
+    static std::string res = std::invoke([] {
+        std::string date = __DATE__;
+        // Find and erase double space.
+        const size_t pos = date.find("  ");
+        if (pos != std::string::npos) {
+            date.erase(pos, 1);
+        }
+        return date;
+    });
+    return res;
+}
+
+inline const std::string& get_build_time() {
+    static std::string res = std::invoke([] {
+        int hours = 0, minutes = 0, seconds = 0;
+        std::sscanf(__TIME__, "%d:%d:%d", &hours, &minutes, &seconds);
+        const std::string_view suffix = (hours < 12) ? "AM" : "PM";
+        // Use a zero-indexed 12-hour clock for elegance.
+        return std::format("{}:{:02} {}", hours % 12, minutes, suffix);
+    });
+    return res;
+}
+#endif

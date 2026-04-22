@@ -26,8 +26,13 @@
 #include "../multi/gametype.h"
 #include "../rf/player/player.h"
 #include "../rf/os/timestamp.h"
+#include "../os/os.h"
 #include "../rf/os/array.h"
 #include "../rf/gr/gr_light.h"
+#include "../rf/glare.h"
+#include "../graphics/gr.h"
+#include "../misc/level.h"
+#include "../misc/alpine_settings.h"
 
 void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale);
 rf::Vector3 rotate_velocity(const rf::Vector3& old_velocity, const rf::Matrix3& old_orient, const rf::Matrix3& new_orient);
@@ -105,7 +110,9 @@ namespace rf
         red_team_spawned,
         has_flag,
         blue_team,
-        red_team
+        red_team,
+        renderer_d3d11,
+        renderer_legacy
     };
 
     enum class GoalInsideCheckSubject : int
@@ -147,6 +154,14 @@ namespace rf
     enum class GameplayRule : int
     {
         player_has_headlamp,
+    };
+
+    enum class FullscreenTransitionType : int
+    {
+        disappear = 0,           // instant on, instant off
+        fade_in_disappear = 1,   // fade in, instant off
+        fade_in_fade_out = 2,    // fade in, fade out
+        appear_fade_out = 3      // instant on, fade out
     };
 
     // start alpine event structs
@@ -228,7 +243,7 @@ namespace rf
                 this_event->hostile_to_player = (value == "true");
             };
 
-            handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventCloneEntity*>(event);
                 this_event->find_player = (value == "true");
             };
@@ -1062,6 +1077,12 @@ namespace rf
             case ScopeGateTests::red_team:
                 pass = (local_player && (local_player->team == 0));
                 break;
+            case ScopeGateTests::renderer_d3d11:
+                pass = is_d3d11();
+                break;
+            case ScopeGateTests::renderer_legacy:
+                pass = !is_d3d11();
+                break;
             default:
                 break;
             }
@@ -1615,7 +1636,7 @@ namespace rf
                         ep->entity_flags2 |= 0x1;
                         break;
                     case SetEntityFlagOption::no_shadow:
-                        ep->entity_flags2 |= 0x2;
+                        ep->entity_flags2 |= rf::EF2_NO_SHADOW;
                         break;
                     case SetEntityFlagOption::perfect_aim:
                         ep->entity_flags2 |= 0x4;
@@ -1668,7 +1689,7 @@ namespace rf
                         ep->entity_flags2 &= ~0x1;
                         break;
                     case SetEntityFlagOption::no_shadow:
-                        ep->entity_flags2 &= ~0x2;
+                        ep->entity_flags2 &= ~rf::EF2_NO_SHADOW;
                         break;
                     case SetEntityFlagOption::perfect_aim:
                         ep->entity_flags2 &= ~0x4;
@@ -1715,7 +1736,7 @@ namespace rf
                 this_event->reset_velocity = (value == "true");
             };
 
-            handlers[SetVarOpts::bool1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::bool2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
                 this_event->force_exit_vehicle = (value == "true");
             };
@@ -1725,7 +1746,7 @@ namespace rf
                 this_event->entrance_vclip = value;
             };
 
-            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+            handlers[SetVarOpts::str2] = [](Event* event, const std::string& value) {
                 auto* this_event = static_cast<EventAFTeleportPlayer*>(event);
                 this_event->exit_vclip = value;
             };
@@ -2454,6 +2475,531 @@ namespace rf
                         break;
                     }
                 }
+            }
+        }
+    };
+
+    // id 145
+    struct EventMeshAnimate : Event
+    {
+        char padding_align[3];
+        int animate_type = 0;        // 0=Action, 1=Action Hold Last, 2=State
+        std::string anim_filename;
+        float blend_weight = 1.0f;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshAnimate*>(event);
+                e->animate_type = std::stoi(value);
+            };
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshAnimate*>(event);
+                e->anim_filename = value;
+            };
+            handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshAnimate*>(event);
+                e->blend_weight = std::stof(value);
+            };
+        }
+
+        void turn_on() override
+        {
+            xlog::debug("[EventMeshAnimate] turn_on: uid={} type={} anim='{}' weight={:.2f} links={}",
+                this->uid, animate_type, anim_filename, blend_weight,
+                this->links.size());
+            for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+                int link_handle = this->links[i];
+                Object* obj = obj_from_handle(link_handle);
+                if (obj) {
+                    alpine_mesh_animate(obj, animate_type, anim_filename, blend_weight);
+                } else {
+                    xlog::warn("[EventMeshAnimate] link[{}]: handle={} -> NULL (stale handle!)", i, link_handle);
+                }
+            }
+        }
+    };
+
+    // id 146
+    struct EventMeshSetTexture : Event
+    {
+        char padding_align[3];
+        int texture_slot = 0;
+        std::string texture_filename;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshSetTexture*>(event);
+                e->texture_slot = std::stoi(value);
+            };
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshSetTexture*>(event);
+                e->texture_filename = value;
+            };
+        }
+
+        void turn_on() override
+        {
+            xlog::debug("[EventMeshSetTexture] turn_on: uid={} slot={} texture='{}'",
+                this->uid, texture_slot, texture_filename);
+            for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+                int link_handle = this->links[i];
+                Object* obj = obj_from_handle(link_handle);
+                if (obj) {
+                    if (texture_filename.empty()) {
+                        alpine_mesh_clear_texture(obj, texture_slot);
+                    }
+                    else {
+                        alpine_mesh_set_texture(obj, texture_slot, texture_filename);
+                    }
+                } else {
+                    xlog::warn("[EventMeshSetTexture]   link[{}]: handle={} -> NULL (stale handle!)", i, link_handle);
+                }
+            }
+        }
+    };
+
+    // id 147
+    struct EventMeshSetCollision : Event
+    {
+        char padding_align[3];
+        int collision_type = 0; // 0=None, 1=Only Weapons, 2=All
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventMeshSetCollision*>(event);
+                e->collision_type = std::stoi(value);
+            };
+        }
+
+        void turn_on() override
+        {
+            xlog::debug("[EventMeshSetCollision] turn_on: uid={} collision_type={} links={}",
+                this->uid, collision_type, this->links.size());
+            for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+                int link_handle = this->links[i];
+                Object* obj = obj_from_handle(link_handle);
+                if (obj) {
+                    alpine_mesh_set_collision(obj, collision_type);
+                } else {
+                    xlog::warn("[EventMeshSetCollision] link[{}]: handle={} -> NULL", i, link_handle);
+                }
+            }
+        }
+    };
+
+    // Base class for fullscreen overlay events
+    struct EventFullscreenOverlayBase : Event
+    {
+        float duration = 0.0f;
+        float transition_time = 0.0f;
+        FullscreenTransitionType transition_type = FullscreenTransitionType::disappear;
+        int max_alpha_raw = 0; // 0 means 255 (full opacity)
+
+        // Runtime state (not serialized)
+        bool active = false;
+        bool fading_out_early = false;
+        HighResTimer main_timer;
+        HighResTimer fadeout_timer;
+        float fadeout_start_alpha = 1.0f;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenOverlayBase*>(event);
+                e->duration = std::stof(value);
+            };
+            handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenOverlayBase*>(event);
+                e->transition_time = std::max(0.0f, std::stof(value));
+            };
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenOverlayBase*>(event);
+                int raw = std::stoi(value);
+                if (raw < 0 || raw > 3) raw = 0;
+                e->transition_type = static_cast<FullscreenTransitionType>(raw);
+            };
+            handlers[SetVarOpts::int2] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenOverlayBase*>(event);
+                e->max_alpha_raw = std::stoi(value);
+            };
+        }
+
+        float effective_max_alpha() const
+        {
+            return (max_alpha_raw <= 0 || max_alpha_raw > 255) ? 1.0f : static_cast<float>(max_alpha_raw) / 255.0f;
+        }
+
+        bool has_fade_in() const
+        {
+            return transition_type == FullscreenTransitionType::fade_in_disappear ||
+                   transition_type == FullscreenTransitionType::fade_in_fade_out;
+        }
+
+        bool has_fade_out() const
+        {
+            return transition_type == FullscreenTransitionType::fade_in_fade_out ||
+                   transition_type == FullscreenTransitionType::appear_fade_out;
+        }
+
+        float compute_alpha() const
+        {
+            float trans = transition_time;
+            float max_a = effective_max_alpha();
+
+            // Early fade-out override
+            if (fading_out_early) {
+                if (trans <= 0.0f) return 0.0f;
+                return fadeout_start_alpha * (1.0f - fadeout_timer.elapsed_frac());
+            }
+
+            float elapsed = main_timer.time_since_sec();
+            bool infinite = (duration <= 0.0f);
+
+            // Fade-in phase
+            if (has_fade_in() && trans > 0.0f && elapsed < trans) {
+                return (elapsed / trans) * max_a;
+            }
+
+            // Hold phase
+            float after_fadein = elapsed - (has_fade_in() ? trans : 0.0f);
+            if (infinite || after_fadein < duration) {
+                return max_a;
+            }
+
+            // Fade-out phase
+            if (has_fade_out() && trans > 0.0f) {
+                float fadeout_elapsed = after_fadein - duration;
+                float progress = fadeout_elapsed / trans;
+                if (progress >= 1.0f) return 0.0f;
+                return (1.0f - progress) * max_a;
+            }
+
+            return 0.0f;
+        }
+
+        bool is_finished() const
+        {
+            if (fading_out_early) {
+                if (transition_time <= 0.0f) return true;
+                return fadeout_timer.elapsed();
+            }
+
+            if (duration <= 0.0f) return false; // infinite hold
+
+            return main_timer.elapsed();
+        }
+
+        void turn_on() override
+        {
+            active = true;
+            fading_out_early = false;
+            float fade_in_time = has_fade_in() ? transition_time : 0.0f;
+            float fade_out_time = has_fade_out() ? transition_time : 0.0f;
+            float total_time = fade_in_time + duration + fade_out_time;
+            main_timer.set_sec(total_time);
+        }
+
+        void turn_off() override
+        {
+            if (!active) return;
+
+            if (has_fade_out() && transition_time > 0.0f && !fading_out_early) {
+                fadeout_start_alpha = compute_alpha(); // capture before setting fading_out_early
+                fading_out_early = true;
+                fadeout_timer.set_sec(transition_time);
+            }
+            else {
+                active = false;
+            }
+        }
+
+        virtual void render(float alpha) = 0;
+    };
+
+    // id 148
+    struct EventFullscreenImage : EventFullscreenOverlayBase
+    {
+        std::string filename;
+        int bitmap_handle = -1;
+        int bm_w = 0;
+        int bm_h = 0;
+
+        void register_variable_handlers() override
+        {
+            EventFullscreenOverlayBase::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenImage*>(event);
+                e->filename = value;
+            };
+        }
+
+        void turn_on() override
+        {
+            bitmap_handle = -1;
+            bm_w = 0;
+            bm_h = 0;
+            if (filename.empty()) {
+                xlog::warn("AF_Fullscreen_Image ({}): no filename set", this->uid);
+            }
+            else {
+                bitmap_handle = bm::load(filename.c_str(), -1, true);
+                if (bitmap_handle < 0) {
+                    xlog::warn("AF_Fullscreen_Image ({}): failed to load '{}'", this->uid, filename);
+                }
+                else {
+                    bm::get_dimensions(bitmap_handle, &bm_w, &bm_h);
+                }
+            }
+            EventFullscreenOverlayBase::turn_on();
+        }
+
+        void render(float alpha) override
+        {
+            if (bitmap_handle < 0 || bm_w <= 0 || bm_h <= 0) return;
+            int a = static_cast<int>(alpha * 255.0f);
+            if (a <= 0) return;
+            if (a > 255) a = 255;
+
+            gr::set_color(255, 255, 255, a);
+            static gr::Mode mode{
+                gr::TEXTURE_SOURCE_CLAMP,
+                gr::COLOR_SOURCE_TEXTURE,
+                gr::ALPHA_SOURCE_VERTEX_TIMES_TEXTURE,
+                gr::ALPHA_BLEND_ALPHA,
+                gr::ZBUFFER_TYPE_NONE,
+                gr::FOG_NOT_ALLOWED,
+            };
+            gr_bitmap_scaled_float(bitmap_handle, 0.0f, 0.0f,
+                static_cast<float>(gr::screen.max_w), static_cast<float>(gr::screen.max_h),
+                0.0f, 0.0f, static_cast<float>(bm_w), static_cast<float>(bm_h),
+                false, false, mode);
+        }
+    };
+
+    // id 149
+    struct EventFullscreenColor : EventFullscreenOverlayBase
+    {
+        std::string color_string;
+        gr::Color parsed_color{0, 0, 0, 255};
+
+        void register_variable_handlers() override
+        {
+            EventFullscreenOverlayBase::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* e = static_cast<EventFullscreenColor*>(event);
+                e->color_string = value;
+            };
+        }
+
+        void turn_on() override
+        {
+            parsed_color = {0, 0, 0, 255};
+            if (!color_string.empty()) {
+                try {
+                    parsed_color = gr::Color::from_rgb_string(color_string);
+                }
+                catch (const std::exception& e) {
+                    xlog::error("AF_Fullscreen_Color ({}) failed to parse color '{}': {}",
+                        this->uid, color_string, e.what());
+                }
+            }
+            EventFullscreenOverlayBase::turn_on();
+        }
+
+        void render(float alpha) override
+        {
+            int a = static_cast<int>(alpha * 255.0f);
+            if (a <= 0) return;
+            if (a > 255) a = 255;
+
+            gr::set_color(parsed_color.red, parsed_color.green, parsed_color.blue, a);
+            static gr::Mode mode{
+                gr::TEXTURE_SOURCE_NONE,
+                gr::COLOR_SOURCE_VERTEX,
+                gr::ALPHA_SOURCE_VERTEX,
+                gr::ALPHA_BLEND_ALPHA,
+                gr::ZBUFFER_TYPE_NONE,
+                gr::FOG_NOT_ALLOWED,
+            };
+            gr::rect(0, 0, gr::screen.max_w, gr::screen.max_h, mode);
+        }
+    };
+
+    // id 150
+    struct EventUnhideGlare : Event
+    {
+        static void set_glares_enabled(const VArray<int>& links, bool enabled)
+        {
+            for (Glare* g = glare_list.next; g != &glare_list; g = g->next) {
+                for (const int link : links) {
+                    if (g->parent_handle == link) {
+                        g->enabled = enabled;
+                        break;
+                    }
+                }
+            }
+        }
+
+        void turn_on() override
+        {
+            set_glares_enabled(this->links, true);
+        }
+
+        void turn_off() override
+        {
+            set_glares_enabled(this->links, false);
+        }
+    };
+
+    // id 151
+    struct EventGasRegionState : Event
+    {
+        void turn_on() override
+        {
+            for (const auto& linked_uid : this->links) {
+                if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                    gas_region->enabled = true;
+                }
+            }
+        }
+
+        void turn_off() override
+        {
+            for (const auto& linked_uid : this->links) {
+                if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                    gas_region->enabled = false;
+                }
+            }
+        }
+    };
+
+    // id 152
+    struct EventModifyGasRegion : Event
+    {
+        std::string color_string;
+        float density = 1.0f;
+        float transition_time = 0.0f;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventModifyGasRegion*>(event);
+                this_event->color_string = value;
+            };
+
+            handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventModifyGasRegion*>(event);
+                this_event->density = std::stof(value);
+            };
+
+            handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventModifyGasRegion*>(event);
+                this_event->transition_time = std::max(0.0f, std::stof(value));
+            };
+        }
+
+        void turn_on() override
+        {
+            try {
+                Color color = Color::from_rgb_string(color_string);
+
+                for (const auto& linked_uid : this->links) {
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        if (transition_time > 0.0f) {
+                            gas_region_add_modify_transition(linked_uid, color, density, transition_time);
+                        }
+                        else {
+                            gas_region->color = color;
+                            gas_region->density = density;
+                        }
+                    }
+                }
+            }
+            catch (const std::exception& e) {
+                xlog::error("Modify_Gas_Region ({}) failed: {}", this->uid, e.what());
+            }
+        }
+    };
+
+    // id 153
+    struct EventResizeGasRegion : Event
+    {
+        int shape = 1; // 1=sphere, 2=box
+        float sphere_radius = 1.0f;
+        std::string box_dimensions; // HWD
+        float transition_time = 0.0f;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventResizeGasRegion*>(event);
+                this_event->shape = std::stoi(value) + 1; // 0->sphere(1), 1->box(2)
+            };
+
+            handlers[SetVarOpts::float1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventResizeGasRegion*>(event);
+                this_event->sphere_radius = std::stof(value);
+            };
+
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventResizeGasRegion*>(event);
+                this_event->box_dimensions = value;
+            };
+
+            handlers[SetVarOpts::float2] = [](Event* event, const std::string& value) {
+                auto* this_event = static_cast<EventResizeGasRegion*>(event);
+                this_event->transition_time = std::max(0.0f, std::stof(value));
+            };
+        }
+
+        void turn_on() override
+        {
+            try {
+                auto dims = Vector3::from_string(box_dimensions, Vector3{1.0f, 1.0f, 1.0f});
+
+                for (const auto& linked_uid : this->links) {
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        if (transition_time > 0.0f) {
+                            gas_region_add_resize_transition(linked_uid, shape,
+                                sphere_radius, dims.x, dims.y, dims.z, transition_time);
+                        }
+                        else {
+                            gas_region->shape = shape;
+
+                            if (shape == 1) { // sphere
+                                gas_region->radius = sphere_radius;
+                            }
+                            else if (shape == 2) { // box - parsed as "H W D"
+                                gas_region->height = dims.x;
+                                gas_region->width = dims.y;
+                                gas_region->depth = dims.z;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (const std::exception& e) {
+                xlog::error("Resize_Gas_Region ({}) failed: {}", this->uid, e.what());
             }
         }
     };

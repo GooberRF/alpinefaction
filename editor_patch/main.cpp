@@ -10,6 +10,9 @@
 #include <iomanip>
 #include <sstream>
 #include <string>
+#include <algorithm>
+#include <set>
+#include <cmath>
 #include <common/version/version.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/os-utils.h>
@@ -30,6 +33,11 @@
 #include "vtypes.h"
 #include "level.h"
 #include "event.h"
+#include "mesh.h"
+#include "alpine_obj.h"
+#include "geometry.h"
+#include "textures.h"
+#include "meshes.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
 HMODULE g_module;
@@ -46,8 +54,6 @@ static bool g_skip_legacy_level_warning = false;
 static int g_current_level_version = -1;
 
 static const auto g_editor_app = reinterpret_cast<std::byte*>(0x006F9DA0);
-
-static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...)>(0x00444980);
 
 
 void *GetMainFrame()
@@ -102,10 +108,7 @@ CodeInjection CMainFrame_PreCreateWindow_injection{
 CodeInjection CEditorApp_InitInstance_additional_file_paths_injection{
     0x0048290D,
     []() {
-        // Load v3m files from more localizations instead of only VPP packfiles
-        auto file_add_path = addr_as_ref<int(const char *path, const char *exts, bool cd)>(0x004C3950);
-        file_add_path("red\\meshes", ".v3m .vfx", false);
-        file_add_path("user_maps\\meshes", ".v3m .vfx", false);
+        meshes_init_paths();
     },
 };
 
@@ -131,12 +134,395 @@ CodeInjection CEditorApp_InitInstance_open_level_injection{
     },
 };
 
+// ===== Brush "Is Geoable" support =====
+
+static int compute_geoable_state_from_selected()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return BST_UNCHECKED;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return BST_UNCHECKED;
+    int num_selected = 0;
+    int num_geoable = 0;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED) {
+            num_selected++;
+            if (std::find(props.geoable_brush_uids.begin(),
+                          props.geoable_brush_uids.end(), node->uid)
+                != props.geoable_brush_uids.end()) {
+                num_geoable++;
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+
+    if (num_selected == 0 || num_geoable == 0) return BST_UNCHECKED;
+    if (num_geoable == num_selected) return BST_CHECKED;
+    return BST_INDETERMINATE;
+}
+
+static void apply_geoable_to_selected_brushes(int new_state)
+{
+    if (new_state == BST_INDETERMINATE) return;
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED) {
+            auto it = std::find(props.geoable_brush_uids.begin(),
+                                props.geoable_brush_uids.end(), node->uid);
+            if (new_state == BST_CHECKED) {
+                if (it == props.geoable_brush_uids.end()) {
+                    props.geoable_brush_uids.push_back(node->uid);
+                }
+            } else {
+                if (it != props.geoable_brush_uids.end()) {
+                    props.geoable_brush_uids.erase(it);
+                }
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+}
+
+// Returns true if at least one selected brush is a breakable detail brush (is_detail && life != -1)
+static bool selection_has_breakable_detail()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return false;
+    BrushNode* node = level->brush_list;
+    if (!node) return false;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1)
+            return true;
+        node = node->next;
+    } while (node != level->brush_list);
+    return false;
+}
+
+// Returns material index for selected breakable brushes, or -1 if mixed
+static int compute_material_from_selected()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return 0;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return 0;
+    int result = -2; // not set yet
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
+            uint8_t mat = 0; // default = Glass
+            auto it = std::find(props.breakable_brush_uids.begin(),
+                                props.breakable_brush_uids.end(), node->uid);
+            if (it != props.breakable_brush_uids.end()) {
+                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                mat = props.breakable_materials[idx] & 0x7F; // mask out flags (bit 7 = no_debris)
+            }
+            if (result == -2) {
+                result = mat;
+            } else if (result != mat) {
+                return -1; // mixed
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+    return (result == -2) ? 0 : result;
+}
+
+static void apply_material_to_selected_brushes(uint8_t mat)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
+            auto it = std::find(props.breakable_brush_uids.begin(),
+                                props.breakable_brush_uids.end(), node->uid);
+            if (mat == 0) {
+                // Glass = default, remove from list (also clears no_debris flag)
+                if (it != props.breakable_brush_uids.end()) {
+                    auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                    props.breakable_brush_uids.erase(it);
+                    props.breakable_room_uids.erase(props.breakable_room_uids.begin() + idx);
+                    props.breakable_materials.erase(props.breakable_materials.begin() + idx);
+                    xlog::info("[Material] brush uid={} set to Glass (removed from list)", node->uid);
+                }
+            } else {
+                // Non-glass: add or update (preserve flags in high bit)
+                if (it != props.breakable_brush_uids.end()) {
+                    auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                    uint8_t flags = props.breakable_materials[idx] & 0x80;
+                    props.breakable_materials[idx] = mat | flags;
+                    xlog::info("[Material] brush uid={} updated material to {}", node->uid, mat);
+                } else {
+                    props.breakable_brush_uids.push_back(node->uid);
+                    props.breakable_room_uids.push_back(0); // filled at save time
+                    props.breakable_materials.push_back(mat);
+                    xlog::info("[Material] brush uid={} added with material {} (total breakable={})",
+                        node->uid, mat, props.breakable_brush_uids.size());
+                }
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+}
+
+static void init_material_combo(HWND hdlg)
+{
+    HWND combo = GetDlgItem(hdlg, IDC_MATERIAL_COMBO);
+    HWND label = GetDlgItem(hdlg, IDC_MATERIAL_LABEL);
+    if (!combo) return;
+
+    // Reset content
+    SendMessageA(combo, CB_RESETCONTENT, 0, 0);
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Glass"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Rock"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Wood"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Metal"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Cement"));
+    SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Ice"));
+
+    bool has_breakable = selection_has_breakable_detail();
+    EnableWindow(combo, has_breakable ? TRUE : FALSE);
+    if (label) EnableWindow(label, has_breakable ? TRUE : FALSE);
+
+    if (has_breakable) {
+        int mat = compute_material_from_selected();
+        if (mat >= 0) {
+            SendMessageA(combo, CB_SETCURSEL, mat, 0);
+        } else {
+            // Mixed — don't select anything
+            SendMessageA(combo, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+        }
+    } else {
+        SendMessageA(combo, CB_SETCURSEL, 0, 0); // show Glass as default
+    }
+}
+
+// ===== Brush "No Debris" support =====
+
+// Returns BST_CHECKED/UNCHECKED/INDETERMINATE for the no_debris flag on selected breakable brushes
+static int compute_no_debris_state_from_selected()
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return BST_UNCHECKED;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return BST_UNCHECKED;
+    int num_checked = 0;
+    int num_applicable = 0;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
+            auto it = std::find(props.breakable_brush_uids.begin(),
+                                props.breakable_brush_uids.end(), node->uid);
+            if (it != props.breakable_brush_uids.end()) {
+                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                uint8_t mat = props.breakable_materials[idx] & 0x7F;
+                if (mat > 0) { // non-glass only
+                    num_applicable++;
+                    if (props.breakable_materials[idx] & 0x80)
+                        num_checked++;
+                }
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+
+    if (num_applicable == 0) return BST_UNCHECKED;
+    if (num_checked == num_applicable) return BST_CHECKED;
+    if (num_checked == 0) return BST_UNCHECKED;
+    return BST_INDETERMINATE;
+}
+
+static void apply_no_debris_to_selected_brushes(int new_state)
+{
+    if (new_state == BST_INDETERMINATE) return;
+
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    BrushNode* node = level->brush_list;
+    if (!node) return;
+    do {
+        if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
+            auto it = std::find(props.breakable_brush_uids.begin(),
+                                props.breakable_brush_uids.end(), node->uid);
+            if (it != props.breakable_brush_uids.end()) {
+                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+                if (new_state == BST_CHECKED) {
+                    props.breakable_materials[idx] |= 0x80;
+                } else {
+                    props.breakable_materials[idx] &= 0x7F;
+                }
+            }
+        }
+        node = node->next;
+    } while (node != level->brush_list);
+}
+
+static void init_no_debris_checkbox(HWND hdlg)
+{
+    HWND ctrl = GetDlgItem(hdlg, IDC_NO_DEBRIS);
+    if (!ctrl) return;
+
+    bool has_breakable = selection_has_breakable_detail();
+    int mat = has_breakable ? compute_material_from_selected() : 0;
+    bool enabled = has_breakable && mat > 0; // non-glass breakable only
+
+    EnableWindow(ctrl, enabled ? TRUE : FALSE);
+    if (enabled) {
+        CheckDlgButton(hdlg, IDC_NO_DEBRIS, compute_no_debris_state_from_selected());
+    } else {
+        CheckDlgButton(hdlg, IDC_NO_DEBRIS, BST_UNCHECKED);
+    }
+}
+
+// Dialog 205 (brush panel) subclass for Is Geoable click handling
+static WNDPROC g_brush_panel_orig_wndproc = nullptr;
+static HWND g_brush_panel_hwnd = nullptr;
+
+static LRESULT CALLBACK BrushPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_BRUSH_MIRROR) {
+        handle_brush_mirror();
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_BRUSH_CONVERT) {
+        handle_brush_convert();
+        return 0;
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
+        int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
+        // Normalize: skip indeterminate state, treat as unchecked
+        if (state == BST_INDETERMINATE) {
+            state = BST_UNCHECKED;
+            CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
+        }
+        apply_geoable_to_selected_brushes(state);
+        // Auto-check Is Detail when Is Geoable is checked
+        if (state == BST_CHECKED && IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
+            CheckDlgButton(hwnd, 1215, BST_CHECKED);
+            // Trigger stock handler to apply detail flag to selected brushes
+            CallWindowProcA(g_brush_panel_orig_wndproc, hwnd, WM_COMMAND,
+                           MAKEWPARAM(1215, BN_CLICKED),
+                           reinterpret_cast<LPARAM>(GetDlgItem(hwnd, 1215)));
+        }
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_MATERIAL_COMBO && HIWORD(wParam) == CBN_SELCHANGE) {
+        int sel = static_cast<int>(SendDlgItemMessageA(hwnd, IDC_MATERIAL_COMBO, CB_GETCURSEL, 0, 0));
+        if (sel >= 0) {
+            apply_material_to_selected_brushes(static_cast<uint8_t>(sel));
+        }
+        // Refresh no_debris checkbox enable state when material changes
+        init_no_debris_checkbox(hwnd);
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_NO_DEBRIS) {
+        int state = IsDlgButtonChecked(hwnd, IDC_NO_DEBRIS);
+        apply_no_debris_to_selected_brushes(state);
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == 1215) {
+        // Auto-uncheck Is Geoable when Is Detail is no longer checked
+        if (IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
+            CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
+            apply_geoable_to_selected_brushes(BST_UNCHECKED);
+        }
+        // Refresh material combo and no_debris enable state when detail flag changes
+        init_material_combo(hwnd);
+        init_no_debris_checkbox(hwnd);
+    }
+    return CallWindowProcA(g_brush_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+// Dialog 270 (brush properties popup) hook and subclass
+static HHOOK g_brush_props_msg_hook = nullptr;
+static WNDPROC g_brush_props_orig_wndproc = nullptr;
+
+static LRESULT CALLBACK BrushPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
+        int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
+        apply_geoable_to_selected_brushes(state);
+        // Apply material from combo
+        int sel = static_cast<int>(SendDlgItemMessageA(hwnd, IDC_MATERIAL_COMBO, CB_GETCURSEL, 0, 0));
+        if (sel >= 0) {
+            apply_material_to_selected_brushes(static_cast<uint8_t>(sel));
+        }
+        // Apply no_debris checkbox
+        int nd_state = IsDlgButtonChecked(hwnd, IDC_NO_DEBRIS);
+        apply_no_debris_to_selected_brushes(nd_state);
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_IS_GEOABLE) {
+        int state = IsDlgButtonChecked(hwnd, IDC_IS_GEOABLE);
+        // Normalize: skip indeterminate state, treat as unchecked
+        if (state == BST_INDETERMINATE) {
+            state = BST_UNCHECKED;
+            CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
+        }
+        // Auto-check Is Detail when Is Geoable is checked
+        if (state == BST_CHECKED && IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
+            CheckDlgButton(hwnd, 1215, BST_CHECKED);
+        }
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDC_MATERIAL_COMBO && HIWORD(wParam) == CBN_SELCHANGE) {
+        // Refresh no_debris checkbox when material changes
+        init_no_debris_checkbox(hwnd);
+    }
+    if (msg == WM_COMMAND && LOWORD(wParam) == 1215) {
+        // Auto-uncheck Is Geoable when Is Detail is no longer checked
+        if (IsDlgButtonChecked(hwnd, 1215) != BST_CHECKED) {
+            CheckDlgButton(hwnd, IDC_IS_GEOABLE, BST_UNCHECKED);
+        }
+        // Refresh material combo and no_debris enable state when detail flag changes
+        init_material_combo(hwnd);
+        init_no_debris_checkbox(hwnd);
+    }
+    if (msg == WM_NCDESTROY) {
+        SetWindowLongPtrA(hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(g_brush_props_orig_wndproc));
+        auto result = CallWindowProcA(g_brush_props_orig_wndproc, hwnd, msg, wParam, lParam);
+        g_brush_props_orig_wndproc = nullptr;
+        return result;
+    }
+    return CallWindowProcA(g_brush_props_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK BrushPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION) {
+        auto* msg = reinterpret_cast<CWPRETSTRUCT*>(lParam);
+        if (msg->message == WM_INITDIALOG && GetDlgItem(msg->hwnd, IDC_IS_GEOABLE)) {
+            int state = compute_geoable_state_from_selected();
+            CheckDlgButton(msg->hwnd, IDC_IS_GEOABLE, state);
+            init_material_combo(msg->hwnd);
+            init_no_debris_checkbox(msg->hwnd);
+            g_brush_props_orig_wndproc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(msg->hwnd, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(BrushPropsSubclassProc)));
+            UnhookWindowsHookEx(g_brush_props_msg_hook);
+            g_brush_props_msg_hook = nullptr;
+        }
+    }
+    return CallNextHookEx(g_brush_props_msg_hook, nCode, wParam, lParam);
+}
+
+// CWnd::CreateDlg path — used by CDialogBar::Create for toolbar-style dialog bars
 CodeInjection CWnd_CreateDlg_injection{
     0x0052F112,
     [](auto& regs) {
         auto& hCurrentResourceHandle = regs.esi;
         auto lpszTemplateName = addr_as_ref<LPCSTR>(regs.esp);
-        // Dialog resource customizations:
         // - 136: main window top bar (added tool buttons)
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_MAIN_FRAME_TOP_BAR)) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
@@ -144,18 +530,68 @@ CodeInjection CWnd_CreateDlg_injection{
     },
 };
 
+// CFormView::Create path — used for form view panels like the brush mode side panel
+// At 0x0052F08D: ESI = hModule, EBX = lpszTemplateName (MAKEINTRESOURCE)
+CodeInjection CFormView_Create_injection{
+    0x0052F08D,
+    [](auto& regs) {
+        auto& hCurrentResourceHandle = regs.esi;
+        auto lpszTemplateName = static_cast<LPCSTR>(reinterpret_cast<void*>(static_cast<uintptr_t>(regs.ebx)));
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MODE_PANEL)
+            || lpszTemplateName == MAKEINTRESOURCE(IDD_FACE_MODE_PANEL)
+            || lpszTemplateName == MAKEINTRESOURCE(IDD_VERTEX_MODE_PANEL)
+            || lpszTemplateName == MAKEINTRESOURCE(IDD_GROUP_MODE_PANEL)) {
+            hCurrentResourceHandle = reinterpret_cast<int>(g_module);
+        }
+    },
+};
+
+// Post-creation hook for CFormView panels. At 0x0052F0A9 (after CreateDlgIndirect),
+// EDI = CWnd*, EBX = template name. CWnd::m_hWnd is at CWnd+0x1C.
+// Subclasses group panel immediately after creation.
+static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static void subclass_group_panel_post_create(HWND hwnd);
+
+CodeInjection CFormView_PostCreate_injection{
+    0x0052F0A9,
+    [](auto& regs) {
+        auto lpszTemplateName = static_cast<LPCSTR>(reinterpret_cast<void*>(static_cast<uintptr_t>(regs.ebx)));
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_GROUP_MODE_PANEL)) {
+            HWND hwnd = *reinterpret_cast<HWND*>(
+                reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.edi)) + 0x1C);
+            if (hwnd) {
+                subclass_group_panel_post_create(hwnd);
+            }
+        }
+    },
+};
+
+// Forward declarations for Keyframe Properties dialog hook (defined after group panel code)
+static HHOOK g_kf_props_msg_hook = nullptr;
+static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lParam);
+
 CodeInjection CDialog_DoModal_injection{
     0x0052F461,
     [](auto& regs) {
         auto& hCurrentResourceHandle = regs.ebx;
         auto lpszTemplateName = addr_as_ref<LPCSTR>(regs.esp);
-        // Customize:
-        // - 148: trigger properties dialog
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_TRIGGER_PROPERTIES) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_LEVEL_PROPERTIES) ||
-            lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP)
+            lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_FACE_SPLIT) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_MIRROR) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_KEYFRAME_PROPERTIES)
         ) {
             hCurrentResourceHandle = reinterpret_cast<int>(g_module);
+        }
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES)) {
+            g_brush_props_msg_hook = SetWindowsHookExA(
+                WH_CALLWNDPROCRET, BrushPropsMsgHookProc, nullptr, GetCurrentThreadId());
+        }
+        if (lpszTemplateName == MAKEINTRESOURCE(IDD_KEYFRAME_PROPERTIES)) {
+            g_kf_props_msg_hook = SetWindowsHookExA(
+                WH_CALLWNDPROCRET, KfPropsMsgHookProc, nullptr, GetCurrentThreadId());
         }
     },
 };
@@ -222,18 +658,36 @@ void __fastcall brush_mode_handle_selection_new(void* self)
     g_skip_wnd_set_text = true;
     brush_mode_handle_selection_hook.call_target(self);
     g_skip_wnd_set_text = false;
-    // TODO: print
     LogDlg_Append(GetLogDlg(), "");
 
+    // Update Is Geoable checkbox and material combo in brush panel
+    HWND hdlg = WndToHandle(reinterpret_cast<CWnd*>(self));
+    if (hdlg && GetDlgItem(hdlg, IDC_IS_GEOABLE)) {
+        int state = compute_geoable_state_from_selected();
+        CheckDlgButton(hdlg, IDC_IS_GEOABLE, state);
+        init_material_combo(hdlg);
+        init_no_debris_checkbox(hdlg);
+        // Subclass panel for Is Geoable click handling (once per HWND)
+        if (hdlg != g_brush_panel_hwnd) {
+            if (g_brush_panel_hwnd && g_brush_panel_orig_wndproc) {
+                SetWindowLongPtrA(g_brush_panel_hwnd, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(g_brush_panel_orig_wndproc));
+            }
+            g_brush_panel_orig_wndproc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(hdlg, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(BrushPanelSubclassProc)));
+            g_brush_panel_hwnd = hdlg;
+        }
+    }
 }
 FunHook<brush_mode_handle_selection_type> brush_mode_handle_selection_hook{0x0043F430, brush_mode_handle_selection_new};
 
-void __fastcall DedLight_UpdateLevelLight(void *this_);
+void __fastcall DedLight_UpdateLevelLight_new(void *this_);
 FunHook DedLight_UpdateLevelLight_hook{
     0x00453200,
-    DedLight_UpdateLevelLight,
+    DedLight_UpdateLevelLight_new,
 };
-void __fastcall DedLight_UpdateLevelLight(void *this_)
+void __fastcall DedLight_UpdateLevelLight_new(void *this_)
 {
     auto& this_is_enabled = struct_field_ref<bool>(this_, 0xD5);
     auto& level_light = struct_field_ref<void*>(this_, 0xD8);
@@ -268,44 +722,21 @@ CodeInjection CCutscenePropertiesDialog_ct_crash_fix{
     },
 };
 
-struct CFrameWnd
-{
-    char padding[0xBC];
-};
-static_assert(sizeof(CFrameWnd) == 0xBC);
-
-struct CMainFrame : CFrameWnd
-{
-    void* views[4];
-    void* unk_view;
-    CDocument* doc;
-    VString field_D4;
-    char dialog_bar[0x88]; // CDialogBar
-    char status_bar[0x7C]; // CStatusBar
-    char splitter[0x26C]; // CDedSplitterWnd
-    float grid_size_available_values[12];
-    float rotate_by_available_vals[8];
-    int texture_grid_size_available_values[8];
-    int grid_size_index;
-    int rotate_by_index;
-    int texture_grid_size_index;
-    float camera_speed_allowed_values[6];
-    int camera_speed_index;
-    float grid_brightness;
-    int custom_colors[16];
-    int favorite_textures[8];
-    bool play_no_tnl;
-    char padding[3];
-    void* preferences_dlg;
-};
-static_assert(sizeof(CMainFrame) == 0x550);
-
 static auto RedrawEditorAfterModification = addr_as_ref<int __cdecl()>(0x00483560);
 
 void* GetLevelFromMainFrame(CWnd* main_frame)
 {
     auto* doc = struct_field_ref<void*>(main_frame, 0xD0);
     return &struct_field_ref<int>(doc, 0x60);
+}
+
+void CMainFrame_ToggleMaximizeViewport(CMainFrame* this_)
+{
+    if (g_maximized_viewport == -1) {
+        this_->MaximizeActiveViewport();
+    } else {
+        this_->RestoreAllViewports();
+    }
 }
 
 void CMainFrame_OpenHelp(CWnd* this_)
@@ -416,6 +847,418 @@ void CMainFrame_BackLink([[maybe_unused]] CWnd* this_)
     RedrawEditorAfterModification();
 }
 
+// Clip tool fix: replace buggy single-pass Cohen-Sutherland with proper slab intersection
+// ====================
+// Stock FUN_004c9af0 fails on diagonal clip lines because it only clips one endpoint
+// against one boundary per axis without iterating. This causes the clip tool to silently
+// skip brushes when the clip plane is sufficiently diagonal.
+
+static bool __cdecl line_aabb_intersect(
+    const Vector3* bbox_min, const Vector3* bbox_max,
+    const Vector3* p0, const Vector3* p1,
+    Vector3* intersection_out)
+{
+    // Slab (Liang-Barsky) line-AABB intersection
+    float dir[3] = {p1->x - p0->x, p1->y - p0->y, p1->z - p0->z};
+    const float* origin = &p0->x;
+    const float* bmin = &bbox_min->x;
+    const float* bmax = &bbox_max->x;
+
+    float t_enter = 0.0f;
+    float t_exit = 1.0f;
+
+    for (int i = 0; i < 3; i++) {
+        if (std::abs(dir[i]) < 1e-12f) {
+            // Line is parallel to this slab — check if origin is inside
+            if (origin[i] < bmin[i] || origin[i] > bmax[i])
+                return false;
+        }
+        else {
+            float inv_dir = 1.0f / dir[i];
+            float t0 = (bmin[i] - origin[i]) * inv_dir;
+            float t1 = (bmax[i] - origin[i]) * inv_dir;
+            if (t0 > t1) { float tmp = t0; t0 = t1; t1 = tmp; }
+            if (t0 > t_enter) t_enter = t0;
+            if (t1 < t_exit) t_exit = t1;
+            if (t_enter > t_exit)
+                return false;
+        }
+    }
+
+    // Clamp to line segment [0, 1]
+    if (t_enter > 1.0f || t_exit < 0.0f)
+        return false;
+
+    float t = (t_enter >= 0.0f) ? t_enter : 0.0f;
+    intersection_out->x = p0->x + dir[0] * t;
+    intersection_out->y = p0->y + dir[1] * t;
+    intersection_out->z = p0->z + dir[2] * t;
+    return true;
+}
+
+FunHook<bool __cdecl(const Vector3*, const Vector3*, const Vector3*, const Vector3*, Vector3*)>
+    line_aabb_intersect_hook{0x004c9af0, line_aabb_intersect};
+
+// Fix greyscale TGA files (image types 3 and 11) not loading.
+CodeInjection tga_greyscale_fix{
+    0x004F3B9E,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x2e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x36c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
+
+CodeInjection tga_greyscale_fix_mipmap{
+    0x004F40EE,
+    [](auto& regs) {
+        uint8_t image_type = regs.bl;
+        if (image_type != 3 && image_type != 11) {
+            return;
+        }
+        if (addr_as_ref<uint8_t>(regs.esp + 0x3e) != 8) {
+            return;
+        }
+        auto* palette = addr_as_ref<uint8_t*>(regs.esp + 0x37c);
+        if (palette) {
+            for (int i = 0; i < 256; ++i) {
+                palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] =
+                    static_cast<uint8_t>(i);
+            }
+        }
+        regs.bl = static_cast<int8_t>((image_type == 3) ? 2 : 10);
+    },
+};
+
+// Fix crashes when moving/rotating/undoing/applying properties to decal objects
+static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void* param);
+FunHook<decltype(object_rotation_update_new)> object_rotation_update_hook{
+    0x0044e9a0, object_rotation_update_new};
+static void __fastcall object_rotation_update_new(void* self, int /*edx*/, void* param)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping rotation update for object with null sub-object at +0xA4");
+        return;
+    }
+    object_rotation_update_hook.call_target(self, 0, param);
+}
+
+static void __fastcall decal_orient_update_new(void* self, int /*edx*/, int p1, int p2, int p3);
+FunHook<decltype(decal_orient_update_new)> decal_orient_update_hook{
+    0x0044e9f0, decal_orient_update_new};
+static void __fastcall decal_orient_update_new(void* self, int /*edx*/, int p1, int p2, int p3)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal orient update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_orient_update_hook.call_target(self, 0, p1, p2, p3);
+}
+
+static void __fastcall decal_angles_update_new(void* self, int /*edx*/, int p1);
+FunHook<decltype(decal_angles_update_new)> decal_angles_update_hook{
+    0x0044ea40, decal_angles_update_new};
+static void __fastcall decal_angles_update_new(void* self, int /*edx*/, int p1)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal angles update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_angles_update_hook.call_target(self, 0, p1);
+}
+
+static void __fastcall decal_geometry_update_new(void* self, int /*edx*/, int p1);
+FunHook<decltype(decal_geometry_update_new)> decal_geometry_update_hook{
+    0x0044ea90, decal_geometry_update_new};
+static void __fastcall decal_geometry_update_new(void* self, int /*edx*/, int p1)
+{
+    auto* sub_obj = *reinterpret_cast<void**>(static_cast<std::byte*>(self) + 0xA4);
+    if (!sub_obj) {
+        WARN_ONCE("Skipping decal geometry update for object with null sub-object at +0xA4");
+        return;
+    }
+    decal_geometry_update_hook.call_target(self, 0, p1);
+}
+
+static bool is_edit_key_held()
+{
+    return g_dinput_keys[DIK_R]
+        || g_dinput_keys[DIK_M]
+        || g_dinput_keys[DIK_S]
+        || g_dinput_keys[DIK_LSHIFT];
+}
+
+CodeInjection autosave_defer_during_edit_injection{
+    0x00483061,
+    [](auto& regs) {
+        if (is_edit_key_held()) {
+            regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
+        }
+        else {
+            xlog::info("Autosave saving");
+        }
+    },
+};
+
+// Face mode panel (dialog 178) subclass
+static WNDPROC g_face_panel_orig_wndproc = nullptr;
+static HWND g_face_panel_hwnd = nullptr;
+
+static LRESULT CALLBACK FacePanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND) {
+        WORD id = LOWORD(wParam);
+        if (id == IDC_FACE_DELETE) { handle_face_delete(); return 0; }
+        if (id == IDC_FACE_DELETE_EXT) { handle_face_delete_ext(); return 0; }
+        if (id == IDC_FACE_SPLIT) { handle_face_split(); return 0; }
+        if (id == IDC_FACE_FLIP_NORMAL) { handle_face_flip_normal(); return 0; }
+    }
+    return CallWindowProcA(g_face_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+// Subclass the face mode panel when it becomes active.
+// Called from CWnd_CreateDlg_injection when dialog 178 is created.
+static void subclass_face_panel(HWND hdlg)
+{
+    if (hdlg == g_face_panel_hwnd) return; // already subclassed
+    if (g_face_panel_hwnd && g_face_panel_orig_wndproc) {
+        SetWindowLongPtrA(g_face_panel_hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(g_face_panel_orig_wndproc));
+    }
+    g_face_panel_orig_wndproc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrA(hdlg, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(FacePanelSubclassProc)));
+    g_face_panel_hwnd = hdlg;
+}
+
+// Vertex mode panel subclass — handles Delete and Bridge button clicks.
+static WNDPROC g_vertex_panel_orig_wndproc = nullptr;
+static HWND g_vertex_panel_hwnd = nullptr;
+
+static LRESULT CALLBACK VertexPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND) {
+        WORD id = LOWORD(wParam);
+        if (id == IDC_VERTEX_DELETE) { handle_vertex_delete(); return 0; }
+        if (id == IDC_VERTEX_CAP) { handle_vertex_bridge(); return 0; }
+    }
+    return CallWindowProcA(g_vertex_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+static void subclass_vertex_panel(HWND hdlg)
+{
+    if (hdlg == g_vertex_panel_hwnd) return;
+    if (g_vertex_panel_hwnd && g_vertex_panel_orig_wndproc) {
+        SetWindowLongPtrA(g_vertex_panel_hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(g_vertex_panel_orig_wndproc));
+    }
+    g_vertex_panel_orig_wndproc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrA(hdlg, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(VertexPanelSubclassProc)));
+    g_vertex_panel_hwnd = hdlg;
+}
+
+// Group mode panel subclass — handles Mirror button click.
+static WNDPROC g_group_panel_orig_wndproc = nullptr;
+static HWND g_group_panel_hwnd = nullptr;
+
+static void subclass_group_panel(HWND hdlg)
+{
+    // Check if already subclassed (current WndProc is ours)
+    auto current = reinterpret_cast<WNDPROC>(GetWindowLongPtrA(hdlg, GWLP_WNDPROC));
+    if (current == GroupPanelSubclassProc) return;
+    g_group_panel_orig_wndproc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrA(hdlg, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(GroupPanelSubclassProc)));
+    g_group_panel_hwnd = hdlg;
+}
+
+// Called from CFormView_PostCreate_injection when dialog 231 is created
+static void subclass_group_panel_post_create(HWND hwnd)
+{
+    subclass_group_panel(hwnd);
+}
+
+static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND) {
+        WORD id = LOWORD(wParam);
+        if (id == IDC_GROUP_MIRROR) {
+            handle_group_mirror();
+            return 0;
+        }
+    }
+    return CallWindowProcA(g_group_panel_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+// Keyframe Properties dialog (280) — Alpine "Hold Open" checkbox integration
+// Uses the same WH_CALLWNDPROCRET + subclass pattern as the brush properties dialog.
+// g_kf_props_msg_hook is forward-declared before CDialog_DoModal_injection.
+static WNDPROC g_kf_props_orig_wndproc = nullptr;
+
+// Find the moving group being edited by matching CDedLevel::selection against group members.
+// When the keyframe properties dialog opens, the group's objects/keyframes are in the selection.
+static GroupEntry* find_moving_group_from_selection()
+{
+    auto* level = CDedLevel::Get();
+    if (!level)
+        return nullptr;
+
+    auto& sel = level->selection; // VArray<DedObject*> at +0x298
+    if (sel.size <= 0)
+        return nullptr;
+
+    DedObject* selected = sel[0];
+    if (!selected)
+        return nullptr;
+
+    // Match against moving groups: check if any group's objects or keyframes contain this DedObject
+    auto& mg = level->moving_groups;
+    for (int i = 0; i < mg.size; i++) {
+        auto* group = mg[i];
+        if (!group || !group->is_moving_group())
+            continue;
+
+        for (int j = 0; j < group->objects.size; j++) {
+            if (group->objects[j] == selected)
+                return group;
+        }
+
+        if (group->keyframes) {
+            for (int j = 0; j < group->keyframes->size; j++) {
+                if ((*group->keyframes)[j] == selected)
+                    return group;
+            }
+        }
+    }
+
+    return nullptr;
+}
+
+// Get the UID of the first keyframe in the moving group being edited.
+// Keyframe UIDs are stable between editor (DedObject::uid) and game (MoverKeyframe::uid).
+static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
+{
+    auto* group = find_moving_group_from_selection();
+    if (!group || !group->keyframes || group->keyframes->size <= 0)
+        return -1;
+
+    DedObject* first_kf = (*group->keyframes)[0];
+    return first_kf ? first_kf->uid : -1;
+}
+
+static LRESULT CALLBACK KfPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
+        // Read Hold Open checkbox state and update Alpine level properties
+        bool hold_open = (IsDlgButtonChecked(hwnd, IDC_KF_HOLD_OPEN) == BST_CHECKED);
+        int kf_uid = get_editing_group_first_keyframe_uid(hwnd);
+
+        if (kf_uid >= 0) {
+            auto* level = CDedLevel::Get();
+            if (level) {
+                auto& props = level->GetAlpineLevelProperties();
+                auto& uids = props.hold_open_keyframe_uids;
+                auto it = std::find(uids.begin(), uids.end(), static_cast<int32_t>(kf_uid));
+                if (hold_open && it == uids.end()) {
+                    uids.push_back(static_cast<int32_t>(kf_uid));
+                }
+                else if (!hold_open && it != uids.end()) {
+                    uids.erase(it);
+                }
+            }
+        }
+    }
+    if (msg == WM_NCDESTROY) {
+        SetWindowLongPtrA(hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(g_kf_props_orig_wndproc));
+        auto result = CallWindowProcA(g_kf_props_orig_wndproc, hwnd, msg, wParam, lParam);
+        g_kf_props_orig_wndproc = nullptr;
+        return result;
+    }
+    return CallWindowProcA(g_kf_props_orig_wndproc, hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lParam)
+{
+    if (nCode == HC_ACTION) {
+        auto* msg = reinterpret_cast<CWPRETSTRUCT*>(lParam);
+        if (msg->message == WM_INITDIALOG && GetDlgItem(msg->hwnd, IDC_KF_HOLD_OPEN)) {
+            // Set checkbox state from Alpine level properties
+            int kf_uid = get_editing_group_first_keyframe_uid(msg->hwnd);
+            bool hold_open = false;
+
+            if (kf_uid >= 0) {
+                auto* level = CDedLevel::Get();
+                if (level) {
+                    auto& props = level->GetAlpineLevelProperties();
+                    auto& uids = props.hold_open_keyframe_uids;
+                    hold_open = std::find(uids.begin(), uids.end(),
+                                          static_cast<int32_t>(kf_uid)) != uids.end();
+                }
+            }
+
+            CheckDlgButton(msg->hwnd, IDC_KF_HOLD_OPEN,
+                           hold_open ? BST_CHECKED : BST_UNCHECKED);
+
+            // Subclass to intercept OK
+            g_kf_props_orig_wndproc = reinterpret_cast<WNDPROC>(
+                SetWindowLongPtrA(msg->hwnd, GWLP_WNDPROC,
+                                  reinterpret_cast<LONG_PTR>(KfPropsSubclassProc)));
+            UnhookWindowsHookEx(g_kf_props_msg_hook);
+            g_kf_props_msg_hook = nullptr;
+        }
+    }
+    return CallNextHookEx(g_kf_props_msg_hook, nCode, wParam, lParam);
+}
+
+// Inject after the CALL to CDedLevel::SetEditMode in the mode combobox handler
+// (FUN_004496d0 at 0x004496f9). When face/vertex/group mode is entered, find and subclass
+// the panel CFormView to handle our custom button clicks.
+
+struct FindPanelsCtx { HWND face_panel; HWND vertex_panel; HWND group_panel; };
+
+static BOOL CALLBACK EnumChildFindPanelsProc(HWND hwnd, LPARAM lParam)
+{
+    auto* c = reinterpret_cast<FindPanelsCtx*>(lParam);
+    int id = GetDlgCtrlID(hwnd);
+    if (id == IDC_FACE_DELETE) c->face_panel = GetParent(hwnd);
+    if (id == IDC_VERTEX_DELETE) c->vertex_panel = GetParent(hwnd);
+    if (id == IDC_GROUP_MIRROR) c->group_panel = GetParent(hwnd);
+    return (c->face_panel && c->vertex_panel && c->group_panel) ? FALSE : TRUE;
+}
+
+CodeInjection face_panel_subclass_injection{
+    0x004496f9,
+    [](BaseCodeInjection::Regs& regs) {
+        HWND main_hwnd = *reinterpret_cast<HWND*>(
+            reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.esi)) + 0x1C);
+        if (!main_hwnd) return;
+        FindPanelsCtx ctx{nullptr, nullptr, nullptr};
+        EnumChildWindows(main_hwnd, EnumChildFindPanelsProc, reinterpret_cast<LPARAM>(&ctx));
+        if (ctx.face_panel) subclass_face_panel(ctx.face_panel);
+        if (ctx.vertex_panel) subclass_vertex_panel(ctx.vertex_panel);
+        if (ctx.group_panel) subclass_group_panel(ctx.group_panel);
+    },
+    true, // needs_trampoline
+};
+
+
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
 {
     constexpr int CN_COMMAND = 0;
@@ -441,6 +1284,18 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_HIDE_SELECTED:
                 handler = std::bind(CMainFrame_HideSelected, this_);
                 break;
+            case ID_SELECT_OBJECTS:
+                handler = [this_]() {
+                    auto* level = reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_));
+                    if (level) alpine_select_objects(level);
+                };
+                break;
+            case ID_HIDE_OBJECTS:
+                handler = [this_]() {
+                    auto* level = reinterpret_cast<CDedLevel*>(GetLevelFromMainFrame(this_));
+                    if (level) alpine_hide_objects(level);
+                };
+                break;
             case ID_SELECT_OBJECT_BY_UID:
                 handler = std::bind(CMainFrame_SelectObjectByUid, this_);
                 break;
@@ -455,6 +1310,42 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case ID_BACK_LINK:
                 handler = std::bind(CMainFrame_BackLink, this_);
+                break;
+            case IDC_FACE_DELETE:
+                handler = handle_face_delete;
+                break;
+            case IDC_FACE_DELETE_EXT:
+                handler = handle_face_delete_ext;
+                break;
+            case IDC_FACE_SPLIT:
+                handler = handle_face_split;
+                break;
+            case IDC_FACE_FLIP_NORMAL:
+                handler = handle_face_flip_normal;
+                break;
+            case IDC_BRUSH_MIRROR:
+                handler = handle_brush_mirror;
+                break;
+            case IDC_BRUSH_CONVERT:
+                handler = handle_brush_convert;
+                break;
+            case IDC_VERTEX_DELETE:
+                handler = handle_vertex_delete;
+                break;
+            case IDC_VERTEX_CAP:
+                handler = handle_vertex_bridge;
+                break;
+            case IDC_GROUP_MIRROR:
+                handler = handle_group_mirror;
+                break;
+            case ID_RELOAD_MESHES:
+                handler = reload_custom_meshes;
+                break;
+            case ID_RELOAD_TEXTURES:
+                handler = reload_custom_textures;
+                break;
+            case ID_TOGGLE_MAXIMIZE_VIEWPORT:
+                handler = std::bind(CMainFrame_ToggleMaximizeViewport, reinterpret_cast<CMainFrame*>(this_));
                 break;
         }
 
@@ -554,6 +1445,97 @@ CodeInjection CDedLevel_CloneObject_injection{
             // clone cutscene path node
             regs.eax = AddrCaller{0x00413C70}.this_call<void*>(that, obj);
             regs.eip = 0x004135CF;
+        }
+        else if (type == static_cast<int>(DedObjectType::DED_MESH)) {
+            // Safety net: if CloneObject is called for mesh (shouldn't normally happen
+            // since mesh_paste_skip_stock handles it), create clone WITHOUT adding to
+            // mesh_objects to avoid double-cloning.
+            auto* source = static_cast<DedMesh*>(reinterpret_cast<DedObject*>(obj));
+            xlog::info("[Mesh] CloneObject called (safety): source={:p} uid={} type=0x{:x}",
+                static_cast<void*>(source), source->uid, type);
+            auto* clone = CloneMeshObject(source, false);
+            regs.eax = reinterpret_cast<uintptr_t>(static_cast<DedObject*>(clone));
+            regs.eip = 0x004135CF;
+        }
+    },
+};
+
+// Copy geoable and breakable material alpine properties from old_uid to new_uid.
+// Used when a brush is duplicated or pasted with a new UID.
+static void copy_alpine_brush_props(int old_uid, int new_uid)
+{
+    auto* level = CDedLevel::Get();
+    if (!level) return;
+    auto& props = level->GetAlpineLevelProperties();
+
+    // Copy geoable property
+    if (std::find(props.geoable_brush_uids.begin(),
+                  props.geoable_brush_uids.end(), old_uid)
+        != props.geoable_brush_uids.end()) {
+        props.geoable_brush_uids.push_back(new_uid);
+    }
+
+    // Copy breakable material property
+    auto bit = std::find(props.breakable_brush_uids.begin(),
+                         props.breakable_brush_uids.end(), old_uid);
+    if (bit != props.breakable_brush_uids.end()) {
+        auto idx = std::distance(props.breakable_brush_uids.begin(), bit);
+        props.breakable_brush_uids.push_back(new_uid);
+        props.breakable_room_uids.push_back(0); // filled at save time
+        props.breakable_materials.push_back(props.breakable_materials[idx]);
+    }
+}
+
+// Hook in BrushList_clone_selected (0x00412c27) at 0x00412c91, right after the new UID
+// is stored in the clone. EDI = source BrushNode*, ESI = cloned BrushNode* (with new UID).
+CodeInjection brush_clone_copy_alpine_props_injection{
+    0x00412c91,
+    [](auto& regs) {
+        auto* source = reinterpret_cast<BrushNode*>(static_cast<void*>(regs.edi));
+        auto* clone  = reinterpret_cast<BrushNode*>(static_cast<void*>(regs.esi));
+        copy_alpine_brush_props(source->uid, clone->uid);
+    },
+};
+
+// Hook BrushNode_clone_from (0x0044d620) to propagate source UID through copy/paste.
+// BrushNode_clone_from copies is_detail, life, state etc. but intentionally does NOT copy uid.
+// In the copy-to-clipboard path (caller 0x0041301f): we store the source brush's uid in the
+// clipboard clone so it carries the original identity.
+// In the paste-from-clipboard path (caller 0x0041325c): we capture the clipboard clone's uid
+// (set during copy) so we can copy alpine properties after the new uid is assigned.
+static int g_paste_source_uid = -1;
+
+CodeInjection brush_clone_from_alpine_hook{
+    0x0044d620,
+    [](auto& regs) {
+        auto* stack = reinterpret_cast<uint32_t*>(static_cast<uintptr_t>(regs.esp));
+        uint32_t ret_addr = stack[0];
+        auto* source = reinterpret_cast<BrushNode*>(stack[1]);
+        auto* clone = reinterpret_cast<BrushNode*>(static_cast<void*>(regs.ecx));
+
+        if (ret_addr == 0x0041301f) {
+            // Copy to clipboard: store source uid in clipboard clone.
+            // This runs BEFORE clone_from executes. clone_from won't touch uid, so our
+            // write persists. The clipboard clone will carry the original brush's uid.
+            clone->uid = source->uid;
+        }
+        else if (ret_addr == 0x0041325c) {
+            // Paste from clipboard: source is the clipboard clone (uid set above).
+            // Save it so the post-insert hook can copy alpine properties.
+            g_paste_source_uid = source->uid;
+        }
+    },
+};
+
+// After FUN_00414650 inserts the pasted brush and assigns a new UID (0x00413266).
+// ESI = paste clone with its new UID. Copy alpine properties from the original source.
+CodeInjection brush_paste_apply_alpine_props{
+    0x00413266,
+    [](auto& regs) {
+        if (g_paste_source_uid > 0) {
+            auto* paste_clone = reinterpret_cast<BrushNode*>(static_cast<void*>(regs.esi));
+            copy_alpine_brush_props(g_paste_source_uid, paste_clone->uid);
+            g_paste_source_uid = -1;
         }
     },
 };
@@ -766,6 +1748,8 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Replace some editor resources
     CWnd_CreateDlg_injection.install();
+    CFormView_Create_injection.install();
+    CFormView_PostCreate_injection.install();
     CDialog_DoModal_injection.install();
     write_mem_ptr(0x0055456C, &LoadMenuA_new);
     write_mem_ptr(0x005544FC, &LoadIconA_new);
@@ -782,6 +1766,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyTriggerPatches();
     ApplyLevelPatches();
     ApplyEventsPatches();
+    ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
 
@@ -841,7 +1826,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     write_mem<int>(0x0044770D + 1, max_size); // 1 cx
     write_mem<int>(0x0044771D + 1, max_size); // 1 cy
     write_mem<int>(0x00447750 + 1, -max_size); // 2 add cx
-    write_mem<int>(0x004477E1 + 1, -max_size); // 4 add cx crash
+    write_mem<int>(0x004477E1 + 2, -max_size); // 4 add cx
     write_mem<int>(0x00447797 + 1, max_size); // 3 cx
     write_mem<int>(0x00447761 + 1, max_size); // 3 cy
     write_mem<int>(0x004477A0 + 2, -max_size); // 3 lea
@@ -857,6 +1842,11 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Fix copying cutscene path node
     CDedLevel_CloneObject_injection.install();
+
+    // Copy geoable/breakable properties when duplicating or pasting brushes
+    brush_clone_copy_alpine_props_injection.install();
+    brush_clone_from_alpine_hook.install();
+    brush_paste_apply_alpine_props.install();
 
     // Fix copying bool2 field in events
     CDedEvent_Copy_injection.install();
@@ -886,6 +1876,25 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
 
     // Disable red background if geometry limits are crossed
     AsmWriter{0x0043A528, 0x0043A546}.nop();
+
+    // Fix greyscale TGA files not loading (types 3 and 11)
+    tga_greyscale_fix.install();
+    tga_greyscale_fix_mipmap.install();
+
+    // Fix clip tool sometimes doing nothing on diagonal clip lines
+    line_aabb_intersect_hook.install();
+
+    // Fix crash when accessing decal objects with null sub-object pointer at +0xA4
+    object_rotation_update_hook.install();
+    decal_orient_update_hook.install();
+    decal_angles_update_hook.install();
+    decal_geometry_update_hook.install();
+
+    // Defer autosave while an edit operation is in progress to prevent teleporting
+    autosave_defer_during_edit_injection.install();
+
+    // Subclass face mode panel for Delete/Delete Ext./Split button handling
+    face_panel_subclass_injection.install();
 
     return 1; // success
 }

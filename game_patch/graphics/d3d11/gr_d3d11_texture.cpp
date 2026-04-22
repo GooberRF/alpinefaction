@@ -4,11 +4,33 @@
 #include "gr_d3d11_texture.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
+#include "../../misc/alpine_settings.h"
+// Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
+#include <patch_common/MemUtils.h>
+namespace rf::gr::d3d {
+    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
+}
 
 using namespace rf;
 
 namespace df::gr::d3d11
 {
+    static int next_power_of_2(int v)
+    {
+        v--;
+        v |= v >> 1;
+        v |= v >> 2;
+        v |= v >> 4;
+        v |= v >> 8;
+        v |= v >> 16;
+        return v + 1;
+    }
+
+    static bool is_block_compressed_format(bm::Format fmt)
+    {
+        return fmt == bm::FORMAT_DXT1 || fmt == bm::FORMAT_DXT3 || fmt == bm::FORMAT_DXT5;
+    }
+
     TextureManager::TextureManager(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> device_context) :
         device_{std::move(device)}, device_context_{std::move(device_context)}
     {
@@ -18,8 +40,12 @@ namespace df::gr::d3d11
         black_texture_view_ = create_solid_color_texture(0.0f, 0.0f, 0.0f, 1.0f);
     }
 
-    TextureManager::Texture TextureManager::create_texture(int bm_handle, bm::Format fmt, int w, int h, ubyte* bits, ubyte* pal, int mip_levels, bool staging)
+    TextureManager::Texture TextureManager::create_texture(int bm_handle, bm::Format fmt, int w, int h, ubyte* bits, ubyte* pal, int mip_levels, bool staging, int src_w, int src_h)
     {
+        // src_w/src_h are the original bitmap dimensions before pow2 padding
+        // When no padding, they equal w and h (or are 0 to indicate no padding)
+        bool needs_padding = (src_w > 0 && src_h > 0) && (src_w != w || src_h != h);
+
         auto [dxgi_format, supported_fmt] = get_supported_texture_format(fmt);
         CD3D11_TEXTURE2D_DESC desc{
             dxgi_format,
@@ -33,31 +59,65 @@ namespace df::gr::d3d11
         };
 
         std::vector<std::unique_ptr<ubyte[]>> converted_bits_vec;
+        std::vector<std::unique_ptr<ubyte[]>> padded_bits_vec;
         std::vector<D3D11_SUBRESOURCE_DATA> subres_data_vec;
         if (bits) {
+            // Track both source (bitmap) and destination (texture) dimensions per mip level
+            int cur_src_w = needs_padding ? src_w : w;
+            int cur_src_h = needs_padding ? src_h : h;
+            int cur_dst_w = w;
+            int cur_dst_h = h;
+
             for (int i = 0; i < mip_levels; ++i) {
-                int pitch = bm_calculate_pitch(w, fmt);
-                auto rows = bm_calculate_rows(h, fmt);
+                int src_pitch = bm_calculate_pitch(cur_src_w, fmt);
+                auto src_rows = bm_calculate_rows(cur_src_h, fmt);
                 subres_data_vec.emplace_back();
                 D3D11_SUBRESOURCE_DATA& subres_data = subres_data_vec.back();
+
+                ubyte* src_bits = bits;
+                bm::Format src_fmt = fmt;
+
                 if (supported_fmt != fmt) {
                     xlog::trace("Converting texture {} -> {}", fmt, supported_fmt);
-                    int converted_pitch = bm_calculate_pitch(w, supported_fmt);
-                    converted_bits_vec.push_back(std::make_unique<ubyte[]>(converted_pitch * h));
+                    int converted_pitch = bm_calculate_pitch(cur_src_w, supported_fmt);
+                    converted_bits_vec.push_back(std::make_unique<ubyte[]>(converted_pitch * cur_src_h));
                     ubyte* converted_bits = converted_bits_vec.back().get();
-                    ::bm_convert_format(converted_bits, supported_fmt, bits, fmt, w, h,
-                        converted_pitch, pitch, pal);
-                    subres_data.pSysMem = converted_bits;
-                    subres_data.SysMemPitch = converted_pitch;
+                    ::bm_convert_format(converted_bits, supported_fmt, bits, fmt, cur_src_w, cur_src_h,
+                        converted_pitch, src_pitch, pal);
+                    src_bits = converted_bits;
+                    src_pitch = converted_pitch;
+                    src_fmt = supported_fmt;
                 }
                 else {
                     xlog::trace("Creating texture without conversion: format {}", fmt);
-                    subres_data.pSysMem = bits;
-                    subres_data.SysMemPitch = pitch;
                 }
-                bits += pitch * rows;
-                w /= 2;
-                h /= 2;
+
+                if (needs_padding) {
+                    // Create a zero-filled buffer at the padded dimensions and copy source rows into it
+                    int dst_pitch = bm_calculate_pitch(cur_dst_w, src_fmt);
+                    int dst_rows = bm_calculate_rows(cur_dst_h, src_fmt);
+                    padded_bits_vec.push_back(std::make_unique<ubyte[]>(dst_pitch * dst_rows));
+                    ubyte* padded = padded_bits_vec.back().get();
+                    std::memset(padded, 0, dst_pitch * dst_rows);
+
+                    int copy_rows = std::min(src_rows, dst_rows);
+                    int copy_bytes_per_row = std::min(src_pitch, dst_pitch);
+                    for (int row = 0; row < copy_rows; ++row) {
+                        std::memcpy(padded + row * dst_pitch, src_bits + row * src_pitch, copy_bytes_per_row);
+                    }
+                    subres_data.pSysMem = padded;
+                    subres_data.SysMemPitch = dst_pitch;
+                }
+                else {
+                    subres_data.pSysMem = src_bits;
+                    subres_data.SysMemPitch = src_pitch;
+                }
+
+                bits += bm_calculate_pitch(cur_src_w, fmt) * bm_calculate_rows(cur_src_h, fmt);
+                cur_src_w = std::max(1, cur_src_w / 2);
+                cur_src_h = std::max(1, cur_src_h / 2);
+                cur_dst_w = std::max(1, cur_dst_w / 2);
+                cur_dst_h = std::max(1, cur_dst_h / 2);
             }
         }
         else {
@@ -79,6 +139,72 @@ namespace df::gr::d3d11
             texture.gpu_texture = d3d_texture;
             return texture;
         }
+    }
+
+    TextureManager::Texture TextureManager::create_texture_auto_mips(int bm_handle, bm::Format fmt, int w, int h, ubyte* bits, ubyte* pal)
+    {
+        // Use the same narrower-format selection as the stock path (e.g. B5G6R5 for
+        // 565 sources) so 16bpp content stays 16bpp in VRAM. Then probe whether the
+        // chosen DXGI format supports RENDER_TARGET + MIP_AUTOGEN — both are required
+        // for GenerateMips. If the narrower format lacks that combination on this
+        // driver, fall back to 8888 so we still get the mip chain.
+        auto [dxgi_format, supported_fmt] = get_supported_texture_format(fmt);
+        UINT format_support = 0;
+        device_->CheckFormatSupport(dxgi_format, &format_support);
+        constexpr UINT required_support =
+            D3D11_FORMAT_SUPPORT_RENDER_TARGET | D3D11_FORMAT_SUPPORT_MIP_AUTOGEN;
+        if ((format_support & required_support) != required_support) {
+            bool has_alpha = dxgi_format == DXGI_FORMAT_B5G5R5A1_UNORM
+                || dxgi_format == DXGI_FORMAT_B4G4R4A4_UNORM
+                || dxgi_format == DXGI_FORMAT_B8G8R8A8_UNORM;
+            dxgi_format = has_alpha ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_B8G8R8X8_UNORM;
+            supported_fmt = bm::FORMAT_8888_ARGB;
+        }
+
+        CD3D11_TEXTURE2D_DESC desc{
+            dxgi_format,
+            static_cast<UINT>(w),
+            static_cast<UINT>(h),
+            1, // arraySize
+            0, // mipLevels = full chain
+            D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET,
+            D3D11_USAGE_DEFAULT,
+            0,
+        };
+        desc.MiscFlags = D3D11_RESOURCE_MISC_GENERATE_MIPS;
+
+        ComPtr<ID3D11Texture2D> d3d_texture;
+        HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &d3d_texture);
+        if (FAILED(hr)) {
+            xlog::warn("Auto-mip texture creation failed ({}x{}), falling back to single mip", w, h);
+            return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
+        }
+
+        std::unique_ptr<ubyte[]> converted_bits;
+        ubyte* upload_bits = bits;
+        int upload_pitch = bm_calculate_pitch(w, fmt);
+        if (fmt != supported_fmt) {
+            int dst_pitch = bm_calculate_pitch(w, supported_fmt);
+            converted_bits = std::make_unique<ubyte[]>(dst_pitch * h);
+            ::bm_convert_format(converted_bits.get(), supported_fmt, bits, fmt, w, h, dst_pitch, upload_pitch, pal);
+            upload_bits = converted_bits.get();
+            upload_pitch = dst_pitch;
+        }
+
+        device_context_->UpdateSubresource(d3d_texture, 0, nullptr, upload_bits, upload_pitch, 0);
+
+        ComPtr<ID3D11ShaderResourceView> srv;
+        hr = device_->CreateShaderResourceView(d3d_texture, nullptr, &srv);
+        if (FAILED(hr)) {
+            xlog::warn("Auto-mip SRV creation failed ({}x{}), falling back to single mip", w, h);
+            return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
+        }
+        device_context_->GenerateMips(srv);
+
+        Texture texture{bm_handle, dxgi_format, {}};
+        texture.gpu_texture = std::move(d3d_texture);
+        texture.shader_resource_view = std::move(srv);
+        return texture;
     }
 
     TextureManager::Texture TextureManager::create_render_target(int bm_handle, int w, int h)
@@ -167,8 +293,43 @@ namespace df::gr::d3d11
             return {};
         }
 
-        xlog::trace("Creating normal texture: handle {}", bm_handle);
-        auto texture = create_texture(bm_handle, fmt, w, h, bm_bits, bm_pal, mip_levels, staging);
+        // Pow2 texture padding when p2t is active
+        int tex_w = w;
+        int tex_h = h;
+        float u_scale = 1.0f;
+        float v_scale = 1.0f;
+
+        if (rf::gr::d3d::p2t != 0 && !is_block_compressed_format(fmt)) {
+            int pow2_w = next_power_of_2(w);
+            int pow2_h = next_power_of_2(h);
+            if (pow2_w != w || pow2_h != h) {
+                u_scale = static_cast<float>(w) / static_cast<float>(pow2_w);
+                v_scale = static_cast<float>(h) / static_cast<float>(pow2_h);
+                tex_w = pow2_w;
+                tex_h = pow2_h;
+                xlog::trace("Pow2 padding texture {} {}x{} -> {}x{} (u_scale={}, v_scale={})",
+                    bm::get_filename(bm_handle), w, h, pow2_w, pow2_h, u_scale, v_scale);
+            }
+        }
+
+        // When r_picmip > 1, auto-generate a full mip chain for every eligible texture so
+        // the geometry sampler's MinLOD clamp has lower mips to sample from. Sprites/UI are
+        // unaffected because they're drawn with a separate sampler that forces mip 0.
+        // Skip: pow2-padded (zero-bleed), BC-compressed (can't be render target), tiny dims,
+        // staging use, and textures that already have a mip chain.
+        bool auto_mips = g_alpine_game_config.picmip > 1
+            && !staging
+            && mip_levels == 1
+            && u_scale == 1.0f && v_scale == 1.0f
+            && !is_block_compressed_format(fmt)
+            && std::min(tex_w, tex_h) >= 4;
+
+        xlog::trace("Creating normal texture: handle {} auto_mips {}", bm_handle, auto_mips);
+        auto texture = auto_mips
+            ? create_texture_auto_mips(bm_handle, fmt, tex_w, tex_h, bm_bits, bm_pal)
+            : create_texture(bm_handle, fmt, tex_w, tex_h, bm_bits, bm_pal, mip_levels, staging, w, h);
+        texture.u_scale = u_scale;
+        texture.v_scale = v_scale;
 
         xlog::trace("Unlocking bitmap");
         bm::unlock(bm_handle);
@@ -215,6 +376,34 @@ namespace df::gr::d3d11
                     continue;
                 }
                 ++it;
+            }
+        }
+    }
+
+    void TextureManager::flush_non_user_cache()
+    {
+        // Used by the r_picmip transition flush to force non-USER textures to re-upload
+        // with (or without) auto-generated mip chains. Two classes of entries are kept:
+        //   1. TYPE_USER bitmaps (font glyph atlases, HUD overlays, other dynamically-
+        //      written textures) — their pixel data is written INTO the D3D11 texture
+        //      by external code via gr::lock; destroying the texture would leave the
+        //      next lookup with an empty SRV and the writer has no way to know it must
+        //      re-upload.
+        //   2. Entries with ref_count > 0 — the engine holds a logical ref via
+        //      gr_d3d_texture_add_ref. Erasing would desync refcount bookkeeping: a
+        //      later remove_ref against a freshly re-loaded entry (ref_count=0) would
+        //      underflow. Those textures keep their current mip state until released
+        //      and re-added, at which point the new picmip setting takes effect.
+        auto it = texture_cache_.begin();
+        while (it != texture_cache_.end()) {
+            const Texture& texture = it->second;
+            bool is_user = texture.bm_handle >= 0
+                && rf::bm::get_type(texture.bm_handle) == rf::bm::TYPE_USER;
+            if (is_user || texture.ref_count > 0) {
+                ++it;
+            }
+            else {
+                it = texture_cache_.erase(it);
             }
         }
     }

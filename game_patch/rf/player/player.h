@@ -18,6 +18,7 @@
 
 constexpr float BOT_LEVEL_START_WAIT_TIME_SEC = 5.f;
 constexpr float BOT_OPPONENT_DEATH_WAIT_TIME_SEC = 5.f;
+constexpr float BOT_SPECTATE_WAIT_TIME_SEC = 5.f;
 
 struct PlayerNetGameSaveData {
     rf::Vector3 pos{};
@@ -39,11 +40,13 @@ struct ClientVersionInfoProfile {
     uint8_t patch = 0;
     uint8_t type = 0;
     uint32_t max_rfl_ver = 200;
+    bool is_d3d11 = false;
 };
 
 struct PlayerAdditionalData {
     // Shared variables.
     bool is_bot = false;
+    uint8_t bot_skill = 100;
     bool is_spawn_disabled = false;
     bool is_browser = false;
     bool is_spectator = false;
@@ -54,11 +57,13 @@ struct PlayerAdditionalData {
     bool is_muted = false;
 
     // Server-side variables.
+    bool in_grace_period = true;
     ClientVersionInfoProfile version_info{};
-    std::optional<std::chrono::high_resolution_clock::time_point> death_time{};
+    std::optional<std::chrono::steady_clock::time_point> death_time{};
+    std::optional<std::chrono::steady_clock::time_point> spectate_start_time{};
 
-    std::optional<int> last_hit_sound_ms{};
-    std::optional<int> last_critical_sound_ms{};
+    std::optional<int64_t> last_hit_sound_ms{};
+    std::optional<int64_t> last_critical_sound_ms{};
 
     struct {
         std::map<std::string, PlayerNetGameSaveData> saves{};
@@ -82,6 +87,10 @@ struct PlayerAdditionalData {
     // `std::nullptr` represents freelook spectate mode.
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
+
+    // Server side rail gun reload cooldown, used for force_rail_reload
+    // needed because entity_is_reloading is unreliable on server
+    rf::Timestamp rail_gun_reload_timer{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif
@@ -283,6 +292,8 @@ namespace rf
     static auto& player_render = addr_as_ref<void(Player*)>(0x004A2B30);
     static auto& player_render_held_corpse = addr_as_ref<void(Player* player)>(0x004A2B90);
     static auto& player_do_frame = addr_as_ref<void(Player*)>(0x004A2700);
+    static auto& player_execute_action = addr_as_ref<void(Player*, ControlConfigAction, bool)>(0x004A6210);
+    static auto& player_fire_primary_weapon = addr_as_ref<void(Player*, bool, bool)>(0x004A4E80);
     static auto& player_kill_self = addr_as_ref<void(Player*)>(0x004A4DD0);
     static auto& player_make_weapon_current_selection = addr_as_ref<void(Player *player, int weapon_type)>(0x004A4980);
     static auto& player_default_weapon = addr_as_ref<String>(0x007C7600);

@@ -97,6 +97,46 @@ rf::NetGameType upcoming_game_type;
 UpcomingGameTypeSelection g_upcoming_game_type_selection = UpcomingGameTypeSelection::Rotation;
 static std::optional<rf::NetGameType> g_previous_level_game_type;
 
+BotProfileSlotTracker g_bot_profile_slots;
+
+int BotProfileSlotTracker::assign_slot(const rf::Player* player, int num_profiles)
+{
+    if (num_profiles <= 0) return -1;
+
+    std::vector<int> counts(num_profiles, 0);
+    for (const auto& [_, slot] : assignments) {
+        if (slot >= 0 && slot < num_profiles) {
+            counts[slot]++;
+        }
+    }
+
+    int best_slot = 0;
+    for (int i = 1; i < num_profiles; ++i) {
+        if (counts[i] < counts[best_slot]) {
+            best_slot = i;
+        }
+    }
+
+    assignments[player] = best_slot;
+    return best_slot;
+}
+
+void BotProfileSlotTracker::release_slot(const rf::Player* player)
+{
+    assignments.erase(player);
+}
+
+int BotProfileSlotTracker::get_slot(const rf::Player* player) const
+{
+    auto it = assignments.find(player);
+    return it != assignments.end() ? it->second : -1;
+}
+
+void BotProfileSlotTracker::clear()
+{
+    assignments.clear();
+}
+
 const rf::NetGameType get_upcoming_game_type()
 {
     return upcoming_game_type;
@@ -252,26 +292,20 @@ CodeInjection entity_reload_current_primary_patch{
     },
 };
 
-int get_level_file_version(const std::string& file_name)
-{
-    auto level_file = std::make_unique<rf::File>();
-
-    if (level_file->open(file_name.c_str(), rf::File::mode_read) != 0) {
+std::expected<uint32_t, std::errc> get_level_file_version(const std::string& file_name) {
+    rf::File level_file{};
+    if (level_file.open(file_name.c_str(), rf::File::mode_read) != 0) {
         xlog::debug("Could not open {}", file_name);
-        return -1; // error
+        return std::unexpected(std::errc::io_error);
     }
 
     // Seek directly to offset 4
-    if (level_file->seek(4, rf::File::seek_set) != 0) {
+    if (level_file.seek(4, rf::File::seek_set) != 0) {
         xlog::debug("Failed to seek in {}", file_name);
-        level_file->close();
-        return -1;
+        return std::unexpected(std::errc::invalid_seek);
     }
 
-    uint32_t version = level_file->read<uint32_t>(0, 0);
-
-    level_file->close();
-    return static_cast<int>(version);
+    return level_file.read<uint32_t>(0, 0);
 }
 
 std::string build_player_info_line(rf::Player* player, bool new_join) {
@@ -412,7 +446,7 @@ void handle_next_map_command(rf::Player* player)
 {
     int next_idx = (rf::netgame.current_level_index + 1) % rf::netgame.levels.size();
     rf::String next_level_filename = rf::netgame.levels[next_idx];
-    int version = get_level_file_version(next_level_filename);
+    const uint32_t version = get_level_file_version(next_level_filename).value_or(0);
     auto msg = std::format("Next level: {} (version {})", next_level_filename, version);
     af_send_automated_chat_msg(msg, player);
 }
@@ -633,7 +667,7 @@ CodeInjection multi_limbo_leave_pre_patch{
     0x0047C497,
     [](auto& regs) {
         if (rf::is_server) {
-            const int ver = get_level_file_version(rf::level_filename_to_load);
+            const uint32_t ver = get_level_file_version(rf::level_filename_to_load).value_or(0);
             std::vector<rf::Player*> to_kick;
 
             auto plist = SinglyLinkedList{rf::player_list};
@@ -860,6 +894,8 @@ static std::string describe_alpine_restrict_verdict(const std::pair<AlpineRestri
         return verdict.second.empty() ? "requires an official AF release" : std::format("requires release build ({})", verdict.second);
     case AlpineRestrictVerdict::need_update:
         return verdict.second.empty() ? "needs a newer AF build" : std::format("needs update ({})", verdict.second);
+    case AlpineRestrictVerdict::need_d3d11:
+        return verdict.second.empty() ? "requires D3D11 renderer" : std::format("requires D3D11 ({})", verdict.second);
     }
 
     return "unknown status";
@@ -872,7 +908,8 @@ static void print_alpine_restrict_status_summary()
     const bool reject_non_alpine = cfg.reject_non_alpine_clients || hard_reject;
     const bool require_alpine = cfg.clients_require_alpine || auto_require_alpine;
     const bool enforce_release = cfg.alpine_require_release_build || auto_require_release;
-    const auto level_version = get_level_file_version(rf::level.filename.c_str());
+    const bool require_d3d11 = require_alpine && cfg.require_d3d11;
+    const auto level_version = get_level_file_version(rf::level.filename.c_str()).value_or(0);
     const auto game_type = rf::multi_get_game_type();
 
     rf::console::print("Alpine restriction summary:");
@@ -883,7 +920,9 @@ static void print_alpine_restrict_status_summary()
     rf::console::print("  Server config requires Alpine: {}", cfg.clients_require_alpine ? "yes" : "no");
     rf::console::print("  Non-Alpine clients rejected: {}", reject_non_alpine ? "yes" : "no");
     rf::console::print("  Require stable AF build: {}", enforce_release ? "yes" : "no");
+    rf::console::print("  Require D3D11: {}", require_d3d11 ? "yes" : "no");
 
+    const uint32_t alpine_v130_max_rfl = 304u;
     const uint32_t alpine_v122_max_rfl = 303u;
     const uint32_t alpine_v120_max_rfl = 302u;
     const uint32_t alpine_v110_max_rfl = 301u;
@@ -895,6 +934,8 @@ static void print_alpine_restrict_status_summary()
     };
 
     rf::console::print("Common test cases:");
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D11)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl, true}));
+    rf::console::print("{}", describe_client("Alpine Faction 1.3.0 (D3D8)", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 3u, 0u, VERSION_TYPE_RELEASE, alpine_v130_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.2", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 2u, VERSION_TYPE_RELEASE, alpine_v122_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_RELEASE, alpine_v120_max_rfl}));
     rf::console::print("{}", describe_client("Alpine Faction 1.2.0-dev", ClientVersionInfoProfile{ClientSoftware::AlpineFaction, 1u, 2u, 0u, VERSION_TYPE_DEV, alpine_v120_max_rfl}));
@@ -997,7 +1038,16 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
     auto [cmd_name, cmd_arg] = strip_by_space(server_command);
 
     if (cmd_name == "info") {
-        af_send_automated_chat_msg(std::format("Server powered by Alpine Faction {} ({}), build date: {} {}", VERSION_STR, VERSION_CODE, __DATE__, __TIME__), sender);
+        af_send_automated_chat_msg(
+            std::format(
+                "This server is powered by Alpine Faction {} ({}) - {} {}",
+                VERSION_STR,
+                VERSION_CODE,
+                get_build_date(),
+                get_build_time()
+            ),
+            sender
+        );
     }
     else if (cmd_name == "vote") {
         auto [vote_name, vote_arg] = strip_by_space(cmd_arg);
@@ -1085,17 +1135,21 @@ void send_sound_packet_throwaway(rf::Player* target, int sound_id)
     rf::multi_io_send(target, &packet, sizeof(packet));
 }
 
-void send_sound_packet(rf::Player* target, std::optional<int>& last_sent_time, int rate_limit, int sound_id)
-{
+void send_sound_packet(
+    rf::Player* const target,
+    std::optional<int64_t>& last_sent_time,
+    const int rate_limit,
+    const int sound_id
+) {
     // Rate limiting - max `rate_limit` times per second
-    int now = rf::timer_get(1000);
+    const int64_t now = timer::get_i64(1000);
     if (last_sent_time && now - *last_sent_time < 1000 / rate_limit) {
         return;
     }
     last_sent_time.emplace(now);
 
     // Send sound packet
-    RF_SoundPacket packet;
+    RF_SoundPacket packet{};
     packet.header.type = RF_GPT_SOUND;
     packet.header.size = sizeof(packet) - sizeof(packet.header);
     packet.sound_id = sound_id;
@@ -1168,10 +1222,17 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
+        float life_before = damaged_ep->life;
+        float armor_before = damaged_ep->armor;
+        int damaged_ep_handle = damaged_ep->handle;
+
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
 
+        // Re-fetch pointer: entity may have been destroyed during damage processing, making the original pointer dangling
+        damaged_ep = rf::entity_from_handle(damaged_ep_handle);
+
         // should entity gib?
-        if (damaged_ep) { // damaged_ep can sometimes be invalid at this point
+        if (damaged_ep) {
             if (!rf::is_multi) { // SP gibbing
                 if (damaged_ep->life < -100.0f &&               // very dead
                     damage_type == 3 &&                         // explosive
@@ -1198,16 +1259,27 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
-        // damaged_ep may be invalid at this point. If so, assume dead to avoid a rare crash from checking life
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
+
+        // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
+        float effective_damage = real_damage;
+        if (real_damage > 0.0f) {
+            if (damaged_ep) {
+                float health_removed = life_before - std::max(damaged_ep->life, 0.0f);
+                float armor_removed = armor_before - std::max(damaged_ep->armor, 0.0f);
+                effective_damage = std::max(health_removed + armor_removed * 2.0f, 0.0f);
+            } else {
+                effective_damage = std::min(real_damage, std::max(life_before, 0.0f) + std::max(armor_before, 0.0f) * 2.0f);
+            }
+        }
 
         if (rf::is_server && is_pvp_damage && real_damage > 0.0f) {
 
             auto* killer_player_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
-            killer_player_stats->add_damage_given(real_damage);
+            killer_player_stats->add_damage_given(effective_damage);
 
             auto* damaged_player_stats = static_cast<PlayerStatsNew*>(damaged_player->stats);
-            damaged_player_stats->add_damage_received(real_damage);
+            damaged_player_stats->add_damage_received(effective_damage);
 
             if (g_alpine_server_config.damage_notification_config.enabled && damaged_player && killer_player) {
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {
@@ -1217,7 +1289,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                         //xlog::warn("sending damage notify to {}, is dead? {}", killer_player->name, is_dead);
                         af_send_damage_notify_packet(
                             damaged_player->net_data->player_id,
-                            real_damage,
+                            effective_damage,
                             is_dead,
                             killer_player);
                     }
@@ -1236,7 +1308,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                             if (is_player_minimum_af_client_version(&player, 1, 1, 0)) {
                                 af_send_damage_notify_packet(
                                     damaged_player->net_data->player_id,
-                                    real_damage,
+                                    effective_damage,
                                     is_dead,
                                     &player);
                             }
@@ -1363,12 +1435,27 @@ CodeInjection send_ping_time_wrap_fix{
             xlog::trace("sending ping");
             io_stats.send_ping_packet_timestamp.set(3000);
             rf::multi_ping_player(player);
-            io_stats.last_ping_time = rf::timer_get(1000);
+            io_stats.last_ping_time = rf::timer::get(1000);
 
             // check if player is idle
             player_idle_check(player);
         }
         regs.eip = 0x0047CD64;
+    },
+};
+
+CodeInjection ping_response_time_wrap_fix{
+    0x0047CB83,
+    [] (auto& regs) {
+        const rf::MultiIoStats& io_stats = addr_as_ref<rf::MultiIoStats>(regs.esi);
+        // HACKFIX.  May be valid, but treat as sentinel.
+        if (io_stats.last_ping_time == -1) {
+            // Reset.
+            regs.eip = 0x0047CB8D;
+        } else {
+            // Calculate ping.
+            regs.eip = 0x0047CBA9;
+        }
     },
 };
 
@@ -1743,120 +1830,6 @@ std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_inp
     return {is_valid, level_name};
 }
 
-static void bot_decommission(
-    const int active_bots,
-    const int desired_active_bots,
-    std::vector<rf::Player*>& active_candidates,
-    std::vector<rf::Player*>& disabled_candidates
-) {
-    if (active_bots < desired_active_bots) {
-        int need = desired_active_bots - active_bots;
-
-        std::ranges::sort(
-            disabled_candidates,
-            [] (const rf::Player* player_1, const rf::Player* player_2) {
-                return player_1->stats->score > player_2->stats->score;
-            }
-        );
-
-        for (rf::Player* player : disabled_candidates) {
-            if (need <= 0) {
-                break;
-            }
-            player->is_spawn_disabled = false;
-            --need;
-        }
-    } else if (active_bots > desired_active_bots) {
-        int excess = active_bots - desired_active_bots;
-
-        std::ranges::sort(
-            active_candidates,
-            [] (const rf::Player* player_1, const rf::Player* player_2) {
-                return player_1->stats->score < player_2->stats->score;
-            }
-        );
-
-        for (rf::Player* player : active_candidates) {
-            if (excess <= 0) {
-                break;
-            }
-            player->is_spawn_disabled = true;
-            --excess;
-        }
-    }
-}
-
-void bot_decommission_check() {
-    const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
-    if (!rf::is_server
-        || rf::gameseq_get_state() == rf::GS_MULTI_LIMBO
-        // Bots are disabled in `multi_level_init_hook`.
-        || rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC
-        || cfg_rules.ideal_player_count >= 32) {
-        return;
-    }
-
-    constexpr int MAX_TEAMS = 2;
-
-    static std::array<std::vector<rf::Player*>, MAX_TEAMS> active_candidates{};
-    static std::array<std::vector<rf::Player*>, MAX_TEAMS> disabled_candidates{};
-    for (int i = 0; i < MAX_TEAMS; ++i) {
-        active_candidates[i].clear();
-        disabled_candidates[i].clear();
-    }
-
-    std::array<int, MAX_TEAMS> active_persons_per_team{0, 0};
-
-    const bool is_team_mode = multi_is_team_game_type();
-    const auto now = std::chrono::high_resolution_clock::now();
-    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (player.is_browser) {
-            continue;
-        }
-
-        const int team = is_team_mode ? player.team : rf::TEAM_RED;
-        if (team < 0 || team >= MAX_TEAMS) {
-            continue;
-        }
-
-        if (player.is_bot) {
-            if (player.is_spawn_disabled) {
-                disabled_candidates[team].push_back(&player);
-            } else {
-                active_candidates[team].push_back(&player);
-            }
-        } else {
-            const bool is_spawned = !rf::player_is_dead(&player)
-                && !rf::player_is_dying(&player);
-            const bool was_just_unspawned = player.death_time
-                && now - *player.death_time
-                    < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
-
-            if (is_spawned || was_just_unspawned) {
-                ++active_persons_per_team[team];
-            }
-        }
-    }
-
-    const int ideal_per_team = is_team_mode
-        ? cfg_rules.ideal_player_count / MAX_TEAMS
-        : cfg_rules.ideal_player_count;
-    const int num_teams = is_team_mode ? MAX_TEAMS : 1;
-    for (int i = 0; i < num_teams; ++i) {
-        const int active_bots = static_cast<int>(active_candidates[i].size());
-        const int desired_active_bots = std::max(
-            0,
-            ideal_per_team - active_persons_per_team[i]
-        );
-        bot_decommission(
-            active_bots,
-            desired_active_bots,
-            active_candidates[i],
-            disabled_candidates[i]
-        );
-    }
-}
-
 void update_player_active_status(rf::Player* const player) {
     if (rf::is_dedicated_server && g_alpine_server_config.inactivity_config.enabled) {
         player->idle.kick_timer.invalidate();
@@ -1867,34 +1840,35 @@ void update_player_active_status(rf::Player* const player) {
 }
 
 void player_idle_check(rf::Player* const player) {
-    const auto& inactivity_cfg = g_alpine_server_config.inactivity_config;
+    const InactivityConfig& inactivity_cfg = g_alpine_server_config.inactivity_config;
     if (!inactivity_cfg.enabled) {
         return;
-    }
-
-    if (player->idle.kick_timer.valid()) {
+    } else if (player->idle.kick_timer.valid()) {
         if (inactivity_cfg.kick_after_warning && player->idle.kick_timer.elapsed()) {
             kick_player_delayed(player);
         }
-        return; // don't continue if a kick is already pending
-    }
-
-    if (rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
-        return; // don't mark players as idle unless we're in gameplay
-    }
-
-    if (player->version_info.software == ClientSoftware::Browser
+        // don't continue if a kick is already pending
+        return;
+    } else if (rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
+        // don't mark players as idle unless we're in gameplay
+        return;
+    } else if (player->version_info.software == ClientSoftware::Browser
         || player->is_bot) {
         return; // don't mark browsers or bots as idle
+    } else if (g_match_info.match_active || g_match_info.pre_match_active) {
+        // don't mark players as idle during a match or pre-match
+        return;
     }
 
-    if (g_match_info.match_active || g_match_info.pre_match_active) {
-        return; // don't mark players as idle during a match or pre-match
-    }
-
-    if (player->net_data->join_time_ms
-        > (rf::timer_get_milliseconds() - inactivity_cfg.new_player_grace_ms)) {
-        return; // don't mark new players as idle
+    // Use unsigned delta to handle timer wrap correctly (~25 days)
+    const uint32_t time_since_join = static_cast<uint32_t>(rf::timer::get(1000))
+        - static_cast<uint32_t>(player->net_data->join_time_ms);
+    if (player->in_grace_period
+        && time_since_join < inactivity_cfg.new_player_grace_ms) {
+        // don't mark new players as idle
+        return;
+    } else if (player->in_grace_period) {
+        player->in_grace_period = false;
     }
 
     if (player_is_idle(player)) {
@@ -1970,9 +1944,11 @@ std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_st
     }
 
     if (check_level_version) {
-        int level_version = get_level_file_version(rf::level.filename.c_str());
+        const uint32_t level_version =
+            get_level_file_version(rf::level.filename.c_str()).value_or(0);
 
-        if (level_version > info.max_rfl_ver && info.software != ClientSoftware::Browser) {
+        if (level_version > info.max_rfl_ver
+            && info.software != ClientSoftware::Browser) {
             std::string client_name = "";
             switch (info.software) {
                 case ClientSoftware::AlpineFaction:
@@ -1995,6 +1971,11 @@ std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_st
                 std::format("{} max RFL ver {}, {} is {}", client_name, info.max_rfl_ver, rf::level.filename.c_str(), level_version),
                 reject_non_alpine};
         }
+    }
+
+    if (cfg.require_d3d11 && !info.is_d3d11
+        && info.software != ClientSoftware::Browser) {
+        return {AlpineRestrictVerdict::need_d3d11, "D3D11 renderer required", false};
     }
 
     return {AlpineRestrictVerdict::ok, {}, reject_non_alpine};
@@ -2053,6 +2034,9 @@ bool check_can_player_spawn(rf::Player* player)
         return false;
     case AlpineRestrictVerdict::need_update:
         af_send_automated_chat_msg("This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com", player);
+        return false;
+    case AlpineRestrictVerdict::need_d3d11:
+        af_send_automated_chat_msg("This server requires the Direct3D 11 renderer. Enable it in the Alpine Faction launcher settings panel.", player);
         return false;
     }
     return false;
@@ -2206,8 +2190,200 @@ FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     },
 };
 
+struct DefaultBotIdentity {
+    const char* name;
+    const char* character;
+};
+
+static constexpr DefaultBotIdentity k_default_bot_identities[] = {
+    {"Parker",      "scientist_parker"},
+    {"Riot Guard",  "riot_guard"},
+    {"Hendrix",     "hendrix"},
+    {"Gryphon",     "gryphon"},
+    {"Davis",       "fat_admin"},
+    {"Masako",      "masako"},
+    {"Nurse",       "nurse"},
+    {"Eos",         "eos"},
+    {"Merc",        "merc_grunt"},
+    {"Elite",       "elite"},
+    {"Enviro Guard","env_guard"},
+    {"Scientist",   "scientist"},
+    {"Franklin",    "medic1"},
+};
+
+// Pick a random default identity not already used by another bot on the server.
+// If all identities are in use, allow duplicates.
+static const DefaultBotIdentity& pick_unused_default_identity()
+{
+    constexpr int num_identities = static_cast<int>(std::size(k_default_bot_identities));
+
+    // Collect names currently in use by bots
+    std::vector<std::string> used_names;
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (p.is_bot) {
+            used_names.emplace_back(p.name.c_str());
+        }
+    }
+
+    // Build list of unused identity indices
+    std::vector<int> available;
+    for (int i = 0; i < num_identities; ++i) {
+        bool in_use = false;
+        for (const auto& name : used_names) {
+            if (name == k_default_bot_identities[i].name) {
+                in_use = true;
+                break;
+            }
+        }
+        if (!in_use) {
+            available.push_back(i);
+        }
+    }
+
+    // If all are in use, pick from the full set
+    if (available.empty()) {
+        std::uniform_int_distribution<int> dist(0, num_identities - 1);
+        return k_default_bot_identities[dist(g_rng)];
+    }
+
+    std::uniform_int_distribution<int> dist(0, static_cast<int>(available.size()) - 1);
+    return k_default_bot_identities[available[dist(g_rng)]];
+}
+
+static void resolve_bot_identity(const ServerBotConfig& config, std::string& out_name, int32_t& out_character)
+{
+    // If both name and character are specified in the profile, use them directly
+    if (!config.player_name.empty() && !config.mp_character.empty()) {
+        out_name = config.player_name;
+        int idx = rf::multi_find_character(config.mp_character.c_str());
+        if (idx >= 0) {
+            out_character = idx;
+        }
+        else {
+            xlog::warn("Bot mp_character '{}' not found, using default", config.mp_character);
+            out_character = 0;
+        }
+        return;
+    }
+
+    // If neither is specified, pick a paired default identity
+    if (config.player_name.empty() && config.mp_character.empty()) {
+        const auto& identity = pick_unused_default_identity();
+        out_name = identity.name;
+        int idx = rf::multi_find_character(identity.character);
+        out_character = (idx >= 0) ? idx : 0;
+        return;
+    }
+
+    // One is specified, the other needs resolving
+    if (!config.player_name.empty()) {
+        out_name = config.player_name;
+    }
+    else {
+        const auto& identity = pick_unused_default_identity();
+        out_name = identity.name;
+    }
+
+    if (!config.mp_character.empty()) {
+        int idx = rf::multi_find_character(config.mp_character.c_str());
+        if (idx >= 0) {
+            out_character = idx;
+        }
+        else {
+            xlog::warn("Bot mp_character '{}' not found, randomizing", config.mp_character);
+            out_character = 0;
+        }
+    }
+    else {
+        if (rf::num_multi_characters > 0) {
+            std::uniform_int_distribution<int> dist(0, rf::num_multi_characters - 1);
+            out_character = dist(g_rng);
+        }
+        else {
+            out_character = 0;
+        }
+    }
+}
+
+static void broadcast_name_change(rf::Player* player)
+{
+    // Broadcast a stock name_change packet so all other clients see the updated name.
+    uint8_t buf[256];
+    size_t offset = 0;
+
+    RF_GamePacketHeader header{};
+    header.type = RF_GPT_NAME_CHANGE;
+    const char* name = player->name.c_str();
+    const size_t name_len = std::strlen(name);
+    const size_t max_name_len = sizeof(buf) - sizeof(header) - 1 - 1; // player_id + null
+    if (name_len > max_name_len) {
+        xlog::warn("broadcast_name_change: name too long ({} bytes), truncating", name_len);
+    }
+    const size_t safe_name_len = std::min(name_len, max_name_len);
+    header.size = static_cast<uint16_t>(1 + safe_name_len + 1); // player_id + name + null
+    std::memcpy(buf + offset, &header, sizeof(header));
+    offset += sizeof(header);
+
+    buf[offset++] = player->net_data->player_id;
+    std::memcpy(buf + offset, name, safe_name_len);
+    offset += safe_name_len;
+    buf[offset++] = '\0';
+
+    rf::multi_io_send_reliable_to_all(buf, static_cast<int>(offset), 0);
+}
+
+static void send_bot_config_with_identity(rf::Player* player, const ServerBotConfig& config, int slot)
+{
+    std::string resolved_name;
+    int32_t resolved_character = 0;
+    resolve_bot_identity(config, resolved_name, resolved_character);
+
+    // Apply on the server's player struct
+    player->name = resolved_name.c_str();
+    player->settings.multi_character = resolved_character;
+
+    // Broadcast the name change to all other clients
+    broadcast_name_change(player);
+
+    // Send config (personality → skill → identity → go_active)
+    af_send_bot_config(player, config, resolved_name, resolved_character);
+
+    rf::console::print("  Sent bot profile '{}' (slot {}, skill '{}') to {} (character={})\n",
+        config.personality_preset, slot, config.skill_preset, player->name, resolved_character);
+}
+
 void server_reliable_socket_ready(rf::Player* player)
 {
+    // Send bot config once the reliable connection is ready.
+    if (player->is_bot) {
+        // Refuse to give a profile if there are already enough bots for the ideal player count
+        const int ideal = g_alpine_server_config_active_rules.ideal_player_count;
+        int bot_count = 0;
+        for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (p.is_bot && &p != player) {
+                ++bot_count;
+            }
+        }
+        if (bot_count >= ideal) {
+            rf::console::print("Bot initialization was rejected because bot count already meets ideal player count of {}\n", ideal);
+            af_send_bot_control_simple(player, af_bot_control_type::disconnect_bot);
+            return;
+        }
+
+        const auto& configs = g_alpine_server_config.bot_configs;
+        if (!configs.empty()) {
+            const int slot = g_bot_profile_slots.assign_slot(player, static_cast<int>(configs.size()));
+            if (slot >= 0) {
+                send_bot_config_with_identity(player, configs[slot], slot);
+            }
+        }
+        else {
+            // No bot profiles configured - send default config (balanced/average).
+            ServerBotConfig default_cfg;
+            send_bot_config_with_identity(player, default_cfg, -1);
+        }
+    }
+
     // welcome players, restricting to only welcoming alpine clients if configured
     if (g_alpine_server_config_active_rules.welcome_message.enabled) {
         if (!g_alpine_server_config.alpine_restricted_config.only_welcome_alpine || player->version_info.software == ClientSoftware::AlpineFaction) {
@@ -2257,16 +2433,165 @@ CodeInjection multi_level_init_injection{
     },
 };
 
+static int pick_weaker_team()
+{
+    int red_count = 0, blue_count = 0;
+    int red_bots = 0, blue_bots = 0;
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.is_spectator) {
+            continue;
+        }
+        if (player.team == rf::TEAM_RED) {
+            ++red_count;
+            if (player.is_bot) ++red_bots;
+        }
+        else if (player.team == rf::TEAM_BLUE) {
+            ++blue_count;
+            if (player.is_bot) ++blue_bots;
+        }
+    }
+
+    // Fewer players
+    if (red_count != blue_count) {
+        return (red_count < blue_count) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+
+    // Lower team score
+    int red_score = 0, blue_score = 0;
+    switch (rf::multi_get_game_type()) {
+    case rf::NG_TYPE_CTF:
+        red_score = rf::multi_ctf_get_red_team_score();
+        blue_score = rf::multi_ctf_get_blue_team_score();
+        break;
+    case rf::NG_TYPE_TEAMDM:
+        red_score = rf::multi_tdm_get_red_team_score();
+        blue_score = rf::multi_tdm_get_blue_team_score();
+        break;
+    case rf::NG_TYPE_DC:
+    case rf::NG_TYPE_KOTH:
+        red_score = multi_koth_get_red_team_score();
+        blue_score = multi_koth_get_blue_team_score();
+        break;
+    default:
+        break;
+    }
+    if (red_score != blue_score) {
+        return (red_score < blue_score) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+
+    // More bots (disadvantaged)
+    if (red_bots != blue_bots) {
+        return (red_bots > blue_bots) ? rf::TEAM_RED : rf::TEAM_BLUE;
+    }
+    
+    // Fully tied — random
+    return std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+}
+
+FunHook<int()> pick_team_for_new_player_hook{
+    0x004827E0,
+    []() {
+        if (!multi_is_team_game_type()) {
+            return static_cast<int>(rf::TEAM_RED);
+        }
+        return pick_weaker_team();
+    },
+};
+
+static void assign_player_to_team(rf::Player* player, rf::ubyte new_team)
+{
+    if (player->team == new_team) {
+        return;
+    }
+
+    player->team = new_team;
+
+    if (player->net_data) {
+        rf::multi_send_team_change_packet(nullptr, player->net_data->player_id, new_team);
+    }
+
+}
+
+static void balance_teams()
+{
+    std::vector<rf::Player*> humans;
+    std::vector<rf::Player*> bots;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser || player.is_spectator) {
+            continue;
+        }
+        if (player.is_bot) {
+            bots.push_back(&player);
+        }
+        else {
+            humans.push_back(&player);
+        }
+    }
+
+    // Sort humans by score descending and interleave across teams, randomizing
+    // which team gets first pick to avoid systematic bias toward one team
+    std::sort(humans.begin(), humans.end(), [](const rf::Player* a, const rf::Player* b) {
+        return a->stats->score > b->stats->score;
+    });
+
+    rf::ubyte first_team = std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+    rf::ubyte second_team = (first_team == rf::TEAM_RED) ? rf::TEAM_BLUE : rf::TEAM_RED;
+
+    for (size_t i = 0; i < humans.size(); ++i) {
+        rf::ubyte team = (i % 2 == 0) ? first_team : second_team;
+        assign_player_to_team(humans[i], team);
+    }
+
+    // Count humans per team to distribute bots for even total team sizes
+    int red_count = 0;
+    int blue_count = 0;
+    for (const auto* p : humans) {
+        if (p->team == rf::TEAM_RED) {
+            ++red_count;
+        }
+        else {
+            ++blue_count;
+        }
+    }
+
+    // Sort bots by score descending for fairer distribution
+    std::sort(bots.begin(), bots.end(), [](const rf::Player* a, const rf::Player* b) {
+        return a->stats->score > b->stats->score;
+    });
+
+    // Assign each bot to whichever team currently has fewer players,
+    // randomizing the tie-break to avoid systematic bias
+    for (auto* bot : bots) {
+        rf::ubyte new_team;
+        if (red_count < blue_count) {
+            new_team = rf::TEAM_RED;
+        }
+        else if (blue_count < red_count) {
+            new_team = rf::TEAM_BLUE;
+        }
+        else {
+            new_team = std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
+        }
+        assign_player_to_team(bot, new_team);
+        if (new_team == rf::TEAM_RED) {
+            ++red_count;
+        }
+        else {
+            ++blue_count;
+        }
+    }
+}
+
 CodeInjection multi_balance_teams_injection{
     0x0048215D,
     [](auto& regs) {
         const rf::NetGameType current_game_type = rf::multi_get_game_type();
-        if (should_balance_teams(current_game_type)) {
-            regs.eip = 0x00482170; // balance teams
+        if (should_balance_teams(current_game_type)
+            && !g_match_info.pre_match_active && !g_match_info.match_active) {
+            balance_teams();
         }
-        else {
-            regs.eip = 0x004823ED; // end function, no balancing
-        }
+        regs.eip = 0x004823ED; // always skip stock balance code
     },
 };
 
@@ -2716,13 +3041,8 @@ std::optional<int> is_closer_to_red_flag(const rf::Vector3* pos)
         return std::nullopt;
     }
 
-    float dist_to_red_sq =  std::pow(pos->x - red_flag_pos.x, 2) +
-                            std::pow(pos->y - red_flag_pos.y, 2) +
-                            std::pow(pos->z - red_flag_pos.z, 2);
-
-    float dist_to_blue_sq = std::pow(pos->x - blue_flag_pos.x, 2) +
-                            std::pow(pos->y - blue_flag_pos.y, 2) +
-                            std::pow(pos->z - blue_flag_pos.z, 2);
+    const float dist_to_red_sq = (*pos - red_flag_pos).len_sq();
+    const float dist_to_blue_sq = (*pos - blue_flag_pos).len_sq();
 
     return dist_to_red_sq < dist_to_blue_sq ? 1 : 0;
 }
@@ -2822,8 +3142,17 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
             }
         }
 
-        return item_create_hook.call_target(
+        rf::Item* item = item_create_hook.call_target(
             type, name, count, parent_handle, pos, orient, respawn_time, permanent, from_packet);
+
+        if (item && item->respawn_time_ms > 0 &&
+            (rf::is_server || rf::is_dedicated_server) &&
+            g_alpine_server_config_active_rules.delayed_items.contains(name)) {
+            rf::obj_hide(item);
+            item->respawn_next.set(item->respawn_time_ms);
+        }
+
+        return item;
     }
 };
 
@@ -3084,8 +3413,14 @@ void server_init()
     // Fix sending ping packets after time in ms wraps around (~25 days)
     send_ping_time_wrap_fix.install();
 
+    // Fix receiving ping responses after time in ms wraps around (~25 days)
+    ping_response_time_wrap_fix.install();
+
     // Ignore obj_update position for some time after teleportation
     process_obj_update_set_pos_injection.install();
+
+    // Exclude spectators and browsers from team selection when a new player joins
+    pick_team_for_new_player_hook.install();
 
     // Customized dedicated server console message when player joins
     multi_on_new_player_injection.install();
@@ -3131,12 +3466,144 @@ void server_init()
     checkmaps_cmd.register_cmd();
 }
 
+static void bot_decommission(
+    const int active_bots,
+    const int desired_active_bots,
+    std::vector<rf::Player*>& active_candidates,
+    std::vector<rf::Player*>& disabled_candidates
+) {
+    if (active_bots < desired_active_bots) {
+        int need = desired_active_bots - active_bots;
+
+        std::ranges::sort(
+            disabled_candidates,
+            [] (const rf::Player* player_1, const rf::Player* player_2) {
+                return player_1->stats->score > player_2->stats->score;
+            }
+        );
+
+        for (rf::Player* player : disabled_candidates) {
+            if (need <= 0) {
+                break;
+            }
+            player->is_spawn_disabled = false;
+            --need;
+        }
+    } else if (active_bots > desired_active_bots) {
+        int excess = active_bots - desired_active_bots;
+
+        std::ranges::sort(
+            active_candidates,
+            [] (const rf::Player* player_1, const rf::Player* player_2) {
+                return player_1->stats->score < player_2->stats->score;
+            }
+        );
+
+        for (rf::Player* player : active_candidates) {
+            if (excess <= 0) {
+                break;
+            }
+            player->is_spawn_disabled = true;
+            --excess;
+        }
+    }
+}
+
+static void bot_decommission_check() {
+    const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
+    if (!rf::is_server
+        || rf::gameseq_get_state() == rf::GS_MULTI_LIMBO
+        || rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC) {
+        return;
+    }
+
+    // When ideal_player_count >= 32, decommissioning is disabled — just enable all disabled bots.
+    // This is needed because multi_level_init sets is_spawn_disabled = true for all bots on map change.
+    if (cfg_rules.ideal_player_count >= 32) {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            if (player.is_bot && player.is_spawn_disabled) {
+                player.is_spawn_disabled = false;
+            }
+        }
+        return;
+    }
+
+    constexpr int MAX_TEAMS = 2;
+
+    static std::array<std::vector<rf::Player*>, MAX_TEAMS> active_candidates{};
+    static std::array<std::vector<rf::Player*>, MAX_TEAMS> disabled_candidates{};
+    for (int i = 0; i < MAX_TEAMS; ++i) {
+        active_candidates[i].clear();
+        disabled_candidates[i].clear();
+    }
+
+    std::array<int, MAX_TEAMS> active_persons_per_team{0, 0};
+
+    const bool is_team_mode = multi_is_team_game_type();
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser) {
+            continue;
+        }
+
+        const int team = is_team_mode ? player.team : rf::TEAM_RED;
+        if (team < 0 || team >= MAX_TEAMS) {
+            continue;
+        }
+
+        if (player.is_bot) {
+            if (player.is_spawn_disabled) {
+                disabled_candidates[team].push_back(&player);
+            } else {
+                active_candidates[team].push_back(&player);
+            }
+        } else if (player.is_spectator) {
+            const auto now = std::chrono::steady_clock::now();
+            const bool just_entered_spectate = player.spectate_start_time
+                && now - *player.spectate_start_time
+                    < std::chrono::duration<float>(BOT_SPECTATE_WAIT_TIME_SEC);
+
+            if (just_entered_spectate) {
+                ++active_persons_per_team[team];
+            }
+        } else {
+            const bool is_spawned = !rf::player_is_dead(&player)
+                && !rf::player_is_dying(&player);
+            const auto now = std::chrono::steady_clock::now();
+            const bool was_just_unspawned = player.death_time
+                && now - *player.death_time
+                    < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
+
+            if (is_spawned || was_just_unspawned) {
+                ++active_persons_per_team[team];
+            }
+        }
+    }
+
+    const int ideal_per_team = is_team_mode
+        ? cfg_rules.ideal_player_count / MAX_TEAMS
+        : cfg_rules.ideal_player_count;
+    const int num_teams = is_team_mode ? MAX_TEAMS : 1;
+    for (int i = 0; i < num_teams; ++i) {
+        const int active_bots = static_cast<int>(active_candidates[i].size());
+        const int desired_active_bots = std::max(
+            0,
+            ideal_per_team - active_persons_per_team[i]
+        );
+        bot_decommission(
+            active_bots,
+            desired_active_bots,
+            active_candidates[i],
+            disabled_candidates[i]
+        );
+    }
+}
+
 void server_do_frame()
 {
+    bot_decommission_check();
     server_vote_do_frame();
     match_do_frame();
     process_delayed_kicks();
-    bot_decommission_check();
 }
 
 void server_on_limbo_state_enter()
@@ -3147,7 +3614,7 @@ void server_on_limbo_state_enter()
 
     auto player_list = SinglyLinkedList{rf::player_list};
 
-    const int ver = get_level_file_version(rf::level_filename_to_load);
+    const uint32_t ver = get_level_file_version(rf::level_filename_to_load).value_or(0);
 
     apply_game_type_for_current_level();
     koth_force_broadcast_all_hill_states();
@@ -3166,10 +3633,9 @@ void server_on_limbo_state_enter()
         if (&player != rf::local_player) {
             if (ver > player.version_info.max_rfl_ver && player.version_info.software != ClientSoftware::Browser) {
                 notify_for_upcoming_level_version_incompatible(&player);
-            }
-            else if (get_upcoming_game_type() != rf::netgame.type &&
-                !(player.version_info.software == ClientSoftware::AlpineFaction && player.version_info.minor >= 2) &&
-                player.version_info.software != ClientSoftware::Browser) {
+            } else if (get_upcoming_game_type() != rf::netgame.type
+                && !(player.version_info.software == ClientSoftware::AlpineFaction && player.version_info.minor >= 2U)
+                && player.version_info.software != ClientSoftware::Browser) {
                 // only notify them if they CAN load the map, otherwise they can't play anyway so no point
                 notify_for_client_incompatible_with_switching_game_type(&player);
             }
@@ -3233,9 +3699,34 @@ bool server_allow_unlimited_fps()
     return g_alpine_server_config.allow_unlimited_fps;
 }
 
+bool server_allow_outlines()
+{
+    return g_alpine_server_config.allow_outlines;
+}
+
+bool server_allow_outlines_xray()
+{
+    return g_alpine_server_config.allow_outlines_xray;
+}
+
 bool server_gaussian_spread()
 {
     return g_alpine_server_config.gaussian_spread;
+}
+
+bool server_geo_chunk_physics()
+{
+    return g_alpine_server_config_active_rules.geo_chunk_physics;
+}
+
+bool server_clear_stale_movement_input()
+{
+    return g_alpine_server_config_active_rules.clear_stale_movement_input;
+}
+
+bool server_allow_footsteps()
+{
+    return g_alpine_server_config.allow_footsteps;
 }
 
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
@@ -3270,6 +3761,22 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 2);
+    }
+
+    if (!g_alpine_server_config_active_rules.geo_chunk_physics) {
+        requires_alpine = true;
+        hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 3);
+    }
+
+    if (g_alpine_server_config_active_rules.clear_stale_movement_input) {
+        requires_alpine = true;
+        min_minor_version = std::max(min_minor_version, 3);
+    }
+
+    if (g_alpine_server_config.alpine_restricted_config.require_d3d11) {
+        requires_alpine = true;
+        min_minor_version = std::max(min_minor_version, 3);
     }
 
     return {requires_alpine, min_minor_version, hard_reject, require_release_version};

@@ -25,3 +25,9 @@ CMakeSettings.json
 
 # Experimental code
 /game_patch/experimental
+
+# MCP configuration file (local)
+.mcp.json
+
+# Claude IDE integration settings
+/.claude

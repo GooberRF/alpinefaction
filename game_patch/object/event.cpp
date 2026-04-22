@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <format>
 #include "../misc/misc.h"
+#include "../misc/alpine_settings.h"
 #include "../rf/file/file.h"
 #include "../rf/object.h"
 #include "../rf/event.h"
@@ -20,7 +21,11 @@
 #include "../rf/os/console.h"
 #include "../os/console.h"
 #include "../rf/v3d.h"
+#include "../rf/vmesh.h"
+#include <common/config/GameConfig.h>
+#include "../main/main.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include "object.h"
 
 bool event_debug_enabled;
 
@@ -121,15 +126,20 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
             rf::physics_delete_object(&obj->p_data);
             rf::physics_create_object(&obj->p_data, &oci);
 
-            // D3D11 renderer: reset static mesh vertex colors for the swapped mesh
+            // Refresh mesh lighting data for the new mesh (old data was sized for previous mesh)
+            obj_mesh_lighting_free_one(obj);
+            obj_mesh_lighting_alloc_one(obj);
+            obj_mesh_lighting_update_one(obj);
+
+            // D3D11 renderer: update vertex color state for the swapped mesh.
+            // Self-illumination is detected at render time from CPU vertex colors.
             if (g_game_config.renderer == GameConfig::Renderer::d3d11 &&
                 obj->vmesh &&
                 rf::vmesh_get_type(obj->vmesh) == rf::MESH_TYPE_STATIC) {
 
-                // The VIF LOD mesh instance points at the submesh that was swapped in
-                if (auto* lod_mesh = static_cast<rf::VifLodMesh*>(obj->vmesh->instance)) {
-                    xlog::debug("D3D11 renderer: vertex color state changed for mesh {} on UID {}", obj->vmesh->filename, obj->uid);
-                    df::gr::d3d11::on_static_vertex_color_state_changed(lod_mesh);
+                auto* v3d = static_cast<rf::V3d*>(obj->vmesh->instance);
+                if (v3d && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
+                    df::gr::d3d11::on_static_vertex_color_state_changed(v3d->meshes[0].vu);
                 }
             }
         }
@@ -232,6 +242,18 @@ void __fastcall EventMessage__turn_on_new(rf::Event *this_)
 FunHook<void __fastcall(rf::Event *this_)> EventMessage__turn_on_hook{
     0x004BB210,
     EventMessage__turn_on_new,
+};
+
+extern FunHook<void __fastcall(rf::Event *)> EventShakePlayer__turn_on_hook;
+void __fastcall EventShakePlayer__turn_on_new(rf::Event *this_)
+{
+    if (rf::local_player) {
+        EventShakePlayer__turn_on_hook.call_target(this_);
+    }
+}
+FunHook<void __fastcall(rf::Event *this_)> EventShakePlayer__turn_on_hook{
+    0x004BB660,
+    EventShakePlayer__turn_on_new,
 };
 
 CodeInjection event_activate_injection{
@@ -583,6 +605,9 @@ void apply_event_patches()
 
     // Fix Message event crash on dedicated server
     EventMessage__turn_on_hook.install();
+
+    // Fix Shake_Player event crash when local_player is null (e.g. dedicated server)
+    EventShakePlayer__turn_on_hook.install();
 
     // Level specific event fixes
     event_level_init_post_hook.install();

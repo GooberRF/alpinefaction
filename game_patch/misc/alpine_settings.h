@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <optional>
 #include "../rf/os/timestamp.h"
 #include "../hud/hud.h"
 #include "../hud/remote_server_cfg_ui.h"
@@ -78,6 +79,7 @@ struct AlpineGameSettings
     bool swap_gn_controls = false;
     bool swap_sg_controls = false;
     bool mouse_linear_pitch = true;
+    int mouse_scale = 0; // 0=Classic (RF native), 1=Raw (pure degrees), 2=Modern (id Tech/Source 0.022 deg/pixel)
     bool big_hud = false;
     int skip_cutscene_bind_alias = -1;
     bool try_disable_weapon_shake = false;
@@ -107,6 +109,7 @@ struct AlpineGameSettings
     bool play_team_rad_msg_sounds = true;
     bool unlimited_semi_auto = false;
     bool gaussian_spread = false;
+    bool geo_chunk_physics = true;
     bool show_run_timer = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;
@@ -115,7 +118,20 @@ struct AlpineGameSettings
     bool explosion_env_flash_lights = true;
     bool burning_entity_lights = true;
     bool death_bars = true;
-    bool mesh_static_lighting = true;
+    // Mesh lighting mode: 0 = off (ambient only), 1 = vertex (legacy), 2 = pixel (D3D11 GPU)
+    int mesh_lighting_mode = 2;
+    bool mesh_lighting_use_static() const { return mesh_lighting_mode >= 1; }
+    bool mesh_lighting_use_vertex() const { return mesh_lighting_mode <= 1; }
+    float dynamic_light_ndotl = 1.0f; // N·L blend for dynamic lights on BSP faces: 0.0 = none, 1.0 = full
+    void set_dynamic_light_ndotl(float value)
+    {
+        dynamic_light_ndotl = std::clamp(value, 0.0f, 1.0f);
+    }
+    float pixel_light_overbright = 0.5f; // overbright range for pixel lighting compression: 0.0 = hard clamp, higher = more overbright
+    void set_pixel_light_overbright(float value)
+    {
+        pixel_light_overbright = std::clamp(value, 0.0f, 3.0f);
+    }
     bool show_glares = true;
     bool show_enemy_bullets = true;
     bool fps_counter = true;
@@ -150,8 +166,12 @@ struct AlpineGameSettings
     bool player_join_beep = false;
     bool full_range_lighting = true;
     bool always_clamp_official_lightmaps = false;
+    bool ignore_tbl_vertex_lighting = false;
+    bool ignore_tbl_pixel_light_overbright = false;
+    bool ignore_tbl_lightmap_clamping = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
+    bool footsteps = true;
     static constexpr int min_gib_chunk_count = 7;
     static constexpr int max_gib_chunk_count = 100;
     int gib_chunk_count = 14;
@@ -180,9 +200,20 @@ struct AlpineGameSettings
     bool simple_server_chat_msgs = true;
     bool quick_exit = false;
     uint32_t bot_shared_secret = 0;
+    std::string bot_personality_preset = "balanced";
+    std::string bot_skill_preset = "average";
+    bool bot_quit_when_disconnected = true;
+    bool waypoints_edit_mode = false;
+    bool waypoints_edit_default_enabled = false;
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
+    bool climb_fix = true;
+    bool killfeed_enabled = false;
+    bool autodl_blur_background = true;
+    bool autodl_download_awps = false;
+    bool hide_chat = false;
+    bool spectate_cinematic_mode = false;
 
     // hud color overrides
     std::optional<uint32_t> sniper_scope_color_override{};
@@ -269,6 +300,17 @@ struct AlpineGameSettings
 
     bool precache_rooms = true; // d3d11 only
 
+    // outline rendering (d3d11 multiplayer)
+    bool try_outlines = false;
+    bool outlines_spectator = false;
+    bool try_outlines_team_xray = true;
+
+    uint32_t outlines_color = 0xFF3232FF;         // red, opaque (RRGGBBAA)
+    uint32_t outlines_color_team_r = 0xFF3232FF;   // 255, 50, 50, 255
+    uint32_t outlines_color_team_b = 0x0096FFFF;   // 0, 150, 255, 255
+    std::optional<uint32_t> outlines_color_enemy{};
+    std::optional<uint32_t> outlines_color_team{};
+
     int suppress_autoswitch_fire_wait = 0;
     void set_suppress_autoswitch_fire_wait(int value)
     {
@@ -343,6 +385,26 @@ struct AlpineGameSettings
     bool rendering_enabled = true;
     bool sound_enabled = true;
     bool background_mouse = false;
+    bool dbg_bot = false;
+
+    // entity shadow settings
+    bool shadow_corpses = true;
+    bool shadow_items = true;
+    int shadow_distance = 3; // 0=lowest, 1=low, 2=medium, 3=high, 4=very_high, 5=maximum
+    void set_shadow_distance(int value)
+    {
+        shadow_distance = std::clamp(value, 0, 5);
+    }
+    int shadow_quality = 3; // 0=lowest(blob), 1=low, 2=medium, 3=high, 4=very_high, 5=maximum
+    void set_shadow_quality(int value)
+    {
+        shadow_quality = std::clamp(value, 0, 5);
+    }
+    int shadow_frame_lag = 1; // 1=every frame (default), 2-30=refresh every N frames
+    void set_shadow_frame_lag(int value)
+    {
+        shadow_frame_lag = std::clamp(value, 1, 30);
+    }
 };
 
 struct FpsCounterState

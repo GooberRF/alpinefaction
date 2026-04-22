@@ -33,6 +33,7 @@ static rf::Player* g_spectate_mode_target;
 static rf::Camera* g_old_target_camera = nullptr;
 static bool g_spectate_mode_enabled = false;
 static bool g_spectate_mode_follow_killer = false;
+static rf::Player* g_spectate_freelook_saved_target = nullptr;
 
 // Edge-detection state for spectated player action animations
 static bool g_prev_weapon_is_on = false;
@@ -222,6 +223,10 @@ static void spectate_next_player(const bool dir, const bool try_alive_players_fi
     if (try_alive_players_first) {
         spectate_next_player(dir, false);
     }
+    else if (!g_spectate_mode_enabled) {
+        // No other players to spectate - fall back to freelook
+        multi_spectate_enter_freelook();
+    }
 }
 
 void multi_spectate_enter_freelook()
@@ -253,6 +258,62 @@ bool multi_spectate_is_spectating()
     return g_spectate_mode_enabled || multi_spectate_is_freelook();
 }
 
+bool multi_spectate_is_first_person()
+{
+    return g_spectate_mode_enabled;
+}
+
+void multi_spectate_toggle_freelook()
+{
+    if (!multi_spectate_is_spectating())
+        return;
+
+    if (g_spectate_mode_enabled) {
+        // Currently in first-person spectate, switch to freelook
+        // Save the current target so we can resume on the same player when toggling back
+        g_spectate_freelook_saved_target = g_spectate_mode_target;
+
+        // Clean up the first-person spectate state (restore old target's camera, weapon state)
+        if (g_spectate_mode_target && g_spectate_mode_target != rf::local_player) {
+            g_spectate_mode_target->cam = g_old_target_camera;
+            g_old_target_camera = nullptr;
+            rf::local_player->cam->player = rf::local_player;
+
+#if SPECTATE_MODE_SHOW_WEAPON
+            g_spectate_mode_target->flags &= ~(1u << 4);
+            rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+            if (entity)
+                entity->local_player = nullptr;
+#endif
+        }
+
+        g_spectate_mode_enabled = false;
+        g_spectate_mode_target = rf::local_player;
+
+#if SPECTATE_MODE_SHOW_WEAPON
+        player_fpgun_set_player(rf::local_player);
+#endif
+
+        // Now enter freelook cleanly
+        multi_spectate_enter_freelook();
+    }
+    else {
+        // Currently in freelook, switch to first-person spectate
+        // Try to resume on the saved target if they're still valid
+        if (g_spectate_freelook_saved_target
+            && g_spectate_freelook_saved_target != rf::local_player
+            && !g_spectate_freelook_saved_target->is_browser) {
+            multi_spectate_set_target_player(g_spectate_freelook_saved_target);
+        }
+        else {
+            // Saved target is gone, find any player
+            g_spectate_mode_target = rf::local_player;
+            spectate_next_player(true, true);
+        }
+        g_spectate_freelook_saved_target = nullptr;
+    }
+}
+
 rf::Player* multi_spectate_get_target_player()
 {
     return g_spectate_mode_target;
@@ -260,11 +321,26 @@ rf::Player* multi_spectate_get_target_player()
 
 void multi_spectate_leave()
 {
+    g_spectate_freelook_saved_target = nullptr;
     if (g_spectate_mode_enabled) {
         multi_spectate_set_target_player(nullptr);
     } else {
         set_camera_target(rf::local_player);
         af_send_spectate_start_packet(rf::local_player);
+    }
+}
+
+void multi_spectate_toggle()
+{
+    if (!rf::is_multi || rf::is_dedicated_server || !rf::player_is_dead(rf::local_player))
+        return;
+
+    if (multi_spectate_is_spectating()) {
+        multi_spectate_leave();
+    }
+    else if (rf::player_is_dead(rf::local_player)) {
+        multi_spectate_set_target_player(rf::local_player);
+        spectate_next_player(true, true);
     }
 }
 
@@ -285,24 +361,10 @@ bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pres
                 spectate_next_player(false);
             return true;
         }
-        if (action == rf::CC_ACTION_JUMP) {
-            if (was_pressed)
-                multi_spectate_leave();
-            return true;
-        }
     }
     else if (multi_spectate_is_freelook()) {
-        // don't allow respawn in freelook spectate
+        // consume attack inputs in freelook to prevent respawn
         if (action == rf::CC_ACTION_PRIMARY_ATTACK || action == rf::CC_ACTION_SECONDARY_ATTACK) {
-            if (was_pressed)
-                multi_spectate_leave();
-            return true;
-        }
-    }
-    else if (!g_spectate_mode_enabled) {
-        if (action == rf::CC_ACTION_JUMP && was_pressed && rf::player_is_dead(rf::local_player)) {
-            multi_spectate_set_target_player(rf::local_player);
-            spectate_next_player(true, true);
             return true;
         }
     }
@@ -325,6 +387,8 @@ void multi_spectate_on_player_kill(rf::Player* victim, rf::Player* killer)
 void multi_spectate_on_destroy_player(rf::Player* player)
 {
     if (player != rf::local_player) {
+        if (g_spectate_freelook_saved_target == player)
+            g_spectate_freelook_saved_target = nullptr;
         if (g_spectate_mode_target == player)
             spectate_next_player(true);
         if (g_spectate_mode_target == player)
@@ -392,6 +456,14 @@ ConsoleCommand2 spectate_cmd{
             return;
         }
 
+        auto print_exit_hint = [] {
+            std::string bind = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
+            );
+            std::string msg = "Press " + bind + " to exit spectate mode.";
+            rf::console::output(msg.c_str(), nullptr);
+        };
+
         if (player_name) {
             // spectate player using 1st person view
             rf::Player* player = find_best_matching_player(player_name.value().c_str());
@@ -401,6 +473,7 @@ ConsoleCommand2 spectate_cmd{
             }
             // player found - spectate
             multi_spectate_set_target_player(player);
+            print_exit_hint();
         }
         else if (g_spectate_mode_enabled || multi_spectate_is_freelook()) {
             // leave spectate mode
@@ -409,6 +482,7 @@ ConsoleCommand2 spectate_cmd{
         else {
             // enter freelook spectate mode
             multi_spectate_enter_freelook();
+            print_exit_hint();
         }
     },
     "Toggles spectate mode (first person or free-look depending on the argument)",
@@ -790,6 +864,7 @@ void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* en
 void multi_spectate_level_init()
 {
     g_spawned_in_current_level = false;
+    g_spectate_freelook_saved_target = nullptr;
 }
 
 template<typename F>
@@ -850,10 +925,59 @@ static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar
 }
 
 void multi_spectate_render() {
-    if (rf::hud_disabled
-        || rf::gameseq_get_state() != rf::GS_GAMEPLAY
-        || multi_spectate_is_freelook())
+    if (is_hud_effectively_hidden()
+        || rf::gameseq_get_state() != rf::GS_GAMEPLAY)
     {
+        return;
+    }
+
+    if (multi_spectate_is_freelook()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active()) {
+            int medium_font = hud_get_default_font();
+            int medium_font_h = rf::gr::get_font_height(medium_font);
+            int large_font = hud_get_large_font();
+            int scr_w = rf::gr::screen_width();
+            int scr_h = rf::gr::screen_height();
+
+            rf::Color white_clr{255, 255, 255, 255};
+            rf::Color shadow_clr{0, 0, 0, 128};
+
+            int title_x = scr_w / 2;
+            int title_y = g_alpine_game_config.big_hud ? 250 : 150;
+            draw_with_shadow(
+                title_x, title_y, 2, 2, white_clr, shadow_clr,
+                [=](int x, int y) {
+                    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "FREELOOK SPECTATE", large_font);
+                }
+            );
+
+            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
+            int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
+            int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
+
+            std::string toggle_freelook_text = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK)
+            );
+            std::string exit_spec_text = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
+            );
+            std::string spec_menu_text = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU)
+            );
+
+            const char* hints[][2] = {
+                {toggle_freelook_text.c_str(), "Switch to First Person"},
+                {spec_menu_text.c_str(), "Open Spectate Options Menu"},
+                {exit_spec_text.c_str(), "Exit Spectate Mode"},
+            };
+            for (auto& hint : hints) {
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
+                rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, hints_left_x, hints_y, hint[0], medium_font);
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+                rf::gr::string(hints_right_x, hints_y, hint[1], medium_font);
+                hints_y += medium_font_h;
+            }
+        }
         return;
     }
 
@@ -868,12 +992,57 @@ void multi_spectate_render() {
     if (!g_spectate_mode_enabled) {
         if (rf::player_is_dead(rf::local_player)
             && !g_remote_server_cfg_popup.is_active()) {
+            const std::string spectate_bind_text = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
+            );
+            const std::string hint_text =
+                "Press "
+                + spectate_bind_text
+                + " to enter Spectate Mode";
+
+            const rf::NetGameType game_type = rf::multi_get_game_type();
+            const bool is_ctf = game_type == rf::NG_TYPE_CTF;
+            const bool is_tdm = game_type == rf::NG_TYPE_TEAMDM;
+            const bool is_koth = game_type == rf::NG_TYPE_KOTH;
+            const bool is_dc = game_type == rf::NG_TYPE_DC;
+            const bool is_esc = game_type == rf::NG_TYPE_ESC;
+            const bool is_rev = game_type == rf::NG_TYPE_REV;
+            const bool is_run = game_type == rf::NG_TYPE_RUN;
+
+            const int font_h = rf::gr::get_font_height(medium_font);
+            const int y = std::invoke([&] {
+                const int low_death_bar_y =
+                    rf::gr::clip_height()
+                    - static_cast<int>(rf::gr::clip_height() * .125f);
+                if (is_koth || is_dc || is_esc || is_rev) {
+                    return g_alpine_game_config.death_bars
+                        ? std::min(g_multi_hud_cp_strip_y, low_death_bar_y)
+                        : g_multi_hud_cp_strip_y;
+                } else if (is_run) {
+                    const int y = rf::gr::clip_height()
+                        - 10
+                        - (g_alpine_game_config.big_hud ? 60 : 40);
+                    return g_alpine_game_config.death_bars
+                        ? std::min(y, low_death_bar_y)
+                        : y;
+                } else if (is_ctf || is_tdm) {
+                    const int y = rf::gr::clip_height()
+                        - 10
+                        - (g_alpine_game_config.big_hud ? 80 : 55);
+                    return g_alpine_game_config.death_bars
+                        ? std::min(y, low_death_bar_y)
+                        : y;
+                } else {
+                    return g_alpine_game_config.death_bars
+                        ? low_death_bar_y
+                        : rf::gr::clip_height();
+                }
+            });
+
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-            const int bottom_death_bar_y = rf::gr::screen_height()
-                - static_cast<int>(rf::gr::screen_height() * .125f);
-            const int y = bottom_death_bar_y - rf::gr::get_font_height(medium_font) - 5;
-            rf::gr::string(10, y, "Press Jump to enter Spectate Mode", medium_font);
+            rf::gr::string(10, y - 10 - font_h, hint_text.c_str(), medium_font);
         }
+
         return;
     }
 
@@ -902,22 +1071,20 @@ void multi_spectate_render() {
         );
 
         if (!g_remote_server_cfg_popup.is_active()) {
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120);
+            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
             int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
             int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
-            std::string next_player_text =
-                get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
-            std::string prev_player_text = get_action_bind_name(
-                rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK
+            std::string toggle_freelook_text = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK)
             );
-            std::string exit_spec_text =
-                get_action_bind_name(rf::ControlConfigAction::CC_ACTION_JUMP);
+            std::string exit_spec_text = get_action_bind_name(
+                get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
+            );
             std::string spec_menu_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU)
             );
-            const char* hints[][3] = {
-                {next_player_text.c_str(), "Next Player"},
-                {prev_player_text.c_str(), "Previous Player"},
+            const char* hints[][2] = {
+                {toggle_freelook_text.c_str(), "Switch to Freelook"},
                 {spec_menu_text.c_str(), "Open Spectate Options Menu"},
                 {exit_spec_text.c_str(), "Exit Spectate Mode"},
             };
@@ -946,7 +1113,7 @@ void multi_spectate_render() {
         rf::gr::get_string_size(spectating_label, small_font);
     auto [target_name_w, target_name_h] =
         rf::gr::get_string_size(target_name, large_font);
-    const auto [bot_w, bot_h] = rf::gr::get_string_size(" bot", large_font);
+    const auto [bot_w, bot_h] = rf::gr::get_string_size(" BOT", small_font);
     const bool is_bot = g_spectate_mode_target->is_bot;
     if (is_bot) {
         target_name_w += bot_w;
@@ -999,13 +1166,42 @@ void multi_spectate_render() {
     if (is_bot) {
         const rf::gr::Color saved_color = rf::gr::screen.current_color;
         rf::gr::set_color(255, 250, 205, 255);
-        rf::gr::string(rf::gr::current_string_x, name_y, " bot", large_font);
+        int bot_y = name_y + (rf::gr::get_font_height(large_font) - rf::gr::get_font_height(small_font)) / 2;
+        rf::gr::string(rf::gr::current_string_x, bot_y, " BOT", small_font);
         rf::gr::set_color(saved_color);
     }
 
     rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
 
     render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
+
+    // Draw next/prev player hints flanking the nameplate bar
+    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active()) {
+        std::string prev_player_text =
+            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
+        std::string next_player_text =
+            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
+
+        int nav_gap = g_alpine_game_config.big_hud ? 16 : 10;
+
+        int nav_content_h = small_font_h * 2 + line_gap;
+        int nav_y = bar_y + (bar_h - nav_content_h) / 2;
+
+        // Left side: previous player
+        int prev_x = bar_x - nav_gap;
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y, prev_player_text.c_str(), small_font);
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y + small_font_h + line_gap, "Previous Player", small_font);
+
+        // Right side: next player
+        int next_x = bar_x + bar_w + nav_gap;
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y, next_player_text.c_str(), small_font);
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y + small_font_h + line_gap, "Next Player", small_font);
+    }
+
     if (!entity) {
         rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
         static int blood_bm = rf::bm::load("bloodsmear07_A.tga", -1, true);

@@ -21,12 +21,21 @@ namespace df::gr::d3d11
         standard,
         character,
         transformed,
+        shadow_standard,
+        shadow_character,
+        outline_character,
+        outline_standard,
+        gamma,
     };
 
     enum class PixelShaderId
     {
         standard,
+        standard_no_gas,
         ui,
+        shadow_debug,
+        outline,
+        gamma,
     };
 
     inline const char* get_vertex_shader_filename(VertexShaderId vertex_shader_id)
@@ -38,6 +47,16 @@ namespace df::gr::d3d11
                 return "character_vs.bin";
             case VertexShaderId::transformed:
                 return "transformed_vs.bin";
+            case VertexShaderId::shadow_standard:
+                return "shadow_standard_vs.bin";
+            case VertexShaderId::shadow_character:
+                return "shadow_character_vs.bin";
+            case VertexShaderId::outline_character:
+                return "outline_character_vs.bin";
+            case VertexShaderId::outline_standard:
+                return "outline_standard_vs.bin";
+            case VertexShaderId::gamma:
+                return "gamma_vs.bin";
             default:
                 return nullptr;
         }
@@ -47,11 +66,19 @@ namespace df::gr::d3d11
     {
         switch (vertex_shader_id) {
             case VertexShaderId::standard:
+            case VertexShaderId::shadow_standard:
                 return VertexLayout::standard;
             case VertexShaderId::character:
+            case VertexShaderId::shadow_character:
                 return VertexLayout::character;
             case VertexShaderId::transformed:
                 return VertexLayout::transformed;
+            case VertexShaderId::outline_character:
+                return VertexLayout::character;
+            case VertexShaderId::outline_standard:
+                return VertexLayout::standard;
+            case VertexShaderId::gamma:
+                return VertexLayout::standard; // unused — gamma VS uses SV_VertexID, no input layout
             default:
                 return VertexLayout::standard;
         }
@@ -62,8 +89,16 @@ namespace df::gr::d3d11
         switch (pixel_shader_id) {
             case PixelShaderId::standard:
                 return "standard_ps.bin";
+            case PixelShaderId::standard_no_gas:
+                return "standard_nogas_ps.bin";
             case PixelShaderId::ui:
                 return "ui_ps.bin";
+            case PixelShaderId::shadow_debug:
+                return "shadow_debug_ps.bin";
+            case PixelShaderId::outline:
+                return "outline_ps.bin";
+            case PixelShaderId::gamma:
+                return "gamma_ps.bin";
             default:
                 return nullptr;
         }
@@ -99,6 +134,8 @@ namespace df::gr::d3d11
                 get_vertex_shader_layout(vertex_shader_id)
             );
         }
+
+        ComPtr<ID3D11VertexShader> load_vertex_shader_only(const char* filename);
 
         const ComPtr<ID3D11PixelShader>& get_pixel_shader(PixelShaderId pixel_shader_id)
         {

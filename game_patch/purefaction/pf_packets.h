@@ -73,25 +73,6 @@ struct pf_player_announce_packet
 
 constexpr uint8_t pf_announce_player_packet_version = 2;
 
-struct pf_players_packet
-{
-    rf_packet_header hdr; // players
-    uint8_t version; // current version is 1
-    uint8_t show_ip;
-#ifdef PSEUDOCODE
-    struct player_info
-    {
-        if (show_ip) {
-            uint32_t ip_addr;
-        }
-        char name[];
-    };
-    player_info players[];
-    uint8_t reserved[3]; // PF bug workaround (PF expects size field to include header size)
-#endif
-};
-
-constexpr uint8_t pf_players_packet_version = 1;
 
 constexpr uint32_t pf_game_info_signature = 0xEFBEADDE;
 constexpr uint16_t pf_game_info_version = 0x030DF;

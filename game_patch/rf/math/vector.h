@@ -1,7 +1,10 @@
 #pragma once
 
 #include <cmath>
+#include <cstdio>
+#include <limits>
 #include <numbers>
+#include <string>
 #include <patch_common/MemUtils.h>
 #include "../os/os.h"
 #include "../../main/main.h"
@@ -228,6 +231,24 @@ namespace rf
             }
         }
 
+        static Vector3 from_string(const std::string& str) { return from_string(str, Vector3{}); }
+
+        static Vector3 from_string(const std::string& str, const Vector3& fallback)
+        {
+            // normalize: strip <>, replace commas with spaces
+            // supports: "5 10 5", "<5.5, 10.1, 5.0>", "5, 10, 5", "5,10,5"
+            std::string cleaned = str;
+            for (char& c : cleaned) {
+                if (c == ',' || c == '<' || c == '>') {
+                    c = ' ';
+                }
+            }
+
+            Vector3 result = fallback;
+            std::sscanf(cleaned.c_str(), "%f %f %f", &result.x, &result.y, &result.z);
+            return result;
+        }
+
         void rand_quick()
         {
             constexpr float TWO_PI = 6.2831855f;
@@ -323,19 +344,8 @@ namespace rf
             return int16_t(i);
         }
 
-         // clamp a float->int16 conversion
         static ShortVector from(const rf::Vector3& v)
         {
-            auto clamp16 = [](float f) {
-                // round to nearest
-                int i = int(std::lroundf(f));
-                if (i > std::numeric_limits<int16_t>::max())
-                    return std::numeric_limits<int16_t>::max();
-                else if (i < std::numeric_limits<int16_t>::min())
-                    return std::numeric_limits<int16_t>::min();
-                else
-                    return int16_t(i);
-            };
             return {clamp16(v.x), clamp16(v.y), clamp16(v.z)};
         }
 

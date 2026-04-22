@@ -1,7 +1,9 @@
 #include <cstring>
+#include <cctype>
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <unordered_set>
 #include <windows.h>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
@@ -11,16 +13,20 @@
 #include "mfc_types.h"
 #include "level.h"
 #include "textures.h"
+#include "meshes.h"
 #include "event.h"
 
 // Subdirectory names registered during init, used by VPP packing fix
 static std::vector<std::string> custom_texture_subdirs;
+// Texture manager pointer, stored at init for reload support
+static void* g_texture_manager = nullptr;
 
 static void register_custom_texture_subdirectories(void* texture_manager)
 {
     // Resolve path relative to executable directory
     char exe_dir[MAX_PATH];
-    GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    DWORD len = GetModuleFileNameA(NULL, exe_dir, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return;
     char* last_sep = strrchr(exe_dir, '\\');
     if (last_sep) *(last_sep + 1) = '\0';
 
@@ -59,16 +65,6 @@ static void register_custom_texture_subdirectories(void* texture_manager)
     auto* category_array = reinterpret_cast<VArray<TextureCategory*>*>(
         static_cast<char*>(texture_manager) + 0x7C);
 
-    // Find "Custom" category index so subcategories can be inserted right after it
-    int custom_idx = -1;
-    for (int i = 0; i < category_array->get_size(); i++) {
-        if (strcmp((*category_array)[i]->name.c_str(), "Custom") == 0) {
-            custom_idx = i;
-            break;
-        }
-    }
-    int old_size = category_array->get_size();
-
     for (const auto& dirname : subdirs) {
         std::string display_name = "Custom - " + dirname;
         std::string subdir_path = "user_maps\\textures\\" + dirname;
@@ -87,19 +83,9 @@ static void register_custom_texture_subdirectories(void* texture_manager)
         cat->path_handle = file_add_path(subdir_path.c_str(), ".tga .vbm", false);
 
         // Append to the manager's category array at this+0x7C
-        AddrCaller{0x00491020}.this_call<void>(category_array, cat);
+        category_array->push_back(cat);
 
         xlog::info("Registered custom texture category: '{}' (path_handle={})", display_name, cat->path_handle);
-    }
-
-    // Reorder: move newly appended subcategories to right after "Custom"
-    if (custom_idx >= 0 && category_array->size > old_size) {
-        int insert_pos = custom_idx + 1;
-        std::rotate(
-            category_array->data_ptr + insert_pos,
-            category_array->data_ptr + old_size,
-            category_array->data_ptr + category_array->size
-        );
     }
 
     xlog::info("Registered {} custom texture subdirectories (total categories: {})",
@@ -122,6 +108,7 @@ void __fastcall texture_config_init_new(void* self, int edx)
     // FUN_0046ac30's this is a parent object; the texture manager sub-object is dereferenced
     // through FUN_0046ad00 -> FUN_00478320([this+0x9C]) -> FUN_004778e0 (init_texture_categories).
     void* texture_manager = *reinterpret_cast<void**>(static_cast<char*>(self) + 0x9C);
+    g_texture_manager = texture_manager;
     register_custom_texture_subdirectories(texture_manager);
 }
 
@@ -170,16 +157,168 @@ CodeInjection config_save_skip_custom_subdirs{
 CodeInjection sidebar_custom_texture_path_injection{
     0x0044540f,
     [](auto& regs) {
-        int esi = regs.esi;
-        int cat_index = *reinterpret_cast<int*>(esi + 0x94);
-        int tex_mgr = *reinterpret_cast<int*>(esi + 0xa4);
-        // VArray<TextureCategory*> at tex_mgr + 0x7C: {size, capacity, data_ptr}
-        auto** data_ptr = *reinterpret_cast<TextureCategory***>(tex_mgr + 0x7C + 8);
-        regs.edx = data_ptr[cat_index]->path_handle;
+        auto* panel = reinterpret_cast<TextureModePanel*>(static_cast<uintptr_t>(regs.esi));
+        auto* cat_array = reinterpret_cast<VArray<TextureCategory*>*>(
+            static_cast<char*>(panel->texture_manager) + 0x7C);
+        regs.edx = (*cat_array)[panel->category_index]->path_handle;
         // Original MOV EDX,[ESI+0x98] is 6 bytes; continue at next instruction
         regs.eip = 0x00445415;
     },
     false // skip original instruction
+};
+
+// FUN_00445910 (texture→category reverse lookup) is called when the texture browser returns.
+// It searches loaded texture groups for the selected texture filename. Custom category textures
+// are not in any loaded group, so the lookup falls through to a fallback that calls FUN_004cf9a0
+// which searches ALL VFS paths. The function succeeds but the code then uses [panel+0x98] (base
+// "Custom" path) for file enumeration, so subcategory textures aren't found → "Missing".
+// Fix: inject at 0x445a3f (AFTER file_search succeeds). Read the found VFS path slot from
+// search_ctx[0], find which category owns it, and update [panel+0x98] to the correct path.
+static int g_custom_lookup_cat_index = -1;
+static const char* g_custom_lookup_cat_name = nullptr;
+
+CodeInjection texture_reverse_lookup_fix{
+    0x445a3f,
+    [](auto& regs) {
+        g_custom_lookup_cat_index = -1;
+        g_custom_lookup_cat_name = nullptr;
+
+        if (!g_texture_manager) return;
+
+        auto stack = static_cast<uintptr_t>(regs.esp);
+
+        // search_ctx lives at [ESP + 0x1c]. FUN_004cf9a0 stores the found VFS path
+        // slot index at [search_ctx + 0] (verified at 0x4cfbc3: MOV [EBP], EDI).
+        int found_path = *reinterpret_cast<int*>(stack + 0x1c);
+
+        auto* cat_array = reinterpret_cast<VArray<TextureCategory*>*>(
+            static_cast<char*>(g_texture_manager) + 0x7C);
+
+        for (int i = 0; i < cat_array->get_size(); i++) {
+            TextureCategory* cat = (*cat_array)[i];
+            // Only match custom categories — stock categories' path_handle values
+            // are a different namespace that can numerically overlap with VFS path slots
+            if (strncmp(cat->name.c_str(), "Custom", 6) != 0) continue;
+            if (cat->path_handle == found_path) {
+                // Update panel's path_handle so file enumeration at 0x445a92 uses
+                // the correct subdirectory
+                auto* panel = reinterpret_cast<TextureModePanel*>(static_cast<uintptr_t>(regs.esi));
+                panel->custom_path_handle = found_path;
+                g_custom_lookup_cat_index = i;
+                g_custom_lookup_cat_name = cat->name.c_str();
+                return;
+            }
+        }
+    }
+};
+
+// At 0x445a4a in FUN_00445910: the stock code does MOV [ESI+0x94], ECX where ECX = path_handle
+// (from [ESI+0x98]) and the stack has a pushed "Custom" string for the combo.
+// Fix both: set ECX to the correct category array index, and replace the combo text on stack.
+CodeInjection texture_reverse_lookup_index_fix{
+    0x445a4a,
+    [](auto& regs) {
+        if (g_custom_lookup_cat_index >= 0) {
+            // Fix category index: ECX is about to be stored into [ESI+0x94]
+            regs.ecx = g_custom_lookup_cat_index;
+
+            // Fix combo text: [ESP] = "Custom" pointer, replace with actual category name
+            auto stack = static_cast<uintptr_t>(regs.esp);
+            *reinterpret_cast<const char**>(stack) = g_custom_lookup_cat_name;
+
+            g_custom_lookup_cat_index = -1;
+            g_custom_lookup_cat_name = nullptr;
+        }
+    }
+};
+// Sorted splice merge of temp into master by filename (strcmp matches stock comparator).
+static void merge_sorted_into_master(TextureListSentinel* master, TextureListSentinel* temp)
+{
+    auto* master_end = reinterpret_cast<TextureListNode*>(master);
+    auto* temp_end = reinterpret_cast<TextureListNode*>(temp);
+    TextureListNode* mp = master->head;
+    TextureListNode* tp = temp->head;
+
+    while (mp != master_end && tp != temp_end) {
+        if (std::strcmp(tp->name, mp->name) < 0) {
+            TextureListNode* next_tp = tp->next;
+            tp->next = mp;
+            tp->prev = mp->prev;
+            mp->prev->next = tp;
+            mp->prev = tp;
+            tp = next_tp;
+        } else {
+            mp = mp->next;
+        }
+    }
+
+    if (tp != temp_end) {
+        TextureListNode* temp_last = temp->tail;
+        master->tail->next = tp;
+        tp->prev = master->tail;
+        temp_last->next = master_end;
+        master->tail = temp_last;
+    }
+}
+
+// Drop any node whose lowercased filename was already seen. Sentinel layout means
+// node->next->prev rewrites automatically update master->tail when unlinking the tail.
+static void dedup_master_by_name(TextureListSentinel* master)
+{
+    auto* master_end = reinterpret_cast<TextureListNode*>(master);
+    std::unordered_set<std::string> seen;
+    TextureListNode* node = master->head;
+    while (node != master_end) {
+        TextureListNode* next_node = node->next;
+        std::string key = node->name;
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (!seen.insert(std::move(key)).second) {
+            node->prev->next = node->next;
+            node->next->prev = node->prev;
+            editor_free(node);
+        }
+        node = next_node;
+    }
+}
+
+CodeInjection texture_refresh_all_iterate_custom_injection{
+    0x0046feee,
+    [](auto& regs) {
+        auto* panel = reinterpret_cast<TextureBrowserPanel*>(
+            static_cast<uintptr_t>(regs.ebx));
+
+        // Skip the stock single-category scan/merge block (0x0046feee … 0x0046fffd)
+        regs.eip = 0x00470134;
+
+        uint8_t flags = texture_browser_get_scan_flags(panel);
+        auto* cat_array = texture_browser_categories(panel);
+
+        for (int i = 0; i < cat_array->get_size(); i++) {
+            TextureCategory* cat = (*cat_array)[i];
+            if (std::strncmp(cat->name.c_str(), "Custom", 6) != 0) continue;
+
+            TextureListSentinel temp;
+            temp.head = reinterpret_cast<TextureListNode*>(&temp);
+            temp.tail = reinterpret_cast<TextureListNode*>(&temp);
+
+            texture_browser_scan_path(&temp, cat->path_handle, "*.*",
+                                      flags, texture_browser_validator);
+
+            if (temp.head != reinterpret_cast<TextureListNode*>(&temp)) {
+                merge_sorted_into_master(&panel->master_list, &temp);
+            }
+        }
+    }
+};
+
+CodeInjection texture_refresh_dedup_master_injection{
+    0x00470134,
+    [](auto& regs) {
+        auto* panel = reinterpret_cast<TextureBrowserPanel*>(
+            static_cast<uintptr_t>(regs.ebx));
+        dedup_master_by_name(&panel->master_list);
+    }
 };
 
 // VPP packfile creation (FUN_004482c0) constructs custom texture paths by combining a
@@ -253,8 +392,7 @@ static void add_texture_to_pack_list(void* temp_list, const char* filename)
 CodeInjection vpp_clear_log_injection{
     0x0044cb10,
     [](auto& regs) {
-        void* log_dlg = *reinterpret_cast<void**>(
-            *reinterpret_cast<uintptr_t*>(0x006f9e68) + 0x2b4);
+        void* log_dlg = struct_field_ref<void*>(g_main_frame, 0x2b4);
         log_dlg_clear(log_dlg);
     }
 };
@@ -282,8 +420,7 @@ CodeInjection vpp_skip_missing_file_injection{
             if (file_handle != 0 && mode == 0) {
                 xlog::warn("Packfile: Skipping missing file: {}", filename);
 
-                void* log_dlg = *reinterpret_cast<void**>(
-                    *reinterpret_cast<uintptr_t*>(0x006f9e68) + 0x2b4);
+                void* log_dlg = struct_field_ref<void*>(g_main_frame, 0x2b4);
                 log_dlg_append(log_dlg, "Warning: Skipping missing file %s\n", filename);
             }
         }
@@ -292,6 +429,37 @@ CodeInjection vpp_skip_missing_file_injection{
         regs.eip = 0x0044c898;
     }
 };
+
+// ─── Mesh file VPP helpers ──────────────────────────────────────────────────
+
+// Add a mesh file to the global VPP file list (0x006c9ba8) if it exists on disk.
+static void add_mesh_to_vpp_list(const char* filename)
+{
+    std::string full_path = find_mesh_on_disk(filename);
+    if (full_path.empty()) return;
+
+    VString str;
+    str.assign_0(full_path.c_str());
+    int ml = str.max_len;
+    char* b = str.buf;
+    str.max_len = 0;
+    str.buf = nullptr;
+    AddrCaller{0x00438640}.this_call<int>(reinterpret_cast<void*>(0x006c9ba8), ml, b);
+    xlog::info("VPP: Added mesh file '{}'", full_path);
+}
+
+// Find a V3M/V3C mesh file on disk and add its referenced textures to the VPP pack list.
+static void add_mesh_textures_to_pack_list(void* temp_list, const char* filename)
+{
+    std::string path = find_mesh_on_disk(filename);
+    if (path.empty()) return;
+
+    auto tex_names = extract_v3d_texture_names(path.c_str());
+    for (const auto& name : tex_names) {
+        add_texture_to_pack_list(temp_list, name.c_str());
+        xlog::info("VPP: Added texture '{}' from mesh '{}'", name, filename);
+    }
+}
 
 // Stock VPP packing (FUN_004482c0) gathers textures from geometry, particle emitters,
 // and decals, but misses bolt emitters, room effect liquid surfaces,
@@ -306,44 +474,217 @@ CodeInjection vpp_extra_textures_injection{
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<int>(regs.ebx));
         auto* temp_list = reinterpret_cast<void*>(static_cast<int>(regs.esp) + 0x30);
 
-        // Bolt Emitter textures (VString at +0xC4)
-        for (int i = 0; i < level->bolt_emitters.get_size(); i++) {
-            auto* obj = static_cast<DedBoltEmitter*>(level->bolt_emitters[i]);
-            add_texture_to_pack_list(temp_list, obj->bitmap.c_str());
-        }
+        // Iterate master_objects to find assets to add to the packfile
+        for (int i = 0; i < level->master_objects.get_size(); i++) {
+            auto* obj = level->master_objects[i];
 
-        // Room Effect liquid surface textures (VString at +0xA8, type 2 = Liquid Room)
-        for (int i = 0; i < level->room_effects.get_size(); i++) {
-            auto* obj = static_cast<DedRoomEffect*>(level->room_effects[i]);
-            if (obj->effect_type == static_cast<int>(DedRoomEffectType::Liquid)) {
-                add_texture_to_pack_list(temp_list, obj->liquid_bitmap.c_str());
+            if (obj->type == DedObjectType::DED_BOLT_EMITTER) {
+                auto* bolt = static_cast<DedBoltEmitter*>(obj);
+                add_texture_to_pack_list(temp_list, bolt->bitmap.c_str());
             }
-        }
-
-        // Event textures
-        for (int i = 0; i < level->events.get_size(); i++) {
-            auto* evt = static_cast<DedEvent*>(level->events[i]);
-            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image)) {
-                add_texture_to_pack_list(temp_list, evt->str1.c_str());
+            else if (obj->type == DedObjectType::DED_ROOM_EFFECT) {
+                auto* room = static_cast<DedRoomEffect*>(obj);
+                if (room->effect_type == static_cast<int>(DedRoomEffectType::Liquid)) {
+                    add_texture_to_pack_list(temp_list, room->liquid_bitmap.c_str());
+                }
             }
-            else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Swap_Textures)) {
-                add_texture_to_pack_list(temp_list, evt->str1.c_str());
-                add_texture_to_pack_list(temp_list, evt->str2.c_str());
+            else if (obj->type == DedObjectType::DED_EVENT) {
+                auto* evt = static_cast<DedEvent*>(obj);
+                if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Display_Fullscreen_Image) ||
+                    evt->event_type == af_ded_event_to_int(AlpineDedEventID::AF_Fullscreen_Image)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Swap_Textures)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                    add_texture_to_pack_list(temp_list, evt->str2.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+                    add_mesh_textures_to_pack_list(temp_list, evt->str1.c_str());
+                }
             }
         }
 
         // Geomod default crater texture (VString at CDedLevel+0x24)
         add_texture_to_pack_list(temp_list, level->geomod_texture.c_str());
+
+        // Textures referenced by custom mesh files (.v3m/.v3c)
+        for (auto* mesh : level->GetAlpineLevelProperties().mesh_objects) {
+            add_mesh_textures_to_pack_list(temp_list, mesh->mesh_filename.c_str());
+            add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.debris_filename.c_str());
+            add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.corpse_filename.c_str());
+        }
+
+        // Corona bitmaps (corona sprite + optional volumetric bitmap)
+        for (auto* corona : level->GetAlpineLevelProperties().corona_objects) {
+            add_texture_to_pack_list(temp_list, corona->corona_bitmap.c_str());
+            add_texture_to_pack_list(temp_list, corona->volumetric_bitmap.c_str());
+        }
     }
 };
+
+CodeInjection vpp_mesh_files_injection{
+    0x004485e2,
+    [](auto& regs) {
+        auto* level = CDedLevel::Get();
+        if (!level) return;
+
+        // Mesh objects: mesh_filename, state_anim, debris, corpse mesh, corpse state anim
+        for (auto* mesh : level->GetAlpineLevelProperties().mesh_objects) {
+            add_mesh_to_vpp_list(mesh->mesh_filename.c_str());
+            add_mesh_to_vpp_list(mesh->state_anim.c_str());
+            add_mesh_to_vpp_list(mesh->clutter_props.debris_filename.c_str());
+            add_mesh_to_vpp_list(mesh->clutter_props.corpse_filename.c_str());
+            add_mesh_to_vpp_list(mesh->clutter_props.corpse_state_anim.c_str());
+        }
+
+        // Events: Switch_Model (str1=mesh), Play_Animation (str1=anim),
+        // Mesh_Animate (str1=anim)
+        for (int i = 0; i < level->master_objects.get_size(); i++) {
+            auto* obj = level->master_objects[i];
+            if (obj->type != DedObjectType::DED_EVENT) continue;
+            auto* evt = static_cast<DedEvent*>(obj);
+            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+                add_mesh_to_vpp_list(evt->str1.c_str());
+            }
+            else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Play_Animation)) {
+                add_mesh_to_vpp_list(evt->str1.c_str());
+            }
+            else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Mesh_Animate)) {
+                add_mesh_to_vpp_list(evt->str1.c_str());
+            }
+        }
+    }
+};
+
+// ─── Texture reload ─────────────────────────────────────────────────────────
+
+// Reload bitmap manager placeholder entries in-place.
+// bm_load creates a 32x32 TYPE_USER placeholder with the texture's name on failure
+// (FUN_004bc9c0). Subsequent loads find this cached entry and never retry from disk.
+// We reload each placeholder by: temporarily hiding it from name lookup, calling bm_load
+// to create a real entry, then copying the real metadata into the original entry so the
+// handle stays valid (faces referencing it don't break on save/load).
+static void reload_bm_placeholders()
+{
+    int table_size = BitmapEntry::hash_table_size_m1 + 1;
+
+    struct Placeholder {
+        BitmapEntry* entry;
+        int original_checksum;
+        char name[32];
+    };
+    std::vector<Placeholder> placeholders;
+
+    // Phase 1: Find placeholders and temporarily invalidate their checksums
+    // so bm_load won't match them during the reload pass
+    for (int i = 0; i < table_size; i++) {
+        BitmapEntry* entry = BitmapEntry::hash_table[i];
+        if (!entry) continue;
+
+        // Placeholder signature: TYPE_USER + FORMAT_888_RGB + 32x32
+        // bm_create sets width/height (not orig_width/orig_height)
+        if (entry->bm_type == BitmapEntry::TYPE_USER &&
+            entry->format == BitmapEntry::FORMAT_888_RGB &&
+            entry->width == 32 && entry->height == 32) {
+            if (entry->name[0] == '\0') continue; // skip already-cleared entries
+
+            Placeholder ph;
+            ph.entry = entry;
+            ph.original_checksum = entry->name_checksum;
+            memcpy(ph.name, entry->name, 31);
+            ph.name[31] = '\0';
+
+            // Invalidate checksum so bm_load's name lookup skips this entry.
+            // Entry stays in its hash slot (preserving linear probe chain).
+            entry->name_checksum = ~ph.original_checksum;
+
+            placeholders.push_back(ph);
+        }
+    }
+
+    // Phase 2: Reload each placeholder in-place
+    int reloaded = 0;
+    for (auto& ph : placeholders) {
+        int new_handle = BitmapEntry::load(ph.name, -1);
+
+        // bm_load never returns < 0 — if the file can't be read, it creates another
+        // placeholder. Check the new entry's type to detect this.
+        int new_index = BitmapEntry::handle_to_index(new_handle);
+        BitmapEntry* new_entry = &BitmapEntry::entries[new_index];
+
+        if (new_entry->bm_type == BitmapEntry::TYPE_USER) {
+            // File still can't be loaded — bm_load created another placeholder.
+            // Restore old entry's checksum and invalidate the redundant new one.
+            ph.entry->name_checksum = ph.original_checksum;
+            new_entry->name_checksum = ~ph.original_checksum;
+            continue;
+        }
+
+        // Preserve the old entry's handle and linked list pointers
+        int old_handle = ph.entry->handle;
+        BitmapEntry* old_next = ph.entry->next;
+        BitmapEntry* old_prev = ph.entry->prev;
+
+        // Copy all bitmap data from the new (real) entry into the old (placeholder) entry
+        memcpy(ph.entry, new_entry, sizeof(BitmapEntry));
+
+        // Restore the fields that must stay tied to the old entry's position
+        ph.entry->handle = old_handle;
+        ph.entry->next = old_next;
+        ph.entry->prev = old_prev;
+
+        // The old entry now has real texture metadata with the original handle.
+        // Checksum and name were copied from the new entry (same filename = same values).
+
+        // Invalidate the new entry's checksum so hash lookups find the old entry, not this one
+        new_entry->name_checksum = ~ph.original_checksum;
+
+        // Invalidate the cached D3D texture so the renderer recreates it from the real data
+        gr_d3d_mark_texture_dirty(old_handle);
+
+        xlog::info("Reloaded bmpman placeholder '{}' in-place (handle=0x{:x})", ph.name, old_handle);
+        reloaded++;
+    }
+
+    if (!placeholders.empty()) {
+        xlog::info("Reloaded {}/{} bmpman placeholder(s)", reloaded, placeholders.size());
+    }
+}
+
+void reload_custom_textures()
+{
+    if (!g_texture_manager) return;
+
+    auto* category_array = reinterpret_cast<VArray<TextureCategory*>*>(
+        static_cast<char*>(g_texture_manager) + 0x7C);
+
+    for (int i = 0; i < category_array->get_size(); i++) {
+        const char* name = (*category_array)[i]->name.c_str();
+        if (strncmp(name, "Custom", 6) == 0) {
+            int handle = (*category_array)[i]->path_handle;
+            if (handle >= 0) {
+                file_scan_path(handle);
+            }
+        }
+    }
+
+    // Reload placeholder bitmap entries so previously-failed textures load from disk.
+    // This updates entries in-place (same handle) so faces referencing them stay valid.
+    reload_bm_placeholders();
+}
 
 void ApplyTexturesPatches() {
     texture_config_init_hook.install();
     custom_category_check_hook.install();
     sidebar_custom_texture_path_injection.install();
+    texture_reverse_lookup_fix.install();
+    texture_reverse_lookup_index_fix.install();
     vpp_texture_path_fix.install();
     vpp_extra_textures_injection.install();
     vpp_skip_missing_file_injection.install();
     vpp_clear_log_injection.install();
+    vpp_mesh_files_injection.install();
     config_save_skip_custom_subdirs.install();
+    texture_refresh_all_iterate_custom_injection.install();
+    texture_refresh_dedup_master_injection.install();
 }

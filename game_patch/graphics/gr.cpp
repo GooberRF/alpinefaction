@@ -11,7 +11,10 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <optional>
+#include <shellapi.h>
 #include "../os/console.h"
+#include "../os/os.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
@@ -25,8 +28,10 @@
 #include "../rf/os/frametime.h"
 #include "../rf/item.h"
 #include "../rf/clutter.h"
+#include "../rf/ui.h"
 #include "gr.h"
 #include "gr_internal.h"
+#include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
@@ -36,6 +41,11 @@ namespace df::gr::d3d11
     bool set_render_target(int bm_handle);
     void update_window_mode();
     void bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
+}
+
+bool should_bypass_graphics_init_for_headless_bot()
+{
+    return is_headless_mode() || headless_requested_from_raw_cmdline();
 }
 
 CodeInjection gr_init_stretched_window_injection{
@@ -59,6 +69,41 @@ CodeInjection gr_init_injection{
     []() {
         // Make sure pixel aspect ratio is set to 1 so the frame is not stretched
         rf::gr::screen.aspect = 1.0f;
+    },
+};
+
+CodeInjection gr_init_headless_skip_backend_injection{
+    0x0050C551,
+    [](auto& regs) {
+        if (!should_bypass_graphics_init_for_headless_bot()) {
+            return;
+        }
+
+        // Skip the backend init path entirely (gr_d3d_init / renderer bootstrap).
+        // This keeps headless bot startup independent from Direct3D availability.
+        rf::gr::screen.mode = rf::gr::NONE;
+        regs.eip = 0x0050C582;
+    },
+};
+
+CodeInjection gr_d3d_init_headless_early_return_injection{
+    0x00545960,
+    [](auto& regs) {
+        if (!should_bypass_graphics_init_for_headless_bot()) {
+            return;
+        }
+
+        static bool logged = false;
+        if (!logged) {
+            xlog::info("Headless bot: bypassing gr_d3d_init entry");
+            logged = true;
+        }
+
+        // Extra safety: if any path still reaches gr_d3d_init while headless,
+        // bail before any Direct3D module/device setup runs.
+        regs.eax = 0;
+        regs.eip = addr_as_ref<uint32_t>(regs.esp);
+        regs.esp += 4;
     },
 };
 
@@ -175,9 +220,10 @@ ConsoleCommand2 fov_cmd{
 
 ConsoleCommand2 gamma_cmd{
     "r_gamma",
-    [](std::optional<float> value_opt) {
-        if (value_opt) {
-            rf::gr::set_gamma(value_opt.value());
+    [] (const std::optional<float> gamma) {
+        if (gamma) {
+            rf::gr::set_gamma(*gamma);
+            rf::ui::video_gamma_slider.set_value(*gamma);
         }
         rf::console::print("Gamma: {:.2f}", rf::gr::gamma);
     },
@@ -268,7 +314,7 @@ ConsoleCommand2 disable_rendering_cmd{
 FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
     0x00431A00,
     [](rf::Player* pp, int flags) {
-        if (!g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
             return;
         }
 
@@ -280,7 +326,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
 FunHook<void()> gameplay_render_frame_pre_hook{
     0x00431820,
     []() {
-        if (!g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled) {
             return;
         }
 
@@ -449,12 +495,28 @@ ConsoleCommand2 picmip_cmd{
     "r_picmip",
     [](std::optional<int> picmip_opt) {
         if (picmip_opt) {
+            if (rf::gr::screen.mode != rf::gr::DIRECT3D || !is_d3d11()) {
+                rf::console::print("r_picmip is supported only by the Direct3D 11 renderer");
+                return;
+            }
+            int old_divisor = g_alpine_game_config.picmip;
             int divisor = picmip_opt.value();
             if (divisor < 1) {
                 divisor = 1;
             }
             g_alpine_game_config.set_picmip(divisor);
             gr_update_texture_filtering();
+            // Auto-mip gen happens at texture upload and is gated on picmip > 1. When the
+            // gate crosses, already-cached textures have the wrong mip chain state; evict
+            // them so they re-upload on next use. Critically, we skip TYPE_USER bitmaps
+            // (fonts, HUD glyph atlases, dynamically-written textures) — their pixel data
+            // lives inside the D3D11 texture and is written externally via gr::lock; a
+            // force flush would leave them blank forever.
+            bool was_on = old_divisor > 1;
+            bool now_on = g_alpine_game_config.picmip > 1;
+            if (was_on != now_on) {
+                df::gr::d3d11::texture_flush_non_user_cache();
+            }
         }
         rf::console::print(
             "Texture resolution divisor is set to {} (Direct3D 11 renderer only, 1 = full resolution)",
@@ -486,8 +548,70 @@ CodeInjection gr_d3d_render_lod_vif_injection{
     },
 };
 
+// Power of 2 texture enforcement
+// Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
+namespace rf::gr::d3d {
+    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
+}
+static bool override_pow2tex = false;
+
+ConsoleCommand2 pow2_tex_cmd{
+    "dbg_pow2tex",
+    [](std::optional<int> argument) {
+        if (argument) {
+            int arg = argument.value();
+            switch (arg) {
+            case 0:
+                override_pow2tex = true;
+                rf::gr::d3d::p2t = 0;
+                break;
+            case 1:
+                override_pow2tex = true;
+                rf::gr::d3d::p2t = 1;
+                break;
+            default:
+                override_pow2tex = false;
+                break;
+            }
+        }
+
+        if (override_pow2tex) {
+            rf::console::print("Enforcement of power of 2 textures is set to manual override. The option is currently {}. Use 'dbg_pow2tex -1' to disable override.", rf::gr::d3d::p2t ? "enabled" : "disabled");
+        }
+        else {
+            rf::console::print("Enforcement of power of 2 textures is set to automatic. Use 'dbg_pow2tex 0' or 'dbg_pow2tex 1' to override for debugging.");
+        }
+    },
+    "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
+};
+
+// checked during level load
+void evaluate_pow2tex(const rf::String& level_filename) {
+    // if dbg_pow2tex is active, use manual override instead of level filename lookup
+    if (!override_pow2tex) {
+        bool should_p2t_fix = false;
+
+        if (is_p2t_fix_level(level_filename)) {
+            should_p2t_fix = true;
+            rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
+        }
+
+        rf::gr::d3d::p2t = should_p2t_fix;
+    }
+
+    // Always sync D3D11 state with current p2t value at level load
+    if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
+        df::gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
+        if (is_sky_fix_level(level_filename)) {
+            rf::console::print("Applying sky fix to known affected level {}", level_filename);
+        }
+    }
+}
+
 void gr_apply_patch()
 {
+    const bool headless_bot_graphics_bypass = should_bypass_graphics_init_for_headless_bot();
+
     if (g_game_config.wnd_mode != GameConfig::FULLSCREEN) {
         // Enable windowed mode
         write_mem<u32>(0x004B29A5 + 6, 0xC8);
@@ -496,6 +620,8 @@ void gr_apply_patch()
 
     // Fix FOV for widescreen
     gr_init_injection.install();
+    gr_init_headless_skip_backend_injection.install();
+    gr_d3d_init_headless_early_return_injection.install();
     gameplay_render_frame_fov_injection.install();
     gr_setup_3d_railgun_hook.install();
 
@@ -511,22 +637,26 @@ void gr_apply_patch()
     // Lights
     gr_light_apply_patch();
 
-    if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
-        void gr_d3d11_apply_patch();
-        gr_d3d11_apply_patch();
-    }
-    else {
-        // D3D generic patches
-        gr_d3d_apply_patch();
+    if (!headless_bot_graphics_bypass) {
+        const bool use_d3d11_renderer =
+            g_game_config.renderer == GameConfig::Renderer::d3d11;
+        if (use_d3d11_renderer) {
+            void gr_d3d11_apply_patch();
+            gr_d3d11_apply_patch();
+        }
+        else {
+            // D3D generic patches
+            gr_d3d_apply_patch();
 
-        // D3D texture handling
-        gr_d3d_texture_apply_patch();
+            // D3D texture handling
+            gr_d3d_texture_apply_patch();
 
-        // Back-buffer capture or render to texture related code
-        gr_d3d_capture_apply_patch();
+            // Back-buffer capture or render to texture related code
+            gr_d3d_capture_apply_patch();
 
-        // Gamma related code
-        gr_d3d_gamma_apply_patch();
+            // Gamma related code
+            gr_d3d_gamma_apply_patch();
+        }
     }
 
     // Bink Video patch
@@ -578,6 +708,7 @@ void gr_apply_patch()
     colorblind_cmd.register_cmd();
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
+    pow2_tex_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

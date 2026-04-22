@@ -10,6 +10,8 @@
 #include "misc.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
+#include "../os/os.h"
+#include "../multi/multi.h"
 #include "../rf/ui.h"
 #include "../rf/sound/sound.h"
 #include "../rf/input.h"
@@ -17,6 +19,8 @@
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
 #include "../object/object.h"
+#include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include "../rf/level.h"
 
 #define DEBUG_UI_LAYOUT 0
 #define SHARP_UI_TEXT 1
@@ -91,6 +95,8 @@ static rf::ui::Checkbox ao_dinput_cbox;
 static rf::ui::Label ao_dinput_label;
 static rf::ui::Checkbox ao_linearpitch_cbox;
 static rf::ui::Label ao_linearpitch_label;
+static rf::ui::Checkbox ao_mousecamerascale_cbox;
+static char ao_mousecamerascale_butlabel_text[9];
 static rf::ui::Checkbox ao_bighud_cbox;
 static rf::ui::Label ao_bighud_label;
 static rf::ui::Checkbox ao_ctfwh_cbox;
@@ -123,6 +129,8 @@ static rf::ui::Checkbox ao_clicklimit_cbox;
 static rf::ui::Label ao_clicklimit_label;
 static rf::ui::Checkbox ao_gaussian_cbox;
 static rf::ui::Label ao_gaussian_label;
+static rf::ui::Checkbox ao_geochunk_cbox;
+static rf::ui::Label ao_geochunk_label;
 static rf::ui::Checkbox ao_autosave_cbox;
 static rf::ui::Label ao_autosave_label;
 static rf::ui::Checkbox ao_damagenum_cbox;
@@ -159,8 +167,10 @@ static rf::ui::Checkbox ao_fullbrightchar_cbox;
 static rf::ui::Label ao_fullbrightchar_label;
 static rf::ui::Checkbox ao_notex_cbox;
 static rf::ui::Label ao_notex_label;
-static rf::ui::Checkbox ao_meshstatic_cbox;
-static rf::ui::Label ao_meshstatic_label;
+static rf::ui::Checkbox ao_meshlight_cbox;
+static rf::ui::Label ao_meshlight_label;
+static rf::ui::Label ao_meshlight_butlabel;
+static char ao_meshlight_butlabel_text[9];
 static rf::ui::Checkbox ao_enemybullets_cbox;
 static rf::ui::Label ao_enemybullets_label;
 static rf::ui::Checkbox ao_togglecrouch_cbox;
@@ -459,6 +469,9 @@ static bool is_any_font_modded()
 FunHook<void()> menu_init_hook{
     0x00442BB0,
     []() {
+        if (is_headless_mode() || headless_requested_from_raw_cmdline()) {
+            return;
+        }
         menu_init_hook.call_target();
 #if SHARP_UI_TEXT
         xlog::info("UI scale: {:.4f} {:.4f}", rf::ui::scale_x, rf::ui::scale_y);
@@ -663,6 +676,7 @@ void ao_maxfps_cbox_on_click_callback()
     try {
         unsigned new_fps = std::stoi(str);
         g_alpine_game_config.set_max_fps(new_fps);
+        apply_maximum_fps();
     }
     catch (const std::exception& e) {
         xlog::info("Invalid max FPS input: '{}', reason: {}", str, e.what());
@@ -802,6 +816,12 @@ void ao_gaussian_cbox_on_click(int x, int y) {
     g_alpine_game_config.gaussian_spread = !g_alpine_game_config.gaussian_spread;
     ao_gaussian_cbox.checked = g_alpine_game_config.gaussian_spread;
     ao_play_button_snd(g_alpine_game_config.gaussian_spread);
+}
+
+void ao_geochunk_cbox_on_click(int x, int y) {
+    g_alpine_game_config.geo_chunk_physics = !g_alpine_game_config.geo_chunk_physics;
+    ao_geochunk_cbox.checked = g_alpine_game_config.geo_chunk_physics;
+    ao_play_button_snd(g_alpine_game_config.geo_chunk_physics);
 }
 
 void ao_autosave_cbox_on_click(int x, int y) {
@@ -965,11 +985,17 @@ void ao_notex_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.try_disable_textures);
 }
 
-void ao_meshstatic_cbox_on_click(int x, int y) {
-    g_alpine_game_config.mesh_static_lighting = !g_alpine_game_config.mesh_static_lighting;
-    ao_meshstatic_cbox.checked = g_alpine_game_config.mesh_static_lighting;
+static constexpr const char* meshlight_mode_names[] = {"Ambient", "Vertex", "Pixel"};
+
+void ao_meshlight_cbox_on_click(int x, int y) {
+    g_alpine_game_config.mesh_lighting_mode = (g_alpine_game_config.mesh_lighting_mode + 1) % 3;
     recalc_mesh_static_lighting();
-    ao_play_button_snd(g_alpine_game_config.mesh_static_lighting);
+    if (is_d3d11()) {
+        df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+    }
+    snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
+        meshlight_mode_names[g_alpine_game_config.mesh_lighting_mode]);
+    ao_play_button_snd(g_alpine_game_config.mesh_lighting_mode > 0);
 }
 
 void ao_enemybullets_cbox_on_click(int x, int y) {
@@ -1138,8 +1164,8 @@ void alpine_options_panel_init() {
         &ao_ricochet_cbox, &ao_ricochet_label, &alpine_options_panel0, ao_ricochet_cbox_on_click, g_alpine_game_config.multi_ricochet, 280, 84, "Ricochet FX (MP)");
     alpine_options_panel_checkbox_init(
         &ao_fullbrightchar_cbox, &ao_fullbrightchar_label, &alpine_options_panel0, ao_fullbrightchar_cbox_on_click, g_alpine_game_config.try_fullbright_characters, 280, 114, "Fullbright models");
-    alpine_options_panel_checkbox_init(
-        &ao_meshstatic_cbox, &ao_meshstatic_label, &alpine_options_panel0, ao_meshstatic_cbox_on_click, g_alpine_game_config.mesh_static_lighting, 280, 144, "Mesh static light");
+    alpine_options_panel_inputbox_init(
+        &ao_meshlight_cbox, &ao_meshlight_label, &ao_meshlight_butlabel, &alpine_options_panel0, ao_meshlight_cbox_on_click, 280, 144, "Mesh lighting");
     alpine_options_panel_checkbox_init(
         &ao_nearest_cbox, &ao_nearest_label, &alpine_options_panel0, ao_nearest_cbox_on_click, g_alpine_game_config.nearest_texture_filtering, 280, 174, "Nearest filtering");
     alpine_options_panel_checkbox_init(
@@ -1220,6 +1246,8 @@ void alpine_options_panel_init() {
         &ao_joinbeep_cbox, &ao_joinbeep_label, &alpine_options_panel3, ao_joinbeep_cbox_on_click, g_alpine_game_config.player_join_beep, 112, 144, "Join beep");
     alpine_options_panel_checkbox_init(
         &ao_painsounds_cbox, &ao_painsounds_label, &alpine_options_panel3, ao_painsounds_cbox_on_click, g_alpine_game_config.entity_pain_sounds, 112, 174, "Pain sounds");
+    alpine_options_panel_checkbox_init(
+        &ao_geochunk_cbox, &ao_geochunk_label, &alpine_options_panel3, ao_geochunk_cbox_on_click, g_alpine_game_config.geo_chunk_physics, 112, 204, "Geo chunks");
 
     alpine_options_panel_checkbox_init(
         &ao_teamrad_cbox, &ao_teamrad_label, &alpine_options_panel3, ao_teamrad_cbox_on_click, g_alpine_game_config.play_team_rad_msg_sounds, 280, 54, "Team radio msgs");
@@ -1357,6 +1385,11 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_simdist_butlabel_text, sizeof(ao_simdist_butlabel_text), "%6.2f", g_alpine_game_config.entity_sim_distance);
     ao_simdist_butlabel.text = ao_simdist_butlabel_text;
 
+    // mesh lighting
+    snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
+        meshlight_mode_names[std::clamp(g_alpine_game_config.mesh_lighting_mode, 0, 2)]);
+    ao_meshlight_butlabel.text = ao_meshlight_butlabel_text;
+
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {
         if (ui_label) {
@@ -1429,12 +1462,84 @@ CodeInjection handle_options_button_click_patch{
     },
 };
 
+// Mouse scale button toggle injected into the stock Controls panel (next to Mouse Y-Invert)
+static constexpr int CTRL_CAMSCALE_X = 306;
+static constexpr int CTRL_CAMSCALE_Y = 107;
+
+static bool g_ctrl_camscale_initialized = false;
+
+static constexpr const char* camscale_mode_names[] = {"Classic", "Raw", "Modern"};
+
+static void ctrl_camscale_on_click(int, int)
+{
+    g_alpine_game_config.mouse_scale = (g_alpine_game_config.mouse_scale + 1) % 3;
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[g_alpine_game_config.mouse_scale]);
+    ao_play_button_snd(g_alpine_game_config.mouse_scale != 0);
+}
+
+static void init_ctrl_camscale_btns()
+{
+    if (g_ctrl_camscale_initialized) return;
+    ao_mousecamerascale_cbox.create("ao_smbut1.tga", "ao_smbut1_hover.tga", "ao_tab.tga",
+        CTRL_CAMSCALE_X, CTRL_CAMSCALE_Y, 45, "106.26", 0);
+    ao_mousecamerascale_cbox.checked = false;
+    ao_mousecamerascale_cbox.on_click = ctrl_camscale_on_click;
+    ao_mousecamerascale_cbox.enabled = true;
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
+    g_ctrl_camscale_initialized = true;
+}
+
+static void render_ctrl_camscale_btns()
+{
+    init_ctrl_camscale_btns();
+    snprintf(ao_mousecamerascale_butlabel_text, sizeof(ao_mousecamerascale_butlabel_text), "%s",
+        camscale_mode_names[std::clamp(g_alpine_game_config.mouse_scale, 0, 2)]);
+    ao_mousecamerascale_cbox.x = CTRL_CAMSCALE_X + static_cast<int>(rf::ui::options_animated_offset);
+    ao_mousecamerascale_cbox.render();
+    int val_x = static_cast<int>((ao_mousecamerascale_cbox.x + 50) * rf::ui::scale_x);
+    int val_y = static_cast<int>((CTRL_CAMSCALE_Y + 6) * rf::ui::scale_y);
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, val_x, val_y, ao_mousecamerascale_butlabel_text, rf::ui::medium_font_0);
+    int name_x = static_cast<int>((ao_mousecamerascale_cbox.x + 87) * rf::ui::scale_x);
+    rf::gr::set_color(0, 0, 0, 255);
+    rf::gr::string(name_x, val_y, "Mouse scale", rf::ui::medium_font_0);
+}
+
+static void handle_ctrl_camscale_btns(int x, int y)
+{
+    if (!g_ctrl_camscale_initialized)
+        return;
+
+    // Use absolute position so hit-testing tracks parent panel offsets/animations.
+    int bx = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_x() * rf::ui::scale_x);
+    int by = static_cast<int>(ao_mousecamerascale_cbox.get_absolute_y() * rf::ui::scale_y);
+    int bw = static_cast<int>(ao_mousecamerascale_cbox.w * rf::ui::scale_x);
+    int bh = static_cast<int>(ao_mousecamerascale_cbox.h * rf::ui::scale_y);
+
+    bool inside = (x >= bx && x < bx + bw && y >= by && y < by + bh);
+
+    // Keep hover state in sync with cursor position so the correct bitmap/state is rendered.
+    ao_mousecamerascale_cbox.highlighted = inside;
+
+    // Do not react to clicks while the controls panel is waiting for a key/mouse binding.
+    if (!inside || rf::ui::options_controls_waiting_for_key || !rf::mouse_was_button_pressed(0))
+        return;
+
+    ctrl_camscale_on_click(x, y);
+}
+
 // handle alpine options panel rendering
 CodeInjection options_render_alpine_panel_patch{
     0x0044F80B,
     []() {
         int index = rf::ui::options_current_panel;
         //xlog::warn("render index {}", index);
+
+        if (index == 3 && !rf::ui::options_controls_waiting_for_key) {
+            render_ctrl_camscale_btns();
+        }
 
         // render alpine options panel
         if (index == 4) {
@@ -1466,6 +1571,9 @@ CodeInjection options_handle_mouse_patch{
 
         if (index == 4) {
             alpine_options_panel_handle_mouse(x, y);
+        }
+        if (index == 3) {
+            handle_ctrl_camscale_btns(x, y);
         }
     },
 };

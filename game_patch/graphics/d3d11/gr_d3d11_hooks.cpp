@@ -1,5 +1,8 @@
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 #include <patch_common/AsmWriter.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
@@ -10,14 +13,180 @@
 #include "../../rf/v3d.h"
 #include "../../rf/character.h"
 #include "../../rf/level.h"
+#include "../../rf/geometry.h"
 #include "../../rf/mover.h"
+#include "../../rf/object.h"
+#include "../../rf/vmesh.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/misc.h"
+#include "../../misc/alpine_settings.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_mesh.h"
+
+void gr_light_use_static(bool use_static);
 
 namespace df::gr::d3d11
 {
+    // Gather both dynamic and static lights for GPU-lit meshes.
+    // is_find_static_lights controls which linked list the internal light search
+    // functions traverse, so we must call light_filter_set_solid twice to get both.
+    // Check if a light's sphere overlaps a mesh's bounding sphere.
+    // More accurate than point-to-point distance for large meshes where
+    // the origin may be far from the nearest surface to the light.
+    static bool light_overlaps_mesh(const rf::gr::Light* light, const rf::Vector3& mesh_pos, float mesh_radius)
+    {
+        float combined_radius = light->rad_2 + mesh_radius;
+        float dist_sq = (light->vec - mesh_pos).len_sq();
+        return dist_sq <= combined_radius * combined_radius;
+    }
+
+    // Local working buffer for gathered lights. Preserves dynamic-light results
+    // while running the static-light pass, then overwrites the globals for GPU upload.
+    static rf::gr::Light* gathered_lights[rf::gr::max_relevant_lights];
+
+    // When true, render_v3d_vif/render_character_vif skip automatic light gathering.
+    // Used by sky room mesh rendering which pre-gathers lights at the untransformed position.
+    static bool skip_mesh_light_gather = false;
+
+    static void gather_mesh_lights(const rf::Vector3& pos, float mesh_radius = 0.0f)
+    {
+        // Pass 1: dynamic lights (default is_find_static_lights=false)
+        rf::gr::light_filter_set_solid(rf::level.geometry, true, false);
+        int dynamic_count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
+
+        // Copy dynamic lights to local buffer
+        int total = 0;
+        for (int i = 0; i < dynamic_count && total < rf::gr::max_relevant_lights; ++i) {
+            gathered_lights[total++] = rf::gr::relevant_lights[i];
+        }
+
+        // Pass 2: static lights (requires is_find_static_lights=true)
+        if (g_alpine_game_config.mesh_lighting_use_static()) {
+            rf::gr::light_filter_reset();
+            gr_light_use_static(true);
+            rf::gr::light_filter_set_solid(rf::level.geometry, true, true);
+            gr_light_use_static(false);
+
+            // Append static lights
+            int static_count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
+            // Insert static lights before dynamic so static don't push out dynamic
+            // Shift dynamic lights right, insert static at front
+            if (static_count > 0 && total > 0) {
+                int space = std::min(static_count, rf::gr::max_relevant_lights - total);
+                std::memmove(gathered_lights + space, gathered_lights, total * sizeof(rf::gr::Light*));
+                for (int i = 0; i < space; ++i) {
+                    gathered_lights[i] = rf::gr::relevant_lights[i];
+                }
+                total += space;
+            } else {
+                for (int i = 0; i < static_count && total < rf::gr::max_relevant_lights; ++i) {
+                    gathered_lights[total++] = rf::gr::relevant_lights[i];
+                }
+            }
+        }
+
+        // Filter out negative-intensity (subtractive) lights. These are a lightmap
+        // baking trick to darken areas and have no physical meaning for real-time
+        // point lighting. They waste GPU slots and cause color artifacts.
+        {
+            int write = 0;
+            for (int read = 0; read < total; ++read) {
+                const auto* light = gathered_lights[read];
+                if (light->r >= 0.0f && light->g >= 0.0f && light->b >= 0.0f) {
+                    gathered_lights[write++] = gathered_lights[read];
+                }
+            }
+            total = write;
+        }
+
+        // Cull lights that can't reach the mesh (zero attenuation guaranteed).
+        // Without this, the shader evaluates all 32 light slots per pixel even
+        // for lights far beyond their radius, wasting GPU ALU on zero contributions.
+        // Spotlights use a conservative sphere test; the shader handles cone rejection.
+        // Tube lights check distance to nearest point on the segment.
+        {
+            int write = 0;
+            for (int read = 0; read < total; ++read) {
+                const auto* light = gathered_lights[read];
+                float combined_radius = light->rad_2 + mesh_radius;
+                float combined_sq = combined_radius * combined_radius;
+                float dist_sq;
+                if (light->type == rf::gr::LT_TUBE) {
+                    rf::Vector3 seg = light->vec2 - light->vec;
+                    rf::Vector3 delta = pos - light->vec;
+                    float seg_len_sq = seg.len_sq();
+                    if (seg_len_sq > 0.0001f) {
+                        float t = delta.dot_prod(seg) / seg_len_sq;
+                        t = std::clamp(t, 0.0f, 1.0f);
+                        rf::Vector3 closest = light->vec + seg * t;
+                        dist_sq = (pos - closest).len_sq();
+                    } else {
+                        dist_sq = delta.len_sq();
+                    }
+                } else {
+                    dist_sq = (light->vec - pos).len_sq();
+                }
+                if (dist_sq <= combined_sq) {
+                    gathered_lights[write++] = gathered_lights[read];
+                }
+            }
+            total = write;
+        }
+
+        // Priority sorting for the 32-light GPU limit.
+        // Three tiers, each stable-partitioned to the front:
+        //   1. Dynamic lights whose sphere overlaps the mesh (muzzle flashes, explosions, fire)
+        //   2. Large spotlights (radius >= 30m) whose sphere overlaps the mesh
+        //   3. Everything else, sorted by distance to mesh center
+        // All overlap tests use sphere-sphere intersection (light radius + mesh radius)
+        // to correctly handle large meshes where the origin is far from the nearest surface.
+        constexpr int gpu_max = 32;
+        constexpr float large_spot_radius = 30.0f;
+        if (total > 1) {
+            auto* begin = gathered_lights;
+            auto* end = begin + total;
+
+            // Tier 1: dynamic lights overlapping the mesh
+            auto* t1_end = std::stable_partition(begin, end,
+                [&pos, mesh_radius](const rf::gr::Light* light) {
+                    if (!light->dynamic) return false;
+                    return light_overlaps_mesh(light, pos, mesh_radius);
+                }
+            );
+
+            // Tier 2: large spotlights overlapping the mesh (not already in tier 1)
+            auto* t2_end = std::stable_partition(t1_end, end,
+                [&pos, mesh_radius](const rf::gr::Light* light) {
+                    if (light->type != rf::gr::LT_SPOT) return false;
+                    if (light->rad_2 < large_spot_radius) return false;
+                    return light_overlaps_mesh(light, pos, mesh_radius);
+                }
+            );
+            int priority_count = static_cast<int>(t2_end - begin);
+
+            // Sort the remaining (non-priority) lights by distance to mesh center
+            int remaining = total - priority_count;
+            if (remaining > 1) {
+                int slots_left = std::max(gpu_max - priority_count, 0);
+                std::partial_sort(
+                    t2_end,
+                    t2_end + std::min(remaining, slots_left),
+                    end,
+                    [&pos](const rf::gr::Light* a, const rf::gr::Light* b) {
+                        float da = (a->vec - pos).len_sq();
+                        float db = (b->vec - pos).len_sq();
+                        return da < db;
+                    }
+                );
+            }
+        }
+
+        // Write results back to the global arrays for the GPU upload to read
+        std::memcpy(rf::gr::relevant_lights, gathered_lights, total * sizeof(rf::gr::Light*));
+        rf::gr::num_relevant_lights = total;
+    }
+
     static std::optional<Renderer> renderer;
 
     void update_window_mode();
@@ -143,6 +312,13 @@ namespace df::gr::d3d11
         renderer->texture_flush_cache(force);
     }
 
+    void texture_flush_non_user_cache()
+    {
+        if (renderer) {
+            renderer->texture_flush_non_user_cache();
+        }
+    }
+
     void texture_mark_dirty(int bm_handle)
     {
         renderer->texture_mark_dirty(bm_handle);
@@ -187,7 +363,44 @@ namespace df::gr::d3d11
 
     void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
     {
+        // Stock gr_d3d_render_movable_solid (0x00553C60) gathers only dynamic lights
+        // using the mover's own GSolid (not level.geometry). Static lights are already
+        // baked into the mover's lightmap, so we must not add them as point lights.
+        // The stock engine also temporarily transforms the solid's bbox to world space
+        // before calling light_filter_set_solid, since it uses bbox for sphere overlap tests.
+        bool lights_gathered = false;
+        if (solid) {
+            // Save local-space bbox
+            rf::Vector3 saved_min = solid->bbox_min;
+            rf::Vector3 saved_max = solid->bbox_max;
+
+            // Transform local bbox to world-space AABB (replicates stock FUN_00539a40)
+            rf::Vector3 local_center = (saved_min + saved_max) * 0.5f;
+            rf::Vector3 half = (saved_max - saved_min) * 0.5f;
+            rf::Vector3 world_center = pos + orient.transform_vector(local_center);
+            // Compute world-space half-extents from oriented local half-extents
+            rf::Vector3 world_half{
+                std::abs(orient.rvec.x) * half.x + std::abs(orient.uvec.x) * half.y + std::abs(orient.fvec.x) * half.z,
+                std::abs(orient.rvec.y) * half.x + std::abs(orient.uvec.y) * half.y + std::abs(orient.fvec.y) * half.z,
+                std::abs(orient.rvec.z) * half.x + std::abs(orient.uvec.z) * half.y + std::abs(orient.fvec.z) * half.z,
+            };
+            solid->bbox_min = world_center - world_half;
+            solid->bbox_max = world_center + world_half;
+
+            rf::gr::light_filter_set_solid(solid, true, false);
+            lights_gathered = true;
+
+            // Restore local-space bbox
+            solid->bbox_min = saved_min;
+            solid->bbox_max = saved_max;
+        }
+
         renderer->render_movable_solid(solid, pos, orient);
+
+        if (lights_gathered) {
+            rf::gr::light_filter_reset();
+            renderer->clear_mesh_lights();
+        }
     }
 
     void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid)
@@ -199,49 +412,164 @@ namespace df::gr::d3d11
 
     void render_sky_room(rf::GRoom *room)
     {
-        renderer->render_sky_room(room);
+        if (!room) {
+            return;
+        }
+
+        // Render sky room geometry and movers; get the computed sky transform back
+        rf::Vector3 sky_transform_pos;
+        rf::Matrix3 sky_transform_orient;
+        renderer->render_sky_room(room, sky_transform_pos, sky_transform_orient);
+
+        // Gather lights once for the sky room and build transformed copies.
+        // Filter to only lights within the sky room's bounding box.
+        // All meshes in the same sky room share the same light set.
+        constexpr int max_sky_lights = 32;
+        rf::gr::Light sky_light_copies[max_sky_lights];
+        rf::gr::Light* sky_light_ptrs[max_sky_lights];
+        int sky_light_count = 0;
+
+        gather_mesh_lights(rf::Vector3{
+            (room->bbox_min.x + room->bbox_max.x) * 0.5f,
+            (room->bbox_min.y + room->bbox_max.y) * 0.5f,
+            (room->bbox_min.z + room->bbox_max.z) * 0.5f});
+
+        for (int i = 0; i < rf::gr::num_relevant_lights && sky_light_count < max_sky_lights; ++i) {
+            rf::gr::Light* light = rf::gr::relevant_lights[i];
+            if (light->vec.x < room->bbox_min.x || light->vec.x > room->bbox_max.x ||
+                light->vec.y < room->bbox_min.y || light->vec.y > room->bbox_max.y ||
+                light->vec.z < room->bbox_min.z || light->vec.z > room->bbox_max.z) {
+                continue;
+            }
+            sky_light_copies[sky_light_count] = *light;
+            sky_light_copies[sky_light_count].vec = sky_transform_orient.transform_vector(light->vec) + sky_transform_pos;
+            sky_light_copies[sky_light_count].vec2 = sky_transform_orient.transform_vector(light->vec2) + sky_transform_pos;
+            sky_light_copies[sky_light_count].spotlight_dir = sky_transform_orient.transform_vector(light->spotlight_dir);
+            sky_light_ptrs[sky_light_count] = &sky_light_copies[sky_light_count];
+            sky_light_count++;
+        }
+        rf::gr::light_filter_reset();
+
+        // Render meshes (entities, clutter, items, etc.) that are in the sky room
+        for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
+            if (!obj->vmesh || obj->room != room) {
+                continue;
+            }
+            if (obj->obj_flags & rf::OF_HIDDEN) {
+                continue;
+            }
+            if (obj->type == rf::OT_MOVER_BRUSH) {
+                continue;
+            }
+
+            // Set pre-built sky room lights for this mesh
+            std::memcpy(rf::gr::relevant_lights, sky_light_ptrs, sky_light_count * sizeof(rf::gr::Light*));
+            rf::gr::num_relevant_lights = sky_light_count;
+            skip_mesh_light_gather = true;
+
+            rf::MeshRenderParams render_params{};
+            render_params.init_defaults();
+            render_params.flags = rf::MRF_CLIP_VERTICES;
+            render_params.vertex_colors = reinterpret_cast<rf::ubyte*>(obj->mesh_lighting_data);
+            if (room->ambient_light_defined) {
+                render_params.flags |= rf::MRF_CUSTOM_AMBIENT_COLOR;
+                render_params.ambient_color = room->ambient_light;
+            }
+
+            rf::Vector3 transformed_pos = sky_transform_orient.transform_vector(obj->pos) + sky_transform_pos;
+            rf::Matrix3 transformed_orient = sky_transform_orient;
+            transformed_orient.mul(obj->orient);
+            rf::vmesh_render(obj->vmesh, &transformed_pos, &transformed_orient, &render_params);
+
+            skip_mesh_light_gather = false;
+            renderer->clear_mesh_lights();
+        }
     }
 
     void render_v3d_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, int lod_index, const rf::MeshRenderParams& params)
     {
+        if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels && !level_uses_vertex_lighting()) {
+            bool lights_gathered = false;
+            if (rf::level.geometry && !skip_mesh_light_gather) {
+                gather_mesh_lights(pos, lod_mesh->radius);
+                lights_gathered = true;
+            }
+
+            // Ensure render cache exists before setting self-illumination.
+            renderer->page_in_v3d_mesh(lod_mesh);
+
+            // Detect fullbright batches from CPU vertex colors.
+            // The stock CPU code sets vertex colors to exactly (255,255,255) for self-illuminated
+            // materials via max(computed_lighting, self_illumination * 255).
+            // Check ALL vertices in each chunk to avoid false positives from brightly-lit meshes
+            // where a few vertices happen to saturate to white. A truly self-illuminated batch
+            // will have every vertex at (255,255,255).
+            // Only update batches that don't already have self_illumination set (from v3d_page_in
+            // materials path) to avoid overwriting correct values with false positives.
+            if (params.vertex_colors && lod_mesh->render_cache) {
+                auto* cache = reinterpret_cast<BaseMeshRenderCache*>(lod_mesh->render_cache);
+                auto& batches = const_cast<std::vector<BaseMeshRenderCache::Batch>&>(cache->get_batches(lod_index));
+                rf::VifMesh* vif_mesh_lod = lod_mesh->meshes[lod_index];
+                if (vif_mesh_lod) {
+                    int vertex_offset = 0;
+                    for (int ci = 0; ci < vif_mesh_lod->num_chunks && ci < static_cast<int>(batches.size()); ++ci) {
+                        if (batches[ci].self_illumination == 0.0f) {
+                            int num_vecs = vif_mesh_lod->chunks[ci].num_vecs;
+                            if (num_vecs > 0) {
+                                const rf::ubyte* vc = params.vertex_colors + vertex_offset * 3;
+                                bool all_white = true;
+                                for (int vi = 0; vi < num_vecs; ++vi) {
+                                    if (vc[vi * 3] != 255 || vc[vi * 3 + 1] != 255 || vc[vi * 3 + 2] != 255) {
+                                        all_white = false;
+                                        break;
+                                    }
+                                }
+                                if (all_white) {
+                                    batches[ci].self_illumination = 1.0f;
+                                }
+                            }
+                        }
+                        vertex_offset += vif_mesh_lod->chunks[ci].num_vecs;
+                    }
+                }
+            }
+
+            // Clear CPU vertex colors so the GPU shader handles all lighting.
+            rf::MeshRenderParams params_no_cpu_lighting = params;
+            params_no_cpu_lighting.vertex_colors = nullptr;
+
+            renderer->render_v3d_vif(lod_mesh, lod_index, pos, orient, params_no_cpu_lighting, true);
+
+            if (lights_gathered) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
+            return;
+        }
+
         renderer->render_v3d_vif(lod_mesh, lod_index, pos, orient, params);
     }
 
     void render_character_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, int lod_index, const rf::MeshRenderParams& params)
     {
+        bool use_vertex_lighting = level_uses_vertex_lighting();
+
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels) {
-            bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) == 0;
+            // Gather nearby lights (both static and dynamic) so the pixel shader can
+            // compute per-pixel N·L lighting for this character mesh.
+            // Skip when using vertex lighting — the old path doesn't need gathered lights.
+            bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
+            bool lights_gathered = false;
+            if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
+                gather_mesh_lights(pos, lod_mesh->radius);
+                lights_gathered = true;
+            }
+
+            bool fullbright_character = g_character_meshes_are_fullbright && !is_first_person;
             bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character;
 
             if (synthesize_colors) {
                 rf::MeshRenderParams params_with_vertex_colors = params;
-
-                float ambient_r = static_cast<float>(params.ambient_color.red);
-                float ambient_g = static_cast<float>(params.ambient_color.green);
-                float ambient_b = static_cast<float>(params.ambient_color.blue);
-                float lvl_ambient_r = static_cast<float>(rf::level.ambient_light.red);
-                float lvl_ambient_g = static_cast<float>(rf::level.ambient_light.green);
-                float lvl_ambient_b = static_cast<float>(rf::level.ambient_light.blue);
-
-                // if mesh amb color is full white it is usually because player is standing on a mover or a surface
-                // without lightmaps. Take a guess on a reasonable light level for the map so it doesn't look as ugly
-                if (ambient_r == 255 && ambient_g == 255 && ambient_b == 255) {
-                    ambient_r = lvl_ambient_r + 64.0f;
-                    ambient_g = lvl_ambient_g + 64.0f;
-                    ambient_b = lvl_ambient_b + 64.0f;
-                }
-
-                constexpr float scale = 1.5f;
-                constexpr float bias = 32.0f;
-
-                params_with_vertex_colors.ambient_color.red =
-                    static_cast<rf::ubyte>(std::clamp(ambient_r * scale + bias, 0.0f, 255.0f));
-                params_with_vertex_colors.ambient_color.green =
-                    static_cast<rf::ubyte>(std::clamp(ambient_g * scale + bias, 0.0f, 255.0f));
-                params_with_vertex_colors.ambient_color.blue =
-                    static_cast<rf::ubyte>(std::clamp(ambient_b * scale + bias, 0.0f, 255.0f));
-
-                //xlog::warn("built amb color {},{},{}", params_with_vertex_colors.ambient_color.red, params_with_vertex_colors.ambient_color.green, params_with_vertex_colors.ambient_color.blue);
 
                 rf::VifMesh* lod_mesh_level = lod_mesh->meshes[lod_index];
                 int total_vertices = 0;
@@ -259,10 +587,29 @@ namespace df::gr::d3d11
                 static thread_local ScratchVertexColors scratch_vertex_colors;
                 scratch_vertex_colors.data.resize(static_cast<std::size_t>(total_vertices) * 3);
 
-                rf::Color base_color = params_with_vertex_colors.ambient_color;
-                if (fullbright_character) {
-                    base_color = {255, 255, 255, 255};
+                rf::Color base_color{255, 255, 255, 255};
+
+                if (use_vertex_lighting && !fullbright_character) {
+                    // Old (master) CPU ambient calculation: scale + bias the entity's
+                    // lightmap-sampled ambient color into vertex colors.
+                    float ambient_r = static_cast<float>(params.ambient_color.red);
+                    float ambient_g = static_cast<float>(params.ambient_color.green);
+                    float ambient_b = static_cast<float>(params.ambient_color.blue);
+
+                    // White ambient means no lightmap data — guess from level ambient
+                    if (ambient_r == 255 && ambient_g == 255 && ambient_b == 255) {
+                        ambient_r = static_cast<float>(rf::level.ambient_light.red) + 64.0f;
+                        ambient_g = static_cast<float>(rf::level.ambient_light.green) + 64.0f;
+                        ambient_b = static_cast<float>(rf::level.ambient_light.blue) + 64.0f;
+                    }
+
+                    constexpr float scale = 1.5f;
+                    constexpr float bias = 32.0f;
+                    base_color.red = static_cast<rf::ubyte>(std::clamp(ambient_r * scale + bias, 0.0f, 255.0f));
+                    base_color.green = static_cast<rf::ubyte>(std::clamp(ambient_g * scale + bias, 0.0f, 255.0f));
+                    base_color.blue = static_cast<rf::ubyte>(std::clamp(ambient_b * scale + bias, 0.0f, 255.0f));
                 }
+                // else: enhanced lighting uses neutral white — shader handles all lighting
 
                 bool color_changed =
                     scratch_vertex_colors.last_color.red != base_color.red ||
@@ -281,9 +628,22 @@ namespace df::gr::d3d11
                 }
 
                 params_with_vertex_colors.vertex_colors = scratch_vertex_colors.data.data();
-                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors);
+                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors, !use_vertex_lighting);
+
+                if (lights_gathered) {
+                    rf::gr::light_filter_reset();
+                    renderer->clear_mesh_lights();
+                }
                 return;
             }
+
+            renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
+
+            if (lights_gathered) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
+            return;
         }
 
         renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
@@ -320,7 +680,14 @@ namespace df::gr::d3d11
 
     void update_window_mode()
     {
-        renderer->set_fullscreen_state(rf::gr::screen.window_mode == rf::gr::FULLSCREEN);
+        bool want_fullscreen = rf::gr::screen.window_mode == rf::gr::FULLSCREEN;
+        if (want_fullscreen && !renderer->supports_exclusive_fullscreen()) {
+            xlog::error("Cannot enter exclusive fullscreen while D3D11_LowFrameLatency or D3D11_AllowTearing are enabled in alpine_system.ini.");
+            rf::gr::screen.window_mode = rf::gr::WINDOWED;
+            renderer->set_fullscreen_state(false);
+            return;
+        }
+        renderer->set_fullscreen_state(want_fullscreen);
     }
 
     rf::ubyte project_vertex_new(Vertex* v)
@@ -389,12 +756,16 @@ namespace df::gr::d3d11
         },
     };
 
+
     static CodeInjection v3d_page_in_injection{
         0x0053C1B9,
         [](auto& regs) {
             rf::V3d* v3d = regs.ecx;
-            if (renderer && v3d->num_meshes > 0) {
-                renderer->page_in_v3d_mesh(v3d->meshes[0].vu);
+            if (renderer && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
+                auto* materials = reinterpret_cast<rf::MeshMaterial*>(v3d->meshes[0].materials);
+                int num_materials = v3d->meshes[0].num_materials;
+                renderer->page_in_v3d_mesh(v3d->meshes[0].vu,
+                    (num_materials > 0) ? materials : nullptr, num_materials);
             }
         },
     };
@@ -408,6 +779,13 @@ namespace df::gr::d3d11
             }
         },
     };
+
+    void set_pow2_tex_active(bool active)
+    {
+        if (renderer) {
+            renderer->set_pow2_tex_active(active);
+        }
+    }
 
     static CodeInjection level_page_in_injection{
         0x0045CC20,
@@ -427,6 +805,42 @@ namespace df::gr::d3d11
         []() {
             if (renderer) {
                 renderer->flush_caches();
+            }
+            clear_entity_ambient_cache();
+        },
+    };
+
+    // Hook blob shadow rendering: allow blob shadows only when D3D11 shadow quality is 0
+    static CallHook<void()> obj_shadow_render_all_hook{
+        0x00432021,
+        []() {
+            if (g_alpine_game_config.shadow_quality > 0) {
+                return; // D3D11 shadow mapping handles shadows at quality > 0
+            }
+            obj_shadow_render_all_hook.call_target();
+        },
+    };
+
+    static FunHook<void(void*)> item_render_hook{
+        0x00458F80,
+        [](void* item) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard;
+                item_render_hook.call_target(item);
+            } else {
+                item_render_hook.call_target(item);
+            }
+        },
+    };
+
+    static FunHook<void(void*)> entity_render_weapon_in_hands_hook{
+        0x00421C40,
+        [](void* entity) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard;
+                entity_render_weapon_in_hands_hook.call_target(entity);
+            } else {
+                entity_render_weapon_in_hands_hook.call_target(entity);
             }
         },
     };
@@ -526,6 +940,12 @@ void gr_d3d11_apply_patch()
     AsmWriter{0x0052E9E0}.jmp(render_character_vif); // gr_d3d_render_character_vif
     AsmWriter{0x004D34D0}.jmp(render_alpha_detail_room); // room_render_alpha_detail
     AsmWriter{0x0054F160}.ret(); // gr_d3d_set_state
+
+    // Hook blob shadow rendering: skip when D3D11 shadow mapping is active (quality > 0)
+    obj_shadow_render_all_hook.install();
+    
+    item_render_hook.install();
+    entity_render_weapon_in_hands_hook.install();
 
     // Change size of standard structures
     write_mem<int8_t>(0x00569884 + 1, sizeof(rf::VifMesh));

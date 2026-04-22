@@ -1,5 +1,6 @@
 #include <cassert>
 #include <dxgi1_4.h>
+#include <dxgi1_5.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
@@ -16,13 +17,15 @@
 #include "gr_d3d11_dynamic_geometry.h"
 #include "gr_d3d11_solid.h"
 #include "gr_d3d11_mesh.h"
+#include "gr_d3d11_entity_shadow.h"
+#include "gr_d3d11_outline.h"
+#include "gr_d3d11_gamma.h"
 
 using namespace rf;
 
 namespace df::gr::d3d11
 {
     constexpr DXGI_FORMAT swap_chain_format = DXGI_FORMAT_B8G8R8A8_UNORM;
-    constexpr UINT swap_chain_flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
 
     Renderer::Renderer(HWND hwnd) : hwnd_{hwnd}, d3d11_lib_{L"d3d11.dll"}
     {
@@ -30,6 +33,12 @@ namespace df::gr::d3d11
             RF_DEBUG_ERROR("Failed to load d3d11.dll");
         }
         init_device();
+        // Snapshot settings that must stay consistent across the swap chain / back buffer
+        // setup and the flip() path. Changes require a restart to take effect, so the
+        // user doesn't end up with a half-applied state mid-session.
+        low_frame_latency_ = g_alpine_system_config.low_frame_latency;
+        skip_gamma_pass_ = g_alpine_system_config.skip_gamma_pass;
+        allow_tearing_ = g_alpine_system_config.allow_tearing;
         init_swap_chain(hwnd);
         init_back_buffer();
         init_depth_stencil_buffer();
@@ -41,6 +50,19 @@ namespace df::gr::d3d11
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        entity_shadow_renderer_ = std::make_unique<EntityShadowRenderer>(device_, *shader_manager_, *mesh_renderer_);
+        outline_renderer_ = std::make_unique<OutlineRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
+        gamma_pass_ = std::make_unique<GammaPass>(device_, *shader_manager_);
+
+        // Flush pending outlines before each dyn_geo draw. This ensures outlines
+        // render behind transparent effects (smoke, particles, explosions) that are
+        // batched in the dyn_geo renderer during scene rendering. Without this,
+        // the dyn_geo batcher can flush particles to the framebuffer mid-scene
+        // (on state changes or at explicit flush points like render_alpha_detail_room),
+        // and outlines would later render on top of those already-drawn particles.
+        dyn_geo_renderer_->set_pre_flush_callback([this]() {
+            outline_renderer_->flush(*mesh_renderer_);
+        });
 
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         render_context_->set_cull_mode(D3D11_CULL_BACK);
@@ -59,6 +81,10 @@ namespace df::gr::d3d11
         }
         if (gr::screen.window_mode == gr::FULLSCREEN) {
             swap_chain_->SetFullscreenState(FALSE, nullptr);
+        }
+        if (frame_latency_wait_handle_) {
+            CloseHandle(frame_latency_wait_handle_);
+            frame_latency_wait_handle_ = nullptr;
         }
     }
 
@@ -88,10 +114,13 @@ namespace df::gr::d3d11
         // unref swapchain resources before calling ResizeBuffers
         context_->OMSetRenderTargets(0, nullptr, nullptr);
         back_buffer_.release();
+        back_buffer_rtv_.release();
+        scene_texture_.release();
+        scene_texture_srv_.release();
         default_render_target_.release();
         default_render_target_view_.release();
         DF_GR_D3D11_CHECK_HR(
-            swap_chain_->ResizeBuffers(0, gr::screen.max_w, gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags)
+            swap_chain_->ResizeBuffers(0, gr::screen.max_w, gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags_)
         );
         // get back buffer from the swap chain after it has been resized
         init_back_buffer();
@@ -167,6 +196,52 @@ namespace df::gr::d3d11
         dxgi_factory->QueryInterface(&dxgi_factory3);
         dxgi_factory->QueryInterface(&dxgi_factory4);
 
+        swap_chain_flags_ = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+        // Both features require IDXGIFactory2 (flip-model swap chains). Without it
+        // we're on the legacy CreateSwapChain path; clear the snapshots so flip()
+        // doesn't later pass DXGI_PRESENT_ALLOW_TEARING to a non-tearing swap chain.
+        if (!dxgi_factory2) {
+            if (low_frame_latency_ || allow_tearing_) {
+                xlog::warn("LowFrameLatency and AllowTearing require IDXGIFactory2; disabled");
+            }
+            low_frame_latency_ = false;
+            allow_tearing_ = false;
+        }
+        if (low_frame_latency_) {
+            if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
+                low_frame_latency_ = false;
+                xlog::warn("LowFrameLatency requires windowed or stretched window mode; disabled in fullscreen");
+            }
+            else {
+                swap_chain_flags_ |= DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+            }
+        }
+        if (allow_tearing_) {
+            if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
+                allow_tearing_ = false;
+                xlog::warn("AllowTearing requires windowed or stretched window mode; disabled in fullscreen");
+            }
+            else {
+                ComPtr<IDXGIFactory5> dxgi_factory5;
+                if (SUCCEEDED(dxgi_factory->QueryInterface(&dxgi_factory5))) {
+                    BOOL tearing_supported = FALSE;
+                    if (SUCCEEDED(dxgi_factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                            &tearing_supported, sizeof(tearing_supported))) && tearing_supported) {
+                        swap_chain_flags_ |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+                        xlog::info("D3D11 ALLOW_TEARING enabled");
+                    }
+                    else {
+                        allow_tearing_ = false;
+                        xlog::warn("ALLOW_TEARING requested but the system does not support it; disabled");
+                    }
+                }
+                else {
+                    allow_tearing_ = false;
+                    xlog::warn("ALLOW_TEARING requires IDXGIFactory5; disabled");
+                }
+            }
+        }
+
         if (dxgi_factory2) {
             DXGI_SWAP_CHAIN_DESC1 sc_desc1;
             ZeroMemory(&sc_desc1, sizeof(sc_desc1));
@@ -188,7 +263,7 @@ namespace df::gr::d3d11
                 sc_desc1.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
             }
             xlog::info("D3D11 swap effect: {}", static_cast<int>(sc_desc1.SwapEffect));
-            sc_desc1.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+            sc_desc1.Flags = swap_chain_flags_;
 
             DXGI_SWAP_CHAIN_FULLSCREEN_DESC sc_fs_desc;
             ZeroMemory(&sc_fs_desc, sizeof(sc_fs_desc));
@@ -199,6 +274,39 @@ namespace df::gr::d3d11
                 dxgi_factory2->CreateSwapChainForHwnd(device_, hwnd, &sc_desc1, &sc_fs_desc, nullptr, &swap_chain1)
             );
             DF_GR_D3D11_CHECK_HR(swap_chain1->QueryInterface(&swap_chain_));
+
+            // Configure the low-latency waitable-object pattern. This is the flip-model-correct
+            // way to cap queued frames; the device-level SetMaximumFrameLatency API has known
+            // pacing problems on flip-model swap chains with some drivers.
+            if (swap_chain_flags_ & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
+                ComPtr<IDXGISwapChain2> swap_chain2;
+                if (SUCCEEDED(swap_chain_->QueryInterface(&swap_chain2))) {
+                    HRESULT max_latency_hr = swap_chain2->SetMaximumFrameLatency(1);
+                    if (FAILED(max_latency_hr)) {
+                        xlog::warn("SetMaximumFrameLatency failed (hr=0x{:x}); low frame latency inactive", static_cast<unsigned>(max_latency_hr));
+                    }
+                    else {
+                        frame_latency_wait_handle_ = swap_chain2->GetFrameLatencyWaitableObject();
+                        if (frame_latency_wait_handle_) {
+                            xlog::info("D3D11 low-latency waitable object acquired");
+                        }
+                        else {
+                            xlog::warn("GetFrameLatencyWaitableObject returned null; low frame latency inactive");
+                        }
+                    }
+                }
+                else {
+                    xlog::warn("IDXGISwapChain2 not available; low frame latency inactive");
+                }
+                // The FRAME_LATENCY_WAITABLE_OBJECT flag is baked into the swap chain at
+                // creation; we can't strip it after the fact. If we didn't end up with a
+                // usable wait handle, fullscreen stays blocked until the user disables
+                // D3D11_LowFrameLatency and restarts.
+                if (!frame_latency_wait_handle_) {
+                    xlog::warn("Exclusive fullscreen will remain unavailable this session; "
+                               "set D3D11_LowFrameLatency=0 in alpine_system.ini and restart to restore");
+                }
+            }
         }
         else {
             DXGI_SWAP_CHAIN_DESC sd;
@@ -214,7 +322,7 @@ namespace df::gr::d3d11
             sd.SampleDesc.Count = 1;
             sd.SampleDesc.Quality = 0;
             sd.Windowed = rf::gr::screen.window_mode == rf::gr::WINDOWED;
-            sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+            sd.Flags = swap_chain_flags_;
 
             DF_GR_D3D11_CHECK_HR(
                 dxgi_factory->CreateSwapChain(device_, &sd, &swap_chain_)
@@ -237,7 +345,16 @@ namespace df::gr::d3d11
             swap_chain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<LPVOID*>(&back_buffer_))
         );
 
-        // Create a render-target view
+        // Always create back buffer RTV (used as gamma pass output, or as the main
+        // render target when the gamma pass is skipped)
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateRenderTargetView(back_buffer_, nullptr, &back_buffer_rtv_)
+        );
+
+        // Create intermediate scene texture for gamma post-processing
+        init_scene_texture();
+
+        // Create a render-target view for the main rendering pass
         if (g_game_config.msaa) {
             D3D11_TEXTURE2D_DESC desc;
             back_buffer_->GetDesc(&desc);
@@ -253,11 +370,29 @@ namespace df::gr::d3d11
             );
         }
         else {
-            default_render_target_ = back_buffer_;
+            // Without MSAA, render directly to the scene texture. Final output to
+            // back_buffer_ happens in flip() — either via the gamma pass, or via
+            // a CopyResource when the gamma pass is skipped.
+            default_render_target_ = scene_texture_;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateRenderTargetView(default_render_target_, nullptr, &default_render_target_view_)
             );
         }
+    }
+
+    void Renderer::init_scene_texture()
+    {
+        D3D11_TEXTURE2D_DESC desc;
+        back_buffer_->GetDesc(&desc);
+        desc.SampleDesc.Count = 1;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateTexture2D(&desc, nullptr, &scene_texture_)
+        );
+        DF_GR_D3D11_CHECK_HR(
+            device_->CreateShaderResourceView(scene_texture_, nullptr, &scene_texture_srv_)
+        );
     }
 
     void Renderer::init_depth_stencil_buffer()
@@ -290,6 +425,15 @@ namespace df::gr::d3d11
 
     void Renderer::bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, gr::Mode mode)
     {
+        // Flush pending outlines before any 2D bitmap is committed to the framebuffer.
+        // RF draws the scope overlay as a bitmap during HUD rendering. Because the
+        // dyn_geo batcher flushes each batch when the texture/mode changes (see setup()),
+        // the scope can end up in the framebuffer before zbuffer_clear fires and flushes
+        // outlines — which would place outlines on top of the scope. By flushing outlines
+        // here (on the first bitmap after 3D scene rendering), outlines land in the
+        // framebuffer first, and subsequent bitmaps (scope etc.) commit on top of them.
+        // If outlines were already flushed in zbuffer_clear this is a no-op.
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->bitmap(bm_handle,
             static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h),
             static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sw), static_cast<float>(sh),
@@ -298,6 +442,7 @@ namespace df::gr::d3d11
 
     void Renderer::bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->bitmap(bm_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
     }
 
@@ -314,6 +459,21 @@ namespace df::gr::d3d11
 
     void Renderer::zbuffer_clear()
     {
+        // Flush queued outlines before clearing the depth buffer.
+        // The fpgun rendering clears zbuffer before its setup_3d call,
+        // so outlines must be rendered while scene depth data is still available.
+        // Outlines are flushed first so that subsequently flushed dyn_geo draws
+        // (player labels, crosshair, world HUD) always render on top of outlines.
+        // The outline silhouette pass writes depth (DepthWriteMask = ALL) to prevent
+        // liquid surfaces from alpha-blending over outline pixels. This is safe here
+        // because the zbuffer is about to be cleared for the fpgun pass, and the
+        // written depth values are geometrically correct (at the character's depth).
+        // Note: the scope overlay (a bitmap) is drawn
+        // BEFORE zbuffer_clear, causing the scope to reach the framebuffer before
+        // this flush via the dyn_geo batcher's automatic state-change flush. The
+        // bitmap() override handles that case by flushing outlines on the first
+        // bitmap call, so this flush here is then a no-op and that path is also safe.
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         render_context_->zbuffer_clear();
     }
@@ -326,14 +486,66 @@ namespace df::gr::d3d11
 
     void Renderer::flip()
     {
+        // Pace the CPU against the GPU's presentation queue before we do any
+        // end-of-frame work. This is the canonical placement for the frame-latency
+        // waitable object (MSFT samples wait at frame-start); it gates Present()
+        // on the swap chain being ready to accept the next frame. The handle is
+        // auto-reset and starts signaled, so the first wait returns immediately.
+        if (frame_latency_wait_handle_) {
+            DWORD wait_result = WaitForSingleObject(frame_latency_wait_handle_, 1000);
+            if (wait_result == WAIT_TIMEOUT) {
+                if (!frame_latency_stall_logged_) {
+                    xlog::warn("Frame-latency wait timed out after 1000 ms; GPU may be stalled");
+                    frame_latency_stall_logged_ = true;
+                }
+            }
+            else if (wait_result == WAIT_FAILED) {
+                xlog::warn("Frame-latency wait failed (GetLastError={}); disabling", GetLastError());
+                CloseHandle(frame_latency_wait_handle_);
+                frame_latency_wait_handle_ = nullptr;
+            }
+            else {
+                frame_latency_stall_logged_ = false;
+            }
+        }
+        outline_renderer_->flush_forced_xray(*mesh_renderer_);
         dyn_geo_renderer_->flush();
+        entity_shadow_renderer_->render_debug_overlay(context_);
+        entity_shadow_renderer_->unbind_shadow_resources(context_);
         if (msaa_render_target_) {
-            context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
+            // Resolve MSAA into scene_texture_ unconditionally. The final copy to
+            // back_buffer_ happens below — either via the gamma pass, or via a
+            // CopyResource when the gamma pass is skipped.
+            context_->ResolveSubresource(scene_texture_, 0, msaa_render_target_, 0, swap_chain_format);
+        }
+        if (skip_gamma_pass_) {
+            // Straight copy into the back buffer; cheaper than the gamma pixel shader
+            // and avoids the state invalidate, while keeping scene_texture_ stable
+            // for read_back_buffer. CopyResource forbids src/dst being bound as RTV,
+            // and in the no-MSAA path scene_texture_ is bound via default_render_target_view_,
+            // so unbind before the copy. set_render_target at end of flip() rebinds.
+            context_->OMSetRenderTargets(0, nullptr, nullptr);
+            context_->CopyResource(back_buffer_, scene_texture_);
+        }
+        else {
+            // Gamma-corrects scene_texture_ into the back buffer. Runs unconditionally
+            // even at gamma == 1.0 (where the shader degenerates to a copy) because
+            // the per-frame cost is negligible and skipping the float comparison keeps
+            // the hot path branchless.
+            gamma_pass_->render(context_, scene_texture_srv_, back_buffer_rtv_, rf::gr::gamma);
+            // Restore render context state after gamma pass overwrote shaders/layout/blend/etc.
+            render_context_->invalidate_cached_state();
         }
         xlog::trace("Presenting frame {}", rf::frame_count);
         UINT sync_interval = g_alpine_system_config.vsync ? 1 : 0;
+        // DXGI_PRESENT_ALLOW_TEARING can only be combined with sync_interval 0, and only
+        // works when the swap chain was created with DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.
+        UINT present_flags = 0;
+        if (allow_tearing_ && sync_interval == 0) {
+            present_flags |= DXGI_PRESENT_ALLOW_TEARING;
+        }
         DF_GR_D3D11_CHECK_HR(
-            swap_chain_->Present(sync_interval, 0)
+            swap_chain_->Present(sync_interval, present_flags)
         );
         // Flip swap effect clears render target after Present call
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
@@ -349,6 +561,11 @@ namespace df::gr::d3d11
     void Renderer::texture_flush_cache(bool force)
     {
         texture_manager_->flush_cache(force);
+    }
+
+    void Renderer::texture_flush_non_user_cache()
+    {
+        texture_manager_->flush_non_user_cache();
     }
 
     void Renderer::texture_mark_dirty(int bm_handle)
@@ -417,7 +634,7 @@ namespace df::gr::d3d11
                 project_vertex(v);
             }
             if (constant_sw) {
-                float unscaled_z = sw / matrix_scale.z;
+                float unscaled_z = std::max(sw / matrix_scale.z, 0.1f);
                 v->sw = render_context_->projection().project_z(unscaled_z);
             }
         }
@@ -464,15 +681,26 @@ namespace df::gr::d3d11
     bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)
     {
         dyn_geo_renderer_->flush();
+        // Resolve the current scene content into a readable texture.
+        // With MSAA the scene lives in msaa_render_target_; without MSAA it is
+        // already in scene_texture_ (which is also a non-MSAA texture).
         if (msaa_render_target_) {
             context_->ResolveSubresource(back_buffer_, 0, msaa_render_target_, 0, swap_chain_format);
+            return texture_manager_->read_back_buffer(back_buffer_, x, y, w, h, data);
         }
-        return texture_manager_->read_back_buffer(back_buffer_, x, y, w, h, data);
+        return texture_manager_->read_back_buffer(scene_texture_, x, y, w, h, data);
     }
 
     void Renderer::setup_3d(Projection proj)
     {
         render_context_->update_view_proj_transform(proj);
+        // Only initialize outlines when rendering to the back buffer.
+        // The rail gun scanner calls setup_3d while rendering to a small texture;
+        // running begin_frame there would save the wrong projection and cause
+        // outlines to be queued (and potentially flushed) into the scanner texture.
+        if (render_target_bm_handle_ == -1) {
+            outline_renderer_->begin_frame();
+        }
     }
 
     void Renderer::set_far_clip(bool enabled)
@@ -483,6 +711,24 @@ namespace df::gr::d3d11
     void Renderer::render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
     {
         dyn_geo_renderer_->flush();
+
+        // Generate entity shadow map before rendering the scene
+        entity_shadow_renderer_->generate_shadow_map(context_, *render_context_, rf::gr::eye_pos);
+
+        // Restore render target and viewport after shadow pass
+        // Use the current render target (may be a security camera/mirror texture, not the backbuffer)
+        ID3D11RenderTargetView* current_rtv = default_render_target_view_;
+        if (render_target_bm_handle_ != -1) {
+            ID3D11RenderTargetView* rt = texture_manager_->lookup_render_target(render_target_bm_handle_);
+            if (rt) current_rtv = rt;
+        }
+        render_context_->set_render_target(current_rtv, depth_stencil_view_);
+        render_context_->set_clip();
+        render_context_->set_cull_mode(D3D11_CULL_BACK);
+
+        // Bind shadow resources for the scene pixel shader
+        entity_shadow_renderer_->bind_shadow_resources(context_);
+
         solid_renderer_->render_solid(solid, rooms, num_rooms);
     }
 
@@ -498,16 +744,26 @@ namespace df::gr::d3d11
         solid_renderer_->render_alpha_detail(room, solid);
     }
 
-    void Renderer::render_sky_room(rf::GRoom *room)
+    void Renderer::render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient)
     {
         dyn_geo_renderer_->flush();
-        solid_renderer_->render_sky_room(room);
+        solid_renderer_->render_sky_room(room, out_sky_transform_pos, out_sky_transform_orient);
     }
 
     void Renderer::render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room)
     {
+        // Flush outlines before liquid renders. The outline silhouette pass writes
+        // depth (DepthWriteMask=ALL), so outline pixels claim depth ownership.
+        // When the liquid subsequently depth-tests at those pixels, it fails
+        // (outline is closer than liquid), preventing liquid alpha-blend from
+        // contaminating outline colors.
+        outline_renderer_->flush(*mesh_renderer_);
         dyn_geo_renderer_->flush();
+        // Disable shadows for liquid surfaces — shadows pass through water/lava
+        // and land on the solid geometry below
+        entity_shadow_renderer_->disable_shadow_rendering(context_);
         solid_renderer_->render_room_liquid_surface(solid, room);
+        entity_shadow_renderer_->bind_shadow_resources(context_);
     }
 
     void Renderer::clear_solid_cache()
@@ -520,16 +776,60 @@ namespace df::gr::d3d11
         solid_renderer_->reset_cache_after_boolean();
     }
 
-    void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params)
+    void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
-        mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params);
+        mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
+
+        // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
+        if (render_target_bm_handle_ != -1) {
+            return;
+        }
+
+        // Queue outline for third-person weapon meshes.
+        // The game renders weapon meshes (MRF_CUSTOM_AMBIENT_COLOR) immediately after
+        // the owning character mesh, so current_character_outline tracks the association.
+        if ((params.flags & rf::MeshRenderFlags::MRF_CUSTOM_AMBIENT_COLOR) &&
+            !(params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON)) {
+            if (auto* info = outline_renderer_->current_character_outline()) {
+                QueuedV3dOutline entry{};
+                entry.lod_mesh = lod_mesh;
+                entry.lod_index = lod_index;
+                entry.pos = pos;
+                entry.orient = orient;
+                entry.info = *info;
+                outline_renderer_->queue_v3d(std::move(entry));
+            }
+        }
     }
 
-    void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params)
+    void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
         dyn_geo_renderer_->flush();
-        mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
+        mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
+
+        // Skip outline queuing when rendering to a texture (e.g. rail gun scanner).
+        // Outlines use the main depth/stencil buffer and should only render to the back buffer.
+        if (render_target_bm_handle_ != -1) {
+            return;
+        }
+
+        // Queue outline if this character needs one, and track for weapon meshes
+        if (auto* info = outline_renderer_->lookup(ci)) {
+            outline_renderer_->set_current_character_outline(info);
+
+            QueuedOutline entry{};
+            entry.lod_mesh = lod_mesh;
+            entry.lod_index = lod_index;
+            entry.pos = pos;
+            entry.orient = orient;
+            entry.ci = ci;
+            entry.info = *info;
+            outline_renderer_->queue(std::move(entry));
+        }
+        else {
+            outline_renderer_->set_current_character_outline(nullptr);
+        }
     }
 
     void Renderer::clear_vif_cache(rf::VifLodMesh *lod_mesh)
@@ -543,9 +843,9 @@ namespace df::gr::d3d11
         render_context_->fog_set();
     }
 
-    void Renderer::page_in_v3d_mesh(rf::VifLodMesh* lod_mesh)
+    void Renderer::page_in_v3d_mesh(rf::VifLodMesh* lod_mesh, rf::MeshMaterial* materials, int num_materials)
     {
-        mesh_renderer_->page_in_v3d_mesh(lod_mesh);
+        mesh_renderer_->page_in_v3d_mesh(lod_mesh, materials, num_materials);
     }
 
     void Renderer::page_in_character_mesh(rf::VifLodMesh* lod_mesh)
@@ -573,8 +873,36 @@ namespace df::gr::d3d11
         mesh_renderer_->reset_static_vertex_color_tracking();
     }
 
+    void Renderer::clear_mesh_lights()
+    {
+        render_context_->update_lights();
+    }
+
     float Renderer::z_far() const
     {
         return render_context_->projection().z_far();
+    }
+
+    bool Renderer::supports_exclusive_fullscreen() const
+    {
+        // ALLOW_TEARING and FRAME_LATENCY_WAITABLE_OBJECT are both incompatible with
+        // exclusive fullscreen swap chains. If either flag is set, SetFullscreenState(TRUE)
+        // may fail. Callers should check this before initiating a fullscreen transition.
+        constexpr UINT incompatible = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING |
+                                      DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
+        return (swap_chain_flags_ & incompatible) == 0;
+    }
+
+    void Renderer::set_pow2_tex_active(bool active)
+    {
+        bool was_active = render_context_->is_pow2_tex_active();
+        render_context_->set_pow2_tex_active(active);
+
+        // When transitioning from p2t to non-p2t, evict only pow2-padded textures
+        // so they are reloaded at native dimensions. Non-padded textures (fonts,
+        // user bitmaps, already-pow2 textures) are preserved.
+        if (was_active && !active) {
+            texture_manager_->flush_pow2_padded_textures();
+        }
     }
 }

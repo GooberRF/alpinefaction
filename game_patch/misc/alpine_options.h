@@ -126,6 +126,8 @@ enum class AlpineLevelInfoID
     ChatMap8,
     ChatMap9,
     CraterTexturePPM,
+    UseVertexLighting,
+    PixelLightOverbright,
     _optioncount       // dummy for total count
 };
 
@@ -191,5 +193,7 @@ inline T get_level_info_or_default(const std::string& level, AlpineLevelInfoID i
 }
 
 bool is_p2t_fix_level(const std::string& filename);
+bool is_sky_fix_level(const std::string& filename);
+bool is_stock_alpha_test_level(const std::string& filename);
 bool is_known_run_level(const std::string& filename);
 void open_url(const std::string& url);

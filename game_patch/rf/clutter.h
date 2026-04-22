@@ -27,7 +27,7 @@ namespace rf
         float explode_anim_radius;
         float explode_damage;
         Vector3 explode_offset;
-        Timestamp timer_70;
+        Timestamp explode_anim_timer;
         int flags;
         float debris_velocity;
         int glare;
@@ -99,6 +99,28 @@ namespace rf
     };
 
     static auto& clutter_list = addr_as_ref<Clutter>(0x005C9360);
+    static auto& clutter_list_tail = addr_as_ref<Clutter*>(0x005C95F0);
+    static auto& clutter_count = addr_as_ref<int>(0x005C9358);
+    static auto& clutter_killable_count = addr_as_ref<int>(0x005AFB84);
+    static constexpr int clutter_killable_max = 0xC80; // 3200
+    static auto& clutter_killable_bitset = addr_as_ref<BitSet>(0x005C97E8);
+
+    // Shared dummy ClutterInfo for alpine objects that don't need clutter behavior.
+    inline ClutterInfo& get_dummy_clutter_info()
+    {
+        static ClutterInfo info = []() {
+            ClutterInfo ci{};
+            ci.life = -1.0f;
+            ci.sound = -1;
+            ci.use_sound = -1;
+            ci.explode_anim_vclip = -1;
+            ci.glare = -1;
+            ci.rod_glare = -1;
+            ci.light_prop = -1;
+            return ci;
+        }();
+        return info;
+    }
     static auto& monitor_list = addr_as_ref<Monitor>(0x005C98A8);
 
     static auto& clutter_create = addr_as_ref<Clutter*(int clutter_info_index, const char* name, int parent_handle, const Vector3* pos, const Matrix3* orient, int register_killable)>(0x004104A0);

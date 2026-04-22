@@ -2,6 +2,7 @@
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
+#include <shellapi.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -14,16 +15,20 @@
 #include "alpine_packets.h"
 #include "server_internal.h"
 #include "gametype.h"
+#include "bots/bot_chat_manager.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/file/file.h"
 #include "../rf/level.h"
+#include "../os/os.h"
 #include "../os/console.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 #include "../rf/os/os.h"
 #include "../rf/event.h"
 #include "../rf/gameseq.h"
+#include "../rf/misc.h"
 #include "../rf/os/timer.h"
 #include "../rf/player/camera.h"
 #include "../rf/multi.h"
@@ -34,6 +39,7 @@
 #include "../rf/localize.h"
 #include "../rf/ai.h"
 #include "../rf/item.h"
+#include "../rf/sound/sound.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
 
@@ -49,6 +55,129 @@ static rf::CmdLineParam& get_levelm_cmd_line_param()
 {
     static rf::CmdLineParam levelm_param{"-levelm", "", true};
     return levelm_param;
+}
+
+static rf::CmdLineParam& get_bot_cmd_line_param()
+{
+    static rf::CmdLineParam bot_param{"-bot", "", true};
+    return bot_param;
+}
+
+static rf::CmdLineParam& get_debugbot_cmd_line_param()
+{
+    static rf::CmdLineParam debugbot_param{"-debugbot", "", true};
+    return debugbot_param;
+}
+
+static rf::CmdLineParam& get_noquit_cmd_line_param()
+{
+    static rf::CmdLineParam noquit_param{"-noquit", "", false};
+    return noquit_param;
+}
+
+static rf::CmdLineParam& get_awpgen_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_param{"-awpgen", "", true};
+    return awpgen_param;
+}
+
+static bool g_client_bot_launch_enabled = false;
+static bool g_client_bot_debug_render_enabled = false;
+static bool g_awpgen_mode = false;
+
+bool client_bot_launch_enabled()
+{
+    return g_client_bot_launch_enabled
+        || is_client_bot_requested_from_cmdline()
+        || is_client_debugbot_requested_from_cmdline();
+}
+
+bool client_bot_headless_enabled()
+{
+    return client_bot_launch_enabled()
+        && !(g_client_bot_debug_render_enabled || is_client_debugbot_requested_from_cmdline());
+}
+
+bool is_awpgen_active()
+{
+    return g_awpgen_mode || awpgen_requested_from_raw_cmdline();
+}
+
+bool is_headless_mode()
+{
+    return client_bot_headless_enabled() || g_awpgen_mode || awpgen_requested_from_raw_cmdline();
+}
+
+// Returns false if bot launch validation failed and the process should quit.
+static bool handle_bot_cmd_line_params()
+{
+    if (rf::is_dedicated_server) {
+        g_client_bot_launch_enabled = false;
+        g_client_bot_debug_render_enabled = false;
+        return true;
+    }
+
+    const bool has_bot_switch = is_client_bot_requested_from_cmdline();
+    const bool has_debugbot_switch = is_client_debugbot_requested_from_cmdline();
+    g_client_bot_launch_enabled = has_bot_switch || has_debugbot_switch;
+    g_client_bot_debug_render_enabled = has_debugbot_switch;
+
+    // Parse shared secret from -bot or -debugbot argument
+    auto parse_secret = [](rf::CmdLineParam& param) -> uint32_t {
+        if (!param.found()) return 0;
+        const char* arg = param.get_arg();
+        if (!arg || arg[0] == '\0') return 0;
+        try { return std::stoul(arg); }
+        catch (...) { return 0; }
+    };
+    if (has_bot_switch) {
+        g_alpine_game_config.bot_shared_secret = parse_secret(get_bot_cmd_line_param());
+    }
+    if (has_debugbot_switch && g_alpine_game_config.bot_shared_secret == 0) {
+        g_alpine_game_config.bot_shared_secret = parse_secret(get_debugbot_cmd_line_param());
+    }
+
+    // Parse -noquit flag
+    if (get_noquit_cmd_line_param().found() && client_bot_launch_enabled()) {
+        g_alpine_game_config.bot_quit_when_disconnected = false;
+    }
+
+    // Validate bot launch requirements
+    if (g_client_bot_launch_enabled) {
+        const bool has_url = get_url_cmd_line_param().found();
+        const bool has_secret = g_alpine_game_config.bot_shared_secret != 0;
+        if (!has_url || !has_secret) {
+            rf::console::print(
+                "Bot launch requires a server (-url <rf://IP:PORT>) and the correct shared secret (-bot <secret> or -debugbot <secret>)."
+            );
+            g_client_bot_launch_enabled = false;
+            g_alpine_game_config.rendering_enabled = false;
+            rf::sound_enabled = false;
+            rf::gameseq_set_state(rf::GS_QUITING, false);
+            return false;
+        }
+    }
+
+    if (client_bot_launch_enabled()) {
+        const bool headless = client_bot_headless_enabled();
+        g_alpine_game_config.rendering_enabled = !headless;
+        if (headless) {
+            rf::sound_enabled = false;
+        }
+        rf::console::print(
+            "Client bot mode enabled ({}).",
+            headless ? "headless" : "debug render"
+        );
+
+        // Set a consistent initial name for bot clients.
+        // The server will assign the real identity after connection.
+        if (rf::local_player) {
+            std::strncpy(rf::local_player->settings.name, "af_bot", sizeof(rf::local_player->settings.name) - 1);
+            rf::local_player->settings.name[sizeof(rf::local_player->settings.name) - 1] = '\0';
+            rf::local_player->name = "af_bot";
+        }
+    }
+    return true;
 }
 
 void handle_url_param()
@@ -96,8 +225,45 @@ void handle_levelm_param()
 
     std::string level_filename = get_levelm_cmd_line_param().get_arg();
 
-    //rf::console::print("filename {}", level_filename);
+    auto [is_valid, valid_filename] = is_level_name_valid(level_filename);
+    if (!is_valid) {
+        xlog::warn("levelm: level '{}' is not available", level_filename);
+        return;
+    }
+    start_levelm_load_sequence(valid_filename);
+}
+
+// Returns true if -awpgen was handled (caller should skip -levelm).
+bool handle_awpgen_param()
+{
+    if (!get_awpgen_cmd_line_param().found()) {
+        return false;
+    }
+
+    const char* arg = get_awpgen_cmd_line_param().get_arg();
+    if (!arg || arg[0] == '\0') {
+        xlog::error("-awpgen: missing level filename, quitting");
+        rf::gameseq_set_state(rf::GS_QUITING, false);
+        return true;
+    }
+
+    std::string level_filename = arg;
+
+    // Normalize .rfl extension
+    if (!string_iends_with(level_filename, ".rfl")) {
+        level_filename += ".rfl";
+    }
+
+    // Validate level file is installed
+    if (rf::get_file_checksum(level_filename.c_str()) == 0) {
+        xlog::error("-awpgen: unknown level {}, quitting", level_filename);
+        rf::gameseq_set_state(rf::GS_QUITING, false);
+        return true;
+    }
+
+    waypoints_start_awpgen(level_filename);
     start_levelm_load_sequence(level_filename);
+    return true;
 }
 
 FunHook<void()> multi_limbo_init{
@@ -143,9 +309,12 @@ FunHook<void()> multi_limbo_init{
         }
 
         rf::multi_limbo_timer.set(limbo_time);
+        waypoints_on_limbo_enter();
 
         if (!rf::local_player)
             return;
+
+        bot_chat_manager_on_limbo_enter(*rf::local_player);
 
         rf::camera_enter_random_fixed_pos();
         rf::camera_enter_fixed(rf::local_player->cam);
@@ -246,6 +415,46 @@ CodeInjection ctf_flag_return_fix{
     },
 };
 
+// Vanilla multi_ctf_is_red/blue_flag_in_base functions crash if the ctf_initialized flag is set
+// but the corresponding flag item pointer is NULL. This can happen if a level has only one CTF flag
+// item (e.g. blue but not red). Return true (in base) when the pointer is NULL, matching the vanilla
+// behavior when CTF is uninitialized.
+// Same vulnerability exists in the CTF flag capture function (0x00473BA0) which directly
+// dereferences ctf_red/blue_flag_item pointers without NULL checks.
+CodeInjection ctf_flag_capture_red_null_check{
+    0x00473C17,
+    [](auto& regs) {
+        if (!rf::ctf_red_flag_item) {
+            regs.eip = 0x00473D2E;
+        }
+    },
+};
+
+CodeInjection ctf_flag_capture_blue_null_check{
+    0x00473CC2,
+    [](auto& regs) {
+        if (!rf::ctf_blue_flag_item) {
+            regs.eip = 0x00473D2E;
+        }
+    },
+};
+
+FunHook<bool()> multi_ctf_is_red_flag_in_base_hook{
+    0x00474E80,
+    []() -> bool {
+        if (!rf::ctf_red_flag_item) return true;
+        return multi_ctf_is_red_flag_in_base_hook.call_target();
+    },
+};
+
+FunHook<bool()> multi_ctf_is_blue_flag_in_base_hook{
+    0x00474EA0,
+    []() -> bool {
+        if (!rf::ctf_blue_flag_item) return true;
+        return multi_ctf_is_blue_flag_in_base_hook.call_target();
+    },
+};
+
 FunHook<void()> multi_ctf_level_init_hook{
     0x00472E30,
     []() {
@@ -275,6 +484,16 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
     rf::player_make_weapon_current_selection(pp, weapon_type);
     ep->ai.current_primary_weapon = weapon_type;
     g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+}
+
+static bool multi_is_rail_gun_on_cooldown(rf::Player* pp, rf::Entity* ep)
+{
+    if (ep->ai.current_primary_weapon != rf::rail_gun_weapon_type) {
+        return false;
+    }
+    bool fire_cooldown = ep->ai.next_fire_primary.valid() && !ep->ai.next_fire_primary.elapsed();
+    bool reloading = pp->rail_gun_reload_timer.valid() && !pp->rail_gun_reload_timer.elapsed();
+    return fire_cooldown || reloading;
 }
 
 FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hook{
@@ -307,6 +526,10 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             xlog::debug("Player {} attempted to select weapon {} while reloading weapon {}",
                 pp->name, weapon_type, ep->ai.current_primary_weapon);
         }
+        else if (g_alpine_server_config_active_rules.force_rail_reload &&
+            multi_is_rail_gun_on_cooldown(pp, ep)) {
+            xlog::debug("Player {} attempted to switch from rail_gun while on cooldown", pp->name);
+        }
         else {
             rf::player_make_weapon_current_selection(pp, weapon_type);
             ep->ai.current_primary_weapon = weapon_type;
@@ -331,7 +554,20 @@ void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
         xlog::debug("Player {} attempted to reload weapon {} while reloading it", pp->name, weapon_type);
     }
     else {
-        rf::entity_reload_current_primary(ep, false, false);
+        // action the reload
+        bool reloaded = rf::entity_reload_current_primary(ep, false, false);
+        if (reloaded && weapon_type == rf::rail_gun_weapon_type) {
+            float reload_secs = rf::weapon_types[weapon_type].clip_reload_time_secs;
+
+            // default rail reload time is 3 seconds, but the animation time isn't that long
+            // without this fix, the player is blocked from switching away from the rail for
+            // 500ms after the reload finishes
+            if (reload_secs == 3.0f) {
+                reload_secs = 2.5f;
+            }
+
+            pp->rail_gun_reload_timer.set(static_cast<int>(reload_secs * 1000.0f));
+        }
     }
 }
 
@@ -418,69 +654,63 @@ void send_private_message_for_cancelled_shot(rf::Player* player, const std::stri
     af_send_automated_chat_msg(message, player);
 }
 
-bool multi_is_player_firing_too_fast(rf::Player* pp, int weapon_type)
-{
+bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapon_type) {
     // do not consider melee weapons for click limiter
     if (rf::weapon_is_melee(weapon_type)) {
         return false;
     }
 
-    int player_id = pp->net_data->player_id;
-    int now = rf::timer_get(1000);
-
-    static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
-    static std::vector<int> last_weapon_fire(rf::multi_max_player_id, 0);
-
     int fire_wait_ms = 0;
-
     if (rf::weapon_is_semi_automatic(weapon_type)) {
-
         // if semi auto click limit is on
-        if (get_af_server_info().has_value() &&
-            get_af_server_info()->click_limit) {
-
+        if (get_af_server_info().has_value() && get_af_server_info()->click_limit) {
             // use override value for pistol/PR in stock game
             // stock game pistol has alt fire wait of 200ms, so can't use normal min logic for it
             if (rf::weapon_get_fire_wait_ms(weapon_type, 0) == 500) {
                 fire_wait_ms = get_semi_auto_fire_wait_override();
+            } else {
+                // otherwise use the minimum fire wait between both modes in weapons.tbl
+                fire_wait_ms = std::min(
+                    rf::weapon_get_fire_wait_ms(weapon_type, 0), // primary
+                    rf::weapon_get_fire_wait_ms(weapon_type, 1) // alt
+                );
             }
-            // otherwise use the minimum fire wait between both modes in weapons.tbl
-            else {
-                fire_wait_ms = std::min(rf::weapon_get_fire_wait_ms(weapon_type, 0),  // primary
-                    rf::weapon_get_fire_wait_ms(weapon_type, 1)); // alt
-            }
-        }
-        // otherwise, don't enforce a limit for semi autos
-        else {
+        } else {
+            // otherwise, don't enforce a limit for semi autos
             fire_wait_ms = 0;
         }
-    }
-    // for automatic weapons, use the minimum fire wait between both modes in weapons.tbl
-    else {
-        fire_wait_ms = std::min(rf::weapon_get_fire_wait_ms(weapon_type, 0),  // primary
-            rf::weapon_get_fire_wait_ms(weapon_type, 1)); // alt
+    } else {
+        // for automatic weapons, use the minimum fire wait between both modes in weapons.tbl
+        fire_wait_ms = std::min(
+            rf::weapon_get_fire_wait_ms(weapon_type, 0), // primary
+            rf::weapon_get_fire_wait_ms(weapon_type, 1) // alt
+        );
     }
 
-    // reset if weapon changed
+    static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
+    static std::vector<int64_t> last_weapon_fire(rf::multi_max_player_id, 0);
+
+    const int player_id = pp->net_data->player_id;
+    const int64_t now = timer::get_i64(1000);
+
+    // If weapon changed, skip interval check.
     if (last_weapon_id[player_id] != weapon_type) {
-        last_weapon_fire[player_id] = 0;
         last_weapon_id[player_id] = weapon_type;
+    } else {
+        const int64_t time_since_last_shot = now - last_weapon_fire[player_id];
+        // Calculate server-enforced cooldown from weapon fire wait, half of ping,
+        // and 50 ms jitter tolerance.
+        const int adjusted_ping = std::max(0, pp->net_data->ping);
+        const int cooldown_threshold =
+            std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50);
+        if (time_since_last_shot < cooldown_threshold) {
+            // Send notification to player for firing too fast.
+            // send_private_message_for_cancelled_shot(pp, "You are firing too fast!");
+            return true;
+        }
     }
 
-    // check if time since last shot is less than minimum wait time
-    int time_since_last_shot = std::max(0, now - last_weapon_fire[player_id]); // ensure time is positive
-
-    // calculate server-enforced cooldown from weapon fire wait, halfping, and 50ms jitter tolerance
-    int adjusted_ping = std::max(0, pp->net_data->ping); // ensure ping is positive
-    int cooldown_threshold = std::max(0, fire_wait_ms - (adjusted_ping / 2) - 50); // halfping and jitter tolerance
-    if (time_since_last_shot < cooldown_threshold) {
-        // send notification to player for firing too fast
-        //send_private_message_for_cancelled_shot(pp, "firing too fast!");
-
-        return true;
-    }
-
-    // we fired
+    // We fired.
     last_weapon_fire[player_id] = now;
     return false;
 }
@@ -653,6 +883,17 @@ void configure_custom_gametype_listen_server_settings() {
     apply_defaults_for_game_type(rules.game_type, rules);
     rules.set_koth_score_limit(3600);
     rules.set_dc_score_limit(3600);
+
+    // Enable on listen servers based on the host's local config
+    if (rf::game_get_gore_level() >= 2) {
+        rules.gibbing.enabled = true;
+    }
+
+    // Always allow these visual options on listen servers
+    g_alpine_server_config.allow_fullbright_meshes = true;
+    g_alpine_server_config.allow_lightmaps_only = true;
+    g_alpine_server_config.allow_unlimited_fps = true;
+    g_alpine_server_config.allow_outlines = true;
 }
 
 void start_level_in_multi(std::string filename) {
@@ -660,6 +901,11 @@ void start_level_in_multi(std::string filename) {
     auto [is_valid, valid_filename] = is_level_name_valid(filename);
 
     if (is_valid) {
+        // Clean up any previous game state so the level loader doesn't call game_shutdown
+        // after multi_start has already set up the new multiplayer session
+        rf::game_shutdown();
+
+        rf::netgame.levels.clear();
         rf::netgame.levels.add(valid_filename.c_str());
         rf::netgame.max_time_seconds = 3600.0f;
         rf::netgame.max_kills = 30;
@@ -696,16 +942,20 @@ CodeInjection multi_customize_listen_server_settings_patch {
 ConsoleCommand2 levelm_cmd{
     "levelm",
     [](std::string filename) {
-        if (rf::gameseq_get_state() == rf::GS_MAIN_MENU ||
-            rf::gameseq_get_state() == rf::GS_EXTRAS_MENU) {
-            start_level_in_multi(filename);
-            rf::console::print("Starting local multiplayer game on {}", filename);
+        if (rf::is_dedicated_server) {
+            rf::console::print("This command is not available on dedicated servers");
+            return;
         }
-        else {
-            rf::console::print("You must run this command from the main menu!");
+        auto [is_valid, valid_filename] = is_level_name_valid(filename);
+        if (!is_valid) {
+            rf::console::print("Level '{}' is not available!", filename);
+            return;
         }
+        start_levelm_load_sequence(valid_filename);
+        rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
+        rf::console::print("Starting local multiplayer game on {}", valid_filename);
     },
-    "Start a local multiplayer game on the specified level",
+    "Start a new local multiplayer game on the specified level",
     "levelm <filename>",
 };
 
@@ -722,38 +972,52 @@ ConsoleCommand2 mapver_cmd{
             filename += ".rfl";
         }
 
-        int map_ver = get_level_file_version(filename);
-        if (map_ver == -1) {
+        const std::expected map_ver = get_level_file_version(filename);
+        if (!map_ver) {
             rf::console::print("Level {} not found.", filename);
-        }
-        else {
+        } else {
             std::string version_text;
 
-            if (map_ver == 175) {
+            if (*map_ver == 175) {
                 version_text = "Official - PS2 retail";
-            }
-            else if (map_ver == 180) {
+            } else if (*map_ver == 180) {
                 version_text = "Official - PC retail";
-            }
-            else if (map_ver == 200) {
+            } else if (*map_ver == 200) {
                 version_text = "Community - RF/PF/DF";
-            }
-            else if (map_ver > 0 && map_ver < 200) {
+            } else if (*map_ver > 0 && *map_ver < 200) {
                 version_text = "Official - Internal";
-            }
-            else if (map_ver >= 300) {
+            } else if (*map_ver >= 300) {
                 version_text = "Community - Alpine";
-            }
-            else {
+            } else {
                 version_text = "Unsupported";
             }
 
-            rf::console::print("RFL version for level {} is {} ({}). You can {}load this map.", filename,
-                               map_ver, version_text, map_ver > MAXIMUM_RFL_VERSION ? " NOT" : "");
+            rf::console::print(
+                "RFL version for level {} is {} ({}). You can {}load this map.",
+                filename,
+                *map_ver,
+                version_text,
+                *map_ver > MAXIMUM_RFL_VERSION ? " NOT" : ""
+            );
         }
     },
     "Check the version of a specific level file",
     "dbg_mapver <filename>",
+};
+
+ConsoleCommand2 dbg_bot_cmd{
+    "dbg_bot",
+    [](std::optional<int> enabled) {
+        if (enabled.has_value()) {
+            g_alpine_game_config.dbg_bot = enabled.value() != 0;
+        }
+        rf::console::print(
+            "Bot debug console logging is {}.",
+            g_alpine_game_config.dbg_bot ? "enabled" : "disabled"
+        );
+    },
+    "Toggle bot debug console logging",
+    "dbg_bot [0|1]",
 };
 
 void mp_send_handicap_request(bool force) {
@@ -811,6 +1075,12 @@ void multi_do_patch()
     // Check ammo server-side when handling weapon fire packets
     multi_process_remote_weapon_fire_hook.install();
 
+    // Prevent crash when CTF flag item pointers are NULL
+    multi_ctf_is_red_flag_in_base_hook.install();
+    multi_ctf_is_blue_flag_in_base_hook.install();
+    ctf_flag_capture_red_null_check.install();
+    ctf_flag_capture_blue_null_check.install();
+
     // Make sure CTF flag does not spin in new level if it was dropped in the previous level
     multi_ctf_level_init_hook.install();
 
@@ -835,17 +1105,37 @@ void multi_do_patch()
     // Init cmd line param
     get_url_cmd_line_param();
     get_levelm_cmd_line_param();
+    get_bot_cmd_line_param();
+    get_debugbot_cmd_line_param();
+    get_noquit_cmd_line_param();
+    get_awpgen_cmd_line_param();
+    g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
+    g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
+    g_awpgen_mode = get_awpgen_cmd_line_param().found();
+    if (is_headless_mode()) {
+        g_alpine_game_config.rendering_enabled = false;
+        rf::sound_enabled = false;
+    }
+    else if (g_client_bot_launch_enabled) {
+        g_alpine_game_config.rendering_enabled = true;
+    }
 
     // console commands
     levelm_cmd.register_cmd();
     mapver_cmd.register_cmd();
     mapm_cmd.register_cmd();
     set_handicap_cmd.register_cmd();
+    dbg_bot_cmd.register_cmd();
 }
 
 void multi_after_full_game_init()
 {
     populate_gametype_table();
+    if (!handle_bot_cmd_line_params()) {
+        return; // bot launch validation failed, process is quitting
+    }
     handle_url_param();
-    handle_levelm_param();
+    if (!handle_awpgen_param()) {
+        handle_levelm_param();
+    }
 }

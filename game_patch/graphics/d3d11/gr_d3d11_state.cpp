@@ -31,7 +31,7 @@ namespace df::gr::d3d11
         return rasterizer_state;
     }
 
-    ComPtr<ID3D11SamplerState> StateManager::create_sampler_state(rf::gr::TextureSource ts)
+    ComPtr<ID3D11SamplerState> StateManager::create_sampler_state(rf::gr::TextureSource ts, bool picmip_active)
     {
         CD3D11_SAMPLER_DESC desc{CD3D11_DEFAULT()};
         switch (ts) {
@@ -66,17 +66,39 @@ namespace df::gr::d3d11
         }
 
         desc.MipLODBias = 0.0f;
+        desc.MinLOD = 0.0f;
         int divisor = g_alpine_game_config.picmip;
         if (divisor < 1) {
             divisor = 1;
         }
-        desc.MinLOD = divisor > 1 ? std::log2(static_cast<float>(divisor)) : 0.0f;
+
+        // Only diverge from stock sampler state when picmip is actually enabled
+        if (divisor > 1) {
+            if (picmip_active) {
+                // Geometry sampler: clamp sampling to mip >= log2(divisor). Requires
+                // textures to have been uploaded with a mip chain (handled at load time).
+                desc.MinLOD = std::log2(static_cast<float>(divisor));
+            }
+            else {
+                // Sprite/UI sampler: forbid the GPU from touching anything but mip 0 so
+                // that auto-generated mips on sprite textures can't alter their
+                // appearance.
+                desc.MaxLOD = 0.0f;
+            }
+        }
+
         if (g_alpine_game_config.nearest_texture_filtering) {
             desc.Filter = D3D11_FILTER_MIN_MAG_MIP_POINT;
         }
         else if (g_game_config.anisotropic_filtering && desc.Filter != D3D11_FILTER_MIN_MAG_MIP_POINT) {
             desc.Filter = D3D11_FILTER_ANISOTROPIC;
             desc.MaxAnisotropy = 16;
+        }
+
+        // Anisotropic filter + MaxLOD=0
+        if (divisor > 1 && !picmip_active && desc.Filter == D3D11_FILTER_ANISOTROPIC) {
+            desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+            desc.MaxAnisotropy = 1;
         }
 
         ComPtr<ID3D11SamplerState> sampler_state;
@@ -148,6 +170,111 @@ namespace df::gr::d3d11
             [=] { xlog::error("Failed to create blend state {}", static_cast<int>(ab)); }
         );
         return blend_state;
+    }
+
+    ID3D11DepthStencilState* StateManager::get_outline_stencil_mark_state()
+    {
+        if (!outline_stencil_mark_state_) {
+            D3D11_DEPTH_STENCIL_DESC desc{};
+            desc.DepthEnable = TRUE;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            desc.DepthFunc = (gr::screen.depthbuffer_type == gr::DEPTHBUFFER_Z)
+                ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
+            desc.StencilEnable = TRUE;
+            desc.StencilReadMask = 0xFF;
+            desc.StencilWriteMask = 0xFF;
+            desc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+            desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_REPLACE;
+            desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.BackFace = desc.FrontFace;
+            check_hr(
+                device_->CreateDepthStencilState(&desc, &outline_stencil_mark_state_),
+                []() { xlog::error("Failed to create outline stencil mark state"); }
+            );
+        }
+        return outline_stencil_mark_state_;
+    }
+
+    ID3D11DepthStencilState* StateManager::get_outline_stencil_mark_xray_state()
+    {
+        if (!outline_stencil_mark_xray_state_) {
+            D3D11_DEPTH_STENCIL_DESC desc{};
+            desc.DepthEnable = FALSE;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            desc.StencilEnable = TRUE;
+            desc.StencilReadMask = 0xFF;
+            desc.StencilWriteMask = 0xFF;
+            desc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+            desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_REPLACE;
+            desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.BackFace = desc.FrontFace;
+            check_hr(
+                device_->CreateDepthStencilState(&desc, &outline_stencil_mark_xray_state_),
+                []() { xlog::error("Failed to create outline stencil mark xray state"); }
+            );
+        }
+        return outline_stencil_mark_xray_state_;
+    }
+
+    ID3D11DepthStencilState* StateManager::get_outline_depth_test_state()
+    {
+        if (!outline_depth_test_state_) {
+            D3D11_DEPTH_STENCIL_DESC desc{};
+            desc.DepthEnable = TRUE;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+            desc.DepthFunc = (gr::screen.depthbuffer_type == gr::DEPTHBUFFER_Z)
+                ? D3D11_COMPARISON_GREATER_EQUAL : D3D11_COMPARISON_LESS_EQUAL;
+            desc.StencilEnable = TRUE;
+            desc.StencilReadMask = 0xFF;
+            desc.StencilWriteMask = 0x00;
+            desc.FrontFace.StencilFunc = D3D11_COMPARISON_NOT_EQUAL;
+            desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.BackFace = desc.FrontFace;
+            check_hr(
+                device_->CreateDepthStencilState(&desc, &outline_depth_test_state_),
+                []() { xlog::error("Failed to create outline depth test state"); }
+            );
+        }
+        return outline_depth_test_state_;
+    }
+
+    ID3D11DepthStencilState* StateManager::get_outline_xray_state()
+    {
+        if (!outline_xray_state_) {
+            D3D11_DEPTH_STENCIL_DESC desc{};
+            desc.DepthEnable = FALSE;
+            desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            desc.StencilEnable = TRUE;
+            desc.StencilReadMask = 0xFF;
+            desc.StencilWriteMask = 0x00;
+            desc.FrontFace.StencilFunc = D3D11_COMPARISON_NOT_EQUAL;
+            desc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+            desc.BackFace = desc.FrontFace;
+            check_hr(
+                device_->CreateDepthStencilState(&desc, &outline_xray_state_),
+                []() { xlog::error("Failed to create outline xray state"); }
+            );
+        }
+        return outline_xray_state_;
+    }
+
+    ID3D11BlendState* StateManager::get_no_color_write_blend_state()
+    {
+        if (!no_color_write_blend_state_) {
+            CD3D11_BLEND_DESC desc{D3D11_DEFAULT};
+            desc.RenderTarget[0].RenderTargetWriteMask = 0;
+            check_hr(
+                device_->CreateBlendState(&desc, &no_color_write_blend_state_),
+                []() { xlog::error("Failed to create no-color-write blend state"); }
+            );
+        }
+        return no_color_write_blend_state_;
     }
 
     ComPtr<ID3D11DepthStencilState> StateManager::create_depth_stencil_state(gr::ZbufferType zbt)

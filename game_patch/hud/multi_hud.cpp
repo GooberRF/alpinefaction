@@ -3,6 +3,7 @@
 #include <tuple>
 #include <format>
 #include <cstdint>
+#include <random>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/FunHook.h>
@@ -31,6 +32,7 @@
 #include "../graphics/gr.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints_utils.h"
 #include "../sound/sound.h"
 #include "../os/console.h"
 #include "hud_internal.h"
@@ -57,6 +59,7 @@ static rf::Color time_left_string_color = {0, 255, 0, 255};
 static rf::TimestampRealtime g_run_life_start_timestamp;
 static bool g_run_timer_reset_by_respawn_key = false;
 static bool g_run_timer_fade_active = false;
+int g_multi_hud_cp_strip_y = 0;
 
 void multi_hud_update_timer_color()
 {
@@ -397,6 +400,66 @@ rf::TimestampRealtime g_chat_menu_timer;
 rf::TimestampRealtime g_taunt_timer;
 rf::TimestampRealtime g_rad_msg_timer;
 
+namespace
+{
+constexpr std::string_view kTauntChatPrefix = "\xA8[Taunt] ";
+
+const std::vector<const std::string*>& get_all_taunt_messages()
+{
+    static const std::vector<const std::string*> taunt_messages = []() {
+        std::vector<const std::string*> result{};
+        const ChatMenuList* const taunt_lists[] = {
+            &intimidation_menu,
+            &mockery_menu,
+            &celebration_menu,
+            &dismissiveness_menu,
+            &bravado_menu,
+            &derision_menu,
+            &casual_menu,
+            &random_funny_menu,
+        };
+        for (const ChatMenuList* list : taunt_lists) {
+            if (!list) {
+                continue;
+            }
+            for (const ChatMenuElement& element : list->elements) {
+                if (element.is_menu || element.long_string.empty()) {
+                    continue;
+                }
+                result.push_back(&element.long_string);
+            }
+        }
+        return result;
+    }();
+    return taunt_messages;
+}
+}
+
+std::string_view multi_hud_get_random_taunt_message()
+{
+    const auto& taunt_messages = get_all_taunt_messages();
+    if (taunt_messages.empty()) {
+        return {};
+    }
+    std::uniform_int_distribution<size_t> index_dist(0, taunt_messages.size() - 1);
+    return *taunt_messages[index_dist(g_rng)];
+}
+
+bool multi_hud_send_taunt_chat_message(const std::string_view taunt_text)
+{
+    if (taunt_text.empty()) {
+        return false;
+    }
+
+    std::string msg{};
+    msg.reserve(kTauntChatPrefix.size() + taunt_text.size());
+    msg.append(kTauntChatPrefix.data(), kTauntChatPrefix.size());
+    msg.append(taunt_text.data(), taunt_text.size());
+    rf::multi_chat_say(msg.c_str(), false);
+    rf::snd_play(4, 0, 0.0f, 1.0f);
+    return true;
+}
+
 bool is_element_valid(const ChatMenuElement& element) {
     if (element.type == ChatMenuListType::Basic) {
         return true;
@@ -554,6 +617,8 @@ static void hud_render_cp_strip_koth_dc_fullwidth(int anchor_x, int anchor_y, in
             y0 = anchor_y - total_h - margin;
         }
     }
+
+    g_multi_hud_cp_strip_y = y0;
 
     // draw from top row to bottom, stacked
     int cur_y = y0;
@@ -742,10 +807,10 @@ void multi_hud_render_team_scores()
     rf::gr::set_color(0, 0, 0, 150);
 
     const auto game_type = rf::multi_get_game_type();
-    const bool is_koth_dc = (game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC);
-    const bool is_esc = (game_type == rf::NG_TYPE_ESC);
-    const bool is_rev = (game_type == rf::NG_TYPE_REV);
-    const bool is_run = (game_type == rf::NG_TYPE_RUN);
+    const bool is_koth_dc = game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC;
+    const bool is_esc = game_type == rf::NG_TYPE_ESC;
+    const bool is_rev = game_type == rf::NG_TYPE_REV;
+    const bool is_run = game_type == rf::NG_TYPE_RUN;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
@@ -899,7 +964,7 @@ void multi_hud_render_team_scores()
     }
 
     // render capture point bars
-    if (is_koth_dc || is_rev || is_esc) {
+    if (is_hill_score) {
         hud_render_cp_strip_koth_dc_fullwidth(box_x, box_y, box_w);
     }
 }
@@ -1083,7 +1148,7 @@ void multi_hud_render_local_player_spectators() {
         || multi_scoreboard_is_visible();
     if (show_spectators
         && !g_local_player_spectators.empty()
-        && !rf::hud_disabled
+        && !is_hud_effectively_hidden()
         && rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
         const rf::NetGameType game_type = rf::multi_get_game_type();
         const bool is_koth_or_dc = game_type == rf::NG_TYPE_KOTH
@@ -1128,12 +1193,23 @@ void multi_hud_render_local_player_spectators() {
 CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
     0x0043D6D6,
     [] (int* const dx, int* const dy, int* dz) {
-        // If active, do not write mouse wheel scroll delta.
-        if (g_remote_server_cfg_popup.is_active()) {
-            int tmp{};
-            dz = &tmp;
-        }
         control_config_get_mouse_delta_hook.call_target(dx, dy, dz);
+
+        // While waypoint editor UI-cursor mode is active, consume mouse movement
+        // so the camera does not continue to aim/turn.
+        if (waypoints_utils_should_block_mouse_look()) {
+            if (dx) {
+                *dx = 0;
+            }
+            if (dy) {
+                *dy = 0;
+            }
+        }
+
+        // If active, do not use mouse wheel scroll delta.
+        if (g_remote_server_cfg_popup.is_active() && dz) {
+            *dz = 0;
+        }
     }
 };
 
@@ -1178,6 +1254,8 @@ CodeInjection multi_hud_render_patch{
                 toggle_chat_menu(ChatMenuType::None);
             }
         }
+
+        multi_hud_render_killfeed();
     }
 };
 
@@ -1187,6 +1265,7 @@ void multi_hud_level_init() {
     g_run_life_start_timestamp.invalidate();
     g_run_timer_reset_by_respawn_key = false;
     g_run_timer_fade_active = false;
+    killfeed_clear();
 
     level_menu = ChatMenuList{
         .display_string = "MAP MESSAGES",
@@ -1416,9 +1495,7 @@ void chat_menu_action_handler(rf::Key key) {
         if (g_chat_menu_active == ChatMenuType::Taunts) {
             if (!g_taunt_timer.valid() || g_taunt_timer.elapsed()) {
                 g_taunt_timer.set(10000); // 10 second cooldown
-                const std::string msg = "\xA8[Taunt] " + selected_element.long_string;
-                rf::multi_chat_say(("\xA8[Taunt] " + selected_element.long_string).c_str(), false);
-                rf::snd_play(4, 0, 0.0f, 1.0f);
+                multi_hud_send_taunt_chat_message(selected_element.long_string);
             } else {
                 rf::String msg{"You must wait a little while between taunts"};
                 rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, {});
@@ -1627,6 +1704,16 @@ ConsoleCommand2 ui_always_show_specators_cmd{
     "ui_always_show_specators",
 };
 
+ConsoleCommand2 ui_gamefeed_cmd{
+    "ui_gamefeed",
+    [] {
+        g_alpine_game_config.killfeed_enabled = !g_alpine_game_config.killfeed_enabled;
+        rf::console::print("Game feed is {}", g_alpine_game_config.killfeed_enabled ? "enabled" : "disabled");
+    },
+    "Toggle game event messages in a dedicated feed instead of chat",
+    "ui_gamefeed",
+};
+
 ConsoleCommand2 ui_simple_server_chat_messages_cmd{
     "ui_simple_server_chat_messages",
     [] {
@@ -1674,6 +1761,9 @@ void multi_hud_apply_patches()
     ui_runtimer_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();
+    ui_gamefeed_cmd.register_cmd();
+
+    multi_hud_killfeed_apply_patches();
 
     control_config_get_mouse_delta_hook.install();
 }

@@ -314,7 +314,9 @@ FunHook<int(HMMIO*, LPMMCKINFO, const MMCKINFO*)> snd_mmio_find_data_chunk_hook{
                 stb_vorbis_seek_start(wrapper->vorbis);
                 stb_vorbis_info info = stb_vorbis_get_info(wrapper->vorbis);
                 float length = stb_vorbis_stream_length_in_seconds(wrapper->vorbis);
-                data_mmcki->cksize = info.sample_rate * info.channels * sizeof(short) * length;
+                data_mmcki->cksize = static_cast<DWORD>(
+                    info.sample_rate * info.channels * sizeof(short) * length
+                );
                 return 0;
             }
             else {

@@ -147,6 +147,21 @@ struct ParticleEmitter
     {
         return AddrCaller{0x00496BC0}.this_call<Object*>(this, pos, dir);
     }
+
+    void activate()
+    {
+        AddrCaller{0x004973B0}.this_call(this);
+    }
+
+    void spawn_first_particle()
+    {
+        AddrCaller{0x00496C50}.this_call(this);
+    }
+
+    void destroy()
+    {
+        AddrCaller{0x00497D80}.this_call(this);
+    }
 };
 static_assert(sizeof(ParticleEmitter) == 0x158);
 
@@ -197,5 +212,19 @@ static auto& level_get_bolt_emitter_from_uid = addr_as_ref<BoltEmitter*(int uid)
 
 static auto& bolt_emitter_list = addr_as_ref<VArray<BoltEmitter*>>(0x0064608C);
 static auto& particle_emitter_list = addr_as_ref<VArray<ParticleEmitter*>>(0x00646080);
+
+static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo& pci,
+    GRoom* room, Vector3* a4, int parent_obj, Particle** result,
+    ParticleEmitter* emitter)>(0x00496840);
+
+// Particle emitter type template array (256 entries, indexed by emitter idx)
+static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*>(0x007B2770);
+
+static auto& particle_emitter_create = addr_as_ref<ParticleEmitter*(
+    int parent_handle, ParticleEmitterType& type, GRoom* room, Vector3& pos, bool is_on)>(0x00497CA0);
+
+// spawn particle explosion from explosion.tbl by name.
+static auto& particle_explosion_create = addr_as_ref<void(
+    const char* name, Vector3* pos, Vector3* dir, float radius_scale, GRoom* room, unsigned int flags)>(0x0048e640);
 
 }

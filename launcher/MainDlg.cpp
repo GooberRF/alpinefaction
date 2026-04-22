@@ -15,6 +15,7 @@
 #include <chrono>
 #include <launcher_common/PatchedAppLauncher.h>
 #include <launcher_common/UpdateChecker.h>
+#include <launcher_common/VideoDeviceInfoProvider.h>
 #include "ImageButton.h"
 
 #ifdef _DEBUG
@@ -161,6 +162,29 @@ LRESULT MainDlg::OnShowWhatsNew(WPARAM wparam, LPARAM lparam)
     ClearWhatsNewFlag();
     std::string content = FetchWhatsNewContent();
     MessageBoxA(content.c_str(), "What's new?", MB_OK | MB_ICONINFORMATION);
+
+    // Prompt to switch to D3D11 if not already using it and D3D11 hardware is available
+    try {
+        GameConfig game_config;
+        game_config.load();
+        if (game_config.renderer.value() != GameConfig::Renderer::d3d11
+            && is_d3d11_device_available()) {
+            int result = MessageBoxA(
+                "Direct3D 11 is now the recommended renderer.\n\n"
+                "Do you want to switch to it now?\n\n"
+                "You can configure the renderer at any time via the settings panel (gear icon) "
+                "in the Alpine Faction launcher.",
+                "Recommended Renderer",
+                MB_YESNO | MB_ICONINFORMATION);
+            if (result == IDYES) {
+                game_config.renderer = GameConfig::Renderer::d3d11;
+                game_config.save();
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        xlog::warn("Skipping D3D11 renderer prompt: {}", e.what());
+    }
 
     return 0;
 }
@@ -442,18 +466,18 @@ bool MainDlg::ShouldShowWhatsNew()
 std::string MainDlg::FetchWhatsNewContent()
 {
     constexpr std::string_view content = R"(
-Thanks for updating, and welcome to Alpine Faction v1.2.2!
+Thanks for updating, and welcome to Alpine Faction v1.3.0!
 
 Highlights from this release are listed below. This is not a complete changelog.
 
-Changes:
-- New event for use in custom maps: When_Round_Ends
-- Add dynamic light flashes from explosions
-- Add dynamic light glows from burning entities
-
-Fixes:
-- Fix crash when gibbing corpses in single player
-- Fix crash when loading extremely complex levels using Direct3D 11 renderer
+- New advanced multiplayer bots system
+- Realtime shadows and pixel lighting for meshes
+- New level autodownloader GUI
+- New FF Link workflow in launcher
+- Vastly improved spectator mode
+- Player outlines and footsteps
+- Expanded destruction capabilities for designers
+- Many stability and performance improvements
 
 If you run into issues, have questions, or just want to join the active community, click the Discord icon in the main launcher window to drop by the Red Faction Community Discord.
 )";

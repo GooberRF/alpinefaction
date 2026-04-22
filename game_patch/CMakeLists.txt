@@ -90,11 +90,18 @@ set(SRCS
     graphics/d3d11/gr_d3d11_solid.h
     graphics/d3d11/gr_d3d11_mesh.cpp
     graphics/d3d11/gr_d3d11_mesh.h
+    graphics/d3d11/gr_d3d11_entity_shadow.cpp
+    graphics/d3d11/gr_d3d11_entity_shadow.h
     graphics/d3d11/gr_d3d11_vertex.h
     graphics/d3d11/gr_d3d11_buffer.h
     graphics/d3d11/gr_d3d11_hooks.cpp
     graphics/d3d11/gr_d3d11_hooks.h
+    graphics/d3d11/gr_d3d11_outline.h
+    graphics/d3d11/gr_d3d11_outline.cpp
+    graphics/d3d11/gr_d3d11_gamma.h
+    graphics/d3d11/gr_d3d11_gamma.cpp
     input/input.h
+    input/mouse.h
     input/mouse.cpp
     input/key.cpp
     hud/hud_colors.cpp
@@ -115,6 +122,7 @@ set(SRCS
     hud/multi_spectate.h
     hud/multi_hud.cpp
     hud/multi_hud_chat.cpp
+    hud/multi_hud_killfeed.cpp
     hud/weapon_select.cpp
     hud/message_log.cpp
     debug/debugwinmsg.cpp
@@ -146,6 +154,57 @@ set(SRCS
     multi/faction_files.cpp
     multi/faction_files.h
     multi/multi_ban.cpp
+    multi/bots/bot_alerts.cpp
+    multi/bots/bot_alerts.h
+    multi/bots/bot_chat_manager.cpp
+    multi/bots/bot_chat_manager.h
+    multi/bots/bot_combat.cpp
+    multi/bots/bot_combat.h
+    multi/bots/bot_combat_manager.cpp
+    multi/bots/bot_combat_manager.h
+    multi/bots/bot_decision_eval.cpp
+    multi/bots/bot_decision_eval.h
+    multi/bots/bot_fsm.cpp
+    multi/bots/bot_fsm.h
+    multi/bots/bot_fsm_manager.cpp
+    multi/bots/bot_fsm_manager.h
+    multi/bots/bot_goal_manager.cpp
+    multi/bots/bot_goal_manager.h
+    multi/bots/bot_goal_memory.cpp
+    multi/bots/bot_goal_memory.h
+    multi/bots/bot_goal_runtime.cpp
+    multi/bots/bot_goal_runtime.h
+    multi/bots/bot_goals.cpp
+    multi/bots/bot_goals.h
+    multi/bots/bot_internal.h
+    multi/bots/bot_main.cpp
+    multi/bots/bot_main.h
+    multi/bots/bot_math.h
+    multi/bots/bot_memory_manager.cpp
+    multi/bots/bot_memory_manager.h
+    multi/bots/bot_movement.cpp
+    multi/bots/bot_movement.h
+    multi/bots/bot_navigation.cpp
+    multi/bots/bot_navigation.h
+    multi/bots/bot_navigation_manager.cpp
+    multi/bots/bot_navigation_manager.h
+    multi/bots/bot_navigation_pathing.cpp
+    multi/bots/bot_navigation_pathing.h
+    multi/bots/bot_navigation_routes.cpp
+    multi/bots/bot_navigation_routes.h
+    multi/bots/bot_perception_manager.cpp
+    multi/bots/bot_perception_manager.h
+    multi/bots/bot_personality.cpp
+    multi/bots/bot_personality.h
+    multi/bots/bot_personality_manager.cpp
+    multi/bots/bot_personality_manager.h
+    multi/bots/bot_state.cpp
+    multi/bots/bot_state.h
+    multi/bots/bot_utils.cpp
+    multi/bots/bot_utils.h
+    multi/bots/bot_waypoint_route.cpp
+    multi/bots/bot_waypoint_route.h
+    multi/bots/bot_weapon_profiles.h
     os/console.cpp
     os/console.h
     os/commands.cpp
@@ -172,6 +231,9 @@ set(SRCS
     object/monitor.cpp
     object/particle.cpp
     object/obj_light.cpp
+    object/alpine_mesh.cpp
+    object/alpine_corona.cpp
+    object/alpine_corona.h
     misc/achievements.h
     misc/achievements.cpp
     misc/character.cpp
@@ -179,6 +241,8 @@ set(SRCS
     misc/high_fps.h
     misc/misc.cpp
     misc/misc.h
+    misc/string.cpp
+    misc/string.h
     misc/vpackfile.cpp
     misc/vpackfile.h
     misc/save_restore.cpp
@@ -186,10 +250,17 @@ set(SRCS
     misc/player.cpp
     misc/player_fpgun.cpp
     misc/g_solid.cpp
+    misc/destruction.cpp
+    misc/destruction.h
     misc/camera.cpp
     misc/ui.cpp
     misc/game.cpp
     misc/level.cpp
+    misc/waypoints.cpp
+    misc/waypoints.h
+    misc/waypoints_internal.h
+    misc/waypoints_utils.cpp
+    misc/waypoints_utils.h
     misc/alpine_options.h
     misc/alpine_options.cpp
     misc/alpine_settings.h
@@ -199,6 +270,8 @@ set(SRCS
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp
+    sound/sound_foley.cpp
+    sound/sound_foley.h
     res/resources.rc
     purefaction/pf.cpp
     purefaction/pf.h
@@ -229,6 +302,7 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
     ${CMAKE_SOURCE_DIR}/vendor/dds
     ${CMAKE_SOURCE_DIR}/vendor/toml++
+    ${CMAKE_SOURCE_DIR}/vendor/nlohmann
 )
 
 if(NOT MSVC)
@@ -241,6 +315,7 @@ target_compile_definitions(AlpineFaction PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX BU
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/experimental/experimental.cpp")
     target_compile_definitions(AlpineFaction PRIVATE HAS_EXPERIMENTAL)
 endif()
+
 
 target_link_libraries(AlpineFaction
     psapi
@@ -260,4 +335,5 @@ target_link_libraries(AlpineFaction
     ws2_32
     freetype
     stb_vorbis
+    stb_image
 )
