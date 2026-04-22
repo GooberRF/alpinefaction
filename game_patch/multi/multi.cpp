@@ -48,7 +48,7 @@ std::string net_addr_to_string(const uint32_t addr) {
     char buf[INET_ADDRSTRLEN];
     const uint32_t addr_net_order = htonl(addr); 
     if (!inet_ntop(AF_INET, &addr_net_order, buf, sizeof(buf))) {
-        throw std::runtime_error("`inet_ntop` failed")
+        throw std::runtime_error{"`inet_ntop` failed"};
     }
     return std::string{buf};
 }
