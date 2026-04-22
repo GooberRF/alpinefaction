@@ -30,8 +30,9 @@ Key Features
 -----
 Most important:
 * Fixes for critical security vulnerabilities
-* Direct3D 11 renderer
+* Direct3D 11 renderer with GPU accelerated realtime per-pixel lighting and full mesh shadows
 * Brand new `King of the Hill`, `Damage Control`, `Revolt`, `Escalation`, and `Run` multiplayer game types
+* Advanced multiplayer bots system with headless bot clients, profile customization, and a fully integrated waypoint grid editor (with autogeneration for custom maps)
 * Multiplayer level auto-downloader (using API at https://autodl.factionfiles.com)
 * Fix for infamous submarine explosion bug (and other FPS-related issues)
 * Checkpoint autosaves at the start of each level
@@ -42,35 +43,43 @@ Most important:
 * Player headlamp (flashlight)
 * Support for any resolution and aspect ratio
 * Fullscreen, windowed, borderless window modes
-* Enhanced mouse input
+* Enhanced mouse input with selectable sensitivity scaling
 * Ability to skip cutscenes
 * Restored water/lava rising functionality in Geothermal Plant
-* Enhanced graphics options such as anti-aliasing and full color range lighting
+* Enhanced graphics options such as anti-aliasing, full color range lighting, and colorblind mode
 * High resolution HUD and vector fonts
+* Speedometer HUD widget
 * Many performance and graphical improvements
 
 Multiplayer:
 * Increased (and configurable) tick rate
+* TOML-based `ADS` dedicated server configuration with per-level rules, on-demand reloading, rule presets, and on-the-fly game type switching
 * "GunGame" game mode
 * Competitive match framework including "ready up" system and overtime
 * Improved gaussian distribution method for bullet spread
 * Damage feedback system including hit sounds, kill sounds, and visual damage number indicators
 * Radio messages and taunts
 * Visual indicators and nameplates in the world for objectives and teammates
+* Player outlines with per-team and enemy colors, plus optional team X-ray
+* Enemy and teammate footstep audio
 * Location pinging visible to teammates
 * Random critical hits (configurable)
-* Improved scoreboard
-* Voting system for kicking players and changing levels
 * First person and free camera spectate
+* Improved scoreboard with splittable categories for spectators, bots, browsers, and idle players
+* Voting system for kicking players, changing levels, and changing game types
+* Server-configurable gibbing, weapon loadouts, spawn delays, delayed item spawns, etc.
 * Cheating prevention
 * Many server fixes, performance improvements, and customizable features
 * `rf://` protocol handler for joining servers
 
 Community development:
-* 40+ new event scripting objects for crafting advanced logic systems in maps
+* 60+ new event scripting objects for crafting advanced logic systems in maps, including events for gas regions, respawn points, capture points, mesh animation, fullscreen images, and gameplay rules
+* Support for gas regions
 * Support for dynamic lights in maps
 * Support for using dynamic lights, particle emitters, and push regions with movers
-* Enhanced and more immersive skyboxes
+* Enhanced and more immersive skyboxes, including support for movers, meshes, and mesh pixel lighting in skyboxes
+* Expanded destruction system with `Brush-based geomod` (RF2-style) and breakable detail brushes with dynamic debris generation
+* New `Mesh`, `Corona`, and `Note` object types
 * Removed legacy PS2 compatibility measures that resulted in decreased map performance
 * Access for many hardcoded settings to be customized in mods
 * Support for custom HUDs and translation packs as clientside mods
@@ -80,11 +89,18 @@ Community development:
 * Fixed support for events in multiplayer (removed requirement to use hacky workarounds)
 * Full color range lightmaps (removed lightmap clamping)
 * DDS texture support
+* 8-bit greyscale TGA support in both editor and game
 * OGG audio support
 * Support for custom BIK videos and bluebeard.bty in mods
 * Advanced debugging features for developing maps and mods
 * Many engine geometry and object limits raised or removed
-* Many level editor bug fixes, performance, and workflow improvements
+* Many level editor bug fixes, performance, and workflow improvements, including:
+  * `Mirror` tool for brushes and groups
+  * `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` face-mode tools
+  * `Delete` and `Bridge` vertex-mode tools
+  * `To Mesh` tool for converting brushes directly to `.v3m` static meshes
+  * Custom texture subdirectories
+  * Improved packfile creation that includes used meshes, animations, and textures
 
 See the [CHANGELOG file](docs/CHANGELOG.md) for a detailed list of all features.
 
