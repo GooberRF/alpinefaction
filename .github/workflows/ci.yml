@@ -2,11 +2,10 @@ name: CI
 
 on:
   push:
-    paths-ignore:
-      - '**/*.md'
+    paths-ignore: &paths
+      - '**.md'
   pull_request:
-    paths-ignore:
-      - '**/*.md'
+    paths-ignore: *paths
 
 permissions: {}
 
