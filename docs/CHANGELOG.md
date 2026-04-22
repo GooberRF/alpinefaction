@@ -6,6 +6,9 @@ Version 1.4.0 (Bakeapple): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@is-this-c](https://github.com/is-this-c)
+- Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
+- Rename `antialiasing` console command to `r_antialiasing`
 
 ### Bug fixes
 
@@ -117,8 +120,6 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
 - Add experimental D3D11 performance settings `D3D11_LowFrameLatency`, `D3D11_AllowTearing`, and `D3D11_SkipGammaPass`
 
 [@is-this-c](https://github.com/is-this-c)
-- Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
-- Rename `antialiasing` console command to `r_antialiasing`
 - Use 64-bit integers for time deltas
 - Replace `os_sleep` in `frametime_calculate` with `wait_for`
 - Add version and uptime to a server's printed config
