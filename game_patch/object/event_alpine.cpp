@@ -849,7 +849,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     {
         rf::EventType::Modify_Gas_Region, [](const rf::EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Modify_Gas_Region));
-            auto* event = dynamic_cast<rf::EventModifyGasRegion*>(base_event);
+            auto* event = dynamic_cast<EventModifyGasRegion*>(base_event);
             if (event) {
                 event->color_string = params.str1;
                 event->density = params.float1;
@@ -862,7 +862,7 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
     {
         rf::EventType::Resize_Gas_Region, [](const rf::EventCreateParams& params) {
             auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::Resize_Gas_Region));
-            auto* event = dynamic_cast<rf::EventResizeGasRegion*>(base_event);
+            auto* event = dynamic_cast<EventResizeGasRegion*>(base_event);
             if (event) {
                 event->shape = params.int1 + 1; // dropdown index counts from 0, must be incremented
                 event->sphere_radius = params.float1;
