@@ -63,6 +63,8 @@ static int g_rebind_pending_sc = -1; // scan code captured during rebind, -1 = n
 static bool g_last_input_was_gamepad = false;
 static float g_message_log_close_cooldown = 0.0f;
 static int g_pending_scroll_delta = 0;
+static float g_menu_cursor_accum_x = 0.0f;
+static float g_menu_cursor_accum_y = 0.0f;
 
 struct MenuNavState {
     int   deferred_btn_down  = -1;   // SDL button queued from poll for button-down
@@ -74,6 +76,13 @@ struct MenuNavState {
     bool  last_nav_was_dpad  = true;  // true = D-pad drove focus; false = left stick moved cursor
 };
 static MenuNavState g_menu_nav;
+
+struct TouchpadState {
+    bool  active = false;
+    float last_x = 0.0f;
+    float last_y = 0.0f;
+};
+static TouchpadState g_touchpad;
 
 static float g_move_lx = 0.0f, g_move_ly = 0.0f;
 static float g_move_mag = 0.0f;
@@ -170,6 +179,9 @@ static void reset_gamepad_input_state()
     g_flickstick_prev_stick_angle  = 0.0f;
     memset(g_flickstick_turn_smooth_buf, 0, sizeof(g_flickstick_turn_smooth_buf));
     g_flickstick_turn_smooth_idx   = 0;
+    g_touchpad = {};
+    g_menu_cursor_accum_x = 0.0f;
+    g_menu_cursor_accum_y = 0.0f;
     g_lt_was_down = false;
     g_rt_was_down = false;
     g_last_input_was_gamepad = false;
@@ -404,6 +416,21 @@ static void menu_nav_move_cursor(int dx, int dy)
     SendMessage(rf::main_wnd, WM_MOUSEMOVE, 0, MAKELPARAM(client.x, client.y));
 }
 
+static void menu_nav_apply_cursor_delta(float dx, float dy)
+{
+    if (dx == 0.0f && dy == 0.0f) return;
+    g_menu_cursor_accum_x += dx;
+    g_menu_cursor_accum_y += dy;
+    int ix = static_cast<int>(g_menu_cursor_accum_x);
+    int iy = static_cast<int>(g_menu_cursor_accum_y);
+    g_menu_cursor_accum_x -= static_cast<float>(ix);
+    g_menu_cursor_accum_y -= static_cast<float>(iy);
+    if (ix == 0 && iy == 0) return;
+    menu_nav_move_cursor(ix, iy);
+    g_menu_nav.last_nav_was_dpad = false;
+    g_last_input_was_gamepad = true;
+}
+
 static int dpad_btn_to_navkey(int btn)
 {
     switch (btn) {
@@ -454,6 +481,9 @@ static bool menu_nav_on_button_down(int btn)
         return true;
     }
     switch (btn) {
+    case SDL_GAMEPAD_BUTTON_TOUCHPAD:
+        menu_nav_handle_confirm();
+        return true;
     case SDL_GAMEPAD_BUTTON_DPAD_UP:
     case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
     case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
@@ -474,7 +504,7 @@ static void menu_nav_on_button_up(int btn)
 {
     if (btn == g_menu_nav.repeat_btn)
         g_menu_nav.repeat_btn = -1;
-    if (btn == static_cast<int>(get_menu_confirm_button()))
+    if (btn == static_cast<int>(get_menu_confirm_button()) || btn == SDL_GAMEPAD_BUTTON_TOUCHPAD)
         menu_nav_release_click();
 }
 
@@ -694,7 +724,8 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
 
     bool is_menu_nav_button = in_menu_nav_state && !in_spectate_state
         && (ev.button == static_cast<int>(get_menu_confirm_button())
-            || ev.button == static_cast<int>(get_menu_cancel_button()));
+            || ev.button == static_cast<int>(get_menu_cancel_button())
+            || ev.button == SDL_GAMEPAD_BUTTON_TOUCHPAD);
 
     if (!is_menu_nav_button && ev.button < SDL_GAMEPAD_BUTTON_COUNT) {
         int mapped = g_button_map[ev.button];
@@ -768,6 +799,45 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
     }
 }
 
+static void handle_gamepad_touchpad_down(const SDL_GamepadTouchpadEvent& ev)
+{
+    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (ev.touchpad != 0 || ev.finger != 0) return; // track primary finger on first touchpad only
+    if (g_message_log_close_cooldown > 0.0f) return;
+    g_touchpad.active = true;
+    g_touchpad.last_x = ev.x;
+    g_touchpad.last_y = ev.y;
+    // Reset accumulator so the first motion event of a new touch starts clean.
+    g_menu_cursor_accum_x = 0.0f;
+    g_menu_cursor_accum_y = 0.0f;
+    g_last_input_was_gamepad = true;
+}
+
+static void handle_gamepad_touchpad_motion(const SDL_GamepadTouchpadEvent& ev)
+{
+    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (ev.touchpad != 0 || ev.finger != 0) return;
+    if (!g_touchpad.active) return;
+    // Always update position so delta is fresh when we next enter menu state.
+    float dx = ev.x - g_touchpad.last_x;
+    float dy = ev.y - g_touchpad.last_y;
+    g_touchpad.last_x = ev.x;
+    g_touchpad.last_y = ev.y;
+    if (g_message_log_close_cooldown > 0.0f) return;
+    if (!is_gamepad_menu_navigation_state()) return;
+    // Scale: one full touchpad swipe maps to traversing the full screen dimension.
+    float fdx = dx * static_cast<float>(rf::gr::screen_width());
+    float fdy = dy * static_cast<float>(rf::gr::screen_height());
+    menu_nav_apply_cursor_delta(fdx, fdy);
+}
+
+static void handle_gamepad_touchpad_up(const SDL_GamepadTouchpadEvent& ev)
+{
+    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (ev.touchpad != 0 || ev.finger != 0) return;
+    g_touchpad.active = false;
+}
+
 static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
 {
     if (!g_motion_sensors_supported) return;
@@ -835,6 +905,15 @@ void gamepad_sdl_poll()
             case SDL_EVENT_GAMEPAD_REMOVED:
                 handle_gamepad_removed(ev.gdevice);
                 break;
+            case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
+                handle_gamepad_touchpad_down(ev.gtouchpad);
+                break;
+            case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+                handle_gamepad_touchpad_motion(ev.gtouchpad);
+                break;
+            case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
+                handle_gamepad_touchpad_up(ev.gtouchpad);
+                break;
             case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
                 handle_gamepad_sensor_update(ev.gsensor);
                 break;
@@ -862,12 +941,9 @@ static void menu_nav_handle_cursor_frame()
     get_axis_circular(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, k_menu_stick_deadzone, sx, sy);
     if (sx == 0.0f && sy == 0.0f) return;
     float speed = k_base_speed * (static_cast<float>(rf::gr::screen_height()) / 600.0f);
-    int dx = static_cast<int>(sx * speed * rf::frametime);
-    int dy = static_cast<int>(sy * speed * rf::frametime);
-    if (dx == 0 && dy == 0) return;
-    menu_nav_move_cursor(dx, dy);
-    g_menu_nav.last_nav_was_dpad = false;
-    g_last_input_was_gamepad = true;
+    float dx = sx * speed * rf::frametime;
+    float dy = sy * speed * rf::frametime;
+    menu_nav_apply_cursor_delta(dx, dy);
 }
 
 static void menu_nav_tick_dpad_repeat()
