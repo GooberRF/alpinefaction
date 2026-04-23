@@ -20,10 +20,12 @@ void gyro_update_calibration_mode()
     using CM = GamepadMotionHelpers::CalibrationMode;
     int mode = std::clamp(g_alpine_game_config.gamepad_gyro_autocalibration_mode, 0, 2);
 
-    // Autocalibration should only run when gyro aiming is enabled.
-    bool gyro_enabled = g_alpine_game_config.gamepad_gyro_enabled && gamepad_is_motionsensors_supported();
-    if (!gyro_enabled) {
-        mode = 0; // force manual calibration when gyro is disabled
+    // Autocalibration should only run when gyro input is in use (gameplay camera or menu cursor).
+    bool gyro_active = gamepad_is_motionsensors_supported()
+        && (g_alpine_game_config.gamepad_gyro_enabled
+            || g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity > 0.0f);
+    if (!gyro_active) {
+        mode = 0; // force manual calibration when no gyro feature is active
     }
 
     CM desired;
@@ -139,6 +141,11 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
         out_yaw_dps   = y;
         break;
     }
+}
+
+void gyro_get_calibrated_rates(float& out_pitch_dps, float& out_yaw_dps)
+{
+    g_motion.GetWorldSpaceGyro(out_pitch_dps, out_yaw_dps);
 }
 
 // Gyro tightening is based on GyroWiki documents

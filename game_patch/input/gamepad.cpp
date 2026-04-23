@@ -65,6 +65,7 @@ static float g_message_log_close_cooldown = 0.0f;
 static int g_pending_scroll_delta = 0;
 static float g_menu_cursor_accum_x = 0.0f;
 static float g_menu_cursor_accum_y = 0.0f;
+static bool g_gyro_menu_cursor_active = false;
 
 struct MenuNavState {
     int   deferred_btn_down  = -1;   // SDL button queued from poll for button-down
@@ -182,6 +183,7 @@ static void reset_gamepad_input_state()
     g_touchpad = {};
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
+    g_gyro_menu_cursor_active = false;
     g_lt_was_down = false;
     g_rt_was_down = false;
     g_last_input_was_gamepad = false;
@@ -467,10 +469,18 @@ static SDL_GamepadButton get_menu_cancel_button()
     return SDL_GAMEPAD_BUTTON_EAST;
 }
 
+static SDL_GamepadButton get_gyro_toggle_button()
+{
+    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_WEST) == SDL_GAMEPAD_BUTTON_LABEL_Y)
+        return SDL_GAMEPAD_BUTTON_WEST;
+    return SDL_GAMEPAD_BUTTON_NORTH;
+}
+
 static bool menu_nav_on_button_down(int btn)
 {
-    const SDL_GamepadButton confirm_btn = get_menu_confirm_button();
-    const SDL_GamepadButton cancel_btn  = get_menu_cancel_button();
+    const SDL_GamepadButton confirm_btn      = get_menu_confirm_button();
+    const SDL_GamepadButton cancel_btn       = get_menu_cancel_button();
+    const SDL_GamepadButton gyro_toggle_btn  = get_gyro_toggle_button();
 
     if (btn == static_cast<int>(confirm_btn)) {
         menu_nav_handle_confirm();
@@ -478,6 +488,11 @@ static bool menu_nav_on_button_down(int btn)
     }
     if (btn == static_cast<int>(cancel_btn)) {
         menu_nav_handle_cancel();
+        return true;
+    }
+    if (btn == static_cast<int>(gyro_toggle_btn)) {
+        if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity > 0.0f)
+            g_gyro_menu_cursor_active = !g_gyro_menu_cursor_active;
         return true;
     }
     switch (btn) {
@@ -933,6 +948,23 @@ void gamepad_sdl_poll()
         SDL_EVENT_LAST);
 }
 
+static void menu_nav_handle_gyro_cursor_frame()
+{
+    if (!g_gyro_menu_cursor_active) return;
+    if (!g_motion_sensors_supported) return;
+    float sensitivity = g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity;
+    if (sensitivity <= 0.0f) return;
+
+    float pitch_dps, yaw_dps;
+    gyro_get_calibrated_rates(pitch_dps, yaw_dps);
+    if (pitch_dps == 0.0f && yaw_dps == 0.0f) return;
+
+    float scale = sensitivity * (static_cast<float>(rf::gr::screen_height()) / 600.0f) * rf::frametime;
+    float dx = -yaw_dps   * scale;
+    float dy = -pitch_dps * scale;
+    menu_nav_apply_cursor_delta(dx, dy);
+}
+
 static void menu_nav_handle_cursor_frame()
 {
     constexpr float k_menu_stick_deadzone = 0.24f;
@@ -996,6 +1028,7 @@ static void gamepad_do_menu_frame()
         g_menu_nav.deferred_btn_up = -1;
     }
 
+    menu_nav_handle_gyro_cursor_frame();
     menu_nav_handle_cursor_frame();
     menu_nav_tick_dpad_repeat();
     menu_nav_tick_scroll();
@@ -1599,6 +1632,16 @@ ConsoleCommand2 joy_rumble_vibration_filter_cmd{
     "joy_rumble_vibration_filter [0|1|2]",
 };
 
+ConsoleCommand2 gyro_menu_cursor_sens_cmd{
+    "gyro_menu_cursor_sens",
+    [](std::optional<float> val) {
+        if (val) g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity = std::clamp(val.value(), 0.0f, 30.0f);
+        rf::console::print("Gyro menu cursor sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity);
+    },
+    "Set gyro cursor sensitivity for menus (0 = disabled, default 1.0)",
+    "gyro_menu_cursor_sens [value]",
+};
+
 ConsoleCommand2 gyro_camera_cmd{
     "gyro_camera",
     [](std::optional<int> val) {
@@ -2077,6 +2120,7 @@ void gamepad_apply_patch()
     joy_rumble_when_primary_cmd.register_cmd();
     joy_rumble_vibration_filter_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
+    gyro_menu_cursor_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();
     input_prompts_cmd.register_cmd();

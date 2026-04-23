@@ -25,6 +25,7 @@ bool gyro_is_autocalibration_steady();
 void gyro_process_motion(float gyro_x, float gyro_y, float gyro_z,
                          float accel_x, float accel_y, float accel_z, float delta_time);
 void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps);
+void gyro_get_calibrated_rates(float& out_pitch_dps, float& out_yaw_dps);
 void gyro_apply_tightening(float& pitch_dps, float& yaw_dps);
 void gyro_apply_smoothing(float& pitch_dps, float& yaw_dps);
 void gyro_apply_vh_mixer(float& pitch_dps, float& yaw_dps);

@@ -1110,10 +1110,6 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gamepad_look_deadzone = std::clamp(std::stof(settings["GamepadLookDeadzone"]), 0.0f, 0.9f);
         processed_keys.insert("GamepadLookDeadzone");
     }
-    if (settings.count("GamepadGyroCameraSensitivity")) {
-        g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(std::stof(settings["GamepadGyroCameraSensitivity"]), 0.0f, 30.0f);
-        processed_keys.insert("GamepadGyroCameraSensitivity");
-    }
     if (settings.count("GamepadGyroEnabled")) {
         g_alpine_game_config.gamepad_gyro_enabled = std::stoi(settings["GamepadGyroEnabled"]) != 0;
         processed_keys.insert("GamepadGyroEnabled");
@@ -1121,6 +1117,14 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("GamepadGyroVehicleEnabled")) {
         g_alpine_game_config.gamepad_gyro_vehicle_camera = std::stoi(settings["GamepadGyroVehicleEnabled"]) != 0;
         processed_keys.insert("GamepadGyroVehicleEnabled");
+    }
+    if (settings.count("GamepadGyroCameraSensitivity")) {
+        g_alpine_game_config.gamepad_gyro_sensitivity = std::clamp(std::stof(settings["GamepadGyroCameraSensitivity"]), 0.0f, 30.0f);
+        processed_keys.insert("GamepadGyroCameraSensitivity");
+    }
+    if (settings.count("GamepadGyroCursorSensitivity")) {
+        g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity = std::clamp(std::stof(settings["GamepadGyroCursorSensitivity"]), 0.0f, 30.0f);
+        processed_keys.insert("GamepadGyroCursorSensitivity");
     }
     if (settings.count("GamepadGyroAutocalibrationMode")) {
         int mode = std::clamp(std::stoi(settings["GamepadGyroAutocalibrationMode"]), 0, 2);
@@ -1385,6 +1389,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "GamepadGyroInvertY=" << g_alpine_game_config.gamepad_gyro_invert_y << "\n";
     file << "GamepadGyroTightening=" << g_alpine_game_config.gamepad_gyro_tightening << "\n";
     file << "GamepadGyroSmoothing=" << g_alpine_game_config.gamepad_gyro_smoothing << "\n";
+    file << "GamepadGyroCursorSensitivity=" << g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity << "\n";
     file << "GamepadIconOverride=" << g_alpine_game_config.gamepad_icon_override << "\n";
     file << "InputPromptMode=" << g_alpine_game_config.input_prompt_override << "\n";
     file << "GamepadJoyInvertY=" << g_alpine_game_config.gamepad_joy_invert_y << "\n";
