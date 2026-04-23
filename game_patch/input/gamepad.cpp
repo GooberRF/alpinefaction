@@ -185,7 +185,7 @@ static void reset_gamepad_input_state()
 static float get_axis(SDL_GamepadAxis axis, float deadzone)
 {
     if (!g_gamepad) return 0.0f;
-    float v = SDL_GetGamepadAxis(g_gamepad, axis) / static_cast<float>(SDL_MAX_SINT16);
+    float v = SDL_GetGamepadAxis(g_gamepad, axis) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
     if (v >  deadzone) return (v - deadzone) / (1.0f - deadzone);
     if (v < -deadzone) return (v + deadzone) / (1.0f - deadzone);
     return 0.0f;
@@ -196,8 +196,8 @@ static void get_axis_circular(SDL_GamepadAxis axis_x, SDL_GamepadAxis axis_y, fl
                               float& out_x, float& out_y)
 {
     if (!g_gamepad) { out_x = out_y = 0.0f; return; }
-    float raw_x = SDL_GetGamepadAxis(g_gamepad, axis_x) / static_cast<float>(SDL_MAX_SINT16);
-    float raw_y = SDL_GetGamepadAxis(g_gamepad, axis_y) / static_cast<float>(SDL_MAX_SINT16);
+    float raw_x = SDL_GetGamepadAxis(g_gamepad, axis_x) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+    float raw_y = SDL_GetGamepadAxis(g_gamepad, axis_y) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
     float mag = std::hypot(raw_x, raw_y);
     float remapped = (mag > deadzone) ? (mag - deadzone) / (1.0f - deadzone) : 0.0f;
     float scale = mag > 0.0f ? remapped / mag : 0.0f;
@@ -428,8 +428,8 @@ static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_a
 
 static void update_trigger_actions()
 {
-    float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_MAX_SINT16);
-    float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
+    float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+    float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
     bool lt_down = lt > 0.5f;
     bool rt_down = rt > 0.5f;
 
@@ -746,26 +746,26 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
     if (g_message_log_close_cooldown > 0.0f) return;
     if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
 
-    float v = ev.value / static_cast<float>(SDL_MAX_SINT16);
-    float deadzone = 0.0f;
+    float v = ev.value / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
     switch (static_cast<SDL_GamepadAxis>(ev.axis)) {
     case SDL_GAMEPAD_AXIS_LEFTX:
     case SDL_GAMEPAD_AXIS_LEFTY:
-        deadzone = g_alpine_game_config.gamepad_move_deadzone;
+        if (std::abs(v) > g_alpine_game_config.gamepad_move_deadzone)
+            g_last_input_was_gamepad = true;
         break;
     case SDL_GAMEPAD_AXIS_RIGHTX:
     case SDL_GAMEPAD_AXIS_RIGHTY:
-        deadzone = g_alpine_game_config.gamepad_look_deadzone;
+        if (std::abs(v) > g_alpine_game_config.gamepad_look_deadzone)
+            g_last_input_was_gamepad = true;
         break;
     case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
     case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
-        deadzone = 0.5f;
+        if (v > 0.5f)
+            g_last_input_was_gamepad = true;
         break;
     default:
         break;
     }
-    if (std::abs(v) > deadzone)
-        g_last_input_was_gamepad = true;
 }
 
 static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
@@ -942,8 +942,8 @@ void gamepad_do_frame()
         return;
 
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
-        float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_MAX_SINT16);
-        float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_MAX_SINT16);
+        float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
         if (lt > 0.5f && !g_lt_was_down) {
             g_rebind_pending_sc = CTRL_GAMEPAD_LEFT_TRIGGER;
             rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
@@ -1007,8 +1007,8 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
     pitch_delta = 0.0f;
 
     // Raw axes — no deadzone remapping to avoid quadrant snapping in the angle math.
-    float rx = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_x) / static_cast<float>(SDL_MAX_SINT16) : 0.0f;
-    float ry = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_y) / static_cast<float>(SDL_MAX_SINT16) : 0.0f;
+    float rx = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_x) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX) : 0.0f;
+    float ry = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_y) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX) : 0.0f;
 
     float stick_mag      = std::hypot(rx, ry);
     bool  in_flick_zone  = stick_mag >  g_alpine_game_config.gamepad_flickstick_deadzone;
