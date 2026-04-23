@@ -426,6 +426,58 @@ static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_a
     }
 }
 
+static SDL_GamepadButton get_menu_confirm_button()
+{
+    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A)
+        return SDL_GAMEPAD_BUTTON_EAST;
+    return SDL_GAMEPAD_BUTTON_SOUTH;
+}
+
+static SDL_GamepadButton get_menu_cancel_button()
+{
+    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_SOUTH) == SDL_GAMEPAD_BUTTON_LABEL_B)
+        return SDL_GAMEPAD_BUTTON_SOUTH;
+    return SDL_GAMEPAD_BUTTON_EAST;
+}
+
+static bool menu_nav_on_button_down(int btn)
+{
+    const SDL_GamepadButton confirm_btn = get_menu_confirm_button();
+    const SDL_GamepadButton cancel_btn  = get_menu_cancel_button();
+
+    if (btn == static_cast<int>(confirm_btn)) {
+        menu_nav_handle_confirm();
+        return true;
+    }
+    if (btn == static_cast<int>(cancel_btn)) {
+        menu_nav_handle_cancel();
+        return true;
+    }
+    switch (btn) {
+    case SDL_GAMEPAD_BUTTON_DPAD_UP:
+    case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+    case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+        if (!rf::ui::options_controls_waiting_for_key) {
+            menu_nav_inject_key(dpad_btn_to_navkey(btn));
+            g_menu_nav.last_nav_was_dpad = true;
+            g_menu_nav.repeat_btn        = btn;
+            g_menu_nav.repeat_timer      = 0.4f;
+        }
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void menu_nav_on_button_up(int btn)
+{
+    if (btn == g_menu_nav.repeat_btn)
+        g_menu_nav.repeat_btn = -1;
+    if (btn == static_cast<int>(get_menu_confirm_button()))
+        menu_nav_release_click();
+}
+
 static void update_trigger_actions()
 {
     float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
@@ -554,58 +606,6 @@ static void update_stick_movement()
     set_movement_key(rf::CC_ACTION_BACKWARD,    ly > 0.0f);
     set_movement_key(rf::CC_ACTION_SLIDE_LEFT,  lx < 0.0f);
     set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, lx > 0.0f);
-}
-
-static SDL_GamepadButton get_menu_confirm_button()
-{
-    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A)
-        return SDL_GAMEPAD_BUTTON_EAST;
-    return SDL_GAMEPAD_BUTTON_SOUTH;
-}
-
-static SDL_GamepadButton get_menu_cancel_button()
-{
-    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_SOUTH) == SDL_GAMEPAD_BUTTON_LABEL_B)
-        return SDL_GAMEPAD_BUTTON_SOUTH;
-    return SDL_GAMEPAD_BUTTON_EAST;
-}
-
-static bool menu_nav_on_button_down(int btn)
-{
-    const SDL_GamepadButton confirm_btn = get_menu_confirm_button();
-    const SDL_GamepadButton cancel_btn  = get_menu_cancel_button();
-
-    if (btn == static_cast<int>(confirm_btn)) {
-        menu_nav_handle_confirm();
-        return true;
-    }
-    if (btn == static_cast<int>(cancel_btn)) {
-        menu_nav_handle_cancel();
-        return true;
-    }
-    switch (btn) {
-    case SDL_GAMEPAD_BUTTON_DPAD_UP:
-    case SDL_GAMEPAD_BUTTON_DPAD_DOWN:
-    case SDL_GAMEPAD_BUTTON_DPAD_LEFT:
-    case SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
-        if (!rf::ui::options_controls_waiting_for_key) {
-            menu_nav_inject_key(dpad_btn_to_navkey(btn));
-            g_menu_nav.last_nav_was_dpad = true;
-            g_menu_nav.repeat_btn        = btn;
-            g_menu_nav.repeat_timer      = 0.4f;
-        }
-        return true;
-    default:
-        return false;
-    }
-}
-
-static void menu_nav_on_button_up(int btn)
-{
-    if (btn == g_menu_nav.repeat_btn)
-        g_menu_nav.repeat_btn = -1;
-    if (btn == static_cast<int>(get_menu_confirm_button()))
-        menu_nav_release_click();
 }
 
 static void disconnect_active_gamepad()
@@ -966,38 +966,6 @@ void gamepad_do_frame()
         rumble_do_frame();
 }
 
-static bool is_gamepad_controls_rebind_active()
-{
-    return ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key;
-}
-
-static bool is_key_allowed_during_rebind(int scan_code)
-{
-    if (scan_code == CTRL_REBIND_SENTINEL)
-        return true;
-    if ((scan_code & rf::KEY_MASK) == rf::KEY_ESC)
-        return true;
-    return false;
-}
-
-FunHook<void(int,int,int)> key_process_event_hook{
-    0x0051E6C0,
-    [](int scan_code, int key_down, int delta_time) {
-        if (is_gamepad_controls_rebind_active() && !is_key_allowed_during_rebind(scan_code))
-            return;
-        key_process_event_hook.call_target(scan_code, key_down, delta_time);
-    }
-};
-
-FunHook<int(int)> mouse_was_button_pressed_hook{
-    0x0051E5D0,
-    [](int btn_idx) -> int {
-        if (is_gamepad_controls_rebind_active())
-            return 0;
-        return mouse_was_button_pressed_hook.call_target(btn_idx);
-    }
-};
-
 // Flick stick is based on GyroWiki documents
 // http://gyrowiki.jibbsmart.com/blog:good-gyro-controls-part-2:the-flick-stick
 static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y,
@@ -1213,6 +1181,38 @@ void flush_freelook_gamepad_deltas()
     cam_entity->control_data.eye_phb.x += gamepad_pitch;
     cam_entity->control_data.phb.y += gamepad_yaw;
 }
+
+static bool is_gamepad_controls_rebind_active()
+{
+    return ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key;
+}
+
+static bool is_key_allowed_during_rebind(int scan_code)
+{
+    if (scan_code == CTRL_REBIND_SENTINEL)
+        return true;
+    if ((scan_code & rf::KEY_MASK) == rf::KEY_ESC)
+        return true;
+    return false;
+}
+
+FunHook<void(int,int,int)> key_process_event_hook{
+    0x0051E6C0,
+    [](int scan_code, int key_down, int delta_time) {
+        if (is_gamepad_controls_rebind_active() && !is_key_allowed_during_rebind(scan_code))
+            return;
+        key_process_event_hook.call_target(scan_code, key_down, delta_time);
+    }
+};
+
+FunHook<int(int)> mouse_was_button_pressed_hook{
+    0x0051E5D0,
+    [](int btn_idx) -> int {
+        if (is_gamepad_controls_rebind_active())
+            return 0;
+        return mouse_was_button_pressed_hook.call_target(btn_idx);
+    }
+};
 
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_down_hook{
     0x00430F40,
