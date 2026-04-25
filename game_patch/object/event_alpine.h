@@ -34,10 +34,10 @@
 #include "../graphics/gr.h"
 #include "../misc/level.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/alpine_packets.h"
 
 void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale);
 rf::Vector3 rotate_velocity(const rf::Vector3& old_velocity, const rf::Matrix3& old_orient, const rf::Matrix3& new_orient);
-void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 
 namespace rf
 {
