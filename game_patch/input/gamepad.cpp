@@ -182,7 +182,6 @@ static void reset_gamepad_input_state()
     g_flickstick_turn_smooth_idx   = 0;
     g_touchpad = {};
     g_menu_cursor_accum_x = 0.0f;
-    g_menu_cursor_accum_y = 0.0f;
     g_gyro_menu_cursor_active = false;
     g_lt_was_down = false;
     g_rt_was_down = false;
@@ -542,15 +541,20 @@ static void update_trigger_actions()
         sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER), lt_down, g_trigger_action[0]);
     }
     if (rt_down != g_rt_was_down) {
-        if (rt_down)
-            inject_action_key(g_trigger_action[1], true);
-        else
-            force_release_action_key(g_trigger_action[1]);
-        if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count)
-            g_action_curr[g_trigger_action[1]] = rt_down;
-        if (g_menu_trigger_action[1] >= 0 && g_menu_trigger_action[1] < k_action_count)
-            g_action_curr[g_menu_trigger_action[1]] = rt_down;
-        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER), rt_down, g_trigger_action[1]);
+        if (is_gamepad_menu_navigation_state()) {
+            rt_down ? menu_nav_handle_confirm() : menu_nav_release_click();
+        }
+        else {
+            if (rt_down)
+                inject_action_key(g_trigger_action[1], true);
+            else
+                force_release_action_key(g_trigger_action[1]);
+            if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count)
+                g_action_curr[g_trigger_action[1]] = rt_down;
+            if (g_menu_trigger_action[1] >= 0 && g_menu_trigger_action[1] < k_action_count)
+                g_action_curr[g_menu_trigger_action[1]] = rt_down;
+            sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER), rt_down, g_trigger_action[1]);
+        }
     }
 
     g_lt_was_down = lt_down;
@@ -817,12 +821,11 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
 static void handle_gamepad_touchpad_down(const SDL_GamepadTouchpadEvent& ev)
 {
     if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
-    if (ev.touchpad != 0 || ev.finger != 0) return; // track primary finger on first touchpad only
+    if (ev.touchpad != 0 || ev.finger != 0) return;
     if (g_message_log_close_cooldown > 0.0f) return;
     g_touchpad.active = true;
     g_touchpad.last_x = ev.x;
     g_touchpad.last_y = ev.y;
-    // Reset accumulator so the first motion event of a new touch starts clean.
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
     g_last_input_was_gamepad = true;
@@ -833,14 +836,12 @@ static void handle_gamepad_touchpad_motion(const SDL_GamepadTouchpadEvent& ev)
     if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
     if (ev.touchpad != 0 || ev.finger != 0) return;
     if (!g_touchpad.active) return;
-    // Always update position so delta is fresh when we next enter menu state.
     float dx = ev.x - g_touchpad.last_x;
     float dy = ev.y - g_touchpad.last_y;
     g_touchpad.last_x = ev.x;
     g_touchpad.last_y = ev.y;
     if (g_message_log_close_cooldown > 0.0f) return;
     if (!is_gamepad_menu_navigation_state()) return;
-    // Scale: one full touchpad swipe maps to traversing the full screen dimension.
     float fdx = dx * static_cast<float>(rf::gr::screen_width());
     float fdy = dy * static_cast<float>(rf::gr::screen_height());
     menu_nav_apply_cursor_delta(fdx, fdy);
@@ -1248,7 +1249,6 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         }
     }
 
-    // Use flickstick when not scoped/scanning; joystick while scoped/scanning for consistent aim.
     if (g_alpine_game_config.gamepad_joy_camera && !is_freelook && !is_scoped_or_scanning) {
         gamepad_apply_flickstick(cam_x, cam_y, yaw_delta, pitch_delta);
         yaw_delta   *= gamepad_zoom_sens;
