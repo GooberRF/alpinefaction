@@ -98,6 +98,7 @@ struct af_client_req_packet
 enum class af_server_req_type : uint8_t
 {
     af_sreq_should_gib = 0x0,
+    af_sreq_teleport_entity = 0x1,  // Alpine 1.4
 };
 
 struct ShouldGibPayload
@@ -105,7 +106,15 @@ struct ShouldGibPayload
     uint32_t obj_handle = 0;
 };
 
-using af_server_req_payload = std::variant<ShouldGibPayload>;
+struct TeleportEntityPayload
+{
+    uint32_t obj_handle = 0;
+    RF_Vector pos = {};
+    RF_Matrix orient = {};
+    RF_Vector vel = {};
+};
+
+using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload>;
 
 struct af_server_req_packet
 {
@@ -378,6 +387,7 @@ void af_send_client_req_packet(const af_client_req_packet& packet);
 static void af_process_client_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player);
 void af_send_should_gib_req(uint32_t obj_handle);
+void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_just_spawned_loadout(rf::Player* to_player, std::vector<WeaponLoadoutEntry> loadout);
 static void af_process_just_spawned_info_packet(const void* data, size_t len, const rf::NetAddr& addr);

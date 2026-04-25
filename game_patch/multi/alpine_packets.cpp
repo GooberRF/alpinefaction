@@ -565,6 +565,19 @@ void serialize_payload(const ShouldGibPayload& payload, std::byte* buf, size_t& 
     offset += sizeof(payload.obj_handle);
 }
 
+// af_sreq_teleport_entity
+void serialize_payload(const TeleportEntityPayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
+    std::memcpy(buf + offset, &payload.pos, sizeof(payload.pos));
+    offset += sizeof(payload.pos);
+    std::memcpy(buf + offset, &payload.orient, sizeof(payload.orient));
+    offset += sizeof(payload.orient);
+    std::memcpy(buf + offset, &payload.vel, sizeof(payload.vel));
+    offset += sizeof(payload.vel);
+}
+
 void af_send_server_cfg_request() {
     if (!rf::is_multi || rf::is_server) {
         return;
@@ -719,6 +732,35 @@ void af_send_should_gib_req(uint32_t obj_handle)
     }
 }
 
+void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos,
+                                  const rf::Matrix3& orient, const rf::Vector3& vel)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    TeleportEntityPayload payload{};
+    payload.obj_handle = obj_handle;
+    static_assert(sizeof(payload.pos) == sizeof(rf::Vector3), "RF_Vector / rf::Vector3 layout mismatch");
+    static_assert(sizeof(payload.orient) == sizeof(rf::Matrix3), "RF_Matrix / rf::Matrix3 layout mismatch");
+    std::memcpy(&payload.pos, &pos, sizeof(payload.pos));
+    std::memcpy(&payload.orient, &orient, sizeof(payload.orient));
+    std::memcpy(&payload.vel, &vel, sizeof(payload.vel));
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(payload.obj_handle)
+                       + sizeof(payload.pos) + sizeof(payload.orient) + sizeof(payload.vel);
+    packet.req_type = af_server_req_type::af_sreq_teleport_entity;
+    packet.payload = payload;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
 static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr&)
 {
     // Receive: client <- server
@@ -784,6 +826,57 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
 
             entity_set_gib_flag(entity);
+            break;
+        }
+        case af_server_req_type::af_sreq_teleport_entity: {
+            constexpr size_t expected = sizeof(uint32_t) + sizeof(RF_Vector) + sizeof(RF_Matrix) + sizeof(RF_Vector);
+            if (remaining < expected) {
+                xlog::warn("af_process_server_req_packet: TeleportEntity payload too short ({} < {})", remaining, expected);
+                return;
+            }
+
+            TeleportEntityPayload payload{};
+            std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
+            offset += sizeof(payload.obj_handle);
+            std::memcpy(&payload.pos, bytes + offset, sizeof(payload.pos));
+            offset += sizeof(payload.pos);
+            std::memcpy(&payload.orient, bytes + offset, sizeof(payload.orient));
+            offset += sizeof(payload.orient);
+            std::memcpy(&payload.vel, bytes + offset, sizeof(payload.vel));
+            offset += sizeof(payload.vel);
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
+            if (!remote_object) {
+                xlog::warn("af_process_server_req_packet: TeleportEntity invalid remote handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::warn("af_process_server_req_packet: TeleportEntity invalid entity handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            rf::Vector3 new_pos;
+            rf::Matrix3 new_orient;
+            rf::Vector3 new_vel;
+            std::memcpy(&new_pos, &payload.pos, sizeof(new_pos));
+            std::memcpy(&new_orient, &payload.orient, sizeof(new_orient));
+            std::memcpy(&new_vel, &payload.vel, sizeof(new_vel));
+
+            // Snap physics state. move() updates pos, bbox, and room.
+            entity->p_data.next_pos = new_pos;
+            entity->move(&new_pos);
+            entity->orient = new_orient;
+            entity->p_data.orient = new_orient;
+            entity->p_data.next_orient = new_orient;
+            entity->eye_orient = new_orient;
+            entity->p_data.vel = new_vel;
+
+            // Drop the interp buffer so we don't render a slide from old pos to new pos.
+            if (entity->obj_interp) {
+                entity->obj_interp->Clear();
+            }
             break;
         }
         default:

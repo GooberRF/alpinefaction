@@ -5,6 +5,7 @@
 #include <sstream>
 #include <optional>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <algorithm>
 #include <common/utils/list-utils.h>
@@ -33,6 +34,7 @@
 #include "../graphics/gr.h"
 #include "../misc/level.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/alpine_packets.h"
 
 void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_position, float position_scale);
 rf::Vector3 rotate_velocity(const rf::Vector3& old_velocity, const rf::Matrix3& old_orient, const rf::Matrix3& new_orient);
@@ -1814,6 +1816,22 @@ namespace rf
                     if (exit_vclip_id > -1) {
                         rf::vclip_play_3d(
                             exit_vclip_id, this->room, &this->pos, &this->pos, 1.0f, -1, &this->orient.fvec, 1);
+                    }
+                }
+
+                // Replicate the position snap to clients
+                if (is_multi && is_server) {
+                    af_send_teleport_entity_req(
+                        static_cast<uint32_t>(teleported_entity->handle),
+                        this->pos,
+                        this->orient,
+                        teleported_entity->p_data.vel);
+
+                    // Suppress prediction for the teleported player's own client
+                    // so they don't rubber band between positions
+                    if (rf::Player* teleported_player = rf::player_from_entity_handle(teleported_entity->handle)) {
+                        teleported_player->saving.last_teleport_timer.set(300);
+                        teleported_player->saving.last_teleport_pos = this->pos;
                     }
                 }
             }

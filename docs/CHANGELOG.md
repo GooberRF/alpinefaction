@@ -1,13 +1,15 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.4.0 (Bakeapple): Not yet released
+Version 1.4.0 (TBD): Not yet released
 --------------------------------
 ### Major features
 
 ### Minor features, changes, and enhancements
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix `AF_Teleport_Player` event clientside smoothly interpolating the teleported entity position
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
