@@ -8,6 +8,8 @@ Version 1.4.0 (Bakeapple): Not yet released
 ### Minor features, changes, and enhancements
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix team balance not properly randomizing the distribution order of equal-scoring human players
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
