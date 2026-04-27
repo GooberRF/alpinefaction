@@ -52,8 +52,6 @@ namespace df::gr::d3d11
     }
 
     void set_dbg_breaks(ID3D11Device* const device) {
-        g_device = device;
-    #ifndef NDEBUG
         ComPtr<ID3D11Debug> debug{};
         if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D11Debug), debug.put_void()))) {
             ComPtr<ID3D11InfoQueue> info_queue{};
@@ -64,7 +62,6 @@ namespace df::gr::d3d11
                 info_queue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_ERROR, true);
             }
         }
-    #endif
     }
 
     void fatal_gr_error(const HRESULT hr, const std::source_location& loc) {

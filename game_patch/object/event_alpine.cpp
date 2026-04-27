@@ -260,7 +260,6 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {148, [](rf::Event* e) { delete static_cast<EventFullscreenImage*>(e); }},
                 {149, [](rf::Event* e) { delete static_cast<EventFullscreenColor*>(e); }},
                 {150, [](rf::Event* e) { delete static_cast<EventUnhideGlare*>(e); }},
-                {150, [](rf::Event* e) { delete static_cast<EventUnhideGlare*>(e); }},
                 {151, [](rf::Event* e) { delete static_cast<EventGasRegionState*>(e); }},
                 {152, [](rf::Event* e) { delete static_cast<EventModifyGasRegion*>(e); }},
                 {153, [](rf::Event* e) { delete static_cast<EventResizeGasRegion*>(e); }},
