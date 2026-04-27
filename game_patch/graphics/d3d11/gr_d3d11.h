@@ -133,7 +133,7 @@ namespace df::gr::d3d11
         UINT swap_chain_flags_ = 0;
     };
 
-    void set_dbg_breaks(ID3D11Device* device);
+    void init_error(ID3D11Device* device);
     void fatal_gr_error(
         HRESULT hr,
         const std::source_location& loc = std::source_location::current()
