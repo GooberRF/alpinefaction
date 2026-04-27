@@ -488,8 +488,7 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
                     static_cast<PlayerStatsNew*>(player_2->stats);
                 if (stats_1->num_deaths != stats_2->num_deaths) {
                     return stats_1->num_deaths < stats_2->num_deaths;
-                }
-                if (player_1->stats->caps != player_2->stats->caps) {
+                } else if (player_1->stats->caps != player_2->stats->caps) {
                     return player_1->stats->caps < player_2->stats->caps;
                 }
             } else {

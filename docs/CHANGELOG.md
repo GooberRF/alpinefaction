@@ -12,7 +12,7 @@ Version 1.4.0 (Bakeapple): Not yet released
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
 
 [@is-this-c](https://github.com/is-this-c)
-- Fix the scoreboard for `Run` games
+- For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
