@@ -176,7 +176,7 @@ namespace df::gr::d3d11
 
         check_hr(hr, [] { xlog::error("`D3D11CreateDevice` failed"); });
 
-        g_device = device;
+        g_device = device_;
 
     #ifndef NDEBUG
         set_dbg_breaks(device_);
