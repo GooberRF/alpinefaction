@@ -56,15 +56,20 @@ bool gr_d3d_set_render_target(int bmh)
         IDirect3DTexture8* const texture =
             rf::gr::d3d::get_texture(g_render_to_texture_bm_h);
         ComPtr<IDirect3DSurface8> surface{};
-        const HRESULT hr = texture->GetSurfaceLevel(0, &surface);
-        if (SUCCEEDED(hr)) {
-            rf::gr::d3d::device->CopyRects(
+        if (SUCCEEDED(texture->GetSurfaceLevel(0, &surface))) {
+             const HRESULT hr = rf::gr::d3d::device->CopyRects(
                 msaa_render_target,
                 nullptr,
                 0,
                 surface,
                 nullptr
             );
+            if (FAILED(hr)) {
+                ERR_ONCE(
+                    "IDirect3DDevice8::CopyRects failed: {}",
+                    get_d3d_error_str(hr)
+                );  
+            }
         }
     }
 
