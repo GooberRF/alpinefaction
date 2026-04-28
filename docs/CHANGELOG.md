@@ -6,6 +6,9 @@ Version 1.4.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@is-this-c](https://github.com/is-this-c)
+- Add `mp_new_player_flash` console command and UI option to flash your window upon player joins, if your window is out of focus
+- Rename `mp_notifyonjoin` console command to `mp_new_player_beep`
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -31,14 +34,14 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
   - Support movers, meshes, and mesh pixel lighting in skyboxes
   - Support gas regions
-- Expanded destruction capabilities available to developers
+- Expand destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
   - `Is Geoable` flag added to brush properties
   - Support for rock, wood, cement, metal, and ice breakable detail brushes
   - Add dynamic debris generation from breakable detail brushes
   - `No Debris` flag added to brush properties for breakable detail brushes
-- Added new object types
+- Add new object types
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
   - `Corona` for configuring custom glare effects in levels
   - `Note` for leaving important information in levels (editor only)
