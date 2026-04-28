@@ -80,6 +80,7 @@ namespace rf
     static auto& gravity = addr_as_ref<float>(0x005A00DC);
 
     static auto& physics_create_object = addr_as_ref<void(PhysicsData *pd, ObjectCreateInfo *oci)>(0x0049EC90);
+    static auto& physics_init_object = addr_as_ref<void(PhysicsData* pd, ObjectCreateInfo* oci, bool is_load_state)>(0x0049F010);
     static auto& physics_delete_object = addr_as_ref<void(PhysicsData *pd)>(0x0049F1D0);
 
     template<>

@@ -123,5 +123,6 @@ namespace rf
     }
     static auto& monitor_list = addr_as_ref<Monitor>(0x005C98A8);
 
+    static auto& clutter_create = addr_as_ref<Clutter*(int clutter_info_index, const char* name, int parent_handle, const Vector3* pos, const Matrix3* orient, int register_killable)>(0x004104A0);
     static auto& clutter_restore_mesh = addr_as_ref<void(Clutter *clutter, const char *mesh_name)>(0x00410ED0);
 }

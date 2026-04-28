@@ -1,4 +1,5 @@
 #include "alpine_options.h"
+#include <common/utils/string-utils.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -70,37 +71,19 @@ bool is_known_run_level(const std::string& filename)
     return g_known_run_levels.contains(string_to_lower(level_name));
 }
 
-// trim leading and trailing whitespace
-std::string trim(const std::string& str, bool remove_quotes = false)
-{
-    auto start = str.find_first_not_of(" \t\n\r");
-    auto end = str.find_last_not_of(" \t\n\r");
-    if (start == std::string::npos) {
-        return "";
-    }        
-
-    std::string trimmed = str.substr(start, end - start + 1);
-
-    // extract quoted value
-    if (remove_quotes && trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
-        trimmed = trimmed.substr(1, trimmed.size() - 2);
-    }
-
-    return trimmed;
-}
 
 // ===== Parsers for AlpineOptions =====
 
 // strings can be provided in quotation marks or not
 std::optional<OptionValue> parse_string(const std::string& value)
 {
-    return trim(value, true);
+    return std::string{unquote(trim(value))};
 }
 
 // colors can be provided in quotation marks or not, and can be hex formatted or RF-style
 std::optional<OptionValue> parse_color(const std::string& value)
 {
-    std::string trimmed_value = trim(value, true);
+    std::string trimmed_value{unquote(trim(value))};
 
     try {
         // Check if it's a valid hex string (6 or 8 characters)
@@ -187,6 +170,7 @@ const std::unordered_map<std::string, OptionMetadata> option_metadata = {
     {"$Multi Timer Y Offset", {AlpineOptionID::MultiTimerYOffset, "af_client.tbl", parse_int}},
     {"$Multi Timer Color", {AlpineOptionID::MultiTimerColor, "af_client.tbl", parse_color}},
     {"$Default Third Person", {AlpineOptionID::DefaultThirdPerson, "af_game.tbl", parse_bool}},
+    {"$Require Alpine Savegame Format", {AlpineOptionID::RequireAlpineSavegameFormat, "af_game.tbl", parse_bool}},
 };
 
 // ===== Parsers for Alpine level info =====
@@ -215,12 +199,12 @@ std::optional<LevelInfoValue> parse_bool_level(const std::string& value)
 }
 std::optional<LevelInfoValue> parse_string_level(const std::string& value)
 {
-    return trim(value, true);
+    return std::string{unquote(trim(value))};
 }
 
 std::optional<LevelInfoValue> parse_color_level(const std::string& value)
 {
-    std::string trimmed_value = trim(value, true);
+    std::string trimmed_value{unquote(trim(value))};
 
     try {
         // Check if it's a valid hex string (6 or 8 characters)
@@ -262,13 +246,13 @@ std::optional<LevelInfoValue> parse_color_level(const std::string& value)
 
 std::optional<std::pair<std::string, std::string>> parse_mesh_replacement(const std::string& value)
 {
-    std::string trimmed_value = trim(value, true);
+    std::string trimmed_value{unquote(trim(value))};
     std::regex mesh_replacement_pattern("\\{\\s*\"([^\"]+)\"\\s*,\\s*\"([^\"]+)\"\\s*\\}");
     std::smatch matches;
 
     if (std::regex_match(trimmed_value, matches, mesh_replacement_pattern)) {
         if (matches.size() == 3) { // Full match and 2 filename captures
-            return std::make_pair(trim(matches[1].str(), true), trim(matches[2].str(), true));
+            return std::make_pair(std::string{unquote(trim(matches[1].str()))}, std::string{unquote(trim(matches[2].str()))});
         }
     }
     return std::nullopt;
@@ -341,7 +325,7 @@ void load_level_info_config(const std::string& level_filename)
 
     // Search for #Start marker
     while (std::getline(file_stream, line)) {
-        line = trim(line, false);
+        line = std::string{trim(line)};
         if (line == "#Start") {
             found_start = true;
             break;
@@ -356,7 +340,7 @@ void load_level_info_config(const std::string& level_filename)
     // Process options until #End marker is found
     bool found_end = false;
     while (std::getline(file_stream, line)) {
-        line = trim(line, false);
+        line = std::string{trim(line)};
 
         if (line == "#End") {
             found_end = true;
@@ -371,8 +355,8 @@ void load_level_info_config(const std::string& level_filename)
             continue;
         }
 
-        std::string option_name = trim(line.substr(0, delimiter_pos), false);
-        std::string option_value = trim(line.substr(delimiter_pos + 1), false);
+        std::string option_name{trim(line.substr(0, delimiter_pos))};
+        std::string option_value{trim(line.substr(delimiter_pos + 1))};
 
         // handle mesh replacements
         if (option_name == "$Mesh Replacement") {
@@ -788,7 +772,7 @@ void load_single_af_options_file(const std::string& file_name)
 
     // Search for #Start marker
     while (std::getline(file_stream, line)) {
-        line = trim(line, false);
+        line = std::string{trim(line)};
         if (line == "#Start") {
             found_start = true;
             break;
@@ -803,7 +787,7 @@ void load_single_af_options_file(const std::string& file_name)
     // Process options until #End marker is found
     bool found_end = false;
     while (std::getline(file_stream, line)) {
-        line = trim(line, false);
+        line = std::string{trim(line)};
 
         if (line == "#End") {
             found_end = true;
@@ -818,8 +802,8 @@ void load_single_af_options_file(const std::string& file_name)
             continue;
         }
 
-        std::string option_name = trim(line.substr(0, delimiter_pos), false);
-        std::string option_value = trim(line.substr(delimiter_pos + 1), false);
+        std::string option_name{trim(line.substr(0, delimiter_pos))};
+        std::string option_value{trim(line.substr(delimiter_pos + 1))};
 
         // Handle af_level_quirks.tbl
         if (file_name == "af_level_quirks.tbl" &&
