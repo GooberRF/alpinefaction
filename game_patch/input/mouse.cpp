@@ -559,7 +559,7 @@ CodeInjection static_zoom_sensitivity_patch2 {
     },
 };
 
-static void handle_extra_mouse_button(const SDL_Event& ev)
+void process_extra_mouse_button(const SDL_Event& ev)
 {
     if (g_alpine_game_config.input_mode != 2)
         return;
@@ -582,73 +582,57 @@ static void handle_extra_mouse_button(const SDL_Event& ev)
     }
 }
 
-void mouse_sdl_poll()
+void process_mouse_event(const SDL_Event& ev)
 {
-    if (!g_sdl_window) return;
-
-    if (SDL_IsMainThread())
-        SDL_PumpEvents();
-
-    SDL_Event events[16];
-    int n;
-    while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
-                               SDL_GETEVENT, SDL_EVENT_MOUSE_MOTION,
-                               SDL_EVENT_MOUSE_WHEEL)) > 0) {
-        for (int i = 0; i < n; ++i) {
-            const SDL_Event& ev = events[i];
-            switch (ev.type) {
-            case SDL_EVENT_MOUSE_MOTION:
-                if (ev.motion.which == SDL_TOUCH_MOUSEID || ev.motion.which == SDL_PEN_MOUSEID) {
-                    // Touch/pen: sync Win32 cursor position in menus.
-                    if (!rf::keep_mouse_centered) {
-                        POINT pt{static_cast<LONG>(ev.motion.x), static_cast<LONG>(ev.motion.y)};
-                        ClientToScreen(rf::main_wnd, &pt);
-                        SetCursorPos(pt.x, pt.y);
-                    }
-                } else if (g_alpine_game_config.input_mode == 2 && rf::os_foreground()) {
-                    g_sdl_mouse_dx_rem += ev.motion.xrel;
-                    g_sdl_mouse_dy_rem += ev.motion.yrel;
-                }
-                break;
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-                if (ev.button.which == SDL_TOUCH_MOUSEID || ev.button.which == SDL_PEN_MOUSEID) {
-                    // Touch/pen taps: synthesise a left-click at the tap position in menus.
-                    if (!rf::keep_mouse_centered && ev.button.button == SDL_BUTTON_LEFT) {
-                        POINT pt{static_cast<LONG>(ev.button.x), static_cast<LONG>(ev.button.y)};
-                        ClientToScreen(rf::main_wnd, &pt);
-                        SetCursorPos(pt.x, pt.y);
-                        UINT  wmsg = (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? WM_LBUTTONDOWN : WM_LBUTTONUP;
-                        WPARAM wp  = (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? MK_LBUTTON : 0;
-                        PostMessageA(rf::main_wnd, wmsg, wp,
-                            MAKELPARAM(static_cast<int>(ev.button.x), static_cast<int>(ev.button.y)));
-                    }
-                } else {
-                    handle_extra_mouse_button(ev);
-                }
-                break;
-            case SDL_EVENT_MOUSE_WHEEL:
-                // Feed scroll into rf::mouse_wheel_pos (120 units per notch, matching Win32/DInput).
-                if (g_alpine_game_config.input_mode == 2
-                    && ev.wheel.which != SDL_TOUCH_MOUSEID
-                    && ev.wheel.which != SDL_PEN_MOUSEID) {
-                    float dy = (ev.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
-                        ? -ev.wheel.y : ev.wheel.y;
-                    g_sdl_mouse_wheel_rem += dy;
-                    int notches = static_cast<int>(g_sdl_mouse_wheel_rem);
-                    if (notches != 0) {
-                        rf::mouse_wheel_pos += notches * 120;
-                        g_sdl_mouse_wheel_rem -= static_cast<float>(notches);
-                    }
-                }
-                break;
-            default:
-                break;
+    switch (ev.type) {
+    case SDL_EVENT_MOUSE_MOTION:
+        if (ev.motion.which == SDL_TOUCH_MOUSEID || ev.motion.which == SDL_PEN_MOUSEID) {
+            // Touch/pen: sync Win32 cursor position in menus.
+            if (!rf::keep_mouse_centered) {
+                POINT pt{static_cast<LONG>(ev.motion.x), static_cast<LONG>(ev.motion.y)};
+                ClientToScreen(rf::main_wnd, &pt);
+                SetCursorPos(pt.x, pt.y);
+            }
+        } else if (g_alpine_game_config.input_mode == 2 && rf::os_foreground()) {
+            g_sdl_mouse_dx_rem += ev.motion.xrel;
+            g_sdl_mouse_dy_rem += ev.motion.yrel;
+        }
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        if (ev.button.which == SDL_TOUCH_MOUSEID || ev.button.which == SDL_PEN_MOUSEID) {
+            // Touch/pen taps: synthesise a left-click at the tap position in menus.
+            if (!rf::keep_mouse_centered && ev.button.button == SDL_BUTTON_LEFT) {
+                POINT pt{static_cast<LONG>(ev.button.x), static_cast<LONG>(ev.button.y)};
+                ClientToScreen(rf::main_wnd, &pt);
+                SetCursorPos(pt.x, pt.y);
+                UINT  wmsg = (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? WM_LBUTTONDOWN : WM_LBUTTONUP;
+                WPARAM wp  = (ev.type == SDL_EVENT_MOUSE_BUTTON_DOWN) ? MK_LBUTTON : 0;
+                PostMessageA(rf::main_wnd, wmsg, wp,
+                    MAKELPARAM(static_cast<int>(ev.button.x), static_cast<int>(ev.button.y)));
+            }
+        } else {
+            process_extra_mouse_button(ev);
+        }
+        break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        // Feed scroll into rf::mouse_wheel_pos (120 units per notch, matching Win32/DInput).
+        if (g_alpine_game_config.input_mode == 2
+            && ev.wheel.which != SDL_TOUCH_MOUSEID
+            && ev.wheel.which != SDL_PEN_MOUSEID) {
+            float dy = (ev.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
+                ? -ev.wheel.y : ev.wheel.y;
+            g_sdl_mouse_wheel_rem += dy;
+            int notches = static_cast<int>(g_sdl_mouse_wheel_rem);
+            if (notches != 0) {
+                rf::mouse_wheel_pos += notches * 120;
+                g_sdl_mouse_wheel_rem -= static_cast<float>(notches);
             }
         }
+        break;
+    default:
+        break;
     }
-    if (n < 0)
-        xlog::warn("SDL Events error: {}", SDL_GetError());
 }
 
 int mouse_take_pending_rebind()

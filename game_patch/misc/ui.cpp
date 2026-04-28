@@ -1255,7 +1255,7 @@ void alpine_options_panel_init() {
 
     // panel 2
     alpine_options_panel_inputbox_init(
-        &ao_input_mode_cbox, &ao_input_mode_label, &ao_input_mode_butlabel, &alpine_options_panel2, ao_input_mode_cbox_on_click, 112, 54, "Input mode");
+        &ao_input_mode_cbox, &ao_input_mode_label, &ao_input_mode_butlabel, &alpine_options_panel2, ao_input_mode_cbox_on_click, 112, 54, "KB/M Input mode");
     ui_refresh_input_mode_label();
     alpine_options_panel_checkbox_init(
         &ao_linearpitch_cbox, &ao_linearpitch_label, &alpine_options_panel2, ao_linearpitch_cbox_on_click, g_alpine_game_config.mouse_linear_pitch, 112, 84, "Linear pitch");

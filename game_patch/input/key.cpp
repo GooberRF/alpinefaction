@@ -296,50 +296,37 @@ static bool scan_needs_rebind_sentinel(int scan)
     return scan == rf::KEY_LALT || scan == rf::KEY_RALT;
 }
 
-void keyboard_sdl_poll()
+void process_keyboard_event(const SDL_Event& evt)
 {
-    if (SDL_IsMainThread())
-        SDL_PumpEvents();
-
-    SDL_Event events[16];
-    int n;
-    while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
-                               SDL_GETEVENT, SDL_EVENT_KEY_DOWN, SDL_EVENT_TEXT_EDITING_CANDIDATES)) > 0) {
-        for (int i = 0; i < n; ++i) {
-            const auto& evt = events[i];
-            switch (evt.type) {
-            case SDL_EVENT_TEXT_INPUT:
-                // Always buffer text — on-screen keyboard works in all input modes.
-                g_sdl_pending_text += evt.text.text;
-                break;
-            case SDL_EVENT_KEY_DOWN:
-            case SDL_EVENT_KEY_UP: {
-                if (g_alpine_game_config.input_mode != 2)
-                    break; // Win32 keyboard handles key events in modes 0/1
-                if (evt.key.repeat)
-                    break; // ignore OS key repeat; RF tracks state itself
-                const bool down = (evt.type == SDL_EVENT_KEY_DOWN);
-                const rf::Key rf_key = sdl_scancode_to_rf_key(evt.key.scancode);
-                if (rf_key == rf::KEY_NONE)
-                    break;
-                int scan = static_cast<int>(rf_key);
-                // Keys that RF's rebind UI can't handle use the sentinel pattern.
-                if (scan_needs_rebind_sentinel(scan) && down && g_pending_extra_key_rebind < 0 &&
-                    rf::ui::options_controls_waiting_for_key) {
-                    g_pending_extra_key_rebind = scan;
-                    rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
-                } else {
-                    rf::key_process_event(scan, down ? 1 : 0, 0);
-                }
-                break;
-            }
-            default:
-                break;
-            }
+    switch (evt.type) {
+    case SDL_EVENT_TEXT_INPUT:
+        // Always buffer text — on-screen keyboard works in all input modes.
+        g_sdl_pending_text += evt.text.text;
+        break;
+    case SDL_EVENT_KEY_DOWN:
+    case SDL_EVENT_KEY_UP: {
+        if (g_alpine_game_config.input_mode != 2)
+            break; // Win32 keyboard handles key events in modes 0/1
+        if (evt.key.repeat)
+            break; // ignore OS key repeat; RF tracks state itself
+        const bool down = (evt.type == SDL_EVENT_KEY_DOWN);
+        const rf::Key rf_key = sdl_scancode_to_rf_key(evt.key.scancode);
+        if (rf_key == rf::KEY_NONE)
+            break;
+        int scan = static_cast<int>(rf_key);
+        // Keys that RF's rebind UI can't handle use the sentinel pattern.
+        if (scan_needs_rebind_sentinel(scan) && down && g_pending_extra_key_rebind < 0 &&
+            rf::ui::options_controls_waiting_for_key) {
+            g_pending_extra_key_rebind = scan;
+            rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
+        } else {
+            rf::key_process_event(scan, down ? 1 : 0, 0);
         }
+        break;
     }
-    if (n < 0)
-        xlog::warn("SDL Events error: {}", SDL_GetError());
+    default:
+        break;
+    }
 }
 
 int key_take_pending_extra_rebind()

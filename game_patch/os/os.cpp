@@ -42,8 +42,7 @@ FunHook<void()> os_poll_hook{
         }
 
         if (g_sdl_video_initialized) {
-            keyboard_sdl_poll();
-            mouse_sdl_poll();
+            sdl_input_poll();
         }
     },
 };

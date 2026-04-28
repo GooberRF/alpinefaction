@@ -31,7 +31,8 @@ enum ExtraKeyScanOffset : int {
 
 rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_control);
 rf::String get_action_bind_name(int action);
-void keyboard_sdl_poll();
+void process_keyboard_event(const SDL_Event& evt);
+void sdl_input_poll();
 int  key_take_pending_extra_rebind();
 std::string keyboard_take_pending_text();
 void key_apply_patch();
