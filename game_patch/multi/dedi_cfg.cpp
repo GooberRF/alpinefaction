@@ -26,6 +26,7 @@
 #include "alpine_packets.h"
 #include "network.h"
 #include "multi.h"
+#include "../fflink/fflink_session.h"
 #include "../os/console.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
@@ -1157,6 +1158,11 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
             cfg.set_bot_shared_secret(*v);
         }
     }
+    else if (key == "fflink_gsk") {
+        if (auto v = node.value<std::string>()) {
+            cfg.set_fflink_gsk(*v);
+        }
+    }
     else if (key == "upnp") {
         if (auto v = node.value<bool>())
             cfg.upnp_enabled = *v;
@@ -2006,6 +2012,8 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
         std::format_to(iter, "  Rcon password (legacy):                {}\n", cfg.rcon_password);
         std::format_to(iter, "  Bot shared secret:                     {}\n", cfg.bot_shared_secret);
+        std::format_to(iter, "  FactionFiles GSK:                      {}\n",
+            cfg.fflink_gsk.empty() ? "<not set>" : "<set>");
     } else {
         std::format_to(iter, "  Uptime:                                {}\n", g_process_startup_time);
     }
@@ -2412,6 +2420,9 @@ void launch_alpine_dedicated_server() {
     init_alpine_dedicated_server();
     netgame.current_level_index = 0;
     rf::multi_level_switch_queued = -1;
+
+    // Kick off FactionFiles stats session key exchange
+    fflink::start_session_exchange();
 }
 
 ConsoleCommand2 print_server_config_cmd{

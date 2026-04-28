@@ -3,6 +3,7 @@
 #include <vector>
 #include <thread>
 #include <sstream>
+#include <format>
 #include <xlog/xlog.h>
 #include <patch_common/CodeInjection.h>
 #include <common/HttpRequest.h>
@@ -20,6 +21,7 @@
 #include "../rf/gr/gr_font.h"
 #include "../os/console.h"
 #include "../sound/sound.h"
+#include "../fflink/fflink_utils.h"
 #include "achievements.h"
 #include "alpine_settings.h"
 #include "misc.h"
@@ -203,7 +205,11 @@ void AchievementManager::process_ff_response(const std::string& response, int ex
         if (is_initial_sync) {
             synced_with_ff = true;
             std::string username = g_game_config.fflink_username.value();
-            rf::console::printf("Successfully initialized Alpine Faction achievements for FactionFiles account %s", username.c_str());
+            
+            // defer console print to main thread via fflink console queue
+            fflink::enqueue_console_line(std::format(
+                "Successfully initialized Alpine Faction achievements for FactionFiles account {}",
+                username));
         }
         else {
             xlog::debug("Successfully processed FF update [{}].", expected_key);
