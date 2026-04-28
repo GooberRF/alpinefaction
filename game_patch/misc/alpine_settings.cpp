@@ -1078,18 +1078,18 @@ bool alpine_player_settings_load(rf::Player* player)
         player->settings.controls.axes[1].invert = std::stoi(settings["MouseYInvert"]);
         processed_keys.insert("MouseYInvert");
     }
-    if (settings.count("InputMode")) {
-        int input_mode = std::stoi(settings["InputMode"]);
-        set_input_mode(std::clamp(input_mode, 0, 2));
-        processed_keys.insert("InputMode");
+    if (settings.count("KBMInputMode")) {
+        int kbm_input_mode = std::stoi(settings["KBMInputMode"]);
+        set_kbm_input_mode(std::clamp(kbm_input_mode, 0, 2));
+        processed_keys.insert("KBMInputMode");
     } else if (settings.count("SDL")) {
         int sdl_mode = std::stoi(settings["SDL"]);
-        set_input_mode((sdl_mode != 0) ? 2 : 1);
+        set_kbm_input_mode((sdl_mode != 0) ? 2 : 1);
         processed_keys.insert("SDL");
     } else if (settings.count("DirectInput")) {
         // Legacy: DirectInput=0 was Legacy/Win32 (mode 0), DirectInput=1 was DInput (mode 1)
         int direct_input = std::stoi(settings["DirectInput"]);
-        set_input_mode((direct_input != 0) ? 1 : 0);
+        set_kbm_input_mode((direct_input != 0) ? 1 : 0);
         processed_keys.insert("DirectInput");
     }
     if (settings.count("MouseLinearPitch")) {
@@ -1200,7 +1200,7 @@ void alpine_control_config_serialize(std::ofstream& file, const rf::ControlConfi
     file << "\n[InputSettings]\n";
     file << "MouseSensitivity=" << cc.mouse_sensitivity << "\n";
     file << "MouseYInvert=" << cc.axes[1].invert << "\n";
-    file << "InputMode=" << g_alpine_game_config.input_mode << "\n";
+    file << "KBMInputMode=" << g_alpine_game_config.kbm_input_mode << "\n";
     file << "MouseLinearPitch=" << g_alpine_game_config.mouse_linear_pitch << "\n";
     file << "MouseScale=" << g_alpine_game_config.mouse_scale << "\n";
     file << "SwapARBinds=" << g_alpine_game_config.swap_ar_controls << "\n";
@@ -1549,7 +1549,7 @@ static void set_headless_defaults(rf::Player* player, const char* player_name, u
     g_alpine_game_config.swap_ar_controls = false;
     g_alpine_game_config.swap_gn_controls = false;
     g_alpine_game_config.swap_sg_controls = false;
-    g_alpine_game_config.input_mode = 0; // headless mode uses legacy mouse path
+    g_alpine_game_config.kbm_input_mode = 0; // headless mode uses legacy mouse path
     g_alpine_game_config.save_console_history = false;
     g_alpine_game_config.set_max_fps(max_fps);
     g_alpine_game_config.dbg_bot = false;

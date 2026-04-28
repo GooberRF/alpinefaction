@@ -167,12 +167,12 @@ bool set_direct_input_enabled(bool enabled)
     return true;
 }
 
-void set_input_mode(int mode)
+void set_kbm_input_mode(int mode)
 {
     mode = std::clamp(mode, 0, 2);
 
-    const int old_mode = g_alpine_game_config.input_mode;
-    g_alpine_game_config.input_mode = mode;
+    const int old_mode = g_alpine_game_config.kbm_input_mode;
+    g_alpine_game_config.kbm_input_mode = mode;
 
     if (!rf::is_dedicated_server) {
         if (g_sdl_window) {
@@ -209,7 +209,7 @@ void set_input_mode(int mode)
     }
 
     // Keep the Alpine Settings UI button label in sync
-    ui_refresh_input_mode_label();
+    ui_refresh_kbm_input_mode_label();
 }
 
 FunHook<void()> mouse_eval_deltas_hook{
@@ -225,7 +225,7 @@ FunHook<void()> mouse_eval_deltas_hook{
             return;
         }
 
-        if (g_alpine_game_config.input_mode == 2) {
+        if (g_alpine_game_config.kbm_input_mode == 2) {
             g_sdl_mouse_dx = static_cast<int>(g_sdl_mouse_dx_rem);
             g_sdl_mouse_dy = static_cast<int>(g_sdl_mouse_dy_rem);
             g_sdl_mouse_dx_rem -= g_sdl_mouse_dx;
@@ -235,7 +235,7 @@ FunHook<void()> mouse_eval_deltas_hook{
         mouse_eval_deltas_hook.call_target();
 
         // Cursor centering fallback for SDL mode when relative mouse mode is unavailable (e.g. no SDL window)
-        if (rf::keep_mouse_centered && g_alpine_game_config.input_mode == 2 && (!g_sdl_window || !SDL_GetWindowRelativeMouseMode(g_sdl_window))) {
+        if (rf::keep_mouse_centered && g_alpine_game_config.kbm_input_mode == 2 && (!g_sdl_window || !SDL_GetWindowRelativeMouseMode(g_sdl_window))) {
             RECT rect{};
             GetClientRect(rf::main_wnd, &rect);
             POINT pt{rect.right / 2, rect.bottom / 2};
@@ -257,14 +257,14 @@ FunHook<void()> mouse_eval_deltas_di_hook{
 
         mouse_eval_deltas_di_hook.call_target();
 
-        if (g_alpine_game_config.input_mode == 2 && rf::keep_mouse_centered) {
+        if (g_alpine_game_config.kbm_input_mode == 2 && rf::keep_mouse_centered) {
             rf::mouse_dz = rf::mouse_wheel_pos - rf::mouse_old_z;
             rf::mouse_old_z = rf::mouse_wheel_pos;
             return;
         }
 
         // Fix invalid mouse scroll delta when DirectInput is not active (mode 0 or SDL menu mode)
-        if (g_alpine_game_config.input_mode != 1)
+        if (g_alpine_game_config.kbm_input_mode != 1)
             rf::mouse_old_z = rf::mouse_wheel_pos;
 
         // Keep Win32 cursor at window centre so delta-from-centre aiming stays accurate
@@ -305,7 +305,7 @@ FunHook<void()> mouse_keep_centered_enable_hook{
             // Release menu grab when entering gameplay; only set in stretched (borderless) mode.
             if (g_sdl_window && g_game_config.wnd_mode == GameConfig::STRETCHED)
                 SDL_SetWindowMouseGrab(g_sdl_window, false);
-            switch (g_alpine_game_config.input_mode) {
+            switch (g_alpine_game_config.kbm_input_mode) {
             case 1: // DirectInput mouse
                 set_direct_input_enabled(true);
                 break;
@@ -336,7 +336,7 @@ FunHook<void()> mouse_keep_centered_disable_hook{
 
         // keep_mouse_centered is still true here; call_target clears it
         if (rf::keep_mouse_centered && !rf::is_dedicated_server) {
-            switch (g_alpine_game_config.input_mode) {
+            switch (g_alpine_game_config.kbm_input_mode) {
             case 1: // DirectInput mouse
                 set_direct_input_enabled(false);
                 break;
@@ -363,7 +363,7 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     [](int& dx, int& dy, int& dz) {
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
 
-        if (g_alpine_game_config.input_mode == 2 && g_sdl_window) {
+        if (g_alpine_game_config.kbm_input_mode == 2 && g_sdl_window) {
             dx = g_sdl_mouse_dx;
             dy = g_sdl_mouse_dy;
             g_sdl_mouse_dx = 0;
@@ -424,29 +424,29 @@ FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     },
 };
 
-ConsoleCommand2 input_mode_cmd{
+ConsoleCommand2 kbm_input_mode_cmd{
     "inputmode",
     [](std::optional<int> mode_opt) {
         static constexpr const char* mode_names[] = {"Legacy", "DirectInput", "SDL"};
 
         if (is_headless_mode()) {
-            set_input_mode(0);
-            rf::console::print("Input mode is disabled in headless bot mode");
+            set_kbm_input_mode(0);
+            rf::console::print("KB/M Input mode is disabled in headless bot mode");
             return;
         }
 
         if (!mode_opt) {
             // No argument: print current mode
-            int cur = g_alpine_game_config.input_mode;
-            rf::console::print("Input mode: {} ({})", cur, mode_names[cur]);
+            int cur = g_alpine_game_config.kbm_input_mode;
+            rf::console::print("KB/M Input mode: {} ({})", cur, mode_names[cur]);
             return;
         }
 
         int new_mode = std::clamp(mode_opt.value(), 0, 2);
-        set_input_mode(new_mode);
-        rf::console::print("Input mode: {} ({})", new_mode, mode_names[new_mode]);
+        set_kbm_input_mode(new_mode);
+        rf::console::print("KB/M Input mode: {} ({})", new_mode, mode_names[new_mode]);
     },
-    "Gets or sets input mode: 0=Legacy Win32, 1=DirectInput mouse+Legacy keyboard, 2=SDL mouse+keyboard",
+    "Gets or sets KB/M input mode: 0=Legacy Win32, 1=DirectInput mouse+Legacy keyboard, 2=SDL mouse+keyboard",
     "inputmode [0|1|2]",
 };
 
@@ -561,7 +561,7 @@ CodeInjection static_zoom_sensitivity_patch2 {
 
 void process_extra_mouse_button(const SDL_Event& ev)
 {
-    if (g_alpine_game_config.input_mode != 2)
+    if (g_alpine_game_config.kbm_input_mode != 2)
         return;
 
     if (ev.button.button < SDL_BUTTON_X1 ||
@@ -593,7 +593,7 @@ void process_mouse_event(const SDL_Event& ev)
                 ClientToScreen(rf::main_wnd, &pt);
                 SetCursorPos(pt.x, pt.y);
             }
-        } else if (g_alpine_game_config.input_mode == 2 && rf::os_foreground()) {
+        } else if (g_alpine_game_config.kbm_input_mode == 2 && rf::os_foreground()) {
             g_sdl_mouse_dx_rem += ev.motion.xrel;
             g_sdl_mouse_dy_rem += ev.motion.yrel;
         }
@@ -617,7 +617,7 @@ void process_mouse_event(const SDL_Event& ev)
         break;
     case SDL_EVENT_MOUSE_WHEEL:
         // Feed scroll into rf::mouse_wheel_pos (120 units per notch, matching Win32/DInput).
-        if (g_alpine_game_config.input_mode == 2
+        if (g_alpine_game_config.kbm_input_mode == 2
             && ev.wheel.which != SDL_TOUCH_MOUSEID
             && ev.wheel.which != SDL_PEN_MOUSEID) {
             float dy = (ev.wheel.direction == SDL_MOUSEWHEEL_FLIPPED)
@@ -655,7 +655,7 @@ void mouse_on_focus_changed(bool focused)
 
     if (focused) {
         // Gameplay (mode 2): re-enable relative mouse mode; SDL3 may have cleared it on focus loss.
-        if (g_alpine_game_config.input_mode == 2 && rf::keep_mouse_centered)
+        if (g_alpine_game_config.kbm_input_mode == 2 && rf::keep_mouse_centered)
             SDL_SetWindowRelativeMouseMode(g_sdl_window, true);
         // Menu: confine cursor in stretched (borderless) mode to prevent escape to other monitors.
         if (!rf::keep_mouse_centered && g_game_config.wnd_mode == GameConfig::STRETCHED)
@@ -689,7 +689,7 @@ void mouse_apply_patch()
     // Sync SDL cursor visibility with the game's own cursor show/hide calls
     mouse_set_visible_hook.install();
 
-    // Mouse mode hooks (DInput or SDL depending on input_mode)
+    // Mouse mode hooks (DInput or SDL depending on kbm_input_mode)
     mouse_keep_centered_enable_hook.install();
     mouse_keep_centered_disable_hook.install();
     mouse_get_delta_hook.install();
@@ -698,7 +698,7 @@ void mouse_apply_patch()
     AsmWriter(0x0051DD7C).jmp(0x0051DD8E);
 
     // Commands
-    input_mode_cmd.register_cmd();
+    kbm_input_mode_cmd.register_cmd();
     ms_cmd.register_cmd();
     ms_scale_cmd.register_cmd();
     static_scope_sens_cmd.register_cmd();

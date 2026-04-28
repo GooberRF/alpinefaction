@@ -36,5 +36,5 @@ void sdl_input_poll();
 int  key_take_pending_extra_rebind();
 std::string keyboard_take_pending_text();
 void key_apply_patch();
-void set_input_mode(int mode);
-void ui_refresh_input_mode_label();
+void set_kbm_input_mode(int mode);
+void ui_refresh_kbm_input_mode_label();

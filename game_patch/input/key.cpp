@@ -70,7 +70,7 @@ FunHook<int(int16_t)> key_to_ascii_hook{
             case CTRL_EXTRA_KEY_SCAN_BASE + EXTRA_KEY_KP_DIVIDE: return static_cast<int>('/');
         }
 
-        if (g_alpine_game_config.input_mode == 2) {
+        if (g_alpine_game_config.kbm_input_mode == 2) {
             SDL_Keymod sdl_mods = SDL_GetModState();
 
             // Treat pure Ctrl shortcuts as non-text, but allow AltGr (often Ctrl+Alt or SDL_KMOD_MODE)
@@ -305,7 +305,7 @@ void process_keyboard_event(const SDL_Event& evt)
         break;
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
-        if (g_alpine_game_config.input_mode != 2)
+        if (g_alpine_game_config.kbm_input_mode != 2)
             break; // Win32 keyboard handles key events in modes 0/1
         if (evt.key.repeat)
             break; // ignore OS key repeat; RF tracks state itself
@@ -358,7 +358,7 @@ int get_key_name(int key, char* buf, size_t buf_len)
         int n = std::snprintf(buf, buf_len, "%s", names[key - CTRL_EXTRA_KEY_SCAN_BASE]);
         return n > 0 ? n : 0;
     }
-    if (g_alpine_game_config.input_mode == 2) {
+    if (g_alpine_game_config.kbm_input_mode == 2) {
         SDL_Scancode sc = rf_key_to_sdl_scancode(key);
         if (sc == SDL_SCANCODE_UNKNOWN) {
             buf[0] = '\0';
@@ -755,7 +755,7 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
             case WM_SYSKEYDOWN:
             case WM_KEYUP:
             case WM_SYSKEYUP:
-                if (g_alpine_game_config.input_mode == 2
+                if (g_alpine_game_config.kbm_input_mode == 2
                     && (SDL_WasInit(SDL_INIT_VIDEO) & SDL_INIT_VIDEO) != 0
                     && SDL_GetKeyboardFocus() != nullptr)
                     return; // SDL handles keyboard in mode 2
