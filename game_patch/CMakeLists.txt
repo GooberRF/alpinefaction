@@ -231,6 +231,7 @@ set(SRCS
     object/monitor.cpp
     object/particle.cpp
     object/obj_light.cpp
+    object/mesh_collision.cpp
     object/alpine_mesh.cpp
     object/alpine_corona.cpp
     object/alpine_corona.h
