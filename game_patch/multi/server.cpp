@@ -2529,9 +2529,10 @@ static void balance_teams()
         }
     }
 
-    // Sort humans by score descending and interleave across teams, randomizing
-    // which team gets first pick to avoid systematic bias toward one team
-    std::sort(humans.begin(), humans.end(), [](const rf::Player* a, const rf::Player* b) {
+    // Shuffle first so equal-score players are ordered randomly.
+    // Interleave across teams, randomizing which team gets first pick.
+    std::ranges::shuffle(humans, g_rng);
+    std::stable_sort(humans.begin(), humans.end(), [](const rf::Player* a, const rf::Player* b) {
         return a->stats->score > b->stats->score;
     });
 
@@ -2555,8 +2556,9 @@ static void balance_teams()
         }
     }
 
-    // Sort bots by score descending for fairer distribution
-    std::sort(bots.begin(), bots.end(), [](const rf::Player* a, const rf::Player* b) {
+    // Shuffle then stable_sort so bots distribute randomly rather than always in player_list order
+    std::ranges::shuffle(bots, g_rng);
+    std::stable_sort(bots.begin(), bots.end(), [](const rf::Player* a, const rf::Player* b) {
         return a->stats->score > b->stats->score;
     });
 

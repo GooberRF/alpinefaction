@@ -2,6 +2,7 @@
 
 #include <patch_common/MemUtils.h>
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <sstream>
 #include "../bmpman.h"
@@ -43,16 +44,24 @@ namespace rf::gr
             return Color(r, g, b, a);
         }
 
+        static float srgb_to_linear(ubyte v)
+        {
+            return std::pow(v / 255.0f, 2.2f);
+        }
+
+        static ubyte linear_to_srgb(float v)
+        {
+            if (v <= 0.0f) return 0;
+            return static_cast<ubyte>(std::clamp(std::lround(std::pow(v, 1.0f / 2.2f) * 255.0f), 0L, 255L));
+        }
+
         static Color lerp(const Color& a, const Color& b, float t)
         {
-            auto ch = [](float v) -> ubyte {
-                return static_cast<ubyte>(std::clamp(v, 0.0f, 255.0f));
-            };
             return Color(
-                ch(a.red + (b.red - a.red) * t),
-                ch(a.green + (b.green - a.green) * t),
-                ch(a.blue + (b.blue - a.blue) * t),
-                ch(a.alpha + (b.alpha - a.alpha) * t)
+                linear_to_srgb(std::lerp(srgb_to_linear(a.red), srgb_to_linear(b.red), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.green), srgb_to_linear(b.green), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.blue), srgb_to_linear(b.blue), t)),
+                static_cast<ubyte>(std::clamp(std::lround(std::lerp(static_cast<float>(a.alpha), static_cast<float>(b.alpha), t)), 0L, 255L))
             );
         }
 
