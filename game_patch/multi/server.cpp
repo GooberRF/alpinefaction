@@ -28,6 +28,7 @@
 #include "../misc/alpine_options.h"
 #include "../main/main.h"
 #include "../misc/achievements.h"
+#include "../input/rumble.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/file/file.h"
 #include "../rf/math/vector.h"
@@ -1323,6 +1324,11 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             damaged_ep &&
             damaged_ep->life <= 0.0f) {
             achievement_player_killed_entity(damaged_ep, damage_type, damaged_ep->killer_handle);
+        }
+
+        // Rumble feedback for local player being hit by melee or explosions
+        if (damaged_ep == rf::local_player_entity && real_damage > 0.0f) {
+            rumble_on_player_hit(damage, damage_type);
         }
 
         return real_damage;

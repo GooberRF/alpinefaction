@@ -581,6 +581,11 @@ CodeInjection options_do_frame_patch{
                     break;
                 }
             }
+        } else {
+            // Options menu has closed — restore keyboard scan codes if the
+            // controller bindings view was still active.
+            if (ui_ctrl_bindings_view_active())
+                ui_ctrl_bindings_view_reset();
         }
     },
 };
