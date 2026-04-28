@@ -891,62 +891,39 @@ static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
         g_sensor_last_gyro_ts = ev.sensor_timestamp;
 }
 
-void gamepad_sdl_poll()
+void process_gamepad_event(const SDL_Event& ev)
 {
-    if (SDL_IsMainThread())
-        SDL_PumpEvents();
-
-    memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
-
-    SDL_Event events[64];
-    int n;
-    while ((n = SDL_PeepEvents(events, static_cast<int>(std::size(events)),
-                               SDL_GETEVENT, SDL_EVENT_GAMEPAD_AXIS_MOTION,
-                               SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED)) > 0) {
-        for (int i = 0; i < n; ++i) {
-            const SDL_Event& ev = events[i];
-            switch (ev.type) {
-            case SDL_EVENT_GAMEPAD_AXIS_MOTION:
-                handle_gamepad_axis_motion(ev.gaxis);
-                break;
-            case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
-                handle_gamepad_button_down(ev.gbutton);
-                break;
-            case SDL_EVENT_GAMEPAD_BUTTON_UP:
-                handle_gamepad_button_up(ev.gbutton);
-                break;
-            case SDL_EVENT_GAMEPAD_ADDED:
-                handle_gamepad_added(ev.gdevice);
-                break;
-            case SDL_EVENT_GAMEPAD_REMOVED:
-                handle_gamepad_removed(ev.gdevice);
-                break;
-            case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
-                handle_gamepad_touchpad_down(ev.gtouchpad);
-                break;
-            case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
-                handle_gamepad_touchpad_motion(ev.gtouchpad);
-                break;
-            case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
-                handle_gamepad_touchpad_up(ev.gtouchpad);
-                break;
-            case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
-                handle_gamepad_sensor_update(ev.gsensor);
-                break;
-            default:
-                break;
-            }
-        }
+    switch (ev.type) {
+    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+        handle_gamepad_axis_motion(ev.gaxis);
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+        handle_gamepad_button_down(ev.gbutton);
+        break;
+    case SDL_EVENT_GAMEPAD_BUTTON_UP:
+        handle_gamepad_button_up(ev.gbutton);
+        break;
+    case SDL_EVENT_GAMEPAD_ADDED:
+        handle_gamepad_added(ev.gdevice);
+        break;
+    case SDL_EVENT_GAMEPAD_REMOVED:
+        handle_gamepad_removed(ev.gdevice);
+        break;
+    case SDL_EVENT_GAMEPAD_TOUCHPAD_DOWN:
+        handle_gamepad_touchpad_down(ev.gtouchpad);
+        break;
+    case SDL_EVENT_GAMEPAD_TOUCHPAD_MOTION:
+        handle_gamepad_touchpad_motion(ev.gtouchpad);
+        break;
+    case SDL_EVENT_GAMEPAD_TOUCHPAD_UP:
+        handle_gamepad_touchpad_up(ev.gtouchpad);
+        break;
+    case SDL_EVENT_GAMEPAD_SENSOR_UPDATE:
+        handle_gamepad_sensor_update(ev.gsensor);
+        break;
+    default:
+        break;
     }
-    if (n < 0)
-        xlog::warn("SDL Events error: {}", SDL_GetError());
-
-    // Discard non-gamepad SDL events that accumulated in the queue.
-    SDL_FlushEvents(SDL_EVENT_FIRST,
-        static_cast<SDL_EventType>(SDL_EVENT_GAMEPAD_AXIS_MOTION - 1));
-    SDL_FlushEvents(
-        static_cast<SDL_EventType>(SDL_EVENT_GAMEPAD_STEAM_HANDLE_UPDATED + 1),
-        SDL_EVENT_LAST);
 }
 
 static void menu_nav_handle_gyro_cursor_frame()
@@ -1037,7 +1014,8 @@ static void gamepad_do_menu_frame()
 
 void gamepad_do_frame()
 {
-    gamepad_sdl_poll();
+    memcpy(g_action_prev, g_action_curr, sizeof(g_action_curr));
+    sdl_input_poll();
 
     if (g_message_log_close_cooldown > 0.0f) {
         g_message_log_close_cooldown -= rf::frametime;

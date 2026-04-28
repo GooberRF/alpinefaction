@@ -11,5 +11,5 @@ void mouse_apply_patch();
 void camera_start_reset_to_horizon();
 void key_apply_patch();
 void gamepad_apply_patch();
-void gamepad_sdl_poll();
 void gamepad_do_frame();
+void sdl_input_poll();

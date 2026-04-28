@@ -1,8 +1,10 @@
 #pragma once
 #include <cstdint>
+#include <SDL3/SDL.h>
 
 void gamepad_apply_patch();
 void gamepad_sdl_init();
+void process_gamepad_event(const SDL_Event& ev);
 
 
 struct RumbleEffect
