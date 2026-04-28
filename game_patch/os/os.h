@@ -7,7 +7,12 @@
 #include <windows.h>
 #include <xlog/xlog.h>
 
+struct SDL_Window;
+extern SDL_Window* g_sdl_window;
+
 void os_apply_patch();
+void os_init_sdl_video();
+void os_init_sdl_window();
 void frametime_render_ui();
 float get_maximum_fps();
 void apply_maximum_fps();

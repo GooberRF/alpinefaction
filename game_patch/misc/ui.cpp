@@ -1,4 +1,5 @@
 #include <cstring>
+#include <SDL3/SDL.h>
 #include <xlog/xlog.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
@@ -19,6 +20,7 @@
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
 #include "../object/object.h"
+#include "../input/input.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../rf/level.h"
 
@@ -91,8 +93,12 @@ static char ao_simdist_butlabel_text[9];
 // alpine options checkboxes and labels
 static rf::ui::Checkbox ao_mpcharlod_cbox;
 static rf::ui::Label ao_mpcharlod_label;
-static rf::ui::Checkbox ao_dinput_cbox;
-static rf::ui::Label ao_dinput_label;
+static rf::ui::Checkbox ao_kbm_input_mode_cbox;
+static rf::ui::Label ao_kbm_input_mode_label;
+static rf::ui::Label ao_kbm_input_mode_butlabel;
+static char ao_kbm_input_mode_butlabel_text[16];
+static bool g_alpine_options_just_switched_kbm_input_mode = false;
+static constexpr const char* kbm_input_mode_names[] = {"Classic", "DInput", "SDL"};
 static rf::ui::Checkbox ao_linearpitch_cbox;
 static rf::ui::Label ao_linearpitch_label;
 static rf::ui::Checkbox ao_mousecamerascale_cbox;
@@ -372,6 +378,8 @@ void __fastcall UiInputBox_create(rf::ui::InputBox& this_, int, rf::ui::Gadget *
 }
 FunHook UiInputBox_create_hook{0x00456FE0, UiInputBox_create};
 
+auto UiInputBox_add_char = reinterpret_cast<bool (__thiscall*)(void *this_, char c)>(0x00457260);
+
 void __fastcall UiInputBox_render(rf::ui::InputBox& this_, void*)
 {
     if (this_.enabled && this_.highlighted) {
@@ -397,6 +405,25 @@ void __fastcall UiInputBox_render(rf::ui::InputBox& this_, void*)
         }
     }
     rf::gr::set_clip(clip_x, clip_y, clip_w, clip_h);
+
+    static const rf::ui::InputBox* s_text_input_owner = nullptr;
+    if (this_.enabled && this_.highlighted && g_sdl_window && SDL_HasScreenKeyboardSupport()) {
+        if (s_text_input_owner != &this_) {
+            SDL_PropertiesID props = SDL_CreateProperties();
+            SDL_SetNumberProperty(props, SDL_PROP_TEXTINPUT_TYPE_NUMBER, SDL_TEXTINPUT_TYPE_NUMBER);
+            SDL_StartTextInputWithProperties(g_sdl_window, props);
+            SDL_DestroyProperties(props);
+            s_text_input_owner = &this_;
+        }
+        auto pending = keyboard_take_pending_text();
+        for (char c : pending)
+            UiInputBox_add_char(&this_, c);
+    } else if (s_text_input_owner == &this_) {
+        keyboard_take_pending_text();
+        if (g_sdl_window)
+            SDL_StopTextInput(g_sdl_window);
+        s_text_input_owner = nullptr;
+    }
 
     debug_ui_layout(this_);
 }
@@ -490,8 +517,6 @@ FunHook<void()> menu_init_hook{
     },
 };
 
-auto UiInputBox_add_char = reinterpret_cast<bool (__thiscall*)(void *this_, char c)>(0x00457260);
-
 extern FunHook<bool __fastcall(void*, int, rf::Key)> UiInputBox_process_key_hook;
 bool __fastcall UiInputBox_process_key_new(void *this_, int edx, rf::Key key)
 {
@@ -550,11 +575,19 @@ void ao_bighud_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.big_hud);
 }
 
-void ao_dinput_cbox_on_click(int x, int y)
+void ui_refresh_kbm_input_mode_label()
 {
-    g_alpine_game_config.direct_input = !g_alpine_game_config.direct_input;
-    ao_dinput_cbox.checked = g_alpine_game_config.direct_input;
-    ao_play_button_snd(g_alpine_game_config.direct_input);
+    int mode_index = std::clamp(g_alpine_game_config.kbm_input_mode, 0, 2);
+    snprintf(ao_kbm_input_mode_butlabel_text, sizeof(ao_kbm_input_mode_butlabel_text), "%s",
+        kbm_input_mode_names[mode_index]);
+    ao_kbm_input_mode_butlabel.text = ao_kbm_input_mode_butlabel_text;
+}
+
+void ao_kbm_input_mode_cbox_on_click([[maybe_unused]] int x, [[maybe_unused]] int y) {
+    set_kbm_input_mode((g_alpine_game_config.kbm_input_mode + 1) % 3);
+    ui_refresh_kbm_input_mode_label();
+    g_alpine_options_just_switched_kbm_input_mode = true;
+    ao_play_button_snd(true);
 }
 
 void ao_linearpitch_cbox_on_click(int x, int y) {
@@ -1009,10 +1042,18 @@ void alpine_options_panel_handle_key(rf::Key* key){
     // todo: more key support (tab, etc.)
     // close panel on escape
     if (*key == rf::Key::KEY_ESC) {
+        if (g_alpine_options_just_switched_kbm_input_mode) {
+            // Ignore the ESC stutter that can occur when switching to SDL mode.
+            g_alpine_options_just_switched_kbm_input_mode = false;
+            return;
+        }
+
         rf::ui::options_close_current_panel();
         rf::snd_play(43, 0, 0.0f, 1.0f);
         return;
     }
+
+    g_alpine_options_just_switched_kbm_input_mode = false;
 }
 
 void alpine_options_panel_handle_mouse(int x, int y) {
@@ -1213,8 +1254,9 @@ void alpine_options_panel_init() {
         &ao_always_show_spectators_cbox, &ao_always_show_spectators_label, &alpine_options_panel1, ao_always_show_spectators_cbox_on_click, g_alpine_game_config.always_show_spectators, 280, 264, "Show spectators");
 
     // panel 2
-    alpine_options_panel_checkbox_init(
-        &ao_dinput_cbox, &ao_dinput_label, &alpine_options_panel2, ao_dinput_cbox_on_click, g_alpine_game_config.direct_input, 112, 54, "DirectInput"); 
+    alpine_options_panel_inputbox_init(
+        &ao_kbm_input_mode_cbox, &ao_kbm_input_mode_label, &ao_kbm_input_mode_butlabel, &alpine_options_panel2, ao_kbm_input_mode_cbox_on_click, 112, 54, "KB/M Input");
+    ui_refresh_kbm_input_mode_label();
     alpine_options_panel_checkbox_init(
         &ao_linearpitch_cbox, &ao_linearpitch_label, &alpine_options_panel2, ao_linearpitch_cbox_on_click, g_alpine_game_config.mouse_linear_pitch, 112, 84, "Linear pitch");
     alpine_options_panel_checkbox_init(
@@ -1537,8 +1579,45 @@ CodeInjection options_render_alpine_panel_patch{
         int index = rf::ui::options_current_panel;
         //xlog::warn("render index {}", index);
 
-        if (index == 3 && !rf::ui::options_controls_waiting_for_key) {
-            render_ctrl_camscale_btns();
+        // handle key rebinding in input options panel
+        if (index == 3) {
+            static bool s_was_waiting = false;
+            bool now_waiting = rf::ui::options_controls_waiting_for_key;
+            if (s_was_waiting && !now_waiting) {
+                int16_t new_sc = -1;
+                int xbtn = mouse_take_pending_rebind();
+                if (xbtn >= 0) {
+                    new_sc = static_cast<int16_t>(CTRL_EXTRA_MOUSE_SCAN_BASE + (xbtn - 3));
+                } else {
+                    int extra_key = key_take_pending_extra_rebind();
+                    if (extra_key >= 0)
+                        new_sc = static_cast<int16_t>(extra_key);
+                }
+                if (new_sc >= 0 && rf::local_player) {
+                    auto& cc = rf::local_player->settings.controls;
+                    int n = std::min(cc.num_bindings, 128);
+                    bool found = false;
+                    for (int i = 0; i < n && !found; ++i) {
+                        for (int slot = 0; slot < 2 && !found; ++slot) {
+                            if (cc.bindings[i].scan_codes[slot] == static_cast<int16_t>(CTRL_REBIND_SENTINEL)) {
+                                for (int j = 0; j < n; ++j)
+                                    for (int s = 0; s < 2; ++s)
+                                        if ((j != i || s != slot) && cc.bindings[j].scan_codes[s] == new_sc)
+                                            cc.bindings[j].scan_codes[s] = -1;
+                                cc.bindings[i].scan_codes[slot] = new_sc;
+                                found = true;
+                            }
+                        }
+                    }
+                    rf::key_process_event(CTRL_REBIND_SENTINEL, 0, 0);
+                }
+            }
+            s_was_waiting = now_waiting;
+
+            // Render the mouse scale control button in the controls tab when user is not rebinding
+            if (!rf::ui::options_controls_waiting_for_key) {
+                render_ctrl_camscale_btns();
+            }
         }
 
         // render alpine options panel
