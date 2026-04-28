@@ -1,21 +1,13 @@
 #pragma once
 #include <cstdint>
 #include <SDL3/SDL.h>
+#include "rumble.h"
 
 void gamepad_apply_patch();
 void gamepad_sdl_init();
 void process_gamepad_event(const SDL_Event& ev);
 
-
-struct RumbleEffect
-{
-    uint16_t lo_motor      = 0; // low-frequency (left) body motor
-    uint16_t hi_motor      = 0; // high-frequency (right) body motor
-    uint16_t trigger_motor = 0; // trigger motor strength (if supported by SDL_RumbleGamepadTriggers)
-    uint32_t duration_ms   = 0;
-};
-
-void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms);
+void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms, bool ignore_filter = false);
 void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire = false);
 void gamepad_stop_rumble(); // immediately silence all rumble motors
 

@@ -2131,7 +2131,7 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
     reset_gamepad_input_state();
 }
 
-void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
+void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms, bool ignore_filter)
 {
     if (!g_gamepad || !g_rumble_supported)
         return;
@@ -2141,9 +2141,11 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms)
         return;
     low_freq = static_cast<uint16_t>(low_freq * g_alpine_game_config.gamepad_rumble_intensity);
     high_freq = static_cast<uint16_t>(high_freq * g_alpine_game_config.gamepad_rumble_intensity);
-    int filter_mode = g_alpine_game_config.gamepad_rumble_vibration_filter;
-    if (filter_mode == 2 || (filter_mode == 1 && g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled))
-        low_freq = static_cast<uint16_t>(low_freq * 0.02f);
+    if (!ignore_filter) {
+        int filter_mode = g_alpine_game_config.gamepad_rumble_vibration_filter;
+        if (filter_mode == 2 || (filter_mode == 1 && g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled))
+            low_freq = static_cast<uint16_t>(low_freq * 0.02f);
+    }
     SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
 }
 

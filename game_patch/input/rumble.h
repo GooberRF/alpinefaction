@@ -1,6 +1,15 @@
 #pragma once
+#include <cstdint>
 
 namespace rf { struct Entity; }
+
+struct RumbleEffect
+{
+    uint16_t lo_motor      = 0; // low-frequency (left) body motor
+    uint16_t hi_motor      = 0; // high-frequency (right) body motor
+    uint16_t trigger_motor = 0; // trigger motor strength (if supported by SDL_RumbleGamepadTriggers)
+    uint32_t duration_ms   = 0;
+};
 
 // Main per-frame rumble coordinator. Called once per frame from gamepad_do_frame().
 void rumble_do_frame();

@@ -20,6 +20,8 @@ static constexpr RumbleEffect k_rumble_smg_shot{ 0x1800, 0x1000, 0x2000, 65u };
 static constexpr RumbleEffect k_rumble_sniper_shot{ 0x9000, 0xFFFF, 0xFFFF, 180u };
 // Turret shot: strong body-only pulse (no trigger routing for turrets)
 static constexpr RumbleEffect k_rumble_turret_shot{ 0xA800, 0x8C00, 0, 120u };
+// Submarine rocket launch: firm pulse — sub hull dampens the kick vs open-air rocket
+static constexpr RumbleEffect k_rumble_sub_rocket{ 0xC000, 0xF000, 0, 90u };
 
 struct WeaponRumbleProfile {
     const RumbleEffect* preset = nullptr;
@@ -120,8 +122,8 @@ static void rumble_weapon_do_frame()
         return;
     }
 
-    // Turret shots are detected via rumble_on_turret_fire() called from the entity-fire hook.
-    if (rf::entity_is_on_turret(lpe)) {
+    // Turret and vehicle turret shots are detected via rumble_on_turret_fire() called from the entity-fire hook.
+    if (rf::entity_is_on_turret(lpe) || rf::entity_is_jeep_gunner(lpe)) {
         s_last_fired_ts     = -2;
         s_last_secondary_ts = -2;
         s_pending_alt_fire  = false;
@@ -215,10 +217,20 @@ void rumble_on_turret_fire(rf::Entity* firer)
 {
     if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f || !g_alpine_game_config.gamepad_weapon_rumble_enabled)
         return;
-    if (!rf::entity_is_turret(firer))
-        return;
     auto* lpe = rf::local_player_entity;
-    if (!lpe || !rf::entity_is_on_turret(lpe))
+    if (!lpe)
         return;
-    gamepad_play_rumble(k_rumble_turret_shot);
+    if (rf::entity_is_turret(firer) && rf::entity_is_on_turret(lpe))
+        gamepad_play_rumble(k_rumble_turret_shot);
+    else if (rf::entity_is_vehicle(firer) && rf::entity_from_handle(lpe->host_handle) == firer) {
+        if (rf::entity_is_jeep_gunner(lpe))
+            gamepad_play_rumble(k_rumble_turret_shot);
+        else if (rf::entity_is_sub(firer)) {
+            // Bypass vibration filter when gyro_vehicle_camera is off (default): gyro isn't
+            // active in vehicles, so the filter serves no purpose and would suppress the effect.
+            bool ignore_filter = !g_alpine_game_config.gamepad_gyro_vehicle_camera;
+            gamepad_rumble(k_rumble_sub_rocket.lo_motor, k_rumble_sub_rocket.hi_motor,
+                           k_rumble_sub_rocket.duration_ms, ignore_filter);
+        }
+    }
 }
