@@ -24,7 +24,7 @@
 #include "../gr_internal.h"
 #include "gr_d3d_internal.h"
 
-void monitor_refresh_all();
+extern void monitor_refresh_all();
 
 static void set_texture_min_mag_filter_in_code(D3DTEXTUREFILTERTYPE filter_type0, D3DTEXTUREFILTERTYPE filter_type1)
 {
@@ -178,6 +178,38 @@ D3DFORMAT determine_depth_buffer_format(D3DFORMAT adapter_format)
     return D3DFMT_D16;
 }
 
+static bool try_set_msaa_level(const uint32_t msaa_level) {
+    const D3DMULTISAMPLE_TYPE multi_sample_type =
+        static_cast<D3DMULTISAMPLE_TYPE>(msaa_level);
+    if (multi_sample_type == D3DMULTISAMPLE_NONE) {
+        xlog::info("Disabling anti-aliasing");
+    } else {
+        // Make sure selected MSAA mode is available
+        const HRESULT hr = rf::gr::d3d::d3d->CheckDeviceMultiSampleType(
+            rf::gr::d3d::adapter_idx,
+            D3DDEVTYPE_HAL,
+            rf::gr::d3d::pp.BackBufferFormat,
+            rf::gr::d3d::pp.Windowed,
+            multi_sample_type
+        );
+        if (SUCCEEDED(hr)) {
+            xlog::info(
+                "Enabling anti-aliasing (MSAAx{})",
+                msaa_level
+            );
+        } else {
+            xlog::warn(
+                "MSAAx{} is not supported ({})",
+                msaa_level,
+                get_d3d_error_str(hr)
+            );
+            return false;
+        }
+    }
+    rf::gr::d3d::pp.MultiSampleType = multi_sample_type;
+    return true;
+}
+
 CodeInjection update_pp_hook{
     0x00545BC7,
     []() {
@@ -191,19 +223,8 @@ CodeInjection update_pp_hook{
         xlog::info("D3D Raster Caps: {:x}", rf::gr::d3d::device_caps.RasterCaps);
         xlog::info("Max texture size: {}x{}", rf::gr::d3d::device_caps.MaxTextureWidth, rf::gr::d3d::device_caps.MaxTextureHeight);
 
-        if (g_game_config.msaa) {
-            // Make sure selected MSAA mode is available
-            auto multi_sample_type = static_cast<D3DMULTISAMPLE_TYPE>(g_game_config.msaa.value());
-            HRESULT hr = rf::gr::d3d::d3d->CheckDeviceMultiSampleType(rf::gr::d3d::adapter_idx, D3DDEVTYPE_HAL, rf::gr::d3d::pp.BackBufferFormat,
-                                                                rf::gr::d3d::pp.Windowed, multi_sample_type);
-            if (SUCCEEDED(hr)) {
-                xlog::info("Enabling Anti-Aliasing ({}x MSAA)...", g_game_config.msaa.value());
-                rf::gr::d3d::pp.MultiSampleType = multi_sample_type;
-            }
-            else {
-                xlog::warn("MSAA not supported ({})...", get_d3d_error_str(hr));
-                g_game_config.msaa = D3DMULTISAMPLE_NONE;
-            }
+        if (g_game_config.msaa_level) {
+            try_set_msaa_level(g_game_config.msaa_level);
         }
 
         // remove D3DPRESENTFLAG_LOCKABLE_BACKBUFFER flag
@@ -285,9 +306,8 @@ DWORD setup_max_anisotropy()
 
 CallHook<void()> gr_d3d_init_buffers_gr_d3d_flip_hook{
     0x00545045,
-    []() {
+    [] {
         gr_d3d_init_buffers_gr_d3d_flip_hook.call_target();
-
         // Apply state change after reset
         // Note: we dont have to set min/mag filtering because its set when selecting material
 
@@ -297,11 +317,13 @@ CallHook<void()> gr_d3d_init_buffers_gr_d3d_flip_hook{
         rf::gr::d3d::device->SetRenderState(D3DRS_AMBIENT, 0xFF545454);
         rf::gr::d3d::device->SetRenderState(D3DRS_CLIPPING, FALSE);
 
-        if (rf::local_player)
+        if (rf::local_player) {
             rf::gr::set_texture_mip_filter(!rf::local_player->settings.bilinear_filtering);
+        }
 
-        if (rf::gr::d3d::device_caps.MaxAnisotropy > 0 && g_game_config.anisotropic_filtering)
+        if (rf::gr::d3d::device_caps.MaxAnisotropy > 0 && g_game_config.anisotropic_filtering) {
             setup_max_anisotropy();
+        }
     },
 };
 
@@ -339,17 +361,80 @@ void gr_d3d_update_window_mode()
     gr_d3d_update_vsync();
 }
 
-ConsoleCommand2 antialiasing_cmd{
-    "antialiasing",
-    []() {
-        if (!g_game_config.msaa)
-            rf::console::print("Anti-aliasing is not supported");
-        else {
-            DWORD enabled = 0;
-            rf::gr::d3d::device->GetRenderState(D3DRS_MULTISAMPLEANTIALIAS, &enabled);
-            enabled = !enabled;
-            rf::gr::d3d::device->SetRenderState(D3DRS_MULTISAMPLEANTIALIAS, enabled);
-            rf::console::print("Anti-aliasing is {}", enabled ? "enabled" : "disabled");
+ConsoleCommand2 r_antialiasing_mode_cmd{
+    "r_antialiasing_mode",
+    [] (const std::string_view mode) {
+        if (!g_antialiasing) {
+            rf::console::print("Anti-aliasing is not enabled");
+        } else {
+            constexpr auto CHANGE_MSAA_CFG = [] (
+                const uint32_t msaa_level
+            ) {
+                g_game_config.msaa_level = msaa_level;
+                g_game_config.save();
+            };
+            constexpr std::string_view MSAA_PREFIX = "msaax";
+            if (string_iequals(mode, "none")) {
+                if (g_game_config.msaa_level) {
+                    try_set_msaa_level(0);
+                    CHANGE_MSAA_CFG(0);
+                    g_reset_device_req = true;
+                    rf::console::print("Anti-aliasing mode is none");
+                } else {
+                    rf::console::print("Anti-aliasing mode is already none");
+                }
+            } else if (string_istarts_with(mode, MSAA_PREFIX)) {
+                int value = 0;
+                const auto [ptr, err] = std::from_chars(
+                    mode.data() + MSAA_PREFIX.size(),
+                    mode.data() + mode.size(),
+                    value
+                );
+                if (err != std::errc{} || ptr != mode.data() + mode.size()) {
+                    rf::console::print("Invalid value!");
+                    return;
+                } else if (value != 2 && value != 4 && value != 8) {
+                    rf::console::print("MSAA level must be 2, 4, or 8");
+                    return;
+                }
+                if (value != g_game_config.msaa_level) {
+                    if (!try_set_msaa_level(value)) {
+                        rf::console::print("MSAAx{} is an unsupported mode!", value);
+                    } else {
+                        CHANGE_MSAA_CFG(value);
+                        g_reset_device_req = true;
+                        rf::console::print("Anti-aliasing mode is MSAAx{}", value);
+                    }
+                } else {
+                    rf::console::print(
+                        "Anti-aliasing mode is already MSAAx{}",
+                        value
+                    );
+                }
+            } else {
+                rf::console::print("Invalid value!");
+            }
+        }
+    },
+    "Sets anti-aliasing mode",
+    "r_antialiasing_mode <none|msaax{2,4,8}>",
+};
+
+ConsoleCommand2 r_antialiasing_cmd{
+    "r_antialiasing",
+    [] {
+        if (!g_game_config.msaa_level) {
+            rf::console::print("Anti-aliasing is not set or supported");
+        } else {
+            g_antialiasing = !g_antialiasing;
+            try_set_msaa_level(
+                g_antialiasing ? g_game_config.msaa_level : D3DMULTISAMPLE_NONE
+            );
+            g_reset_device_req = true;
+            rf::console::print(
+                "Anti-aliasing is {} until exit",
+                g_antialiasing ? "enabled" : "disabled"
+            );
         }
     },
     "Toggles anti-aliasing",
@@ -655,13 +740,12 @@ CodeInjection gr_d3d_init_load_library_injection{
 
 CodeInjection gr_d3d_device_lost_injection{
     0x00545042,
-    []() {
-        void monitor_refresh_all();
-
+    [] {
         xlog::info("D3D device lost");
         gr_d3d_capture_device_lost();
         gr_d3d_texture_device_lost();
         monitor_refresh_all();
+        g_d3d_msaa_surfaces.clear();
     },
 };
 
@@ -869,7 +953,8 @@ void gr_d3d_apply_patch()
     gr_d3d_close_injection.install();
 
     // Commands
-    antialiasing_cmd.register_cmd();
+    r_antialiasing_cmd.register_cmd();
+    r_antialiasing_mode_cmd.register_cmd();
 #ifdef DEBUG
     profile_frame_cmd.register_cmd();
 #endif

@@ -6,6 +6,9 @@ Version 1.4.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@is-this-c](https://github.com/is-this-c)
+- Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
+- Rename `antialiasing` console command to `r_antialiasing`
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)

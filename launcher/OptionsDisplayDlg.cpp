@@ -71,7 +71,7 @@ void OptionsDisplayDlg::UpdateMsaaCombo()
         for (auto msaa : multi_sample_types) {
             auto s = std::format("MSAAx{}", msaa);
             int idx = m_msaa_combo.AddString(s.c_str());
-            if (m_conf.msaa == msaa)
+            if (m_conf.msaa_level == msaa)
                 selected_msaa = idx;
             m_multi_sample_types.push_back(msaa);
         }
@@ -238,7 +238,7 @@ void OptionsDisplayDlg::OnSave()
     }
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
     m_conf.geometry_cache_size = GetDlgItemInt(IDC_RENDERING_CACHE_EDIT, false);
-    m_conf.msaa = m_multi_sample_types[m_msaa_combo.GetCurSel()];
+    m_conf.msaa_level = m_multi_sample_types[m_msaa_combo.GetCurSel()];
     m_conf.anisotropic_filtering = (IsDlgButtonChecked(IDC_ANISOTROPIC_CHECK) == BST_CHECKED);
     m_conf.high_scanner_res = (IsDlgButtonChecked(IDC_HIGH_SCANNER_RES_CHECK) == BST_CHECKED);
     m_conf.true_color_textures = (IsDlgButtonChecked(IDC_TRUE_COLOR_TEXTURES_CHECK) == BST_CHECKED);

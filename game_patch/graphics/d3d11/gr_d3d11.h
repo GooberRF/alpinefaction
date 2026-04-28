@@ -18,12 +18,7 @@ namespace rf
     struct CharacterInstance;
 }
 
-namespace df::gr
-{
-    using namespace rf::gr;
-}
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     class StateManager;
     class ShaderManager;
@@ -90,14 +85,16 @@ namespace df::gr::d3d11
         void clear_mesh_lights();
         void set_pow2_tex_active(bool active);
         float z_far() const;
+        bool is_sample_count_valid(const uint32_t sample_count);
+        void flush_render_targets();
         bool supports_exclusive_fullscreen() const;
 
     private:
         void init_device();
         void init_swap_chain(HWND hwnd);
-        void init_back_buffer();
+        void init_back_buffer(const uint32_t msaa_level);
         void init_scene_texture();
-        void init_depth_stencil_buffer();
+        void init_depth_stencil_buffer(const uint32_t msaa_level);
 
         HWND hwnd_;
         DynamicLinkLibrary d3d11_lib_;

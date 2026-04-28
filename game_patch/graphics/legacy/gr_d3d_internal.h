@@ -2,8 +2,11 @@
 
 #include <windows.h>
 #include <d3d8.h>
+#include <common/ComPtr.h>
 #include <xlog/xlog.h>
 #include "../../rf/bmpman.h"
+
+inline std::unordered_map<int, ComPtr<IDirect3DSurface8>> g_d3d_msaa_surfaces{};
 
 void gr_d3d_gamma_reset();
 void gr_d3d_texture_device_lost();

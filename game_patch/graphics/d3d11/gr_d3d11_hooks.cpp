@@ -21,12 +21,14 @@
 #include "../../main/main.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
+#include "../../os/console.h"
+#include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_mesh.h"
 
 void gr_light_use_static(bool use_static);
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     // Gather both dynamic and static lights for GPU-lit meshes.
     // is_find_static_lights controls which linked list the internal light search
@@ -690,7 +692,7 @@ namespace df::gr::d3d11
         renderer->set_fullscreen_state(want_fullscreen);
     }
 
-    rf::ubyte project_vertex_new(Vertex* v)
+    rf::ubyte project_vertex_new(rf::gr::Vertex* v)
     {
         renderer->project_vertex(v);
         return v->flags;
@@ -714,8 +716,8 @@ namespace df::gr::d3d11
     static CodeInjection gr_d3d_setup_3d_injection{
         0x005473E4,
         []() {
-            float sx = matrix_scale.x / matrix_scale.z;
-            float sy = matrix_scale.y / matrix_scale.z;
+            float sx = rf::gr::matrix_scale.x / rf::gr::matrix_scale.z;
+            float sy = rf::gr::matrix_scale.y / rf::gr::matrix_scale.z;
             static auto& zm = addr_as_ref<float>(0x005A7DD8);
             float zn = 0.1f; // static near plane (RF uses: zm / matrix_scale.z)
             zm = 1.0f; // let's not use zm at all to simplify software projections
@@ -821,11 +823,86 @@ namespace df::gr::d3d11
         },
     };
 
-    static FunHook<void(void*)> item_render_hook{
+    ConsoleCommand2 r_antialiasing_mode_cmd{
+        "r_antialiasing_mode",
+        [] (const std::string_view mode) {
+            if (!g_antialiasing) {
+                rf::console::print("Anti-aliasing is not enabled");
+            } else {
+                constexpr auto CHANGE_MSAA_CFG = [] (
+                    const uint32_t msaa_level
+                ) {
+                    g_game_config.msaa_level = msaa_level;
+                    g_game_config.save();
+                };
+                constexpr std::string_view MSAA_PREFIX = "msaax";
+                if (string_iequals(mode, "none")) {
+                    if (g_game_config.msaa_level) {
+                        CHANGE_MSAA_CFG(0);
+                        gr::d3d11::renderer->flush_render_targets();
+                        rf::console::print("Anti-aliasing mode is none");
+                    } else {
+                        rf::console::print("Anti-aliasing mode is already none");
+                    }
+                } else if (string_istarts_with(mode, MSAA_PREFIX)) {
+                    int value = 0;
+                    const auto [ptr, err] = std::from_chars(
+                        mode.data() + MSAA_PREFIX.size(),
+                        mode.data() + mode.size(),
+                        value
+                    );
+                    if (err != std::errc{} || ptr != mode.data() + mode.size()) {
+                        rf::console::print("Invalid value!");
+                        return;
+                    } else if (value != 2 && value != 4 && value != 8) {
+                        rf::console::print("MSAA level must be 2, 4, or 8");
+                        return;
+                    }
+                    if (value != g_game_config.msaa_level) {
+                        if (!gr::d3d11::renderer->is_sample_count_valid(value)) {
+                            rf::console::print("MSAAx{} is an unsupported mode!", value);
+                        } else {
+                            CHANGE_MSAA_CFG(value);
+                            gr::d3d11::renderer->flush_render_targets();
+                            rf::console::print("Anti-aliasing mode is MSAAx{}", value);
+                        }
+                    } else {
+                        rf::console::print(
+                            "Anti-aliasing mode is already MSAAx{}",
+                            value
+                        );
+                    }
+                } else {
+                    rf::console::print("Invalid value!");
+                }
+            }
+        },
+        "Sets anti-aliasing mode",
+        "r_antialiasing_mode <none|msaax{2,4,8}>",
+    };
+
+    ConsoleCommand2 r_antialiasing_cmd{
+        "r_antialiasing",
+        [] {
+            if (!g_game_config.msaa_level) {
+                rf::console::print("Anti-aliasing is not set or supported");
+            } else {
+                g_antialiasing = !g_antialiasing;
+                gr::d3d11::renderer->flush_render_targets();
+                rf::console::print(
+                    "Anti-aliasing is {} until exit",
+                    g_antialiasing ? "enabled" : "disabled"
+                );
+            }
+        },
+        "Toggles anti-aliasing",
+    };
+  
+    FunHook<void(rf::Item*)> item_render_hook{
         0x00458F80,
-        [](void* item) {
+        [] (rf::Item* const item) {
             if (g_alpine_game_config.picmip > 1) {
-                ScopedPicmipSkipObject guard;
+                ScopedPicmipSkipObject guard{};
                 item_render_hook.call_target(item);
             } else {
                 item_render_hook.call_target(item);
@@ -833,11 +910,11 @@ namespace df::gr::d3d11
         },
     };
 
-    static FunHook<void(void*)> entity_render_weapon_in_hands_hook{
+    FunHook<void(rf::Entity*)> entity_render_weapon_in_hands_hook{
         0x00421C40,
-        [](void* entity) {
+        [] (rf::Entity* const entity) {
             if (g_alpine_game_config.picmip > 1) {
-                ScopedPicmipSkipObject guard;
+                ScopedPicmipSkipObject guard{};
                 entity_render_weapon_in_hands_hook.call_target(entity);
             } else {
                 entity_render_weapon_in_hands_hook.call_target(entity);
@@ -848,7 +925,7 @@ namespace df::gr::d3d11
 
 void gr_d3d11_apply_patch()
 {
-    using namespace df::gr::d3d11;
+    using namespace gr::d3d11;
 
     g_render_room_objects_render_liquid_injection.install();
     gr_d3d_setup_3d_injection.install();
@@ -950,4 +1027,7 @@ void gr_d3d11_apply_patch()
     // Change size of standard structures
     write_mem<int8_t>(0x00569884 + 1, sizeof(rf::VifMesh));
     write_mem<int8_t>(0x00569732 + 1, sizeof(rf::VifLodMesh));
+
+    r_antialiasing_cmd.register_cmd();
+    r_antialiasing_mode_cmd.register_cmd();
 }

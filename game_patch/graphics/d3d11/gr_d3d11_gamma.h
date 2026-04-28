@@ -3,7 +3,7 @@
 #include <d3d11.h>
 #include <common/ComPtr.h>
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     class ShaderManager;
 

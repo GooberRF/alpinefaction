@@ -991,7 +991,7 @@ void ao_meshlight_cbox_on_click(int x, int y) {
     g_alpine_game_config.mesh_lighting_mode = (g_alpine_game_config.mesh_lighting_mode + 1) % 3;
     recalc_mesh_static_lighting();
     if (is_d3d11()) {
-        df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+        gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
     }
     snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
         meshlight_mode_names[g_alpine_game_config.mesh_lighting_mode]);

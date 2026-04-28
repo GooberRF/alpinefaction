@@ -36,7 +36,7 @@
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     bool set_render_target(int bm_handle);
     void update_window_mode();
@@ -420,7 +420,7 @@ bool gr_set_render_target(int bm_handle)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         if (is_d3d11()) {
-            return df::gr::d3d11::set_render_target(bm_handle);
+            return gr::d3d11::set_render_target(bm_handle);
         }
         else {
             return gr_d3d_set_render_target(bm_handle);
@@ -434,7 +434,7 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         if (is_d3d11()) {
-            df::gr::d3d11::bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+            gr::d3d11::bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
         }
         else {
             gr_d3d_bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
@@ -447,7 +447,7 @@ void gr_set_window_mode(rf::gr::WindowMode window_mode)
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         rf::gr::screen.window_mode = window_mode;
         if (is_d3d11()) {
-            df::gr::d3d11::update_window_mode();
+            gr::d3d11::update_window_mode();
         }
         else {
             gr_d3d_update_window_mode();
@@ -459,7 +459,7 @@ void gr_update_texture_filtering()
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         if (is_d3d11()) {
-            df::gr::d3d11::update_texture_filtering();
+            gr::d3d11::update_texture_filtering();
         }
         else {
             gr_d3d_update_texture_filtering();
@@ -515,7 +515,7 @@ ConsoleCommand2 picmip_cmd{
             bool was_on = old_divisor > 1;
             bool now_on = g_alpine_game_config.picmip > 1;
             if (was_on != now_on) {
-                df::gr::d3d11::texture_flush_non_user_cache();
+                gr::d3d11::texture_flush_non_user_cache();
             }
         }
         rf::console::print(
@@ -601,7 +601,7 @@ void evaluate_pow2tex(const rf::String& level_filename) {
 
     // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
-        df::gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
+        gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
         if (is_sky_fix_level(level_filename)) {
             rf::console::print("Applying sky fix to known affected level {}", level_filename);
         }

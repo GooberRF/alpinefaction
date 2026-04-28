@@ -5,7 +5,7 @@
 #include <cassert>
 #include <d3d11.h>
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     enum class VertexLayout
     {

@@ -14,9 +14,7 @@
 #include "gr_d3d11_state.h"
 #include "gr_d3d11_shader.h"
 
-using namespace rf;
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     RenderContext::RenderContext(
         ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> device_context,
@@ -63,9 +61,9 @@ namespace df::gr::d3d11
         // Note: original code clears clip rect only but it is not trivial in D3D11
         if (render_target_view_) {
             float clear_color[4] = {
-                gr::screen.current_color.red / 255.0f,
-                gr::screen.current_color.green / 255.0f,
-                gr::screen.current_color.blue / 255.0f,
+                rf::gr::screen.current_color.red / 255.0f,
+                rf::gr::screen.current_color.green / 255.0f,
+                rf::gr::screen.current_color.blue / 255.0f,
                 1.0f,
             };
             device_context_->ClearRenderTargetView(render_target_view_, clear_color);
@@ -75,8 +73,8 @@ namespace df::gr::d3d11
     void RenderContext::zbuffer_clear()
     {
         // Note: original code clears clip rect only but it is not trivial in D3D11
-        if (gr::screen.depthbuffer_type != gr::DEPTHBUFFER_NONE && depth_stencil_view_) {
-            float depth = gr::screen.depthbuffer_type == gr::DEPTHBUFFER_Z ? 0.0f : 1.0f;
+        if (rf::gr::screen.depthbuffer_type != rf::gr::DEPTHBUFFER_NONE && depth_stencil_view_) {
+            float depth = rf::gr::screen.depthbuffer_type == rf::gr::DEPTHBUFFER_Z ? 0.0f : 1.0f;
             device_context_->ClearDepthStencilView(depth_stencil_view_, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, depth, 0);
         }
     }
@@ -84,10 +82,10 @@ namespace df::gr::d3d11
     void RenderContext::set_clip()
     {
         D3D11_VIEWPORT vp;
-        vp.TopLeftX = static_cast<float>(gr::screen.clip_left + gr::screen.offset_x);
-        vp.TopLeftY = static_cast<float>(gr::screen.clip_top + gr::screen.offset_y);
-        vp.Width = static_cast<float>(gr::screen.clip_width);
-        vp.Height = static_cast<float>(gr::screen.clip_height);
+        vp.TopLeftX = static_cast<float>(rf::gr::screen.clip_left + rf::gr::screen.offset_x);
+        vp.TopLeftY = static_cast<float>(rf::gr::screen.clip_top + rf::gr::screen.offset_y);
+        vp.Width = static_cast<float>(rf::gr::screen.clip_width);
+        vp.Height = static_cast<float>(rf::gr::screen.clip_height);
         vp.MinDepth = 0.0f;
         vp.MaxDepth = 1.0f;
         device_context_->RSSetViewports(1, &vp);
@@ -530,16 +528,16 @@ namespace df::gr::d3d11
             current_color_.alpha / 255.0f,
         };
         data.alpha_test = current_alpha_test_ ? current_alpha_test_threshold_ : 0.0f;
-        if (!current_fog_allowed_ || !gr::screen.fog_mode) {
+        if (!current_fog_allowed_ || !rf::gr::screen.fog_mode) {
             data.fog_far = std::numeric_limits<float>::infinity();
             data.fog_color = {0.0f, 0.0f, 0.0f};
         }
         else {
-            data.fog_far = gr::screen.fog_far;
+            data.fog_far = rf::gr::screen.fog_far;
             data.fog_color = {
-                static_cast<float>(gr::screen.fog_color.red) / 255.0f,
-                static_cast<float>(gr::screen.fog_color.green) / 255.0f,
-                static_cast<float>(gr::screen.fog_color.blue) / 255.0f,
+                static_cast<float>(rf::gr::screen.fog_color.red) / 255.0f,
+                static_cast<float>(rf::gr::screen.fog_color.green) / 255.0f,
+                static_cast<float>(rf::gr::screen.fog_color.blue) / 255.0f,
             };
         }
         data.colorblind_mode = static_cast<float>(current_colorblind_mode_);

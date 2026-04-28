@@ -8,7 +8,7 @@
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_buffer.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     struct GpuTransformedVertex;
     class RenderContext;
@@ -18,10 +18,10 @@ namespace df::gr::d3d11
     public:
         DynamicGeometryRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager, RenderContext& render_context);
         void add_poly(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, const std::array<int, 2>& tex_handles, rf::gr::Mode mode);
-        void line(const gr::Vertex **vertices, rf::gr::Mode mode, bool is_3d);
+        void line(const rf::gr::Vertex **vertices, rf::gr::Mode mode, bool is_3d);
         void line_3d(const rf::gr::Vertex& v0, const rf::gr::Vertex& v1, rf::gr::Mode mode);
         void line_2d(float x1, float y1, float x2, float y2, rf::gr::Mode mode);
-        void bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, gr::Mode mode);
+        void bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
         void set_pre_flush_callback(std::function<void()> callback);
         void set_cull_mode(D3D11_CULL_MODE cull_mode);
         void flush();

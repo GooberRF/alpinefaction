@@ -1707,7 +1707,7 @@ ConsoleCommand2 shadow_items_cmd{
 ConsoleCommand2 dbg_shadows_cmd{
     "dbg_shadows",
     []() {
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         if (rf::is_multi && !rf::is_server) {
             rf::console::print("This command is only available in single-player or as host");
             return;
@@ -1724,7 +1724,7 @@ ConsoleCommand2 shadow_distance_cmd{
         if (value_opt) {
             g_alpine_game_config.set_shadow_distance(value_opt.value());
         }
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         int d = g_alpine_game_config.shadow_distance;
         rf::console::print("Shadow distance: {} ({}) [0-5]",
             d, ESR::preset_names[d]);
@@ -1739,7 +1739,7 @@ ConsoleCommand2 shadow_quality_cmd{
         if (value_opt) {
             g_alpine_game_config.set_shadow_quality(value_opt.value());
         }
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         int q = g_alpine_game_config.shadow_quality;
         const auto& preset = ESR::shadow_quality_presets[q];
         if (preset.resolution == 0) {

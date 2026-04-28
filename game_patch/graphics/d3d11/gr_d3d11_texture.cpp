@@ -2,18 +2,18 @@
 #include <cassert>
 #include "gr_d3d11.h"
 #include "gr_d3d11_texture.h"
+#include "../gr.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/alpine_settings.h"
 // Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
 #include <patch_common/MemUtils.h>
+
 namespace rf::gr::d3d {
     static auto& p2t = addr_as_ref<int>(0x01CFCC18);
 }
 
-using namespace rf;
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     static int next_power_of_2(int v)
     {
@@ -26,9 +26,9 @@ namespace df::gr::d3d11
         return v + 1;
     }
 
-    static bool is_block_compressed_format(bm::Format fmt)
+    static bool is_block_compressed_format(rf::bm::Format fmt)
     {
-        return fmt == bm::FORMAT_DXT1 || fmt == bm::FORMAT_DXT3 || fmt == bm::FORMAT_DXT5;
+        return fmt == rf::bm::FORMAT_DXT1 || fmt == rf::bm::FORMAT_DXT3 || fmt == rf::bm::FORMAT_DXT5;
     }
 
     TextureManager::TextureManager(ComPtr<ID3D11Device> device, ComPtr<ID3D11DeviceContext> device_context) :
@@ -40,7 +40,7 @@ namespace df::gr::d3d11
         black_texture_view_ = create_solid_color_texture(0.0f, 0.0f, 0.0f, 1.0f);
     }
 
-    TextureManager::Texture TextureManager::create_texture(int bm_handle, bm::Format fmt, int w, int h, ubyte* bits, ubyte* pal, int mip_levels, bool staging, int src_w, int src_h)
+    TextureManager::Texture TextureManager::create_texture(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal, int mip_levels, bool staging, int src_w, int src_h)
     {
         // src_w/src_h are the original bitmap dimensions before pow2 padding
         // When no padding, they equal w and h (or are 0 to indicate no padding)
@@ -58,8 +58,8 @@ namespace df::gr::d3d11
             staging ? D3D11_CPU_ACCESS_READ|D3D11_CPU_ACCESS_WRITE : 0u,
         };
 
-        std::vector<std::unique_ptr<ubyte[]>> converted_bits_vec;
-        std::vector<std::unique_ptr<ubyte[]>> padded_bits_vec;
+        std::vector<std::unique_ptr<rf::ubyte[]>> converted_bits_vec;
+        std::vector<std::unique_ptr<rf::ubyte[]>> padded_bits_vec;
         std::vector<D3D11_SUBRESOURCE_DATA> subres_data_vec;
         if (bits) {
             // Track both source (bitmap) and destination (texture) dimensions per mip level
@@ -74,14 +74,14 @@ namespace df::gr::d3d11
                 subres_data_vec.emplace_back();
                 D3D11_SUBRESOURCE_DATA& subres_data = subres_data_vec.back();
 
-                ubyte* src_bits = bits;
-                bm::Format src_fmt = fmt;
+                rf::ubyte* src_bits = bits;
+                rf::bm::Format src_fmt = fmt;
 
                 if (supported_fmt != fmt) {
                     xlog::trace("Converting texture {} -> {}", fmt, supported_fmt);
                     int converted_pitch = bm_calculate_pitch(cur_src_w, supported_fmt);
-                    converted_bits_vec.push_back(std::make_unique<ubyte[]>(converted_pitch * cur_src_h));
-                    ubyte* converted_bits = converted_bits_vec.back().get();
+                    converted_bits_vec.push_back(std::make_unique<rf::ubyte[]>(converted_pitch * cur_src_h));
+                    rf::ubyte* converted_bits = converted_bits_vec.back().get();
                     ::bm_convert_format(converted_bits, supported_fmt, bits, fmt, cur_src_w, cur_src_h,
                         converted_pitch, src_pitch, pal);
                     src_bits = converted_bits;
@@ -96,8 +96,8 @@ namespace df::gr::d3d11
                     // Create a zero-filled buffer at the padded dimensions and copy source rows into it
                     int dst_pitch = bm_calculate_pitch(cur_dst_w, src_fmt);
                     int dst_rows = bm_calculate_rows(cur_dst_h, src_fmt);
-                    padded_bits_vec.push_back(std::make_unique<ubyte[]>(dst_pitch * dst_rows));
-                    ubyte* padded = padded_bits_vec.back().get();
+                    padded_bits_vec.push_back(std::make_unique<rf::ubyte[]>(dst_pitch * dst_rows));
+                    rf::ubyte* padded = padded_bits_vec.back().get();
                     std::memset(padded, 0, dst_pitch * dst_rows);
 
                     int copy_rows = std::min(src_rows, dst_rows);
@@ -141,7 +141,7 @@ namespace df::gr::d3d11
         }
     }
 
-    TextureManager::Texture TextureManager::create_texture_auto_mips(int bm_handle, bm::Format fmt, int w, int h, ubyte* bits, ubyte* pal)
+    TextureManager::Texture TextureManager::create_texture_auto_mips(int bm_handle, rf::bm::Format fmt, int w, int h, rf::ubyte* bits, rf::ubyte* pal)
     {
         // Use the same narrower-format selection as the stock path (e.g. B5G6R5 for
         // 565 sources) so 16bpp content stays 16bpp in VRAM. Then probe whether the
@@ -158,7 +158,7 @@ namespace df::gr::d3d11
                 || dxgi_format == DXGI_FORMAT_B4G4R4A4_UNORM
                 || dxgi_format == DXGI_FORMAT_B8G8R8A8_UNORM;
             dxgi_format = has_alpha ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_B8G8R8X8_UNORM;
-            supported_fmt = bm::FORMAT_8888_ARGB;
+            supported_fmt = rf::bm::FORMAT_8888_ARGB;
         }
 
         CD3D11_TEXTURE2D_DESC desc{
@@ -180,12 +180,12 @@ namespace df::gr::d3d11
             return create_texture(bm_handle, fmt, w, h, bits, pal, 1, false, w, h);
         }
 
-        std::unique_ptr<ubyte[]> converted_bits;
-        ubyte* upload_bits = bits;
+        std::unique_ptr<rf::ubyte[]> converted_bits;
+        rf::ubyte* upload_bits = bits;
         int upload_pitch = bm_calculate_pitch(w, fmt);
         if (fmt != supported_fmt) {
             int dst_pitch = bm_calculate_pitch(w, supported_fmt);
-            converted_bits = std::make_unique<ubyte[]>(dst_pitch * h);
+            converted_bits = std::make_unique<rf::ubyte[]>(dst_pitch * h);
             ::bm_convert_format(converted_bits.get(), supported_fmt, bits, fmt, w, h, dst_pitch, upload_pitch, pal);
             upload_bits = converted_bits.get();
             upload_pitch = dst_pitch;
@@ -209,9 +209,9 @@ namespace df::gr::d3d11
 
     TextureManager::Texture TextureManager::create_render_target(int bm_handle, int w, int h)
     {
-        ComPtr<ID3D11Texture2D> gpu_ss_texture;
-        ComPtr<ID3D11Texture2D> gpu_ms_texture;
-        ComPtr<ID3D11RenderTargetView> render_target_view;
+        ComPtr<ID3D11Texture2D> gpu_ss_texture{};
+        ComPtr<ID3D11Texture2D> gpu_ms_texture{};
+        ComPtr<ID3D11RenderTargetView> render_target_view{};
 
         CD3D11_TEXTURE2D_DESC tex_desc{
             DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -221,14 +221,16 @@ namespace df::gr::d3d11
             1, // mipLevels
         };
 
-        if (g_game_config.msaa) {
-            tex_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        const bool use_msaa = g_antialiasing
+            && g_game_config.msaa_level >= 2
+            && g_game_config.msaa_level <= 8;
+        if (use_msaa) {
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&tex_desc, nullptr, &gpu_ss_texture)
             );
 
             tex_desc.BindFlags = D3D11_BIND_RENDER_TARGET;
-            tex_desc.SampleDesc.Count = g_game_config.msaa.value();
+            tex_desc.SampleDesc.Count = g_game_config.msaa_level;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&tex_desc, nullptr, &gpu_ms_texture)
             );
@@ -236,9 +238,8 @@ namespace df::gr::d3d11
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateRenderTargetView(gpu_ms_texture, nullptr, &render_target_view)
             );
-        }
-        else {
-            tex_desc.BindFlags = D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
+        } else {
+            tex_desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&tex_desc, nullptr, &gpu_ss_texture)
             );
@@ -248,19 +249,25 @@ namespace df::gr::d3d11
             );
         }
 
-        Texture texture{bm_handle, tex_desc.Format, std::move(gpu_ss_texture), std::move(render_target_view)};
+        Texture texture{
+            bm_handle,
+            tex_desc.Format,
+            std::move(gpu_ss_texture),
+            std::move(render_target_view)
+        };
         texture.gpu_ms_texture = std::move(gpu_ms_texture);
+
         return texture;
     }
 
     TextureManager::Texture TextureManager::load_texture(int bm_handle, bool staging)
     {
-        xlog::trace("Creating texture for bitmap {} handle {} format {}", bm::get_filename(bm_handle), bm_handle, bm::get_format(bm_handle));
+        xlog::trace("Creating texture for bitmap {} handle {} format {}", rf::bm::get_filename(bm_handle), bm_handle, std::to_underlying(rf::bm::get_format(bm_handle)));
 
         int w, h, num_pixels, mip_levels;
-        bm::get_mipmap_info(bm_handle, &w, &h, &num_pixels, &mip_levels);
+        rf::bm::get_mipmap_info(bm_handle, &w, &h, &num_pixels, &mip_levels);
         if (w <= 0 || h <= 0) {
-            xlog::warn("Bad bitmap dimensions: handle {} filename {} dimensions {}x{}", bm_handle, bm::get_filename(bm_handle), w, h);
+            xlog::warn("Bad bitmap dimensions: handle {} filename {} dimensions {}x{}", bm_handle, rf::bm::get_filename(bm_handle), w, h);
             return {};
         }
 
@@ -272,23 +279,23 @@ namespace df::gr::d3d11
             mip_levels = max_mip_levels;
         }
 
-        bm::Format fmt = bm::get_format(bm_handle);
-        if (fmt == bm::FORMAT_RENDER_TARGET) {
+        rf::bm::Format fmt = rf::bm::get_format(bm_handle);
+        if (fmt == rf::bm::FORMAT_RENDER_TARGET) {
             xlog::info("Creating render target: handle {}", bm_handle);
             return create_render_target(bm_handle, w, h);
         }
 
-        if (bm::get_type(bm_handle) == bm::TYPE_USER) {
+        if (rf::bm::get_type(bm_handle) == rf::bm::TYPE_USER) {
             xlog::trace("Creating user bitmap texture: handle {}", bm_handle);
             auto texture = create_texture(bm_handle, fmt, w, h, nullptr, nullptr, 1, staging);
             return texture;
         }
 
-        ubyte* bm_bits = nullptr;
-        ubyte* bm_pal = nullptr;
+        rf::ubyte* bm_bits = nullptr;
+        rf::ubyte* bm_pal = nullptr;
         xlog::trace("Locking bitmap");
-        fmt = bm::lock(bm_handle, &bm_bits, &bm_pal);
-        if (fmt == bm::FORMAT_NONE || bm_bits == nullptr) {
+        fmt = rf::bm::lock(bm_handle, &bm_bits, &bm_pal);
+        if (fmt == rf::bm::FORMAT_NONE || bm_bits == nullptr) {
             xlog::warn("Bitmap lock failed or unsupported bitmap");
             return {};
         }
@@ -308,7 +315,7 @@ namespace df::gr::d3d11
                 tex_w = pow2_w;
                 tex_h = pow2_h;
                 xlog::trace("Pow2 padding texture {} {}x{} -> {}x{} (u_scale={}, v_scale={})",
-                    bm::get_filename(bm_handle), w, h, pow2_w, pow2_h, u_scale, v_scale);
+                    rf::bm::get_filename(bm_handle), w, h, pow2_w, pow2_h, u_scale, v_scale);
             }
         }
 
@@ -332,7 +339,7 @@ namespace df::gr::d3d11
         texture.v_scale = v_scale;
 
         xlog::trace("Unlocking bitmap");
-        bm::unlock(bm_handle);
+        rf::bm::unlock(bm_handle);
 
         xlog::trace("Texture created");
         return texture;
@@ -440,31 +447,31 @@ namespace df::gr::d3d11
         texture_cache_.erase(bm_index);
     }
 
-    std::pair<DXGI_FORMAT, bm::Format> TextureManager::determine_supported_texture_format(bm::Format fmt)
+    std::pair<DXGI_FORMAT, rf::bm::Format> TextureManager::determine_supported_texture_format(rf::bm::Format fmt)
     {
-        std::vector<std::pair<DXGI_FORMAT, bm::Format>> candidates;
+        std::vector<std::pair<DXGI_FORMAT, rf::bm::Format>> candidates;
         switch (fmt) {
-            case bm::FORMAT_8_PALETTED: return {DXGI_FORMAT_B8G8R8X8_UNORM, bm::FORMAT_8888_ARGB};
-            case bm::FORMAT_565_RGB:
-                candidates.emplace_back(DXGI_FORMAT_B5G6R5_UNORM, bm::FORMAT_565_RGB);
-                candidates.emplace_back(DXGI_FORMAT_B8G8R8X8_UNORM, bm::FORMAT_8888_ARGB);
+            case rf::bm::FORMAT_8_PALETTED: return {DXGI_FORMAT_B8G8R8X8_UNORM, rf::bm::FORMAT_8888_ARGB};
+            case rf::bm::FORMAT_565_RGB:
+                candidates.emplace_back(DXGI_FORMAT_B5G6R5_UNORM, rf::bm::FORMAT_565_RGB);
+                candidates.emplace_back(DXGI_FORMAT_B8G8R8X8_UNORM, rf::bm::FORMAT_8888_ARGB);
                 break;
-            case bm::FORMAT_1555_ARGB:
-                candidates.emplace_back(DXGI_FORMAT_B5G5R5A1_UNORM, bm::FORMAT_1555_ARGB);
-                candidates.emplace_back(DXGI_FORMAT_B8G8R8A8_UNORM, bm::FORMAT_8888_ARGB);
+            case rf::bm::FORMAT_1555_ARGB:
+                candidates.emplace_back(DXGI_FORMAT_B5G5R5A1_UNORM, rf::bm::FORMAT_1555_ARGB);
+                candidates.emplace_back(DXGI_FORMAT_B8G8R8A8_UNORM, rf::bm::FORMAT_8888_ARGB);
                 break;
-            case bm::FORMAT_4444_ARGB:
-                candidates.emplace_back(DXGI_FORMAT_B4G4R4A4_UNORM, bm::FORMAT_4444_ARGB);
-                candidates.emplace_back(DXGI_FORMAT_B8G8R8A8_UNORM, bm::FORMAT_8888_ARGB);
+            case rf::bm::FORMAT_4444_ARGB:
+                candidates.emplace_back(DXGI_FORMAT_B4G4R4A4_UNORM, rf::bm::FORMAT_4444_ARGB);
+                candidates.emplace_back(DXGI_FORMAT_B8G8R8A8_UNORM, rf::bm::FORMAT_8888_ARGB);
                 break;
             // Formats below should always be supported
-            case bm::FORMAT_888_RGB: return {DXGI_FORMAT_B8G8R8X8_UNORM, bm::FORMAT_8888_ARGB};
-            case bm::FORMAT_8888_ARGB: return {DXGI_FORMAT_B8G8R8A8_UNORM, fmt};
-            case bm::FORMAT_DXT1: return {DXGI_FORMAT_BC1_UNORM, fmt};
-            case bm::FORMAT_DXT3: return {DXGI_FORMAT_BC2_UNORM, fmt};
-            case bm::FORMAT_DXT5: return {DXGI_FORMAT_BC3_UNORM, fmt};
+            case rf::bm::FORMAT_888_RGB: return {DXGI_FORMAT_B8G8R8X8_UNORM, rf::bm::FORMAT_8888_ARGB};
+            case rf::bm::FORMAT_8888_ARGB: return {DXGI_FORMAT_B8G8R8A8_UNORM, fmt};
+            case rf::bm::FORMAT_DXT1: return {DXGI_FORMAT_BC1_UNORM, fmt};
+            case rf::bm::FORMAT_DXT3: return {DXGI_FORMAT_BC2_UNORM, fmt};
+            case rf::bm::FORMAT_DXT5: return {DXGI_FORMAT_BC3_UNORM, fmt};
             // Other formats
-            default: return {DXGI_FORMAT_B8G8R8A8_UNORM, bm::FORMAT_8888_ARGB};
+            default: return {DXGI_FORMAT_B8G8R8A8_UNORM, rf::bm::FORMAT_8888_ARGB};
         }
 
         unsigned format_support = 0;
@@ -478,16 +485,16 @@ namespace df::gr::d3d11
         }
         // We shouldn't get here (last candidate should always be supported)
         assert(false);
-        return {DXGI_FORMAT_B8G8R8A8_UNORM, bm::FORMAT_8888_ARGB};
+        return {DXGI_FORMAT_B8G8R8A8_UNORM, rf::bm::FORMAT_8888_ARGB};
     }
 
-    std::pair<DXGI_FORMAT, bm::Format> TextureManager::get_supported_texture_format(rf::bm::Format fmt)
+    std::pair<DXGI_FORMAT, rf::bm::Format> TextureManager::get_supported_texture_format(rf::bm::Format fmt)
     {
         auto it = supported_texture_format_cache_.find(fmt);
         if (it != supported_texture_format_cache_.end()) {
             return it->second;
         }
-        std::pair<DXGI_FORMAT, bm::Format> p = determine_supported_texture_format(fmt);
+        std::pair<DXGI_FORMAT, rf::bm::Format> p = determine_supported_texture_format(fmt);
         supported_texture_format_cache_.insert({fmt, p});
         return p;
     }
@@ -495,26 +502,26 @@ namespace df::gr::d3d11
     rf::bm::Format TextureManager::get_bm_format(DXGI_FORMAT dxgi_fmt)
     {
         switch (dxgi_fmt) {
-            case DXGI_FORMAT_B5G6R5_UNORM: return bm::FORMAT_565_RGB;
-            case DXGI_FORMAT_B5G5R5A1_UNORM: return bm::FORMAT_1555_ARGB;
-            case DXGI_FORMAT_B4G4R4A4_UNORM: return bm::FORMAT_4444_ARGB;
-            case DXGI_FORMAT_B8G8R8A8_UNORM: return bm::FORMAT_8888_ARGB;
-            case DXGI_FORMAT_B8G8R8X8_UNORM: return bm::FORMAT_8888_ARGB;
-            case DXGI_FORMAT_BC1_UNORM: return bm::FORMAT_DXT1;
-            case DXGI_FORMAT_BC2_UNORM: return bm::FORMAT_DXT3;
-            case DXGI_FORMAT_BC3_UNORM: return bm::FORMAT_DXT5;
-            default: return bm::FORMAT_NONE;
+            case DXGI_FORMAT_B5G6R5_UNORM: return rf::bm::FORMAT_565_RGB;
+            case DXGI_FORMAT_B5G5R5A1_UNORM: return rf::bm::FORMAT_1555_ARGB;
+            case DXGI_FORMAT_B4G4R4A4_UNORM: return rf::bm::FORMAT_4444_ARGB;
+            case DXGI_FORMAT_B8G8R8A8_UNORM: return rf::bm::FORMAT_8888_ARGB;
+            case DXGI_FORMAT_B8G8R8X8_UNORM: return rf::bm::FORMAT_8888_ARGB;
+            case DXGI_FORMAT_BC1_UNORM: return rf::bm::FORMAT_DXT1;
+            case DXGI_FORMAT_BC2_UNORM: return rf::bm::FORMAT_DXT3;
+            case DXGI_FORMAT_BC3_UNORM: return rf::bm::FORMAT_DXT5;
+            default: return rf::bm::FORMAT_NONE;
         }
     }
 
-    static D3D11_MAP convert_lock_mode_to_map_type(gr::LockMode mode)
+    static D3D11_MAP convert_lock_mode_to_map_type(rf::gr::LockMode mode)
     {
         switch (mode) {
-            case gr::LOCK_READ_ONLY:
+            case rf::gr::LOCK_READ_ONLY:
                 return D3D11_MAP_READ;
-            case gr::LOCK_READ_ONLY_WRITE:
+            case rf::gr::LOCK_READ_ONLY_WRITE:
                 return D3D11_MAP_READ_WRITE;
-            case gr::LOCK_WRITE_ONLY:
+            case rf::gr::LOCK_WRITE_ONLY:
                 return D3D11_MAP_WRITE;
             default:
                 xlog::warn("Invalid lock mode: {}", static_cast<int>(mode));
@@ -523,21 +530,21 @@ namespace df::gr::d3d11
         }
     }
 
-    bool TextureManager::lock(int bm_handle, int section, gr::LockInfo *lock)
+    bool TextureManager::lock(int bm_handle, int section, rf::gr::LockInfo *lock)
     {
         if (section != 0) {
             return false;
         }
 
         int w, h;
-        bm::get_dimensions(bm_handle, &w, &h);
+        rf::bm::get_dimensions(bm_handle, &w, &h);
         if (w == 0 || h == 0) {
             return false;
         }
 
         Texture& texture = get_or_load_texture(bm_handle, true);
         ID3D11Texture2D* staging_texture = texture.get_or_create_staging_texture(device_, device_context_,
-            lock->mode != gr::LOCK_WRITE_ONLY);
+            lock->mode != rf::gr::LOCK_WRITE_ONLY);
         if (!staging_texture) {
             xlog::warn("Attempted to lock texture without staging resource {}", texture.bm_handle);
             return false;
@@ -564,7 +571,7 @@ namespace df::gr::d3d11
         return true;
     }
 
-    void TextureManager::unlock(gr::LockInfo *lock)
+    void TextureManager::unlock(rf::gr::LockInfo *lock)
     {
         xlog::trace("unlocking texture: handle {} format {} size {}x{} data {}", lock->bm_handle, lock->format, lock->w, lock->h, lock->data);
         Texture& texture = get_or_load_texture(lock->bm_handle, true);
@@ -646,7 +653,7 @@ namespace df::gr::d3d11
 
     void TextureManager::Texture::init_gpu_texture(ID3D11Device* device, ID3D11DeviceContext* device_context)
     {
-        xlog::trace("Creating GPU texture for {}", bm::get_filename(bm_handle));
+        xlog::trace("Creating GPU texture for {}", rf::bm::get_filename(bm_handle));
 
         if (!cpu_texture) {
             xlog::warn("Both GPU and CPU textures are missing");
@@ -706,7 +713,7 @@ namespace df::gr::d3d11
     {
         D3D11_TEXTURE2D_DESC gpu_desc;
         back_buffer->GetDesc(&gpu_desc);
-        bm::Format bm_format = get_bm_format(gpu_desc.Format);
+        rf::bm::Format bm_format = get_bm_format(gpu_desc.Format);
         if (data) {
             // TODO: use ResolveSubresource if multi-sampling is enabled
             if (!back_buffer_staging_texture_) {
@@ -729,8 +736,8 @@ namespace df::gr::d3d11
             DF_GR_D3D11_CHECK_HR(
                 device_context_->Map(back_buffer_staging_texture_, 0, D3D11_MAP_READ, 0, &mapped_res)
             );
-            ubyte* src_ptr = reinterpret_cast<ubyte*>(mapped_res.pData);
-            ubyte* dst_ptr = data;
+            rf::ubyte* src_ptr = reinterpret_cast<rf::ubyte*>(mapped_res.pData);
+            rf::ubyte* dst_ptr = data;
 
             src_ptr += y * mapped_res.RowPitch;
             int bytes_per_pixel = bm_bytes_per_pixel(bm_format);

@@ -18,9 +18,7 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/os/frametime.h"
 
-using namespace rf;
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     // VS cbuffer b4: { float2 screen_resolution, float outline_thickness, float padding }
     struct OutlineVSParams
