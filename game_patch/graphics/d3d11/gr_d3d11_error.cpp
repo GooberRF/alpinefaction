@@ -51,32 +51,39 @@ namespace df::gr::d3d11
         }
     }
 
-    void init_error(ID3D11Device* device)
-    {
+    void init_error(ID3D11Device* const device) {
         g_device = device;
-        ComPtr<ID3D11Debug> debug;
-        if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D11Debug), (void**)&debug))) {
-
-            ComPtr<ID3D11InfoQueue> info_queue;
-            if (SUCCEEDED(debug->QueryInterface(__uuidof(ID3D11InfoQueue), (void**)&info_queue))) {
     #ifndef NDEBUG
+        ComPtr<ID3D11Debug> debug{};
+        if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D11Debug), debug.put_void()))) {
+            ComPtr<ID3D11InfoQueue> info_queue{};
+            if (SUCCEEDED(
+                debug->QueryInterface(__uuidof(ID3D11InfoQueue), info_queue.put_void())
+            )) {
                 info_queue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_CORRUPTION, true);
                 info_queue->SetBreakOnSeverity(D3D11_MESSAGE_SEVERITY_ERROR, true);
-    #endif
             }
         }
+    #endif
     }
 
-    void fatal_error(HRESULT hr)
-    {
-        const char* code_name = get_hresult_code_name(hr);
-        std::string error_desc = get_win32_error_description(hr);
-        xlog::error("D3D11 result: {:x} ({})\n{}", static_cast<unsigned>(hr), code_name, error_desc);
+    void fatal_gr_error(const HRESULT hr, const std::source_location& loc) {
+        const char* const code_name = get_hresult_code_name(hr);
+        const std::string error_desc = get_win32_error_description(hr);
+        xlog::error(
+            "D3D11 result: 0x{:X} ({})\n{}",
+            static_cast<uint32_t>(hr),
+            code_name,
+            error_desc
+        );
         if (hr == DXGI_ERROR_DEVICE_REMOVED) {
-            hr = g_device->GetDeviceRemovedReason();
-            code_name = get_hresult_code_name(hr);
-            xlog::error("Device removed reason: {:x} {}", hr, code_name);
+            const HRESULT removed_hr = g_device->GetDeviceRemovedReason();
+            xlog::error(
+                "Device removed reason: 0x{:X} ({})",
+                static_cast<uint32_t>(removed_hr),
+                get_hresult_code_name(removed_hr)
+            );
         }
-        RF_DEBUG_ERROR("D3D11 subsystem fatal error");
+        rf::fatal_error("D3D11 subsystem fatal error", loc);
     }
 }

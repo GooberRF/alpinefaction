@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.15)
 project(AlpineFaction)
 
 if(NOT "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")
-    message(FATAL_ERROR "Only x86 (32 bit) platform is supported!")
+    message(FATAL_ERROR "Only x86 (32-bit) platforms are supported!")
 endif()
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
@@ -13,27 +13,21 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(MSVC)
     add_compile_definitions(
         _CRT_SECURE_NO_WARNINGS
-        _CRT_SECURE_NO_DEPRECATE
-        _CRT_NONSTDC_NO_DEPRECATE
-        _SCL_SECURE_NO_WARNINGS
-        _USE_MATH_DEFINES
     )
 endif()
 
-# Set target Windows version to XP SP3
+# Set our target version to Windows 7.
 add_compile_definitions(
-    WINVER=0x0501
-    # needed for PROCESS_DEP_ENABLE on MinGW
     _WIN32_WINNT=0x0601
-    _WIN32_IE=0x0501
-    # needed for GetModuleFileNameEx resolution before Windows 7
-    PSAPI_VERSION=1
+    NTDDI_VERSION=0x06010000
+    WINVER=0x0601
+    _WIN32_IE=0x0800
     ALPINE_FACTION
     "$<$<CONFIG:Debug>:DEBUG>"
 )
 
 if(MSVC)
-    set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} /MANIFEST:NO")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /MANIFEST:NO")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /MANIFEST:NO")
 else()
     # Use static linking
@@ -52,18 +46,17 @@ else()
     add_compile_options(-msse2)
 endif()
 
-# FIXME
-# if(MSVC)
-#     set(CMAKE_GENERATOR_TOOLSET v141_xp)
-# endif()
-
 # Macros
 
 macro(enable_warnings target)
     if(NOT MSVC)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wundef)
     else()
-        target_compile_options(${target} PRIVATE /W3)
+        target_compile_options(${target} PRIVATE
+            /W3
+            /w34100 # Unused parameters.
+            /w34189 # Unused local variables.
+        )
     endif()
 endmacro()
 

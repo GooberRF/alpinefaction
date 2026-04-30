@@ -91,4 +91,9 @@ public:
         }
         m_ptr = nullptr;
     }
+
+    void** put_void() {
+        release();
+        return reinterpret_cast<void**>(&m_ptr);
+    }
 };
