@@ -130,7 +130,7 @@ namespace df::gr::d3d11
     void Renderer::init_device()
     {
         const PFN_D3D11_CREATE_DEVICE pfD3D11CreateDevice =
-            d3d11_lib_.get_proc_address("D3D11CreateDevice");
+            d3d11_lib_.get_proc_address<PFN_D3D11_CREATE_DEVICE>("D3D11CreateDevice");
         if (!pfD3D11CreateDevice) {
             rf::fatal_error("Cannot find D3D11CreateDevice procedure");
         }
