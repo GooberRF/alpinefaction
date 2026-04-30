@@ -41,6 +41,7 @@ namespace rf::bm
 #ifdef ALPINE_FACTION
         // Custom bitmap types
         TYPE_DDS = 0x10,
+        TYPE_ATX = 0x11,
 #endif
     };
 

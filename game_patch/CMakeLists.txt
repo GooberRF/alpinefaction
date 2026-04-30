@@ -57,6 +57,8 @@ set(SRCS
     rf/v3d.h
     rf/vmesh.h
     rf/weapon.h
+    bmpman/atx.cpp
+    bmpman/atx.h
     bmpman/dds.cpp
     bmpman/bmpman.cpp
     bmpman/bmpman.h
