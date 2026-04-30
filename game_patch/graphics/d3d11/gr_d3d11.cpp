@@ -129,20 +129,22 @@ namespace df::gr::d3d11
 
     void Renderer::init_device()
     {
-        auto pD3D11CreateDevice = d3d11_lib_.get_proc_address<PFN_D3D11_CREATE_DEVICE>("D3D11CreateDevice");
-        if (!pD3D11CreateDevice) {
+        const PFN_D3D11_CREATE_DEVICE pfD3D11CreateDevice =
+            d3d11_lib_.get_proc_address("D3D11CreateDevice");
+        if (!pfD3D11CreateDevice) {
             rf::fatal_error("Cannot find D3D11CreateDevice procedure");
         }
-
-        // D3D_FEATURE_LEVEL feature_levels[] = {
-        //     D3D_FEATURE_LEVEL_9_1,
-        //     D3D_FEATURE_LEVEL_9_2,
-        //     D3D_FEATURE_LEVEL_9_3,
-        //     D3D_FEATURE_LEVEL_10_0,
-        //     D3D_FEATURE_LEVEL_10_1,
-        //     D3D_FEATURE_LEVEL_11_0,
-        //     D3D_FEATURE_LEVEL_11_1
-        // };
+ 
+        // By default, `D3D_FEATURE_LEVEL_11_1` is not requested.
+        const D3D_FEATURE_LEVEL feature_levels[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0,
+            D3D_FEATURE_LEVEL_9_3,
+            D3D_FEATURE_LEVEL_9_2,
+            D3D_FEATURE_LEVEL_9_1
+        };
 
         DWORD flags = 0;
     #ifndef NDEBUG
@@ -150,15 +152,13 @@ namespace df::gr::d3d11
     CREATE_DEVICE:
     #endif
         D3D_FEATURE_LEVEL feature_level_supported{};
-        const HRESULT hr = pD3D11CreateDevice(
+        const HRESULT hr = pfD3D11CreateDevice(
             nullptr,
             D3D_DRIVER_TYPE_HARDWARE,
             nullptr,
             flags,
-            // feature_levels,
-            // std::size(feature_levels),
-            nullptr,
-            0,
+            feature_levels,
+            std::size(feature_levels),
             D3D11_SDK_VERSION,
             &device_,
             &feature_level_supported,
