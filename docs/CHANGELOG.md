@@ -1,12 +1,12 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.4.0 (Bakeapple): Not yet released
+Version 1.4.0 (Lupin): Not yet released
 --------------------------------
 ### Major features
 - Controller Support
 > [!WARNING]
-> When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2025): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
+> When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2015): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
   - Full controller support via SDL3 Gamepad API
   - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, and Steam Controller 2026)
   - Dual-Analog support for movement and camera controls
@@ -30,7 +30,16 @@ Version 1.4.0 (Bakeapple): Not yet released
 - Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
 - Add the ability to scroll thought Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
 
+[@GooberRF](https://github.com/GooberRF)
+- Add vote-allowed levels to level autodownload list for dedicated servers
+
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix team balance not properly randomizing the distribution order of equal-scoring human players
+- Fix incorrect clickable area size for launcher FFLink button
+
+[@is-this-c](https://github.com/is-this-c)
+- For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
