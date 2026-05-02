@@ -6,6 +6,8 @@ Version 1.4.0 (Lupin): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Add vote-allowed levels to level autodownload list for dedicated servers
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)

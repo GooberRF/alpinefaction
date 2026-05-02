@@ -969,8 +969,9 @@ ConsoleCommand2 checkmaps_cmd{
         }
 
         const auto& levels = g_alpine_server_config.levels;
-        if (levels.empty()) {
-            rf::console::print("Server rotation is empty.\n");
+        const auto& allowed_maps = g_alpine_server_config.vote_level.allowed_maps;
+        if (levels.empty() && allowed_maps.empty()) {
+            rf::console::print("Server rotation and vote-allowed list are both empty.\n");
             return;
         }
 
@@ -979,12 +980,13 @@ ConsoleCommand2 checkmaps_cmd{
             return;
         }
 
-        rf::console::print("Checking FactionFiles for {} levels. This may take a moment...", levels.size());
+        const size_t total_count = levels.size() + allowed_maps.size();
+        rf::console::print("Checking FactionFiles for {} levels. This may take a moment...", total_count);
 
         std::vector<std::string> unique_levels;
         std::unordered_map<std::string, size_t> unique_level_index;
-        unique_levels.reserve(levels.size());
-        unique_level_index.reserve(levels.size());
+        unique_levels.reserve(total_count);
+        unique_level_index.reserve(total_count);
 
         for (const auto& entry : levels) {
             std::string filename = entry.level_filename;
@@ -994,9 +996,17 @@ ConsoleCommand2 checkmaps_cmd{
             }
         }
 
-        rotation_autodl_start(levels.size(), std::move(unique_levels));
+        for (const auto& entry : allowed_maps) {
+            std::string filename = entry;
+            std::string key = string_to_lower(filename);
+            if (unique_level_index.emplace(key, unique_levels.size()).second) {
+                unique_levels.push_back(std::move(filename));
+            }
+        }
+
+        rotation_autodl_start(total_count, std::move(unique_levels));
     },
-    "Check whether any levels on the server rotation are unavailable for autodownload from FactionFiles.",
+    "Check whether any levels on the server rotation or vote-allowed list are unavailable for autodownload from FactionFiles.",
     "sv_checkmaps",
 };
 
