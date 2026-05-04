@@ -437,17 +437,37 @@ bool vpackfile_supercede_allowed(const char* requested_filename, const char* sib
     if (sibling_it == g_loopup_table.end()) {
         return false;
     }
+    rf::VPackfileEntry* sibling = sibling_it->second;
 
-    // If no original asset exists at the requested name, the sibling is the only source.
-    // Allow it — there's no override happening, just a regular load.
-    auto requested_it = g_loopup_table.find(string_to_lower(requested_filename));
-    if (requested_it == g_loopup_table.end()) {
+    // Sources outside user_maps — root game packfiles, mods/, client_mods/ — can supercede
+    // unconditionally. Matches the same-name override policy for these sources.
+    //
+    // Note: deliberately NOT consulting g_is_overriding_disabled (the flag set after init).
+    // That flag protects against late packfile registration; runtime cache lookups are not
+    // late registrations, so reusing it here would falsely deny every supercede during
+    // gameplay (which is when bm_read_header_hook actually runs).
+    if (!sibling->parent->is_user_maps) {
+        if (sibling->parent->is_client_mods) {
+            g_is_modded_game = true;
+        }
         return true;
     }
 
-    // Reuse the existing same-name override policy: treat the original as the "old" entry and
-    // the sibling as the "new" entry.
-    return is_lookup_table_entry_override_allowed(requested_it->second, sibling_it->second);
+    // Sibling is from user_maps. Same-name policy says: user_maps can override another
+    // user_maps entry regardless of toggle, but can only override a non-user_maps entry
+    // when the "allow overwrite game files" toggle is on. Mirror that here.
+    auto requested_it = g_loopup_table.find(string_to_lower(requested_filename));
+    bool requested_is_user_maps =
+        (requested_it != g_loopup_table.end()) && requested_it->second->parent->is_user_maps;
+
+    if (requested_is_user_maps) {
+        return true;
+    }
+    if (g_game_config.allow_overwrite_game_files) {
+        g_is_modded_game = true;
+        return true;
+    }
+    return false;
 }
 
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)

@@ -547,15 +547,7 @@ std::optional<uint8_t> atx_material_override(const rf::bm::BitmapEntry& bm_entry
 
 void atx_free(rf::bm::BitmapEntry& bm_entry)
 {
-    auto it = g_controllers.find(key_from_bm_name(bm_entry.name));
-    if (it == g_controllers.end()) {
-        return;
-    }
-    if (it->second->atx_bm_handle >= 0) {
-        g_by_handle.erase(it->second->atx_bm_handle);
-    }
-    release_children(*it->second);
-    g_controllers.erase(it);
+    g_by_handle.erase(bm_entry.handle);
 }
 
 void atx_do_frame()
