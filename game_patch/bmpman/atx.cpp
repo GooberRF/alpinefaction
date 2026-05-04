@@ -12,6 +12,9 @@
 
 #include <toml++/toml.hpp>
 #include <xlog/xlog.h>
+#include <common/bitmap/formats.h>
+#include <common/atx/parse.h>
+#include <common/utils/string-utils.h>
 
 #include "atx.h"
 #include "bmpman.h"
@@ -23,13 +26,8 @@
 
 namespace
 {
-    enum class AtxAnimationMode : int
-    {
-        Static = 0,    // No auto playback. Frames change only via events.
-        PingPong = 1,  // Forward to last, then backward to first, repeating.
-        Loop = 2,      // Forward; wrap to 0 after last.
-        PlayOnce = 3,  // Forward; stop and hold on the last frame.
-    };
+    // Alias to the shared schema enum so editor and game can't drift on values.
+    using AtxAnimationMode = AtxSpec::AnimationMode;
 
     struct AtxFrame
     {
@@ -86,31 +84,19 @@ namespace
     // to this name (each retry would log spam and could re-disturb the bm cache).
     std::unordered_set<std::string> g_failed;
 
+    // Hot-path lookup: bm_handle → controller. Populated lazily on first lock/material query so
+    // bm_get_material_idx_hook (called for every footstep/impact/decal — many per frame) can
+    // avoid a `to_lower` heap allocation + name-keyed map lookup per call. Cleared on
+    // atx_level_reset and on per-entry atx_free.
+    std::unordered_map<int, AtxController*> g_by_handle;
+
     bool g_loading_child = false;
     struct ChildLoadGuard {
         ChildLoadGuard() { g_loading_child = true; }
         ~ChildLoadGuard() { g_loading_child = false; }
     };
 
-    std::string to_lower(std::string s)
-    {
-        std::transform(s.begin(), s.end(), s.begin(),
-            [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return s;
-    }
-
-    bool ends_with_icase(const std::string& s, const char* suffix)
-    {
-        size_t suf_len = std::strlen(suffix);
-        if (s.size() < suf_len) return false;
-        for (size_t i = 0; i < suf_len; ++i) {
-            if (std::tolower(static_cast<unsigned char>(s[s.size() - suf_len + i]))
-                != std::tolower(static_cast<unsigned char>(suffix[i]))) {
-                return false;
-            }
-        }
-        return true;
-    }
+    // String helpers come from common/utils/string-utils.h (string_to_lower, string_iends_with).
 
     std::string handle_from_filename(const char* filename)
     {
@@ -119,7 +105,7 @@ namespace
         if (last_slash != std::string::npos) s = s.substr(last_slash + 1);
         auto dot = s.find_last_of('.');
         if (dot != std::string::npos) s.resize(dot);
-        return to_lower(std::move(s));
+        return string_to_lower(s);
     }
 
     bool read_atx_text(const char* filename, std::string& content_out)
@@ -189,7 +175,7 @@ namespace
 
     AtxController* get_by_handle(const std::string& handle)
     {
-        auto it = g_controllers.find(to_lower(handle));
+        auto it = g_controllers.find(string_to_lower(handle));
         return it == g_controllers.end() ? nullptr : it->second.get();
     }
 
@@ -204,7 +190,7 @@ namespace
     // we normalise to lowercase before lookup.
     std::optional<uint8_t> parse_material_name(std::string s)
     {
-        s = to_lower(std::move(s));
+        s = string_to_lower(s);
         if (s == "default") return 0;
         if (s == "rock")    return 1;
         if (s == "metal")   return 2;
@@ -218,46 +204,8 @@ namespace
         return std::nullopt;
     }
 
-    // Parse a TOML format string ("8888_argb", "4444", etc.) into the matching bm Format enum.
-    std::optional<rf::bm::Format> parse_format_string(std::string s)
-    {
-        s = to_lower(std::move(s));
-        if (s == "565" || s == "565_rgb") return rf::bm::FORMAT_565_RGB;
-        if (s == "4444" || s == "4444_argb") return rf::bm::FORMAT_4444_ARGB;
-        if (s == "1555" || s == "1555_argb") return rf::bm::FORMAT_1555_ARGB;
-        if (s == "888" || s == "888_rgb") return rf::bm::FORMAT_888_RGB;
-        if (s == "8888" || s == "8888_argb") return rf::bm::FORMAT_8888_ARGB;
-        return std::nullopt;
-    }
-
-    // Formats that the ATX transform pass can read or write. Compressed (DXT*) and paletted
-    // formats are excluded — we'd need a real codec to round-trip them.
-    bool is_supported_for_transform(rf::bm::Format f)
-    {
-        switch (f) {
-            case rf::bm::FORMAT_565_RGB:
-            case rf::bm::FORMAT_4444_ARGB:
-            case rf::bm::FORMAT_1555_ARGB:
-            case rf::bm::FORMAT_888_RGB:
-            case rf::bm::FORMAT_8888_ARGB:
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    // If `f` lacks an alpha channel, return an analogous format with one. Used to auto-promote
-    // when the mapper supplies an alpha mask without explicitly choosing a target format.
-    rf::bm::Format promote_to_alpha(rf::bm::Format f)
-    {
-        switch (f) {
-            case rf::bm::FORMAT_565_RGB: return rf::bm::FORMAT_4444_ARGB;
-            case rf::bm::FORMAT_888_RGB: return rf::bm::FORMAT_8888_ARGB;
-            default: return f;
-        }
-    }
-
-    // Total bytes for a full mip chain at (w, h) in `fmt` over `num_levels`.
+    // Total bytes for a full mip chain at (w, h) in `fmt` over `num_levels`. Stays game-side
+    // because bm_calculate_total_bytes is a game_patch helper not yet promoted to common.
     size_t mip_chain_bytes(int w, int h, rf::bm::Format fmt, int num_levels)
     {
         size_t total = 0;
@@ -270,35 +218,6 @@ namespace
         return total;
     }
 
-    // Overlay an 8-bit greyscale mask as the alpha channel of a destination buffer in `dst_fmt`.
-    // Caller guarantees dst_fmt is one of the alpha-bearing supported formats.
-    void overlay_alpha(uint8_t* dst, rf::bm::Format dst_fmt, const uint8_t* mask, int num_pixels)
-    {
-        switch (dst_fmt) {
-            case rf::bm::FORMAT_8888_ARGB:
-                // Memory order is BGRA on little-endian; alpha is the 4th byte per pixel.
-                for (int i = 0; i < num_pixels; ++i) {
-                    dst[i * 4 + 3] = mask[i];
-                }
-                break;
-            case rf::bm::FORMAT_4444_ARGB:
-                // Two bytes per pixel little-endian; alpha lives in the high nibble of byte 1.
-                for (int i = 0; i < num_pixels; ++i) {
-                    dst[i * 2 + 1] = static_cast<uint8_t>((dst[i * 2 + 1] & 0x0F) | (mask[i] & 0xF0));
-                }
-                break;
-            case rf::bm::FORMAT_1555_ARGB:
-                // Single alpha bit at the top of byte 1; threshold the mask at 0x80.
-                for (int i = 0; i < num_pixels; ++i) {
-                    if (mask[i] >= 128) dst[i * 2 + 1] |= 0x80;
-                    else                dst[i * 2 + 1] &= 0x7F;
-                }
-                break;
-            default:
-                break;
-        }
-    }
-
     std::unique_ptr<AtxController> parse_and_load(const char* filename)
     {
         std::string content;
@@ -307,90 +226,55 @@ namespace
             return nullptr;
         }
 
-        toml::table tbl;
-        try {
-            tbl = toml::parse(content, std::string_view{filename});
-        }
-        catch (const toml::parse_error& e) {
-            xlog::warn("ATX: parse error in '{}': {}", filename, e.description());
-            return nullptr;
+        // Parse the TOML and validate format-internal constraints via the shared parser.
+        // Engine-specific concerns (material name → material index, format token → bm::Format,
+        // and child texture loading) are still handled below.
+        auto spec = parse_atx(content, filename);
+        if (!spec) {
+            return nullptr; // parser already logged the cause
         }
 
         auto c = std::make_unique<AtxController>();
         c->handle_str = handle_from_filename(filename);
+        c->base_frame_time_ms = spec->header.frame_time_ms;
+        c->initially_on = spec->header.initially_on;
+        c->animation_mode = spec->header.animation_mode;
 
         std::optional<rf::bm::Format> target_format;
-        std::optional<std::string> alpha_mask_filename;
+        std::optional<std::string> alpha_mask_filename = spec->header.alpha_mask;
 
-        if (auto* hdr = tbl.get_as<toml::table>("header")) {
-            // `frame_time` in [header] is the default for any [[frame]] that doesn't specify its own.
-            if (auto v = (*hdr)["frame_time"].value<int64_t>()) {
-                c->base_frame_time_ms = std::max<int>(1, static_cast<int>(*v));
+        if (spec->header.format) {
+            if (auto fmt = atx_parse_format_token(*spec->header.format)) {
+                target_format = static_cast<rf::bm::Format>(*fmt);
             }
-            if (auto v = (*hdr)["initially_on"].value<bool>()) {
-                c->initially_on = *v;
-            }
-            if (auto v = (*hdr)["animation_mode"].value<int64_t>()) {
-                int mode = static_cast<int>(*v);
-                if (mode < 0 || mode > 3) {
-                    xlog::warn("ATX '{}': animation_mode {} out of range, defaulting to Loop", filename, mode);
-                    mode = static_cast<int>(AtxAnimationMode::Loop);
-                }
-                c->animation_mode = static_cast<AtxAnimationMode>(mode);
-            }
-            if (auto v = (*hdr)["format"].value<std::string>()) {
-                target_format = parse_format_string(*v);
-                if (!target_format) {
-                    xlog::error("ATX '{}': unrecognized format '{}'", filename, *v);
-                    return nullptr;
-                }
-            }
-            if (auto v = (*hdr)["alpha_mask"].value<std::string>()) {
-                alpha_mask_filename = *v;
-            }
-            if (auto v = (*hdr)["material"].value<std::string>()) {
-                auto mat = parse_material_name(*v);
-                if (!mat) {
-                    xlog::error("ATX '{}': unrecognized material '{}' in [header]", filename, *v);
-                    return nullptr;
-                }
-                c->header_material = mat;
-                c->has_material_override = true;
-            }
-        }
-
-        const auto* frames_arr = tbl.get_as<toml::array>("frame");
-        if (!frames_arr || frames_arr->empty()) {
-            xlog::warn("ATX '{}': no [[frame]] entries", filename);
-            return nullptr;
-        }
-
-        c->frames.reserve(frames_arr->size());
-        for (auto&& node : *frames_arr) {
-            const auto* frame_tbl = node.as_table();
-            if (!frame_tbl) {
-                xlog::warn("ATX '{}': non-table frame entry", filename);
+            else {
+                xlog::error("ATX '{}': unrecognized format '{}'", filename, *spec->header.format);
                 return nullptr;
             }
+        }
+        if (spec->header.material) {
+            auto mat = parse_material_name(*spec->header.material);
+            if (!mat) {
+                xlog::error("ATX '{}': unrecognized material '{}' in [header]",
+                            filename, *spec->header.material);
+                return nullptr;
+            }
+            c->header_material = mat;
+            c->has_material_override = true;
+        }
+
+        c->frames.reserve(spec->frames.size());
+        for (auto& src : spec->frames) {
             AtxFrame f;
-            if (auto v = (*frame_tbl)["file"].value<std::string>()) {
-                f.filename = *v;
+            f.filename = std::move(src.filename);
+            if (src.frame_time_ms) {
+                f.frame_time_ms = *src.frame_time_ms;
             }
-            if (f.filename.empty()) {
-                xlog::warn("ATX '{}': frame missing 'file'", filename);
-                return nullptr;
-            }
-            if (ends_with_icase(f.filename, ".atx")) {
-                xlog::warn("ATX '{}': nested .atx not allowed (frame '{}')", filename, f.filename);
-                return nullptr;
-            }
-            if (auto v = (*frame_tbl)["frame_time"].value<int64_t>()) {
-                f.frame_time_ms = std::max<int>(1, static_cast<int>(*v));
-            }
-            if (auto v = (*frame_tbl)["material"].value<std::string>()) {
-                auto mat = parse_material_name(*v);
+            if (src.material) {
+                auto mat = parse_material_name(*src.material);
                 if (!mat) {
-                    xlog::error("ATX '{}': unrecognized material '{}' in [[frame]]", filename, *v);
+                    xlog::error("ATX '{}': unrecognized material '{}' in [[frame]]",
+                                filename, *src.material);
                     return nullptr;
                 }
                 f.material_override = mat;
@@ -449,16 +333,16 @@ namespace
         if (format_change || alpha_mask_filename) {
             rf::bm::Format effective = target_format.value_or(c->format);
             if (alpha_mask_filename) {
-                effective = promote_to_alpha(effective);
+                effective = static_cast<rf::bm::Format>(bm_promote_to_alpha(effective));
             }
 
-            if (!is_supported_for_transform(c->format)) {
+            if (!bm_format_is_uncompressed_rgb(c->format)) {
                 xlog::error("ATX '{}': source format {} cannot be transformed (uncompressed RGB/RGBA only)",
                     filename, static_cast<int>(c->format));
                 unlock_children(*c);
                 return nullptr;
             }
-            if (!is_supported_for_transform(effective)) {
+            if (!bm_format_is_uncompressed_rgb(effective)) {
                 xlog::error("ATX '{}': target format {} not supported (uncompressed RGB/RGBA only)",
                     filename, static_cast<int>(effective));
                 unlock_children(*c);
@@ -528,7 +412,7 @@ namespace
                         rf::bm::convert_format(dst, effective, src, c->format, n);
                     }
                     if (mask) {
-                        overlay_alpha(dst, effective, mask, n);
+                        bm_overlay_alpha_mask(dst, effective, mask, n);
                     }
                     src += bm_calculate_total_bytes(mw, mh, c->format);
                     dst += bm_calculate_total_bytes(mw, mh, effective);
@@ -607,13 +491,24 @@ rf::bm::Format lock_atx_bitmap(rf::bm::BitmapEntry& bm_entry, void** pixels_out,
         return rf::bm::FORMAT_NONE;
     }
     AtxController& c = *it->second;
-    c.atx_bm_handle = bm_entry.handle;
+    if (c.atx_bm_handle != bm_entry.handle) {
+        c.atx_bm_handle = bm_entry.handle;
+        // Populate the hot-path lookup so bm_get_material_idx_hook can find the controller in
+        // O(1) by handle without re-hashing the entry name.
+        g_by_handle[bm_entry.handle] = &c;
+    }
 
     int idx = c.current_frame;
     if (idx < 0 || idx >= static_cast<int>(c.frames.size())) {
         idx = 0;
     }
-    *pixels_out = c.frames[idx].locked_pixels;
+    auto* px = c.frames[idx].locked_pixels;
+    if (!px) {
+        // Shouldn't happen — parse_and_load locks every frame and only succeeds if every lock
+        // succeeds. Defensive: report FORMAT_NONE so the caller doesn't dereference nullptr.
+        return rf::bm::FORMAT_NONE;
+    }
+    *pixels_out = px;
     *palette_out = c.frames[idx].locked_palette;
     return bm_entry.format;
 }
@@ -625,21 +520,29 @@ void unlock_atx_bitmap(rf::bm::BitmapEntry& /*bm_entry*/)
 
 std::optional<uint8_t> atx_material_override(const rf::bm::BitmapEntry& bm_entry)
 {
-    auto it = g_controllers.find(key_from_bm_name(bm_entry.name));
-    if (it == g_controllers.end()) {
+    // Hot path — called from bm_get_material_idx_hook for every footstep/bullet impact/decal.
+    // Try the handle-keyed map first (no string allocation). Fall back to the name-keyed map
+    // for the rare case where a material query happens before lock_atx_bitmap has populated
+    // g_by_handle (e.g. very first query at level start).
+    const AtxController* c = nullptr;
+    if (auto it = g_by_handle.find(bm_entry.handle); it != g_by_handle.end()) {
+        c = it->second;
+    }
+    else {
+        auto it2 = g_controllers.find(key_from_bm_name(bm_entry.name));
+        if (it2 == g_controllers.end()) return std::nullopt;
+        c = it2->second.get();
+    }
+    if (!c->has_material_override) {
         return std::nullopt;
     }
-    const AtxController& c = *it->second;
-    if (!c.has_material_override) {
-        return std::nullopt;
-    }
-    int idx = c.current_frame;
-    if (idx >= 0 && idx < static_cast<int>(c.frames.size())) {
-        if (auto& over = c.frames[idx].material_override) {
+    int idx = c->current_frame;
+    if (idx >= 0 && idx < static_cast<int>(c->frames.size())) {
+        if (auto& over = c->frames[idx].material_override) {
             return *over;
         }
     }
-    return c.header_material; // may be nullopt if only some frames override and this isn't one
+    return c->header_material; // may be nullopt if only some frames override and this isn't one
 }
 
 void atx_free(rf::bm::BitmapEntry& bm_entry)
@@ -647,6 +550,9 @@ void atx_free(rf::bm::BitmapEntry& bm_entry)
     auto it = g_controllers.find(key_from_bm_name(bm_entry.name));
     if (it == g_controllers.end()) {
         return;
+    }
+    if (it->second->atx_bm_handle >= 0) {
+        g_by_handle.erase(it->second->atx_bm_handle);
     }
     release_children(*it->second);
     g_controllers.erase(it);
@@ -673,8 +579,19 @@ void atx_do_frame()
         // but defensively skip if it ever drops to 0 to avoid an infinite loop.
         if (ft_s <= 0.0f) continue;
 
+        // Cap inner-loop iterations to two full cycles. After a long stall (level transition,
+        // alt-tab) `dt_s` could be huge, and a tight `frame_time_ms` would otherwise loop
+        // thousands of times here. Two cycles is enough to land on the right frame for any
+        // mode (Loop wraps once, PingPong needs at most 2*(n-1) advances to return to phase).
+        // If we hit the cap, drop the leftover accumulated time so we don't carry the deficit.
+        const int max_advances = std::max(2, n * 2);
+        int advances = 0;
         bool stop_advancing = false;
         while (c.time_in_frame_s >= ft_s) {
+            if (advances++ >= max_advances) {
+                c.time_in_frame_s = 0.0f;
+                break;
+            }
             c.time_in_frame_s -= ft_s;
             switch (c.animation_mode) {
                 case AtxAnimationMode::Loop:
@@ -723,6 +640,7 @@ void atx_level_reset()
         release_children(*cptr);
     }
     g_controllers.clear();
+    g_by_handle.clear();
     g_failed.clear();
 }
 
@@ -730,7 +648,7 @@ bool atx_set_frame(const std::string& handle, int frame_index)
 {
     AtxController* c = get_by_handle(handle);
     if (!c) {
-        rf::bm::load((to_lower(handle) + ".atx").c_str(), -1, true);
+        rf::bm::load((string_to_lower(handle) + ".atx").c_str(), -1, true);
         c = get_by_handle(handle);
         if (!c) return false;
     }
@@ -751,7 +669,7 @@ bool atx_play(const std::string& handle)
 {
     AtxController* c = get_by_handle(handle);
     if (!c) {
-        rf::bm::load((to_lower(handle) + ".atx").c_str(), -1, true);
+        rf::bm::load((string_to_lower(handle) + ".atx").c_str(), -1, true);
         c = get_by_handle(handle);
         if (!c) return false;
     }
@@ -771,7 +689,7 @@ bool atx_set_frame_time(const std::string& handle, int frame_time_ms)
 {
     AtxController* c = get_by_handle(handle);
     if (!c) {
-        rf::bm::load((to_lower(handle) + ".atx").c_str(), -1, true);
+        rf::bm::load((string_to_lower(handle) + ".atx").c_str(), -1, true);
         c = get_by_handle(handle);
         if (!c) return false;
     }

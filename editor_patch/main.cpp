@@ -45,8 +45,6 @@ static std::string g_launcher_pathname;
 static bool g_is_play_in_multi = false;
 static std::string g_red_cmdline;
 
-constexpr size_t max_texture_name_len = 31;
-
 bool g_skip_wnd_set_text = false;
 
 static bool g_is_saving_af_version = true;
@@ -1397,6 +1395,7 @@ void ApplyLevelPatches();
 void ApplyEventsPatches();
 void ApplyTexturesPatches();
 void ApplyLightmapPatches();
+void install_editor_bitmap_loader_hooks();
 
 void LoadAlpineEditorPackfile()
 {
@@ -1554,7 +1553,7 @@ CodeInjection texture_name_buffer_overflow_injection1{
     0x00445297,
     [](auto &regs) {
         const char *filename = regs.esi;
-        if (std::strlen(filename) > max_texture_name_len) {
+        if (std::strlen(filename) > MAX_TEXTURE_NAME_LEN) {
             LogDlg_Append(GetLogDlg(), "Texture name too long: %s\n", filename);
             regs.eip = 0x00445273;
         }
@@ -1565,7 +1564,7 @@ CodeInjection texture_name_buffer_overflow_injection2{
     0x004703EC,
     [](auto &regs) {
         const char *filename = regs.ebp;
-        if (std::strlen(filename) > max_texture_name_len) {
+        if (std::strlen(filename) > MAX_TEXTURE_NAME_LEN) {
             LogDlg_Append(GetLogDlg(), "Texture name too long: %s\n", filename);
             regs.eip = 0x0047047F;
         }
@@ -1769,6 +1768,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
     ApplyLightmapPatches();
+    install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d
     static char mesh_ext_filter[] = "Mesh (*.v3m)|*.v3m|All Files (*.*)|*.*||";
@@ -1778,8 +1778,8 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     write_mem_ptr(0x004624A9 + 1, ".v3m");
     write_mem_ptr(0x0044244A + 1, "RFBrush.v3m");
 
-    // Fix rendering of VBM textures from user_maps/textures
-    write_mem_ptr(0x004828C2 + 1, ".tga .vbm");
+    // Render all supported texture formats from user_maps/textures
+    write_mem_ptr(0x004828C2 + 1, ".tga .vbm .dds .atx .png .jpg .jpeg");
 
     // Fix lights sometimes not working
     DedLight_UpdateLevelLight_hook.install();

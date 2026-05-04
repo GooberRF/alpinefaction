@@ -1,6 +1,7 @@
 #include <dds.h>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
+#include <common/bitmap/formats.h>
 #include "../graphics/gr.h"
 #include "../os/os.h"
 #include "../multi/multi.h"
@@ -11,40 +12,11 @@
 
 rf::bm::Format get_bm_format_from_dds_pixel_format(DDS_PIXELFORMAT& ddspf)
 {
-    if (ddspf.flags & DDS_RGB) {
-        switch (ddspf.RGBBitCount) {
-            case 32:
-                if (ddspf.ABitMask)
-                    return rf::bm::FORMAT_8888_ARGB;
-                else
-                    break;
-            case 24:
-                return rf::bm::FORMAT_888_RGB;
-            case 16:
-                if (ddspf.ABitMask == 0x8000)
-                    return rf::bm::FORMAT_1555_ARGB;
-                else if (ddspf.ABitMask)
-                    return rf::bm::FORMAT_4444_ARGB;
-                else
-                    return rf::bm::FORMAT_565_RGB;
-        }
+    int fmt = bm_format_from_dds(ddspf);
+    if (fmt == BM_FORMAT_NONE) {
+        xlog::warn("Unsupported DDS pixel format");
     }
-    else if (ddspf.flags & DDS_FOURCC) {
-        switch (ddspf.fourCC) {
-            case MAKEFOURCC('D', 'X', 'T', '1'):
-                return rf::bm::FORMAT_DXT1;
-            case MAKEFOURCC('D', 'X', 'T', '2'):
-                return rf::bm::FORMAT_DXT2;
-            case MAKEFOURCC('D', 'X', 'T', '3'):
-                return rf::bm::FORMAT_DXT3;
-            case MAKEFOURCC('D', 'X', 'T', '4'):
-                return rf::bm::FORMAT_DXT4;
-            case MAKEFOURCC('D', 'X', 'T', '5'):
-                return rf::bm::FORMAT_DXT5;
-        }
-    }
-    xlog::warn("Unsupported DDS pixel format");
-    return rf::bm::FORMAT_NONE;
+    return static_cast<rf::bm::Format>(fmt);
 }
 
 rf::bm::Type read_dds_header(rf::File& file, int *width_out, int *height_out, rf::bm::Format *format_out,
@@ -90,6 +62,10 @@ rf::bm::Type read_dds_header(rf::File& file, int *width_out, int *height_out, rf
 
 int lock_dds_bitmap(rf::bm::BitmapEntry& bm_entry)
 {
+    // Defensively null both fields up front so any failure path returning -1 cannot leave a stale pointer
+    bm_entry.locked_data = nullptr;
+    bm_entry.locked_palette = nullptr;
+
     rf::File file;
     std::string filename_without_ext{get_filename_without_ext(bm_entry.name)};
     auto dds_filename = filename_without_ext + ".dds";

@@ -4,11 +4,13 @@
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
+#include <common/bitmap/formats.h>
 #include "../graphics/gr.h"
 #include "../rf/file/file.h"
 #include "../misc/vpackfile.h"
 #include "atx.h"
 #include "dds.h"
+#include "stb_image_loader.h"
 
 int bm_calculate_pitch(int w, rf::bm::Format format)
 {
@@ -89,7 +91,7 @@ bm_read_header_hook{
 
         std::string filename_without_ext{get_filename_without_ext(filename)};
 
-        // ATX: text-based proxy format that wraps existing texture files
+        // ATX supercedes DDS, PNG, JPG, VBM, and TGA
         if (!atx_is_loading_child()) {
             auto atx_filename = filename_without_ext + ".atx";
             rf::File atx_file;
@@ -104,6 +106,7 @@ bm_read_header_hook{
             }
         }
 
+        // DDS supercedes PNG, JPG, VBM, and TGA
         rf::File dds_file;
         auto dds_filename = filename_without_ext + ".dds";
         if (dds_file.open(dds_filename.c_str()) == 0) {
@@ -114,6 +117,16 @@ bm_read_header_hook{
             }
         }
 
+        // PNG/JPG supercedes VBM and TGA
+        {
+            auto bm_type = read_stb_header(filename, width_out, height_out, pixel_fmt_out, num_levels_out);
+            if (bm_type != rf::bm::TYPE_NONE) {
+                xlog::trace("Loading PNG/JPG sibling for '{}'", filename);
+                return bm_type;
+            }
+        }
+
+        // Precedence chain: ATX > DDS > PNG/JPG > VBM > TGA.
         xlog::trace("Loading bitmap header for '{}'", filename);
         auto bm_type = bm_read_header_hook.call_target(filename, width_out, height_out, pixel_fmt_out, num_levels_out,
             num_levels_external_mips_out, num_frames_out, fps_out, total_bytes_m2v_out, vbm_ver_out, a11);
@@ -142,7 +155,15 @@ FunHook<rf::bm::Format(int, void**, void**)> bm_lock_hook{
             lock_dds_bitmap(bm_entry);
             *pixels_out = bm_entry.locked_data;
             *palette_out = bm_entry.locked_palette;
-            return bm_entry.format;
+            // If the load failed, locked_data is left null, report FORMAT_NONE so the
+            // caller doesn't dereference null with a "valid" format code.
+            return bm_entry.locked_data ? bm_entry.format : rf::bm::FORMAT_NONE;
+        }
+        if (bm_entry.bm_type == rf::bm::TYPE_STB) {
+            lock_stb_bitmap(bm_entry);
+            *pixels_out = bm_entry.locked_data;
+            *palette_out = bm_entry.locked_palette;
+            return bm_entry.locked_data ? bm_entry.format : rf::bm::FORMAT_NONE;
         }
         if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
             return lock_atx_bitmap(bm_entry, pixels_out, palette_out);

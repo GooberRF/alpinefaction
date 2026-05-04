@@ -64,6 +64,8 @@ set(SRCS
     bmpman/bmpman.h
     bmpman/fmt_conv.cpp
     bmpman/fmt_conv_templates.h
+    bmpman/stb_image_loader.cpp
+    bmpman/stb_image_loader.h
     graphics/bink.cpp
     graphics/gr_font.cpp
     graphics/gr.cpp

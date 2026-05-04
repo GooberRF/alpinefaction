@@ -15,6 +15,8 @@
 #include "textures.h"
 #include "meshes.h"
 #include "event.h"
+#include "bitmap_loaders.h"
+#include <common/utils/string-utils.h>
 
 // Subdirectory names registered during init, used by VPP packing fix
 static std::vector<std::string> custom_texture_subdirs;
@@ -80,7 +82,7 @@ static void register_custom_texture_subdirectories(void* texture_manager)
         cat->name.assign_0(display_name.c_str());
 
         // Register the subdirectory path with the VFS
-        cat->path_handle = file_add_path(subdir_path.c_str(), ".tga .vbm", false);
+        cat->path_handle = file_add_path(subdir_path.c_str(), ".tga .vbm .dds .atx .png .jpg .jpeg", false);
 
         // Append to the manager's category array at this+0x7C
         category_array->push_back(cat);
@@ -131,6 +133,47 @@ static char __cdecl is_custom_category(VString* name, const char* /*cstr*/)
 CallHook<char __cdecl(VString*, const char*)> custom_category_check_hook{
     {0x0046ff05, 0x00470027, 0x004776e9, 0x004774d6, 0x00445403},
     is_custom_category
+};
+
+// Permissive replacement for the texture browser entry validator
+static bool browser_extension_allowed(const char* ext)
+{
+    if (!ext || !*ext) return false;
+    return _stricmp(ext, ".tga") == 0
+        || _stricmp(ext, ".vbm") == 0
+        || _stricmp(ext, ".dds") == 0
+        || _stricmp(ext, ".atx") == 0
+        || _stricmp(ext, ".png") == 0
+        || _stricmp(ext, ".jpg") == 0
+        || _stricmp(ext, ".jpeg") == 0;
+}
+
+static int __cdecl permissive_texture_browser_validator(void* entry)
+{
+    const char* filename = static_cast<const char*>(entry) + 8;
+    if (!filename || !*filename) return 0;
+
+    // Skip "-mip" LOD variants
+    if (std::strstr(filename, "-mip") != nullptr) return 0;
+
+    // Refuse over-long names
+    if (std::strlen(filename) > MAX_TEXTURE_NAME_LEN) {
+        xlog::warn("Texture name too long, skipping: {}", filename);
+        return 0;
+    }
+
+    const char* ext = std::strrchr(filename, '.');
+    return browser_extension_allowed(ext) ? 1 : 0;
+}
+
+FunHook<int __cdecl(void*)> texture_browser_validator_hook{
+    0x00470330,
+    permissive_texture_browser_validator
+};
+
+FunHook<int __cdecl(void*)> texture_sidebar_validator_hook{
+    0x004451C0,
+    permissive_texture_browser_validator
 };
 
 // FUN_00477460 saves texture categories to red.cfg. Skip "Custom - " subdirectory
@@ -367,14 +410,15 @@ static bool has_texture_extension(const char* filename)
     if (!ext) return false;
     return (_stricmp(ext, ".tga") == 0 ||
             _stricmp(ext, ".vbm") == 0 ||
-            _stricmp(ext, ".dds") == 0);
+            _stricmp(ext, ".dds") == 0 ||
+            _stricmp(ext, ".atx") == 0 ||
+            _stricmp(ext, ".png") == 0 ||
+            _stricmp(ext, ".jpg") == 0 ||
+            _stricmp(ext, ".jpeg") == 0);
 }
 
-// Add a texture filename to the VPP temp file list if it has a valid texture extension.
-// FUN_00438640 is __thiscall(void* list, VString by_value); it checks for duplicates internally.
-static void add_texture_to_pack_list(void* temp_list, const char* filename)
+static void push_to_pack_list(void* temp_list, const char* filename)
 {
-    if (!has_texture_extension(filename)) return;
     VString str;
     str.assign_0(filename);
     // FUN_00438640 is __thiscall(list, VString by value) where VString = {int, char*}.
@@ -385,6 +429,24 @@ static void add_texture_to_pack_list(void* temp_list, const char* filename)
     str.max_len = 0;
     str.buf = nullptr;
     AddrCaller{0x00438640}.this_call<int>(temp_list, ml, b);
+}
+
+// Add a texture filename to the VPP temp file list if it has a valid texture extension.
+// For .atx files, also pulls in every dependency
+static void add_texture_to_pack_list(void* temp_list, const char* filename)
+{
+    if (!has_texture_extension(filename)) return;
+    push_to_pack_list(temp_list, filename);
+
+    if (string_iends_with(filename, ".atx")) {
+        // Parse the .atx and add each referenced texture.
+        for (const auto& dep : parse_atx_dependencies(filename)) {
+            if (has_texture_extension(dep.c_str())
+                && !string_iends_with(dep, ".atx")) {
+                push_to_pack_list(temp_list, dep.c_str());
+            }
+        }
+    }
 }
 
 // Clear the RED console log at the start of VPP packfile creation (FUN_0044cb10),
@@ -675,6 +737,8 @@ void reload_custom_textures()
 
 void ApplyTexturesPatches() {
     texture_config_init_hook.install();
+    texture_browser_validator_hook.install();
+    texture_sidebar_validator_hook.install();
     custom_category_check_hook.install();
     sidebar_custom_texture_path_injection.install();
     texture_reverse_lookup_fix.install();
