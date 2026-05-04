@@ -7,8 +7,8 @@ Version 1.4.0 (Bakeapple): Not yet released
 
 ### Minor features, changes, and enhancements
 [@is-this-c](https://github.com/is-this-c)
-- Add `mp_new_player_flash` console command and UI option to flash your window upon player joins, if your window is out of focus
-- Rename `mp_notifyonjoin` console command to `mp_new_player_beep`
+- Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
+- Rename `mp_notifyonjoin` console command to `mp_join_beep`
 
 ### Bug fixes
 
