@@ -315,6 +315,17 @@ void wait_for(const float ms, const WaitableTimer& timer) {
     }
 }
 
+void flash_window(const HWND hwnd) {
+    FLASHWINFO flash{
+        .cbSize = sizeof(flash),
+        .hwnd = hwnd,
+        .dwFlags = FLASHW_TRAY,
+        .uCount = 1,
+        .dwTimeout = 0
+    };
+    FlashWindowEx(&flash);
+}
+
 void os_apply_patch()
 {
     // Process messages in the same thread as DX processing (alternative: D3DCREATE_MULTITHREADED)

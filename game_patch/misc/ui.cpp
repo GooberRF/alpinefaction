@@ -175,8 +175,6 @@ static rf::ui::Checkbox ao_enemybullets_cbox;
 static rf::ui::Label ao_enemybullets_label;
 static rf::ui::Checkbox ao_togglecrouch_cbox;
 static rf::ui::Label ao_togglecrouch_label;
-static rf::ui::Checkbox ao_joinbeep_cbox;
-static rf::ui::Label ao_joinbeep_label;
 static rf::ui::Checkbox ao_join_flash_cbox;
 static rf::ui::Label ao_join_flash_label;
 static rf::ui::Checkbox ao_vsync_cbox;
@@ -782,12 +780,6 @@ void ao_togglecrouch_cbox_on_click(int x, int y) {
     ao_play_button_snd(rf::local_player->settings.toggle_crouch);
 }
 
-void ao_joinbeep_cbox_on_click(int x, int y) {
-    g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
-    ao_joinbeep_cbox.checked = g_alpine_game_config.player_join_beep;
-    ao_play_button_snd(g_alpine_game_config.player_join_beep);
-}
-
 void ao_join_flash_cbox_on_click(const int x, const int y) {
     g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
     ao_join_flash_cbox.checked = g_alpine_game_config.player_join_flash;
@@ -1251,13 +1243,11 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_autosave_cbox, &ao_autosave_label, &alpine_options_panel3, ao_autosave_cbox_on_click, g_alpine_game_config.autosave, 112, 114, "Autosave");
     alpine_options_panel_checkbox_init(
-        &ao_joinbeep_cbox, &ao_joinbeep_label, &alpine_options_panel3, ao_joinbeep_cbox_on_click, g_alpine_game_config.player_join_beep, 112, 144, "Join beep");
+        &ao_join_flash_cbox, &ao_join_flash_label, &alpine_options_panel3, ao_join_flash_cbox_on_click, g_alpine_game_config.player_join_flash, 112, 144, "Join flash");
     alpine_options_panel_checkbox_init(
-        &ao_join_flash_cbox, &ao_join_flash_label, &alpine_options_panel3, ao_join_flash_cbox_on_click, g_alpine_game_config.player_join_flash, 112, 174, "Join flash");
+        &ao_painsounds_cbox, &ao_painsounds_label, &alpine_options_panel3, ao_painsounds_cbox_on_click, g_alpine_game_config.entity_pain_sounds, 112, 174, "Pain sounds");
     alpine_options_panel_checkbox_init(
-        &ao_painsounds_cbox, &ao_painsounds_label, &alpine_options_panel3, ao_painsounds_cbox_on_click, g_alpine_game_config.entity_pain_sounds, 112, 204, "Pain sounds");
-    alpine_options_panel_checkbox_init(
-        &ao_geochunk_cbox, &ao_geochunk_label, &alpine_options_panel3, ao_geochunk_cbox_on_click, g_alpine_game_config.geo_chunk_physics, 112, 234, "Geo chunks");
+        &ao_geochunk_cbox, &ao_geochunk_label, &alpine_options_panel3, ao_geochunk_cbox_on_click, g_alpine_game_config.geo_chunk_physics, 112, 204, "Geo chunks");
 
     alpine_options_panel_checkbox_init(
         &ao_teamrad_cbox, &ao_teamrad_label, &alpine_options_panel3, ao_teamrad_cbox_on_click, g_alpine_game_config.play_team_rad_msg_sounds, 280, 54, "Team radio msgs");

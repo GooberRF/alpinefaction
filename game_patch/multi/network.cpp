@@ -703,17 +703,6 @@ FunHook<MultiIoPacketHandler> process_join_deny_packet_hook{
     },
 };
 
-static void flash_taskbar(const HWND hwnd) {
-    FLASHWINFO flash{
-        .cbSize = sizeof(flash),
-        .hwnd = hwnd,
-        .dwFlags = FLASHW_TRAY,
-        .uCount = 8,
-        .dwTimeout = 0
-    };
-    FlashWindowEx(&flash);
-}
-
 FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
     0x0047A580,
     [] (char* const data, const rf::NetAddr& addr) {
@@ -722,7 +711,7 @@ FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
                 Beep(750, 300);
             }
             if (g_alpine_game_config.player_join_flash) {
-                flash_taskbar(rf::main_wnd);
+                flash_window(rf::main_wnd);
             }   
         }
         process_new_player_packet_hook.call_target(data, addr);

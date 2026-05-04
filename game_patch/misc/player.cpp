@@ -394,8 +394,8 @@ ConsoleCommand2 swap_shotgun_controls_cmd{
     "Swap shotgun controls",
 };
 
-ConsoleCommand2 mp_new_player_beep_cmd{
-    "mp_new_player_beep",
+ConsoleCommand2 mp_join_beep_cmd{
+    "mp_join_beep",
     [] {
         g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
         rf::console::print(
@@ -406,8 +406,8 @@ ConsoleCommand2 mp_new_player_beep_cmd{
     "Toggles beeps upon player joins, if your window is out of focus",
 };
 
-ConsoleCommand2 mp_new_player_flash_cmd{
-    "mp_new_player_flash",
+ConsoleCommand2 mp_join_flash_cmd{
+    "mp_join_flash",
     [] {
         g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
         rf::console::print(
@@ -979,8 +979,8 @@ void player_do_patch()
     swap_assault_rifle_controls_cmd.register_cmd();
     swap_grenade_controls_cmd.register_cmd();
     swap_shotgun_controls_cmd.register_cmd();
-    mp_new_player_beep_cmd.register_cmd();
-    mp_new_player_flash_cmd.register_cmd();
+    mp_join_beep_cmd.register_cmd();
+    mp_join_flash_cmd.register_cmd();
     mp_set_character_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
     hit_sound_interval_cmd.register_cmd();
