@@ -319,7 +319,7 @@ public:
             .type = std::to_underlying(type),
             .size = static_cast<uint16_t>(self.payload_len())
         };
-        self.storage.write_into(
+        self.storage.write(
             0,
             std::span{
                 reinterpret_cast<const char*>(&header),

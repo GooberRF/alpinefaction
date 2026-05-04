@@ -25,7 +25,7 @@ concept Read = requires(
 ) {
     { storage.ptr() } noexcept -> std::same_as<const char*>;
     { storage.len() } noexcept -> std::same_as<size_t>;
-    { storage.read_into(position, out) } noexcept -> std::same_as<size_t>;
+    { storage.read(position, out) } noexcept -> std::same_as<size_t>;
 };
 
 template <typename Storage>
@@ -34,7 +34,7 @@ concept Write = requires(
     size_t position,
     std::span<const char> in
 ) {
-    { storage.write_into(position, in) } -> std::same_as<size_t>;
+    { storage.write(position, in) } -> std::same_as<size_t>;
 };
 
 class ReadOnlySpanStorage {
@@ -64,7 +64,7 @@ public:
         return self.view.size();
     }
 
-    size_t read_into(
+    size_t read(
         this const ReadOnlySpanStorage& self,
         const size_t position,
         const std::span<char> out
@@ -107,7 +107,7 @@ public:
         return self.view.size();
     }
 
-    size_t read_into(
+    size_t read(
         this const FixedSpanStorage& self,
         const size_t position,
         const std::span<char> out
@@ -122,7 +122,7 @@ public:
         return num_bytes;
     }
 
-    size_t write_into(
+    size_t write(
         this FixedSpanStorage& self,
         const size_t position,
         const std::span<const char> in
@@ -158,7 +158,7 @@ public:
         return self.buf.size();
     }
 
-    size_t read_into(
+    size_t read(
         this const VectorGrowStorage& self,
         const size_t position,
         const std::span<char> out
@@ -173,7 +173,7 @@ public:
         return num_bytes;
     }
 
-    size_t write_into(
+    size_t write(
         this VectorGrowStorage& self,
         const size_t position,
         const std::span<const char> in
@@ -230,7 +230,7 @@ public:
             reinterpret_cast<char*>(std::addressof(out)),
             sizeof(T)
         };
-        if (self.storage.read_into(self.pos, bytes) != sizeof(T)) {
+        if (self.storage.read(self.pos, bytes) != sizeof(T)) {
             self.poison();
             return false;
         }
@@ -296,7 +296,7 @@ public:
             reinterpret_cast<const char*>(std::addressof(value)),
             sizeof(T)
         };
-        const size_t num_bytes = self.storage.write_into(self.pos, bytes);
+        const size_t num_bytes = self.storage.write(self.pos, bytes);
         if (num_bytes != sizeof(T)) {
             self.poison();
             return false;
@@ -312,14 +312,14 @@ public:
             return false;
         }
         const size_t num_bytes =
-            self.storage.write_into(self.pos, std::span{text});
+            self.storage.write(self.pos, std::span{text});
         if (num_bytes != text.size()) {
             self.poison();
             return false;
         }
         self.pos += num_bytes;
         constexpr char NUL = '\0';
-        if (self.storage.write_into(self.pos, std::span{&NUL, 1}) != 1) {
+        if (self.storage.write(self.pos, std::span{&NUL, 1}) != 1) {
             self.poison();
             return false;
         }
