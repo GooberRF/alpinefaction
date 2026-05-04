@@ -43,16 +43,6 @@
 #include "../main/main.h"
 #include "../graphics/gr.h"
 
-// `addr` is in host byte order.
-std::string net_addr_to_string(const uint32_t addr) {
-    char buf[INET_ADDRSTRLEN];
-    const uint32_t addr_net_order = htonl(addr); 
-    if (!inet_ntop(AF_INET, &addr_net_order, buf, sizeof(buf))) {
-        throw std::runtime_error{"`inet_ntop` failed"};
-    }
-    return std::string{buf};
-}
-
 // Note: this must be called from DLL init function
 // Note: we can't use global variable because that would lead to crash when launcher loads this DLL to check dependencies
 static rf::CmdLineParam& get_url_cmd_line_param()

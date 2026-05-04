@@ -161,4 +161,3 @@ std::string_view multi_game_type_prefix(rf::NetGameType game_type);
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);
-std::string net_addr_to_string(uint32_t addr);

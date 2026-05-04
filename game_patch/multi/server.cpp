@@ -364,20 +364,18 @@ std::string build_player_info_line(rf::Player* player, bool new_join) {
 
     if (new_join) {
         return std::format(
-            "===| {}{} | IP: {}:{} | {} | Max RFL: {} |===",
+            "===| {}{} | IP: {} | {} | Max RFL: {} |===",
             name,
             rf::strings::has_joined,
-            net_addr_to_string(player->net_data->addr.ip_addr),
-            player->net_data->addr.port,
+            player->net_data->addr,
             client_info,
             player->version_info.max_rfl_ver
         );
     } else {
         return std::format(
-            "- {} | IP: {}:{} | {} | Max RFL: {} | Ping: {} | HC: {}%",
+            "- {} | IP: {} | {} | Max RFL: {} | Ping: {} | HC: {}%",
             name,
-            net_addr_to_string(player->net_data->addr.ip_addr),
-            player->net_data->addr.port,
+            player->net_data->addr,
             client_info, player->version_info.max_rfl_ver,
             player->net_data->ping,
             player->damage_handicap
@@ -1499,7 +1497,7 @@ CodeInjection multi_on_new_player_injection{
                 "{}{} ({})",
                 player->name,
                 rf::strings::has_joined,
-                net_addr_to_string(player->net_data->addr.ip_addr)
+                player->net_data->addr.ip_addr
             );
         }
         regs.eip = 0x0047B051;

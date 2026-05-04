@@ -347,7 +347,7 @@ CodeInjection process_game_packet_whitelist_filter{
 
 static inline uint64_t addr_key(const rf::NetAddr& a)
 {
-    return (uint64_t(a.ip_addr) << 16) | (uint64_t(a.port) & 0xFFFF);
+    return (uint64_t(a.ip_addr.inner) << 16) | (uint64_t(a.port) & 0xFFFF);
 }
 
 static rf::NetAddr addr_from_key(uint64_t key)
@@ -2051,9 +2051,9 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
     },
 };
 
-FunHook<int(rf::NetAddr*, rf::JoinRequest*)> check_access_for_new_player_hook {
+FunHook<int(const rf::NetAddr&, const rf::JoinRequest*)> check_access_for_new_player_hook {
     0x0047AE10,
-    [] (rf::NetAddr* addr, rf::JoinRequest* join_req) {
+    [] (const rf::NetAddr& addr, const rf::JoinRequest* const join_req) {
         const int reason = check_access_for_new_player_hook.call_target(addr, join_req);
         if (reason != 0 && rf::is_dedicated_server) {
             const RF_JoinDenyReason jdr = static_cast<RF_JoinDenyReason>(reason);
@@ -2074,9 +2074,8 @@ FunHook<int(rf::NetAddr*, rf::JoinRequest*)> check_access_for_new_player_hook {
             }
 
             rf::console::print(
-                "Join request from {}:{} was rejected (reason: {})\n",
-                net_addr_to_string(addr->ip_addr),
-                addr->port,
+                "Join request from {} was rejected (reason: {})\n",
+                addr,
                 jdr_str
             );
         }
@@ -2111,16 +2110,12 @@ CodeInjection process_join_req_injection{
         const auto [verdict, reason, hard_reject] = check_join_request_restrict_status(g_joining_client_version, g_joining_player_info);
 
         if (verdict != AlpineRestrictVerdict::ok && hard_reject) {
-            const rf::NetAddr* const addr = static_cast<rf::NetAddr*>(regs.esi);
-            if (addr) {
-                rf::console::print(
-                    "Join request from {}:{} was rejected (reason: {})\n",
-                    net_addr_to_string(addr->ip_addr),
-                    addr->port,
-                    reason
-                );
-            }
-
+            const rf::NetAddr& addr = addr_as_ref<rf::NetAddr>(regs.esi);
+            rf::console::print(
+                "Join request from {} was rejected (reason: {})\n",
+                addr,
+                reason
+            );
             regs.eax = 8; // RF_JDR_UNSUPPORTED_VERSION
         }
     },
@@ -2613,7 +2608,7 @@ CodeInjection multi_io_process_packets_injection{
                 if (parse_af_gi_req_tail(base + off, size_t(len), ver)) {
                     const int64_t now = timer::get_i64(1000);
                     g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{ver, now};
-                    xlog::debug("AF GI-REQ detected from {:x}:{} (ver={})", addr.ip_addr, addr.port, ver);
+                    xlog::debug("AF GI-REQ detected from {} (ver={})", addr, ver);
                 }
             }
         }
