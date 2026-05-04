@@ -13,6 +13,7 @@
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/file/file.h"
+#include "../misc/vpackfile.h"
 
 namespace
 {
@@ -34,14 +35,18 @@ namespace
         return bytes_read == file_size;
     }
 
-    // Probe for a PNG/JPG/JPEG sibling of `base_filename` (any extension stripped). Reads the
-    // first file that exists into `out` and returns true. If none exists, returns false. Used
-    // by both read_stb_header and lock_stb_bitmap
-    bool read_stb_sibling(const char* base_filename, std::vector<uint8_t>& out)
+    // Probe for a PNG/JPG/JPEG sibling of `requested_filename` (any extension stripped). For
+    // each candidate extension, the supercede policy gate (vpackfile_supercede_allowed) is
+    // checked first — same toggle that gates user_maps overriding stock for any other asset
+    // type. The first allowed-and-existing sibling wins; if none qualify, returns false.
+    bool read_stb_sibling(const char* requested_filename, std::vector<uint8_t>& out)
     {
-        std::string base{get_filename_without_ext(base_filename)};
+        std::string base{get_filename_without_ext(requested_filename)};
         for (const char* ext : {".png", ".jpg", ".jpeg"}) {
             auto candidate = base + ext;
+            if (!vpackfile_supercede_allowed(requested_filename, candidate.c_str())) {
+                continue;
+            }
             if (read_file_to_vector(candidate.c_str(), out)) {
                 return true;
             }

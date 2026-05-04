@@ -91,29 +91,38 @@ bm_read_header_hook{
 
         std::string filename_without_ext{get_filename_without_ext(filename)};
 
-        // ATX supercedes DDS, PNG, JPG, VBM, and TGA
+        // ATX supercedes DDS, PNG, JPG, VBM, and TGA. Each candidate sibling is gated by
+        // vpackfile_supercede_allowed so user_maps content can't override stock when the
+        // "allow overwrite game files" toggle is off — same policy that already gates
+        // same-name overrides for every other asset type.
         if (!atx_is_loading_child()) {
             auto atx_filename = filename_without_ext + ".atx";
-            rf::File atx_file;
-            if (atx_file.open(atx_filename.c_str()) == 0) {
-                atx_file.close();
-                xlog::trace("Loading ATX {} (resolved from {})", atx_filename, filename);
-                auto bm_type = read_atx_header(atx_filename.c_str(), width_out, height_out,
-                    pixel_fmt_out, num_levels_out, num_frames_out);
-                if (bm_type != rf::bm::TYPE_NONE) {
-                    return bm_type;
+            if (vpackfile_supercede_allowed(filename, atx_filename.c_str())) {
+                rf::File atx_file;
+                if (atx_file.open(atx_filename.c_str()) == 0) {
+                    atx_file.close();
+                    xlog::trace("Loading ATX {} (resolved from {})", atx_filename, filename);
+                    auto bm_type = read_atx_header(atx_filename.c_str(), width_out, height_out,
+                        pixel_fmt_out, num_levels_out, num_frames_out);
+                    if (bm_type != rf::bm::TYPE_NONE) {
+                        return bm_type;
+                    }
                 }
             }
         }
 
         // DDS supercedes PNG, JPG, VBM, and TGA
-        rf::File dds_file;
-        auto dds_filename = filename_without_ext + ".dds";
-        if (dds_file.open(dds_filename.c_str()) == 0) {
-            xlog::trace("Loading {}", dds_filename);
-            auto bm_type = read_dds_header(dds_file, width_out, height_out, pixel_fmt_out, num_levels_out);
-            if (bm_type != rf::bm::TYPE_NONE) {
-                return bm_type;
+        {
+            auto dds_filename = filename_without_ext + ".dds";
+            if (vpackfile_supercede_allowed(filename, dds_filename.c_str())) {
+                rf::File dds_file;
+                if (dds_file.open(dds_filename.c_str()) == 0) {
+                    xlog::trace("Loading {}", dds_filename);
+                    auto bm_type = read_dds_header(dds_file, width_out, height_out, pixel_fmt_out, num_levels_out);
+                    if (bm_type != rf::bm::TYPE_NONE) {
+                        return bm_type;
+                    }
+                }
             }
         }
 

@@ -428,6 +428,28 @@ static bool is_lookup_table_entry_override_allowed(rf::VPackfileEntry* old_entry
     return true;
 }
 
+bool vpackfile_supercede_allowed(const char* requested_filename, const char* sibling_filename)
+{
+    if (!sibling_filename || !*sibling_filename) return false;
+
+    // The sibling must actually exist somewhere — otherwise there's nothing to supercede with.
+    auto sibling_it = g_loopup_table.find(string_to_lower(sibling_filename));
+    if (sibling_it == g_loopup_table.end()) {
+        return false;
+    }
+
+    // If no original asset exists at the requested name, the sibling is the only source.
+    // Allow it — there's no override happening, just a regular load.
+    auto requested_it = g_loopup_table.find(string_to_lower(requested_filename));
+    if (requested_it == g_loopup_table.end()) {
+        return true;
+    }
+
+    // Reuse the existing same-name override policy: treat the original as the "old" entry and
+    // the sibling as the "new" entry.
+    return is_lookup_table_entry_override_allowed(requested_it->second, sibling_it->second);
+}
+
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)
 {
     std::string filename_str = string_to_lower(entry->name);
