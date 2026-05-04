@@ -426,8 +426,7 @@ CodeInjection server_browser_idle_status_injection{
     0x0044dc6f,
     [](auto& regs) {
         // default: preserve the stock idle text (e.g. "Pinging servers...")
-        static char (&stock_idle_buf)[96] stock_idle_buf =
-            addr_as_ref<char[96]>(0x0063f6e4);
+        static char (&stock_idle_buf)[96] = addr_as_ref<char[96]>(0x0063f6e4);
         std::memcpy(
             s_server_browser_status_buf,
             stock_idle_buf,
