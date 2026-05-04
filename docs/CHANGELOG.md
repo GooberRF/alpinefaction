@@ -1,16 +1,25 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.4.0 (Bakeapple): Not yet released
+Version 1.4.0 (Lupin): Not yet released
 --------------------------------
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Add vote-allowed levels to level autodownload list for dedicated servers
+
 [@is-this-c](https://github.com/is-this-c)
 - Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
 - Rename `mp_notifyonjoin` console command to `mp_join_beep`
-
+- 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix team balance not properly randomizing the distribution order of equal-scoring human players
+- Fix incorrect clickable area size for launcher FFLink button
+
+[@is-this-c](https://github.com/is-this-c)
+- For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
