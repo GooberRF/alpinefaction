@@ -2,9 +2,11 @@
 
 #include <string>
 #include <vector>
+#include <common/rfproto.h>
 #include <common/version/version.h>
 #include "server_internal.h"
 #include "../rf/multi.h"
+#include "../os/io_cursor.h"
 
 constexpr uint32_t ALPINE_FACTION_SIGNATURE = 0x4E4C5246;
 constexpr uint32_t DASH_FACTION_SIGNATURE = 0xDA58FAC7;
@@ -277,3 +279,89 @@ void send_queues_rel_clear_packets(int socket_id);
 void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
 void clear_rcon_profile_sessions();
 void multi_disconnect_from_server();
+
+template <io_cursor_detail::Write Storage>
+class PacketBuilder {
+public:
+    explicit PacketBuilder(const Storage storage)
+        noexcept(std::is_nothrow_move_constructible_v<Storage>)
+        : storage{std::move(storage)}
+        , cursor{this->storage} {
+        this->cursor.write(DUMMY_HEADER);
+    }
+
+    template <typename... Args>
+    requires std::constructible_from<Storage, Args...>
+    explicit PacketBuilder(Args&&... args)
+        noexcept(std::is_nothrow_constructible_v<Storage, Args...>)
+        : storage{std::forward<Args>(args)...}
+        , cursor{this->storage} {
+        this->cursor.write(DUMMY_HEADER);
+    }
+
+    template <io_cursor_detail::PodLike T>
+    bool write(this PacketBuilder& self, const T& value) noexcept {
+        return self.cursor.write(value);
+    }
+
+    bool write_zstring(
+        this PacketBuilder& self,
+        const std::string_view text
+    ) noexcept {
+        return self.cursor.write_zstring(text);
+    }
+
+    template <typename E>
+    requires std::is_enum_v<E>
+        && (sizeof(std::underlying_type_t<E>) == 1)
+    void finalize(this PacketBuilder& self, const E type) noexcept {
+        const RF_GamePacketHeader header{
+            .type = std::to_underlying(type),
+            .size = static_cast<uint16_t>(self.payload_len())
+        };
+        self.storage.write_into(
+            0,
+            std::span{
+                reinterpret_cast<const char*>(&header),
+                sizeof(RF_GamePacketHeader)
+            }
+        );
+    }
+
+    [[nodiscard]]
+    size_t capacity(this const PacketBuilder& self) noexcept {
+        return self.cursor.len();
+    }
+
+    [[nodiscard]]
+    size_t payload_len(this const PacketBuilder& self) noexcept {
+        return self.cursor.position() - sizeof(RF_GamePacketHeader);
+    }
+
+    [[nodiscard]]
+    size_t len(this const PacketBuilder& self) noexcept {
+        return self.cursor.position();
+    }
+
+    [[nodiscard]]
+    bool is_poisoned(this const PacketBuilder& self) noexcept {
+        return self.cursor.is_poisoned();
+    }
+
+    [[nodiscard]]
+    const char* ptr(this const PacketBuilder& self) noexcept {
+        return self.storage.ptr();
+    }
+
+private:
+    static constexpr RF_GamePacketHeader DUMMY_HEADER{};
+
+    Storage storage;
+    IoCursor<Storage> cursor;
+};
+
+template <size_t N>
+PacketBuilder(char (&)[N]) -> PacketBuilder<io_cursor_detail::FixedSpanStorage>;
+PacketBuilder(std::span<char>) -> PacketBuilder<io_cursor_detail::FixedSpanStorage>;
+PacketBuilder(void*, size_t) -> PacketBuilder<io_cursor_detail::FixedSpanStorage>;
+PacketBuilder(std::vector<char>&) -> PacketBuilder<io_cursor_detail::VectorGrowStorage>;

@@ -207,6 +207,7 @@ set(SRCS
     multi/bots/bot_weapon_profiles.h
     os/console.cpp
     os/console.h
+    os/io_cursor.h
     os/commands.cpp
     os/autocomplete.cpp
     os/frametime.cpp
