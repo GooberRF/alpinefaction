@@ -315,10 +315,12 @@ namespace rf::ui
     static auto& join_game_server_list_up_on_click = addr_as_ref<void(int x, int y)>(0x0044B4C0);
     static auto& join_game_server_list_down_on_click = addr_as_ref<void(int x, int y)>(0x0044B520);
     static auto& join_game_current_gadget = addr_as_ref<int>(0x0063EE78);
-    static auto& server_browser_selected_index = addr_as_ref<int>(0x0063F644);
-    static auto& server_browser_display_count = addr_as_ref<int>(0x0063F578);
-    static auto& server_browser_sorted_indices = addr_as_ref<int*>(0x0063F634);
     static auto& server_browser_server_list = addr_as_ref<ServerListEntry*>(0x0063F62C);
+    static auto& server_browser_sel_idx = addr_as_ref<int>(0x00599CDC);
+    static auto& server_browser_num_servers = addr_as_ref<int>(0x0063EE74);
+    static auto& server_browser_sorted_indices = addr_as_ref<int*>(0x0063F634);
+    static auto& server_browser_num_sorted_servers = addr_as_ref<int>(0x0063F578);
+    static auto& server_browser_sel_sorted_idx = addr_as_ref<int>(0x0063F644);
     static auto& server_browser_sort_column = addr_as_ref<int>(0x00599D20);
     static auto& server_browser_filter_type = addr_as_ref<int>(0x0063F22C);
     static auto& server_browser_filter_cycler = addr_as_ref<Cycler>(0x0063F0C0);
