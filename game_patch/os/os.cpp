@@ -63,6 +63,10 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         if (!rf::is_dedicated_server) {
             // Show cursor if window is not active
             if (w_param) {
+                extern std::unordered_set<rf::Player*> g_join_flash_active_players;
+                g_join_flash_active_players.clear();
+                wnd_set_flash(rf::main_wnd, false);
+
                 ShowCursor(FALSE);
                 while (ShowCursor(FALSE) >= 0)
                     ;
@@ -75,7 +79,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         }
 
         rf::is_main_wnd_active = w_param;
-        return 0; //DefWindowProcA(wnd_handle, msg, w_param, l_param);
+        return 0;
 
     case WM_WINDOWPOSCHANGING:
         if (is_headless_mode() && l_param) {
@@ -240,6 +244,22 @@ bool awpgen_requested_from_raw_cmdline()
 bool headless_requested_from_raw_cmdline()
 {
     return headless_bot_requested_from_raw_cmdline() || awpgen_requested_from_raw_cmdline();
+}
+
+static bool g_wnd_is_flash_active = false;
+
+void wnd_set_flash(const HWND hwnd, const bool active) {
+    if (g_wnd_is_flash_active != active) {
+        FLASHWINFO flash{
+            .cbSize = sizeof(flash),
+            .hwnd = hwnd,
+            .dwFlags = static_cast<DWORD>(active ? FLASHW_TRAY : FLASHW_STOP),
+            .uCount = 0,
+            .dwTimeout = 0
+        };
+        FlashWindowEx(&flash);
+        g_wnd_is_flash_active = active;
+    }
 }
 
 static FunHook<void()> os_close_hook{

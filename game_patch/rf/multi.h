@@ -338,3 +338,15 @@ namespace rf
 
     constexpr int multi_max_player_id = 256;
 }
+
+namespace std {
+    template <>
+    struct hash<rf::NetAddr> {
+        size_t operator()(const rf::NetAddr& addr) const noexcept {
+            const size_t ip_addr_hash = hash<uint32_t>{}(addr.ip_addr);
+            const size_t port_hash = hash<uint16_t>{}(addr.port);
+            return ip_addr_hash 
+                ^ (port_hash + 0x9E3779B9 + (ip_addr_hash << 6) + (ip_addr_hash >> 2));
+        }
+    };
+}

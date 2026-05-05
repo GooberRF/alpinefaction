@@ -394,14 +394,28 @@ ConsoleCommand2 swap_shotgun_controls_cmd{
     "Swap shotgun controls",
 };
 
-ConsoleCommand2 play_join_beep_cmd{
-    "mp_notifyonjoin",
-    []() {
+ConsoleCommand2 mp_join_beep_cmd{
+    "mp_join_beep",
+    [] {
         g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
-        rf::console::print("Out of focus player join notifications are {}",
-            g_alpine_game_config.player_join_beep ? "enabled" : "disabled");
+        rf::console::print(
+            "Out-of-focus beeps upon player joins are {}",
+            g_alpine_game_config.player_join_beep ? "enabled" : "disabled"
+        );
     },
-    "Toggle notification beeps being played when a player joins the server you are in when your game doesn't have focus",
+    "Toggles beeps upon player joins, if your window is out of focus",
+};
+
+ConsoleCommand2 mp_join_flash_cmd{
+    "mp_join_flash",
+    [] {
+        g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
+        rf::console::print(
+            "Out-of-focus window flashes upon player joins are {}",
+            g_alpine_game_config.player_join_flash ? "enabled" : "disabled"
+        );
+    },
+    "Toggles window flashes upon player joins, if your window is out of focus",
 };
 
 ConsoleCommand2 mp_set_character_cmd{
@@ -965,7 +979,8 @@ void player_do_patch()
     swap_assault_rifle_controls_cmd.register_cmd();
     swap_grenade_controls_cmd.register_cmd();
     swap_shotgun_controls_cmd.register_cmd();
-    play_join_beep_cmd.register_cmd();
+    mp_join_beep_cmd.register_cmd();
+    mp_join_flash_cmd.register_cmd();
     mp_set_character_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
     hit_sound_interval_cmd.register_cmd();
