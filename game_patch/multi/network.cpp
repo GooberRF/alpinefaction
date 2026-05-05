@@ -703,18 +703,22 @@ FunHook<MultiIoPacketHandler> process_join_deny_packet_hook{
     },
 };
 
+std::unordered_set<rf::Player*> g_join_flash_active_players{};
+
 FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
     0x0047A580,
     [] (char* const data, const rf::NetAddr& addr) {
+        process_new_player_packet_hook.call_target(data, addr);
         if (GetForegroundWindow() != rf::main_wnd) {
             if (g_alpine_game_config.player_join_beep) {
                 Beep(750, 300);
             }
+
             if (g_alpine_game_config.player_join_flash) {
-                flash_window(rf::main_wnd);
-            }   
+                wnd_set_flash(rf::main_wnd, true);
+                g_join_flash_active_players.insert(rf::player_list->prev);
+            }
         }
-        process_new_player_packet_hook.call_target(data, addr);
     },
 };
 
@@ -741,13 +745,17 @@ static void verify_player_id_in_packet(char* player_id_ptr, const rf::NetAddr& a
 
 FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
     0x0047BBC0,
-    [](char* data, const rf::NetAddr& addr) {
+    [] (char* const data, const rf::NetAddr& addr) {
         // server-side and client-side
         verify_player_id_in_packet(&data[0], addr, "left_game");
 
         if (!rf::is_server && !rf::is_dedicated_server) {
             rf::Player* const player = rf::multi_find_player_by_id(data[0]);
             if (player) {
+                if (g_join_flash_active_players.erase(player)
+                    && g_join_flash_active_players.empty()) {
+                    wnd_set_flash(rf::main_wnd, false);
+                }
                 g_local_player_spectators.erase(player);
                 build_local_player_spectators_strings();
             }
