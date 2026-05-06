@@ -42,6 +42,12 @@ FunHook<void()> os_poll_hook{
         }
 
         if (g_sdl_video_initialized) {
+            // Flush WM_MOUSEMOVE spam before SDL drains the queue
+            if (g_alpine_game_config.kbm_input_mode == 2 && rf::keep_mouse_centered) {
+                MSG flush_msg;
+                while (PeekMessageA(&flush_msg, nullptr, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_REMOVE))
+                    ;
+            } 
             sdl_input_poll();
         }
     },
