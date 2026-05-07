@@ -1483,27 +1483,46 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
 static void download_missing_server_levels()
 {
     auto& cfg = g_alpine_server_config;
-    if (cfg.levels.empty()) {
-        return;
+
+    if (!cfg.levels.empty()) {
+        rf::console::print("\nChecking for missing maps on server rotation...\n");
+
+        std::vector<AlpineServerConfigLevelEntry> resolved_levels;
+        resolved_levels.reserve(cfg.levels.size());
+
+        for (auto& entry : cfg.levels) {
+            if (download_level_if_missing(entry.level_filename)) {
+                resolved_levels.push_back(std::move(entry));
+            }
+            else {
+                rf::console::print("--> Skipping level {} (download failed).\n", entry.level_filename);
+                rf::console::print("\n");
+            }
+        }
+
+        cfg.levels = std::move(resolved_levels);
+        rf::console::print("\n");
     }
 
-    rf::console::print("\nChecking for missing maps on server rotation...\n");
+    if (!cfg.vote_level.allowed_maps.empty()) {
+        rf::console::print("\nChecking for missing maps on vote-allowed list...\n");
 
-    std::vector<AlpineServerConfigLevelEntry> resolved_levels;
-    resolved_levels.reserve(cfg.levels.size());
+        std::vector<std::string> resolved_allowed;
+        resolved_allowed.reserve(cfg.vote_level.allowed_maps.size());
 
-    for (auto& entry : cfg.levels) {
-        if (download_level_if_missing(entry.level_filename)) {
-            resolved_levels.push_back(std::move(entry));
+        for (auto& filename : cfg.vote_level.allowed_maps) {
+            if (download_level_if_missing(filename)) {
+                resolved_allowed.push_back(std::move(filename));
+            }
+            else {
+                rf::console::print("--> Skipping vote-allowed level {} (download failed).\n", filename);
+                rf::console::print("\n");
+            }
         }
-        else {
-            rf::console::print("--> Skipping level {} (download failed).\n", entry.level_filename);
-            rf::console::print("\n");
-        }
+
+        cfg.vote_level.allowed_maps = std::move(resolved_allowed);
+        rf::console::print("\n");
     }
-
-    cfg.levels = std::move(resolved_levels);
-    rf::console::print("\n");
 }
 
 void print_gungame(std::string& output, const GunGameConfig& cur, const GunGameConfig& base_cfg, bool base = true)

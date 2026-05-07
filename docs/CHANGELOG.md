@@ -1,6 +1,22 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
+Version 1.4.0 (Lupin): Not yet released
+--------------------------------
+### Major features
+
+### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Add vote-allowed levels to level autodownload list for dedicated servers
+
+### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix team balance not properly randomizing the distribution order of equal-scoring human players
+- Fix incorrect clickable area size for launcher FFLink button
+
+[@is-this-c](https://github.com/is-this-c)
+- For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
+
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
 ### Major features

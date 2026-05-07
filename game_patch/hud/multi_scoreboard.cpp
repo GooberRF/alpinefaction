@@ -267,7 +267,7 @@ int draw_scoreboard_players(
     const int divider_height = std::max(1, static_cast<int>(scale));
 
     int status_w = static_cast<int>(12 * scale);
-    int score_w = static_cast<int>(50 * scale);
+    int score_w = static_cast<int>((game_type == rf::NG_TYPE_RUN ? 63 : 50) * scale);
     bool show_kd = game_type != rf::NG_TYPE_RUN;
     int kd_w = show_kd ? static_cast<int>(70 * scale) : 0;
     int caps_w = game_type == rf::NG_TYPE_CTF ? static_cast<int>(45 * scale) : 0;
@@ -290,7 +290,11 @@ int draw_scoreboard_players(
     if (!dry_run) {
         rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
         rf::gr::string(name_x, y, rf::strings::player);
-        rf::gr::string(score_x, y, rf::strings::score); // Note: RF uses "Frags"
+        if (game_type == rf::NG_TYPE_RUN) {
+            rf::gr::string(score_x, y, "Deaths");
+        } else {
+            rf::gr::string(score_x, y, rf::strings::score); // Note: RF uses "Frags"
+        }
         if (show_kd) {
             rf::gr::string(kd_x, y, "K/D");
         }
@@ -475,8 +479,21 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
                 return category_1 < category_2;
             }
 
-            if (player_1->stats->score != player_2->stats->score) {
-                return player_1->stats->score > player_2->stats->score;
+            const rf::NetGameType game_type = rf::multi_get_game_type();
+            if (game_type == rf::NG_TYPE_RUN) {
+                const PlayerStatsNew* const stats_1 =
+                    static_cast<PlayerStatsNew*>(player_1->stats);
+                const PlayerStatsNew* const stats_2 =
+                    static_cast<PlayerStatsNew*>(player_2->stats);
+                if (stats_1->num_deaths != stats_2->num_deaths) {
+                    return stats_1->num_deaths < stats_2->num_deaths;
+                } else if (player_1->stats->caps != player_2->stats->caps) {
+                    return player_1->stats->caps < player_2->stats->caps;
+                }
+            } else {
+                if (player_1->stats->score != player_2->stats->score) {
+                    return player_1->stats->score > player_2->stats->score;
+                }
             }
 
             // Sort players before bots, and both before browsers.
