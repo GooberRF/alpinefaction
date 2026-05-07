@@ -164,6 +164,11 @@ public:
     void sync_with_ff();
     void add_key_to_ff_update_map();
 
+    // Main-thread callbacks invoked by the fflink::achievements client when its
+    // HTTP exchange completes. Apply the parsed result to local achievement state.
+    // initial_sync = true for the bootstrap GET; false for incremental update POSTs.
+    void apply_ff_unlocks(const std::vector<int>& unlocked_uids, bool initial_sync);
+
     const std::unordered_map<AchievementName, Achievement>& get_achievements() const {
     return achievements;
     }
@@ -190,7 +195,6 @@ private:
     std::vector<LoggedKill> logged_kills;
     std::vector<LoggedUse> logged_uses;
 
-    void process_ff_response(const std::string& response, int expected_key, bool is_initial_sync);
     void show_notification(Achievement& achievement);
     const Achievement* get_achievement(AchievementName achievement_name);
 };

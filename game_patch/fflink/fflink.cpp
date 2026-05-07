@@ -11,6 +11,7 @@ void do_patch()
 
 void do_frame()
 {
+    drain_pending_main_thread_tasks();
     drain_pending_console();
 }
 

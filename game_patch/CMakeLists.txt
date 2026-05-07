@@ -155,6 +155,8 @@ set(SRCS
     multi/faction_files.h
     fflink/fflink.cpp
     fflink/fflink.h
+    fflink/fflink_achievements.cpp
+    fflink/fflink_achievements.h
     fflink/fflink_session.cpp
     fflink/fflink_session.h
     fflink/fflink_utils.cpp
