@@ -850,7 +850,7 @@ enum class UpcomingGameTypeSelection {
     ExplicitRequest,
 };
 
-const rf::NetGameType get_upcoming_game_type();
+rf::NetGameType get_upcoming_game_type();
 UpcomingGameTypeSelection get_upcoming_game_type_selection();
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);

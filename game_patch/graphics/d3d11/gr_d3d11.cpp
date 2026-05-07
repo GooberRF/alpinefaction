@@ -30,7 +30,7 @@ namespace df::gr::d3d11
     Renderer::Renderer(HWND hwnd) : hwnd_{hwnd}, d3d11_lib_{L"d3d11.dll"}
     {
         if (!d3d11_lib_) {
-            RF_DEBUG_ERROR("Failed to load d3d11.dll");
+            rf::fatal_error("Failed to load d3d11.dll");
         }
         init_device();
         // Snapshot settings that must stay consistent across the swap chain / back buffer
@@ -129,43 +129,52 @@ namespace df::gr::d3d11
 
     void Renderer::init_device()
     {
-        auto pD3D11CreateDevice = d3d11_lib_.get_proc_address<PFN_D3D11_CREATE_DEVICE>("D3D11CreateDevice");
-        if (!pD3D11CreateDevice) {
-            RF_DEBUG_ERROR("Cannot find D3D11CreateDevice procedure");
+        const PFN_D3D11_CREATE_DEVICE pfD3D11CreateDevice =
+            d3d11_lib_.get_proc_address<PFN_D3D11_CREATE_DEVICE>("D3D11CreateDevice");
+        if (!pfD3D11CreateDevice) {
+            rf::fatal_error("Cannot find D3D11CreateDevice procedure");
         }
-
-        // D3D_FEATURE_LEVEL feature_levels[] = {
-        //     D3D_FEATURE_LEVEL_9_1,
-        //     D3D_FEATURE_LEVEL_9_2,
-        //     D3D_FEATURE_LEVEL_9_3,
-        //     D3D_FEATURE_LEVEL_10_0,
-        //     D3D_FEATURE_LEVEL_10_1,
-        //     D3D_FEATURE_LEVEL_11_0,
-        //     D3D_FEATURE_LEVEL_11_1
-        // };
+ 
+        // By default, `D3D_FEATURE_LEVEL_11_1` is not requested.
+        const D3D_FEATURE_LEVEL feature_levels[] = {
+            D3D_FEATURE_LEVEL_11_1,
+            D3D_FEATURE_LEVEL_11_0,
+            D3D_FEATURE_LEVEL_10_1,
+            D3D_FEATURE_LEVEL_10_0,
+            D3D_FEATURE_LEVEL_9_3,
+            D3D_FEATURE_LEVEL_9_2,
+            D3D_FEATURE_LEVEL_9_1
+        };
 
         DWORD flags = 0;
-    //#ifndef NDEBUG
-        // Requires Windows 10 SDK
-        //flags |= D3D11_CREATE_DEVICE_DEBUG;
-    //#endif
-        D3D_FEATURE_LEVEL feature_level_supported;
-        DF_GR_D3D11_CHECK_HR(
-            pD3D11CreateDevice(
-                nullptr,
-                D3D_DRIVER_TYPE_HARDWARE,
-                nullptr,
-                flags,
-                // feature_levels,
-                // std::size(feature_levels),
-                nullptr,
-                0,
-                D3D11_SDK_VERSION,
-                &device_,
-                &feature_level_supported,
-                &context_
-            )
+    #ifndef NDEBUG
+        flags |= D3D11_CREATE_DEVICE_DEBUG;
+    CREATE_DEVICE:
+    #endif
+        D3D_FEATURE_LEVEL feature_level_supported{};
+        const HRESULT hr = pfD3D11CreateDevice(
+            nullptr,
+            D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            flags,
+            feature_levels,
+            std::size(feature_levels),
+            D3D11_SDK_VERSION,
+            &device_,
+            &feature_level_supported,
+            &context_
         );
+
+     #ifndef NDEBUG
+         if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING &&
+            flags & D3D11_CREATE_DEVICE_DEBUG) {
+             xlog::warn( "D3D11 debug layer not available");
+             flags &= ~D3D11_CREATE_DEVICE_DEBUG;
+             goto CREATE_DEVICE;
+         }
+     #endif
+
+        check_hr(hr, [] { xlog::error("`D3D11CreateDevice` failed"); });
 
         init_error(device_);
 

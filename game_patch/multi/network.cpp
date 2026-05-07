@@ -7,6 +7,7 @@
 #include <functional>
 #include <thread>
 #include <utility>
+#include <deque>
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <ws2ipdef.h>
@@ -53,7 +54,6 @@
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
 #include "../misc/tlv.h"
-#include <deque>
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
@@ -347,7 +347,7 @@ CodeInjection process_game_packet_whitelist_filter{
 
 static inline uint64_t addr_key(const rf::NetAddr& a)
 {
-    return (uint64_t(a.ip_addr) << 16) | (uint64_t(a.port) & 0xFFFF);
+    return (uint64_t(a.ip_addr.inner) << 16) | (uint64_t(a.port) & 0xFFFF);
 }
 
 static rf::NetAddr addr_from_key(uint64_t key)
@@ -2051,37 +2051,33 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
     },
 };
 
-FunHook<int(rf::NetAddr*, rf::JoinRequest*)> check_access_for_new_player_hook {
+FunHook<int(const rf::NetAddr&, const rf::JoinRequest*)> check_access_for_new_player_hook {
     0x0047AE10,
-    [](rf::NetAddr* addr, rf::JoinRequest* join_req) {
-        auto reason = check_access_for_new_player_hook.call_target(addr, join_req);
-        
+    [] (const rf::NetAddr& addr, const rf::JoinRequest* const join_req) {
+        const int reason = check_access_for_new_player_hook.call_target(addr, join_req);
         if (reason != 0 && rf::is_dedicated_server) {
-            in_addr ia;
-            ia.S_un.S_addr = ntohl(addr->ip_addr);
-            RF_JoinDenyReason jdr = static_cast<RF_JoinDenyReason>(reason);
+            const RF_JoinDenyReason jdr = static_cast<RF_JoinDenyReason>(reason);
             std::string jdr_str = "unknown";
 
             if (jdr == RF_JoinDenyReason::RF_JDR_INVALID_PASSWORD) {
                 jdr_str = std::format("wrong password '{}'", join_req->password);
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_BANNED) {
+            }  else if (jdr == RF_JoinDenyReason::RF_JDR_BANNED) {
                 jdr_str = "banned";
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_SERVER_IS_FULL) {
+            } else if (jdr == RF_JoinDenyReason::RF_JDR_SERVER_IS_FULL) {
                 jdr_str = "server full";
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_THE_SAME_IP) {
+            } else if (jdr == RF_JoinDenyReason::RF_JDR_THE_SAME_IP) {
                 jdr_str = "same socket as another player";
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_LEVEL_CHANGING) {
+            } else if (jdr == RF_JoinDenyReason::RF_JDR_LEVEL_CHANGING) {
                 jdr_str = "level change in progress";
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_DATA_DOESNT_MATCH) {
+            } else if (jdr == RF_JoinDenyReason::RF_JDR_DATA_DOESNT_MATCH) {
                 jdr_str = "failed data validation";
             }
 
-            rf::console::print("Join request from {}:{} was rejected (reason: {})\n", inet_ntoa(ia), addr->port, jdr_str);
+            rf::console::print(
+                "Join request from {} was rejected (reason: {})\n",
+                addr,
+                jdr_str
+            );
         }
 
         return reason;
@@ -2106,7 +2102,7 @@ CodeInjection process_join_req_injection{
         if (conn_rate == 12345) {
             g_conn_rate_stashed = conn_rate;
         }
-        
+
         bool found_tail = parse_af_join_req_any_tail(g_join_request_stashed.pkt, g_join_request_stashed.len, g_join_request_stashed.rx_len);
         g_join_request_stashed = {};
         g_conn_rate_stashed.reset();
@@ -2114,12 +2110,12 @@ CodeInjection process_join_req_injection{
         const auto [verdict, reason, hard_reject] = check_join_request_restrict_status(g_joining_client_version, g_joining_player_info);
 
         if (verdict != AlpineRestrictVerdict::ok && hard_reject) {
-            if (auto* addr = static_cast<rf::NetAddr*>(regs.esi)) {
-                in_addr ia;
-                ia.S_un.S_addr = ntohl(addr->ip_addr);
-                rf::console::print("Join request from {}:{} was rejected (reason: {})\n", inet_ntoa(ia), addr->port, reason);
-            }
-
+            const rf::NetAddr& addr = addr_as_ref<rf::NetAddr>(regs.esi);
+            rf::console::print(
+                "Join request from {} was rejected (reason: {})\n",
+                addr,
+                reason
+            );
             regs.eax = 8; // RF_JDR_UNSUPPORTED_VERSION
         }
     },
@@ -2333,8 +2329,8 @@ void send_queues_rel_add_packet(
 FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
     0x0052A750,
     [] (int* const socket_id, const bool send_dis_conn_packet) {
-        if (socket_id && *socket_id >= 0 && *socket_id < std::size(g_send_queues_rel)) {
-            g_send_queues_rel[*socket_id].clear();
+        if (socket_id) {
+            send_queues_rel_clear_packets(*socket_id);
         }
         return psnet_rel_close_socket_hook.call_target(socket_id, send_dis_conn_packet);
     },
@@ -2612,7 +2608,7 @@ CodeInjection multi_io_process_packets_injection{
                 if (parse_af_gi_req_tail(base + off, size_t(len), ver)) {
                     const int64_t now = timer::get_i64(1000);
                     g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{ver, now};
-                    xlog::debug("AF GI-REQ detected from {:x}:{} (ver={})", addr.ip_addr, addr.port, ver);
+                    xlog::debug("AF GI-REQ detected from {} (ver={})", addr, ver);
                 }
             }
         }
