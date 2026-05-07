@@ -31,7 +31,7 @@ namespace rf
         GS_CREDITS = 0x17,
         GS_BOMB_DEFUSE = 0x18,
         GS_MULTI_LEVEL_DOWNLOAD = 0x19, // unused by the base game
-        GS_1A = 0x1A, // unused
+        GS_MULTI_LIMBO_JUST_JOINED = 0x1A, // unused
         GS_1B = 0x1B, // unused
         GS_1C = 0x1C, // unused
         GS_1D = 0x1D, // unused
@@ -44,11 +44,13 @@ namespace rf
     };
     static_assert(GS_NUM_STATES == 0x23, "more states will corrupt gameseq_state_info variable");
 
+    static auto& gameseq_close_state = addr_as_ref<void(GameState state, GameState new_state, bool force)>(0x004B1BF0);
     static auto& gameseq_set_state = addr_as_ref<void(GameState state, bool force)>(0x00434190);
     static auto& gameseq_get_state = addr_as_ref<GameState()>(0x00434200);
     static auto& gameseq_get_pending_state = addr_as_ref<GameState()>(0x00434220);
     static auto& gameseq_in_gameplay = addr_as_ref<bool()>(0x00434460);
     static auto& gameseq_push_state = addr_as_ref<void(GameState state, bool transparent, bool pause_beneath)>(0x00434410);
+    static auto& gameseq_process = addr_as_ref<GameState()>(0x00434230);
     static auto& gameseq_process_deferred_change = addr_as_ref<GameState()>(0x00434310);
 
     static auto& game_shutdown = addr_as_ref<void()>(0x004359E0);

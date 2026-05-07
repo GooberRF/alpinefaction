@@ -187,7 +187,12 @@ static FunHook<void()> console_draw_client_hook{
         // Fixes console rendering in endgame state
         rf::gr::reset_clip();
 
-        console_draw_client_hook.call_target();
+        const rf::GameState state = rf::gameseq_get_state();
+        if (state != rf::GS_QUITING
+            && state != rf::GS_NEW_LEVEL
+            && state != rf::GS_MULTI_GETTING_STATE_INFO) {
+            console_draw_client_hook.call_target();
+        }
     },
 };
 

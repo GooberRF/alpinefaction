@@ -120,6 +120,7 @@ enum class AlpineRestrictVerdict : uint8_t
 };
 
 extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
+extern bool g_multi_limbo_just_joined_req_leave;
 
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
@@ -143,8 +144,11 @@ void multi_init_player(rf::Player* player);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
+void multi_limbo_just_joined_do_frame();
 void multi_level_download_do_frame();
 void multi_level_download_abort();
+void multi_level_download_manager_start(std::string filename);
+bool multi_next_level_exists();
 bool rotation_autodl_in_progress();
 void rotation_autodl_start(size_t levels_count, std::vector<std::string> unique_levels);
 void multi_ban_apply_patch();

@@ -151,6 +151,10 @@ std::array g_buffer_overflow_patches{
     BufferOverflowPatch{0x00479FAA, 0x00479FB3, 256}, // process_item_create_packet (item name)
     BufferOverflowPatch{0x0046C590, 0x0046C59B, 256}, // process_rcon_req_packet (password)
     BufferOverflowPatch{0x0046C751, 0x0046C75A, 512}, // process_rcon_packet (command)
+    // These functions are not called anymore, but are patched for completeness.
+    BufferOverflowPatch{0x0047B2D3, 0x0047B2DE, 256}, // process_game_info_packet (server name)
+    BufferOverflowPatch{0x0047B334, 0x0047B33D, 256}, // process_game_info_packet (level name)
+    BufferOverflowPatch{0x0047B38E, 0x0047B397, 256}, // process_game_info_packet (mod name)
 };
 
 // clang-format off
@@ -2053,9 +2057,8 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
 
 FunHook<int(rf::NetAddr*, rf::JoinRequest*)> check_access_for_new_player_hook {
     0x0047AE10,
-    [](rf::NetAddr* addr, rf::JoinRequest* join_req) {
-        auto reason = check_access_for_new_player_hook.call_target(addr, join_req);
-        
+    [] (rf::NetAddr* const addr, rf::JoinRequest* const join_req) {
+        const int reason = check_access_for_new_player_hook.call_target(addr, join_req);
         if (reason != 0 && rf::is_dedicated_server) {
             in_addr ia;
             ia.S_un.S_addr = ntohl(addr->ip_addr);
@@ -2075,7 +2078,8 @@ FunHook<int(rf::NetAddr*, rf::JoinRequest*)> check_access_for_new_player_hook {
                 jdr_str = "same socket as another player";
             }
             else if (jdr == RF_JoinDenyReason::RF_JDR_LEVEL_CHANGING) {
-                jdr_str = "level change in progress";
+                // Handle in `process_join_req_injection`.
+                return 0;
             }
             else if (jdr == RF_JoinDenyReason::RF_JDR_DATA_DOESNT_MATCH) {
                 jdr_str = "failed data validation";
@@ -2114,13 +2118,20 @@ CodeInjection process_join_req_injection{
         const auto [verdict, reason, hard_reject] = check_join_request_restrict_status(g_joining_client_version, g_joining_player_info);
 
         if (verdict != AlpineRestrictVerdict::ok && hard_reject) {
-            if (auto* addr = static_cast<rf::NetAddr*>(regs.esi)) {
-                in_addr ia;
-                ia.S_un.S_addr = ntohl(addr->ip_addr);
-                rf::console::print("Join request from {}:{} was rejected (reason: {})\n", inet_ntoa(ia), addr->port, reason);
+            const rf::NetAddr& addr = addr_as_ref<rf::NetAddr>(regs.esi);
+            in_addr ia{};
+            ia.S_un.S_addr = ntohl(addr.ip_addr);
+            rf::console::print(
+                "Join request from {}:{} was rejected (reason: {})\n",
+                inet_ntoa(ia),
+                addr.port,
+                reason
+            );
+            if (!(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)) {
+                regs.eax = RF_JDR_LEVEL_CHANGING;
+            } else {
+                regs.eax = RF_JDR_UNSUPPORTED_VERSION;
             }
-
-            regs.eax = 8; // RF_JDR_UNSUPPORTED_VERSION
         }
     },
 };
