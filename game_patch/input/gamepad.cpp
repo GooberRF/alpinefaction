@@ -594,7 +594,7 @@ static void set_movement_key(rf::ControlConfigAction action, bool down)
     if (g_action_curr[idx] == down) return;
     if (in_gameplay && rf::local_player && !rf::console::console_is_visible()) {
         int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
-        if (sc >= 0)
+        if (sc > 0)
             rf::key_process_event(sc, down ? 1 : 0, 0);
     }
     g_action_curr[idx] = down;
@@ -615,7 +615,7 @@ static void release_movement_keys()
         int idx = static_cast<int>(action);
         if (g_action_curr[idx] && rf::local_player && !rf::console::console_is_visible()) {
             int16_t sc = rf::local_player->settings.controls.bindings[idx].scan_codes[0];
-            if (sc >= 0)
+            if (sc > 0)
                 rf::key_process_event(sc, 0, 0);
         }
         g_action_curr[idx] = false;

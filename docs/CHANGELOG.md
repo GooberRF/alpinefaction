@@ -23,12 +23,12 @@ Version 1.4.0 (Lupin): Not yet released
   - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
     - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.5000`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
   - Partial controller menu navigation support (Mouse controls are handled via Left Stick, Scrollbar are handled by Right Stick)
-  - Additional Controller settings are available in `alpine_settings.ini`and/or console commands
+- Additional Controller settings are available in `alpine_settings.ini` and/or console commands
 
 ### Minor features, changes, and enhancements
 [@AL2009man](https://github.com/AL2009man)
 - Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
-- Add the ability to scroll thought Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
+- Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
 
 [@GooberRF](https://github.com/GooberRF)
 - Add vote-allowed levels to level autodownload list for dedicated servers
