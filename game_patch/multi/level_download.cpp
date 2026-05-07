@@ -985,12 +985,12 @@ private:
         }
 
         if (report.missing_levels.empty()) {
-            rf::console::print("{} unique levels on server rotation. All are available for autodownload from FactionFiles.",
+            rf::console::print("{} unique levels checked. All are available for autodownload from FactionFiles.",
                 report.unique_levels);
             return;
         }
 
-        rf::console::print("{} unique levels on server rotation. {} are NOT available for autodownload from FactionFiles:",
+        rf::console::print("{} unique levels checked. {} are NOT available for autodownload from FactionFiles:",
             report.unique_levels, report.missing_levels.size());
         for (const auto& missing : report.missing_levels) {
             rf::console::print("  {}", missing);
