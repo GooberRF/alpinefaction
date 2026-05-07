@@ -14,6 +14,7 @@ Version 1.4.0 (Lupin): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Support DDS texture format in level editor
 - Add `ATX_Set_Frame`, `ATX_Play`, `ATX_Pause`, `ATX_Set_Frame_Time` events
+- Add vote-allowed levels to level autodownload list for dedicated servers
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
