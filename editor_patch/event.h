@@ -81,7 +81,11 @@ enum class AlpineDedEventID : int
     Unhide_Glare,
     Gas_Region_State,
     Modify_Gas_Region,
-    Resize_Gas_Region
+    Resize_Gas_Region,
+    ATX_Set_Frame,
+    ATX_Play,
+    ATX_Pause,
+    ATX_Set_Frame_Time
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept

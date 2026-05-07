@@ -84,6 +84,8 @@ static auto& texture_browser_scan_path = addr_as_ref<void __cdecl(
 
 // ─── Bitmap manager (RED.exe bmpman) ────────────────────────────────────────
 
+constexpr size_t MAX_TEXTURE_NAME_LEN = 31;
+
 struct BitmapEntry {
     static constexpr int TYPE_USER = 3;
     static constexpr int FORMAT_888_RGB = 6;

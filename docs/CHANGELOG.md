@@ -4,15 +4,23 @@
 Version 1.4.0 (Lupin): Not yet released
 --------------------------------
 ### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Support Alpine Texture (ATX) declarative texture format in game and level editor
+  - Fine tuned texture animation without being subject to VBM format limitations
+  - Accessible to event system via handle for level-driven behaviour scripting
+- Support PNG and JPG texture formats in game and level editor
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
+- Support DDS texture format in level editor
+- Add `ATX_Set_Frame`, `ATX_Play`, `ATX_Pause`, `ATX_Set_Frame_Time` events
 - Add vote-allowed levels to level autodownload list for dedicated servers
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
 - Fix incorrect clickable area size for launcher FFLink button
+- Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
 
 [@is-this-c](https://github.com/is-this-c)
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`

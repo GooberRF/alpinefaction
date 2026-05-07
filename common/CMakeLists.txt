@@ -19,6 +19,9 @@ set(SRCS
     include/common/utils/perf-utils.h
     include/common/utils/string-utils.h
     include/common/utils/bool-utils.h
+    include/common/bitmap/formats.h
+    include/common/atx/spec.h
+    include/common/atx/parse.h
     include/common/version/version.h
     src/HttpRequest.cpp
     src/config/GameConfig.cpp

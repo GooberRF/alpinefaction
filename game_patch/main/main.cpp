@@ -18,6 +18,7 @@
 #include "main.h"
 #include "../os/console.h"
 #include "../os/os.h"
+#include "../bmpman/atx.h"
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
@@ -154,6 +155,7 @@ FunHook<int()> rf_do_frame_hook{
         client_bot_do_frame();
         koth_do_frame();
         alpine_mesh_do_frame();
+        atx_do_frame();
         int result = rf_do_frame_hook.call_target();
         maybe_autosave();
         debug_do_frame_post();
@@ -204,6 +206,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         xlog::info("Loading level: {}", level_filename);
         evaluate_pow2tex(level_filename);
         waypoints_level_reset();
+        atx_level_reset();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);
 
