@@ -61,6 +61,15 @@ static bool g_action_curr[k_action_count] = {};
 
 static int g_rebind_pending_sc = -1; // scan code captured during rebind, -1 = none pending
 static bool g_last_input_was_gamepad = false;
+
+static void set_last_input_gamepad(bool is_gamepad)
+{
+    if (g_last_input_was_gamepad != is_gamepad) {
+        g_last_input_was_gamepad = is_gamepad;
+        hud_mark_bindings_dirty();
+    }
+}
+
 static float g_message_log_close_cooldown = 0.0f;
 static int g_pending_scroll_delta = 0;
 static float g_menu_cursor_accum_x = 0.0f;
@@ -429,7 +438,7 @@ static void menu_nav_apply_cursor_delta(float dx, float dy)
     if (ix == 0 && iy == 0) return;
     menu_nav_move_cursor(ix, iy);
     g_menu_nav.last_nav_was_dpad = false;
-    g_last_input_was_gamepad = true;
+    set_last_input_gamepad(true);
 }
 
 static int dpad_btn_to_navkey(int btn)
@@ -718,7 +727,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
     if (g_message_log_close_cooldown > 0.0f) return;
     if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
 
-    g_last_input_was_gamepad = true;
+    set_last_input_gamepad(true);
 
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
         if (ev.button == SDL_GAMEPAD_BUTTON_START) {
@@ -801,17 +810,17 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
     case SDL_GAMEPAD_AXIS_LEFTX:
     case SDL_GAMEPAD_AXIS_LEFTY:
         if (std::abs(v) > g_alpine_game_config.gamepad_move_deadzone)
-            g_last_input_was_gamepad = true;
+            set_last_input_gamepad(true);
         break;
     case SDL_GAMEPAD_AXIS_RIGHTX:
     case SDL_GAMEPAD_AXIS_RIGHTY:
         if (std::abs(v) > g_alpine_game_config.gamepad_look_deadzone)
-            g_last_input_was_gamepad = true;
+            set_last_input_gamepad(true);
         break;
     case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
     case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
         if (v > 0.5f)
-            g_last_input_was_gamepad = true;
+            set_last_input_gamepad(true);
         break;
     default:
         break;
@@ -828,7 +837,7 @@ static void handle_gamepad_touchpad_down(const SDL_GamepadTouchpadEvent& ev)
     g_touchpad.last_y = ev.y;
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
-    g_last_input_was_gamepad = true;
+    set_last_input_gamepad(true);
 }
 
 static void handle_gamepad_touchpad_motion(const SDL_GamepadTouchpadEvent& ev)
@@ -998,7 +1007,7 @@ static void gamepad_do_menu_frame()
 {
     if (g_menu_nav.deferred_btn_down != -1) {
         if (menu_nav_on_button_down(g_menu_nav.deferred_btn_down))
-            g_last_input_was_gamepad = true;
+            set_last_input_gamepad(true);
         g_menu_nav.deferred_btn_down = -1;
     }
     if (g_menu_nav.deferred_btn_up != -1) {
@@ -1784,7 +1793,7 @@ bool gamepad_is_menu_only_action(int action_idx)
 
 void gamepad_set_last_input_keyboard()
 {
-    g_last_input_was_gamepad = false;
+    set_last_input_gamepad(false);
 }
 
 int gamepad_get_button_for_action(int action_idx)
