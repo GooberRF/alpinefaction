@@ -72,6 +72,44 @@ namespace
         // True if any override (header or per-frame) is configured. Used as a fast early-out
         // in the material-getter hook so non-override ATXes pay zero overhead.
         bool has_material_override = false;
+
+        AtxController() = default;
+        AtxController(const AtxController&) = delete;
+        AtxController& operator=(const AtxController&) = delete;
+
+        // Failure-path RAII: drop any outstanding locks but DO NOT release bm refs.
+        ~AtxController()
+        {
+            for (auto& f : frames) {
+                if (f.bm_handle >= 0 && (f.locked_pixels || f.locked_palette)) {
+                    rf::bm::unlock(f.bm_handle);
+                    f.locked_pixels = nullptr;
+                    f.locked_palette = nullptr;
+                }
+            }
+        }
+    };
+
+    // RAII guard for the alpha mask child bm during parse_and_load's transform block.
+    struct MaskHandleGuard
+    {
+        int handle = -1;
+        bool locked = false;
+        ~MaskHandleGuard()
+        {
+            if (handle >= 0 && locked) {
+                rf::bm::unlock(handle);
+            }
+        }
+        void release()
+        {
+            if (handle >= 0) {
+                if (locked) rf::bm::unlock(handle);
+                rf::bm::release(handle);
+            }
+            handle = -1;
+            locked = false;
+        }
     };
 
     // Single registry keyed by lowercase basename. With ATX supercede in effect a caller may
@@ -350,19 +388,20 @@ namespace
             }
 
             // Load and validate the alpha mask if one was specified.
-            int mask_handle = -1;
+            MaskHandleGuard mask_guard;
             uint8_t* mask_pixels = nullptr;
             rf::bm::Format mask_fmt = rf::bm::FORMAT_NONE;
             if (alpha_mask_filename) {
+                int mask_handle = -1;
                 {
                     ChildLoadGuard guard;
                     mask_handle = rf::bm::load(alpha_mask_filename->c_str(), -1, true);
                 }
                 if (mask_handle < 0) {
                     xlog::error("ATX '{}': failed to load alpha mask '{}'", filename, *alpha_mask_filename);
-                    unlock_children(*c);
                     return nullptr;
                 }
+                mask_guard.handle = mask_handle;
                 int mw = 0, mh = 0, mnp = 0, mml = 0;
                 rf::bm::get_mipmap_info(mask_handle, &mw, &mh, &mnp, &mml);
                 if (mw != c->width || mh != c->height || mml != c->num_levels) {
@@ -370,26 +409,21 @@ namespace
                                 "(got {}x{} mips={}, expected {}x{} mips={})",
                         filename, *alpha_mask_filename, mw, mh, mml,
                         c->width, c->height, c->num_levels);
-                    rf::bm::release(mask_handle);
-                    unlock_children(*c);
                     return nullptr;
                 }
                 mask_fmt = rf::bm::get_format(mask_handle);
                 if (mask_fmt != rf::bm::FORMAT_8_PALETTED && mask_fmt != rf::bm::FORMAT_8_ALPHA) {
                     xlog::error("ATX '{}': alpha mask '{}' must be 8-bit greyscale (got format {})",
                         filename, *alpha_mask_filename, static_cast<int>(mask_fmt));
-                    rf::bm::release(mask_handle);
-                    unlock_children(*c);
                     return nullptr;
                 }
                 uint8_t* dummy_pal = nullptr;
                 rf::bm::lock(mask_handle, &mask_pixels, &dummy_pal);
                 if (!mask_pixels) {
                     xlog::error("ATX '{}': failed to lock alpha mask '{}'", filename, *alpha_mask_filename);
-                    rf::bm::release(mask_handle);
-                    unlock_children(*c);
                     return nullptr;
                 }
+                mask_guard.locked = true;
             }
 
             // Per-frame transform: allocate owned buffer, convert + overlay alpha for each mip,
@@ -423,18 +457,17 @@ namespace
 
                 // Source pixels are no longer needed — unlock and drop our ref. Other consumers
                 // (direct references, other ATXes) keep the source alive via their own refs.
+                f.locked_pixels = nullptr;
+                f.locked_palette = nullptr;
                 rf::bm::unlock(f.bm_handle);
                 rf::bm::release(f.bm_handle);
                 f.bm_handle = -1;
                 f.locked_pixels = f.owned_buffer.get();
-                f.locked_palette = nullptr;
             }
 
-            if (mask_handle >= 0) {
-                rf::bm::unlock(mask_handle);
-                rf::bm::release(mask_handle);
-            }
-
+            // Success path: drop the mask's ref now that the per-frame transform has copied
+            // its data into each owned_buffer.
+            mask_guard.release();
             c->format = effective;
         }
 
@@ -636,13 +669,15 @@ void atx_level_reset()
     g_failed.clear();
 }
 
+// Each event entry point requires the controller to already exist (i.e. the texture has been
+// referenced through the bm system at least once).
 bool atx_set_frame(const std::string& handle, int frame_index)
 {
     AtxController* c = get_by_handle(handle);
     if (!c) {
-        rf::bm::load((string_to_lower(handle) + ".atx").c_str(), -1, true);
-        c = get_by_handle(handle);
-        if (!c) return false;
+        xlog::warn("ATX_Set_Frame: '{}' not loaded — texture must be referenced by the level "
+                   "before this event fires", handle);
+        return false;
     }
     const int n = static_cast<int>(c->frames.size());
     if (frame_index < 0 || frame_index >= n) {
@@ -661,9 +696,9 @@ bool atx_play(const std::string& handle)
 {
     AtxController* c = get_by_handle(handle);
     if (!c) {
-        rf::bm::load((string_to_lower(handle) + ".atx").c_str(), -1, true);
-        c = get_by_handle(handle);
-        if (!c) return false;
+        xlog::warn("ATX_Play: '{}' not loaded — texture must be referenced by the level "
+                   "before this event fires", handle);
+        return false;
     }
     c->playing = true;
     return true;
@@ -672,7 +707,11 @@ bool atx_play(const std::string& handle)
 bool atx_pause(const std::string& handle)
 {
     AtxController* c = get_by_handle(handle);
-    if (!c) return false;
+    if (!c) {
+        xlog::warn("ATX_Pause: '{}' not loaded — texture must be referenced by the level "
+                   "before this event fires", handle);
+        return false;
+    }
     c->playing = false;
     return true;
 }
@@ -681,9 +720,9 @@ bool atx_set_frame_time(const std::string& handle, int frame_time_ms)
 {
     AtxController* c = get_by_handle(handle);
     if (!c) {
-        rf::bm::load((string_to_lower(handle) + ".atx").c_str(), -1, true);
-        c = get_by_handle(handle);
-        if (!c) return false;
+        xlog::warn("ATX_Set_Frame_Time: '{}' not loaded — texture must be referenced by the "
+                   "level before this event fires", handle);
+        return false;
     }
     c->base_frame_time_ms = std::max(1, frame_time_ms);
     return true;

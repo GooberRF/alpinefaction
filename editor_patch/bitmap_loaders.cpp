@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstring>
@@ -5,7 +7,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include <algorithm>
 #include <dds.h>
 #include <stb_image.h>
 #include <toml++/toml.hpp>
@@ -243,6 +244,18 @@ namespace
         return true;
     }
 
+    // Per-binary file redirect map for STB/DDS. Populated at read_header time when a sibling
+    std::unordered_map<std::string, std::string> g_file_redirects;
+
+    // Resolve the filename to read for a given bm_entry. Returns the redirect-stored sibling
+    // filename if one was recorded at header time, otherwise the entry's literal name.
+    std::string resolve_locked_filename(const BitmapEntry& entry)
+    {
+        auto it = g_file_redirects.find(string_to_lower(entry.name));
+        if (it != g_file_redirects.end()) return it->second;
+        return entry.name;
+    }
+
     bool fill_stb_locked_data(BitmapEntry& entry)
     {
         // Defensively null out before any failure path so a re-lock-after-unlock can't expose
@@ -250,9 +263,10 @@ namespace
         entry.locked_data = nullptr;
         entry.locked_palette = nullptr;
 
+        const std::string filename = resolve_locked_filename(entry);
         std::vector<uint8_t> file_bytes;
-        if (!read_file_to_vector(entry.name, file_bytes)) {
-            xlog::error("editor stb_image: failed to reopen '{}' during lock", entry.name);
+        if (!read_file_to_vector(filename.c_str(), file_bytes)) {
+            xlog::error("editor stb_image: failed to reopen '{}' during lock", filename);
             return false;
         }
         // Output channels match the format we declared at read_header time.
@@ -330,8 +344,9 @@ namespace
         entry.locked_data = nullptr;
         entry.locked_palette = nullptr;
 
+        const std::string filename = resolve_locked_filename(entry);
         std::vector<uint8_t> file_bytes;
-        if (!read_file_to_vector(entry.name, file_bytes)) return false;
+        if (!read_file_to_vector(filename.c_str(), file_bytes)) return false;
         if (file_bytes.size() < 4 + sizeof(DDS_HEADER)) return false;
         if (read_u32le(file_bytes.data()) != DDS_MAGIC) return false;
 
@@ -386,6 +401,8 @@ namespace
 
     // ATX (frame-0 preview)
     // Editor doesn't run the game tick, so animation is irrelevant
+    // Keyed by lowercased bm_entry.name (the originally requested filename — which may be a
+    // legacy .tga/.vbm name superceded to .atx). The value is the resolved frame[0] filename.
     std::unordered_map<std::string, std::string> g_atx_redirects;
 
     // Re-entrancy guard in case anything goes weird while loading a child texture.
@@ -400,7 +417,42 @@ namespace
         return spec->frames[0].filename;
     }
 
-    bool fill_atx_header(const char* atx_filename, int* w, int* h, int* format, int* num_levels,
+    // Returns true if the editor's VFS can find the named file (either loose or in a packfile).
+    // Cheap probe used to decide whether a sibling exists before committing to decode it.
+    bool sibling_file_exists(const char* filename)
+    {
+        rf::File file;
+        if (file.open_mode(filename) != 0) return false;
+        file.close();
+        return true;
+    }
+
+    // Probe the supercede chain (.atx > .dds > .png > .jpg > .jpeg) for a sibling of
+    // `requested_name`. Returns the first existing sibling that is not the requested file
+    // itself, or empty string if none qualify. Mirrors the game-side chain so the editor
+    // previews the same file the game will actually load.
+    constexpr std::array<std::string_view, 5> editor_sibling_supercede_extensions = {
+        ".atx", ".dds", ".png", ".jpg", ".jpeg"
+    };
+
+    std::string find_supercede_sibling(const char* requested_name)
+    {
+        std::string base{get_filename_without_ext(requested_name)};
+        for (auto ext : editor_sibling_supercede_extensions) {
+            std::string candidate = base + std::string{ext};
+            // Don't resolve to ourselves — the caller already handles its own extension via
+            // the direct dispatch below. This also avoids infinite recursion when the
+            // requested file happens to be one of the new formats but doesn't exist on disk.
+            if (string_iequals(candidate, requested_name)) continue;
+            if (sibling_file_exists(candidate.c_str())) {
+                return candidate;
+            }
+        }
+        return {};
+    }
+
+    bool fill_atx_header(const char* atx_filename, const char* original_name,
+                         int* w, int* h, int* format, int* num_levels,
                          int* num_frames, int* fps, int* total_bytes)
     {
         auto frame0 = get_atx_frame0_filename(atx_filename);
@@ -430,7 +482,13 @@ namespace
         *fps = 0;
         *total_bytes = -1;
 
-        g_atx_redirects[string_to_lower(atx_filename)] = *frame0;
+        // Index the redirect under the originally-requested name (matches what the bm system
+        // will store in entry.name) AND under the .atx filename, so direct .atx loads still
+        // work alongside supercede resolutions.
+        g_atx_redirects[string_to_lower(original_name)] = *frame0;
+        if (!string_iequals(original_name, atx_filename)) {
+            g_atx_redirects[string_to_lower(atx_filename)] = *frame0;
+        }
         return true;
     }
 
@@ -454,15 +512,51 @@ namespace
             }
             if (is_atx_filename(name)) {
                 if (g_loading_atx_child) return 0; // refuse recursive .atx load
-                if (fill_atx_header(name, w, h, format, num_levels, num_frames, fps, total_bytes)) {
+                if (fill_atx_header(name, name, w, h, format, num_levels, num_frames, fps, total_bytes)) {
                     return EDITOR_BM_TYPE_ATX;
                 }
                 return 0;
+            }
+            // Legacy-named — probe the supercede chain so the editor preview
+            // matches what the game side resolves at runtime. WYSIWYG with the in-game render.
+            if (!g_loading_atx_child) {
+                std::string sibling = find_supercede_sibling(name);
+                if (!sibling.empty()) {
+                    if (is_atx_filename(sibling)) {
+                        if (fill_atx_header(sibling.c_str(), name, w, h, format, num_levels,
+                                            num_frames, fps, total_bytes)) {
+                            return EDITOR_BM_TYPE_ATX;
+                        }
+                    }
+                    else if (is_dds_filename(sibling)) {
+                        if (fill_dds_header(sibling.c_str(), w, h, format, num_levels,
+                                            num_frames, fps, total_bytes)) {
+                            g_file_redirects[string_to_lower(name)] = sibling;
+                            return EDITOR_BM_TYPE_DDS;
+                        }
+                    }
+                    else if (is_stb_filename(sibling)) {
+                        if (fill_stb_header(sibling.c_str(), w, h, format, num_levels,
+                                            num_frames, fps, total_bytes)) {
+                            g_file_redirects[string_to_lower(name)] = sibling;
+                            return EDITOR_BM_TYPE_STB;
+                        }
+                    }
+                    // sibling probe failed; fall through to stock dispatch below
+                }
             }
             return editor_bm_read_header_hook.call_target(name, w, h, format, num_levels, pal_buf,
                 num_frames, fps, total_bytes, vbm_ver_buf, default_path);
         }
     };
+
+    // Lock an entry by its bm_type. For custom types (STB/DDS), invoke the editor-side decoder
+    // directly. For stock types, invoke the trampoline so RED's original dispatch runs.
+    //
+    // RED's original bm_lock at 0x004BCCD0 contains a default-case `do { assert } while(true)`
+    // which hangs the editor on unknown bm_type, so we must NEVER let a custom bm_type
+    // (0x10/0x11/0x12) reach the trampoline.
+    int dispatch_lock(BitmapEntry& entry, int handle, void** pixels_out, void** palette_out);
 
     FunHook<int(int, void**, void**)> editor_bm_lock_hook{
         0x004BCCD0,
@@ -474,47 +568,58 @@ namespace
                 return 0;
             }
             BitmapEntry& entry = BitmapEntry::entries[idx];
-
-            if (entry.bm_type == EDITOR_BM_TYPE_STB) {
-                if (fill_stb_locked_data(entry)) {
-                    *pixels_out = entry.locked_data;
-                    *palette_out = entry.locked_palette;
-                    return entry.format;
-                }
-                *pixels_out = nullptr; *palette_out = nullptr; return 0;
-            }
-            if (entry.bm_type == EDITOR_BM_TYPE_DDS) {
-                if (fill_dds_locked_data(entry)) {
-                    *pixels_out = entry.locked_data;
-                    *palette_out = entry.locked_palette;
-                    return entry.format;
-                }
-                *pixels_out = nullptr; *palette_out = nullptr; return 0;
-            }
-            if (entry.bm_type == EDITOR_BM_TYPE_ATX) {
-                auto it = g_atx_redirects.find(string_to_lower(entry.name));
-                if (it == g_atx_redirects.end()) {
-                    *pixels_out = nullptr; *palette_out = nullptr; return 0;
-                }
-                // Re-resolve frame[0]'s bm_handle by filename. BitmapEntry::load is name-cached
-                // (returns the existing handle if already loaded) so this is cheap, and it's
-                // robust against the original child handle having been freed and replaced.
-                int child_handle = -1;
-                {
-                    g_loading_atx_child = true;
-                    child_handle = BitmapEntry::load(it->second.c_str(), 0);
-                    g_loading_atx_child = false;
-                }
-                if (child_handle < 0) {
-                    *pixels_out = nullptr; *palette_out = nullptr; return 0;
-                }
-                // Forward lock to the child handle. Recurses through this hook; the child is
-                // not type ATX so it dispatches to the appropriate non-ATX branch.
-                return editor_bm_lock_hook.call_target(child_handle, pixels_out, palette_out);
-            }
-            return editor_bm_lock_hook.call_target(handle, pixels_out, palette_out);
+            return dispatch_lock(entry, handle, pixels_out, palette_out);
         }
     };
+
+    int dispatch_lock(BitmapEntry& entry, int handle, void** pixels_out, void** palette_out)
+    {
+        if (entry.bm_type == EDITOR_BM_TYPE_STB) {
+            if (fill_stb_locked_data(entry)) {
+                *pixels_out = entry.locked_data;
+                *palette_out = entry.locked_palette;
+                return entry.format;
+            }
+            *pixels_out = nullptr; *palette_out = nullptr; return 0;
+        }
+        if (entry.bm_type == EDITOR_BM_TYPE_DDS) {
+            if (fill_dds_locked_data(entry)) {
+                *pixels_out = entry.locked_data;
+                *palette_out = entry.locked_palette;
+                return entry.format;
+            }
+            *pixels_out = nullptr; *palette_out = nullptr; return 0;
+        }
+        if (entry.bm_type == EDITOR_BM_TYPE_ATX) {
+            auto it = g_atx_redirects.find(string_to_lower(entry.name));
+            if (it == g_atx_redirects.end()) {
+                *pixels_out = nullptr; *palette_out = nullptr; return 0;
+            }
+            // Re-resolve frame[0]'s bm_handle by filename. BitmapEntry::load is name-cached
+            // (returns the existing handle if already loaded) so this is cheap, and it's
+            // robust against the original child handle having been freed and replaced.
+            int child_handle = -1;
+            {
+                g_loading_atx_child = true;
+                child_handle = BitmapEntry::load(it->second.c_str(), 0);
+                g_loading_atx_child = false;
+            }
+            if (child_handle < 0) {
+                *pixels_out = nullptr; *palette_out = nullptr; return 0;
+            }
+            const int child_idx = BitmapEntry::handle_to_index(child_handle);
+            if (child_idx < 0) {
+                *pixels_out = nullptr; *palette_out = nullptr; return 0;
+            }
+            BitmapEntry& child = BitmapEntry::entries[child_idx];
+            // Re-dispatch on the child's bm_type. This routes custom-type children (DDS/STB)
+            // through our decoders rather than RED's original lock, which would hang on those
+            // types. Stock-type children (TGA/VBM/etc.) hit the call_target branch below.
+            return dispatch_lock(child, child_handle, pixels_out, palette_out);
+        }
+        // Stock bm_type — safe to invoke RED's original lock.
+        return editor_bm_lock_hook.call_target(handle, pixels_out, palette_out);
+    }
 }
 
 void install_editor_bitmap_loader_hooks()
@@ -522,6 +627,12 @@ void install_editor_bitmap_loader_hooks()
     editor_bm_read_header_hook.install();
     editor_bm_lock_hook.install();
     xlog::info("Editor bitmap loader hooks installed (PNG/JPG, DDS, ATX preview)");
+}
+
+void clear_editor_bitmap_redirects()
+{
+    g_atx_redirects.clear();
+    g_file_redirects.clear();
 }
 
 std::vector<std::string> parse_atx_dependencies(const char* atx_filename)

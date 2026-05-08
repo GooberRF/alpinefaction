@@ -730,6 +730,10 @@ void reload_custom_textures()
         }
     }
 
+    // Drop cached redirects so edits to .atx files (or new sibling files dropped on disk
+    // mid-session) are re-resolved on the next read_header.
+    clear_editor_bitmap_redirects();
+
     // Reload placeholder bitmap entries so previously-failed textures load from disk.
     // This updates entries in-place (same handle) so faces referencing them stay valid.
     reload_bm_placeholders();

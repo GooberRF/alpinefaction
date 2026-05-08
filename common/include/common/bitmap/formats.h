@@ -83,8 +83,6 @@ inline bool is_stb_filename(std::string_view name)
 inline bool is_dds_filename(std::string_view name) { return string_iends_with(name, ".dds"); }
 inline bool is_atx_filename(std::string_view name) { return string_iends_with(name, ".atx"); }
 
-// ─── Format predicates / mappings ─────────────────────────────────────────────
-
 // True for the set of uncompressed direct-color formats: 565, 1555, 4444, 888, 8888.
 // Excludes paletted (indexed-color) and block-compressed (DXT*). Useful for any pipeline
 // that reads or writes pixel bytes directly.

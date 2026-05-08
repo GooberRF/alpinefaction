@@ -18,3 +18,7 @@ void install_editor_bitmap_loader_hooks();
 
 // Parse an ATX file and return the list of texture filenames it references
 std::vector<std::string> parse_atx_dependencies(const char* atx_filename);
+
+// Clear the editor's ATX→frame[0] and legacy-name→sibling redirect caches. Safe to call
+// from texture-reload paths to pick up edits to .atx files made on disk during a session.
+void clear_editor_bitmap_redirects();

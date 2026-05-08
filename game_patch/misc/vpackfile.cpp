@@ -457,9 +457,15 @@ bool vpackfile_supercede_allowed(const char* requested_filename, const char* sib
     // user_maps entry regardless of toggle, but can only override a non-user_maps entry
     // when the "allow overwrite game files" toggle is on. Mirror that here.
     auto requested_it = g_loopup_table.find(string_to_lower(requested_filename));
-    bool requested_is_user_maps =
-        (requested_it != g_loopup_table.end()) && requested_it->second->parent->is_user_maps;
 
+    // If the requested file doesn't exist anywhere, the sibling isn't overriding anything —
+    // it's a net-new asset that the user_maps content needs in place of the legacy reference.
+    if (requested_it == g_loopup_table.end()) {
+        g_is_modded_game = true;
+        return true;
+    }
+
+    bool requested_is_user_maps = requested_it->second->parent->is_user_maps;
     if (requested_is_user_maps) {
         return true;
     }
