@@ -42,10 +42,10 @@ static const ButtonOverride shared_glyphs[] = {
     {  9, "L1"        },  // Left shoulder
     { 10, "R1"        },  // Right shoulder
     { 15, "M1"        },
-    { 16, "L4"        },  // Left back upper paddle
-    { 17, "L5"        },  // Left back lower paddle
-    { 18, "R4"        },  // Right back upper paddle
-    { 19, "R5"        },  // Right back lower paddle
+    { 16, "R4"        },  // Right Paddle 1
+    { 17, "L4"        },  // Left Paddle 1
+    { 18, "R5"        },  // Right Paddle 2
+    { 19, "L5"        },  // Left Paddle 2
     { 21, "M2"        },
     { 22, "M3"        },
     { 23, "M4"        },

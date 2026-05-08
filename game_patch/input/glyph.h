@@ -11,9 +11,10 @@
 #define STEAM_CONTROLLER_V2_WIRED_PID 0x1201  // Valve wired Steam Controller (HEADCRAB)
 #define STEAM_CONTROLLER_V2_BT_PID    0x1202  // Valve Bluetooth Steam Controller (HEADCRAB)
 #define STEAM_VIRTUAL_GAMEPAD_PID     0x11ff  // Steam Virtual Gamepad
-#define STEAM_DECK_BUILTIN_PID        0x1205  // Steam Deck Builtin
-#define STEAM_TRITON_WIRED_PID        0x1302  // Steam Controller 2 (GORDON) wired
-#define STEAM_TRITON_BLE_PID          0x1303  // Steam Controller 2 (GORDON) BLE
+#define STEAM_DECK_BUILTIN_PID        0x1205  // Valve Steam Deck Controller
+#define STEAM_TRITON_WIRED_PID        0x1302  // Valve wired Steam Controller (TRITON) wired
+#define STEAM_TRITON_BLE_PID          0x1303  // Valve Bluetooth Steam Controller (TRITON) 
+#define STEAM_TRITON_PROTEUS_PID      0x1304  // Valve Steam Controller Puck
 
 enum class ControllerIconType {
     Auto = 0,
@@ -45,7 +46,8 @@ inline bool is_steam_controller_pid(Uint16 pid)
 inline bool is_steam_triton_controller_pid(Uint16 pid)
 {
     return (pid == STEAM_TRITON_WIRED_PID ||
-            pid == STEAM_TRITON_BLE_PID);
+            pid == STEAM_TRITON_BLE_PID   ||
+            pid == STEAM_TRITON_PROTEUS_PID);
 }
 
 // Checks Valve VID/PID to resolve Steam-specific controller icon types.
