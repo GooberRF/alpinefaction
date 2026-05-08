@@ -256,7 +256,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
 
     if (!rf::console::console_is_visible()) {
         const int page_h = h - label_h * 2 - separator_h;
-        constexpr int PAGE_UP_DOWN_GRACE_PERIOD_MS = 500;
+        constexpr int PAGE_UP_DOWN_GRACE_PERIOD_MS = 800;
         constexpr int PAGE_UP_DOWN_WAIT_TIME_MS = 100;
         if (rf::key_is_down(rf::KEY_PAGEUP)
             && (!self.page_up_timer.valid() || self.page_up_timer.elapsed())
