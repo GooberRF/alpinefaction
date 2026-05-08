@@ -340,6 +340,8 @@ void os_init_sdl_window()
     // Deferred after D3D device creation so SDL's hidden helper window does not
     // interfere with exclusive fullscreen acquisition.
     os_init_sdl_video();
+    if (!g_sdl_video_initialized)
+        return;
 
     SDL_PropertiesID props = SDL_CreateProperties();
     SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_HWND_POINTER, rf::main_wnd);

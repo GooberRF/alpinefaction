@@ -1,5 +1,5 @@
 #include <cctype>
-#include <string>
+#include <cstring>
 #include <SDL3/SDL.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -190,8 +190,7 @@ static SDL_Scancode rf_key_to_sdl_scancode(int key)
         case KEY_SEMICOL:      return SDL_SCANCODE_SEMICOLON;
         case KEY_RAPOSTRO:     return SDL_SCANCODE_APOSTROPHE;
         case KEY_LAPOSTRO_DBG: return SDL_SCANCODE_GRAVE;
-        case KEY_LSHIFT:       return SDL_SCANCODE_LSHIFT;
-        case KEY_SLASH:        return SDL_SCANCODE_BACKSLASH;
+        case KEY_LSHIFT:       return SDL_SCANCODE_LSHIFT;        case KEY_SLASH:        return SDL_SCANCODE_BACKSLASH;
         case KEY_Z:            return SDL_SCANCODE_Z;
         case KEY_X:            return SDL_SCANCODE_X;
         case KEY_C:            return SDL_SCANCODE_C;
