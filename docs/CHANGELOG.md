@@ -9,12 +9,19 @@ Version 1.4.0 (Lupin): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Add vote-allowed levels to level autodownload list for dedicated servers
 
+[@is-this-c](https://github.com/is-this-c)
+- Remote server config UI
+  - Add `Net FPS`
+  - Add detection of manually loaded levels
+  - Highlight an active level in a server's rotation via background color instead of text color
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
 - Fix incorrect clickable area size for launcher FFLink button
 
 [@is-this-c](https://github.com/is-this-c)
+- Clear cached server config output after a shuffle of a server's rotation
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026

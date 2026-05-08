@@ -2446,6 +2446,8 @@ ConsoleCommand2 netfps_cmd{
     [](std::optional<int> update_rate) {
         if (update_rate) {
             g_alpine_game_config.set_server_netfps(update_rate.value());
+            g_alpine_server_config.printed_cfg.clear();
+            g_alpine_server_config.signal_cfg_changed = true;
         }
         rf::console::print("Server netfps: {}", g_alpine_game_config.server_netfps);
     },
