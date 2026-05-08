@@ -10,6 +10,7 @@
 #include "../rf/multi.h"
 #include "../os/console.h"
 #include "../input/input.h"
+#include "../input/gamepad.h"
 #include "../input/mouse.h"
 #include "../rf/entity.h"
 #include "../misc/misc.h"
@@ -33,6 +34,11 @@ constexpr float freelook_accel_max_scale = 20.0f;
 constexpr float freelook_accel_scroll_step = 0.25f;
 
 bool server_side_restrict_disable_ss = false;
+
+static bool s_camera_resetting = false;
+static bool s_camera_reset_prev_down = false;
+static float s_camera_reset_start_pitch = 0.0f;
+static float s_camera_reset_elapsed = 0.0f;
 
 FunHook<void(rf::Camera*)> camera_update_shake_hook{
     0x0040DB70,
@@ -180,6 +186,7 @@ CodeInjection free_camera_do_frame_patch{
 
                 if (!rf::is_multi) {
                     cep->info->acceleration = freelook_cam_base_accel; // `camera2` in SP ignores accel scale
+                    flush_freelook_gamepad_deltas();
                     return;
                 }
                 else {
@@ -200,6 +207,7 @@ CodeInjection free_camera_do_frame_patch{
                     }
 
                     cep->info->acceleration = freelook_cam_base_accel * freelook_cam_accel_scale;
+                    flush_freelook_gamepad_deltas();
                 }
             }
         }
@@ -338,7 +346,7 @@ static float convert_pitch_delta_to_non_linear_space(
     const float pitch_delta,
     const float yaw_delta
 ) {
-    // Convert to linear space.  See `physics_make_orient`.
+    // Convert to linear space. See `physics_make_orient`.
     const rf::Vector3 fvec =
         fw_vector_from_non_linear_yaw_pitch(current_yaw, current_pitch_non_lin);
     const float current_pitch_lin = linear_pitch_from_forward_vector(fvec);
@@ -356,8 +364,48 @@ static float convert_pitch_delta_to_non_linear_space(
 
     // Update non-linear pitch delta.
     const float new_pitch_delta = new_pitch_non_lin - current_pitch_non_lin;
+    xlog::trace(
+        "non-lin {} lin {} delta {} new {}",
+        current_pitch_non_lin,
+        current_pitch_lin,
+        pitch_delta,
+        new_pitch_delta
+    );
 
     return new_pitch_delta;
+}
+
+static void apply_camera_reset_to_horizon(rf::Entity* entity, float& pitch_delta)
+{
+    // Track button state every frame so a held button doesn't re-arm after completion.
+    if (rf::local_player) {
+        const auto action = get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
+        const bool down = rf::control_is_control_down(&rf::local_player->settings.controls, action);
+
+        if (!s_camera_resetting && down && !s_camera_reset_prev_down) {
+            // Rising edge: capture the starting pitch and begin the animation.
+            s_camera_resetting = true;
+            s_camera_reset_start_pitch = entity->control_data.eye_phb.x;
+            s_camera_reset_elapsed = 0.0f;
+        }
+
+        s_camera_reset_prev_down = down;
+    }
+
+    if (!s_camera_resetting)
+        return;
+
+    // Advance time and compute a smoothstep [0,1] parameter.
+    // Smoothstep has zero first-derivative at both endpoints, giving a natural ease-in/out feel.
+    constexpr float duration = 0.3f;
+    s_camera_reset_elapsed += rf::frametime;
+    const float t = std::min(s_camera_reset_elapsed / duration, 1.0f);
+    const float t_smooth = t * t * (3.0f - 2.0f * t);
+    const float target_pitch = s_camera_reset_start_pitch * (1.0f - t_smooth);
+    pitch_delta = target_pitch - entity->control_data.eye_phb.x;
+
+    if (t >= 1.0f)
+        s_camera_resetting = false;
 }
 
 // Applies raw/modern mouse deltas and linear pitch correction at the entity
@@ -384,6 +432,12 @@ CodeInjection linear_pitch_patch{
             yaw_delta += mouse_yaw;
         }
 
+        // Add gamepad rotation deltas to the game's computed deltas
+        float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
+        consume_raw_gamepad_deltas(gamepad_pitch, gamepad_yaw);
+        pitch_delta += gamepad_pitch;
+        yaw_delta += gamepad_yaw;
+
         // Apply linear pitch correction to combined delta
         if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0.0f) {
             const float current_yaw = entity->control_data.phb.y;
@@ -395,8 +449,16 @@ CodeInjection linear_pitch_patch{
                 yaw_delta
             );
         }
+        
+        // Apply camera reset to horizon if Center View action is pressed
+        apply_camera_reset_to_horizon(entity, pitch_delta);
     },
 };
+
+void camera_start_reset_to_horizon()
+{
+    s_camera_resetting = true;
+}
 
 ConsoleCommand2 linear_pitch_cmd{
     "cl_linearpitch",
@@ -440,7 +502,7 @@ void camera_do_patch()
     // Improve freelook spectate logic after level transition.
     multi_get_state_info_camera_enter_fixed_patch.install();
 
-    // Linear pitch correction
+    // linear pitch correction
     linear_pitch_patch.install();
     linear_pitch_cmd.register_cmd();
 }

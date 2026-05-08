@@ -25,3 +25,13 @@ void clear_explicit_upcoming_game_type_request();
 bool file_loaded_from_alpinefaction_vpp(const char* filename);
 bool weapon_reticle_is_customized(int weapon_id, bool bighud);
 bool rocket_locked_reticle_is_customized(bool bighud);
+
+// Controller bindings tab (ui.cpp) — queried from main_menu.cpp
+bool ui_ctrl_bindings_view_active();
+void ui_ctrl_bindings_view_reset(); // restore keyboard scan codes and deactivate tab
+
+// Redraw currently active HUD token message after input icon/settings change
+void hud_refresh_action_tokens();
+
+// Schedule a HUD token refresh on the next game frame (safe to call while menus are open)
+void hud_mark_bindings_dirty();

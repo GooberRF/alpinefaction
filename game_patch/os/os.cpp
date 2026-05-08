@@ -12,7 +12,6 @@
 #include "../multi/multi.h"
 #include "os.h"
 #include "win32_console.h"
-
 #include <timeapi.h>
 
 const char* get_win_msg_name(UINT msg);
