@@ -101,8 +101,9 @@ set(SRCS
     graphics/d3d11/gr_d3d11_gamma.h
     graphics/d3d11/gr_d3d11_gamma.cpp
     input/input.h
-    input/mouse.h
+    input/input.cpp
     input/mouse.cpp
+    input/mouse.h
     input/key.cpp
     hud/hud_colors.cpp
     hud/hud_scale.cpp
@@ -334,4 +335,13 @@ target_link_libraries(AlpineFaction
     freetype
     stb_vorbis
     stb_image
+    SDL3::SDL3
 )
+
+if(WIN32)
+    target_link_libraries(AlpineFaction
+        setupapi
+        imm32
+        cfgmgr32
+    )
+endif()

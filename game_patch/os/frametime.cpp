@@ -11,6 +11,7 @@
 #include "../rf/hud.h"
 #include "../rf/entity.h"
 #include "../rf/os/frametime.h"
+#include "os.h"
 #include "../multi/multi.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
