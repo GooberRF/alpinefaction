@@ -138,13 +138,21 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
     }
 
     // Always log status code and response prefix so misroutes / proxy interception are diagnosable.
+    xlog::info("[fflink] HTTP {} from {}", status_code, k_session_url);
+
     constexpr size_t k_log_response_prefix = 256;
-    const std::string response_preview = sanitize_for_log(
-        response.size() <= k_log_response_prefix
-            ? std::string_view{response}
-            : std::string_view{response}.substr(0, k_log_response_prefix));
-    const char* truncated = response.size() > k_log_response_prefix ? "...[truncated]" : "";
-    xlog::info("[fflink] HTTP {} from {}; response: {}{}", status_code, k_session_url, response_preview, truncated);
+    auto log_body_preview = [&]() {
+        const std::string response_preview = sanitize_for_log(
+            response.size() <= k_log_response_prefix
+                ? std::string_view{response}
+                : std::string_view{response}.substr(0, k_log_response_prefix));
+        const char* truncated = response.size() > k_log_response_prefix ? "...[truncated]" : "";
+        xlog::info("[fflink] response body: {}{}", response_preview, truncated);
+    };
+
+    if (status_code != 200) {
+        log_body_preview();
+    }
 
     if (status_code == 200) {
         // Detect HTML / non-JSON bodies before trying to parse, so the operator-facing
@@ -155,6 +163,8 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
             trimmed.remove_prefix(1);
         }
         if (trimmed.empty() || trimmed.front() != '{') {
+            // 200 with non-JSON body (captive portal, upstream error page, etc.)
+            log_body_preview();
             out.kind = ExchangeOutcome::Kind::transient_error;
             out.error_detail = "server returned non-JSON response (likely upstream/DB error)";
             return out;
@@ -173,6 +183,7 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
             return out;
         }
         catch (const std::exception& e) {
+            xlog::warn("[fflink] HTTP 200 but JSON parse / validation failed; body length={} bytes", response.size());
             out.kind = ExchangeOutcome::Kind::transient_error;
             out.error_detail = std::string{"malformed JSON response: "} + e.what();
             return out;
