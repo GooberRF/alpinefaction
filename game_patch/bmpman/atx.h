@@ -33,7 +33,11 @@ void unlock_atx_bitmap(rf::bm::BitmapEntry& bm_entry);
 // through to the stock material logic in that case).
 std::optional<uint8_t> atx_material_override(const rf::bm::BitmapEntry& bm_entry);
 
-// Called from bm_free_entry_hook for TYPE_ATX bitmaps. Releases child handles.
+// Called from bm_free_entry_hook for TYPE_ATX bitmaps. Removes this handle from the
+// controller's tracking set so subsequent dirty marks don't reach a freed handle. Does NOT
+// release the controller or its child bm handles — multiple bm_entries can share one
+// controller (via basename), and child release is bounded to atx_level_reset (level
+// transition), matching the level-based lifetime of every other ATX-cached asset.
 void atx_free(rf::bm::BitmapEntry& bm_entry);
 
 // Per-frame tick: advance auto-playing controllers, dirty texture cache when frame index changes.

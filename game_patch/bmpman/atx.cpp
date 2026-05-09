@@ -65,7 +65,13 @@ namespace
         int direction = 1; // ping-pong only: +1 or -1
         bool playing = true;
         float time_in_frame_s = 0.0f;
-        int atx_bm_handle = -1; // populated on first lock
+
+        // Every bm cache entry currently backed by this controller. Multiple entries can
+        // co-exist when the same ATX is referenced under different extensions in one level
+        // (e.g. brushes via .tga, meshes via .dds), each producing a separate bm_handle that
+        // resolves to the same controller via basename. dirty_atx must mark all of them so
+        // every GPU surface re-uploads; populated on lock, removed on atx_free.
+        std::unordered_set<int> bm_handles;
 
         // ATX-wide material override (applied when a frame doesn't have its own).
         std::optional<uint8_t> header_material;
@@ -206,8 +212,11 @@ namespace
 
     void dirty_atx(AtxController& c)
     {
-        if (c.atx_bm_handle >= 0) {
-            rf::gr::mark_texture_dirty(c.atx_bm_handle);
+        // Mark every bm_handle that maps to this controller. Without this, only the
+        // most-recently-locked handle would re-upload to the GPU, freezing animation on any
+        // other in-world instance that references this ATX through a different extension.
+        for (int h : c.bm_handles) {
+            rf::gr::mark_texture_dirty(h);
         }
     }
 
@@ -524,12 +533,11 @@ rf::bm::Format lock_atx_bitmap(rf::bm::BitmapEntry& bm_entry, void** pixels_out,
         return rf::bm::FORMAT_NONE;
     }
     AtxController& c = *it->second;
-    if (c.atx_bm_handle != bm_entry.handle) {
-        c.atx_bm_handle = bm_entry.handle;
-        // Populate the hot-path lookup so bm_get_material_idx_hook can find the controller in
-        // O(1) by handle without re-hashing the entry name.
-        g_by_handle[bm_entry.handle] = &c;
-    }
+    // Insertions are idempotent. We track every bm_handle that locks this controller so
+    // dirty_atx can refresh all GPU surfaces on frame change, and so bm_get_material_idx_hook
+    // can resolve a controller from a handle in O(1) without re-hashing the entry name.
+    c.bm_handles.insert(bm_entry.handle);
+    g_by_handle[bm_entry.handle] = &c;
 
     int idx = c.current_frame;
     if (idx < 0 || idx >= static_cast<int>(c.frames.size())) {
@@ -580,7 +588,15 @@ std::optional<uint8_t> atx_material_override(const rf::bm::BitmapEntry& bm_entry
 
 void atx_free(rf::bm::BitmapEntry& bm_entry)
 {
-    g_by_handle.erase(bm_entry.handle);
+    // Forget this handle. Other bm_entries (e.g. the same ATX referenced under a different
+    // extension) may still be backed by the same controller, so we don't tear down the
+    // controller here — that's bounded to atx_level_reset (level transition). The set
+    // shrinks to empty naturally when the last reference is freed; the controller and its
+    // child bm refs are retained until level reset, matching the level-based asset model.
+    if (auto it = g_by_handle.find(bm_entry.handle); it != g_by_handle.end()) {
+        it->second->bm_handles.erase(bm_entry.handle);
+        g_by_handle.erase(it);
+    }
 }
 
 void atx_do_frame()
