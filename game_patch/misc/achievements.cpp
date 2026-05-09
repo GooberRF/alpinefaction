@@ -501,9 +501,7 @@ void log_use(int used_uid, int type) {
 
 void initialize_achievement_manager() {
     // build achievement storage and sync with FF
-    if (!rf::is_server && !rf::is_dedicated_server) {
-        AchievementManager::get_instance().initialize();
-    }
+    AchievementManager::get_instance().initialize();
 }
 
 void draw_achievement_box_content(int x, int y) {

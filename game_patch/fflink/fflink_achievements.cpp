@@ -52,7 +52,8 @@ UnlockedAchievementsResult parse_response(const std::string& response)
         }
         catch (const std::exception& e) {
             // Non-integer token — log and skip rather than failing the whole batch.
-            xlog::warn("[fflink::achievements] skipping non-integer uid token '{}': {}", token, e.what());
+            xlog::warn("[fflink::achievements] skipping non-integer uid token '{}': {}",
+                sanitize_for_log(token), e.what());
         }
     }
 

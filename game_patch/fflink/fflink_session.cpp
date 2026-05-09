@@ -139,11 +139,12 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
 
     // Always log status code and response prefix so misroutes / proxy interception are diagnosable.
     constexpr size_t k_log_response_prefix = 256;
-    const std::string response_preview =
+    const std::string response_preview = sanitize_for_log(
         response.size() <= k_log_response_prefix
-            ? response
-            : response.substr(0, k_log_response_prefix) + "...[truncated]";
-    xlog::info("[fflink] HTTP {} from {}; response: {}", status_code, k_session_url, response_preview);
+            ? std::string_view{response}
+            : std::string_view{response}.substr(0, k_log_response_prefix));
+    const char* truncated = response.size() > k_log_response_prefix ? "...[truncated]" : "";
+    xlog::info("[fflink] HTTP {} from {}; response: {}{}", status_code, k_session_url, response_preview, truncated);
 
     if (status_code == 200) {
         // Detect HTML / non-JSON bodies before trying to parse, so the operator-facing
@@ -161,7 +162,7 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
 
         try {
             auto j = nlohmann::json::parse(response);
-            const auto gssk = j.at("gssk").get<std::string>();
+            auto gssk = j.at("gssk").get<std::string>();
             const auto server_id = j.at("server_id").get<int>();
             if (!is_valid_gssk_format(gssk)) {
                 throw std::runtime_error("gssk has invalid format");
@@ -179,11 +180,11 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
     }
 
     // Non-200: try to extract `error` field for diagnostics.
-    std::string error_code = "<no error code>";
+    std::string error_code = "unspecified";
     try {
         auto j = nlohmann::json::parse(response);
         if (j.contains("error") && j["error"].is_string()) {
-            error_code = j["error"].get<std::string>();
+            error_code = sanitize_for_log(j["error"].get<std::string>());
         }
     }
     catch (const std::exception&) {
@@ -205,7 +206,7 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
 
 void exchange_worker(std::string gsk)
 {
-    xlog::info("[fflink] starting session-key exchange with FactionFiles");
+    xlog::info("[fflink] starting session key exchange with FactionFiles");
 
     int attempt = 0;
     while (true) {
@@ -215,7 +216,8 @@ void exchange_worker(std::string gsk)
             xlog::info("[fflink] session established (server_id={})", outcome.server_id);
             set_state(SessionStatus::valid, outcome.server_id, "", outcome.gssk);
             enqueue_console_line(std::format(
-                "FactionFiles stats: session established (server id {}).", outcome.server_id));
+                "FactionFiles session established (server id {}, gssk={}).",
+                outcome.server_id, outcome.gssk));
             g_exchange_in_flight.store(false, std::memory_order_release);
             return;
         }
@@ -227,8 +229,7 @@ void exchange_worker(std::string gsk)
                 outcome.error_detail);
             set_state(SessionStatus::rejected_by_server, 0, outcome.error_detail, "");
             enqueue_console_line(std::format(
-                "FactionFiles stats: GSK was rejected by FactionFiles ({}). "
-                "Stats reporting disabled until the GSK in your server config is corrected.",
+                "FactionFiles GSK was rejected by FactionFiles ({}).",
                 outcome.error_detail));
             g_exchange_in_flight.store(false, std::memory_order_release);
             return;
@@ -241,7 +242,7 @@ void exchange_worker(std::string gsk)
         // Only print the very first transient failure to console, to avoid spamming the operator while we backoff.
         if (attempt == 0) {
             enqueue_console_line(std::format(
-                "FactionFiles stats: session exchange failed ({}). Will retry in background.",
+                "FactionFiles session exchange failed ({}). Will retry in background.",
                 outcome.error_detail));
         }
 
@@ -256,17 +257,14 @@ void start_session_exchange()
 {
     const auto& cfg = g_alpine_server_config;
     if (cfg.fflink_gsk.empty()) {
-        // Optional config item; staying silent here to keep startup clean.
         return;
     }
 
     if (!is_valid_gsk_format(cfg.fflink_gsk)) {
         xlog::error(
-            "[fflink] configured fflink_gsk is malformed (must be exactly 32 lowercase hex chars). "
-            "FactionFiles stats reporting will be disabled.");
+            "[fflink] configured fflink_gsk is malformed (must be exactly 32 lowercase hex chars).");
         rf::console::print(
-            "FactionFiles stats: GSK in server config is malformed (must be exactly 32 lowercase hex chars). "
-            "Stats reporting disabled.");
+            "FactionFiles GSK in server config is malformed (must be exactly 32 lowercase hex chars).");
         set_state(SessionStatus::bad_gsk_format, 0, "malformed GSK in server config", "");
         return;
     }
@@ -274,13 +272,28 @@ void start_session_exchange()
     bool expected = false;
     if (!g_exchange_in_flight.compare_exchange_strong(expected, true)) {
         xlog::debug("[fflink] session exchange already in flight; skipping new request");
+        rf::console::print(
+            "FactionFiles session exchange is already in flight; "
+            "the running attempt will continue (use sv_fflink_status to inspect).");
         return;
     }
 
-    rf::console::print("FactionFiles stats: requesting session key from FactionFiles...");
+    rf::console::print("-- Requesting FactionFiles session key --");
     set_state(SessionStatus::pending, 0, "", "");
 
-    std::thread(exchange_worker, cfg.fflink_gsk).detach();
+    try {
+        std::thread(exchange_worker, cfg.fflink_gsk).detach();
+    }
+    catch (const std::exception& e) {
+        // Failed to spawn worker (e.g., resource exhaustion). Restore state so future
+        // sv_fflink_resync attempts can try again instead of being permanently locked out.
+        xlog::error("[fflink] failed to spawn session exchange thread: {}", e.what());
+        set_state(SessionStatus::failed, 0, std::string{"failed to spawn worker thread: "} + e.what(), "");
+        rf::console::print(
+            "Failed to start FactionFiles session key exchange ({}); use sv_fflink_resync to retry.",
+            e.what());
+        g_exchange_in_flight.store(false, std::memory_order_release);
+    }
 }
 
 SessionState snapshot_state()
@@ -317,7 +330,7 @@ ConsoleCommand2 sv_fflink_status_cmd{
     "sv_fflink_status",
     []() {
         const auto state = snapshot_state();
-        rf::console::print("FactionFiles stats link: {}", status_to_str(state.status));
+        rf::console::print("FactionFiles link: {}", status_to_str(state.status));
         if (state.status == SessionStatus::valid) {
             rf::console::print("  Server id: {}", state.server_id);
         }
@@ -325,7 +338,7 @@ ConsoleCommand2 sv_fflink_status_cmd{
             rf::console::print("  Last error: {}", state.last_error);
         }
     },
-    "Show the current FactionFiles stats session-link status.",
+    "Show the current FactionFiles server session link status.",
 };
 
 ConsoleCommand2 sv_fflink_resync_cmd{
@@ -334,7 +347,7 @@ ConsoleCommand2 sv_fflink_resync_cmd{
         rf::console::print("Re-attempting FactionFiles session exchange...");
         start_session_exchange();
     },
-    "Force a fresh FactionFiles session-key exchange (e.g. after fixing the GSK in config).",
+    "Force a fresh FactionFiles session key exchange.",
 };
 
 } // namespace

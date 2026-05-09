@@ -67,4 +67,19 @@ void drain_pending_main_thread_tasks()
     }
 }
 
+std::string sanitize_for_log(std::string_view in)
+{
+    std::string out;
+    out.reserve(in.size());
+    for (unsigned char c : in) {
+        if (c < 0x20 || c == 0x7F) {
+            out.push_back('.');
+        }
+        else {
+            out.push_back(static_cast<char>(c));
+        }
+    }
+    return out;
+}
+
 } // namespace fflink

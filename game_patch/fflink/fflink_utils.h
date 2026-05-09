@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <string>
+#include <string_view>
 
 namespace fflink {
 
@@ -16,5 +17,10 @@ void enqueue_main_thread_task(std::function<void()> task);
 
 // Drain and run any pending main-thread tasks. MUST be called from the main thread.
 void drain_pending_main_thread_tasks();
+
+// Replace control characters (and anything outside printable ASCII) with '.'
+// before logging server-controlled or otherwise untrusted bytes, so a hostile
+// or malformed response can't inject newlines / ANSI escapes into the log.
+std::string sanitize_for_log(std::string_view in);
 
 } // namespace fflink

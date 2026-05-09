@@ -22,7 +22,7 @@ struct SessionState
     std::string last_error; // human-readable, safe to display
 };
 
-// Trigger an asynchronous session-key exchange using the GSK from g_alpine_server_config.
+// Trigger an asynchronous session key exchange using the GSK from g_alpine_server_config.
 // Safe to call multiple times; an in-flight exchange will not be re-issued.
 // No-op if no GSK is configured.
 void start_session_exchange();

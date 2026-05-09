@@ -2031,8 +2031,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
         std::format_to(iter, "  Rcon password (legacy):                {}\n", cfg.rcon_password);
         std::format_to(iter, "  Bot shared secret:                     {}\n", cfg.bot_shared_secret);
-        std::format_to(iter, "  FactionFiles GSK:                      {}\n",
-            cfg.fflink_gsk.empty() ? "<not set>" : "<set>");
+        std::format_to(iter, "  FactionFiles GSK:                      {}\n", cfg.fflink_gsk);
     } else {
         std::format_to(iter, "  Uptime:                                {}\n", g_process_startup_time);
     }
@@ -2440,7 +2439,7 @@ void launch_alpine_dedicated_server() {
     netgame.current_level_index = 0;
     rf::multi_level_switch_queued = -1;
 
-    // Kick off FactionFiles stats session key exchange
+    // Kick off FactionFiles session key exchange
     fflink::start_session_exchange();
 }
 
