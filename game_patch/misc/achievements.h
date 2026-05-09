@@ -170,7 +170,7 @@ public:
     void apply_ff_unlocks(const std::vector<int>& unlocked_uids, bool initial_sync);
 
     const std::unordered_map<AchievementName, Achievement>& get_achievements() const {
-    return achievements;
+        return achievements;
     }
 
     std::unordered_map<AchievementName, Achievement>& get_achievements_mutable() {
