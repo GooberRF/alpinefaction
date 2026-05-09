@@ -18,14 +18,13 @@
 //
 // Header-only and engine-agnostic. Each consumer just needs toml++ on the include path.
 
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
-
 #include <toml++/toml.hpp>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
-
 #include "spec.h"
 
 // Returns the parsed AtxSpec on success, or nullopt on TOML parse error or schema violation.

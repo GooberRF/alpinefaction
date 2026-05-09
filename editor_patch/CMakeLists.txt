@@ -43,9 +43,7 @@ target_compile_definitions(AlpineEditor PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX BUI
 target_include_directories(AlpineEditor PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor
     ${CMAKE_SOURCE_DIR}/vendor/d3d8
-    ${CMAKE_SOURCE_DIR}/vendor/dds
     ${CMAKE_SOURCE_DIR}/vendor/stb
-    ${CMAKE_SOURCE_DIR}/vendor/toml++
 )
 
 target_link_libraries(AlpineEditor

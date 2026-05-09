@@ -231,6 +231,12 @@ namespace
             return false;
         }
         if (sw <= 0 || sh <= 0) return false;
+        // Reject oversized images so the lock path's int arithmetic can't overflow.
+        if (sw > BM_STB_MAX_DIMENSION || sh > BM_STB_MAX_DIMENSION) {
+            xlog::warn("editor stb_image: '{}' rejected ({}x{} exceeds {} px ceiling)",
+                       filename, sw, sh, BM_STB_MAX_DIMENSION);
+            return false;
+        }
 
         // Channel-count → format mapping shared with game side via common/bitmap/formats.h
         // (1/3 channel → 24-bit RGB, 2/4 channel → 32-bit RGBA).
@@ -284,14 +290,17 @@ namespace
             stbi_image_free(pixels);
             return false;
         }
-        const size_t total = static_cast<size_t>(w) * h * desired;
+        // dims pre-validated against BM_STB_MAX_DIMENSION at header time, so w * h * desired
+        // stays in int range here.
+        const int num_pixels = w * h;
+        const size_t total = static_cast<size_t>(num_pixels) * desired;
         void* dst = rf_alloc(total);
         if (!dst) { stbi_image_free(pixels); return false; }
         std::memcpy(dst, pixels, total);
         // stb returns RGB(A) byte order; both FORMAT_888_RGB and FORMAT_8888_ARGB use BGR(A)
         // memory layout (R at the highest channel position). Swap channel 0 and 2 per pixel.
         auto* p = static_cast<uint8_t*>(dst);
-        for (int i = 0; i < w * h; ++i) std::swap(p[i * desired + 0], p[i * desired + 2]);
+        for (int i = 0; i < num_pixels; ++i) std::swap(p[i * desired + 0], p[i * desired + 2]);
         entry.locked_data = dst;
         entry.locked_palette = nullptr;
         stbi_image_free(pixels);

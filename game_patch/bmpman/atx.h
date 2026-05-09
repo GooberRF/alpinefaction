@@ -47,7 +47,9 @@ void atx_do_frame();
 void atx_level_reset();
 
 // Event control entry points. `handle` is the .atx filename without extension (case-insensitive).
-// If the controller isn't loaded yet, attempts to load it lazily.
+// Returns false (with a warning) when the controller hasn't been loaded yet — these entry
+// points do NOT lazy-load. The texture must be referenced through the bm system at least once
+// before any event can manipulate it, otherwise frame changes wouldn't reach a GPU surface anyway.
 bool atx_set_frame(const std::string& handle, int frame_index);
 bool atx_play(const std::string& handle);
 bool atx_pause(const std::string& handle);

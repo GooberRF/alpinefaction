@@ -1,12 +1,10 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
-
 #include <stb_image.h>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
-
 #include "stb_image_loader.h"
 #include "../rf/bmpman.h"
 #include "../rf/crt.h"
@@ -91,6 +89,12 @@ rf::bm::Type read_stb_header(const char* filename, int* width_out, int* height_o
     if (w <= 0 || h <= 0 || channels < 1 || channels > 4) {
         return rf::bm::TYPE_NONE;
     }
+    // Reject oversized images at header time so the lock path can rely on int arithmetic
+    // staying inside INT_MAX. See BM_STB_MAX_DIMENSION docstring for the rationale.
+    if (w > BM_STB_MAX_DIMENSION || h > BM_STB_MAX_DIMENSION) {
+        xlog::warn("stb_image: '{}' rejected ({}x{} exceeds {} px ceiling)", filename, w, h, BM_STB_MAX_DIMENSION);
+        return rf::bm::TYPE_NONE;
+    }
 
     *width_out = w;
     *height_out = h;
@@ -132,9 +136,10 @@ int lock_stb_bitmap(rf::bm::BitmapEntry& bm_entry)
         stbi_image_free(pixels);
         return -1;
     }
-
-    const int num_pixels = w * h;
+    // dims pre-validated against BM_STB_MAX_DIMENSION at header time, so w * h * channels
+    // stays in int range here.
     const int bytes_per_pixel = desired_channels;
+    const int num_pixels = w * h;
     const size_t total_bytes = static_cast<size_t>(num_pixels) * bytes_per_pixel;
 
     // Allocate via rf::rf_malloc so stock unlock can free this buffer with its matching free.
