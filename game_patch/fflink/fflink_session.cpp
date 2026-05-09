@@ -32,7 +32,7 @@ constexpr const char* k_user_agent = AF_USER_AGENT_SUFFIX("AFStats");
 constexpr unsigned long k_connect_timeout_ms = 3000;
 constexpr unsigned long k_receive_timeout_ms = 3000;
 
-// Backoff schedule for transient failures (seconds). After the last entry the schedule repeats.
+// Backoff schedule for transient failures (seconds). After the last entry, entries continue using the last delay.
 constexpr int k_backoff_schedule_s[] = {5, 30, 120};
 
 std::mutex g_state_mutex;
@@ -215,7 +215,7 @@ ExchangeOutcome do_one_exchange(const std::string& gsk)
     return out;
 }
 
-void exchange_worker(std::string gsk)
+void exchange_worker_impl(const std::string& gsk)
 {
     xlog::info("[fflink] starting session key exchange with FactionFiles");
 
@@ -259,6 +259,34 @@ void exchange_worker(std::string gsk)
 
         std::this_thread::sleep_for(std::chrono::seconds(delay_s));
         ++attempt;
+    }
+}
+
+void exchange_worker(std::string gsk)
+{
+    // Catch-all wrapper and safe escape for worker thread
+    try {
+        exchange_worker_impl(gsk);
+    }
+    catch (const std::exception& e) {
+        xlog::error("[fflink] session exchange worker terminated unexpectedly: {}", e.what());
+        try {
+            set_state(SessionStatus::failed, 0,
+                std::string{"worker thread crashed: "} + e.what(), "");
+        }
+        catch (...) {
+            // Best-effort cleanup; don't recurse on exception during exception handling.
+        }
+        g_exchange_in_flight.store(false, std::memory_order_release);
+    }
+    catch (...) {
+        xlog::error("[fflink] session exchange worker terminated with unknown exception");
+        try {
+            set_state(SessionStatus::failed, 0, "worker thread crashed: unknown exception", "");
+        }
+        catch (...) {
+        }
+        g_exchange_in_flight.store(false, std::memory_order_release);
     }
 }
 
