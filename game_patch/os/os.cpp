@@ -14,6 +14,7 @@
 #include "win32_console.h"
 
 #include <timeapi.h>
+#include "../misc/alpine_settings.h"
 
 const char* get_win_msg_name(UINT msg);
 
@@ -256,7 +257,7 @@ void wnd_set_flash(const HWND hwnd, const bool active) {
             .cbSize = sizeof(flash),
             .hwnd = hwnd,
             .dwFlags = static_cast<DWORD>(active ? FLASHW_TRAY : FLASHW_STOP),
-            .uCount = 0,
+            .uCount = g_alpine_game_config.player_join_flash_highlight_only ? 0ul : 3ul,
             .dwTimeout = 0
         };
         FlashWindowEx(&flash);

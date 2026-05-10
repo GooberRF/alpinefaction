@@ -399,7 +399,7 @@ ConsoleCommand2 mp_join_beep_cmd{
     [] {
         g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
         rf::console::print(
-            "Out-of-focus beeps upon player joins are {}",
+            "Beeps upon player joins are {}",
             g_alpine_game_config.player_join_beep ? "enabled" : "disabled"
         );
     },
@@ -411,7 +411,7 @@ ConsoleCommand2 mp_join_flash_cmd{
     [] {
         g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
         rf::console::print(
-            "Out-of-focus window flashes upon player joins are {}",
+            "Window flashes upon player joins are {}",
             g_alpine_game_config.player_join_flash ? "enabled" : "disabled"
         );
     },
@@ -432,6 +432,34 @@ ConsoleCommand2 mp_join_flash_timeout_cmd{
     },
     "Sets your join flash timeout",
     "mp_join_flash_timeout <seconds>",
+};
+
+ConsoleCommand2 mp_join_flash_highlight_only_cmd{
+    "mp_join_flash_highlight_only",
+    [] {
+        g_alpine_game_config.player_join_flash_highlight_only =
+            !g_alpine_game_config.player_join_flash_highlight_only;
+        rf::console::print(
+            "Join flashes that highlight instead of flash are {}",
+            g_alpine_game_config.player_join_flash_highlight_only
+                ? "enabled"
+                : "disabled"
+        );
+    },
+    "Toggles join flashes that highlight instead of flash",
+};
+
+ConsoleCommand2 mp_join_flash_cancelable_cmd{
+    "mp_join_flash_cancelable",
+    [] {
+        g_alpine_game_config.player_join_flash_cancelable =
+            !g_alpine_game_config.player_join_flash_cancelable;
+        rf::console::print(
+            "Cancelable join flashes are {}",
+            g_alpine_game_config.player_join_flash_cancelable ? "enabled" : "disabled"
+        );
+    },
+    "Toggles join flashes that cancel, if a player left",
 };
 
 ConsoleCommand2 mp_set_character_cmd{

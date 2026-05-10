@@ -10,6 +10,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Add vote-allowed levels to level autodownload list for dedicated servers
 
 [@is-this-c](https://github.com/is-this-c)
+- Add `mp_join_flash_highlight_cancelable` console command to cancel join flashes, if a player joined but left
+- Add `mp_join_flash_highlight_only` console command to make join flashes that highlight instead of flash
 - Add `mp_join_flash_timeout` console command to configure a timeout for join flashes
 - Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focusmp_join_flash_timeout
 - Rename `mp_notifyonjoin` console command to `mp_join_beep`

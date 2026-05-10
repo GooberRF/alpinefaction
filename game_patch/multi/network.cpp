@@ -758,7 +758,8 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
         if (!rf::is_server && !rf::is_dedicated_server) {
             rf::Player* const player = rf::multi_find_player_by_id(data[0]);
             if (player) {
-                if (g_join_flash_active_players.erase(player)
+                if (g_alpine_game_config.player_join_flash_cancelable
+                    && g_join_flash_active_players.erase(player)
                     && g_join_flash_active_players.empty()) {
                     wnd_set_flash(rf::main_wnd, false);
                     g_join_flash_timer.invalidate();
