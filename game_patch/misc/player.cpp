@@ -418,6 +418,22 @@ ConsoleCommand2 mp_join_flash_cmd{
     "Toggles window flashes upon player joins, if your window is out of focus",
 };
 
+ConsoleCommand2 mp_join_flash_timeout_cmd{
+    "mp_join_flash_timeout",
+    [] (const std::optional<uint32_t> seconds) {
+        if (seconds) {
+            g_alpine_game_config.player_join_flash_timeout_sec = *seconds;
+        }
+        rf::console::print(
+            "The join flash timeout is {} second{} [zero is disable]",
+            g_alpine_game_config.player_join_flash_timeout_sec,
+            g_alpine_game_config.player_join_flash_timeout_sec == 1 ? "" : "s"
+        );
+    },
+    "Sets join flash timeout",
+    "mp_join_flash_timeout <seconds>",
+};
+
 ConsoleCommand2 mp_set_character_cmd{
     "mp_character",
     [](std::optional<int> character_index) {
@@ -981,6 +997,7 @@ void player_do_patch()
     swap_shotgun_controls_cmd.register_cmd();
     mp_join_beep_cmd.register_cmd();
     mp_join_flash_cmd.register_cmd();
+    mp_join_flash_timeout_cmd.register_cmd();
     mp_set_character_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
     hit_sound_interval_cmd.register_cmd();

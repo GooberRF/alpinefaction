@@ -10,9 +10,10 @@ Version 1.4.0 (Lupin): Not yet released
 - Add vote-allowed levels to level autodownload list for dedicated servers
 
 [@is-this-c](https://github.com/is-this-c)
-- Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
+- Add `mp_join_flash_timeout` console command to configure a timeout for join flashes
+- Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focusmp_join_flash_timeout
 - Rename `mp_notifyonjoin` console command to `mp_join_beep`
-- 
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
