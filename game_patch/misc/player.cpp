@@ -1026,6 +1026,8 @@ void player_do_patch()
     mp_join_beep_cmd.register_cmd();
     mp_join_flash_cmd.register_cmd();
     mp_join_flash_timeout_cmd.register_cmd();
+    mp_join_flash_cancelable_cmd.register_cmd();
+    mp_join_flash_highlight_only_cmd.register_cmd();
     mp_set_character_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
     hit_sound_interval_cmd.register_cmd();
