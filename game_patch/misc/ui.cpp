@@ -780,7 +780,7 @@ void ao_togglecrouch_cbox_on_click(int x, int y) {
     ao_play_button_snd(rf::local_player->settings.toggle_crouch);
 }
 
-void ao_join_flash_cbox_on_click(const int x, const int y) {
+void ao_join_flash_cbox_on_click(int x, int y) {
     g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
     ao_join_flash_cbox.checked = g_alpine_game_config.player_join_flash;
     ao_play_button_snd(g_alpine_game_config.player_join_flash);

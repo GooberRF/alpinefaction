@@ -19,7 +19,6 @@ bool is_client_debugbot_requested_from_cmdline();
 bool headless_bot_requested_from_raw_cmdline();
 bool awpgen_requested_from_raw_cmdline();
 bool headless_requested_from_raw_cmdline();
-void wnd_set_flash(HWND hwnd, bool enable);
 
 struct WaitableTimer {
     HANDLE handle;

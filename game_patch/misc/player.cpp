@@ -396,24 +396,20 @@ ConsoleCommand2 swap_shotgun_controls_cmd{
 
 ConsoleCommand2 mp_join_beep_cmd{
     "mp_join_beep",
-    [] {
+    []() {
         g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
-        rf::console::print(
-            "Out-of-focus beeps upon player joins are {}",
-            g_alpine_game_config.player_join_beep ? "enabled" : "disabled"
-        );
+        rf::console::print("Out-of-focus beeps upon player joins are {}",
+            g_alpine_game_config.player_join_beep ? "enabled" : "disabled");
     },
     "Toggles beeps upon player joins, if your window is out of focus",
 };
 
 ConsoleCommand2 mp_join_flash_cmd{
     "mp_join_flash",
-    [] {
+    []() {
         g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
-        rf::console::print(
-            "Out-of-focus window flashes upon player joins are {}",
-            g_alpine_game_config.player_join_flash ? "enabled" : "disabled"
-        );
+        rf::console::print("Out-of-focus window flashes upon player joins are {}",
+            g_alpine_game_config.player_join_flash ? "enabled" : "disabled");
     },
     "Toggles window flashes upon player joins, if your window is out of focus",
 };
