@@ -257,7 +257,9 @@ void wnd_set_flash(const HWND hwnd, const bool active) {
             .cbSize = sizeof(flash),
             .hwnd = hwnd,
             .dwFlags = static_cast<DWORD>(active ? FLASHW_TRAY : FLASHW_STOP),
-            .uCount = g_alpine_game_config.player_join_flash_highlight_only ? 0ul : 3ul,
+            .uCount = active
+                ? (g_alpine_game_config.player_join_flash_highlight_only ? 0ul : 3ul)
+                : 0ul,
             .dwTimeout = 0
         };
         FlashWindowEx(&flash);

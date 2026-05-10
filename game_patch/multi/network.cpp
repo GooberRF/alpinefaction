@@ -712,7 +712,7 @@ FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
         process_new_player_packet_hook.call_target(data, addr);
         if (GetForegroundWindow() != rf::main_wnd) {
             if (g_alpine_game_config.player_join_beep) {
-                MessageBeep(MB_OK);
+                Beep(750, 300);
             }
 
             if (g_alpine_game_config.player_join_flash) {
