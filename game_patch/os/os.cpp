@@ -64,10 +64,10 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
             // Show cursor if window is not active
             if (w_param) {
                 extern std::unordered_set<rf::Player*> g_join_flash_active_players;
-                extern HighResTimer g_join_flash_timeout_timer;
+                extern HighResTimer g_join_flash_timer;
                 g_join_flash_active_players.clear();
                 wnd_set_flash(rf::main_wnd, false);
-                g_join_flash_timeout_timer.invalidate();
+                g_join_flash_timer.invalidate();
 
                 ShowCursor(FALSE);
                 while (ShowCursor(FALSE) >= 0)

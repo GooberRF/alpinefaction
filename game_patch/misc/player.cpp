@@ -430,7 +430,7 @@ ConsoleCommand2 mp_join_flash_timeout_cmd{
             g_alpine_game_config.player_join_flash_timeout_sec == 1 ? "" : "s"
         );
     },
-    "Sets join flash timeout",
+    "Sets your join flash timeout",
     "mp_join_flash_timeout <seconds>",
 };
 
