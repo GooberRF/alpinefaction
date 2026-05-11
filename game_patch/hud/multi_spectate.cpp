@@ -1202,7 +1202,7 @@ void multi_spectate_render() {
         rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y + small_font_h + line_gap, "Next Player", small_font);
     }
 
-    if (!entity || rf::entity_is_dying(entity)) {
+    if (!entity) {
         const PlayerStatsNew* const stats =
             static_cast<PlayerStatsNew*>(g_spectate_mode_target->stats);
 
