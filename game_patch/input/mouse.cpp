@@ -224,34 +224,10 @@ FunHook<void()> mouse_keep_centered_disable_hook{
     },
 };
 
-bool is_mouse_wheel_down() {
-    static HighResTimer mouse_wheel_cool_down_timer{};
-    static bool was_mouse_wheel_down = false;
-    constexpr int MOUSE_BUTTON_3 = 2;
-    const bool is_mouse_wheel_down = rf::mouse_button_is_down(MOUSE_BUTTON_3);
-    if (!is_mouse_wheel_down && was_mouse_wheel_down) {
-        // Keep mouse wheel frozen briefly after release to avoid accidental
-        // weapon cycle selection.
-        constexpr uint64_t COOL_DOWN_MS = 64;
-        mouse_wheel_cool_down_timer.set_ms(COOL_DOWN_MS);
-    }
-    if (is_mouse_wheel_down) {
-        mouse_wheel_cool_down_timer.invalidate();
-    }
-    was_mouse_wheel_down = is_mouse_wheel_down;
-    return is_mouse_wheel_down || (mouse_wheel_cool_down_timer.valid()
-        && !mouse_wheel_cool_down_timer.elapsed());
-}
-
 FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
     0x0051E630,
     [](int& dx, int& dy, int& dz) {
         mouse_get_delta_hook.call_target(dx, dy, dz); // fills dz (scroll wheel)
-
-        // Disable weapon cycle selection, if `Mouse 3` is pressed.
-        if (is_mouse_wheel_down() && dz != 0) {
-            dz = 0;
-        }
 
         // Nothing to do in Classic mode or outside gameplay.
         if (!rf::keep_mouse_centered || g_alpine_game_config.mouse_scale == 0) {
@@ -443,8 +419,6 @@ CodeInjection static_zoom_sensitivity_patch2 {
         }
     },
 };
-
-
 
 void mouse_apply_patch()
 {
