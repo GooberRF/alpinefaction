@@ -239,8 +239,8 @@ bool is_mouse_wheel_down() {
         mouse_wheel_cool_down_timer.invalidate();
     }
     was_mouse_wheel_down = is_mouse_wheel_down;
-    return is_mouse_wheel_down
-        || (mouse_wheel_cool_down_timer.valid() && !mouse_wheel_cool_down_timer.elapsed());
+    return is_mouse_wheel_down || (mouse_wheel_cool_down_timer.valid()
+        && !mouse_wheel_cool_down_timer.elapsed());
 }
 
 FunHook<void(int&, int&, int&)> mouse_get_delta_hook{
