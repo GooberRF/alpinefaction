@@ -28,7 +28,7 @@ CodeInjection clock_180deg_offset_injection{
 
         *sec_slot = (*sec_slot + 30) % 60;
         *min_slot = (*min_slot + 1800) % 3600;
-        *hour_slot = (*hour_slot + 21600) % 216000;
+        *hour_slot = (*hour_slot + 21600) % 43200;
 
         regs.edx = static_cast<int32_t>(esp + 0xC4);
         regs.eip = 0x004112A1;
