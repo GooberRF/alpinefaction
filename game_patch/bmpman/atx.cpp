@@ -83,14 +83,18 @@ namespace
         AtxController(const AtxController&) = delete;
         AtxController& operator=(const AtxController&) = delete;
 
-        // Failure-path RAII: drop any outstanding locks but DO NOT release bm refs.
+        // Release every child handle this controller owns.
         ~AtxController()
         {
             for (auto& f : frames) {
-                if (f.bm_handle >= 0 && (f.locked_pixels || f.locked_palette)) {
-                    rf::bm::unlock(f.bm_handle);
-                    f.locked_pixels = nullptr;
-                    f.locked_palette = nullptr;
+                if (f.bm_handle >= 0) {
+                    if (f.locked_pixels || f.locked_palette) {
+                        rf::bm::unlock(f.bm_handle);
+                        f.locked_pixels = nullptr;
+                        f.locked_palette = nullptr;
+                    }
+                    rf::bm::release(f.bm_handle);
+                    f.bm_handle = -1;
                 }
             }
         }
@@ -103,18 +107,10 @@ namespace
         bool locked = false;
         ~MaskHandleGuard()
         {
-            if (handle >= 0 && locked) {
-                rf::bm::unlock(handle);
-            }
-        }
-        void release()
-        {
             if (handle >= 0) {
                 if (locked) rf::bm::unlock(handle);
                 rf::bm::release(handle);
             }
-            handle = -1;
-            locked = false;
         }
     };
 
@@ -167,38 +163,6 @@ namespace
         const int bytes_read = file.read(content_out.data(), file_size);
         file.close();
         return bytes_read == file_size;
-    }
-
-    // Drop the ATX's exclusive lock on each loaded child, but leave the bm-load reference in place.
-    // Used by parse-failure paths: dropping the ref there has caused stock RF to mis-handle later
-    // standalone loads of the same .tga, so we accept a small per-failure ref leak (goes away on
-    // level transition) in exchange for not destabilising the bm cache.
-    void unlock_children(AtxController& c)
-    {
-        for (auto& f : c.frames) {
-            if (f.bm_handle >= 0 && (f.locked_pixels || f.locked_palette)) {
-                rf::bm::unlock(f.bm_handle);
-                f.locked_pixels = nullptr;
-                f.locked_palette = nullptr;
-            }
-        }
-    }
-
-    // Full teardown: unlock then release. Only call when the ATX itself is being destroyed
-    // (atx_free, atx_level_reset).
-    void release_children(AtxController& c)
-    {
-        for (auto& f : c.frames) {
-            if (f.bm_handle >= 0) {
-                if (f.locked_pixels || f.locked_palette) {
-                    rf::bm::unlock(f.bm_handle);
-                    f.locked_pixels = nullptr;
-                    f.locked_palette = nullptr;
-                }
-                rf::bm::release(f.bm_handle);
-                f.bm_handle = -1;
-            }
-        }
     }
 
     int frame_time_for(const AtxController& c, int idx)
@@ -338,7 +302,6 @@ namespace
             }
             if (f.bm_handle < 0) {
                 xlog::error("ATX '{}': failed to load child '{}'", filename, f.filename);
-                unlock_children(*c);
                 return nullptr;
             }
 
@@ -356,7 +319,6 @@ namespace
                 xlog::error("ATX '{}': frame {} '{}' mismatch {}x{} fmt={} mips={}, expected {}x{} fmt={} mips={}",
                     filename, i, f.filename, w, h, static_cast<int>(fmt), num_levels,
                     c->width, c->height, static_cast<int>(c->format), c->num_levels);
-                unlock_children(*c);
                 return nullptr;
             }
 
@@ -366,7 +328,6 @@ namespace
             const rf::bm::Format locked_fmt = rf::bm::lock(f.bm_handle, &px, &pal);
             if (locked_fmt == rf::bm::FORMAT_NONE || px == nullptr) {
                 xlog::error("ATX '{}': failed to lock child '{}'", filename, f.filename);
-                unlock_children(*c);
                 return nullptr;
             }
             f.locked_pixels = px;
@@ -386,13 +347,11 @@ namespace
             if (!bm_format_is_uncompressed_rgb(c->format)) {
                 xlog::error("ATX '{}': source format {} cannot be transformed (uncompressed RGB/RGBA only)",
                     filename, static_cast<int>(c->format));
-                unlock_children(*c);
                 return nullptr;
             }
             if (!bm_format_is_uncompressed_rgb(effective)) {
                 xlog::error("ATX '{}': target format {} not supported (uncompressed RGB/RGBA only)",
                     filename, static_cast<int>(effective));
-                unlock_children(*c);
                 return nullptr;
             }
 
@@ -474,9 +433,7 @@ namespace
                 f.locked_pixels = f.owned_buffer.get();
             }
 
-            // Success path: drop the mask's ref now that the per-frame transform has copied
-            // its data into each owned_buffer.
-            mask_guard.release();
+            // mask_guard releases the mask at end of scope (unlock+release).
             c->format = effective;
         }
 
@@ -677,9 +634,6 @@ void atx_do_frame()
 
 void atx_level_reset()
 {
-    for (auto& [key, cptr] : g_controllers) {
-        release_children(*cptr);
-    }
     g_controllers.clear();
     g_by_handle.clear();
     g_failed.clear();
