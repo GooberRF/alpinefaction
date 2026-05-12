@@ -9,6 +9,9 @@ Version 1.4.0 (Lupin): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Add vote-allowed levels to level autodownload list for dedicated servers
 
+[@is-this-c](https://github.com/is-this-c)
+- Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
