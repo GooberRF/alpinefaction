@@ -1218,7 +1218,7 @@ void multi_spectate_render() {
             }
         });
 
-        const rf::Color red_clr{255, 0, 0, 255};
+        const rf::Color red_clr{0xF0, 0x20, 0x10, 0xC0};
         draw_with_shadow(
             scr_w / 2,
             scr_h / 2,
