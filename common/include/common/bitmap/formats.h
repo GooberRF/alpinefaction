@@ -70,8 +70,9 @@ inline int bm_format_from_stb_channels(int channels)
     return (channels == 2 || channels == 4) ? BM_FORMAT_8888_ARGB : BM_FORMAT_888_RGB;
 }
 
-// Hard upper bound for stb-decoded texture dimensions.
-inline constexpr int BM_STB_MAX_DIMENSION = 16384;
+// Hard upper bound for any externally-sourced texture dimension
+// 16384 matches D3D11's mandatory minimum
+inline constexpr int BM_MAX_DIMENSION = 16384;
 
 // ─── Filename extension predicates ────────────────────────────────────────────
 // Used by both game-side and editor-side bm hooks to decide which decode path applies.

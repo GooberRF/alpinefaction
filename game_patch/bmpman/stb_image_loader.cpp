@@ -89,10 +89,9 @@ rf::bm::Type read_stb_header(const char* filename, int* width_out, int* height_o
     if (w <= 0 || h <= 0 || channels < 1 || channels > 4) {
         return rf::bm::TYPE_NONE;
     }
-    // Reject oversized images at header time so the lock path can rely on int arithmetic
-    // staying inside INT_MAX. See BM_STB_MAX_DIMENSION docstring for the rationale.
-    if (w > BM_STB_MAX_DIMENSION || h > BM_STB_MAX_DIMENSION) {
-        xlog::warn("stb_image: '{}' rejected ({}x{} exceeds {} px ceiling)", filename, w, h, BM_STB_MAX_DIMENSION);
+    // Reject invalid dimensions before reaching int arithmetic.
+    if (w > BM_MAX_DIMENSION || h > BM_MAX_DIMENSION) {
+        xlog::warn("stb_image: '{}' rejected ({}x{} exceeds {} px ceiling)", filename, w, h, BM_MAX_DIMENSION);
         return rf::bm::TYPE_NONE;
     }
 
@@ -136,7 +135,7 @@ int lock_stb_bitmap(rf::bm::BitmapEntry& bm_entry)
         stbi_image_free(pixels);
         return -1;
     }
-    // dims pre-validated against BM_STB_MAX_DIMENSION at header time, so w * h * channels
+    // dims pre-validated against BM_MAX_DIMENSION at header time, so w * h * channels
     // stays in int range here.
     const int bytes_per_pixel = desired_channels;
     const int num_pixels = w * h;

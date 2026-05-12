@@ -48,8 +48,8 @@ target_compile_definitions(Common PUBLIC NOMINMAX)
 
 target_include_directories(Common PUBLIC
     include
+    ${CMAKE_SOURCE_DIR}/vendor
     ${CMAKE_SOURCE_DIR}/vendor/dds
-    ${CMAKE_SOURCE_DIR}/vendor/toml++
 )
 
 target_link_libraries(Common

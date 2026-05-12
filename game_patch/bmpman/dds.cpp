@@ -46,10 +46,17 @@ rf::bm::Type read_dds_header(rf::File& file, int *width_out, int *height_out, rf
         return rf::bm::TYPE_NONE;
     }
 
+    // Reject invalid dimensions before reaching int arithmetic.
+    if (hdr.width == 0 || hdr.height == 0
+        || hdr.width > BM_MAX_DIMENSION || hdr.height > BM_MAX_DIMENSION) {
+        xlog::warn("DDS rejected: dimensions {}x{} outside (0, {}]", hdr.width, hdr.height, BM_MAX_DIMENSION);
+        return rf::bm::TYPE_NONE;
+    }
+
     xlog::trace("Using DDS format 0x{:x}", format);
 
-    *width_out = hdr.width;
-    *height_out = hdr.height;
+    *width_out = static_cast<int>(hdr.width);
+    *height_out = static_cast<int>(hdr.height);
     *format_out = format;
 
     *num_levels_out = 1;

@@ -232,9 +232,9 @@ namespace
         }
         if (sw <= 0 || sh <= 0) return false;
         // Reject oversized images so the lock path's int arithmetic can't overflow.
-        if (sw > BM_STB_MAX_DIMENSION || sh > BM_STB_MAX_DIMENSION) {
+        if (sw > BM_MAX_DIMENSION || sh > BM_MAX_DIMENSION) {
             xlog::warn("editor stb_image: '{}' rejected ({}x{} exceeds {} px ceiling)",
-                       filename, sw, sh, BM_STB_MAX_DIMENSION);
+                       filename, sw, sh, BM_MAX_DIMENSION);
             return false;
         }
 
@@ -290,7 +290,7 @@ namespace
             stbi_image_free(pixels);
             return false;
         }
-        // dims pre-validated against BM_STB_MAX_DIMENSION at header time, so w * h * desired
+        // dims pre-validated against BM_MAX_DIMENSION at header time, so w * h * desired
         // stays in int range here.
         const int num_pixels = w * h;
         const size_t total = static_cast<size_t>(num_pixels) * desired;
@@ -333,6 +333,13 @@ namespace
             xlog::warn("editor DDS: '{}' uses an unsupported pixel format (flags=0x{:x} "
                        "fourCC=0x{:x} bits={})",
                        filename, hdr.ddspf.flags, hdr.ddspf.fourCC, hdr.ddspf.RGBBitCount);
+            return false;
+        }
+
+        // Reject invalid dimensions before reaching int arithmetic in fill_dds_locked_data.
+        if (hdr.width == 0 || hdr.height == 0
+            || hdr.width > BM_MAX_DIMENSION || hdr.height > BM_MAX_DIMENSION) {
+            xlog::warn("editor DDS: '{}' rejected ({}x{} outside (0, {}])", filename, hdr.width, hdr.height, BM_MAX_DIMENSION);
             return false;
         }
 
