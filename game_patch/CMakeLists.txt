@@ -157,6 +157,14 @@ set(SRCS
     multi/endgame_votes.h
     multi/faction_files.cpp
     multi/faction_files.h
+    fflink/fflink.cpp
+    fflink/fflink.h
+    fflink/fflink_achievements.cpp
+    fflink/fflink_achievements.h
+    fflink/fflink_session.cpp
+    fflink/fflink_session.h
+    fflink/fflink_utils.cpp
+    fflink/fflink_utils.h
     multi/multi_ban.cpp
     multi/bots/bot_alerts.cpp
     multi/bots/bot_alerts.h
@@ -238,6 +246,7 @@ set(SRCS
     object/alpine_mesh.cpp
     object/alpine_corona.cpp
     object/alpine_corona.h
+    object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp
     misc/character.cpp
