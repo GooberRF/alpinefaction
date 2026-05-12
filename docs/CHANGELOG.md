@@ -8,6 +8,10 @@ Version 1.4.0 (Lupin): Not yet released
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Add vote-allowed levels to level autodownload list for dedicated servers
+- Add `fflink_gsk` dedicated server config field and `sv_fflink_status` / `sv_fflink_resync` console commands for FactionFiles session key exchange
+
+[@is-this-c](https://github.com/is-this-c)
+- Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -15,6 +19,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix incorrect clickable area size for launcher FFLink button
 
 [@is-this-c](https://github.com/is-this-c)
+- Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026

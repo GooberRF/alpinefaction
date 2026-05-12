@@ -32,6 +32,7 @@
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
+#include "../fflink/fflink.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_options.h"
@@ -154,6 +155,7 @@ FunHook<int()> rf_do_frame_hook{
         client_bot_do_frame();
         koth_do_frame();
         alpine_mesh_do_frame();
+        fflink::do_frame();
         int result = rf_do_frame_hook.call_target();
         maybe_autosave();
         debug_do_frame_post();
@@ -557,6 +559,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     os_apply_patch();
     hud_apply_patches();
     multi_do_patch();
+    fflink::do_patch();
     multi_scoreboard_apply_patch();
     gametype_do_patch();
     vpackfile_apply_patches();

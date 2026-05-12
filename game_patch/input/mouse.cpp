@@ -420,8 +420,6 @@ CodeInjection static_zoom_sensitivity_patch2 {
     },
 };
 
-
-
 void mouse_apply_patch()
 {
     // Handle zoom sens customization

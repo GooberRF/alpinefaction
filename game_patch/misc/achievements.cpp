@@ -1,12 +1,10 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <thread>
 #include <sstream>
+#include <format>
 #include <xlog/xlog.h>
 #include <patch_common/CodeInjection.h>
-#include <common/HttpRequest.h>
-#include <common/version/version.h>
 #include "../rf/os/console.h"
 #include "../rf/trigger.h"
 #include "../rf/player/camera.h"
@@ -20,6 +18,7 @@
 #include "../rf/gr/gr_font.h"
 #include "../os/console.h"
 #include "../sound/sound.h"
+#include "../fflink/fflink_achievements.h"
 #include "achievements.h"
 #include "alpine_settings.h"
 #include "misc.h"
@@ -152,67 +151,38 @@ const Achievement* AchievementManager::get_achievement(AchievementName achieveme
     return nullptr; // Return nullptr if not found
 }
 
-void AchievementManager::process_ff_response(const std::string& response, int expected_key, bool is_initial_sync)
+void AchievementManager::apply_ff_unlocks(const std::vector<int>& unlocked_uids, bool initial_sync)
 {
-    if (response.empty()) {
-        xlog::warn("No response from FF API.");
-        return;
-    }
+    // Runs on the main thread (dispatched by fflink::achievements client).
+    auto& achievements_map = get_achievements_mutable();
 
-    std::istringstream response_stream(response);
-    std::string key_token;
-    std::getline(response_stream, key_token, ',');
-
-    try {
-        int key_received = std::stoi(key_token);
-
-        // If this is an update, validate the key
-        if (!is_initial_sync && key_received != expected_key) {
-            xlog::debug("Response received but key mismatch, ignoring.");
-            return;
+    for (int uid : unlocked_uids) {
+        const auto achievement_name = static_cast<AchievementName>(uid);
+        auto it = achievements_map.find(achievement_name);
+        if (it == achievements_map.end() || it->second.unlocked) {
+            continue;
         }
+        it->second.unlocked = true;
+        xlog::info("Achievement '{}' unlocked via FF.", it->second.name);
 
-        if (is_initial_sync && synced_with_ff) {
-            xlog::debug("Initial sync response received but already synced, ignoring.");
-            return;
+        if (initial_sync) {
+            it->second.notified = true;
         }
-
-        // Process unlocked achievements
-        std::string achievement_id_str;
-        auto& manager = AchievementManager::get_instance();
-        auto& achievements = manager.get_achievements_mutable();
-
-        while (std::getline(response_stream, achievement_id_str, ',')) {
-            int achievement_id = std::stoi(achievement_id_str);
-            AchievementName achievement_name = static_cast<AchievementName>(achievement_id); // received facet UID to enum
-
-            auto it = achievements.find(achievement_name);
-            if (it != achievements.end() && !it->second.unlocked) {
-                it->second.unlocked = true;
-                xlog::info("Achievement '{}' unlocked via FF.", it->second.name);
-
-                if (is_initial_sync) {
-                    it->second.notified = true;
-                }
-                else if (!it->second.notified && it->second.type == AchievementType::ff_authoritative) {
-                    manager.show_notification(it->second);
-                }
-            }
-        }
-
-        if (is_initial_sync) {
-            synced_with_ff = true;
-            std::string username = g_game_config.fflink_username.value();
-            rf::console::printf("Successfully initialized Alpine Faction achievements for FactionFiles account %s", username.c_str());
-        }
-        else {
-            xlog::debug("Successfully processed FF update [{}].", expected_key);
-            achievement_async_ff_string.clear();
-            achievement_async_ff_key = 0; // Reset key
+        else if (!it->second.notified && it->second.type == AchievementType::ff_authoritative) {
+            show_notification(it->second);
         }
     }
-    catch (...) {
-        xlog::warn("Ignoring invalid response format from FF API: {}", response);
+
+    if (initial_sync) {
+        synced_with_ff = true;
+        const std::string username = g_game_config.fflink_username.value();
+        rf::console::printf(
+            "Successfully initialized Alpine Faction achievements for FactionFiles account %s",
+            username.c_str());
+    }
+    else {
+        achievement_async_ff_string.clear();
+        achievement_async_ff_key = 0;
     }
 }
 
@@ -224,30 +194,20 @@ void AchievementManager::sync_with_ff()
         return;
     }
 
-    std::thread([token]() {
-        xlog::info("Syncing achievements with FF...");
-
-        std::string url = "https://link.factionfiles.com/afachievement/v1/initial/" + encode_uri_component(token);
-        std::string response;
-
-        try {
-            HttpSession session(AF_USER_AGENT_SUFFIX("Achievement Sync"));
-            HttpRequest request(url, "GET", session);
-            request.send();
-
-            char buffer[4096];
-            std::ostringstream response_stream;
-            while (size_t bytes_read = request.read(buffer, sizeof(buffer))) {
-                response_stream.write(buffer, bytes_read);
+    xlog::info("Syncing achievements with FF...");
+    fflink::achievements::sync_async(std::move(token),
+        [](fflink::achievements::UnlockedAchievementsResult result) {
+            // Runs on main thread.
+            if (!result.ok) {
+                // Error already logged by the client.
+                return;
             }
-
-            response = response_stream.str();
-            AchievementManager::get_instance().process_ff_response(response, 0, true);
-        }
-        catch (const std::exception& e) {
-            xlog::error("Failed to sync achievements with FF: {}", e.what());
-        }
-    }).detach();
+            if (synced_with_ff) {
+                xlog::debug("Initial sync response received but already synced, ignoring.");
+                return;
+            }
+            AchievementManager::get_instance().apply_ff_unlocks(result.unlocked_uids, true);
+        });
 }
 
 void AchievementManager::send_update_to_ff()
@@ -263,36 +223,25 @@ void AchievementManager::send_update_to_ff()
         return;
     }
 
-    std::thread([token]() {
-        xlog::debug("Sending achievement updates to FF [{}]...", achievement_async_ff_key);
+    const int sent_key = achievement_async_ff_key;
+    xlog::debug("Sending achievement updates to FF [{}]...", sent_key);
 
-        std::string url =
-            "https://link.factionfiles.com/afachievement/v1/update/" + encode_uri_component(token);
-        std::string response;
-
-        try {
-            HttpSession session(AF_USER_AGENT_SUFFIX("Achievement Push"));
-            HttpRequest request(url, "POST", session);
-            request.set_content_type("application/x-www-form-urlencoded");
-
-            std::string post_string =
-                "key=" + std::to_string(achievement_async_ff_key) + "," + achievement_async_ff_string;
-            xlog::debug("sending post string {}", post_string);
-            request.send(post_string);
-
-            char buffer[4096];
-            std::ostringstream response_stream;
-            while (size_t bytes_read = request.read(buffer, sizeof(buffer))) {
-                response_stream.write(buffer, bytes_read);
+    fflink::achievements::push_async(std::move(token), sent_key, achievement_async_ff_string,
+        [sent_key](fflink::achievements::UnlockedAchievementsResult result) {
+            // Runs on main thread.
+            if (!result.ok) {
+                // Error already logged by the client. Leave the pending payload in place
+                // so the next achievement_system_do_frame retry will resend it.
+                return;
             }
-
-            response = response_stream.str();
-            AchievementManager::get_instance().process_ff_response(response, achievement_async_ff_key, false);
-        }
-        catch (const std::exception& e) {
-            xlog::error("Failed to send achievement updates: {}", e.what());
-        }
-    }).detach();
+            if (result.returned_key != sent_key) {
+                xlog::debug("Update response key mismatch (sent {}, got {}); ignoring.",
+                    sent_key, result.returned_key);
+                return;
+            }
+            xlog::debug("Successfully processed FF update [{}].", sent_key);
+            AchievementManager::get_instance().apply_ff_unlocks(result.unlocked_uids, false);
+        });
 }
 
 void AchievementManager::add_key_to_ff_update_map()
@@ -552,9 +501,7 @@ void log_use(int used_uid, int type) {
 
 void initialize_achievement_manager() {
     // build achievement storage and sync with FF
-    if (!rf::is_server && !rf::is_dedicated_server) {
-        AchievementManager::get_instance().initialize();
-    }
+    AchievementManager::get_instance().initialize();
 }
 
 void draw_achievement_box_content(int x, int y) {
