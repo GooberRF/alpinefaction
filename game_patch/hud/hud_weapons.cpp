@@ -171,6 +171,42 @@ bool hud_weapons_is_double_ammo()
     return weapon_type == rf::machine_pistol_weapon_type || weapon_type == rf::machine_pistol_special_weapon_type;
 }
 
+static bool is_mouse_wheel_down() {
+    static bool was_mouse_3_down = false;
+    static HighResTimer mouse_3_up_cool_down_timer{};
+    constexpr int MOUSE_BUTTON_3 = 2;
+    const bool is_mouse_3_down = rf::mouse_button_is_down(MOUSE_BUTTON_3);
+    if (!is_mouse_3_down && was_mouse_3_down) {
+        // Use a cool down after key up to avoid accidental
+        // weapon cycle selection.
+        constexpr uint64_t COOL_DOWN_MS = 64;
+        mouse_3_up_cool_down_timer.set_ms(COOL_DOWN_MS);
+    } else if (is_mouse_3_down) {
+        mouse_3_up_cool_down_timer.invalidate();
+    }
+    was_mouse_3_down = is_mouse_3_down;
+    return is_mouse_3_down || (mouse_3_up_cool_down_timer.valid()
+        && !mouse_3_up_cool_down_timer.elapsed());
+}
+
+FunHook<void(rf::Player*, int, bool)> player_select_next_primary_hook{
+    0x004A3770,
+    [] (rf::Player* const player, const int a2, const bool play_sound) {
+        if (!is_mouse_wheel_down() || rf::hud_render_weapon_cycle) {
+            player_select_next_primary_hook.call_target(player, a2, play_sound);
+        }
+    },
+};
+
+FunHook<void(rf::Player*, int, bool)> player_select_prev_primary_hook{
+    0x004A3BE0,
+    [] (rf::Player* const player, const int a2, const bool play_sound) {
+        if (!is_mouse_wheel_down() || rf::hud_render_weapon_cycle) {
+            player_select_prev_primary_hook.call_target(player, a2, play_sound);
+        }
+    },
+};
+
 void hud_weapons_apply_patches()
 {
     // Big HUD support for ammo display
@@ -182,4 +218,8 @@ void hud_weapons_apply_patches()
     render_reticle_set_color_hook.install();
     render_reticle_locked_set_color_hook.install();
     render_reticle_check_custom_injection.install();
+
+    // Disable weapon cycle selection, if `Mouse 3` is pressed.
+    player_select_next_primary_hook.install();
+    player_select_prev_primary_hook.install();
 }

@@ -1203,35 +1203,37 @@ void multi_spectate_render() {
     }
 
     if (!entity) {
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
-        static int blood_bm = rf::bm::load("bloodsmear07_A.tga", -1, true);
-        int blood_w, blood_h;
-        rf::bm::get_dimensions(blood_bm, &blood_w, &blood_h);
-        rf::gr::bitmap_scaled(
-            blood_bm,
-            (scr_w - blood_w * 2) / 2,
-            (scr_h - blood_h * 2) / 2,
-            blood_w * 2,
-            blood_h * 2,
-            0,
-            0,
-            blood_w,
-            blood_h,
-            false,
-            false,
-            rf::gr::bitmap_clamp_mode
-        );
+        const PlayerStatsNew* const stats =
+            static_cast<PlayerStatsNew*>(g_spectate_mode_target->stats);
 
-        rf::Color dead_clr{0xF0, 0x20, 0x10, 0xC0};
+        const std::string_view text = std::invoke([&] {
+            if (g_spectate_mode_target->is_spectator) {
+                return "SPECTATOR";
+            } else if (player_is_idle(g_spectate_mode_target)) {
+                return "IDLE";
+            } else if (!stats->num_deaths) {
+                return "NOT IN ROUND";
+            } else {
+                return "DEAD";
+            }
+        });
+
+        const rf::Color red_clr{0xF0, 0x20, 0x10, 0xC0};
         draw_with_shadow(
             scr_w / 2,
             scr_h / 2,
             2,
             2,
-            dead_clr,
+            red_clr,
             shadow_clr,
-            [=] (int x, int y) {
-                rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "DEAD", large_font);
+            [=] (const int x, const int y) {
+                rf::gr::string_aligned(
+                    rf::gr::ALIGN_CENTER,
+                    x,
+                    y,
+                    text.data(),
+                    large_font
+                );
             }
         );
     }

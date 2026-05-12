@@ -16,6 +16,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `ATX_Set_Frame`, `ATX_Play`, `ATX_Pause`, `ATX_Set_Frame_Time` events
 - Add vote-allowed levels to level autodownload list for dedicated servers
 
+[@is-this-c](https://github.com/is-this-c)
+- Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
@@ -23,6 +26,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
 
 [@is-this-c](https://github.com/is-this-c)
+- Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
