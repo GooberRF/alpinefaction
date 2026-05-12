@@ -282,11 +282,11 @@ namespace
             static_cast<int>(file_bytes.size()), &w, &h, &source_channels, desired);
         if (!pixels) {
             xlog::error("editor stb_image: decode failed for '{}': {}",
-                        entry.name, stbi_failure_reason());
+                        filename, stbi_failure_reason());
             return false;
         }
         if (w != entry.orig_width || h != entry.orig_height) {
-            xlog::error("editor stb_image: '{}' dims changed between header and decode", entry.name);
+            xlog::error("editor stb_image: '{}' dims changed between header and decode", filename);
             stbi_image_free(pixels);
             return false;
         }

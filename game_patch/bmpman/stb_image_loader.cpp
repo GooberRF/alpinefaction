@@ -36,8 +36,8 @@ namespace
     // Probe for a PNG/JPG/JPEG sibling of `requested_filename` (any extension stripped). For
     // each candidate extension, the supercede policy gate (vpackfile_supercede_allowed) is
     // checked first — same toggle that gates user_maps overriding stock for any other asset
-    // type. The first allowed-and-existing sibling wins; if none qualify, returns false.
-    bool read_stb_sibling(const char* requested_filename, std::vector<uint8_t>& out)
+    // type.
+    std::string read_stb_sibling(const char* requested_filename, std::vector<uint8_t>& out)
     {
         std::string base{get_filename_without_ext(requested_filename)};
         for (const char* ext : {".png", ".jpg", ".jpeg"}) {
@@ -46,10 +46,10 @@ namespace
                 continue;
             }
             if (read_file_to_vector(candidate.c_str(), out)) {
-                return true;
+                return candidate;
             }
         }
-        return false;
+        return {};
     }
 
     // Channel-count → bm format mapping lives in common/bitmap/formats.h so the editor uses
@@ -76,14 +76,15 @@ rf::bm::Type read_stb_header(const char* filename, int* width_out, int* height_o
     // Probe for any PNG/JPG/JPEG sibling of the requested name. Returning TYPE_NONE here is
     // not an error — it just means no sibling exists, and the caller falls through to stock.
     std::vector<uint8_t> file_bytes;
-    if (!read_stb_sibling(filename, file_bytes)) {
+    const std::string resolved = read_stb_sibling(filename, file_bytes);
+    if (resolved.empty()) {
         return rf::bm::TYPE_NONE;
     }
 
     int w = 0, h = 0, channels = 0;
     if (!stbi_info_from_memory(file_bytes.data(), static_cast<int>(file_bytes.size()),
                                &w, &h, &channels)) {
-        xlog::warn("stb_image: failed to read header for '{}': {}", filename, stbi_failure_reason());
+        xlog::warn("stb_image: failed to read header for '{}': {}", resolved, stbi_failure_reason());
         return rf::bm::TYPE_NONE;
     }
     if (w <= 0 || h <= 0 || channels < 1 || channels > 4) {
@@ -91,7 +92,7 @@ rf::bm::Type read_stb_header(const char* filename, int* width_out, int* height_o
     }
     // Reject invalid dimensions before reaching int arithmetic.
     if (w > BM_MAX_DIMENSION || h > BM_MAX_DIMENSION) {
-        xlog::warn("stb_image: '{}' rejected ({}x{} exceeds {} px ceiling)", filename, w, h, BM_MAX_DIMENSION);
+        xlog::warn("stb_image: '{}' rejected ({}x{} exceeds {} px ceiling)", resolved, w, h, BM_MAX_DIMENSION);
         return rf::bm::TYPE_NONE;
     }
 
@@ -115,7 +116,8 @@ int lock_stb_bitmap(rf::bm::BitmapEntry& bm_entry)
     // requested name (which might be foo.tga even though we superceded with foo.png), so we
     // can't just reopen by name — we have to re-resolve.
     std::vector<uint8_t> file_bytes;
-    if (!read_stb_sibling(bm_entry.name, file_bytes)) {
+    const std::string resolved = read_stb_sibling(bm_entry.name, file_bytes);
+    if (resolved.empty()) {
         xlog::error("stb_image: no PNG/JPG sibling found for '{}' during lock", bm_entry.name);
         return -1;
     }
@@ -127,11 +129,11 @@ int lock_stb_bitmap(rf::bm::BitmapEntry& bm_entry)
     uint8_t* pixels = stbi_load_from_memory(file_bytes.data(), static_cast<int>(file_bytes.size()),
                                             &w, &h, &source_channels, desired_channels);
     if (!pixels) {
-        xlog::error("stb_image: decode failed for '{}': {}", bm_entry.name, stbi_failure_reason());
+        xlog::error("stb_image: decode failed for '{}': {}", resolved, stbi_failure_reason());
         return -1;
     }
     if (w != bm_entry.orig_width || h != bm_entry.orig_height) {
-        xlog::error("stb_image: '{}' dimensions changed between header read and decode", bm_entry.name);
+        xlog::error("stb_image: '{}' dimensions changed between header read and decode", resolved);
         stbi_image_free(pixels);
         return -1;
     }
@@ -144,7 +146,7 @@ int lock_stb_bitmap(rf::bm::BitmapEntry& bm_entry)
     // Allocate via rf::rf_malloc so stock unlock can free this buffer with its matching free.
     void* dst = rf::rf_malloc(static_cast<int>(total_bytes));
     if (!dst) {
-        xlog::error("stb_image: rf_malloc failed for {} bytes ('{}')", total_bytes, bm_entry.name);
+        xlog::error("stb_image: rf_malloc failed for {} bytes ('{}')", total_bytes, resolved);
         stbi_image_free(pixels);
         return -1;
     }

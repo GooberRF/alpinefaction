@@ -562,8 +562,8 @@ void atx_do_frame()
     const float dt_s = rf::frametime;
     if (dt_s <= 0.0f) return;
 
-    for (auto& [key, cptr] : g_controllers) {
-        AtxController& c = *cptr;
+    for (auto& kv : g_controllers) {
+        AtxController& c = *kv.second;
         if (c.animation_mode == AtxAnimationMode::Static) continue;
         if (!c.playing) continue;
         if (c.frames.size() < 2) continue;
