@@ -29,7 +29,7 @@ else()
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static")
 endif()
 
-# Output all "exe" and "dll" files into "bin" directory.
+# Output all 'exe' and 'dll' files into 'bin' directory.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 if(MSVC)
