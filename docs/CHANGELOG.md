@@ -20,6 +20,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Make clock clutter objects correctly display the current local real world time
 
 [@is-this-c](https://github.com/is-this-c)
+- Never disable `Refresh Selected` or `Add Server` buttons
 - Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
 
 ### Bug fixes
