@@ -90,13 +90,11 @@ jobs:
     - uses: actions/checkout@v4
     - uses: mozilla-actions/sccache-action@v0.0.9
 
-    - name: Install Ninja
-      run: choco install ninja
-
-    - name: Add Launch-VsDevShell to PATH
+    - name: Add VS_INSTALL and VS_TOOLS to GITHUB_ENV
       run: |
         $vs = (Get-CimInstance MSFT_VSInstance -Namespace root/cimv2/vs).InstallLocation
-        Write-Output (Join-Path $vs Common7\Tools) >> $env:GITHUB_PATH
+        "VS_INSTALL=$vs" >> $env:GITHUB_ENV
+        "VS_TOOLS=$(Join-Path $vs Common7\Tools)" >> $env:GITHUB_ENV
 
     - name: Create build environment
       run: cmake -E make_directory .\build
@@ -104,7 +102,13 @@ jobs:
     - name: Configure CMake
       working-directory: ./build
       run: |
-        Launch-VsDevShell -HostArch amd64 -Arch x86 -SkipAutomaticLocation
+        Import-Module "$env:VS_TOOLS\Microsoft.VisualStudio.DevShell.dll"
+        Enter-VsDevShell `
+          -VsInstallPath $env:VS_INSTALL `
+          -HostArch amd64 `
+          -Arch x86 `
+          -SkipAutomaticLocation `
+          -DevCmdArguments '-vcvars_ver=14.44'
         cmake .. `
           -G Ninja `
           -D CMAKE_C_COMPILER_LAUNCHER=sccache `
@@ -114,7 +118,13 @@ jobs:
     - name: Build
       working-directory: ./build
       run: |
-        Launch-VsDevShell -HostArch amd64 -Arch x86 -SkipAutomaticLocation
+        Import-Module "$env:VS_TOOLS\Microsoft.VisualStudio.DevShell.dll"
+        Enter-VsDevShell `
+          -VsInstallPath $env:VS_INSTALL `
+          -HostArch amd64 `
+          -Arch x86 `
+          -SkipAutomaticLocation `
+          -DevCmdArguments '-vcvars_ver=14.44'
         cmake --build . -j $env:NUMBER_OF_PROCESSORS
 
     - name: Stage artifacts (dist)

@@ -29,7 +29,7 @@ else()
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static")
 endif()
 
-# Output all `exe` and `dll` files into `bin` directory.
+# Output all "exe" and "dll" files into "bin" directory.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 if(MSVC)
@@ -37,8 +37,6 @@ if(MSVC)
     add_compile_options(/arch:SSE2)
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    # Build Tools >=14.50 do not support Windows 7.
-    set(CMAKE_GENERATOR_TOOLSET version=14.44 CACHE STRING "Microsoft C++ Build Tools")
 else()
     add_compile_options(-msse2)
 endif()
