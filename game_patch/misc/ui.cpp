@@ -1810,6 +1810,12 @@ void ui_apply_patch()
 
     // Handle CTRL+V in input boxes
     UiInputBox_process_key_hook.install();
+
+    // Never disable `Refresh Selected` or `Add Server`.
+    AsmWriter{0x0044D4A6}.nop(5);
+    AsmWriter{0x0044D4BA}.nop(5);
+    AsmWriter{0x0044D468}.nop(5);
+    AsmWriter{0x0044D47C}.nop(5);
 }
 
 void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num) {
