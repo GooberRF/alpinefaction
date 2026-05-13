@@ -37,7 +37,7 @@ if(MSVC)
     add_compile_options(/arch:SSE2)
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    # Build Tools >=14.50 do not support Windows 7 etc.
+    # Build Tools >=14.50 do not support Windows 7.
     set(CMAKE_GENERATOR_TOOLSET version=14.44 CACHE STRING "Microsoft C++ Build Tools")
 else()
     add_compile_options(-msse2)
