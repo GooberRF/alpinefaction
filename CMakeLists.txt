@@ -10,12 +10,6 @@ set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(MSVC)
-    add_compile_definitions(
-        _CRT_SECURE_NO_WARNINGS
-    )
-endif()
-
 # Set our target version to Windows 7.
 add_compile_definitions(
     _WIN32_WINNT=0x0601
@@ -35,13 +29,16 @@ else()
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static")
 endif()
 
-# Output all 'exe' and 'dll' files into 'bin' directory
+# Output all `exe` and `dll` files into `bin` directory.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 if(MSVC)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/arch:SSE2)
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    # Build Tools >=14.50 do not support Windows 7 etc.
+    set(CMAKE_GENERATOR_TOOLSET version=14.44 CACHE STRING "Microsoft C++ Build Tools")
 else()
     add_compile_options(-msse2)
 endif()
