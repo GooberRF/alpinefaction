@@ -7,6 +7,7 @@
 #include <cassert>
 #include <unordered_set>
 #include "event_alpine.h"
+#include "../bmpman/atx.h"
 #include "../hud/hud_world.h"
 #include "../misc/misc.h"
 #include "../misc/level.h"
@@ -100,6 +101,10 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"Gas_Region_State", 151},
                 {"Modify_Gas_Region", 152},
                 {"Resize_Gas_Region", 153},
+                {"ATX_Set_Frame", 154},
+                {"ATX_Play", 155},
+                {"ATX_Pause", 156},
+                {"ATX_Set_Frame_Time", 157},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -179,6 +184,10 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {151, []() { return new EventGasRegionState(); }},
                 {152, []() { return new EventModifyGasRegion(); }},
                 {153, []() { return new EventResizeGasRegion(); }},
+                {154, []() { return new EventATXSetFrame(); }},
+                {155, []() { return new EventATXPlay(); }},
+                {156, []() { return new EventATXPause(); }},
+                {157, []() { return new EventATXSetFrameTime(); }},
             };
 
             // find type and allocate
@@ -263,6 +272,10 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {151, [](rf::Event* e) { delete static_cast<EventGasRegionState*>(e); }},
                 {152, [](rf::Event* e) { delete static_cast<EventModifyGasRegion*>(e); }},
                 {153, [](rf::Event* e) { delete static_cast<EventResizeGasRegion*>(e); }},
+                {154, [](rf::Event* e) { delete static_cast<EventATXSetFrame*>(e); }},
+                {155, [](rf::Event* e) { delete static_cast<EventATXPlay*>(e); }},
+                {156, [](rf::Event* e) { delete static_cast<EventATXPause*>(e); }},
+                {157, [](rf::Event* e) { delete static_cast<EventATXSetFrameTime*>(e); }},
             };
 
             // find type and deallocate
@@ -317,7 +330,11 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Unhide_Glare,
         rf::EventType::Gas_Region_State,
         rf::EventType::Modify_Gas_Region,
-        rf::EventType::Resize_Gas_Region
+        rf::EventType::Resize_Gas_Region,
+        rf::EventType::ATX_Set_Frame,
+        rf::EventType::ATX_Play,
+        rf::EventType::ATX_Pause,
+        rf::EventType::ATX_Set_Frame_Time
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
@@ -857,6 +874,52 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
             return event;
         }
     },
+    // ATX_Set_Frame
+    {
+        rf::EventType::ATX_Set_Frame, [](const EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::ATX_Set_Frame));
+            auto* event = dynamic_cast<EventATXSetFrame*>(base_event);
+            if (event) {
+                event->handle = params.str1;
+                event->frame_index = params.int1;
+            }
+            return event;
+        }
+    },
+    // ATX_Play
+    {
+        rf::EventType::ATX_Play, [](const EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::ATX_Play));
+            auto* event = dynamic_cast<EventATXPlay*>(base_event);
+            if (event) {
+                event->handle = params.str1;
+            }
+            return event;
+        }
+    },
+    // ATX_Pause
+    {
+        rf::EventType::ATX_Pause, [](const EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::ATX_Pause));
+            auto* event = dynamic_cast<EventATXPause*>(base_event);
+            if (event) {
+                event->handle = params.str1;
+            }
+            return event;
+        }
+    },
+    // ATX_Set_Frame_Time
+    {
+        rf::EventType::ATX_Set_Frame_Time, [](const EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, rf::event_type_to_int(rf::EventType::ATX_Set_Frame_Time));
+            auto* event = dynamic_cast<EventATXSetFrameTime*>(base_event);
+            if (event) {
+                event->handle = params.str1;
+                event->frame_time_ms = params.int1;
+            }
+            return event;
+        }
+    },
     // Resize_Gas_Region
     {
         rf::EventType::Resize_Gas_Region, [](const EventCreateParams& params) {
@@ -921,6 +984,43 @@ CodeInjection level_read_events_factories_patch {
         }
     }
 };
+
+// ATX event turn_on implementations (out-of-line so event_alpine.h doesn't need to pull in atx.h).
+void EventATXSetFrame::turn_on()
+{
+    if (handle.empty()) {
+        xlog::warn("[ATX_Set_Frame] uid={} called with empty handle", this->uid);
+        return;
+    }
+    atx_set_frame(handle, frame_index);
+}
+
+void EventATXPlay::turn_on()
+{
+    if (handle.empty()) {
+        xlog::warn("[ATX_Play] uid={} called with empty handle", this->uid);
+        return;
+    }
+    atx_play(handle);
+}
+
+void EventATXPause::turn_on()
+{
+    if (handle.empty()) {
+        xlog::warn("[ATX_Pause] uid={} called with empty handle", this->uid);
+        return;
+    }
+    atx_pause(handle);
+}
+
+void EventATXSetFrameTime::turn_on()
+{
+    if (handle.empty()) {
+        xlog::warn("[ATX_Set_Frame_Time] uid={} called with empty handle", this->uid);
+        return;
+    }
+    atx_set_frame_time(handle, frame_time_ms);
+}
 
 // set p_data orient for Anchor_Marker_Orient when event is created (required for use in moving groups)
 CodeInjection level_read_events_movers_patch {

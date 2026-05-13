@@ -35,7 +35,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 55; // must be 1 higher than actual count
+constexpr int new_event_count = 59; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -95,6 +95,10 @@ const char* additional_event_names[new_event_count] = {
     "Gas_Region_State",
     "Modify_Gas_Region",
     "Resize_Gas_Region",
+    "ATX_Set_Frame",
+    "ATX_Play",
+    "ATX_Pause",
+    "ATX_Set_Frame_Time",
     "_dummy"
 };
 
@@ -761,6 +765,32 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         },
         {
             {FIELD_INT1, true}
+        }
+    }},
+    {AlpineDedEventID::ATX_Set_Frame, {
+        {FIELD_STR1, FIELD_INT1},
+        {
+            {FIELD_STR1, "ATX handle (str1):"},
+            {FIELD_INT1, "Frame index (int1):"}
+        }
+    }},
+    {AlpineDedEventID::ATX_Play, {
+        {FIELD_STR1},
+        {
+            {FIELD_STR1, "ATX handle (str1):"}
+        }
+    }},
+    {AlpineDedEventID::ATX_Pause, {
+        {FIELD_STR1},
+        {
+            {FIELD_STR1, "ATX handle (str1):"}
+        }
+    }},
+    {AlpineDedEventID::ATX_Set_Frame_Time, {
+        {FIELD_STR1, FIELD_INT1},
+        {
+            {FIELD_STR1, "ATX handle (str1):"},
+            {FIELD_INT1, "Frame time ms (int1):"}
         }
     }},
 };
