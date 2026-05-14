@@ -19,6 +19,9 @@ set(SRCS
     include/common/utils/perf-utils.h
     include/common/utils/string-utils.h
     include/common/utils/bool-utils.h
+    include/common/bitmap/formats.h
+    include/common/atx/spec.h
+    include/common/atx/parse.h
     include/common/version/version.h
     src/HttpRequest.cpp
     src/config/GameConfig.cpp
@@ -43,7 +46,11 @@ target_include_directories(Common PRIVATE
 # Make sure Windows min/max macro don't conflict with std::min/std::max
 target_compile_definitions(Common PUBLIC NOMINMAX)
 
-target_include_directories(Common PUBLIC include)
+target_include_directories(Common PUBLIC
+    include
+    ${CMAKE_SOURCE_DIR}/vendor
+    ${CMAKE_SOURCE_DIR}/vendor/dds
+)
 
 target_link_libraries(Common
     shlwapi
