@@ -21,6 +21,7 @@
 #include "../object/object.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
 #include "../rf/level.h"
+#include "../input/input.h"
 
 #define DEBUG_UI_LAYOUT 0
 #define SHARP_UI_TEXT 1
@@ -1537,8 +1538,41 @@ CodeInjection options_render_alpine_panel_patch{
         int index = rf::ui::options_current_panel;
         //xlog::warn("render index {}", index);
 
-        if (index == 3 && !rf::ui::options_controls_waiting_for_key) {
-            render_ctrl_camscale_btns();
+        if (index == 3) {
+            static bool s_was_waiting = false;
+            bool now_waiting = rf::ui::options_controls_waiting_for_key;
+            if (s_was_waiting && !now_waiting) {
+                int16_t new_sc = -1;
+                int xbtn = mouse_take_pending_rebind();
+                if (xbtn >= 0)
+                    new_sc = static_cast<int16_t>(CTRL_EXTRA_MOUSE_SCAN_BASE + (xbtn - 3));
+                if (new_sc < 0) {
+                    int kbd_sc = key_take_pending_extra_rebind();
+                    if (kbd_sc >= 0)
+                        new_sc = static_cast<int16_t>(kbd_sc);
+                }
+                if (new_sc >= 0 && rf::local_player) {
+                    auto& cc = rf::local_player->settings.controls;
+                    int n = std::min(cc.num_bindings, 128);
+                    bool found = false;
+                    for (int i = 0; i < n && !found; ++i) {
+                        for (int slot = 0; slot < 2 && !found; ++slot) {
+                            if (cc.bindings[i].scan_codes[slot] == static_cast<int16_t>(CTRL_REBIND_SENTINEL)) {
+                                for (int j = 0; j < n; ++j)
+                                    for (int s = 0; s < 2; ++s)
+                                        if ((j != i || s != slot) && cc.bindings[j].scan_codes[s] == new_sc)
+                                            cc.bindings[j].scan_codes[s] = -1;
+                                cc.bindings[i].scan_codes[slot] = new_sc;
+                                found = true;
+                            }
+                        }
+                    }
+                    rf::key_process_event(CTRL_REBIND_SENTINEL, 0, 0);
+                }
+            }
+            s_was_waiting = now_waiting;
+            if (!rf::ui::options_controls_waiting_for_key)
+                render_ctrl_camscale_btns();
         }
 
         // render alpine options panel

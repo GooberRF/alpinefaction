@@ -19,8 +19,10 @@
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
 #include "../rf/os/os.h"
+#include "../rf/ui.h"
 #include "../multi/alpine_packets.h"
 #include "../os/console.h"
+#include "input.h"
 
 static int starting_alpine_control_index = -1;
 
@@ -114,6 +116,11 @@ FunHook<int(int16_t)> key_to_ascii_hook{
 
 int get_key_name(int key, char* buf, size_t buf_len)
 {
+    // Extra mouse buttons (Mouse 4+): stored as custom scan codes
+    if (key >= CTRL_EXTRA_MOUSE_SCAN_BASE && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT) {
+        int n = snprintf(buf, buf_len, "Mouse %d", (key - CTRL_EXTRA_MOUSE_SCAN_BASE) + 4);
+        return n > 0 ? n : 0;
+    }
      LONG lparam = (key & 0x7F) << 16;
     if (key & 0x80) {
         lparam |= 1 << 24;
@@ -488,6 +495,16 @@ CodeInjection item_touch_weapon_autoswitch_patch{
     }
 };
 
+// Pending extra key rebind scan code (-1 = none).
+static int g_pending_extra_key_rebind = -1;
+
+int key_take_pending_extra_rebind()
+{
+    int sc = g_pending_extra_key_rebind;
+    g_pending_extra_key_rebind = -1;
+    return sc;
+}
+
 FunHook<void(int, int, int)> key_msg_handler_hook{
     0x0051EBA0,
     [] (const int msg, const int w_param, int l_param) {
@@ -502,6 +519,19 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
                     || w_param == VK_END
                     || w_param == VK_HOME) {
                     l_param |= KF_EXTENDED << 16;
+                }
+                // Alt keys arrive via WM_SYSKEYDOWN but RF's handler doesn't feed them into its
+                // key system — inject the sentinel so the rebind UI records the press, then swap on fall edge.
+                if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+                    && rf::ui::options_controls_waiting_for_key
+                    && g_pending_extra_key_rebind < 0) {
+                    int win32_scan = (l_param >> 16) & 0x1FF;
+                    int rf_scan = (win32_scan & 0x7F) | ((win32_scan & 0x100) ? 0x80 : 0);
+                    if (rf_scan == rf::KEY_LALT || rf_scan == rf::KEY_RALT) {
+                        g_pending_extra_key_rebind = rf_scan;
+                        rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
+                        return;
+                    }
                 }
             }
         }

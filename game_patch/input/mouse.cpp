@@ -11,6 +11,7 @@
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "../rf/ui.h"
 #include "../misc/alpine_settings.h"
 #include "../main/main.h"
 #include "mouse.h"
@@ -419,6 +420,29 @@ CodeInjection static_zoom_sensitivity_patch2 {
         }
     },
 };
+
+// Pending extra mouse button rebind (rf_btn index, -1 = none).
+static int g_pending_mouse_extra_btn_rebind = -1;
+
+int mouse_take_pending_rebind()
+{
+    int btn = g_pending_mouse_extra_btn_rebind;
+    g_pending_mouse_extra_btn_rebind = -1;
+    return btn;
+}
+
+void mouse_handle_xbutton_wm(int rf_btn, bool down)
+{
+    int extra = rf_btn - 3;
+    if (extra < 0 || extra >= CTRL_EXTRA_MOUSE_SCAN_COUNT)
+        return;
+    if (down && g_pending_mouse_extra_btn_rebind < 0 && rf::ui::options_controls_waiting_for_key) {
+        g_pending_mouse_extra_btn_rebind = rf_btn;
+        rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
+    } else {
+        rf::key_process_event(CTRL_EXTRA_MOUSE_SCAN_BASE + extra, down ? 1 : 0, 0);
+    }
+}
 
 void mouse_apply_patch()
 {
