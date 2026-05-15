@@ -1,7 +1,7 @@
 #pragma once
 #include <SDL3/SDL.h>
 
-// Valve Corporation VID/PID definitions
+// Valve hardware VID/PID definitions
 #define VALVE_VENDOR_ID               0x28de
 #define STEAM_CONTROLLER_LEGACY_PID   0x1101  // Valve Legacy Steam Controller (CHELL)
 #define STEAM_CONTROLLER_WIRED_PID    0x1102  // Valve wired Steam Controller (D0G)
@@ -15,6 +15,7 @@
 #define STEAM_TRITON_WIRED_PID        0x1302  // Valve wired Steam Controller (TRITON) wired
 #define STEAM_TRITON_BLE_PID          0x1303  // Valve Bluetooth Steam Controller (TRITON) 
 #define STEAM_TRITON_PROTEUS_PID      0x1304  // Valve Steam Controller Puck
+#define STEAM_NEREID_DONGLE_PID       0x1305  // Valve Steam Nereid Dongle (most likely for Steam Machine 2 or Steam Frame?)
 
 enum class ControllerIconType {
     Auto = 0,
@@ -26,8 +27,8 @@ enum class ControllerIconType {
     PS5,
     NintendoSwitch,
     NintendoGameCube,
-    SteamController,
-    SteamDeck,
+    Steam,
+    SteamControllerLegacy,
 };
 
 // Returns true if the product ID matches any Steam Controller (2015) variant
@@ -47,12 +48,13 @@ inline bool is_steam_triton_controller_pid(Uint16 pid)
 {
     return (pid == STEAM_TRITON_WIRED_PID ||
             pid == STEAM_TRITON_BLE_PID   ||
-            pid == STEAM_TRITON_PROTEUS_PID);
+            pid == STEAM_TRITON_PROTEUS_PID ||
+            pid == STEAM_NEREID_DONGLE_PID);
 }
 
 // Checks Valve VID/PID to resolve Steam-specific controller icon types.
 // For Steam Virtual Gamepad (0x11ff), passes through the supplied fallback icon type.
-// For Steam Deck/SteamController 2, returns Steam Deck glyphs; for Steam Controller (2015), returns Steam Controller glyphs.
+// For Steam (Deck/Steam Controller), returns Steam glyphs; for Steam Controller (2015), returns SC1 glyphs instead.
 inline ControllerIconType get_steam_virtual_controller_detection(SDL_Gamepad* ctrl, ControllerIconType fallback)
 {
     if (!ctrl)
@@ -67,14 +69,11 @@ inline ControllerIconType get_steam_virtual_controller_detection(SDL_Gamepad* ct
     if (product == STEAM_VIRTUAL_GAMEPAD_PID)
         return fallback;
 
-    if (product == STEAM_DECK_BUILTIN_PID)
-        return ControllerIconType::SteamDeck;
-
     if (is_steam_controller_pid(product))
-        return ControllerIconType::SteamController;
+        return ControllerIconType::SteamControllerLegacy;
 
-    if (is_steam_triton_controller_pid(product))
-        return ControllerIconType::SteamDeck;
+    if (product == STEAM_DECK_BUILTIN_PID || is_steam_triton_controller_pid(product))
+        return ControllerIconType::Steam;
 
     return fallback;
 }

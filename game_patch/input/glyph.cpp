@@ -196,8 +196,8 @@ static SDL_GamepadType icon_type_to_sdl(ControllerIconType icon)
         case ControllerIconType::NintendoGameCube: return SDL_GAMEPAD_TYPE_GAMECUBE;
 #endif
         // Steam devices use Xbox-style A/B/X/Y face labels
-        case ControllerIconType::SteamController:
-        case ControllerIconType::SteamDeck:        return SDL_GAMEPAD_TYPE_XBOXONE;
+        case ControllerIconType::SteamControllerLegacy:
+        case ControllerIconType::Steam:        return SDL_GAMEPAD_TYPE_XBOXONE;
         default:                                   return SDL_GAMEPAD_TYPE_UNKNOWN;
     }
 }
@@ -230,7 +230,7 @@ static bool uses_shared_glyphs(ControllerIconType type)
         case ControllerIconType::PS3:
         case ControllerIconType::PS4:
         case ControllerIconType::PS5:
-        case ControllerIconType::SteamDeck:
+        case ControllerIconType::Steam:
             return true;
         default:
             return false;
@@ -278,12 +278,12 @@ const char* gamepad_get_button_display_name(ControllerIconType type, int button_
         case ControllerIconType::NintendoGameCube:
             result = search_overrides(gamecube_overrides, button_idx);
             break;
-        case ControllerIconType::SteamController:
+        case ControllerIconType::SteamControllerLegacy:
             result = search_overrides(steamcontroller_overrides, button_idx);
             if (result) return result;
             result = search_overrides(xboxone_overrides, button_idx);  // LB/RB/LT/RT
             break;
-        case ControllerIconType::SteamDeck:
+        case ControllerIconType::Steam:
             result = search_overrides(steamdeck_overrides, button_idx);
             break;
         default:

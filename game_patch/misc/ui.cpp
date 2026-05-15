@@ -2185,7 +2185,7 @@ void alpine_options_panel_do_frame(int x)
     ao_rumble_filter_butlabel.text = ao_rumble_filter_butlabel_text;
     ao_rumble_filter_butlabel.align = rf::gr::ALIGN_CENTER;
 
-    static const char* gamepad_icon_names[] = {"auto", "generic", "xbox360", "xboxone", "ds3", "ds4", "dualsense", "ns switch", "gamecube", "sc1", "sd"};
+    static const char* gamepad_icon_names[] = {"auto", "generic", "xbox360", "xboxone", "ds3", "ds4", "dualsense", "ns switch", "gamecube", "steam", "sclegacy"};
     int gamepad_icon_index = std::clamp(g_alpine_game_config.gamepad_icon_override, 0, 10);
     if (gamepad_icon_index == 0) {
         snprintf(ao_gamepad_icon_override_butlabel_text, sizeof(ao_gamepad_icon_override_butlabel_text), " auto ");
