@@ -24,6 +24,11 @@ Version 1.4.0 (Lupin): Not yet released
     - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.5000`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
   - Partial controller menu navigation support (Mouse controls are handled via Left Stick, Scrollbar are handled by Right Stick)
 - Additional Controller settings are available in `alpine_settings.ini` and/or console commands
+[@GooberRF](https://github.com/GooberRF)
+- Support Alpine Texture (ATX) declarative texture format in game and level editor
+  - Fine tuned texture animation without being subject to VBM format limitations
+  - Accessible to event system via handle for level-driven behaviour scripting
+- Support PNG and JPG texture formats in game and level editor
 
 ### Minor features, changes, and enhancements
 [@AL2009man](https://github.com/AL2009man)
@@ -31,14 +36,24 @@ Version 1.4.0 (Lupin): Not yet released
 - Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
 
 [@GooberRF](https://github.com/GooberRF)
+- Support DDS texture format in level editor
+- Bump RFL version to 305
+- Add `ATX_Set_Frame`, `ATX_Play`, `ATX_Pause`, `ATX_Set_Frame_Time` events
 - Add vote-allowed levels to level autodownload list for dedicated servers
+- Add `fflink_gsk` dedicated server config field and `sv_fflink_status` / `sv_fflink_resync` console commands for FactionFiles session key exchange
+- Make clock clutter objects correctly display the current local real world time
+
+[@is-this-c](https://github.com/is-this-c)
+- Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
 - Fix incorrect clickable area size for launcher FFLink button
+- Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
 
 [@is-this-c](https://github.com/is-this-c)
+- Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026

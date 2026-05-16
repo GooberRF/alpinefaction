@@ -20,3 +20,7 @@ int vpackfile_load_user_maps_packfiles();
 // suppress unnecessary missing asset warnings for asset files referenced by but missing
 // from the stock game
 bool is_known_missing_stock_asset(std::string_view filename);
+
+// Used to normalize supercede checks across extensions for the
+// "allow clientside mods from legacy directories" option
+bool vpackfile_supercede_allowed(const char* requested_filename, const char* sibling_filename);

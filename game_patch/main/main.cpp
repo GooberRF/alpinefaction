@@ -18,6 +18,7 @@
 #include "main.h"
 #include "../os/console.h"
 #include "../os/os.h"
+#include "../bmpman/atx.h"
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
@@ -32,6 +33,7 @@
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
+#include "../fflink/fflink.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_options.h"
@@ -157,6 +159,8 @@ FunHook<int()> rf_do_frame_hook{
         koth_do_frame();
         gamepad_do_frame();
         alpine_mesh_do_frame();
+        atx_do_frame();
+        fflink::do_frame();
         int result = rf_do_frame_hook.call_target();
         maybe_autosave();
         debug_do_frame_post();
@@ -207,6 +211,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         xlog::info("Loading level: {}", level_filename);
         evaluate_pow2tex(level_filename);
         waypoints_level_reset();
+        atx_level_reset();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);
 
@@ -561,6 +566,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     os_apply_patch();
     hud_apply_patches();
     multi_do_patch();
+    fflink::do_patch();
     multi_scoreboard_apply_patch();
     gametype_do_patch();
     vpackfile_apply_patches();

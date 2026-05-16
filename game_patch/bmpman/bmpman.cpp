@@ -4,10 +4,13 @@
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
+#include <common/bitmap/formats.h>
 #include "../graphics/gr.h"
 #include "../rf/file/file.h"
 #include "../misc/vpackfile.h"
+#include "atx.h"
 #include "dds.h"
+#include "stb_image_loader.h"
 
 int bm_calculate_pitch(int w, rf::bm::Format format)
 {
@@ -86,17 +89,53 @@ bm_read_header_hook{
         *total_bytes_m2v_out = -1;
         *vbm_ver_out = 1;
 
-        rf::File dds_file;
         std::string filename_without_ext{get_filename_without_ext(filename)};
-        auto dds_filename = filename_without_ext + ".dds";
-        if (dds_file.open(dds_filename.c_str()) == 0) {
-            xlog::trace("Loading {}", dds_filename);
-            auto bm_type = read_dds_header(dds_file, width_out, height_out, pixel_fmt_out, num_levels_out);
+
+        // ATX supercedes DDS, PNG, JPG, VBM, and TGA. Each candidate sibling is gated by
+        // vpackfile_supercede_allowed so user_maps content can't override stock when the
+        // "allow overwrite game files" toggle is off — same policy that already gates
+        // same-name overrides for every other asset type.
+        if (!atx_is_loading_child()) {
+            auto atx_filename = filename_without_ext + ".atx";
+            if (vpackfile_supercede_allowed(filename, atx_filename.c_str())) {
+                rf::File atx_file;
+                if (atx_file.open(atx_filename.c_str()) == 0) {
+                    atx_file.close();
+                    xlog::trace("Loading ATX {} (resolved from {})", atx_filename, filename);
+                    auto bm_type = read_atx_header(atx_filename.c_str(), width_out, height_out,
+                        pixel_fmt_out, num_levels_out, num_frames_out);
+                    if (bm_type != rf::bm::TYPE_NONE) {
+                        return bm_type;
+                    }
+                }
+            }
+        }
+
+        // DDS supercedes PNG, JPG, VBM, and TGA
+        {
+            auto dds_filename = filename_without_ext + ".dds";
+            if (vpackfile_supercede_allowed(filename, dds_filename.c_str())) {
+                rf::File dds_file;
+                if (dds_file.open(dds_filename.c_str()) == 0) {
+                    xlog::trace("Loading {}", dds_filename);
+                    auto bm_type = read_dds_header(dds_file, width_out, height_out, pixel_fmt_out, num_levels_out);
+                    if (bm_type != rf::bm::TYPE_NONE) {
+                        return bm_type;
+                    }
+                }
+            }
+        }
+
+        // PNG/JPG supercedes VBM and TGA
+        {
+            auto bm_type = read_stb_header(filename, width_out, height_out, pixel_fmt_out, num_levels_out);
             if (bm_type != rf::bm::TYPE_NONE) {
+                xlog::trace("Loading PNG/JPG sibling for '{}'", filename);
                 return bm_type;
             }
         }
 
+        // Precedence chain: ATX > DDS > PNG/JPG > VBM > TGA.
         xlog::trace("Loading bitmap header for '{}'", filename);
         auto bm_type = bm_read_header_hook.call_target(filename, width_out, height_out, pixel_fmt_out, num_levels_out,
             num_levels_external_mips_out, num_frames_out, fps_out, total_bytes_m2v_out, vbm_ver_out, a11);
@@ -125,7 +164,18 @@ FunHook<rf::bm::Format(int, void**, void**)> bm_lock_hook{
             lock_dds_bitmap(bm_entry);
             *pixels_out = bm_entry.locked_data;
             *palette_out = bm_entry.locked_palette;
-            return bm_entry.format;
+            // If the load failed, locked_data is left null, report FORMAT_NONE so the
+            // caller doesn't dereference null with a "valid" format code.
+            return bm_entry.locked_data ? bm_entry.format : rf::bm::FORMAT_NONE;
+        }
+        if (bm_entry.bm_type == rf::bm::TYPE_STB) {
+            lock_stb_bitmap(bm_entry);
+            *pixels_out = bm_entry.locked_data;
+            *palette_out = bm_entry.locked_palette;
+            return bm_entry.locked_data ? bm_entry.format : rf::bm::FORMAT_NONE;
+        }
+        if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
+            return lock_atx_bitmap(bm_entry, pixels_out, palette_out);
         }
         auto pixel_fmt = bm_lock_hook.call_target(bmh, pixels_out, palette_out);
         if (pixel_fmt == rf::bm::FORMAT_NONE) {
@@ -157,10 +207,39 @@ FunHook<bool(int)> bm_has_alpha_hook{
     },
 };
 
+FunHook<uint8_t(int)> bm_get_material_idx_hook{
+    0x00511780,
+    [](int bmh) -> uint8_t {
+        auto& bm_entry = rf::bm::bitmaps[rf::bm::get_cache_slot(bmh)];
+        if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
+            if (auto over = atx_material_override(bm_entry)) {
+                return *over;
+            }
+        }
+        return bm_get_material_idx_hook.call_target(bmh);
+    },
+};
+
+FunHook<void(int)> bm_unlock_hook{
+    0x00511700,
+    [](int bmh) {
+        auto& bm_entry = rf::bm::bitmaps[rf::bm::get_cache_slot(bmh)];
+        if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
+            unlock_atx_bitmap(bm_entry);
+            return;
+        }
+        bm_unlock_hook.call_target(bmh);
+    },
+};
+
 FunHook<void(int)> bm_free_entry_hook{
     0x0050F240,
     [](int bm_index) {
-        rf::bm::bitmaps[bm_index].dynamic = false;
+        auto& bm_entry = rf::bm::bitmaps[bm_index];
+        if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
+            atx_free(bm_entry);
+        }
+        bm_entry.dynamic = false;
         bm_free_entry_hook.call_target(bm_index);
     },
 };
@@ -253,6 +332,8 @@ void bm_apply_patch()
 {
     bm_read_header_hook.install();
     bm_lock_hook.install();
+    bm_unlock_hook.install();
+    bm_get_material_idx_hook.install();
     bm_has_alpha_hook.install();
     bm_free_entry_hook.install();
 
