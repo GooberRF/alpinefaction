@@ -2126,9 +2126,9 @@ CodeInjection process_join_accept_send_game_info_req_injection{
     [](auto& regs) {
         // Force game_info update in case we were joining using protocol handler (server list not fully refreshed) or
         // using old fav entry with outdated name
-        rf::NetAddr* server_addr = regs.edi;
-        xlog::trace("Sending game_info_req to {:x}:{}", server_addr->ip_addr, server_addr->port);
-        rf::send_game_info_req_packet(*server_addr);
+        const rf::NetAddr& server_addr = addr_as_ref<rf::NetAddr>(regs.edi);
+        xlog::trace("Sending game_info_req to {}", server_addr);
+        rf::send_game_info_req_packet(server_addr);
     },
 };
 
