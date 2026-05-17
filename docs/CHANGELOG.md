@@ -19,6 +19,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `fflink_gsk` dedicated server config field and `sv_fflink_status` / `sv_fflink_resync` console commands for FactionFiles session key exchange
 - Make clock clutter objects correctly display the current local real world time
 
+[@AL2009man](https://github.com/AL2009man)
+-Add support for Additional Mouse Button and Left/Right Alt to the Controls binding UI
+
 [@is-this-c](https://github.com/is-this-c)
 - Disable `Refresh Selected` in the server browser, only if `Refresh Selected` was pressed
 - Never disable `Add Server` in the server browser
@@ -29,6 +32,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
 - Fix incorrect clickable area size for launcher FFLink button
 - Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
+
+[@AL2009man](https://github.com/AL2009man)
+- Fix brief game freeze every time the Alt key is pressed.
 
 [@is-this-c](https://github.com/is-this-c)
 - For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
