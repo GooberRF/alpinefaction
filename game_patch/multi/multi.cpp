@@ -212,7 +212,7 @@ void handle_url_param()
         reinterpret_cast<const sockaddr_in*>(host_addr->ai_addr);
 
     const rf::NetAddr addr{
-        .ip_addr = sock->sin_addr.S_un.S_addr, 
+        .ip_addr = ntohl(sock->sin_addr.S_un.S_addr), 
         .port = port
     };
     start_join_multi_game_sequence(addr, password);
