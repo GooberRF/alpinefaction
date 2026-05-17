@@ -1462,6 +1462,16 @@ ConsoleCommand2 joy_sens_cmd{
     "joy_sens [value]",
 };
 
+ConsoleCommand2 swap_sticks_cmd{
+    "joy_swap_sticks",
+    [](std::optional<int> val) {
+        if (val) g_alpine_game_config.gamepad_swap_sticks = *val != 0;
+        rf::console::print("Swap sticks: {}", g_alpine_game_config.gamepad_swap_sticks ? "enabled" : "disabled");
+    },
+    "Swap left and right analog sticks (default 0)",
+    "joy_swap_sticks [0|1]",
+};
+
 ConsoleCommand2 joy_move_deadzone_cmd{
     "joy_move_deadzone",
     [](std::optional<float> val) {
@@ -2112,6 +2122,7 @@ void gamepad_apply_patch()
     gyro_vehicle_camera_cmd.register_cmd();
     input_prompts_cmd.register_cmd();
     gamepad_prompts_cmd.register_cmd();
+    swap_sticks_cmd.register_cmd();
     joy_reconnect_cmd.register_cmd();
     gyro_apply_patch();
 }
