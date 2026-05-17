@@ -24,11 +24,10 @@ namespace rf
     struct IpAddr {
         uint32_t inner;
 
-        operator uint32_t(this const IpAddr& self) {
-            return self.inner;
-        }
+        constexpr auto operator<=>(const IpAddr&) const = default;
     };
     #pragma pack(pop)
+    static_assert(sizeof(IpAddr) == 0x4);
 
     #pragma pack(push, 4)
     struct NetAddr
@@ -351,38 +350,28 @@ namespace rf
     constexpr int multi_max_player_id = 256;
 }
 
-namespace std {
-    template <>
-    struct formatter<rf::IpAddr> {
-        constexpr auto parse(format_parse_context& ctx) {
-            return ctx.begin();
-        }
+template <>
+struct std::formatter<rf::IpAddr, char> : std::formatter<std::string, char> {
+    auto format(const rf::IpAddr& ip_addr, format_context& ctx) const {
+        const std::string str = std::format(
+            "{}.{}.{}.{}",
+            (ip_addr.inner >> 24) & 0xFF,
+            (ip_addr.inner >> 16) & 0xFF,
+            (ip_addr.inner >> 8) & 0xFF,
+            ip_addr.inner & 0xFF
+        );
+        return std::formatter<std::string>::format(str, ctx);
+    }
+};
 
-        auto format(const rf::IpAddr& ip_addr, format_context& ctx) const {
-            return std::format_to(
-                ctx.out(),
-                "{}.{}.{}.{}",
-                (ip_addr.inner >> 24) & 0xFF,
-                (ip_addr.inner >> 16) & 0xFF,
-                (ip_addr.inner >> 8) & 0xFF,
-                ip_addr.inner & 0xFF
-            );
-        }
-    };
-
-    template <>
-    struct formatter<rf::NetAddr> {
-        constexpr auto parse(format_parse_context& ctx) {
-            return ctx.begin();
-        }
-
-        auto format(const rf::NetAddr& net_addr, format_context& ctx) const {
-            return std::format_to(
-                ctx.out(),
-                "{}:{}",
-                net_addr.ip_addr,
-                net_addr.port
-            );
-        }
-    };
-}
+template <>
+struct std::formatter<rf::NetAddr, char> : std::formatter<std::string, char> {
+    auto format(const rf::NetAddr& net_addr, format_context& ctx) const {
+        const std::string str = std::format(
+            "{}:{}",
+            net_addr.ip_addr,
+            net_addr.port
+        );
+        return std::formatter<std::string>::format(str, ctx);
+    }
+};

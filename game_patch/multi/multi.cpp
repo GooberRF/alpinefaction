@@ -198,27 +198,23 @@ void handle_url_param()
     const uint16_t port = static_cast<uint16_t>(std::stoi(cm[2].str()));
     const std::string password = cm[3].str();
 
-    addrinfo hints{};
-    hints.ai_family = AF_INET;
-    addrinfo* host_addr = nullptr;
+    rf::console::print("Connecting to {}:{}...", host_name, port);
 
+    const addrinfo hints{ .ai_family = AF_INET };
+    addrinfo* host_addr = nullptr;
     if (getaddrinfo(host_name.c_str(), nullptr, &hints, &host_addr) != 0
         || !host_addr) {
         xlog::warn("URL host lookup failed");
         return;
     }
 
-    const sockaddr_in* const next =
+    const sockaddr_in* const sock =
         reinterpret_cast<const sockaddr_in*>(host_addr->ai_addr);
-    if (!next) {
-        xlog::warn("URL host lookup failed");
-        freeaddrinfo(host_addr);
-        return;
-    }
 
-    rf::console::print("Connecting to {}:{}...", host_name, port);
-
-    rf::NetAddr addr{ntohl(next->sin_addr.S_un.S_addr), port};
+    const rf::NetAddr addr{
+        .ip_addr = sock->sin_addr.S_un.S_addr, 
+        .port = port
+    };
     start_join_multi_game_sequence(addr, password);
 
     freeaddrinfo(host_addr);

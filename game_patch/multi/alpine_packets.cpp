@@ -2261,7 +2261,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         return;
     }
 
-    auto [it, inserted] = recent_responses.try_emplace(addr.ip_addr);
+    auto [it, inserted] = recent_responses.try_emplace(addr.ip_addr.inner);
     if (!inserted) {
         // Already responded to this IP within the last second
         return;
