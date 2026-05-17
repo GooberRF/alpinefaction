@@ -1770,7 +1770,7 @@ CallHook<
     void __fastcall(rf::ui::Gadget&)
 > server_list_refresh_server_btn_ui_gadget_disable_hook{
     0x0044D4BA,
-    [] (rf::ui::Gadget& self) {
+    [] (rf::ui::Gadget& self) FASTCALL_LAMBDA {
         const bool& single_refresh_active = addr_as_ref<bool>(0x0063F638);
         self.enabled = !single_refresh_active;
     }
