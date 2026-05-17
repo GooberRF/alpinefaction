@@ -4,6 +4,7 @@
 Version 1.4.0 (Lupin): Not yet released
 --------------------------------
 ### Major features
+[@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Controller Support
 > [!WARNING]
 > When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2015): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
@@ -24,6 +25,7 @@ Version 1.4.0 (Lupin): Not yet released
     - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.5000`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
   - Partial controller menu navigation support (Mouse controls are handled via Left Stick, Scrollbar are handled by Right Stick)
 - Additional Controller settings are available in `alpine_settings.ini` and/or console commands
+
 [@GooberRF](https://github.com/GooberRF)
 - Support Alpine Texture (ATX) declarative texture format in game and level editor
   - Fine tuned texture animation without being subject to VBM format limitations
