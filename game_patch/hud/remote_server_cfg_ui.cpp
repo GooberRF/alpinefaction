@@ -467,7 +467,6 @@ void RemoteServerCfgPopup::render(this Self& self) {
         line_y += separator_h;
 
         rf::gr::set_color(255, 255, 255, 255);
-        const int line_w = content_w - 20 - static_cast<int>(50.f * ui_scale);
         if (std::holds_alternative<Self::KeyValue>(line)) {
             const auto& [key, value] =
                 std::get<Self::KeyValue>(line);

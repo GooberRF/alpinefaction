@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+#include <source_location>
 #include <windows.h>
 #include <patch_common/MemUtils.h>
 
@@ -62,6 +64,12 @@ namespace rf
     static auto& cmdline_args = addr_as_ref<CmdArg[50]>(0x01AED368);
     static auto& cmdline_num_args = addr_as_ref<int>(0x01AED514);
 
-    static auto& debug_error = addr_as_ref<void __cdecl(const char *filename, int line, const char *text)>(0x0050BA90);
-    #define RF_DEBUG_ERROR(text) rf::debug_error(__FILE__, __LINE__, text)
+    [[noreturn]]
+    inline void fatal_error(
+        const std::string& text,
+        const std::source_location& loc = std::source_location::current()) {
+        static auto& debug_error =
+            addr_as_ref<void(const char*, int, const char*)>(0x0050BA90);
+        debug_error(loc.file_name(), loc.line(), text.c_str());
+    }
 }

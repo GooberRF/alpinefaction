@@ -197,7 +197,7 @@ FunHook multi_ban_shutdown_hook{
 FunHook multi_ban_is_banned_hook{
     0x0046D010,
     [](const rf::NetAddr& addr) -> int {
-        return Banlist::instance().is_banned(addr.ip_addr) ? 1 : 0;
+        return Banlist::instance().is_banned(addr.ip_addr.inner) ? 1 : 0;
     },
 };
 
@@ -226,7 +226,7 @@ FunHook multi_ban_add_hook{
 FunHook multi_ban_add2_hook{
     0x0046D0F0,
     [](const rf::NetAddr& addr) {
-        Banlist::instance().add(addr.ip_addr);
+        Banlist::instance().add(addr.ip_addr.inner);
         Banlist::instance().save();
     },
 };

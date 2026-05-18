@@ -2,6 +2,7 @@
 
 #include <patch_common/MemUtils.h>
 #include "../os/vtypes.h"
+#include "../math/matrix.h"
 #include "../os/string.h"
 
 namespace rf

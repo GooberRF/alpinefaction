@@ -25,7 +25,7 @@ bool GameConfig::load() try
 
     if (update_rate == 0) {
         // Update Rate is set to "None" - this would prevent Multi menu from working - fix it
-        update_rate = GameConfig::default_update_rate;
+        update_rate = GameConfig::DEFAULT_UPDATE_RATE;
         result = false;
     }
 

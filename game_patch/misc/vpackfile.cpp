@@ -59,7 +59,7 @@ const char* mod_file_allow_list[] = {
 static bool is_mod_file_in_whitelist(const char* Filename)
 {
     for (unsigned i = 0; i < std::size(mod_file_allow_list); ++i)
-        if (!stricmp(mod_file_allow_list[i], Filename))
+        if (!_stricmp(mod_file_allow_list[i], Filename))
             return true;
     return false;
 }
@@ -81,7 +81,7 @@ constexpr std::array<std::string_view, 7> tbl_mod_allow_list = {
 static bool is_tbl_file(const char* filename)
 {
     // confirm we're working with a tbl file
-    if (stricmp(rf::file_get_ext(filename), ".tbl") == 0) {
+    if (_stricmp(rf::file_get_ext(filename), ".tbl") == 0) {
         return true;
     }
     return false;
@@ -91,14 +91,14 @@ static bool is_tbl_file_in_allowlist(const char* filename)
 {
     // compare the input file against the tbl file allowlist
     return is_tbl_file(filename) && std::ranges::any_of(tbl_mod_allow_list, [filename](std::string_view allowed_tbl) {
-               return stricmp(allowed_tbl.data(), filename) == 0;
+               return _stricmp(allowed_tbl.data(), filename) == 0;
            });
 }
 
 static bool is_tbl_file_a_hud_messages_file(const char* filename)
 {
     // check if the input file ends with "_text.tbl"
-    if (strlen(filename) >= 9 && stricmp(filename + strlen(filename) - 9, "_text.tbl") == 0) {
+    if (strlen(filename) >= 9 && _stricmp(filename + strlen(filename) - 9, "_text.tbl") == 0) {
         return true;
     }
     return false;
@@ -197,7 +197,7 @@ static std::string build_packfile_full_path(const char* filename, const char* di
 static bool is_packfile_loaded(const std::string& full_path)
 {
     for (auto& packfile : g_packfiles) {
-        if (!stricmp(packfile->path, full_path.c_str())) {
+        if (!_stricmp(packfile->path, full_path.c_str())) {
             return true;
         }
     }
@@ -249,15 +249,15 @@ static int vpackfile_add_new(const char* filename, const char* dir)
     packfile->num_files = 0;
 
     packfile->is_user_maps = (dir && (
-            stricmp(dir, "user_maps\\projects\\") == 0 ||
-            stricmp(dir, "user_maps\\multi\\") == 0 ||
-            stricmp(dir, "user_maps\\single\\") == 0));
+            _stricmp(dir, "user_maps\\projects\\") == 0 ||
+            _stricmp(dir, "user_maps\\multi\\") == 0 ||
+            _stricmp(dir, "user_maps\\single\\") == 0));
 
-    packfile->is_client_mods = (dir && stricmp(dir, "client_mods\\") == 0);
+    packfile->is_client_mods = (dir && _stricmp(dir, "client_mods\\") == 0);
 
     packfile->is_mods = (dir && PathIsRelativeA(dir) && StrCmpNIA(dir, "mods\\", 5) == 0);
 
-    packfile->is_alpinefaction_vpp = (filename && stricmp(filename, "alpinefaction.vpp") == 0);
+    packfile->is_alpinefaction_vpp = (filename && _stricmp(filename, "alpinefaction.vpp") == 0);
 
     xlog::debug(
         "Packfile {} is from {}user_maps, {}client_mods, {}mods, {}alpinefaction.vpp",
@@ -323,7 +323,7 @@ static void for_each_packfile_entry(const std::vector<std::string_view>& ext_fil
     ext_filter_lower.reserve(ext_filter.size());
     std::transform(ext_filter.begin(), ext_filter.end(), std::back_inserter(ext_filter_lower), string_to_lower);
     for (auto& packfile : g_packfiles) {
-        if (!packfile_filter || !stricmp(packfile_filter, packfile->filename)) {
+        if (!packfile_filter || !_stricmp(packfile_filter, packfile->filename)) {
             for (auto& entry : packfile->files) {
                 const char* ext_ptr = rf::file_get_ext(entry.name);
                 if (ext_ptr[0]) {
