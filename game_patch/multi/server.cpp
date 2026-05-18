@@ -137,7 +137,7 @@ void BotProfileSlotTracker::clear()
     assignments.clear();
 }
 
-const rf::NetGameType get_upcoming_game_type()
+rf::NetGameType get_upcoming_game_type()
 {
     return upcoming_game_type;
 }
@@ -161,7 +161,7 @@ bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection select
     return upcoming_game_type != rf::netgame.type;
 }
 
-const bool was_level_loaded_manually()
+bool was_level_loaded_manually()
 {
     return g_manually_loaded_level;
 }
@@ -332,32 +332,55 @@ std::string build_player_info_line(rf::Player* player, bool new_join) {
         return std::format("- {} | Ping: {}", name, player->net_data->ping);
     }
 
-    std::string client_info;
+    std::string client_info{};
     if (player->version_info.software == ClientSoftware::AlpineFaction) {
-        client_info = std::format("Alpine Faction {}.{}.{}-{}",
-            player->version_info.major, player->version_info.minor, player->version_info.patch, player->version_info.type == VERSION_TYPE_RELEASE ? "stable" : "dev");
+        client_info = std::format(
+            "Alpine Faction {}.{}.{}-{}",
+            player->version_info.major,
+            player->version_info.minor,
+            player->version_info.patch,
+            player->version_info.type == VERSION_TYPE_RELEASE ? "stable" : "dev"
+        );
     }
     else if (player->version_info.software == ClientSoftware::DashFaction) {
-        client_info = std::format("Dash Faction {}.{}{}",
-            player->version_info.major, player->version_info.minor, player->version_info.type == VERSION_TYPE_BETA ? "-m" : "");
+        client_info = std::format(
+            "Dash Faction {}.{}{}",
+            player->version_info.major,
+            player->version_info.minor,
+            player->version_info.type == VERSION_TYPE_BETA ? "-m" : ""
+        );
     }
     else if (player->version_info.software == ClientSoftware::Browser) {
-        client_info = std::format("RF Server Browser {}.{}.{}",
-            player->version_info.major, player->version_info.minor, player->version_info.patch);
+        client_info = std::format(
+            "RF Server Browser {}.{}.{}",
+            player->version_info.major,
+            player->version_info.minor,
+            player->version_info.patch
+        );
     }
     else {
         client_info = std::format("Legacy Client");
     }
 
-    in_addr addr;
-    auto player_addr = player->net_data->addr;
-    addr.S_un.S_addr = ntohl(player_addr.ip_addr);
     if (new_join) {
-        return std::format("===| {}{} | IP: {}:{} | {} | Max RFL: {} |===",
-            name, rf::strings::has_joined, inet_ntoa(addr), player->net_data->addr.port, client_info, player->version_info.max_rfl_ver);
+        return std::format(
+            "===| {}{} | IP: {} | {} | Max RFL: {} |===",
+            name,
+            rf::strings::has_joined,
+            player->net_data->addr,
+            client_info,
+            player->version_info.max_rfl_ver
+        );
+    } else {
+        return std::format(
+            "- {} | IP: {} | {} | Max RFL: {} | Ping: {} | HC: {}%",
+            name,
+            player->net_data->addr,
+            client_info, player->version_info.max_rfl_ver,
+            player->net_data->ping,
+            player->damage_handicap
+        );
     }
-    return std::format("- {} | IP: {}:{} | {} | Max RFL: {} | Ping: {} | HC: {}%",
-        name, inet_ntoa(addr), player->net_data->addr.port, client_info, player->version_info.max_rfl_ver, player->net_data->ping, player->damage_handicap);
 }
 
 std::string build_all_player_info_output() {
@@ -969,8 +992,9 @@ ConsoleCommand2 checkmaps_cmd{
         }
 
         const auto& levels = g_alpine_server_config.levels;
-        if (levels.empty()) {
-            rf::console::print("Server rotation is empty.\n");
+        const auto& allowed_maps = g_alpine_server_config.vote_level.allowed_maps;
+        if (levels.empty() && allowed_maps.empty()) {
+            rf::console::print("Server rotation and vote-allowed list are both empty.\n");
             return;
         }
 
@@ -979,12 +1003,13 @@ ConsoleCommand2 checkmaps_cmd{
             return;
         }
 
-        rf::console::print("Checking FactionFiles for {} levels. This may take a moment...", levels.size());
+        const size_t total_count = levels.size() + allowed_maps.size();
+        rf::console::print("Checking FactionFiles for {} levels. This may take a moment...", total_count);
 
         std::vector<std::string> unique_levels;
         std::unordered_map<std::string, size_t> unique_level_index;
-        unique_levels.reserve(levels.size());
-        unique_level_index.reserve(levels.size());
+        unique_levels.reserve(total_count);
+        unique_level_index.reserve(total_count);
 
         for (const auto& entry : levels) {
             std::string filename = entry.level_filename;
@@ -994,9 +1019,17 @@ ConsoleCommand2 checkmaps_cmd{
             }
         }
 
-        rotation_autodl_start(levels.size(), std::move(unique_levels));
+        for (const auto& entry : allowed_maps) {
+            std::string filename = entry;
+            std::string key = string_to_lower(filename);
+            if (unique_level_index.emplace(key, unique_levels.size()).second) {
+                unique_levels.push_back(std::move(filename));
+            }
+        }
+
+        rotation_autodl_start(total_count, std::move(unique_levels));
     },
-    "Check whether any levels on the server rotation are unavailable for autodownload from FactionFiles.",
+    "Check whether any levels on the server rotation or vote-allowed list are unavailable for autodownload from FactionFiles.",
     "sv_checkmaps",
 };
 
@@ -1469,10 +1502,13 @@ CodeInjection multi_on_new_player_injection{
 
         // ADS version is in handled in process_join_req_packet_hook in network.cpp
         if (!g_dedicated_launched_from_ads) {
-            rf::Player* player = regs.esi;
-            in_addr addr;
-            addr.S_un.S_addr = ntohl(player->net_data->addr.ip_addr);
-            rf::console::print("{}{} ({})", player->name,  rf::strings::has_joined, inet_ntoa(addr));
+            const rf::Player* const player = regs.esi;
+            rf::console::print(
+                "{}{} ({})",
+                player->name,
+                rf::strings::has_joined,
+                player->net_data->addr.ip_addr
+            );
         }
         regs.eip = 0x0047B051;
     },
@@ -2529,9 +2565,10 @@ static void balance_teams()
         }
     }
 
-    // Sort humans by score descending and interleave across teams, randomizing
-    // which team gets first pick to avoid systematic bias toward one team
-    std::sort(humans.begin(), humans.end(), [](const rf::Player* a, const rf::Player* b) {
+    // Shuffle first so equal-score players are ordered randomly.
+    // Interleave across teams, randomizing which team gets first pick.
+    std::ranges::shuffle(humans, g_rng);
+    std::stable_sort(humans.begin(), humans.end(), [](const rf::Player* a, const rf::Player* b) {
         return a->stats->score > b->stats->score;
     });
 
@@ -2555,8 +2592,9 @@ static void balance_teams()
         }
     }
 
-    // Sort bots by score descending for fairer distribution
-    std::sort(bots.begin(), bots.end(), [](const rf::Player* a, const rf::Player* b) {
+    // Shuffle then stable_sort so bots distribute randomly rather than always in player_list order
+    std::ranges::shuffle(bots, g_rng);
+    std::stable_sort(bots.begin(), bots.end(), [](const rf::Player* a, const rf::Player* b) {
         return a->stats->score > b->stats->score;
     });
 

@@ -26,6 +26,7 @@
 #include "alpine_packets.h"
 #include "network.h"
 #include "multi.h"
+#include "../fflink/fflink_session.h"
 #include "../os/console.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
@@ -1157,6 +1158,11 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
             cfg.set_bot_shared_secret(*v);
         }
     }
+    else if (key == "fflink_gsk") {
+        if (auto v = node.value<std::string>()) {
+            cfg.set_fflink_gsk(*v);
+        }
+    }
     else if (key == "upnp") {
         if (auto v = node.value<bool>())
             cfg.upnp_enabled = *v;
@@ -1483,27 +1489,46 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
 static void download_missing_server_levels()
 {
     auto& cfg = g_alpine_server_config;
-    if (cfg.levels.empty()) {
-        return;
+
+    if (!cfg.levels.empty()) {
+        rf::console::print("\nChecking for missing maps on server rotation...\n");
+
+        std::vector<AlpineServerConfigLevelEntry> resolved_levels;
+        resolved_levels.reserve(cfg.levels.size());
+
+        for (auto& entry : cfg.levels) {
+            if (download_level_if_missing(entry.level_filename)) {
+                resolved_levels.push_back(std::move(entry));
+            }
+            else {
+                rf::console::print("--> Skipping level {} (download failed).\n", entry.level_filename);
+                rf::console::print("\n");
+            }
+        }
+
+        cfg.levels = std::move(resolved_levels);
+        rf::console::print("\n");
     }
 
-    rf::console::print("\nChecking for missing maps on server rotation...\n");
+    if (!cfg.vote_level.allowed_maps.empty()) {
+        rf::console::print("\nChecking for missing maps on vote-allowed list...\n");
 
-    std::vector<AlpineServerConfigLevelEntry> resolved_levels;
-    resolved_levels.reserve(cfg.levels.size());
+        std::vector<std::string> resolved_allowed;
+        resolved_allowed.reserve(cfg.vote_level.allowed_maps.size());
 
-    for (auto& entry : cfg.levels) {
-        if (download_level_if_missing(entry.level_filename)) {
-            resolved_levels.push_back(std::move(entry));
+        for (auto& filename : cfg.vote_level.allowed_maps) {
+            if (download_level_if_missing(filename)) {
+                resolved_allowed.push_back(std::move(filename));
+            }
+            else {
+                rf::console::print("--> Skipping vote-allowed level {} (download failed).\n", filename);
+                rf::console::print("\n");
+            }
         }
-        else {
-            rf::console::print("--> Skipping level {} (download failed).\n", entry.level_filename);
-            rf::console::print("\n");
-        }
+
+        cfg.vote_level.allowed_maps = std::move(resolved_allowed);
+        rf::console::print("\n");
     }
-
-    cfg.levels = std::move(resolved_levels);
-    rf::console::print("\n");
 }
 
 void print_gungame(std::string& output, const GunGameConfig& cur, const GunGameConfig& base_cfg, bool base = true)
@@ -2006,6 +2031,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
         std::format_to(iter, "  Rcon password (legacy):                {}\n", cfg.rcon_password);
         std::format_to(iter, "  Bot shared secret:                     {}\n", cfg.bot_shared_secret);
+        std::format_to(iter, "  FactionFiles GSK:                      {}\n", cfg.fflink_gsk);
     } else {
         std::format_to(iter, "  Uptime:                                {}\n", g_process_startup_time);
     }
@@ -2412,6 +2438,9 @@ void launch_alpine_dedicated_server() {
     init_alpine_dedicated_server();
     netgame.current_level_index = 0;
     rf::multi_level_switch_queued = -1;
+
+    // Kick off FactionFiles session key exchange
+    fflink::start_session_exchange();
 }
 
 ConsoleCommand2 print_server_config_cmd{

@@ -128,7 +128,7 @@ void HttpRequest::write(const void* data, size_t len)
     }
 }
 
-void HttpRequest::send(std::string_view body)
+int HttpRequest::send_no_check(std::string_view body)
 {
     if (m_in_body) {
         write(body);
@@ -150,6 +150,12 @@ void HttpRequest::send(std::string_view body)
         THROW_WIN32_ERROR();
     }
 
+    return static_cast<int>(status_code);
+}
+
+void HttpRequest::send(std::string_view body)
+{
+    int status_code = send_no_check(body);
     if (status_code != 200) {
         throw std::runtime_error(std::format("Invalid HTTP status code: {}", status_code));
     }

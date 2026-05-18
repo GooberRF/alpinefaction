@@ -415,6 +415,18 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Resize_Gas_Region"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "ATX_Set_Frame"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "ATX_Play"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "ATX_Pause"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "ATX_Set_Frame_Time"
+$RFE Level1:      "AF_General"
+
 #End
 
 // ------------------------------------------------
