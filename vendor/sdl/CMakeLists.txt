@@ -16,4 +16,6 @@ FetchContent_Declare(
 set(SDL_STATIC ON  CACHE BOOL "" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_TEST   OFF CACHE BOOL "" FORCE)
+set(SDL_PRESEED                  OFF CACHE BOOL     "" FORCE)
+set(HAVE_WINDOWS_GAMING_INPUT_H  0   CACHE INTERNAL "" FORCE)
 FetchContent_MakeAvailable(SDL3)
