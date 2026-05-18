@@ -1464,7 +1464,7 @@ ConsoleCommand2 joy_sens_cmd{
 
 ConsoleCommand2 swap_sticks_cmd{
     "joy_swap_sticks",
-    [](std::optional<int> val) {
+    [](std::optional<float> val) {
         if (val) g_alpine_game_config.gamepad_swap_sticks = *val != 0;
         rf::console::print("Swap sticks: {}", g_alpine_game_config.gamepad_swap_sticks ? "enabled" : "disabled");
     },
