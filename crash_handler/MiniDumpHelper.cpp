@@ -14,7 +14,7 @@ bool MiniDumpHelper::is_data_section_needed(const WCHAR* module_name)
 
     // Compare the name with the list of known names and decide
     for (const auto& name : m_known_modules) {
-        if (wcsicmp(file_name, name.c_str()) == 0) {
+        if (_wcsicmp(file_name, name.c_str()) == 0) {
             return true;
         }
     }

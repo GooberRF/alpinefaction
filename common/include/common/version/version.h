@@ -28,7 +28,7 @@
 #define VERSION_PATCH          0
 #define VERSION_TYPE           VERSION_TYPE_DEV
 #define VERSION_TYPE_REVISION  0
-#define VERSION_CODE           "TBD"
+#define VERSION_CODE           "Lupin"
 
 // Version used for Alpine settings files
 #define ADS_VERSION            2      // .toml dedicated server config files
@@ -46,7 +46,8 @@
 // 302 = Alpine 1.2.0
 // 303 = Alpine 1.2.2
 // 304 = Alpine 1.3.0
-#define MAXIMUM_RFL_VERSION    304
+// 305 = Alpine 1.4.0
+#define MAXIMUM_RFL_VERSION    305
 
 // clang-format on
 

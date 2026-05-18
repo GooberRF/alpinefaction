@@ -14,6 +14,8 @@ set(SRCS
     corona.cpp
     corona.h
     textures.cpp
+    bitmap_loaders.cpp
+    bitmap_loaders.h
     meshes.cpp
     meshes.h
     tbl.cpp
@@ -39,7 +41,9 @@ setup_debug_info(AlpineEditor)
 target_compile_definitions(AlpineEditor PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX BUILD_DLL)
 
 target_include_directories(AlpineEditor PRIVATE
+    ${CMAKE_SOURCE_DIR}/vendor
     ${CMAKE_SOURCE_DIR}/vendor/d3d8
+    ${CMAKE_SOURCE_DIR}/vendor/stb
 )
 
 target_link_libraries(AlpineEditor
@@ -48,4 +52,5 @@ target_link_libraries(AlpineEditor
     Xlog
     CrashHandlerStub
     shlwapi
+    stb_image
 )
