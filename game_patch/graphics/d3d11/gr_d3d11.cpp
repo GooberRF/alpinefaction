@@ -1,6 +1,7 @@
 #include <cassert>
 #include <dxgi1_4.h>
 #include <dxgi1_5.h>
+#pragma comment(lib, "dxgi.lib")
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
@@ -147,32 +148,27 @@ namespace df::gr::d3d11
         };
 
         DWORD flags = 0;
-    #ifndef NDEBUG
-        flags |= D3D11_CREATE_DEVICE_DEBUG;
-    CREATE_DEVICE:
-    #endif
         D3D_FEATURE_LEVEL feature_level_supported{};
-        const HRESULT hr = pfD3D11CreateDevice(
-            nullptr,
-            D3D_DRIVER_TYPE_HARDWARE,
-            nullptr,
-            flags,
-            feature_levels,
-            std::size(feature_levels),
-            D3D11_SDK_VERSION,
-            &device_,
-            &feature_level_supported,
-            &context_
-        );
-
-     #ifndef NDEBUG
-         if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING &&
-            flags & D3D11_CREATE_DEVICE_DEBUG) {
-             xlog::warn( "D3D11 debug layer not available");
-             flags &= ~D3D11_CREATE_DEVICE_DEBUG;
-             goto CREATE_DEVICE;
-         }
-     #endif
+    #ifndef NDEBUG
+        // AMD drivers (atidxx32.dll) crash with D3D11_CREATE_DEVICE_DEBUG active.
+        // Check the primary adapter vendor and skip the debug layer on AMD hardware.
+        {
+            ComPtr<IDXGIFactory> factory;
+            ComPtr<IDXGIAdapter> adapter;
+            DXGI_ADAPTER_DESC desc{};
+            if (SUCCEEDED(CreateDXGIFactory(__uuidof(IDXGIFactory), reinterpret_cast<void**>(&factory)))
+                && SUCCEEDED(factory->EnumAdapters(0, &adapter))
+                && SUCCEEDED(adapter->GetDesc(&desc))
+                && desc.VendorId == 0x1002u) {
+                xlog::warn("Skipping D3D11 debug layer on AMD hardware to avoid driver crash");
+            } else {
+                flags |= D3D11_CREATE_DEVICE_DEBUG;
+            }
+        }
+    #endif
+        const HRESULT hr = pfD3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
+            feature_levels, std::size(feature_levels), D3D11_SDK_VERSION,
+            &device_, &feature_level_supported, &context_);
 
         check_hr(hr, [] { xlog::error("`D3D11CreateDevice` failed"); });
 
