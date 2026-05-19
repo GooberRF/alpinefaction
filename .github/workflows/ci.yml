@@ -30,7 +30,7 @@ jobs:
         dpkg --add-architecture i386
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates
+          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates git
 
     - name: Create build environment
       run: cmake -E make_directory ./build

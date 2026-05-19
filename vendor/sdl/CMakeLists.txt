@@ -1,22 +1,17 @@
-# To update or downgrade SDL3, change the SDL3_VERSION and SDL3_HASH (sha256) variables below. 
-# Version histories and sha256 hashes can be found at SDL release pages: https://github.com/libsdl-org/SDL/releases
+# Tracks the release-3.4.x branch of SDL3. 
+# To update, change GIT_TAG to a commit hash from that branch.
 # Read the sdl wiki for more info about CMake-configurations: https://wiki.libsdl.org/SDL3/README-cmake
-
-set(SDL3_VERSION "3.4.8")
-set(SDL3_HASH "e9fff7467fb60f037e6708da18b25560649e4c63edc2a69bb871b960d9cbfbba")
+# FIXME: until the next stable release, we'll switch back to the release build
 
 include(FetchContent)
 FetchContent_Declare(
     SDL3
-    URL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL3_VERSION}/SDL3-${SDL3_VERSION}.tar.gz"
-    URL_HASH SHA256=${SDL3_HASH}
-    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+    GIT_REPOSITORY "https://github.com/libsdl-org/SDL.git"
+    GIT_TAG        "eb8caad5a4c7d89eddc4c63143cadc389359d133"
 )
 
 set(SDL_STATIC ON  CACHE BOOL "" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_TEST   OFF CACHE BOOL "" FORCE)
 set(SDL_PRESEED                  OFF CACHE BOOL     "" FORCE)
-set(HAVE_WINDOWS_GAMING_INPUT_H  1   CACHE INTERNAL "" FORCE)
-set(SDL_JOYSTICK_WGI ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(SDL3)
