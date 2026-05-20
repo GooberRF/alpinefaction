@@ -167,7 +167,7 @@ namespace df::gr::d3d11
 
         if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING &&
             flags & D3D11_CREATE_DEVICE_DEBUG) {
-            xlog::warn( "D3D11 debug layer not available");
+            xlog::warn( "The D3D11 debug layer is not available");
             flags &= ~D3D11_CREATE_DEVICE_DEBUG;
             goto CREATE_DEVICE;
         }
