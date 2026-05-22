@@ -2986,6 +2986,28 @@ FunHook<int(int, int)> audio_panel_handle_mouse_hook{
     },
 };
 
+// Do not disable `Refresh Selected`, unless it is a single server refresh.
+CallHook<
+    void __fastcall(rf::ui::Gadget&)
+> server_list_refresh_server_btn_ui_gadget_disable_hook{
+    0x0044D4BA,
+    [] (rf::ui::Gadget& self) FASTCALL_LAMBDA {
+        const bool& single_refresh_active = addr_as_ref<bool>(0x0063F638);
+        self.enabled = !single_refresh_active;
+    }
+};
+
+// `server_refresh_timeout` should be reset, when we set `single_refresh_active` to false.
+// Otherwise, `Get Servers` etc. stay disabled until timeout.
+CodeInjection server_list_set_single_refresh_inactive_patch{
+    0x0044DF75,
+    [] {
+        rf::TimestampRealtime& server_refresh_timeout =
+            addr_as_ref<rf::TimestampRealtime>(0x0063EF68);
+        server_refresh_timeout.set(0);
+    },
+};
+
 void ui_apply_patch()
 {
     // Alpine Faction options button and panel
@@ -3031,6 +3053,11 @@ void ui_apply_patch()
 
     // Handle CTRL+V in input boxes
     UiInputBox_process_key_hook.install();
+
+    // Do not disable `Add Server`.
+    AsmWriter{0x0044D4A6}.nop(5);
+    server_list_refresh_server_btn_ui_gadget_disable_hook.install();
+    server_list_set_single_refresh_inactive_patch.install();
 }
 
 void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num) {

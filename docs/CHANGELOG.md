@@ -46,6 +46,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Make clock clutter objects correctly display the current local real world time
 
 [@is-this-c](https://github.com/is-this-c)
+- Disable `Refresh Selected` in the server browser, only if `Refresh Selected` was pressed
+- Never disable `Add Server` in the server browser
 - Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
 
 ### Bug fixes
@@ -55,6 +57,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
 
 [@is-this-c](https://github.com/is-this-c)
+- For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
 - Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 
