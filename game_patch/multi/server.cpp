@@ -2457,13 +2457,16 @@ CodeInjection multi_level_init_injection{
     0x0046E450,
     [](auto& regs) {
         if (rf::is_server) {
-            initialize_game_info_server_flags();
-            af_send_server_info_packet_to_all();
-            if (g_alpine_server_config.dynamic_rotation &&
-                rf::netgame.current_level_index == rf::netgame.levels.size() - 1 && rf::netgame.levels.size() > 1) {
+            if (g_alpine_server_config.dynamic_rotation
+                && rf::netgame.current_level_index == rf::netgame.levels.size() - 1
+                && rf::netgame.levels.size() > 1) {
                 // if this is the last level in the list and dynamic rotation is on, shuffle
                 shuffle_level_array();
+                g_alpine_server_config.printed_cfg.clear();
+                g_alpine_server_config.signal_cfg_changed = true;
             }
+            initialize_game_info_server_flags();
+            af_send_server_info_packet_to_all();
             enforce_alpine_hard_reject_for_all_players_on_current_level();
         }
     },

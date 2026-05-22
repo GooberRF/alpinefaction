@@ -108,6 +108,7 @@ struct AlpineFactionServerInfo
     bool allow_outlines = false;
     bool allow_outlines_xray = false;
     bool clear_stale_movement_input = false;
+    bool was_manual_level_load = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

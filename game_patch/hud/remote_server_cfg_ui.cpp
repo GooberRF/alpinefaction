@@ -11,6 +11,7 @@
 #include <format>
 #include <utility>
 #include <common/utils/os-utils.h>
+#include "../multi/multi.h"
 
 static bool display_mode_is_compact() {
     return g_alpine_game_config.remote_server_cfg_display_mode
@@ -255,7 +256,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
 
     if (!rf::console::console_is_visible()) {
         const int page_h = h - label_h * 2 - separator_h;
-        constexpr int PAGE_UP_DOWN_GRACE_PERIOD_MS = 500;
+        constexpr int PAGE_UP_DOWN_GRACE_PERIOD_MS = 800;
         constexpr int PAGE_UP_DOWN_WAIT_TIME_MS = 100;
         if (rf::key_is_down(rf::KEY_PAGEUP)
             && (!self.page_up_timer.valid() || self.page_up_timer.elapsed())
@@ -517,8 +518,14 @@ void RemoteServerCfgPopup::render(this Self& self) {
             }
         } else if (std::holds_alternative<std::string>(line)) {
             const std::string& text = std::get<std::string>(line);
-            if (text.starts_with(rf::level.filename.c_str())) {
-                rf::gr::set_color(255, 0, 255, 255);
+            const bool is_loaded_map =
+                text.starts_with(rf::level.filename.c_str())
+                && get_af_server_info()
+                && !get_af_server_info()->was_manual_level_load;
+            if (is_loaded_map) {
+                rf::gr::set_color(0, 200, 140, 72);
+                rf::gr::rect(content_x, line_y, content_w, line_h);
+                rf::gr::set_color(255, 255, 255, 255);
             }
             rf::gr::string_aligned(
                 rf::gr::ALIGN_LEFT,

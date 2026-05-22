@@ -60,7 +60,7 @@
 #define NET_IFINDEX_UNSPECIFIED 0
 #endif
 
-int g_update_rate = 30; // client netfps
+static constexpr int CLIENT_NET_FPS = 30;
 
 ClientSoftware g_joining_client_version = ClientSoftware::Unknown;
 AlpineFactionJoinReqPacketExt g_joining_player_info{};
@@ -2423,25 +2423,30 @@ void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::P
 
 CodeInjection client_update_rate_injection{
     0x0047E5D8,
-    [](auto& regs) {
-        auto& send_obj_update_interval = *static_cast<int*>(regs.esp);
-        send_obj_update_interval = 1000 / g_update_rate;
+    [] (auto& regs) {
+        int& send_obj_update_interval = addr_as_ref<int>(regs.esp);
+        send_obj_update_interval = 1000 / CLIENT_NET_FPS;
     },
 };
 
 CodeInjection server_update_rate_injection{
     0x0047E891,
-    [](auto& regs) {
-        auto& min_send_obj_update_interval = *static_cast<int*>(regs.esp);
+    [] (auto& regs) {
+        int& min_send_obj_update_interval = addr_as_ref<int>(regs.esp);
         min_send_obj_update_interval = 1000 / g_alpine_game_config.server_netfps;
     },
 };
 
 ConsoleCommand2 netfps_cmd{
     "sv_netfps",
-    [](std::optional<int> update_rate) {
+    [] (std::optional<int> update_rate) {
         if (update_rate) {
-            g_alpine_game_config.set_server_netfps(update_rate.value());
+            const unsigned int old_v = g_alpine_game_config.server_netfps;
+            g_alpine_game_config.set_server_netfps(*update_rate);
+            if (rf::is_server && g_alpine_game_config.server_netfps != old_v) {
+                g_alpine_server_config.printed_cfg.clear();
+                g_alpine_server_config.signal_cfg_changed = true;
+            }
         }
         rf::console::print("Server netfps: {}", g_alpine_game_config.server_netfps);
     },
