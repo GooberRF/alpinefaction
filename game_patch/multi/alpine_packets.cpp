@@ -65,8 +65,12 @@ void af_send_packet(rf::Player* player, const void* data, int len, bool is_relia
     }
 }
 
-bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player)
-{
+bool af_process_packet(
+    const void* const data,
+    const int len,
+    const rf::NetAddr& addr,
+    [[maybe_unused]] rf::Player* const player
+) {
     RF_GamePacketHeader header{};
     if (len < static_cast<int>(sizeof(header))) {
         return false;
@@ -2260,7 +2264,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         return;
     }
 
-    auto [it, inserted] = recent_responses.try_emplace(addr.ip_addr);
+    auto [it, inserted] = recent_responses.try_emplace(addr.ip_addr.inner);
     if (!inserted) {
         // Already responded to this IP within the last second
         return;
