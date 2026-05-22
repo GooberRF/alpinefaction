@@ -215,9 +215,7 @@ static ControllerIconType sdl_type_to_icon(SDL_GamepadType type)
         case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
         case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
         case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:  return ControllerIconType::NintendoSwitch;
-#if SDL_VERSION_ATLEAST(3, 2, 0)
         case SDL_GAMEPAD_TYPE_GAMECUBE:                      return ControllerIconType::NintendoGameCube;
-#endif
         default:                                             return ControllerIconType::Generic;
     }
 }
