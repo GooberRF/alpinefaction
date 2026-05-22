@@ -23,8 +23,6 @@ Version 1.4.0 (Lupin): Not yet released
 - Disable `Refresh Selected` in the server browser, only if `Refresh Selected` was pressed
 - Never disable `Add Server` in the server browser
 - Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
-
-[@is-this-c](https://github.com/is-this-c)
 - Remote server config UI
   - Add `Net FPS`
   - Add detection of manually loaded levels
