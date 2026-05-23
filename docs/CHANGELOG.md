@@ -24,7 +24,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Never disable `Add Server` in the server browser
 - Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
 - Remote server config UI
-  - Add `Net FPS`
+  - Add `Net FPS` and `FPS`
   - Add detection of manually loaded levels
   - Highlight an active level in a server's rotation via background color instead of text color
 
