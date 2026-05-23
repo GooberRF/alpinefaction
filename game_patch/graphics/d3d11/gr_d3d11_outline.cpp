@@ -104,10 +104,6 @@ namespace df::gr::d3d11
 
         bool is_spectating = multi_spectate_is_spectating();
 
-        // Bag carrier outline runs INDEPENDENTLY of the normal outline gating
-        // below (client toggle / server permission / team-xray permission).
-        // The carrier indicator is gameplay-critical, not a configurable
-        // cosmetic, so it bypasses all the regular checks.
         if (gt_is_bagman_any() && g_bagman_info.carrier
             && g_bagman_info.carrier != rf::local_player
             && next_stencil_ref_ <= 255) {
@@ -201,14 +197,6 @@ namespace df::gr::d3d11
                 continue;
             }
 
-            // Skip the bag carrier — the pre-pass at the top of begin_frame()
-            // has already added them to ci_map_ + xray_forced_ with the
-            // green xray outline. Running the regular path would not change
-            // ci_map_ (emplace is no-op on existing key) but would push a
-            // duplicate xray_forced_ entry with team/enemy colours, causing
-            // flush_forced_xray to draw the team-coloured outline on top
-            // of the green one. Skipping here keeps the green outline
-            // authoritative.
             if (gt_is_bagman_any() && g_bagman_info.carrier == &player) {
                 continue;
             }
