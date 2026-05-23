@@ -20,13 +20,19 @@ Version 1.4.0 (Lupin): Not yet released
 - Make clock clutter objects correctly display the current local real world time
 
 [@is-this-c](https://github.com/is-this-c)
-- Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to the spectate UI
 - Add join flashes to multiplayer
   - Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
   - Add `mp_join_flash_timeout` console command to configure a timeout for a join flash
   - Add `mp_join_flash_highlight_only` console command to set a join flash to highlight only
   - Add `mp_join_flash_cancelable` console command to cancel a join flash, if a player joined but left
 - Rename `mp_notifyonjoin` console command to `mp_join_beep`
+- Disable `Refresh Selected` in the server browser, only if `Refresh Selected` was pressed
+- Never disable `Add Server` in the server browser
+- Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to spectate UI
+- Remote server config UI
+  - Add `Net FPS`
+  - Add detection of manually loaded levels
+  - Highlight an active level in a server's rotation via background color instead of text color
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -35,6 +41,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
 
 [@is-this-c](https://github.com/is-this-c)
+- Clear cached server config output after a shuffle of a server's rotation
+- For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
 - Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
 

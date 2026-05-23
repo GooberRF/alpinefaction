@@ -229,15 +229,15 @@ void __fastcall UiButton_create(rf::ui::Button& this_, int, const char *normal_b
             rf::bm::get_dimensions(this_.selected_bitmap, &this_.w, &this_.h);
         }
     }
-    this_.text = strdup(text);
+    this_.text = _strdup(text);
     this_.font = font;
 }
 FunHook UiButton_create_hook{0x004574D0, UiButton_create};
 
 void __fastcall UiButton_set_text(rf::ui::Button& this_, int, const char *text, int font)
 {
-    delete[] this_.text;
-    this_.text = strdup(text);
+    free(this_.text);
+    this_.text = _strdup(text);
     this_.font = font;
 }
 FunHook UiButton_set_text_hook{0x00457710, UiButton_set_text};
@@ -295,7 +295,7 @@ void __fastcall UiLabel_create(rf::ui::Label& this_, int, rf::ui::Gadget *parent
     const auto [text_w, text_h] = rf::gr::get_string_size(text, font);
     this_.w = static_cast<int>(text_w / rf::ui::scale_x);
     this_.h = static_cast<int>(text_h / rf::ui::scale_y);
-    this_.text = strdup(text);
+    this_.text = _strdup(text);
     this_.font = font;
     this_.align = rf::gr::ALIGN_LEFT;
     this_.clr.set(0, 0, 0, 255);
@@ -318,7 +318,7 @@ void __fastcall UiLabel_create2(rf::ui::Label& this_, int, rf::ui::Gadget *paren
     else {
         this_.align = rf::gr::ALIGN_LEFT;
     }
-    this_.text = strdup(text);
+    this_.text = _strdup(text);
     this_.font = font;
     this_.clr.set(0, 0, 0, 255);
 }
@@ -326,8 +326,8 @@ FunHook UiLabel_create2_hook{0x00456C20, UiLabel_create2};
 
 void __fastcall UiLabel_set_text(rf::ui::Label& this_, int, const char *text, int font)
 {
-    delete[] this_.text;
-    this_.text = strdup(text);
+    free(this_.text);
+    this_.text = _strdup(text);
     this_.font = font;
 }
 FunHook UiLabel_set_text_hook{0x00456DC0, UiLabel_set_text};
@@ -405,7 +405,7 @@ FunHook UiInputBox_render_hook{0x004570E0, UiInputBox_render};
 void __fastcall UiCycler_add_item(rf::ui::Cycler& this_, int, const char *text, int font)
 {
     if (this_.num_items < rf::ui::Cycler::max_items) {
-        this_.items_text[this_.num_items] = strdup(text);
+        this_.items_text[this_.num_items] = _strdup(text);
         this_.items_font[this_.num_items] = font;
         ++this_.num_items;
     }
@@ -1765,6 +1765,28 @@ FunHook<int(int, int)> audio_panel_handle_mouse_hook{
     },
 };
 
+// Do not disable `Refresh Selected`, unless it is a single server refresh.
+CallHook<
+    void __fastcall(rf::ui::Gadget&)
+> server_list_refresh_server_btn_ui_gadget_disable_hook{
+    0x0044D4BA,
+    [] (rf::ui::Gadget& self) FASTCALL_LAMBDA {
+        const bool& single_refresh_active = addr_as_ref<bool>(0x0063F638);
+        self.enabled = !single_refresh_active;
+    }
+};
+
+// `server_refresh_timeout` should be reset, when we set `single_refresh_active` to false.
+// Otherwise, `Get Servers` etc. stay disabled until timeout.
+CodeInjection server_list_set_single_refresh_inactive_patch{
+    0x0044DF75,
+    [] {
+        rf::TimestampRealtime& server_refresh_timeout =
+            addr_as_ref<rf::TimestampRealtime>(0x0063EF68);
+        server_refresh_timeout.set(0);
+    },
+};
+
 void ui_apply_patch()
 {
     // Alpine Faction options button and panel
@@ -1810,6 +1832,11 @@ void ui_apply_patch()
 
     // Handle CTRL+V in input boxes
     UiInputBox_process_key_hook.install();
+
+    // Do not disable `Add Server`.
+    AsmWriter{0x0044D4A6}.nop(5);
+    server_list_refresh_server_btn_ui_gadget_disable_hook.install();
+    server_list_set_single_refresh_inactive_patch.install();
 }
 
 void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num) {

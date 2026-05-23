@@ -426,25 +426,38 @@ CodeInjection server_browser_idle_status_injection{
     0x0044dc6f,
     [](auto& regs) {
         // default: preserve the stock idle text (e.g. "Pinging servers...")
-        static auto& stock_idle_buf = addr_as_ref<char[96]>(0x0063f6e4);
-        std::memcpy(s_server_browser_status_buf, stock_idle_buf, sizeof(s_server_browser_status_buf));
+        static char (&stock_idle_buf)[96] = addr_as_ref<char[96]>(0x0063f6e4);
+        std::memcpy(
+            s_server_browser_status_buf,
+            stock_idle_buf,
+            sizeof(s_server_browser_status_buf)
+        );
 
-        if (rf::ui::server_browser_selected_index < 0 ||
-            rf::ui::server_browser_selected_index >= rf::ui::server_browser_display_count)
+        if (rf::ui::server_browser_sel_idx < 0
+            || rf::ui::server_browser_sel_idx >= rf::ui::server_browser_num_servers) {
             return;
+        }
 
-        int actual_idx = rf::ui::server_browser_sorted_indices[rf::ui::server_browser_selected_index];
-        const auto& entry = rf::ui::server_browser_server_list[actual_idx];
-        const auto* extra = get_server_browser_extra(entry.addr);
-        if (!extra)
+        const rf::ui::ServerListEntry& server =
+            rf::ui::server_browser_server_list[rf::ui::server_browser_sel_idx];
+        const AFGameInfoExtra* const extra = get_server_browser_extra(server.addr);
+        if (!extra) {
             return;
+        }
 
-        std::snprintf(s_server_browser_status_buf, sizeof(s_server_browser_status_buf),
+        std::snprintf(
+            s_server_browser_status_buf,
+            sizeof(s_server_browser_status_buf),
             "%d client%s: %d player%s, %d bot%s, %d browser%s",
-            extra->num_total_clients, extra->num_total_clients == 1 ? "" : "s",
-            extra->num_human_players, extra->num_human_players == 1 ? "" : "s",
-            extra->num_bots, extra->num_bots == 1 ? "" : "s",
-            extra->num_browsers, extra->num_browsers == 1 ? "" : "s");
+            extra->num_total_clients,
+            extra->num_total_clients == 1 ? "" : "s",
+            extra->num_human_players,
+            extra->num_human_players == 1 ? "" : "s",
+            extra->num_bots,
+            extra->num_bots == 1 ? "" : "s",
+            extra->num_browsers,
+            extra->num_browsers == 1 ? "" : "s"
+        );
     },
 };
 
