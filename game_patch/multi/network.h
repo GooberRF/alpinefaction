@@ -5,6 +5,7 @@
 #include <common/version/version.h>
 #include "server_internal.h"
 #include "../rf/multi.h"
+ #include "../os/os.h"
 
 constexpr uint32_t ALPINE_FACTION_SIGNATURE = 0x4E4C5246;
 constexpr uint32_t DASH_FACTION_SIGNATURE = 0xDA58FAC7;

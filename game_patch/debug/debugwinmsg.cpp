@@ -200,7 +200,7 @@ static const WinMsgNameMapping g_all_messages[] = {
 };
 
 const char *get_win_msg_name(const UINT msg) {
-    for (WinMsgNameMapping& mapping : g_all_messages) {
+    for (const WinMsgNameMapping& mapping : g_all_messages) {
         if (mapping.msg_id == msg) {
             return mapping.msg_name;
         }

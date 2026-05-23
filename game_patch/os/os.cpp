@@ -246,20 +246,20 @@ bool headless_requested_from_raw_cmdline()
 
 static bool g_wnd_is_flash_active = false;
 
-void wnd_set_flash(const HWND hwnd, const bool active, const bool hightlight_only = false) {
-    if (g_wnd_is_flash_active != active
-        || (g_wnd_is_flash_active && active && !hightlight_only)) {
+void wnd_set_flash(const HWND hwnd, const bool active, const bool highlight_only) {
+    if (g_wnd_is_flash_active != active) {
         FLASHWINFO flash{
             .cbSize = sizeof(flash),
             .hwnd = hwnd,
             .dwFlags = static_cast<DWORD>(active ? FLASHW_TRAY : FLASHW_STOP),
-            .uCount = active
-                ? (hightlight_only ? 0ul : 3ul)
-                : 0ul,
+            .uCount = active ? (highlight_only ? 0ul : 3ul) : 0ul,
             .dwTimeout = 0
         };
         FlashWindowEx(&flash);
         g_wnd_is_flash_active = active;
+    } else if (g_wnd_is_flash_active && active && !highlight_only) {
+        wnd_set_flash(hwnd, false);
+        wnd_set_flash(hwnd, true);
     }
 }
 
