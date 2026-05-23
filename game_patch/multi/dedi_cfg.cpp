@@ -464,20 +464,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.default_player_weapon.set_weapon("Machine Pistol");
 
             rules.spawn_loadout.loadouts_active = true;
-
-            // Note: drop_amps is force-suppressed at the consumption site in
-            // entity_maybe_die_patch (server.cpp) when bagman is active —
-            // not changed here. That way the admin's drop_amps config
-            // setting remains intact for non-bagman gametypes loaded after.
-
-            // Note: bag-spawn-candidate items (Multi Damage Amplifier and the
-            // fallback super-pickups) are NOT disabled here via
-            // item_replacements. They must remain loadable so the bag
-            // resolver in bagman_level_init_post can read their positions
-            // from the RFL. The resolver then kills all instances of the
-            // candidate classes and spawns a fresh non-respawning bag at the
-            // chosen position — so they never appear as level pickups
-            // either way.
             break;
         }
 
