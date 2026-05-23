@@ -1500,7 +1500,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DisableMultiCharacterLOD=" << g_alpine_game_config.multi_no_character_lod << "\n";
     file << "PlayerJoinBeep=" << g_alpine_game_config.player_join_beep << "\n";
     file << "PlayerJoinFlash=" << g_alpine_game_config.player_join_flash << "\n";
-    file << "PlayerJoinFlashHightlightOnly=" << g_alpine_game_config.player_join_flash_highlight_only << "\n";
+    file << "PlayerJoinFlashHighlightOnly=" << g_alpine_game_config.player_join_flash_highlight_only << "\n";
     file << "PlayerJoinFlashCancelable=" << g_alpine_game_config.player_join_flash_cancelable << "\n";
     file << "PlayerJoinFlashTimeoutSeconds=" << g_alpine_game_config.player_join_flash_timeout_sec << "\n";
     file << "WorldHUDAltDamageIndicators=" << g_alpine_game_config.world_hud_alt_damage_indicators << "\n";
