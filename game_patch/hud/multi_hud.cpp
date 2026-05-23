@@ -49,10 +49,29 @@ static bool g_big_team_scores_hud = false;
 constexpr bool g_debug_team_scores_hud = false;
 static bool g_draw_vote_notification = false;
 static std::string g_active_vote_type = "";
-static bool g_draw_ready_notification = false;
 bool g_pre_match_active = false;
 static bool g_draw_respawn_timer_notification = false;
 static bool g_draw_respawn_timer_can_respawn = false;
+
+struct ActiveHudNotification
+{
+    HudNotificationType type = HudNotificationType::None;
+    std::string text;
+    rf::TimestampRealtime expiry; // invalid for perpetual
+    rf::TimestampRealtime fade_start; // invalid while not fading
+    bool fade_on_expire = false;
+};
+static ActiveHudNotification g_hud_notification;
+constexpr int kHudNotificationFadeMs = 500;
+
+static void hud_notification_clear()
+{
+    g_hud_notification.type = HudNotificationType::None;
+    g_hud_notification.text.clear();
+    g_hud_notification.expiry.invalidate();
+    g_hud_notification.fade_start.invalidate();
+    g_hud_notification.fade_on_expire = false;
+}
 static std::string time_left_string_format = "";
 static int time_left_string_x_pos_offset = 135;
 static int time_left_string_y_pos_offset = 21;
@@ -1100,14 +1119,61 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
     g_draw_respawn_timer_can_respawn = can_respawn;
 }
 
-void hud_render_ready_notification() {
-    const std::string ready_key_text =
-        get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
+void hud_notification_show(std::string text, int duration_ms,
+    HudNotificationType type, bool fade_on_expire)
+{
+    g_hud_notification.type = type;
+    g_hud_notification.text = std::move(text);
+    if (duration_ms >= 0) {
+        g_hud_notification.expiry.set(duration_ms);
+    } else {
+        g_hud_notification.expiry.invalidate();
+    }
+    g_hud_notification.fade_start.invalidate();
+    g_hud_notification.fade_on_expire = fade_on_expire;
+}
 
-    const std::string ready_notification_text =
-        "Press " + ready_key_text + " to ready up for the match";
+void hud_notification_remove(HudNotificationType type, bool instant)
+{
+    if (g_hud_notification.type == HudNotificationType::None) return;
+    // Type::None matches any currently displayed notification.
+    if (type != HudNotificationType::None && g_hud_notification.type != type) return;
+    if (instant) {
+        hud_notification_clear();
+    } else if (!g_hud_notification.fade_start.valid()) {
+        g_hud_notification.fade_start.set(0);
+    }
+}
 
-    rf::gr::set_color(255, 255, 255, 225);
+static void hud_render_notification()
+{
+    if (g_hud_notification.type == HudNotificationType::None) return;
+
+    // Handle expiry: either start a fade or clear immediately.
+    if (!g_hud_notification.fade_start.valid()
+        && g_hud_notification.expiry.valid()
+        && g_hud_notification.expiry.elapsed()) {
+        if (g_hud_notification.fade_on_expire) {
+            g_hud_notification.fade_start.set(0);
+        } else {
+            hud_notification_clear();
+            return;
+        }
+    }
+
+    // Compute alpha (matches the 225 base used by other HUD overlays).
+    int alpha = 225;
+    if (g_hud_notification.fade_start.valid()) {
+        const int elapsed = g_hud_notification.fade_start.time_since();
+        if (elapsed >= kHudNotificationFadeMs) {
+            hud_notification_clear();
+            return;
+        }
+        const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
+        alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+
+    rf::gr::set_color(255, 255, 255, alpha);
     const int center_x = rf::gr::screen_width() / 2;
     const int font = hud_get_default_font();
     const int font_h = rf::gr::get_font_height(font);
@@ -1121,17 +1187,23 @@ void hud_render_ready_notification() {
     if (!g_alpine_game_config.big_hud) {
         notification_y += 2;
     }
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, notification_y, ready_notification_text.c_str(), font);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, notification_y, g_hud_notification.text.c_str(), font);
 }
 
 void draw_hud_ready_notification(bool draw)
 {
-    g_draw_ready_notification = draw;
+    if (draw) {
+        const std::string key = get_action_bind_name(
+            get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
+        hud_notification_show("Press " + key + " to ready up for the match",
+            -1, HudNotificationType::ReadyUp, false);
+    } else {
+        hud_notification_remove(HudNotificationType::ReadyUp, true);
+    }
 }
 
 void set_local_pre_match_active(bool set_active) {
-    set_active ? g_pre_match_active = true : g_pre_match_active = false;
-
+    g_pre_match_active = set_active;
     draw_hud_ready_notification(set_active);
 }
 
@@ -1304,9 +1376,16 @@ CodeInjection multi_hud_render_patch{
             hud_render_vote_notification();
         }
 
-        if (g_draw_ready_notification) {
-            hud_render_ready_notification();
+        static bool s_was_bag_carrier = false;
+        const bool is_bag_carrier = bagman_local_player_is_carrier();
+        if (is_bag_carrier && !s_was_bag_carrier) {
+            hud_notification_show("You have the bag", -1, HudNotificationType::BagCarrier, false);
+        } else if (!is_bag_carrier && s_was_bag_carrier) {
+            hud_notification_remove(HudNotificationType::BagCarrier, false);
         }
+        s_was_bag_carrier = is_bag_carrier;
+
+        hud_render_notification();
 
         if (g_draw_respawn_timer_notification) {
             hud_render_respawn_timer_notification();
@@ -1330,6 +1409,7 @@ void multi_hud_level_init() {
     g_run_life_start_timestamp.invalidate();
     g_run_timer_reset_by_respawn_key = false;
     g_run_timer_fade_active = false;
+    hud_notification_clear();
     killfeed_clear();
 
     level_menu = ChatMenuList{

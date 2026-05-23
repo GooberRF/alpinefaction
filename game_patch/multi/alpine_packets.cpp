@@ -1141,15 +1141,24 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
         return;
     }
 
+    const BagState prev_state = g_bagman_info.state;
     g_bagman_info.state = static_cast<BagState>(pkt.state);
+
+    if (prev_state == BagState::BS_Dropped &&
+        g_bagman_info.state == BagState::BS_At_Spawn) {
+        bagman_play_return_sound();
+    }
+
     g_bagman_info.bag_pos.x = pkt.bag_x;
     g_bagman_info.bag_pos.y = pkt.bag_y;
     g_bagman_info.bag_pos.z = pkt.bag_z;
+
     if (pkt.carrier_player_id == 0xFF) {
         g_bagman_info.carrier = nullptr;
     } else {
         g_bagman_info.carrier = rf::multi_find_player_by_id(pkt.carrier_player_id);
     }
+
     g_bagman_info.red_team_score = pkt.red_team_score;
     g_bagman_info.blue_team_score = pkt.blue_team_score;
 

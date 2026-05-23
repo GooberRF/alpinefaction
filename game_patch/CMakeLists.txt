@@ -248,6 +248,8 @@ set(SRCS
     object/alpine_mesh.cpp
     object/alpine_corona.cpp
     object/alpine_corona.h
+    object/alpine_bag.cpp
+    object/alpine_bag.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp

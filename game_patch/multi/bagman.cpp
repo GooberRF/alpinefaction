@@ -18,6 +18,7 @@
 #include "../rf/entity.h"
 #include "../rf/object.h"
 #include "../rf/level.h"
+#include "../object/alpine_bag.h"
 #include "../rf/bmpman.h"
 #include "../rf/file/file.h"
 #include "../rf/gameseq.h"
@@ -25,6 +26,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/player/player.h"
 #include "../rf/os/timestamp.h"
+#include "../rf/sound/sound.h"
 #include <patch_common/FunHook.h>
 
 BagmanInfo g_bagman_info;
@@ -186,13 +188,20 @@ void resolve_bag_spawn_from_placed_item()
 
     bool position_chosen = false;
 
-    // (Future) "Bag" editor object — not implemented yet.
-
-    // Hardcoded bag positions for specific RFLs.
-    if (auto override_pos = lookup_hardcoded_bag_home(rf::level.filename.c_str())) {
-        g_bagman_info.spawn_pos = *override_pos;
-        g_bagman_info.spawn_orient = rf::identity_matrix;
+    // Priority 1: mapper-placed Bag editor object.
+    if (auto bag = get_first_bag_object()) {
+        g_bagman_info.spawn_pos = bag->pos;
+        g_bagman_info.spawn_orient = bag->orient;
         position_chosen = true;
+    }
+
+    // Priority 2: hardcoded bag positions for specific RFLs.
+    if (!position_chosen) {
+        if (auto override_pos = lookup_hardcoded_bag_home(rf::level.filename.c_str())) {
+            g_bagman_info.spawn_pos = *override_pos;
+            g_bagman_info.spawn_orient = rf::identity_matrix;
+            position_chosen = true;
+        }
     }
 
     // Walk item_list once per candidate class. The first match (in
@@ -266,6 +275,10 @@ void bagman_set_blue_team_score(int v)
 void bagman_level_init()
 {
     g_bagman_info = BagmanInfo{};
+
+    // Drop the cached dynamic-light handle.
+    g_bag_light_handle = -1;
+    g_bag_light_pulse_phase = 0.0f;
 
     // Always restore engine state before deciding what to do this level.
     revert_aura_swap_if_active();
@@ -386,6 +399,11 @@ static void drop_bag_from_entity(rf::Player* prev_carrier, rf::Entity* ep)
     bagman_broadcast_state();
 }
 
+void bagman_play_return_sound()
+{
+    rf::snd_play(65, 0, 0.0f, 1.0f);
+}
+
 static void on_return()
 {
     g_bagman_info.state = BagState::BS_At_Spawn;
@@ -396,6 +414,7 @@ static void on_return()
     spawn_bag_item(g_bagman_info.spawn_pos, g_bagman_info.spawn_orient);
 
     announce("The bag has returned.");
+    bagman_play_return_sound();
     bagman_broadcast_state();
 }
 
@@ -483,8 +502,9 @@ void bagman_on_entity_will_die(rf::Entity* ep)
 
 bool bagman_local_player_is_carrier()
 {
-    return gt_is_bagman_any() && g_bagman_info.carrier != nullptr
-        && rf::local_player == g_bagman_info.carrier;
+    return gt_is_bagman_any() &&
+    g_bagman_info.carrier != nullptr
+    && rf::local_player == g_bagman_info.carrier;
 }
 
 int bagman_get_hud_icon_bitmap_handle()
@@ -552,6 +572,72 @@ CodeInjection bagman_carrier_no_amp_damage_patch3{
     },
 };
 
+CodeInjection bagman_carrier_no_amp_fire_sound_patch1{
+    0x0042612B,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            regs.eip = 0x00426154;
+        }
+    },
+};
+
+CodeInjection bagman_carrier_no_amp_fire_sound_patch2{
+    0x00426236,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            regs.eip = 0x0042625F;
+        }
+    },
+};
+
+CodeInjection bagman_carrier_no_amp_fire_sound_patch3{
+    0x00426AA3,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            regs.eip = 0x00426AC3;
+        }
+    },
+};
+
+CodeInjection bagman_carrier_no_amp_fire_sound_patch4{
+    0x0041AAA7,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            regs.eip = 0x0041AAD3;
+        }
+    },
+};
+
+CodeInjection bagman_carrier_no_amp_fire_sound_patch5{
+    0x0041ABAF,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            regs.eip = 0x0041ABD8;
+        }
+    },
+};
+
+CodeInjection bagman_carrier_amp_pickup_sound_swap_patch{
+    0x0042D1E4,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            *reinterpret_cast<int*>(static_cast<uintptr_t>(regs.esp)) = 0x40;
+        }
+    },
+};
+
+CodeInjection bagman_suppress_amp_pickup_msg_patch{
+    0x0045A100,
+    [](auto& regs) {
+        if (!gt_is_bagman_any()) return;
+        if (g_bagman_info.bag_item_type < 0) return;
+        auto* item_info = *reinterpret_cast<rf::ItemInfo**>(static_cast<uintptr_t>(regs.esp) + 8);
+        if (item_info == &rf::item_info[g_bagman_info.bag_item_type]) {
+            regs.eip = 0x0045A1E8;
+        }
+    },
+};
+
 FunHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*, int, bool, bool)>
     item_create_bagman_bag_mesh_swap_hook{
     0x00459100,
@@ -600,10 +686,22 @@ void bagman_do_patch()
     bagman_carrier_no_amp_damage_patch2.install();
     bagman_carrier_no_amp_damage_patch3.install();
 
+    // Suppress the amped weapon-fire sound for amp (bag) holder
+    bagman_carrier_no_amp_fire_sound_patch1.install();
+    bagman_carrier_no_amp_fire_sound_patch2.install();
+    bagman_carrier_no_amp_fire_sound_patch3.install();
+    bagman_carrier_no_amp_fire_sound_patch4.install();
+    bagman_carrier_no_amp_fire_sound_patch5.install();
+
+    // Swap amp pickup sound (84) for flag pickup sound (64) in bagman
+    bagman_carrier_amp_pickup_sound_swap_patch.install();
+
+    // Suppress the "Damage Amp picked up" HUD message in bagman
+    bagman_suppress_amp_pickup_msg_patch.install();
+
     // Bagman's dynamic light is green instead of purple
     bagman_carrier_amp_light_color_patch.install();
 
     // Amp (bag) pickup uses a new mesh in bagman mode
     item_create_bagman_bag_mesh_swap_hook.install();
 }
-
