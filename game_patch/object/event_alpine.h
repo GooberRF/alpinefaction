@@ -3004,4 +3004,88 @@ namespace rf
         }
     };
 
+    // id 154 — ATX_Set_Frame: jump the named ATX texture to a specific frame index.
+    // str1 = handle (atx filename without extension), int1 = frame index (0-based).
+    struct EventATXSetFrame : Event
+    {
+        char padding_align[3];
+        int frame_index = 0;
+        std::string handle;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                static_cast<EventATXSetFrame*>(event)->frame_index = std::stoi(value);
+            };
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                static_cast<EventATXSetFrame*>(event)->handle = value;
+            };
+        }
+
+        void turn_on() override;
+    };
+
+    // id 155 — ATX_Play: resume time-based playback for the named ATX texture.
+    // str1 = handle. No-op for animation_mode = Static (engine just won't advance).
+    struct EventATXPlay : Event
+    {
+        char padding_align[3];
+        std::string handle;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                static_cast<EventATXPlay*>(event)->handle = value;
+            };
+        }
+
+        void turn_on() override;
+    };
+
+    // id 156 — ATX_Pause: stop time-based playback for the named ATX texture at the current frame.
+    // str1 = handle.
+    struct EventATXPause : Event
+    {
+        char padding_align[3];
+        std::string handle;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                static_cast<EventATXPause*>(event)->handle = value;
+            };
+        }
+
+        void turn_on() override;
+    };
+
+    // id 157 — ATX_Set_Frame_Time: change base_frame_time_ms at runtime.
+    // str1 = handle, int1 = ms per frame (clamped to >= 1).
+    struct EventATXSetFrameTime : Event
+    {
+        char padding_align[3];
+        int frame_time_ms = 100;
+        std::string handle;
+
+        void register_variable_handlers() override
+        {
+            Event::register_variable_handlers();
+            auto& handlers = variable_handler_storage[this];
+            handlers[SetVarOpts::int1] = [](Event* event, const std::string& value) {
+                static_cast<EventATXSetFrameTime*>(event)->frame_time_ms = std::stoi(value);
+            };
+            handlers[SetVarOpts::str1] = [](Event* event, const std::string& value) {
+                static_cast<EventATXSetFrameTime*>(event)->handle = value;
+            };
+        }
+
+        void turn_on() override;
+    };
+
 } // namespace rf

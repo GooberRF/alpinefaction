@@ -7,6 +7,7 @@
 #include "../rf/player/player.h"
 #include "../rf/gameseq.h"
 #include "../rf/input.h"
+#include "../rf/multi.h"
 #include "win32_console.h"
 #include <common/config/BuildConfig.h>
 #include <common/version/version.h>
@@ -318,7 +319,7 @@ void console_apply_patches()
 void console_init()
 {
     console_commands_init();
-    if (!client_bot_launch_enabled() && !is_headless_mode()) {
+    if (!client_bot_launch_enabled() && !is_headless_mode() && !rf::is_dedicated_server) {
         print_fflink_info();
         initialize_achievement_manager();
     }
