@@ -4,12 +4,13 @@
 
 struct WinMsgNameMapping
 {
-    UINT    msg_id;
-    LPCSTR  msg_name;
+    UINT msg_id;
+    LPCSTR msg_name;
 };
+
 #define DEFINE_MESSAGE(wm) { wm, #wm }
-static const WinMsgNameMapping g_all_messages[] =
-{
+
+static const WinMsgNameMapping g_all_messages[] = {
     DEFINE_MESSAGE(WM_CREATE),
     DEFINE_MESSAGE(WM_DESTROY),
     DEFINE_MESSAGE(WM_MOVE),
@@ -157,14 +158,16 @@ static const WinMsgNameMapping g_all_messages[] =
     DEFINE_MESSAGE(WM_POWER),
     DEFINE_MESSAGE(WM_WINDOWPOSCHANGED),
     DEFINE_MESSAGE(WM_WINDOWPOSCHANGING),
-// MFC specific messages
-    /*DEFINE_MESSAGE(WM_SIZEPARENT),
+    // MFC specific messages
+    /*
+    DEFINE_MESSAGE(WM_SIZEPARENT),
     DEFINE_MESSAGE(WM_SETMESSAGESTRING),
     DEFINE_MESSAGE(WM_IDLEUPDATECMDUI),
     DEFINE_MESSAGE(WM_INITIALUPDATE),
     DEFINE_MESSAGE(WM_COMMANDHELP),
     DEFINE_MESSAGE(WM_HELPHITTEST),
-    DEFINE_MESSAGE(WM_EXITHELPMODE),*/
+    DEFINE_MESSAGE(WM_EXITHELPMODE),
+    */
     DEFINE_MESSAGE(WM_HELP),
     DEFINE_MESSAGE(WM_NOTIFY),
     DEFINE_MESSAGE(WM_CONTEXTMENU),
@@ -193,12 +196,11 @@ static const WinMsgNameMapping g_all_messages[] =
     DEFINE_MESSAGE(WM_DEVICECHANGE),
     DEFINE_MESSAGE(WM_PRINT),
     DEFINE_MESSAGE(WM_PRINTCLIENT),
-    { 0, nullptr, }    // end of message list
+    { 0, nullptr, } // end of message list
 };
 
-const char *get_win_msg_name(UINT msg)
-{
-    for (auto& mapping : g_all_messages) {
+const char *get_win_msg_name(const UINT msg) {
+    for (WinMsgNameMapping& mapping : g_all_messages) {
         if (mapping.msg_id == msg) {
             return mapping.msg_name;
         }

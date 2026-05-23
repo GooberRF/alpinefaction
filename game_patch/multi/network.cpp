@@ -703,20 +703,24 @@ FunHook<MultiIoPacketHandler> process_join_deny_packet_hook{
     },
 };
 
-std::unordered_set<rf::Player*> g_join_flash_active_players{};
-HighResTimer g_join_flash_timer{};
-
 FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
     0x0047A580,
     [] (char* const data, const rf::NetAddr& addr) {
         process_new_player_packet_hook.call_target(data, addr);
-        if (GetForegroundWindow() != rf::main_wnd) {
+        if (!rf::is_server && GetForegroundWindow() != rf::main_wnd) {
             if (g_alpine_game_config.player_join_beep) {
-                Beep(750, 300);
+                std::thread{[] {
+                    Beep(750, 300);
+                }}
+                .detach();
             }
 
             if (g_alpine_game_config.player_join_flash) {
-                wnd_set_flash(rf::main_wnd, true);
+                wnd_set_flash(
+                    rf::main_wnd,
+                    true,
+                    g_alpine_game_config.player_join_flash_highlight_only
+                );
                 g_join_flash_active_players.insert(rf::player_list->prev);
                 if (g_alpine_game_config.player_join_flash_timeout_sec != 0) {
                     g_join_flash_timer.set(std::chrono::seconds{
@@ -755,11 +759,12 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
         // server-side and client-side
         verify_player_id_in_packet(&data[0], addr, "left_game");
 
-        if (!rf::is_server && !rf::is_dedicated_server) {
+        if (!rf::is_server) {
             rf::Player* const player = rf::multi_find_player_by_id(data[0]);
             if (player) {
+                const bool was_in_set = g_join_flash_active_players.erase(player) > 0;
                 if (g_alpine_game_config.player_join_flash_cancelable
-                    && g_join_flash_active_players.erase(player)
+                    && was_in_set
                     && g_join_flash_active_players.empty()) {
                     wnd_set_flash(rf::main_wnd, false);
                     g_join_flash_timer.invalidate();
@@ -2732,7 +2737,7 @@ FunHook<void()> multi_io_do_frame_hook{
 
         if (!rf::is_server) {
             if (g_join_flash_timer.valid()
-                && g_join_flash_timer.elapsed()) { 
+                && g_join_flash_timer.elapsed()) {
                 g_join_flash_active_players.clear();
                 wnd_set_flash(rf::main_wnd, false);
                 g_join_flash_timer.invalidate();

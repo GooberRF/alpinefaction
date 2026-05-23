@@ -12,11 +12,8 @@
 #include "../multi/multi.h"
 #include "os.h"
 #include "win32_console.h"
-
 #include <timeapi.h>
-#include "../misc/alpine_settings.h"
-
-const char* get_win_msg_name(UINT msg);
+#include "../multi/network.h"
 
 FunHook<void()> os_poll_hook{
     0x00524B60,
@@ -64,8 +61,6 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         if (!rf::is_dedicated_server) {
             // Show cursor if window is not active
             if (w_param) {
-                extern std::unordered_set<rf::Player*> g_join_flash_active_players;
-                extern HighResTimer g_join_flash_timer;
                 g_join_flash_active_players.clear();
                 wnd_set_flash(rf::main_wnd, false);
                 g_join_flash_timer.invalidate();
@@ -251,14 +246,15 @@ bool headless_requested_from_raw_cmdline()
 
 static bool g_wnd_is_flash_active = false;
 
-void wnd_set_flash(const HWND hwnd, const bool active) {
-    if (g_wnd_is_flash_active != active) {
+void wnd_set_flash(const HWND hwnd, const bool active, const bool hightlight_only = false) {
+    if (g_wnd_is_flash_active != active
+        || (g_wnd_is_flash_active && active && !hightlight_only)) {
         FLASHWINFO flash{
             .cbSize = sizeof(flash),
             .hwnd = hwnd,
             .dwFlags = static_cast<DWORD>(active ? FLASHW_TRAY : FLASHW_STOP),
             .uCount = active
-                ? (g_alpine_game_config.player_join_flash_highlight_only ? 0ul : 3ul)
+                ? (hightlight_only ? 0ul : 3ul)
                 : 0ul,
             .dwTimeout = 0
         };
