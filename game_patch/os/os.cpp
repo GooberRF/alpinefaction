@@ -246,7 +246,7 @@ bool headless_requested_from_raw_cmdline()
 
 static bool g_wnd_is_flash_active = false;
 
-void wnd_set_flash(const HWND hwnd, const bool active, const bool highlight_only) {
+static void wnd_set_flash_impl(const HWND hwnd, const bool active, const bool highlight_only) {
     if (g_wnd_is_flash_active != active) {
         FLASHWINFO flash{
             .cbSize = sizeof(flash),
@@ -257,10 +257,14 @@ void wnd_set_flash(const HWND hwnd, const bool active, const bool highlight_only
         };
         FlashWindowEx(&flash);
         g_wnd_is_flash_active = active;
-    } else if (g_wnd_is_flash_active && active && !highlight_only) {
-        wnd_set_flash(hwnd, false);
-        wnd_set_flash(hwnd, true);
     }
+}
+
+void wnd_set_flash(const HWND hwnd, const bool active, const bool highlight_only) {
+    if (g_wnd_is_flash_active && active && !highlight_only) {
+        wnd_set_flash_impl(hwnd, false, false);
+    }
+    wnd_set_flash_impl(hwnd, active, highlight_only);
 }
 
 static FunHook<void()> os_close_hook{
