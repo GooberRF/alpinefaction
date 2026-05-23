@@ -9,6 +9,7 @@
 #include "../../misc/alpine_settings.h"
 #include "../../multi/multi.h"
 #include "../../multi/gametype.h"
+#include "../../multi/bagman.h"
 #include "../../hud/multi_spectate.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
@@ -103,6 +104,52 @@ namespace df::gr::d3d11
 
         bool is_spectating = multi_spectate_is_spectating();
 
+        // Bag carrier outline runs INDEPENDENTLY of the normal outline gating
+        // below (client toggle / server permission / team-xray permission).
+        // The carrier indicator is gameplay-critical, not a configurable
+        // cosmetic, so it bypasses all the regular checks.
+        if (gt_is_bagman_any() && g_bagman_info.carrier
+            && g_bagman_info.carrier != rf::local_player
+            && next_stencil_ref_ <= 255) {
+
+            rf::Player* carrier = g_bagman_info.carrier;
+            rf::Player* spectate_target = is_spectating ? multi_spectate_get_target_player() : nullptr;
+
+            // Skip if we're spectating the carrier — their mesh IS our view.
+            if (spectate_target != carrier) {
+                if (rf::Entity* entity = rf::entity_from_handle(carrier->entity_handle)) {
+                    if (!rf::entity_is_dying(entity)
+                        && entity->vmesh
+                        && entity->vmesh->type == rf::MESH_TYPE_CHARACTER) {
+                        if (auto* ci = static_cast<rf::CharacterInstance*>(entity->vmesh->instance)) {
+                            OutlineInfo info{};
+                            info.r = 0.0f;
+                            info.g = 1.0f;
+                            info.b = 0.0f;
+                            info.a = 1.0f;
+                            info.xray = true;
+                            info.stencil_ref = next_stencil_ref_++;
+                            ci_map_.emplace(ci, info);
+
+                            if (ci->base_character
+                                && ci->base_character->num_character_meshes > 0
+                                && ci->base_character->character_meshes[0].mesh) {
+                                ForcedXrayEntry forced{};
+                                forced.lod_mesh = ci->base_character->character_meshes[0].mesh->vu;
+                                forced.pos = entity->pos;
+                                forced.orient = entity->orient;
+                                forced.ci = ci;
+                                forced.info = info;
+                                if (forced.lod_mesh) {
+                                    xray_forced_.push_back(forced);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if (is_spectating) {
             // Spectator outlines: client toggle only, no server permission needed
             if (!g_alpine_game_config.outlines_spectator) {
@@ -151,6 +198,18 @@ namespace df::gr::d3d11
 
             // Skip the player we are spectating (their mesh is our first-person view)
             if (spectate_target && &player == spectate_target) {
+                continue;
+            }
+
+            // Skip the bag carrier — the pre-pass at the top of begin_frame()
+            // has already added them to ci_map_ + xray_forced_ with the
+            // green xray outline. Running the regular path would not change
+            // ci_map_ (emplace is no-op on existing key) but would push a
+            // duplicate xray_forced_ entry with team/enemy colours, causing
+            // flush_forced_xray to draw the team-coloured outline on top
+            // of the green one. Skipping here keeps the green outline
+            // authoritative.
+            if (gt_is_bagman_any() && g_bagman_info.carrier == &player) {
                 continue;
             }
 

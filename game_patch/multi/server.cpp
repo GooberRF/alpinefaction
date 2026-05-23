@@ -22,6 +22,8 @@
 #include "server_internal.h"
 #include "alpine_packets.h"
 #include "multi.h"
+#include "gametype.h"
+#include "bagman.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
@@ -815,6 +817,12 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     }
     if (string_iequals(gametype_name, "esc")) {
         return rf::NetGameType::NG_TYPE_ESC;
+    }
+    if (string_iequals(gametype_name, "bm") || string_iequals(gametype_name, "bagman")) {
+        return rf::NetGameType::NG_TYPE_BM;
+    }
+    if (string_iequals(gametype_name, "tbm") || string_iequals(gametype_name, "team_bagman")) {
+        return rf::NetGameType::NG_TYPE_TBM;
     }
 
     return std::nullopt;
@@ -2640,7 +2648,9 @@ bool round_is_tied(rf::NetGameType game_type)
     }
 
     switch (game_type) {
-    case rf::NG_TYPE_DM: {
+    case rf::NG_TYPE_DM:
+    case rf::NG_TYPE_BM: {
+        // DM and BM have the same tie condition: two or more players share the highest score.
         const auto current_players = get_clients(false, true);
 
         if (current_players.empty())
@@ -2751,6 +2761,9 @@ bool round_is_tied(rf::NetGameType game_type)
 
         return false;
     }
+    case rf::NG_TYPE_TBM: {
+        return bagman_get_red_team_score() == bagman_get_blue_team_score();
+    }
     default: // other modes (e.g. RUN) can't be tied
         return false;
     }
@@ -2839,6 +2852,26 @@ FunHook<void()> multi_check_for_round_end_hook{
             }
             case rf::NG_TYPE_ESC: {
                 if (esc_all_points_owned_by_one_team()) {
+                    round_over = true;
+                }
+                break;
+            }
+            case rf::NG_TYPE_BM: {
+                auto current_players = get_clients(false, true);
+                if (current_players.empty()) break;
+                const int limit = g_alpine_server_config_active_rules.bagman.bm_score_limit;
+                for (rf::Player* player : current_players) {
+                    if (player->stats->score >= limit) {
+                        round_over = true;
+                        break;
+                    }
+                }
+                break;
+            }
+            case rf::NG_TYPE_TBM: {
+                const int limit = g_alpine_server_config_active_rules.bagman.tbm_score_limit;
+                if (bagman_get_red_team_score() >= limit ||
+                    bagman_get_blue_team_score() >= limit) {
                     round_over = true;
                 }
                 break;
@@ -3246,7 +3279,7 @@ void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count)
 
     if (dropped_item) {
         dropped_item->item_flags |= 8u;
-        rf::send_item_create_packet(dropped_item, 0);
+        rf::send_item_create_packet(dropped_item, 0, -1);
     }
 }
 
@@ -3272,7 +3305,7 @@ CodeInjection entity_maybe_die_patch{
                     af_send_just_died_info_packet(player, respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
                 }
 
-                if (g_alpine_server_config_active_rules.drop_amps) {
+                if (g_alpine_server_config_active_rules.drop_amps && !gt_is_bagman_any()) {
                     if (rf::multi_powerup_has_player(player, 1)) {
                         int amp_count = 0;
                         int time_left = rf::multi_powerup_get_time_until(player, 1);
@@ -3293,29 +3326,12 @@ CodeInjection entity_maybe_die_patch{
                         }
                     }
                 }
+
+                bagman_on_entity_will_die(ep);
             }
         }
     },
 };
-
-// ensure bag isn't purged for being the oldest dropped item (not currently used)
-/* CodeInjection item_get_oldest_dynamic_patch{
-    0x00458858,
-    [](auto& regs) {
-        if (g_additional_server_config.bagman.enabled) {
-
-            rf::Item* item = regs.esi;
-
-            if (item) {
-                //xlog::warn("checked item {}, UID {}", item->name, item->uid);
-                if (item->name == "Multi Damage Amplifier") {
-                    //xlog::warn("found bag item, ensuring it persists");
-                    regs.eip = 0x0045887E;
-                }
-            }
-        }
-    },
-};*/
 
 CallHook<rf::Entity*(int, const char*, int, rf::Vector3*, rf::Matrix3*, int, int)> entity_create_no_collide_hook {
     0x004A41D3,
@@ -3385,7 +3401,6 @@ void server_init()
 
     // Handle dropping amps on death
     entity_maybe_die_patch.install();
-    //item_get_oldest_dynamic_patch.install(); // bagman, not currently used
 
     // Allow players to capture CTF flag even if their own flag is stolen
     allow_red_cap_when_stolen_patch.install();

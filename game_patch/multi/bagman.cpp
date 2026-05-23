@@ -1,0 +1,609 @@
+#include <cstring>
+#include <cmath>
+#include <format>
+#include <xlog/xlog.h>
+#include <patch_common/CodeInjection.h>
+#include <patch_common/MemUtils.h>
+#include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
+#include <common/rfproto.h>
+#include "bagman.h"
+#include "gametype.h"
+#include "multi.h"
+#include "server.h"
+#include "server_internal.h"
+#include "alpine_packets.h"
+#include "../rf/multi.h"
+#include "../rf/item.h"
+#include "../rf/entity.h"
+#include "../rf/object.h"
+#include "../rf/level.h"
+#include "../rf/bmpman.h"
+#include "../rf/file/file.h"
+#include "../rf/gameseq.h"
+#include "../rf/gr/gr_light.h"
+#include "../rf/os/frametime.h"
+#include "../rf/player/player.h"
+#include "../rf/os/timestamp.h"
+#include <patch_common/FunHook.h>
+
+BagmanInfo g_bagman_info;
+constexpr int kPowerupTypeAmp = 1;      // Multi Damage Amplifier
+constexpr int kCarrierAmpDurationMs = 600000;   // refreshed every second, generous safety margin
+constexpr int kCarrierAmpRefreshIntervalMs = 1000;
+constexpr int kScoreTickMs = 1000;
+
+namespace
+{
+
+// Hardcoded per-RFL bag home positions.
+struct BagHomeEntry { const char* rfl; float x, y, z; };
+constexpr BagHomeEntry kBagHomePositions[] = {
+    { "dm12.rfl", 5.0f, 0.0f, 0.0f }, // wip
+    { "dm01.rfl", 14.0f, -2.0f, -10.0f },
+};
+
+std::optional<rf::Vector3> lookup_hardcoded_bag_home(std::string_view filename)
+{
+    for (const BagHomeEntry& e : kBagHomePositions) {
+        if (string_iequals(filename, e.rfl)) {
+            return rf::Vector3{e.x, e.y, e.z};
+        }
+    }
+    return std::nullopt;
+}
+
+// The bag IS a Multi Damage Amplifier item
+int g_bag_aura_bitmap = -1;
+int g_bag_hud_icon_bitmap = -1;
+int g_saved_amp_aura_bitmap = -1;  // -1 = not currently swapped
+bool g_bag_bitmaps_load_attempted = false;
+constexpr const char* kBagMeshFilename = "af_bag.v3m";
+bool g_bag_mesh_exists = false;
+bool g_bag_mesh_checked = false;
+int g_bag_light_handle = -1;
+float g_bag_light_pulse_phase = 0.0f;
+
+void ensure_bag_bitmaps_loaded()
+{
+    if (g_bag_bitmaps_load_attempted) return;
+    g_bag_bitmaps_load_attempted = true;
+    g_bag_aura_bitmap = rf::bm::load("af_pow_bag.vbm", -1, true);
+    g_bag_hud_icon_bitmap = rf::bm::load("af_hud_pow_bag.tga", -1, true);
+}
+
+void ensure_bag_mesh_checked()
+{
+    if (g_bag_mesh_checked) return;
+    g_bag_mesh_checked = true;
+    auto file = std::make_unique<rf::File>();
+    if (file->open(kBagMeshFilename) == 0) {
+        g_bag_mesh_exists = true;
+        file->close();
+    }
+}
+
+void apply_aura_swap_if_available()
+{
+    if (g_bag_aura_bitmap < 0) return;
+    int& engine_amp_aura = addr_as_ref<int>(0x00594584);
+    if (g_saved_amp_aura_bitmap < 0) {
+        g_saved_amp_aura_bitmap = engine_amp_aura;
+    }
+    engine_amp_aura = g_bag_aura_bitmap;
+}
+
+void revert_aura_swap_if_active()
+{
+    if (g_saved_amp_aura_bitmap < 0) return;
+    addr_as_ref<int>(0x00594584) = g_saved_amp_aura_bitmap;
+    g_saved_amp_aura_bitmap = -1;
+}
+
+rf::Entity* alive_entity_for(rf::Player* player)
+{
+    if (!player) return nullptr;
+    if (rf::player_is_dead(player) || rf::player_is_dying(player)) return nullptr;
+    rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+    if (!ep) return nullptr;
+    if (ep->life <= 0.0f) return nullptr;
+    return ep;
+}
+
+rf::Item* item_from_handle_or_null(int handle)
+{
+    if (handle < 0) return nullptr;
+    rf::Object* obj = rf::obj_from_handle(handle);
+    if (!obj || obj->type != rf::OT_ITEM) return nullptr;
+    return static_cast<rf::Item*>(obj);
+}
+
+void announce(std::string_view msg)
+{
+    af_broadcast_automated_chat_msg(msg);
+}
+
+// Create amp (bag) item at an explicit position.
+void spawn_bag_item(const rf::Vector3& pos, rf::Matrix3& orient)
+{
+    if (g_bagman_info.bag_item_type < 0) return;
+
+    rf::Item* item = rf::item_create(
+        g_bagman_info.bag_item_type,
+        "Multi Damage Amplifier",
+        60,
+        -1,
+        &pos,
+        &orient,
+        -1,
+        0,
+        0
+    );
+
+    if (!item) {
+        xlog::error("bagman: item_create failed for bag at ({},{},{})", pos.x, pos.y, pos.z);
+        g_bagman_info.bag_item_handle = -1;
+        return;
+    }
+
+    item->item_flags |= rf::IF_DROPPED;
+    g_bagman_info.bag_item_handle = item->handle;
+    g_bagman_info.bag_pos = pos;
+    // -1 for level_item_index: the bag drop is not a level-placed item.
+    rf::send_item_create_packet(item, 0, -1);
+}
+
+void kill_current_bag_item()
+{
+    rf::Item* item = item_from_handle_or_null(g_bagman_info.bag_item_handle);
+    if (item) {
+        // Broadcast the item-apply packet (entity_handle = 0 to indicate "no
+        // player picked it up — it just goes away") so clients remove the item
+        // visually. obj_flag_dead alone only affects the server.
+        rf::send_item_apply_packet(nullptr, item->handle, 0, -1, -1, -1);
+        rf::obj_flag_dead(item);
+    }
+    g_bagman_info.bag_item_handle = -1;
+}
+
+void resolve_bag_spawn_from_placed_item()
+{
+    if (g_bagman_info.bag_item_type < 0) {
+        xlog::warn("bagman: Multi Damage Amplifier item type not registered; "
+            "cannot resolve bag spawn ({} item types loaded)",
+            static_cast<int>(rf::num_item_types));
+        return;
+    }
+
+    // Priority-ordered list of item classes used as bag spawn positions
+    // when no other location is specified for the map.
+    static const char* const kBagCandidateClasses[] = {
+        "Multi Damage Amplifier",
+        "Multi Invulnerability",
+        "Multi Super Armor",
+        "Multi Super Health",
+    };
+
+    bool position_chosen = false;
+
+    // (Future) "Bag" editor object — not implemented yet.
+
+    // Hardcoded bag positions for specific RFLs.
+    if (auto override_pos = lookup_hardcoded_bag_home(rf::level.filename.c_str())) {
+        g_bagman_info.spawn_pos = *override_pos;
+        g_bagman_info.spawn_orient = rf::identity_matrix;
+        position_chosen = true;
+    }
+
+    // Walk item_list once per candidate class. The first match (in
+    // priority order) becomes the spawn position if no higher-priority
+    // source chose one.
+    for (const char* cls : kBagCandidateClasses) {
+        int type_idx = rf::item_lookup_type(cls);
+        if (type_idx < 0) continue;
+        rf::Item* it = rf::item_list.next;
+        while (it && it != &rf::item_list) {
+            rf::Item* next = it->next;
+            if (it->info_index == type_idx) {
+                if (!position_chosen) {
+                    g_bagman_info.spawn_pos = it->pos;
+                    g_bagman_info.spawn_orient = it->orient;
+                    position_chosen = true;
+                }
+                rf::obj_flag_dead(it);
+            }
+            it = next;
+        }
+    }
+
+    // Last resort: the level's player start position.
+    if (!position_chosen) {
+        g_bagman_info.spawn_pos = rf::level.player_start_pos;
+        g_bagman_info.spawn_orient = rf::level.player_start_orient;
+        xlog::warn("bagman: no suitable item found in level; bag spawned at player start position");
+    }
+
+    g_bagman_info.bag_pos = g_bagman_info.spawn_pos;
+    g_bagman_info.spawn_known = true;
+
+    spawn_bag_item(g_bagman_info.spawn_pos, g_bagman_info.spawn_orient);
+}
+
+} // namespace
+
+void bagman_force_state_sync_to(rf::Player* player)
+{
+    if (!gt_is_bagman_any()) return;
+    af_send_bagman_state_packet(player);
+}
+
+void bagman_broadcast_state()
+{
+    if (!gt_is_bagman_any() || !rf::is_server) return;
+    af_send_bagman_state_packet_to_all();
+}
+
+int bagman_get_red_team_score() 
+{
+    return g_bagman_info.red_team_score;
+}
+
+int bagman_get_blue_team_score()
+{
+    return g_bagman_info.blue_team_score;
+}
+
+void bagman_set_red_team_score(int v)
+{
+    g_bagman_info.red_team_score = v;
+}
+
+void bagman_set_blue_team_score(int v)
+{
+    g_bagman_info.blue_team_score = v;
+}
+
+void bagman_level_init()
+{
+    g_bagman_info = BagmanInfo{};
+
+    // Always restore engine state before deciding what to do this level.
+    revert_aura_swap_if_active();
+
+    g_bagman_info.active = gt_is_bagman_any();
+    if (!g_bagman_info.active) return;
+
+    // Apply visual swaps on clients.
+    if (!rf::is_dedicated_server) {
+        ensure_bag_bitmaps_loaded();
+        apply_aura_swap_if_available();
+    }
+
+    // Resolve item type index on both client and server so the item_create
+    // mesh swap hook can identify bag instances on either side.
+    g_bagman_info.bag_item_type = rf::item_lookup_type("Multi Damage Amplifier");
+
+    // Cache whether the bag mesh asset is present.
+    ensure_bag_mesh_checked();
+
+    g_bagman_info.state = BagState::BS_At_Spawn;
+    g_bagman_info.score_tick.set(kScoreTickMs);
+    g_bagman_info.carrier_amp_refresh.invalidate();
+}
+
+void bagman_level_init_post()
+{
+    if (!g_bagman_info.active) return;
+    if (!rf::is_server) return;
+
+    resolve_bag_spawn_from_placed_item();
+    if (g_bagman_info.spawn_known) {
+        // The placed item IS the bag — no need to respawn.
+        bagman_broadcast_state();
+    }
+}
+
+static rf::Player* find_player_with_bag_powerup()
+{
+    for (rf::Player& pl : SinglyLinkedList{rf::player_list}) {
+        if (rf::player_is_dead(&pl) || rf::player_is_dying(&pl)) continue;
+        if (rf::multi_powerup_has_player(&pl, kPowerupTypeAmp)) {
+            return &pl;
+        }
+    }
+    return nullptr;
+}
+
+static void on_pickup(rf::Player* player)
+{
+    rf::Entity* ep = alive_entity_for(player);
+
+    g_bagman_info.carrier = player;
+    g_bagman_info.state = BagState::BS_Carried;
+    g_bagman_info.bag_item_handle = -1; // engine consumed the item
+    if (ep) g_bagman_info.bag_pos = ep->pos;
+    g_bagman_info.score_tick.set(kScoreTickMs);
+    g_bagman_info.carrier_amp_refresh.set(kCarrierAmpRefreshIntervalMs);
+    g_bagman_info.return_timer.invalidate();
+
+    // Extend the amp duration so the carrier visibly holds the bag indefinitely
+    rf::multi_powerup_add(player, kPowerupTypeAmp, kCarrierAmpDurationMs);
+
+    announce(std::format("{} has the bag!", player->name.c_str()));
+    bagman_broadcast_state();
+}
+
+// Drop the bag at an explicit position
+static void drop_bag_at_position(rf::Player* prev_carrier, const rf::Vector3& drop_pos)
+{
+    g_bagman_info.carrier = nullptr;
+    g_bagman_info.state = BagState::BS_Dropped;
+    g_bagman_info.bag_pos = drop_pos;
+    g_bagman_info.return_timer.set(g_alpine_server_config_active_rules.bagman.bag_return_time_ms);
+
+    if (prev_carrier) {
+        rf::multi_powerup_remove(prev_carrier, kPowerupTypeAmp);
+    }
+
+    spawn_bag_item(drop_pos, g_bagman_info.spawn_orient);
+
+    if (prev_carrier) {
+        announce(std::format("{} dropped the bag!", prev_carrier->name.c_str()));
+    } else {
+        announce("The bag has been dropped!");
+    }
+
+    bagman_broadcast_state();
+}
+
+// Drop the bag from the carrier's entity using the same engine path that the
+// stock drop_amps option uses on death.
+static void drop_bag_from_entity(rf::Player* prev_carrier, rf::Entity* ep)
+{
+    if (prev_carrier) {
+        // Remove the amp immediately on death so the previous bagman's HUD
+        // indicator isn't wrong.
+        rf::multi_powerup_remove(prev_carrier, kPowerupTypeAmp);
+        if (ep) {
+            ep->entity_flags2 &= ~rf::EF2_POWERUP_DAMAGE_AMP;
+        }
+    }
+
+    g_bagman_info.carrier = nullptr;
+    g_bagman_info.state = BagState::BS_Dropped;
+    g_bagman_info.return_timer.set(g_alpine_server_config_active_rules.bagman.bag_return_time_ms);
+
+    rf::Vector3 drop_pos = ep ? ep->pos : g_bagman_info.bag_pos;
+    rf::Matrix3 drop_orient = ep ? ep->orient : g_bagman_info.spawn_orient;
+    spawn_bag_item(drop_pos, drop_orient);
+
+    if (prev_carrier) {
+        announce(std::format("{} dropped the bag!", prev_carrier->name.c_str()));
+    } else {
+        announce("The bag has been dropped!");
+    }
+
+    bagman_broadcast_state();
+}
+
+static void on_return()
+{
+    g_bagman_info.state = BagState::BS_At_Spawn;
+    g_bagman_info.return_timer.invalidate();
+
+    // Replace the dropped item with one at the home position
+    kill_current_bag_item();
+    spawn_bag_item(g_bagman_info.spawn_pos, g_bagman_info.spawn_orient);
+
+    announce("The bag has returned.");
+    bagman_broadcast_state();
+}
+
+void bagman_do_frame()
+{
+    if (!rf::is_server) return;
+    if (!gt_is_bagman_any()) {
+        if (g_bagman_info.active) {
+            g_bagman_info = BagmanInfo{};
+        }
+        return;
+    }
+    if (!g_bagman_info.spawn_known) return;
+
+    if (g_bagman_info.carrier) {
+        rf::Entity* raw_ep = rf::entity_from_handle(g_bagman_info.carrier->entity_handle);
+        rf::Entity* ep = alive_entity_for(g_bagman_info.carrier);
+        const bool still_has_amp = ep && rf::multi_powerup_has_player(g_bagman_info.carrier, kPowerupTypeAmp);
+
+        if (!still_has_amp) {
+            // Carrier died, lost the powerup, or disconnected — drop from their
+            // entity using the engine's mechanism.
+            drop_bag_from_entity(g_bagman_info.carrier, raw_ep);
+        } else {
+            g_bagman_info.bag_pos = ep->pos;
+
+            // Refresh amp so it never times out while alive and carrying
+            if (g_bagman_info.carrier_amp_refresh.elapsed()) {
+                rf::multi_powerup_add(g_bagman_info.carrier, kPowerupTypeAmp, kCarrierAmpDurationMs);
+                g_bagman_info.carrier_amp_refresh.set(kCarrierAmpRefreshIntervalMs);
+            }
+
+            // Score tick during active gameplay
+            if (rf::gameseq_get_state() == rf::GameState::GS_GAMEPLAY
+                && g_bagman_info.score_tick.elapsed()) {
+                rf::player_add_score(g_bagman_info.carrier, 1);
+                if (gt_is_tbm()) {
+                    if (g_bagman_info.carrier->team == 0) {
+                        g_bagman_info.red_team_score++;
+                    } else {
+                        g_bagman_info.blue_team_score++;
+                    }
+                }
+                g_bagman_info.score_tick.set(kScoreTickMs);
+
+                // Broadcast immediately so clients see the score increment
+                bagman_broadcast_state();
+            }
+        }
+    } else {
+        // No carrier. The engine handles physical pickup; we detect it
+        // by checking who now holds the amp powerup.
+        rf::Player* pickup_player = find_player_with_bag_powerup();
+        if (pickup_player) {
+            on_pickup(pickup_player);
+        } else if (g_bagman_info.state == BagState::BS_Dropped &&
+                   g_bagman_info.return_timer.valid() &&
+                   g_bagman_info.return_timer.elapsed()) {
+            on_return();
+        }
+    }
+}
+
+void bagman_on_player_disconnect(rf::Player* player)
+{
+    if (!rf::is_server || !gt_is_bagman_any()) return;
+    if (g_bagman_info.carrier == player) {
+        rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+        if (ep) {
+            drop_bag_from_entity(player, ep);
+        } else {
+            drop_bag_at_position(player, g_bagman_info.bag_pos);
+        }
+    }
+}
+
+void bagman_on_entity_will_die(rf::Entity* ep)
+{
+    if (!rf::is_server || !gt_is_bagman_any() || !ep) return;
+    rf::Player* player = rf::player_from_entity_handle(ep->handle);
+    if (!player || player != g_bagman_info.carrier) return;
+
+    drop_bag_from_entity(player, ep);
+}
+
+bool bagman_local_player_is_carrier()
+{
+    return gt_is_bagman_any() && g_bagman_info.carrier != nullptr
+        && rf::local_player == g_bagman_info.carrier;
+}
+
+int bagman_get_hud_icon_bitmap_handle()
+{
+    return g_bag_hud_icon_bitmap;
+}
+
+void bagman_update_dynamic_light()
+{
+    if (g_bag_light_handle >= 0) {
+        rf::gr::light_delete(g_bag_light_handle, 0);
+        g_bag_light_handle = -1;
+    }
+
+    if (!gt_is_bagman_any()) return;
+    if (g_bagman_info.state == BagState::BS_Carried) return;
+
+    // Match stock game dynamic light pulse for amps/flags.
+    const float pulse_period   = addr_as_ref<float>(0x005947A0);
+    const float sine_amplitude = addr_as_ref<float>(0x005947A4);
+    const float sine_base      = addr_as_ref<float>(0x00594798);
+    const float radius         = addr_as_ref<float>(0x0059479C);
+    if (pulse_period <= 0.0f) return;
+
+    g_bag_light_pulse_phase = std::fmod(g_bag_light_pulse_phase + rf::frametime, pulse_period);
+
+    constexpr float kTwoPi = 6.28318530718f;
+    const float intensity = sine_base + sine_amplitude * std::sin(kTwoPi * g_bag_light_pulse_phase / pulse_period);
+
+    rf::Vector3 pos = g_bagman_info.bag_pos;
+    g_bag_light_handle = rf::gr::light_create_point(
+        &pos,
+        radius,
+        intensity,
+        0.0f, 1.0f, 0.0f,
+        true,
+        rf::gr::LightShadowcastCondition::SHADOWCAST_EDITOR,
+        0);
+}
+
+CodeInjection bagman_carrier_no_amp_damage_patch1{
+    0x004C60CE,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            regs.eip = 0x004C60DC;
+        }
+    },
+};
+
+CodeInjection bagman_carrier_no_amp_damage_patch2{
+    0x00489246,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            regs.eip = 0x00489283;
+        }
+    },
+};
+
+CodeInjection bagman_carrier_no_amp_damage_patch3{
+    0x0046F485,
+    [](auto& regs) {
+        if (gt_is_bagman_any()) {
+            regs.eip = 0x0046F493;
+        }
+    },
+};
+
+FunHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*, int, bool, bool)>
+    item_create_bagman_bag_mesh_swap_hook{
+    0x00459100,
+    [](int type, const char* name, int count, int parent_handle,
+       const rf::Vector3* pos, rf::Matrix3* orient, int respawn_time,
+       bool permanent, bool from_packet) -> rf::Item* {
+        rf::Item* item = item_create_bagman_bag_mesh_swap_hook.call_target(
+            type, name, count, parent_handle, pos, orient,
+            respawn_time, permanent, from_packet);
+
+        if (item && g_bag_mesh_exists && gt_is_bagman_any()
+            && type == g_bagman_info.bag_item_type) {
+            rf::item_restore_mesh(item, kBagMeshFilename);
+        }
+        return item;
+    },
+};
+
+CodeInjection bagman_carrier_amp_light_color_patch{
+    0x0041EC7C,
+    [](auto& regs) {
+        // Only change the color in bagman.
+        if (!gt_is_bagman_any()) return;
+
+        // Suppress dynamic light for dying players since amp (bag) item already emits a glow.
+        // Without this, the glow would double up until the player fully dies.
+        rf::Entity* ep = regs.esi;
+        if (ep && rf::entity_is_dying(ep)) {
+            regs.eax = static_cast<uint32_t>(-1);
+            regs.eip = 0x0041EE21;
+            return;
+        }
+
+        // Set light to green. Pulses from stock game code.
+        const uint32_t esp = regs.esp;
+        addr_as_ref<uint32_t>(esp + 12) = 0x00000000; // R = 0.0
+        addr_as_ref<uint32_t>(esp + 16) = 0x3F800000; // G = 1.0
+        addr_as_ref<uint32_t>(esp + 20) = 0x00000000; // B = 0.0
+    },
+};
+
+void bagman_do_patch()
+{
+    // Remove 4x damage bonus for amp (bag) holder
+    bagman_carrier_no_amp_damage_patch1.install();
+    bagman_carrier_no_amp_damage_patch2.install();
+    bagman_carrier_no_amp_damage_patch3.install();
+
+    // Bagman's dynamic light is green instead of purple
+    bagman_carrier_amp_light_color_patch.install();
+
+    // Amp (bag) pickup uses a new mesh in bagman mode
+    item_create_bagman_bag_mesh_swap_hook.install();
+}
+

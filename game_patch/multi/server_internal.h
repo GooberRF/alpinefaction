@@ -195,8 +195,30 @@ struct GunGameConfig
 
 struct BagmanConfig
 {
-    bool enabled = false;
-    float bag_return_time = 25000.0f;
+    std::string bag_item = "Multi Damage Amplifier";
+    int bag_return_time_ms = 25000;
+    int bm_score_limit = 150;
+    int tbm_score_limit = 400;
+
+    void set_bag_item(std::string_view in_item)
+    {
+        bag_item = std::string(in_item);
+    }
+
+    void set_bag_return_time(float in_seconds)
+    {
+        bag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 600000);
+    }
+
+    void set_bm_score_limit(int count)
+    {
+        bm_score_limit = std::clamp(count, 1, 65535);
+    }
+
+    void set_tbm_score_limit(int count)
+    {
+        tbm_score_limit = std::clamp(count, 1, 65535);
+    }
 };
 
 struct DamageNotificationConfig
@@ -607,6 +629,7 @@ struct AlpineServerConfigRules
     bool force_rail_reload = true;
     KillRewardConfig kill_rewards;
     WeaponStayExemptionConfig weapon_stay_exemptions;
+    BagmanConfig bagman;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;

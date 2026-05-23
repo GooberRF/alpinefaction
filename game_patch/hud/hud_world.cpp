@@ -3,6 +3,7 @@
 #include <patch_common/MemUtils.h>
 #include <patch_common/AsmWriter.h>
 #include <algorithm>
+#include <format>
 #include <unordered_set>
 #include "hud_internal.h"
 #include "hud_world.h"
@@ -11,6 +12,7 @@
 #include "../object/event_alpine.h"
 #include "../multi/server.h"
 #include "../multi/gametype.h"
+#include "../multi/bagman.h"
 #include "../misc/alpine_settings.h"
 #include "../sound/sound.h"
 #include "../rf/hud.h"
@@ -26,6 +28,7 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/localize.h"
 #include "../os/console.h"
+#include <cmath>
 
 WorldHUDAssets g_world_hud_assets;
 static KothHudTuning g_koth_hud_tuning{};
@@ -62,6 +65,8 @@ void load_world_hud_assets() {
     g_world_hud_assets.koth_fill_red = rf::bm::load("af_wh_koth_fill_red.tga", -1, true);
     g_world_hud_assets.koth_fill_blue = rf::bm::load("af_wh_koth_fill_blue.tga", -1, true);
     g_world_hud_assets.koth_ring_fade = rf::bm::load("af_wh_koth_ring_fade.tga", -1, true);
+    g_world_hud_assets.bag_player_icon = rf::bm::load("af_wh_bag_hold.tga", -1, true);
+    g_world_hud_assets.bag_pickup_icon = rf::bm::load("af_wh_bag_take.tga", -1, true);
 }
 
 static rf::gr::Mode bitmap_mode_from(WorldHUDRenderMode render_mode)
@@ -710,6 +715,46 @@ void build_ephemeral_world_hud_strings() {
     }
 }
 
+void build_bag_icon()
+{
+    bagman_update_dynamic_light();
+    if (g_bagman_info.state == BagState::BS_Carried) {
+        if (!g_bagman_info.carrier) return;
+        if (g_bagman_info.carrier == rf::local_player) return;
+        rf::Entity* carrier_ep = rf::entity_from_handle(g_bagman_info.carrier->entity_handle);
+        if (!carrier_ep) return;
+
+        rf::Vector3 pos = carrier_ep->pos;
+        pos.y += WorldHUDRender::bag_player_icon_offset;
+
+        const int bitmap_handle = g_world_hud_assets.bag_player_icon;
+        do_render_world_hud_sprite(pos, 0.6f, bitmap_handle, WorldHUDRenderMode::overdraw, true, true, true);
+        return;
+    }
+
+    // Bag is at home or dropped
+    rf::Vector3 vec = g_bagman_info.bag_pos;
+
+    const int bitmap_handle = g_world_hud_assets.bag_pickup_icon;
+    do_render_world_hud_sprite(vec, 0.6f, bitmap_handle, WorldHUDRenderMode::overdraw, true, true, true);
+
+    if (g_bagman_info.state == BagState::BS_Dropped && g_bagman_info.return_timer.valid()) {
+        const int time_left_ms = std::max(0, g_bagman_info.return_timer.time_until());
+        const float seconds = time_left_ms / 1000.0f;
+        const std::string label = std::format("{:.1f}", seconds);
+
+        const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+        const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
+        const int half_text_width = text_width / 2;
+
+        // Place the countdown above the icon
+        rf::Vector3 text_pos = vec;
+        text_pos.y += WorldHUDRender::bag_countdown_offset;
+
+        render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, 255, 220, 64, 255);
+    }
+}
+
 static inline void make_onb_edge_with_up(const rf::Vector3& dir_norm, const rf::Vector3& up_exact, rf::Matrix3& M)
 {
     rf::Vector3 r = dir_norm;
@@ -1060,6 +1105,9 @@ static void build_koth_hill_outlines()
 void hud_world_do_frame() {
     if (rf::is_multi && g_alpine_game_config.world_hud_ctf_icons && rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_CTF) {
         build_ctf_flag_icons();
+    }
+    if (rf::is_multi && gt_is_bagman_any()) {
+        build_bag_icon();
     }
     if (rf::is_multi && multi_is_game_type_with_hills()) {
         build_koth_hill_icons();

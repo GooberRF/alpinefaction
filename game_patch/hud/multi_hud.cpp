@@ -13,6 +13,7 @@
 #include <xlog/xlog.h>
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
+#include "../multi/bagman.h"
 #include "../input/input.h"
 #include "../rf/input.h"
 #include "../rf/hud.h"
@@ -811,6 +812,7 @@ void multi_hud_render_team_scores()
     const bool is_esc = game_type == rf::NG_TYPE_ESC;
     const bool is_rev = game_type == rf::NG_TYPE_REV;
     const bool is_run = game_type == rf::NG_TYPE_RUN;
+    const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_BM;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
@@ -824,6 +826,9 @@ void multi_hud_render_team_scores()
         box_h = g_big_team_scores_hud ? 60  : 40;
     } else if (is_rev || is_esc) {
         box_w = g_big_team_scores_hud ? 240 : 185;
+    } else if (is_ffa_with_list) {
+        box_w = g_big_team_scores_hud ? 280 : 240;
+        box_h = g_big_team_scores_hud ? 90 : 65;
     } else {
         const int ctf_box_w = rf::gr::clip_width() <= 1280 ? 350 : 370;
         box_w = g_big_team_scores_hud ? ctf_box_w : 185;
@@ -942,6 +947,11 @@ void multi_hud_render_team_scores()
             red_score = multi_koth_get_red_team_score();
             blue_score = multi_koth_get_blue_team_score();
         }
+        else if (game_type == rf::NG_TYPE_TBM) {
+            rf::gr::set_color(53, 207, 22, 255);
+            red_score = bagman_get_red_team_score();
+            blue_score = bagman_get_blue_team_score();
+        }
     }
 
     auto red_score_str = std::to_string(red_score);
@@ -955,6 +965,49 @@ void multi_hud_render_team_scores()
     }
     else if (is_run) {
         hud_render_run_timer_widget(box_x, box_y, box_w, box_h, font_id);
+    }
+    else if (is_ffa_with_list) {
+        // Collect non-browser players, sort by score desc, render top 3
+        std::vector<rf::Player*> entries;
+        entries.reserve(32);
+        for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (!p.stats) continue;
+            if (p.is_browser) continue;
+            entries.push_back(&p);
+        }
+        std::ranges::sort(entries, [](rf::Player* a, rf::Player* b) {
+            return a->stats->score > b->stats->score;
+        });
+
+        const int row_h = g_big_team_scores_hud ? 24 : 18;
+        const int name_x = box_x + 8;
+        const int max_name_w = box_w - 50; // leave room for the right-aligned score
+        int row_y = box_y + 4;
+
+        const int max_rows = 3;
+        int rendered = 0;
+        for (rf::Player* p : entries) {
+            if (rendered >= max_rows) break;
+
+            if (p == rf::local_player) {
+                rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
+            } else {
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+            }
+
+            // Name (trimmed to fit)
+            const char* raw_name = p->name.c_str();
+            std::string fitting_name = hud_fit_string(raw_name, max_name_w, nullptr, font_id);
+            rf::gr::string(name_x, row_y + 4, fitting_name.c_str(), font_id);
+
+            // Score (right-aligned)
+            std::string score_str = std::to_string(p->stats->score);
+            auto [sw, sh] = rf::gr::get_string_size(score_str, font_id);
+            rf::gr::string(box_x + box_w - 5 - sw, row_y + 4, score_str.c_str(), font_id);
+
+            row_y += row_h;
+            rendered++;
+        }
     }
     else if (!is_rev && !is_esc) {
         auto [str_w, str_h] = rf::gr::get_string_size(red_score_str, font_id);
@@ -972,7 +1025,9 @@ void multi_hud_render_team_scores()
 CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     0x00476DEB,
     [](auto& regs) {
-        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc()) {
+        const auto game_type = rf::multi_get_game_type();
+        const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_BM;
+        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbm() || is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
     }
@@ -985,6 +1040,16 @@ CallHook<void(int, int, int, rf::gr::Mode)> multi_powerup_render_gr_bitmap_hook{
         0x0047FFFD,
     },
     [](int bm_handle, int x, int y, rf::gr::Mode mode) {
+        if (bagman_local_player_is_carrier()) {
+            const int amp_hud_handle = addr_as_ref<int>(0x006FC440);
+            if (bm_handle == amp_hud_handle) {
+                const int bag_handle = bagman_get_hud_icon_bitmap_handle();
+                if (bag_handle >= 0) {
+                    bm_handle = bag_handle;
+                }
+            }
+        }
+
         float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
         x = hud_transform_value(x, 640, rf::gr::clip_width());
         x = hud_scale_value(x, rf::gr::clip_width(), scale);

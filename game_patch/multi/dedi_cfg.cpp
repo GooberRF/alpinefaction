@@ -450,6 +450,37 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_BM:
+        case rf::NetGameType::NG_TYPE_TBM: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            rules.location_pinging = (game_type == rf::NetGameType::NG_TYPE_TBM);
+
+            // secondary weapon
+            rules.spawn_loadout.add("Remote Charge", 3, false, true);
+
+            // primary weapon
+            rules.spawn_loadout.remove("12mm handgun", false);
+            rules.default_player_weapon.set_weapon("Machine Pistol");
+
+            rules.spawn_loadout.loadouts_active = true;
+
+            // Note: drop_amps is force-suppressed at the consumption site in
+            // entity_maybe_die_patch (server.cpp) when bagman is active —
+            // not changed here. That way the admin's drop_amps config
+            // setting remains intact for non-bagman gametypes loaded after.
+
+            // Note: bag-spawn-candidate items (Multi Damage Amplifier and the
+            // fallback super-pickups) are NOT disabled here via
+            // item_replacements. They must remain loadable so the bag
+            // resolver in bagman_level_init_post can read their positions
+            // from the RFL. The resolver then kills all instances of the
+            // candidate classes and spawns a fresh non-respawning bag at the
+            // chosen position — so they never appear as level pickups
+            // either way.
+            break;
+        }
+
         default: {
             rules.spawn_delay.enabled = false;
 
@@ -503,6 +534,21 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.set_koth_score_limit(*v);
     if (auto v = t["dc_score_limit"].value<int>())
         o.set_dc_score_limit(*v);
+    if (auto v = t["bm_score_limit"].value<int>())
+        o.bagman.set_bm_score_limit(*v);
+    if (auto v = t["tbm_score_limit"].value<int>())
+        o.bagman.set_tbm_score_limit(*v);
+
+    if (auto sub = t["bagman"].as_table()) {
+        if (auto v = (*sub)["bag_item"].value<std::string>())
+            o.bagman.set_bag_item(*v);
+        if (auto v = (*sub)["bag_return_time"].value<float>())
+            o.bagman.set_bag_return_time(*v);
+        if (auto v = (*sub)["bm_score_limit"].value<int>())
+            o.bagman.set_bm_score_limit(*v);
+        if (auto v = (*sub)["tbm_score_limit"].value<int>())
+            o.bagman.set_tbm_score_limit(*v);
+    }
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())

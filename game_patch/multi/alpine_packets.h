@@ -37,6 +37,7 @@ enum class af_packet_type : uint8_t
     af_server_msg = 0x5D,               // Alpine 1.2
     af_server_req = 0x5E,               // Alpine 1.2.1
     af_server_bot_control = 0x5F,       // Alpine 1.3
+    af_bagman_state = 0x60,             // Alpine 1.4
 };
 
 struct af_ping_location_req_packet
@@ -188,6 +189,20 @@ struct af_koth_hill_state_packet
     uint8_t num_blue_players;
     uint16_t red_score;
     uint16_t blue_score;
+};
+
+struct af_bagman_state_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t carrier_player_id;
+    uint8_t state;
+    float bag_x;
+    float bag_y;
+    float bag_z;
+    uint16_t return_time_left_ms;
+    uint16_t red_team_score;
+    uint16_t blue_team_score;
+    int16_t  carrier_score;
 };
 
 struct af_koth_hill_captured_packet
@@ -384,6 +399,9 @@ static void af_process_just_spawned_info_packet(const void* data, size_t len, co
 void af_send_koth_hill_state_packet(rf::Player* player, const HillInfo& h, const Presence& pres); // sent to new joiners
 void af_send_koth_hill_state_packet_to_all(const HillInfo& h, const Presence& pres);
 static void af_process_koth_hill_state_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_bagman_state_packet(rf::Player* player);
+void af_send_bagman_state_packet_to_all();
+void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_koth_hill_captured_packet_to_all(uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids);
 static void af_process_koth_hill_captured_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, bool force_respawn, uint16_t spawn_delay);

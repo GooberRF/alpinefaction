@@ -144,6 +144,8 @@ set(SRCS
     multi/multi.cpp
     multi/gametype.h
     multi/gametype.cpp
+    multi/bagman.h
+    multi/bagman.cpp
     multi/kill.cpp
     multi/network.cpp
     multi/network.h

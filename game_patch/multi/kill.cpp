@@ -528,17 +528,22 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     if (killer_player) {
         auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
+        const bool score_from_kills = !gt_is_bagman_any();
         if (killer_player != killed_player) {
-            rf::player_add_score(killer_player, 1);
+            if (score_from_kills) {
+                rf::player_add_score(killer_player, 1);
+            }
             killer_stats->inc_kills();
         }
         else {
-            rf::player_add_score(killer_player, -1);
+            if (score_from_kills) {
+                rf::player_add_score(killer_player, -1);
 
-            // decrement TDM team score on self kill in match mode servers
-            if (g_alpine_server_config.vote_match.enabled
-                && rf::multi_get_game_type() == rf::NG_TYPE_TEAMDM) {
-                multi_tdm_add_team_score(killer_player, -1);
+                // decrement TDM team score on self kill in match mode servers
+                if (g_alpine_server_config.vote_match.enabled
+                    && rf::multi_get_game_type() == rf::NG_TYPE_TEAMDM) {
+                    multi_tdm_add_team_score(killer_player, -1);
+                }
             }
         }
 
