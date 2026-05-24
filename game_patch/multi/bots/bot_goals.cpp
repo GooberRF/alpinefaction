@@ -1951,17 +1951,18 @@ void bot_refresh_goal_state(
                 380.0f - camp_maintenance_penalty,
             });
         } else if (bagman_state.in_world) {
-            // The bag is on the ground (home or dropped).
+            // The bag is on the ground (home or dropped). This is THE most
+            // immediate objective.
             const float dist = std::sqrt(std::max(
                 rf::vec_dist_squared(&local_entity.pos, &bagman_state.bag_pos), 0.0f));
-            const float proximity_bonus = std::clamp(210.0f - dist * 1.15f, -45.0f, 210.0f);
+            const float proximity_bonus = std::clamp(230.0f - dist * 1.10f, -40.0f, 230.0f);
             consider_bagman_candidate(BagmanGoalCandidate{
                 BotGoalType::bag_pickup,
                 -1,
                 -1,
                 bagman_state.bag_waypoint,
                 bagman_state.bag_pos,
-                430.0f + proximity_bonus,
+                510.0f + proximity_bonus,
             });
         } else if (bagman_state.enemy_carry && bagman_state.carrier_entity) {
             // Chase the enemy carrier.
@@ -1984,6 +1985,19 @@ void bot_refresh_goal_state(
             });
         }
         // ally_carry case (TBM teammate): no dedicated goal necessary.
+    }
+
+    // Deprioritize fights between non-carriers.
+    if (bagman_mode && !bagman_state.we_carry && enemy_target
+        && std::isfinite(enemy_goal_score)) {
+        const bool enemy_is_carrier =
+            bagman_state.carrier_entity
+            && enemy_target->handle == bagman_state.carrier_entity->handle;
+        if (!enemy_is_carrier) {
+            // Heavier reduction when the bag is on the ground.
+            const float reduction = bagman_state.in_world ? 260.0f : 170.0f;
+            enemy_goal_score -= reduction;
+        }
     }
 
     ControlPointGoalCandidate control_point_goal{};

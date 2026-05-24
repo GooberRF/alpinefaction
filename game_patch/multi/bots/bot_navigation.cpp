@@ -2116,13 +2116,11 @@ bool update_bagman_objective_goal(
                 && g_bagman_info.state != BagState::BS_Dropped) {
                 return bot_goal_runtime_abort_bagman_goal();
             }
+            target_pos = g_bagman_info.bag_pos;
             int bag_wp = 0;
             rf::Vector3 bag_wp_pos{};
             if (waypoints_find_bag_waypoint(bag_wp, bag_wp_pos)) {
-                target_pos = bag_wp_pos;
                 g_client_bot_state.goal_target_waypoint = bag_wp;
-            } else {
-                target_pos = g_bagman_info.bag_pos;
             }
             has_target = true;
             break;
@@ -2180,6 +2178,30 @@ bool update_bagman_objective_goal(
             && waypoints_get_pos(snap_waypoint, waypoint_pos)) {
             g_client_bot_state.goal_target_waypoint = snap_waypoint;
             waypoint_valid = true;
+        }
+    }
+    if (g_client_bot_state.active_goal == BotGoalType::bag_pickup) {
+        const float goal_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
+        const bool direct_approach_allowed = bot_has_unobstructed_level_los(
+            local_entity.eye_pos, target_pos, nullptr, nullptr);
+        if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius
+            && direct_approach_allowed) {
+            bot_internal_clear_waypoint_route();
+            move_target = target_pos;
+            has_move_target = true;
+            return true;
+        }
+        if (waypoint_valid) {
+            constexpr float kBagFinalApproachWaypointProximity = kWaypointReachRadius * 1.2f;
+            const float dist_to_anchor_sq = rf::vec_dist_squared(&local_entity.pos, &waypoint_pos);
+            if (dist_to_anchor_sq
+                    <= kBagFinalApproachWaypointProximity * kBagFinalApproachWaypointProximity
+                && direct_approach_allowed) {
+                bot_internal_clear_waypoint_route();
+                move_target = target_pos;
+                has_move_target = true;
+                return true;
+            }
         }
     }
 
