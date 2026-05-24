@@ -1218,6 +1218,15 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         bool is_pvp_damage = damaged_player && killer_player && damaged_player != killer_player;
         if (rf::is_server && is_pvp_damage) {
             damage *= g_alpine_server_config_active_rules.pvp_damage_modifier;
+
+            // Bagman/Team Bagman: 25% damage reduction on PvP exchanges where
+            // neither side is the bag carrier.
+            if (gt_is_bagman_any()
+                && g_bagman_info.carrier != damaged_player
+                && g_bagman_info.carrier != killer_player) {
+                damage *= 0.75f;
+            }
+
             if (damage == 0.0f) {
                 return 0.0f;
             }

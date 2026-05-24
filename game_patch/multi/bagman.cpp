@@ -9,6 +9,7 @@
 #include <common/rfproto.h>
 #include "bagman.h"
 #include "gametype.h"
+#include "kill.h"
 #include "multi.h"
 #include "server.h"
 #include "server_internal.h"
@@ -35,6 +36,8 @@ constexpr int kCarrierAmpDurationMs = 600000; // refreshed every second, generou
 constexpr int kCarrierAmpRefreshIntervalMs = 1000;
 constexpr int kScoreTickMs = 1000;
 constexpr int kBagPickupUnlockDelayMs = 500; // Delay after a bag is dropped before it can be picked up
+constexpr float kCarrierTickEffectiveHealth = 10.0f;
+constexpr float kCarrierKillEffectiveHealth = 50.0f;
 
 namespace
 {
@@ -124,6 +127,17 @@ rf::Item* item_from_handle_or_null(int handle)
 void announce(std::string_view msg)
 {
     af_broadcast_automated_chat_msg(msg);
+}
+
+void apply_effective_health_reward(rf::Player* player, float amount)
+{
+    if (!player || amount <= 0.0f) return;
+    rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+    if (!ep || ep->life <= 0.0f) return;
+
+    const float max_life_cap = std::max(ep->life, ep->info->max_life);
+    const float max_armor_cap = std::max(ep->armor, ep->info->max_armor);
+    distribute_effective_health(ep, amount, max_life_cap, max_armor_cap);
 }
 
 // Create amp (bag) item at an explicit position.
@@ -468,6 +482,7 @@ void bagman_do_frame()
                         g_bagman_info.blue_team_score++;
                     }
                 }
+                apply_effective_health_reward(g_bagman_info.carrier, kCarrierTickEffectiveHealth);
                 g_bagman_info.score_tick.set(kScoreTickMs);
 
                 // Broadcast immediately so clients see the score increment
@@ -528,6 +543,10 @@ void bagman_on_entity_will_die(rf::Entity* ep)
     if (!rf::is_server || !gt_is_bagman_any() || !ep) return;
     rf::Player* player = rf::player_from_entity_handle(ep->handle);
     if (!player || player != g_bagman_info.carrier) return;
+    rf::Player* killer = rf::player_from_entity_handle(ep->killer_handle);
+    if (killer && killer != player) {
+        apply_effective_health_reward(killer, kCarrierKillEffectiveHealth);
+    }
 
     drop_bag_from_entity(player, ep);
 }
