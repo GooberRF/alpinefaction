@@ -483,8 +483,7 @@ void distribute_effective_health(rf::Entity* ep, float amount, float max_life_ca
     if (!ep || amount <= 0.0f) return;
 
     const float life_to_add = std::min(amount, std::max(0.0f, max_life_cap - ep->life));
-    const float armor_to_add = std::min((amount - life_to_add) / 2.0f,
-                                         std::max(0.0f, max_armor_cap - ep->armor));
+    const float armor_to_add = std::min((amount - life_to_add) / 2.0f, std::max(0.0f, max_armor_cap - ep->armor));
 
     ep->life += life_to_add;
     ep->armor += armor_to_add;

@@ -246,6 +246,9 @@ add_packfile(alpinefaction.vpp
     images/mtl_archway04-mip1.tga
     images/pls_airlockmat01-mip2.tga
     images/consolebutton2A.tga
+    images/af_powerup-bag.vbm
+    images/af_wh_bag_hold.tga
+    images/af_wh_bag_take.tga
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
