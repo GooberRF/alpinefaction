@@ -11,6 +11,7 @@
 #include "bot_state.h"
 #include "bot_utils.h"
 #include "bot_waypoint_route.h"
+#include "../bagman.h"
 #include "../gametype.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
@@ -2095,6 +2096,142 @@ bool update_ctf_objective_goal(
     return true;
 }
 
+// Drive bot movement for bagman goals.
+bool update_bagman_objective_goal(
+    const rf::Entity& local_entity,
+    rf::Vector3& move_target,
+    bool& has_move_target)
+{
+    if (!gt_is_bagman_any() || !rf::local_player) {
+        return bot_goal_runtime_abort_bagman_goal();
+    }
+
+    rf::Vector3 target_pos{};
+    bool has_target = false;
+
+    switch (g_client_bot_state.active_goal) {
+        case BotGoalType::bag_pickup: {
+            // Bag must still be on the ground.
+            if (g_bagman_info.state != BagState::BS_At_Spawn
+                && g_bagman_info.state != BagState::BS_Dropped) {
+                return bot_goal_runtime_abort_bagman_goal();
+            }
+            int bag_wp = 0;
+            rf::Vector3 bag_wp_pos{};
+            if (waypoints_find_bag_waypoint(bag_wp, bag_wp_pos)) {
+                target_pos = bag_wp_pos;
+                g_client_bot_state.goal_target_waypoint = bag_wp;
+            } else {
+                target_pos = g_bagman_info.bag_pos;
+            }
+            has_target = true;
+            break;
+        }
+        case BotGoalType::bag_camp: {
+            // Must still be carrier.
+            if (g_bagman_info.state != BagState::BS_Carried
+                || g_bagman_info.carrier != rf::local_player) {
+                return bot_goal_runtime_abort_bagman_goal();
+            }
+            if (g_client_bot_state.goal_target_pos.len_sq() <= 0.0001f) {
+                g_client_bot_state.goal_target_pos = local_entity.pos;
+            }
+            target_pos = g_client_bot_state.goal_target_pos;
+            has_target = true;
+            break;
+        }
+        case BotGoalType::bag_chase_carrier: {
+            // Track the live carrier entity.
+            if (g_bagman_info.state != BagState::BS_Carried || !g_bagman_info.carrier) {
+                return bot_goal_runtime_abort_bagman_goal();
+            }
+            if (g_bagman_info.carrier == rf::local_player) {
+                return bot_goal_runtime_abort_bagman_goal();
+            }
+            rf::Entity* carrier_ent =
+                rf::entity_from_handle(g_bagman_info.carrier->entity_handle);
+            if (!carrier_ent || rf::entity_is_dying(carrier_ent)) {
+                return bot_goal_runtime_abort_bagman_goal();
+            }
+            target_pos = carrier_ent->pos;
+            g_client_bot_state.goal_target_handle = carrier_ent->handle;
+            g_client_bot_state.goal_target_identifier = carrier_ent->uid;
+            has_target = true;
+            break;
+        }
+        default:
+            return false;
+    }
+
+    if (!has_target || target_pos.len_sq() <= 0.0001f) {
+        return bot_goal_runtime_abort_bagman_goal();
+    }
+
+    g_client_bot_state.goal_target_pos = target_pos;
+
+    // Snap the goal waypoint to the closest one near the target if we don't have one.
+    rf::Vector3 waypoint_pos{};
+    bool waypoint_valid =
+        g_client_bot_state.goal_target_waypoint > 0
+        && waypoints_get_pos(g_client_bot_state.goal_target_waypoint, waypoint_pos);
+    if (!waypoint_valid) {
+        const int snap_waypoint = bot_find_closest_waypoint_with_fallback(target_pos);
+        if (snap_waypoint > 0
+            && waypoints_get_pos(snap_waypoint, waypoint_pos)) {
+            g_client_bot_state.goal_target_waypoint = snap_waypoint;
+            waypoint_valid = true;
+        }
+    }
+
+    const rf::Vector3 routing_destination =
+        waypoint_valid ? waypoint_pos : target_pos;
+
+    bool routed = bot_internal_update_waypoint_target_towards(
+        local_entity,
+        routing_destination,
+        nullptr,
+        nullptr,
+        scale_repath_ms(kItemRouteRepathMs));
+    if (!routed && waypoint_valid) {
+        // Try routing to the live target pos in case the waypoint anchor is isolated.
+        routed = bot_internal_update_waypoint_target_towards(
+            local_entity,
+            target_pos,
+            nullptr,
+            nullptr,
+            scale_repath_ms(kItemRouteRepathMs));
+    }
+    if (!routed) {
+        bot_internal_start_recovery_anchor_reroute(
+            local_entity, g_client_bot_state.goal_target_waypoint);
+        routed = bot_internal_update_waypoint_target_towards(
+            local_entity,
+            routing_destination,
+            nullptr,
+            nullptr,
+            scale_repath_ms(kWaypointRecoveryRepathMs, true));
+    }
+    if (!routed) {
+        // Persistent failure: time-box and abort after a window.
+        if (!g_client_bot_state.ctf_objective_route_fail_timer.valid()) {
+            g_client_bot_state.ctf_objective_route_fail_timer.set(5000);
+        } else if (g_client_bot_state.ctf_objective_route_fail_timer.elapsed()) {
+            return bot_goal_runtime_abort_bagman_goal();
+        }
+        if (bot_has_unobstructed_level_los(
+                local_entity.eye_pos, target_pos, nullptr, nullptr)) {
+            move_target = target_pos;
+            has_move_target = true;
+        }
+        return true;
+    }
+
+    g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+    move_target = g_client_bot_state.waypoint_target_pos;
+    has_move_target = true;
+    return true;
+}
+
 bool update_control_point_objective_goal(
     const rf::Entity& local_entity,
     rf::Vector3& move_target,
@@ -2431,7 +2568,11 @@ void bot_update_move_target(
             update_shatter_goal(local_entity, move_target, has_move_target);
             break;
         case BotFsmState::ctf_objective:
-            update_ctf_objective_goal(local_entity, move_target, has_move_target);
+            if (bot_goal_is_bagman_objective(g_client_bot_state.active_goal)) {
+                update_bagman_objective_goal(local_entity, move_target, has_move_target);
+            } else {
+                update_ctf_objective_goal(local_entity, move_target, has_move_target);
+            }
             break;
         case BotFsmState::control_point_objective:
             update_control_point_objective_goal(local_entity, move_target, has_move_target);

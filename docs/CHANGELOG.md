@@ -9,6 +9,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Fine tuned texture animation without being subject to VBM format limitations
   - Accessible to event system via handle for level-driven behaviour scripting
 - Support PNG and JPG texture formats in game and level editor
+- Add Bagman (`BM`) and Team Bagman (`TBM`) game types
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)

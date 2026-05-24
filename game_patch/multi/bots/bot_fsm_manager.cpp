@@ -82,6 +82,18 @@ BotFsmState bot_fsm_manager_select_state(
         }
         return BotFsmState::ctf_objective;
     }
+    if (bot_goal_is_bagman_objective(g_client_bot_state.active_goal)) {
+        if (g_client_bot_state.active_goal == BotGoalType::bag_camp
+            && !keep_pressure_on_enemy) {
+            if (needs_replenish) {
+                return BotFsmState::replenish_health_armor;
+            }
+            if (needs_weapon) {
+                return BotFsmState::seek_weapon;
+            }
+        }
+        return BotFsmState::ctf_objective;
+    }
     if (bot_goal_is_control_point_objective(g_client_bot_state.active_goal)) {
         return BotFsmState::control_point_objective;
     }

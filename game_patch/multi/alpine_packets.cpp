@@ -23,6 +23,7 @@
 #include "../hud/hud.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "bots/bot_personality.h"
 #include "bots/bot_state.h"
@@ -1173,6 +1174,13 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
     // Keep score in sync
     if (g_bagman_info.carrier && g_bagman_info.carrier->stats) {
         g_bagman_info.carrier->stats->score = pkt.carrier_score;
+    }
+
+    // Handle bag waypoints for bots.
+    if (g_bagman_info.state == BagState::BS_Carried || g_bagman_info.state == BagState::BS_Delayed) {
+        waypoints_on_bag_carried();
+    } else {
+        waypoints_on_bag_world_pos(g_bagman_info.bag_pos);
     }
 }
 

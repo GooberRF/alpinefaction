@@ -17,6 +17,7 @@ enum class BagState : uint8_t
     BS_At_Spawn = 0,
     BS_Carried = 1,
     BS_Dropped = 2,
+    BS_Delayed = 3,  // initial spawn delay active; no bag item exists yet
 };
 
 struct BagmanInfo
@@ -32,6 +33,8 @@ struct BagmanInfo
     rf::Player* carrier = nullptr;
     rf::Timestamp score_tick;
     rf::Timestamp return_timer;
+    rf::Timestamp spawn_delay_timer; // initial bag spawn delay after level start
+    rf::Timestamp pickup_unlock_timer; // brief window after spawn during which IF_NO_PICKUP is set
     rf::Timestamp carrier_amp_refresh;
     int red_team_score = 0;
     int blue_team_score = 0;

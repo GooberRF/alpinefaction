@@ -718,6 +718,8 @@ void build_ephemeral_world_hud_strings() {
 void build_bag_icon()
 {
     bagman_update_dynamic_light();
+    // No icon during the initial spawn delay — the bag doesn't yet exist.
+    if (g_bagman_info.state == BagState::BS_Delayed) return;
     if (g_bagman_info.state == BagState::BS_Carried) {
         if (!g_bagman_info.carrier) return;
         if (g_bagman_info.carrier == rf::local_player) return;

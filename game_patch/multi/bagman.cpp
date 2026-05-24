@@ -30,10 +30,11 @@
 #include <patch_common/FunHook.h>
 
 BagmanInfo g_bagman_info;
-constexpr int kPowerupTypeAmp = 1;      // Multi Damage Amplifier
-constexpr int kCarrierAmpDurationMs = 600000;   // refreshed every second, generous safety margin
+constexpr int kPowerupTypeAmp = 1; // Multi Damage Amplifier
+constexpr int kCarrierAmpDurationMs = 600000; // refreshed every second, generous safety margin
 constexpr int kCarrierAmpRefreshIntervalMs = 1000;
 constexpr int kScoreTickMs = 1000;
+constexpr int kBagPickupUnlockDelayMs = 500; // Delay after a bag is dropped before it can be picked up
 
 namespace
 {
@@ -70,7 +71,7 @@ void ensure_bag_bitmaps_loaded()
 {
     if (g_bag_bitmaps_load_attempted) return;
     g_bag_bitmaps_load_attempted = true;
-    g_bag_aura_bitmap = rf::bm::load("af_pow_bag.vbm", -1, true);
+    g_bag_aura_bitmap = rf::bm::load("af_powerup-bag.vbm", -1, true);
     g_bag_hud_icon_bitmap = rf::bm::load("af_hud_pow_bag.tga", -1, true);
 }
 
@@ -128,6 +129,9 @@ void announce(std::string_view msg)
 // Create amp (bag) item at an explicit position.
 void spawn_bag_item(const rf::Vector3& pos, rf::Matrix3& orient)
 {
+    g_bagman_info.bag_pos = pos;
+    g_bagman_info.bag_item_handle = -1;
+
     if (g_bagman_info.bag_item_type < 0) return;
 
     rf::Item* item = rf::item_create(
@@ -143,14 +147,14 @@ void spawn_bag_item(const rf::Vector3& pos, rf::Matrix3& orient)
     );
 
     if (!item) {
-        xlog::error("bagman: item_create failed for bag at ({},{},{})", pos.x, pos.y, pos.z);
-        g_bagman_info.bag_item_handle = -1;
+        xlog::warn("bagman: item_create failed for bag at ({},{},{}); ", pos.x, pos.y, pos.z);
         return;
     }
 
-    item->item_flags |= rf::IF_DROPPED;
+    item->item_flags |= rf::IF_DROPPED | rf::IF_NO_PICKUP;
     g_bagman_info.bag_item_handle = item->handle;
-    g_bagman_info.bag_pos = pos;
+    g_bagman_info.pickup_unlock_timer.set(kBagPickupUnlockDelayMs);
+
     // -1 for level_item_index: the bag drop is not a level-placed item.
     rf::send_item_create_packet(item, 0, -1);
 }
@@ -234,8 +238,6 @@ void resolve_bag_spawn_from_placed_item()
 
     g_bagman_info.bag_pos = g_bagman_info.spawn_pos;
     g_bagman_info.spawn_known = true;
-
-    spawn_bag_item(g_bagman_info.spawn_pos, g_bagman_info.spawn_orient);
 }
 
 } // namespace
@@ -310,8 +312,16 @@ void bagman_level_init_post()
     if (!rf::is_server) return;
 
     resolve_bag_spawn_from_placed_item();
-    if (g_bagman_info.spawn_known) {
-        // The placed item IS the bag — no need to respawn.
+    if (!g_bagman_info.spawn_known) return;
+
+    const int delay_ms = g_alpine_server_config_active_rules.bagman.bag_spawn_delay_ms;
+    if (delay_ms > 0) {
+        // Defer the first bag spawn.
+        g_bagman_info.state = BagState::BS_Delayed;
+        g_bagman_info.spawn_delay_timer.set(delay_ms);
+        bagman_broadcast_state();
+    } else {
+        spawn_bag_item(g_bagman_info.spawn_pos, g_bagman_info.spawn_orient);
         bagman_broadcast_state();
     }
 }
@@ -465,6 +475,28 @@ void bagman_do_frame()
             }
         }
     } else {
+        // Honour the initial bag spawn delay.
+        if (g_bagman_info.spawn_delay_timer.valid()) {
+            if (g_bagman_info.spawn_delay_timer.elapsed()) {
+                g_bagman_info.spawn_delay_timer.invalidate();
+                g_bagman_info.state = BagState::BS_At_Spawn;
+                spawn_bag_item(g_bagman_info.spawn_pos, g_bagman_info.spawn_orient);
+                announce("The bag is now available!");
+                bagman_broadcast_state();
+            }
+            return;
+        }
+
+        // Clear the post-spawn IF_NO_PICKUP gate after a small delay to
+        // ensure the dying player doesn't pick up the dropped bag.
+        if (g_bagman_info.pickup_unlock_timer.valid()
+            && g_bagman_info.pickup_unlock_timer.elapsed()) {
+            g_bagman_info.pickup_unlock_timer.invalidate();
+            if (rf::Item* bag = item_from_handle_or_null(g_bagman_info.bag_item_handle)) {
+                bag->item_flags &= ~rf::IF_NO_PICKUP;
+            }
+        }
+
         // No carrier. The engine handles physical pickup; we detect it
         // by checking who now holds the amp powerup.
         rf::Player* pickup_player = find_player_with_bag_powerup();
