@@ -3493,7 +3493,7 @@ int create_temporary_bag_waypoint(const rf::Vector3& bag_pos)
         0,
         false,
         true,
-        kWaypointLinkRadius,
+        kBagWaypointLinkRadius,
         -1,
         nullptr,
         false,

@@ -2182,9 +2182,28 @@ bool update_bagman_objective_goal(
     }
     if (g_client_bot_state.active_goal == BotGoalType::bag_pickup) {
         const float goal_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
+        rf::Vector3 los_target = target_pos;
+        los_target.z += 2.5f;
         const bool direct_approach_allowed = bot_has_unobstructed_level_los(
-            local_entity.eye_pos, target_pos, nullptr, nullptr);
-        if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius
+            local_entity.eye_pos, los_target, nullptr, nullptr);
+
+        constexpr float kBagDirectApproachRadius = kWaypointLinkRadius * 2.0f;
+        constexpr float kBagAnchorProximityRadius = kWaypointReachRadius * 2.0f;
+        // Hard-commit at close range regardless of LOS, using horizontal
+        // (xy) distance — bags can sit on small platforms or ledges so the
+        // bot's foot z often differs from the bag's z by 2-4u even when
+        // they're effectively "right there" in plan view.
+        const float dx = target_pos.x - local_entity.pos.x;
+        const float dy = target_pos.y - local_entity.pos.y;
+        const float xy_dist_sq = dx * dx + dy * dy;
+        constexpr float kBagHardCommitXyRadius = 6.0f;
+        if (xy_dist_sq <= kBagHardCommitXyRadius * kBagHardCommitXyRadius) {
+            bot_internal_clear_waypoint_route();
+            move_target = target_pos;
+            has_move_target = true;
+            return true;
+        }
+        if (goal_dist_sq <= kBagDirectApproachRadius * kBagDirectApproachRadius
             && direct_approach_allowed) {
             bot_internal_clear_waypoint_route();
             move_target = target_pos;
@@ -2192,10 +2211,9 @@ bool update_bagman_objective_goal(
             return true;
         }
         if (waypoint_valid) {
-            constexpr float kBagFinalApproachWaypointProximity = kWaypointReachRadius * 1.2f;
             const float dist_to_anchor_sq = rf::vec_dist_squared(&local_entity.pos, &waypoint_pos);
             if (dist_to_anchor_sq
-                    <= kBagFinalApproachWaypointProximity * kBagFinalApproachWaypointProximity
+                    <= kBagAnchorProximityRadius * kBagAnchorProximityRadius
                 && direct_approach_allowed) {
                 bot_internal_clear_waypoint_route();
                 move_target = target_pos;

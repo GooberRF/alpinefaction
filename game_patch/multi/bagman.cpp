@@ -512,6 +512,31 @@ void bagman_do_frame()
             }
         }
 
+        // Recovery: state says the bag should be on the ground but no item
+        // is associated with our handle.
+        const bool item_missing = item_from_handle_or_null(g_bagman_info.bag_item_handle) == nullptr;
+        if (item_missing
+            && (g_bagman_info.state == BagState::BS_At_Spawn
+                || g_bagman_info.state == BagState::BS_Dropped)
+            && !find_player_with_bag_powerup()
+            && (!g_bagman_info.bag_respawn_retry_timer.valid()
+                || g_bagman_info.bag_respawn_retry_timer.elapsed())) {
+            xlog::warn("bagman: bag item missing in state {} — attempting respawn at ({},{},{})",
+                static_cast<int>(g_bagman_info.state),
+                g_bagman_info.bag_pos.x, g_bagman_info.bag_pos.y, g_bagman_info.bag_pos.z);
+            const rf::Vector3 retry_pos =
+                g_bagman_info.state == BagState::BS_At_Spawn
+                    ? g_bagman_info.spawn_pos
+                    : g_bagman_info.bag_pos;
+            spawn_bag_item(retry_pos, g_bagman_info.spawn_orient);
+            if (g_bagman_info.bag_item_handle >= 0) {
+                g_bagman_info.bag_respawn_retry_timer.invalidate();
+                bagman_broadcast_state();
+            } else {
+                g_bagman_info.bag_respawn_retry_timer.set(2000);
+            }
+        }
+
         // No carrier. The engine handles physical pickup; we detect it
         // by checking who now holds the amp powerup.
         rf::Player* pickup_player = find_player_with_bag_powerup();
@@ -677,6 +702,22 @@ CodeInjection bagman_carrier_amp_pickup_sound_swap_patch{
     },
 };
 
+// Block dying entities from picking up the bag.
+CodeInjection bagman_block_dying_bag_pickup_patch{
+    0x0045959D,
+    [](auto& regs) {
+        if (!gt_is_bagman_any()) return;
+        if (g_bagman_info.bag_item_handle < 0) return;
+        auto* item = reinterpret_cast<rf::Item*>(regs.esi.value);
+        if (!item || item->handle != g_bagman_info.bag_item_handle) return;
+        auto* toucher = reinterpret_cast<rf::Entity*>(regs.edi.value);
+        if (!toucher) return;
+        if (rf::entity_is_dying(toucher)) {
+            regs.eip = 0x0045995C;
+        }
+    },
+};
+
 CodeInjection bagman_suppress_amp_pickup_msg_patch{
     0x0045A100,
     [](auto& regs) {
@@ -749,6 +790,9 @@ void bagman_do_patch()
 
     // Suppress the "Damage Amp picked up" HUD message in bagman
     bagman_suppress_amp_pickup_msg_patch.install();
+
+    // Block dying entities from picking up the bag
+    bagman_block_dying_bag_pickup_patch.install();
 
     // Bagman's dynamic light is green instead of purple
     bagman_carrier_amp_light_color_patch.install();

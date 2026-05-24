@@ -18,6 +18,7 @@ constexpr int kWptVersion = 1;
 constexpr int kMaxWaypointLinks = 6;
 constexpr float kWaypointRadius = 4.0f / 3.0f;
 constexpr float kWaypointLinkRadius = kWaypointRadius * 3.0f;
+constexpr float kBagWaypointLinkRadius = kWaypointLinkRadius * 2.5f;
 constexpr float kWaypointLinkRadiusEpsilon = 0.001f;
 constexpr float kWaypointRadiusCompressionScale = 100.0f;
 constexpr float kJumpPadAutoLinkRangeScale = 0.5f;

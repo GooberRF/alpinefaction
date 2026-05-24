@@ -1973,8 +1973,8 @@ void bot_refresh_goal_state(
             float chase_score = bot_internal_compute_enemy_goal_score(
                 local_entity,
                 *bagman_state.carrier_entity,
-                carrier_has_los) + 320.0f;
-            if (carrier_has_los) chase_score += 55.0f;
+                carrier_has_los) + 420.0f;
+            if (carrier_has_los) chase_score += 80.0f;
             consider_bagman_candidate(BagmanGoalCandidate{
                 BotGoalType::bag_chase_carrier,
                 bagman_state.carrier_entity->handle,
@@ -1987,15 +1987,14 @@ void bot_refresh_goal_state(
         // ally_carry case (TBM teammate): no dedicated goal necessary.
     }
 
-    // Deprioritize fights between non-carriers.
-    if (bagman_mode && !bagman_state.we_carry && enemy_target
-        && std::isfinite(enemy_goal_score)) {
+    if (bagman_mode && enemy_target && std::isfinite(enemy_goal_score)) {
         const bool enemy_is_carrier =
             bagman_state.carrier_entity
             && enemy_target->handle == bagman_state.carrier_entity->handle;
-        if (!enemy_is_carrier) {
-            // Heavier reduction when the bag is on the ground.
-            const float reduction = bagman_state.in_world ? 260.0f : 170.0f;
+        if (enemy_is_carrier) {
+            enemy_goal_score += 220.0f;
+        } else if (!bagman_state.we_carry) {
+            const float reduction = bagman_state.in_world ? 380.0f : 170.0f;
             enemy_goal_score -= reduction;
         }
     }
@@ -2486,7 +2485,7 @@ void bot_refresh_goal_state(
     }
     else if (bot_goal_is_bagman_objective(g_client_bot_state.active_goal)
         && bagman_goal.goal == g_client_bot_state.active_goal) {
-        current_goal_score = bagman_goal.score + 12.0f;
+        current_goal_score = bagman_goal.score + 30.0f;
     }
     else if (bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
         && std::isfinite(active_control_point_goal_score)) {
@@ -2517,6 +2516,10 @@ void bot_refresh_goal_state(
         if (g_client_bot_state.active_goal == BotGoalType::eliminate_target
             && bot_goal_is_item_collection(selected_goal)) {
             switch_margin *= std::lerp(1.05f, 2.40f, eliminate_commitment_norm);
+        }
+        if (g_client_bot_state.active_goal == BotGoalType::eliminate_target
+            && bot_goal_is_bagman_objective(selected_goal)) {
+            switch_margin *= 0.35f;
         }
         if (deathmatch_mode
             && selected_goal == BotGoalType::eliminate_target

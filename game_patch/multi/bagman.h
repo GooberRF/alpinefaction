@@ -36,6 +36,7 @@ struct BagmanInfo
     rf::Timestamp spawn_delay_timer; // initial bag spawn delay after level start
     rf::Timestamp pickup_unlock_timer; // brief window after spawn during which IF_NO_PICKUP is set
     rf::Timestamp carrier_amp_refresh;
+    rf::Timestamp bag_respawn_retry_timer; // throttles re-spawn attempts when item_create failed
     int red_team_score = 0;
     int blue_team_score = 0;
 };
