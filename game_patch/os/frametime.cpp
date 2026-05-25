@@ -299,12 +299,11 @@ ConsoleCommand2 max_fps_cmd{
                     g_alpine_server_config.signal_cfg_changed = true;
                 }
             } else {
-                g_alpine_game_config.set_max_fps(limit_opt.value());
+                g_alpine_game_config.set_max_fps(*limit_opt);
             }
             apply_maximum_fps();
-        } else {
-            rf::console::print("Maximal FPS: {:.1f}", get_maximum_fps());
         }
+        rf::console::print("Maximal FPS: {:.1f}", get_maximum_fps());
     },
     "Sets maximal FPS",
     "maxfps <limit>",
