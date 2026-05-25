@@ -45,8 +45,34 @@ namespace
 // Hardcoded per-RFL bag home positions.
 struct BagHomeEntry { const char* rfl; float x, y, z; };
 constexpr BagHomeEntry kBagHomePositions[] = {
-    { "dm12.rfl", 5.0f, 0.0f, 0.0f }, // wip
     { "dm01.rfl", 14.0f, -2.0f, -10.0f },
+    { "dm02.rfl", 460.0f, -30.13f, 28.0f },
+    { "dm03.rfl", -218.98f, -34.99f, -75.02f },
+    { "dm04.rfl", 6.55f, -47.80f, 11.38f },
+    { "dm05.rfl", 43.0f, -3.75f, 54.0f },
+    { "dm06.rfl", 476.0f, -28.0f, 117.0f },
+    { "dm07.rfl", 102.34f, 30.94f, -140.85f },
+    { "dm08.rfl", 175.50f, -9.77f, -75.25f },
+    { "dm09.rfl", 10.50f, -4.75f, 0.0f },
+    { "dm10.rfl", -4.0f, 8.57f, 50.0f },
+    { "dm11.rfl", -10.0f, -8.50f, -0.09f },
+    { "dm12.rfl", 8.27f, -0.96f, 5.52f },
+    { "dm13.rfl", 52.03f, -7.05f, -0.01f },
+    { "dm14.rfl", 30.01f, 0.27f, -2.40f },
+    { "dm15.rfl", -5.21f, 7.01f, 7.93f },
+    { "dm16.rfl", 32.45f, 11.97f, 29.15f },
+    { "dm17.rfl", -26.21f, 1.95f, 25.52f },
+    { "dm18.rfl", 0.0f, 4.0f, 0.0f },
+    { "dm19.rfl", -14.50f, 19.0f, -4.50f },
+    { "dm20.rfl", 17.47f, -7.04f, 0.10f },
+    { "ctf01.rfl", 131.0f, -7.77f, -81.50f },
+    { "ctf02.rfl", 0.25f, -22.80f, 0.11f },
+    { "ctf03.rfl", 3.77f, -10.02f, -0.0f },
+    { "ctf04.rfl", 40.0f, -3.46f, 0.0f },
+    { "ctf05.rfl", 2.0f, 1.16f, 8.0f },
+    { "ctf06.rfl", 0.53f, 4.99f, 0.0f },
+    { "ctf07.rfl", 8.50f, -5.0f, 22.0f },
+    { "dmabruptdecayrc2.rfl", 15.54f, 2.50f, 11.0f },
 };
 
 std::optional<rf::Vector3> lookup_hardcoded_bag_home(std::string_view filename)
