@@ -1,6 +1,7 @@
 #pragma once
 
 #include <format>
+#include <functional>
 #include <patch_common/MemUtils.h>
 #include "os/vtypes.h"
 #include "os/timestamp.h"
@@ -381,7 +382,7 @@ struct std::hash<rf::NetAddr> {
     size_t operator()(const rf::NetAddr& net_addr) const noexcept {
         const size_t ip_addr_hash = std::hash<uint32_t>{}(net_addr.ip_addr.inner);
         const size_t port_hash = std::hash<uint16_t>{}(net_addr.port);
-        return ip_addr_hash 
+        return ip_addr_hash
             ^ (port_hash + 0x9E3779B9 + (ip_addr_hash << 6) + (ip_addr_hash >> 2));
     }
 };
