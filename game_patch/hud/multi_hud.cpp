@@ -1,5 +1,6 @@
 #include <ranges>
 #include <algorithm>
+#include <array>
 #include <tuple>
 #include <format>
 #include <cstdint>
@@ -986,27 +987,45 @@ void multi_hud_render_team_scores()
         hud_render_run_timer_widget(box_x, box_y, box_w, box_h, font_id);
     }
     else if (is_ffa_with_list) {
-        // Collect non-browser players, sort by score desc, render top 3
-        std::vector<rf::Player*> entries;
-        entries.reserve(32);
+        constexpr size_t kMaxEntries = 32;
+        std::array<rf::Player*, kMaxEntries> entries{};
+        size_t entry_count = 0;
         for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
             if (!p.stats) continue;
             if (p.is_browser) continue;
-            entries.push_back(&p);
+            if (entry_count >= kMaxEntries) break;
+            entries[entry_count++] = &p;
         }
-        std::ranges::sort(entries, [](rf::Player* a, rf::Player* b) {
-            return a->stats->score > b->stats->score;
-        });
+        std::sort(entries.begin(), entries.begin() + entry_count,
+            [](rf::Player* a, rf::Player* b) {
+                return a->stats->score > b->stats->score;
+            });
+
+        // Pin the local player to the third row.
+        std::array<rf::Player*, 3> display_rows{};
+        size_t display_count = 0;
+        const auto entries_end = entries.begin() + entry_count;
+        const auto local_it = std::find(entries.begin(), entries_end, rf::local_player);
+        const auto local_rank_idx = std::distance(entries.begin(), local_it);
+        if (local_rank_idx >= 2) {
+            if (entry_count >= 1) display_rows[display_count++] = entries[0];
+            if (entry_count >= 2) display_rows[display_count++] = entries[1];
+            display_rows[display_count++] = rf::local_player;
+        } else {
+            const size_t count = std::min<size_t>(3, entry_count);
+            for (size_t i = 0; i < count; ++i) {
+                display_rows[display_count++] = entries[i];
+            }
+        }
 
         const int row_h = g_big_team_scores_hud ? 24 : 18;
         const int name_x = box_x + 8;
         const int max_name_w = box_w - 50; // leave room for the right-aligned score
         int row_y = box_y + 4;
 
-        const int max_rows = 3;
-        int rendered = 0;
-        for (rf::Player* p : entries) {
-            if (rendered >= max_rows) break;
+        for (size_t i = 0; i < display_count; ++i) {
+            rf::Player* p = display_rows[i];
+            if (!p || !p->stats) continue;
 
             if (p == rf::local_player) {
                 rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
@@ -1025,7 +1044,6 @@ void multi_hud_render_team_scores()
             rf::gr::string(box_x + box_w - 5 - sw, row_y + 4, score_str.c_str(), font_id);
 
             row_y += row_h;
-            rendered++;
         }
     }
     else if (!is_rev && !is_esc) {
@@ -1059,14 +1077,8 @@ CallHook<void(int, int, int, rf::gr::Mode)> multi_powerup_render_gr_bitmap_hook{
         0x0047FFFD,
     },
     [](int bm_handle, int x, int y, rf::gr::Mode mode) {
-        if (bagman_local_player_is_carrier()) {
-            const int amp_hud_handle = addr_as_ref<int>(0x006FC440);
-            if (bm_handle == amp_hud_handle) {
-                const int bag_handle = bagman_get_hud_icon_bitmap_handle();
-                if (bag_handle >= 0) {
-                    bm_handle = bag_handle;
-                }
-            }
+        if (gt_is_bagman_any()) {
+            return;
         }
 
         float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;

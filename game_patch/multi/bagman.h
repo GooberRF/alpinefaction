@@ -55,7 +55,6 @@ void bagman_set_blue_team_score(int v);
 void bagman_force_state_sync_to(rf::Player* player);
 void bagman_broadcast_state();
 bool bagman_local_player_is_carrier();
-int bagman_get_hud_icon_bitmap_handle();
 void bagman_update_dynamic_light();
 void bagman_play_return_sound();
 

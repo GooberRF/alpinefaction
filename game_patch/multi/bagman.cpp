@@ -61,7 +61,6 @@ std::optional<rf::Vector3> lookup_hardcoded_bag_home(std::string_view filename)
 
 // The bag IS a Multi Damage Amplifier item
 int g_bag_aura_bitmap = -1;
-int g_bag_hud_icon_bitmap = -1;
 int g_saved_amp_aura_bitmap = -1;  // -1 = not currently swapped
 bool g_bag_bitmaps_load_attempted = false;
 constexpr const char* kBagMeshFilename = "af_bag.v3m";
@@ -75,7 +74,6 @@ void ensure_bag_bitmaps_loaded()
     if (g_bag_bitmaps_load_attempted) return;
     g_bag_bitmaps_load_attempted = true;
     g_bag_aura_bitmap = rf::bm::load("af_powerup-bag.vbm", -1, true);
-    g_bag_hud_icon_bitmap = rf::bm::load("af_hud_pow_bag.tga", -1, true);
 }
 
 void ensure_bag_mesh_checked()
@@ -581,11 +579,6 @@ bool bagman_local_player_is_carrier()
     return gt_is_bagman_any() &&
     g_bagman_info.carrier != nullptr
     && rf::local_player == g_bagman_info.carrier;
-}
-
-int bagman_get_hud_icon_bitmap_handle()
-{
-    return g_bag_hud_icon_bitmap;
 }
 
 void bagman_update_dynamic_light()

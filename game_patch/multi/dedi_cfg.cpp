@@ -455,15 +455,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_delay.enabled = true;
             rules.spawn_delay.set_base_value(2.0f);
             rules.location_pinging = (game_type == rf::NetGameType::NG_TYPE_TBM);
-
-            // secondary weapon
-            rules.spawn_loadout.add("Remote Charge", 3, false, true);
-
-            // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
-            rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
