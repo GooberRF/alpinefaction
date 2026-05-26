@@ -726,9 +726,9 @@ namespace gr::d3d11
         },
     };
 
-    static CodeInjection gr_d3d_setup_fustrum_injection{
+    CodeInjection gr_d3d_setup_fustrum_injection{
         0x00546A40,
-        []() {
+        [] {
             // Glares and volumetric lights use doubled far clip plane
             // To avoid using "user clip planes" disable depth clipping
             // Frustum culling should be enough
@@ -740,17 +740,17 @@ namespace gr::d3d11
         },
     };
 
-    static CodeInjection vif_lod_mesh_ctor_injection{
+    CodeInjection vif_lod_mesh_ctor_injection{
         0x00569D00,
-        [](auto& regs) {
+        [] (auto& regs) {
             rf::VifLodMesh* lod_mesh = regs.ecx;
             lod_mesh->render_cache = nullptr;
         },
     };
 
-    static CodeInjection vif_lod_mesh_destroy_injection{
+    CodeInjection vif_lod_mesh_destroy_injection{
         0x005695D0,
-        [](auto& regs) {
+        [] (auto& regs) {
             const auto lod_mesh = addr_as_ref<rf::VifLodMesh*>(regs.esp + 4);
             if (renderer) {
                 renderer->clear_vif_cache(lod_mesh);
@@ -759,9 +759,9 @@ namespace gr::d3d11
     };
 
 
-    static CodeInjection v3d_page_in_injection{
+    CodeInjection v3d_page_in_injection{
         0x0053C1B9,
-        [](auto& regs) {
+        [] (auto& regs) {
             rf::V3d* v3d = regs.ecx;
             if (renderer && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
                 auto* materials = reinterpret_cast<rf::MeshMaterial*>(v3d->meshes[0].materials);
@@ -772,9 +772,9 @@ namespace gr::d3d11
         },
     };
 
-    static CodeInjection character_instance_page_in_injection{
+    CodeInjection character_instance_page_in_injection{
         0x0051C4C0,
-        [](auto& regs) {
+        [] (auto& regs) {
             rf::CharacterInstance* ci = regs.ecx;
             if (renderer) {
                 renderer->page_in_character_mesh(ci->base_character->character_meshes[0].mesh->vu);
@@ -789,9 +789,9 @@ namespace gr::d3d11
         }
     }
 
-    static CodeInjection level_page_in_injection{
+    CodeInjection level_page_in_injection{
         0x0045CC20,
-        []() {
+        [] {
             if (renderer) {
                 renderer->page_in_solid(rf::level.geometry);
                 for (rf::MoverBrush& mb : DoublyLinkedList{rf::mover_brush_list}) {
@@ -802,9 +802,9 @@ namespace gr::d3d11
         },
     };
 
-    static CodeInjection level_page_out_injection{
+    CodeInjection level_page_out_injection{
         0x0045CB83,
-        []() {
+        [] {
             if (renderer) {
                 renderer->flush_caches();
             }
@@ -813,9 +813,9 @@ namespace gr::d3d11
     };
 
     // Hook blob shadow rendering: allow blob shadows only when D3D11 shadow quality is 0
-    static CallHook<void()> obj_shadow_render_all_hook{
+    CallHook<void()> obj_shadow_render_all_hook{
         0x00432021,
-        []() {
+        [] {
             if (g_alpine_game_config.shadow_quality > 0) {
                 return; // D3D11 shadow mapping handles shadows at quality > 0
             }
@@ -823,11 +823,11 @@ namespace gr::d3d11
         },
     };
 
-    static FunHook<void(void*)> item_render_hook{
+    FunHook<void(rf::Item*)> item_render_hook{
         0x00458F80,
-        [](void* item) {
+        [] (rf::Item* const item) {
             if (g_alpine_game_config.picmip > 1) {
-                ScopedPicmipSkipObject guard;
+                ScopedPicmipSkipObject guard{};
                 item_render_hook.call_target(item);
             } else {
                 item_render_hook.call_target(item);
@@ -835,11 +835,11 @@ namespace gr::d3d11
         },
     };
 
-    static FunHook<void(void*)> entity_render_weapon_in_hands_hook{
+    FunHook<void(rf::Entity*)> entity_render_weapon_in_hands_hook{
         0x00421C40,
-        [](void* entity) {
+        [] (rf::Entity* const entity) {
             if (g_alpine_game_config.picmip > 1) {
-                ScopedPicmipSkipObject guard;
+                ScopedPicmipSkipObject guard{};
                 entity_render_weapon_in_hands_hook.call_target(entity);
             } else {
                 entity_render_weapon_in_hands_hook.call_target(entity);
@@ -867,12 +867,11 @@ namespace gr::d3d11
 ConsoleCommand2 r_antialiasing_mode_cmd{
     "r_antialiasing_mode",
     [] (const std::optional<std::string_view> mode) {
-        std::optional<gr::d3d11::Renderer>& renderer = gr::d3d11::renderer;
         if (!g_antialiasing) {
             rf::console::print("Anti-aliasing is not enabled");
         } else if (!mode) {
-            if (!g_alpine_game_config.sample_count) {
-                rf::console::print("Anti-aliasing level is none");
+            if (g_alpine_game_config.sample_count == 1) {
+                rf::console::print("Anti-aliasing mode is none");
             } else {
                 rf::console::print(
                     "Anti-aliasing mode is MSAAx{}",
@@ -884,7 +883,7 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
             if (string_iequals(*mode, "none")) {
                 if (g_alpine_game_config.sample_count != 1) {
                     g_alpine_game_config.sample_count = 1;
-                    renderer->flush_frame_buffers();
+                    gr::d3d11::renderer->flush_frame_buffers();
                     rf::console::print("Anti-aliasing mode is none");
                 } else {
                     rf::console::print("Anti-aliasing mode is already none");
@@ -904,17 +903,17 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
                     return;
                 }
                 if (std::cmp_not_equal(value, g_alpine_game_config.sample_count)) {
-                    if (!renderer->supports_sample_count(value)) {
+                    if (!gr::d3d11::renderer->supports_sample_count(value)) {
                         rf::console::print("MSAAx{} is an unsupported mode!", value);
                     } else {
                         g_alpine_game_config.sample_count = value;
-                        renderer->flush_frame_buffers();
+                        gr::d3d11::renderer->flush_frame_buffers();
                         rf::console::print("Anti-aliasing mode is MSAAx{}", value);
                     }
                 } else {
                     rf::console::print(
                         "Anti-aliasing mode is already MSAAx{}",
-                        g_alpine_game_config.sample_count
+                        value
                     );
                 }
             } else {
@@ -922,7 +921,7 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
             }
         }
     },
-    "Set anti-aliasing mode",
+    "Sets anti-aliasing mode",
     "r_antialiasing_mode [none|msaax{2,4,8}]",
 };
 

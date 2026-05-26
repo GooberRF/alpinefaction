@@ -1196,7 +1196,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_inputbox_init(
         &ao_meshlight_cbox, &ao_meshlight_label, &ao_meshlight_butlabel, &alpine_options_panel0, ao_meshlight_cbox_on_click, 280, 144, "Mesh lighting");
     alpine_options_panel_inputbox_init(
-        &ao_aa_cbox, &ao_aa_label, &ao_aa_btn_label, &alpine_options_panel0, ao_aa_cbox_on_click, 280, 174, "MSAA Anti-aliasing");
+        &ao_aa_cbox, &ao_aa_label, &ao_aa_btn_label, &alpine_options_panel0, ao_aa_cbox_on_click, 280, 174, "Anti-aliasing");
     alpine_options_panel_inputbox_init(
         &ao_fov_cbox, &ao_fov_label, &ao_fov_butlabel, &alpine_options_panel0, ao_fov_cbox_on_click, 280, 204, "Horizontal FOV");
     alpine_options_panel_checkbox_init(

@@ -230,7 +230,7 @@ CodeInjection update_pp_hook{
         rf::gr::d3d::pp.Flags = 0;
 #if D3D_LOCKABLE_BACKBUFFER
         // Note: if MSAA is used backbuffer cannot be lockable
-        if (g_alpine_game_config.msaa_level == D3DMULTISAMPLE_NONE)
+        if (g_alpine_game_config.sample_count == 1)
             rf::gr::d3d::pp.Flags = D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
 #endif
 
@@ -361,13 +361,12 @@ void gr_d3d_update_window_mode()
 }
 
 void gr_d3d_flush_frame_buffers() {
-    if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
-        if (g_alpine_game_config.sample_count == 1) {
-            rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
-        } else {
-            rf::gr::d3d::pp.MultiSampleType =
-                static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
-        }
+    if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)
+        && g_alpine_game_config.sample_count != 1) {
+        rf::gr::d3d::pp.MultiSampleType =
+            static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
+    } else {
+        rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
     }
     g_reset_device_req = true;
 }
@@ -379,7 +378,7 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
             rf::console::print("Anti-aliasing is not enabled");
         } else if (!mode) {
             if (g_alpine_game_config.sample_count == 1) {
-                rf::console::print("Anti-aliasing level is none");
+                rf::console::print("Anti-aliasing mode is none");
             } else {
                 rf::console::print(
                     "Anti-aliasing mode is MSAAx{}",
@@ -393,9 +392,9 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
                     rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
                     g_alpine_game_config.sample_count = 1;
                     g_reset_device_req = true;
-                    rf::console::print("Anti-aliasing level is disabled");
+                    rf::console::print("Anti-aliasing mode is none");
                 } else {
-                    rf::console::print("Anti-aliasing level is already disabled");
+                    rf::console::print("Anti-aliasing mode is already none");
                 }
             } else if (string_istarts_with(*mode, MSAA_PREFIX)) {
                 int value = 0;
@@ -424,7 +423,7 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
                 } else {
                     rf::console::print(
                         "Anti-aliasing mode is already MSAAx{}",
-                        g_alpine_game_config.sample_count
+                        value
                     );
                 }
             } else {
@@ -432,8 +431,8 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
             }
         }
     },
-    "Set anti-aliasing mode",
-    "antialiasing_mode [none|msaax{2,4,8}]",
+    "Sets anti-aliasing mode",
+    "r_antialiasing_mode [none|msaax{2,4,8}]",
 };
 
 ConsoleCommand2 r_antialiasing_cmd{
