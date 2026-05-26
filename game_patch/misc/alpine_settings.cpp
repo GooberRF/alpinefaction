@@ -664,6 +664,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.ignore_tbl_lightmap_clamping = std::stoi(settings["IgnoreTblLightmapClamping"]);
         processed_keys.insert("IgnoreTblLightmapClamping");
     }
+    if (settings.contains("SampleCount")) {
+        g_alpine_game_config.sample_count = std::stoi(settings["SampleCount"]);
+        processed_keys.insert("SampleCount");
+    }
 
     // Load UI settings
     if (settings.count("BigHUD")) {
@@ -1377,6 +1381,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "IgnoreTblVertexLighting=" << g_alpine_game_config.ignore_tbl_vertex_lighting << "\n";
     file << "IgnoreTblPixelLightOverbright=" << g_alpine_game_config.ignore_tbl_pixel_light_overbright << "\n";
     file << "IgnoreTblLightmapClamping=" << g_alpine_game_config.ignore_tbl_lightmap_clamping << "\n";
+    file << "SampleCount=" << g_alpine_game_config.sample_count << "\n";
 
     // UI
     file << "\n[UISettings]\n";

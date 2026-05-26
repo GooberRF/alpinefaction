@@ -823,105 +823,125 @@ namespace gr::d3d11
         },
     };
 
-    ConsoleCommand2 r_antialiasing_mode_cmd{
-        "r_antialiasing_mode",
-        [] (const std::string_view mode) {
-            if (!g_antialiasing) {
-                rf::console::print("Anti-aliasing is not enabled");
+    static FunHook<void(void*)> item_render_hook{
+        0x00458F80,
+        [](void* item) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard;
+                item_render_hook.call_target(item);
             } else {
-                constexpr auto CHANGE_MSAA_CFG = [] (
-                    const uint32_t msaa_level
-                ) {
-                    g_game_config.msaa_level = msaa_level;
-                    g_game_config.save();
-                };
-                constexpr std::string_view MSAA_PREFIX = "msaax";
-                if (string_iequals(mode, "none")) {
-                    if (g_game_config.msaa_level) {
-                        CHANGE_MSAA_CFG(0);
-                        gr::d3d11::renderer->flush_render_targets();
-                        rf::console::print("Anti-aliasing mode is none");
-                    } else {
-                        rf::console::print("Anti-aliasing mode is already none");
-                    }
-                } else if (string_istarts_with(mode, MSAA_PREFIX)) {
-                    int value = 0;
-                    const auto [ptr, err] = std::from_chars(
-                        mode.data() + MSAA_PREFIX.size(),
-                        mode.data() + mode.size(),
-                        value
-                    );
-                    if (err != std::errc{} || ptr != mode.data() + mode.size()) {
-                        rf::console::print("Invalid value!");
-                        return;
-                    } else if (value != 2 && value != 4 && value != 8) {
-                        rf::console::print("MSAA level must be 2, 4, or 8");
-                        return;
-                    }
-                    if (value != g_game_config.msaa_level) {
-                        if (!gr::d3d11::renderer->is_sample_count_valid(value)) {
-                            rf::console::print("MSAAx{} is an unsupported mode!", value);
-                        } else {
-                            CHANGE_MSAA_CFG(value);
-                            gr::d3d11::renderer->flush_render_targets();
-                            rf::console::print("Anti-aliasing mode is MSAAx{}", value);
-                        }
-                    } else {
-                        rf::console::print(
-                            "Anti-aliasing mode is already MSAAx{}",
-                            value
-                        );
-                    }
-                } else {
-                    rf::console::print("Invalid value!");
-                }
+                item_render_hook.call_target(item);
             }
         },
-        "Sets anti-aliasing mode",
-        "r_antialiasing_mode <none|msaax{2,4,8}>",
     };
 
-    ConsoleCommand2 r_antialiasing_cmd{
-        "r_antialiasing",
-        [] {
-            if (!g_game_config.msaa_level) {
-                rf::console::print("Anti-aliasing is not set or supported");
+    static FunHook<void(void*)> entity_render_weapon_in_hands_hook{
+        0x00421C40,
+        [](void* entity) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard;
+                entity_render_weapon_in_hands_hook.call_target(entity);
             } else {
-                g_antialiasing = !g_antialiasing;
-                gr::d3d11::renderer->flush_render_targets();
+                entity_render_weapon_in_hands_hook.call_target(entity);
+            }
+        },
+    };
+
+    bool is_antialiasing_err() {
+        return g_alpine_game_config.sample_count != 1
+            && g_alpine_game_config.sample_count != gr::d3d11::renderer->get_sample_count()
+            && g_antialiasing;
+    }
+
+    bool supports_sample_count(const uint32_t sample_count) {
+        return renderer && renderer->supports_sample_count(sample_count);
+    }
+
+    void flush_frame_buffers() {
+        if (renderer) {
+            renderer->flush_frame_buffers();
+        }
+    }
+}
+
+ConsoleCommand2 r_antialiasing_mode_cmd{
+    "r_antialiasing_mode",
+    [] (const std::optional<std::string_view> mode) {
+        std::optional<gr::d3d11::Renderer>& renderer = gr::d3d11::renderer;
+        if (!g_antialiasing) {
+            rf::console::print("Anti-aliasing is not enabled");
+        } else if (!mode) {
+            if (!g_alpine_game_config.sample_count) {
+                rf::console::print("Anti-aliasing level is none");
+            } else {
                 rf::console::print(
-                    "Anti-aliasing is {} until exit",
-                    g_antialiasing ? "enabled" : "disabled"
+                    "Anti-aliasing mode is MSAAx{}",
+                    g_alpine_game_config.sample_count
                 );
             }
-        },
-        "Toggles anti-aliasing",
-    };
-  
-    FunHook<void(rf::Item*)> item_render_hook{
-        0x00458F80,
-        [] (rf::Item* const item) {
-            if (g_alpine_game_config.picmip > 1) {
-                ScopedPicmipSkipObject guard{};
-                item_render_hook.call_target(item);
+        } else {
+            constexpr std::string_view MSAA_PREFIX = "msaax";
+            if (string_iequals(*mode, "none")) {
+                if (g_alpine_game_config.sample_count != 1) {
+                    g_alpine_game_config.sample_count = 1;
+                    renderer->flush_frame_buffers();
+                    rf::console::print("Anti-aliasing mode is none");
+                } else {
+                    rf::console::print("Anti-aliasing mode is already none");
+                }
+            } else if (string_istarts_with(*mode, MSAA_PREFIX)) {
+                int value = 0;
+                const auto [ptr, err] = std::from_chars(
+                    mode->data() + MSAA_PREFIX.size(),
+                    mode->data() + mode->size(),
+                    value
+                );
+                if (err != std::errc{} || ptr != mode->data() + mode->size()) {
+                    rf::console::print("Invalid value!");
+                    return;
+                } else if (value != 2 && value != 4 && value != 8) {
+                    rf::console::print("MSAA level must be 2, 4, or 8");
+                    return;
+                }
+                if (std::cmp_not_equal(value, g_alpine_game_config.sample_count)) {
+                    if (!renderer->supports_sample_count(value)) {
+                        rf::console::print("MSAAx{} is an unsupported mode!", value);
+                    } else {
+                        g_alpine_game_config.sample_count = value;
+                        renderer->flush_frame_buffers();
+                        rf::console::print("Anti-aliasing mode is MSAAx{}", value);
+                    }
+                } else {
+                    rf::console::print(
+                        "Anti-aliasing mode is already MSAAx{}",
+                        g_alpine_game_config.sample_count
+                    );
+                }
             } else {
-                item_render_hook.call_target(item);
+                rf::console::print("Invalid value!");
             }
-        },
-    };
+        }
+    },
+    "Set anti-aliasing mode",
+    "r_antialiasing_mode [none|msaax{2,4,8}]",
+};
 
-    FunHook<void(rf::Entity*)> entity_render_weapon_in_hands_hook{
-        0x00421C40,
-        [] (rf::Entity* const entity) {
-            if (g_alpine_game_config.picmip > 1) {
-                ScopedPicmipSkipObject guard{};
-                entity_render_weapon_in_hands_hook.call_target(entity);
-            } else {
-                entity_render_weapon_in_hands_hook.call_target(entity);
-            }
-        },
-    };
-}
+ConsoleCommand2 r_antialiasing_cmd{
+    "r_antialiasing",
+    [] {
+        if (g_alpine_game_config.sample_count == 1) {
+            rf::console::print("Anti-aliasing is not set or supported");
+        } else {
+            g_antialiasing = !g_antialiasing;
+            gr::d3d11::renderer->flush_frame_buffers();
+            rf::console::print(
+                "Anti-aliasing is {} until exit",
+                g_antialiasing ? "enabled" : "disabled"
+            );
+        }
+    },
+    "Toggles anti-aliasing",
+};
 
 void gr_d3d11_apply_patch()
 {

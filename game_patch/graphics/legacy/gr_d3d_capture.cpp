@@ -15,6 +15,7 @@
 #include "../gr_internal.h"
 #include "gr_d3d_internal.h"
 #include "../gr.h"
+#include "../../misc/alpine_settings.h"
 
 static ComPtr<IDirect3DSurface8> g_capture_tmp_surface{};
 static ComPtr<IDirect3DSurface8> g_depth_stencil_surface{};
@@ -29,9 +30,11 @@ IDirect3DSurface8* get_cached_depth_stencil_surface() {
             rf::gr::d3d::pp.BackBufferWidth,
             rf::gr::d3d::pp.BackBufferHeight,
             rf::gr::d3d::pp.AutoDepthStencilFormat,
-            g_antialiasing && g_game_config.msaa_level >= 2 && g_game_config.msaa_level <= 8
-                ? static_cast<D3DMULTISAMPLE_TYPE>(g_game_config.msaa_level.value())
-                : D3DMULTISAMPLE_NONE,
+            g_antialiasing
+                && g_alpine_game_config.sample_count >= 2
+                && g_alpine_game_config.sample_count <= 8
+                    ? static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count)
+                    : D3DMULTISAMPLE_NONE,
             &g_depth_stencil_surface
         );
         if (FAILED(hr)) {

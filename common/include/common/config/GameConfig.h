@@ -49,7 +49,6 @@ struct GameConfig
 
     // Graphics
     CfgVar<bool> anisotropic_filtering = true;
-    CfgVar<uint32_t> msaa_level = 0;
 
     CfgVar<bool> high_scanner_res = true;
     CfgVar<bool> true_color_textures = true;

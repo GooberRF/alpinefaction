@@ -18,6 +18,9 @@ int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::strin
 void explosion_flash_lights_level_init();
 
 inline bool g_antialiasing = true;
+bool gr_is_antialiasing_err();
+bool gr_supports_sample_count(uint32_t sample_count);
+void gr_flush_frame_buffers();
 
 inline constexpr rf::gr::Mode overdraw_colorized_3d_bitmap{
         rf::gr::TEXTURE_SOURCE_WRAP,

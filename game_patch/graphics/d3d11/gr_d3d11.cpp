@@ -39,8 +39,13 @@ namespace gr::d3d11
         skip_gamma_pass_ = g_alpine_system_config.skip_gamma_pass;
         allow_tearing_ = g_alpine_system_config.allow_tearing;
         init_swap_chain(hwnd);
-        init_back_buffer(g_game_config.msaa_level);
-        init_depth_stencil_buffer(g_game_config.msaa_level);
+        if (supports_sample_count(g_alpine_game_config.sample_count)) {
+            init_back_buffer(g_alpine_game_config.sample_count);
+            init_depth_stencil_buffer(g_alpine_game_config.sample_count);
+        } else {
+            init_back_buffer(1);
+            init_depth_stencil_buffer(1);
+        }
 
         state_manager_ = std::make_unique<StateManager>(device_);
         shader_manager_ = std::make_unique<ShaderManager>(device_);
@@ -122,7 +127,7 @@ namespace gr::d3d11
             swap_chain_->ResizeBuffers(0, rf::gr::screen.max_w, rf::gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags_)
         );
         // get back buffer from the swap chain after it has been resized
-        init_back_buffer(g_game_config.msaa_level);
+        init_back_buffer(g_alpine_game_config.sample_count);
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
 
@@ -444,10 +449,8 @@ namespace gr::d3d11
         );
     }
 
-    bool Renderer::is_sample_count_valid(const uint32_t sample_count) {
+    bool Renderer::supports_sample_count(const uint32_t sample_count) {
         switch (sample_count) {
-            case 0:
-                return false;
             case 1:
                 return true;
             case 2:
@@ -466,10 +469,15 @@ namespace gr::d3d11
         }
     }
 
-    void Renderer::flush_render_targets() {
+    void Renderer::flush_frame_buffers() {
+        if (supports_sample_count(g_alpine_game_config.sample_count)) {
+            init_back_buffer(g_alpine_game_config.sample_count);
+            init_depth_stencil_buffer(g_alpine_game_config.sample_count);
+        } else {
+            init_back_buffer(1);
+            init_depth_stencil_buffer(1);
+        }
         texture_manager_->flush_render_targets();
-        init_back_buffer(g_game_config.msaa_level);
-        init_depth_stencil_buffer(g_game_config.msaa_level);
         render_context_
             ->set_render_target(default_render_target_view_, depth_stencil_view_);
     }

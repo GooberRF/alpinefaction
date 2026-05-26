@@ -178,36 +178,33 @@ D3DFORMAT determine_depth_buffer_format(D3DFORMAT adapter_format)
     return D3DFMT_D16;
 }
 
-static bool try_set_msaa_level(const uint32_t msaa_level) {
-    const D3DMULTISAMPLE_TYPE multi_sample_type =
-        static_cast<D3DMULTISAMPLE_TYPE>(msaa_level);
-    if (multi_sample_type == D3DMULTISAMPLE_NONE) {
-        xlog::info("Disabling anti-aliasing");
-    } else {
-        // Make sure selected MSAA mode is available
-        const HRESULT hr = rf::gr::d3d::d3d->CheckDeviceMultiSampleType(
-            rf::gr::d3d::adapter_idx,
-            D3DDEVTYPE_HAL,
-            rf::gr::d3d::pp.BackBufferFormat,
-            rf::gr::d3d::pp.Windowed,
-            multi_sample_type
-        );
-        if (SUCCEEDED(hr)) {
-            xlog::info(
-                "Enabling anti-aliasing (MSAAx{})",
-                msaa_level
+bool gr_d3d_is_antialiasing_err() {
+    return g_alpine_game_config.sample_count != 1
+        && g_alpine_game_config.sample_count != std::to_underlying(rf::gr::d3d::pp.MultiSampleType)
+        && g_antialiasing;
+}
+
+bool gr_d3d_supports_sample_count(const uint32_t sample_count) {
+    switch (sample_count) {
+        case 1:
+            return true;
+        case 2:
+        case 4:
+        case 8: {
+            const D3DMULTISAMPLE_TYPE multi_sample_type =
+                static_cast<D3DMULTISAMPLE_TYPE>(sample_count);
+            const HRESULT hr = rf::gr::d3d::d3d->CheckDeviceMultiSampleType(
+                rf::gr::d3d::adapter_idx,
+                D3DDEVTYPE_HAL,
+                rf::gr::d3d::pp.BackBufferFormat,
+                rf::gr::d3d::pp.Windowed,
+                multi_sample_type
             );
-        } else {
-            xlog::warn(
-                "MSAAx{} is not supported ({})",
-                msaa_level,
-                get_d3d_error_str(hr)
-            );
-            return false;
+            return SUCCEEDED(hr);
         }
+        default:
+            return false;
     }
-    rf::gr::d3d::pp.MultiSampleType = multi_sample_type;
-    return true;
 }
 
 CodeInjection update_pp_hook{
@@ -223,15 +220,17 @@ CodeInjection update_pp_hook{
         xlog::info("D3D Raster Caps: {:x}", rf::gr::d3d::device_caps.RasterCaps);
         xlog::info("Max texture size: {}x{}", rf::gr::d3d::device_caps.MaxTextureWidth, rf::gr::d3d::device_caps.MaxTextureHeight);
 
-        if (g_game_config.msaa_level) {
-            try_set_msaa_level(g_game_config.msaa_level);
+        if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)
+            && g_alpine_game_config.sample_count != 1) {
+            rf::gr::d3d::pp.MultiSampleType =
+                static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
         }
 
         // remove D3DPRESENTFLAG_LOCKABLE_BACKBUFFER flag
         rf::gr::d3d::pp.Flags = 0;
 #if D3D_LOCKABLE_BACKBUFFER
         // Note: if MSAA is used backbuffer cannot be lockable
-        if (g_game_config.msaa == D3DMULTISAMPLE_NONE)
+        if (g_alpine_game_config.msaa_level == D3DMULTISAMPLE_NONE)
             rf::gr::d3d::pp.Flags = D3DPRESENTFLAG_LOCKABLE_BACKBUFFER;
 #endif
 
@@ -361,54 +360,71 @@ void gr_d3d_update_window_mode()
     gr_d3d_update_vsync();
 }
 
+void gr_d3d_flush_frame_buffers() {
+    if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
+        if (g_alpine_game_config.sample_count == 1) {
+            rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
+        } else {
+            rf::gr::d3d::pp.MultiSampleType =
+                static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
+        }
+    }
+    g_reset_device_req = true;
+}
+
 ConsoleCommand2 r_antialiasing_mode_cmd{
     "r_antialiasing_mode",
-    [] (const std::string_view mode) {
+    [] (const std::optional<std::string_view> mode) {
         if (!g_antialiasing) {
             rf::console::print("Anti-aliasing is not enabled");
+        } else if (!mode) {
+            if (g_alpine_game_config.sample_count == 1) {
+                rf::console::print("Anti-aliasing level is none");
+            } else {
+                rf::console::print(
+                    "Anti-aliasing mode is MSAAx{}",
+                    g_alpine_game_config.sample_count
+                );
+            }
         } else {
-            constexpr auto CHANGE_MSAA_CFG = [] (
-                const uint32_t msaa_level
-            ) {
-                g_game_config.msaa_level = msaa_level;
-                g_game_config.save();
-            };
             constexpr std::string_view MSAA_PREFIX = "msaax";
-            if (string_iequals(mode, "none")) {
-                if (g_game_config.msaa_level) {
-                    try_set_msaa_level(0);
-                    CHANGE_MSAA_CFG(0);
+            if (string_iequals(*mode, "none")) {
+                if (g_alpine_game_config.sample_count != 1) {
+                    rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
+                    g_alpine_game_config.sample_count = 1;
                     g_reset_device_req = true;
-                    rf::console::print("Anti-aliasing mode is none");
+                    rf::console::print("Anti-aliasing level is disabled");
                 } else {
-                    rf::console::print("Anti-aliasing mode is already none");
+                    rf::console::print("Anti-aliasing level is already disabled");
                 }
-            } else if (string_istarts_with(mode, MSAA_PREFIX)) {
+            } else if (string_istarts_with(*mode, MSAA_PREFIX)) {
                 int value = 0;
                 const auto [ptr, err] = std::from_chars(
-                    mode.data() + MSAA_PREFIX.size(),
-                    mode.data() + mode.size(),
+                    mode->data() + MSAA_PREFIX.size(),
+                    mode->data() + mode->size(),
                     value
                 );
-                if (err != std::errc{} || ptr != mode.data() + mode.size()) {
+                if (err != std::errc{} || ptr != mode->data() + mode->size()) {
                     rf::console::print("Invalid value!");
                     return;
                 } else if (value != 2 && value != 4 && value != 8) {
                     rf::console::print("MSAA level must be 2, 4, or 8");
                     return;
                 }
-                if (value != g_game_config.msaa_level) {
-                    if (!try_set_msaa_level(value)) {
+                if (value != g_alpine_game_config.sample_count) {
+                    if (!gr_d3d_supports_sample_count(value)) {
                         rf::console::print("MSAAx{} is an unsupported mode!", value);
                     } else {
-                        CHANGE_MSAA_CFG(value);
+                        rf::gr::d3d::pp.MultiSampleType =
+                            static_cast<D3DMULTISAMPLE_TYPE>(value);
+                        g_alpine_game_config.sample_count = value;
                         g_reset_device_req = true;
                         rf::console::print("Anti-aliasing mode is MSAAx{}", value);
                     }
                 } else {
                     rf::console::print(
                         "Anti-aliasing mode is already MSAAx{}",
-                        value
+                        g_alpine_game_config.sample_count
                     );
                 }
             } else {
@@ -416,20 +432,25 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
             }
         }
     },
-    "Sets anti-aliasing mode",
-    "r_antialiasing_mode <none|msaax{2,4,8}>",
+    "Set anti-aliasing mode",
+    "antialiasing_mode [none|msaax{2,4,8}]",
 };
 
 ConsoleCommand2 r_antialiasing_cmd{
     "r_antialiasing",
     [] {
-        if (!g_game_config.msaa_level) {
+        if (g_alpine_game_config.sample_count == 1) {
             rf::console::print("Anti-aliasing is not set or supported");
         } else {
             g_antialiasing = !g_antialiasing;
-            try_set_msaa_level(
-                g_antialiasing ? g_game_config.msaa_level : D3DMULTISAMPLE_NONE
-            );
+            if (!g_antialiasing) {
+                rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
+            } else {
+                if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
+                    rf::gr::d3d::pp.MultiSampleType =
+                        static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
+                }
+            }
             g_reset_device_req = true;
             rf::console::print(
                 "Anti-aliasing is {} until exit",

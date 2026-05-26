@@ -212,6 +212,7 @@ struct AlpineGameSettings
     bool autodl_download_awps = false;
     bool hide_chat = false;
     bool spectate_cinematic_mode = false;
+    uint32_t sample_count = 1;
 
     // hud color overrides
     std::optional<uint32_t> sniper_scope_color_override{};

@@ -87,8 +87,9 @@ namespace gr::d3d11
         void clear_mesh_lights();
         void set_pow2_tex_active(bool active);
         float z_far() const;
-        bool is_sample_count_valid(const uint32_t sample_count);
-        void flush_render_targets();
+        bool supports_sample_count(uint32_t sample_count);
+        uint32_t get_sample_count() const;
+        void flush_frame_buffers();
         bool supports_exclusive_fullscreen() const;
 
     private:
@@ -150,7 +151,7 @@ namespace gr::d3d11
 
     #define DF_GR_D3D11_CHECK_HR(code) { \
         const char* const func_name = __func__; \
-        ::df::gr::d3d11::check_hr( \
+        ::gr::d3d11::check_hr( \
             code, \
             [=] { \
                 ::xlog::error( \

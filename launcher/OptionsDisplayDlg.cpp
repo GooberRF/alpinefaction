@@ -26,7 +26,6 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     AttachItem(IDC_RESOLUTIONS_COMBO, m_res_combo);
     AttachItem(IDC_COLOR_DEPTH_COMBO, m_color_depth_combo);
     AttachItem(IDC_WND_MODE_COMBO, m_wnd_mode_combo);
-    AttachItem(IDC_MSAA_COMBO, m_msaa_combo);
 
     // Populate combo boxes with static content
     m_renderer_combo.AddString("Direct3D 8");
@@ -44,7 +43,6 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     UpdateResolutionCombo();
     m_wnd_mode_combo.SetCurSel(static_cast<int>(m_conf.wnd_mode));
     SetDlgItemInt(IDC_RENDERING_CACHE_EDIT, m_conf.geometry_cache_size, false);
-    UpdateMsaaCombo();
     UpdateAnisotropyCheckbox();
     CheckDlgButton(IDC_HIGH_SCANNER_RES_CHECK, m_conf.high_scanner_res ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_TRUE_COLOR_TEXTURES_CHECK, m_conf.true_color_textures ? BST_CHECKED : BST_UNCHECKED);
@@ -52,34 +50,6 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     InitToolTip();
 
     return TRUE;
-}
-
-void OptionsDisplayDlg::UpdateMsaaCombo()
-{
-    m_msaa_combo.ResetContent();
-    m_msaa_combo.AddString("Disabled");
-
-    if (!m_video_info) {
-        return;
-    }
-
-    int selected_msaa = 0;
-    m_multi_sample_types.push_back(0);
-    try {
-        BOOL windowed = m_conf.wnd_mode != GameConfig::FULLSCREEN;
-        auto multi_sample_types = m_video_info->get_multisample_types(m_conf.selected_video_card, m_conf.res_backbuffer_format, windowed);
-        for (auto msaa : multi_sample_types) {
-            auto s = std::format("MSAAx{}", msaa);
-            int idx = m_msaa_combo.AddString(s.c_str());
-            if (m_conf.msaa_level == msaa)
-                selected_msaa = idx;
-            m_multi_sample_types.push_back(msaa);
-        }
-    }
-    catch (std::exception &e) {
-        xlog::error("Cannot check available MSAA modes: {}", e.what());
-    }
-    m_msaa_combo.SetCurSel(selected_msaa);
 }
 
 void OptionsDisplayDlg::UpdateAnisotropyCheckbox()
@@ -238,7 +208,6 @@ void OptionsDisplayDlg::OnSave()
     }
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
     m_conf.geometry_cache_size = GetDlgItemInt(IDC_RENDERING_CACHE_EDIT, false);
-    m_conf.msaa_level = m_multi_sample_types[m_msaa_combo.GetCurSel()];
     m_conf.anisotropic_filtering = (IsDlgButtonChecked(IDC_ANISOTROPIC_CHECK) == BST_CHECKED);
     m_conf.high_scanner_res = (IsDlgButtonChecked(IDC_HIGH_SCANNER_RES_CHECK) == BST_CHECKED);
     m_conf.true_color_textures = (IsDlgButtonChecked(IDC_TRUE_COLOR_TEXTURES_CHECK) == BST_CHECKED);
@@ -260,7 +229,6 @@ void OptionsDisplayDlg::OnRendererChange()
     UpdateAdapterCombo();
     UpdateResolutionCombo();
     UpdateColorDepthCombo();
-    UpdateMsaaCombo();
     UpdateAnisotropyCheckbox();
 }
 
@@ -269,7 +237,6 @@ void OptionsDisplayDlg::OnAdapterChange()
     m_conf.selected_video_card = m_adapter_combo.GetCurSel();
     UpdateResolutionCombo();
     UpdateColorDepthCombo();
-    UpdateMsaaCombo();
     UpdateAnisotropyCheckbox();
 }
 
@@ -281,11 +248,9 @@ void OptionsDisplayDlg::OnColorDepthChange()
     m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32 bit" ? 32 : 16;
     m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     UpdateResolutionCombo();
-    UpdateMsaaCombo();
 }
 
 void OptionsDisplayDlg::OnWindowModeChange()
 {
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
-    UpdateMsaaCombo();
 }

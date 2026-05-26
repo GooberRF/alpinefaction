@@ -608,6 +608,36 @@ void evaluate_pow2tex(const rf::String& level_filename) {
     }
 }
 
+bool gr_is_antialiasing_err() {
+    if (rf::is_dedicated_server || is_headless_mode()) {
+        return false;
+    } else if (is_d3d11()) {
+        return gr::d3d11::is_antialiasing_err();
+    } else {
+        return gr_d3d_is_antialiasing_err();
+    }
+}
+
+bool gr_supports_sample_count(const uint32_t sample_count) {
+    if (rf::is_dedicated_server || is_headless_mode()) {
+        return false;
+    } else if (is_d3d11()) {
+        return gr::d3d11::supports_sample_count(sample_count);
+    } else {
+        return gr_d3d_supports_sample_count(sample_count);
+    }
+}
+
+void gr_flush_frame_buffers() {
+    if (!rf::is_dedicated_server && !is_headless_mode()) {
+        if (is_d3d11()) {
+            gr::d3d11::flush_frame_buffers();
+        } else {
+            gr_d3d_flush_frame_buffers();
+        }
+    }
+}
+
 void gr_apply_patch()
 {
     const bool headless_bot_graphics_bypass = should_bypass_graphics_init_for_headless_bot();

@@ -11,5 +11,7 @@ namespace gr::d3d11 {
     void update_texture_filtering();
     void texture_flush_non_user_cache();
     void set_pow2_tex_active(bool active);
+    bool is_antialiasing_err();
+    bool supports_sample_count(uint32_t sample_count);
+    void flush_frame_buffers();
 }
-

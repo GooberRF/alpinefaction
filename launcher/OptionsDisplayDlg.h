@@ -27,7 +27,6 @@ private:
     void UpdateAdapterCombo();
     void UpdateResolutionCombo();
     void UpdateColorDepthCombo();
-    void UpdateMsaaCombo();
     void UpdateAnisotropyCheckbox();
 
     GameConfig& m_conf;

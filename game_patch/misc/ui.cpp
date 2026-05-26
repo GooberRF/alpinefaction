@@ -171,6 +171,10 @@ static rf::ui::Checkbox ao_meshlight_cbox;
 static rf::ui::Label ao_meshlight_label;
 static rf::ui::Label ao_meshlight_butlabel;
 static char ao_meshlight_butlabel_text[9];
+static rf::ui::Checkbox ao_aa_cbox;
+static rf::ui::Label ao_aa_label;
+static rf::ui::Label ao_aa_btn_label;
+static char ao_aa_btn_label_text[8];
 static rf::ui::Checkbox ao_enemybullets_cbox;
 static rf::ui::Label ao_enemybullets_label;
 static rf::ui::Checkbox ao_togglecrouch_cbox;
@@ -998,6 +1002,29 @@ void ao_meshlight_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.mesh_lighting_mode > 0);
 }
 
+void ao_aa_cbox_on_click(const int x, const int y) {
+TRY_NEXT_SAMPLE_COUNT:
+    switch (g_alpine_game_config.sample_count) {
+        case 1:
+            g_alpine_game_config.sample_count = 2;
+            break;
+        case 2:
+            g_alpine_game_config.sample_count = 4;
+            break;
+        case 4:
+            g_alpine_game_config.sample_count = 8;
+            break;
+        default:
+            g_alpine_game_config.sample_count = 1;
+            break;
+    }
+    if (!gr_supports_sample_count(g_alpine_game_config.sample_count)) {
+        goto TRY_NEXT_SAMPLE_COUNT;
+    }
+    gr_flush_frame_buffers();
+    ao_play_button_snd(g_alpine_game_config.sample_count != 1);
+}
+
 void ao_enemybullets_cbox_on_click(int x, int y) {
     g_alpine_game_config.show_enemy_bullets = !g_alpine_game_config.show_enemy_bullets;
     ao_enemybullets_cbox.checked = g_alpine_game_config.show_enemy_bullets;
@@ -1145,18 +1172,20 @@ void alpine_options_panel_init() {
         &ao_notex_cbox, &ao_notex_label, &alpine_options_panel0, ao_notex_cbox_on_click, g_alpine_game_config.try_disable_textures, 112, 84, "Lightmaps only");
     alpine_options_panel_checkbox_init(
         &ao_weapshake_cbox, &ao_weapshake_label, &alpine_options_panel0, ao_weapshake_cbox_on_click, !g_alpine_game_config.try_disable_weapon_shake, 112, 114, "Weapon shake");
+    alpine_options_panel_checkbox_init(
+        &ao_vsync_cbox, &ao_vsync_label, &alpine_options_panel0, ao_vsync_cbox_on_click, g_alpine_system_config.vsync, 112, 144, "Vertical sync");
     alpine_options_panel_inputbox_init(
-        &ao_fov_cbox, &ao_fov_label, &ao_fov_butlabel, &alpine_options_panel0, ao_fov_cbox_on_click, 112, 144, "Horizontal FOV");
+        &ao_maxfps_cbox, &ao_maxfps_label, &ao_maxfps_butlabel, &alpine_options_panel0, ao_maxfps_cbox_on_click, 112, 174, "Max FPS");
     alpine_options_panel_inputbox_init(
-        &ao_fpfov_cbox, &ao_fpfov_label, &ao_fpfov_butlabel, &alpine_options_panel0, ao_fpfov_cbox_on_click, 112, 174, "Gun FOV mod");
-    alpine_options_panel_inputbox_init(
-        &ao_maxfps_cbox, &ao_maxfps_label, &ao_maxfps_butlabel, &alpine_options_panel0, ao_maxfps_cbox_on_click, 112, 204, "Max FPS");
+        &ao_fpfov_cbox, &ao_fpfov_label, &ao_fpfov_butlabel, &alpine_options_panel0, ao_fpfov_cbox_on_click, 112, 204, "Gun FOV mod");
     alpine_options_panel_inputbox_init(
         &ao_simdist_cbox, &ao_simdist_label, &ao_simdist_butlabel, &alpine_options_panel0, ao_simdist_cbox_on_click, 112, 234, "Simulation dist");
     alpine_options_panel_inputbox_init(
         &ao_loddist_cbox, &ao_loddist_label, &ao_loddist_butlabel, &alpine_options_panel0, ao_loddist_cbox_on_click, 112, 262, "LOD scale");
     alpine_options_panel_checkbox_init(
         &ao_unclamplights_cbox, &ao_unclamplights_label, &alpine_options_panel0, ao_unclamplights_cbox_on_click, g_alpine_game_config.full_range_lighting, 112, 292, "Full light range");
+    alpine_options_panel_checkbox_init(
+        &ao_nearest_cbox, &ao_nearest_label, &alpine_options_panel0, ao_nearest_cbox_on_click, g_alpine_game_config.nearest_texture_filtering, 112, 322, "Nearest filtering");
 
     alpine_options_panel_checkbox_init(
         &ao_camshake_cbox, &ao_camshake_label, &alpine_options_panel0, ao_camshake_cbox_on_click, !g_alpine_game_config.screen_shake_force_off, 280, 54, "View shake (SP)");
@@ -1166,16 +1195,17 @@ void alpine_options_panel_init() {
         &ao_fullbrightchar_cbox, &ao_fullbrightchar_label, &alpine_options_panel0, ao_fullbrightchar_cbox_on_click, g_alpine_game_config.try_fullbright_characters, 280, 114, "Fullbright models");
     alpine_options_panel_inputbox_init(
         &ao_meshlight_cbox, &ao_meshlight_label, &ao_meshlight_butlabel, &alpine_options_panel0, ao_meshlight_cbox_on_click, 280, 144, "Mesh lighting");
+    alpine_options_panel_inputbox_init(
+        &ao_aa_cbox, &ao_aa_label, &ao_aa_btn_label, &alpine_options_panel0, ao_aa_cbox_on_click, 280, 174, "MSAA Anti-aliasing");
+    alpine_options_panel_inputbox_init(
+        &ao_fov_cbox, &ao_fov_label, &ao_fov_butlabel, &alpine_options_panel0, ao_fov_cbox_on_click, 280, 204, "Horizontal FOV");
     alpine_options_panel_checkbox_init(
-        &ao_nearest_cbox, &ao_nearest_label, &alpine_options_panel0, ao_nearest_cbox_on_click, g_alpine_game_config.nearest_texture_filtering, 280, 174, "Nearest filtering");
+        &ao_glares_cbox, &ao_glares_label, &alpine_options_panel0, ao_glares_cbox_on_click, g_alpine_game_config.show_glares, 280, 234, "Light glares");
     alpine_options_panel_checkbox_init(
-        &ao_glares_cbox, &ao_glares_label, &alpine_options_panel0, ao_glares_cbox_on_click, g_alpine_game_config.show_glares, 280, 204, "Light glares");
+        &ao_firelights_cbox, &ao_firelights_label, &alpine_options_panel0, ao_firelights_cbox_on_click, !g_alpine_game_config.try_disable_muzzle_flash_lights, 280, 262, "Muzzle lights");
     alpine_options_panel_checkbox_init(
-        &ao_firelights_cbox, &ao_firelights_label, &alpine_options_panel0, ao_firelights_cbox_on_click, !g_alpine_game_config.try_disable_muzzle_flash_lights, 280, 234, "Muzzle lights");
-    alpine_options_panel_checkbox_init(
-        &ao_mpcharlod_cbox, &ao_mpcharlod_label, &alpine_options_panel0, ao_mpcharlod_cbox_on_click, !g_alpine_game_config.multi_no_character_lod, 280, 262, "Entity LOD (MP)");
-    alpine_options_panel_checkbox_init(
-        &ao_vsync_cbox, &ao_vsync_label, &alpine_options_panel0, ao_vsync_cbox_on_click, g_alpine_system_config.vsync, 280, 292, "Vertical sync");
+        &ao_mpcharlod_cbox, &ao_mpcharlod_label, &alpine_options_panel0, ao_mpcharlod_cbox_on_click, !g_alpine_game_config.multi_no_character_lod, 280, 292, "Entity LOD (MP)");
+
 
     // panel 1
     alpine_options_panel_checkbox_init(
@@ -1346,7 +1376,7 @@ void alpine_options_panel_do_frame(int x)
     // set dynamic strings for button labels
     // fov
     if (g_alpine_game_config.horz_fov == 0.0f) {
-        snprintf(ao_fov_butlabel_text, sizeof(ao_fov_butlabel_text), " auto ");
+        snprintf(ao_fov_butlabel_text, sizeof(ao_fov_butlabel_text), "Auto ");
     }
     else {
         snprintf(ao_fov_butlabel_text, sizeof(ao_fov_butlabel_text), "%6.2f", g_alpine_game_config.horz_fov);
@@ -1389,6 +1419,23 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
         meshlight_mode_names[std::clamp(g_alpine_game_config.mesh_lighting_mode, 0, 2)]);
     ao_meshlight_butlabel.text = ao_meshlight_butlabel_text;
+
+    if (gr_is_antialiasing_err()) {
+        ao_aa_btn_label.clr = rf::Color{255, 0, 0, 255};
+        strcpy(ao_aa_btn_label_text, "Error");
+    } else {
+        ao_aa_btn_label.clr = rf::Color{255, 255, 255, 255};
+        if (g_alpine_game_config.sample_count == 1) {
+            strcpy(ao_aa_btn_label_text, "None");
+        } else {
+            snprintf(ao_aa_btn_label_text,
+                sizeof(ao_aa_btn_label_text),
+                "%ux",
+                g_alpine_game_config.sample_count
+            );
+        }
+    }
+    ao_aa_btn_label.text = ao_aa_btn_label_text;
 
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {
