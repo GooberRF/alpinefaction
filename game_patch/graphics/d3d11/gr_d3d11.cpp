@@ -469,6 +469,20 @@ namespace gr::d3d11
         }
     }
 
+    uint32_t Renderer::get_sample_count() const {
+        ComPtr<ID3D11Resource> resource{};
+        default_render_target_view_->GetResource(&resource);
+
+        ComPtr<ID3D11Texture2D> render_target{};
+        if (FAILED(resource->QueryInterface(&render_target))) {
+            return 1;
+        }
+
+        D3D11_TEXTURE2D_DESC rt_desc{};
+        render_target->GetDesc(&rt_desc);
+        return rt_desc.SampleDesc.Count;
+    }
+
     void Renderer::flush_frame_buffers() {
         if (supports_sample_count(g_alpine_game_config.sample_count)) {
             init_back_buffer(g_alpine_game_config.sample_count);
