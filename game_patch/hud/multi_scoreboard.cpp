@@ -189,9 +189,8 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
 
     // Draw server info
     if (!dry_run) {
-        char ip_addr_buf[64];
-        rf::net_addr_to_string(ip_addr_buf, sizeof(ip_addr_buf), rf::netgame.server_addr);
-        auto server_info = rf::String::format("{} ({})", rf::netgame.name, ip_addr_buf);
+        rf::String server_info =
+            rf::String::format("{} (IP: {})", rf::netgame.name, rf::netgame.server_addr);
         rf::String server_info_stripped;
         rf::fit_scoreboard_string(&server_info_stripped, server_info, w - 20); // Note: this destroys input string
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x_center, cur_y, server_info_stripped);

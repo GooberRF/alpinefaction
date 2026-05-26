@@ -59,7 +59,7 @@ const char* mod_file_allow_list[] = {
 static bool is_mod_file_in_whitelist(const char* Filename)
 {
     for (unsigned i = 0; i < std::size(mod_file_allow_list); ++i)
-        if (!stricmp(mod_file_allow_list[i], Filename))
+        if (!_stricmp(mod_file_allow_list[i], Filename))
             return true;
     return false;
 }
@@ -81,7 +81,7 @@ constexpr std::array<std::string_view, 7> tbl_mod_allow_list = {
 static bool is_tbl_file(const char* filename)
 {
     // confirm we're working with a tbl file
-    if (stricmp(rf::file_get_ext(filename), ".tbl") == 0) {
+    if (_stricmp(rf::file_get_ext(filename), ".tbl") == 0) {
         return true;
     }
     return false;
@@ -91,14 +91,14 @@ static bool is_tbl_file_in_allowlist(const char* filename)
 {
     // compare the input file against the tbl file allowlist
     return is_tbl_file(filename) && std::ranges::any_of(tbl_mod_allow_list, [filename](std::string_view allowed_tbl) {
-               return stricmp(allowed_tbl.data(), filename) == 0;
+               return _stricmp(allowed_tbl.data(), filename) == 0;
            });
 }
 
 static bool is_tbl_file_a_hud_messages_file(const char* filename)
 {
     // check if the input file ends with "_text.tbl"
-    if (strlen(filename) >= 9 && stricmp(filename + strlen(filename) - 9, "_text.tbl") == 0) {
+    if (strlen(filename) >= 9 && _stricmp(filename + strlen(filename) - 9, "_text.tbl") == 0) {
         return true;
     }
     return false;
@@ -197,7 +197,7 @@ static std::string build_packfile_full_path(const char* filename, const char* di
 static bool is_packfile_loaded(const std::string& full_path)
 {
     for (auto& packfile : g_packfiles) {
-        if (!stricmp(packfile->path, full_path.c_str())) {
+        if (!_stricmp(packfile->path, full_path.c_str())) {
             return true;
         }
     }
@@ -249,15 +249,15 @@ static int vpackfile_add_new(const char* filename, const char* dir)
     packfile->num_files = 0;
 
     packfile->is_user_maps = (dir && (
-            stricmp(dir, "user_maps\\projects\\") == 0 ||
-            stricmp(dir, "user_maps\\multi\\") == 0 ||
-            stricmp(dir, "user_maps\\single\\") == 0));
+            _stricmp(dir, "user_maps\\projects\\") == 0 ||
+            _stricmp(dir, "user_maps\\multi\\") == 0 ||
+            _stricmp(dir, "user_maps\\single\\") == 0));
 
-    packfile->is_client_mods = (dir && stricmp(dir, "client_mods\\") == 0);
+    packfile->is_client_mods = (dir && _stricmp(dir, "client_mods\\") == 0);
 
     packfile->is_mods = (dir && PathIsRelativeA(dir) && StrCmpNIA(dir, "mods\\", 5) == 0);
 
-    packfile->is_alpinefaction_vpp = (filename && stricmp(filename, "alpinefaction.vpp") == 0);
+    packfile->is_alpinefaction_vpp = (filename && _stricmp(filename, "alpinefaction.vpp") == 0);
 
     xlog::debug(
         "Packfile {} is from {}user_maps, {}client_mods, {}mods, {}alpinefaction.vpp",
@@ -323,7 +323,7 @@ static void for_each_packfile_entry(const std::vector<std::string_view>& ext_fil
     ext_filter_lower.reserve(ext_filter.size());
     std::transform(ext_filter.begin(), ext_filter.end(), std::back_inserter(ext_filter_lower), string_to_lower);
     for (auto& packfile : g_packfiles) {
-        if (!packfile_filter || !stricmp(packfile_filter, packfile->filename)) {
+        if (!packfile_filter || !_stricmp(packfile_filter, packfile->filename)) {
             for (auto& entry : packfile->files) {
                 const char* ext_ptr = rf::file_get_ext(entry.name);
                 if (ext_ptr[0]) {
@@ -426,6 +426,54 @@ static bool is_lookup_table_entry_override_allowed(rf::VPackfileEntry* old_entry
     // resolve warning by having a default option, even though there should be no way to hit it
     g_is_modded_game = true;
     return true;
+}
+
+bool vpackfile_supercede_allowed(const char* requested_filename, const char* sibling_filename)
+{
+    if (!sibling_filename || !*sibling_filename) return false;
+
+    // The sibling must actually exist somewhere — otherwise there's nothing to supercede with.
+    auto sibling_it = g_loopup_table.find(string_to_lower(sibling_filename));
+    if (sibling_it == g_loopup_table.end()) {
+        return false;
+    }
+    rf::VPackfileEntry* sibling = sibling_it->second;
+
+    // Sources outside user_maps — root game packfiles, mods/, client_mods/ — can supercede
+    // unconditionally. Matches the same-name override policy for these sources.
+    //
+    // Note: deliberately NOT consulting g_is_overriding_disabled (the flag set after init).
+    // That flag protects against late packfile registration; runtime cache lookups are not
+    // late registrations, so reusing it here would falsely deny every supercede during
+    // gameplay (which is when bm_read_header_hook actually runs).
+    if (!sibling->parent->is_user_maps) {
+        if (sibling->parent->is_client_mods) {
+            g_is_modded_game = true;
+        }
+        return true;
+    }
+
+    // Sibling is from user_maps. Same-name policy says: user_maps can override another
+    // user_maps entry regardless of toggle, but can only override a non-user_maps entry
+    // when the "allow overwrite game files" toggle is on. Mirror that here.
+    auto requested_it = g_loopup_table.find(string_to_lower(requested_filename));
+
+    // If the requested file doesn't exist anywhere, the sibling isn't overriding anything —
+    // it's a net-new asset that the user_maps content needs in place of the legacy reference.
+    if (requested_it == g_loopup_table.end()) {
+        g_is_modded_game = true;
+        return true;
+    }
+
+    bool requested_is_user_maps = requested_it->second->parent->is_user_maps;
+    if (requested_is_user_maps) {
+        return true;
+    }
+    if (g_game_config.allow_overwrite_game_files) {
+        g_is_modded_game = true;
+        return true;
+    }
+    return false;
 }
 
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)

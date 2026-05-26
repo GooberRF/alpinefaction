@@ -65,8 +65,12 @@ void af_send_packet(rf::Player* player, const void* data, int len, bool is_relia
     }
 }
 
-bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player)
-{
+bool af_process_packet(
+    const void* const data,
+    const int len,
+    const rf::NetAddr& addr,
+    [[maybe_unused]] rf::Player* const player
+) {
     RF_GamePacketHeader header{};
     if (len < static_cast<int>(sizeof(header))) {
         return false;
@@ -1276,6 +1280,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY;
     if (g_alpine_server_config_active_rules.clear_stale_movement_input)
         af |= af_server_info_flags::SIF_CLEAR_STALE_MOVEMENT_INPUT;
+    if (was_level_loaded_manually())
+        af |= af_server_info_flags::SIF_MANUAL_LEVEL_LOAD;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -1348,6 +1354,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.no_player_collide = (pkt.af_flags & af_server_info_flags::SIF_NO_PLAYER_COLLIDE) != 0;
     server_info.allow_no_mf = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT) != 0;
     server_info.click_limit = (pkt.af_flags & af_server_info_flags::SIF_CLICK_LIMITER) != 0;
+    server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
     server_info.unlimited_fps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS) != 0;
     server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
     server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
@@ -1357,7 +1364,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.allow_outlines = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES) != 0;
     server_info.allow_outlines_xray = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY) != 0;
     server_info.clear_stale_movement_input = (pkt.af_flags & af_server_info_flags::SIF_CLEAR_STALE_MOVEMENT_INPUT) != 0;
-    server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
+    server_info.was_manual_level_load = (pkt.af_flags & af_server_info_flags::SIF_MANUAL_LEVEL_LOAD) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
@@ -2257,7 +2264,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         return;
     }
 
-    auto [it, inserted] = recent_responses.try_emplace(addr.ip_addr);
+    auto [it, inserted] = recent_responses.try_emplace(addr.ip_addr.inner);
     if (!inserted) {
         // Already responded to this IP within the last second
         return;

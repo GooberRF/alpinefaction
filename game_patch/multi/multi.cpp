@@ -2,6 +2,7 @@
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
+#include <ws2tcpip.h>
 #include <shellapi.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
@@ -35,7 +36,6 @@
 #include "../rf/os/console.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
-#include "../rf/player/player.h"
 #include "../rf/localize.h"
 #include "../rf/ai.h"
 #include "../rf/item.h"
@@ -186,34 +186,38 @@ void handle_url_param()
         return;
     }
 
-    const char* url = get_url_cmd_line_param().get_arg();
+    const char* const url = get_url_cmd_line_param().get_arg();
     std::regex e{R"(^rf://([\w\.-]+):(\d+)/?(?:\?password=(.*))?$)"};
-    std::cmatch cm;
+    std::cmatch cm{};
     if (!std::regex_match(url, cm, e)) {
         xlog::warn("Unsupported URL: {}", url);
         return;
     }
 
-    auto host_name = cm[1].str();
-    auto port = static_cast<uint16_t>(std::stoi(cm[2].str()));
-    auto password = cm[3].str();
+    const std::string host_name = cm[1].str();
+    const uint16_t port = static_cast<uint16_t>(std::stoi(cm[2].str()));
+    const std::string password = cm[3].str();
 
-    hostent* hp = gethostbyname(host_name.c_str());
-    if (!hp) {
+    rf::console::print("Connecting to {}:{}...", host_name, port);
+
+    const addrinfo hints{ .ai_family = AF_INET };
+    addrinfo* host_addr = nullptr;
+    if (getaddrinfo(host_name.c_str(), nullptr, &hints, &host_addr) != 0
+        || !host_addr) {
         xlog::warn("URL host lookup failed");
         return;
     }
 
-    if (hp->h_addrtype != AF_INET) {
-        xlog::warn("Unsupported address type (only IPv4 is supported)");
-        return;
-    }
+    const sockaddr_in* const sock =
+        reinterpret_cast<const sockaddr_in*>(host_addr->ai_addr);
 
-    rf::console::print("Connecting to {}:{}...", host_name, port);
-    auto host = ntohl(reinterpret_cast<in_addr *>(hp->h_addr_list[0])->S_un.S_addr);
-
-    rf::NetAddr addr{host, port};
+    const rf::NetAddr addr{
+        .ip_addr = ntohl(sock->sin_addr.S_un.S_addr), 
+        .port = port
+    };
     start_join_multi_game_sequence(addr, password);
+
+    freeaddrinfo(host_addr);
 }
 
 void handle_levelm_param()

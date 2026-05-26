@@ -57,11 +57,15 @@ set(SRCS
     rf/v3d.h
     rf/vmesh.h
     rf/weapon.h
+    bmpman/atx.cpp
+    bmpman/atx.h
     bmpman/dds.cpp
     bmpman/bmpman.cpp
     bmpman/bmpman.h
     bmpman/fmt_conv.cpp
     bmpman/fmt_conv_templates.h
+    bmpman/stb_image_loader.cpp
+    bmpman/stb_image_loader.h
     graphics/bink.cpp
     graphics/gr_font.cpp
     graphics/gr.cpp
@@ -153,6 +157,14 @@ set(SRCS
     multi/endgame_votes.h
     multi/faction_files.cpp
     multi/faction_files.h
+    fflink/fflink.cpp
+    fflink/fflink.h
+    fflink/fflink_achievements.cpp
+    fflink/fflink_achievements.h
+    fflink/fflink_session.cpp
+    fflink/fflink_session.h
+    fflink/fflink_utils.cpp
+    fflink/fflink_utils.h
     multi/multi_ban.cpp
     multi/bots/bot_alerts.cpp
     multi/bots/bot_alerts.h
@@ -235,6 +247,7 @@ set(SRCS
     object/alpine_mesh.cpp
     object/alpine_corona.cpp
     object/alpine_corona.h
+    object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp
     misc/character.cpp
@@ -299,8 +312,6 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/xxhash
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
-    ${CMAKE_SOURCE_DIR}/vendor/dds
-    ${CMAKE_SOURCE_DIR}/vendor/toml++
     ${CMAKE_SOURCE_DIR}/vendor/nlohmann
 )
 
