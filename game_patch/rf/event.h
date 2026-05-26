@@ -16,28 +16,25 @@
 #include "player/player.h"
 #include "os/timestamp.h"
 
-namespace rf
+enum class SetVarOpts : int
 {
-    enum class SetVarOpts : int
-    {
-        delay,
-        int1,
-        int2,
-        float1,
-        float2,
-        bool1,
-        bool2,
-        str1,
-        str2
-    };
-}
+    delay,
+    int1,
+    int2,
+    float1,
+    float2,
+    bool1,
+    bool2,
+    str1,
+    str2
+};
 
 namespace std
 {
     template<>
-    struct hash<rf::SetVarOpts> // Allow SetVarOpts as a key in std::unordered_map
+    struct hash<SetVarOpts> // Allow SetVarOpts as a key in std::unordered_map
     {
-        std::size_t operator()(const rf::SetVarOpts& opt) const noexcept
+        std::size_t operator()(const SetVarOpts& opt) const noexcept
         {
             return static_cast<std::size_t>(opt);
         }
@@ -66,7 +63,7 @@ namespace rf
         bool delayed_msg;
 
         // handler storage, defined in event.cpp
-        static std::unordered_map<const Event*, std::unordered_map<rf::SetVarOpts, std::function<void(Event*, const std::string&)>>>
+        static std::unordered_map<const Event*, std::unordered_map<SetVarOpts, std::function<void(Event*, const std::string&)>>>
             variable_handler_storage;
 
 

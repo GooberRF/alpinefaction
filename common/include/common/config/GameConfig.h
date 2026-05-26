@@ -12,11 +12,18 @@ struct GameConfig
     CfgVar<std::string> game_executable_path{""};
 
     // Display
-    CfgVar<unsigned> res_width{1920, [](auto val) { return std::max(val, 128u); }};
-    CfgVar<unsigned> res_height{1080, [](auto val) { return std::max(val, 96u); }};
-    CfgVar<unsigned> res_bpp = 32;
-    CfgVar<unsigned> res_backbuffer_format = 22U; // D3DFMT_X8R8G8B8
-    CfgVar<unsigned> selected_video_card = 0;
+    CfgVar<unsigned int> res_width{
+        1920,
+        [] (const auto val) { return std::max<unsigned int>(val, 128); }
+    };
+    CfgVar<unsigned int> res_height{
+        1080,
+        [] (const auto val) { return std::max<unsigned int>(val, 96); }
+    };
+    CfgVar<unsigned int> res_bpp = 32;
+    CfgVar<unsigned int> res_backbuffer_format = 22; // D3DFMT_X8R8G8B8
+    CfgVar<unsigned int> selected_video_card = 0;
+
     enum WndMode
     {
         FULLSCREEN,
@@ -26,7 +33,10 @@ struct GameConfig
 
     CfgVar<WndMode> wnd_mode = FULLSCREEN;
     CfgVar<bool> vsync = false;
-    CfgVar<unsigned> geometry_cache_size{32, [](auto val) { return std::clamp(val, 2u, 32u); }};
+    CfgVar<unsigned int> geometry_cache_size{
+        32,
+        [] (const auto val) { return std::clamp<unsigned int>(val, 2, 32); }
+    };
 
     enum class Renderer
     {
@@ -39,7 +49,11 @@ struct GameConfig
 
     // Graphics
     CfgVar<bool> anisotropic_filtering = true;
+<<<<<<< msaa_run_time
     CfgVar<uint32_t> msaa_level = 0;
+=======
+    CfgVar<unsigned int> msaa = 0;
+>>>>>>> master
 
     CfgVar<bool> high_scanner_res = true;
     CfgVar<bool> true_color_textures = true;
@@ -48,10 +62,15 @@ struct GameConfig
     CfgVar<bool> eax_sound = true;
 
     // Multiplayer
-    static constexpr unsigned default_update_rate = 200000; // T1/LAN in stock launcher
-    CfgVar<unsigned> update_rate = default_update_rate;
+    static constexpr unsigned int DEFAULT_UPDATE_RATE = 200000; // T1/LAN in stock launcher
+    CfgVar<unsigned int> update_rate = DEFAULT_UPDATE_RATE;
 
-    CfgVar<unsigned> force_port{0, [](auto val) { return std::min<unsigned>(val, std::numeric_limits<uint16_t>::max()); }};
+    CfgVar<unsigned int> force_port{
+        0,
+        [] (const auto val) {
+            return std::min<unsigned int>(val, std::numeric_limits<uint16_t>::max()); 
+        }
+    };
 
     // Interface
     CfgVar<int> language = -1;
