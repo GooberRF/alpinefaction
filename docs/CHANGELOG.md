@@ -20,6 +20,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Make clock clutter objects correctly display the current local real world time
 
 [@is-this-c](https://github.com/is-this-c)
+- Add `IoCursor` and `PacketBuilder`
 - Disable `Refresh Selected` in the server browser, only if `Refresh Selected` was pressed
 - Never disable `Add Server` in the server browser
 - Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to the spectate UI
@@ -27,9 +28,6 @@ Version 1.4.0 (Lupin): Not yet released
   - Add `Net FPS` and `Target FPS`
   - Add detection of manually loaded levels
   - Highlight an active level in a server's rotation via background color instead of text color
-
-[@is-this-c](https://github.com/is-this-c)
-- Add `IoCursor` and `PacketBuilder`
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
