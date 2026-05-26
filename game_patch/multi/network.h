@@ -342,7 +342,6 @@ public:
             .size = static_cast<uint16_t>(self.payload_size())
         };
         const char* const ptr = reinterpret_cast<const char*>(&header);
-
         try {
             const size_t num_bytes =
                 self.storage.write(0, std::span{ptr, sizeof(RF_GamePacketHeader)});
