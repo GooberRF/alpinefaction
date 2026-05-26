@@ -153,7 +153,7 @@ void console_auto_complete_command(int offset)
     std::vector<rf::console::Command*> matching_cmds;
     for (int i = 0; i < rf::console::num_commands; ++i) {
         rf::console::Command* cmd = g_commands_buffer[i];
-        if (!strnicmp(cmd->name, cmd_name.c_str(), cmd_name.size()) &&
+        if (!_strnicmp(cmd->name, cmd_name.c_str(), cmd_name.size()) &&
             (next_offset == -1 || !cmd->name[cmd_name.size()])) {
             matching_cmds.push_back(cmd);
             console_auto_complete_update_common_prefix(common_prefix, cmd->name, first);
@@ -161,12 +161,12 @@ void console_auto_complete_command(int offset)
     }
 
     if (next_offset != -1) {
-        if (!stricmp(cmd_name.c_str(), "level") || !stricmp(cmd_name.c_str(), "map") ||
-            !stricmp(cmd_name.c_str(), "levelm") || !stricmp(cmd_name.c_str(), "mapm"))
+        if (!_stricmp(cmd_name.c_str(), "level") || !_stricmp(cmd_name.c_str(), "map") ||
+            !_stricmp(cmd_name.c_str(), "levelm") || !_stricmp(cmd_name.c_str(), "mapm"))
             console_auto_complete_level(next_offset);
-        else if (!stricmp(cmd_name.c_str(), "kick") || !stricmp(cmd_name.c_str(), "ban"))
+        else if (!_stricmp(cmd_name.c_str(), "kick") || !_stricmp(cmd_name.c_str(), "ban"))
             console_auto_complete_player(next_offset);
-        else if (!stricmp(cmd_name.c_str(), "rcon") || !stricmp(cmd_name.c_str(), "help"))
+        else if (!_stricmp(cmd_name.c_str(), "rcon") || !_stricmp(cmd_name.c_str(), "help"))
             console_auto_complete_command(next_offset);
         else if (matching_cmds.size() != 1)
             return;

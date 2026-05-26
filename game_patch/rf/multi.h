@@ -1,15 +1,17 @@
 #pragma once
 
+#include <format>
+#include <functional>
 #include <patch_common/MemUtils.h>
 #include "os/vtypes.h"
 #include "os/timestamp.h"
 #include "os/string.h"
 #include "os/array.h"
+#include "gr/gr.h"
 #include "object.h"
 #include "item.h"
 #include "geometry.h"
 #include "ai.h"
-#include "gr/gr.h"
 
 namespace rf
 {
@@ -20,9 +22,18 @@ namespace rf
     // nw/psnet
 
     #pragma pack(push, 4)
+    struct IpAddr {
+        uint32_t inner;
+
+        constexpr auto operator<=>(const IpAddr&) const = default;
+    };
+    #pragma pack(pop)
+    static_assert(sizeof(IpAddr) == 0x4);
+
+    #pragma pack(push, 4)
     struct NetAddr
     {
-        uint32_t ip_addr;
+        IpAddr ip_addr;
         uint16_t port;
         // padding byte
         // padding byte
@@ -35,6 +46,7 @@ namespace rf
     constexpr int NET_MAX_REL_SOCKETS = 40;
 
     static const auto& net_init_socket = addr_as_ref<void(unsigned short port)>(0x00528F10);
+    [[deprecated]]
     static const auto& net_addr_to_string = addr_as_ref<void(char *buf, int buf_size, const NetAddr& addr)>(0x00529FE0);
     static const auto& net_send = addr_as_ref<void(const NetAddr &addr, const void *data, int len)>(0x0052A080);
     static const auto& net_same = addr_as_ref<int(const NetAddr &addr1, const NetAddr &addr2, bool check_port)>(0x0052A930);
@@ -338,3 +350,39 @@ namespace rf
 
     constexpr int multi_max_player_id = 256;
 }
+
+template <>
+struct std::formatter<rf::IpAddr, char> : std::formatter<std::string, char> {
+    auto format(const rf::IpAddr& ip_addr, format_context& ctx) const {
+        const std::string str = std::format(
+            "{}.{}.{}.{}",
+            (ip_addr.inner >> 24) & 0xFF,
+            (ip_addr.inner >> 16) & 0xFF,
+            (ip_addr.inner >> 8) & 0xFF,
+            ip_addr.inner & 0xFF
+        );
+        return std::formatter<std::string>::format(str, ctx);
+    }
+};
+
+template <>
+struct std::formatter<rf::NetAddr, char> : std::formatter<std::string, char> {
+    auto format(const rf::NetAddr& net_addr, format_context& ctx) const {
+        const std::string str = std::format(
+            "{}:{}",
+            net_addr.ip_addr,
+            net_addr.port
+        );
+        return std::formatter<std::string>::format(str, ctx);
+    }
+};
+
+template <>
+struct std::hash<rf::NetAddr> {
+    size_t operator()(const rf::NetAddr& net_addr) const noexcept {
+        const size_t ip_addr_hash = std::hash<uint32_t>{}(net_addr.ip_addr.inner);
+        const size_t port_hash = std::hash<uint16_t>{}(net_addr.port);
+        return ip_addr_hash
+            ^ (port_hash + 0x9E3779B9 + (ip_addr_hash << 6) + (ip_addr_hash >> 2));
+    }
+};

@@ -256,7 +256,7 @@ ConsoleCommand2 mute_player_cmd{
 
 CallHook<void(const char*, bool)> process_rcon_req_packet_chat_say_hook{
     0x0046C62F,
-    [] (const char* msg, const bool is_team_msg) {
+    [] (const char* msg, [[maybe_unused]] const bool is_team_msg) {
         af_broadcast_automated_chat_msg(msg);
     },
 };

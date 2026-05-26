@@ -789,7 +789,7 @@ HRESULT STDMETHODCALLTYPE Direct3DDevice8::SetRenderState(D3DRENDERSTATETYPE Sta
 		return hr;
 	case D3DRS_ZBIAS:
 		Biased = static_cast<FLOAT>(Value) * -0.000005f;
-		Value = *reinterpret_cast<const DWORD *>(&Biased);
+		memcpy(&Value, &Biased, sizeof(Biased));
 		State = D3DRS_DEPTHBIAS;
 	default:
 		return ProxyInterface->SetRenderState(State, Value);

@@ -289,18 +289,21 @@ FunHook<void()> frametime_reset_hook{
 
 ConsoleCommand2 max_fps_cmd{
     "maxfps",
-    [](std::optional<int> limit_opt) {
+    [] (const std::optional<int> limit_opt) {
         if (limit_opt) {
             if (rf::is_dedicated_server) {
-                g_alpine_game_config.set_server_max_fps(limit_opt.value());
-            }
-            else {
-                g_alpine_game_config.set_max_fps(limit_opt.value());
+                const unsigned int old_v = g_alpine_game_config.server_max_fps;
+                g_alpine_game_config.set_server_max_fps(*limit_opt);
+                if (g_alpine_game_config.server_max_fps != old_v) {
+                    g_alpine_server_config.printed_cfg.clear();
+                    g_alpine_server_config.signal_cfg_changed = true;
+                }
+            } else {
+                g_alpine_game_config.set_max_fps(*limit_opt);
             }
             apply_maximum_fps();
         }
-        else
-            rf::console::print("Maximal FPS: {:.1f}", get_maximum_fps());
+        rf::console::print("Maximal FPS: {:.1f}", get_maximum_fps());
     },
     "Sets maximal FPS",
     "maxfps <limit>",

@@ -7,6 +7,7 @@
 #include <functional>
 #include <thread>
 #include <utility>
+#include <deque>
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <ws2ipdef.h>
@@ -53,14 +54,13 @@
 #include "../purefaction/pf.h"
 #include "../sound/sound.h"
 #include "../misc/tlv.h"
-#include <deque>
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
 #define NET_IFINDEX_UNSPECIFIED 0
 #endif
 
-int g_update_rate = 30; // client netfps
+static constexpr int CLIENT_NET_FPS = 30;
 
 ClientSoftware g_joining_client_version = ClientSoftware::Unknown;
 AlpineFactionJoinReqPacketExt g_joining_player_info{};
@@ -351,7 +351,7 @@ CodeInjection process_game_packet_whitelist_filter{
 
 static inline uint64_t addr_key(const rf::NetAddr& a)
 {
-    return (uint64_t(a.ip_addr) << 16) | (uint64_t(a.port) & 0xFFFF);
+    return (uint64_t(a.ip_addr.inner) << 16) | (uint64_t(a.port) & 0xFFFF);
 }
 
 static rf::NetAddr addr_from_key(uint64_t key)
@@ -577,7 +577,7 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
             // use <incompatible version> for any servers that don't match
             // rf 1.0, 1.1, 1.2, or 1.3 protocol version (should never happen)
             rf::multi_join_game_add_server(
-                addr.ip_addr, addr.port,
+                addr.ip_addr.inner, addr.port,
                 rf::strings::incompatible_version, "", "", 0, 0, 0, 0);
             clear_extra();
             return;
@@ -611,7 +611,7 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         uint8_t flags = *r++;
 
         rf::multi_join_game_add_server(
-            addr.ip_addr, addr.port,
+            addr.ip_addr.inner, addr.port,
             name, level_name, mod_name,
             players, max_players, game_type, flags);
 
@@ -2055,26 +2055,21 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
     },
 };
 
-FunHook<int(rf::NetAddr*, rf::JoinRequest*)> check_access_for_new_player_hook {
+FunHook<int(const rf::NetAddr&, const rf::JoinRequest*)> check_access_for_new_player_hook {
     0x0047AE10,
-    [] (rf::NetAddr* const addr, rf::JoinRequest* const join_req) {
+    [] (const rf::NetAddr& addr, const rf::JoinRequest* const join_req) {
         const int reason = check_access_for_new_player_hook.call_target(addr, join_req);
         if (reason != 0 && rf::is_dedicated_server) {
-            in_addr ia;
-            ia.S_un.S_addr = ntohl(addr->ip_addr);
-            RF_JoinDenyReason jdr = static_cast<RF_JoinDenyReason>(reason);
+            const RF_JoinDenyReason jdr = static_cast<RF_JoinDenyReason>(reason);
             std::string jdr_str = "unknown";
 
             if (jdr == RF_JoinDenyReason::RF_JDR_INVALID_PASSWORD) {
                 jdr_str = std::format("wrong password '{}'", join_req->password);
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_BANNED) {
+            }  else if (jdr == RF_JoinDenyReason::RF_JDR_BANNED) {
                 jdr_str = "banned";
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_SERVER_IS_FULL) {
+            } else if (jdr == RF_JoinDenyReason::RF_JDR_SERVER_IS_FULL) {
                 jdr_str = "server full";
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_THE_SAME_IP) {
+            } else if (jdr == RF_JoinDenyReason::RF_JDR_THE_SAME_IP) {
                 jdr_str = "same socket as another player";
             }
             else if (jdr == RF_JoinDenyReason::RF_JDR_LEVEL_CHANGING) {
@@ -2085,7 +2080,11 @@ FunHook<int(rf::NetAddr*, rf::JoinRequest*)> check_access_for_new_player_hook {
                 jdr_str = "failed data validation";
             }
 
-            rf::console::print("Join request from {}:{} was rejected (reason: {})\n", inet_ntoa(ia), addr->port, jdr_str);
+            rf::console::print(
+                "Join request from {} was rejected (reason: {})\n",
+                addr,
+                jdr_str
+            );
         }
 
         return reason;
@@ -2110,7 +2109,7 @@ CodeInjection process_join_req_injection{
         if (conn_rate == 12345) {
             g_conn_rate_stashed = conn_rate;
         }
-        
+
         bool found_tail = parse_af_join_req_any_tail(g_join_request_stashed.pkt, g_join_request_stashed.len, g_join_request_stashed.rx_len);
         g_join_request_stashed = {};
         g_conn_rate_stashed.reset();
@@ -2119,12 +2118,9 @@ CodeInjection process_join_req_injection{
 
         if (verdict != AlpineRestrictVerdict::ok && hard_reject) {
             const rf::NetAddr& addr = addr_as_ref<rf::NetAddr>(regs.esi);
-            in_addr ia{};
-            ia.S_un.S_addr = ntohl(addr.ip_addr);
             rf::console::print(
-                "Join request from {}:{} was rejected (reason: {})\n",
-                inet_ntoa(ia),
-                addr.port,
+                "Join request from {} was rejected (reason: {})\n",
+                addr,
                 reason
             );
             if (!(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)) {
@@ -2141,9 +2137,9 @@ CodeInjection process_join_accept_send_game_info_req_injection{
     [](auto& regs) {
         // Force game_info update in case we were joining using protocol handler (server list not fully refreshed) or
         // using old fav entry with outdated name
-        rf::NetAddr* server_addr = regs.edi;
-        xlog::trace("Sending game_info_req to {:x}:{}", server_addr->ip_addr, server_addr->port);
-        rf::send_game_info_req_packet(*server_addr);
+        const rf::NetAddr& server_addr = addr_as_ref<rf::NetAddr>(regs.edi);
+        xlog::trace("Sending game_info_req to {}", server_addr);
+        rf::send_game_info_req_packet(server_addr);
     },
 };
 
@@ -2344,8 +2340,8 @@ void send_queues_rel_add_packet(
 FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
     0x0052A750,
     [] (int* const socket_id, const bool send_dis_conn_packet) {
-        if (socket_id && *socket_id >= 0 && *socket_id < std::size(g_send_queues_rel)) {
-            g_send_queues_rel[*socket_id].clear();
+        if (socket_id) {
+            send_queues_rel_clear_packets(*socket_id);
         }
         return psnet_rel_close_socket_hook.call_target(socket_id, send_dis_conn_packet);
     },
@@ -2438,25 +2434,30 @@ void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::P
 
 CodeInjection client_update_rate_injection{
     0x0047E5D8,
-    [](auto& regs) {
-        auto& send_obj_update_interval = *static_cast<int*>(regs.esp);
-        send_obj_update_interval = 1000 / g_update_rate;
+    [] (auto& regs) {
+        int& send_obj_update_interval = addr_as_ref<int>(regs.esp);
+        send_obj_update_interval = 1000 / CLIENT_NET_FPS;
     },
 };
 
 CodeInjection server_update_rate_injection{
     0x0047E891,
-    [](auto& regs) {
-        auto& min_send_obj_update_interval = *static_cast<int*>(regs.esp);
+    [] (auto& regs) {
+        int& min_send_obj_update_interval = addr_as_ref<int>(regs.esp);
         min_send_obj_update_interval = 1000 / g_alpine_game_config.server_netfps;
     },
 };
 
 ConsoleCommand2 netfps_cmd{
     "sv_netfps",
-    [](std::optional<int> update_rate) {
+    [] (std::optional<int> update_rate) {
         if (update_rate) {
-            g_alpine_game_config.set_server_netfps(update_rate.value());
+            const unsigned int old_v = g_alpine_game_config.server_netfps;
+            g_alpine_game_config.set_server_netfps(*update_rate);
+            if (rf::is_server && g_alpine_game_config.server_netfps != old_v) {
+                g_alpine_server_config.printed_cfg.clear();
+                g_alpine_server_config.signal_cfg_changed = true;
+            }
         }
         rf::console::print("Server netfps: {}", g_alpine_game_config.server_netfps);
     },
@@ -2623,7 +2624,7 @@ CodeInjection multi_io_process_packets_injection{
                 if (parse_af_gi_req_tail(base + off, size_t(len), ver)) {
                     const int64_t now = timer::get_i64(1000);
                     g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{ver, now};
-                    xlog::debug("AF GI-REQ detected from {:x}:{} (ver={})", addr.ip_addr, addr.port, ver);
+                    xlog::debug("AF GI-REQ detected from {} (ver={})", addr, ver);
                 }
             }
         }

@@ -108,6 +108,7 @@ struct AlpineFactionServerInfo
     bool allow_outlines = false;
     bool allow_outlines_xray = false;
     bool clear_stale_movement_input = false;
+    bool was_manual_level_load = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t
@@ -124,7 +125,7 @@ extern bool g_multi_limbo_just_joined_req_leave;
 
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
-const bool was_level_loaded_manually();
+bool was_level_loaded_manually();
 void set_manually_loaded_level(bool is_true);
 bool version_is_older(int aMaj, int aMin, int bMaj, int bMin);
 void enforce_alpine_hard_reject_for_all_players_on_current_level();

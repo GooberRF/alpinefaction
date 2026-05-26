@@ -733,6 +733,7 @@ struct AlpineServerConfig
     std::string rcon_password = "";
     std::vector<AlpineRconProfile> rcon_profiles;
     uint32_t bot_shared_secret = 0;
+    std::string fflink_gsk = "";
     std::vector<ServerBotConfig> bot_configs;
     bool upnp_enabled = false;
     bool require_client_mod = true;
@@ -792,6 +793,10 @@ struct AlpineServerConfig
     void set_bot_shared_secret(const uint32_t secret) {
         bot_shared_secret = secret;
     }
+
+    void set_fflink_gsk(std::string_view new_gsk) {
+        fflink_gsk.assign(new_gsk);
+    }
 };
 
 struct ManualRulesOverride
@@ -850,7 +855,7 @@ enum class UpcomingGameTypeSelection {
     ExplicitRequest,
 };
 
-const rf::NetGameType get_upcoming_game_type();
+rf::NetGameType get_upcoming_game_type();
 UpcomingGameTypeSelection get_upcoming_game_type_selection();
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
