@@ -346,12 +346,12 @@ public:
             const size_t num_bytes =
                 self.storage.write(0, std::span{ptr, sizeof(RF_GamePacketHeader)});
             if (num_bytes != sizeof(RF_GamePacketHeader) || self.size() > MAX_LEN) {
-                goto POISON;
+            POISON:
+                self.cursor.poison();
+                return false;
             }
         } catch (...) {
-        POISON:
-            self.cursor.poison();
-            return false;
+            goto POISON;
         }
         return true;
     }
