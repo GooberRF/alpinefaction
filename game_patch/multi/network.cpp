@@ -716,17 +716,7 @@ FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
             }
 
             if (g_alpine_game_config.player_join_flash) {
-                wnd_set_flash(
-                    rf::main_wnd,
-                    true,
-                    g_alpine_game_config.player_join_flash_highlight_only
-                );
-                g_join_flash_active_players.insert(rf::player_list->prev);
-                if (g_alpine_game_config.player_join_flash_timeout_sec != 0) {
-                    g_join_flash_timer.set(std::chrono::seconds{
-                        g_alpine_game_config.player_join_flash_timeout_sec
-                    });
-                }
+                wnd_set_flash(rf::main_wnd);
             }
         }
     },
@@ -762,13 +752,6 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
         if (!rf::is_server) {
             rf::Player* const player = rf::multi_find_player_by_id(data[0]);
             if (player) {
-                const bool was_in_set = g_join_flash_active_players.erase(player) > 0;
-                if (g_alpine_game_config.player_join_flash_cancelable
-                    && was_in_set
-                    && g_join_flash_active_players.empty()) {
-                    wnd_set_flash(rf::main_wnd, false);
-                    g_join_flash_timer.invalidate();
-                }
                 g_local_player_spectators.erase(player);
                 build_local_player_spectators_strings();
             }
@@ -2375,10 +2358,6 @@ FunHook<void()> multi_stop_hook{
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);
             *player_add_data = PlayerAdditionalData{};
-
-            g_join_flash_active_players.clear();
-            wnd_set_flash(rf::main_wnd, false);
-            g_join_flash_timer.invalidate();
         }
 
         multi_stop_hook.call_target();
@@ -2736,12 +2715,6 @@ FunHook<void()> multi_io_do_frame_hook{
         multi_io_do_frame_hook.call_target();
 
         if (!rf::is_server) {
-            if (g_join_flash_timer.valid()
-                && g_join_flash_timer.elapsed()) {
-                g_join_flash_active_players.clear();
-                wnd_set_flash(rf::main_wnd, false);
-                g_join_flash_timer.invalidate();
-            }
             return;
         }
 

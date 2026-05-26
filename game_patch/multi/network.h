@@ -278,6 +278,3 @@ void send_queues_rel_clear_packets(int socket_id);
 void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
 void clear_rcon_profile_sessions();
 void multi_disconnect_from_server();
-
-inline std::unordered_set<rf::Player*> g_join_flash_active_players;
-inline HighResTimer g_join_flash_timer;

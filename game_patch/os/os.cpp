@@ -61,10 +61,6 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         if (!rf::is_dedicated_server) {
             // Show cursor if window is not active
             if (w_param) {
-                g_join_flash_active_players.clear();
-                wnd_set_flash(rf::main_wnd, false);
-                g_join_flash_timer.invalidate();
-
                 ShowCursor(FALSE);
                 while (ShowCursor(FALSE) >= 0)
                     ;
@@ -244,31 +240,15 @@ bool headless_requested_from_raw_cmdline()
     return headless_bot_requested_from_raw_cmdline() || awpgen_requested_from_raw_cmdline();
 }
 
-static bool g_wnd_is_flash_active = false;
-
-static void wnd_set_flash_impl(
-    const HWND hwnd,
-    const bool active,
-    const bool highlight_only
-) {
-    if (g_wnd_is_flash_active != active) {
-        FLASHWINFO flash{
-            .cbSize = sizeof(flash),
-            .hwnd = hwnd,
-            .dwFlags = static_cast<DWORD>(active ? FLASHW_TRAY : FLASHW_STOP),
-            .uCount = active && !highlight_only ? 3ul : 0ul,
-            .dwTimeout = 0
-        };
-        FlashWindowEx(&flash);
-        g_wnd_is_flash_active = active;
-    }
-}
-
-void wnd_set_flash(const HWND hwnd, const bool active, const bool highlight_only) {
-    if (g_wnd_is_flash_active && active && !highlight_only) {
-        wnd_set_flash_impl(hwnd, false, false);
-    }
-    wnd_set_flash_impl(hwnd, active, highlight_only);
+void wnd_set_flash(const HWND hwnd) {
+    FLASHWINFO flash{
+        .cbSize = sizeof(flash),
+        .hwnd = hwnd,
+        .dwFlags = FLASHW_TRAY,
+        .uCount = 3ul,
+        .dwTimeout = 0
+    };
+    FlashWindowEx(&flash);
 }
 
 static FunHook<void()> os_close_hook{

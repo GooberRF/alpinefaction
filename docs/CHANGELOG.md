@@ -20,11 +20,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Make clock clutter objects correctly display the current local real world time
 
 [@is-this-c](https://github.com/is-this-c)
-- Add join flashes to multiplayer
-  - Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
-  - Add `mp_join_flash_timeout` console command to configure a timeout for a join flash
-  - Add `mp_join_flash_highlight_only` console command to set a join flash to highlight only
-  - Add `mp_join_flash_cancelable` console command to cancel a join flash, if a player joined but left
+- Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
 - Rename `mp_notifyonjoin` console command to `mp_join_beep`
 - Disable `Refresh Selected` in the server browser, only if `Refresh Selected` was pressed
 - Never disable `Add Server` in the server browser
