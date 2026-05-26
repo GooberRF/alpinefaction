@@ -242,7 +242,7 @@ namespace rf
     #pragma pack(pop)
     static_assert(sizeof(NetReliableSocket) == 0x6BF);
 
-    constexpr size_t max_packet_size = 512;
+    constexpr size_t MAX_PACKET_SIZE = 512;
 
     static auto& multi_get_game_type = addr_as_ref<NetGameType()>(0x00470770);
     static auto& multi_io_send = addr_as_ref<void(Player *player, const void *packet, int len)>(0x00479370);

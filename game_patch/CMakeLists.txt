@@ -217,15 +217,16 @@ set(SRCS
     multi/bots/bot_waypoint_route.cpp
     multi/bots/bot_waypoint_route.h
     multi/bots/bot_weapon_profiles.h
+    os/autocomplete.cpp
     os/console.cpp
     os/console.h
     os/commands.cpp
-    os/autocomplete.cpp
     os/frametime.cpp
-    os/timer.cpp
-    os/win32_console.cpp
+    os/io_cursor.h
     os/os.cpp
     os/os.h
+    os/timer.cpp
+    os/win32_console.cpp
     object/object.h
     object/mover.h
     object/object_private.h
