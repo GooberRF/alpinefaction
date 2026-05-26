@@ -237,10 +237,7 @@ public:
             self.poison();
             return false;
         }
-        const std::span bytes = std::span{
-            reinterpret_cast<char*>(std::addressof(out)),
-            sizeof(T)
-        };
+        const std::span bytes = std::as_bytes(std::span{std::addressof(out), 1});
         if (self.storage.read(self.pos, bytes) != sizeof(T)) {
             self.poison();
             return false;
@@ -315,8 +312,7 @@ public:
         if (self.poisoned) {
             return false;
         }
-        const char* const ptr = reinterpret_cast<const char*>(std::addressof(value));
-        const std::span bytes = std::span{ptr, sizeof(T)};
+        const std::span bytes = std::as_bytes(std::span{std::addressof(value), 1});
         size_t num_bytes = 0;
         try {
             num_bytes = self.storage.write(self.pos, bytes);

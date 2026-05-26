@@ -341,19 +341,19 @@ public:
             .type = std::to_underlying(type),
             .size = static_cast<uint16_t>(self.payload_size())
         };
-        const char* const ptr = reinterpret_cast<const char*>(&header);
         try {
             const size_t num_bytes =
-                self.storage.write(0, std::span{ptr, sizeof(RF_GamePacketHeader)});
+                self.storage.write(0, std::as_bytes(std::span{&header, 1}));
             if (num_bytes != sizeof(RF_GamePacketHeader) || self.size() > MAX_LEN) {
-            POISON:
-                self.cursor.poison();
-                return false;
+                goto POISON;
             }
         } catch (...) {
             goto POISON;
         }
         return true;
+    POISON:
+        self.cursor.poison();
+        return false;
     }
 
     [[nodiscard]]
