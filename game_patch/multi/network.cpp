@@ -2055,28 +2055,27 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
     },
 };
 
-FunHook<int(const rf::NetAddr&, const rf::JoinRequest*)> check_access_for_new_player_hook {
+FunHook<int(const rf::NetAddr&, const rf::JoinRequest&)> check_access_for_new_player_hook {
     0x0047AE10,
-    [] (const rf::NetAddr& addr, const rf::JoinRequest* const join_req) {
+    [] (const rf::NetAddr& addr, const rf::JoinRequest& join_req) {
         const int reason = check_access_for_new_player_hook.call_target(addr, join_req);
+
         if (reason != 0 && rf::is_dedicated_server) {
             const RF_JoinDenyReason jdr = static_cast<RF_JoinDenyReason>(reason);
             std::string jdr_str = "unknown";
 
             if (jdr == RF_JoinDenyReason::RF_JDR_INVALID_PASSWORD) {
-                jdr_str = std::format("wrong password '{}'", join_req->password);
+                jdr_str = std::format("wrong password '{}'", join_req.password);
             }  else if (jdr == RF_JoinDenyReason::RF_JDR_BANNED) {
                 jdr_str = "banned";
             } else if (jdr == RF_JoinDenyReason::RF_JDR_SERVER_IS_FULL) {
                 jdr_str = "server full";
             } else if (jdr == RF_JoinDenyReason::RF_JDR_THE_SAME_IP) {
                 jdr_str = "same socket as another player";
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_LEVEL_CHANGING) {
+            } else if (jdr == RF_JoinDenyReason::RF_JDR_LEVEL_CHANGING) {
                 // Handle in `process_join_req_injection`.
                 return 0;
-            }
-            else if (jdr == RF_JoinDenyReason::RF_JDR_DATA_DOESNT_MATCH) {
+            } else if (jdr == RF_JoinDenyReason::RF_JDR_DATA_DOESNT_MATCH) {
                 jdr_str = "failed data validation";
             }
 
