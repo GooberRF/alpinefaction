@@ -280,13 +280,16 @@ void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
 void clear_rcon_profile_sessions();
 void multi_disconnect_from_server();
 
-template <io_cursor_detail::Write Storage>
+template <io_cursor_detail::WriteSeek Storage, auto MAX_LEN = 512>
 class PacketBuilder {
 public:
     explicit PacketBuilder(const Storage storage)
         noexcept(std::is_nothrow_move_constructible_v<Storage>)
         : storage{std::move(storage)}
         , cursor{this->storage} {
+        if constexpr (std::derived_from<Storage, io_cursor_detail::VectorGrowStorage>) {
+            this->storage.reserve(rf::MAX_PACKET_SIZE);
+        }
         this->cursor.write(DUMMY_HEADER);
     }
 
@@ -296,56 +299,87 @@ public:
         noexcept(std::is_nothrow_constructible_v<Storage, Args...>)
         : storage{std::forward<Args>(args)...}
         , cursor{this->storage} {
+        if constexpr (std::derived_from<Storage, io_cursor_detail::VectorGrowStorage>) {
+            this->storage.reserve(rf::MAX_PACKET_SIZE);
+        }
         this->cursor.write(DUMMY_HEADER);
     }
 
     template <io_cursor_detail::PodLike T>
     bool write(this PacketBuilder& self, const T& value) noexcept {
-        return self.cursor.write(value);
+        const bool res = self.cursor.write(value);
+        if (!res || self.size() > MAX_LEN) {
+            self.cursor.poison();
+            return false;
+        } else {
+            return true;
+        }
     }
 
     bool write_zstring(
         this PacketBuilder& self,
         const std::string_view text
     ) noexcept {
-        return self.cursor.write_zstring(text);
+        const bool res = self.cursor.write_zstring(text);
+        if (!res || self.size() > MAX_LEN) {
+            self.cursor.poison();
+            return false;
+        } else {
+            return true;
+        }
     }
 
     template <typename E>
     requires std::is_enum_v<E>
         && (sizeof(std::underlying_type_t<E>) == 1)
-    void finalize(this PacketBuilder& self, const E type) noexcept {
+    bool finalize(this PacketBuilder& self, const E type) noexcept {
+        if (self.cursor.is_poisoned()
+            || self.payload_size() > std::numeric_limits<uint16_t>::max()) {
+            return false;
+        }
         const RF_GamePacketHeader header{
             .type = std::to_underlying(type),
-            .size = static_cast<uint16_t>(self.payload_len())
+            .size = static_cast<uint16_t>(self.payload_size())
         };
         const char* const ptr = reinterpret_cast<const char*>(&header);
-        self.storage.write(0, std::span{ptr, sizeof(RF_GamePacketHeader)});
+
+        try {
+            const size_t num_bytes =
+                self.storage.write(0, std::span{ptr, sizeof(RF_GamePacketHeader)});
+            if (num_bytes != sizeof(RF_GamePacketHeader) || self.size() > MAX_LEN) {
+                goto POISON;
+            }
+        } catch (...) {
+        POISON:
+            self.cursor.poison();
+            return false;
+        }
+        return true;
     }
 
     [[nodiscard]]
     size_t capacity(this const PacketBuilder& self) noexcept {
-        return self.cursor.len();
+        return self.cursor.size();
     }
 
     [[nodiscard]]
-    size_t payload_len(this const PacketBuilder& self) noexcept {
+    size_t size(this const PacketBuilder& self) noexcept {
+        return self.cursor.position();
+    }
+
+    [[nodiscard]]
+    size_t payload_size(this const PacketBuilder& self) noexcept {
         return self.cursor.position() - sizeof(RF_GamePacketHeader);
     }
 
     [[nodiscard]]
-    size_t len(this const PacketBuilder& self) noexcept {
-        return self.cursor.position();
+    const char* data(this const PacketBuilder& self) noexcept {
+        return self.storage.data();
     }
 
     [[nodiscard]]
     bool is_poisoned(this const PacketBuilder& self) noexcept {
         return self.cursor.is_poisoned();
-    }
-
-    [[nodiscard]]
-    const char* ptr(this const PacketBuilder& self) noexcept {
-        return self.storage.ptr();
     }
 
 private:

@@ -18,24 +18,29 @@ concept PodLike = std::is_trivially_copyable_v<T>
     && std::is_standard_layout_v<T>;
 
 template <typename Storage>
-concept Read = requires(
+concept ReadSeek = requires(
     const Storage& storage,
     size_t position,
     std::span<char> out
 ) {
-    { storage.ptr() } noexcept -> std::same_as<const char*>;
-    { storage.len() } noexcept -> std::same_as<size_t>;
+    { storage.size() } noexcept -> std::same_as<size_t>;
+    { storage.data() } noexcept -> std::same_as<const char*>;
     { storage.read(position, out) } noexcept -> std::same_as<size_t>;
 };
 
 template <typename Storage>
-concept Write = requires(
+concept WriteSeek = requires(
     Storage& storage,
     size_t position,
     std::span<const char> in
 ) {
+    { storage.size() } noexcept -> std::same_as<size_t>;
+    { storage.data() } noexcept -> std::same_as<const char*>;
     { storage.write(position, in) } -> std::same_as<size_t>;
 };
+
+template <typename Storage>
+concept ReadWriteSeek = ReadSeek<Storage> && WriteSeek<Storage>;
 
 class ReadOnlySpanStorage {
 public:
@@ -55,12 +60,12 @@ public:
         : view{static_cast<const char*>(buf), len} {}
 
     [[nodiscard]]
-    const char* ptr(this const ReadOnlySpanStorage& self) noexcept {
+    const char* data(this const ReadOnlySpanStorage& self) noexcept {
         return self.view.data();
     }
 
     [[nodiscard]]
-    size_t len(this const ReadOnlySpanStorage& self) noexcept {
+    size_t size(this const ReadOnlySpanStorage& self) noexcept {
         return self.view.size();
     }
 
@@ -98,12 +103,12 @@ public:
         : view{static_cast<char*>(buf), len} {}
 
     [[nodiscard]]
-    const char* ptr(this const FixedSpanStorage& self) noexcept {
+    const char* data(this const FixedSpanStorage& self) noexcept {
         return self.view.data();
     }
 
     [[nodiscard]]
-    size_t len(this const FixedSpanStorage& self) noexcept {
+    size_t size(this const FixedSpanStorage& self) noexcept {
         return self.view.size();
     }
 
@@ -143,19 +148,23 @@ private:
 
 class VectorGrowStorage {
 public:
-    VectorGrowStorage() = default;
+    VectorGrowStorage() = delete;
 
     explicit VectorGrowStorage(std::vector<char>& buf) noexcept
         : buf{buf} {}
 
     [[nodiscard]]
-    const char* ptr(this const VectorGrowStorage& self) noexcept {
+    const char* data(this const VectorGrowStorage& self) noexcept {
         return self.buf.data();
     }
 
     [[nodiscard]]
-    size_t len(this const VectorGrowStorage& self) noexcept {
+    size_t size(this const VectorGrowStorage& self) noexcept {
         return self.buf.size();
+    }
+
+    void reserve(this VectorGrowStorage& self, const size_t size) noexcept {
+        self.buf.reserve(size);
     }
 
     size_t read(
@@ -195,7 +204,7 @@ private:
 
 }
 
-template <io_cursor_detail::Read Storage>
+template <typename Storage>
 class IoCursor {
 public:
     explicit IoCursor(Storage storage)
@@ -213,14 +222,16 @@ public:
         , poisoned{false} {}
 
     template <io_cursor_detail::PodLike T>
+    requires io_cursor_detail::ReadSeek<Storage> || io_cursor_detail::WriteSeek<Storage>
     [[nodiscard]]
     bool available(this const IoCursor& self) noexcept {
         return !self.poisoned
-            && self.pos <= self.storage.len()
-            && sizeof(T) <= self.storage.len() - self.pos;
+            && self.pos <= self.storage.size()
+            && sizeof(T) <= self.storage.size() - self.pos;
     }
 
     template <io_cursor_detail::PodLike T>
+    requires io_cursor_detail::ReadSeek<Storage>
     bool peek(this IoCursor& self, T& out) noexcept {
         if (!self.available<T>()) {
             self.poison();
@@ -238,6 +249,7 @@ public:
     }
 
     template <io_cursor_detail::PodLike T>
+    requires io_cursor_detail::ReadSeek<Storage> || io_cursor_detail::WriteSeek<Storage>
     bool skip(this IoCursor& self) noexcept {
         if (!self.available<T>()) {
             self.poison();
@@ -247,7 +259,9 @@ public:
         return true;
     }
 
+
     template <io_cursor_detail::PodLike T>
+    requires io_cursor_detail::ReadSeek<Storage>
     bool read(this IoCursor& self, T& out) noexcept {
         if (!self.peek(out)) {
             return false;
@@ -256,16 +270,18 @@ public:
         return true;
     }
 
+    template <typename S = Storage>
+    requires io_cursor_detail::ReadSeek<S>
     bool read_zstring(this IoCursor& self, std::string_view& out) noexcept {
         if (self.poisoned) {
             return false;
-        } else if (self.pos >= self.storage.len()) {
+        } else if (self.pos >= self.storage.size()) {
             self.poison();
             return false;
         }
-        const char* const storage = self.storage.ptr();
-        const char* const begin = storage + self.pos;
-        const char* const end = storage + self.storage.len();
+        const char* const data = self.storage.data();
+        const char* const begin = data + self.pos;
+        const char* const end = data + self.storage.size();
         const char* const nul = std::find(begin, end, '\0');
         if (nul == end) {
             self.poison();
@@ -277,27 +293,38 @@ public:
         return true;
     }
 
-    bool read_zstring(this IoCursor& self, std::string& out) {
+    template <typename S = Storage>
+    requires io_cursor_detail::ReadSeek<S>
+    bool read_zstring(this IoCursor& self, std::string& out) noexcept {
         std::string_view view{};
         if (!self.read_zstring(view)) {
             return false;
         }
-        out.assign(view);
+        try {
+            out.assign(view);
+        } catch (...) {
+            self.poison();
+            return false;
+        }
         return true;
     }
 
     template <io_cursor_detail::PodLike T>
-    requires io_cursor_detail::Write<Storage>
-    bool write(this IoCursor& self, const T& value) {
+    requires io_cursor_detail::WriteSeek<Storage>
+    bool write(this IoCursor& self, const T& value) noexcept {
         if (self.poisoned) {
             return false;
         }
-        const std::span bytes = std::span{
-            reinterpret_cast<const char*>(std::addressof(value)),
-            sizeof(T)
-        };
-        const size_t num_bytes = self.storage.write(self.pos, bytes);
+        const char* const ptr = reinterpret_cast<const char*>(std::addressof(value));
+        const std::span bytes = std::span{ptr, sizeof(T)};
+        size_t num_bytes = 0;
+        try {
+            num_bytes = self.storage.write(self.pos, bytes);
+        } catch (...) {
+            goto POISON;
+        }
         if (num_bytes != sizeof(T)) {
+        POISON:
             self.poison();
             return false;
         }
@@ -306,22 +333,30 @@ public:
     }
 
     template <typename S = Storage>
-    requires io_cursor_detail::Write<S>
-    bool write_zstring(this IoCursor& self, const std::string_view text) {
+    requires io_cursor_detail::WriteSeek<S>
+    bool write_zstring(this IoCursor& self, const std::string_view text) noexcept {
         if (self.poisoned) {
             return false;
         }
-        const size_t num_bytes =
-            self.storage.write(self.pos, std::span{text});
+        size_t num_bytes = 0;
+        try {
+            num_bytes = self.storage.write(self.pos, std::span{text});
+        } catch (...) {
+            goto POISON;
+        }
         if (num_bytes != text.size()) {
+        POISON:
             self.poison();
             return false;
         }
         self.pos += num_bytes;
         constexpr char NUL = '\0';
-        if (self.storage.write(self.pos, std::span{&NUL, 1}) != 1) {
-            self.poison();
-            return false;
+        try {
+            if (self.storage.write(self.pos, std::span{&NUL, 1}) != sizeof(char)) {
+                goto POISON;
+            }
+        } catch (...) {
+            goto POISON;
         }
         self.pos += 1;
         return true;
@@ -337,9 +372,11 @@ public:
         return self.pos;
     }
 
+    template <typename S = Storage>
+    requires io_cursor_detail::ReadSeek<S> || io_cursor_detail::WriteSeek<S>
     [[nodiscard]]
-    size_t len(this const IoCursor& self) noexcept {
-        return self.storage.len();
+    size_t size(this const IoCursor& self) noexcept {
+        return self.storage.size();
     }
 
 private:
@@ -347,8 +384,8 @@ private:
         self.poisoned = true;
     }
 
-    size_t pos;
     Storage storage;
+    size_t pos;
     bool poisoned;
 };
 
