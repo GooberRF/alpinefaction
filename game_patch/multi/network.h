@@ -283,7 +283,7 @@ void multi_disconnect_from_server();
 template <io_cursor_detail::WriteSeek Storage, auto MAX_LEN = 512>
 class PacketBuilder {
 public:
-    explicit PacketBuilder(const Storage storage)
+    explicit PacketBuilder(Storage storage)
         noexcept(std::is_nothrow_move_constructible_v<Storage>)
         : storage{std::move(storage)}
         , cursor{this->storage} {
