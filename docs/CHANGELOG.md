@@ -16,20 +16,19 @@ Version 1.4.0 (Lupin): Not yet released
 - Bump RFL version to 305
 - Add `ATX_Set_Frame`, `ATX_Play`, `ATX_Pause`, `ATX_Set_Frame_Time` events
 - Add vote-allowed levels to level autodownload list for dedicated servers
-- Add `fflink_gsk` dedicated server config field and `sv_fflink_status` / `sv_fflink_resync` console commands for FactionFiles session key exchange
+- Add `fflink_gsk` dedicated server config field and `sv_fflink_status` and `sv_fflink_resync` console commands for FactionFiles session key exchange
 - Make clock clutter objects correctly display the current local real world time
 
 [@is-this-c](https://github.com/is-this-c)
-- Disable `Refresh Selected` in the server browser, only if `Refresh Selected` was pressed
-- Never disable `Add Server` in the server browser
+- Allow players to join between levels
+- Server browser
+  - Disable `Refresh Selected`, only if `Refresh Selected` was pressed
+  - Never disable `Add Server`
 - Add `NOT IN ROUND`, `IDLE`, and `SPECTATOR` to the spectate UI
 - Remote server config UI
   - Add `Net FPS` and `Target FPS`
   - Add detection of manually loaded levels
   - Highlight an active level in a server's rotation via background color instead of text color
-
-[@is-this-c](https://github.com/is-this-c)
-- Allow players to join between levels
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
