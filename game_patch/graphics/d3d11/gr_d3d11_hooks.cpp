@@ -862,85 +862,85 @@ namespace gr::d3d11
             renderer->flush_frame_buffers();
         }
     }
-}
 
-ConsoleCommand2 r_antialiasing_mode_cmd{
-    "r_antialiasing_mode",
-    [] (const std::optional<std::string_view> mode) {
-        if (!g_antialiasing) {
-            rf::console::print("Anti-aliasing is not enabled");
-        } else if (!mode) {
-            if (g_alpine_game_config.sample_count == 1) {
-                rf::console::print("Anti-aliasing mode is none");
-            } else {
-                rf::console::print(
-                    "Anti-aliasing mode is MSAAx{}",
-                    g_alpine_game_config.sample_count
-                );
-            }
-        } else {
-            constexpr std::string_view MSAA_PREFIX = "msaax";
-            if (string_iequals(*mode, "none")) {
-                if (g_alpine_game_config.sample_count != 1) {
-                    g_alpine_game_config.sample_count = 1;
-                    gr::d3d11::renderer->flush_frame_buffers();
+    ConsoleCommand2 r_antialiasing_mode_cmd{
+        "r_antialiasing_mode",
+        [] (const std::optional<std::string_view> mode) {
+            if (!g_antialiasing) {
+                rf::console::print("Anti-aliasing is not enabled");
+            } else if (!mode) {
+                if (g_alpine_game_config.sample_count == 1) {
                     rf::console::print("Anti-aliasing mode is none");
                 } else {
-                    rf::console::print("Anti-aliasing mode is already none");
-                }
-            } else if (string_istarts_with(*mode, MSAA_PREFIX)) {
-                int value = 0;
-                const auto [ptr, err] = std::from_chars(
-                    mode->data() + MSAA_PREFIX.size(),
-                    mode->data() + mode->size(),
-                    value
-                );
-                if (err != std::errc{} || ptr != mode->data() + mode->size()) {
-                    rf::console::print("Invalid value!");
-                    return;
-                } else if (value != 2 && value != 4 && value != 8) {
-                    rf::console::print("MSAA level must be 2, 4, or 8");
-                    return;
-                }
-                if (std::cmp_not_equal(value, g_alpine_game_config.sample_count)) {
-                    if (!gr::d3d11::renderer->supports_sample_count(value)) {
-                        rf::console::print("MSAAx{} is an unsupported mode!", value);
-                    } else {
-                        g_alpine_game_config.sample_count = value;
-                        gr::d3d11::renderer->flush_frame_buffers();
-                        rf::console::print("Anti-aliasing mode is MSAAx{}", value);
-                    }
-                } else {
                     rf::console::print(
-                        "Anti-aliasing mode is already MSAAx{}",
-                        value
+                        "Anti-aliasing mode is MSAAx{}",
+                        g_alpine_game_config.sample_count
                     );
                 }
             } else {
-                rf::console::print("Invalid value!");
+                constexpr std::string_view MSAA_PREFIX = "msaax";
+                if (string_iequals(*mode, "none")) {
+                    if (g_alpine_game_config.sample_count != 1) {
+                        g_alpine_game_config.sample_count = 1;
+                        gr::d3d11::renderer->flush_frame_buffers();
+                        rf::console::print("Anti-aliasing mode is none");
+                    } else {
+                        rf::console::print("Anti-aliasing mode is already none");
+                    }
+                } else if (string_istarts_with(*mode, MSAA_PREFIX)) {
+                    int value = 0;
+                    const auto [ptr, err] = std::from_chars(
+                        mode->data() + MSAA_PREFIX.size(),
+                        mode->data() + mode->size(),
+                        value
+                    );
+                    if (err != std::errc{} || ptr != mode->data() + mode->size()) {
+                        rf::console::print("Invalid value!");
+                        return;
+                    } else if (value != 2 && value != 4 && value != 8) {
+                        rf::console::print("MSAA level must be 2, 4, or 8");
+                        return;
+                    }
+                    if (std::cmp_not_equal(value, g_alpine_game_config.sample_count)) {
+                        if (!gr::d3d11::renderer->supports_sample_count(value)) {
+                            rf::console::print("MSAAx{} is an unsupported mode!", value);
+                        } else {
+                            g_alpine_game_config.sample_count = value;
+                            gr::d3d11::renderer->flush_frame_buffers();
+                            rf::console::print("Anti-aliasing mode is MSAAx{}", value);
+                        }
+                    } else {
+                        rf::console::print(
+                            "Anti-aliasing mode is already MSAAx{}",
+                            value
+                        );
+                    }
+                } else {
+                    rf::console::print("Invalid value!");
+                }
             }
-        }
-    },
-    "Sets anti-aliasing mode",
-    "r_antialiasing_mode [none|msaax{2,4,8}]",
-};
+        },
+        "Sets anti-aliasing mode",
+        "r_antialiasing_mode [none|msaax{2,4,8}]",
+    };
 
-ConsoleCommand2 r_antialiasing_cmd{
-    "r_antialiasing",
-    [] {
-        if (g_alpine_game_config.sample_count == 1) {
-            rf::console::print("Anti-aliasing is not set or supported");
-        } else {
-            g_antialiasing = !g_antialiasing;
-            gr::d3d11::renderer->flush_frame_buffers();
-            rf::console::print(
-                "Anti-aliasing is {} until exit",
-                g_antialiasing ? "enabled" : "disabled"
-            );
-        }
-    },
-    "Toggles anti-aliasing",
-};
+    ConsoleCommand2 r_antialiasing_cmd{
+        "r_antialiasing",
+        [] {
+            if (g_alpine_game_config.sample_count == 1) {
+                rf::console::print("Anti-aliasing is not set or supported");
+            } else {
+                g_antialiasing = !g_antialiasing;
+                gr::d3d11::renderer->flush_frame_buffers();
+                rf::console::print(
+                    "Anti-aliasing is {} until exit",
+                    g_antialiasing ? "enabled" : "disabled"
+                );
+            }
+        },
+        "Toggles anti-aliasing",
+    };
+}
 
 void gr_d3d11_apply_patch()
 {
