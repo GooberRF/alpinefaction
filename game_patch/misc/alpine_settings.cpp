@@ -32,6 +32,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <xlog/xlog.h>
+#include "../graphics/gr.h"
 
 bool g_loaded_alpine_settings_file = false;
 bool g_loaded_alpine_core_config_file = false;
@@ -1594,6 +1595,11 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
             else {
                 xlog::warn("Legacy RF settings file not found. Applying default settings.");
             }
+        }
+
+        // HACKFIX.  We need to load our settings earlier.
+        if (g_alpine_game_config.sample_count != 1) {
+           gr_flush_frame_buffers();
         }
 
         // display popup recommending ff link (skip for bots)
