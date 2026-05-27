@@ -191,16 +191,25 @@ bool gr_d3d_supports_sample_count(const uint32_t sample_count) {
         case 2:
         case 4:
         case 8: {
-            const D3DMULTISAMPLE_TYPE multi_sample_type =
-                static_cast<D3DMULTISAMPLE_TYPE>(sample_count);
-            const HRESULT hr = rf::gr::d3d::d3d->CheckDeviceMultiSampleType(
-                rf::gr::d3d::adapter_idx,
-                D3DDEVTYPE_HAL,
+            const D3DFORMAT formats[] = {
                 rf::gr::d3d::pp.BackBufferFormat,
-                rf::gr::d3d::pp.Windowed,
-                multi_sample_type
-            );
-            return SUCCEEDED(hr);
+                rf::gr::d3d::pp.AutoDepthStencilFormat
+            };
+            for (const D3DFORMAT format : formats) {
+                const D3DMULTISAMPLE_TYPE multi_sample_type =
+                    static_cast<D3DMULTISAMPLE_TYPE>(sample_count);
+                const HRESULT hr = rf::gr::d3d::d3d->CheckDeviceMultiSampleType(
+                    rf::gr::d3d::adapter_idx,
+                    D3DDEVTYPE_HAL,
+                    format,
+                    rf::gr::d3d::pp.Windowed,
+                    multi_sample_type
+                );
+                if (FAILED(hr)) {
+                    return false;
+                }
+            }
+            return true;
         }
         default:
             return false;

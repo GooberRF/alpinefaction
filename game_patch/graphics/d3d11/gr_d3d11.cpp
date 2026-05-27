@@ -458,13 +458,22 @@ namespace gr::d3d11
             case 2:
             case 4:
             case 8: {
-                UINT num_quality_levels = 0;
-                const HRESULT hr = device_->CheckMultisampleQualityLevels(
+                constexpr DXGI_FORMAT FORMATS[] = {
                     swap_chain_format,
-                    sample_count,
-                    &num_quality_levels
-                );
-                return SUCCEEDED(hr) && num_quality_levels > 0;
+                    DXGI_FORMAT_D24_UNORM_S8_UINT
+                };
+                for (const DXGI_FORMAT format : FORMATS) {
+                    UINT num_quality_levels = 0;
+                    const HRESULT hr = device_->CheckMultisampleQualityLevels(
+                        format,
+                        sample_count,
+                        &num_quality_levels
+                    );
+                    if (FAILED(hr) || num_quality_levels == 0) {
+                        return false;
+                    }
+                }
+                return true;
             }
             default:
                 return false;
