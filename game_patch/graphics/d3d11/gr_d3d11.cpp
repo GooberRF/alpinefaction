@@ -39,10 +39,12 @@ namespace gr::d3d11
         skip_gamma_pass_ = g_alpine_system_config.skip_gamma_pass;
         allow_tearing_ = g_alpine_system_config.allow_tearing;
         init_swap_chain(hwnd);
+        // TODO.  `sample_count` is always 1 here, until we load settings earlier.
         if (supports_sample_count(g_alpine_game_config.sample_count)) {
             init_back_buffer(g_alpine_game_config.sample_count);
             init_depth_stencil_buffer(g_alpine_game_config.sample_count);
         } else {
+            xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
             init_back_buffer(1);
             init_depth_stencil_buffer(1);
         }
@@ -488,6 +490,7 @@ namespace gr::d3d11
             init_back_buffer(g_alpine_game_config.sample_count);
             init_depth_stencil_buffer(g_alpine_game_config.sample_count);
         } else {
+            xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
             init_back_buffer(1);
             init_depth_stencil_buffer(1);
         }
