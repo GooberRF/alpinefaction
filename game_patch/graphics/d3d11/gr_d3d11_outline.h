@@ -59,6 +59,15 @@ namespace df::gr::d3d11
         OutlineInfo info;
     };
 
+    // v3d analog of ForcedXrayEntry for a static mesh
+    struct ForcedV3dXrayEntry
+    {
+        rf::VifLodMesh* lod_mesh = nullptr;
+        rf::Vector3 pos{};
+        rf::Matrix3 orient{};
+        bool naturally_rendered = false;
+    };
+
     class OutlineRenderer
     {
     public:
@@ -72,6 +81,9 @@ namespace df::gr::d3d11
         void set_current_character_outline(const OutlineInfo* info);
         void flush(MeshRenderer& mesh_renderer);
         void flush_forced_xray(MeshRenderer& mesh_renderer);
+        void maybe_queue_bag_outline(
+            rf::VifLodMesh* lod_mesh, int lod_index,
+            const rf::Vector3& pos, const rf::Matrix3& orient);
 
     private:
         void queue_unrendered_xray_outlines();
@@ -97,5 +109,7 @@ namespace df::gr::d3d11
         UINT next_stencil_ref_ = 1;
         int last_begin_frame_ = -1; // frame_count of last begin_frame to run once per frame
         const OutlineInfo* current_character_outline_ = nullptr; // outline info of last rendered character
+        ForcedV3dXrayEntry bagman_pickup_xray_{};
+        ForcedV3dXrayEntry bagman_carrier_xray_{};
     };
 }

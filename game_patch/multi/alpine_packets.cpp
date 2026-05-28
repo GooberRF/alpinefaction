@@ -18,10 +18,12 @@
 #include "server.h"
 #include "../hud/hud_world.h"
 #include "alpine_packets.h"
+#include "bagman.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "bots/bot_personality.h"
 #include "bots/bot_state.h"
@@ -137,6 +139,10 @@ bool af_process_packet(
         }
         case af_packet_type::af_server_bot_control: {
             af_process_bot_control_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_bagman_state: {
+            af_process_bagman_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -1040,6 +1046,139 @@ static void af_process_koth_hill_state_packet(const void* data, size_t len, cons
     multi_koth_set_blue_team_score(pkt.blue_score);
 }
 
+// Build the wire packet once from the current bagman state. Used by both the
+// single-player and broadcast send paths so we don't reconstruct per-player.
+static void build_af_bagman_state_packet(af_bagman_state_packet& pkt)
+{
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_bagman_state);
+    pkt.header.size = static_cast<uint16_t>(sizeof(af_bagman_state_packet) - sizeof(RF_GamePacketHeader));
+
+    pkt.carrier_player_id = (g_bagman_info.carrier && g_bagman_info.carrier->net_data)
+        ? g_bagman_info.carrier->net_data->player_id
+        : 0xFF;
+    pkt.state = static_cast<uint8_t>(g_bagman_info.state);
+
+    int return_left = 0;
+    if (g_bagman_info.state == BagState::BS_Dropped && g_bagman_info.return_timer.valid()) {
+        return_left = g_bagman_info.return_timer.time_until();
+    }
+    pkt.return_time_left_ms = static_cast<uint16_t>(std::clamp(return_left, 0, 0xFFFF));
+    pkt.red_team_score = static_cast<uint16_t>(std::clamp(g_bagman_info.red_team_score, 0, 0xFFFF));
+    pkt.blue_team_score = static_cast<uint16_t>(std::clamp(g_bagman_info.blue_team_score, 0, 0xFFFF));
+    pkt.carrier_score = (g_bagman_info.carrier && g_bagman_info.carrier->stats)
+        ? g_bagman_info.carrier->stats->score
+        : 0;
+}
+
+void af_send_bagman_state_packet(rf::Player* player)
+{
+    // server -> single client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_bagman_state_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    af_bagman_state_packet pkt{};
+    build_af_bagman_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+    af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
+}
+
+void af_send_bagman_state_packet_to_all()
+{
+    // server -> all clients
+    if (!rf::is_server)
+        return;
+
+    af_bagman_state_packet pkt{};
+    build_af_bagman_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+
+    SinglyLinkedList<rf::Player> players{rf::player_list};
+    for (auto& p : players) {
+        if (!p.net_data)
+            continue;
+        af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
+    }
+}
+
+void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server)
+        return;
+    if (len < sizeof(RF_GamePacketHeader))
+        return;
+
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (sizeof(RF_GamePacketHeader) + hdr.size > len) {
+        xlog::warn("bagman_state: truncated (declared={}, len={})", hdr.size, len);
+        return;
+    }
+    if (len < sizeof(af_bagman_state_packet)) {
+        xlog::warn("bagman_state: short packet ({}<{})", len, sizeof(af_bagman_state_packet));
+        return;
+    }
+
+    af_bagman_state_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    const size_t expected_payload = sizeof(af_bagman_state_packet) - sizeof(RF_GamePacketHeader);
+    if (pkt.header.size != expected_payload) {
+        xlog::warn("bagman_state: bad payload size {} (expected {})", pkt.header.size, expected_payload);
+        return;
+    }
+
+    const BagState prev_state = g_bagman_info.state;
+    g_bagman_info.state = static_cast<BagState>(pkt.state);
+
+    if (prev_state == BagState::BS_Dropped &&
+        g_bagman_info.state == BagState::BS_At_Spawn) {
+        bagman_play_return_sound();
+    }
+
+    if (pkt.carrier_player_id == 0xFF) {
+        g_bagman_info.carrier = nullptr;
+    } else {
+        g_bagman_info.carrier = rf::multi_find_player_by_id(pkt.carrier_player_id);
+    }
+
+    g_bagman_info.red_team_score = pkt.red_team_score;
+    g_bagman_info.blue_team_score = pkt.blue_team_score;
+
+    // Keep return_timer in sync so the client can render a smooth countdown
+    // between packet broadcasts.
+    if (g_bagman_info.state == BagState::BS_Dropped) {
+        g_bagman_info.return_timer.set(pkt.return_time_left_ms);
+    } else {
+        g_bagman_info.return_timer.invalidate();
+    }
+
+    // Keep score in sync
+    if (g_bagman_info.carrier && g_bagman_info.carrier->stats) {
+        g_bagman_info.carrier->stats->score = pkt.carrier_score;
+    }
+
+    // Handle bag waypoints for bots.
+    if (g_bagman_info.state == BagState::BS_Carried || g_bagman_info.state == BagState::BS_Delayed) {
+        waypoints_on_bag_carried();
+    } else {
+        // On-ground bag: position comes from the replicated item object.
+        rf::Vector3 bag_world_pos;
+        if (bagman_get_client_pickup_pos(&bag_world_pos)) {
+            waypoints_on_bag_world_pos(bag_world_pos);
+        }
+    }
+}
+
 void af_send_koth_hill_captured_packet(rf::Player* player, uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids)
 {
     // Send: server -> client
@@ -1392,7 +1531,7 @@ void af_send_server_info_packet_to_all()
 
     SinglyLinkedList<rf::Player> players{rf::player_list};
     for (auto& p : players) {
-        if (!&p || !p.net_data)
+        if (!p.net_data)
             continue;
         af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
     }

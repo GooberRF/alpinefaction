@@ -18,6 +18,7 @@ constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_note_chunk_id = 0x0AFBAE02;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
+constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
 
 // Per-entry data in the alpine_brush_group_chunk_id chunk (.rfg only).
@@ -366,6 +367,9 @@ struct AlpineLevelProperties
     // Alpine corona objects
     std::vector<DedCorona*> corona_objects;
 
+    // Alpine bag objects
+    std::vector<DedBag*> bag_objects;
+
     static constexpr std::uint32_t current_alpine_chunk_version = 4u;
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
@@ -402,6 +406,14 @@ struct AlpineLevelProperties
             DestroyDedCorona(c);
         }
         corona_objects.clear();
+
+        for (auto* b : bag_objects) {
+            b->field_4.free();
+            b->script_name.free();
+            b->class_name.free();
+            delete b;
+        }
+        bag_objects.clear();
     }
 
     void Serialize(rf::File& file) const

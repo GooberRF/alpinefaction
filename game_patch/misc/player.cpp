@@ -22,6 +22,7 @@
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
+#include "../multi/bagman.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
@@ -246,6 +247,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
     0x004A35C0,
     [](rf::Player* player) {
         multi_spectate_on_destroy_player(player);
+        bagman_on_player_disconnect(player);
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
