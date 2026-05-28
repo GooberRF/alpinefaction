@@ -517,8 +517,6 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.bagman.set_tbm_score_limit(*v);
 
     if (auto sub = t["bagman"].as_table()) {
-        if (auto v = (*sub)["bag_item"].value<std::string>())
-            o.bagman.set_bag_item(*v);
         if (auto v = (*sub)["bag_return_time"].value<float>())
             o.bagman.set_bag_return_time(*v);
         if (auto v = (*sub)["bag_spawn_delay"].value<float>())

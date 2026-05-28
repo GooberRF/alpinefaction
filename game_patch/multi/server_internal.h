@@ -195,16 +195,10 @@ struct GunGameConfig
 
 struct BagmanConfig
 {
-    std::string bag_item = "Multi Damage Amplifier";
     int bag_return_time_ms = 7500;
     int bag_spawn_delay_ms = 7500;
     int bm_score_limit = 150;
     int tbm_score_limit = 300;
-
-    void set_bag_item(std::string_view in_item)
-    {
-        bag_item = std::string(in_item);
-    }
 
     void set_bag_return_time(float in_seconds)
     {

@@ -1108,7 +1108,7 @@ void af_send_bagman_state_packet_to_all()
 
     SinglyLinkedList<rf::Player> players{rf::player_list};
     for (auto& p : players) {
-        if (!&p || !p.net_data)
+        if (!p.net_data)
             continue;
         af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
     }
@@ -1536,7 +1536,7 @@ void af_send_server_info_packet_to_all()
 
     SinglyLinkedList<rf::Player> players{rf::player_list};
     for (auto& p : players) {
-        if (!&p || !p.net_data)
+        if (!p.net_data)
             continue;
         af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
     }
