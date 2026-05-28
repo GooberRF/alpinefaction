@@ -32,6 +32,7 @@
 #include "server_internal.h"
 #include "bots/bot_chat_manager.h"
 #include "../main/main.h"
+#include "../os/os.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/multi.h"
@@ -707,12 +708,17 @@ FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
     0x0047A580,
     [] (char* const data, const rf::NetAddr& addr) {
         process_new_player_packet_hook.call_target(data, addr);
-        if (!rf::is_server && GetForegroundWindow() != rf::main_wnd) {
+        if (!rf::is_server && !is_headless_mode() && GetForegroundWindow() != rf::main_wnd) {
             if (g_alpine_game_config.player_join_beep) {
-                std::thread{[] {
-                    Beep(750, 300);
-                }}
-                .detach();
+                try {
+                    std::thread{[] {
+                        Beep(750, 300);
+                    }}
+                    .detach();
+                }
+                catch (const std::exception& e) {
+                    xlog::error("Failed to start player join beep thread: {}", e.what());
+                }
             }
 
             if (g_alpine_game_config.player_join_flash) {

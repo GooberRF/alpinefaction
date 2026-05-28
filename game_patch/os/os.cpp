@@ -13,7 +13,6 @@
 #include "os.h"
 #include "win32_console.h"
 #include <timeapi.h>
-#include "../multi/network.h"
 
 FunHook<void()> os_poll_hook{
     0x00524B60,
