@@ -1011,11 +1011,11 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.player_join_beep = std::stoi(settings["PlayerJoinBeep"]);
         processed_keys.insert("PlayerJoinBeep");
     }
-    if (settings.contains("PlayerJoinFlash")) {
+    if (settings.count("PlayerJoinFlash")) {
         g_alpine_game_config.player_join_flash = std::stoi(settings["PlayerJoinFlash"]);
         processed_keys.insert("PlayerJoinFlash");
     }
-    if (settings.contains("WorldHUDAltDamageIndicators")) {
+    if (settings.count("WorldHUDAltDamageIndicators")) {
         g_alpine_game_config.world_hud_alt_damage_indicators = std::stoi(settings["WorldHUDAltDamageIndicators"]);
         processed_keys.insert("WorldHUDAltDamageIndicators");
     }
