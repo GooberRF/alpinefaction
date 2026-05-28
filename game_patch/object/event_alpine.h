@@ -1364,22 +1364,6 @@ struct EventAFWhenDead : rf::Event
                     default:
                         break;
                 }
-
-                // Replicate the position snap to clients
-                if (is_multi && is_server) {
-                    af_send_teleport_entity_req(
-                        static_cast<uint32_t>(teleported_entity->handle),
-                        this->pos,
-                        this->orient,
-                        teleported_entity->p_data.vel);
-
-                    // Suppress prediction for the teleported player's own client
-                    // so they don't rubber band between positions
-                    if (rf::Player* teleported_player = rf::player_from_entity_handle(teleported_entity->handle)) {
-                        teleported_player->saving.last_teleport_timer.set(300);
-                        teleported_player->saving.last_teleport_pos = this->pos;
-                    }
-                }
             }
         }
     }
@@ -1840,6 +1824,22 @@ struct EventAFTeleportPlayer : rf::Event
                 if (exit_vclip_id > -1) {
                     rf::vclip_play_3d(
                         exit_vclip_id, this->room, &this->pos, &this->pos, 1.0f, -1, &this->orient.fvec, 1);
+                }
+            }
+
+            // Replicate the position snap to clients
+            if (rf::is_multi && rf::is_server) {
+                af_send_teleport_entity_req(
+                    static_cast<uint32_t>(teleported_entity->handle),
+                    this->pos,
+                    this->orient,
+                    teleported_entity->p_data.vel);
+
+                // Suppress prediction for the teleported player's own client
+                // so they don't rubber band between positions
+                if (rf::Player* teleported_player = rf::player_from_entity_handle(teleported_entity->handle)) {
+                    teleported_player->saving.last_teleport_timer.set(300);
+                    teleported_player->saving.last_teleport_pos = this->pos;
                 }
             }
         }
