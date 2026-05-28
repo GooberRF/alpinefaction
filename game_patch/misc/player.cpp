@@ -247,10 +247,10 @@ FunHook<void(rf::Player*)> player_destroy_hook{
     0x004A35C0,
     [](rf::Player* player) {
         multi_spectate_on_destroy_player(player);
+        bagman_on_player_disconnect(player);
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
-            bagman_on_player_disconnect(player);
             if (player->is_bot) {
                 g_bot_profile_slots.release_slot(player);
             }

@@ -326,6 +326,10 @@ void bagman_level_init()
     g_bag_light_handle = -1;
     g_bag_light_pulse_phase = 0.0f;
 
+    // Drop the cached carrier bag VMesh.
+    g_bag_carrier_mesh = nullptr;
+    g_bag_carrier_mesh_load_attempted = false;
+
     // Always restore engine state before deciding what to do this level.
     revert_aura_swap_if_active();
 
@@ -582,14 +586,24 @@ void bagman_do_frame()
 
 void bagman_on_player_disconnect(rf::Player* player)
 {
-    if (!rf::is_server || !gt_is_bagman_any()) return;
-    if (g_bagman_info.carrier == player) {
+    if (!gt_is_bagman_any()) return;
+    if (g_bagman_info.carrier != player) return;
+
+    if (rf::is_server) {
+        // Server-authoritative: drop the bag at the carrier's position and
+        // broadcast the new state.
         rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
         if (ep) {
             drop_bag_from_entity(player, ep);
         } else {
             drop_bag_at_position(player, g_bagman_info.bag_pos);
         }
+    }
+    else {
+        // Client: the carrier Player struct is about to be destroyed. Drop
+        // our reference now so the render/HUD paths don't dereference freed
+        // memory in the window before the next bagman state packet arrives.
+        g_bagman_info.carrier = nullptr;
     }
 }
 
