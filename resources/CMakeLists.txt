@@ -241,6 +241,7 @@ add_packfile(alpinefaction.vpp
     images/Icon_Event.tga
     images/Icon_AFNote.tga
     images/Icon_AFCorona.tga
+    images/Icon_AFBag.tga
     images/radar_dish.tga
     images/score_aflogo.tga
     images/mtl_archway04-mip1.tga
