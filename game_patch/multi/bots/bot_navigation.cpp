@@ -2116,7 +2116,9 @@ bool update_bagman_objective_goal(
                 && g_bagman_info.state != BagState::BS_Dropped) {
                 return bot_goal_runtime_abort_bagman_goal();
             }
-            target_pos = g_bagman_info.bag_pos;
+            if (!bagman_get_client_pickup_pos(&target_pos)) {
+                return bot_goal_runtime_abort_bagman_goal();
+            }
             int bag_wp = 0;
             rf::Vector3 bag_wp_pos{};
             if (waypoints_find_bag_waypoint(bag_wp, bag_wp_pos)) {

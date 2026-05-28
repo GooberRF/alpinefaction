@@ -1057,16 +1057,12 @@ static void build_af_bagman_state_packet(af_bagman_state_packet& pkt)
         ? g_bagman_info.carrier->net_data->player_id
         : 0xFF;
     pkt.state = static_cast<uint8_t>(g_bagman_info.state);
-    pkt.bag_x = g_bagman_info.bag_pos.x;
-    pkt.bag_y = g_bagman_info.bag_pos.y;
-    pkt.bag_z = g_bagman_info.bag_pos.z;
 
     int return_left = 0;
     if (g_bagman_info.state == BagState::BS_Dropped && g_bagman_info.return_timer.valid()) {
         return_left = g_bagman_info.return_timer.time_until();
-        if (return_left < 0) return_left = 0;
     }
-    pkt.return_time_left_ms = static_cast<uint32_t>(return_left);
+    pkt.return_time_left_ms = static_cast<uint16_t>(std::clamp(return_left, 0, 0xFFFF));
     pkt.red_team_score = static_cast<uint16_t>(std::clamp(g_bagman_info.red_team_score, 0, 0xFFFF));
     pkt.blue_team_score = static_cast<uint16_t>(std::clamp(g_bagman_info.blue_team_score, 0, 0xFFFF));
     pkt.carrier_score = (g_bagman_info.carrier && g_bagman_info.carrier->stats)
@@ -1149,10 +1145,6 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
         bagman_play_return_sound();
     }
 
-    g_bagman_info.bag_pos.x = pkt.bag_x;
-    g_bagman_info.bag_pos.y = pkt.bag_y;
-    g_bagman_info.bag_pos.z = pkt.bag_z;
-
     if (pkt.carrier_player_id == 0xFF) {
         g_bagman_info.carrier = nullptr;
     } else {
@@ -1179,7 +1171,11 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
     if (g_bagman_info.state == BagState::BS_Carried || g_bagman_info.state == BagState::BS_Delayed) {
         waypoints_on_bag_carried();
     } else {
-        waypoints_on_bag_world_pos(g_bagman_info.bag_pos);
+        // On-ground bag: position comes from the replicated item object.
+        rf::Vector3 bag_world_pos;
+        if (bagman_get_client_pickup_pos(&bag_world_pos)) {
+            waypoints_on_bag_world_pos(bag_world_pos);
+        }
     }
 }
 

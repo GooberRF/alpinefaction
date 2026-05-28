@@ -202,12 +202,13 @@ struct BagmanConfig
 
     void set_bag_return_time(float in_seconds)
     {
-        bag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 600000);
+        // 2 bytes (uint16_t) on the wire
+        bag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
     }
 
     void set_bag_spawn_delay(float in_seconds)
     {
-        bag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 600000);
+        bag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
     }
 
     void set_bm_score_limit(int count)

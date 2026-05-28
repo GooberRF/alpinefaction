@@ -196,10 +196,7 @@ struct af_bagman_state_packet
     RF_GamePacketHeader header;
     uint8_t carrier_player_id;
     uint8_t state;
-    float bag_x;
-    float bag_y;
-    float bag_z;
-    uint32_t return_time_left_ms;
+    uint16_t return_time_left_ms;
     uint16_t red_team_score;
     uint16_t blue_team_score;
     int16_t  carrier_score;

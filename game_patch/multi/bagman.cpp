@@ -666,6 +666,14 @@ rf::Item* find_client_side_bag_pickup_item()
     return nullptr;
 }
 
+bool bagman_get_client_pickup_pos(rf::Vector3* out_pos)
+{
+    rf::Item* bag = find_client_side_bag_pickup_item();
+    if (!bag) return false;
+    *out_pos = bag->pos;
+    return true;
+}
+
 bool bagman_query_pickup_bag_outline(
     rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient)
 {
@@ -806,6 +814,9 @@ void bagman_update_dynamic_light()
     if (!gt_is_bagman_any()) return;
     if (g_bagman_info.state == BagState::BS_Carried) return;
 
+    rf::Vector3 pos;
+    if (!bagman_get_client_pickup_pos(&pos)) return;
+
     // Match stock game dynamic light pulse for amps/flags.
     const float pulse_period   = addr_as_ref<float>(0x005947A0);
     const float sine_amplitude = addr_as_ref<float>(0x005947A4);
@@ -818,7 +829,6 @@ void bagman_update_dynamic_light()
     constexpr float kTwoPi = 6.28318530718f;
     const float intensity = sine_base + sine_amplitude * std::sin(kTwoPi * g_bag_light_pulse_phase / pulse_period);
 
-    rf::Vector3 pos = g_bagman_info.bag_pos;
     g_bag_light_handle = rf::gr::light_create_point(
         &pos,
         radius,

@@ -735,7 +735,8 @@ void build_bag_icon()
     }
 
     // Bag is at home or dropped
-    rf::Vector3 vec = g_bagman_info.bag_pos;
+    rf::Vector3 vec;
+    if (!bagman_get_client_pickup_pos(&vec)) return;
 
     const int bitmap_handle = g_world_hud_assets.bag_pickup_icon;
     do_render_world_hud_sprite(vec, 0.6f, bitmap_handle, WorldHUDRenderMode::overdraw, true, true, true);

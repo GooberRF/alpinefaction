@@ -511,6 +511,10 @@ bool build_bagman_runtime_state(BagmanRuntimeState& out_state)
 
     out_state.bag_pos = g_bagman_info.bag_pos;
     if (out_state.in_world) {
+        rf::Vector3 item_pos{};
+        if (bagman_get_client_pickup_pos(&item_pos)) {
+            out_state.bag_pos = item_pos;
+        }
         rf::Vector3 wp_pos{};
         if (waypoints_find_bag_waypoint(out_state.bag_waypoint, wp_pos)) {
             out_state.bag_pos = wp_pos;
