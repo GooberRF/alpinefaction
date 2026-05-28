@@ -267,6 +267,7 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk3.v3m
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
+    meshes/af_pickup-bag.v3m
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin
