@@ -28,6 +28,9 @@
 #include "../rf/player/player.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/sound/sound.h"
+#include "../rf/vmesh.h"
+#include "../rf/v3d.h"
+#include "../hud/multi_spectate.h"
 #include <patch_common/FunHook.h>
 
 BagmanInfo g_bagman_info;
@@ -72,6 +75,7 @@ constexpr BagHomeEntry kBagHomePositions[] = {
     { "ctf05.rfl", 2.0f, 1.16f, 8.0f },
     { "ctf06.rfl", 0.53f, 4.99f, 0.0f },
     { "ctf07.rfl", 8.50f, -5.0f, 22.0f },
+    { "dmabruptdecayrc1.rfl", 15.54f, 2.50f, 11.0f },
     { "dmabruptdecayrc2.rfl", 15.54f, 2.50f, 11.0f },
 };
 
@@ -89,11 +93,13 @@ std::optional<rf::Vector3> lookup_hardcoded_bag_home(std::string_view filename)
 int g_bag_aura_bitmap = -1;
 int g_saved_amp_aura_bitmap = -1;  // -1 = not currently swapped
 bool g_bag_bitmaps_load_attempted = false;
-constexpr const char* kBagMeshFilename = "af_bag.v3m";
+constexpr const char* kBagMeshFilename = "af_pickup-bag.v3m";
 bool g_bag_mesh_exists = false;
 bool g_bag_mesh_checked = false;
 int g_bag_light_handle = -1;
 float g_bag_light_pulse_phase = 0.0f;
+rf::VMesh* g_bag_carrier_mesh = nullptr;
+bool g_bag_carrier_mesh_load_attempted = false;
 
 void ensure_bag_bitmaps_loaded()
 {
@@ -607,6 +613,172 @@ bool bagman_local_player_is_carrier()
     && rf::local_player == g_bagman_info.carrier;
 }
 
+bool bagman_viewer_is_carrier_first_person()
+{
+    if (!gt_is_bagman_any() || !g_bagman_info.carrier) return false;
+    if (rf::local_player == g_bagman_info.carrier) return true;
+    if (multi_spectate_is_first_person()
+        && multi_spectate_get_target_player() == g_bagman_info.carrier) {
+        return true;
+    }
+    return false;
+}
+
+// Extract the first LOD-0 VifLodMesh from a static VMesh by walking through
+// the V3d header.
+rf::VifLodMesh* static_vmesh_lod0(rf::VMesh* vmesh)
+{
+    if (!vmesh || vmesh->type != rf::MESH_TYPE_STATIC) return nullptr;
+    auto* v3d = static_cast<rf::V3d*>(vmesh->instance);
+    if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) return nullptr;
+    return v3d->meshes[0].vu;
+}
+
+// Walk the client's item list to find the bag pickup. bag_item_handle is
+// server-only state, so clients have to look it up by item class.
+rf::Item* find_client_side_bag_pickup_item()
+{
+    if (g_bagman_info.bag_item_type < 0) return nullptr;
+    rf::Item* it = rf::item_list.next;
+    while (it && it != &rf::item_list) {
+        if (it->info_index == g_bagman_info.bag_item_type) {
+            return it;
+        }
+        it = it->next;
+    }
+    return nullptr;
+}
+
+bool bagman_query_pickup_bag_outline(
+    rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient)
+{
+    if (!gt_is_bagman_any()) return false;
+    if (g_bagman_info.state != BagState::BS_At_Spawn
+        && g_bagman_info.state != BagState::BS_Dropped) return false;
+
+    rf::Item* bag_item = find_client_side_bag_pickup_item();
+    if (!bag_item || !bag_item->vmesh) return false;
+
+    rf::VifLodMesh* lod = static_vmesh_lod0(bag_item->vmesh);
+    if (!lod) return false;
+
+    *out_lod_mesh = lod;
+    *out_pos = bag_item->pos;
+    // For spinning items the stock engine renders with an orient derived
+    // from spin_angle, not item->orient. Mirror that so the outline rotates
+    // in sync with the visible mesh.
+    if (bag_item->info && (bag_item->info->flags & rf::IIF_SPINS_IN_MULTI)) {
+        out_orient->set_from_angles(0.0f, 0.0f, -bag_item->spin_angle);
+    }
+    else {
+        *out_orient = bag_item->orient;
+    }
+    return true;
+}
+
+void bagman_tick_pickup_spin()
+{
+    if (!gt_is_bagman_any()) return;
+    if (g_bagman_info.state != BagState::BS_At_Spawn
+        && g_bagman_info.state != BagState::BS_Dropped) return;
+
+    rf::Item* bag = find_client_side_bag_pickup_item();
+    if (!bag || !bag->info) return;
+    if (!(bag->info->flags & rf::IIF_SPINS_IN_MULTI)) return;
+
+    const float spin_rate = addr_as_ref<float>(0x005897A8);
+    const float two_pi = addr_as_ref<float>(0x005894AC);
+    bag->spin_angle += spin_rate * rf::frametime;
+    if (bag->spin_angle > two_pi) {
+        bag->spin_angle -= two_pi;
+    }
+}
+
+bool bagman_query_carrier_bag_outline(
+    rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient)
+{
+    if (!gt_is_bagman_any()) return false;
+    if (g_bagman_info.state != BagState::BS_Carried) return false;
+    if (!g_bagman_info.carrier) return false;
+    if (bagman_viewer_is_carrier_first_person()) return false;
+
+    rf::Entity* ep = rf::entity_from_handle(g_bagman_info.carrier->entity_handle);
+    if (!ep || !ep->vmesh) return false;
+    if (rf::entity_is_dying(ep)) return false;
+
+    if (!g_bag_carrier_mesh_load_attempted) {
+        g_bag_carrier_mesh_load_attempted = true;
+        g_bag_carrier_mesh = rf::vmesh_load(kBagMeshFilename, rf::MESH_TYPE_STATIC, -1);
+    }
+    if (!g_bag_carrier_mesh) return false;
+
+    rf::VifLodMesh* lod = static_vmesh_lod0(g_bag_carrier_mesh);
+    if (!lod) return false;
+
+    // Carrier's $prop_flag in WORLD space.
+    const int carrier_prop_idx = rf::vmesh_lookup_prop_point(ep->vmesh, "$prop_flag");
+    if (carrier_prop_idx < 0) return false;
+
+    rf::Vector3 carrier_prop_pos{};
+    rf::Matrix3 carrier_prop_orient{};
+    rf::vmesh_get_prop_point_transform(
+        ep->vmesh, carrier_prop_idx, &ep->orient, &ep->pos,
+        &carrier_prop_orient, &carrier_prop_pos);
+
+    // Bag mesh's $prop_flag in BAG-LOCAL space.
+    const int bag_prop_idx = rf::vmesh_lookup_prop_point(g_bag_carrier_mesh, "$prop_flag");
+    if (bag_prop_idx < 0) return false;
+
+    rf::Vector3 bag_prop_local_pos{};
+    rf::Matrix3 bag_prop_local_orient{};
+    rf::Vector3 zero_pos{0.0f, 0.0f, 0.0f};
+    rf::Matrix3 ident = rf::identity_matrix;
+    rf::vmesh_get_prop_point_transform(
+        g_bag_carrier_mesh, bag_prop_idx, &ident, &zero_pos,
+        &bag_prop_local_orient, &bag_prop_local_pos);
+
+    // Solve for the bag world transform so its $prop_flag overlays the
+    // carrier's $prop_flag. For an orthonormal rotation, inverse == transpose.
+    rf::Matrix3 bag_prop_local_inv = bag_prop_local_orient;
+    bag_prop_local_inv.transpose();
+    rf::Matrix3 bag_orient_world = carrier_prop_orient;
+    bag_orient_world.mul(bag_prop_local_inv);
+    rf::Vector3 offset = bag_orient_world.transform_vector(bag_prop_local_pos);
+
+    *out_lod_mesh = lod;
+    *out_pos = carrier_prop_pos - offset;
+    *out_orient = bag_orient_world;
+    return true;
+}
+
+// Render the cosmetic bag mesh on the carrier's back. The green outline is
+// queued separately by the d3d11 outline renderer (which compares this mesh's
+// lod against the per-frame cached carrier-bag lod), so no MRF flag is needed
+// here — that keeps the outline working even when the carrier is portal-culled.
+CodeInjection bagman_render_carrier_attachment_patch{
+    0x00421c08,
+    [](auto& regs) {
+        // The hooked entity must be the carrier for the transform to be
+        // valid (bagman_query_carrier_bag_outline derives from the carrier
+        // entity). Gate on that before doing the shared query.
+        if (!gt_is_bagman_any() || !g_bagman_info.carrier) return;
+        auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
+        if (!ep || ep->handle != g_bagman_info.carrier->entity_handle) return;
+
+        rf::VifLodMesh* lod = nullptr;
+        rf::Vector3 bag_pos_world{};
+        rf::Matrix3 bag_orient_world{};
+        if (!bagman_query_carrier_bag_outline(&lod, &bag_pos_world, &bag_orient_world)) {
+            return;
+        }
+
+        rf::MeshRenderParams params{};
+        params.init_defaults();
+        params.orient = bag_orient_world;
+        rf::vmesh_render(g_bag_carrier_mesh, &bag_pos_world, &bag_orient_world, &params);
+    },
+};
+
 void bagman_update_dynamic_light()
 {
     if (g_bag_light_handle >= 0) {
@@ -812,6 +984,9 @@ void bagman_do_patch()
 
     // Block dying entities from picking up the bag
     bagman_block_dying_bag_pickup_patch.install();
+
+    // Render the cosmetic bag mesh on the carrier each frame
+    bagman_render_carrier_attachment_patch.install();
 
     // Bagman's dynamic light is green instead of purple
     bagman_carrier_amp_light_color_patch.install();

@@ -722,7 +722,7 @@ void build_bag_icon()
     if (g_bagman_info.state == BagState::BS_Delayed) return;
     if (g_bagman_info.state == BagState::BS_Carried) {
         if (!g_bagman_info.carrier) return;
-        if (g_bagman_info.carrier == rf::local_player) return;
+        if (bagman_viewer_is_carrier_first_person()) return;
         rf::Entity* carrier_ep = rf::entity_from_handle(g_bagman_info.carrier->entity_handle);
         if (!carrier_ep) return;
 

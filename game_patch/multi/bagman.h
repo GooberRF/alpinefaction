@@ -10,6 +10,7 @@ namespace rf
     struct Entity;
     struct Item;
     struct NetAddr;
+    struct VifLodMesh;
 }
 
 enum class BagState : uint8_t
@@ -55,6 +56,10 @@ void bagman_set_blue_team_score(int v);
 void bagman_force_state_sync_to(rf::Player* player);
 void bagman_broadcast_state();
 bool bagman_local_player_is_carrier();
+bool bagman_viewer_is_carrier_first_person();
+bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
+bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
+void bagman_tick_pickup_spin();
 void bagman_update_dynamic_light();
 void bagman_play_return_sound();
 
