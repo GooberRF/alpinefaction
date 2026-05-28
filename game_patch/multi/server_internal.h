@@ -212,7 +212,7 @@ struct BagmanConfig
 
     void set_bm_score_limit(int count)
     {
-        bm_score_limit = std::clamp(count, 1, 65535);
+        bm_score_limit = std::clamp(count, 1, 32767);
     }
 
     void set_tbm_score_limit(int count)
@@ -646,7 +646,7 @@ struct AlpineServerConfigRules
     }
     void set_individual_kill_limit(int count)
     {
-        individual_kill_limit = std::clamp(count, 1, 65535);
+        individual_kill_limit = std::clamp(count, 1, 32767);
     }
     void set_team_kill_limit(int count)
     {

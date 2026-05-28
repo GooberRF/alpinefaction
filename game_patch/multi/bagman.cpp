@@ -2,6 +2,8 @@
 #include <cmath>
 #include <format>
 #include <memory>
+#include <optional>
+#include <string_view>
 #include <xlog/xlog.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/MemUtils.h>

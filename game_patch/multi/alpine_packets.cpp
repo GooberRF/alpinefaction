@@ -1065,9 +1065,8 @@ static void build_af_bagman_state_packet(af_bagman_state_packet& pkt)
     if (g_bagman_info.state == BagState::BS_Dropped && g_bagman_info.return_timer.valid()) {
         return_left = g_bagman_info.return_timer.time_until();
         if (return_left < 0) return_left = 0;
-        if (return_left > 0xFFFF) return_left = 0xFFFF;
     }
-    pkt.return_time_left_ms = static_cast<uint16_t>(return_left);
+    pkt.return_time_left_ms = static_cast<uint32_t>(return_left);
     pkt.red_team_score = static_cast<uint16_t>(std::clamp(g_bagman_info.red_team_score, 0, 0xFFFF));
     pkt.blue_team_score = static_cast<uint16_t>(std::clamp(g_bagman_info.blue_team_score, 0, 0xFFFF));
     pkt.carrier_score = (g_bagman_info.carrier && g_bagman_info.carrier->stats)

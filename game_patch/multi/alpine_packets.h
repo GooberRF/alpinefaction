@@ -199,7 +199,7 @@ struct af_bagman_state_packet
     float bag_x;
     float bag_y;
     float bag_z;
-    uint16_t return_time_left_ms;
+    uint32_t return_time_left_ms;
     uint16_t red_team_score;
     uint16_t blue_team_score;
     int16_t  carrier_score;

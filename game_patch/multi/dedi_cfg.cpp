@@ -515,17 +515,10 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.bagman.set_bm_score_limit(*v);
     if (auto v = t["tbm_score_limit"].value<int>())
         o.bagman.set_tbm_score_limit(*v);
-
-    if (auto sub = t["bagman"].as_table()) {
-        if (auto v = (*sub)["bag_return_time"].value<float>())
-            o.bagman.set_bag_return_time(*v);
-        if (auto v = (*sub)["bag_spawn_delay"].value<float>())
-            o.bagman.set_bag_spawn_delay(*v);
-        if (auto v = (*sub)["bm_score_limit"].value<int>())
-            o.bagman.set_bm_score_limit(*v);
-        if (auto v = (*sub)["tbm_score_limit"].value<int>())
-            o.bagman.set_tbm_score_limit(*v);
-    }
+    if (auto v = t["bag_return_time"].value<float>())
+        o.bagman.set_bag_return_time(*v);
+    if (auto v = t["bag_spawn_delay"].value<float>())
+        o.bagman.set_bag_spawn_delay(*v);
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
