@@ -1313,12 +1313,6 @@ void ao_swap_sticks_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.gamepad_swap_sticks);
 }
 
-void ao_joinbeep_cbox_on_click(int x, int y) {
-    g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
-    ao_joinbeep_cbox.checked = g_alpine_game_config.player_join_beep;
-    ao_play_button_snd(g_alpine_game_config.player_join_beep);
-}
-
 void ao_join_flash_cbox_on_click(const int x, const int y) {
     g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
     ao_join_flash_cbox.checked = g_alpine_game_config.player_join_flash;
