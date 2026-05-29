@@ -32,6 +32,7 @@
 #include "server_internal.h"
 #include "bots/bot_chat_manager.h"
 #include "../main/main.h"
+#include "../os/os.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/multi.h"
@@ -60,7 +61,7 @@
 #define NET_IFINDEX_UNSPECIFIED 0
 #endif
 
-int g_update_rate = 30; // client netfps
+static constexpr int CLIENT_NET_FPS = 30;
 
 ClientSoftware g_joining_client_version = ClientSoftware::Unknown;
 AlpineFactionJoinReqPacketExt g_joining_player_info{};
@@ -227,7 +228,8 @@ enum packet_type : uint8_t {
     af_spectate_notify     = 0x5C,
     af_server_msg          = 0x5D,
     af_server_req          = 0x5E,
-    af_server_bot_control  = 0x5F
+    af_server_bot_control  = 0x5F,
+    af_bagman_state        = 0x60
 };
 
 // client -> server
@@ -312,7 +314,8 @@ std::array g_client_side_packet_whitelist{
     af_spectate_notify,
     af_server_msg,
     af_server_req,
-    af_server_bot_control
+    af_server_bot_control,
+    af_bagman_state
 };
 // clang-format on
 
@@ -595,7 +598,7 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         char name[256]{};
         if (!read_string(name, sizeof(name))) { clear_extra(); return; }
         if (end - r < 3) { clear_extra(); return; }
-        uint8_t game_type = std::clamp<uint8_t>(*r++, 0, 7);
+        uint8_t game_type = std::clamp<uint8_t>(*r++, 0, RF_GT_TBM);
         uint8_t players = *r++;
         uint8_t max_players = *r++;
 
@@ -705,10 +708,25 @@ FunHook<MultiIoPacketHandler> process_join_deny_packet_hook{
 
 FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
     0x0047A580,
-    [](char* data, const rf::NetAddr& addr) {
-        if (GetForegroundWindow() != rf::main_wnd && g_alpine_game_config.player_join_beep)
-            Beep(750, 300);
+    [] (char* const data, const rf::NetAddr& addr) {
         process_new_player_packet_hook.call_target(data, addr);
+        if (!rf::is_server && !is_headless_mode() && GetForegroundWindow() != rf::main_wnd) {
+            if (g_alpine_game_config.player_join_beep) {
+                try {
+                    std::thread{[] {
+                        Beep(750, 300);
+                    }}
+                    .detach();
+                }
+                catch (const std::exception& e) {
+                    xlog::error("Failed to start player join beep thread: {}", e.what());
+                }
+            }
+
+            if (g_alpine_game_config.player_join_flash) {
+                wnd_set_flash(rf::main_wnd);
+            }
+        }
     },
 };
 
@@ -735,11 +753,11 @@ static void verify_player_id_in_packet(char* player_id_ptr, const rf::NetAddr& a
 
 FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
     0x0047BBC0,
-    [](char* data, const rf::NetAddr& addr) {
+    [] (char* const data, const rf::NetAddr& addr) {
         // server-side and client-side
         verify_player_id_in_packet(&data[0], addr, "left_game");
 
-        if (!rf::is_server && !rf::is_dedicated_server) {
+        if (!rf::is_server) {
             rf::Player* const player = rf::multi_find_player_by_id(data[0]);
             if (player) {
                 g_local_player_spectators.erase(player);
@@ -2423,25 +2441,30 @@ void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::P
 
 CodeInjection client_update_rate_injection{
     0x0047E5D8,
-    [](auto& regs) {
-        auto& send_obj_update_interval = *static_cast<int*>(regs.esp);
-        send_obj_update_interval = 1000 / g_update_rate;
+    [] (auto& regs) {
+        int& send_obj_update_interval = addr_as_ref<int>(regs.esp);
+        send_obj_update_interval = 1000 / CLIENT_NET_FPS;
     },
 };
 
 CodeInjection server_update_rate_injection{
     0x0047E891,
-    [](auto& regs) {
-        auto& min_send_obj_update_interval = *static_cast<int*>(regs.esp);
+    [] (auto& regs) {
+        int& min_send_obj_update_interval = addr_as_ref<int>(regs.esp);
         min_send_obj_update_interval = 1000 / g_alpine_game_config.server_netfps;
     },
 };
 
 ConsoleCommand2 netfps_cmd{
     "sv_netfps",
-    [](std::optional<int> update_rate) {
+    [] (std::optional<int> update_rate) {
         if (update_rate) {
-            g_alpine_game_config.set_server_netfps(update_rate.value());
+            const unsigned int old_v = g_alpine_game_config.server_netfps;
+            g_alpine_game_config.set_server_netfps(*update_rate);
+            if (rf::is_server && g_alpine_game_config.server_netfps != old_v) {
+                g_alpine_server_config.printed_cfg.clear();
+                g_alpine_server_config.signal_cfg_changed = true;
+            }
         }
         rf::console::print("Server netfps: {}", g_alpine_game_config.server_netfps);
     },

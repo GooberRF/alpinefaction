@@ -808,6 +808,8 @@ namespace df::gr::d3d11
                 outline_renderer_->queue_v3d(std::move(entry));
             }
         }
+
+        outline_renderer_->maybe_queue_bag_outline(lod_mesh, lod_index, pos, orient);
     }
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)

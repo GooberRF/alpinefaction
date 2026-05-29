@@ -48,3 +48,4 @@ void multi_change_level_alpine(const char* filename);
 const char* get_rand_level_filename();
 void shuffle_level_array();void process_queued_spawn_points_from_items();
 bool is_player_idle(const rf::Player* player);
+void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count);
