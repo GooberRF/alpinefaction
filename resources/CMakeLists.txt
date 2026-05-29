@@ -241,11 +241,15 @@ add_packfile(alpinefaction.vpp
     images/Icon_Event.tga
     images/Icon_AFNote.tga
     images/Icon_AFCorona.tga
+    images/Icon_AFBag.tga
     images/radar_dish.tga
     images/score_aflogo.tga
     images/mtl_archway04-mip1.tga
     images/pls_airlockmat01-mip2.tga
     images/consolebutton2A.tga
+    images/af_powerup-bag.vbm
+    images/af_wh_bag_hold.tga
+    images/af_wh_bag_take.tga
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
@@ -264,6 +268,7 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk3.v3m
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
+    meshes/af_pickup-bag.v3m
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin

@@ -32,6 +32,7 @@
 #include "server_internal.h"
 #include "bots/bot_chat_manager.h"
 #include "../main/main.h"
+#include "../os/os.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../rf/multi.h"
@@ -227,7 +228,8 @@ enum packet_type : uint8_t {
     af_spectate_notify     = 0x5C,
     af_server_msg          = 0x5D,
     af_server_req          = 0x5E,
-    af_server_bot_control  = 0x5F
+    af_server_bot_control  = 0x5F,
+    af_bagman_state        = 0x60
 };
 
 // client -> server
@@ -312,7 +314,8 @@ std::array g_client_side_packet_whitelist{
     af_spectate_notify,
     af_server_msg,
     af_server_req,
-    af_server_bot_control
+    af_server_bot_control,
+    af_bagman_state
 };
 // clang-format on
 
@@ -705,10 +708,25 @@ FunHook<MultiIoPacketHandler> process_join_deny_packet_hook{
 
 FunHook<MultiIoPacketHandler> process_new_player_packet_hook{
     0x0047A580,
-    [](char* data, const rf::NetAddr& addr) {
-        if (GetForegroundWindow() != rf::main_wnd && g_alpine_game_config.player_join_beep)
-            Beep(750, 300);
+    [] (char* const data, const rf::NetAddr& addr) {
         process_new_player_packet_hook.call_target(data, addr);
+        if (!rf::is_server && !is_headless_mode() && GetForegroundWindow() != rf::main_wnd) {
+            if (g_alpine_game_config.player_join_beep) {
+                try {
+                    std::thread{[] {
+                        Beep(750, 300);
+                    }}
+                    .detach();
+                }
+                catch (const std::exception& e) {
+                    xlog::error("Failed to start player join beep thread: {}", e.what());
+                }
+            }
+
+            if (g_alpine_game_config.player_join_flash) {
+                wnd_set_flash(rf::main_wnd);
+            }
+        }
     },
 };
 
@@ -735,11 +753,11 @@ static void verify_player_id_in_packet(char* player_id_ptr, const rf::NetAddr& a
 
 FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
     0x0047BBC0,
-    [](char* data, const rf::NetAddr& addr) {
+    [] (char* const data, const rf::NetAddr& addr) {
         // server-side and client-side
         verify_player_id_in_packet(&data[0], addr, "left_game");
 
-        if (!rf::is_server && !rf::is_dedicated_server) {
+        if (!rf::is_server) {
             rf::Player* const player = rf::multi_find_player_by_id(data[0]);
             if (player) {
                 g_local_player_spectators.erase(player);
