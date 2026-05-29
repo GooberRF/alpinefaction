@@ -742,8 +742,11 @@ void af_send_should_gib_req(uint32_t obj_handle)
     }
 }
 
-void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos,
-                                  const rf::Matrix3& orient, const rf::Vector3& vel)
+void af_send_teleport_entity_req(
+    uint32_t obj_handle,
+    const rf::Vector3& pos,
+    const rf::Matrix3& orient,
+    const rf::Vector3& vel)
 {
     if (!rf::is_server) {
         return;
@@ -759,8 +762,7 @@ void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos,
 
     af_server_req_packet packet{};
     packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
-    packet.header.size = sizeof(uint8_t) + sizeof(payload.obj_handle)
-                       + sizeof(payload.pos) + sizeof(payload.orient) + sizeof(payload.vel);
+    packet.header.size = sizeof(uint8_t) + sizeof(payload.obj_handle) + sizeof(payload.pos) + sizeof(payload.orient) + sizeof(payload.vel);
     packet.req_type = af_server_req_type::af_sreq_teleport_entity;
     packet.payload = payload;
 
