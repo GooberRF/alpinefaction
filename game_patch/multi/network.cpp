@@ -2080,10 +2080,11 @@ FunHook<int(const rf::NetAddr&, const rf::JoinRequest&)> check_access_for_new_pl
 
         // Restore our limbo check.
         if (!reason && !(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)) {
-            reason = std::to_underlying(RF_JoinDenyReason::RF_JDR_LEVEL_CHANGING);
+            // Handle `RF_JDR_LEVEL_CHANGING` in `process_join_req_injection`.
+            return 0;
         }
 
-        if (reason != 0 && rf::is_dedicated_server) {
+        if (reason != 0) {
             const RF_JoinDenyReason jdr = static_cast<RF_JoinDenyReason>(reason);
             std::string jdr_str = "unknown";
 
@@ -2095,9 +2096,6 @@ FunHook<int(const rf::NetAddr&, const rf::JoinRequest&)> check_access_for_new_pl
                 jdr_str = "server full";
             } else if (jdr == RF_JoinDenyReason::RF_JDR_THE_SAME_IP) {
                 jdr_str = "same socket as another player";
-            } else if (jdr == RF_JoinDenyReason::RF_JDR_LEVEL_CHANGING) {
-                // Handle in `process_join_req_injection`.
-                return 0;
             } else if (jdr == RF_JoinDenyReason::RF_JDR_DATA_DOESNT_MATCH) {
                 jdr_str = "failed data validation";
             }
