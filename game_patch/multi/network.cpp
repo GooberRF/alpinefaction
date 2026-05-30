@@ -709,13 +709,10 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         if (!parsed) {
             if (unknown_game_type) {
                 // No AF extension on the wire, but the server is reporting a
-                // game type this build doesn't recognize. Keep a minimal entry
-                // around so the join gate can block users from joining it.
+                // game type this build doesn't recognize.
                 // This should never be possible under normal circumstances,
                 // but the guard is very cheap and safer.
-                AFGameInfoExtra extra{};
-                extra.unknown_game_type = true;
-                g_server_browser_extra[key] = std::move(extra);
+                g_server_browser_extra[key].unknown_game_type = true;
             }
             else {
                 clear_extra();

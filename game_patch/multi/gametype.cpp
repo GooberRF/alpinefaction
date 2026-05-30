@@ -65,17 +65,17 @@ static void stop_hill_sounds()
 }
 
 void populate_gametype_table() {
-    g_af_gametype_names[0] = &rf::strings::dm;
-    g_af_gametype_names[1] = &rf::strings::ctf;
-    g_af_gametype_names[2] = &rf::strings::teamdm;
-    g_af_gametype_names[3] = &koth_slot;
-    g_af_gametype_names[4] = &dc_slot;
-    g_af_gametype_names[5] = &rev_slot;
-    g_af_gametype_names[6] = &run_slot;
-    g_af_gametype_names[7] = &esc_slot;
-    g_af_gametype_names[8] = &bm_slot;
-    g_af_gametype_names[9] = &tbm_slot;
-    g_af_gametype_names[rf::NG_TYPE_UNK] = &unk_slot;
+    g_af_gametype_names[rf::NG_TYPE_DM]     = &rf::strings::dm;
+    g_af_gametype_names[rf::NG_TYPE_CTF]    = &rf::strings::ctf;
+    g_af_gametype_names[rf::NG_TYPE_TEAMDM] = &rf::strings::teamdm;
+    g_af_gametype_names[rf::NG_TYPE_KOTH]   = &koth_slot;
+    g_af_gametype_names[rf::NG_TYPE_DC]     = &dc_slot;
+    g_af_gametype_names[rf::NG_TYPE_REV]    = &rev_slot;
+    g_af_gametype_names[rf::NG_TYPE_RUN]    = &run_slot;
+    g_af_gametype_names[rf::NG_TYPE_ESC]    = &esc_slot;
+    g_af_gametype_names[rf::NG_TYPE_BM]     = &bm_slot;
+    g_af_gametype_names[rf::NG_TYPE_TBM]    = &tbm_slot;
+    g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
         const char* const* slot = g_af_gametype_names[i];
