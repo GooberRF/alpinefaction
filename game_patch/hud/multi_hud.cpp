@@ -1,5 +1,6 @@
 #include <ranges>
 #include <algorithm>
+#include <array>
 #include <tuple>
 #include <format>
 #include <cstdint>
@@ -13,6 +14,7 @@
 #include <xlog/xlog.h>
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
+#include "../multi/bagman.h"
 #include "../input/input.h"
 #include "../rf/input.h"
 #include "../rf/hud.h"
@@ -48,10 +50,29 @@ static bool g_big_team_scores_hud = false;
 constexpr bool g_debug_team_scores_hud = false;
 static bool g_draw_vote_notification = false;
 static std::string g_active_vote_type = "";
-static bool g_draw_ready_notification = false;
 bool g_pre_match_active = false;
 static bool g_draw_respawn_timer_notification = false;
 static bool g_draw_respawn_timer_can_respawn = false;
+
+struct ActiveHudNotification
+{
+    HudNotificationType type = HudNotificationType::None;
+    std::string text;
+    rf::TimestampRealtime expiry; // invalid for perpetual
+    rf::TimestampRealtime fade_start; // invalid while not fading
+    bool fade_on_expire = false;
+};
+static ActiveHudNotification g_hud_notification;
+constexpr int kHudNotificationFadeMs = 500;
+
+static void hud_notification_clear()
+{
+    g_hud_notification.type = HudNotificationType::None;
+    g_hud_notification.text.clear();
+    g_hud_notification.expiry.invalidate();
+    g_hud_notification.fade_start.invalidate();
+    g_hud_notification.fade_on_expire = false;
+}
 static std::string time_left_string_format = "";
 static int time_left_string_x_pos_offset = 135;
 static int time_left_string_y_pos_offset = 21;
@@ -811,6 +832,7 @@ void multi_hud_render_team_scores()
     const bool is_esc = game_type == rf::NG_TYPE_ESC;
     const bool is_rev = game_type == rf::NG_TYPE_REV;
     const bool is_run = game_type == rf::NG_TYPE_RUN;
+    const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_BM;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
@@ -824,6 +846,9 @@ void multi_hud_render_team_scores()
         box_h = g_big_team_scores_hud ? 60  : 40;
     } else if (is_rev || is_esc) {
         box_w = g_big_team_scores_hud ? 240 : 185;
+    } else if (is_ffa_with_list) {
+        box_w = g_big_team_scores_hud ? 280 : 240;
+        box_h = g_big_team_scores_hud ? 90 : 65;
     } else {
         const int ctf_box_w = rf::gr::clip_width() <= 1280 ? 350 : 370;
         box_w = g_big_team_scores_hud ? ctf_box_w : 185;
@@ -942,6 +967,11 @@ void multi_hud_render_team_scores()
             red_score = multi_koth_get_red_team_score();
             blue_score = multi_koth_get_blue_team_score();
         }
+        else if (game_type == rf::NG_TYPE_TBM) {
+            rf::gr::set_color(53, 207, 22, 255);
+            red_score = bagman_get_red_team_score();
+            blue_score = bagman_get_blue_team_score();
+        }
     }
 
     auto red_score_str = std::to_string(red_score);
@@ -955,6 +985,66 @@ void multi_hud_render_team_scores()
     }
     else if (is_run) {
         hud_render_run_timer_widget(box_x, box_y, box_w, box_h, font_id);
+    }
+    else if (is_ffa_with_list) {
+        constexpr size_t kMaxEntries = 32;
+        std::array<rf::Player*, kMaxEntries> entries{};
+        size_t entry_count = 0;
+        for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (!p.stats) continue;
+            if (p.is_browser) continue;
+            if (entry_count >= kMaxEntries) break;
+            entries[entry_count++] = &p;
+        }
+        std::sort(entries.begin(), entries.begin() + entry_count,
+            [](rf::Player* a, rf::Player* b) {
+                return a->stats->score > b->stats->score;
+            });
+
+        // Pin the local player to the third row.
+        std::array<rf::Player*, 3> display_rows{};
+        size_t display_count = 0;
+        const auto entries_end = entries.begin() + entry_count;
+        const auto local_it = std::find(entries.begin(), entries_end, rf::local_player);
+        const auto local_rank_idx = std::distance(entries.begin(), local_it);
+        if (local_rank_idx >= 2) {
+            if (entry_count >= 1) display_rows[display_count++] = entries[0];
+            if (entry_count >= 2) display_rows[display_count++] = entries[1];
+            display_rows[display_count++] = rf::local_player;
+        } else {
+            const size_t count = std::min<size_t>(3, entry_count);
+            for (size_t i = 0; i < count; ++i) {
+                display_rows[display_count++] = entries[i];
+            }
+        }
+
+        const int row_h = g_big_team_scores_hud ? 24 : 18;
+        const int name_x = box_x + 8;
+        const int max_name_w = box_w - 50; // leave room for the right-aligned score
+        int row_y = box_y + 4;
+
+        for (size_t i = 0; i < display_count; ++i) {
+            rf::Player* p = display_rows[i];
+            if (!p || !p->stats) continue;
+
+            if (p == rf::local_player) {
+                rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
+            } else {
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+            }
+
+            // Name (trimmed to fit)
+            const char* raw_name = p->name.c_str();
+            std::string fitting_name = hud_fit_string(raw_name, max_name_w, nullptr, font_id);
+            rf::gr::string(name_x, row_y + 4, fitting_name.c_str(), font_id);
+
+            // Score (right-aligned)
+            std::string score_str = std::to_string(p->stats->score);
+            auto [sw, sh] = rf::gr::get_string_size(score_str, font_id);
+            rf::gr::string(box_x + box_w - 5 - sw, row_y + 4, score_str.c_str(), font_id);
+
+            row_y += row_h;
+        }
     }
     else if (!is_rev && !is_esc) {
         auto [str_w, str_h] = rf::gr::get_string_size(red_score_str, font_id);
@@ -972,7 +1062,9 @@ void multi_hud_render_team_scores()
 CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     0x00476DEB,
     [](auto& regs) {
-        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc()) {
+        const auto game_type = rf::multi_get_game_type();
+        const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_BM;
+        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbm() || is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
     }
@@ -985,6 +1077,10 @@ CallHook<void(int, int, int, rf::gr::Mode)> multi_powerup_render_gr_bitmap_hook{
         0x0047FFFD,
     },
     [](int bm_handle, int x, int y, rf::gr::Mode mode) {
+        if (gt_is_bagman_any()) {
+            return;
+        }
+
         float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
         x = hud_transform_value(x, 640, rf::gr::clip_width());
         x = hud_scale_value(x, rf::gr::clip_width(), scale);
@@ -1035,14 +1131,61 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
     g_draw_respawn_timer_can_respawn = can_respawn;
 }
 
-void hud_render_ready_notification() {
-    const std::string ready_key_text =
-        get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
+void hud_notification_show(std::string text, int duration_ms,
+    HudNotificationType type, bool fade_on_expire)
+{
+    g_hud_notification.type = type;
+    g_hud_notification.text = std::move(text);
+    if (duration_ms >= 0) {
+        g_hud_notification.expiry.set(duration_ms);
+    } else {
+        g_hud_notification.expiry.invalidate();
+    }
+    g_hud_notification.fade_start.invalidate();
+    g_hud_notification.fade_on_expire = fade_on_expire;
+}
 
-    const std::string ready_notification_text =
-        "Press " + ready_key_text + " to ready up for the match";
+void hud_notification_remove(HudNotificationType type, bool instant)
+{
+    if (g_hud_notification.type == HudNotificationType::None) return;
+    // Type::None matches any currently displayed notification.
+    if (type != HudNotificationType::None && g_hud_notification.type != type) return;
+    if (instant) {
+        hud_notification_clear();
+    } else if (!g_hud_notification.fade_start.valid()) {
+        g_hud_notification.fade_start.set(0);
+    }
+}
 
-    rf::gr::set_color(255, 255, 255, 225);
+static void hud_render_notification()
+{
+    if (g_hud_notification.type == HudNotificationType::None) return;
+
+    // Handle expiry: either start a fade or clear immediately.
+    if (!g_hud_notification.fade_start.valid()
+        && g_hud_notification.expiry.valid()
+        && g_hud_notification.expiry.elapsed()) {
+        if (g_hud_notification.fade_on_expire) {
+            g_hud_notification.fade_start.set(0);
+        } else {
+            hud_notification_clear();
+            return;
+        }
+    }
+
+    // Compute alpha (matches the 225 base used by other HUD overlays).
+    int alpha = 225;
+    if (g_hud_notification.fade_start.valid()) {
+        const int elapsed = g_hud_notification.fade_start.time_since();
+        if (elapsed >= kHudNotificationFadeMs) {
+            hud_notification_clear();
+            return;
+        }
+        const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
+        alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+
+    rf::gr::set_color(255, 255, 255, alpha);
     const int center_x = rf::gr::screen_width() / 2;
     const int font = hud_get_default_font();
     const int font_h = rf::gr::get_font_height(font);
@@ -1056,17 +1199,23 @@ void hud_render_ready_notification() {
     if (!g_alpine_game_config.big_hud) {
         notification_y += 2;
     }
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, notification_y, ready_notification_text.c_str(), font);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, notification_y, g_hud_notification.text.c_str(), font);
 }
 
 void draw_hud_ready_notification(bool draw)
 {
-    g_draw_ready_notification = draw;
+    if (draw) {
+        const std::string key = get_action_bind_name(
+            get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
+        hud_notification_show("Press " + key + " to ready up for the match",
+            -1, HudNotificationType::ReadyUp, false);
+    } else {
+        hud_notification_remove(HudNotificationType::ReadyUp, true);
+    }
 }
 
 void set_local_pre_match_active(bool set_active) {
-    set_active ? g_pre_match_active = true : g_pre_match_active = false;
-
+    g_pre_match_active = set_active;
     draw_hud_ready_notification(set_active);
 }
 
@@ -1239,9 +1388,16 @@ CodeInjection multi_hud_render_patch{
             hud_render_vote_notification();
         }
 
-        if (g_draw_ready_notification) {
-            hud_render_ready_notification();
+        static bool s_was_bag_carrier = false;
+        const bool is_bag_carrier = bagman_local_player_is_carrier();
+        if (is_bag_carrier && !s_was_bag_carrier) {
+            hud_notification_show("You have the bag", -1, HudNotificationType::BagCarrier, false);
+        } else if (!is_bag_carrier && s_was_bag_carrier) {
+            hud_notification_remove(HudNotificationType::BagCarrier, false);
         }
+        s_was_bag_carrier = is_bag_carrier;
+
+        hud_render_notification();
 
         if (g_draw_respawn_timer_notification) {
             hud_render_respawn_timer_notification();
@@ -1265,6 +1421,7 @@ void multi_hud_level_init() {
     g_run_life_start_timestamp.invalidate();
     g_run_timer_reset_by_respawn_key = false;
     g_run_timer_fade_active = false;
+    hud_notification_clear();
     killfeed_clear();
 
     level_menu = ChatMenuList{

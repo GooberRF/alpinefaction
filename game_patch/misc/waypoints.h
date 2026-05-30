@@ -18,6 +18,7 @@ constexpr int kWptVersion = 1;
 constexpr int kMaxWaypointLinks = 6;
 constexpr float kWaypointRadius = 4.0f / 3.0f;
 constexpr float kWaypointLinkRadius = kWaypointRadius * 3.0f;
+constexpr float kBagWaypointLinkRadius = kWaypointLinkRadius * 2.5f;
 constexpr float kWaypointLinkRadiusEpsilon = 0.001f;
 constexpr float kWaypointRadiusCompressionScale = 100.0f;
 constexpr float kJumpPadAutoLinkRangeScale = 0.5f;
@@ -70,6 +71,7 @@ enum class WaypointType : int
     tele_exit = 12,
     conveyer = 13,
     water = 14,
+    bag = 15,
 };
 
 enum class WaypointDroppedSubtype : int
@@ -216,6 +218,9 @@ void waypoints_on_ctf_flag_dropped_packet(bool red_flag, const rf::Vector3& flag
 void waypoints_on_ctf_flag_returned_packet(bool red_flag);
 void waypoints_on_ctf_flag_captured_packet(bool red_flag);
 void waypoints_on_ctf_flag_picked_up_packet(uint8_t picker_player_id);
+void waypoints_on_bag_world_pos(const rf::Vector3& bag_pos);
+void waypoints_on_bag_carried();
+bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos);
 
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);

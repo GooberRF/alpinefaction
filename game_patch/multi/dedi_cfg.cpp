@@ -450,6 +450,14 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_BM:
+        case rf::NetGameType::NG_TYPE_TBM: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            rules.location_pinging = (game_type == rf::NetGameType::NG_TYPE_TBM);
+            break;
+        }
+
         default: {
             rules.spawn_delay.enabled = false;
 
@@ -503,6 +511,14 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.set_koth_score_limit(*v);
     if (auto v = t["dc_score_limit"].value<int>())
         o.set_dc_score_limit(*v);
+    if (auto v = t["bm_score_limit"].value<int>())
+        o.bagman.set_bm_score_limit(*v);
+    if (auto v = t["tbm_score_limit"].value<int>())
+        o.bagman.set_tbm_score_limit(*v);
+    if (auto v = t["bag_return_time"].value<float>())
+        o.bagman.set_bag_return_time(*v);
+    if (auto v = t["bag_spawn_delay"].value<float>())
+        o.bagman.set_bag_spawn_delay(*v);
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
@@ -1661,6 +1677,10 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  KOTH team score limit:                 {}\n", rules.koth_score_limit);
     if (base || rules.dc_score_limit != b.dc_score_limit)
         std::format_to(iter, "  DC team score limit:                   {}\n", rules.dc_score_limit);
+    if (base || rules.bagman.bm_score_limit != b.bagman.bm_score_limit)
+        std::format_to(iter, "  BM player score limit:                 {}\n", rules.bagman.bm_score_limit);
+    if (base || rules.bagman.tbm_score_limit != b.bagman.tbm_score_limit)
+        std::format_to(iter, "  TBM team score limit:                  {}\n", rules.bagman.tbm_score_limit);
 
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
@@ -1682,6 +1702,10 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Ideal player count:                    {}\n", rules.ideal_player_count);
     if (base || rules.saving_enabled != b.saving_enabled)
         std::format_to(iter, "  Position saving:                       {}\n", rules.saving_enabled);
+    if (base || rules.bagman.bag_return_time_ms != b.bagman.bag_return_time_ms)
+        std::format_to(iter, "  BM/TBM bag return time:                {} sec\n", rules.bagman.bag_return_time_ms / 1000.0f);
+    if (base || rules.bagman.bag_spawn_delay_ms != b.bagman.bag_spawn_delay_ms)
+        std::format_to(iter, "  BM/TBM bag spawn delay:                {} sec\n", rules.bagman.bag_spawn_delay_ms / 1000.0f);
     if (base || rules.flag_dropping != b.flag_dropping)
         std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)

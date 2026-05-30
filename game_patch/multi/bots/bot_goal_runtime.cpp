@@ -89,6 +89,15 @@ bool bot_goal_runtime_abort_ctf_goal()
     return false;
 }
 
+bool bot_goal_runtime_abort_bagman_goal()
+{
+    bot_state_set_roam_fallback_goal(250);
+    // Reuse the CTF objective fail timer slot.
+    g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+    bot_state_clear_waypoint_route(true, true, false);
+    return false;
+}
+
 bool bot_goal_runtime_abort_control_point_goal()
 {
     bot_state_set_roam_fallback_goal(250);
