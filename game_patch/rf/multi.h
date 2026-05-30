@@ -143,7 +143,7 @@ namespace rf
         NG_TYPE_ESC = 7,    // Escalation, as of AF v1.2
         NG_TYPE_BM = 8,     // Bagman, as of AF v1.4
         NG_TYPE_TBM = 9,    // Team Bagman, as of AF v1.4
-        // Sentinel: must always be the last entry.
+        // Sentinel: UNK must always be the last entry.
         NG_TYPE_UNK
     };
 
@@ -298,6 +298,8 @@ namespace rf
     static auto& multi_chat_say = addr_as_ref<void(const char *msg, bool is_team_msg)>(0x00444150);
     static auto& multi_chat_add_msg = addr_as_ref<void(Player* pp, const char* msg, bool is_team_msg)>(0x00443FB0);
     static auto& multi_is_connecting_to_server = addr_as_ref<uint8_t(const NetAddr& addr)>(0x0044AD80);
+    static auto& multi_clear_current_server_addr = addr_as_ref<void()>(0x0044AD60);
+    static auto& multi_join_in_progress = addr_as_ref<bool>(0x0063E93C);
     using MultiIoProcessPackets_Type = void(const void* data, size_t len, const NetAddr& addr, Player* player);
     static auto& multi_io_process_packets = addr_as_ref<MultiIoProcessPackets_Type>(0x004790D0);
     static auto& multi_kill_local_player = addr_as_ref<void()>(0x004757A0);

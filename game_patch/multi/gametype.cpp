@@ -34,6 +34,7 @@ static char bm_name[] = "BM";
 static char* bm_slot = bm_name;
 static char tbm_name[] = "TBM";
 static char* tbm_slot = tbm_name;
+// UNK is the sentinel; new game types must be added above
 static char unk_name[] = "UNK";
 static char* unk_slot = unk_name;
 
@@ -82,6 +83,20 @@ void populate_gametype_table() {
         //xlog::warn("GameType[{}]: {} (slot={}, name_ptr={})", i, name, static_cast<const void*>(slot), static_cast<const void*>(*slot));
     }
 }
+
+FunHook<int(uint8_t*, int)> server_list_load_entry_game_type_guard{
+    0x0044B810,
+    [](uint8_t* record, int is_favorite) -> int {
+        if (record) {
+            constexpr int num_gametypes = sizeof(g_af_gametype_names) / sizeof(g_af_gametype_names[0]);
+            auto& game_type = *reinterpret_cast<int32_t*>(record + 0x58);
+            if (game_type < 0 || game_type >= num_gametypes) {
+                game_type = static_cast<int32_t>(rf::NG_TYPE_UNK);
+            }
+        }
+        return server_list_load_entry_game_type_guard.call_target(record, is_favorite);
+    },
+};
 
 CallHook<char*(const char*, const char*)> listen_server_map_list_filename_contains_hook{
     0x00445730,
@@ -2097,6 +2112,9 @@ void gametype_do_patch()
     const uintptr_t kCmpEnd = 0x004459CE;
     write_mem<uint32_t>(kMovBase + 1, (uint32_t)base);
     write_mem<uint32_t>(kCmpEnd + 2, (uint32_t)end);
+
+    // Defensive clamp against game_type OOB crash in stale server records (like from favlist.adr)
+    server_list_load_entry_game_type_guard.install();
 
     // team_score packet expansion to support new team gametypes
     send_team_score_server_do_frame_patch.install();
