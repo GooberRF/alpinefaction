@@ -2076,7 +2076,7 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
 FunHook<int(const rf::NetAddr&, const rf::JoinRequest&)> check_access_for_new_player_hook {
     0x0047AE10,
     [] (const rf::NetAddr& addr, const rf::JoinRequest& join_req) {
-        int reason = check_access_for_new_player_hook.call_target(addr, join_req);
+        const int reason = check_access_for_new_player_hook.call_target(addr, join_req);
 
         // Restore our limbo check.
         if (!reason && !(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)) {
