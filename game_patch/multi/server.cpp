@@ -2012,17 +2012,6 @@ std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_st
     if (cfg.require_d3d11 && !info.is_d3d11
         && info.software != ClientSoftware::Browser) {
         return {AlpineRestrictVerdict::need_d3d11, "D3D11 renderer required", false};
-    } else if (!(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)
-        && (info.software != ClientSoftware::AlpineFaction
-            || version_is_older(info.major, info.minor, 1, 4))
-        && info.software != ClientSoftware::Browser) {
-        return {
-            info.software != ClientSoftware::AlpineFaction
-                ? AlpineRestrictVerdict::need_alpine
-                : AlpineRestrictVerdict::need_update,
-            "Alpine Faction >=1.4.0 is required to join a server between levels",
-            true
-        };
     }
 
     return {AlpineRestrictVerdict::ok, {}, reject_non_alpine};

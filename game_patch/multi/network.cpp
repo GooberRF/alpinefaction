@@ -2091,11 +2091,34 @@ FunHook<int(const rf::NetAddr&, const rf::JoinRequest&)> check_access_for_new_pl
 };
 
 static std::tuple<AlpineRestrictVerdict, std::string, bool> check_join_request_restrict_status(
-    ClientSoftware cv, const AlpineFactionJoinReqPacketExt& info)
-{
-    const ClientVersionInfoProfile version_info{cv, info.version_major, info.version_minor, info.version_patch, info.version_type, info.max_rfl_version};
+    const ClientSoftware cv,
+    const AlpineFactionJoinReqPacketExt& info
+) {
+    const ClientVersionInfoProfile version_info{
+        cv,
+        info.version_major,
+        info.version_minor,
+        info.version_patch,
+        info.version_type,
+        info.max_rfl_version
+    };
 
-    const auto [verdict, verdict_string, hard_reject] = evaluate_alpine_restrict_status(version_info, true);
+    const auto [verdict, verdict_string, hard_reject] =
+        evaluate_alpine_restrict_status(version_info, true);
+
+    if (verdict == AlpineRestrictVerdict::ok
+        && !(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)
+        && (version_info.software != ClientSoftware::AlpineFaction
+            || version_is_older(version_info.major, version_info.minor, 1, 4))
+        && version_info.software != ClientSoftware::Browser) {
+        return {
+            version_info.software != ClientSoftware::AlpineFaction
+                ? AlpineRestrictVerdict::need_alpine
+                : AlpineRestrictVerdict::need_update,
+            "Alpine Faction >=1.4.0 is required to join a server between levels",
+            true
+        };
+    }
 
     return {verdict, verdict_string, hard_reject};
 }
