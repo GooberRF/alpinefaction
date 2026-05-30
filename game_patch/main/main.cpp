@@ -30,6 +30,7 @@
 #include "../object/object.h"
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
+#include "../multi/bagman.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
@@ -155,6 +156,7 @@ FunHook<int()> rf_do_frame_hook{
         server_do_frame();
         client_bot_do_frame();
         koth_do_frame();
+        bagman_do_frame();
         alpine_mesh_do_frame();
         atx_do_frame();
         fflink::do_frame();

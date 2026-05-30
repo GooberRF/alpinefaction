@@ -794,6 +794,10 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Run"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"Escalation"};
+    } else if (game_type == rf::NG_TYPE_BM) {
+        return std::string_view{"Bagman"};
+    } else if (game_type == rf::NG_TYPE_TBM) {
+        return std::string_view{"Team Bagman"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
@@ -817,6 +821,10 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"RUN"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"ESCALATION"};
+    } else if (game_type == rf::NG_TYPE_BM) {
+        return std::string_view{"BAGMAN"};
+    } else if (game_type == rf::NG_TYPE_TBM) {
+        return std::string_view{"TEAM BAGMAN"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
@@ -840,6 +848,10 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"RUN"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"ESC"};
+    } else if (game_type == rf::NG_TYPE_BM) {
+        return std::string_view{"BM"};
+    } else if (game_type == rf::NG_TYPE_TBM) {
+        return std::string_view{"TBM"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
@@ -865,6 +877,10 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"run"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"esc"};
+    } else if (game_type == rf::NG_TYPE_BM) {
+        return std::string_view{"bagman"};
+    } else if (game_type == rf::NG_TYPE_TBM) {
+        return std::string_view{"tbm"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));

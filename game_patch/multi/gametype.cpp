@@ -7,6 +7,7 @@
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
 #include "gametype.h"
+#include "bagman.h"
 #include "multi.h"
 #include "alpine_packets.h"
 #include "../hud/hud_internal.h"
@@ -17,7 +18,7 @@
 #include "../rf/gameseq.h"
 #include "../rf/localize.h"
 
-static char* const* g_af_gametype_names[8];
+static char* const* g_af_gametype_names[10];
 
 static char koth_name[] = "KOTH";
 static char* koth_slot = koth_name;
@@ -29,6 +30,10 @@ static char run_name[] = "RUN";
 static char* run_slot = run_name;
 static char esc_name[] = "ESC";
 static char* esc_slot = esc_name;
+static char bm_name[] = "BM";
+static char* bm_slot = bm_name;
+static char tbm_name[] = "TBM";
+static char* tbm_slot = tbm_name;
 
 KothInfo g_koth_info; // KOTH and DC
 rf::Timestamp g_local_contest_alarm_cooldown;
@@ -65,6 +70,8 @@ void populate_gametype_table() {
     g_af_gametype_names[5] = &rev_slot;
     g_af_gametype_names[6] = &run_slot;
     g_af_gametype_names[7] = &esc_slot;
+    g_af_gametype_names[8] = &bm_slot;
+    g_af_gametype_names[9] = &tbm_slot;
 
     for (int i = 0; i < 5; ++i) {
         const char* const* slot = g_af_gametype_names[i];
@@ -97,8 +104,9 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_DC:
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
+        case rf::NG_TYPE_TBM:
             return true;
-        default: // DM, RUN
+        default: // DM, RUN, BM
             return false;
     }
 }
@@ -188,6 +196,21 @@ bool gt_is_esc()
 bool gt_is_run()
 {
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_RUN;
+}
+
+bool gt_is_bm()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_BM;
+}
+
+bool gt_is_tbm()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_TBM;
+}
+
+bool gt_is_bagman_any()
+{
+    return gt_is_bm() || gt_is_tbm();
 }
 
 static HillInfo* esc_find_hill_by_role(HillRole role)
@@ -1889,6 +1912,7 @@ void hill_mode_level_init_post()
 void multi_level_init_post_gametypes()
 {
     hill_mode_level_init_post();
+    bagman_level_init_post();
 }
 
 // pre level being loaded
@@ -1896,6 +1920,7 @@ CodeInjection multi_level_init_gametypes_injection{
     0x0046E466,
     [](auto& regs) {
         hill_mode_level_init();
+        bagman_level_init();
     },
 };
 
@@ -1929,9 +1954,16 @@ CodeInjection send_team_score_state_info_patch{
             }
         }
 
+        // send bagman state packet on join
+        if (gt_is_bagman_any()) {
+            if (rf::Player* pp = regs.edi) {
+                bagman_force_state_sync_to(pp);
+            }
+        }
+
         // send team_scores packet
         if (multi_game_type_is_team_type(game_type) && !gt_is_rev()) {
-            regs.eip = 0x00481859; 
+            regs.eip = 0x00481859;
         }
     },
 };
@@ -1966,6 +1998,13 @@ CodeInjection send_team_score_patch{
             regs.ax = blue_score;
             regs.eip = 0x00472176; // use stock game packet send
         }
+        else if (gt_is_tbm()) {
+            const uint16_t red_score = (uint16_t)std::clamp(bagman_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(bagman_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
     },
 };
 
@@ -1979,6 +2018,12 @@ CodeInjection process_team_score_patch{
             int blue_score = regs.edi;
             multi_koth_set_red_team_score(red_score);
             multi_koth_set_blue_team_score(blue_score);
+        }
+        else if (gt_is_tbm()) {
+            int red_score = regs.esi;
+            int blue_score = regs.edi;
+            bagman_set_red_team_score(red_score);
+            bagman_set_blue_team_score(blue_score);
         }
     },
 };
@@ -2019,6 +2064,7 @@ CallHook<int()> multi_get_game_type_non_team_mode_hook{
         0x00444A93, // multi_chat_say_show
         0x00476CA8, // multi_hud_level_init for "You are on team X" for client
         0x004827E1, // multi_get_new_player_team on join
+        0x0048939F, // team damage gate
     },
     []() {
         // all are calls to multi_get_game_type in the stock game
@@ -2069,4 +2115,7 @@ void gametype_do_patch()
 
     // handle new non-team modes
     multi_get_game_type_non_team_mode_hook.install();
+
+    // bagman specific
+    bagman_do_patch();
 }

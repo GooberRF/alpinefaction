@@ -161,6 +161,9 @@ enum class BotGoalType
     ctf_hold_enemy_flag = 13,
     roam = 14,
     control_point_objective = 15,
+    bag_pickup = 16,
+    bag_camp = 17,
+    bag_chase_carrier = 18,
 };
 
 inline constexpr bool bot_goal_is_item_collection(const BotGoalType goal)
@@ -190,6 +193,18 @@ inline constexpr bool bot_goal_is_ctf_objective(const BotGoalType goal)
     }
 }
 
+inline constexpr bool bot_goal_is_bagman_objective(const BotGoalType goal)
+{
+    switch (goal) {
+        case BotGoalType::bag_pickup:
+        case BotGoalType::bag_camp:
+        case BotGoalType::bag_chase_carrier:
+            return true;
+        default:
+            return false;
+    }
+}
+
 inline constexpr bool bot_goal_is_control_point_objective(const BotGoalType goal)
 {
     return goal == BotGoalType::control_point_objective;
@@ -211,6 +226,9 @@ inline constexpr BotGoalTier bot_goal_tier(const BotGoalType goal)
         case BotGoalType::ctf_return_flag:
         case BotGoalType::ctf_capture_flag:
         case BotGoalType::ctf_hold_enemy_flag:
+        case BotGoalType::bag_pickup:
+        case BotGoalType::bag_camp:
+        case BotGoalType::bag_chase_carrier:
         case BotGoalType::control_point_objective:
             return BotGoalTier::tier1_objective;
         case BotGoalType::collect_weapon:
