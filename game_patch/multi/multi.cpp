@@ -1158,7 +1158,6 @@ void multi_limbo_just_joined_do_frame() {
     }
 }
 
-
 CodeInjection rf_do_frame_dim_screen_patch{
     0x004B2E26,
     [] (auto& regs) {
