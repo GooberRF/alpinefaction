@@ -598,7 +598,8 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         char name[256]{};
         if (!read_string(name, sizeof(name))) { clear_extra(); return; }
         if (end - r < 3) { clear_extra(); return; }
-        uint8_t game_type = std::clamp<uint8_t>(*r++, 0, RF_GT_TBM);
+        // Values from newer-protocol servers show as UNK
+        uint8_t game_type = std::min<uint8_t>(*r++, RF_GT_UNK);
         uint8_t players = *r++;
         uint8_t max_players = *r++;
 

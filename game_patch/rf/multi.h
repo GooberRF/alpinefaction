@@ -143,6 +143,8 @@ namespace rf
         NG_TYPE_ESC = 7,    // Escalation, as of AF v1.2
         NG_TYPE_BM = 8,     // Bagman, as of AF v1.4
         NG_TYPE_TBM = 9,    // Team Bagman, as of AF v1.4
+        // Sentinel: must always be the last entry.
+        NG_TYPE_UNK
     };
 
     enum NetGameFlags
