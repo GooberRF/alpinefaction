@@ -3299,49 +3299,47 @@ void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count)
 CodeInjection entity_maybe_die_patch{
     0x00420600,
     [](auto& regs) {
-        if (rf::is_multi && (rf::is_server || rf::is_dedicated_server)) {
-            rf::Entity* ep = regs.esi;
+        if (!(rf::is_multi && (rf::is_server || rf::is_dedicated_server))) return;
 
-            if (ep) {
-                rf::Player* player = rf::player_from_entity_handle(ep->handle);
+        rf::Entity* ep = regs.esi;
+        if (!ep) return;
 
-                if (g_alpine_server_config_active_rules.spawn_delay.enabled) {
-                    rf::Player* player = rf::player_from_entity_handle(ep->handle);
-                    player->respawn_timer.set(g_alpine_server_config_active_rules.spawn_delay.base_value);
-                    bool respawn_allowed = true; // nothing currently disables respawns
-                    bool force_respawn = (rf::multi_server_flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN) != 0;
+        rf::Player* player = rf::player_from_entity_handle(ep->handle);
 
-                    if (rf::is_server) {
-                        set_local_spawn_delay(respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
-                    }
-                    af_send_just_died_info_packet(player, respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
+        if (player && g_alpine_server_config_active_rules.spawn_delay.enabled) {
+            player->respawn_timer.set(g_alpine_server_config_active_rules.spawn_delay.base_value);
+            bool respawn_allowed = true; // nothing currently disables respawns
+            bool force_respawn = (rf::multi_server_flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN) != 0;
+
+            if (rf::is_server) {
+                set_local_spawn_delay(respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
+            }
+            af_send_just_died_info_packet(player, respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
+        }
+
+        if (player && g_alpine_server_config_active_rules.drop_amps && !gt_is_bagman_any()) {
+            if (rf::multi_powerup_has_player(player, 1)) {
+                int amp_count = 0;
+                int time_left = rf::multi_powerup_get_time_until(player, 1);
+                amp_count = time_left >= 1000 ? time_left : 0;
+
+                if (amp_count >= 1000) { // only drop if at least 1 second left
+                    entity_drop_powerup(ep, 1, amp_count / 1000); // item_touch_multi_amp multiplies by 1000
                 }
+            }
 
-                if (g_alpine_server_config_active_rules.drop_amps && !gt_is_bagman_any()) {
-                    if (rf::multi_powerup_has_player(player, 1)) {
-                        int amp_count = 0;
-                        int time_left = rf::multi_powerup_get_time_until(player, 1);
-                        amp_count = time_left >= 1000 ? time_left : 0;
+            if (rf::multi_powerup_has_player(player, 0)) {
+                int invuln_count = 0;
+                int time_left = rf::multi_powerup_get_time_until(player, 0);
+                invuln_count = time_left >= 1000 ? time_left : 0;
 
-                        if (amp_count >= 1000) { // only drop if at least 1 second left
-                            entity_drop_powerup(ep, 1, amp_count / 1000); // item_touch_multi_amp multiplies by 1000
-                        }
-                    }
-
-                    if (rf::multi_powerup_has_player(player, 0)) {
-                        int invuln_count = 0;
-                        int time_left = rf::multi_powerup_get_time_until(player, 0);
-                        invuln_count = time_left >= 1000 ? time_left : 0;
-
-                        if (invuln_count >= 1000) { // only drop if at least 1 second left
-                            entity_drop_powerup(ep, 0, invuln_count / 1000); // item_touch_multi_amp multiplies by 1000
-                        }
-                    }
+                if (invuln_count >= 1000) { // only drop if at least 1 second left
+                    entity_drop_powerup(ep, 0, invuln_count / 1000); // item_touch_multi_amp multiplies by 1000
                 }
-
-                bagman_on_entity_will_die(ep);
             }
         }
+
+        bagman_on_entity_will_die(ep);
     },
 };
 
