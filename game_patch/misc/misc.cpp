@@ -169,6 +169,10 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             g_jump_to_multi_server_list
         );
 
+        if (old_state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+            g_multi_limbo_just_joined_req_leave = false;
+        }
+
         const bool exiting_game = state == rf::GS_MAIN_MENU
             && (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
         if (exiting_game && g_in_mp_game) {

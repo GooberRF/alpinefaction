@@ -1358,9 +1358,7 @@ CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_
         if (!multi_next_level_exists()) {
             rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
             multi_level_download_manager_start(rf::level.next_level_filename);
-        } else if (rf::is_multi
-            && !rf::is_server
-            && !(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)) {
+        } else if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             g_multi_limbo_just_joined_req_leave = true;
         } else {
             process_leave_limbo_packet_gameseq_set_next_state_hook.call_target(state, force);
