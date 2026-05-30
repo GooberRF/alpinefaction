@@ -1110,9 +1110,27 @@ void alpine_options_panel_checkbox_init(rf::ui::Checkbox* checkbox, rf::ui::Labe
     alpine_options_panel_labels.push_back(label);
 }
 
-void alpine_options_panel_inputbox_init(rf::ui::Checkbox* checkbox, rf::ui::Label* label, rf::ui::Label* but_label,
-    rf::ui::Panel* parent_panel, void (*on_click)(int, int), int x, int y, std::string label_text) {
-    checkbox->create("ao_smbut1.tga", "ao_smbut1_hover.tga", "ao_tab.tga", x, y, 45, "106.26", 0);
+void alpine_options_panel_inputbox_init(
+    rf::ui::Checkbox* const checkbox,
+    rf::ui::Label* const label,
+    rf::ui::Label* const but_label,
+    rf::ui::Panel* const parent_panel,
+    void (*const on_click)(int, int),
+    const int x,
+    const int y,
+    const std::string& label_text,
+    const int btn_font_id = rf::ui::medium_font_0
+) {
+    checkbox->create(
+        "ao_smbut1.tga",
+        "ao_smbut1_hover.tga",
+        "ao_tab.tga",
+        x,
+        y,
+        45,
+        "106.26",
+        0
+    );
     checkbox->parent = parent_panel;
     checkbox->checked = false;
     checkbox->on_click = on_click;
@@ -1123,7 +1141,12 @@ void alpine_options_panel_inputbox_init(rf::ui::Checkbox* checkbox, rf::ui::Labe
     label->enabled = true;
     alpine_options_panel_labels.push_back(label);
 
-    but_label->create(parent_panel, x + 32, y + 6, "", rf::ui::medium_font_0);
+    const int default_font_h = rf::gr::get_font_height(rf::ui::medium_font_0);
+    const int btn_font_h = rf::gr::get_font_height(btn_font_id);
+    const int btn_font_delta_h = btn_font_h - default_font_h;
+    const int btn_text_y =
+        y + 6 - static_cast<int>(btn_font_delta_h / rf::ui::scale_y * .5f);
+    but_label->create(parent_panel, x + 32, btn_text_y, "", btn_font_id);
     but_label->clr = {255, 255, 255, 255};
     but_label->enabled = true;
     alpine_options_panel_labels.push_back(but_label);
@@ -1195,8 +1218,11 @@ void alpine_options_panel_init() {
         &ao_fullbrightchar_cbox, &ao_fullbrightchar_label, &alpine_options_panel0, ao_fullbrightchar_cbox_on_click, g_alpine_game_config.try_fullbright_characters, 280, 114, "Fullbright models");
     alpine_options_panel_inputbox_init(
         &ao_meshlight_cbox, &ao_meshlight_label, &ao_meshlight_butlabel, &alpine_options_panel0, ao_meshlight_cbox_on_click, 280, 144, "Mesh lighting");
+    // HACKFIX.  We need to decrease our font size to fit our text.
+    const int aa_font_size = std::lround(rf::ui::scale_y * 8.f);
     alpine_options_panel_inputbox_init(
-        &ao_aa_cbox, &ao_aa_label, &ao_aa_btn_label, &alpine_options_panel0, ao_aa_cbox_on_click, 280, 174, "MSAA antialiasing");
+        &ao_aa_cbox, &ao_aa_label, &ao_aa_btn_label, &alpine_options_panel0, ao_aa_cbox_on_click, 280, 174, "Anti-aliasing", rf::gr::load_font(std::format("regularfont.ttf:{}", aa_font_size).c_str()));
+    ao_aa_btn_label.text = ao_aa_btn_label_text;
     alpine_options_panel_inputbox_init(
         &ao_fov_cbox, &ao_fov_label, &ao_fov_butlabel, &alpine_options_panel0, ao_fov_cbox_on_click, 280, 204, "Horizontal FOV");
     alpine_options_panel_checkbox_init(
@@ -1430,12 +1456,11 @@ void alpine_options_panel_do_frame(int x)
         } else {
             snprintf(ao_aa_btn_label_text,
                 sizeof(ao_aa_btn_label_text),
-                "%u x",
+                "MSAAx%u",
                 g_alpine_game_config.sample_count
             );
         }
     }
-    ao_aa_btn_label.text = ao_aa_btn_label_text;
 
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {
