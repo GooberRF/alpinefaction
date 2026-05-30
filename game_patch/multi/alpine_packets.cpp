@@ -18,10 +18,12 @@
 #include "server.h"
 #include "../hud/hud_world.h"
 #include "alpine_packets.h"
+#include "bagman.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "bots/bot_personality.h"
 #include "bots/bot_state.h"
@@ -137,6 +139,10 @@ bool af_process_packet(
         }
         case af_packet_type::af_server_bot_control: {
             af_process_bot_control_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_bagman_state: {
+            af_process_bagman_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -569,6 +575,19 @@ void serialize_payload(const ShouldGibPayload& payload, std::byte* buf, size_t& 
     offset += sizeof(payload.obj_handle);
 }
 
+// af_sreq_teleport_entity
+void serialize_payload(const TeleportEntityPayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.obj_handle, sizeof(payload.obj_handle));
+    offset += sizeof(payload.obj_handle);
+    std::memcpy(buf + offset, &payload.pos, sizeof(payload.pos));
+    offset += sizeof(payload.pos);
+    std::memcpy(buf + offset, &payload.orient, sizeof(payload.orient));
+    offset += sizeof(payload.orient);
+    std::memcpy(buf + offset, &payload.vel, sizeof(payload.vel));
+    offset += sizeof(payload.vel);
+}
+
 void af_send_server_cfg_request() {
     if (!rf::is_multi || rf::is_server) {
         return;
@@ -723,6 +742,37 @@ void af_send_should_gib_req(uint32_t obj_handle)
     }
 }
 
+void af_send_teleport_entity_req(
+    uint32_t obj_handle,
+    const rf::Vector3& pos,
+    const rf::Matrix3& orient,
+    const rf::Vector3& vel)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    TeleportEntityPayload payload{};
+    payload.obj_handle = obj_handle;
+    static_assert(sizeof(payload.pos) == sizeof(rf::Vector3), "RF_Vector / rf::Vector3 layout mismatch");
+    static_assert(sizeof(payload.orient) == sizeof(rf::Matrix3), "RF_Matrix / rf::Matrix3 layout mismatch");
+    std::memcpy(&payload.pos, &pos, sizeof(payload.pos));
+    std::memcpy(&payload.orient, &orient, sizeof(payload.orient));
+    std::memcpy(&payload.vel, &vel, sizeof(payload.vel));
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(payload.obj_handle) + sizeof(payload.pos) + sizeof(payload.orient) + sizeof(payload.vel);
+    packet.req_type = af_server_req_type::af_sreq_teleport_entity;
+    packet.payload = payload;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
 static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr&)
 {
     // Receive: client <- server
@@ -788,6 +838,57 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
 
             entity_set_gib_flag(entity);
+            break;
+        }
+        case af_server_req_type::af_sreq_teleport_entity: {
+            constexpr size_t expected = sizeof(uint32_t) + sizeof(RF_Vector) + sizeof(RF_Matrix) + sizeof(RF_Vector);
+            if (remaining < expected) {
+                xlog::warn("af_process_server_req_packet: TeleportEntity payload too short ({} < {})", remaining, expected);
+                return;
+            }
+
+            TeleportEntityPayload payload{};
+            std::memcpy(&payload.obj_handle, bytes + offset, sizeof(payload.obj_handle));
+            offset += sizeof(payload.obj_handle);
+            std::memcpy(&payload.pos, bytes + offset, sizeof(payload.pos));
+            offset += sizeof(payload.pos);
+            std::memcpy(&payload.orient, bytes + offset, sizeof(payload.orient));
+            offset += sizeof(payload.orient);
+            std::memcpy(&payload.vel, bytes + offset, sizeof(payload.vel));
+            offset += sizeof(payload.vel);
+
+            rf::Object* remote_object = rf::obj_from_remote_handle(payload.obj_handle);
+            if (!remote_object) {
+                xlog::warn("af_process_server_req_packet: TeleportEntity invalid remote handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(remote_object->handle);
+            if (!entity) {
+                xlog::warn("af_process_server_req_packet: TeleportEntity invalid entity handle {:x}", payload.obj_handle);
+                return;
+            }
+
+            rf::Vector3 new_pos;
+            rf::Matrix3 new_orient;
+            rf::Vector3 new_vel;
+            std::memcpy(&new_pos, &payload.pos, sizeof(new_pos));
+            std::memcpy(&new_orient, &payload.orient, sizeof(new_orient));
+            std::memcpy(&new_vel, &payload.vel, sizeof(new_vel));
+
+            // Snap physics state. move() updates pos, bbox, and room.
+            entity->p_data.next_pos = new_pos;
+            entity->move(&new_pos);
+            entity->orient = new_orient;
+            entity->p_data.orient = new_orient;
+            entity->p_data.next_orient = new_orient;
+            entity->eye_orient = new_orient;
+            entity->p_data.vel = new_vel;
+
+            // Drop the interp buffer so we don't render a slide from old pos to new pos.
+            if (entity->obj_interp) {
+                entity->obj_interp->Clear();
+            }
             break;
         }
         default:
@@ -1038,6 +1139,139 @@ static void af_process_koth_hill_state_packet(const void* data, size_t len, cons
     // Scores are authoritative
     multi_koth_set_red_team_score(pkt.red_score);
     multi_koth_set_blue_team_score(pkt.blue_score);
+}
+
+// Build the wire packet once from the current bagman state. Used by both the
+// single-player and broadcast send paths so we don't reconstruct per-player.
+static void build_af_bagman_state_packet(af_bagman_state_packet& pkt)
+{
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_bagman_state);
+    pkt.header.size = static_cast<uint16_t>(sizeof(af_bagman_state_packet) - sizeof(RF_GamePacketHeader));
+
+    pkt.carrier_player_id = (g_bagman_info.carrier && g_bagman_info.carrier->net_data)
+        ? g_bagman_info.carrier->net_data->player_id
+        : 0xFF;
+    pkt.state = static_cast<uint8_t>(g_bagman_info.state);
+
+    int return_left = 0;
+    if (g_bagman_info.state == BagState::BS_Dropped && g_bagman_info.return_timer.valid()) {
+        return_left = g_bagman_info.return_timer.time_until();
+    }
+    pkt.return_time_left_ms = static_cast<uint16_t>(std::clamp(return_left, 0, 0xFFFF));
+    pkt.red_team_score = static_cast<uint16_t>(std::clamp(g_bagman_info.red_team_score, 0, 0xFFFF));
+    pkt.blue_team_score = static_cast<uint16_t>(std::clamp(g_bagman_info.blue_team_score, 0, 0xFFFF));
+    pkt.carrier_score = (g_bagman_info.carrier && g_bagman_info.carrier->stats)
+        ? g_bagman_info.carrier->stats->score
+        : 0;
+}
+
+void af_send_bagman_state_packet(rf::Player* player)
+{
+    // server -> single client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_bagman_state_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    af_bagman_state_packet pkt{};
+    build_af_bagman_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+    af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
+}
+
+void af_send_bagman_state_packet_to_all()
+{
+    // server -> all clients
+    if (!rf::is_server)
+        return;
+
+    af_bagman_state_packet pkt{};
+    build_af_bagman_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+
+    SinglyLinkedList<rf::Player> players{rf::player_list};
+    for (auto& p : players) {
+        if (!p.net_data)
+            continue;
+        af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
+    }
+}
+
+void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server)
+        return;
+    if (len < sizeof(RF_GamePacketHeader))
+        return;
+
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (sizeof(RF_GamePacketHeader) + hdr.size > len) {
+        xlog::warn("bagman_state: truncated (declared={}, len={})", hdr.size, len);
+        return;
+    }
+    if (len < sizeof(af_bagman_state_packet)) {
+        xlog::warn("bagman_state: short packet ({}<{})", len, sizeof(af_bagman_state_packet));
+        return;
+    }
+
+    af_bagman_state_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    const size_t expected_payload = sizeof(af_bagman_state_packet) - sizeof(RF_GamePacketHeader);
+    if (pkt.header.size != expected_payload) {
+        xlog::warn("bagman_state: bad payload size {} (expected {})", pkt.header.size, expected_payload);
+        return;
+    }
+
+    const BagState prev_state = g_bagman_info.state;
+    g_bagman_info.state = static_cast<BagState>(pkt.state);
+
+    if (prev_state == BagState::BS_Dropped &&
+        g_bagman_info.state == BagState::BS_At_Spawn) {
+        bagman_play_return_sound();
+    }
+
+    if (pkt.carrier_player_id == 0xFF) {
+        g_bagman_info.carrier = nullptr;
+    } else {
+        g_bagman_info.carrier = rf::multi_find_player_by_id(pkt.carrier_player_id);
+    }
+
+    g_bagman_info.red_team_score = pkt.red_team_score;
+    g_bagman_info.blue_team_score = pkt.blue_team_score;
+
+    // Keep return_timer in sync so the client can render a smooth countdown
+    // between packet broadcasts.
+    if (g_bagman_info.state == BagState::BS_Dropped) {
+        g_bagman_info.return_timer.set(pkt.return_time_left_ms);
+    } else {
+        g_bagman_info.return_timer.invalidate();
+    }
+
+    // Keep score in sync
+    if (g_bagman_info.carrier && g_bagman_info.carrier->stats) {
+        g_bagman_info.carrier->stats->score = pkt.carrier_score;
+    }
+
+    // Handle bag waypoints for bots.
+    if (g_bagman_info.state == BagState::BS_Carried || g_bagman_info.state == BagState::BS_Delayed) {
+        waypoints_on_bag_carried();
+    } else {
+        // On-ground bag: position comes from the replicated item object.
+        rf::Vector3 bag_world_pos;
+        if (bagman_get_client_pickup_pos(&bag_world_pos)) {
+            waypoints_on_bag_world_pos(bag_world_pos);
+        }
+    }
 }
 
 void af_send_koth_hill_captured_packet(rf::Player* player, uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids)
@@ -1392,7 +1626,7 @@ void af_send_server_info_packet_to_all()
 
     SinglyLinkedList<rf::Player> players{rf::player_list};
     for (auto& p : players) {
-        if (!&p || !p.net_data)
+        if (!p.net_data)
             continue;
         af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
     }

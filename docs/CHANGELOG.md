@@ -9,6 +9,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Fine tuned texture animation without being subject to VBM format limitations
   - Accessible to event system via handle for level-driven behaviour scripting
 - Support PNG and JPG texture formats in game and level editor
+- Add Bagman (`BM`) and Team Bagman (`TBM`) game types
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -18,9 +19,12 @@ Version 1.4.0 (Lupin): Not yet released
 - Add vote-allowed levels to level autodownload list for dedicated servers
 - Add `fflink_gsk` dedicated server config field and `sv_fflink_status` and `sv_fflink_resync` console commands for FactionFiles session key exchange
 - Make clock clutter objects correctly display the current local real world time
+- Add mini scoreboard HUD element to FFA game types
 
 [@is-this-c](https://github.com/is-this-c)
 - Allow players to join between levels
+- Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
+- Rename `mp_notifyonjoin` console command to `mp_join_beep`
 - Server browser
   - Disable `Refresh Selected`, only if `Refresh Selected` was pressed
   - Never disable `Add Server`
@@ -35,6 +39,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
 - Fix incorrect clickable area size for launcher FFLink button
 - Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
+- Fix `AF_Teleport_Player` event clientside smoothly interpolating the teleported entity position
+- Fix ability to configure invalid values for `individual_kill_limit` in ADS configs
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
@@ -58,14 +64,14 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
   - Support `Alpha` field in `Decal` objects placed in version >= 304 levels
   - Support movers, meshes, and mesh pixel lighting in skyboxes
   - Support gas regions
-- Expanded destruction capabilities available to developers
+- Expand destruction capabilities available to developers
   - `Brush-based geomod` switch added to level properties; if true, use level hardness for geoable brushes (RF2-style)
   - Geo regions allow traditional world-based geomod to be used even when brush-based switch is true
   - `Is Geoable` flag added to brush properties
   - Support for rock, wood, cement, metal, and ice breakable detail brushes
   - Add dynamic debris generation from breakable detail brushes
   - `No Debris` flag added to brush properties for breakable detail brushes
-- Added new object types
+- Add new object types
   - `Mesh` for configuring custom static, skeletal, or animated meshes in levels
   - `Corona` for configuring custom glare effects in levels
   - `Note` for leaving important information in levels (editor only)

@@ -456,6 +456,8 @@ WaypointType waypoint_type_from_int(int raw_type)
             return WaypointType::conveyer;
         case static_cast<int>(WaypointType::water):
             return WaypointType::water;
+        case static_cast<int>(WaypointType::bag):
+            return WaypointType::bag;
         default:
             return static_cast<WaypointType>(raw_type);
     }
@@ -503,6 +505,8 @@ std::string_view waypoint_type_name(WaypointType type)
             return "conveyer";
         case WaypointType::water:
             return "water";
+        case WaypointType::bag:
+            return "bag";
         default:
             return "unknown";
     }
@@ -3458,6 +3462,82 @@ void remove_temporary_ctf_flag_waypoints(bool red_flag)
         }
         remove_waypoint_by_uid(waypoint_uid);
     }
+}
+
+// Bagman: there is at most one bag waypoint at any time.
+int find_temporary_bag_waypoint()
+{
+    for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
+        const auto& node = g_waypoints[waypoint_uid];
+        if (!node.valid || !node.temporary) continue;
+        if (node.type != WaypointType::bag) continue;
+        return waypoint_uid;
+    }
+    return 0;
+}
+
+void remove_temporary_bag_waypoints()
+{
+    while (true) {
+        const int waypoint_uid = find_temporary_bag_waypoint();
+        if (waypoint_uid <= 0) break;
+        remove_waypoint_by_uid(waypoint_uid);
+    }
+}
+
+int create_temporary_bag_waypoint(const rf::Vector3& bag_pos)
+{
+    const int waypoint_uid = add_waypoint(
+        bag_pos,
+        WaypointType::bag,
+        0,
+        false,
+        true,
+        kBagWaypointLinkRadius,
+        -1,
+        nullptr,
+        false,
+        static_cast<int>(WaypointDroppedSubtype::normal),
+        true);
+    link_temporary_waypoint_like_crater(waypoint_uid);
+    return waypoint_uid;
+}
+
+void waypoints_on_bag_world_pos(const rf::Vector3& bag_pos)
+{
+    if (!is_waypoint_bot_mode_active()) return;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) return;
+
+    const int existing = find_temporary_bag_waypoint();
+    if (existing <= 0) {
+        create_temporary_bag_waypoint(bag_pos);
+        return;
+    }
+    // Move the waypoint if the bag has shifted more than the CTF threshold.
+    constexpr float kBagWaypointMoveThreshold = 0.75f;
+    auto& waypoint = g_waypoints[existing];
+    if (distance_sq(waypoint.pos, bag_pos)
+        <= kBagWaypointMoveThreshold * kBagWaypointMoveThreshold) {
+        return;
+    }
+    remove_waypoint_by_uid(existing);
+    create_temporary_bag_waypoint(bag_pos);
+}
+
+void waypoints_on_bag_carried()
+{
+    if (!is_waypoint_bot_mode_active()) return;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) return;
+    remove_temporary_bag_waypoints();
+}
+
+bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos)
+{
+    const int waypoint_uid = find_temporary_bag_waypoint();
+    if (waypoint_uid <= 0) return false;
+    out_waypoint = waypoint_uid;
+    out_pos = g_waypoints[waypoint_uid].pos;
+    return true;
 }
 
 void update_ctf_dropped_flag_temporary_waypoint_for_team(bool red_flag)
