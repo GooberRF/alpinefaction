@@ -314,6 +314,7 @@ namespace asg
     {
         std::string goal_name;
         int count;
+        int initial_count = 0;
     };
 
     struct SavegameLevelDecalDataBlock

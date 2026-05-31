@@ -910,7 +910,7 @@ namespace asg
         SavegameEventSwitchRandomDataBlock m;
         m.ev = make_event_base_block(e);
 
-        auto* event = static_cast<rf::EventSwitchRandom*>(e);
+        auto* event = static_cast<EventSwitchRandom*>(e);
         if (event) {
             m.used_handles.clear();
             m.used_handles.reserve(event->used_handles.size());
@@ -926,7 +926,7 @@ namespace asg
         SavegameEventSequenceDataBlock m;
         m.ev = make_event_base_block(e);
 
-        auto* event = static_cast<rf::EventSequence*>(e);
+        auto* event = static_cast<EventSequence*>(e);
         if (event) {
             m.next_link_index = event->next_link_index;
         }
@@ -938,7 +938,7 @@ namespace asg
         SavegameEventWorldHudSpriteDataBlock m;
         m.ev = make_event_pos_block(e);
 
-        auto* event = static_cast<rf::EventWorldHUDSprite*>(e);
+        auto* event = static_cast<EventWorldHUDSprite*>(e);
         if (event) {
             m.enabled = event->enabled;
         }
@@ -1017,7 +1017,7 @@ namespace asg
         b.sticky_host_uid = uid_from_handle(w->sticky_host_handle);
         b.sticky_host_pos_offset = w->sticky_host_pos_offset;
         b.sticky_host_orient = w->sticky_host_orient;
-        b.weap_friendliness = static_cast<uint8_t>(w->friendliness);
+        b.weap_friendliness = static_cast<uint8_t>(w->weap_friendliness);
         b.target_uid = uid_from_handle(w->target_handle);
         b.pierce_power_left = w->pierce_power_left;
         b.thrust_left = w->thrust_left;
@@ -1280,6 +1280,7 @@ namespace asg
             SavegameLevelPersistentGoalDataBlock h;
             h.goal_name = ev.name.c_str();
             h.count = ev.count;
+            h.initial_count = ev.initial_count;
             out.push_back(std::move(h));
         }
     }
@@ -1872,8 +1873,8 @@ namespace asg
 
         e->links.clear();
         const bool is_light_event = event_links_can_be_raw_uids(e);
-        for (int link_uid : b.links) {
-            if (is_light_event) {
+        if (is_light_event) {
+            for (int link_uid : b.links) {
                 if (link_uid == -1) {
                     e->links.add(-1);
                     continue;
@@ -1886,14 +1887,16 @@ namespace asg
                     e->links.add(link_uid);
                 }
             }
-            else {
-                // push a placeholder handle
+        }
+        else {
+            // Pre-size the VArray before taking interior element pointers: rf::VArray::add
+            // reallocates its backing buffer on growth, so a pointer captured from an earlier
+            // add() would dangle once a later add() moves the buffer. Add all placeholders
+            // first, then queue each slot by stable index for delayed resolution.
+            for (size_t i = 0; i < b.links.size(); ++i)
                 e->links.add(-1);
-                // reference to slot
-                int& slot = e->links[e->links.size() - 1];
-                // queue the UID for resolution
-                add_handle_for_delayed_resolution(link_uid, &slot);
-            }
+            for (size_t i = 0; i < b.links.size(); ++i)
+                add_handle_for_delayed_resolution(b.links[i], &e->links[static_cast<int>(i)]);
         }
     }
 
@@ -1978,7 +1981,7 @@ namespace asg
     static void apply_switch_random_event(rf::Event* e, const SavegameEventSwitchRandomDataBlock& blk)
     {
         apply_event_base_fields(e, blk.ev);
-        auto* ev = static_cast<rf::EventSwitchRandom*>(e);
+        auto* ev = static_cast<EventSwitchRandom*>(e);
         ev->used_handles.clear();
         ev->used_handles.reserve(blk.used_handles.size());
         for (int uid : blk.used_handles) {
@@ -1992,7 +1995,7 @@ namespace asg
     static void apply_sequence_event(rf::Event* e, const SavegameEventSequenceDataBlock& blk)
     {
         apply_event_base_fields(e, blk.ev);
-        auto* ev = static_cast<rf::EventSequence*>(e);
+        auto* ev = static_cast<EventSequence*>(e);
         ev->next_link_index = blk.next_link_index;
     }
 
@@ -2000,7 +2003,7 @@ namespace asg
     static void apply_world_hud_sprite_event(rf::Event* e, const SavegameEventWorldHudSpriteDataBlock& blk)
     {
         apply_event_pos_fields(e, blk.ev);
-        auto* ev = static_cast<rf::EventWorldHUDSprite*>(e);
+        auto* ev = static_cast<EventWorldHUDSprite*>(e);
         ev->enabled = blk.enabled;
         if (ev->enabled) {
             ev->build_sprite_ints();
@@ -2262,13 +2265,16 @@ namespace asg
         deserialize_timestamp(&c->delayed_kill_timestamp, &b.delayed_kill_timestamp);
         deserialize_timestamp(&c->corpse_create_timestamp, &b.corpse_create_timestamp);
 
-        // 3) rebuild the link list, queuing each uid for delayed resolution
+        // 3) rebuild the link list, queuing each uid for delayed resolution.
+        // Pre-size the VArray before taking interior element pointers: rf::VArray::add
+        // reallocates its backing buffer on growth, so a pointer captured from an earlier
+        // add() would dangle once a later add() moves the buffer. Add all placeholders
+        // first, then queue each slot by stable index.
         c->links.clear();
-        for (int uid : b.links) {
+        for (size_t i = 0; i < b.links.size(); ++i)
             c->links.add(-1);
-            int& slot = c->links[c->links.size() - 1];
-            add_handle_for_delayed_resolution(uid, &slot);
-        }
+        for (size_t i = 0; i < b.links.size(); ++i)
+            add_handle_for_delayed_resolution(b.links[i], &c->links[static_cast<int>(i)]);
     }
 
     static void clutter_deserialize_all_state(const std::vector<SavegameClutterDataBlock>& blocks)
@@ -3585,6 +3591,7 @@ static toml::table make_persistent_goal_table(const asg::SavegameLevelPersistent
     toml::table t;
     t.insert("goal_name", g.goal_name);
     t.insert("count", g.count);
+    t.insert("initial_count", g.initial_count);
     return t;
 }
 
@@ -5114,6 +5121,20 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
             parse_killed_rooms(*deu, lvl.dead_entity_uids);
         }
 
+        if (auto pg = tbl["persistent_goals"].as_array()) {
+            lvl.persistent_goals.reserve(pg->size());
+            for (auto& n : *pg) {
+                if (!n.is_table())
+                    continue;
+                auto pt = *n.as_table();
+                asg::SavegameLevelPersistentGoalDataBlock g;
+                g.goal_name = pt["goal_name"].value_or(std::string{});
+                g.count = pt["count"].value_or(0);
+                g.initial_count = pt["initial_count"].value_or(0);
+                lvl.persistent_goals.push_back(std::move(g));
+            }
+        }
+
         outLevels.push_back(std::move(lvl));
     }
     return true;
@@ -5338,21 +5359,50 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
         // A small helper to do exactly what you do for the "auto." path:
         auto do_transition_load = [&](int slot_idx) -> bool {
             using namespace rf;
+
+            // guard against a header/levels desync (e.g. a corrupt or hand-edited .asg whose
+            // saved_level_filenames list is longer than the [[levels]] array) before indexing
+            if (slot_idx < 0 || slot_idx >= static_cast<int>(g_save_data.levels.size())) {
+                xlog::error("[ASG] save level slot {} out of range (have {} levels)", slot_idx,
+                            g_save_data.levels.size());
+                return false;
+            }
+
             // pause the game timer
             rf::timer::inc_game_paused();
 
             auto& hdr = g_save_data.header;
             auto& lvl = g_save_data.levels[slot_idx];
             xlog::warn("geomod_craters size from save = {}", lvl.geomod_craters.size());
-            // restore geomods
-            num_geomods_this_level = lvl.geomod_craters.size();
-            std::memcpy(geomods_this_level, lvl.geomod_craters.data(), sizeof(GeomodCraterData) * num_geomods_this_level);
+            // restore geomods (clamp to the engine's fixed crater array capacity; a corrupt or
+            // hand-edited .asg could otherwise overflow geomods_this_level)
+            int crater_count = static_cast<int>(lvl.geomod_craters.size());
+            if (crater_count > rf::sr::MAX_GEOMOD_CRATERS) {
+                xlog::warn("[ASG] geomod crater count {} exceeds engine max {}, clamping", crater_count,
+                           int(rf::sr::MAX_GEOMOD_CRATERS));
+                crater_count = rf::sr::MAX_GEOMOD_CRATERS;
+            }
+            num_geomods_this_level = crater_count;
+            std::memcpy(geomods_this_level, lvl.geomod_craters.data(),
+                        sizeof(GeomodCraterData) * size_t(crater_count));
             xlog::warn("restored {} geomods", num_geomods_this_level);
             levelmod_load_state();
 
             // restore world bounds
             world_solid->bbox_min = lvl.header.aabb_min;
             world_solid->bbox_max = lvl.header.aabb_max;
+
+            // restore persistent (cross-level) goals; the level-init hook clears the global on
+            // every load, so repopulate it from this level's saved snapshot
+            g_persistent_goals.clear();
+            g_persistent_goals.reserve(lvl.persistent_goals.size());
+            for (auto const& pg : lvl.persistent_goals) {
+                rf::PersistentGoalEvent ev;
+                ev.name = pg.goal_name.c_str();
+                ev.initial_count = pg.initial_count;
+                ev.count = pg.count;
+                g_persistent_goals.push_back(std::move(ev));
+            }
 
             // restore everything else
             asg::g_entity_skin_state.clear();

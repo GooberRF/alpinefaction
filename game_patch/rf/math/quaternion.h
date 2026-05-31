@@ -9,9 +9,11 @@ namespace rf
     {
         int16_t x, y, z, w;
 
-        ShortQuat* from_quat(Quaternion* a2)
+        // Engine routine writes the compressed quat into *this; it does not return a
+        // meaningful value (EAX is not set), so this is void. All callers ignore the result.
+        void from_quat(Quaternion* a2)
         {
-            return AddrCaller{0x0051A540}.this_call<ShortQuat*>(this, a2);
+            AddrCaller{0x0051A540}.this_call<void>(this, a2);
         }
     };
     static_assert(sizeof(ShortQuat) == 0x8);
@@ -20,9 +22,11 @@ namespace rf
     {
         float x, y, z, w;
 
-        int unpack(const ShortQuat* pCompressed)
+        // Engine routine decompresses pCompressed into *this; it does not return a
+        // meaningful value (EAX is not set), so this is void. All callers ignore the result.
+        void unpack(const ShortQuat* pCompressed)
         {
-            return AddrCaller{0x00417E90}.this_call<int>(this, pCompressed);
+            AddrCaller{0x00417E90}.this_call<void>(this, pCompressed);
         }
 
         void extract_matrix(Matrix3* mat)

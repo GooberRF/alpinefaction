@@ -318,6 +318,7 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
     ${CMAKE_SOURCE_DIR}/vendor/nlohmann
+    ${CMAKE_SOURCE_DIR}/vendor/toml++
 )
 
 if(NOT MSVC)
