@@ -896,12 +896,9 @@ namespace gr::d3d11
                     );
                     if (err != std::errc{} || ptr != mode->data() + mode->size()) {
                         rf::console::print("Invalid value!");
-                        return;
                     } else if (value != 2 && value != 4 && value != 8) {
                         rf::console::print("MSAA level must be 2, 4, or 8");
-                        return;
-                    }
-                    if (std::cmp_not_equal(value, g_alpine_game_config.sample_count)) {
+                    } else if (std::cmp_not_equal(value, g_alpine_game_config.sample_count)) {
                         if (!gr::d3d11::renderer->supports_sample_count(value)) {
                             rf::console::print("MSAAx{} is an unsupported mode!", value);
                         } else {

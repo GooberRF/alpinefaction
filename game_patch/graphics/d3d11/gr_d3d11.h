@@ -95,9 +95,9 @@ namespace gr::d3d11
     private:
         void init_device();
         void init_swap_chain(HWND hwnd);
-        void init_back_buffer(const uint32_t msaa_level);
+        void init_back_buffer(const uint32_t sample_count);
         void init_scene_texture();
-        void init_depth_stencil_buffer(const uint32_t msaa_level);
+        void init_depth_stencil_buffer(const uint32_t sample_count);
 
         HWND hwnd_;
         DynamicLinkLibrary d3d11_lib_;

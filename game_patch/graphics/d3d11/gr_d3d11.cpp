@@ -351,7 +351,7 @@ namespace gr::d3d11
         dxgi_factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     }
 
-    void Renderer::init_back_buffer(const uint32_t msaa_level)
+    void Renderer::init_back_buffer(const uint32_t sample_count)
     {
         // Get a pointer to the back buffer
         DF_GR_D3D11_CHECK_HR(
@@ -370,10 +370,10 @@ namespace gr::d3d11
         init_scene_texture();
 
         // Create a render-target view for the main rendering pass
-        if (g_antialiasing && msaa_level >= 2 && msaa_level <= 8) {
+        if (g_antialiasing && sample_count >= 2 && sample_count <= 8) {
             D3D11_TEXTURE2D_DESC desc;
             back_buffer_->GetDesc(&desc);
-            desc.SampleDesc.Count = msaa_level;
+            desc.SampleDesc.Count = sample_count;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&desc, nullptr, &msaa_render_target_)
             );
@@ -417,7 +417,7 @@ namespace gr::d3d11
         );
     }
 
-    void Renderer::init_depth_stencil_buffer(const uint32_t msaa_level)
+    void Renderer::init_depth_stencil_buffer(const uint32_t sample_count)
     {
         D3D11_TEXTURE2D_DESC depth_stencil_desc;
         ZeroMemory(&depth_stencil_desc, sizeof(depth_stencil_desc));
@@ -426,9 +426,9 @@ namespace gr::d3d11
         depth_stencil_desc.MipLevels = 1;
         depth_stencil_desc.ArraySize = 1;
         depth_stencil_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        const bool use_msaa = g_antialiasing && msaa_level >= 2 && msaa_level <= 8;
+        const bool use_msaa = g_antialiasing && sample_count >= 2 && sample_count <= 8;
         if (use_msaa) {
-             depth_stencil_desc.SampleDesc.Count = msaa_level;
+             depth_stencil_desc.SampleDesc.Count = sample_count;
         } else {
              depth_stencil_desc.SampleDesc.Count = 1;
         }
