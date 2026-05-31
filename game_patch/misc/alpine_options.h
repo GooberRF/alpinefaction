@@ -51,6 +51,7 @@ enum class AlpineOptionID
     MultiTimerYOffset,
     MultiTimerColor,
     DefaultThirdPerson,
+    RequireAlpineSavegameFormat,
     _optioncount // dummy for total count
 };
 

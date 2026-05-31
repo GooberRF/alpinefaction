@@ -109,6 +109,8 @@ namespace rf
     static auto& vmesh_get_materials_array = addr_as_ref<void(VMesh *vmesh, int *num_materials_out, MeshMaterial **materials_array_out)>(0x00503650);
     static auto& vmesh_render = addr_as_ref<void(VMesh* vmesh, Vector3* pos, Matrix3* orient, MeshRenderParams* params)>(0x00503100);
     static auto& vmesh_process = addr_as_ref<void(VMesh* vmesh, float frametime, int increment_only, Vector3* pos, Matrix3* orient, int lod_level)>(0x00503360);
+    static auto& vmesh_anim_length = addr_as_ref<double(VMesh* vmesh, int anim_index)>(0x005033E0);
+    static auto& vmesh_play_action = addr_as_ref<void(VMesh* vmesh, int anim_index, float percent, bool hold_last_frame)>(0x005033B0);
 
     // character_mesh_load_action: __thiscall on mesh_data (VMesh::mesh), loads .rfa animation file
     // 3 stack args: filename, is_state flag, unused — original function does RET 0xC (12 bytes)

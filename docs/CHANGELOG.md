@@ -9,6 +9,17 @@ Version 1.4.0 (Lupin): Not yet released
   - Fine tuned texture animation without being subject to VBM format limitations
   - Accessible to event system via handle for level-driven behaviour scripting
 - Support PNG and JPG texture formats in game and level editor
+- Implement TOML-based `ASG` savegame file format for single player
+    - Support (theoretically) any number of each saved object type, removing specific limits
+    - Support tracking orientation for triggers and clutter (disabled when `sp_savespeedrunmode` is enabled)
+    - Support tracking trigger reset timestamps (disabled when `sp_savespeedrunmode` is enabled)
+    - Support tracking skins for clutter and entities
+    - Support tracking all event links
+    - Support tracking positions and rotations for relevant event types
+    - Support tracking dynamic lights
+    - Support Alpine events `Switch_Random`, `Sequence`, and `World_HUD_Sprite`
+    - Fix collision bugs resulting from compressed position/orientation values (disabled when `sp_savespeedrunmode` is enabled)
+    - Add support for `Require Alpine Savegame Format` in `af_game.tbl` for TC mods that want to force the modern format
 - Add Bagman (`BM`) and Team Bagman (`TBM`) game types
 
 ### Minor features, changes, and enhancements
