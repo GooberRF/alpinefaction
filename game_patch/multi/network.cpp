@@ -2167,12 +2167,6 @@ FunHook<int(const rf::NetAddr&, const rf::JoinRequest&)> check_access_for_new_pl
     [] (const rf::NetAddr& addr, const rf::JoinRequest& join_req) {
         const int reason = check_access_for_new_player_hook.call_target(addr, join_req);
 
-        // Restore our limbo check.
-        if (!reason && !(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)) {
-            // Handle `RF_JDR_LEVEL_CHANGING` in `process_join_req_injection`.
-            return 0;
-        }
-
         if (reason != 0) {
             const RF_JoinDenyReason jdr = static_cast<RF_JoinDenyReason>(reason);
             std::string jdr_str = "unknown";
@@ -3038,7 +3032,7 @@ void network_init()
 
     // print join_req denial reasons
     check_access_for_new_player_hook.install();
-    // Move our limbo check to `check_access_for_new_player_hook`.
+    // Move our limbo check to `check_join_request_restrict_status`.
     AsmWriter{0x0047AE64}.nop(6);
 
     // Use port 7755 when hosting a server without 'Force port' option
