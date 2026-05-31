@@ -46,6 +46,7 @@
 #include "../rf/os/timer.h"
 #include "../rf/geometry.h"
 #include "../rf/level.h"
+#include "../rf/ui.h"
 #include "../misc/misc.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
@@ -62,6 +63,25 @@
 #endif
 
 static constexpr int CLIENT_NET_FPS = 30;
+
+// Popup shown when the user attempts to join a server whose game type this build doesn't recognize.
+static void show_unsupported_game_type_popup()
+{
+    rf::ui::popup_message(
+        "Update Required",
+        "This server is running a game type that your version of Alpine\n"
+        "Faction doesn't support. Visit alpinefaction.com to update.",
+        nullptr,
+        false);
+}
+
+// Lightweight cancel sequence for an in-progress join.
+// Stock cancel path (0x0044B9A0) does this, but also kicks off a server list refresh.
+static void cancel_pending_join()
+{
+    rf::multi_clear_current_server_addr();
+    rf::multi_join_in_progress = false;
+}
 
 ClientSoftware g_joining_client_version = ClientSoftware::Unknown;
 AlpineFactionJoinReqPacketExt g_joining_player_info{};
@@ -602,7 +622,10 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         char name[256]{};
         if (!read_string(name, sizeof(name))) { clear_extra(); return; }
         if (end - r < 3) { clear_extra(); return; }
-        uint8_t game_type = std::clamp<uint8_t>(*r++, 0, RF_GT_TBM);
+        // Values from newer-protocol servers show as UNK
+        const uint8_t raw_game_type = *r++;
+        const bool unknown_game_type = raw_game_type >= RF_GT_UNK;
+        const uint8_t game_type = std::min<uint8_t>(raw_game_type, RF_GT_UNK);
         uint8_t players = *r++;
         uint8_t max_players = *r++;
 
@@ -649,6 +672,7 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
                     extra.num_human_players = *ext_r++;
                     extra.num_browsers = *ext_r++;
                     extra.num_total_clients = *ext_r++;
+                    extra.unknown_game_type = unknown_game_type;
                     g_server_browser_extra[key] = std::move(extra);
                     parsed = true;
                 }
@@ -680,13 +704,24 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
                 if (ext_r < footer_start)
                     extra.level_filename.assign(
                         reinterpret_cast<const char*>(fname_start), ext_r - fname_start);
+                extra.unknown_game_type = unknown_game_type;
                 g_server_browser_extra[key] = std::move(extra);
                 parsed = true;
             }
         }
 
-        if (!parsed)
-            clear_extra();
+        if (!parsed) {
+            if (unknown_game_type) {
+                // No AF extension on the wire, but the server is reporting a
+                // game type this build doesn't recognize.
+                // This should never be possible under normal circumstances,
+                // but the guard is very cheap and safer.
+                g_server_browser_extra[key].unknown_game_type = true;
+            }
+            else {
+                clear_extra();
+            }
+        }
 
         // Update netgame name if this is from the connected server
         if (addr == rf::netgame.server_addr) {
@@ -1478,6 +1513,17 @@ enum JoinReqTlv : uint8_t {
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
     0x0047ABFB,
     [] (const rf::NetAddr* const addr, std::byte* const data, const size_t len) {
+        // If this server's browser entry says its game type is one we don't
+        // recognize, block the join here before any packet goes out.
+        if (addr) {
+            const AFGameInfoExtra* extra = get_server_browser_extra(*addr);
+            if (extra && extra->unknown_game_type) {
+                cancel_pending_join();
+                show_unsupported_game_type_popup();
+                return 0;
+            }
+        }
+
         const bool session_client_bot_mode = client_bot_launch_enabled();
 
         // Add Alpine Faction info to join_req packet
@@ -1676,6 +1722,49 @@ static bool parse_join_accept_af_ext(const uint8_t* payload, size_t payload_len,
     std::memcpy(&out, p, copy_len);
     return out.af_signature == ALPINE_FACTION_SIGNATURE;
 }
+
+// Gate process_join_accept_packet so the engine never assigns an unknown
+// game type to rf::netgame.type. Covers cases the browser-side gate can't.
+// Examples: direct connect and stale browser entries.
+FunHook<MultiIoPacketHandler> process_join_accept_unsupported_gt_guard{
+    0x0047A840,
+    [](char* data, const rf::NetAddr& addr) {
+        if (data) {
+            uint16_t payload_len = 0;
+            std::memcpy(&payload_len, data - 2, sizeof(payload_len));
+
+            const uint8_t* payload = reinterpret_cast<const uint8_t*>(data);
+            const uint8_t* end = payload + payload_len;
+            const uint8_t* p = payload;
+
+            // Skip null-terminated level filename
+            while (p < end && *p != 0) ++p;
+            if (p < end) {
+                ++p; // skip null terminator
+                if (static_cast<size_t>(end - p) >= sizeof(RF_JoinAcceptRest)) {
+                    RF_JoinAcceptRest rest;
+                    std::memcpy(&rest, p, sizeof(rest));
+                    if (rest.game_type >= RF_GT_UNK) {
+                        // Cache the result. The server browser only sends
+                        // game_info_req to tracker-discovered servers, so a
+                        // server reached via -url / direct-connect won't have
+                        // an entry.
+                        AFGameInfoExtra cached{};
+                        cached.unknown_game_type = true;
+                        g_server_browser_extra[addr_key(addr)] = std::move(cached);
+
+                        cancel_pending_join();
+                        rf::multi_stop();
+                        show_unsupported_game_type_popup();
+                        rf::gameseq_set_state(rf::GS_MAIN_MENU, false);
+                        return;
+                    }
+                }
+            }
+        }
+        process_join_accept_unsupported_gt_guard.call_target(data, addr);
+    },
+};
 
 CodeInjection process_join_accept_injection{
     0x0047A979,
@@ -2939,6 +3028,7 @@ void network_init()
     process_join_req_packet_hook.install();
     process_join_req_injection.install();
     send_join_accept_packet_hook.install();
+    process_join_accept_unsupported_gt_guard.install();
     process_join_accept_injection.install();
     process_join_accept_send_game_info_req_injection.install();
     multi_stop_hook.install();
