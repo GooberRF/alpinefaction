@@ -1708,15 +1708,15 @@ ConsoleCommand2 gamepad_prompts_cmd{
         static const char* icon_names[] = {
             "Auto", "Generic", "Xbox 360 Controller", "Xbox Wireless Controller",
             "DualShock 3", "DualShock 4", "DualSense", "Nintendo Switch Controller", "Nintendo GameCube Controller",
-            "Steam", "Steam Controller (2015)",
+            "Steam",
         };
-        if (val) g_alpine_game_config.gamepad_icon_override = std::clamp(val.value(), 0, 10);
+        if (val) g_alpine_game_config.gamepad_icon_override = std::clamp(val.value(), 0, 9);
         rf::console::print("Gamepad icons: {} ({})",
             icon_names[g_alpine_game_config.gamepad_icon_override],
             g_alpine_game_config.gamepad_icon_override);
     },
-    "Set gamepad button icon style: 0=Auto, 1=Generic, 2=Xbox 360 Controller, 3=Xbox Wireless Controller, 4=DualShock 3, 5=DualShock 4, 6=DualSense, 7=Nintendo Switch Controller, 8=Nintendo GameCube Controller, 9=Steam, 10=SteamControllerLegacy",
-    "gamepad_prompts [0-10]",
+    "Set gamepad button icon style: 0=Auto, 1=Generic, 2=Xbox 360 Controller, 3=Xbox Wireless Controller, 4=DualShock 3, 5=DualShock 4, 6=DualSense, 7=Nintendo Switch Controller, 8=Nintendo GameCube Controller, 9=Steam",
+    "gamepad_prompts [0-9]",
 };
 
 ConsoleCommand2 joy_reconnect_cmd{

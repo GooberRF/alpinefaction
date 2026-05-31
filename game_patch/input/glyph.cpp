@@ -126,21 +126,13 @@ static const ButtonOverride gamecube_overrides[] = {
     { 27, "R"       },
 };
 
-static const ButtonOverride steamdeck_overrides[] = {
-    {  4, "View"  },
-    {  5, "Steam" },
-    {  6, "Menu"  },
-    { 15, "..."   },   // Quick Access button
-};
-
-static const ButtonOverride steamcontroller_overrides[] = {
-    {  4, "Back"                 },
-    {  5, "Steam"                },
-    {  6, "Start"                },
-    {  7, "Stick Click"          },
-    {  8, "Right Trackpad Click" },
-    { 16, "RG"                   },  // Right grip
-    { 17, "LG"                   },  // Left grip
+static const ButtonOverride steam_overrides[] = {
+    {  4, "View"               },
+    {  5, "Steam"              },
+    {  6, "Menu"               },
+    { 15, "Quick Access"       },  // QAM button 
+    { 20, "Left Trackpad Click"    },  // Left touchpad 
+    { 21, "Right Trackpad Click"     },  // Right touchpad 
 };
 
 const char* gamepad_get_button_name(int button_idx)
@@ -195,9 +187,8 @@ static SDL_GamepadType icon_type_to_sdl(ControllerIconType icon)
 #if SDL_VERSION_ATLEAST(3, 2, 0)
         case ControllerIconType::NintendoGameCube: return SDL_GAMEPAD_TYPE_GAMECUBE;
 #endif
-        // Steam devices use Xbox-style A/B/X/Y face labels
-        case ControllerIconType::SteamControllerLegacy:
-        case ControllerIconType::Steam:        return SDL_GAMEPAD_TYPE_XBOXONE;
+        // Steam hardware uses Xbox-style A/B/X/Y face labels
+        case ControllerIconType::Steam:            return SDL_GAMEPAD_TYPE_XBOXONE;
         default:                                   return SDL_GAMEPAD_TYPE_UNKNOWN;
     }
 }
@@ -276,13 +267,8 @@ const char* gamepad_get_button_display_name(ControllerIconType type, int button_
         case ControllerIconType::NintendoGameCube:
             result = search_overrides(gamecube_overrides, button_idx);
             break;
-        case ControllerIconType::SteamControllerLegacy:
-            result = search_overrides(steamcontroller_overrides, button_idx);
-            if (result) return result;
-            result = search_overrides(xboxone_overrides, button_idx);  // LB/RB/LT/RT
-            break;
         case ControllerIconType::Steam:
-            result = search_overrides(steamdeck_overrides, button_idx);
+            result = search_overrides(steam_overrides, button_idx);
             break;
         default:
             break;
