@@ -1100,7 +1100,7 @@ void multi_limbo_just_joined_handle_input(const int key) {
     if (rf::multi_chat_is_say_visible()) {
         rf::multi_chat_say_handle_key(key);
     } else if (key == rf::KEY_ESC) {
-         rf::gameseq_push_state(rf::GS_MAIN_MENU, false, false);
+        rf::gameseq_push_state(rf::GS_MAIN_MENU, false, false);
     }
 }
 
