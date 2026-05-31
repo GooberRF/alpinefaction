@@ -17,6 +17,7 @@
 #include "mesh.h"
 #include "note.h"
 #include "corona.h"
+#include "bag.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -80,6 +81,8 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
         static_cast<DedObject*>(n)->vmesh = nullptr;
     for (auto* c : props.corona_objects)
         static_cast<DedObject*>(c)->vmesh = nullptr;
+    for (auto* b : props.bag_objects)
+        static_cast<DedObject*>(b)->vmesh = nullptr;
 
     // Let stock DeleteContents run — undo/redo cleanup skips Alpine objects
     // (found in master_objects), and loop 3 safely returns early for type > 0x16.
@@ -125,6 +128,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_corona_chunk_id) {
                     corona_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_bag_chunk_id) {
+                    bag_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -702,7 +709,10 @@ CodeInjection skip_alpine_objects_bounds_check{
     0x0041d7c0,
     [](auto& regs) {
         auto* obj = reinterpret_cast<DedObject*>(static_cast<uintptr_t>(regs.edx));
-        if (obj->type == DedObjectType::DED_MESH || obj->type == DedObjectType::DED_NOTE || obj->type == DedObjectType::DED_CORONA || obj->type == DedObjectType::DED_GAS_REGION) {
+        if (obj->type == DedObjectType::DED_MESH ||
+            obj->type == DedObjectType::DED_NOTE ||
+            obj->type == DedObjectType::DED_CORONA ||
+            obj->type == DedObjectType::DED_GAS_REGION) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -754,6 +764,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write corona objects chunk
         corona_serialize_chunk(level, file);
+
+        // Write bag objects chunk
+        bag_serialize_chunk(level, file);
     },
 };
 

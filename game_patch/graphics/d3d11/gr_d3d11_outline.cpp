@@ -9,6 +9,7 @@
 #include "../../misc/alpine_settings.h"
 #include "../../multi/multi.h"
 #include "../../multi/gametype.h"
+#include "../../multi/bagman.h"
 #include "../../hud/multi_spectate.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
@@ -101,6 +102,62 @@ namespace gr::d3d11
 
         bool is_spectating = multi_spectate_is_spectating();
 
+        // Outline the bag carrier player.
+        if (gt_is_bagman_any() && g_bagman_info.carrier
+            && !bagman_viewer_is_carrier_first_person()
+            && next_stencil_ref_ <= 255) {
+            rf::Player* carrier = g_bagman_info.carrier;
+            if (rf::Entity* entity = rf::entity_from_handle(carrier->entity_handle)) {
+                if (!rf::entity_is_dying(entity)
+                    && entity->vmesh
+                    && entity->vmesh->type == rf::MESH_TYPE_CHARACTER) {
+                    if (auto* ci = static_cast<rf::CharacterInstance*>(entity->vmesh->instance)) {
+                        OutlineInfo info{};
+                        info.r = 0.0f;
+                        info.g = 1.0f;
+                        info.b = 0.0f;
+                        info.a = 1.0f;
+                        info.xray = true;
+                        info.stencil_ref = next_stencil_ref_++;
+                        ci_map_.emplace(ci, info);
+
+                        if (ci->base_character
+                            && ci->base_character->num_character_meshes > 0
+                            && ci->base_character->character_meshes[0].mesh) {
+                            ForcedXrayEntry forced{};
+                            forced.lod_mesh = ci->base_character->character_meshes[0].mesh->vu;
+                            forced.pos = entity->pos;
+                            forced.orient = entity->orient;
+                            forced.ci = ci;
+                            forced.info = info;
+                            if (forced.lod_mesh) {
+                                xray_forced_.push_back(forced);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Cache the bagman bag outlines for this frame.
+        bagman_pickup_xray_ = ForcedV3dXrayEntry{};
+        bagman_carrier_xray_ = ForcedV3dXrayEntry{};
+        if (gt_is_bagman_any()) {
+            rf::VifLodMesh* lod = nullptr;
+            rf::Vector3 bp{};
+            rf::Matrix3 bo{};
+            if (bagman_query_pickup_bag_outline(&lod, &bp, &bo)) {
+                bagman_pickup_xray_.lod_mesh = lod;
+                bagman_pickup_xray_.pos = bp;
+                bagman_pickup_xray_.orient = bo;
+            }
+            if (bagman_query_carrier_bag_outline(&lod, &bp, &bo)) {
+                bagman_carrier_xray_.lod_mesh = lod;
+                bagman_carrier_xray_.pos = bp;
+                bagman_carrier_xray_.orient = bo;
+            }
+        }
+
         if (is_spectating) {
             // Spectator outlines: client toggle only, no server permission needed
             if (!g_alpine_game_config.outlines_spectator) {
@@ -149,6 +206,10 @@ namespace gr::d3d11
 
             // Skip the player we are spectating (their mesh is our first-person view)
             if (spectate_target && &player == spectate_target) {
+                continue;
+            }
+
+            if (gt_is_bagman_any() && g_bagman_info.carrier == &player) {
                 continue;
             }
 
@@ -276,6 +337,39 @@ namespace gr::d3d11
         v3d_queue_.push_back(std::move(entry));
     }
 
+    void OutlineRenderer::maybe_queue_bag_outline(
+        rf::VifLodMesh* lod_mesh, int lod_index,
+        const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        // Match the rendered lod against either cached bag (pickup or carrier)
+        // and queue a green xray outline. Marks the matched entry as naturally
+        // rendered so flush_forced_xray doesn't double it on portal-cull
+        // recovery.
+        ForcedV3dXrayEntry* match = nullptr;
+        if (bagman_pickup_xray_.lod_mesh == lod_mesh) {
+            match = &bagman_pickup_xray_;
+        }
+        else if (bagman_carrier_xray_.lod_mesh == lod_mesh) {
+            match = &bagman_carrier_xray_;
+        }
+        if (!match) return;
+        if (next_stencil_ref_ > 255) return;
+
+        QueuedV3dOutline entry{};
+        entry.lod_mesh = lod_mesh;
+        entry.lod_index = lod_index;
+        entry.pos = pos;
+        entry.orient = orient;
+        entry.info.r = 0.0f;
+        entry.info.g = 1.0f;
+        entry.info.b = 0.0f;
+        entry.info.a = 1.0f;
+        entry.info.xray = true;
+        entry.info.stencil_ref = next_stencil_ref_++;
+        v3d_queue_.push_back(std::move(entry));
+        match->naturally_rendered = true;
+    }
+
     const OutlineInfo* OutlineRenderer::current_character_outline() const
     {
         return current_character_outline_;
@@ -339,29 +433,77 @@ namespace gr::d3d11
         // so they can render after zbuffer_clear without issues.
         queue_unrendered_xray_outlines();
 
-        if (!queue_.empty()) {
-            // The fpgun's setup_3d may have overwritten the view/projection cbuffer
-            // with a different FOV. Restore the main-scene projection so outlines
-            // render at the correct screen positions.
-            Projection current_proj = render_context_.projection();
-            render_context_.update_view_proj_transform(saved_projection_);
+        // A bag mesh needs a forced outline when it has a cached entry.
+        const bool need_forced_pickup =
+            bagman_pickup_xray_.lod_mesh && !bagman_pickup_xray_.naturally_rendered;
+        const bool need_forced_carrier =
+            bagman_carrier_xray_.lod_mesh && !bagman_carrier_xray_.naturally_rendered;
 
-            for (const auto& outline : queue_) {
-                // For portal-culled xray characters RF never called the bone transform
-                // computation function, so bone_transforms_final is stale (frozen pose).
-                // Recompute it here before rendering the outline.
-                // outline.ci is const because the normal render path receives it as const.
-                // The forced-xray path is the exception: RF never computed bone transforms
-                // for portal-culled characters, so we must mutate here.
-                rf::ci_update_bone_transforms(const_cast<rf::CharacterInstance*>(outline.ci));
-                render_outline(outline, mesh_renderer);
-            }
-            queue_.clear();
-
-            // Restore the fpgun projection
-            render_context_.update_view_proj_transform(current_proj);
-            render_context_.invalidate_mode();
+        if (queue_.empty() && v3d_queue_.empty()
+            && !need_forced_pickup && !need_forced_carrier) {
+            xray_forced_.clear();
+            return;
         }
+
+        // The fpgun's setup_3d may have overwritten the view/projection cbuffer
+        // with a different FOV. Restore the main-scene projection so outlines
+        // render at the correct screen positions.
+        Projection current_proj = render_context_.projection();
+        render_context_.update_view_proj_transform(saved_projection_);
+
+        // Characters first: this recomputes their bones (frozen while culled),
+        // which the carrier bag attach transform depends on.
+        for (const auto& outline : queue_) {
+            rf::ci_update_bone_transforms(const_cast<rf::CharacterInstance*>(outline.ci));
+            render_outline(outline, mesh_renderer);
+        }
+        queue_.clear();
+
+        // Force-queue culled bag outlines with freshly-computed transforms.
+        auto push_forced_bag = [&](rf::VifLodMesh* lod,
+            const rf::Vector3& pos, const rf::Matrix3& orient) {
+            if (!lod || next_stencil_ref_ > 255) return;
+            QueuedV3dOutline entry{};
+            entry.lod_mesh = lod;
+            entry.lod_index = 0;
+            entry.pos = pos;
+            entry.orient = orient;
+            entry.info.r = 0.0f;
+            entry.info.g = 1.0f;
+            entry.info.b = 0.0f;
+            entry.info.a = 1.0f;
+            entry.info.xray = true;
+            entry.info.stencil_ref = next_stencil_ref_++;
+            v3d_queue_.push_back(std::move(entry));
+        };
+        if (need_forced_pickup) {
+            // Tick spin (the stock increment in item_render is skipped while
+            // culled) then re-query for the post-tick orient.
+            bagman_tick_pickup_spin();
+            rf::VifLodMesh* lod = nullptr;
+            rf::Vector3 p{};
+            rf::Matrix3 o{};
+            if (bagman_query_pickup_bag_outline(&lod, &p, &o)) {
+                push_forced_bag(lod, p, o);
+            }
+        }
+        if (need_forced_carrier) {
+            rf::VifLodMesh* lod = nullptr;
+            rf::Vector3 p{};
+            rf::Matrix3 o{};
+            if (bagman_query_carrier_bag_outline(&lod, &p, &o)) {
+                push_forced_bag(lod, p, o);
+            }
+        }
+
+        for (const auto& outline : v3d_queue_) {
+            render_v3d_outline(outline, mesh_renderer);
+        }
+        v3d_queue_.clear();
+
+        // Restore the fpgun projection
+        render_context_.update_view_proj_transform(current_proj);
+        render_context_.invalidate_mode();
 
         xray_forced_.clear();
     }

@@ -22,6 +22,7 @@
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
+#include "../multi/bagman.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
@@ -246,6 +247,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
     0x004A35C0,
     [](rf::Player* player) {
         multi_spectate_on_destroy_player(player);
+        bagman_on_player_disconnect(player);
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
@@ -394,14 +396,28 @@ ConsoleCommand2 swap_shotgun_controls_cmd{
     "Swap shotgun controls",
 };
 
-ConsoleCommand2 play_join_beep_cmd{
-    "mp_notifyonjoin",
-    []() {
+ConsoleCommand2 mp_join_beep_cmd{
+    "mp_join_beep",
+    [] {
         g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
-        rf::console::print("Out of focus player join notifications are {}",
-            g_alpine_game_config.player_join_beep ? "enabled" : "disabled");
+        rf::console::print(
+            "Beeps upon player joins are {}",
+            g_alpine_game_config.player_join_beep ? "enabled" : "disabled"
+        );
     },
-    "Toggle notification beeps being played when a player joins the server you are in when your game doesn't have focus",
+    "Toggles beeps upon player joins, if your window is out of focus",
+};
+
+ConsoleCommand2 mp_join_flash_cmd{
+    "mp_join_flash",
+    [] {
+        g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
+        rf::console::print(
+            "Window flashes upon player joins are {}",
+            g_alpine_game_config.player_join_flash ? "enabled" : "disabled"
+        );
+    },
+    "Toggles window flashes upon player joins, if your window is out of focus",
 };
 
 ConsoleCommand2 mp_set_character_cmd{
@@ -965,7 +981,8 @@ void player_do_patch()
     swap_assault_rifle_controls_cmd.register_cmd();
     swap_grenade_controls_cmd.register_cmd();
     swap_shotgun_controls_cmd.register_cmd();
-    play_join_beep_cmd.register_cmd();
+    mp_join_beep_cmd.register_cmd();
+    mp_join_flash_cmd.register_cmd();
     mp_set_character_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
     hit_sound_interval_cmd.register_cmd();
