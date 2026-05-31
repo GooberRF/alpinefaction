@@ -3,6 +3,15 @@
 #include <SDL3/SDL.h>
 #include "rumble.h"
 
+// Maximum number of simultaneously connected gamepads.
+// Note: if planning to add Local multiplayer support, please upgrade the rest of the gamepad input functionality 
+// to be per-gamepad instead of global, then increase the max gamepad to 4...or higher? (wink wink)
+inline constexpr int k_max_gamepads = 2;
+SDL_Gamepad* gamepad_get_slot(int idx);      // direct slot access by index
+SDL_Gamepad* gamepad_get_primary();          // first open slot
+SDL_Gamepad* gamepad_get_last_active();      // slot that most recently produced input
+bool         gamepad_any_open();             // true if at least one slot is occupied
+
 void gamepad_apply_patch();
 void gamepad_sdl_init();
 void process_gamepad_event(const SDL_Event& ev);

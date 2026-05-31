@@ -29,7 +29,7 @@
 #include <SDL3/SDL.h>
 #include "../rf/os/os.h"
 
-static SDL_Gamepad* g_gamepad = nullptr;
+static SDL_Gamepad* g_gamepads[k_max_gamepads] = {};
 static bool g_motion_sensors_supported = false;
 static bool g_rumble_supported         = false;
 static bool g_trigger_rumble_supported = false;
@@ -61,9 +61,12 @@ static bool g_action_curr[k_action_count] = {};
 
 static int g_rebind_pending_sc = -1; // scan code captured during rebind, -1 = none pending
 static bool g_last_input_was_gamepad = false;
+static SDL_JoystickID g_last_active_gamepad_id = 0; // which controller last produced input
 
-static void set_last_input_gamepad(bool is_gamepad)
+static void set_last_input_gamepad(bool is_gamepad, SDL_JoystickID which = 0)
 {
+    if (is_gamepad && which != 0)
+        g_last_active_gamepad_id = which;
     if (g_last_input_was_gamepad != is_gamepad) {
         g_last_input_was_gamepad = is_gamepad;
         hud_mark_bindings_dirty();
@@ -113,9 +116,65 @@ static Uint64 g_sensor_last_accel_ts = 0;
 static float  g_sensor_accel[3]      = {};
 static float  g_sensor_gyro[3]       = {};
 
+bool gamepad_any_open()
+{
+    for (auto* gp : g_gamepads) if (gp) return true;
+    return false;
+}
+
+SDL_Gamepad* gamepad_get_primary()
+{
+    for (auto* gp : g_gamepads) if (gp) return gp;
+    return nullptr;
+}
+
+SDL_Gamepad* gamepad_get_slot(int idx)
+{
+    if (idx < 0 || idx >= k_max_gamepads) return nullptr;
+    return g_gamepads[idx];
+}
+
+// Returns the gamepad that most recently produced input, falling back to primary.
+SDL_Gamepad* gamepad_get_last_active()
+{
+    if (g_last_active_gamepad_id != 0) {
+        for (auto* gp : g_gamepads)
+            if (gp && SDL_GetGamepadID(gp) == g_last_active_gamepad_id)
+                return gp;
+    }
+    return gamepad_get_primary();
+}
+
+static bool is_open_gamepad_id(SDL_JoystickID id)
+{
+    for (auto* gp : g_gamepads)
+        if (gp && SDL_GetGamepadID(gp) == id) return true;
+    return false;
+}
+
+static void add_to_gamepad_list(SDL_Gamepad* gp)
+{
+    for (auto*& slot : g_gamepads) {
+        if (!slot) { slot = gp; return; }
+    }
+    xlog::warn("Gamepad list full, closing excess: {}", SDL_GetGamepadName(gp));
+    SDL_CloseGamepad(gp);
+}
+
+static void remove_from_gamepad_list(SDL_JoystickID id)
+{
+    for (auto*& slot : g_gamepads) {
+        if (slot && SDL_GetGamepadID(slot) == id) {
+            SDL_CloseGamepad(slot);
+            slot = nullptr;
+            return;
+        }
+    }
+}
+
 static bool is_gamepad_input_active()
 {
-    return g_gamepad && rf::is_main_wnd_active;
+    return gamepad_any_open() && rf::is_main_wnd_active;
 }
 
 static bool is_freelook_camera()
@@ -194,7 +253,8 @@ static void reset_gamepad_input_state()
     g_gyro_menu_cursor_active = false;
     g_lt_was_down = false;
     g_rt_was_down = false;
-    g_last_input_was_gamepad = false;
+    set_last_input_gamepad(false);
+    g_last_active_gamepad_id = 0;
     g_sensor_last_gyro_ts  = 0;
     g_sensor_last_accel_ts = 0;
     memset(g_sensor_accel, 0, sizeof(g_sensor_accel));
@@ -206,25 +266,50 @@ static void reset_gamepad_input_state()
 // Per-axis (cross-shaped) deadzone: each axis is independently deadzoned and rescaled.
 static float get_axis(SDL_GamepadAxis axis, float deadzone)
 {
-    if (!g_gamepad) return 0.0f;
-    float v = SDL_GetGamepadAxis(g_gamepad, axis) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
-    if (v >  deadzone) return (v - deadzone) / (1.0f - deadzone);
-    if (v < -deadzone) return (v + deadzone) / (1.0f - deadzone);
-    return 0.0f;
+    float best = 0.0f;
+    for (auto* gp : g_gamepads) {
+        if (!gp) continue;
+        float v = SDL_GetGamepadAxis(gp, axis) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        if (v >  deadzone) v = (v - deadzone) / (1.0f - deadzone);
+        else if (v < -deadzone) v = (v + deadzone) / (1.0f - deadzone);
+        else v = 0.0f;
+        if (std::abs(v) > std::abs(best)) best = v;
+    }
+    return best;
 }
 
 // Radial (circular) deadzone: deadzone applied to stick magnitude; preserves direction.
 static void get_axis_circular(SDL_GamepadAxis axis_x, SDL_GamepadAxis axis_y, float deadzone,
                               float& out_x, float& out_y)
 {
-    if (!g_gamepad) { out_x = out_y = 0.0f; return; }
-    float raw_x = SDL_GetGamepadAxis(g_gamepad, axis_x) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
-    float raw_y = SDL_GetGamepadAxis(g_gamepad, axis_y) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
-    float mag = std::hypot(raw_x, raw_y);
-    float remapped = (mag > deadzone) ? (mag - deadzone) / (1.0f - deadzone) : 0.0f;
-    float scale = mag > 0.0f ? remapped / mag : 0.0f;
-    out_x = raw_x * scale;
-    out_y = raw_y * scale;
+    float best_x = 0.0f, best_y = 0.0f, best_mag = 0.0f;
+    for (auto* gp : g_gamepads) {
+        if (!gp) continue;
+        float raw_x = SDL_GetGamepadAxis(gp, axis_x) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        float raw_y = SDL_GetGamepadAxis(gp, axis_y) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        float mag = std::hypot(raw_x, raw_y);
+        float remapped = (mag > deadzone) ? (mag - deadzone) / (1.0f - deadzone) : 0.0f;
+        if (remapped > best_mag) {
+            float scale = mag > 0.0f ? remapped / mag : 0.0f;
+            best_x = raw_x * scale;
+            best_y = raw_y * scale;
+            best_mag = remapped;
+        }
+    }
+    out_x = best_x;
+    out_y = best_y;
+}
+
+// Returns the highest trigger value across all connected gamepads, in [0, 1].
+static float get_max_trigger_value(SDL_GamepadAxis axis)
+{
+    float best = 0.0f;
+    for (auto* gp : g_gamepads) {
+        if (!gp) continue;
+        float v = SDL_GetGamepadAxis(gp, axis) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        if (v > best) best = v;
+    }
+    return best;
 }
 
 static float wrap_angle_pi(float a)
@@ -239,40 +324,41 @@ static float angle_diff(float target, float current)
     return wrap_angle_pi(target - current);
 }
 
-
 static bool action_is_down(rf::ControlConfigAction action)
 {
     int i = static_cast<int>(action);
     return i >= 0 && i < k_action_count && g_action_curr[i];
 }
 
-static bool try_enable_gamepad_sensors()
+static bool try_enable_gamepad_sensors(SDL_Gamepad* gp)
 {
-    if (!g_gamepad) return false;
+    if (!gp) return false;
 
-    if (!SDL_GamepadHasSensor(g_gamepad, SDL_SENSOR_GYRO) ||
-        !SDL_GamepadHasSensor(g_gamepad, SDL_SENSOR_ACCEL)) {
+    if (!SDL_GamepadHasSensor(gp, SDL_SENSOR_GYRO) ||
+        !SDL_GamepadHasSensor(gp, SDL_SENSOR_ACCEL)) {
         xlog::info("Motion sensors are not supported");
         return false;
     }
 
-    if (!SDL_SetGamepadSensorEnabled(g_gamepad, SDL_SENSOR_GYRO,  true) ||
-        !SDL_SetGamepadSensorEnabled(g_gamepad, SDL_SENSOR_ACCEL, true)) {
+    if (!SDL_SetGamepadSensorEnabled(gp, SDL_SENSOR_GYRO,  true) ||
+        !SDL_SetGamepadSensorEnabled(gp, SDL_SENSOR_ACCEL, true)) {
         xlog::warn("Failed to enable motion sensors: {}", SDL_GetError());
         return false;
     }
 
     xlog::info("Motion sensors are supported");
-    g_motion_sensors_supported = true;
-    gyro_reset_full();
+    if (!g_motion_sensors_supported) {
+        g_motion_sensors_supported = true;
+        gyro_reset_full();
+    }
     return true;
 }
 
-static bool try_enable_gamepad_rumble()
+static bool try_enable_gamepad_rumble(SDL_Gamepad* gp)
 {
-    if (!g_gamepad) return false;
+    if (!gp) return false;
 
-    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(g_gamepad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) {
+    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false)) {
         xlog::info("Rumble is not supported");
         return false;
     }
@@ -282,11 +368,11 @@ static bool try_enable_gamepad_rumble()
     return true;
 }
 
-static bool try_enable_gamepad_trigger_rumble()
+static bool try_enable_gamepad_trigger_rumble(SDL_Gamepad* gp)
 {
-    if (!g_gamepad) return false;
+    if (!gp) return false;
 
-    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(g_gamepad), SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false)) {
+    if (!SDL_GetBooleanProperty(SDL_GetGamepadProperties(gp), SDL_PROP_GAMEPAD_CAP_TRIGGER_RUMBLE_BOOLEAN, false)) {
         xlog::info("Trigger rumble is not supported");
         return false;
     }
@@ -298,16 +384,17 @@ static bool try_enable_gamepad_trigger_rumble()
 
 static void try_open_gamepad(SDL_JoystickID id)
 {
-    g_gamepad = SDL_OpenGamepad(id);
-    if (!g_gamepad) {
+    SDL_Gamepad* gp = SDL_OpenGamepad(id);
+    if (!gp) {
         xlog::warn("Failed to open gamepad: {}", SDL_GetError());
         return;
     }
 
-    xlog::info("Gamepad connected: {}", SDL_GetGamepadName(g_gamepad));
-    try_enable_gamepad_rumble();
-    try_enable_gamepad_trigger_rumble();
-    try_enable_gamepad_sensors();
+    xlog::info("Gamepad connected: {}", SDL_GetGamepadName(gp));
+    add_to_gamepad_list(gp);
+    if (!g_rumble_supported)         try_enable_gamepad_rumble(gp);
+    if (!g_trigger_rumble_supported) try_enable_gamepad_trigger_rumble(gp);
+    try_enable_gamepad_sensors(gp);
 }
 
 static void inject_action_key(int action, bool down)
@@ -465,21 +552,24 @@ static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_a
 
 static SDL_GamepadButton get_menu_confirm_button()
 {
-    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A)
+    auto* gp = gamepad_get_primary();
+    if (gp && SDL_GetGamepadButtonLabel(gp, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A)
         return SDL_GAMEPAD_BUTTON_EAST;
     return SDL_GAMEPAD_BUTTON_SOUTH;
 }
 
 static SDL_GamepadButton get_menu_cancel_button()
 {
-    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_SOUTH) == SDL_GAMEPAD_BUTTON_LABEL_B)
+    auto* gp = gamepad_get_primary();
+    if (gp && SDL_GetGamepadButtonLabel(gp, SDL_GAMEPAD_BUTTON_SOUTH) == SDL_GAMEPAD_BUTTON_LABEL_B)
         return SDL_GAMEPAD_BUTTON_SOUTH;
     return SDL_GAMEPAD_BUTTON_EAST;
 }
 
 static SDL_GamepadButton get_gyro_toggle_button()
 {
-    if (g_gamepad && SDL_GetGamepadButtonLabel(g_gamepad, SDL_GAMEPAD_BUTTON_WEST) == SDL_GAMEPAD_BUTTON_LABEL_Y)
+    auto* gp = gamepad_get_primary();
+    if (gp && SDL_GetGamepadButtonLabel(gp, SDL_GAMEPAD_BUTTON_WEST) == SDL_GAMEPAD_BUTTON_LABEL_Y)
         return SDL_GAMEPAD_BUTTON_WEST;
     return SDL_GAMEPAD_BUTTON_NORTH;
 }
@@ -533,8 +623,8 @@ static void menu_nav_on_button_up(int btn)
 
 static void update_trigger_actions()
 {
-    float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
-    float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+    float lt = get_max_trigger_value(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+    float rt = get_max_trigger_value(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
     bool lt_down = lt > 0.5f;
     bool rt_down = rt > 0.5f;
 
@@ -573,11 +663,13 @@ static void update_trigger_actions()
 
 static bool is_action_held_by_button(int action_idx)
 {
-    if (!g_gamepad) return false;
-    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
-        if ((g_button_map[b] == action_idx || g_button_map_alt[b] == action_idx)
-            && SDL_GetGamepadButton(g_gamepad, static_cast<SDL_GamepadButton>(b)))
-            return true;
+    for (auto* gp : g_gamepads) {
+        if (!gp) continue;
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
+            if ((g_button_map[b] == action_idx || g_button_map_alt[b] == action_idx)
+                && SDL_GetGamepadButton(gp, static_cast<SDL_GamepadButton>(b)))
+                return true;
+    }
     if (g_trigger_action[0] == action_idx && g_lt_was_down) return true;
     if (g_trigger_action[1] == action_idx && g_rt_was_down) return true;
     return false;
@@ -666,13 +758,8 @@ static void update_stick_movement()
     set_movement_key(rf::CC_ACTION_SLIDE_RIGHT, lx > 0.0f);
 }
 
-static void disconnect_active_gamepad()
+static void release_all_gamepad_inputs()
 {
-    SDL_CloseGamepad(g_gamepad);
-    g_gamepad                  = nullptr;
-    g_motion_sensors_supported = false;
-    g_rumble_supported         = false;
-    g_trigger_rumble_supported = false;
     release_movement_keys();
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
         inject_action_key(g_button_map[b], false);
@@ -684,50 +771,56 @@ static void disconnect_active_gamepad()
     reset_gamepad_input_state();
 }
 
+static void disconnect_all_gamepads()
+{
+    for (auto*& slot : g_gamepads) {
+        if (slot) { SDL_CloseGamepad(slot); slot = nullptr; }
+    }
+    g_last_active_gamepad_id   = 0;
+    g_motion_sensors_supported = false;
+    g_rumble_supported         = false;
+    g_trigger_rumble_supported = false;
+    release_all_gamepad_inputs();
+}
+
 static void handle_gamepad_added(const SDL_GamepadDeviceEvent& ev)
 {
-    if (!g_gamepad) {
-        try_open_gamepad(ev.which);
+    if (is_open_gamepad_id(ev.which))
         return;
-    }
-    if (SDL_GetGamepadID(g_gamepad) == ev.which)
-        return;
-    xlog::info("New gamepad connected, hotswapping from '{}' to '{}'",
-        SDL_GetGamepadName(g_gamepad), SDL_GetGamepadNameForID(ev.which));
-    disconnect_active_gamepad();
     try_open_gamepad(ev.which);
 }
 
 static void handle_gamepad_removed(const SDL_GamepadDeviceEvent& ev)
 {
-    if (!(g_gamepad && SDL_GetGamepadID(g_gamepad) == ev.which))
+    if (!is_open_gamepad_id(ev.which))
         return;
 
     xlog::info("Gamepad disconnected");
-    disconnect_active_gamepad();
+    remove_from_gamepad_list(ev.which);
+    release_all_gamepad_inputs();
 
-    // Fall back to any remaining connected gamepad
-    int fallback_count = 0;
-    SDL_JoystickID* fallback_ids = SDL_GetGamepads(&fallback_count);
-    if (fallback_ids) {
-        for (int i = 0; i < fallback_count; ++i) {
-            if (fallback_ids[i] != ev.which) {
-                try_open_gamepad(fallback_ids[i]);
-                break;
-            }
-        }
-        SDL_free(fallback_ids);
+    if (!gamepad_any_open()) {
+        g_motion_sensors_supported = false;
+        g_rumble_supported         = false;
+        g_trigger_rumble_supported = false;
+        return;
     }
-    if (g_gamepad)
-        xlog::info("Fell back to gamepad: '{}'", SDL_GetGamepadName(g_gamepad));
+
+    // Clear sensor flag if no remaining controller has sensors enabled
+    bool any_sensor = false;
+    for (auto* gp : g_gamepads)
+        if (gp && SDL_GamepadSensorEnabled(gp, SDL_SENSOR_GYRO)) { any_sensor = true; break; }
+    if (!any_sensor)
+        g_motion_sensors_supported = false;
+    xlog::info("Remaining gamepad: '{}'", SDL_GetGamepadName(gamepad_get_primary()));
 }
 
 static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
 {
     if (g_message_log_close_cooldown > 0.0f) return;
-    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
 
-    set_last_input_gamepad(true);
+    set_last_input_gamepad(true, ev.which);
 
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
         if (ev.button == SDL_GAMEPAD_BUTTON_START) {
@@ -776,7 +869,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
 
 static void handle_gamepad_button_up(const SDL_GamepadButtonEvent& ev)
 {
-    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
 
     if (is_gamepad_menu_navigation_state())
         g_menu_nav.deferred_btn_up = ev.button;
@@ -803,24 +896,24 @@ static void handle_gamepad_button_up(const SDL_GamepadButtonEvent& ev)
 static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
 {
     if (g_message_log_close_cooldown > 0.0f) return;
-    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
 
     float v = ev.value / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
     switch (static_cast<SDL_GamepadAxis>(ev.axis)) {
     case SDL_GAMEPAD_AXIS_LEFTX:
     case SDL_GAMEPAD_AXIS_LEFTY:
         if (std::abs(v) > g_alpine_game_config.gamepad_move_deadzone)
-            set_last_input_gamepad(true);
+            set_last_input_gamepad(true, ev.which);
         break;
     case SDL_GAMEPAD_AXIS_RIGHTX:
     case SDL_GAMEPAD_AXIS_RIGHTY:
         if (std::abs(v) > g_alpine_game_config.gamepad_look_deadzone)
-            set_last_input_gamepad(true);
+            set_last_input_gamepad(true, ev.which);
         break;
     case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
     case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
         if (v > 0.5f)
-            set_last_input_gamepad(true);
+            set_last_input_gamepad(true, ev.which);
         break;
     default:
         break;
@@ -829,7 +922,7 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
 
 static void handle_gamepad_touchpad_down(const SDL_GamepadTouchpadEvent& ev)
 {
-    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
     if (ev.touchpad != 0 || ev.finger != 0) return;
     if (g_message_log_close_cooldown > 0.0f) return;
     g_touchpad.active = true;
@@ -837,12 +930,12 @@ static void handle_gamepad_touchpad_down(const SDL_GamepadTouchpadEvent& ev)
     g_touchpad.last_y = ev.y;
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
-    set_last_input_gamepad(true);
+    set_last_input_gamepad(true, ev.which);
 }
 
 static void handle_gamepad_touchpad_motion(const SDL_GamepadTouchpadEvent& ev)
 {
-    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
     if (ev.touchpad != 0 || ev.finger != 0) return;
     if (!g_touchpad.active) return;
     float dx = ev.x - g_touchpad.last_x;
@@ -858,7 +951,7 @@ static void handle_gamepad_touchpad_motion(const SDL_GamepadTouchpadEvent& ev)
 
 static void handle_gamepad_touchpad_up(const SDL_GamepadTouchpadEvent& ev)
 {
-    if (!is_gamepad_input_active() || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
     if (ev.touchpad != 0 || ev.finger != 0) return;
     g_touchpad.active = false;
 }
@@ -866,7 +959,7 @@ static void handle_gamepad_touchpad_up(const SDL_GamepadTouchpadEvent& ev)
 static void handle_gamepad_sensor_update(const SDL_GamepadSensorEvent& ev)
 {
     if (!g_motion_sensors_supported) return;
-    if (!g_gamepad || SDL_GetGamepadID(g_gamepad) != ev.which) return;
+    if (!is_open_gamepad_id(ev.which)) return;
 
     constexpr float rad2deg = 180.0f / 3.14159265f;
 
@@ -1039,8 +1132,8 @@ void gamepad_do_frame()
         return;
 
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
-        float lt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER)  / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
-        float rt = SDL_GetGamepadAxis(g_gamepad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        float lt = get_max_trigger_value(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+        float rt = get_max_trigger_value(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
         if (lt > 0.5f && !g_lt_was_down) {
             g_rebind_pending_sc = CTRL_GAMEPAD_LEFT_TRIGGER;
             rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
@@ -1059,7 +1152,7 @@ void gamepad_do_frame()
 
     g_local_player_body_vmesh = rf::local_player ? rf::get_player_entity_parent_vmesh(rf::local_player) : nullptr;
 
-    if (g_gamepad)
+    if (gamepad_any_open())
         rumble_do_frame();
 }
 
@@ -1072,8 +1165,9 @@ static void gamepad_apply_flickstick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_
     pitch_delta = 0.0f;
 
     // Raw axes — no deadzone remapping to avoid quadrant snapping in the angle math.
-    float rx = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_x) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX) : 0.0f;
-    float ry = g_gamepad ? SDL_GetGamepadAxis(g_gamepad, cam_y) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX) : 0.0f;
+    auto* primary_gp = gamepad_get_primary();
+    float rx = primary_gp ? SDL_GetGamepadAxis(primary_gp, cam_x) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX) : 0.0f;
+    float ry = primary_gp ? SDL_GetGamepadAxis(primary_gp, cam_y) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX) : 0.0f;
 
     float stick_mag      = std::hypot(rx, ry);
     bool  in_flick_zone  = stick_mag >  g_alpine_game_config.gamepad_flickstick_deadzone;
@@ -1138,7 +1232,7 @@ static void gamepad_apply_joystick(SDL_GamepadAxis cam_x, SDL_GamepadAxis cam_y,
     pitch_delta = joy_pitch_sign * rf::frametime * g_alpine_game_config.gamepad_joy_sensitivity * ry * zoom_sens;
 }
 
-static void gamepad_apply_gyro(bool has_player_entity, float zoom_sens, float& yaw_delta, float& pitch_delta)
+static void gamepad_apply_gyro(bool has_player_entity, float& yaw_delta, float& pitch_delta)
 {
     float gyro_pitch, gyro_yaw;
     gyro_get_axis_orientation(gyro_pitch, gyro_yaw);
@@ -1251,7 +1345,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         && gyro_modifier_is_active();
 
     if (allow_gyro)
-        gamepad_apply_gyro(has_player_entity, gamepad_zoom_sens, yaw_delta, pitch_delta);
+        gamepad_apply_gyro(has_player_entity, yaw_delta, pitch_delta);
 
     g_camera_gamepad_dx += pitch_delta;
     g_camera_gamepad_dy += yaw_delta;
@@ -1722,30 +1816,36 @@ ConsoleCommand2 gamepad_prompts_cmd{
 ConsoleCommand2 joy_reconnect_cmd{
     "joy_reset",
     [](std::optional<int>) {
-        if (!g_gamepad) {
+        if (!gamepad_any_open()) {
             // No gamepad open — try to pick up any connected one.
             if (SDL_HasGamepad()) {
                 int count = 0;
                 SDL_JoystickID* ids = SDL_GetGamepads(&count);
                 if (ids) {
-                    if (count > 0)
-                        try_open_gamepad(ids[0]);
+                    for (int i = 0; i < count; ++i)
+                        try_open_gamepad(ids[i]);
                     SDL_free(ids);
                 }
             }
-            if (g_gamepad)
-                rf::console::print("Gamepad reset: opened {}", SDL_GetGamepadName(g_gamepad));
+            auto* gp = gamepad_get_primary();
+            if (gp)
+                rf::console::print("Gamepad reset: opened {}", SDL_GetGamepadName(gp));
             else
                 rf::console::print("Gamepad reset: no gamepad found");
             return;
         }
 
-        SDL_JoystickID prev_id = SDL_GetGamepadID(g_gamepad);
-        disconnect_active_gamepad();
-        try_open_gamepad(prev_id);
+        SDL_JoystickID prev_ids[k_max_gamepads] = {};
+        int n = 0;
+        for (auto* gp : g_gamepads)
+            if (gp && n < k_max_gamepads) prev_ids[n++] = SDL_GetGamepadID(gp);
+        disconnect_all_gamepads();
+        for (int i = 0; i < n; ++i)
+            try_open_gamepad(prev_ids[i]);
 
-        if (g_gamepad)
-            rf::console::print("Gamepad reset: reopened {}", SDL_GetGamepadName(g_gamepad));
+        auto* gp = gamepad_get_primary();
+        if (gp)
+            rf::console::print("Gamepad reset: reopened {}", SDL_GetGamepadName(gp));
         else
             rf::console::print("Gamepad reset: failed to reopen gamepad");
     },
@@ -1844,12 +1944,13 @@ int gamepad_get_button_count()
 const char* gamepad_get_scan_code_name(int scan_code)
 {
     auto icon_pref = static_cast<ControllerIconType>(g_alpine_game_config.gamepad_icon_override);
+    auto* active_gp = gamepad_get_last_active();
     int menu_offset = scan_code - CTRL_GAMEPAD_MENU_BASE;
     if (menu_offset >= 0 && menu_offset < SDL_GAMEPAD_BUTTON_COUNT)
-        return gamepad_get_effective_display_name(icon_pref, g_gamepad, menu_offset);
+        return gamepad_get_effective_display_name(icon_pref, active_gp, menu_offset);
     int offset = scan_code - CTRL_GAMEPAD_SCAN_BASE;
     if (offset >= 0 && offset < SDL_GAMEPAD_BUTTON_COUNT + 2)
-        return gamepad_get_effective_display_name(icon_pref, g_gamepad, offset);
+        return gamepad_get_effective_display_name(icon_pref, active_gp, offset);
     return "<none>";
 }
 
@@ -2132,28 +2233,12 @@ static void gamepad_msg_handler(UINT msg, WPARAM w_param, LPARAM)
     if (msg != WM_ACTIVATEAPP || w_param)
         return;
     // Focus lost: release all gamepad input so nothing stays held while unfocused.
-    if (g_gamepad) {
-        release_movement_keys();
-        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
-            inject_action_key(g_button_map[b], false);
-            inject_action_key(g_button_map_alt[b], false);
-        }
-        inject_action_key(g_trigger_action[0], false);
-        inject_action_key(g_trigger_action[1], false);
-        if (g_menu_nav.lclick_held) {
-            POINT pt;
-            GetCursorPos(&pt);
-            ScreenToClient(rf::main_wnd, &pt);
-            SendMessage(rf::main_wnd, WM_LBUTTONUP, 0, MAKELPARAM(pt.x, pt.y));
-            g_menu_nav.lclick_held = false;
-        }
-    }
-    reset_gamepad_input_state();
+    release_all_gamepad_inputs();
 }
 
 void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms, bool ignore_filter)
 {
-    if (!g_gamepad || !g_rumble_supported)
+    if (!gamepad_any_open() || !g_rumble_supported)
         return;
     if (g_alpine_game_config.gamepad_rumble_when_primary && !g_last_input_was_gamepad)
         return;
@@ -2166,12 +2251,13 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms,
         if (filter_mode == 2 || (filter_mode == 1 && g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_enabled))
             low_freq = static_cast<uint16_t>(low_freq * 0.02f);
     }
-    SDL_RumbleGamepad(g_gamepad, low_freq, high_freq, duration_ms);
+    for (auto* gp : g_gamepads)
+        if (gp) SDL_RumbleGamepad(gp, low_freq, high_freq, duration_ms);
 }
 
 void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire)
 {
-    if (!g_gamepad)
+    if (!gamepad_any_open())
         return;
 
     // No trigger motor requested — plain body rumble.
@@ -2213,17 +2299,22 @@ void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire)
     // Route to the trigger motor(s) matching the active fire binding.
     uint16_t lt_motor = use_lt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
     uint16_t rt_motor = use_rt ? static_cast<uint16_t>(effect.trigger_motor * g_alpine_game_config.gamepad_trigger_rumble_intensity) : 0;
-    if (!SDL_RumbleGamepadTriggers(g_gamepad, lt_motor, rt_motor, effect.duration_ms))
+    bool triggered = false;
+    for (auto* gp : g_gamepads)
+        if (gp && SDL_RumbleGamepadTriggers(gp, lt_motor, rt_motor, effect.duration_ms))
+            triggered = true;
+    if (!triggered)
         gamepad_rumble(effect.lo_motor, effect.hi_motor, effect.duration_ms);
 }
 
 void gamepad_stop_rumble()
 {
-    if (!g_gamepad)
-        return;
-    SDL_RumbleGamepad(g_gamepad, 0, 0, 0);
-    if (g_trigger_rumble_supported)
-        SDL_RumbleGamepadTriggers(g_gamepad, 0, 0, 0);
+    for (auto* gp : g_gamepads) {
+        if (!gp) continue;
+        SDL_RumbleGamepad(gp, 0, 0, 0);
+        if (g_trigger_rumble_supported)
+            SDL_RumbleGamepadTriggers(gp, 0, 0, 0);
+    }
 }
 
 void gamepad_sdl_init()
@@ -2262,10 +2353,10 @@ void gamepad_sdl_init()
         int count = 0;
         SDL_JoystickID* ids = SDL_GetGamepads(&count);
         if (ids) {
-            for (int i = 0; i < count; ++i)
+            for (int i = 0; i < count; ++i) {
                 xlog::info("Gamepad found: {}", SDL_GetGamepadNameForID(ids[i]));
-            if (count > 0)
-                try_open_gamepad(ids[0]);
+                try_open_gamepad(ids[i]);
+            }
             SDL_free(ids);
         }
     }
