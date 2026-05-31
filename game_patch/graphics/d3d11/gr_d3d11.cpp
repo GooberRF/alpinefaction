@@ -146,11 +146,11 @@ namespace df::gr::d3d11
             D3D_FEATURE_LEVEL_9_1
         };
 
-        DWORD flags = 0;
-    #ifndef NDEBUG
-        flags |= D3D11_CREATE_DEVICE_DEBUG;
+        DWORD flags = raw_command_line_has_switch(L"-d3d11-debug-layer")
+            ? D3D11_CREATE_DEVICE_DEBUG
+            : 0;
+
     CREATE_DEVICE:
-    #endif
         D3D_FEATURE_LEVEL feature_level_supported{};
         const HRESULT hr = pfD3D11CreateDevice(
             nullptr,
@@ -165,14 +165,12 @@ namespace df::gr::d3d11
             &context_
         );
 
-     #ifndef NDEBUG
-         if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING &&
+        if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING &&
             flags & D3D11_CREATE_DEVICE_DEBUG) {
-             xlog::warn( "D3D11 debug layer not available");
-             flags &= ~D3D11_CREATE_DEVICE_DEBUG;
-             goto CREATE_DEVICE;
-         }
-     #endif
+            xlog::warn("The D3D11 debug layer is not available");
+            flags &= ~D3D11_CREATE_DEVICE_DEBUG;
+            goto CREATE_DEVICE;
+        }
 
         check_hr(hr, [] { xlog::error("`D3D11CreateDevice` failed"); });
 
@@ -810,6 +808,8 @@ namespace df::gr::d3d11
                 outline_renderer_->queue_v3d(std::move(entry));
             }
         }
+
+        outline_renderer_->maybe_queue_bag_outline(lod_mesh, lod_index, pos, orient);
     }
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)

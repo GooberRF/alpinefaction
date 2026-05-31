@@ -172,6 +172,10 @@ enum RF_GameType
     RF_GT_REV = 0x05,
     RF_GT_RUN = 0x06,
     RF_GT_ESC = 0x07,
+    RF_GT_BM = 0x08,
+    RF_GT_TBM = 0x09,
+    // Sentinel: must always be the last entry.
+    RF_GT_UNK
 };
 
 enum RF_ServerFlags
@@ -271,7 +275,7 @@ enum RF_JoinDenyReason
     RF_JDR_LEVEL_CHANGING        = 0x05,
     RF_JDR_SERVER_ERROR          = 0x06,
     RF_JDR_DATA_DOESNT_MATCH     = 0x07,
-    RF_JDR_UNSUPPOROTED_VERSION  = 0x08,
+    RF_JDR_UNSUPPORTED_VERSION  = 0x08,
     RF_JDR_UNKNOWN               = 0x09,
     RF_JDR_BANNED                = 0x0A,
     // Note: reasons > 0x0A shows the same message as RF_JDR_UNKNOWN (tested in PF)

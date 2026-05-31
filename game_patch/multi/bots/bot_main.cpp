@@ -2234,7 +2234,13 @@ void update_bot_status_hud()
             rf::Player* target_player =
                 rf::player_from_entity_handle(g_client_bot_state.goal_target_handle);
             if (target_player && !target_player->name.empty()) {
+                // rf::hud_msg treats '$' as the start of a $TOKEN$ substitution and fatal-errors
+                // on an unterminated token, so neutralize any '$' in the player name first.
                 std::snprintf(target_label, sizeof(target_label), "%.22s", target_player->name.c_str());
+                for (char& c : target_label) {
+                    if (c == '\0') break;
+                    if (c == '$') c = '_';
+                }
             }
             else {
                 std::snprintf(target_label, sizeof(target_label), "uid%d", g_client_bot_state.goal_target_identifier);

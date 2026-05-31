@@ -1,6 +1,7 @@
 #pragma once
 
 #include <format>
+#include <functional>
 #include <patch_common/MemUtils.h>
 #include "os/vtypes.h"
 #include "os/timestamp.h"
@@ -140,6 +141,10 @@ namespace rf
         NG_TYPE_REV = 5,    // Revolt, as of AF v1.2
         NG_TYPE_RUN = 6,    // Run, as of AF v1.2
         NG_TYPE_ESC = 7,    // Escalation, as of AF v1.2
+        NG_TYPE_BM = 8,     // Bagman, as of AF v1.4
+        NG_TYPE_TBM = 9,    // Team Bagman, as of AF v1.4
+        // Sentinel: UNK must always be the last entry.
+        NG_TYPE_UNK
     };
 
     enum NetGameFlags
@@ -293,6 +298,8 @@ namespace rf
     static auto& multi_chat_say = addr_as_ref<void(const char *msg, bool is_team_msg)>(0x00444150);
     static auto& multi_chat_add_msg = addr_as_ref<void(Player* pp, const char* msg, bool is_team_msg)>(0x00443FB0);
     static auto& multi_is_connecting_to_server = addr_as_ref<uint8_t(const NetAddr& addr)>(0x0044AD80);
+    static auto& multi_clear_current_server_addr = addr_as_ref<void()>(0x0044AD60);
+    static auto& multi_join_in_progress = addr_as_ref<bool>(0x0063E93C);
     using MultiIoProcessPackets_Type = void(const void* data, size_t len, const NetAddr& addr, Player* player);
     static auto& multi_io_process_packets = addr_as_ref<MultiIoProcessPackets_Type>(0x004790D0);
     static auto& multi_kill_local_player = addr_as_ref<void()>(0x004757A0);
@@ -308,7 +315,8 @@ namespace rf
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
     static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int clip_ammo, int ammo)>(0x00485B50);
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
-    static auto& send_item_create_packet = addr_as_ref<void(Item* item, int16_t* index)>(0x00479A20); // send_item_create_packet3
+    static auto& send_item_create_packet = addr_as_ref<void(Item* item, int16_t* recipient_index, int16_t level_item_index)>(0x00479A20);
+    static auto& send_item_apply_packet = addr_as_ref<void(Player* to, int item_handle, int entity_handle, int weapon, int ammo, int clip_ammo)>(0x00479810);
     static auto& send_respawn_req_packet = addr_as_ref<void(uint32_t multi_character, uint8_t player_id)>(0x004809D0); // client -> server
     static auto& multi_spawn_player_server_side = addr_as_ref<void(Player* pp)>(0x00480820);
     static auto& multi_limbo_timer = addr_as_ref<Timestamp>(0x006D6138);
@@ -373,5 +381,15 @@ struct std::formatter<rf::NetAddr, char> : std::formatter<std::string, char> {
             net_addr.port
         );
         return std::formatter<std::string>::format(str, ctx);
+    }
+};
+
+template <>
+struct std::hash<rf::NetAddr> {
+    size_t operator()(const rf::NetAddr& net_addr) const noexcept {
+        const size_t ip_addr_hash = std::hash<uint32_t>{}(net_addr.ip_addr.inner);
+        const size_t port_hash = std::hash<uint16_t>{}(net_addr.port);
+        return ip_addr_hash
+            ^ (port_hash + 0x9E3779B9 + (ip_addr_hash << 6) + (ip_addr_hash >> 2));
     }
 };

@@ -22,6 +22,7 @@
 #include "alpine_packets.h"
 #include "../misc/player.h"
 #include "../misc/misc.h"
+#include "kill.h"
 
 bool kill_messages = true;
 
@@ -477,6 +478,17 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     }
 }
 
+void distribute_effective_health(rf::Entity* ep, float amount, float max_life_cap, float max_armor_cap)
+{
+    if (!ep || amount <= 0.0f) return;
+
+    const float life_to_add = std::min(amount, std::max(0.0f, max_life_cap - ep->life));
+    const float armor_to_add = std::min((amount - life_to_add) / 2.0f, std::max(0.0f, max_armor_cap - ep->armor));
+
+    ep->life += life_to_add;
+    ep->armor += armor_to_add;
+}
+
 void multi_apply_kill_reward(rf::Player* player)
 {
     rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
@@ -487,8 +499,8 @@ void multi_apply_kill_reward(rf::Player* player)
     const auto& conf = g_alpine_server_config_active_rules.kill_rewards;
 
     // Ensure that max health/armor limits do not decrease current values
-    float max_life_limit = std::max(ep->life, conf.kill_reward_health_super ? 200.0f : ep->info->max_life);
-    float armor_max_limit = std::max(ep->armor, conf.kill_reward_armor_super ? 200.0f : ep->info->max_armor);
+    const float max_life_limit = std::max(ep->life, conf.kill_reward_health_super ? 200.0f : ep->info->max_life);
+    const float max_armor_limit = std::max(ep->armor, conf.kill_reward_armor_super ? 200.0f : ep->info->max_armor);
 
     // Apply health reward, ensuring we do not exceed max limits
     if (conf.kill_reward_health > 0.0f) {
@@ -497,17 +509,13 @@ void multi_apply_kill_reward(rf::Player* player)
 
     // Apply armor reward, ensuring we do not exceed max limits
     if (conf.kill_reward_armor > 0.0f) {
-        ep->armor = std::min(ep->armor + conf.kill_reward_armor, armor_max_limit);
+        ep->armor = std::min(ep->armor + conf.kill_reward_armor, max_armor_limit);
     }
 
     // Apply effective health reward, distributed between health and armor
     if (conf.kill_reward_effective_health > 0.0f) {
-        float life_to_add = std::min(conf.kill_reward_effective_health, max_life_limit - ep->life);
-        float armor_to_add =
-            std::min((conf.kill_reward_effective_health - life_to_add) / 2, armor_max_limit - ep->armor);
-
-        ep->life += life_to_add;
-        ep->armor += armor_to_add;
+        distribute_effective_health(ep, conf.kill_reward_effective_health,
+                                     max_life_limit, max_armor_limit);
     }
 }
 
@@ -528,17 +536,22 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     if (killer_player) {
         auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
+        const bool score_from_kills = !gt_is_bagman_any();
         if (killer_player != killed_player) {
-            rf::player_add_score(killer_player, 1);
+            if (score_from_kills) {
+                rf::player_add_score(killer_player, 1);
+            }
             killer_stats->inc_kills();
         }
         else {
-            rf::player_add_score(killer_player, -1);
+            if (score_from_kills) {
+                rf::player_add_score(killer_player, -1);
 
-            // decrement TDM team score on self kill in match mode servers
-            if (g_alpine_server_config.vote_match.enabled
-                && rf::multi_get_game_type() == rf::NG_TYPE_TEAMDM) {
-                multi_tdm_add_team_score(killer_player, -1);
+                // decrement TDM team score on self kill in match mode servers
+                if (g_alpine_server_config.vote_match.enabled
+                    && rf::multi_get_game_type() == rf::NG_TYPE_TEAMDM) {
+                    multi_tdm_add_team_score(killer_player, -1);
+                }
             }
         }
 

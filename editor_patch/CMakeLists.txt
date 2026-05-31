@@ -13,6 +13,8 @@ set(SRCS
     note.h
     corona.cpp
     corona.h
+    bag.cpp
+    bag.h
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h

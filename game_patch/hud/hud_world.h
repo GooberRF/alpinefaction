@@ -32,6 +32,8 @@ struct WorldHUDAssets
     int koth_fill_red;
     int koth_fill_blue;
     int koth_ring_fade;
+    int bag_player_icon;
+    int bag_pickup_icon;
 };
 
 struct KothHudTuning
@@ -57,6 +59,8 @@ struct WorldHUDRender
     static constexpr float fog_dist_min = 5.0f;
     static constexpr float fog_dist_max = 100.0f;
     static constexpr float koth_hill_offset = 0.0f;
+    static constexpr float bag_countdown_offset = 0.75f;
+    static constexpr float bag_player_icon_offset = 1.25f;
 };
 
 enum class WorldHUDRenderMode : int

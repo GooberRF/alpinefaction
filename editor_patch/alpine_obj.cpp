@@ -16,6 +16,7 @@
 #include "mesh.h"
 #include "note.h"
 #include "corona.h"
+#include "bag.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "vtypes.h"
@@ -47,11 +48,12 @@ struct CopyLinkEntry {
     std::vector<int> original_links;
 };
 
-// Separate lists matching clipboard paste order (stock first, then mesh, note, corona)
+// Separate lists matching clipboard paste order (stock first, then mesh, note, corona, bag)
 static std::vector<CopyLinkEntry> g_copy_stock_entries;
 static std::vector<CopyLinkEntry> g_copy_mesh_entries;
 static std::vector<CopyLinkEntry> g_copy_note_entries;
 static std::vector<CopyLinkEntry> g_copy_corona_entries;
+static std::vector<CopyLinkEntry> g_copy_bag_entries;
 
 // Set of all UIDs that were part of the copied selection (for filtering external links)
 static std::set<int> g_copy_all_uids;
@@ -60,7 +62,8 @@ static bool is_alpine_type(DedObjectType type)
 {
     return type == DedObjectType::DED_MESH ||
            type == DedObjectType::DED_NOTE ||
-           type == DedObjectType::DED_CORONA;
+           type == DedObjectType::DED_CORONA ||
+           type == DedObjectType::DED_BAG;
 }
 
 // Capture link snapshot from the current selection before copy processes it.
@@ -72,6 +75,7 @@ static void capture_copy_link_snapshot()
     g_copy_mesh_entries.clear();
     g_copy_note_entries.clear();
     g_copy_corona_entries.clear();
+    g_copy_bag_entries.clear();
     g_copy_all_uids.clear();
 
     auto* level = CDedLevel::Get();
@@ -112,6 +116,9 @@ static void capture_copy_link_snapshot()
             case DedObjectType::DED_CORONA:
                 g_copy_corona_entries.push_back(std::move(entry));
                 break;
+            case DedObjectType::DED_BAG:
+                g_copy_bag_entries.push_back(std::move(entry));
+                break;
             default:
                 g_copy_stock_entries.push_back(std::move(entry));
                 break;
@@ -125,7 +132,7 @@ static void capture_copy_link_snapshot()
 //   - alpine→stock links
 //   - alpine→alpine links
 static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
-                            int note_count, int corona_count)
+                            int note_count, int corona_count, int bag_count)
 {
     // Verify counts match the snapshot (mismatch means the clipboard state diverged).
     // This is the safety guard for the selection-ordering assumption: if anything is
@@ -133,26 +140,28 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     if (stock_count != static_cast<int>(g_copy_stock_entries.size()) ||
         mesh_count != static_cast<int>(g_copy_mesh_entries.size()) ||
         note_count != static_cast<int>(g_copy_note_entries.size()) ||
-        corona_count != static_cast<int>(g_copy_corona_entries.size())) {
+        corona_count != static_cast<int>(g_copy_corona_entries.size()) ||
+        bag_count != static_cast<int>(g_copy_bag_entries.size())) {
         xlog::warn("[AlpineObj] Paste link fixup skipped: count mismatch "
-            "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{})",
+            "(stock {}/{}, mesh {}/{}, note {}/{}, corona {}/{}, bag {}/{})",
             stock_count, g_copy_stock_entries.size(),
             mesh_count, g_copy_mesh_entries.size(),
             note_count, g_copy_note_entries.size(),
-            corona_count, g_copy_corona_entries.size());
+            corona_count, g_copy_corona_entries.size(),
+            bag_count, g_copy_bag_entries.size());
         return;
     }
 
     // Nothing to fix if there are no alpine objects involved
-    bool has_alpine = (mesh_count + note_count + corona_count) > 0;
+    bool has_alpine = (mesh_count + note_count + corona_count + bag_count) > 0;
     if (!has_alpine) return;
 
     auto& sel = level->selection;
-    int total = stock_count + mesh_count + note_count + corona_count;
+    int total = stock_count + mesh_count + note_count + corona_count + bag_count;
     if (sel.size < total) return;
 
-    // Build old_uid → new_uid mapping from all four entry lists.
-    // Selection order after paste: stock objects first, then meshes, notes, coronas.
+    // Build old_uid → new_uid mapping from all entry lists.
+    // Selection order after paste: stock objects first, then meshes, notes, coronas, bags.
     std::map<int, int> uid_map;
     int idx = 0;
     for (int i = 0; i < stock_count; i++, idx++)
@@ -163,6 +172,8 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
         uid_map[g_copy_note_entries[i].original_uid] = sel.data_ptr[idx]->uid;
     for (int i = 0; i < corona_count; i++, idx++)
         uid_map[g_copy_corona_entries[i].original_uid] = sel.data_ptr[idx]->uid;
+    for (int i = 0; i < bag_count; i++, idx++)
+        uid_map[g_copy_bag_entries[i].original_uid] = sel.data_ptr[idx]->uid;
 
     // Apply links from the snapshot to each pasted object
     auto apply_links = [&](const std::vector<CopyLinkEntry>& entries, int count, int& sel_idx) {
@@ -196,9 +207,10 @@ static void fix_paste_links(CDedLevel* level, int stock_count, int mesh_count,
     apply_links(g_copy_mesh_entries, mesh_count, idx);
     apply_links(g_copy_note_entries, note_count, idx);
     apply_links(g_copy_corona_entries, corona_count, idx);
+    apply_links(g_copy_bag_entries, bag_count, idx);
 
-    xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona objects",
-        stock_count, mesh_count, note_count, corona_count);
+    xlog::trace("[AlpineObj] Fixed paste links for {} stock + {} mesh + {} note + {} corona + {} bag objects",
+        stock_count, mesh_count, note_count, corona_count, bag_count);
 }
 
 // ─── UID Generation ─────────────────────────────────────────────────────────
@@ -215,6 +227,7 @@ FunHook<int()> alpine_generate_uid_hook{
             mesh_ensure_uid(uid);
             note_ensure_uid(uid);
             corona_ensure_uid(uid);
+            bag_ensure_uid(uid);
         }
         return uid;
     },
@@ -246,6 +259,11 @@ CodeInjection alpine_properties_patch{
             regs.eip = 0x00402293;
             return;
         }
+        if (regs.eax == static_cast<int>(DedObjectType::DED_BAG)) {
+            // Bag has no editable properties — suppress stock dispatch.
+            regs.eip = 0x00402293;
+            return;
+        }
     },
 };
 
@@ -266,6 +284,7 @@ CodeInjection alpine_tree_patch{
         mesh_tree_populate(tree, master_groups, level);
         note_tree_populate(tree, master_groups, level);
         corona_tree_populate(tree, master_groups, level);
+        bag_tree_populate(tree, master_groups, level);
         tree->sort_children(master_groups);
     },
 };
@@ -287,6 +306,7 @@ CodeInjection alpine_pick_patch{
         mesh_pick(level, param1, param2);
         note_pick(level, param1, param2);
         corona_pick(level, param1, param2);
+        bag_pick(level, param1, param2);
     },
 };
 
@@ -320,6 +340,9 @@ CodeInjection alpine_click_pick_patch{
             // Check corona objects using fixed screen radius
             DedCorona* best_corona = corona_click_pick(level, click_x, click_y);
 
+            // Check bag objects using fixed screen radius
+            DedBag* best_bag = bag_click_pick(level, click_x, click_y);
+
             // Determine best Alpine hit
             DedObject* best_alpine = nullptr;
             float best_dist_sq = 1e30f;
@@ -348,6 +371,18 @@ CodeInjection alpine_click_pick_patch{
                     if (!best_alpine || corona_dist < best_dist_sq) {
                         best_alpine = static_cast<DedObject*>(best_corona);
                         best_dist_sq = corona_dist;
+                    }
+                }
+            }
+            if (best_bag) {
+                float bag_pos[3] = {best_bag->pos.x, best_bag->pos.y, best_bag->pos.z};
+                float bsx = 0.0f, bsy = 0.0f;
+                if (project_to_screen_2d(bag_pos, &bsx, &bsy)) {
+                    float bdx = bsx - click_x, bdy = bsy - click_y;
+                    float bag_dist = bdx * bdx + bdy * bdy;
+                    if (!best_alpine || bag_dist < best_dist_sq) {
+                        best_alpine = static_cast<DedObject*>(best_bag);
+                        best_dist_sq = bag_dist;
                     }
                 }
             }
@@ -395,6 +430,7 @@ CodeInjection alpine_copy_begin_hook{
         mesh_clear_clipboard();
         note_clear_clipboard();
         corona_clear_clipboard();
+        bag_clear_clipboard();
         capture_copy_link_snapshot();
     },
 };
@@ -419,6 +455,11 @@ CodeInjection alpine_copy_hook{
         else if (source && source->type == DedObjectType::DED_CORONA) {
             regs.ebx = reinterpret_cast<uintptr_t>(source);
             corona_copy_object(source);
+            regs.eip = 0x00412edb;
+        }
+        else if (source && source->type == DedObjectType::DED_BAG) {
+            regs.ebx = reinterpret_cast<uintptr_t>(source);
+            bag_copy_object(source);
             regs.eip = 0x00412edb;
         }
     },
@@ -446,8 +487,11 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     corona_paste_objects(level);
     int corona_count = level->selection.size - stock_count - mesh_count - note_count;
 
+    bag_paste_objects(level);
+    int bag_count = level->selection.size - stock_count - mesh_count - note_count - corona_count;
+
     // Fix links that the stock paste missed (involving alpine object types)
-    fix_paste_links(level, stock_count, mesh_count, note_count, corona_count);
+    fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count);
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -485,6 +529,9 @@ CodeInjection alpine_paste_finalize_patch{
         else if (obj && obj->type == DedObjectType::DED_CORONA) {
             corona_handle_delete_or_cut(obj);
         }
+        else if (obj && obj->type == DedObjectType::DED_BAG) {
+            bag_handle_delete_or_cut(obj);
+        }
     },
 };
 
@@ -520,6 +567,13 @@ CodeInjection alpine_undo_readd_patch{
                 props.corona_objects.push_back(corona);
             }
         }
+        else if (obj->type == DedObjectType::DED_BAG) {
+            auto* bag = static_cast<DedBag*>(obj);
+            if (std::find(props.bag_objects.begin(), props.bag_objects.end(), bag)
+                == props.bag_objects.end()) {
+                props.bag_objects.push_back(bag);
+            }
+        }
     },
 };
 
@@ -551,6 +605,7 @@ CodeInjection alpine_delete_patch{
         note_handle_delete_selection(level);
         mesh_handle_delete_selection(level);
         corona_handle_delete_selection(level);
+        bag_handle_delete_selection(level);
     },
 };
 
@@ -564,12 +619,13 @@ CodeInjection alpine_object_tree_patch{
         mesh_tree_add_object_type(tree);
         note_tree_add_object_type(tree);
         corona_tree_add_object_type(tree);
+        bag_tree_add_object_type(tree);
         tree->sort_children(static_cast<int>(reinterpret_cast<intptr_t>(TVI_ROOT)));
     },
 };
 
 // Track which Alpine object type the tree view is creating.
-static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona
+static int g_alpine_create_type = 0; // 0=Mesh, 2=Note, 3=Corona, 4=Bag
 
 // Hook factory FUN_00442a40 to detect Alpine object types by tree item text.
 int __fastcall alpine_factory_hooked(void* ecx_panel, void* /*edx*/, void* tree_item);
@@ -596,6 +652,9 @@ int __fastcall alpine_factory_hooked(void* ecx_panel, void* edx, void* tree_item
         else if (strcmp(text, "Corona") == 0) {
             g_alpine_create_type = 3;
         }
+        else if (strcmp(text, "Bag") == 0) {
+            g_alpine_create_type = 4;
+        }
     }
 
     return alpine_factory_hook.call_target(ecx_panel, edx, tree_item);
@@ -612,6 +671,9 @@ CodeInjection alpine_create_object_patch{
             }
             else if (g_alpine_create_type == 3) {
                 PlaceNewCoronaObject();
+            }
+            else if (g_alpine_create_type == 4) {
+                PlaceNewBagObject();
             }
             else {
                 PlaceNewMeshObject();
@@ -635,6 +697,7 @@ CodeInjection alpine_render_patch{
         mesh_render(level);
         note_render(level);
         corona_render(level);
+        bag_render(level);
     },
 };
 
@@ -668,6 +731,7 @@ static const char* get_type_display_name(DedObjectType type)
         case DedObjectType::DED_MESH:               return "Mesh";
         case DedObjectType::DED_NOTE:               return "Note";
         case DedObjectType::DED_CORONA:             return "Corona";
+        case DedObjectType::DED_BAG:                return "Bag";
         default:                                    return "Unknown";
     }
 }
@@ -677,6 +741,7 @@ static const char* get_type_display_name(DedObjectType type)
 // Type filter entries — alphabetical, matching stock + Alpine types
 static const struct { DedObjectType type; const char* label; } g_type_filters[] = {
     {DedObjectType::DED_AMBIENT_SOUND,    "Ambient Sounds"},
+    {DedObjectType::DED_BAG,              "Bags"},
     {DedObjectType::DED_BOLT_EMITTER,     "Bolt Emitters"},
     {DedObjectType::DED_CLIMBING_REGION,  "Climbing Regions"},
     {DedObjectType::DED_CLUTTER,          "Clutter"},
@@ -1583,11 +1648,12 @@ void alpine_hide_objects(CDedLevel* level)
 
 // Global vectors to collect Alpine objects during group serialization.
 // FUN_00435630 (per-group serializer) has a switch on obj->type that handles types 0..0x16.
-// Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA) fall through and are silently
-// dropped. We hook the switch's overflow check (JA at 0x00435a82) to collect them here.
+// Alpine types (0x17=DED_MESH, 0x18=DED_NOTE, 0x19=DED_CORONA, 0x1A=DED_BAG) fall through
+// and are silently dropped.
 static std::vector<DedMesh*> g_group_save_meshes;
 static std::vector<DedNote*> g_group_save_notes;
 static std::vector<DedCorona*> g_group_save_coronas;
+static std::vector<DedBag*> g_group_save_bags;
 
 // Brush UIDs captured in serialization order during group save.
 // Used to write brush metadata (geoable/breakable flags) to the .rfg brush group chunk.
@@ -1603,6 +1669,7 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_meshes.clear();
         g_group_save_notes.clear();
         g_group_save_coronas.clear();
+        g_group_save_bags.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -1633,6 +1700,8 @@ CodeInjection alpine_group_type_collect_hook{
                 g_group_save_notes.push_back(static_cast<DedNote*>(obj));
             else if (type == static_cast<int>(DedObjectType::DED_CORONA))
                 g_group_save_coronas.push_back(static_cast<DedCorona*>(obj));
+            else if (type == static_cast<int>(DedObjectType::DED_BAG))
+                g_group_save_bags.push_back(static_cast<DedBag*>(obj));
             regs.eip = 0x00435be1; // skip to loop continue
         }
         // types <= 0x16 fall through to jump table at 0x00435a88
@@ -1671,6 +1740,13 @@ CodeInjection alpine_group_save_hook{
             props.corona_objects.assign(g_group_save_coronas.begin(), g_group_save_coronas.end());
             corona_serialize_chunk(*level, *file);
             props.corona_objects = std::move(saved);
+        }
+
+        if (!g_group_save_bags.empty()) {
+            auto saved = std::move(props.bag_objects);
+            props.bag_objects.assign(g_group_save_bags.begin(), g_group_save_bags.end());
+            bag_serialize_chunk(*level, *file);
+            props.bag_objects = std::move(saved);
         }
 
         // Write brush group metadata chunk: which brushes (by serialization index) are
@@ -1730,12 +1806,14 @@ CodeInjection alpine_group_save_hook{
             }
         }
 
-        xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas to group",
-            g_group_save_meshes.size(), g_group_save_notes.size(), g_group_save_coronas.size());
+        xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags to group",
+            g_group_save_meshes.size(), g_group_save_notes.size(),
+            g_group_save_coronas.size(), g_group_save_bags.size());
 
         g_group_save_meshes.clear();
         g_group_save_notes.clear();
         g_group_save_coronas.clear();
+        g_group_save_bags.clear();
         g_group_save_brush_uids.clear();
     },
 };
@@ -1770,6 +1848,7 @@ CodeInjection alpine_group_load_hook{
         auto mesh_start = props.mesh_objects.size();
         auto note_start = props.note_objects.size();
         auto corona_start = props.corona_objects.size();
+        auto bag_start = props.bag_objects.size();
 
         // Brush group entries parsed from the .rfg brush metadata chunk.
         std::vector<BrushGroupEntry> brush_group_entries;
@@ -1790,6 +1869,9 @@ CodeInjection alpine_group_load_hook{
             }
             else if (chunk_id == alpine_corona_chunk_id) {
                 corona_deserialize_chunk(*level, *file, chunk_size);
+            }
+            else if (chunk_id == alpine_bag_chunk_id) {
+                bag_deserialize_chunk(*level, *file, chunk_size);
             }
             else if (chunk_id == alpine_brush_group_chunk_id) {
                 // Read brush metadata chunk, tracking remaining bytes to stay within chunk bounds
@@ -1848,9 +1930,10 @@ CodeInjection alpine_group_load_hook{
         int meshes_loaded = static_cast<int>(props.mesh_objects.size() - mesh_start);
         int notes_loaded = static_cast<int>(props.note_objects.size() - note_start);
         int coronas_loaded = static_cast<int>(props.corona_objects.size() - corona_start);
+        int bags_loaded = static_cast<int>(props.bag_objects.size() - bag_start);
         bool has_brush_props = !brush_group_entries.empty();
 
-        if (!meshes_loaded && !notes_loaded && !coronas_loaded && !has_brush_props)
+        if (!meshes_loaded && !notes_loaded && !coronas_loaded && !bags_loaded && !has_brush_props)
             return;
 
         // Assign new unique UIDs to imported Alpine objects (group import must not
@@ -1862,6 +1945,8 @@ CodeInjection alpine_group_load_hook{
             static_cast<DedObject*>(props.note_objects[i])->uid = generate_uid();
         for (auto i = corona_start; i < props.corona_objects.size(); i++)
             static_cast<DedObject*>(props.corona_objects[i])->uid = generate_uid();
+        for (auto i = bag_start; i < props.bag_objects.size(); i++)
+            static_cast<DedObject*>(props.bag_objects[i])->uid = generate_uid();
 
         // Add newly loaded Alpine objects to the selection so they move with the
         // other stock objects when the user places the imported group.
@@ -1871,6 +1956,8 @@ CodeInjection alpine_group_load_hook{
             level->add_to_selection(static_cast<DedObject*>(props.note_objects[i]));
         for (auto i = corona_start; i < props.corona_objects.size(); i++)
             level->add_to_selection(static_cast<DedObject*>(props.corona_objects[i]));
+        for (auto i = bag_start; i < props.bag_objects.size(); i++)
+            level->add_to_selection(static_cast<DedObject*>(props.bag_objects[i]));
 
         // Refresh console display to include newly selected Alpine objects
         // (stock FUN_00423460 runs inside FUN_00438340, before our hook loads them)
@@ -1898,6 +1985,8 @@ CodeInjection alpine_group_load_hook{
                     entry->objects.push_back(static_cast<DedObject*>(props.note_objects[i]));
                 for (auto i = corona_start; i < props.corona_objects.size(); i++)
                     entry->objects.push_back(static_cast<DedObject*>(props.corona_objects[i]));
+                for (auto i = bag_start; i < props.bag_objects.size(); i++)
+                    entry->objects.push_back(static_cast<DedObject*>(props.bag_objects[i]));
 
                 // Apply brush group properties: map serialization index → final brush UID
                 // via the group entry's brushes VArray (same order as serialized).
@@ -1936,8 +2025,8 @@ CodeInjection alpine_group_load_hook{
             }
         }
 
-        xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas from group",
-            meshes_loaded, notes_loaded, coronas_loaded);
+        xlog::info("[AlpineObj] Loaded {} meshes, {} notes, {} coronas, {} bags from group",
+            meshes_loaded, notes_loaded, coronas_loaded, bags_loaded);
     },
 };
 

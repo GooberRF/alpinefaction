@@ -144,6 +144,8 @@ set(SRCS
     multi/multi.cpp
     multi/gametype.h
     multi/gametype.cpp
+    multi/bagman.h
+    multi/bagman.cpp
     multi/kill.cpp
     multi/network.cpp
     multi/network.h
@@ -246,6 +248,8 @@ set(SRCS
     object/alpine_mesh.cpp
     object/alpine_corona.cpp
     object/alpine_corona.h
+    object/alpine_bag.cpp
+    object/alpine_bag.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp

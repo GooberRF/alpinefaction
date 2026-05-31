@@ -175,8 +175,8 @@ static rf::ui::Checkbox ao_enemybullets_cbox;
 static rf::ui::Label ao_enemybullets_label;
 static rf::ui::Checkbox ao_togglecrouch_cbox;
 static rf::ui::Label ao_togglecrouch_label;
-static rf::ui::Checkbox ao_joinbeep_cbox;
-static rf::ui::Label ao_joinbeep_label;
+static rf::ui::Checkbox ao_join_flash_cbox;
+static rf::ui::Label ao_join_flash_label;
 static rf::ui::Checkbox ao_vsync_cbox;
 static rf::ui::Label ao_vsync_label;
 static rf::ui::Checkbox ao_unclamplights_cbox;
@@ -780,10 +780,10 @@ void ao_togglecrouch_cbox_on_click(int x, int y) {
     ao_play_button_snd(rf::local_player->settings.toggle_crouch);
 }
 
-void ao_joinbeep_cbox_on_click(int x, int y) {
-    g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
-    ao_joinbeep_cbox.checked = g_alpine_game_config.player_join_beep;
-    ao_play_button_snd(g_alpine_game_config.player_join_beep);
+void ao_join_flash_cbox_on_click(const int x, const int y) {
+    g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
+    ao_join_flash_cbox.checked = g_alpine_game_config.player_join_flash;
+    ao_play_button_snd(g_alpine_game_config.player_join_flash);
 }
 
 void ao_vsync_cbox_on_click(int x, int y) {
@@ -1243,7 +1243,7 @@ void alpine_options_panel_init() {
     alpine_options_panel_checkbox_init(
         &ao_autosave_cbox, &ao_autosave_label, &alpine_options_panel3, ao_autosave_cbox_on_click, g_alpine_game_config.autosave, 112, 114, "Autosave");
     alpine_options_panel_checkbox_init(
-        &ao_joinbeep_cbox, &ao_joinbeep_label, &alpine_options_panel3, ao_joinbeep_cbox_on_click, g_alpine_game_config.player_join_beep, 112, 144, "Join beep");
+        &ao_join_flash_cbox, &ao_join_flash_label, &alpine_options_panel3, ao_join_flash_cbox_on_click, g_alpine_game_config.player_join_flash, 112, 144, "Join flash");
     alpine_options_panel_checkbox_init(
         &ao_painsounds_cbox, &ao_painsounds_label, &alpine_options_panel3, ao_painsounds_cbox_on_click, g_alpine_game_config.entity_pain_sounds, 112, 174, "Pain sounds");
     alpine_options_panel_checkbox_init(
@@ -1765,6 +1765,28 @@ FunHook<int(int, int)> audio_panel_handle_mouse_hook{
     },
 };
 
+// Do not disable `Refresh Selected`, unless it is a single server refresh.
+CallHook<
+    void __fastcall(rf::ui::Gadget&)
+> server_list_refresh_server_btn_ui_gadget_disable_hook{
+    0x0044D4BA,
+    [] (rf::ui::Gadget& self) FASTCALL_LAMBDA {
+        const bool& single_refresh_active = addr_as_ref<bool>(0x0063F638);
+        self.enabled = !single_refresh_active;
+    }
+};
+
+// `server_refresh_timeout` should be reset, when we set `single_refresh_active` to false.
+// Otherwise, `Get Servers` etc. stay disabled until timeout.
+CodeInjection server_list_set_single_refresh_inactive_patch{
+    0x0044DF75,
+    [] {
+        rf::TimestampRealtime& server_refresh_timeout =
+            addr_as_ref<rf::TimestampRealtime>(0x0063EF68);
+        server_refresh_timeout.set(0);
+    },
+};
+
 void ui_apply_patch()
 {
     // Alpine Faction options button and panel
@@ -1810,6 +1832,11 @@ void ui_apply_patch()
 
     // Handle CTRL+V in input boxes
     UiInputBox_process_key_hook.install();
+
+    // Do not disable `Add Server`.
+    AsmWriter{0x0044D4A6}.nop(5);
+    server_list_refresh_server_btn_ui_gadget_disable_hook.install();
+    server_list_set_single_refresh_inactive_patch.install();
 }
 
 void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num) {

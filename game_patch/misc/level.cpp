@@ -15,6 +15,7 @@
 #include "player.h"
 #include "../multi/server.h"
 #include "../object/alpine_corona.h"
+#include "../object/alpine_bag.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 
@@ -110,6 +111,7 @@ CodeInjection level_load_init_patch{
         DashLevelProps::instance() = {};
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
+        alpine_bag_clear_state();
         gas_region_clear_state();
         alpine_mover_clear_hold_open();
         hud_world_level_unload();
@@ -142,6 +144,13 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_corona_chunk_id) {
             xlog::debug("[Level] Loading alpine corona chunk: len={}", chunk_len);
             alpine_corona_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine bag objects chunk
+        if (chunk_id == alpine_bag_chunk_id) {
+            xlog::debug("[Level] Loading alpine bag chunk: len={}", chunk_len);
+            alpine_bag_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 
