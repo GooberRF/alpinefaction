@@ -28,8 +28,8 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     AttachItem(IDC_WND_MODE_COMBO, m_wnd_mode_combo);
 
     // Populate combo boxes with static content
-    m_renderer_combo.AddString("Direct3D 8");
-    m_renderer_combo.AddString("Direct3D 9");
+    m_renderer_combo.AddString("Direct3D 8 (deprecated)");
+    m_renderer_combo.AddString("Direct3D 9 (deprecated)");
     m_renderer_combo.AddString("Direct3D 11 (recommended)");
 
     m_wnd_mode_combo.AddString("Exclusive Fullscreen");
@@ -74,13 +74,14 @@ void OptionsDisplayDlg::UpdateAnisotropyCheckbox()
 void OptionsDisplayDlg::InitToolTip()
 {
     m_tool_tip.Create(*this);
-    m_tool_tip.AddTool(GetDlgItem(IDC_RENDERER_COMBO), "Graphics API used for rendering");
-    m_tool_tip.AddTool(GetDlgItem(IDC_ADAPTER_COMBO), "Graphics card/adapter used for rendering");
-    m_tool_tip.AddTool(GetDlgItem(IDC_RENDERING_CACHE_EDIT), "RAM allocated for level geometry rendering, max 32 MB");
-    m_tool_tip.AddTool(GetDlgItem(IDC_RESOLUTIONS_COMBO), "Select resolution from provided dropdown list or type a resolution manually");
+    m_tool_tip.SetMaxTipWidth(512);
+    m_tool_tip.AddTool(GetDlgItem(IDC_RENDERER_COMBO), "Graphics API used for rendering.\nWarning: Direct3D 8 and 9 do not support certain features used by Alpine Faction");
+    m_tool_tip.AddTool(GetDlgItem(IDC_ADAPTER_COMBO), "Graphics adapter used for rendering");
+    m_tool_tip.AddTool(GetDlgItem(IDC_RENDERING_CACHE_EDIT), "RAM allocated for level geometry rendering, which must be 32 MB or less");
+    m_tool_tip.AddTool(GetDlgItem(IDC_RESOLUTIONS_COMBO), "Select resolution from provided drop-down list, or type a resolution manually");
     m_tool_tip.AddTool(GetDlgItem(IDC_ANISOTROPIC_CHECK), "Improve render quality of textures at far distances");
-    m_tool_tip.AddTool(GetDlgItem(IDC_HIGH_SCANNER_RES_CHECK), "Increase scanner resolution (used by Rail Driver, Rocket Launcher and Fusion Launcher)");
-    m_tool_tip.AddTool(GetDlgItem(IDC_TRUE_COLOR_TEXTURES_CHECK), "Increase texture color depth - especially visible for lightmaps and shadows");
+    m_tool_tip.AddTool(GetDlgItem(IDC_HIGH_SCANNER_RES_CHECK), "Increase scanner resolution (used by Rail Driver, Rocket Launcher, and Fusion Launcher)");
+    m_tool_tip.AddTool(GetDlgItem(IDC_TRUE_COLOR_TEXTURES_CHECK), "Increase texture color depth, especially visible for lightmaps and shadows");
 }
 
 void OptionsDisplayDlg::UpdateAdapterCombo()
