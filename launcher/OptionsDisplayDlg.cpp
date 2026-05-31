@@ -160,10 +160,10 @@ void OptionsDisplayDlg::UpdateColorDepthCombo()
     int index_32 = -1;
     int index_16 = -1;
     if (has_32bpp_modes) {
-        index_32 = m_color_depth_combo.AddString("32 bit");
+        index_32 = m_color_depth_combo.AddString("32-bit");
     }
     if (has_16bpp_modes) {
-        index_16 = m_color_depth_combo.AddString("16 bit");
+        index_16 = m_color_depth_combo.AddString("16-bit");
     }
     m_color_depth_combo.SetCurSel(m_conf.res_bpp == 16 ? index_16 : index_32);
 }
