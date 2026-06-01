@@ -47,14 +47,7 @@ void gyro_update_calibration_mode()
         return;
     g_last_calibration_mode = desired;
 
-    // Preserve calibrated offset and confidence across mode changes.
-    float ox, oy, oz;
-    g_motion.GetCalibrationOffset(ox, oy, oz);
-    float confidence = g_motion.GetAutoCalibrationConfidence();
-
     g_motion.SetCalibrationMode(desired);
-    g_motion.SetCalibrationOffset(ox, oy, oz, 1);
-    g_motion.SetAutoCalibrationConfidence(confidence);
 }
 
 void gyro_reset()
@@ -78,16 +71,6 @@ void gyro_set_autocalibration_mode(int mode)
     mode = std::clamp(mode, 0, 2);
     g_alpine_game_config.gamepad_gyro_autocalibration_mode = mode;
     gyro_update_calibration_mode();
-}
-
-float gyro_get_autocalibration_confidence()
-{
-    return g_motion.GetAutoCalibrationConfidence();
-}
-
-bool gyro_is_autocalibration_steady()
-{
-    return g_motion.GetAutoCalibrationIsSteady();
 }
 
 void gyro_process_motion(float gyro_x, float gyro_y, float gyro_z,
@@ -302,7 +285,6 @@ ConsoleCommand2 gyro_reset_autocalibration_partial_cmd{
 ConsoleCommand2 gyro_reset_autocalibration_full_cmd{
     "gyro_reset_autocalibration_full",
     [](std::optional<int>) {
-        g_motion.SetAutoCalibrationConfidence(0.0f);
         g_motion.ResetContinuousCalibration();
         g_motion.ResetMotion();
         gyro_update_calibration_mode();
