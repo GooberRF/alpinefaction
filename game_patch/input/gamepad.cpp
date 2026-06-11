@@ -826,6 +826,11 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
         if (ev.button == SDL_GAMEPAD_BUTTON_START) {
             menu_nav_inject_key(rf::KEY_ESC);
         } else {
+            // Block Misc3-Misc6 (capsense/gripsense) from controller rebinding when using 
+            // Steam Hardware devices (Steam Controller 2026, Steam Deck, Horipad for Steam)
+            // TODO: when next major SDL3 release adds proper support for capsense/gripsense, remove this entirely 
+            if (is_capsense_gripsense_rebind_blocked(SDL_GetGamepadFromID(ev.which), ev.button))
+                return;
             g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.button;
             rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
         }
