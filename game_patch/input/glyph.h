@@ -57,9 +57,7 @@ inline bool is_capsense_gripsense_rebind_blocked(SDL_Gamepad* ctrl, int button)
         || (vendor == HORI_VENDOR_ID && is_steam_horipad_controller_pid(product));
 }
 
-// Checks Valve VID/PID to resolve Steam icon type for Valve hardware.
-// For Steam Virtual Gamepad (0x11ff), passes through the supplied fallback icon type.
-// For Steam Deck and Steam Controller 2/Triton hardware, returns Steam glyphs.
+// Checks Valve VID/PID to resolve Steam icon type for Valve or Steam-licensed controllers.
 inline ControllerIconType get_steam_virtual_controller_detection(SDL_Gamepad* ctrl, ControllerIconType fallback)
 {
     if (!ctrl)
@@ -68,13 +66,13 @@ inline ControllerIconType get_steam_virtual_controller_detection(SDL_Gamepad* ct
     Uint16 vendor  = SDL_GetGamepadVendor(ctrl);
     Uint16 product = SDL_GetGamepadProduct(ctrl);
 
-    if (vendor == HORI_VENDOR_ID && is_steam_horipad_controller_pid(product))
+    if (vendor == VALVE_VENDOR_ID
+        && (product == STEAM_VIRTUAL_GAMEPAD_PID
+            || product == STEAM_DECK_BUILTIN_PID
+            || is_steam_triton_controller_pid(product)))
         return ControllerIconType::Steam;
 
-    if (vendor != VALVE_VENDOR_ID || product == STEAM_VIRTUAL_GAMEPAD_PID)
-        return fallback;
-
-    if (product == STEAM_DECK_BUILTIN_PID || is_steam_triton_controller_pid(product))
+    if (vendor == HORI_VENDOR_ID && is_steam_horipad_controller_pid(product))
         return ControllerIconType::Steam;
 
     return fallback;
