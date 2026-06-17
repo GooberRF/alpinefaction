@@ -1,7 +1,14 @@
+#include <cmath>
+#include <algorithm>
 #include "debug_internal.h"
 #include <patch_common/FunHook.h>
+#include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include "../os/console.h"
+#include "../rf/entity.h"
+#include "../rf/vmesh.h"
+#include "../rf/player/player.h"
+#include "../multi/multi.h"
 
 #define DEBUG_PERF 1
 
@@ -201,9 +208,310 @@ void debug_init()
 #endif
 }
 
+static void draw_3d_capsule_general(const rf::Vector3& cap_a, const rf::Vector3& cap_b, float radius)
+{
+    auto mode = rf::gr::Mode{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_NONE,
+        rf::gr::ZBUFFER_TYPE_FULL,
+        rf::gr::FOG_NOT_ALLOWED,
+    };
+
+    rf::Vector3 axis = cap_b - cap_a;
+    float axis_len = axis.len();
+
+    constexpr int num_segments = 24;
+    constexpr int half_arc = num_segments / 4;
+    constexpr float two_pi = 6.2831853f;
+    constexpr float half_pi = 1.5707963f;
+
+    rf::Vector3 v_axis;
+    if (axis_len > 1e-6f) {
+        v_axis = axis * (1.0f / axis_len);
+    }
+    else {
+        v_axis = {0.0f, 1.0f, 0.0f};
+    }
+
+    rf::Vector3 helper = (std::abs(v_axis.y) < 0.9f)
+        ? rf::Vector3{0.0f, 1.0f, 0.0f}
+        : rf::Vector3{1.0f, 0.0f, 0.0f};
+    rf::Vector3 u_axis = v_axis.cross(helper);
+    u_axis.normalize();
+    rf::Vector3 w_axis = v_axis.cross(u_axis);
+
+    rf::Vector3 a_pts[num_segments];
+    rf::Vector3 b_pts[num_segments];
+
+    for (int i = 0; i < num_segments; i++) {
+        float angle = two_pi * static_cast<float>(i) / static_cast<float>(num_segments);
+        rf::Vector3 offset = u_axis * (radius * std::cos(angle)) + w_axis * (radius * std::sin(angle));
+        a_pts[i] = cap_a + offset;
+        b_pts[i] = cap_b + offset;
+    }
+
+    for (int i = 0; i < num_segments; i++) {
+        int next = (i + 1) % num_segments;
+        rf::gr::line_vec(a_pts[i], a_pts[next], mode);
+        rf::gr::line_vec(b_pts[i], b_pts[next], mode);
+
+        if (i % (num_segments / 4) == 0) {
+            rf::gr::line_vec(a_pts[i], b_pts[i], mode);
+        }
+    }
+
+    auto draw_hemisphere_arc = [&](const rf::Vector3& center, float sign, const rf::Vector3& arc_dir) {
+        rf::Vector3 prev;
+        for (int i = 0; i <= half_arc; i++) {
+            float phi = half_pi * static_cast<float>(i) / static_cast<float>(half_arc);
+            float r_eq = radius * std::cos(phi);
+            float r_ax = radius * std::sin(phi) * sign;
+            rf::Vector3 pt = center + arc_dir * r_eq + v_axis * r_ax;
+            if (i > 0)
+                rf::gr::line_vec(prev, pt, mode);
+            prev = pt;
+        }
+    };
+
+    draw_hemisphere_arc(cap_a, -1.0f, u_axis);
+    draw_hemisphere_arc(cap_a, -1.0f, w_axis);
+    draw_hemisphere_arc(cap_a, -1.0f, -u_axis);
+    draw_hemisphere_arc(cap_a, -1.0f, -w_axis);
+
+    draw_hemisphere_arc(cap_b, 1.0f, u_axis);
+    draw_hemisphere_arc(cap_b, 1.0f, w_axis);
+    draw_hemisphere_arc(cap_b, 1.0f, -u_axis);
+    draw_hemisphere_arc(cap_b, 1.0f, -w_axis);
+}
+
+static void draw_3d_cylinder_general(const rf::Vector3& cyl_a, const rf::Vector3& cyl_b, float radius)
+{
+    auto mode = rf::gr::Mode{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_NONE,
+        rf::gr::ZBUFFER_TYPE_FULL,
+        rf::gr::FOG_NOT_ALLOWED,
+    };
+
+    rf::Vector3 axis = cyl_b - cyl_a;
+    float axis_len = axis.len();
+
+    constexpr int num_segments = 24;
+    constexpr float two_pi = 6.2831853f;
+
+    rf::Vector3 v_axis;
+    if (axis_len > 1e-6f) {
+        v_axis = axis * (1.0f / axis_len);
+    }
+    else {
+        v_axis = {0.0f, 1.0f, 0.0f};
+    }
+
+    rf::Vector3 helper = (std::abs(v_axis.y) < 0.9f)
+        ? rf::Vector3{0.0f, 1.0f, 0.0f}
+        : rf::Vector3{1.0f, 0.0f, 0.0f};
+    rf::Vector3 u_axis = v_axis.cross(helper);
+    u_axis.normalize();
+    rf::Vector3 w_axis = v_axis.cross(u_axis);
+
+    rf::Vector3 a_pts[num_segments];
+    rf::Vector3 b_pts[num_segments];
+
+    for (int i = 0; i < num_segments; i++) {
+        float angle = two_pi * static_cast<float>(i) / static_cast<float>(num_segments);
+        rf::Vector3 offset = u_axis * (radius * std::cos(angle)) + w_axis * (radius * std::sin(angle));
+        a_pts[i] = cyl_a + offset;
+        b_pts[i] = cyl_b + offset;
+    }
+
+    for (int i = 0; i < num_segments; i++) {
+        int next = (i + 1) % num_segments;
+        // Rings at each end
+        rf::gr::line_vec(a_pts[i], a_pts[next], mode);
+        rf::gr::line_vec(b_pts[i], b_pts[next], mode);
+
+        // Connecting lines at cardinal points
+        if (i % (num_segments / 4) == 0) {
+            rf::gr::line_vec(a_pts[i], b_pts[i], mode);
+        }
+    }
+
+    // Cross-lines on disc caps
+    rf::gr::line_vec(a_pts[0], a_pts[num_segments / 2], mode);
+    rf::gr::line_vec(a_pts[num_segments / 4], a_pts[3 * num_segments / 4], mode);
+    rf::gr::line_vec(b_pts[0], b_pts[num_segments / 2], mode);
+    rf::gr::line_vec(b_pts[num_segments / 4], b_pts[3 * num_segments / 4], mode);
+}
+
+static void draw_3d_aabb(const rf::Vector3& bbox_min, const rf::Vector3& bbox_max)
+{
+    auto mode = rf::gr::Mode{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_NONE,
+        rf::gr::ZBUFFER_TYPE_FULL,
+        rf::gr::FOG_NOT_ALLOWED,
+    };
+
+    // 8 corners of the box
+    rf::Vector3 c[8] = {
+        {bbox_min.x, bbox_min.y, bbox_min.z},
+        {bbox_max.x, bbox_min.y, bbox_min.z},
+        {bbox_max.x, bbox_min.y, bbox_max.z},
+        {bbox_min.x, bbox_min.y, bbox_max.z},
+        {bbox_min.x, bbox_max.y, bbox_min.z},
+        {bbox_max.x, bbox_max.y, bbox_min.z},
+        {bbox_max.x, bbox_max.y, bbox_max.z},
+        {bbox_min.x, bbox_max.y, bbox_max.z},
+    };
+
+    // Bottom face
+    rf::gr::line_vec(c[0], c[1], mode);
+    rf::gr::line_vec(c[1], c[2], mode);
+    rf::gr::line_vec(c[2], c[3], mode);
+    rf::gr::line_vec(c[3], c[0], mode);
+    // Top face
+    rf::gr::line_vec(c[4], c[5], mode);
+    rf::gr::line_vec(c[5], c[6], mode);
+    rf::gr::line_vec(c[6], c[7], mode);
+    rf::gr::line_vec(c[7], c[4], mode);
+    // Vertical edges
+    rf::gr::line_vec(c[0], c[4], mode);
+    rf::gr::line_vec(c[1], c[5], mode);
+    rf::gr::line_vec(c[2], c[6], mode);
+    rf::gr::line_vec(c[3], c[7], mode);
+}
+
+static void render_hitboxes()
+{
+    if (!g_dbg_hitboxes)
+        return;
+
+    auto& multi_entity_bbox_size = addr_as_ref<rf::Vector3>(0x007C6A70);
+    auto& server_info = get_af_server_info();
+    bool legacy = server_info ? server_info->legacy_hitboxes : g_alpine_server_config.legacy_hitboxes;
+
+    rf::Entity* ep = rf::entity_list.next;
+    while (ep != &rf::entity_list) {
+        rf::Entity* entity = ep;
+        ep = ep->next;
+
+        if (!entity->vmesh)
+            continue;
+
+        if (rf::local_player && entity->handle == rf::local_player->entity_handle)
+            continue;
+
+        // Match engine bbox computation: entity->pos ± half_size,
+        // then for crouching only bbox_max.y is lowered (feet stay on floor)
+        rf::Vector3 half_size = multi_entity_bbox_size;
+        rf::Vector3 bbox_min = entity->pos - half_size;
+        rf::Vector3 bbox_max = entity->pos + half_size;
+        bool crouching = rf::entity_is_crouching(entity);
+        if (crouching) {
+            bbox_max.y -= multi_entity_bbox_size.y * 0.5f;
+        }
+
+        if (legacy) {
+            // Legacy mode: draw the AABB that the engine actually uses for collision
+            rf::gr::set_color(255, 128, 0, 255);
+            draw_3d_aabb(bbox_min, bbox_max);
+            continue;
+        }
+
+        float cx = (bbox_min.x + bbox_max.x) * 0.5f;
+        float cz = (bbox_min.z + bbox_max.z) * 0.5f;
+        float radius = (bbox_max.x - bbox_min.x) * 0.5f;
+
+        // Extend effective top for crouching (models don't always crouch as low as the engine bbox)
+        float effective_max_y = bbox_max.y;
+        if (crouching) {
+            float h = bbox_max.y - bbox_min.y;
+            effective_max_y += h * 0.3f;
+        }
+
+        float split_ratio = crouching ? 0.35f : 0.55f;
+        float bbox_height = effective_max_y - bbox_min.y;
+        float split_y = bbox_min.y + bbox_height * split_ratio;
+        float upper_height = effective_max_y - split_y;
+
+        // Lower capsule (green): inset bottom so hemisphere doesn't extend below bbox
+        rf::gr::set_color(0, 255, 0, 255);
+        rf::Vector3 lower_bot{cx, bbox_min.y + radius, cz};
+        rf::Vector3 lower_top{cx, split_y, cz};
+        draw_3d_capsule_general(lower_bot, lower_top, radius);
+
+        // Torso cylinder (cyan) + head sphere (magenta)
+        rf::Vector3 upper_a{cx, split_y, cz};
+        float head_dist;
+        float head_radius;
+        rf::Vector3 head_world_pos;
+        rf::Vector3 tilt_axis = compute_tilt_axis(entity, upper_a, &head_dist, &head_radius, &head_world_pos);
+        rf::gr::set_color(0, 255, 255, 255);
+        float upper_len = upper_height;
+        if (head_dist > 0.0f)
+            upper_len = std::min(upper_len, head_dist);
+
+        // Shorten so flat top stops just before head sphere (matching collision)
+        if (head_radius > 0.0f && head_dist > 0.0f) {
+            float max_endpoint = head_dist - head_radius;
+            upper_len = std::min(upper_len, max_endpoint);
+        }
+        upper_len = std::max(upper_len, 0.0f);
+        upper_len *= 1.05f;
+
+        rf::Vector3 upper_b = upper_a + tilt_axis * upper_len;
+        draw_3d_cylinder_general(upper_a, upper_b, radius);
+
+        // Head sphere
+        if (head_radius > 0.0f && head_dist > 0.0f) {
+            rf::gr::set_color(255, 0, 255, 255);
+            auto mode = rf::gr::Mode{
+                rf::gr::TEXTURE_SOURCE_NONE,
+                rf::gr::COLOR_SOURCE_VERTEX,
+                rf::gr::ALPHA_SOURCE_VERTEX,
+                rf::gr::ALPHA_BLEND_NONE,
+                rf::gr::ZBUFFER_TYPE_FULL,
+                rf::gr::FOG_NOT_ALLOWED,
+            };
+            rf::gr::sphere(head_world_pos, head_radius, mode);
+        }
+
+        // Collision spheres (yellow) — toggle via g_dbg_hitboxes_show_cspheres
+        if (!g_dbg_hitboxes_show_cspheres)
+            continue;
+        int num_cspheres = rf::vmesh_get_num_cspheres(entity->vmesh);
+        for (int i = 0; i < num_cspheres; i++) {
+            rf::Vector3 sphere_pos;
+            if (rf::vmesh_get_csphere_pos(entity->vmesh, i, &sphere_pos, &entity->pos, &entity->orient)) {
+                rf::Vector3 local_pos;
+                float sphere_radius;
+                if (rf::vmesh_get_csphere(entity->vmesh, i, &local_pos, &sphere_radius)) {
+                    rf::gr::set_color(255, 255, 0, 180);
+                    auto mode = rf::gr::Mode{
+                        rf::gr::TEXTURE_SOURCE_NONE,
+                        rf::gr::COLOR_SOURCE_VERTEX,
+                        rf::gr::ALPHA_SOURCE_VERTEX,
+                        rf::gr::ALPHA_BLEND_ALPHA,
+                        rf::gr::ZBUFFER_TYPE_FULL,
+                        rf::gr::FOG_NOT_ALLOWED,
+                    };
+                    rf::gr::sphere(sphere_pos, sphere_radius, mode);
+                }
+            }
+        }
+    }
+}
+
 void debug_render()
 {
     debug_cmd_render();
+    render_hitboxes();
 }
 
 void debug_render_ui()

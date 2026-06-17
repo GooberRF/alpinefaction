@@ -102,6 +102,7 @@ struct AlpineFactionServerInfo
     bool geo_chunk_physics = false;
     bool location_pinging = false;
     bool delayed_spawns = false;
+    bool legacy_hitboxes = false;
     int koth_score_limit = 0;
     int dc_score_limit = 0;
     bool allow_footsteps = false;
@@ -154,6 +155,11 @@ bool rotation_autodl_in_progress();
 void rotation_autodl_start(size_t levels_count, std::vector<std::string> unique_levels);
 void multi_ban_apply_patch();
 std::expected<uint32_t, std::errc> get_level_file_version(const std::string& file_name);
+rf::Vector3 compute_tilt_axis(const rf::Entity* entity, const rf::Vector3& split_point,
+                              float* head_dist_out = nullptr,
+                              float* head_radius_out = nullptr,
+                              rf::Vector3* head_pos_out = nullptr);
+void set_lag_comp_flag(bool active);
 void print_player_info(rf::Player* player, bool new_join);
 void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
 void start_level_in_multi(std::string filename);

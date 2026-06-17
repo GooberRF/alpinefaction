@@ -94,6 +94,7 @@ namespace rf
     };
     static_assert(sizeof(MeshMaterial) == 0xC8);
 
+    static auto& vmesh_get_csphere_pos = addr_as_ref<bool(VMesh *vmesh, int cs_idx, Vector3 *pos_out, Vector3 *pos, Matrix3 *orient)>(0x00503290);
     static auto& vmesh_get_type = addr_as_ref<VMeshType(VMesh *vmesh)>(0x00502B00);
     static auto& vmesh_get_name = addr_as_ref<const char*(VMesh* vmesh)>(0x00503470);
     static auto& vmesh_get_num_cspheres = addr_as_ref<int(VMesh *vmesh)>(0x00503250);

@@ -34,6 +34,9 @@ Version 1.4.0 (Lupin): Not yet released
   - Add detection of manually loaded levels
   - Highlight an active level in a server's rotation via background color instead of text color
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add hybrid (sphere, capsule, cylinder) hitbox system with bone tracking for torso and head
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix team balance not properly randomizing the distribution order of equal-scoring human players
@@ -192,6 +195,7 @@ Version 1.3.0 (Bakeapple): Released Apr-22-2026
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `ms_scale` toggle to use various mouse sensitivity scaling options between Classic (original scaling), Raw and Modern (id Tech/Source).
+
 
 [@natarii](https://github.com/natarii)
 - Implement FFLink client functionality in launcher
