@@ -197,8 +197,8 @@ struct BagmanConfig
 {
     int bag_return_time_ms = 7500;
     int bag_spawn_delay_ms = 7500;
-    int bm_score_limit = 150;
-    int tbm_score_limit = 300;
+    int bag_score_limit = 150;
+    int tbag_score_limit = 300;
 
     void set_bag_return_time(float in_seconds)
     {
@@ -211,14 +211,14 @@ struct BagmanConfig
         bag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
     }
 
-    void set_bm_score_limit(int count)
+    void set_bag_score_limit(int count)
     {
-        bm_score_limit = std::clamp(count, 1, 32767);
+        bag_score_limit = std::clamp(count, 1, 32767);
     }
 
-    void set_tbm_score_limit(int count)
+    void set_tbag_score_limit(int count)
     {
-        tbm_score_limit = std::clamp(count, 1, 65535);
+        tbag_score_limit = std::clamp(count, 1, 65535);
     }
 };
 

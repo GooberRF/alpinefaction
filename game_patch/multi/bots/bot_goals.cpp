@@ -445,8 +445,8 @@ bool build_ctf_runtime_state(
 // Bagman runtime state for bot decision-making.
 // Bot perspective tags:
 //   we_carry  - local bot has the bag (best play: hold a safe spot, score)
-//   ally_carry - in TBM, a same-team bot/player has the bag (defend them)
-//   enemy_carry - in BM (FFA) anyone else; in TBM enemy team carries (chase)
+//   ally_carry - in TBAG, a same-team bot/player has the bag (defend them)
+//   enemy_carry - in BAG (FFA) anyone else; in TBAG enemy team carries (chase)
 //   in_world  - bag exists on the ground at bag_pos (path to it & grab)
 //   unavailable - BS_Delayed or unresolved spawn (do nothing bag-specific)
 struct BagmanRuntimeState
@@ -482,7 +482,7 @@ bool build_bagman_runtime_state(BagmanRuntimeState& out_state)
     }
 
     out_state.valid = true;
-    out_state.is_team_mode = gt_is_tbm();
+    out_state.is_team_mode = gt_is_tbag();
 
     switch (g_bagman_info.state) {
         case BagState::BS_Delayed:
@@ -1988,7 +1988,7 @@ void bot_refresh_goal_state(
                 chase_score,
             });
         }
-        // ally_carry case (TBM teammate): no dedicated goal necessary.
+        // ally_carry case (TBAG teammate): no dedicated goal necessary.
     }
 
     if (bagman_mode && enemy_target && std::isfinite(enemy_goal_score)) {

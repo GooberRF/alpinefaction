@@ -191,8 +191,13 @@ CodeInjection after_level_render_hook{
 
 CodeInjection after_frame_render_hook{
     0x004B2DC2,
-    []() {
-        if (!rf::is_dedicated_server && !is_headless_mode()) {
+    [] {
+        const rf::GameState state = rf::gameseq_get_state();
+        if (!rf::is_dedicated_server
+            && !is_headless_mode()
+            && state != rf::GS_QUITING
+            && state != rf::GS_NEW_LEVEL
+            && state != rf::GS_MULTI_GETTING_STATE_INFO) {
             // Draw on top (after scene)
             frametime_render_ui();
             achievement_system_do_frame();

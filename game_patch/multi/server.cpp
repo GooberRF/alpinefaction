@@ -819,11 +819,11 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_iequals(gametype_name, "esc")) {
         return rf::NetGameType::NG_TYPE_ESC;
     }
-    if (string_iequals(gametype_name, "bm") || string_iequals(gametype_name, "bagman")) {
-        return rf::NetGameType::NG_TYPE_BM;
+    if (string_iequals(gametype_name, "bag") || string_iequals(gametype_name, "bm")) {
+        return rf::NetGameType::NG_TYPE_BAG;
     }
-    if (string_iequals(gametype_name, "tbm") || string_iequals(gametype_name, "team_bagman")) {
-        return rf::NetGameType::NG_TYPE_TBM;
+    if (string_iequals(gametype_name, "tbag") || string_iequals(gametype_name, "tbm")) {
+        return rf::NetGameType::NG_TYPE_TBAG;
     }
 
     return std::nullopt;
@@ -907,7 +907,7 @@ ConsoleCommand2 sv_game_type_cmd{
         }
     },
     "Load a specific gametype. Loads level if specificed, otherwise restarts current level. Only available for ADS dedicated servers.",
-    "sv_gametype <dm|tdm|ctf|koth|dc|rev> [level]",
+    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag> [level]",
 };
 
 DcCommandAlias gt_cmd{
@@ -2667,8 +2667,8 @@ bool round_is_tied(rf::NetGameType game_type)
 
     switch (game_type) {
     case rf::NG_TYPE_DM:
-    case rf::NG_TYPE_BM: {
-        // DM and BM have the same tie condition: two or more players share the highest score.
+    case rf::NG_TYPE_BAG: {
+        // DM and BAG have the same tie condition: two or more players share the highest score.
         const auto current_players = get_clients(false, true);
 
         if (current_players.empty())
@@ -2779,7 +2779,7 @@ bool round_is_tied(rf::NetGameType game_type)
 
         return false;
     }
-    case rf::NG_TYPE_TBM: {
+    case rf::NG_TYPE_TBAG: {
         return bagman_get_red_team_score() == bagman_get_blue_team_score();
     }
     default: // other modes (e.g. RUN) can't be tied
@@ -2874,10 +2874,10 @@ FunHook<void()> multi_check_for_round_end_hook{
                 }
                 break;
             }
-            case rf::NG_TYPE_BM: {
+            case rf::NG_TYPE_BAG: {
                 auto current_players = get_clients(false, true);
                 if (current_players.empty()) break;
-                const int limit = g_alpine_server_config_active_rules.bagman.bm_score_limit;
+                const int limit = g_alpine_server_config_active_rules.bagman.bag_score_limit;
                 for (rf::Player* player : current_players) {
                     if (player->stats->score >= limit) {
                         round_over = true;
@@ -2886,8 +2886,8 @@ FunHook<void()> multi_check_for_round_end_hook{
                 }
                 break;
             }
-            case rf::NG_TYPE_TBM: {
-                const int limit = g_alpine_server_config_active_rules.bagman.tbm_score_limit;
+            case rf::NG_TYPE_TBAG: {
+                const int limit = g_alpine_server_config_active_rules.bagman.tbag_score_limit;
                 if (bagman_get_red_team_score() >= limit ||
                     bagman_get_blue_team_score() >= limit) {
                     round_over = true;
@@ -3305,49 +3305,47 @@ void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count)
 CodeInjection entity_maybe_die_patch{
     0x00420600,
     [](auto& regs) {
-        if (rf::is_multi && (rf::is_server || rf::is_dedicated_server)) {
-            rf::Entity* ep = regs.esi;
+        if (!(rf::is_multi && (rf::is_server || rf::is_dedicated_server))) return;
 
-            if (ep) {
-                rf::Player* player = rf::player_from_entity_handle(ep->handle);
+        rf::Entity* ep = regs.esi;
+        if (!ep) return;
 
-                if (g_alpine_server_config_active_rules.spawn_delay.enabled) {
-                    rf::Player* player = rf::player_from_entity_handle(ep->handle);
-                    player->respawn_timer.set(g_alpine_server_config_active_rules.spawn_delay.base_value);
-                    bool respawn_allowed = true; // nothing currently disables respawns
-                    bool force_respawn = (rf::multi_server_flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN) != 0;
+        rf::Player* player = rf::player_from_entity_handle(ep->handle);
 
-                    if (rf::is_server) {
-                        set_local_spawn_delay(respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
-                    }
-                    af_send_just_died_info_packet(player, respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
+        if (player && g_alpine_server_config_active_rules.spawn_delay.enabled) {
+            player->respawn_timer.set(g_alpine_server_config_active_rules.spawn_delay.base_value);
+            bool respawn_allowed = true; // nothing currently disables respawns
+            bool force_respawn = (rf::multi_server_flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN) != 0;
+
+            if (rf::is_server) {
+                set_local_spawn_delay(respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
+            }
+            af_send_just_died_info_packet(player, respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
+        }
+
+        if (player && g_alpine_server_config_active_rules.drop_amps && !gt_is_bagman_any()) {
+            if (rf::multi_powerup_has_player(player, 1)) {
+                int amp_count = 0;
+                int time_left = rf::multi_powerup_get_time_until(player, 1);
+                amp_count = time_left >= 1000 ? time_left : 0;
+
+                if (amp_count >= 1000) { // only drop if at least 1 second left
+                    entity_drop_powerup(ep, 1, amp_count / 1000); // item_touch_multi_amp multiplies by 1000
                 }
+            }
 
-                if (g_alpine_server_config_active_rules.drop_amps && !gt_is_bagman_any()) {
-                    if (rf::multi_powerup_has_player(player, 1)) {
-                        int amp_count = 0;
-                        int time_left = rf::multi_powerup_get_time_until(player, 1);
-                        amp_count = time_left >= 1000 ? time_left : 0;
+            if (rf::multi_powerup_has_player(player, 0)) {
+                int invuln_count = 0;
+                int time_left = rf::multi_powerup_get_time_until(player, 0);
+                invuln_count = time_left >= 1000 ? time_left : 0;
 
-                        if (amp_count >= 1000) { // only drop if at least 1 second left
-                            entity_drop_powerup(ep, 1, amp_count / 1000); // item_touch_multi_amp multiplies by 1000
-                        }
-                    }
-
-                    if (rf::multi_powerup_has_player(player, 0)) {
-                        int invuln_count = 0;
-                        int time_left = rf::multi_powerup_get_time_until(player, 0);
-                        invuln_count = time_left >= 1000 ? time_left : 0;
-
-                        if (invuln_count >= 1000) { // only drop if at least 1 second left
-                            entity_drop_powerup(ep, 0, invuln_count / 1000); // item_touch_multi_amp multiplies by 1000
-                        }
-                    }
+                if (invuln_count >= 1000) { // only drop if at least 1 second left
+                    entity_drop_powerup(ep, 0, invuln_count / 1000); // item_touch_multi_amp multiplies by 1000
                 }
-
-                bagman_on_entity_will_die(ep);
             }
         }
+
+        bagman_on_entity_will_die(ep);
     },
 };
 
@@ -3850,7 +3848,7 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         min_minor_version = std::max(min_minor_version, 3);
     }
 
-    if (static_cast<int>(g_alpine_server_config_active_rules.game_type) >= rf::NG_TYPE_BM) {
+    if (static_cast<int>(g_alpine_server_config_active_rules.game_type) >= rf::NG_TYPE_BAG) {
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 4);

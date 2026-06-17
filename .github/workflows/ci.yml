@@ -102,7 +102,7 @@ jobs:
     - name: Configure CMake
       working-directory: ./build
       run: |
-        Import-Module "$env:VS_TOOLS\Microsoft.VisualStudio.DevShell.dll"
+        Import-Module (Join-Path $env:VS_TOOLS Microsoft.VisualStudio.DevShell.dll)
         Enter-VsDevShell `
           -VsInstallPath $env:VS_INSTALL `
           -HostArch amd64 `
@@ -118,7 +118,7 @@ jobs:
     - name: Build
       working-directory: ./build
       run: |
-        Import-Module "$env:VS_TOOLS\Microsoft.VisualStudio.DevShell.dll"
+        Import-Module (Join-Path $env:VS_TOOLS Microsoft.VisualStudio.DevShell.dll)
         Enter-VsDevShell `
           -VsInstallPath $env:VS_INSTALL `
           -HostArch amd64 `
@@ -128,35 +128,34 @@ jobs:
         cmake --build . -j $env:NUMBER_OF_PROCESSORS
 
     - name: Stage artifacts (dist)
-      shell: pwsh
       run: |
-        $out = Join-Path $env:GITHUB_WORKSPACE "dist\msvc"
+        $out = Join-Path $env:GITHUB_WORKSPACE dist\msvc
         New-Item -ItemType Directory -Force -Path $out | Out-Null
 
         $want = @(
-          "AlpineFaction.dll",
-          "AlpineEditor.dll",
-          "AlpineFactionLauncher.exe",
-          "CrashHandler.exe",
-          "d3d8to9.dll",
-          "alpinefaction.vpp"
+          'AlpineFaction.dll',
+          'AlpineEditor.dll',
+          'AlpineFactionLauncher.exe',
+          'CrashHandler.exe',
+          'd3d8to9.dll',
+          'alpinefaction.vpp'
         )
 
         foreach ($f in $want) {
-          $src = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "build") -Recurse -File -Filter $f -ErrorAction SilentlyContinue |
+          $src = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE build) -Recurse -File -Filter $f -ErrorAction SilentlyContinue |
                  Select-Object -First 1
 
           if (-not $src) {
             Write-Error "Missing $f (not found under build/)"
-            Write-Output "Top-level build dirs:"
-            Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE "build") -Directory | Format-Table -AutoSize
+            Write-Output 'Top-level build dirs:'
+            Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE build) -Directory | Format-Table -AutoSize
             exit 1
           }
 
           Copy-Item -Force $src.FullName (Join-Path $out $f)
         }
 
-        Write-Output "Staged:"
+        Write-Output 'Staged:'
         Get-ChildItem $out | Format-Table -AutoSize
 
     - name: Upload artifact (MSVC)

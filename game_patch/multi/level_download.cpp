@@ -1330,9 +1330,8 @@ void multi_level_download_do_frame()
     }
 }
 
-static bool next_level_exists()
-{
-    rf::File file;
+bool multi_next_level_exists() {
+    rf::File file{};
     return file.find(rf::level.next_level_filename);
 }
 
@@ -1356,26 +1355,39 @@ CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_
     0x0047C24F,
     [](rf::GameState state, bool force) {
         xlog::trace("Leave limbo - next level: {}", rf::level.next_level_filename);
-        if (!next_level_exists()) {
+        if (!multi_next_level_exists()) {
             rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
-            LevelDownloadManager::instance().start(rf::level.next_level_filename,
-                std::make_unique<SetNewLevelStateDownloadListener>());
-        }
-        else {
+            multi_level_download_manager_start(rf::level.next_level_filename);
+        } else if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+            g_multi_limbo_just_joined_req_leave = true;
+        } else {
             process_leave_limbo_packet_gameseq_set_next_state_hook.call_target(state, force);
         }
     },
 };
 
+void multi_level_download_manager_start(std::string filename) {
+    std::unique_ptr listener =
+        std::make_unique<SetNewLevelStateDownloadListener>();
+    LevelDownloadManager::instance()
+        .start(std::move(filename), std::move(listener));
+}
+
 CallHook<void(rf::GameState, bool)> game_new_game_gameseq_set_next_state_hook{
     0x00436959,
-    [](rf::GameState state, bool force) {
-        if (rf::is_multi && !rf::is_server && !next_level_exists()) {
-            rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
-            LevelDownloadManager::instance().start(rf::level.next_level_filename,
-                std::make_unique<SetNewLevelStateDownloadListener>());
-        }
-        else {
+    [] (const rf::GameState state, const bool force) {
+        if (rf::is_multi && !rf::is_server) {
+            if (!(rf::multi_server_flags & rf::NG_FLAG_LEVEL_LOADED)) {
+                rf::local_player->net_data->flags |= rf::NPF_LIMBO;
+                rf::gameseq_set_state(rf::GS_MULTI_LIMBO_JUST_JOINED, false);
+            } else if (!multi_next_level_exists()) {
+                rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
+                multi_level_download_manager_start(rf::level.next_level_filename);
+            } else {
+                goto DEFAULT;
+            }
+        } else {
+        DEFAULT:
             game_new_game_gameseq_set_next_state_hook.call_target(state, force);
         }
     },

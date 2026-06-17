@@ -39,6 +39,9 @@
 #include "../rf/localize.h"
 #include "../rf/ai.h"
 #include "../rf/item.h"
+#include "../rf/gameseq.h"
+#include "../rf/gr/gr_font.h"
+#include "../rf/ui.h"
 #include "../rf/sound/sound.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
@@ -272,7 +275,7 @@ bool handle_awpgen_param()
 
 FunHook<void()> multi_limbo_init{
     0x0047C280,
-    []() {
+    [] {
         rf::activate_all_events_of_type(rf::EventType::When_Round_Ends, -1, -1, true);
 
         int limbo_time = 10000;
@@ -791,10 +794,12 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Run"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"Escalation"};
-    } else if (game_type == rf::NG_TYPE_BM) {
+    } else if (game_type == rf::NG_TYPE_BAG) {
         return std::string_view{"Bagman"};
-    } else if (game_type == rf::NG_TYPE_TBM) {
+    } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"Team Bagman"};
+    } else if (game_type == rf::NG_TYPE_UNK) {
+        return std::string_view{"Unknown"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
@@ -818,10 +823,12 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"RUN"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"ESCALATION"};
-    } else if (game_type == rf::NG_TYPE_BM) {
+    } else if (game_type == rf::NG_TYPE_BAG) {
         return std::string_view{"BAGMAN"};
-    } else if (game_type == rf::NG_TYPE_TBM) {
+    } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"TEAM BAGMAN"};
+    } else if (game_type == rf::NG_TYPE_UNK) {
+        return std::string_view{"UNKNOWN"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
@@ -845,10 +852,12 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"RUN"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"ESC"};
-    } else if (game_type == rf::NG_TYPE_BM) {
-        return std::string_view{"BM"};
-    } else if (game_type == rf::NG_TYPE_TBM) {
-        return std::string_view{"TBM"};
+    } else if (game_type == rf::NG_TYPE_BAG) {
+        return std::string_view{"BAG"};
+    } else if (game_type == rf::NG_TYPE_TBAG) {
+        return std::string_view{"TBAG"};
+    } else if (game_type == rf::NG_TYPE_UNK) {
+        return std::string_view{"UNK"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
@@ -874,10 +883,13 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"run"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"esc"};
-    } else if (game_type == rf::NG_TYPE_BM) {
-        return std::string_view{"bagman"};
-    } else if (game_type == rf::NG_TYPE_TBM) {
-        return std::string_view{"tbm"};
+    } else if (game_type == rf::NG_TYPE_BAG) {
+        return std::string_view{"bag"};
+    } else if (game_type == rf::NG_TYPE_TBAG) {
+        return std::string_view{"tbag"};
+    } else if (game_type == rf::NG_TYPE_UNK) {
+        // No real level-name prefix for unknown game types; "dm" is the safest fallback.
+        return std::string_view{"dm"};
     } else {
         if (game_type != rf::NG_TYPE_TEAMDM) {
             xlog::warn("{} is an invalid `NetGameType`", static_cast<int>(game_type));
@@ -1081,8 +1093,93 @@ CallHook<void(const char* filename)> level_cmd_multi_change_level_hook{
     }
 };
 
+void multi_limbo_just_joined_handle_input(const int key) {
+    if (!key) {
+        return;
+    }
+    if (rf::multi_chat_is_say_visible()) {
+        rf::multi_chat_say_handle_key(key);
+    } else if (key == rf::KEY_ESC) {
+        rf::gameseq_push_state(rf::GS_MAIN_MENU, false, false);
+    }
+}
+
+bool g_multi_limbo_just_joined_req_leave = false;
+
+void multi_limbo_just_joined_do_frame() {
+    rf::game_poll(multi_limbo_just_joined_handle_input);
+
+    const int scr_w = rf::gr::screen.max_w;
+    const int scr_h = rf::gr::screen.max_h;
+
+    static const int bg_bm = rf::bm::load("demo-gameover.tga", -1, false);
+
+    int bm_w = 0, bm_h = 0;
+    rf::bm::get_dimensions(bg_bm, &bm_w, &bm_h);
+
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::bitmap_scaled(bg_bm, 0, 0, scr_w, scr_h, 0, 0, bm_w, bm_h);
+
+    rf::multi_hud_render_chat();
+
+    rf::ControlConfig& controls = rf::local_player->settings.controls;
+    if (rf::control_config_check_pressed(&controls, rf::CC_ACTION_CHAT, nullptr)) {
+        rf::multi_chat_say_show(rf::CHAT_SAY_GLOBAL);
+    }
+
+    if (rf::multi_chat_is_say_visible()) {
+        rf::multi_chat_say_render();
+    }
+
+    const std::string_view text = g_multi_limbo_just_joined_req_leave
+        ? "LOADING..."
+        : "BETWEEN LEVELS...";
+    const auto [text_w, text_h] = rf::gr::get_string_size(text, rf::ui::large_font);
+
+    const int unscaled_text_w = static_cast<int>(text_w / rf::ui::scale_x);
+    const int unscaled_text_h = static_cast<int>(text_h / rf::ui::scale_y);
+
+    const int x = (640 - unscaled_text_w) / 2;
+    const int y = (480 - unscaled_text_h) / 2 - 64;
+
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string_aligned(
+        rf::gr::ALIGN_LEFT,
+        static_cast<int>(x * rf::ui::scale_x)
+            + static_cast<int>(1.f * rf::ui::scale_x),
+        static_cast<int>(y * rf::ui::scale_y),
+        text.data(),
+        rf::ui::large_font
+    );
+
+    if (rf::control_config_check_pressed(&controls, rf::CC_ACTION_MP_STATS, nullptr)) {
+        rf::scoreboard_render_internal(true);
+    }
+
+    if (g_multi_limbo_just_joined_req_leave) {
+        if (!multi_next_level_exists()) {
+            rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
+            multi_level_download_manager_start(rf::level.next_level_filename);
+        } else {
+            rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+        }
+        g_multi_limbo_just_joined_req_leave = false;
+    }
+}
+
+CodeInjection rf_do_frame_dim_screen_patch{
+    0x004B2E26,
+    [] (auto& regs) {
+        const rf::GameState state = rf::gameseq_get_state();
+        if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+            regs.eip = 0x004B2E3F;
+        }
+    },
+};
+
 void multi_do_patch()
 {
+    rf_do_frame_dim_screen_patch.install();
     multi_limbo_init.install();
     multi_start_injection.install();
 
