@@ -40,6 +40,17 @@ static bool g_rf2_style_boolean_active = false;
 static int g_rf2_geo_limit = -1;
 static int g_rf2_geo_count = 0;
 
+// Replayable records of confirmed RF2-style geomod carves this level (for savegame persistence).
+// Appended when a carve is confirmed in geomod_create_hook; cleared on level cleanup; rebuilt on
+// load by destruction_replay_rf2_geomods().
+static std::vector<RF2GeomodRecord> g_rf2_geomod_records;
+
+// Frame countdown active while a savegame's RF2 carves are being replayed. The replayed carves
+// process over several frames (one room per frame); during this window the boolean state machine's
+// cosmetic effects (camera shake, entity push, decal) are suppressed so a load doesn't feel like an
+// explosion. Refreshed each frame while the engine is still actively carving (see geomod_per_frame_hook).
+static int g_rf2_replay_suppress_frames = 0;
+
 // Tracks whether the boolean engine actually modified any detail room faces.
 // Set in boolean State 5 when a detail room appears in the affected rooms list.
 // Cleared at the start of each geomod (in geomod_init_hook).
@@ -2464,6 +2475,15 @@ CallHook<void(rf::GeomodParams*)> packet_emitter_save_params_hook{
 FunHook<void(float)> geomod_per_frame_hook{
     0x00437180,
     [](float dt) {
+        // Keep the replay-suppress window alive while replayed RF2 carves are still being processed.
+        // The boolean engine carves one detail room per frame, so several saved geos span many frames;
+        // if the window expired mid-sequence the later carves would leak their screenshake.
+        if (g_rf2_replay_suppress_frames > 0) {
+            if (g_rf2_target_detail_room != nullptr || !g_rf2_pending_detail_rooms.empty())
+                g_rf2_replay_suppress_frames = 120; // refresh while actively carving
+            else
+                --g_rf2_replay_suppress_frames;
+        }
         process_pending_geomod_effects();
         geomod_per_frame_hook.call_target(dt);
     },
@@ -2566,6 +2586,20 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
             rf::g_num_geomods_this_level = saved_crater_count;
             if (result) {
                 g_rf2_geo_count++;
+                // record this carve so it can be re-issued when a savegame is loaded
+                if (pos) {
+                    RF2GeomodRecord rec{};
+                    rec.pos[0] = pos->x; rec.pos[1] = pos->y; rec.pos[2] = pos->z;
+                    if (hit_normal) {
+                        rec.hit_normal[0] = hit_normal->x;
+                        rec.hit_normal[1] = hit_normal->y;
+                        rec.hit_normal[2] = hit_normal->z;
+                    }
+                    rec.radius = radius;
+                    rec.shape_index = shape_index;
+                    rec.flags = flags;
+                    g_rf2_geomod_records.push_back(rec);
+                }
             }
             else if (!rf::is_multi || rf::is_server) {
                 if (!g_rf2_smoke_pending.empty()) {
@@ -2928,13 +2962,20 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         }
 
         // Boolean carved geometry — replay suppressed effects.
+        // During a savegame replay (the post-load window), skip the cosmetic blast effects (camera
+        // shake, entity knockback, impact decal). The carved geometry itself is produced by the
+        // boolean in State 5 and is unaffected — we just don't want a load to feel like an explosion.
+        bool replaying = g_rf2_replay_suppress_frames > 0;
 
         // Direct replay in State 3 (safe — these were working here before):
-        replay_geomod_camera_shake();
-        replay_geomod_entity_proximity();
+        if (!replaying) {
+            replay_geomod_camera_shake();
+            replay_geomod_entity_proximity();
+        }
 
         if (g_rf2_decal_deferred) {
-            rf::g_decal_add(&g_rf2_deferred_decal_info);
+            if (!replaying)
+                rf::g_decal_add(&g_rf2_deferred_decal_info);
             g_rf2_decal_deferred = false;
         }
 
@@ -3062,7 +3103,72 @@ void destruction_level_cleanup()
     g_rf2_smoke_confirmed.clear();
     g_rf2_smoke_record_ptrs.clear();
     g_rf2_decal_deferred = false;
+    g_rf2_geomod_records.clear();
     AlpineLevelProperties::instance().geoable_room_uids.clear();
+}
+
+const std::vector<RF2GeomodRecord>& destruction_get_rf2_geomod_records()
+{
+    return g_rf2_geomod_records;
+}
+
+// Re-issue saved RF2-style geomods after a savegame load. Each carve is re-run through the master
+// geomod entry (0x00467020), which routes through geomod_create_hook and the RF2 path, queuing the
+// boolean carve. The carves complete over the following frames just like live geomods; the
+// re-issue also re-populates g_rf2_geomod_records so a subsequent save captures them again.
+// Geomod effects (smoke/rock debris/sound) are deferred synchronously during each create call, so
+// we discard those queued effects afterwards — load shouldn't replay explosions. The boolean carve
+// itself is triggered by a separate emitter record and is unaffected.
+void destruction_replay_rf2_geomods(const std::vector<RF2GeomodRecord>& records)
+{
+    if (records.empty() || !rf::world_solid)
+        return;
+
+    static auto& level_mod = addr_as_ref<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)>(0x00467020);
+
+    // The carve hook only targets rooms flagged is_geoable, but apply_geoable_flags' UID matching is
+    // unreliable across reloads (the runtime detail-room UIDs do not stably match the editor's
+    // geoable_room_uids, so only a varying fraction of geoable rooms get flagged). Each saved record is
+    // a position where an RF2 carve previously succeeded, so the detail room there WAS geoable —
+    // guarantee the replay can target it by flagging any non-breakable detail room whose bbox (with the
+    // same hardness padding the carve uses) contains a saved carve position.
+    float padding = get_hardness_scaled_padding();
+    for (auto const& rec : records) {
+        rf::Vector3 p{rec.pos[0], rec.pos[1], rec.pos[2]};
+        for (auto& room : rf::world_solid->all_rooms) {
+            if (!room || !room->is_detail || room->is_geoable)
+                continue;
+            if (room->material_type != rf::DetailMaterial::Glass)
+                continue; // don't turn a breakable brush into a geoable one
+            if (p.x >= room->bbox_min.x - padding && p.x <= room->bbox_max.x + padding &&
+                p.y >= room->bbox_min.y - padding && p.y <= room->bbox_max.y + padding &&
+                p.z >= room->bbox_min.z - padding && p.z <= room->bbox_max.z + padding) {
+                room->is_geoable = true;
+            }
+        }
+    }
+
+    // suppress the boolean engine's cosmetic effects while the replayed carves process (see
+    // geomod_per_frame_hook, which refreshes this window while carving is still in progress)
+    g_rf2_replay_suppress_frames = 120;
+    int replayed = 0;
+    for (auto const& rec : records) {
+        rf::Vector3 pos{rec.pos[0], rec.pos[1], rec.pos[2]};
+        rf::Vector3 normal{rec.hit_normal[0], rec.hit_normal[1], rec.hit_normal[2]};
+        // the source room is the world room containing the geomod position
+        rf::GRoom* src_room = rf::world_solid->find_new_room(nullptr, &pos, &pos, "rf2_replay");
+        if (!src_room)
+            continue;
+        level_mod(rec.radius, -1, src_room, &pos, &normal, rec.shape_index, rec.flags);
+        ++replayed;
+    }
+    xlog::info("[ASG] re-issued {} of {} saved RF2 geomod carve(s)", replayed, static_cast<int>(records.size()));
+
+    // discard geomod effects queued by the replayed carves (boolean carves are unaffected)
+    g_rf2_deferred_debris.pending = false;
+    g_rf2_deferred_sound.pending = false;
+    g_rf2_smoke_pending.clear();
+    g_rf2_smoke_confirmed.clear();
 }
 
 void g_solid_set_rf2_geo_limit(int limit)

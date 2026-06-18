@@ -18,6 +18,8 @@ Version 1.4.0 (Lupin): Not yet released
     - Support tracking positions and rotations for relevant event types
     - Support tracking dynamic lights
     - Support Alpine events `Switch_Random`, `Sequence`, and `World_HUD_Sprite`
+    - Support persisting destroyed breakable detail brushes of all materials, and partial damage to non-glass breakable brushes
+    - Support persisting brush-based (RF2-style) geomod destruction
     - Fix collision bugs resulting from compressed position/orientation values (disabled when `sp_savespeedrunmode` is enabled)
     - Add support for `Require Alpine Savegame Format` in `af_game.tbl` for TC mods that want to force the modern format
 - Add Bagman (`BM`) and Team Bagman (`TBM`) game types

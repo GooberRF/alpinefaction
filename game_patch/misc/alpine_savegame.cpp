@@ -42,6 +42,7 @@
 #include "../rf/save_restore.h"
 #include "../multi/multi.h"
 #include "../misc/player.h"
+#include "../misc/destruction.h"
 #include "../object/event_alpine.h"
 
 // global save buffer, replacement for sr_data
@@ -528,10 +529,12 @@ namespace asg
 
         out.pos_ha.reset();
         out.orient_ha.reset();
+        out.vel_ha.reset();
 
         if (use_high_accuracy_savegame()) {
             out.pos_ha = o->p_data.pos;
             out.orient_ha = o->orient;
+            out.vel_ha = o->p_data.vel;
         }
 
         out.friendliness = o->friendliness;
@@ -1273,6 +1276,19 @@ namespace asg
         }
     }
 
+    // partial-damage state for non-glass breakable detail brushes
+    inline void serialize_breakable_room_life(std::vector<SavegameBreakableRoomLifeDataBlock>& out)
+    {
+        out.clear();
+        if (!rf::world_solid)
+            return;
+        for (rf::GRoom* room : rf::world_solid->all_rooms) {
+            if (room && room->is_detail && room->material_type != rf::DetailMaterial::Glass) {
+                out.push_back({room->uid, room->life});
+            }
+        }
+    }
+
     inline void serialize_all_persistent_goals(std::vector<SavegameLevelPersistentGoalDataBlock>& out)
     {
         out.clear();
@@ -1471,6 +1487,24 @@ namespace asg
         serialize_killed_rooms(data->killed_room_uids);
         xlog::warn("[ASG]       got {} killed rooms for level '{}'", int(data->killed_room_uids.size()), data->header.filename);
 
+        // partial damage on non-glass breakable detail brushes
+        data->breakable_room_life.clear();
+        serialize_breakable_room_life(data->breakable_room_life);
+        xlog::warn("[ASG]       got {} breakable room life records for level '{}'", int(data->breakable_room_life.size()), data->header.filename);
+
+        // RF2-style (brush-based) geomod carves, re-issued on load
+        data->rf2_geomods.clear();
+        for (auto const& r : destruction_get_rf2_geomod_records()) {
+            SavegameRF2GeomodDataBlock b;
+            b.pos = {r.pos[0], r.pos[1], r.pos[2]};
+            b.hit_normal = {r.hit_normal[0], r.hit_normal[1], r.hit_normal[2]};
+            b.radius = r.radius;
+            b.shape_index = r.shape_index;
+            b.flags = r.flags;
+            data->rf2_geomods.push_back(b);
+        }
+        xlog::warn("[ASG]       got {} rf2 geomods for level '{}'", int(data->rf2_geomods.size()), data->header.filename);
+
         // bolt emitters
         xlog::warn("[ASG]     populating bolt emitters for level '{}'", data->header.filename);
         data->bolt_emitters.clear();
@@ -1606,15 +1640,21 @@ namespace asg
         //rf::VArray::reset(&oci.spheres);
         oci.spheres.clear(); // reset = clear?
 
-        // decompress velocity (stock calls decompress_velocity_vector)
-        rf::decompress_velocity_vector(&src.vel.x, &oci.vel);
+        // velocity: prefer the lossless high-accuracy value when present, else decompress
+        if (src.vel_ha)
+            oci.vel = *src.vel_ha;
+        else
+            rf::decompress_velocity_vector(&src.vel.x, &oci.vel);
 
         // call the stock physics re-init
         rf::physics_init_object(&o->p_data, &oci, /*call_callback=*/true);
 
         // restore momentum & velocity
         o->p_data.ang_momentum = src.ang_momentum;
-        rf::decompress_velocity_vector(&src.vel.x, &o->p_data.vel);
+        if (src.vel_ha)
+            o->p_data.vel = *src.vel_ha;
+        else
+            rf::decompress_velocity_vector(&src.vel.x, &o->p_data.vel);
 
         // restore flags and mark “just restored” bit (0x6000000)
         o->p_data.flags = src.physics_flags;
@@ -1629,7 +1669,13 @@ namespace asg
 
         e->ai.current_primary_weapon = src.current_primary_weapon;
         e->ai.current_secondary_weapon = src.current_secondary_weapon;
-        e->info_index = src.info_index;
+        // only overwrite info_index with the saved value if it is in range; the engine indexes
+        // entity_types[info_index], so a corrupt save must not poison an existing entity
+        if (src.info_index >= 0 && src.info_index < rf::num_entity_types)
+            e->info_index = src.info_index;
+        else
+            xlog::warn("[ASG] entity uid {} has out-of-range info_index {}, keeping current",
+                       src.obj.uid, static_cast<int>(src.info_index));
 
         for (int i = 0; i < 32; ++i) {
             e->ai.clip_ammo[i] = src.weapons_clip_ammo[i];
@@ -1747,6 +1793,11 @@ namespace asg
         for (rf::Entity* ent = rf::entity_list.next; ent != &rf::entity_list; ent = ent->next) {
             bool found = false;
 
+            // the local player entity (uid -999) is restored exclusively by load_player, mirroring
+            // stock sr_load_level_state (which restores the -999 record only via sr_load_player).
+            if (ent->uid == -999)
+                continue;
+
             // only replay if not “in transition only,” or we’re out of that mode
             if ((ent->obj_flags & rf::ObjectFlags::OF_IN_LEVEL_TRANSITION) == 0 || !in_transition) {
                 //xlog::warn("looking at ent {}", ent->uid);
@@ -1794,6 +1845,8 @@ namespace asg
 
         // 2) spawn any “transition‐only” entities that were marked with 0x400 in their saved obj_flags
         for (auto const& blk : blocks) {
+            if (blk.obj.uid == -999)
+                continue; // player handled by load_player
             if (blk.obj.obj_flags & 0x400) {
                 // skip if already in the world
                 bool exists = false;
@@ -1825,6 +1878,11 @@ namespace asg
                 }
 
                 // create and replay
+                if (blk.info_index < 0 || blk.info_index >= rf::num_entity_types) {
+                    xlog::warn("[ASG] skipping entity uid {} with out-of-range info_index {} (num types {})",
+                               blk.obj.uid, static_cast<int>(blk.info_index), rf::num_entity_types);
+                    continue;
+                }
                 rf::Entity* ne = rf::entity_create(static_cast<int>(blk.info_index), &rf::default_entity_name, -1, p, m, 0, -1);
                 if (ne)
                     deserialize_entity_state(ne, blk);
@@ -1833,6 +1891,8 @@ namespace asg
 
         // 3) spawn any entities that were in the save but aren't in the world
         for (auto const& blk : blocks) {
+            if (blk.obj.uid == -999)
+                continue; // player handled by load_player
             if (blk.obj.obj_flags & 0x400)
                 continue; // already handled above
             if (rf::obj_lookup_from_uid(blk.obj.uid))
@@ -1855,6 +1915,11 @@ namespace asg
                 rf::decompress_vector3(rf::world_solid, &blk.obj.pos, &p);
             }
 
+            if (blk.info_index < 0 || blk.info_index >= rf::num_entity_types) {
+                xlog::warn("[ASG] skipping entity uid {} with out-of-range info_index {} (num types {})",
+                           blk.obj.uid, static_cast<int>(blk.info_index), rf::num_entity_types);
+                continue;
+            }
             rf::Entity* ne = rf::entity_create(static_cast<int>(blk.info_index), &rf::default_entity_name, -1, p, m, 0, -1);
             if (ne)
                 deserialize_entity_state(ne, blk);
@@ -2202,6 +2267,13 @@ namespace asg
             int reset_timer = *b.reset_timer;
             deserialize_timestamp(&t->next_check, &reset_timer);
         }
+
+        // links — saved as UIDs; resolve back to handles
+        t->links.clear();
+        for (size_t i = 0; i < b.links.size(); ++i)
+            t->links.add(-1);
+        for (size_t i = 0; i < b.links.size(); ++i)
+            add_handle_for_delayed_resolution(b.links[i], &t->links[static_cast<int>(i)]);
     }
 
     static void trigger_deserialize_all_state(const std::vector<SavegameTriggerDataBlock>& blocks)
@@ -2394,6 +2466,11 @@ namespace asg
                     rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
                 }
 
+                if (b.item_cls_id < 0 || b.item_cls_id >= rf::num_item_types) {
+                    xlog::warn("[ASG] skipping item uid {} with out-of-range item_cls_id {} (num types {})",
+                               b.obj.uid, b.item_cls_id, rf::num_item_types);
+                    continue;
+                }
                 // stock signature: item_create(cls_id, default_name, info_mesh, -1, &p, &m, -1,0,0)
                 rf::Item* ni = rf::item_create(b.item_cls_id, "", rf::item_counts[20 * b.item_cls_id], -1, &p, &m, -1, 0, 0);
                 if (ni)
@@ -2578,6 +2655,11 @@ namespace asg
                 rf::decompress_vector3(rf::world_solid, &b.obj.pos, &p);
             }
 
+            if (b.info_index < 0 || b.info_index >= rf::num_weapon_types) {
+                xlog::warn("[ASG] skipping weapon uid {} with out-of-range info_index {} (num types {})",
+                           b.obj.uid, b.info_index, rf::num_weapon_types);
+                continue;
+            }
             rf::Weapon* w = rf::weapon_create(b.info_index, -1, &p, &m, 0, 0);
             if (!w)
                 continue;
@@ -2821,6 +2903,44 @@ namespace asg
         }
     }
 
+    // restore partial damage to non-glass breakable detail brushes that survived (rooms that were
+    // fully destroyed are already removed via killed_room_uids, so they simply won't be found here)
+    static void breakable_room_life_deserialize_all_state(const std::vector<SavegameBreakableRoomLifeDataBlock>& blocks)
+    {
+        if (blocks.empty() || !rf::world_solid)
+            return;
+        int restored = 0;
+        for (auto const& b : blocks) {
+            if (auto* room = rf::world_solid->find_room_by_id(b.uid)) {
+                if (room->is_detail) {
+                    room->life = b.life;
+                    ++restored;
+                }
+            }
+        }
+        xlog::info("[ASG] restored partial-damage life for {} of {} breakable rooms", restored, int(blocks.size()));
+    }
+
+    // re-issue RF2-style (brush-based) geomod carves recorded in the save; the engine keeps no
+    // persistent crater record for these, so we replay them through the geomod engine on load
+    static void rf2_geomods_deserialize_all_state(const std::vector<SavegameRF2GeomodDataBlock>& blocks)
+    {
+        if (blocks.empty())
+            return;
+        std::vector<RF2GeomodRecord> recs;
+        recs.reserve(blocks.size());
+        for (auto const& g : blocks) {
+            RF2GeomodRecord r{};
+            r.pos[0] = g.pos.x; r.pos[1] = g.pos.y; r.pos[2] = g.pos.z;
+            r.hit_normal[0] = g.hit_normal.x; r.hit_normal[1] = g.hit_normal.y; r.hit_normal[2] = g.hit_normal.z;
+            r.radius = g.radius;
+            r.shape_index = g.shape_index;
+            r.flags = g.flags;
+            recs.push_back(r);
+        }
+        destruction_replay_rf2_geomods(recs);
+    }
+
     static void apply_alpine_level_props(const SavegameLevelData& lvl)
     {
         if (!lvl.alpine_level_props) {
@@ -2851,11 +2971,41 @@ namespace asg
         dynamic_light_deserialize_all_state(lvl->dynamic_lights);
         corpse_deserialize_all_state(lvl->corpses);
         glass_deserialize_all_killed_state(lvl->killed_room_uids);
+        breakable_room_life_deserialize_all_state(lvl->breakable_room_life);
+        rf2_geomods_deserialize_all_state(lvl->rf2_geomods);
 
         xlog::warn("restoring current level time {} to buffer time {}", rf::level.time, lvl->header.level_time);
         rf::level.time = lvl->header.level_time;
 
         resolve_delayed_handles();
+    }
+
+    // Re-establish a leech attachment for an entity whose host_handle has been restored.
+    void reattach_entity_to_host(rf::Entity* ent, rf::Vector3& world_pos)
+    {
+        using namespace rf;
+        if (!ent || ent->host_handle == -1)
+            return;
+
+        int ht = ent->host_tag_handle;
+        ent->host_tag_handle = -1;
+
+        if (auto host = obj_from_handle(ent->host_handle); host && host->type == OT_ENTITY) {
+            auto host_ent = static_cast<rf::Entity*>(host);
+            entity_headlamp_turn_off(host_ent);
+            host_ent->attach_leech(ent->handle, ht);
+            uint32_t bits = std::bit_cast<uint32_t>(host_ent->last_pos.x);
+            bits = (bits & ~0x0030000u) | 0x0010000u;
+            host_ent->last_pos.x = std::bit_cast<float>(bits);
+            obj_set_friendliness(host, 1);
+
+            if (entity_is_jeep_gunner(ent)) {
+                ent->min_rel_eye_phb.assign(&world_pos, &jeep_gunner_min_phb);
+                ent->max_rel_eye_phb.assign(&world_pos, &jeep_gunner_max_phb);
+            }
+            if (entity_is_automobile(host_ent))
+                obj_physics_activate(host);
+        }
     }
 
     // Replaces the stock sr_load_player; builds the in-world Entity and restores Player state
@@ -2964,27 +3114,7 @@ namespace asg
         else
             ent->ai.ai_flags &= ~(1 << 16);
 
-        if (ent->host_handle != -1) {
-            int ht = ent->host_tag_handle;
-            ent->host_tag_handle = -1;
-
-            if (auto host = obj_from_handle(ent->host_handle); host && host->type == OT_ENTITY) {
-                auto host_ent = static_cast<rf::Entity*>(host);
-                entity_headlamp_turn_off(host_ent);
-                host_ent->attach_leech(ent->handle, ht);
-                uint32_t bits = std::bit_cast<uint32_t>(host_ent->last_pos.x);
-                bits = (bits & ~0x0030000u) | 0x0010000u;
-                host_ent->last_pos.x = std::bit_cast<float>(bits);
-                obj_set_friendliness(host, 1);
-
-                if (entity_is_jeep_gunner(ent)) {
-                    ent->min_rel_eye_phb.assign(&world_pos, &jeep_gunner_min_phb);
-                    ent->max_rel_eye_phb.assign(&world_pos, &jeep_gunner_max_phb);
-                }
-                if (entity_is_automobile(host_ent))
-                    obj_physics_activate(host);
-            }
-        }
+        reattach_entity_to_host(ent, world_pos);
 
         entity_update_collision_spheres(ent);
 
@@ -3198,8 +3328,15 @@ static toml::table make_object_table(const asg::SavegameObjectDataBlock& o)
     }
 
     // vel
-    toml::array vel{o.vel.x, o.vel.y, o.vel.z};
-    t.insert("vel", std::move(vel));
+    if (asg::use_high_accuracy_savegame() && o.vel_ha) {
+        const auto& v = *o.vel_ha;
+        toml::array vel_ha{v.x, v.y, v.z};
+        t.insert("vel_ha", std::move(vel_ha));
+    }
+    else {
+        toml::array vel{o.vel.x, o.vel.y, o.vel.z};
+        t.insert("vel", std::move(vel));
+    }
 
     t.insert("friendliness", o.friendliness);
     t.insert("host_tag_handle", o.host_tag_handle);
@@ -3877,6 +4014,27 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         for (auto const& c : lvl.geomod_craters) crater_arr.push_back(make_geomod_crater_table(c));
         lt.insert("geomod_craters", std::move(crater_arr));
 
+        toml::array brl_arr;
+        for (auto const& r : lvl.breakable_room_life) {
+            toml::table rt;
+            rt.insert("uid", r.uid);
+            rt.insert("life", r.life);
+            brl_arr.push_back(std::move(rt));
+        }
+        lt.insert("breakable_room_life", std::move(brl_arr));
+
+        toml::array rf2_arr;
+        for (auto const& g : lvl.rf2_geomods) {
+            toml::table gt;
+            gt.insert("pos", toml::array{g.pos.x, g.pos.y, g.pos.z});
+            gt.insert("hit_normal", toml::array{g.hit_normal.x, g.hit_normal.y, g.hit_normal.z});
+            gt.insert("radius", g.radius);
+            gt.insert("shape_index", g.shape_index);
+            gt.insert("flags", g.flags);
+            rf2_arr.push_back(std::move(gt));
+        }
+        lt.insert("rf2_geomods", std::move(rf2_arr));
+
         toml::array pg_arr;
         for (auto const& pg : lvl.persistent_goals) {
             pg_arr.push_back(make_persistent_goal_table(pg));
@@ -3902,6 +4060,7 @@ bool parse_asg_header(const toml::table& root, asg::SavegameHeader& out)
         auto hdr = hdr_node.as_table();
 
         // simple scalars
+        out.version = static_cast<uint8_t>((*hdr)["asg_version"].value_or(0));
         out.mod_name = (*hdr)["mod_name"].value_or(std::string{});
         out.game_time = (*hdr)["game_time"].value_or(0.f);
         out.current_level_filename = (*hdr)["current_level_filename"].value_or(std::string{});
@@ -5121,6 +5280,38 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
             parse_killed_rooms(*deu, lvl.dead_entity_uids);
         }
 
+        if (auto brl = tbl["breakable_room_life"].as_array()) {
+            lvl.breakable_room_life.reserve(brl->size());
+            for (auto& n : *brl) {
+                if (!n.is_table())
+                    continue;
+                auto rt = *n.as_table();
+                asg::SavegameBreakableRoomLifeDataBlock r;
+                r.uid = rt["uid"].value_or(0);
+                r.life = rt["life"].value_or(0.0f);
+                lvl.breakable_room_life.push_back(r);
+            }
+        }
+
+        if (auto rg = tbl["rf2_geomods"].as_array()) {
+            lvl.rf2_geomods.reserve(rg->size());
+            for (auto& n : *rg) {
+                if (!n.is_table())
+                    continue;
+                auto gt = *n.as_table();
+                asg::SavegameRF2GeomodDataBlock g;
+                rf::Vector3 v{};
+                if (asg::parse_f32_vector3(gt, "pos", v))
+                    g.pos = v;
+                if (asg::parse_f32_vector3(gt, "hit_normal", v))
+                    g.hit_normal = v;
+                g.radius = gt["radius"].value_or(0.0f);
+                g.shape_index = gt["shape_index"].value_or(0);
+                g.flags = gt["flags"].value_or(0);
+                lvl.rf2_geomods.push_back(g);
+            }
+        }
+
         if (auto pg = tbl["persistent_goals"].as_array()) {
             lvl.persistent_goals.reserve(pg->size());
             for (auto& n : *pg) {
@@ -5162,6 +5353,24 @@ bool deserialize_savegame_from_asg_file(const std::string& filename, asg::Savega
     if (!parse_asg_header(root, out.header)) {
         xlog::error("ASG header malformed or missing");
         return false;
+    }
+
+    // refuse files written by a newer/unknown format revision (0 == missing asg_version)
+    if (out.header.version == 0 || out.header.version > ASG_VERSION) {
+        xlog::error("ASG file '{}' has unsupported format version {} (this build supports up to {})",
+                    filename, out.header.version, ASG_VERSION);
+        return false;
+    }
+
+    // refuse to load a save made under a different mod.
+    {
+        std::string cur_mod = rf::mod_param.found() ? rf::mod_param.get_arg() : "";
+        if (!string_iequals(out.header.mod_name, cur_mod)) {
+            xlog::error("ASG mod mismatch: save was made under mod '{}' but current mod is '{}'; refusing to load",
+                        out.header.mod_name.empty() ? "(none)" : out.header.mod_name,
+                        cur_mod.empty() ? "(none)" : cur_mod);
+            return false;
+        }
     }
 
     // parse common
@@ -5424,6 +5633,20 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
                 asg::resolve_delayed_handles();
                 asg::clear_delayed_handles();
 
+                // re-establish leech attachments for non-player AI riders.
+                for (auto& eb : lvl.entities) {
+                    if (eb.obj.uid == -999)
+                        continue; // player, already attached by load_player
+                    auto o = obj_lookup_from_uid(eb.obj.uid);
+                    if (!o || o->type != ObjectType::OT_ENTITY)
+                        continue;
+                    auto ai_ent = static_cast<Entity*>(o);
+                    if (ai_ent->host_handle == -1)
+                        continue;
+                    Vector3 ai_world_pos = ai_ent->pos; // throwaway scratch
+                    asg::reattach_entity_to_host(ai_ent, ai_world_pos);
+                }
+
                 if (auto o = obj_lookup_from_uid(-999); o && o->type == ObjectType::OT_ENTITY) {
                     physics_stick_to_ground(reinterpret_cast<Entity*>(o));
                 }
@@ -5558,6 +5781,9 @@ FunHook<void()> glass_delete_rooms_hook{
 CodeInjection glass_delete_room_injection{
     0x00492306,
     [](auto& regs) {
+        // only track deleted rooms for the new savegame format
+        if (!asg::is_new_savegame_format_enabled())
+            return;
         int uid = regs.edx;
         if (std::find(g_deleted_room_uids.begin(), g_deleted_room_uids.end(), uid) == g_deleted_room_uids.end()) {
             g_deleted_room_uids.push_back(uid);
@@ -5569,6 +5795,9 @@ CodeInjection glass_delete_room_injection{
 FunHook<bool(rf::GFace* f)> glass_face_can_be_destroyed_hook{
     0x00490BB0,
     [](rf::GFace* f) {
+        // legacy savegame format must keep stock glass-shatter behavior
+        if (!asg::is_new_savegame_format_enabled())
+            return glass_face_can_be_destroyed_hook.call_target(f);
 
         // only shatter glass faces with 4 vertices
         if (!f || f->num_verts() != 4) {

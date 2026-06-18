@@ -169,55 +169,62 @@ namespace rf
 
     struct SetLiquidDepthEvent : Event
     {
+        char padding[3];
         float depth;
         float duration;
     };
+    static_assert(sizeof(SetLiquidDepthEvent) == 0x2C0);
 
     struct MakeInvulnerableEvent : Event
     {
+        char padding[3];
         float duration;
         Timestamp make_invuln_timestamp;
     };
+    static_assert(sizeof(MakeInvulnerableEvent) == 0x2C0);
 
     struct WhenDeadEvent : Event
     {
+        char padding[3];
         bool message_sent;
         bool when_any_dead;
-        char padding;
+        char padding2[2];
     };
+    static_assert(sizeof(WhenDeadEvent) == 0x2BC);
 
     struct GoalCreateEvent : Event
     {
+        char padding[3];
         int initial_count;
-        int complete_count; // unused
+        int complete_count; // unused by handlers
         int count;
         bool is_persistent;
+        char padding2[3];
     };
+    static_assert(sizeof(GoalCreateEvent) == 0x2C8);
 
     struct AlarmSirenEvent : Event
     {
+        char padding[3];
         bool alarm_siren_playing;
-        char padding1;
-        char padding2;
-        bool sound_instance;
+        char padding2[3];
+        int sound_instance; // sound instance handle, -1 = none
     };
+    static_assert(sizeof(AlarmSirenEvent) == 0x2C0);
 
-    struct CyclicTimerEvent : Event // wip
+    struct CyclicTimerEvent : Event
     {
-        char padding1[2]; // always 0
-        uint8_t unk0; // usually 0 but sometimes 0x80 or 0xFF (l17s1)
+        char padding[3];
         bool active;
-        uint8_t unk2; // usually 0 but sometimes 0xFF
-        uint8_t unk3; // usually 0 but sometimes 0xFF
-        uint8_t unk4;
+        char padding2[3];
         float send_interval_seconds;
         bool send_forever;
-        char padding2[2]; // always 0
-        uint8_t unk5; // usually 0 but sometimes 0x80 or 0xFF (l17s1)
+        char padding3[3];
         int max_sends;
         Timestamp next_fire_timestamp;
         int send_count;
     };
+    static_assert(sizeof(CyclicTimerEvent) == 0x2D0);
     
     struct ContinuousDamageEvent : Event
     {

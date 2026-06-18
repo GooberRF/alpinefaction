@@ -1,12 +1,21 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 // Forward declarations
 namespace rf {
     struct ImpactSoundSet;
     enum class DetailMaterial : uint8_t;
 }
+
+struct RF2GeomodRecord {
+    float pos[3];
+    float hit_normal[3];
+    float radius;
+    int shape_index;
+    int flags;
+};
 
 // Per-material debris subdivision configuration
 struct DebrisConfig {
@@ -60,3 +69,7 @@ void destruction_level_cleanup();
 void apply_geoable_flags();
 void apply_breakable_materials();
 void g_solid_set_rf2_geo_limit(int limit);
+
+// RF2-style geomod savegame persistence.
+const std::vector<RF2GeomodRecord>& destruction_get_rf2_geomod_records();
+void destruction_replay_rf2_geomods(const std::vector<RF2GeomodRecord>& records);

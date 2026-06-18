@@ -416,6 +416,21 @@ namespace asg
         rf::Vector3 color;
     };
 
+    struct SavegameBreakableRoomLifeDataBlock
+    {
+        int uid;
+        float life;
+    };
+
+    struct SavegameRF2GeomodDataBlock
+    {
+        rf::Vector3 pos;
+        rf::Vector3 hit_normal;
+        float radius;
+        int shape_index;
+        int flags;
+    };
+
     struct SavegameLevelData
     {
         SavegameLevelDataHeader header;
@@ -448,6 +463,8 @@ namespace asg
         std::vector<SavegameLevelDynamicLightDataBlock> dynamic_lights;
         std::vector<SavegameLevelCorpseDataBlock> corpses;
         std::vector<SavegameLevelBloodPoolDataBlock> blood_pools;
+        std::vector<SavegameBreakableRoomLifeDataBlock> breakable_room_life;
+        std::vector<SavegameRF2GeomodDataBlock> rf2_geomods;
     };
 
     struct SavegameData
