@@ -93,13 +93,8 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
     float x, y, z;
 
     switch (space) {
-    case GyroSpace::PlayerSpace:
-        g_motion.GetPlayerSpaceGyro(x, y);
-        out_pitch_dps = x;
-        out_yaw_dps   = y;
-        break;
-    case GyroSpace::WorldSpace:
-        g_motion.GetWorldSpaceGyro(x, y);
+    default: // Yaw
+        g_motion.GetCalibratedGyro(x, y, z);
         out_pitch_dps = x;
         out_yaw_dps   = y;
         break;
@@ -108,18 +103,20 @@ void gyro_get_axis_orientation(float& out_pitch_dps, float& out_yaw_dps)
         out_pitch_dps = x;
         out_yaw_dps   = -z;
         break;
-    case GyroSpace::LocalSpace: {
-        // Local Space code is based on http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained
-        // Combines the gravity vector to avoid axis conflict
-        float gx, gy, gz;
+    case GyroSpace::LocalSpace:
+    // Local Space is based on GyroWiki documents
+    // http://gyrowiki.jibbsmart.com/blog:player-space-gyro-and-alternatives-explained
         g_motion.GetCalibratedGyro(x, y, z);
-        g_motion.GetGravity(gx, gy, gz);
         out_pitch_dps = x;
-        out_yaw_dps   = -(gy * y + gz * z);
+        out_yaw_dps   = std::copysign(std::hypot(y, z), y - z);
         break;
-    }
-    default: // Yaw
-        g_motion.GetCalibratedGyro(x, y, z);
+    case GyroSpace::PlayerSpace:
+        g_motion.GetPlayerSpaceGyro(x, y);
+        out_pitch_dps = x;
+        out_yaw_dps   = y;
+        break;
+    case GyroSpace::WorldSpace:
+        g_motion.GetWorldSpaceGyro(x, y);
         out_pitch_dps = x;
         out_yaw_dps   = y;
         break;
