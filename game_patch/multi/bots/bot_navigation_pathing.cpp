@@ -2081,6 +2081,7 @@ bool update_waypoint_target_towards(
         && (bot_goal_is_item_collection(g_client_bot_state.active_goal)
             || bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
             || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
+            || bot_goal_is_bagman_objective(g_client_bot_state.active_goal)
             || g_client_bot_state.active_goal == BotGoalType::activate_bridge
             || g_client_bot_state.active_goal == BotGoalType::create_crater
             || g_client_bot_state.active_goal == BotGoalType::shatter_glass)) {
@@ -2268,6 +2269,7 @@ bool update_waypoint_target_towards(
             bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
             || bot_goal_is_item_collection(g_client_bot_state.active_goal)
             || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
+            || bot_goal_is_bagman_objective(g_client_bot_state.active_goal)
             || g_client_bot_state.active_goal == BotGoalType::activate_bridge
             || g_client_bot_state.active_goal == BotGoalType::create_crater
             || g_client_bot_state.active_goal == BotGoalType::shatter_glass;

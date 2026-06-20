@@ -1881,7 +1881,8 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
         (bot_goal_is_item_collection(g_client_bot_state.active_goal)
             || g_client_bot_state.active_goal == BotGoalType::activate_bridge
             || g_client_bot_state.active_goal == BotGoalType::create_crater
-            || g_client_bot_state.active_goal == BotGoalType::shatter_glass)
+            || g_client_bot_state.active_goal == BotGoalType::shatter_glass
+            || g_client_bot_state.active_goal == BotGoalType::bag_pickup)
         && !g_client_bot_state.recovery_pending_reroute;
     const bool force_stable_recover_eliminate =
         g_client_bot_state.active_goal == BotGoalType::eliminate_target

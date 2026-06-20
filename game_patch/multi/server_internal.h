@@ -195,8 +195,31 @@ struct GunGameConfig
 
 struct BagmanConfig
 {
-    bool enabled = false;
-    float bag_return_time = 25000.0f;
+    int bag_return_time_ms = 7500;
+    int bag_spawn_delay_ms = 7500;
+    int bag_score_limit = 150;
+    int tbag_score_limit = 300;
+
+    void set_bag_return_time(float in_seconds)
+    {
+        // 2 bytes (uint16_t) on the wire
+        bag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
+    }
+
+    void set_bag_spawn_delay(float in_seconds)
+    {
+        bag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+    }
+
+    void set_bag_score_limit(int count)
+    {
+        bag_score_limit = std::clamp(count, 1, 32767);
+    }
+
+    void set_tbag_score_limit(int count)
+    {
+        tbag_score_limit = std::clamp(count, 1, 65535);
+    }
 };
 
 struct DamageNotificationConfig
@@ -607,6 +630,7 @@ struct AlpineServerConfigRules
     bool force_rail_reload = true;
     KillRewardConfig kill_rewards;
     WeaponStayExemptionConfig weapon_stay_exemptions;
+    BagmanConfig bagman;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
@@ -623,7 +647,7 @@ struct AlpineServerConfigRules
     }
     void set_individual_kill_limit(int count)
     {
-        individual_kill_limit = std::clamp(count, 1, 65535);
+        individual_kill_limit = std::clamp(count, 1, 32767);
     }
     void set_team_kill_limit(int count)
     {

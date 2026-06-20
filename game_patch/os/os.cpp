@@ -3,6 +3,7 @@
 #include <cwctype>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
+#include <timeapi.h>
 #include <xlog/xlog.h>
 #include "../rf/os/os.h"
 #include "../rf/multi.h"
@@ -13,10 +14,6 @@
 #include "os.h"
 #include "win32_console.h"
 #include "../input/mouse.h"
-
-#include <timeapi.h>
-
-const char* get_win_msg_name(UINT msg);
 
 FunHook<void()> os_poll_hook{
     0x00524B60,
@@ -76,7 +73,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         }
 
         rf::is_main_wnd_active = w_param;
-        return 0; //DefWindowProcA(wnd_handle, msg, w_param, l_param);
+        return 0;
 
     case WM_WINDOWPOSCHANGING:
         if (is_headless_mode() && l_param) {
@@ -254,6 +251,17 @@ bool awpgen_requested_from_raw_cmdline()
 bool headless_requested_from_raw_cmdline()
 {
     return headless_bot_requested_from_raw_cmdline() || awpgen_requested_from_raw_cmdline();
+}
+
+void wnd_set_flash(const HWND hwnd) {
+    FLASHWINFO flash{
+        .cbSize = sizeof(flash),
+        .hwnd = hwnd,
+        .dwFlags = FLASHW_TRAY,
+        .uCount = 3ul,
+        .dwTimeout = 0
+    };
+    FlashWindowEx(&flash);
 }
 
 static FunHook<void()> os_close_hook{

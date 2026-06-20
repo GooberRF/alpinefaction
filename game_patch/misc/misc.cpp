@@ -157,46 +157,61 @@ bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
     return true;
 }
 
-FunHook<void(int, int)> rf_init_state_hook{
+FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
     0x004B1AC0,
-    [](int state, int old_state) {
+    [] (rf::GameState state, rf::GameState old_state) {
         rf_init_state_hook.call_target(state, old_state);
-        xlog::trace("state {} old_state {} g_jump_to_multi_server_list {}", state, old_state, g_jump_to_multi_server_list);
 
-        bool exiting_game = state == rf::GS_MAIN_MENU &&
-            (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
+        xlog::trace(
+            "state: {}, old_state: {}, g_jump_to_multi_server_list: {}",
+            std::to_underlying(state),
+            std::to_underlying(old_state),
+            g_jump_to_multi_server_list
+        );
+
+        if (old_state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+            g_multi_limbo_just_joined_req_leave = false;
+        }
+
+        const bool exiting_game = state == rf::GS_MAIN_MENU
+            && (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
         if (exiting_game && g_in_mp_game) {
             g_in_mp_game = false;
             g_jump_to_multi_server_list = true;
         }
 
-        if (state == rf::GS_MAIN_MENU && g_jump_to_multi_server_list) {
-            xlog::trace("jump to mp menu!");
-            set_sound_enabled(false);
-            AddrCaller{0x00443C20}.c_call(); // open_multi_menu
-            old_state = state;
-            state = rf::gameseq_process_deferred_change();
-            rf_init_state_hook.call_target(state, old_state);
-        }
-        if (state == rf::GS_MULTI_MENU && g_jump_to_multi_server_list) {
-            AddrCaller{0x00448B70}.c_call(); // on_mp_join_game_btn_click
-            old_state = state;
-            state = rf::gameseq_process_deferred_change();
-            rf_init_state_hook.call_target(state, old_state);
-        }
-        if (state == rf::GS_MULTI_SERVER_LIST && g_jump_to_multi_server_list) {
-            g_jump_to_multi_server_list = false;
-            set_sound_enabled(true);
-
-            if (g_join_mp_game_seq_data) {
-                auto addr = g_join_mp_game_seq_data.value().addr;
-                auto password = g_join_mp_game_seq_data.value().password;
-                g_join_mp_game_seq_data.reset();
-                multi_join_game(addr, password);
+        if (g_jump_to_multi_server_list) {
+            if (state == rf::GS_MAIN_MENU) {
+                xlog::trace("jump to mp menu!");
+                set_sound_enabled(false);
+                AddrCaller{0x00443C20}.c_call(); // open_multi_menu
+                rf::gameseq_close_state(state, old_state, false);
+                old_state = state;
+                state = rf::gameseq_process_deferred_change();
+                rf_init_state_hook.call_target(state, old_state);
             }
-            else if (g_levelm_filename.has_value()) {
-                start_level_in_multi(g_levelm_filename.value());
-                g_levelm_filename.reset();
+
+            if (state == rf::GS_MULTI_MENU) {
+                AddrCaller{0x00448B70}.c_call(); // on_mp_join_game_btn_click
+                rf::gameseq_close_state(state, old_state, false);
+                old_state = state;
+                state = rf::gameseq_process_deferred_change();
+                rf_init_state_hook.call_target(state, old_state);
+            }
+
+            if (state == rf::GS_MULTI_SERVER_LIST) {
+                g_jump_to_multi_server_list = false;
+                set_sound_enabled(true);
+
+                if (g_join_mp_game_seq_data) {
+                    const rf::NetAddr& addr = g_join_mp_game_seq_data->addr;
+                    const std::string& password = g_join_mp_game_seq_data->password;
+                    g_join_mp_game_seq_data.reset();
+                    multi_join_game(addr, password);
+                } else if (g_levelm_filename.has_value()) {
+                    start_level_in_multi(g_levelm_filename.value());
+                    g_levelm_filename.reset();
+                }
             }
         }
     },

@@ -167,7 +167,7 @@ void set_big_hud(bool is_big)
     set_big_countdown_counter(is_big);
 
     // TODO: Message Log - Note: it remembers text height in save files so method of recalculation is needed
-    //write_mem<i8>(0x004553DB + 1, is_big ? 127 : 70);
+    // write_mem<i8>(0x004553DB + 1, is_big ? 127 : 70);
 }
 
 ConsoleCommand2 bighud_cmd{

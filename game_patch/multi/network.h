@@ -264,6 +264,8 @@ struct AFGameInfoExtra
     uint8_t num_human_players = 0;
     uint8_t num_browsers = 0;
     uint8_t num_total_clients = 0;
+    // Server's reported game_type was >= RF_GT_UNK, used to block joins.
+    bool unknown_game_type = false;
 };
 
 // Look up AF extra data for a server by address. Returns nullptr if not found.

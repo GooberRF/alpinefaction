@@ -1,11 +1,14 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <xlog/xlog.h>
 #include "../rf/trigger.h"
 #include "../rf/os/string.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/multi.h"
+#include "../rf/math/vector.h"
+#include "../rf/math/matrix.h"
 
 // forward declarations
 struct EventCapturePointHandler;
@@ -170,6 +173,9 @@ bool gt_is_dc();
 bool gt_is_rev();
 bool gt_is_esc();
 bool gt_is_run();
+bool gt_is_bag();
+bool gt_is_tbag();
+bool gt_is_bagman_any();
 bool rev_all_points_permalocked();
 bool esc_all_points_owned_by_one_team();
 bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);

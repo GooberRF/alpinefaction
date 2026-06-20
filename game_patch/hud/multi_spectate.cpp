@@ -19,6 +19,7 @@
 #include "../main/main.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/gametype.h"
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
@@ -881,6 +882,10 @@ static void draw_with_shadow(int x, int y, int shadow_dx, int shadow_dy, rf::Col
 static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar_y, int bar_h)
 {
     if (!entity)
+        return;
+
+    // Bagman has no powerup HUD icons
+    if (gt_is_bagman_any())
         return;
 
     // Load bitmaps once
