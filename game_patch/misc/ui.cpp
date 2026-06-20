@@ -2725,11 +2725,11 @@ CodeInjection options_render_alpine_panel_patch{
             alpine_options_panel_do_frame(static_cast<int>(rf::ui::options_animated_offset));
         }
 
-        // Detect bind completion (falling edge of waiting_for_key).
-        static bool s_was_waiting = false;
-        bool now_waiting = (index == 3) && rf::ui::options_controls_waiting_for_key;
+        // Detect gamepad bind completion (falling edge of waiting_for_key).
+        static bool s_was_waiting_gamepad = false;
+        bool now_waiting_gamepad = (index == 3) && rf::ui::options_controls_waiting_for_key;
 
-        if (s_was_waiting && !now_waiting && g_ctrl_bind_view) {
+        if (s_was_waiting_gamepad && !now_waiting_gamepad && g_ctrl_bind_view) {
             if (gamepad_has_pending_rebind()) {
                 gamepad_apply_rebind();
                 gamepad_sync_bindings_from_scan_codes();
@@ -2738,7 +2738,7 @@ CodeInjection options_render_alpine_panel_patch{
             refresh_ctrl_gamepad_codes();
             hud_mark_bindings_dirty();
         }
-        s_was_waiting = now_waiting;
+        s_was_waiting_gamepad = now_waiting_gamepad;
 
         if (index == 3 && g_ctrl_codes_installed && rf::local_player) {
             auto& cc = rf::local_player->settings.controls;
