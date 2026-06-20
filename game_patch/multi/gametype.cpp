@@ -18,7 +18,7 @@
 #include "../rf/gameseq.h"
 #include "../rf/localize.h"
 
-static char* const* g_af_gametype_names[10];
+static char* const* g_af_gametype_names[rf::NG_TYPE_UNK + 1];
 
 static char koth_name[] = "KOTH";
 static char* koth_slot = koth_name;
@@ -30,10 +30,13 @@ static char run_name[] = "RUN";
 static char* run_slot = run_name;
 static char esc_name[] = "ESC";
 static char* esc_slot = esc_name;
-static char bm_name[] = "BM";
-static char* bm_slot = bm_name;
-static char tbm_name[] = "TBM";
-static char* tbm_slot = tbm_name;
+static char bag_name[] = "BAG";
+static char* bag_slot = bag_name;
+static char tbag_name[] = "TBAG";
+static char* tbag_slot = tbag_name;
+// UNK is the sentinel; new game types must be added above
+static char unk_name[] = "UNK";
+static char* unk_slot = unk_name;
 
 KothInfo g_koth_info; // KOTH and DC
 rf::Timestamp g_local_contest_alarm_cooldown;
@@ -62,16 +65,17 @@ static void stop_hill_sounds()
 }
 
 void populate_gametype_table() {
-    g_af_gametype_names[0] = &rf::strings::dm;
-    g_af_gametype_names[1] = &rf::strings::ctf;
-    g_af_gametype_names[2] = &rf::strings::teamdm;
-    g_af_gametype_names[3] = &koth_slot;
-    g_af_gametype_names[4] = &dc_slot;
-    g_af_gametype_names[5] = &rev_slot;
-    g_af_gametype_names[6] = &run_slot;
-    g_af_gametype_names[7] = &esc_slot;
-    g_af_gametype_names[8] = &bm_slot;
-    g_af_gametype_names[9] = &tbm_slot;
+    g_af_gametype_names[rf::NG_TYPE_DM]     = &rf::strings::dm;
+    g_af_gametype_names[rf::NG_TYPE_CTF]    = &rf::strings::ctf;
+    g_af_gametype_names[rf::NG_TYPE_TEAMDM] = &rf::strings::teamdm;
+    g_af_gametype_names[rf::NG_TYPE_KOTH]   = &koth_slot;
+    g_af_gametype_names[rf::NG_TYPE_DC]     = &dc_slot;
+    g_af_gametype_names[rf::NG_TYPE_REV]    = &rev_slot;
+    g_af_gametype_names[rf::NG_TYPE_RUN]    = &run_slot;
+    g_af_gametype_names[rf::NG_TYPE_ESC]    = &esc_slot;
+    g_af_gametype_names[rf::NG_TYPE_BAG]     = &bag_slot;
+    g_af_gametype_names[rf::NG_TYPE_TBAG]    = &tbag_slot;
+    g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
         const char* const* slot = g_af_gametype_names[i];
@@ -79,6 +83,20 @@ void populate_gametype_table() {
         //xlog::warn("GameType[{}]: {} (slot={}, name_ptr={})", i, name, static_cast<const void*>(slot), static_cast<const void*>(*slot));
     }
 }
+
+FunHook<int(uint8_t*, int)> server_list_load_entry_game_type_guard{
+    0x0044B810,
+    [](uint8_t* record, int is_favorite) -> int {
+        if (record) {
+            constexpr int num_gametypes = sizeof(g_af_gametype_names) / sizeof(g_af_gametype_names[0]);
+            auto& game_type = *reinterpret_cast<int32_t*>(record + 0x58);
+            if (game_type < 0 || game_type >= num_gametypes) {
+                game_type = static_cast<int32_t>(rf::NG_TYPE_UNK);
+            }
+        }
+        return server_list_load_entry_game_type_guard.call_target(record, is_favorite);
+    },
+};
 
 CallHook<char*(const char*, const char*)> listen_server_map_list_filename_contains_hook{
     0x00445730,
@@ -104,9 +122,9 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_DC:
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
-        case rf::NG_TYPE_TBM:
+        case rf::NG_TYPE_TBAG:
             return true;
-        default: // DM, RUN, BM
+        default: // DM, RUN, BAG
             return false;
     }
 }
@@ -198,19 +216,19 @@ bool gt_is_run()
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_RUN;
 }
 
-bool gt_is_bm()
+bool gt_is_bag()
 {
-    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_BM;
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_BAG;
 }
 
-bool gt_is_tbm()
+bool gt_is_tbag()
 {
-    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_TBM;
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_TBAG;
 }
 
 bool gt_is_bagman_any()
 {
-    return gt_is_bm() || gt_is_tbm();
+    return gt_is_bag() || gt_is_tbag();
 }
 
 static HillInfo* esc_find_hill_by_role(HillRole role)
@@ -1998,7 +2016,7 @@ CodeInjection send_team_score_patch{
             regs.ax = blue_score;
             regs.eip = 0x00472176; // use stock game packet send
         }
-        else if (gt_is_tbm()) {
+        else if (gt_is_tbag()) {
             const uint16_t red_score = (uint16_t)std::clamp(bagman_get_red_team_score(), 0, 0xFFFF);
             const uint16_t blue_score = (uint16_t)std::clamp(bagman_get_blue_team_score(), 0, 0xFFFF);
             regs.si = red_score;
@@ -2019,7 +2037,7 @@ CodeInjection process_team_score_patch{
             multi_koth_set_red_team_score(red_score);
             multi_koth_set_blue_team_score(blue_score);
         }
-        else if (gt_is_tbm()) {
+        else if (gt_is_tbag()) {
             int red_score = regs.esi;
             int blue_score = regs.edi;
             bagman_set_red_team_score(red_score);
@@ -2085,13 +2103,18 @@ void gametype_do_patch()
     write_mem<uint32_t>((0x0044C227) + 3, (uint32_t)(uintptr_t)&g_af_gametype_names[0]); // multi_join_game_render_row
     write_mem<uint32_t>((0x0044C724) + 3, (uint32_t)(uintptr_t)&g_af_gametype_names[0]); // multi_join_game_init
 
-    // patch listen server create menu gametype select field to use new table
+    // patch listen server create menu gametype select field to use new table.
+    // End pointer stops at NG_TYPE_UNK so UNK doesn't appear as a host-selectable
+    // option in the dropdown — UNK is a display-only sentinel for the browser.
     const uintptr_t base = (uintptr_t)&g_af_gametype_names[0];
-    const uintptr_t end = base + sizeof(g_af_gametype_names);
+    const uintptr_t end = (uintptr_t)&g_af_gametype_names[rf::NG_TYPE_UNK];
     const uintptr_t kMovBase = 0x004459B1;
     const uintptr_t kCmpEnd = 0x004459CE;
     write_mem<uint32_t>(kMovBase + 1, (uint32_t)base);
     write_mem<uint32_t>(kCmpEnd + 2, (uint32_t)end);
+
+    // Defensive clamp against game_type OOB crash in stale server records (like from favlist.adr)
+    server_list_load_entry_game_type_guard.install();
 
     // team_score packet expansion to support new team gametypes
     send_team_score_server_do_frame_patch.install();

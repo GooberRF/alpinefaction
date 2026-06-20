@@ -9,6 +9,7 @@
 #include "../multi/endgame_votes.h"
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
+#include "../multi/bagman.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/player/control_config.h"
@@ -224,6 +225,10 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 rf::gr::bitmap(hud_flag_blue_bm, x + w * 4 / 6 - flag_bm_w / 2, cur_y);
                 red_score = multi_koth_get_red_team_score();
                 blue_score = multi_koth_get_blue_team_score();
+            }
+            else if (game_type == rf::NG_TYPE_TBAG) {
+                red_score = bagman_get_red_team_score();
+                blue_score = bagman_get_blue_team_score();
             }
             else if (game_type == rf::NG_TYPE_REV || game_type == rf::NG_TYPE_ESC) {
                 static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);

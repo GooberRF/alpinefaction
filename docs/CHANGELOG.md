@@ -9,7 +9,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Fine tuned texture animation without being subject to VBM format limitations
   - Accessible to event system via handle for level-driven behaviour scripting
 - Support PNG and JPG texture formats in game and level editor
-- Add Bagman (`BM`) and Team Bagman (`TBM`) game types
+- Add Bagman (`BAG`) and Team Bagman (`TBAG`) game types
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -17,7 +17,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Bump RFL version to 305
 - Add `ATX_Set_Frame`, `ATX_Play`, `ATX_Pause`, `ATX_Set_Frame_Time` events
 - Add vote-allowed levels to level autodownload list for dedicated servers
-- Add `fflink_gsk` dedicated server config field and `sv_fflink_status` / `sv_fflink_resync` console commands for FactionFiles session key exchange
+- Add `fflink_gsk` dedicated server config field and `sv_fflink_status` and `sv_fflink_resync` console commands for FactionFiles session key exchange
 - Make clock clutter objects correctly display the current local real world time
 - Add mini scoreboard HUD element to FFA game types
 
@@ -44,6 +44,12 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix "allow clientside mods from legacy directories" option not applying correctly for DDS files
 - Fix `AF_Teleport_Player` event clientside smoothly interpolating the teleported entity position
 - Fix ability to configure invalid values for `individual_kill_limit` in ADS configs
+- Fix dedicated server crash when a non-player entity dies while `spawn_delay` is enabled
+- Fix future game types not being correctly handled by joining clients
+- Fix `Join Server` crash if `favlist.adr` entries have newer game types
+- Fix client crash when a bot targets a player whose name contains `$`
+- Fix crash when a collision query targets an object whose mesh failed to load
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `ctf-stronghold.rfl`
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

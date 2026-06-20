@@ -80,6 +80,18 @@ constexpr BagHomeEntry kBagHomePositions[] = {
     { "ctf07.rfl", 8.50f, -5.0f, 22.0f },
     { "dmabruptdecayrc1.rfl", 15.54f, 2.50f, 11.0f },
     { "dmabruptdecayrc2.rfl", 15.54f, 2.50f, 11.0f },
+    { "dmcompounded.rfl", -28.0f, -7.0f, 33.0f },
+    { "dm_mean.rfl", 30.0f, 17.0f, -4.0f },
+    { "dm_lastexit.rfl", 7.0f, -9.0f, 0.0f },
+    { "dm666castleofdoom.rfl", 0.0f, -4.88f, -10.0f },
+    { "dm-megamix.rfl", 0.04f, -17.13f, -0.02f },
+    { "dm_mf_all_around_the_world.rfl", 3.70f, -40.06f, 15.88f },
+    { "dm-rfu5-midwichv5.rfl", 23.50f, 11.0f, 5.0f },
+    { "dm dac zelda.rfl", -0.46f, -24.54f, 28.91f },
+    { "dmturtleb1.rfl", 24.50f, -18.75f, -34.50f },
+    { "dm_corpsesxroads_2.rfl", -55.0f, -23.0f, -21.50f },
+    { "dm_corpsesxroad-v2.rfl", -55.0f, -23.0f, -21.50f },
+    { "dm_corpses_crossroads.rfl", -55.0f, -23.0f, -21.50f },
 };
 
 std::optional<rf::Vector3> lookup_hardcoded_bag_home(std::string_view filename)
@@ -198,7 +210,8 @@ void spawn_bag_item(const rf::Vector3& pos, rf::Matrix3& orient)
         return;
     }
 
-    item->item_flags |= rf::IF_DROPPED | rf::IF_NO_PICKUP;
+    // IF_PERMANENT exempts the bag from being culled
+    item->item_flags |= rf::IF_DROPPED | rf::IF_NO_PICKUP | rf::IF_PERMANENT;
     g_bagman_info.bag_item_handle = item->handle;
     g_bagman_info.pickup_unlock_timer.set(kBagPickupUnlockDelayMs);
 
@@ -469,6 +482,7 @@ static void on_return()
 {
     g_bagman_info.state = BagState::BS_At_Spawn;
     g_bagman_info.return_timer.invalidate();
+    g_bagman_info.bag_respawn_retry_timer.invalidate();
 
     // Replace the dropped item with one at the home position
     kill_current_bag_item();
@@ -512,7 +526,7 @@ void bagman_do_frame()
             if (rf::gameseq_get_state() == rf::GameState::GS_GAMEPLAY
                 && g_bagman_info.score_tick.elapsed()) {
                 rf::player_add_score(g_bagman_info.carrier, 1);
-                if (gt_is_tbm()) {
+                if (gt_is_tbag()) {
                     if (g_bagman_info.carrier->team == 0) {
                         g_bagman_info.red_team_score++;
                     } else {
