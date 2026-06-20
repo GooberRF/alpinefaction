@@ -5,7 +5,7 @@
 // Sentinel scan code injected into Input Rebind UI, allowing additional input bindings.
 static constexpr int CTRL_REBIND_SENTINEL = 0x58; // KEY_F12
 
-// Custom scan codes for extra mouse buttons (Mouse 4 and above), stored in scan_codes[0].
+// Custom scan codes for extra mouse buttons (Mouse 4 and above)
 static constexpr int CTRL_EXTRA_MOUSE_SCAN_BASE  = 0x75;
 static constexpr int CTRL_EXTRA_MOUSE_SCAN_COUNT = 5;
 

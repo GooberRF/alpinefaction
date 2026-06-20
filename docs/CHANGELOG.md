@@ -22,7 +22,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add mini scoreboard HUD element to FFA game types
 
 [@AL2009man](https://github.com/AL2009man)
--Add support for Additional Mouse Button and Left/Right Alt to the Controls binding UI
+- Add support for additional mouse buttons and Left/Right Alt in the controls binding UI
 
 [@is-this-c](https://github.com/is-this-c)
 - Allow players to join between levels
