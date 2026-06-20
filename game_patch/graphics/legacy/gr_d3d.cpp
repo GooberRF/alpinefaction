@@ -231,7 +231,7 @@ CodeInjection update_pp_hook{
 
         // TODO.  `sample_count` is always 1 here, until we load settings earlier.
         if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
-            if (g_alpine_game_config.sample_count == 1) {
+            if (!g_antialiasing || g_alpine_game_config.sample_count == 1) {
                 rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
             } else {
                 rf::gr::d3d::pp.MultiSampleType =
@@ -376,13 +376,11 @@ void gr_d3d_update_window_mode()
 }
 
 void gr_d3d_flush_frame_buffers() {
-    if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
-        if (g_alpine_game_config.sample_count == 1) {
-            rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
-        } else {
-            rf::gr::d3d::pp.MultiSampleType =
-                static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
-        }
+    if (!g_antialiasing || g_alpine_game_config.sample_count == 1) {
+        rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
+    } else if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
+        rf::gr::d3d::pp.MultiSampleType =
+            static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
     } else {
         xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
         rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;

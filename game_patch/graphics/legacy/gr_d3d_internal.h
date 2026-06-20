@@ -1,5 +1,6 @@
 #pragma once
 
+#include <unordered_map>
 #include <windows.h>
 #include <d3d8.h>
 #include <common/ComPtr.h>

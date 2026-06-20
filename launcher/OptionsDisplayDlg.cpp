@@ -204,7 +204,7 @@ void OptionsDisplayDlg::OnSave()
     }
 
     if (m_video_info) {
-        m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32 bit" ? 32 : 16;
+        m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32-bit" ? 32 : 16;
         m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     }
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
@@ -246,7 +246,7 @@ void OptionsDisplayDlg::OnColorDepthChange()
     if (!m_video_info) {
         return;
     }
-    m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32 bit" ? 32 : 16;
+    m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32-bit" ? 32 : 16;
     m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     UpdateResolutionCombo();
 }

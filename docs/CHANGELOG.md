@@ -25,6 +25,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Anti-aliasing` option to `ADVANCED` options panel
 - Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
 - Rename `antialiasing` console command to `r_antialiasing`
+- Allow players to join between levels
 - Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
 - Rename `mp_notifyonjoin` console command to `mp_join_beep`
 - Server browser
