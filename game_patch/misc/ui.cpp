@@ -1818,7 +1818,7 @@ void alpine_options_panel_init() {
 
     // panel 2
     alpine_options_panel_checkbox_init(
-        &ao_dinput_cbox, &ao_dinput_label, &alpine_options_panel2, ao_dinput_cbox_on_click, g_alpine_game_config.direct_input, 112, 54, "DirectInput"); 
+        &ao_dinput_cbox, &ao_dinput_label, &alpine_options_panel2, ao_dinput_cbox_on_click, g_alpine_game_config.direct_input, 112, 54, "DInput Mouse"); 
     alpine_options_panel_checkbox_init(
         &ao_linearpitch_cbox, &ao_linearpitch_label, &alpine_options_panel2, ao_linearpitch_cbox_on_click, g_alpine_game_config.mouse_linear_pitch, 112, 84, "Linear pitch");
     alpine_options_panel_checkbox_init(
