@@ -256,6 +256,17 @@ void process_pending_end()
 
     if (g_rounds_runtime.state != RoundState::Active) return;
 
+    if (winner) {
+        bool still_present = false;
+        for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (&p == winner) {
+                still_present = true;
+                break;
+            }
+        }
+        if (!still_present) winner = nullptr;
+    }
+
     if (g_rounds_callbacks.on_round_end) {
         g_rounds_callbacks.on_round_end(winner, reason);
     }
