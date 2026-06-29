@@ -31,6 +31,7 @@
 #include "../rf/player/player.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/sound/sound.h"
+#include "../sound/sound.h"
 #include "../rf/vmesh.h"
 #include "../rf/v3d.h"
 #include "../hud/multi_spectate.h"
@@ -474,7 +475,7 @@ static void drop_bag_from_entity(rf::Player* prev_carrier, rf::Entity* ep)
 
 void bagman_play_return_sound()
 {
-    rf::snd_play(65, 0, 0.0f, 1.0f);
+    rf::snd_play(stock_sound_id::flag_respawn, 0, 0.0f, 1.0f);
 }
 
 static void on_return()

@@ -292,7 +292,36 @@ enum af_server_msg_type : uint8_t {
     AF_SERVER_MSG_TYPE_AUTOMATED_CHAT = 0x2,
     AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG_EOF = 0x3,
     AF_SERVER_MSG_TYPE_CONSOLE = 0x4,
+    AF_SERVER_MSG_TYPE_HUD_NOTIFICATION = 0x5, // Alpine 1.4 ( text follows after the fixed prefix)
+    AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN = 0x6,  // Alpine 1.4
+    AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND = 0x7, // Alpine 1.4
 };
+
+#pragma pack(push, 1)
+struct af_round_countdown_payload {
+    uint8_t duration_seconds;
+};
+#pragma pack(pop)
+static_assert(sizeof(af_round_countdown_payload) == 1);
+
+// Must reference a custom sound ID.
+#pragma pack(push, 1)
+struct af_play_custom_sound_payload {
+    uint16_t custom_sound_id;
+};
+#pragma pack(pop)
+static_assert(sizeof(af_play_custom_sound_payload) == 2);
+
+// Text follows immediately after this struct.
+// Keep in sync with HudNotificationType in hud.h.
+#pragma pack(push, 1)
+struct af_hud_notification_prefix {
+    int8_t duration_seconds;    // negative = persistent
+    uint8_t notification_type;  // cast to HudNotificationType on the client
+    uint8_t fade_on_expire;     // bool
+};
+#pragma pack(pop)
+static_assert(sizeof(af_hud_notification_prefix) == 3);
 
 struct af_server_msg_packet {
     RF_GamePacketHeader header;
@@ -425,6 +454,16 @@ void af_send_server_cfg(rf::Player* player);
 void af_process_server_msg_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_broadcast_automated_chat_msg(std::string_view msg);
 void af_send_automated_chat_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
+void af_broadcast_hud_notification(
+    std::string_view text, int duration_seconds, int notification_type, bool fade_on_expire = true);
+void af_send_hud_notification(
+    std::string_view text, int duration_seconds, int notification_type, bool fade_on_expire, rf::Player* player);
+
+// Instruct clients to render the big number countdown for the next N seconds (max 10).
+void af_broadcast_round_countdown(int duration_seconds);
+
+void af_broadcast_play_custom_sound(int custom_sound_id);
+void af_send_play_custom_sound(int custom_sound_id, rf::Player* player);
 void af_send_server_console_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
 
 // client requests

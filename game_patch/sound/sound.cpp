@@ -492,6 +492,10 @@ void gamesound_parse_custom_sounds()
         {"af_hitsound1.wav", 10.0f, 1.0f, 1.0f},        // 2
         {"af_killsound1.wav", 10.0f, 1.0f, 1.0f},       // 3
         {"Console_Large_03.wav", 10.0f, 1.0f, 1.0f},
+        {"MP_ANN_04.wav", 10.0f, 1.0f, 1.0f},           // time expired
+        {"MP_ANN_06.wav", 10.0f, 1.0f, 1.0f},           // match over
+        {"MP_ANN_10.wav", 10.0f, 1.0f, 1.0f},           // five kills remaining
+        {"MP_ANN_11.wav", 10.0f, 1.0f, 1.0f},           // one kill remaining
         {"af_radmsg_000.ogg", 10.0f, 1.0f, 1.0f},
         {"af_radmsg_001.ogg", 10.0f, 1.0f, 1.0f},
         {"af_radmsg_002.ogg", 10.0f, 1.0f, 1.0f},

@@ -21,6 +21,7 @@
 #include "bagman.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
+#include "rounds.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
@@ -1961,6 +1962,35 @@ af_server_msg_packet_buf build_automated_chat_msg_packet(
     return buf;
 }
 
+af_server_msg_packet_buf build_hud_notification_packet(
+    std::string_view text, int8_t duration_seconds,
+    uint8_t notification_type, bool fade_on_expire
+) {
+    constexpr size_t max_len = rf::max_packet_size
+        - sizeof(af_server_msg_packet)
+        - sizeof(af_hud_notification_prefix);
+    const size_t len = std::clamp(text.size(), 0uz, max_len);
+
+    af_server_msg_packet_buf buf{};
+    buf.packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    buf.packet.header.size = static_cast<uint16_t>(
+        sizeof(buf.packet)
+            - sizeof(buf.packet.header)
+            + sizeof(af_hud_notification_prefix)
+            + len
+    );
+    buf.packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_HUD_NOTIFICATION);
+
+    af_hud_notification_prefix prefix{};
+    prefix.duration_seconds = duration_seconds;
+    prefix.notification_type = notification_type;
+    prefix.fade_on_expire = fade_on_expire ? 1 : 0;
+    std::memcpy(buf.packet.data, &prefix, sizeof(prefix));
+    std::memcpy(buf.packet.data + sizeof(prefix), text.data(), len);
+
+    return buf;
+}
+
 af_server_msg_packet_buf build_server_console_msg_packet(
     const std::string_view msg
 ) {
@@ -2054,6 +2084,149 @@ void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player, 
     }
 }
 
+void af_broadcast_hud_notification(const std::string_view text, int duration_seconds, int notification_type, bool fade_on_expire) {
+    if (!rf::is_server) {
+        return;
+    }
+
+    const af_server_msg_packet_buf buf = build_hud_notification_packet(
+        text, static_cast<int8_t>(std::clamp(duration_seconds, -1, 127)),
+        static_cast<uint8_t>(notification_type), fade_on_expire);
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player) {
+            continue;
+        }
+        if (!is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            continue;
+        }
+        rf::multi_io_send_reliable(
+            &player,
+            &buf.packet,
+            buf.packet.header.size + sizeof(buf.packet.header),
+            0
+        );
+    }
+}
+
+void af_send_hud_notification(const std::string_view text, int duration_seconds, int notification_type, bool fade_on_expire, rf::Player* player) {
+    if (!rf::is_server || !player) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        return;
+    }
+
+    const af_server_msg_packet_buf buf = build_hud_notification_packet(
+        text, static_cast<int8_t>(std::clamp(duration_seconds, -1, 127)),
+        static_cast<uint8_t>(notification_type), fade_on_expire);
+
+    rf::multi_io_send_reliable(
+        player,
+        &buf.packet,
+        buf.packet.header.size + sizeof(buf.packet.header),
+        0
+    );
+}
+
+af_server_msg_packet_buf build_round_countdown_packet(uint8_t duration_seconds)
+{
+    af_server_msg_packet_buf buf{};
+    buf.packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    buf.packet.header.size = static_cast<uint16_t>(
+        sizeof(buf.packet)
+            - sizeof(buf.packet.header)
+            + sizeof(af_round_countdown_payload)
+    );
+    buf.packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN);
+
+    af_round_countdown_payload payload{};
+    payload.duration_seconds = duration_seconds;
+    std::memcpy(buf.packet.data, &payload, sizeof(payload));
+
+    return buf;
+}
+
+af_server_msg_packet_buf build_play_custom_sound_packet(uint16_t custom_sound_id)
+{
+    af_server_msg_packet_buf buf{};
+    buf.packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    buf.packet.header.size = static_cast<uint16_t>(
+        sizeof(buf.packet)
+            - sizeof(buf.packet.header)
+            + sizeof(af_play_custom_sound_payload)
+    );
+    buf.packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND);
+
+    af_play_custom_sound_payload payload{};
+    payload.custom_sound_id = custom_sound_id;
+    std::memcpy(buf.packet.data, &payload, sizeof(payload));
+
+    return buf;
+}
+
+void af_broadcast_play_custom_sound(int custom_sound_id)
+{
+    if (!rf::is_server) return;
+
+    const af_server_msg_packet_buf buf = build_play_custom_sound_packet(
+        static_cast<uint16_t>(custom_sound_id));
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player) {
+            // Listen-server host: play locally (doesn't go through the network path).
+            play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(custom_sound_id)), 0, 1.0f);
+            continue;
+        }
+        if (!is_player_minimum_af_client_version(&player, 1, 4, 0)) continue;
+        rf::multi_io_send_reliable(&player, &buf.packet,
+            buf.packet.header.size + sizeof(buf.packet.header), 0);
+    }
+}
+
+void af_send_play_custom_sound(int custom_sound_id, rf::Player* player)
+{
+    if (!rf::is_server || !player) return;
+    if (player == rf::local_player) {
+        play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(custom_sound_id)), 0, 1.0f);
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) return;
+
+    const af_server_msg_packet_buf buf = build_play_custom_sound_packet(
+        static_cast<uint16_t>(custom_sound_id));
+    rf::multi_io_send_reliable(player, &buf.packet,
+        buf.packet.header.size + sizeof(buf.packet.header), 0);
+}
+
+void af_broadcast_round_countdown(int duration_seconds)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    const uint8_t clamped = static_cast<uint8_t>(std::clamp(duration_seconds, 0, 255));
+    const af_server_msg_packet_buf buf = build_round_countdown_packet(clamped);
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player) {
+            // Server's listen-server host renders via the same client-side
+            // hook by setting the local state directly.
+            rounds_client_set_countdown(clamped);
+            continue;
+        }
+        if (!is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            continue;
+        }
+        rf::multi_io_send_reliable(
+            &player,
+            &buf.packet,
+            buf.packet.header.size + sizeof(buf.packet.header),
+            0
+        );
+    }
+}
+
 void af_process_server_msg_packet(
     const void* const data,
     const size_t len,
@@ -2084,12 +2257,40 @@ void af_process_server_msg_packet(
         handle_vote_or_ready_up_msg(msg);
         rf::multi_chat_print(msg, rf::ChatMsgColor::gold_white, rf::String{"Server: "});
         if (!g_alpine_game_config.simple_server_chat_msgs) {
-            rf::snd_play(4, 0, 0.f, 1.f);
+            rf::snd_play(stock_sound_id::end_voice, 0, 0.f, 1.f);
         }
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_CONSOLE)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string msg{ptr, len - sizeof(msg_packet)};
         rf::console::print("{}", msg);
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_HUD_NOTIFICATION)) {
+        const size_t header_len = sizeof(msg_packet) + sizeof(af_hud_notification_prefix);
+        if (len < header_len) {
+            return;
+        }
+        af_hud_notification_prefix prefix{};
+        std::memcpy(&prefix, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(prefix));
+        const char* text_ptr = static_cast<const char*>(data) + header_len;
+        const size_t text_len = len - header_len;
+        std::string text{text_ptr, text_len};
+        hud_notification_show(std::move(text),
+                              prefix.duration_seconds,
+                              static_cast<HudNotificationType>(prefix.notification_type),
+                              prefix.fade_on_expire != 0);
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN)) {
+        if (len < sizeof(msg_packet) + sizeof(af_round_countdown_payload)) {
+            return;
+        }
+        af_round_countdown_payload payload{};
+        std::memcpy(&payload, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(payload));
+        rounds_client_set_countdown(payload.duration_seconds);
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND)) {
+        if (len < sizeof(msg_packet) + sizeof(af_play_custom_sound_payload)) {
+            return;
+        }
+        af_play_custom_sound_payload payload{};
+        std::memcpy(&payload, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(payload));
+        play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(payload.custom_sound_id)), 0, 1.0f);
     }
 }
 
