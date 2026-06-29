@@ -85,8 +85,11 @@ void rounds_on_player_init(rf::Player* player);
 // and starts a fresh series if the active gametype is round-based.
 void rounds_level_init();
 
-// Called after the engine has finished spawning players on a new level so the
-// initial round can fire its on_round_begin callback.
+// Called after the engine has finished initializing the new level. Currently
+// a no-op — rounds_do_frame() drives the Inactive→Active transition once
+// can_round_start() reports ready, so all level-load gating lives in one
+// place. Kept for symmetry with rounds_level_init() and so the dispatch site
+// in multi_level_init_post_gametypes has a stable hook to call.
 void rounds_level_init_post();
 
 // Public state accessors.

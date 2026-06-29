@@ -357,14 +357,17 @@ void rounds_do_frame()
             g_rounds_runtime.current = 0;
             // Use intermission as a pre-round-1 warmup so clients have time
             // to finish loading + first-spawn before the round timer starts.
-            // The on_round_cleanup callback fires the kill+cleanup batch
-            // here too: any entities the engine spawned during Inactive get
-            // killed and then respawned cleanly by on_round_begin once the
-            // intermission expires. Level items are restored to visible by
-            // the same path.
+            // on_round_cleanup runs in both branches so round 1 starts from
+            // the same clean slate as subsequent rounds (matches the cleanup
+            // pattern in proceed_to_next_round_or_rotate): any entities the
+            // engine spawned during Inactive get killed and respawned cleanly
+            // by on_round_begin; level items are restored to visible.
             if (cfg().intermission_time > 0) {
                 enter_intermission();
             } else {
+                if (g_rounds_callbacks.on_round_cleanup) {
+                    g_rounds_callbacks.on_round_cleanup();
+                }
                 start_round();
             }
             break;

@@ -2089,12 +2089,17 @@ void af_broadcast_hud_notification(const std::string_view text, int duration_sec
         return;
     }
 
+    const int8_t clamped_seconds = static_cast<int8_t>(std::clamp(duration_seconds, -1, 127));
     const af_server_msg_packet_buf buf = build_hud_notification_packet(
-        text, static_cast<int8_t>(std::clamp(duration_seconds, -1, 127)),
+        text, clamped_seconds,
         static_cast<uint8_t>(notification_type), fade_on_expire);
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (&player == rf::local_player) {
+            // Listen-server host: render locally; we don't go through the network path.
+            hud_notification_show(std::string{text}, clamped_seconds,
+                                  static_cast<HudNotificationType>(notification_type),
+                                  fade_on_expire);
             continue;
         }
         if (!is_player_minimum_af_client_version(&player, 1, 4, 0)) {
@@ -2113,12 +2118,22 @@ void af_send_hud_notification(const std::string_view text, int duration_seconds,
     if (!rf::is_server || !player) {
         return;
     }
+
+    const int8_t clamped_seconds = static_cast<int8_t>(std::clamp(duration_seconds, -1, 127));
+
+    if (player == rf::local_player) {
+        // Listen-server host: render locally instead of routing through the network path.
+        hud_notification_show(std::string{text}, clamped_seconds,
+                              static_cast<HudNotificationType>(notification_type),
+                              fade_on_expire);
+        return;
+    }
     if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
         return;
     }
 
     const af_server_msg_packet_buf buf = build_hud_notification_packet(
-        text, static_cast<int8_t>(std::clamp(duration_seconds, -1, 127)),
+        text, clamped_seconds,
         static_cast<uint8_t>(notification_type), fade_on_expire);
 
     rf::multi_io_send_reliable(
