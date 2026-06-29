@@ -75,6 +75,7 @@ struct RoundsRuntime
     // never tear down state while inside an engine hook or per-frame check.
     bool end_pending = false;
     rf::Player* pending_winner = nullptr;
+    int pending_winner_id = -1;
     RoundEndReason pending_reason = RoundEndReason::EarlyEnd;
 
     // One-shot flag: we've already broadcast "waiting for players" to chat.
@@ -97,6 +98,7 @@ struct RoundsRuntime
         intermission_deadline_level_time = 0.0f;
         end_pending = false;
         pending_winner = nullptr;
+        pending_winner_id = -1;
         pending_reason = RoundEndReason::EarlyEnd;
         announced_waiting = false;
         pending_level_change = false;
@@ -249,22 +251,27 @@ void process_pending_end()
     if (!g_rounds_runtime.end_pending) return;
 
     rf::Player* winner = g_rounds_runtime.pending_winner;
+    const int winner_id = g_rounds_runtime.pending_winner_id;
     const RoundEndReason reason = g_rounds_runtime.pending_reason;
     g_rounds_runtime.end_pending = false;
     g_rounds_runtime.pending_winner = nullptr;
+    g_rounds_runtime.pending_winner_id = -1;
     g_rounds_runtime.pending_reason = RoundEndReason::EarlyEnd;
 
     if (g_rounds_runtime.state != RoundState::Active) return;
 
+    // The winner pointer was captured a frame ago. Confirm it's still a live
+    // player AND still the same identity before handing it to the callback.
     if (winner) {
-        bool still_present = false;
+        bool valid = false;
         for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
             if (&p == winner) {
-                still_present = true;
+                valid = (winner == rf::local_player)
+                     || (winner->net_data && static_cast<int>(winner->net_data->player_id) == winner_id);
                 break;
             }
         }
-        if (!still_present) winner = nullptr;
+        if (!valid) winner = nullptr;
     }
 
     if (g_rounds_callbacks.on_round_end) {
@@ -454,6 +461,10 @@ void rounds_request_end(rf::Player* winner, RoundEndReason reason)
     // tick_active so concurrent same-frame requests collapse to one.
     g_rounds_runtime.end_pending = true;
     g_rounds_runtime.pending_winner = winner;
+    g_rounds_runtime.pending_winner_id =
+        (winner && winner != rf::local_player && winner->net_data)
+            ? static_cast<int>(winner->net_data->player_id)
+            : -1;
     g_rounds_runtime.pending_reason = reason;
 }
 
