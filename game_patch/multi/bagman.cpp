@@ -211,7 +211,8 @@ void spawn_bag_item(const rf::Vector3& pos, rf::Matrix3& orient)
         return;
     }
 
-    item->item_flags |= rf::IF_DROPPED | rf::IF_NO_PICKUP;
+    // IF_PERMANENT exempts the bag from being culled
+    item->item_flags |= rf::IF_DROPPED | rf::IF_NO_PICKUP | rf::IF_PERMANENT;
     g_bagman_info.bag_item_handle = item->handle;
     g_bagman_info.pickup_unlock_timer.set(kBagPickupUnlockDelayMs);
 
@@ -526,7 +527,7 @@ void bagman_do_frame()
             if (rf::gameseq_get_state() == rf::GameState::GS_GAMEPLAY
                 && g_bagman_info.score_tick.elapsed()) {
                 rf::player_add_score(g_bagman_info.carrier, 1);
-                if (gt_is_tbm()) {
+                if (gt_is_tbag()) {
                     if (g_bagman_info.carrier->team == 0) {
                         g_bagman_info.red_team_score++;
                     } else {

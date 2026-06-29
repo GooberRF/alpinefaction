@@ -833,7 +833,7 @@ void multi_hud_render_team_scores()
     const bool is_rev = game_type == rf::NG_TYPE_REV;
     const bool is_run = game_type == rf::NG_TYPE_RUN;
     const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
-        || game_type == rf::NG_TYPE_BM
+        || game_type == rf::NG_TYPE_BAG
         || game_type == rf::NG_TYPE_LMS;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
@@ -969,7 +969,7 @@ void multi_hud_render_team_scores()
             red_score = multi_koth_get_red_team_score();
             blue_score = multi_koth_get_blue_team_score();
         }
-        else if (game_type == rf::NG_TYPE_TBM) {
+        else if (game_type == rf::NG_TYPE_TBAG) {
             rf::gr::set_color(53, 207, 22, 255);
             red_score = bagman_get_red_team_score();
             blue_score = bagman_get_blue_team_score();
@@ -1066,9 +1066,9 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     [](auto& regs) {
         const auto game_type = rf::multi_get_game_type();
         const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
-            || game_type == rf::NG_TYPE_BM
+            || game_type == rf::NG_TYPE_BAG
             || game_type == rf::NG_TYPE_LMS;
-        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbm() || is_ffa_with_list) {
+        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbag() || is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
     }

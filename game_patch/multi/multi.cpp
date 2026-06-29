@@ -797,9 +797,9 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Run"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"Escalation"};
-    } else if (game_type == rf::NG_TYPE_BM) {
+    } else if (game_type == rf::NG_TYPE_BAG) {
         return std::string_view{"Bagman"};
-    } else if (game_type == rf::NG_TYPE_TBM) {
+    } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"Team Bagman"};
     } else if (game_type == rf::NG_TYPE_LMS) {
         return std::string_view{"Last Miner Standing"};
@@ -828,9 +828,9 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"RUN"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"ESCALATION"};
-    } else if (game_type == rf::NG_TYPE_BM) {
+    } else if (game_type == rf::NG_TYPE_BAG) {
         return std::string_view{"BAGMAN"};
-    } else if (game_type == rf::NG_TYPE_TBM) {
+    } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"TEAM BAGMAN"};
     } else if (game_type == rf::NG_TYPE_LMS) {
         return std::string_view{"LAST MINER STANDING"};
@@ -859,10 +859,10 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"RUN"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"ESC"};
-    } else if (game_type == rf::NG_TYPE_BM) {
-        return std::string_view{"BM"};
-    } else if (game_type == rf::NG_TYPE_TBM) {
-        return std::string_view{"TBM"};
+    } else if (game_type == rf::NG_TYPE_BAG) {
+        return std::string_view{"BAG"};
+    } else if (game_type == rf::NG_TYPE_TBAG) {
+        return std::string_view{"TBAG"};
     } else if (game_type == rf::NG_TYPE_LMS) {
         return std::string_view{"LMS"};
     } else if (game_type == rf::NG_TYPE_UNK) {
@@ -892,10 +892,10 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"run"};
     } else if (game_type == rf::NG_TYPE_ESC) {
         return std::string_view{"esc"};
-    } else if (game_type == rf::NG_TYPE_BM) {
-        return std::string_view{"bm"};
-    } else if (game_type == rf::NG_TYPE_TBM) {
-        return std::string_view{"tbm"};
+    } else if (game_type == rf::NG_TYPE_BAG) {
+        return std::string_view{"bag"};
+    } else if (game_type == rf::NG_TYPE_TBAG) {
+        return std::string_view{"tbag"};
     } else if (game_type == rf::NG_TYPE_LMS) {
         return std::string_view{"lms"};
     } else if (game_type == rf::NG_TYPE_UNK) {

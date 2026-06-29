@@ -9,7 +9,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Fine tuned texture animation without being subject to VBM format limitations
   - Accessible to event system via handle for level-driven behaviour scripting
 - Support PNG and JPG texture formats in game and level editor
-- Add Bagman (`BM`) and Team Bagman (`TBM`) game types
+- Add Bagman (`BAG`) and Team Bagman (`TBAG`) game types
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -45,6 +45,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix future game types not being correctly handled by joining clients
 - Fix `Join Server` crash if `favlist.adr` entries have newer game types
 - Fix client crash when a bot targets a player whose name contains `$`
+- Fix crash when a collision query targets an object whose mesh failed to load
+- Fix skybox rendering issues with Direct3D 11 renderer on community level `ctf-stronghold.rfl`
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
