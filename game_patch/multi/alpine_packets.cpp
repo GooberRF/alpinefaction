@@ -2205,7 +2205,7 @@ void af_broadcast_round_countdown(int duration_seconds)
         return;
     }
 
-    const uint8_t clamped = static_cast<uint8_t>(std::clamp(duration_seconds, 0, 255));
+    const uint8_t clamped = static_cast<uint8_t>(std::clamp(duration_seconds, 0, 10));
     const af_server_msg_packet_buf buf = build_round_countdown_packet(clamped);
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {

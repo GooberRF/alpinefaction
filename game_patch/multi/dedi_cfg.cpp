@@ -132,6 +132,8 @@ static RoundConfig parse_rounds_config(const toml::table& t, RoundConfig c)
         c.set_max_rounds(*v);
     if (auto v = t["round_time"].value<int>())
         c.set_round_time(*v);
+    if (auto v = t["post_round_time"].value<int>())
+        c.set_post_round_time(*v);
     if (auto v = t["intermission_time"].value<int>())
         c.set_intermission_time(*v);
     return c;
@@ -1700,12 +1702,14 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules_uses_rounds != base_uses_rounds ||
         (rules_uses_rounds && (rules.rounds.max_rounds != b.rounds.max_rounds ||
           rules.rounds.round_time != b.rounds.round_time ||
+          rules.rounds.post_round_time != b.rounds.post_round_time ||
           rules.rounds.intermission_time != b.rounds.intermission_time));
 
     if (rules_uses_rounds && (base || rounds_changed)) {
         std::format_to(iter, "  Rounds:\n");
         std::format_to(iter, "    Max rounds per map:                  {}\n", rules.rounds.max_rounds);
         std::format_to(iter, "    Round time:                          {} sec\n", rules.rounds.round_time);
+        std::format_to(iter, "    Post-round celebration:              {} sec\n", rules.rounds.post_round_time);
         std::format_to(iter, "    Intermission between rounds:         {} sec\n", rules.rounds.intermission_time);
     }
 
