@@ -121,6 +121,7 @@ bool in_round_capable_gameplay()
 {
     if (!rf::is_server) return false;
     if (!rf::is_multi) return false;
+    if (g_match_info.pre_match_active) return false;
     if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) return false;
     return true;
 }
