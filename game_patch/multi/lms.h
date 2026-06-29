@@ -30,6 +30,3 @@ bool lms_can_player_spawn(rf::Player* player);
 // Cleanup on disconnect — clear any references and recompute alive count if
 // needed (handled implicitly by removing the player from the global list).
 void lms_on_player_disconnect(rf::Player* player);
-
-// HUD support: server-side count of currently alive (non-out, has-entity) players.
-int lms_alive_count();

@@ -167,7 +167,8 @@ FunHook<int(int, int, float, float)> snd_play_hook{
     [](int handle, int group, float pan, float volume) {
         xlog::trace("snd_play {} {} {:.2f} {:.2f}", handle, group, pan, volume);
 
-        if (!rf::sound_enabled || handle < 0) {
+        // Upper-bound guard
+        if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
             return -1;
         }
         if (rf::snd_load_hint(handle) != 0) {
@@ -472,6 +473,17 @@ FunHook<int(const char*, float, float, float)> snd_get_handle_hook{
 
 int get_custom_sound_id(int custom_id) {
     return g_custom_sound_entry_start + custom_id;
+}
+
+bool is_valid_custom_sound_id(int custom_id) {
+    // g_custom_sound_entry_start is -1 when sounds aren't loaded (dedicated
+    // server). Custom sounds occupy [g_custom_sound_entry_start, g_num_sounds);
+    // anything outside that is not a registered custom sound.
+    if (g_custom_sound_entry_start < 0 || custom_id < 0) {
+        return false;
+    }
+    const int handle = g_custom_sound_entry_start + custom_id;
+    return handle >= 0 && handle < rf::g_num_sounds;
 }
 
 int get_custom_chat_message_sound_id(int custom_id, bool is_taunt)

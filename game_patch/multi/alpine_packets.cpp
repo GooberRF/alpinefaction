@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cassert>
+#include <algorithm>
 #include <array>
 #include <ranges>
 #include <unordered_map>
@@ -2285,6 +2286,10 @@ void af_process_server_msg_packet(
         }
         af_hud_notification_prefix prefix{};
         std::memcpy(&prefix, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(prefix));
+        // notification_type is wire data cast to an enum; reject out-of-range values.
+        if (prefix.notification_type > static_cast<uint8_t>(HudNotificationType::Round)) {
+            return;
+        }
         const char* text_ptr = static_cast<const char*>(data) + header_len;
         const size_t text_len = len - header_len;
         std::string text{text_ptr, text_len};
@@ -2298,13 +2303,19 @@ void af_process_server_msg_packet(
         }
         af_round_countdown_payload payload{};
         std::memcpy(&payload, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(payload));
-        rounds_client_set_countdown(payload.duration_seconds);
+        // Re-enforce the sender's 0-10 contract on receive (sender is untrusted).
+        rounds_client_set_countdown(std::clamp<int>(payload.duration_seconds, 0, 10));
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND)) {
         if (len < sizeof(msg_packet) + sizeof(af_play_custom_sound_payload)) {
             return;
         }
         af_play_custom_sound_payload payload{};
         std::memcpy(&payload, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(payload));
+        // reject anything that doesn't resolve to a loaded custom-sound entry
+        // before it reaches the unchecked engine sound-table index.
+        if (!is_valid_custom_sound_id(payload.custom_sound_id)) {
+            return;
+        }
         play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(payload.custom_sound_id)), 0, 1.0f);
     }
 }

@@ -20,6 +20,7 @@
 #include "../rf/item.h"
 #include "../rf/player/player.h"
 #include "../rf/level.h"
+#include "../rf/gameseq.h"
 #include "../main/main.h"
 
 namespace
@@ -32,6 +33,11 @@ bool g_lms_internal_spawn_in_progress = false;
 
 // Last alive-count we chat-broadcast a milestone for this round.
 int g_last_alive_announced = -1;
+
+// Latches true once the current round has genuinely had >=2 participants
+// spawned in. Reset each round in lms_on_round_begin. See
+// round_reached_min_participants().
+bool g_round_had_min_participants = false;
 
 
 bool player_has_alive_entity(rf::Player* p)
@@ -93,6 +99,21 @@ int count_round_participants()
     return n;
 }
 
+// True once the round has genuinely reached >=2 participants, and stays true
+// for the rest of the round even if participants later disconnect.
+// count_round_participants() is a LIVE count off rf::player_list, so it drops
+// when a participant leaves; latching prevents a 2-player round that loses one
+// mid-round from re-suppressing the end-condition (which would otherwise drag
+// the round out to the full timer, or yield no winner if the survivor then
+// dies). The latch is reset each round in lms_on_round_begin.
+bool round_reached_min_participants()
+{
+    if (!g_round_had_min_participants && count_round_participants() >= 2) {
+        g_round_had_min_participants = true;
+    }
+    return g_round_had_min_participants;
+}
+
 rf::Player* find_only_alive()
 {
     rf::Player* found = nullptr;
@@ -116,6 +137,7 @@ void lms_on_round_begin()
     if (!rf::is_server) return;
 
     g_last_alive_announced = -1;
+    g_round_had_min_participants = false;
 
     // Reset per-round state for all connected participants (humans + bots).
     // Only spawn players who have actually finished loading the level —
@@ -282,8 +304,10 @@ bool lms_should_end_round(rf::Player** out_winner)
     // A round can only end once at least 2 players have actually participated
     // in it (spawned in). This prevents the race where the first-loaded
     // player gets declared "winner" while the others are still mid-connect.
-    const int participants = count_round_participants();
-    if (participants < 2) return false;
+    // We use the latched form so that a 2-player round which then loses a
+    // player to disconnect still resolves its sole survivor (or no-winner)
+    // promptly, instead of stalling until the round timer.
+    if (!round_reached_min_participants()) return false;
 
     const int alive = count_alive();
     if (alive <= 1) {
@@ -382,6 +406,14 @@ void lms_do_frame()
     if (!gt_is_lms()) {
         return;
     }
+    // Only act during live gameplay. rounds_do_frame stops pumping the state
+    // machine outside GS_GAMEPLAY, so g_rounds_runtime.state (and thus
+    // rounds_is_active()) can remain Active through a mid-round level change's
+    // limbo window — without this gate the auto-spawn pass below would create
+    // entities + spawn packets in a non-gameplay state.
+    if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
+        return;
+    }
     if (!rounds_is_active()) {
         return;
     }
@@ -410,10 +442,9 @@ void lms_do_frame()
 
     // Milestone chat: announce when the alive count crosses a notable
     // threshold (one-shot per round per threshold). Don't fire before the
-    // round has at least 2 participants, otherwise round-1 race conditions
-    // trigger spurious "Final duel!" announcements.
-    const int participants = count_round_participants();
-    if (participants < 2) return;
+    // round has reached at least 2 participants, otherwise round-1 race
+    // conditions trigger spurious "Final duel!" announcements.
+    if (!round_reached_min_participants()) return;
 
     const int alive = count_alive();
     if (alive != g_last_alive_announced) {
@@ -483,9 +514,4 @@ void lms_on_player_disconnect(rf::Player* /*player*/)
 {
     // Nothing to clean up — alive count is derived from the live player_list.
     // Callbacks may detect a round-end transition on the next tick.
-}
-
-int lms_alive_count()
-{
-    return count_alive();
 }

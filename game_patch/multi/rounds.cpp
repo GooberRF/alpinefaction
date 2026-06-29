@@ -320,10 +320,6 @@ void tick_intermission()
         start_round();
         return;
     }
-
-    // Per-second countdown render + tick sounds are produced by the engine's
-    // built-in last-10-seconds countdown (driven by multi_time_limit set in
-    // enter_intermission). No explicit per-tick broadcast needed.
 }
 
 } // namespace
@@ -401,6 +397,9 @@ void rounds_level_init()
     // hook re-registers them (e.g. lms_level_init_post for LMS).
     g_rounds_runtime.reset();
     g_rounds_callbacks = RoundCallbacks{};
+
+    // Client-side: clear any in-flight round countdown.
+    rounds_client_set_countdown(0);
 }
 
 void rounds_level_init_post()
