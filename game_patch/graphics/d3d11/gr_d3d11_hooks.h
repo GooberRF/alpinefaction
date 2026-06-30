@@ -2,7 +2,7 @@
 
 #include "../../rf/gr/gr.h"
 
-namespace df::gr::d3d11 {
+namespace gr::d3d11 {
     bool set_render_target(int bm_handle);
     void update_window_mode();
     void bitmap_float(int bitmap_handle, float x, float y, float w, float h,
@@ -11,5 +11,7 @@ namespace df::gr::d3d11 {
     void update_texture_filtering();
     void texture_flush_non_user_cache();
     void set_pow2_tex_active(bool active);
+    bool is_antialiasing_err();
+    bool supports_sample_count(uint32_t sample_count);
+    void flush_frame_buffers();
 }
-

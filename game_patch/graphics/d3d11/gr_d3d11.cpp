@@ -9,6 +9,7 @@
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/alpine_settings.h"
+#include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_context.h"
 #include "gr_d3d11_shader.h"
@@ -21,9 +22,7 @@
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11_gamma.h"
 
-using namespace rf;
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     constexpr DXGI_FORMAT swap_chain_format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
@@ -40,8 +39,15 @@ namespace df::gr::d3d11
         skip_gamma_pass_ = g_alpine_system_config.skip_gamma_pass;
         allow_tearing_ = g_alpine_system_config.allow_tearing;
         init_swap_chain(hwnd);
-        init_back_buffer();
-        init_depth_stencil_buffer();
+        // TODO.  `sample_count` is always 1 here, until we load settings earlier.
+        if (supports_sample_count(g_alpine_game_config.sample_count)) {
+            init_back_buffer(g_alpine_game_config.sample_count);
+            init_depth_stencil_buffer(g_alpine_game_config.sample_count);
+        } else {
+            xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
+            init_back_buffer(1);
+            init_depth_stencil_buffer(1);
+        }
 
         state_manager_ = std::make_unique<StateManager>(device_);
         shader_manager_ = std::make_unique<ShaderManager>(device_);
@@ -67,7 +73,7 @@ namespace df::gr::d3d11
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         render_context_->set_cull_mode(D3D11_CULL_BACK);
 
-        gr::screen.depthbuffer_type = gr::DEPTHBUFFER_Z;
+        rf::gr::screen.depthbuffer_type = rf::gr::DEPTHBUFFER_Z;
 
         // Disable software vertex clipping
         auto& gr_needs_software_clipping = addr_as_ref<bool>(0x005A445A);
@@ -79,7 +85,7 @@ namespace df::gr::d3d11
         if (context_) {
             context_->ClearState();
         }
-        if (gr::screen.window_mode == gr::FULLSCREEN) {
+        if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
             swap_chain_->SetFullscreenState(FALSE, nullptr);
         }
         if (frame_latency_wait_handle_) {
@@ -90,7 +96,7 @@ namespace df::gr::d3d11
 
     void Renderer::window_active()
     {
-        if (rf::gr::screen.window_mode == gr::FULLSCREEN) {
+        if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
             xlog::info("Entering full screen");
             ShowWindow(hwnd_, SW_RESTORE);
             set_fullscreen_state(true);
@@ -99,7 +105,7 @@ namespace df::gr::d3d11
 
     void Renderer::window_inactive()
     {
-        if (rf::gr::screen.window_mode == gr::FULLSCREEN) {
+        if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
             xlog::info("Exiting full screen");
             set_fullscreen_state(false);
             ShowWindow(hwnd_, SW_MINIMIZE);
@@ -120,10 +126,10 @@ namespace df::gr::d3d11
         default_render_target_.release();
         default_render_target_view_.release();
         DF_GR_D3D11_CHECK_HR(
-            swap_chain_->ResizeBuffers(0, gr::screen.max_w, gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags_)
+            swap_chain_->ResizeBuffers(0, rf::gr::screen.max_w, rf::gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags_)
         );
         // get back buffer from the swap chain after it has been resized
-        init_back_buffer();
+        init_back_buffer(g_alpine_game_config.sample_count);
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
 
@@ -318,7 +324,7 @@ namespace df::gr::d3d11
         else {
             DXGI_SWAP_CHAIN_DESC sd;
             ZeroMemory(&sd, sizeof(sd));
-            sd.BufferCount = rf::gr::screen.window_mode == gr::FULLSCREEN ? 2 : 1;
+            sd.BufferCount = rf::gr::screen.window_mode == rf::gr::FULLSCREEN ? 2 : 1;
             sd.BufferDesc.Width = rf::gr::screen.max_w;
             sd.BufferDesc.Height = rf::gr::screen.max_h;
             sd.BufferDesc.Format = swap_chain_format;
@@ -345,12 +351,14 @@ namespace df::gr::d3d11
         dxgi_factory->MakeWindowAssociation(hwnd, DXGI_MWA_NO_ALT_ENTER);
     }
 
-    void Renderer::init_back_buffer()
+    void Renderer::init_back_buffer(const uint32_t sample_count)
     {
         // Get a pointer to the back buffer
         DF_GR_D3D11_CHECK_HR(
             swap_chain_->GetBuffer(0, __uuidof(ID3D11Texture2D), reinterpret_cast<LPVOID*>(&back_buffer_))
         );
+
+        msaa_render_target_.release();
 
         // Always create back buffer RTV (used as gamma pass output, or as the main
         // render target when the gamma pass is skipped)
@@ -362,10 +370,10 @@ namespace df::gr::d3d11
         init_scene_texture();
 
         // Create a render-target view for the main rendering pass
-        if (g_game_config.msaa) {
+        if (g_antialiasing && sample_count >= 2 && sample_count <= 8) {
             D3D11_TEXTURE2D_DESC desc;
             back_buffer_->GetDesc(&desc);
-            desc.SampleDesc.Count = g_game_config.msaa;
+            desc.SampleDesc.Count = sample_count;
             DF_GR_D3D11_CHECK_HR(
                 device_->CreateTexture2D(&desc, nullptr, &msaa_render_target_)
             );
@@ -373,16 +381,23 @@ namespace df::gr::d3d11
 
             CD3D11_RENDER_TARGET_VIEW_DESC view_desc{D3D11_RTV_DIMENSION_TEXTURE2DMS};
             DF_GR_D3D11_CHECK_HR(
-                device_->CreateRenderTargetView(default_render_target_, &view_desc, &default_render_target_view_)
+                device_->CreateRenderTargetView(
+                    default_render_target_,
+                    &view_desc,
+                    &default_render_target_view_
+                )
             );
-        }
-        else {
+        } else {
             // Without MSAA, render directly to the scene texture. Final output to
             // back_buffer_ happens in flip() — either via the gamma pass, or via
             // a CopyResource when the gamma pass is skipped.
             default_render_target_ = scene_texture_;
             DF_GR_D3D11_CHECK_HR(
-                device_->CreateRenderTargetView(default_render_target_, nullptr, &default_render_target_view_)
+                device_->CreateRenderTargetView(
+                    default_render_target_,
+                    nullptr,
+                    &default_render_target_view_
+                )
             );
         }
     }
@@ -402,7 +417,7 @@ namespace df::gr::d3d11
         );
     }
 
-    void Renderer::init_depth_stencil_buffer()
+    void Renderer::init_depth_stencil_buffer(const uint32_t sample_count)
     {
         D3D11_TEXTURE2D_DESC depth_stencil_desc;
         ZeroMemory(&depth_stencil_desc, sizeof(depth_stencil_desc));
@@ -411,7 +426,12 @@ namespace df::gr::d3d11
         depth_stencil_desc.MipLevels = 1;
         depth_stencil_desc.ArraySize = 1;
         depth_stencil_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        depth_stencil_desc.SampleDesc.Count = std::max(g_game_config.msaa.value(), 1u);
+        const bool use_msaa = g_antialiasing && sample_count >= 2 && sample_count <= 8;
+        if (use_msaa) {
+             depth_stencil_desc.SampleDesc.Count = sample_count;
+        } else {
+             depth_stencil_desc.SampleDesc.Count = 1;
+        }
         depth_stencil_desc.SampleDesc.Quality = 0;
         depth_stencil_desc.Usage = D3D11_USAGE_DEFAULT;
         depth_stencil_desc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
@@ -421,16 +441,74 @@ namespace df::gr::d3d11
             device_->CreateTexture2D(&depth_stencil_desc, nullptr, &depth_stencil)
         );
 
-        D3D11_DEPTH_STENCIL_VIEW_DESC view_desc;
-        ZeroMemory(&view_desc, sizeof(view_desc));
-        view_desc.ViewDimension = g_game_config.msaa ? D3D11_DSV_DIMENSION_TEXTURE2DMS : D3D11_DSV_DIMENSION_TEXTURE2D;
+        D3D11_DEPTH_STENCIL_VIEW_DESC view_desc{};
+        view_desc.ViewDimension = use_msaa
+            ? D3D11_DSV_DIMENSION_TEXTURE2DMS
+            : D3D11_DSV_DIMENSION_TEXTURE2D;
 
         DF_GR_D3D11_CHECK_HR(
             device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_)
         );
     }
 
-    void Renderer::bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, gr::Mode mode)
+    bool Renderer::supports_sample_count(const uint32_t sample_count) {
+        switch (sample_count) {
+            case 1:
+                return true;
+            case 2:
+            case 4:
+            case 8: {
+                constexpr DXGI_FORMAT FORMATS[] = {
+                    swap_chain_format,
+                    DXGI_FORMAT_D24_UNORM_S8_UINT
+                };
+                for (const DXGI_FORMAT format : FORMATS) {
+                    UINT num_quality_levels = 0;
+                    const HRESULT hr = device_->CheckMultisampleQualityLevels(
+                        format,
+                        sample_count,
+                        &num_quality_levels
+                    );
+                    if (FAILED(hr) || num_quality_levels == 0) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
+
+    uint32_t Renderer::get_sample_count() const {
+        ComPtr<ID3D11Resource> resource{};
+        default_render_target_view_->GetResource(&resource);
+
+        ComPtr<ID3D11Texture2D> render_target{};
+        if (FAILED(resource->QueryInterface(&render_target))) {
+            return 1;
+        }
+
+        D3D11_TEXTURE2D_DESC rt_desc{};
+        render_target->GetDesc(&rt_desc);
+        return rt_desc.SampleDesc.Count;
+    }
+
+    void Renderer::flush_frame_buffers() {
+        if (supports_sample_count(g_alpine_game_config.sample_count)) {
+            init_back_buffer(g_alpine_game_config.sample_count);
+            init_depth_stencil_buffer(g_alpine_game_config.sample_count);
+        } else {
+            xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
+            init_back_buffer(1);
+            init_depth_stencil_buffer(1);
+        }
+        texture_manager_->flush_render_targets();
+        render_context_
+            ->set_render_target(default_render_target_view_, depth_stencil_view_);
+    }
+
+    void Renderer::bitmap(int bm_handle, int x, int y, int w, int h, int sx, int sy, int sw, int sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
         // Flush pending outlines before any 2D bitmap is committed to the framebuffer.
         // RF draws the scope overlay as a bitmap during HUD rendering. Because the
@@ -612,7 +690,7 @@ namespace df::gr::d3d11
 
     void Renderer::tmapper(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, rf::gr::Mode mode)
     {
-        std::array<int, 2> tex_handles{gr::screen.current_texture_1, gr::screen.current_texture_2};
+        std::array<int, 2> tex_handles{rf::gr::screen.current_texture_1, rf::gr::screen.current_texture_2};
         dyn_geo_renderer_->add_poly(nv, vertices, vertex_attributes, tex_handles, mode);
     }
 
@@ -641,7 +719,7 @@ namespace df::gr::d3d11
                 project_vertex(v);
             }
             if (constant_sw) {
-                float unscaled_z = std::max(sw / matrix_scale.z, 0.1f);
+                float unscaled_z = std::max(sw / rf::gr::matrix_scale.z, 0.1f);
                 v->sw = render_context_->projection().project_z(unscaled_z);
             }
         }
@@ -655,11 +733,11 @@ namespace df::gr::d3d11
             return;
         }
 
-        rf::Vector3 unscaled_world_pos = v->world_pos / matrix_scale;
+        rf::Vector3 unscaled_world_pos = v->world_pos / rf::gr::matrix_scale;
         auto& proj = render_context_->projection();
         auto proj_pos = proj.project(unscaled_world_pos);
-        v->sx = screen.clip_width / 2.0f * (proj_pos.x + 1.0f) + screen.offset_x;
-        v->sy = screen.clip_height / 2.0f * (1.0f - proj_pos.y) + screen.offset_y;
+        v->sx = rf::gr::screen.clip_width / 2.0f * (proj_pos.x + 1.0f) + rf::gr::screen.offset_x;
+        v->sy = rf::gr::screen.clip_height / 2.0f * (1.0f - proj_pos.y) + rf::gr::screen.offset_y;
         v->sw = proj_pos.z;
 
         v->flags |= rf::gr::VF_PROJECTED;
@@ -669,13 +747,13 @@ namespace df::gr::d3d11
     {
         dyn_geo_renderer_->flush();
         if (bm_handle != -1) {
-            ID3D11RenderTargetView* render_target_view = texture_manager_->lookup_render_target(bm_handle);
+            ID3D11RenderTargetView* const render_target_view =
+                texture_manager_->lookup_render_target(bm_handle);
             if (!render_target_view) {
                 return false;
             }
             render_context_->set_render_target(render_target_view, depth_stencil_view_);
-        }
-        else {
+        } else {
             render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         }
         if (render_target_bm_handle_ != -1) {
@@ -685,7 +763,7 @@ namespace df::gr::d3d11
         return true;
     }
 
-    bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)
+    rf::bm::Format Renderer::read_back_buffer([[maybe_unused]] int x, [[maybe_unused]] int y, int w, int h, rf::ubyte *data)
     {
         dyn_geo_renderer_->flush();
         // Resolve the current scene content into a readable texture.

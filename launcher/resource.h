@@ -28,7 +28,7 @@
 #define IDC_RENDERING_CACHE_EDIT        1010
 #define IDC_DIRECT_INPUT_CHECK          1011
 #define IDC_ANISOTROPIC_CHECK           1012
-#define IDC_MSAA_COMBO                  1013
+// #define IDC_MSAA_COMBO                  1013
 // #define IDC_DISABLE_LOD_CHECK           1014
 #define IDC_HEADER_PIC                  1015
 #define IDC_EXE_PATH_EDIT               1016

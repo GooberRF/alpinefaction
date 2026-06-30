@@ -47,44 +47,43 @@ rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_cont
 
 FunHook<int(int16_t)> key_to_ascii_hook{
     0x0051EFC0,
-    [](int16_t key) {
-        using namespace rf;
+    [] (int16_t key) {
         constexpr int empty_result = 0xFF;
         if (!key) {
             return empty_result;
         }
         // special handling for Num Lock (because ToAscii API does not support it)
-        switch (key & KEY_MASK) {
+        switch (key & rf::KEY_MASK) {
             // Numpad keys that always work
-            case KEY_PADMULTIPLY: return static_cast<int>('*');
-            case KEY_PADMINUS: return static_cast<int>('-');
-            case KEY_PADPLUS: return static_cast<int>('+');
+            case rf::KEY_PADMULTIPLY: return static_cast<int>('*');
+            case rf::KEY_PADMINUS: return static_cast<int>('-');
+            case rf::KEY_PADPLUS: return static_cast<int>('+');
             // Disable Numpad Enter key because game is not prepared for getting new line character from this function
-            case KEY_PADENTER: return empty_result;
+            case rf::KEY_PADENTER: return empty_result;
         }
         if (GetKeyState(VK_NUMLOCK) & 1) {
-            switch (key & KEY_MASK) {
-                case KEY_PAD7: return static_cast<int>('7');
-                case KEY_PAD8: return static_cast<int>('8');
-                case KEY_PAD9: return static_cast<int>('9');
-                case KEY_PAD4: return static_cast<int>('4');
-                case KEY_PAD5: return static_cast<int>('5');
-                case KEY_PAD6: return static_cast<int>('6');
-                case KEY_PAD1: return static_cast<int>('1');
-                case KEY_PAD2: return static_cast<int>('2');
-                case KEY_PAD3: return static_cast<int>('3');
-                case KEY_PAD0: return static_cast<int>('0');
-                case KEY_PADPERIOD: return static_cast<int>('.');
+            switch (key & rf::KEY_MASK) {
+                case rf::KEY_PAD7: return static_cast<int>('7');
+                case rf::KEY_PAD8: return static_cast<int>('8');
+                case rf::KEY_PAD9: return static_cast<int>('9');
+                case rf::KEY_PAD4: return static_cast<int>('4');
+                case rf::KEY_PAD5: return static_cast<int>('5');
+                case rf::KEY_PAD6: return static_cast<int>('6');
+                case rf::KEY_PAD1: return static_cast<int>('1');
+                case rf::KEY_PAD2: return static_cast<int>('2');
+                case rf::KEY_PAD3: return static_cast<int>('3');
+                case rf::KEY_PAD0: return static_cast<int>('0');
+                case rf::KEY_PADPERIOD: return static_cast<int>('.');
             }
         }
         BYTE key_state[256] = {0};
-        if (key & KEY_SHIFTED) {
+        if (key & rf::KEY_SHIFTED) {
             key_state[VK_SHIFT] = 0x80;
         }
-        if (key & KEY_ALTED) {
+        if (key & rf::KEY_ALTED) {
             key_state[VK_MENU] = 0x80;
         }
-        if (key & KEY_CTRLED) {
+        if (key & rf::KEY_CTRLED) {
             key_state[VK_CONTROL] = 0x80;
         }
         int scan_code = key & 0x7F;

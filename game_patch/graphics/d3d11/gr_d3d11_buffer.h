@@ -4,7 +4,7 @@
 #include <common/ComPtr.h>
 #include "gr_d3d11.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     template<typename T>
     class RingBuffer
