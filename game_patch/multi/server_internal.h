@@ -275,6 +275,21 @@ struct WeaponStayExemptionConfigOld
     bool rail_gun = false;
 };
 
+struct RoundConfig
+{
+    int max_rounds = 5;            // rounds per map before rotation
+    uint16_t round_time = 90;      // seconds per round
+    uint8_t post_round_time = 3;   // seconds of celebration after round end
+    uint8_t intermission_time = 3; // seconds of countdown between rounds
+
+    // =============================================
+
+    void set_max_rounds(int v) { max_rounds = std::clamp(v, 1, 999); }
+    void set_round_time(int v) { round_time = static_cast<uint16_t>(std::clamp(v, 10, 3600)); }
+    void set_post_round_time(int v) { post_round_time = static_cast<uint8_t>(std::clamp(v, 0, 10)); }
+    void set_intermission_time(int v) { intermission_time = static_cast<uint8_t>(std::clamp(v, 0, 10)); }
+};
+
 struct OvertimeConfig
 {
     bool enabled = false;
@@ -594,6 +609,7 @@ struct AlpineServerConfigRules
     rf::NetGameType game_type = rf::NetGameType::NG_TYPE_DM;
     float time_limit = 600.0f;
     OvertimeConfig overtime;
+    RoundConfig rounds;
     int individual_kill_limit = 30;
     int team_kill_limit = 100;
     int cap_limit = 5;

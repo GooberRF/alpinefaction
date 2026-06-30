@@ -477,7 +477,7 @@ bool multi_hud_send_taunt_chat_message(const std::string_view taunt_text)
     msg.append(kTauntChatPrefix.data(), kTauntChatPrefix.size());
     msg.append(taunt_text.data(), taunt_text.size());
     rf::multi_chat_say(msg.c_str(), false);
-    rf::snd_play(4, 0, 0.0f, 1.0f);
+    rf::snd_play(stock_sound_id::end_voice, 0, 0.0f, 1.0f);
     return true;
 }
 
@@ -832,7 +832,9 @@ void multi_hud_render_team_scores()
     const bool is_esc = game_type == rf::NG_TYPE_ESC;
     const bool is_rev = game_type == rf::NG_TYPE_REV;
     const bool is_run = game_type == rf::NG_TYPE_RUN;
-    const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_BAG;
+    const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
+        || game_type == rf::NG_TYPE_BAG
+        || game_type == rf::NG_TYPE_LMS;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
@@ -1063,7 +1065,9 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     0x00476DEB,
     [](auto& regs) {
         const auto game_type = rf::multi_get_game_type();
-        const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM || game_type == rf::NG_TYPE_BAG;
+        const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
+            || game_type == rf::NG_TYPE_BAG
+            || game_type == rf::NG_TYPE_LMS;
         if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbag() || is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
@@ -1131,13 +1135,13 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
     g_draw_respawn_timer_can_respawn = can_respawn;
 }
 
-void hud_notification_show(std::string text, int duration_ms,
+void hud_notification_show(std::string text, int duration_seconds,
     HudNotificationType type, bool fade_on_expire)
 {
     g_hud_notification.type = type;
     g_hud_notification.text = std::move(text);
-    if (duration_ms >= 0) {
-        g_hud_notification.expiry.set(duration_ms);
+    if (duration_seconds >= 0) {
+        g_hud_notification.expiry.set(duration_seconds * 1000);
     } else {
         g_hud_notification.expiry.invalidate();
     }
@@ -1680,7 +1684,7 @@ void chat_menu_action_handler(rf::Key key) {
                 if (!g_rad_msg_timer.valid() || g_rad_msg_timer.elapsed()) {
                     g_rad_msg_timer.set(1000);
                     rf::multi_chat_say(msg.c_str(), use_team_chat);
-                    rf::snd_play(4, 0, 0.0f, 1.0f);
+                    rf::snd_play(stock_sound_id::end_voice, 0, 0.0f, 1.0f);
                 }
                 else {
                     rf::String msg{"You must wait at least one second between radio messages"};

@@ -14,6 +14,7 @@
 #include "../multi/multi.h"
 #include "../rf/ui.h"
 #include "../rf/sound/sound.h"
+#include "../sound/sound.h"
 #include "../rf/input.h"
 #include "../rf/player/player.h"
 #include "../rf/misc.h"
@@ -681,15 +682,15 @@ FunHook<bool __fastcall(void *this_, int edx, rf::Key key)> UiInputBox_process_k
 
 void ao_play_button_snd(bool on) {
     if (on) {
-        rf::snd_play(45, 0, 0.0f, 1.0f);
+        rf::snd_play(stock_sound_id::checkbox_off, 0, 0.0f, 1.0f);
     }
     else {
-        rf::snd_play(44, 0, 0.0f, 1.0f);
+        rf::snd_play(stock_sound_id::checkbox_on, 0, 0.0f, 1.0f);
     }
 }
 
 void ao_play_tab_snd() {
-    rf::snd_play(41, 0, 0.0f, 1.0f);
+    rf::snd_play(stock_sound_id::menu_select, 0, 0.0f, 1.0f);
 }
 
 void ao_tab_button_on_click_0(int x, int y) {
@@ -1568,7 +1569,7 @@ static int ao_compute_max_scroll(rf::ui::Panel* subpanel)
 void alpine_options_panel_handle_key(rf::Key* key){
     if (*key == rf::Key::KEY_ESC) {
         rf::ui::options_close_current_panel();
-        rf::snd_play(43, 0, 0.0f, 1.0f);
+        rf::snd_play(stock_sound_id::panel_button_click, 0, 0.0f, 1.0f);
         return;
     }
 }
@@ -2923,7 +2924,7 @@ FunHook<int(int, int)> audio_panel_handle_mouse_hook{
                     hovered_index = static_cast<int>(i);
 
                     if (last_hover_sound_index != hovered_index) {
-                        rf::snd_play(42, 0, 0.0f, 1.0f);
+                        rf::snd_play(stock_sound_id::panel_highlight, 0, 0.0f, 1.0f);
                         last_hover_sound_index = hovered_index;
                     }
                     break;
@@ -2939,7 +2940,7 @@ FunHook<int(int, int)> audio_panel_handle_mouse_hook{
                     gadget->on_click(x, y);
 
                 last_hovered_index = hovered_index; // remember active gadget for slider drag
-                rf::snd_play(43, 0, 0.0f, 1.0f);
+                rf::snd_play(stock_sound_id::panel_button_click, 0, 0.0f, 1.0f);
             }
         }
 

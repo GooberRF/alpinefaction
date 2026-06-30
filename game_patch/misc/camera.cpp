@@ -13,6 +13,7 @@
 #include "../input/gamepad.h"
 #include "../input/mouse.h"
 #include "../rf/entity.h"
+#include "../rf/level.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/alpine_options.h"
@@ -472,6 +473,171 @@ ConsoleCommand2 linear_pitch_cmd{
     "Toggles mouse linear pitch angle",
 };
 
+enum class AlpineStaticCameraMode
+{
+    None,
+    Fixed,  // static position and orientation
+    Tripod, // static position, orientation tracks the player
+};
+
+static AlpineStaticCameraMode g_static_camera_mode = AlpineStaticCameraMode::None;
+static rf::Vector3 g_static_camera_pos;
+static rf::Matrix3 g_static_camera_orient;
+
+void alpine_camera_clear_static_mode()
+{
+    g_static_camera_mode = AlpineStaticCameraMode::None;
+}
+
+FunHook<bool(rf::Camera*)> camera_enter_third_person_hook{
+    0x0040DE80,
+    [](rf::Camera* camera) -> bool {
+        if (!rf::is_multi && camera && camera->mode == rf::CameraMode::CAMERA_FREELOOK &&
+            camera->camera_entity && camera->player) {
+            rf::Entity* player_entity = rf::entity_from_handle(camera->player->entity_handle);
+            if (player_entity) {
+                rf::Entity* camera_entity = camera->camera_entity;
+
+                const rf::Vector3 view_pos = rf::camera_get_pos(camera);
+                const rf::Matrix3 view_orient = rf::camera_get_orient(camera);
+
+                rf::Matrix3 eye_orient_t;
+                player_entity->eye_orient.copy_transpose(&eye_orient_t);
+
+                const rf::Vector3 host_offset =
+                    eye_orient_t.transform_vector(view_pos - player_entity->eye_pos);
+
+                rf::Matrix3 host_orient = eye_orient_t;
+                host_orient.mul(view_orient); // host_orient = transpose(eye_orient) * view_orient
+
+                camera_entity->host_handle = player_entity->handle;
+                camera_entity->host_offset = host_offset;
+                camera_entity->host_orient = host_orient;
+                camera->mode = rf::CameraMode::CAMERA_THIRD_PERSON;
+                return true;
+            }
+        }
+        return camera_enter_third_person_hook.call_target(camera);
+    },
+};
+
+// Entering free camera from an attached camera
+CodeInjection camera_enter_freelook_preserve_view_patch{
+    0x0040DD4C,
+    [](auto& regs) {
+        if (rf::is_multi) {
+            return;
+        }
+        rf::Entity* camera_entity = regs.esi;
+        if (camera_entity->orient.uvec.y > 0.9999f) {
+            return;
+        }
+        float pitch = 0.0f, roll = 0.0f, yaw = 0.0f;
+        camera_entity->eye_orient.extract_angles(&pitch, &roll, &yaw);
+        camera_entity->orient.set_from_angles(0.0f, 0.0f, yaw);
+    },
+};
+
+static void alpine_static_camera_apply(rf::Camera* camera)
+{
+    rf::Entity* camera_entity = camera->camera_entity;
+
+    if (g_static_camera_mode == AlpineStaticCameraMode::Tripod && camera->player) {
+        if (rf::Entity* player_entity = rf::entity_from_handle(camera->player->entity_handle)) {
+            // Follow target roughly at chest height.
+            rf::Vector3 target = player_entity->pos;
+            target.y += 0.5f;
+
+            rf::Vector3 forward = target - g_static_camera_pos;
+            if (forward.len_sq() > 0.0001f) {
+                forward.normalize();
+                g_static_camera_orient.make_quick(forward);
+            }
+        }
+    }
+
+    camera_entity->pos = g_static_camera_pos;
+    camera_entity->orient = g_static_camera_orient;
+    camera_entity->eye_pos = g_static_camera_pos;
+    camera_entity->eye_orient = g_static_camera_orient;
+
+    // Keep the camera entity's room in sync with its position.
+    camera_entity->set_room(nullptr);
+    camera_entity->update_room();
+}
+
+FunHook<void(rf::Camera*)> camera_do_frame_hook{
+    0x0040D850,
+    [](rf::Camera* camera) {
+        if (g_static_camera_mode != AlpineStaticCameraMode::None) {
+            const bool active = !rf::is_multi && rf::local_player &&
+                camera == rf::local_player->cam && camera->camera_entity &&
+                camera->mode == rf::CameraMode::CAMERA_THIRD_PERSON;
+
+            if (active) {
+                alpine_static_camera_apply(camera);
+                return;
+            }
+            // Camera left third person for some other reason (death, cutscene, level change, etc).
+            // Disengage and fall back to stock behaviour.
+            g_static_camera_mode = AlpineStaticCameraMode::None;
+        }
+        camera_do_frame_hook.call_target(camera);
+    },
+};
+
+static void alpine_enter_static_camera(AlpineStaticCameraMode mode)
+{
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        rf::console::print("No level loaded!");
+        return;
+    }
+    if (rf::is_multi) {
+        rf::console::print("That command can't be used in multiplayer.");
+        return;
+    }
+    if (!rf::local_player || !rf::local_player->cam || !rf::local_player->cam->camera_entity) {
+        return;
+    }
+
+    rf::Camera* camera = rf::local_player->cam;
+
+    // Capture the position and orientation currently on screen before changing modes.
+    const rf::Vector3 pos = rf::camera_get_pos(camera);
+    const rf::Matrix3 orient = rf::camera_get_orient(camera);
+
+    // Force third person so the player model is visible and freelook input no longer drives the
+    // camera. The per-frame hook overrides the actual transform, so the host follow is unused.
+    if (camera->mode != rf::CameraMode::CAMERA_THIRD_PERSON) {
+        rf::camera_enter_third_person(camera);
+    }
+
+    g_static_camera_pos = pos;
+    g_static_camera_orient = orient;
+    g_static_camera_mode = mode;
+
+    // Neutralize any leftover velocity so physics doesn't drift the camera entity off its mark.
+    if (camera->camera_entity) {
+        camera->camera_entity->p_data.vel.zero();
+        camera->camera_entity->p_data.pos = pos;
+    }
+
+    rf::console::print("Camera mode set to {}. Use `camera1` to return to first person.",
+        mode == AlpineStaticCameraMode::Tripod ? "tripod" : "static");
+}
+
+ConsoleCommand2 camera4_cmd{
+    "camera4",
+    []() { alpine_enter_static_camera(AlpineStaticCameraMode::Fixed); },
+    "Freeze a static camera in place while you keep controlling your character.",
+};
+
+ConsoleCommand2 camera5_cmd{
+    "camera5",
+    []() { alpine_enter_static_camera(AlpineStaticCameraMode::Tripod); },
+    "Freeze the camera in place, following your character (tripod).",
+};
+
 void camera_do_patch()
 {
     // Maintain third person camera mode if set
@@ -505,4 +671,13 @@ void camera_do_patch()
     // linear pitch correction
     linear_pitch_patch.install();
     linear_pitch_cmd.register_cmd();
+
+    // Do not snap the camera angle when transitioning between free look and third person camera
+    camera_enter_third_person_hook.install();
+    camera_enter_freelook_preserve_view_patch.install();
+
+    // Additional camera modes
+    camera_do_frame_hook.install();
+    camera4_cmd.register_cmd();
+    camera5_cmd.register_cmd();
 }

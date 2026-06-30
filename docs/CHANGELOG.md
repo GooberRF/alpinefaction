@@ -31,7 +31,10 @@ Version 1.4.0 (Lupin): Not yet released
   - Fine tuned texture animation without being subject to VBM format limitations
   - Accessible to event system via handle for level-driven behaviour scripting
 - Support PNG and JPG texture formats in game and level editor
-- Add Bagman (`BAG`) and Team Bagman (`TBAG`) game types
+- Add new multiplayer game types:
+  - Bagman (`BAG`)
+  - Team Bagman (`TBAG`)
+  - Last Miner Standing (`LMS`)
 
 ### Minor features, changes, and enhancements
 [@AL2009man](https://github.com/AL2009man)
@@ -46,6 +49,15 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `fflink_gsk` dedicated server config field and `sv_fflink_status` and `sv_fflink_resync` console commands for FactionFiles session key exchange
 - Make clock clutter objects correctly display the current local real world time
 - Add mini scoreboard HUD element to FFA game types
+- Add support for round-based game types
+- Add dedicated server config fields `max_rounds`, `round_time`, `post_round_time`, and `intermission_time`
+- Add HUD notification messages via `AF_SERVER_MSG_TYPE_HUD_NOTIFICATION` server message type
+- Add server-initiated HUD countdown via `AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN` server message type
+- Add server-initiated custom sound play via `AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND` server message type
+- Add per-type object count next to each entry in the `Show In List` filter in the editor's Select Objects and Show/Hide Objects windows
+- Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
+- Add `camera4` console command for static camera in single player
+- Add `camera5` console command for tripod (follow player) camera in single player
 
 [@is-this-c](https://github.com/is-this-c)
 - Allow players to join between levels
@@ -73,6 +85,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix client crash when a bot targets a player whose name contains `$`
 - Fix crash when a collision query targets an object whose mesh failed to load
 - Fix skybox rendering issues with Direct3D 11 renderer on community level `ctf-stronghold.rfl`
+- Fix unbounded read when a request to play a sound above `g_num_sounds` is made
+- Fix camera angle snapping when switching between free look and third person camera modes
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
