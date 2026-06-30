@@ -36,6 +36,12 @@ constexpr float freelook_accel_scroll_step = 0.25f;
 
 bool server_side_restrict_disable_ss = false;
 
+static bool is_freelook_camera()
+{
+    return rf::local_player && rf::local_player->cam
+        && rf::camera_get_mode(*rf::local_player->cam) == rf::CameraMode::CAMERA_FREELOOK;
+}
+
 static bool s_camera_resetting = false;
 static bool s_camera_reset_prev_down = false;
 static float s_camera_reset_start_pitch = 0.0f;
@@ -434,10 +440,12 @@ CodeInjection linear_pitch_patch{
         }
 
         // Add gamepad rotation deltas to the game's computed deltas
-        float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
-        consume_raw_gamepad_deltas(gamepad_pitch, gamepad_yaw);
-        pitch_delta += gamepad_pitch;
-        yaw_delta += gamepad_yaw;
+        if (!is_freelook_camera()) {
+            float gamepad_pitch = 0.0f, gamepad_yaw = 0.0f;
+            consume_raw_gamepad_deltas(gamepad_pitch, gamepad_yaw);
+            pitch_delta += gamepad_pitch;
+            yaw_delta += gamepad_yaw;
+        }
 
         // Apply linear pitch correction to combined delta
         if (g_alpine_game_config.mouse_linear_pitch && pitch_delta != 0.0f) {

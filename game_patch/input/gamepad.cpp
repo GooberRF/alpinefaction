@@ -180,7 +180,7 @@ static bool is_gamepad_input_active()
 static bool is_freelook_camera()
 {
     return rf::local_player && rf::local_player->cam
-        && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
+        && rf::camera_get_mode(*rf::local_player->cam) == rf::CameraMode::CAMERA_FREELOOK;
 }
 
 static void update_gamepad_scoped_sensitivities()
@@ -720,10 +720,8 @@ static void update_stick_movement()
         return;
 
     if (!rf::gameseq_in_gameplay() || is_gamepad_menu_state()) {
-        if (!is_freelook_camera()) {
-            release_movement_keys();
-            return;
-        }
+        release_movement_keys();
+        return;
     }
 
     if (rf::local_player_entity && rf::entity_is_dying(rf::local_player_entity)) {
@@ -1288,7 +1286,8 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     }
 
     const bool has_player_entity = rf::local_player_entity && !rf::entity_is_dying(rf::local_player_entity);
-    const bool is_freelook = !has_player_entity && is_freelook_camera();
+    const bool freelook_camera_active = is_freelook_camera();
+    const bool is_freelook = !has_player_entity && freelook_camera_active;
     if (!is_gamepad_input_active() || !rf::keep_mouse_centered) {
         reset_gamepad_input_state();
         return;
@@ -1343,7 +1342,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         gamepad_apply_joystick(cam_x, cam_y, cam_dz, gamepad_zoom_sens, yaw_delta, pitch_delta);
     }
 
-    bool allow_gyro = !is_freelook
+    bool allow_gyro = !freelook_camera_active
         && g_motion_sensors_supported
         && g_alpine_game_config.gamepad_gyro_enabled
         && g_alpine_game_config.gamepad_gyro_sensitivity > 0.0f
@@ -1449,7 +1448,8 @@ FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
         if (entity == rf::local_player_entity && rf::entity_is_dying(entity)) {
             entity->ai.ci.move.x = 0.0f;
             entity->ai.ci.move.z = 0.0f;
-        } else if (is_gamepad_input_active() && entity == rf::local_player_entity && g_move_mag > 0.001f) {
+        } else if (is_gamepad_input_active() && entity == rf::local_player_entity
+            && g_move_mag > 0.001f && !is_freelook_camera()) {
             if (rf::is_multi) {
                 float inv_mag = 1.0f / g_move_mag;
                 entity->ai.ci.move.x = g_move_lx * inv_mag;

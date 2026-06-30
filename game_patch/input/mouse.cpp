@@ -23,10 +23,11 @@
 // pipeline so the controlled entity/camera picks them up.
 static int g_camera_mouse_dx = 0, g_camera_mouse_dy = 0;
 
+// Use the camera-mode accessor so single-player camera2 freelook matches spectator freelook.
 static bool is_freelook_camera()
 {
     return rf::local_player && rf::local_player->cam
-        && rf::local_player->cam->mode == rf::CameraMode::CAMERA_FREELOOK;
+        && rf::camera_get_mode(*rf::local_player->cam) == rf::CameraMode::CAMERA_FREELOOK;
 }
 
 // Sub-pixel remainder accumulators for vehicle mouse sensitivity scaling.
