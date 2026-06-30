@@ -33,6 +33,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `camera4` console command for static camera in single player
 - Add `camera5` console command for tripod (follow player) camera in single player
 
+[@AL2009man](https://github.com/AL2009man)
+- Add support for additional mouse buttons and Left/Right Alt in the controls binding UI
+
 [@is-this-c](https://github.com/is-this-c)
 - Allow players to join between levels
 - Add `mp_join_flash` console command to flash your window upon player joins, if your window is out of focus
@@ -61,6 +64,9 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix skybox rendering issues with Direct3D 11 renderer on community level `ctf-stronghold.rfl`
 - Fix unbounded read when a request to play a sound above `g_num_sounds` is made
 - Fix camera angle snapping when switching between free look and third person camera modes
+
+[@AL2009man](https://github.com/AL2009man)
+- Fix brief game freeze every time the Alt key is pressed.
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
