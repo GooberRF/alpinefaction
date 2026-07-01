@@ -2171,7 +2171,7 @@ void gamepad_reset_to_defaults()
     g_trigger_action[0] = g_trigger_action[1] = -1;
     g_menu_trigger_action[0] = g_menu_trigger_action[1] = -1;
 
-    g_button_map[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = rf::CC_ACTION_PRIMARY_ATTACK;
+    g_button_map[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = rf::CC_ACTION_CROUCH;
     g_button_map[SDL_GAMEPAD_BUTTON_LEFT_SHOULDER]  = rf::CC_ACTION_JUMP;
     g_button_map[SDL_GAMEPAD_BUTTON_SOUTH]          = rf::CC_ACTION_USE;
     g_button_map[SDL_GAMEPAD_BUTTON_NORTH]          = rf::CC_ACTION_RELOAD;
@@ -2189,8 +2189,8 @@ void gamepad_reset_to_defaults()
     g_menu_button_map[SDL_GAMEPAD_BUTTON_NORTH]     = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU));
 
     // Trigger defaults (gameplay action)
-    g_trigger_action[0] = rf::CC_ACTION_CROUCH;
-    g_trigger_action[1] = rf::CC_ACTION_SECONDARY_ATTACK;
+    g_trigger_action[0] = rf::CC_ACTION_SECONDARY_ATTACK;
+    g_trigger_action[1] = rf::CC_ACTION_PRIMARY_ATTACK;
 }
 
 void gamepad_apply_patch()
