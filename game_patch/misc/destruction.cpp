@@ -2,6 +2,7 @@
 #include <deque>
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <map>
 #include <set>
 #include <unordered_set>
@@ -41,15 +42,11 @@ static int g_rf2_geo_limit = -1;
 static int g_rf2_geo_count = 0;
 
 // Replayable records of confirmed RF2-style geomod carves this level (for savegame persistence).
-// Appended when a carve is confirmed in geomod_create_hook; cleared on level cleanup; rebuilt on
-// load by destruction_replay_rf2_geomods().
 static std::vector<RF2GeomodRecord> g_rf2_geomod_records;
-
-// Frame countdown active while a savegame's RF2 carves are being replayed. The replayed carves
-// process over several frames (one room per frame); during this window the boolean state machine's
-// cosmetic effects (camera shake, entity push, decal) are suppressed so a load doesn't feel like an
-// explosion. Refreshed each frame while the engine is still actively carving (see geomod_per_frame_hook).
-static int g_rf2_replay_suppress_frames = 0;
+static std::deque<RF2GeomodRecord> g_rf2_pending_records;
+static bool g_rf2_replaying = false;
+static bool g_rf2_orient_override_active = false;
+static rf::Matrix3 g_rf2_orient_override;
 
 // Tracks whether the boolean engine actually modified any detail room faces.
 // Set in boolean State 5 when a detail room appears in the affected rooms list.
@@ -2475,17 +2472,32 @@ CallHook<void(rf::GeomodParams*)> packet_emitter_save_params_hook{
 FunHook<void(float)> geomod_per_frame_hook{
     0x00437180,
     [](float dt) {
-        // Keep the replay-suppress window alive while replayed RF2 carves are still being processed.
-        // The boolean engine carves one detail room per frame, so several saved geos span many frames;
-        // if the window expired mid-sequence the later carves would leak their screenshake.
-        if (g_rf2_replay_suppress_frames > 0) {
-            if (g_rf2_target_detail_room != nullptr || !g_rf2_pending_detail_rooms.empty())
-                g_rf2_replay_suppress_frames = 120; // refresh while actively carving
-            else
-                --g_rf2_replay_suppress_frames;
-        }
         process_pending_geomod_effects();
         geomod_per_frame_hook.call_target(dt);
+    },
+};
+
+// Hook the random crater-orientation generator for normal geos
+FunHook<void __fastcall(rf::Matrix3*)> geomod_random_orient_hook{
+    0x004fccc0,
+    [](rf::Matrix3* dest) {
+        if (g_rf2_orient_override_active && dest) {
+            *dest = g_rf2_orient_override;
+            return;
+        }
+        geomod_random_orient_hook.call_target(dest);
+    },
+};
+
+// Hook the random crater-orientation generator for identify (driller) geos
+FunHook<void __fastcall(rf::Matrix3*)> geomod_identity_orient_hook{
+    0x004fce70,
+    [](rf::Matrix3* dest) {
+        if (g_rf2_orient_override_active && dest) {
+            *dest = g_rf2_orient_override;
+            return;
+        }
+        geomod_identity_orient_hook.call_target(dest);
     },
 };
 
@@ -2528,7 +2540,12 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
                 // using bbox + padding. Reliable for all geometry shapes including
                 // concave brushes and touching detail brushes.
                 auto overlapping = find_overlapping_detail_rooms(*pos);
+                if (g_rf2_replaying)
+                    xlog::info("[ASG][RF2] replay carve pos=({:.2f},{:.2f},{:.2f}) overlapping_geoable={}",
+                               pos->x, pos->y, pos->z, overlapping.size());
                 if (overlapping.empty()) {
+                    if (g_rf2_replaying)
+                        xlog::warn("[ASG][RF2] replay carve DROPPED — no geoable detail room overlaps this position");
                     return false; // skip entire geomod (no effects, no boolean, no state machine)
                 }
             }
@@ -2586,8 +2603,8 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
             rf::g_num_geomods_this_level = saved_crater_count;
             if (result) {
                 g_rf2_geo_count++;
-                // record this carve so it can be re-issued when a savegame is loaded
-                if (pos) {
+                // Stash this carve so it can be re-issued when a savegame is loaded.
+                if (pos && !g_rf2_replaying && !rf::is_multi) {
                     RF2GeomodRecord rec{};
                     rec.pos[0] = pos->x; rec.pos[1] = pos->y; rec.pos[2] = pos->z;
                     if (hit_normal) {
@@ -2598,7 +2615,15 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
                     rec.radius = radius;
                     rec.shape_index = shape_index;
                     rec.flags = flags;
-                    g_rf2_geomod_records.push_back(rec);
+                    // capture the (randomly generated) crater orientation from the just-queued geomod
+                    // event so the exact same rotation is reproduced on load.
+                    if (rf::g_geomod_pending_list.prev != &rf::g_geomod_pending_list) {
+                        const rf::Matrix3& m = rf::g_geomod_pending_list.prev->parameters.orient;
+                        rec.orient[0] = m.rvec.x; rec.orient[1] = m.rvec.y; rec.orient[2] = m.rvec.z;
+                        rec.orient[3] = m.uvec.x; rec.orient[4] = m.uvec.y; rec.orient[5] = m.uvec.z;
+                        rec.orient[6] = m.fvec.x; rec.orient[7] = m.fvec.y; rec.orient[8] = m.fvec.z;
+                    }
+                    g_rf2_pending_records.push_back(rec);
                 }
             }
             else if (!rf::is_multi || rf::is_server) {
@@ -2954,6 +2979,8 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         if (g_rf2_target_detail_room == nullptr || !g_rf2_boolean_modified_detail) {
             rf::g_geomod_outer_state = -1; // mark geomod as done
             if (!g_rf2_smoke_pending.empty()) g_rf2_smoke_pending.pop_front();
+            // Phantom carve (queued but cut nothing): discard its stashed record so it isn't persisted.
+            if (!g_rf2_pending_records.empty()) g_rf2_pending_records.pop_front();
             g_rf2_deferred_debris.pending = false;
             g_rf2_deferred_sound.pending = false;
             g_rf2_decal_deferred = false;
@@ -2965,7 +2992,7 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         // During a savegame replay (the post-load window), skip the cosmetic blast effects (camera
         // shake, entity knockback, impact decal). The carved geometry itself is produced by the
         // boolean in State 5 and is unaffected — we just don't want a load to feel like an explosion.
-        bool replaying = g_rf2_replay_suppress_frames > 0;
+        const bool replaying = g_rf2_replaying;
 
         // Direct replay in State 3 (safe — these were working here before):
         if (!replaying) {
@@ -2980,12 +3007,13 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         }
 
         if (g_rf2_deferred_debris.pending) {
-            rf::geomod_create_rock_debris(
-                &g_rf2_deferred_debris.orientation,
-                g_rf2_deferred_debris.scaled_radius,
-                &g_rf2_deferred_debris.source_dir,
-                g_rf2_deferred_debris.texture,
-                g_rf2_deferred_debris.room);
+            if (!replaying)
+                rf::geomod_create_rock_debris(
+                    &g_rf2_deferred_debris.orientation,
+                    g_rf2_deferred_debris.scaled_radius,
+                    &g_rf2_deferred_debris.source_dir,
+                    g_rf2_deferred_debris.texture,
+                    g_rf2_deferred_debris.room);
             g_rf2_deferred_debris.pending = false;
         }
 
@@ -2996,6 +3024,12 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         if (!g_rf2_smoke_pending.empty()) {
             g_rf2_smoke_confirmed.push_back(g_rf2_smoke_pending.front());
             g_rf2_smoke_pending.pop_front();
+        }
+        // Carve confirmed — commit its stashed record to the persistent list (empty during replay, which
+        // restores the saved list verbatim afterward, so this is a no-op there).
+        if (!g_rf2_pending_records.empty()) {
+            g_rf2_geomod_records.push_back(g_rf2_pending_records.front());
+            g_rf2_pending_records.pop_front();
         }
 
         // State 3 proceeds normally — stock effects fire for the carved room(s)
@@ -3039,8 +3073,9 @@ CodeInjection boolean_state5_protect_detail_cache_for_rf2{
                 // Play geomod sound at the earliest confirmation of carving
                 // (during boolean inner State 5, several frames before outer State 3).
                 if (g_rf2_deferred_sound.pending) {
-                    rf::snd_play_3d(g_rf2_deferred_sound.handle, g_rf2_deferred_sound.pos,
-                        1.0f, rf::Vector3{0.0f, 0.0f, 0.0f}, 0);
+                    if (!g_rf2_replaying)
+                        rf::snd_play_3d(g_rf2_deferred_sound.handle, g_rf2_deferred_sound.pos,
+                            1.0f, rf::Vector3{0.0f, 0.0f, 0.0f}, 0);
                     g_rf2_deferred_sound.pending = false;
                 }
             }
@@ -3104,6 +3139,7 @@ void destruction_level_cleanup()
     g_rf2_smoke_record_ptrs.clear();
     g_rf2_decal_deferred = false;
     g_rf2_geomod_records.clear();
+    g_rf2_pending_records.clear();
     AlpineLevelProperties::instance().geoable_room_uids.clear();
 }
 
@@ -3126,32 +3162,52 @@ void destruction_replay_rf2_geomods(const std::vector<RF2GeomodRecord>& records)
 
     static auto& level_mod = addr_as_ref<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)>(0x00467020);
 
-    // The carve hook only targets rooms flagged is_geoable, but apply_geoable_flags' UID matching is
-    // unreliable across reloads (the runtime detail-room UIDs do not stably match the editor's
-    // geoable_room_uids, so only a varying fraction of geoable rooms get flagged). Each saved record is
-    // a position where an RF2 carve previously succeeded, so the detail room there WAS geoable —
-    // guarantee the replay can target it by flagging any non-breakable detail room whose bbox (with the
-    // same hardness padding the carve uses) contains a saved carve position.
-    float padding = get_hardness_scaled_padding();
-    for (auto const& rec : records) {
-        rf::Vector3 p{rec.pos[0], rec.pos[1], rec.pos[2]};
-        for (auto& room : rf::world_solid->all_rooms) {
-            if (!room || !room->is_detail || room->is_geoable)
-                continue;
-            if (room->material_type != rf::DetailMaterial::Glass)
-                continue; // don't turn a breakable brush into a geoable one
-            if (p.x >= room->bbox_min.x - padding && p.x <= room->bbox_max.x + padding &&
-                p.y >= room->bbox_min.y - padding && p.y <= room->bbox_max.y + padding &&
-                p.z >= room->bbox_min.z - padding && p.z <= room->bbox_max.z + padding) {
-                room->is_geoable = true;
-            }
-        }
+    // Re-resolve geoable flags on the current (final) geometry before re-issuing carves.
+    apply_geoable_flags();
+    if (auto* solid = rf::level.geometry) {
+        int geoable_count = 0;
+        for (auto& room : solid->all_rooms)
+            if (room && room->is_detail && room->is_geoable)
+                ++geoable_count;
+        xlog::info("[ASG] RF2 replay: re-resolved geoable flags ({} detail room(s) flagged)", geoable_count);
     }
 
-    // suppress the boolean engine's cosmetic effects while the replayed carves process (see
-    // geomod_per_frame_hook, which refreshes this window while carving is still in progress)
-    g_rf2_replay_suppress_frames = 120;
-    int replayed = 0;
+    // suppress the boolean engine's cosmetic effects for the duration of the replay.
+    g_rf2_replaying = true;
+
+    // Drive the boolean engine to completion for the single carve currently queued.
+    auto pump_to_idle = [&]() -> long long {
+        long long steps = 0;
+        long long frozen = 0;
+        long long prev_signal = -1;
+        constexpr long long idle_after_frozen = 65'536;     // signal stable this long => state machine idle
+        constexpr long long hard_step_cap = 100'000'000;    // last-resort hang guard; never reached by real carving
+        for (;;) {
+            const long long signal = (static_cast<long long>(g_rf2_pending_detail_rooms.size()) << 20)
+                                   ^ (static_cast<long long>(g_rf2_target_detail_room != nullptr) << 18)
+                                   ^ (static_cast<long long>(rf::g_geomod_outer_state) << 8)
+                                   ^ static_cast<long long>(rf::g_boolean_inner_state);
+            if (signal != prev_signal) {
+                frozen = 0;
+                prev_signal = signal;
+            }
+            else if (++frozen >= idle_after_frozen) {
+                break; // idle: this carve fully processed
+            }
+            if (steps >= hard_step_cap) {
+                xlog::error("[ASG] RF2 replay pump exceeded {} steps without going idle — aborting", hard_step_cap);
+                break;
+            }
+            geomod_per_frame_hook.call_target(0.016f); // advance the geomod state machine one frame's worth
+            ++steps;
+        }
+        return steps;
+    };
+
+    // Issue each saved carve and pump it to completion BEFORE issuing the next.
+    auto pump_start = std::chrono::steady_clock::now();
+    int replayed = 0, confirmed = 0;
+    long long total_steps = 0;
     for (auto const& rec : records) {
         rf::Vector3 pos{rec.pos[0], rec.pos[1], rec.pos[2]};
         rf::Vector3 normal{rec.hit_normal[0], rec.hit_normal[1], rec.hit_normal[2]};
@@ -3159,16 +3215,48 @@ void destruction_replay_rf2_geomods(const std::vector<RF2GeomodRecord>& records)
         rf::GRoom* src_room = rf::world_solid->find_new_room(nullptr, &pos, &pos, "rf2_replay");
         if (!src_room)
             continue;
+        // Force the saved crater orientation (if present) so this carve reproduces its exact original
+        // rotation.
+        bool has_orient = false;
+        for (int i = 0; i < 9 && !has_orient; ++i)
+            has_orient = rec.orient[i] != 0.f;
+        if (has_orient) {
+            g_rf2_orient_override.rvec = {rec.orient[0], rec.orient[1], rec.orient[2]};
+            g_rf2_orient_override.uvec = {rec.orient[3], rec.orient[4], rec.orient[5]};
+            g_rf2_orient_override.fvec = {rec.orient[6], rec.orient[7], rec.orient[8]};
+            g_rf2_orient_override_active = true;
+        }
+        // Reset the per-carve "modified geometry" flag so the confirmation check below reflects only this
+        // carve (geomod_init resets it too, but only if the carve actually queues and reaches processing).
+        g_rf2_boolean_modified_detail = false;
         level_mod(rec.radius, -1, src_room, &pos, &normal, rec.shape_index, rec.flags);
+        g_rf2_orient_override_active = false;
         ++replayed;
+
+        // Pump THIS carve to completion before issuing the next.
+        total_steps += pump_to_idle();
+        if (g_rf2_boolean_modified_detail)
+            ++confirmed;
+        else
+            xlog::warn("[ASG][RF2] replay carve at ({:.2f},{:.2f},{:.2f}) modified no geometry", pos.x, pos.y, pos.z);
     }
-    xlog::info("[ASG] re-issued {} of {} saved RF2 geomod carve(s)", replayed, static_cast<int>(records.size()));
+    const auto pump_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - pump_start).count();
+    xlog::info("[ASG] RF2 replay: re-issued {} of {} carve(s), {} confirmed, pumped {} step(s) in {} ms",
+               replayed, static_cast<int>(records.size()), confirmed, total_steps, pump_ms);
+
+    g_rf2_replaying = false; // replay complete — live carving resumes normal effects
+
+    // restore the saved record list verbatim so a subsequent save preserves every carve and its
+    // original orientation, regardless of how many re-issued carves actually re-confirmed
+    g_rf2_geomod_records = records;
 
     // discard geomod effects queued by the replayed carves (boolean carves are unaffected)
     g_rf2_deferred_debris.pending = false;
     g_rf2_deferred_sound.pending = false;
     g_rf2_smoke_pending.clear();
     g_rf2_smoke_confirmed.clear();
+    g_rf2_pending_records.clear(); // any stragglers from the pump (should be empty — replay doesn't record)
 }
 
 void g_solid_set_rf2_geo_limit(int limit)
@@ -3180,6 +3268,8 @@ void destruction_do_patch()
 {
     // RF2-style geomod: geoable detail brush only mode
     geomod_per_frame_hook.install();
+    geomod_random_orient_hook.install();
+    geomod_identity_orient_hook.install();
     geomod_emitter_save_params_hook.install();
     geomod_rock_debris_defer_hook.install();
     geomod_sound_defer_hook.install();

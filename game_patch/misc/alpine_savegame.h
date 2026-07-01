@@ -44,9 +44,6 @@ namespace asg
     struct SavegameCommonDataPlayer
     {
         int entity_host_uid;
-        int16_t clip_x, clip_y, clip_w, clip_h;
-        float fov_h;
-        //int32_t field_10;
         int16_t player_flags;
         int field_11f8;
         int entity_uid;
@@ -338,6 +335,10 @@ namespace asg
     {
         int uid;
         bool active;
+        // cycle phase, needed for PEF_ALTERNATE_STATES emitters whose per-frame update toggles `active`
+        // (restoring `active` alone desyncs because these reset to 0 on a fresh level load)
+        float time_to_change = 0.0f;
+        float current_state_time = 0.0f;
     };
 
     struct SavegameLevelKeyframeDataBlock
@@ -360,6 +361,18 @@ namespace asg
     {
         int uid;
         bool active;
+    };
+
+    // Runtime liquid depth for a room whose depth was changed by a Set_Liquid_Depth event.
+    // `depth` is the current (possibly mid-animation) GRoom::liquid_depth; if an animation was still
+    // in flight at save time, has_pending captures its target + remaining duration so it finishes on load.
+    struct SavegameLevelLiquidDepthDataBlock
+    {
+        int room_uid;
+        float depth;
+        bool has_pending;
+        float target_depth;
+        float remaining_duration;
     };
 
     struct SavegameLevelWeaponDataBlock
@@ -429,6 +442,7 @@ namespace asg
         float radius;
         int shape_index;
         int flags;
+        float orient[9] = {}; // crater orientation (Matrix3 rvec/uvec/fvec); all-zero = not saved
     };
 
     struct SavegameLevelData
@@ -459,6 +473,7 @@ namespace asg
         std::vector<SavegameLevelParticleEmitterDataBlock> particle_emitters;
         std::vector<SavegameLevelKeyframeDataBlock> movers;
         std::vector<SavegameLevelPushRegionDataBlock> push_regions;
+        std::vector<SavegameLevelLiquidDepthDataBlock> liquid_rooms;
         std::vector<SavegameLevelWeaponDataBlock> weapons;
         std::vector<SavegameLevelDynamicLightDataBlock> dynamic_lights;
         std::vector<SavegameLevelCorpseDataBlock> corpses;
@@ -482,7 +497,15 @@ namespace asg
 
     SavegameData build_savegame_data(rf::Player* pp);
     int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr);
+
+    // Variant for event links, which can sometimes reference raw UIDs
+    void add_handle_for_delayed_resolution_keep_raw(int uid, int* slot_ptr);
     void clear_delayed_handles();
     void resolve_delayed_handles();
+
+    // Record a room's authored (.rfl) liquid depth the first time it is about to be changed (by a
+    // Set_Liquid_Depth event or a savegame restore). Lets a save persist only rooms whose depth actually
+    // differs from the authored value. Resets across level changes.
+    void note_authored_liquid_depth(rf::GRoom* room);
 
 }

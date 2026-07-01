@@ -11,6 +11,7 @@
 #include <format>
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/alpine_savegame.h"
 #include "../rf/file/file.h"
 #include "../rf/object.h"
 #include "../rf/event.h"
@@ -148,16 +149,21 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
 
 void __fastcall EventSetLiquidDepth_turn_on_new(rf::SetLiquidDepthEvent* this_)
 {
-    xlog::info("Processing Set_Liquid_Depth event: uid {} depth {:.2f} duration {:.2f}", this_->uid, this_->depth, this_->duration);
+    xlog::info("Processing Set_Liquid_Depth event: uid {} depth {:.2f} duration {:.2f} ({} link(s))",
+               this_->uid, this_->depth, this_->duration, this_->links.size());
+
+    // No links -> affect the room the event is placed in; otherwise affect each linked room.
+    const bool record_baseline = !rf::is_multi;
     if (this_->links.size() == 0) {
-        xlog::trace("no links");
+        if (record_baseline)
+            asg::note_authored_liquid_depth(this_->room);
         rf::add_liquid_depth_update(this_->room, this_->depth, this_->duration);
     }
     else {
         for (auto room_uid : this_->links) {
-            rf::GRoom* room = rf::level_room_from_uid(room_uid);
-            xlog::trace("link {} {}", room_uid, room);
-            if (room) {
+            if (rf::GRoom* room = rf::level_room_from_uid(room_uid)) {
+                if (record_baseline)
+                    asg::note_authored_liquid_depth(room);
                 rf::add_liquid_depth_update(room, this_->depth, this_->duration);
             }
         }
@@ -167,6 +173,9 @@ void __fastcall EventSetLiquidDepth_turn_on_new(rf::SetLiquidDepthEvent* this_)
 extern CallHook<void __fastcall (rf::GRoom*, int, rf::GSolid*)> liquid_depth_update_apply_all_GRoom_reset_liquid_hook;
 
 void __fastcall liquid_depth_update_apply_all_GRoom_reset_liquid(rf::GRoom* room, int edx, rf::GSolid* solid) {
+    if (room && room->liquid_depth > 0.0f)
+        room->contains_liquid = true;
+
     liquid_depth_update_apply_all_GRoom_reset_liquid_hook.call_target(room, edx, solid);
 
     // check objects in room if they are in water

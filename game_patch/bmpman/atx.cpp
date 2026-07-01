@@ -117,7 +117,16 @@ namespace
     // Single registry keyed by lowercase basename. With ATX supercede in effect a caller may
     // load the same file under any extension (foo.tga, foo.dds, foo.atx, foo) — they all
     // resolve to the same controller, so basename is the right key.
-    std::unordered_map<std::string, std::unique_ptr<AtxController>> g_controllers;
+    //
+    // Intentionally heap-allocated and never destructed. AtxController's destructor calls
+    // rf::bm::release() on its child handles, which is only valid while RF.exe's bitmap manager
+    // is alive. Controllers are torn down at level transitions (atx_level_reset, below) — the
+    // correct time. If this container instead destructed at process exit (it would, as a normal
+    // static object when the user quits with a level still loaded), those AtxController dtors
+    // would run AFTER RF.exe has shut down its bitmap manager, double-freeing bm slots and
+    // crashing on quit.
+    std::unordered_map<std::string, std::unique_ptr<AtxController>>& g_controllers =
+        *new std::unordered_map<std::string, std::unique_ptr<AtxController>>();
 
     // Basenames whose .atx file has been seen this level and failed to parse/validate. Cached so
     // we don't re-run the failing parse on every subsequent load of any extension that supercedes
@@ -484,10 +493,20 @@ rf::bm::Format lock_atx_bitmap(rf::bm::BitmapEntry& bm_entry, void** pixels_out,
     *pixels_out = nullptr;
     *palette_out = nullptr;
 
-    auto it = g_controllers.find(key_from_bm_name(bm_entry.name));
+    const std::string key = key_from_bm_name(bm_entry.name);
+    auto it = g_controllers.find(key);
     if (it == g_controllers.end()) {
-        xlog::warn("ATX: lock for unknown '{}'", bm_entry.name);
-        return rf::bm::FORMAT_NONE;
+        // Safely handle cache.
+        if (!g_failed.contains(key)) {
+            int w = 0, h = 0, levels = 0, frames = 0;
+            rf::bm::Format fmt = rf::bm::FORMAT_NONE;
+            read_atx_header((key + ".atx").c_str(), &w, &h, &fmt, &levels, &frames);
+            it = g_controllers.find(key);
+        }
+        if (it == g_controllers.end()) {
+            xlog::warn("ATX: lock for unknown '{}'", bm_entry.name);
+            return rf::bm::FORMAT_NONE;
+        }
     }
     AtxController& c = *it->second;
     // Insertions are idempotent. We track every bm_handle that locks this controller so

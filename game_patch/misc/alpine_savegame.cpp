@@ -59,6 +59,9 @@ static std::vector<int> g_deleted_room_uids;
 // global buffer for delayed save/restore uids and pointers, replacement for g_sr_uids, g_sr_handle_ptrs, and g_sr_uid_handle_mapping_len
 static std::vector<int> g_sr_delayed_uids;
 static std::vector<int*> g_sr_delayed_ptrs;
+static std::vector<char> g_sr_delayed_keep_raw;
+static std::unordered_map<int, float> g_authored_liquid_depth;
+static std::string g_authored_liquid_level;
 
 // global buffer for ponr entries, replacement for ponr and num_ponr (really, the entirety of the stock ponr system)
 std::vector<asg::AlpinePonr> g_alpine_ponr;
@@ -81,21 +84,6 @@ namespace asg
         return !g_alpine_game_config.speedrun_savegame_mode;
     }
 
-    static bool event_links_can_be_raw_uids(const rf::Event* e)
-    {
-        if (!e) {
-            return false;
-        }
-
-        switch (static_cast<rf::EventType>(e->event_type)) {
-        case rf::EventType::Light_State:
-        case rf::EventType::Set_Light_Color:
-            return true;
-        default:
-            return false;
-        }
-    }
-
     // Look up an object by handle and return its uid, or –1 if not found
     // prevent crashing from trying to fetch uid from invalid objects
     inline int uid_from_handle(int handle)
@@ -105,17 +93,13 @@ namespace asg
         return -1;
     }
 
-    static int link_uid_from_handle_or_uid(bool is_light_event, int handle_or_uid)
+    // Convert an event link (as stored at runtime) to the value to persist.
+    static int link_uid_from_handle_or_uid(int handle_or_uid)
     {
         if (auto handle_uid = uid_from_handle(handle_or_uid); handle_uid != -1) {
             return handle_uid;
         }
-
-        if (is_light_event) {
-            return handle_or_uid;
-        }
-
-        return -1;
+        return handle_or_uid;
     }
 
     void serialize_timestamp(rf::Timestamp* timestamp, int* out_value)
@@ -424,15 +408,6 @@ namespace asg
 
         data.entity_host_uid = uid_from_handle(entity->host_handle);
         xlog::warn("[SP] entity_host_uid = {}", data.entity_host_uid);
-
-        // 2) viewport
-        data.clip_x = pp->viewport.clip_x;
-        data.clip_y = pp->viewport.clip_y;
-        data.clip_w = pp->viewport.clip_w;
-        data.clip_h = pp->viewport.clip_h;
-        data.fov_h = pp->viewport.fov_h;
-        xlog::warn("[SP] viewport: x={} y={} w={} h={} fov={}", data.clip_x, data.clip_y, data.clip_w, data.clip_h,
-                   data.fov_h);
 
         // 3) flags & entity info
         data.player_flags = pp->flags;
@@ -798,9 +773,8 @@ namespace asg
         b.activated_by_trigger_uid = uid_from_handle(e->trigger_handle);
 
         b.links.clear();
-        const bool is_light_event = event_links_can_be_raw_uids(e);
         for (auto handle_or_uid : e->links) {
-            b.links.push_back(link_uid_from_handle_or_uid(is_light_event, handle_or_uid));
+            b.links.push_back(link_uid_from_handle_or_uid(handle_or_uid));
         }
         return b;
     }
@@ -976,6 +950,8 @@ namespace asg
         SavegameLevelParticleEmitterDataBlock b{};
         b.uid = e->uid;
         b.active = e->active;
+        b.time_to_change = e->time_to_change;
+        b.current_state_time = e->current_state_time;
 
         return b;
     }
@@ -1355,6 +1331,80 @@ namespace asg
         }
     }
 
+    // Stock game in-flight Set_Liquid_Depth animation entry
+    struct LiquidDepthUpdate
+    {
+        rf::GRoom* room;
+        float start_depth;
+        float current_depth;
+        float target_depth;
+        float duration;
+        float elapsed;
+    };
+
+    static void serialize_all_liquid_rooms(std::vector<SavegameLevelLiquidDepthDataBlock>& out)
+    {
+        out.clear();
+        // Only rooms whose authored depth we captured (i.e. rooms touched by a Set_Liquid_Depth event or a
+        // prior restore this level) can possibly differ from their .rfl value — every other liquid room is
+        // still at its authored depth and needs no record. If the captured baseline is for a different level,
+        // nothing here was changed.
+        if (g_authored_liquid_depth.empty() || g_authored_liquid_level != string_to_lower(rf::level.filename))
+            return;
+
+        auto& queue = addr_as_ref<rf::VArray<LiquidDepthUpdate*>>(0x00645FC8);
+
+        for (auto const& kv : g_authored_liquid_depth) {
+            rf::GRoom* room = rf::level_room_from_uid(kv.first);
+            if (!room)
+                continue;
+
+            bool has_pending = false;
+            float target_depth = 0.f;
+            float remaining_duration = 0.f;
+            for (auto* u : queue) {
+                if (u && u->room == room) {
+                    has_pending = true;
+                    target_depth = u->target_depth;
+                    remaining_duration = u->duration - u->elapsed;
+                    if (remaining_duration < 0.f)
+                        remaining_duration = 0.f;
+                    break;
+                }
+            }
+
+            // Persist only if the depth actually differs from the authored value (or an animation is still
+            // in flight). A room changed and then returned exactly to its authored depth needs no record.
+            const bool changed = room->liquid_depth != kv.second;
+            if (!changed && !has_pending)
+                continue;
+
+            SavegameLevelLiquidDepthDataBlock b{};
+            b.room_uid = room->uid;
+            b.depth = room->liquid_depth;
+            b.has_pending = has_pending;
+            b.target_depth = target_depth;
+            b.remaining_duration = remaining_duration;
+            out.push_back(b);
+        }
+    }
+
+    void note_authored_liquid_depth(rf::GRoom* room)
+    {
+        if (!room)
+            return;
+        // Reset the captured baseline when the level changes (room uids are only unique within a level).
+        std::string cur = string_to_lower(rf::level.filename);
+        if (g_authored_liquid_level != cur) {
+            g_authored_liquid_depth.clear();
+            g_authored_liquid_level = cur;
+        }
+        // Record the room's CURRENT depth the first time it's about to be changed. This runs before any
+        // Set_Liquid_Depth event or savegame restore mutates the room, so the current depth is the authored
+        // .rfl value.
+        g_authored_liquid_depth.emplace(room->uid, room->liquid_depth);
+    }
+
     inline void serialize_all_keyframes(std::vector<SavegameLevelKeyframeDataBlock>& out)
     {
         out.clear();
@@ -1501,6 +1551,8 @@ namespace asg
             b.radius = r.radius;
             b.shape_index = r.shape_index;
             b.flags = r.flags;
+            for (int i = 0; i < 9; ++i)
+                b.orient[i] = r.orient[i];
             data->rf2_geomods.push_back(b);
         }
         xlog::warn("[ASG]       got {} rf2 geomods for level '{}'", int(data->rf2_geomods.size()), data->header.filename);
@@ -1522,6 +1574,12 @@ namespace asg
         data->push_regions.clear();
         serialize_all_push_regions(data->push_regions);
         xlog::warn("[ASG]       got {} push_regions for level '{}'", int(data->push_regions.size()), data->header.filename);
+
+        // liquid rooms (runtime Set_Liquid_Depth changes)
+        xlog::warn("[ASG]     populating liquid_rooms for level '{}'", data->header.filename);
+        data->liquid_rooms.clear();
+        serialize_all_liquid_rooms(data->liquid_rooms);
+        xlog::warn("[ASG]       got {} liquid_rooms for level '{}'", int(data->liquid_rooms.size()), data->header.filename);
 
         // movers
         xlog::warn("[ASG]     populating movers for level '{}'", data->header.filename);
@@ -1936,33 +1994,14 @@ namespace asg
         add_handle_for_delayed_resolution(b.activated_by_entity_uid, &e->triggered_by_handle);
         add_handle_for_delayed_resolution(b.activated_by_trigger_uid, &e->trigger_handle);
 
+        // Restore each link to an object HANDLE if its uid resolves to a live object (delayed, so forward
+        // references — link targets deserialized after this event — still resolve), otherwise LEAVE the raw
+        // uid.
         e->links.clear();
-        const bool is_light_event = event_links_can_be_raw_uids(e);
-        if (is_light_event) {
-            for (int link_uid : b.links) {
-                if (link_uid == -1) {
-                    e->links.add(-1);
-                    continue;
-                }
-
-                if (auto obj = rf::obj_lookup_from_uid(link_uid)) {
-                    e->links.add(obj->handle);
-                }
-                else {
-                    e->links.add(link_uid);
-                }
-            }
-        }
-        else {
-            // Pre-size the VArray before taking interior element pointers: rf::VArray::add
-            // reallocates its backing buffer on growth, so a pointer captured from an earlier
-            // add() would dangle once a later add() moves the buffer. Add all placeholders
-            // first, then queue each slot by stable index for delayed resolution.
-            for (size_t i = 0; i < b.links.size(); ++i)
-                e->links.add(-1);
-            for (size_t i = 0; i < b.links.size(); ++i)
-                add_handle_for_delayed_resolution(b.links[i], &e->links[static_cast<int>(i)]);
-        }
+        for (size_t i = 0; i < b.links.size(); ++i)
+            e->links.add(b.links[i]);
+        for (size_t i = 0; i < b.links.size(); ++i)
+            add_handle_for_delayed_resolution_keep_raw(b.links[i], &e->links[static_cast<int>(i)]);
     }
 
     static void apply_event_pos_fields(rf::Event* e, const SavegameEventDataBlockPos& b)
@@ -2505,6 +2544,8 @@ namespace asg
             auto it = std::find_if(blocks.begin(), blocks.end(), [&](auto const& blk) { return blk.uid == e->uid; });
             if (it != blocks.end()) {
                 e->active = it->active;
+                e->time_to_change = it->time_to_change;
+                e->current_state_time = it->current_state_time;
             }
         }
     }
@@ -2581,6 +2622,48 @@ namespace asg
                     apply_push_region_fields(pr, SavegameLevelPushRegionDataBlock{pr->uid, it->second});
                 }
                 // stock doesn’t delete missing push regions, so we don’t either
+            }
+        }
+    }
+
+    static void liquid_room_deserialize_all_state(const std::vector<SavegameLevelLiquidDepthDataBlock>& blocks)
+    {
+        if (blocks.empty())
+            return;
+        // The engine passes g_level_solid to GRoom_reset_liquid; fall back to level.geometry if it's not set.
+        auto* solid = rf::g_level_solid ? rf::g_level_solid : rf::level.geometry;
+        if (!solid)
+            return;
+
+        for (auto const& b : blocks) {
+            rf::GRoom* room = rf::level_room_from_uid(b.room_uid);
+            if (!room)
+                continue;
+
+            // Capture the authored .rfl depth BEFORE we mutate the room.
+            note_authored_liquid_depth(room);
+
+            // On a fresh level load every liquid room sits at its authored depth, so only act when the
+            // saved depth differs (or an animation was in flight).
+            const bool changed = room->liquid_depth != b.depth;
+            if (!changed && !b.has_pending)
+                continue;
+
+            // Snap to the saved current depth, then rebuild the liquid surface so it renders +
+            // collides at the new level.
+            room->liquid_depth = b.depth;
+            if (b.depth > 0.0f)
+                room->contains_liquid = true;
+            AddrCaller{0x004CDC50}.this_call(room, solid);
+
+            // If a Set_Liquid_Depth animation was still running, re-queue it so it completes.
+            if (b.has_pending) {
+                rf::add_liquid_depth_update(room, b.target_depth, b.remaining_duration);
+                xlog::info("[ASG] restored liquid room uid={} depth={:.2f} (animating to {:.2f} over {:.2f}s)",
+                           b.room_uid, b.depth, b.target_depth, b.remaining_duration);
+            }
+            else {
+                xlog::info("[ASG] restored liquid room uid={} depth={:.2f}", b.room_uid, b.depth);
             }
         }
     }
@@ -2936,6 +3019,8 @@ namespace asg
             r.radius = g.radius;
             r.shape_index = g.shape_index;
             r.flags = g.flags;
+            for (int i = 0; i < 9; ++i)
+                r.orient[i] = g.orient[i];
             recs.push_back(r);
         }
         destruction_replay_rf2_geomods(recs);
@@ -2965,6 +3050,7 @@ namespace asg
         trigger_deserialize_all_state(lvl->triggers);
         mover_deserialize_all_state(lvl->movers);
         push_region_deserialize_all_state(lvl->push_regions);
+        liquid_room_deserialize_all_state(lvl->liquid_rooms);
         decal_deserialize_all_state(lvl->decals);
         weapon_deserialize_all_state(lvl->weapons);
         blood_pool_deserialize_all_state(lvl->blood_pools);
@@ -3145,11 +3231,14 @@ namespace asg
         return data;
     }
 
+    // Saved links are stored as UIDs but live objects reference each other by HANDLE. During a load we
+    // can't resolve a link until its target object exists.
     int add_handle_for_delayed_resolution(int uid, int* obj_handle_ptr)
     {
         if (uid != -1) {
             g_sr_delayed_uids.push_back(uid);
             g_sr_delayed_ptrs.push_back(obj_handle_ptr);
+            g_sr_delayed_keep_raw.push_back(0);
         }
         else {
             *obj_handle_ptr = -1;
@@ -3157,35 +3246,69 @@ namespace asg
         return int(g_sr_delayed_uids.size());
     }
 
+    // Like add_handle_for_delayed_resolution, but if `uid` never resolves to a live object the slot keeps
+    // its current value.
+    // Most event links resolve to object handles, but some are raw uids referencing non-objects (rooms,
+    // lights, particle/bolt emitters, push regions, ambient sounds) that must survive the round-trip.
+    void add_handle_for_delayed_resolution_keep_raw(int uid, int* slot_ptr)
+    {
+        if (uid == -1) {
+            *slot_ptr = -1;
+            return;
+        }
+        g_sr_delayed_uids.push_back(uid);
+        g_sr_delayed_ptrs.push_back(slot_ptr);
+        g_sr_delayed_keep_raw.push_back(1);
+    }
+
     void clear_delayed_handles()
     {
         g_sr_delayed_uids.clear();
         g_sr_delayed_ptrs.clear();
+        g_sr_delayed_keep_raw.clear();
     }
 
     void resolve_delayed_handles()
     {
+        // The arrays are filled in lockstep by add_handle_for_delayed_resolution[_keep_raw]; a size mismatch
+        // means the parallel-array invariant was broken upstream. Bail rather than walk past the end of the
+        // shorter vector (which would dereference a garbage int*).
+        if (g_sr_delayed_uids.size() != g_sr_delayed_ptrs.size()
+            || g_sr_delayed_uids.size() != g_sr_delayed_keep_raw.size()) {
+            xlog::error("[ASG] delayed-handle buffers desynced ({} uids / {} ptrs / {} flags) — skipping resolution",
+                        g_sr_delayed_uids.size(), g_sr_delayed_ptrs.size(), g_sr_delayed_keep_raw.size());
+            clear_delayed_handles();
+            return;
+        }
+
         std::vector<int> unresolved_uids;
         std::vector<int*> unresolved_ptrs;
+        std::vector<char> unresolved_keep_raw;
         unresolved_uids.reserve(g_sr_delayed_uids.size());
         unresolved_ptrs.reserve(g_sr_delayed_ptrs.size());
+        unresolved_keep_raw.reserve(g_sr_delayed_keep_raw.size());
 
         for (size_t i = 0; i < g_sr_delayed_uids.size(); ++i) {
             int uid = g_sr_delayed_uids[i];
             int* dst = g_sr_delayed_ptrs[i];
+            char keep_raw = g_sr_delayed_keep_raw[i];
 
             if (auto obj = rf::obj_lookup_from_uid(uid)) {
                 *dst = obj->handle;
             }
             else {
-                *dst = -1;
+                // Not (yet) a live object.
+                if (!keep_raw)
+                    *dst = -1;
                 unresolved_uids.push_back(uid);
                 unresolved_ptrs.push_back(dst);
+                unresolved_keep_raw.push_back(keep_raw);
             }
         }
 
         g_sr_delayed_uids.swap(unresolved_uids);
         g_sr_delayed_ptrs.swap(unresolved_ptrs);
+        g_sr_delayed_keep_raw.swap(unresolved_keep_raw);
     }
 } // namespace asg
 
@@ -3245,11 +3368,6 @@ static toml::table make_common_player_table(const asg::SavegameCommonDataPlayer&
     cp.insert("view_obj_uid", p.view_obj_uid);
     cp.insert("grenade_mode", int(p.grenade_mode));
 
-    cp.insert("clip_x", p.clip_x);
-    cp.insert("clip_y", p.clip_y);
-    cp.insert("clip_w", p.clip_w);
-    cp.insert("clip_h", p.clip_h);
-    cp.insert("fov_h", p.fov_h);
     cp.insert("player_flags", p.player_flags);
     cp.insert("field_11f8", p.field_11f8);
     cp.insert("entity_uid", p.entity_uid);
@@ -3563,6 +3681,8 @@ static toml::table make_particle_emitters_table(const asg::SavegameLevelParticle
     toml::table t;
     t.insert("uid", b.uid);
     t.insert("active", b.active);
+    t.insert("time_to_change", b.time_to_change);
+    t.insert("current_state_time", b.current_state_time);
     return t;
 }
 
@@ -3571,6 +3691,17 @@ static toml::table make_push_region_table(const asg::SavegameLevelPushRegionData
     toml::table t;
     t.insert("uid", b.uid);
     t.insert("active", b.active);
+    return t;
+}
+
+static toml::table make_liquid_room_table(const asg::SavegameLevelLiquidDepthDataBlock& b)
+{
+    toml::table t;
+    t.insert("room_uid", b.room_uid);
+    t.insert("depth", b.depth);
+    t.insert("has_pending", b.has_pending);
+    t.insert("target_depth", b.target_depth);
+    t.insert("remaining_duration", b.remaining_duration);
     return t;
 }
 
@@ -3988,6 +4119,10 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
         for (auto const& pr : lvl.push_regions) pr_arr.push_back(make_push_region_table(pr));
         lt.insert("push_regions", std::move(pr_arr));
 
+        toml::array liquid_arr;
+        for (auto const& lr : lvl.liquid_rooms) liquid_arr.push_back(make_liquid_room_table(lr));
+        lt.insert("liquid_rooms", std::move(liquid_arr));
+
         toml::array mov_arr;
         for (auto const& mov : lvl.movers) {
             mov_arr.push_back(make_mover_table(mov));
@@ -4031,6 +4166,10 @@ bool serialize_savegame_to_asg_file(const std::string& filename, const asg::Save
             gt.insert("radius", g.radius);
             gt.insert("shape_index", g.shape_index);
             gt.insert("flags", g.flags);
+            toml::array orient;
+            for (int i = 0; i < 9; ++i)
+                orient.push_back(g.orient[i]);
+            gt.insert("orient", std::move(orient));
             rf2_arr.push_back(std::move(gt));
         }
         lt.insert("rf2_geomods", std::move(rf2_arr));
@@ -4153,11 +4292,6 @@ bool parse_common_player(const toml::table& tbl, asg::SavegameCommonDataPlayer& 
     out.view_obj_uid = tbl["view_obj_uid"].value_or(-1);
     out.grenade_mode = static_cast<uint8_t>(tbl["grenade_mode"].value_or(0));
 
-    out.clip_x = tbl["clip_x"].value_or(0);
-    out.clip_y = tbl["clip_y"].value_or(0);
-    out.clip_w = tbl["clip_w"].value_or(0);
-    out.clip_h = tbl["clip_h"].value_or(0);
-    out.fov_h = tbl["fov_h"].value_or(0.f);
     out.player_flags = tbl["player_flags"].value_or(0);
     out.field_11f8 = tbl["field_11f8"].value_or(-1);
     out.entity_uid = tbl["entity_uid"].value_or(-1);
@@ -4800,6 +4934,8 @@ bool parse_particle_emitters(const toml::array& arr, std::vector<asg::SavegameLe
         asg::SavegameLevelParticleEmitterDataBlock p{};
         p.uid = tbl["uid"].value_or(0);
         p.active = tbl["active"].value_or(false);
+        p.time_to_change = tbl["time_to_change"].value_or(0.0f);
+        p.current_state_time = tbl["current_state_time"].value_or(0.0f);
         out.push_back(std::move(p));
     }
     return true;
@@ -4847,6 +4983,25 @@ bool parse_push_regions(const toml::array& arr, std::vector<asg::SavegameLevelPu
         p.uid = tbl["uid"].value_or(0);
         p.active = tbl["active"].value_or(false);
         out.push_back(std::move(p));
+    }
+    return true;
+}
+
+bool parse_liquid_rooms(const toml::array& arr, std::vector<asg::SavegameLevelLiquidDepthDataBlock>& out)
+{
+    out.clear();
+    for (auto& node : arr) {
+        if (!node.is_table())
+            continue;
+        auto tbl = *node.as_table();
+
+        asg::SavegameLevelLiquidDepthDataBlock b{};
+        b.room_uid = tbl["room_uid"].value_or(0);
+        b.depth = tbl["depth"].value_or(0.f);
+        b.has_pending = tbl["has_pending"].value_or(false);
+        b.target_depth = tbl["target_depth"].value_or(0.f);
+        b.remaining_duration = tbl["remaining_duration"].value_or(0.f);
+        out.push_back(std::move(b));
     }
     return true;
 }
@@ -5252,6 +5407,10 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
             parse_push_regions(*pr, lvl.push_regions);
         }
 
+        if (auto lr = tbl["liquid_rooms"].as_array()) {
+            parse_liquid_rooms(*lr, lvl.liquid_rooms);
+        }
+
         if (auto decs = tbl["decals"].as_array()) {
             parse_decals(*decs, lvl.decals);
         }
@@ -5308,6 +5467,14 @@ bool parse_levels(const toml::table& root, std::vector<asg::SavegameLevelData>& 
                 g.radius = gt["radius"].value_or(0.0f);
                 g.shape_index = gt["shape_index"].value_or(0);
                 g.flags = gt["flags"].value_or(0);
+                if (auto oa = gt["orient"].as_array()) {
+                    int i = 0;
+                    for (auto& el : *oa) {
+                        if (i >= 9)
+                            break;
+                        g.orient[i++] = el.value_or(0.0f);
+                    }
+                }
                 lvl.rf2_geomods.push_back(g);
             }
         }
@@ -5355,10 +5522,9 @@ bool deserialize_savegame_from_asg_file(const std::string& filename, asg::Savega
         return false;
     }
 
-    // refuse files written by a newer/unknown format revision (0 == missing asg_version)
-    if (out.header.version == 0 || out.header.version > ASG_VERSION) {
-        xlog::error("ASG file '{}' has unsupported format version {} (this build supports up to {})",
-                    filename, out.header.version, ASG_VERSION);
+    // Only the current format revision is accepted.
+    if (out.header.version != ASG_VERSION) {
+        xlog::error("ASG file '{}' has unsupported format version {} (this build requires {})", filename, out.header.version, ASG_VERSION);
         return false;
     }
 
@@ -5654,6 +5820,9 @@ FunHook<bool(const char* filename, rf::Player* pp)> sr_load_level_state_hook{
                 // restore difficulty
                 game_set_skill_level(g_save_data.common.game.difficulty);
             }
+
+            // Flush any delayed-handle entries unconditionally before returning.
+            asg::clear_delayed_handles();
 
             // final touches
             trigger_disable_all_unless_linked_to_specific_events();

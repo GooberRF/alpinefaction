@@ -15,6 +15,7 @@ struct RF2GeomodRecord {
     float radius;
     int shape_index;
     int flags;
+    float orient[9]; // crater orientation (Matrix3 rvec/uvec/fvec) captured at carve time; all-zero = none saved
 };
 
 // Per-material debris subdivision configuration
