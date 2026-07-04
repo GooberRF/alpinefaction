@@ -230,10 +230,12 @@ static bool is_gamepad_menu_navigation_state()
     const rf::GameState state = rf::gameseq_get_state();
     if (state == rf::GS_MULTI_LIMBO || state == rf::GS_LEVEL_TRANSITION || state == rf::GS_NEW_LEVEL)
         return false;
+    // Block all menu navigation during in-gameplay multiplayer states to prevent bleedthrough
+    if (rf::is_multi && rf::gameseq_in_gameplay())
+        return false;
     return is_gamepad_menu_state();
 }
 
-// Returns the highest trigger value across all connected gamepads, in [0, 1].
 static float get_max_trigger_value(SDL_GamepadAxis axis)
 {
     float best = 0.0f;
@@ -243,6 +245,27 @@ static float get_max_trigger_value(SDL_GamepadAxis axis)
         if (v > best) best = v;
     }
     return best;
+}
+
+static void inject_action_key(int action, bool down)
+{
+    if (!rf::gameseq_in_gameplay()) return;
+    if (rf::console::console_is_visible()) return;
+    if (!rf::local_player || action < 0 || action >= rf::local_player->settings.controls.num_bindings)
+        return;
+    int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
+    if (sc > 0)
+        rf::key_process_event(sc, down ? 1 : 0, 0);
+}
+
+static void force_release_action_key(int action)
+{
+    if (rf::console::console_is_visible()) return;
+    if (!rf::local_player || action < 0 || action >= rf::local_player->settings.controls.num_bindings)
+        return;
+    int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
+    if (sc > 0)
+        rf::key_process_event(sc, 0, 0);
 }
 
 static void reset_gamepad_input_state()
@@ -261,9 +284,12 @@ static void reset_gamepad_input_state()
     memset(g_flickstick_turn_smooth_buf, 0, sizeof(g_flickstick_turn_smooth_buf));
     g_flickstick_turn_smooth_idx   = 0;
     g_menu_cursor_accum_x = 0.0f;
+    g_menu_cursor_accum_y = 0.0f;
+    force_release_action_key(g_trigger_action[0]);
+    force_release_action_key(g_trigger_action[1]);
     g_lt_was_down = get_max_trigger_value(SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0.5f;
     g_rt_was_down = get_max_trigger_value(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.5f;
-    set_last_input_gamepad(false);
+    g_gyro_menu_cursor_active = false;
     g_last_active_gamepad_id = 0;
     g_pending_scroll_delta = 0;
 }
@@ -389,27 +415,6 @@ static void try_open_gamepad(SDL_JoystickID id)
     if (!g_rumble_supported)         try_enable_gamepad_rumble(gp);
     if (!g_trigger_rumble_supported) try_enable_gamepad_trigger_rumble(gp);
     try_enable_gamepad_sensors(gp);
-}
-
-static void inject_action_key(int action, bool down)
-{
-    if (!rf::gameseq_in_gameplay()) return;
-    if (rf::console::console_is_visible()) return;
-    if (!rf::local_player || action < 0 || action >= rf::local_player->settings.controls.num_bindings)
-        return;
-    int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
-    if (sc > 0)
-        rf::key_process_event(sc, down ? 1 : 0, 0);
-}
-
-static void force_release_action_key(int action)
-{
-    if (rf::console::console_is_visible()) return;
-    if (!rf::local_player || action < 0 || action >= rf::local_player->settings.controls.num_bindings)
-        return;
-    int16_t sc = rf::local_player->settings.controls.bindings[action].scan_codes[0];
-    if (sc > 0)
-        rf::key_process_event(sc, 0, 0);
 }
 
 static void menu_nav_inject_key(int key)
@@ -544,6 +549,57 @@ static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_a
     }
 }
 
+static void handle_trigger_down(int trigger_idx, SDL_JoystickID which)
+{
+    if (trigger_idx == 0) g_lt_was_down = true;
+    else g_rt_was_down = true;
+    set_last_input_gamepad(true, which);
+    if (g_message_log_close_cooldown > 0.0f) return;
+
+    int16_t gp_sc = (trigger_idx == 0) ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)
+                                        : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
+
+    if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
+        g_rebind_pending_sc = gp_sc;
+        rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
+        return;
+    }
+
+    if (trigger_idx == 1 && is_gamepad_menu_navigation_state())
+        menu_nav_handle_confirm();
+    else {
+        int action = g_trigger_action[trigger_idx];
+        inject_action_key(action, true);
+        if (action >= 0 && action < k_action_count)
+            g_action_curr[action] = true;
+        int menu_action = g_menu_trigger_action[trigger_idx];
+        if (menu_action >= 0 && menu_action < k_action_count)
+            g_action_curr[menu_action] = true;
+        sync_extra_actions_for_scancode(gp_sc, true, action);
+    }
+}
+
+static void handle_trigger_up(int trigger_idx)
+{
+    if (trigger_idx == 0) g_lt_was_down = false;
+    else g_rt_was_down = false;
+    if (g_message_log_close_cooldown > 0.0f) return;
+
+    if (trigger_idx == 1 && is_gamepad_menu_navigation_state())
+        menu_nav_release_click();
+
+    int16_t gp_sc = (trigger_idx == 0) ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)
+                                        : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
+    int action = g_trigger_action[trigger_idx];
+    force_release_action_key(action);
+    if (action >= 0 && action < k_action_count)
+        g_action_curr[action] = false;
+    int menu_action = g_menu_trigger_action[trigger_idx];
+    if (menu_action >= 0 && menu_action < k_action_count)
+        g_action_curr[menu_action] = false;
+    sync_extra_actions_for_scancode(gp_sc, false, action);
+}
+
 static SDL_GamepadButton get_menu_confirm_button()
 {
     auto* gp = gamepad_get_primary();
@@ -615,52 +671,6 @@ static void menu_nav_on_button_up(int btn)
         menu_nav_release_click();
 }
 
-static void update_trigger_actions()
-{
-    float lt = get_max_trigger_value(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-    float rt = get_max_trigger_value(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-    bool lt_down = lt > 0.5f;
-    bool rt_down = rt > 0.5f;
-
-    if (lt_down != g_lt_was_down) {
-         if (is_gamepad_menu_navigation_state()) {
-            if (!lt_down)
-                force_release_action_key(g_trigger_action[0]);
-        }
-        else {
-            if (lt_down)
-                inject_action_key(g_trigger_action[0], true);
-            else
-                force_release_action_key(g_trigger_action[0]);
-            if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count)
-                g_action_curr[g_trigger_action[0]] = lt_down;
-            if (g_menu_trigger_action[0] >= 0 && g_menu_trigger_action[0] < k_action_count)
-                g_action_curr[g_menu_trigger_action[0]] = lt_down;
-            sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER), lt_down, g_trigger_action[0]);
-        }
-    }
-    if (rt_down != g_rt_was_down) {
-        if (is_gamepad_menu_navigation_state()) {
-            rt_down ? menu_nav_handle_confirm() : menu_nav_release_click();
-        }
-        else {
-            if (rt_down)
-                inject_action_key(g_trigger_action[1], true);
-            else
-                force_release_action_key(g_trigger_action[1]);
-            if (g_trigger_action[1] >= 0 && g_trigger_action[1] < k_action_count)
-                g_action_curr[g_trigger_action[1]] = rt_down;
-            if (g_menu_trigger_action[1] >= 0 && g_menu_trigger_action[1] < k_action_count)
-                g_action_curr[g_menu_trigger_action[1]] = rt_down;
-            sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER), rt_down, g_trigger_action[1]);
-        }
-    }
-
-    g_lt_was_down = lt_down;
-    g_rt_was_down = rt_down;
-}
-
-
 static bool is_action_held_by_button(int action_idx)
 {
     for (auto* gp : g_gamepads) {
@@ -719,16 +729,14 @@ static void update_stick_movement()
     if (!rf::local_player)
         return;
 
-    if (rf::local_player_entity && rf::entity_is_dying(rf::local_player_entity)) {
+    if (!rf::gameseq_in_gameplay() || is_gamepad_menu_state()) {
         release_movement_keys();
-        force_release_action_key(g_trigger_action[0]);
-        force_release_action_key(g_trigger_action[1]);
-        reset_gamepad_input_state();
         return;
     }
 
-    if (!rf::gameseq_in_gameplay() || is_gamepad_menu_state()) {
+    if (rf::local_player_entity && rf::entity_is_dying(rf::local_player_entity)) {
         release_movement_keys();
+        reset_gamepad_input_state();
         return;
     }
 
@@ -905,25 +913,27 @@ static void handle_gamepad_button_up(const SDL_GamepadButtonEvent& ev)
 
 static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
 {
-    if (g_message_log_close_cooldown > 0.0f) return;
     if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
 
     float v = ev.value / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
     switch (static_cast<SDL_GamepadAxis>(ev.axis)) {
     case SDL_GAMEPAD_AXIS_LEFTX:
     case SDL_GAMEPAD_AXIS_LEFTY:
-        if (std::abs(v) > g_alpine_game_config.gamepad_move_deadzone)
+        if (g_message_log_close_cooldown <= 0.0f && std::abs(v) > g_alpine_game_config.gamepad_move_deadzone)
             set_last_input_gamepad(true, ev.which);
         break;
     case SDL_GAMEPAD_AXIS_RIGHTX:
     case SDL_GAMEPAD_AXIS_RIGHTY:
-        if (std::abs(v) > g_alpine_game_config.gamepad_look_deadzone)
+        if (g_message_log_close_cooldown <= 0.0f && std::abs(v) > g_alpine_game_config.gamepad_look_deadzone)
             set_last_input_gamepad(true, ev.which);
         break;
     case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
+        if ((v > 0.5f) != g_lt_was_down)
+            (v > 0.5f) ? handle_trigger_down(0, ev.which) : handle_trigger_up(0);
+        break;
     case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
-        if (v > 0.5f)
-            set_last_input_gamepad(true, ev.which);
+        if ((v > 0.5f) != g_rt_was_down)
+            (v > 0.5f) ? handle_trigger_down(1, ev.which) : handle_trigger_up(1);
         break;
     default:
         break;
@@ -1141,20 +1151,6 @@ void gamepad_do_frame()
     if (!is_gamepad_input_active())
         return;
 
-    if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
-        float lt = get_max_trigger_value(SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
-        float rt = get_max_trigger_value(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER);
-        if (lt > 0.5f && !g_lt_was_down) {
-            g_rebind_pending_sc = CTRL_GAMEPAD_LEFT_TRIGGER;
-            rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
-        }
-        if (rt > 0.5f && !g_rt_was_down) {
-            g_rebind_pending_sc = CTRL_GAMEPAD_RIGHT_TRIGGER;
-            rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
-        }
-    }
-
-    update_trigger_actions();
     update_stick_movement();
 
     if (is_gamepad_menu_navigation_state())
@@ -1296,16 +1292,10 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     const bool freelook_camera_active = is_freelook_camera();
     const bool is_freelook = !has_player_entity && freelook_camera_active;
     if (!is_gamepad_input_active() || !rf::keep_mouse_centered) {
-        release_movement_keys();
-        force_release_action_key(g_trigger_action[0]);
-        force_release_action_key(g_trigger_action[1]);
         reset_gamepad_input_state();
         return;
     }
     if (!has_player_entity && !is_freelook) {
-        release_movement_keys();
-        force_release_action_key(g_trigger_action[0]);
-        force_release_action_key(g_trigger_action[1]);
         reset_gamepad_input_state();
         return;
     }
