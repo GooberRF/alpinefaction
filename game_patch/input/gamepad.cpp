@@ -233,6 +233,18 @@ static bool is_gamepad_menu_navigation_state()
     return is_gamepad_menu_state();
 }
 
+// Returns the highest trigger value across all connected gamepads, in [0, 1].
+static float get_max_trigger_value(SDL_GamepadAxis axis)
+{
+    float best = 0.0f;
+    for (auto* gp : g_gamepads) {
+        if (!gp) continue;
+        float v = SDL_GetGamepadAxis(gp, axis) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
+        if (v > best) best = v;
+    }
+    return best;
+}
+
 static void reset_gamepad_input_state()
 {
     g_camera_gamepad_dx = 0.0f;
@@ -251,8 +263,8 @@ static void reset_gamepad_input_state()
     g_touchpad = {};
     g_menu_cursor_accum_x = 0.0f;
     g_gyro_menu_cursor_active = false;
-    g_lt_was_down = false;
-    g_rt_was_down = false;
+    g_lt_was_down = get_max_trigger_value(SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0.5f;
+    g_rt_was_down = get_max_trigger_value(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.5f;
     set_last_input_gamepad(false);
     g_last_active_gamepad_id = 0;
     g_sensor_last_gyro_ts  = 0;
@@ -298,18 +310,6 @@ static void get_axis_circular(SDL_GamepadAxis axis_x, SDL_GamepadAxis axis_y, fl
     }
     out_x = best_x;
     out_y = best_y;
-}
-
-// Returns the highest trigger value across all connected gamepads, in [0, 1].
-static float get_max_trigger_value(SDL_GamepadAxis axis)
-{
-    float best = 0.0f;
-    for (auto* gp : g_gamepads) {
-        if (!gp) continue;
-        float v = SDL_GetGamepadAxis(gp, axis) / static_cast<float>(SDL_JOYSTICK_AXIS_MAX);
-        if (v > best) best = v;
-    }
-    return best;
 }
 
 static float wrap_angle_pi(float a)
@@ -629,15 +629,21 @@ static void update_trigger_actions()
     bool rt_down = rt > 0.5f;
 
     if (lt_down != g_lt_was_down) {
-        if (lt_down)
-            inject_action_key(g_trigger_action[0], true);
-        else
-            force_release_action_key(g_trigger_action[0]);
-        if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count)
-            g_action_curr[g_trigger_action[0]] = lt_down;
-        if (g_menu_trigger_action[0] >= 0 && g_menu_trigger_action[0] < k_action_count)
-            g_action_curr[g_menu_trigger_action[0]] = lt_down;
-        sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER), lt_down, g_trigger_action[0]);
+         if (is_gamepad_menu_navigation_state()) {
+            if (!lt_down)
+                force_release_action_key(g_trigger_action[0]);
+        }
+        else {
+            if (lt_down)
+                inject_action_key(g_trigger_action[0], true);
+            else
+                force_release_action_key(g_trigger_action[0]);
+            if (g_trigger_action[0] >= 0 && g_trigger_action[0] < k_action_count)
+                g_action_curr[g_trigger_action[0]] = lt_down;
+            if (g_menu_trigger_action[0] >= 0 && g_menu_trigger_action[0] < k_action_count)
+                g_action_curr[g_menu_trigger_action[0]] = lt_down;
+            sync_extra_actions_for_scancode(static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER), lt_down, g_trigger_action[0]);
+        }
     }
     if (rt_down != g_rt_was_down) {
         if (is_gamepad_menu_navigation_state()) {
@@ -719,14 +725,16 @@ static void update_stick_movement()
     if (!rf::local_player)
         return;
 
-    if (!rf::gameseq_in_gameplay() || is_gamepad_menu_state()) {
+    if (rf::local_player_entity && rf::entity_is_dying(rf::local_player_entity)) {
         release_movement_keys();
+        force_release_action_key(g_trigger_action[0]);
+        force_release_action_key(g_trigger_action[1]);
+        reset_gamepad_input_state();
         return;
     }
 
-    if (rf::local_player_entity && rf::entity_is_dying(rf::local_player_entity)) {
+    if (!rf::gameseq_in_gameplay() || is_gamepad_menu_state()) {
         release_movement_keys();
-        reset_gamepad_input_state();
         return;
     }
 
@@ -1289,10 +1297,16 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
     const bool freelook_camera_active = is_freelook_camera();
     const bool is_freelook = !has_player_entity && freelook_camera_active;
     if (!is_gamepad_input_active() || !rf::keep_mouse_centered) {
+        release_movement_keys();
+        force_release_action_key(g_trigger_action[0]);
+        force_release_action_key(g_trigger_action[1]);
         reset_gamepad_input_state();
         return;
     }
     if (!has_player_entity && !is_freelook) {
+        release_movement_keys();
+        force_release_action_key(g_trigger_action[0]);
+        force_release_action_key(g_trigger_action[1]);
         reset_gamepad_input_state();
         return;
     }
@@ -1445,7 +1459,7 @@ static bool is_local_player_vehicle(rf::Entity* entity)
 FunHook<void(rf::Entity*)> physics_simulate_entity_hook{
     0x0049F3C0,
     [](rf::Entity* entity) {
-        if (entity == rf::local_player_entity && rf::entity_is_dying(entity)) {
+        if (entity == rf::local_player_entity && (rf::entity_is_dying(entity) || is_gamepad_menu_state())) {
             entity->ai.ci.move.x = 0.0f;
             entity->ai.ci.move.z = 0.0f;
         } else if (is_gamepad_input_active() && entity == rf::local_player_entity
