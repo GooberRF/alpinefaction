@@ -260,17 +260,11 @@ static void reset_gamepad_input_state()
     g_flickstick_prev_stick_angle  = 0.0f;
     memset(g_flickstick_turn_smooth_buf, 0, sizeof(g_flickstick_turn_smooth_buf));
     g_flickstick_turn_smooth_idx   = 0;
-    g_touchpad = {};
     g_menu_cursor_accum_x = 0.0f;
-    g_gyro_menu_cursor_active = false;
     g_lt_was_down = get_max_trigger_value(SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > 0.5f;
     g_rt_was_down = get_max_trigger_value(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 0.5f;
     set_last_input_gamepad(false);
     g_last_active_gamepad_id = 0;
-    g_sensor_last_gyro_ts  = 0;
-    g_sensor_last_accel_ts = 0;
-    memset(g_sensor_accel, 0, sizeof(g_sensor_accel));
-    memset(g_sensor_gyro,  0, sizeof(g_sensor_gyro));
     g_pending_scroll_delta = 0;
 }
 
@@ -774,6 +768,11 @@ static void release_all_gamepad_inputs()
     inject_action_key(g_trigger_action[0], false);
     inject_action_key(g_trigger_action[1], false);
     menu_nav_release_click();
+    g_touchpad = {};
+    g_sensor_last_gyro_ts  = 0;
+    g_sensor_last_accel_ts = 0;
+    memset(g_sensor_accel, 0, sizeof(g_sensor_accel));
+    memset(g_sensor_gyro,  0, sizeof(g_sensor_gyro));
     reset_gamepad_input_state();
 }
 
