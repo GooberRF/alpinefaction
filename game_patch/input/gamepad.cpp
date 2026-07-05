@@ -730,14 +730,12 @@ static void update_stick_movement()
         return;
 
     if (!rf::gameseq_in_gameplay() || is_gamepad_menu_state()) {
-        release_movement_keys();
-        return;
-    }
-
-    if (rf::local_player_entity && rf::entity_is_dying(rf::local_player_entity)) {
-        release_movement_keys();
-        reset_gamepad_input_state();
-        return;
+        if (rf::local_player_entity && rf::entity_is_dying(rf::local_player_entity))
+            reset_gamepad_input_state();
+        if (!is_freelook_camera()) {
+            release_movement_keys();
+            return;
+        }
     }
 
     // Suppress movement input while viewing a security camera
