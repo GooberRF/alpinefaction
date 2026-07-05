@@ -1320,7 +1320,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         }
     }
 
-    if (g_alpine_game_config.gamepad_joy_camera && !is_freelook && !is_scoped_or_scanning) {
+    if (g_alpine_game_config.gamepad_joy_camera && !freelook_camera_active && !is_scoped_or_scanning) {
         gamepad_apply_flickstick(cam_x, cam_y, yaw_delta, pitch_delta);
         yaw_delta   *= gamepad_zoom_sens;
         pitch_delta *= gamepad_zoom_sens;
