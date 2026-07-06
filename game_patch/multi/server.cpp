@@ -26,6 +26,7 @@
 #include "bagman.h"
 #include "rounds.h"
 #include "lms.h"
+#include "wipeout.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
@@ -830,6 +831,9 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_iequals(gametype_name, "lms")) {
         return rf::NetGameType::NG_TYPE_LMS;
     }
+    if (string_iequals(gametype_name, "wo") || string_iequals(gametype_name, "wipeout")) {
+        return rf::NetGameType::NG_TYPE_WO;
+    }
 
     return std::nullopt;
 }
@@ -912,7 +916,7 @@ ConsoleCommand2 sv_game_type_cmd{
         }
     },
     "Load a specific gametype. Loads level if specificed, otherwise restarts current level. Only available for ADS dedicated servers.",
-    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag> [level]",
+    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|lms|wo> [level]",
 };
 
 DcCommandAlias gt_cmd{
@@ -2142,6 +2146,12 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
 
+        // Wipeout: block late joiners / between-round spawn attempts (the
+        // escalating per-death delay is enforced by the respawn_timer check below).
+        if (!wipeout_can_player_spawn(player)) {
+            return;
+        }
+
         // if a respawn timer has been set by the server, enforce it
         if (player->respawn_timer.valid() && !player->respawn_timer.elapsed()) {
             const float spawn_delay_left = std::max(
@@ -3016,6 +3026,34 @@ float get_nearest_other_player(const rf::Player* player, const rf::Vector3* spaw
     return min_dist_sq;
 }
 
+// Squared distance from a candidate spawn to the nearest LIVING teammate (used
+// by Wipeout mid-round respawns to cluster on teammates). Returns float max if
+// no teammate has a live entity.
+float get_nearest_teammate(const rf::Player* player, const rf::Vector3* spawn_pos)
+{
+    float min_dist_sq = std::numeric_limits<float>::max();
+    const int player_team = player->team;
+
+    for (const auto* other_player : get_clients(false, true)) {
+        if (other_player == player) {
+            continue;
+        }
+        if (other_player->team != player_team) {
+            continue;
+        }
+        auto* other_entity = rf::entity_from_handle(other_player->entity_handle);
+        if (!other_entity) {
+            continue;
+        }
+        const float dist_sq = rf::vec_dist_squared(spawn_pos, &other_entity->pos);
+        if (dist_sq < min_dist_sq) {
+            min_dist_sq = dist_sq;
+        }
+    }
+
+    return min_dist_sq;
+}
+
 FunHook<void(rf::Vector3*, rf::Matrix3*, rf::Player*)> multi_respawn_get_next_point_hook{
     0x00470300, [](rf::Vector3* pos, rf::Matrix3* orient, rf::Player* player) {
         //if (!rf::is_server)
@@ -3043,6 +3081,76 @@ FunHook<void(rf::Vector3*, rf::Matrix3*, rf::Player*)> multi_respawn_get_next_po
         const int last_index = player->last_spawn_point_index.value_or(-1);
         const bool is_team_game = multi_is_team_game_type();
         const auto& config = g_alpine_server_config_active_rules.spawn_logic;
+
+        // Wipeout mid-round respawn: ignore spawn-point team flags entirely and
+        // cluster near a living teammate, while avoiding points right next to an
+        // enemy. The round's FIRST spawn is not "subsequent" yet, so it falls
+        // through to the standard (TDM) path below; the hook flips the flag once
+        // a point is chosen here.
+        if (rf::is_server && wipeout_is_subsequent_spawn(player)) {
+            // Enemy-proximity threshold (units^2): points with an enemy closer
+            // than this are deprioritized. Tuning knob; degrades gracefully.
+            constexpr float k_enemy_avoid_dist_sq = 20.0f * 20.0f;
+
+            std::vector<rf::AlpineRespawnPoint*> wo_eligible;
+            wo_eligible.reserve(g_alpine_respawn_points.size());
+            for (auto& point : g_alpine_respawn_points) {
+                if (!point.enabled) {
+                    continue; // team flags intentionally ignored
+                }
+                point.dist_other_player = get_nearest_teammate(player, &point.position);
+                wo_eligible.push_back(&point);
+            }
+
+            if (!wo_eligible.empty()) {
+                // Prefer points that aren't hugging an enemy; if that empties the
+                // pool, fall back to the full teammate-weighted list.
+                std::vector<rf::AlpineRespawnPoint*> safe;
+                safe.reserve(wo_eligible.size());
+                for (auto* p : wo_eligible) {
+                    if (get_nearest_other_player(player, &p->position, true) >= k_enemy_avoid_dist_sq) {
+                        safe.push_back(p);
+                    }
+                }
+                std::vector<rf::AlpineRespawnPoint*>& pool = safe.empty() ? wo_eligible : safe;
+
+                const bool have_teammate = std::any_of(pool.begin(), pool.end(),
+                    [](const rf::AlpineRespawnPoint* p) {
+                        return p->dist_other_player < std::numeric_limits<float>::max();
+                    });
+
+                int sel = 0;
+                if (have_teammate) {
+                    // Closest-to-teammate first, then weighted RNG biased to the front.
+                    std::sort(pool.begin(), pool.end(),
+                        [](const rf::AlpineRespawnPoint* a, const rf::AlpineRespawnPoint* b) {
+                            return a->dist_other_player < b->dist_other_player;
+                        });
+                    std::uniform_real_distribution<double> real_dist(0.0, 1.0);
+                    sel = static_cast<int>((1 - std::sqrt(real_dist(g_rng))) * pool.size());
+                    sel = std::clamp(sel, 0, static_cast<int>(pool.size()) - 1);
+                }
+                else {
+                    std::uniform_int_distribution<int> dist(0, static_cast<int>(pool.size()) - 1);
+                    sel = dist(g_rng);
+                }
+
+                const int global_index = std::distance(g_alpine_respawn_points.data(), pool[sel]);
+                *pos = pool[sel]->position;
+                *orient = pool[sel]->orientation;
+                player->last_spawn_point_index = global_index;
+                player->wipeout_spawned_this_round = true;
+                return;
+            }
+            // No eligible points — fall through to the standard path below.
+        }
+
+        // Any Wipeout spawn that reaches the standard path (the round's first
+        // spawn, or a subsequent spawn with no teammate-eligible point) marks the
+        // player as spawned this round so the NEXT respawn uses teammate logic.
+        if (gt_is_wipeout()) {
+            player->wipeout_spawned_this_round = true;
+        }
 
         //xlog::debug("Spawn point requested! Player: {}, Team: {}, Last Spawn Index: {}", player->name, team, last_index);
 
@@ -3328,7 +3436,17 @@ CodeInjection entity_maybe_die_patch{
         rf::Player* player = rf::player_from_entity_handle(ep->handle);
 
         if (player && g_alpine_server_config_active_rules.spawn_delay.enabled) {
-            player->respawn_timer.set(g_alpine_server_config_active_rules.spawn_delay.base_value);
+            int spawn_delay_ms = g_alpine_server_config_active_rules.spawn_delay.base_value;
+
+            // Wipeout: the respawn delay escalates by the base value on each
+            // death this round (5s, 10s, 15s...), resetting at round start. The
+            // growing delay is what eventually lets a whole team be wiped.
+            if (gt_is_wipeout()) {
+                ++player->wipeout_round_deaths;
+                spawn_delay_ms *= player->wipeout_round_deaths;
+            }
+
+            player->respawn_timer.set(spawn_delay_ms);
             bool respawn_allowed = true; // nothing currently disables respawns
             bool force_respawn = (rf::multi_server_flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN) != 0;
 
@@ -3690,6 +3808,7 @@ void server_do_frame()
     match_do_frame();
     process_delayed_kicks();
     lms_do_frame();
+    wipeout_do_frame();
     rounds_do_frame();
 }
 

@@ -150,6 +150,8 @@ set(SRCS
     multi/rounds.cpp
     multi/lms.h
     multi/lms.cpp
+    multi/wipeout.h
+    multi/wipeout.cpp
     multi/kill.cpp
     multi/network.cpp
     multi/network.h

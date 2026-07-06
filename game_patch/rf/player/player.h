@@ -96,6 +96,15 @@ struct PlayerAdditionalData {
     bool round_is_out = false;
     bool round_participated = false; // the player has participated this round
     float lms_round_damage_dealt = 0.0f; // damage dealt during current round (tiebreak)
+
+    // Wipeout (NG_TYPE_WO): per-round death counter drives the escalating respawn
+    // delay (5s * deaths); spawned_this_round selects first-spawn (TDM) vs
+    // subsequent-spawn (cluster near teammates) logic. Both reset each round.
+    int wipeout_round_deaths = 0;
+    bool wipeout_spawned_this_round = false;
+    // Throttles the "you're waiting" spawn-denied chat line so repeated spawn
+    // requests (e.g. holding fire while waiting) don't spam it.
+    rf::Timestamp wipeout_waiting_msg_timer{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif

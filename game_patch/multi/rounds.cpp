@@ -148,8 +148,16 @@ void start_round()
     // The engine uses multi_time_limit (== netgame.max_time_seconds) for the
     // HUD countdown rendered as (max_time - level.time). Setting it to the
     // round's deadline makes the existing HUD show the correct remaining time
-    // every round, with no new packet.
-    rf::multi_time_limit = g_rounds_runtime.round_deadline_level_time;
+    // every round, with no new packet. When round_time is 0 the round is
+    // untimed (e.g. Wipeout, which ends only on a team wipe): park the limit
+    // far in the future so no countdown ever appears and tick_active never
+    // time-ends the round.
+    if (cfg().round_time == 0) {
+        rf::multi_time_limit = rf::level.time + 1.0e9f;
+    }
+    else {
+        rf::multi_time_limit = g_rounds_runtime.round_deadline_level_time;
+    }
 
     if (g_rounds_callbacks.on_round_begin) {
         g_rounds_callbacks.on_round_begin();
@@ -194,11 +202,45 @@ void enter_intermission()
     }
 }
 
+void rotate_to_next_level()
+{
+    g_rounds_runtime.state = RoundState::Inactive;
+    g_rounds_runtime.current = 0;
+    g_rounds_runtime.pending_level_change = true; // gate Inactive→start until level actually loads
+    // Advance the rotation. multi_change_level is async; the latch above
+    // keeps rounds_do_frame from restarting a round-set on the doomed level.
+    set_manually_loaded_level(false);
+    rf::multi_change_level(nullptr);
+}
+
 void proceed_to_next_round_or_rotate()
 {
     // Called after the PostRound celebration window expires (or directly if
-    // post_round_time is 0). Decides whether to rotate the level (max rounds
-    // hit) or continue into intermission + the next round.
+    // post_round_time is 0). Decides whether to rotate the level (match/max
+    // rounds decided) or continue into intermission + the next round.
+
+    // Gametype-driven match end (best-of-N + sudden death etc.) takes priority
+    // over the fixed max_rounds count and fully governs rotation when present.
+    if (g_rounds_callbacks.is_match_over) {
+        if (g_rounds_callbacks.is_match_over()) {
+            rf::console::print("Rounds: match decided, advancing to next level.\n");
+            rotate_to_next_level();
+        }
+        else if (cfg().intermission_time > 0) {
+            enter_intermission();
+        }
+        else {
+            if (g_rounds_callbacks.on_round_cleanup) {
+                g_rounds_callbacks.on_round_cleanup();
+            }
+            if (!ready_to_start_round()) {
+                enter_intermission(); // hold here, no countdown
+                return;
+            }
+            start_round();
+        }
+        return;
+    }
 
     if (g_rounds_runtime.current >= cfg().max_rounds) {
         rf::console::print("Rounds: max rounds reached, advancing to next level.\n");
@@ -207,13 +249,7 @@ void proceed_to_next_round_or_rotate()
             3,
             static_cast<int>(HudNotificationType::Round),
             true);
-        g_rounds_runtime.state = RoundState::Inactive;
-        g_rounds_runtime.current = 0;
-        g_rounds_runtime.pending_level_change = true; // gate Inactive→start until level actually loads
-        // Advance the rotation. multi_change_level is async; the latch above
-        // keeps rounds_do_frame from restarting a round-set on the doomed level.
-        set_manually_loaded_level(false);
-        rf::multi_change_level(nullptr);
+        rotate_to_next_level();
         return;
     }
 
@@ -293,8 +329,8 @@ void tick_active()
         }
     }
 
-    // 2. Time-up
-    if (rf::level.time >= g_rounds_runtime.round_deadline_level_time) {
+    // 2. Time-up (skipped entirely for untimed rounds, round_time == 0)
+    if (cfg().round_time != 0 && rf::level.time >= g_rounds_runtime.round_deadline_level_time) {
         rf::Player* w = nullptr;
         if (g_rounds_callbacks.resolve_timeout_winner) {
             w = g_rounds_callbacks.resolve_timeout_winner();

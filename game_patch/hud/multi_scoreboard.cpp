@@ -10,6 +10,7 @@
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
+#include "../multi/wipeout.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../rf/player/control_config.h"
@@ -229,6 +230,16 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
             else if (game_type == rf::NG_TYPE_TBAG) {
                 red_score = bagman_get_red_team_score();
                 blue_score = bagman_get_blue_team_score();
+            }
+            else if (game_type == rf::NG_TYPE_WO) {
+                static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
+                static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
+                int flag_bm_w, flag_bm_h;
+                rf::bm::get_dimensions(hud_flag_red_bm, &flag_bm_w, &flag_bm_h);
+                rf::gr::bitmap(hud_flag_red_bm, x + w * 2 / 6 - flag_bm_w / 2, cur_y);
+                rf::gr::bitmap(hud_flag_blue_bm, x + w * 4 / 6 - flag_bm_w / 2, cur_y);
+                red_score = wipeout_get_red_team_score();
+                blue_score = wipeout_get_blue_team_score();
             }
             else if (game_type == rf::NG_TYPE_REV || game_type == rf::NG_TYPE_ESC) {
                 static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);

@@ -144,6 +144,7 @@ namespace rf
         NG_TYPE_BAG = 8,    // Bagman, as of AF v1.4
         NG_TYPE_TBAG = 9,   // Team Bagman, as of AF v1.4
         NG_TYPE_LMS = 10,   // Last Miner Standing, as of AF v1.4
+        NG_TYPE_WO = 11,    // Wipeout, as of AF v1.4
         // Sentinel: UNK must always be the last entry.
         NG_TYPE_UNK
     };

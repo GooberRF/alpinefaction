@@ -10,6 +10,7 @@
 #include "bagman.h"
 #include "rounds.h"
 #include "lms.h"
+#include "wipeout.h"
 #include "multi.h"
 #include "alpine_packets.h"
 #include "../hud/hud_internal.h"
@@ -38,6 +39,8 @@ static char tbag_name[] = "TBAG";
 static char* tbag_slot = tbag_name;
 static char lms_name[] = "LMS";
 static char* lms_slot = lms_name;
+static char wo_name[] = "WO";
+static char* wo_slot = wo_name;
 // UNK is the sentinel; new game types must be added above
 static char unk_name[] = "UNK";
 static char* unk_slot = unk_name;
@@ -80,6 +83,7 @@ void populate_gametype_table() {
     g_af_gametype_names[rf::NG_TYPE_BAG]     = &bag_slot;
     g_af_gametype_names[rf::NG_TYPE_TBAG]    = &tbag_slot;
     g_af_gametype_names[rf::NG_TYPE_LMS]    = &lms_slot;
+    g_af_gametype_names[rf::NG_TYPE_WO]     = &wo_slot;
     g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
@@ -128,8 +132,9 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
         case rf::NG_TYPE_TBAG:
+        case rf::NG_TYPE_WO:
             return true;
-        default: // DM, RUN, BAG
+        default: // DM, RUN, BAG, LMS
             return false;
     }
 }
@@ -241,14 +246,20 @@ bool gt_is_lms()
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_LMS;
 }
 
+bool gt_is_wipeout()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_WO;
+}
+
 bool gt_uses_custom_scoring()
 {
-    return gt_is_bagman_any() || gt_is_lms();
+    return gt_is_bagman_any() || gt_is_lms() || gt_is_wipeout();
 }
 
 bool gt_type_uses_rounds(rf::NetGameType game_type)
 {
-    return game_type == rf::NetGameType::NG_TYPE_LMS;
+    return game_type == rf::NetGameType::NG_TYPE_LMS
+        || game_type == rf::NetGameType::NG_TYPE_WO;
 }
 
 bool gt_uses_rounds()
@@ -1957,6 +1968,7 @@ void multi_level_init_post_gametypes()
     hill_mode_level_init_post();
     bagman_level_init_post();
     lms_level_init_post();
+    wipeout_level_init_post();
     // Rounds must initialise AFTER per-gametype level-init so the gametype
     // has registered its callbacks before round 1 begins.
     rounds_level_init_post();
@@ -1969,6 +1981,7 @@ CodeInjection multi_level_init_gametypes_injection{
         rounds_level_init();
         hill_mode_level_init();
         bagman_level_init();
+        wipeout_level_init();
     },
 };
 
@@ -2053,6 +2066,13 @@ CodeInjection send_team_score_patch{
             regs.ax = blue_score;
             regs.eip = 0x00472176; // use stock game packet send
         }
+        else if (gt_is_wipeout()) {
+            const uint16_t red_score = (uint16_t)std::clamp(wipeout_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(wipeout_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
     },
 };
 
@@ -2072,6 +2092,12 @@ CodeInjection process_team_score_patch{
             int blue_score = regs.edi;
             bagman_set_red_team_score(red_score);
             bagman_set_blue_team_score(blue_score);
+        }
+        else if (gt_is_wipeout()) {
+            int red_score = regs.esi;
+            int blue_score = regs.edi;
+            wipeout_set_red_team_score(red_score);
+            wipeout_set_blue_team_score(blue_score);
         }
     },
 };
