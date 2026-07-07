@@ -545,7 +545,8 @@ static void handle_trigger_down(int trigger_idx, SDL_JoystickID which)
                                         : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
     if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
         g_rebind_pending_sc = gp_sc;
-        rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
+        rf::ui::options_controls_assign_binding(static_cast<int>(CTRL_REBIND_SENTINEL), -1);
+        rf::ui::options_controls_stop_waiting_for_key();
         return;
     }
 
@@ -570,10 +571,8 @@ static void handle_trigger_up(int trigger_idx)
     else g_rt_was_down = false;
     if (g_message_log_close_cooldown > 0.0f) return;
 
-    if (trigger_idx == 1 && is_gamepad_menu_navigation_state()) {
+    if (trigger_idx == 1)
         menu_nav_release_click();
-        return;
-    }
 
     int16_t gp_sc = (trigger_idx == 0) ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)
                                         : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
@@ -828,7 +827,8 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
             if (is_capsense_gripsense_rebind_blocked(SDL_GetGamepadFromID(ev.which), ev.button))
                 return;
             g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.button;
-            rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
+            rf::ui::options_controls_assign_binding(static_cast<int>(CTRL_REBIND_SENTINEL), -1);
+            rf::ui::options_controls_stop_waiting_for_key();
         }
         return;
     }
