@@ -19,8 +19,10 @@
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
 #include "../rf/os/os.h"
+#include "../rf/ui.h"
 #include "../multi/alpine_packets.h"
 #include "../os/console.h"
+#include "input.h"
 
 static int starting_alpine_control_index = -1;
 
@@ -113,7 +115,12 @@ FunHook<int(int16_t)> key_to_ascii_hook{
 
 int get_key_name(int key, char* buf, size_t buf_len)
 {
-     LONG lparam = (key & 0x7F) << 16;
+    // Extra mouse buttons (Mouse 4+): stored as custom scan codes
+    if (key >= CTRL_EXTRA_MOUSE_SCAN_BASE && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT) {
+        int n = snprintf(buf, buf_len, "Mouse %d", (key - CTRL_EXTRA_MOUSE_SCAN_BASE) + 4);
+        return n > 0 ? n : 0;
+    }
+    LONG lparam = (key & 0x7F) << 16;
     if (key & 0x80) {
         lparam |= 1 << 24;
     }
@@ -508,6 +515,26 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
     },
 };
 
+// Records the pressed key into the selected binding row when the controls panel is
+// waiting for input (scan code from the key queue, or -1 to check mouse buttons).
+// Stock RF rejects Left/Right Alt and any scan code its internal key name table has
+// no name for, which blocks Alpine's extra mouse button scan codes — accept both
+// directly; everything else keeps stock behavior (including the Esc/PrtScn/Pause
+// blacklist and mouse button handling).
+FunHook<void(int)> options_controls_record_binding_hook{
+    0x0044FE60,
+    [](int key) {
+        bool is_extra_mouse_scan = key >= CTRL_EXTRA_MOUSE_SCAN_BASE
+            && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT;
+        if (is_extra_mouse_scan || key == rf::KEY_LALT || key == rf::KEY_RALT) {
+            rf::ui::options_controls_assign_binding(key, -1);
+            rf::ui::options_controls_stop_waiting_for_key();
+            return;
+        }
+        options_controls_record_binding_hook.call_target(key);
+    },
+};
+
 void key_apply_patch()
 {
     // Handle Alpine chat menus
@@ -538,4 +565,7 @@ void key_apply_patch()
 
     // Num pads need a patch to support `PgUp`, `PgDown`, `End`, and `Home`.
     key_msg_handler_hook.install();
+
+    // Allow binding Alt keys and extra mouse buttons in the controls options panel
+    options_controls_record_binding_hook.install();
 }

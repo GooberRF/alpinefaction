@@ -38,7 +38,7 @@ namespace rf
     {
         IF_NO_PICKUP       = 0x01,  // copied from ItemInfo flags on create
         IF_DROPPED         = 0x08,  // item was dropped by a player
-        IF_PERMANENT       = 0x10,  // item persists (won't respawn/delete)
+        IF_PERMANENT       = 0x10,  // item was placed in level file
         IF_RED_FLAG        = 0x20,  // CTF red flag
         IF_BLUE_FLAG       = 0x40,  // CTF blue flag
         IF_RED_BASE        = 0x80,  // CTF red base

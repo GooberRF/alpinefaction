@@ -135,6 +135,20 @@ namespace rf
         {
             AddrCaller{0x0048A230}.this_call(this, new_pos);
         }
+
+        // Set the room this object is considered to be in. Passing nullptr forces update_room()
+        // to perform a full position-based room lookup on its next call.
+        void set_room(GRoom* new_room)
+        {
+            AddrCaller{0x0048A160}.this_call(this, new_room);
+        }
+
+        // Recompute which room this object is in from its current position (also updates the
+        // liquid/underwater state and clears the teleported flag).
+        void update_room()
+        {
+            AddrCaller{0x0048A190}.this_call(this);
+        }
     };
 #pragma pack(pop)
     static_assert(sizeof(Object) == 0x28C);

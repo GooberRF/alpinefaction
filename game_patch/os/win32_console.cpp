@@ -7,19 +7,25 @@
 #include <thread>
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <format>
 #include "../rf/os/console.h"
 #include "../rf/multi.h"
 #include "../rf/input.h"
 #include "../rf/os/os.h"
+#include "os.h"
 
 static bool win32_console_enabled = false;
 static bool win32_console_forced = false;
 static bool win32_console_input_line_printed = false;
+static int win32_console_printed_input_len = 0;
 static HANDLE win32_console_input_handle;
 static HANDLE win32_console_output_handle;
 static bool win32_console_is_output_redirected = false;
 static bool win32_console_is_input_redirected = false;
+// Armed on every output line; the input line reprint waits until output has been quiet for a while
+static HighResTimer win32_console_output_pause_timer;
 
 bool win32_console_is_enabled()
 {
@@ -36,19 +42,26 @@ static void reset_console_cursor_column(bool clear)
     if (win32_console_is_output_redirected) {
         return;
     }
-    CONSOLE_SCREEN_BUFFER_INFO scr_buf_info;
-    GetConsoleScreenBufferInfo(win32_console_output_handle, &scr_buf_info);
-    if (scr_buf_info.dwCursorPosition.X == 0)
+    // The input line is the only text printed without a trailing newline, so the cursor column
+    // equals the printed input line length tracked in win32_console_printed_input_len.
+    // Blank it with a single write ('\r' resets the column thanks to ENABLE_PROCESSED_OUTPUT)
+    // instead of querying the console and writing space by space: each console API call is a
+    // double-hop wineserver/conhost RPC under Wine.
+    if (win32_console_printed_input_len == 0) {
         return;
-    COORD new_pos = scr_buf_info.dwCursorPosition;
-    new_pos.X = 0;
-    SetConsoleCursorPosition(win32_console_output_handle, new_pos);
+    }
     if (clear) {
-        for (int i = 0; i < scr_buf_info.dwCursorPosition.X; ++i) {
-            WriteConsoleA(win32_console_output_handle, " ", 1, nullptr, nullptr);
-        }
-        SetConsoleCursorPosition(win32_console_output_handle, new_pos);
+        std::string buf;
+        buf.reserve(2 + win32_console_printed_input_len);
+        buf += '\r';
+        buf.append(win32_console_printed_input_len, ' ');
+        buf += '\r';
+        WriteConsoleA(win32_console_output_handle, buf.data(), buf.size(), nullptr, nullptr);
         win32_console_input_line_printed = false;
+        win32_console_printed_input_len = 0;
+    }
+    else {
+        WriteConsoleA(win32_console_output_handle, "\r", 1, nullptr, nullptr);
     }
 }
 
@@ -57,12 +70,23 @@ static void print_cmd_input_line()
     if (win32_console_is_output_redirected) {
         return;
     }
+    // Guard against GetConsoleScreenBufferInfo failing (leaving dwSize uninitialized) or reporting a
+    // degenerate width: a width < 3 would push offset past cmd_line_len and underflow the unsigned
+    // length passed to append.
     CONSOLE_SCREEN_BUFFER_INFO scr_buf_info;
-    GetConsoleScreenBufferInfo(win32_console_output_handle, &scr_buf_info);
-    WriteConsoleA(win32_console_output_handle, "] ", 2, nullptr, nullptr);
-    unsigned offset = std::max(0, rf::console::cmd_line_len - scr_buf_info.dwSize.X + 3);
-    WriteConsoleA(win32_console_output_handle, rf::console::cmd_line + offset, rf::console::cmd_line_len - offset, nullptr, nullptr);
+    int console_width = 80;
+    if (GetConsoleScreenBufferInfo(win32_console_output_handle, &scr_buf_info) && scr_buf_info.dwSize.X > 0) {
+        console_width = scr_buf_info.dwSize.X;
+    }
+    int offset = std::clamp(rf::console::cmd_line_len - console_width + 3, 0, rf::console::cmd_line_len);
+    int visible_len = rf::console::cmd_line_len - offset;
+    std::string line;
+    line.reserve(2 + visible_len);
+    line += "] ";
+    line.append(rf::console::cmd_line + offset, visible_len);
+    WriteConsoleA(win32_console_output_handle, line.data(), line.size(), nullptr, nullptr);
     win32_console_input_line_printed = true;
+    win32_console_printed_input_len = static_cast<int>(line.size());
 }
 
 static BOOL WINAPI console_ctrl_handler([[maybe_unused]] DWORD ctrl_type)
@@ -230,6 +254,8 @@ void win32_console_output(const char* text, [[maybe_unused]] const rf::Color* co
     if (current_attr != gray_attr && !win32_console_is_output_redirected) {
         SetConsoleTextAttribute(output_handle, gray_attr);
     }
+
+    win32_console_output_pause_timer.set_ms(100);
 }
 
 void win32_console_new_line()
@@ -242,7 +268,12 @@ void win32_console_new_line()
 void win32_console_update()
 {
     static char prev_cmd_line[sizeof(rf::console::cmd_line)];
-    if (std::strncmp(rf::console::cmd_line, prev_cmd_line, std::size(prev_cmd_line)) != 0 || !win32_console_input_line_printed) {
+    bool cmd_line_changed = std::strncmp(rf::console::cmd_line, prev_cmd_line, std::size(prev_cmd_line)) != 0;
+    // Reprint the input line when the user edited it, or after output has been quiet for a while.
+    // Reprinting right after every output line causes console API call bursts during log storms;
+    // the prompt staying hidden while output is flowing is an accepted tradeoff.
+    bool output_paused = !win32_console_output_pause_timer.valid() || win32_console_output_pause_timer.elapsed();
+    if (cmd_line_changed || (!win32_console_input_line_printed && output_paused)) {
         reset_console_cursor_column(true);
         print_cmd_input_line();
         std::strcpy(prev_cmd_line, rf::console::cmd_line);

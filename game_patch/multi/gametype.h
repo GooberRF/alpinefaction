@@ -176,6 +176,12 @@ bool gt_is_run();
 bool gt_is_bag();
 bool gt_is_tbag();
 bool gt_is_bagman_any();
+bool gt_is_lms();
+
+// Score is driven by gametype-specific logic rather than directly by frags.
+bool gt_uses_custom_scoring();
+bool gt_uses_rounds();
+bool gt_type_uses_rounds(rf::NetGameType game_type);
 bool rev_all_points_permalocked();
 bool esc_all_points_owned_by_one_team();
 bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);

@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cassert>
+#include <algorithm>
 #include <array>
 #include <ranges>
 #include <unordered_map>
@@ -12,6 +13,7 @@
 #include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
+#include "../rf/os/frametime.h"
 #include "multi.h"
 #include "network.h"
 #include "server_internal.h"
@@ -21,6 +23,7 @@
 #include "bagman.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
+#include "rounds.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
@@ -378,57 +381,76 @@ void af_send_obj_update_packet(rf::Player* player)
         return;
     }
 
-    std::vector<af_obj_update> obj_updates;
-    auto player_list = SinglyLinkedList{rf::player_list};
+    // This is called once per recipient from the obj_update send loop, and the gathered state is
+    // identical for every recipient within a frame apart from excluding the recipient's own entry,
+    // so gather it only once per frame.
+    struct GatheredObjUpdate
+    {
+        rf::Player* owner;
+        af_obj_update update;
+    };
+    static std::vector<GatheredObjUpdate> gathered_updates;
+    static std::vector<af_obj_update> obj_updates;
+    static int gathered_frame = -1;
 
-    // loop through players to gather info
-    for (auto& other_player : player_list) {
-        //xlog::info("starting payer list loop");
-        if (!&other_player) {
-            continue; // player not valid
+    if (gathered_frame != rf::frame_count) {
+        gathered_frame = rf::frame_count;
+        gathered_updates.clear();
+        auto player_list = SinglyLinkedList{rf::player_list};
+
+        // loop through players to gather info
+        for (auto& other_player : player_list) {
+            //xlog::info("starting payer list loop");
+            if (!&other_player) {
+                continue; // player not valid
+            }
+
+            if (rf::player_is_dead(&other_player)) {
+                continue; // player is dead
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(other_player.entity_handle);
+            if (!entity) {
+                continue; // player entity is invalid or not spawned
+            }
+
+            if (rf::entity_is_dying(entity)) {
+                continue; // player entity is dying (dying entities have invalid info in ai)
+            }
+
+            af_obj_update obj_update{};
+            obj_update.obj_handle = entity->handle;
+
+            uint8_t current_primary_weapon = static_cast<uint8_t>(entity->ai.current_primary_weapon);
+            if (current_primary_weapon > 63) {
+                xlog::debug("obj_update packet tried to process an invalid weapon type: {}", current_primary_weapon);
+                continue; // reported weapon type is out of valid range
+            }
+            obj_update.current_primary_weapon = current_primary_weapon;
+
+            uint8_t ammo_type = static_cast<uint8_t>(rf::weapon_types[current_primary_weapon].ammo_type);
+            if (ammo_type > 31) {
+                xlog::debug("obj_update packet tried to process an invalid ammo type: {}", ammo_type); // todo: figure out why this happens sometimes on specific maps???
+                continue; // reported ammo type is out of valid range
+            }
+            obj_update.ammo_type = ammo_type;
+
+            obj_update.clip_ammo = static_cast<uint16_t>(entity->ai.clip_ammo[current_primary_weapon]);
+            obj_update.reserve_ammo = static_cast<uint16_t>(entity->ai.ammo[ammo_type]);
+
+            /*xlog::warn("Adding player {}, weap {}, ammo {}, clip {}, reserve {}",
+                       entity->name, obj_update.current_primary_weapon, obj_update.ammo_type,
+                       obj_update.clip_ammo, obj_update.reserve_ammo);*/
+            gathered_updates.push_back({&other_player, obj_update});
         }
+    }
 
-        if (&other_player == player) {
-            continue; // player is myself
+    // exclude the recipient's own entry
+    obj_updates.clear();
+    for (const GatheredObjUpdate& gathered_update : gathered_updates) {
+        if (gathered_update.owner != player) {
+            obj_updates.push_back(gathered_update.update);
         }
-
-        if (rf::player_is_dead(&other_player)) {
-            continue; // player is dead
-        }
-
-        rf::Entity* entity = rf::entity_from_handle(other_player.entity_handle);
-        if (!entity) {
-            continue; // player entity is invalid or not spawned
-        }
-
-        if (rf::entity_is_dying(entity)) {
-            continue; // player entity is dying (dying entities have invalid info in ai)
-        }
-
-        af_obj_update obj_update{};
-        obj_update.obj_handle = entity->handle;
-
-        uint8_t current_primary_weapon = static_cast<uint8_t>(entity->ai.current_primary_weapon);
-        if (current_primary_weapon > 63) {
-            xlog::debug("obj_update packet tried to process an invalid weapon type: {}", current_primary_weapon);
-            continue; // reported weapon type is out of valid range
-        }
-        obj_update.current_primary_weapon = current_primary_weapon;
-
-        uint8_t ammo_type = static_cast<uint8_t>(rf::weapon_types[current_primary_weapon].ammo_type);
-        if (ammo_type > 31) {
-            xlog::debug("obj_update packet tried to process an invalid ammo type: {}", ammo_type); // todo: figure out why this happens sometimes on specific maps???
-            continue; // reported ammo type is out of valid range
-        }
-        obj_update.ammo_type = ammo_type;
-
-        obj_update.clip_ammo = static_cast<uint16_t>(entity->ai.clip_ammo[current_primary_weapon]);
-        obj_update.reserve_ammo = static_cast<uint16_t>(entity->ai.ammo[ammo_type]);
-
-        /*xlog::warn("Adding player {}, weap {}, ammo {}, clip {}, reserve {}", 
-                   entity->name, obj_update.current_primary_weapon, obj_update.ammo_type, 
-                   obj_update.clip_ammo, obj_update.reserve_ammo);*/
-        obj_updates.push_back(obj_update);
     }
 
     if (obj_updates.empty()) {
@@ -444,11 +466,7 @@ void af_send_obj_update_packet(rf::Player* player)
         return;
     }
 
-    // Allocate memory dynamically for the packet
-    auto packet_buf = std::make_unique<std::byte[]>(total_packet_size);
-    if (!packet_buf) {
-        return; // could not allocate memory
-    }
+    static std::byte packet_buf[rf::max_packet_size];
 
     // Fill packet header
     RF_GamePacketHeader header{};
@@ -456,16 +474,14 @@ void af_send_obj_update_packet(rf::Player* player)
     header.size = static_cast<uint16_t>(object_data_size);
 
     // Copy data to packet buffer
-    std::memcpy(packet_buf.get(), &header, sizeof(header));
-    if (!obj_updates.empty()) {
-        std::memcpy(packet_buf.get() + sizeof(header), obj_updates.data(), object_data_size);
-    }
+    std::memcpy(packet_buf, &header, sizeof(header));
+    std::memcpy(packet_buf + sizeof(header), obj_updates.data(), object_data_size);
 
     if (!player) {
         xlog::error("af_obj_update: Attempted to send to an invalid player");
         return;
     }
-    af_send_packet(player, packet_buf.get(), total_packet_size, false);
+    af_send_packet(player, packet_buf, total_packet_size, false);
 }
 
 static void af_process_obj_update_packet(const void* data, size_t len, const rf::NetAddr& addr)
@@ -1961,6 +1977,35 @@ af_server_msg_packet_buf build_automated_chat_msg_packet(
     return buf;
 }
 
+af_server_msg_packet_buf build_hud_notification_packet(
+    std::string_view text, int8_t duration_seconds,
+    uint8_t notification_type, bool fade_on_expire
+) {
+    constexpr size_t max_len = rf::max_packet_size
+        - sizeof(af_server_msg_packet)
+        - sizeof(af_hud_notification_prefix);
+    const size_t len = std::clamp(text.size(), 0uz, max_len);
+
+    af_server_msg_packet_buf buf{};
+    buf.packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    buf.packet.header.size = static_cast<uint16_t>(
+        sizeof(buf.packet)
+            - sizeof(buf.packet.header)
+            + sizeof(af_hud_notification_prefix)
+            + len
+    );
+    buf.packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_HUD_NOTIFICATION);
+
+    af_hud_notification_prefix prefix{};
+    prefix.duration_seconds = duration_seconds;
+    prefix.notification_type = notification_type;
+    prefix.fade_on_expire = fade_on_expire ? 1 : 0;
+    std::memcpy(buf.packet.data, &prefix, sizeof(prefix));
+    std::memcpy(buf.packet.data + sizeof(prefix), text.data(), len);
+
+    return buf;
+}
+
 af_server_msg_packet_buf build_server_console_msg_packet(
     const std::string_view msg
 ) {
@@ -2054,6 +2099,164 @@ void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player, 
     }
 }
 
+void af_broadcast_hud_notification(const std::string_view text, int duration_seconds, int notification_type, bool fade_on_expire) {
+    if (!rf::is_server) {
+        return;
+    }
+
+    const int8_t clamped_seconds = static_cast<int8_t>(std::clamp(duration_seconds, -1, 127));
+    const af_server_msg_packet_buf buf = build_hud_notification_packet(
+        text, clamped_seconds,
+        static_cast<uint8_t>(notification_type), fade_on_expire);
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player) {
+            // Listen-server host: render locally; we don't go through the network path.
+            hud_notification_show(std::string{text}, clamped_seconds,
+                                  static_cast<HudNotificationType>(notification_type),
+                                  fade_on_expire);
+            continue;
+        }
+        if (!is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            continue;
+        }
+        rf::multi_io_send_reliable(
+            &player,
+            &buf.packet,
+            buf.packet.header.size + sizeof(buf.packet.header),
+            0
+        );
+    }
+}
+
+void af_send_hud_notification(const std::string_view text, int duration_seconds, int notification_type, bool fade_on_expire, rf::Player* player) {
+    if (!rf::is_server || !player) {
+        return;
+    }
+
+    const int8_t clamped_seconds = static_cast<int8_t>(std::clamp(duration_seconds, -1, 127));
+
+    if (player == rf::local_player) {
+        // Listen-server host: render locally instead of routing through the network path.
+        hud_notification_show(std::string{text}, clamped_seconds,
+                              static_cast<HudNotificationType>(notification_type),
+                              fade_on_expire);
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        return;
+    }
+
+    const af_server_msg_packet_buf buf = build_hud_notification_packet(
+        text, clamped_seconds,
+        static_cast<uint8_t>(notification_type), fade_on_expire);
+
+    rf::multi_io_send_reliable(
+        player,
+        &buf.packet,
+        buf.packet.header.size + sizeof(buf.packet.header),
+        0
+    );
+}
+
+af_server_msg_packet_buf build_round_countdown_packet(uint8_t duration_seconds)
+{
+    af_server_msg_packet_buf buf{};
+    buf.packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    buf.packet.header.size = static_cast<uint16_t>(
+        sizeof(buf.packet)
+            - sizeof(buf.packet.header)
+            + sizeof(af_round_countdown_payload)
+    );
+    buf.packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN);
+
+    af_round_countdown_payload payload{};
+    payload.duration_seconds = duration_seconds;
+    std::memcpy(buf.packet.data, &payload, sizeof(payload));
+
+    return buf;
+}
+
+af_server_msg_packet_buf build_play_custom_sound_packet(uint16_t custom_sound_id)
+{
+    af_server_msg_packet_buf buf{};
+    buf.packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    buf.packet.header.size = static_cast<uint16_t>(
+        sizeof(buf.packet)
+            - sizeof(buf.packet.header)
+            + sizeof(af_play_custom_sound_payload)
+    );
+    buf.packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND);
+
+    af_play_custom_sound_payload payload{};
+    payload.custom_sound_id = custom_sound_id;
+    std::memcpy(buf.packet.data, &payload, sizeof(payload));
+
+    return buf;
+}
+
+void af_broadcast_play_custom_sound(int custom_sound_id)
+{
+    if (!rf::is_server) return;
+
+    const af_server_msg_packet_buf buf = build_play_custom_sound_packet(
+        static_cast<uint16_t>(custom_sound_id));
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player) {
+            // Listen-server host: play locally (doesn't go through the network path).
+            play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(custom_sound_id)), 0, 1.0f);
+            continue;
+        }
+        if (!is_player_minimum_af_client_version(&player, 1, 4, 0)) continue;
+        rf::multi_io_send_reliable(&player, &buf.packet,
+            buf.packet.header.size + sizeof(buf.packet.header), 0);
+    }
+}
+
+void af_send_play_custom_sound(int custom_sound_id, rf::Player* player)
+{
+    if (!rf::is_server || !player) return;
+    if (player == rf::local_player) {
+        play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(custom_sound_id)), 0, 1.0f);
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) return;
+
+    const af_server_msg_packet_buf buf = build_play_custom_sound_packet(
+        static_cast<uint16_t>(custom_sound_id));
+    rf::multi_io_send_reliable(player, &buf.packet,
+        buf.packet.header.size + sizeof(buf.packet.header), 0);
+}
+
+void af_broadcast_round_countdown(int duration_seconds)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    const uint8_t clamped = static_cast<uint8_t>(std::clamp(duration_seconds, 0, 10));
+    const af_server_msg_packet_buf buf = build_round_countdown_packet(clamped);
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player) {
+            // Server's listen-server host renders via the same client-side
+            // hook by setting the local state directly.
+            rounds_client_set_countdown(clamped);
+            continue;
+        }
+        if (!is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            continue;
+        }
+        rf::multi_io_send_reliable(
+            &player,
+            &buf.packet,
+            buf.packet.header.size + sizeof(buf.packet.header),
+            0
+        );
+    }
+}
+
 void af_process_server_msg_packet(
     const void* const data,
     const size_t len,
@@ -2084,12 +2287,50 @@ void af_process_server_msg_packet(
         handle_vote_or_ready_up_msg(msg);
         rf::multi_chat_print(msg, rf::ChatMsgColor::gold_white, rf::String{"Server: "});
         if (!g_alpine_game_config.simple_server_chat_msgs) {
-            rf::snd_play(4, 0, 0.f, 1.f);
+            rf::snd_play(stock_sound_id::end_voice, 0, 0.f, 1.f);
         }
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_CONSOLE)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string msg{ptr, len - sizeof(msg_packet)};
         rf::console::print("{}", msg);
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_HUD_NOTIFICATION)) {
+        const size_t header_len = sizeof(msg_packet) + sizeof(af_hud_notification_prefix);
+        if (len < header_len) {
+            return;
+        }
+        af_hud_notification_prefix prefix{};
+        std::memcpy(&prefix, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(prefix));
+        // notification_type is wire data cast to an enum; reject out-of-range values.
+        if (prefix.notification_type > static_cast<uint8_t>(HudNotificationType::Round)) {
+            return;
+        }
+        const char* text_ptr = static_cast<const char*>(data) + header_len;
+        const size_t text_len = len - header_len;
+        std::string text{text_ptr, text_len};
+        hud_notification_show(std::move(text),
+                              prefix.duration_seconds,
+                              static_cast<HudNotificationType>(prefix.notification_type),
+                              prefix.fade_on_expire != 0);
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN)) {
+        if (len < sizeof(msg_packet) + sizeof(af_round_countdown_payload)) {
+            return;
+        }
+        af_round_countdown_payload payload{};
+        std::memcpy(&payload, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(payload));
+        // Re-enforce the sender's 0-10 contract on receive (sender is untrusted).
+        rounds_client_set_countdown(std::clamp<int>(payload.duration_seconds, 0, 10));
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND)) {
+        if (len < sizeof(msg_packet) + sizeof(af_play_custom_sound_payload)) {
+            return;
+        }
+        af_play_custom_sound_payload payload{};
+        std::memcpy(&payload, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(payload));
+        // reject anything that doesn't resolve to a loaded custom-sound entry
+        // before it reaches the unchecked engine sound-table index.
+        if (!is_valid_custom_sound_id(payload.custom_sound_id)) {
+            return;
+        }
+        play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(payload.custom_sound_id)), 0, 1.0f);
     }
 }
 

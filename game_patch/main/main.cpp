@@ -216,6 +216,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         evaluate_pow2tex(level_filename);
         waypoints_level_reset();
         atx_level_reset();
+        alpine_camera_clear_static_mode();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);
 

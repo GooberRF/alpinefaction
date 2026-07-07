@@ -24,6 +24,8 @@
 #include "multi.h"
 #include "gametype.h"
 #include "bagman.h"
+#include "rounds.h"
+#include "lms.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
@@ -31,6 +33,7 @@
 #include "../main/main.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
+#include "../sound/sound.h"
 #include "../rf/file/file.h"
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
@@ -66,9 +69,11 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "map_next",
     "map_rand",
     "map_prev",
+    "maxfps",
     "sv_caplimit",
     "sv_fraglimit",
     "sv_gametype",
+    "sv_netfps",
     "gt",
     "sv_geolimit",
     "sv_pass",
@@ -824,6 +829,9 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_iequals(gametype_name, "tbag") || string_iequals(gametype_name, "tbm")) {
         return rf::NetGameType::NG_TYPE_TBAG;
     }
+    if (string_iequals(gametype_name, "lms")) {
+        return rf::NetGameType::NG_TYPE_LMS;
+    }
 
     return std::nullopt;
 }
@@ -1201,13 +1209,13 @@ void send_sound_packet(
 
 void send_legacy_hit_sound_packet(rf::Player* const target) {
     // fallback for legacy clients
-    send_sound_packet(target, target->last_hit_sound_ms, 10, 29);
+    send_sound_packet(target, target->last_hit_sound_ms, 10, stock_sound_id::beep_01);
 }
 
 // todo optimization: move this to a new flag on af_damage_notify packet
 void send_critical_hit_packet(rf::Player* target)
 {
-    send_sound_packet(target, target->last_critical_sound_ms, 10, 35); // rate limit 10/sec, sound id 35
+    send_sound_packet(target, target->last_critical_sound_ms, 10, stock_sound_id::jolt_01); // rate limit 10/sec
 }
 
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
@@ -1277,6 +1285,11 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         int damaged_ep_handle = damaged_ep->handle;
 
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
+
+        // LMS: track damage dealt by killer for round-timeout tiebreak.
+        if (rf::is_server && is_pvp_damage && real_damage > 0.0f) {
+            lms_on_pvp_damage(killer_player, real_damage);
+        }
 
         // Re-fetch pointer: entity may have been destroyed during damage processing, making the original pointer dangling
         damaged_ep = rf::entity_from_handle(damaged_ep_handle);
@@ -2126,6 +2139,11 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
 
+        // LMS: enforce no-respawn-during-round and late-joiner spectate semantics.
+        if (!lms_can_player_spawn(player)) {
+            return;
+        }
+
         // if a respawn timer has been set by the server, enforce it
         if (player->respawn_timer.valid() && !player->respawn_timer.elapsed()) {
             const float spawn_delay_left = std::max(
@@ -2805,6 +2823,11 @@ FunHook<void()> multi_check_for_round_end_hook{
             return; // round can't end during pre-match
         }
 
+        // Rounds primitive owns its own time-up + winner detection.
+        if (gt_uses_rounds()) {
+            return;
+        }
+
         bool time_up = (rf::multi_time_limit > 0.0f && rf::level.time >= rf::multi_time_limit);
         bool round_over = time_up;
         const auto game_type = rf::multi_get_game_type();
@@ -3340,6 +3363,7 @@ CodeInjection entity_maybe_die_patch{
         }
 
         bagman_on_entity_will_die(ep);
+        lms_on_entity_will_die(ep);
     },
 };
 
@@ -3667,6 +3691,8 @@ void server_do_frame()
     server_vote_do_frame();
     match_do_frame();
     process_delayed_kicks();
+    lms_do_frame();
+    rounds_do_frame();
 }
 
 void server_on_limbo_state_enter()
