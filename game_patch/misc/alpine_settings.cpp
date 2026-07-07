@@ -34,6 +34,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <xlog/xlog.h>
+#include "../graphics/gr.h"
 
 bool g_loaded_alpine_settings_file = false;
 bool g_loaded_alpine_core_config_file = false;
@@ -665,6 +666,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("IgnoreTblLightmapClamping")) {
         g_alpine_game_config.ignore_tbl_lightmap_clamping = std::stoi(settings["IgnoreTblLightmapClamping"]);
         processed_keys.insert("IgnoreTblLightmapClamping");
+    }
+    if (settings.contains("SampleCount")) {
+        g_alpine_game_config.sample_count = std::stoi(settings["SampleCount"]);
+        processed_keys.insert("SampleCount");
     }
 
     // Load UI settings
@@ -1603,6 +1608,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "IgnoreTblVertexLighting=" << g_alpine_game_config.ignore_tbl_vertex_lighting << "\n";
     file << "IgnoreTblPixelLightOverbright=" << g_alpine_game_config.ignore_tbl_pixel_light_overbright << "\n";
     file << "IgnoreTblLightmapClamping=" << g_alpine_game_config.ignore_tbl_lightmap_clamping << "\n";
+    file << "SampleCount=" << g_alpine_game_config.sample_count << "\n";
 
     // UI
     file << "\n[UISettings]\n";
@@ -1821,6 +1827,12 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
 
         // Re-apply gyro calibration system
         gyro_update_calibration_mode();
+        }
+  
+        // HACKFIX.  We need to load our settings earlier.
+        if (g_alpine_game_config.sample_count != 1) {
+           gr_flush_frame_buffers();
+        }
 
         // display popup recommending ff link (skip for bots)
         if (ff_link_prompt && !g_game_config.suppress_ff_link_prompt && !client_bot_launch_enabled()) {
@@ -1938,7 +1950,7 @@ ConsoleCommand2 shadow_items_cmd{
 ConsoleCommand2 dbg_shadows_cmd{
     "dbg_shadows",
     []() {
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         if (rf::is_multi && !rf::is_server) {
             rf::console::print("This command is only available in single-player or as host");
             return;
@@ -1955,7 +1967,7 @@ ConsoleCommand2 shadow_distance_cmd{
         if (value_opt) {
             g_alpine_game_config.set_shadow_distance(value_opt.value());
         }
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         int d = g_alpine_game_config.shadow_distance;
         rf::console::print("Shadow distance: {} ({}) [0-5]",
             d, ESR::preset_names[d]);
@@ -1970,7 +1982,7 @@ ConsoleCommand2 shadow_quality_cmd{
         if (value_opt) {
             g_alpine_game_config.set_shadow_quality(value_opt.value());
         }
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         int q = g_alpine_game_config.shadow_quality;
         const auto& preset = ESR::shadow_quality_presets[q];
         if (preset.resolution == 0) {

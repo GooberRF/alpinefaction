@@ -53,6 +53,11 @@ namespace rf
     static const auto& net_rel_send = addr_as_ref<int(int, const uint8_t*, int)>(0x0052A310);
     static auto& net_udp_socket = addr_as_ref<int>(0x005A660C);
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
+    static const auto& net_stats_update = addr_as_ref<void()>(0x00528580);
+    static const auto& net_stats_add = addr_as_ref<void(int, int, int, int)>(0x005286A0);
+    static const auto& net_packet_queue_push =
+        addr_as_ref<void(void*, const void*, int, const NetAddr*)>(0x00528950);
+    static auto& net_packet_queues = addr_as_ref<uint8_t[3][0x1050C]>(0x01B15950);
 
     struct NetReliableSocket;
     static auto& net_rel_sockets = addr_as_ref<NetReliableSocket[NET_MAX_REL_SOCKETS]>(0x01B479E8);

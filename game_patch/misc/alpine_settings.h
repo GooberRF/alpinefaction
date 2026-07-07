@@ -268,6 +268,10 @@ struct AlpineGameSettings
     bool hide_chat = false;
     bool spectate_cinematic_mode = false;
 
+    // MSAA anti-aliasing
+    // 1 = disabled, 2/4/8 = MSAA level
+    uint32_t sample_count = 1;
+
     // hud color overrides
     std::optional<uint32_t> sniper_scope_color_override{};
     std::optional<uint32_t> precision_scope_color_override{};
