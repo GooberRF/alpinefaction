@@ -22,6 +22,12 @@ static constexpr RumbleEffect k_rumble_sniper_shot{ 0x9000, 0xFFFF, 0xFFFF, 180u
 static constexpr RumbleEffect k_rumble_turret_shot{ 0xA800, 0x8C00, 0, 120u };
 // Submarine rocket launch: firm pulse — sub hull dampens the kick vs open-air rocket
 static constexpr RumbleEffect k_rumble_sub_rocket{ 0xC000, 0xF000, 0, 90u };
+// Fighter cannon — punchy open-cockpit shot, less hull damping than the sub
+static constexpr RumbleEffect k_rumble_fighter_shot{ 0xB000, 0xD000, 0, 70u };
+// APC/jeep driver weapon — heavy vehicle-mounted gun
+static constexpr RumbleEffect k_rumble_apc_shot{ 0xA800, 0x9000, 0, 90u };
+// Driller — low continuous grind while the drill head spins
+static constexpr RumbleEffect k_rumble_driller{ 0x5000, 0x3000, 0, 90u };
 
 struct WeaponRumbleProfile {
     const RumbleEffect* preset = nullptr;
@@ -122,12 +128,29 @@ static void rumble_weapon_do_frame()
         return;
     }
 
-    // Turret and vehicle turret shots are detected via rumble_on_turret_fire() called from the entity-fire hook.
-    if (rf::entity_is_on_turret(lpe) || rf::entity_is_jeep_gunner(lpe)) {
+    // Turret and vehicle shots are handled elsewhere; suppress hand-weapon rumble for all of these.
+    if (rf::entity_is_on_turret(lpe) || rf::entity_is_jeep_gunner(lpe)
+            || rf::entity_is_jeep_driver(lpe) || rf::entity_is_fighter(lpe)) {
         s_last_fired_ts     = -2;
         s_last_secondary_ts = -2;
         s_pending_alt_fire  = false;
         return;
+    }
+
+    // Driller: continuous rumble while the drill head spins; no discrete fire event.
+    if (rf::entity_in_vehicle(lpe)) {
+        rf::Entity* vehicle = rf::entity_from_handle(lpe->host_handle);
+        if (vehicle && rf::entity_is_driller(vehicle)) {
+            if (vehicle->driller_rot_speed > 0.0f) {
+                bool ignore_filter = !g_alpine_game_config.gamepad_gyro_vehicle_camera;
+                gamepad_rumble(k_rumble_driller.lo_motor, k_rumble_driller.hi_motor,
+                               k_rumble_driller.duration_ms, ignore_filter);
+            }
+            s_last_fired_ts     = -2;
+            s_last_secondary_ts = -2;
+            s_pending_alt_fire  = false;
+            return;
+        }
     }
 
     // While viewing a security camera the player is not firing; keep the sentinel stale
@@ -225,12 +248,22 @@ void rumble_on_turret_fire(rf::Entity* firer)
     else if (rf::entity_is_vehicle(firer) && rf::entity_from_handle(lpe->host_handle) == firer) {
         if (rf::entity_is_jeep_gunner(lpe))
             gamepad_play_rumble(k_rumble_turret_shot);
-        else if (rf::entity_is_sub(firer)) {
+        else {
             // Bypass vibration filter when gyro_vehicle_camera is off (default): gyro isn't
             // active in vehicles, so the filter serves no purpose and would suppress the effect.
             bool ignore_filter = !g_alpine_game_config.gamepad_gyro_vehicle_camera;
-            gamepad_rumble(k_rumble_sub_rocket.lo_motor, k_rumble_sub_rocket.hi_motor,
-                           k_rumble_sub_rocket.duration_ms, ignore_filter);
+            if (rf::entity_is_sub(firer)) {
+                gamepad_rumble(k_rumble_sub_rocket.lo_motor, k_rumble_sub_rocket.hi_motor,
+                               k_rumble_sub_rocket.duration_ms, ignore_filter);
+            }
+            else if (rf::entity_is_fighter(firer)) {
+                gamepad_rumble(k_rumble_fighter_shot.lo_motor, k_rumble_fighter_shot.hi_motor,
+                               k_rumble_fighter_shot.duration_ms, ignore_filter);
+            }
+            else if (rf::entity_is_jeep(firer) && rf::entity_is_jeep_driver(lpe)) {
+                gamepad_rumble(k_rumble_apc_shot.lo_motor, k_rumble_apc_shot.hi_motor,
+                               k_rumble_apc_shot.duration_ms, ignore_filter);
+            }
         }
     }
 }
