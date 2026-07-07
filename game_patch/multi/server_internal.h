@@ -789,6 +789,7 @@ struct AlpineServerConfig
     bool allow_outlines = false;
     bool allow_outlines_xray = true;
     bool use_sp_damage_calculation = false;
+    bool legacy_hitboxes = true;
     AlpineRestrictConfig alpine_restricted_config;
     InactivityConfig inactivity_config;
     DamageNotificationConfig damage_notification_config;

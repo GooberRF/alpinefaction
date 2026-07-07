@@ -1,4 +1,6 @@
+#include <cmath>
 #include <algorithm>
+#include <unordered_map>
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
@@ -44,9 +46,793 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/ui.h"
 #include "../rf/sound/sound.h"
+#include "../rf/vmesh.h"
 #include "../sound/sound.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
+
+// --- Improved hitboxes: split capsule collision with head tracking ---
+
+// Hybrid hitbox tuning constants. Shared by the server-side collision test
+// (ix_linesegment_capsule_hook) and the client-side debug visualizer (render_hitboxes) via
+// compute_hitbox_geometry(), so the drawn volume always matches the volume that is hit-tested.
+static constexpr float k_hitbox_crouch_top_extension = 0.3f;   // extend effective top when crouching
+static constexpr float k_hitbox_split_ratio_crouch = 0.35f;    // height fraction of lower/torso split, crouched
+static constexpr float k_hitbox_split_ratio_standing = 0.55f;  // ... standing
+static constexpr float k_hitbox_torso_len_scale = 1.05f;       // torso cylinder length overshoot toward head
+static constexpr float k_hitbox_head_back_offset_frac = 0.30f; // pull head sphere back along look dir (x head radius)
+
+// Lag compensation: when true, capsule collision uses rewound physics data
+static bool s_in_lag_comp_raycast = false;
+
+void set_lag_comp_flag(bool active) {
+    s_in_lag_comp_raycast = active;
+}
+
+// Entity pointer captured from the collision loop
+static rf::Entity* s_current_collide_entity = nullptr;
+
+// Cache: VMesh::mesh pointer -> head csphere index (per-model, stable across instances).
+// Keyed by the shared VMesh::mesh pointer, which is freed on level unload and may be recycled
+// by a different model on the next level. Cleared on every level load to avoid a recycled
+// pointer resolving to a stale head-csphere index. See hitbox_reset_head_csphere_cache().
+static std::unordered_map<void*, int> s_head_csphere_cache;
+
+// Clear per-model head-csphere cache. Must be called on level load (mesh pointers are
+// invalidated when the previous level's models are freed).
+void hitbox_reset_head_csphere_cache()
+{
+    s_head_csphere_cache.clear();
+}
+
+// Capture ESI (entity pointer) at start of bbox computation in collide_linesegment_level_for_multi
+static CodeInjection capture_entity_injection{
+    0x0049C7D5,
+    [](auto& regs) {
+        s_current_collide_entity = static_cast<rf::Entity*>(regs.esi);
+    },
+};
+
+// Note on lag compensation and eye angle:
+// The head/torso tilt is driven by the target's eye pitch. RF's server-side lag comp rewinds
+// the target's POSITION and body orientation (used below via p_data.pos/orient), but it does not
+// record the target's eye/aim angle. There is therefore no rewound eye angle to reconstruct,
+// so the tilt uses the live (latest-received) eye orientation.
+// The error is confined to the tilt of the torso cylinder + head sphere and is only significant
+// when the target flicks vertically inside the lag-comp window.
+
+// Find the world position of the head collision sphere.
+// Uses highest world-space Y to identify head csphere, with per-model caching
+// to avoid oscillation at extreme downward pitch where head/torso Y values converge.
+static bool find_head_csphere_pos(const rf::Entity* entity, rf::Vector3* out_pos,
+                                   float* out_radius = nullptr)
+{
+    if (!entity->vmesh)
+        return false;
+
+    int num = rf::vmesh_get_num_cspheres(entity->vmesh);
+    if (num <= 0)
+        return false;
+
+    // During lag comp, use rewound p_data pos/orient; otherwise use live entity pos/orient.
+    // Local copies: vmesh_get_csphere_pos takes non-const pointers, so copying avoids casting away
+    // const and guarantees the engine cannot mutate live/rewound entity state through them.
+    rf::Vector3 transform_pos = s_in_lag_comp_raycast ? entity->p_data.pos : entity->pos;
+    rf::Matrix3 transform_orient = s_in_lag_comp_raycast ? entity->p_data.orient : entity->orient;
+
+    // Find the csphere with highest world-space Y
+    int highest_y_index = -1;
+    float highest_y = -1e30f;
+    rf::Vector3 highest_y_pos;
+
+    for (int i = 0; i < num; i++) {
+        rf::Vector3 pos;
+        if (rf::vmesh_get_csphere_pos(entity->vmesh, i, &pos,
+                &transform_pos, &transform_orient)) {
+            if (pos.y > highest_y) {
+                highest_y = pos.y;
+                highest_y_index = i;
+                highest_y_pos = pos;
+            }
+        }
+    }
+
+    if (highest_y_index < 0)
+        return false;
+
+    // Helper to retrieve csphere radius for a given index (full csphere radius, no scaling applied)
+    auto get_csphere_radius = [&](int index, float* radius) {
+        if (radius) {
+            rf::Vector3 local_pos;
+            float r;
+            if (rf::vmesh_get_csphere(entity->vmesh, index, &local_pos, &r)) {
+                *radius = r;
+            }
+        }
+    };
+
+    // At non-extreme pitch, highest-Y is reliable — update cache.
+    // Uses live eye pitch (no rewound eye angle exists; see note above).
+    float sin_pitch = entity->eye_orient.fvec.y;
+    bool extreme_pitch = std::abs(sin_pitch) > 0.5f;
+    void* mesh_key = entity->vmesh->mesh;
+
+    if (!extreme_pitch) {
+        s_head_csphere_cache[mesh_key] = highest_y_index;
+        *out_pos = highest_y_pos;
+        get_csphere_radius(highest_y_index, out_radius);
+        return true;
+    }
+
+    // At extreme pitch, use cached index to avoid oscillation
+    auto it = s_head_csphere_cache.find(mesh_key);
+    if (it != s_head_csphere_cache.end()) {
+        int cached_index = it->second;
+        if (cached_index >= 0 && cached_index < num) {
+            rf::Vector3 cached_pos;
+            if (rf::vmesh_get_csphere_pos(entity->vmesh, cached_index, &cached_pos,
+                    &transform_pos, &transform_orient)) {
+                *out_pos = cached_pos;
+                get_csphere_radius(cached_index, out_radius);
+                return true;
+            }
+        }
+    }
+
+    // No cache yet — fall through to highest-Y
+    *out_pos = highest_y_pos;
+    get_csphere_radius(highest_y_index, out_radius);
+    return true;
+}
+
+// Pitch-based tilt axis fallback when head csphere is unavailable
+static rf::Vector3 compute_tilt_axis_from_pitch(const rf::Entity* entity)
+{
+    // Live eye orientation (no rewound eye angle exists; see note above).
+    const rf::Vector3 fvec = entity->eye_orient.fvec;
+
+    constexpr float threshold = 0.01f;
+    float cos_pitch_raw = std::sqrt(fvec.x * fvec.x + fvec.z * fvec.z);
+
+    rf::Vector3 fwd_xz;
+    if (cos_pitch_raw > threshold) {
+        float inv_cos = 1.0f / cos_pitch_raw;
+        fwd_xz = {fvec.x * inv_cos, 0.0f, fvec.z * inv_cos};
+    }
+    else {
+        // During lag comp, use rewound p_data.orient for body direction fallback
+        const rf::Vector3& body_fvec = s_in_lag_comp_raycast
+            ? entity->p_data.orient.fvec
+            : entity->orient.fvec;
+        float body_len = std::sqrt(body_fvec.x * body_fvec.x + body_fvec.z * body_fvec.z);
+        if (body_len > threshold) {
+            float inv_len = 1.0f / body_len;
+            fwd_xz = {body_fvec.x * inv_len, 0.0f, body_fvec.z * inv_len};
+        }
+        else {
+            fwd_xz = {1.0f, 0.0f, 0.0f};
+        }
+    }
+
+    float raw_pitch = std::asin(std::clamp(fvec.y, -1.0f, 1.0f));
+    float fraction = (raw_pitch >= 0.0f) ? (40.0f / 90.0f) : (43.0f / 90.0f);
+    float pitch = raw_pitch * fraction;
+    float sin_pitch = std::sin(pitch);
+    float cos_pitch = std::cos(pitch);
+
+    return rf::Vector3{
+        -fwd_xz.x * sin_pitch,
+        cos_pitch,
+        -fwd_xz.z * sin_pitch
+    };
+}
+
+rf::Vector3 compute_tilt_axis(const rf::Entity* entity, const rf::Vector3& split_point,
+                              float* head_dist_out,
+                              float* head_radius_out,
+                              rf::Vector3* head_pos_out)
+{
+    rf::Vector3 pitch_axis = compute_tilt_axis_from_pitch(entity);
+
+    if (head_dist_out)
+        *head_dist_out = -1.0f;
+    if (head_radius_out)
+        *head_radius_out = -1.0f;
+
+    rf::Vector3 head_pos;
+    float head_radius;
+    if (find_head_csphere_pos(entity, &head_pos, &head_radius)) {
+        if (head_pos_out) {
+            // Offset head hitbox backward (opposite look direction).
+            // Live eye orientation (no rewound eye angle exists; see note above).
+            const rf::Vector3 fwd = entity->eye_orient.fvec;
+            *head_pos_out = head_pos - fwd * (head_radius * k_hitbox_head_back_offset_frac);
+        }
+        if (head_radius_out)
+            *head_radius_out = head_radius;
+        rf::Vector3 dir = head_pos - split_point;
+        float len = dir.len();
+        if (len > 0.01f) {
+            if (head_dist_out)
+                *head_dist_out = len;
+            return dir * (1.0f / len);
+        }
+    }
+
+    return pitch_axis;
+}
+
+// Test ray against a sphere centered at `center` with given `radius`.
+// Returns true if hit found with t in [t_min, t_max], writes nearest t to `t_out`.
+static bool ix_ray_sphere(const rf::Vector3& ray_origin, const rf::Vector3& ray_dir,
+                          const rf::Vector3& center, float radius,
+                          float t_min, float t_max, float* t_out)
+{
+    float ox = ray_origin.x - center.x;
+    float oy = ray_origin.y - center.y;
+    float oz = ray_origin.z - center.z;
+
+    float a = ray_dir.x * ray_dir.x + ray_dir.y * ray_dir.y + ray_dir.z * ray_dir.z;
+    if (a < 1e-12f) // degenerate (zero-length ray) — avoid divide-by-zero / NaN
+        return false;
+
+    float b = 2.0f * (ox * ray_dir.x + oy * ray_dir.y + oz * ray_dir.z);
+    float c = ox * ox + oy * oy + oz * oz - radius * radius;
+
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f)
+        return false;
+
+    float sqrt_disc = std::sqrt(disc);
+    float inv_2a = 1.0f / (2.0f * a);
+
+    float t0 = (-b - sqrt_disc) * inv_2a;
+    if (t0 >= t_min && t0 <= t_max) {
+        *t_out = t0;
+        return true;
+    }
+
+    float t1 = (-b + sqrt_disc) * inv_2a;
+    if (t1 >= t_min && t1 <= t_max) {
+        *t_out = t1;
+        return true;
+    }
+
+    return false;
+}
+
+// Compute both intersection parameters (t0 <= t1) of the ray with a sphere.
+// Returns true if the quadratic has real roots. Unlike ix_ray_sphere this does not
+// filter by range or region, so callers can test each root against a hemisphere region
+// (a hemisphere's valid hit may be the *far* root when the near root is on the other cap).
+static bool ix_ray_sphere_roots(const rf::Vector3& ray_origin, const rf::Vector3& ray_dir,
+                                const rf::Vector3& center, float radius,
+                                float* t0_out, float* t1_out)
+{
+    float ox = ray_origin.x - center.x;
+    float oy = ray_origin.y - center.y;
+    float oz = ray_origin.z - center.z;
+
+    float a = ray_dir.x * ray_dir.x + ray_dir.y * ray_dir.y + ray_dir.z * ray_dir.z;
+    if (a < 1e-12f) // degenerate (zero-length ray)
+        return false;
+
+    float b = 2.0f * (ox * ray_dir.x + oy * ray_dir.y + oz * ray_dir.z);
+    float c = ox * ox + oy * oy + oz * oz - radius * radius;
+
+    float disc = b * b - 4.0f * a * c;
+    if (disc < 0.0f)
+        return false;
+
+    float sqrt_disc = std::sqrt(disc);
+    float inv_2a = 1.0f / (2.0f * a);
+    *t0_out = (-b - sqrt_disc) * inv_2a; // near root
+    *t1_out = (-b + sqrt_disc) * inv_2a; // far root
+    return true;
+}
+
+// Vertical-axis ray-capsule intersection (optimized for Y-aligned capsules).
+// cap_a and cap_b are hemisphere centers sharing the same X and Z.
+// Updates *best_t if a closer hit is found. Returns true if any hit found.
+static bool ix_ray_capsule_vertical(const rf::Vector3& cap_a, const rf::Vector3& cap_b,
+                                     float radius,
+                                     const rf::Vector3& ray_origin, const rf::Vector3& ray_dir,
+                                     float* best_t)
+{
+    float cx = cap_a.x;
+    float cz = cap_a.z;
+    float y_bot = std::min(cap_a.y, cap_b.y);
+    float y_top = std::max(cap_a.y, cap_b.y);
+
+    // Degenerate: capsule too short, use single sphere
+    if (y_bot >= y_top) {
+        rf::Vector3 center{cx, y_bot, cz};
+        float t;
+        if (ix_ray_sphere(ray_origin, ray_dir, center, radius, 0.0f, 1.0f, &t) && t < *best_t) {
+            *best_t = t;
+            return true;
+        }
+        return false;
+    }
+
+    bool found = false;
+    constexpr float epsilon = 1e-12f;
+
+    // --- Cylinder body (infinite cylinder in XZ, clamped to Y slab) ---
+    float ox = ray_origin.x - cx;
+    float oz = ray_origin.z - cz;
+    float a = ray_dir.x * ray_dir.x + ray_dir.z * ray_dir.z;
+    float b_cyl = 2.0f * (ox * ray_dir.x + oz * ray_dir.z);
+    float c_cyl = ox * ox + oz * oz - radius * radius;
+
+    if (a >= epsilon) {
+        float disc = b_cyl * b_cyl - 4.0f * a * c_cyl;
+        if (disc >= 0.0f) {
+            float sqrt_disc = std::sqrt(disc);
+            float inv_2a = 1.0f / (2.0f * a);
+            float t0 = (-b_cyl - sqrt_disc) * inv_2a;
+            float t1 = (-b_cyl + sqrt_disc) * inv_2a;
+
+            for (float t : {t0, t1}) {
+                if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+                    float hit_y = ray_origin.y + ray_dir.y * t;
+                    if (hit_y >= y_bot && hit_y <= y_top) {
+                        *best_t = t;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    else {
+        // Ray nearly vertical - check if inside XZ circle
+        if (c_cyl <= 0.0f) {
+            if (std::abs(ray_dir.y) >= epsilon) {
+                float inv_dy = 1.0f / ray_dir.y;
+                float ty0 = (y_bot - ray_origin.y) * inv_dy;
+                float ty1 = (y_top - ray_origin.y) * inv_dy;
+                if (ty0 > ty1) std::swap(ty0, ty1);
+                float t_enter = std::max(ty0, 0.0f);
+                if (t_enter <= ty1 && t_enter <= 1.0f && t_enter < *best_t) {
+                    *best_t = t_enter;
+                    found = true;
+                }
+            }
+            else if (ray_origin.y >= y_bot && ray_origin.y <= y_top && 0.0f < *best_t) {
+                *best_t = 0.0f;
+                found = true;
+            }
+        }
+    }
+
+    // --- Bottom hemisphere (accept the nearest root whose hit lies below y_bot) ---
+    {
+        rf::Vector3 cap_center{cx, y_bot, cz};
+        float t0, t1;
+        if (ix_ray_sphere_roots(ray_origin, ray_dir, cap_center, radius, &t0, &t1)) {
+            for (float t : {t0, t1}) {
+                if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+                    float hit_y = ray_origin.y + ray_dir.y * t;
+                    if (hit_y <= y_bot) {
+                        *best_t = t;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Top hemisphere (accept the nearest root whose hit lies above y_top) ---
+    {
+        rf::Vector3 cap_center{cx, y_top, cz};
+        float t0, t1;
+        if (ix_ray_sphere_roots(ray_origin, ray_dir, cap_center, radius, &t0, &t1)) {
+            for (float t : {t0, t1}) {
+                if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+                    float hit_y = ray_origin.y + ray_dir.y * t;
+                    if (hit_y >= y_top) {
+                        *best_t = t;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    return found;
+}
+
+// General-axis ray-capsule intersection for capsule from cap_a to cap_b with given radius.
+// Updates *best_t if a closer hit is found. Returns true if any hit found.
+static bool ix_ray_capsule_general(const rf::Vector3& cap_a, const rf::Vector3& cap_b,
+                                    float radius,
+                                    const rf::Vector3& ray_origin, const rf::Vector3& ray_dir,
+                                    float* best_t)
+{
+    rf::Vector3 v = cap_b - cap_a;
+    float v_dot_v = v.dot_prod(v);
+
+    constexpr float epsilon = 1e-12f;
+
+    // Degenerate: A == B, test single sphere
+    if (v_dot_v < epsilon) {
+        float t;
+        if (ix_ray_sphere(ray_origin, ray_dir, cap_a, radius, 0.0f, 1.0f, &t) && t < *best_t) {
+            *best_t = t;
+            return true;
+        }
+        return false;
+    }
+
+    float inv_v_dot_v = 1.0f / v_dot_v;
+    rf::Vector3 w = ray_origin - cap_a;
+
+    // Project ray_dir and w perpendicular to capsule axis V
+    float d_dot_v = ray_dir.dot_prod(v);
+    float w_dot_v = w.dot_prod(v);
+
+    rf::Vector3 d_perp = ray_dir - v * (d_dot_v * inv_v_dot_v);
+    rf::Vector3 w_perp = w - v * (w_dot_v * inv_v_dot_v);
+
+    float a = d_perp.dot_prod(d_perp);
+    float b = 2.0f * w_perp.dot_prod(d_perp);
+    float c = w_perp.dot_prod(w_perp) - radius * radius;
+
+    bool found = false;
+
+    // --- Cylinder body ---
+    if (a >= epsilon) {
+        float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f) {
+            float sqrt_disc = std::sqrt(disc);
+            float inv_2a = 1.0f / (2.0f * a);
+            float t0 = (-b - sqrt_disc) * inv_2a;
+            float t1 = (-b + sqrt_disc) * inv_2a;
+
+            for (float t : {t0, t1}) {
+                if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+                    // Check projection along capsule axis: s in [0, 1] means cylinder body
+                    float s = (w_dot_v + d_dot_v * t) * inv_v_dot_v;
+                    if (s >= 0.0f && s <= 1.0f) {
+                        *best_t = t;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Hemisphere at A (accept the nearest root whose projection s <= 0) ---
+    {
+        float t0, t1;
+        if (ix_ray_sphere_roots(ray_origin, ray_dir, cap_a, radius, &t0, &t1)) {
+            for (float t : {t0, t1}) {
+                if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+                    float s = (w_dot_v + d_dot_v * t) * inv_v_dot_v;
+                    if (s <= 0.0f) {
+                        *best_t = t;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Hemisphere at B (accept the nearest root whose projection s >= 1) ---
+    {
+        float t0, t1;
+        if (ix_ray_sphere_roots(ray_origin, ray_dir, cap_b, radius, &t0, &t1)) {
+            for (float t : {t0, t1}) {
+                if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+                    float s = (w_dot_v + d_dot_v * t) * inv_v_dot_v;
+                    if (s >= 1.0f) {
+                        *best_t = t;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    return found;
+}
+
+// Vertical-axis ray-cylinder intersection (flat disc caps, Y-aligned).
+// cyl_bot and cyl_top are the flat disc centers sharing the same X and Z.
+// Updates *best_t if a closer hit is found. Returns true if any hit found.
+static bool ix_ray_cylinder_vertical(const rf::Vector3& cyl_bot, const rf::Vector3& cyl_top,
+                                      float radius,
+                                      const rf::Vector3& ray_origin, const rf::Vector3& ray_dir,
+                                      float* best_t)
+{
+    float cx = cyl_bot.x;
+    float cz = cyl_bot.z;
+    float y_bot = std::min(cyl_bot.y, cyl_top.y);
+    float y_top = std::max(cyl_bot.y, cyl_top.y);
+
+    if (y_bot >= y_top)
+        return false;
+
+    bool found = false;
+    constexpr float epsilon = 1e-12f;
+
+    // --- Cylinder side wall (infinite cylinder in XZ, clamped to Y slab) ---
+    float ox = ray_origin.x - cx;
+    float oz = ray_origin.z - cz;
+    float a = ray_dir.x * ray_dir.x + ray_dir.z * ray_dir.z;
+    float b_cyl = 2.0f * (ox * ray_dir.x + oz * ray_dir.z);
+    float c_cyl = ox * ox + oz * oz - radius * radius;
+
+    if (a >= epsilon) {
+        float disc = b_cyl * b_cyl - 4.0f * a * c_cyl;
+        if (disc >= 0.0f) {
+            float sqrt_disc = std::sqrt(disc);
+            float inv_2a = 1.0f / (2.0f * a);
+            float t0 = (-b_cyl - sqrt_disc) * inv_2a;
+            float t1 = (-b_cyl + sqrt_disc) * inv_2a;
+
+            for (float t : {t0, t1}) {
+                if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+                    float hit_y = ray_origin.y + ray_dir.y * t;
+                    if (hit_y >= y_bot && hit_y <= y_top) {
+                        *best_t = t;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    else {
+        // Ray nearly vertical - check if inside XZ circle
+        if (c_cyl <= 0.0f) {
+            if (std::abs(ray_dir.y) >= epsilon) {
+                float inv_dy = 1.0f / ray_dir.y;
+                float ty0 = (y_bot - ray_origin.y) * inv_dy;
+                float ty1 = (y_top - ray_origin.y) * inv_dy;
+                if (ty0 > ty1) std::swap(ty0, ty1);
+                float t_enter = std::max(ty0, 0.0f);
+                if (t_enter <= ty1 && t_enter <= 1.0f && t_enter < *best_t) {
+                    *best_t = t_enter;
+                    found = true;
+                }
+            }
+            else if (ray_origin.y >= y_bot && ray_origin.y <= y_top && 0.0f < *best_t) {
+                *best_t = 0.0f;
+                found = true;
+            }
+        }
+    }
+
+    // --- Bottom disc cap (y = y_bot) ---
+    if (std::abs(ray_dir.y) >= epsilon) {
+        float t = (y_bot - ray_origin.y) / ray_dir.y;
+        if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+            float hx = ray_origin.x + ray_dir.x * t - cx;
+            float hz = ray_origin.z + ray_dir.z * t - cz;
+            if (hx * hx + hz * hz <= radius * radius) {
+                *best_t = t;
+                found = true;
+            }
+        }
+    }
+
+    // --- Top disc cap (y = y_top) ---
+    if (std::abs(ray_dir.y) >= epsilon) {
+        float t = (y_top - ray_origin.y) / ray_dir.y;
+        if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+            float hx = ray_origin.x + ray_dir.x * t - cx;
+            float hz = ray_origin.z + ray_dir.z * t - cz;
+            if (hx * hx + hz * hz <= radius * radius) {
+                *best_t = t;
+                found = true;
+            }
+        }
+    }
+
+    return found;
+}
+
+// General-axis ray-cylinder intersection (flat disc caps) for cylinder from cyl_a to cyl_b.
+// Updates *best_t if a closer hit is found. Returns true if any hit found.
+static bool ix_ray_cylinder_general(const rf::Vector3& cyl_a, const rf::Vector3& cyl_b,
+                                     float radius,
+                                     const rf::Vector3& ray_origin, const rf::Vector3& ray_dir,
+                                     float* best_t)
+{
+    rf::Vector3 v = cyl_b - cyl_a;
+    float v_dot_v = v.dot_prod(v);
+
+    constexpr float epsilon = 1e-12f;
+
+    // Degenerate: A == B, no volume
+    if (v_dot_v < epsilon)
+        return false;
+
+    float inv_v_dot_v = 1.0f / v_dot_v;
+    rf::Vector3 w = ray_origin - cyl_a;
+
+    // Project ray_dir and w perpendicular to cylinder axis V
+    float d_dot_v = ray_dir.dot_prod(v);
+    float w_dot_v = w.dot_prod(v);
+
+    rf::Vector3 d_perp = ray_dir - v * (d_dot_v * inv_v_dot_v);
+    rf::Vector3 w_perp = w - v * (w_dot_v * inv_v_dot_v);
+
+    float a = d_perp.dot_prod(d_perp);
+    float b = 2.0f * w_perp.dot_prod(d_perp);
+    float c = w_perp.dot_prod(w_perp) - radius * radius;
+
+    bool found = false;
+
+    // --- Cylinder body ---
+    if (a >= epsilon) {
+        float disc = b * b - 4.0f * a * c;
+        if (disc >= 0.0f) {
+            float sqrt_disc = std::sqrt(disc);
+            float inv_2a = 1.0f / (2.0f * a);
+            float t0 = (-b - sqrt_disc) * inv_2a;
+            float t1 = (-b + sqrt_disc) * inv_2a;
+
+            for (float t : {t0, t1}) {
+                if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+                    float s = (w_dot_v + d_dot_v * t) * inv_v_dot_v;
+                    if (s >= 0.0f && s <= 1.0f) {
+                        *best_t = t;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Disc cap at A (plane: dot(p - A, v) = 0) ---
+    if (std::abs(d_dot_v) >= epsilon) {
+        float t = -w_dot_v / d_dot_v;
+        if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+            // Hit point relative to A; on this plane, axial component is 0, so |h|² = radial distance²
+            rf::Vector3 h = w + ray_dir * t;
+            if (h.dot_prod(h) <= radius * radius) {
+                *best_t = t;
+                found = true;
+            }
+        }
+    }
+
+    // --- Disc cap at B (plane: dot(p - A, v) = |v|²) ---
+    if (std::abs(d_dot_v) >= epsilon) {
+        float t = (v_dot_v - w_dot_v) / d_dot_v;
+        if (t >= 0.0f && t <= 1.0f && t < *best_t) {
+            // Hit point relative to B; on this plane, axial component is 0, so |h|² = radial distance²
+            rf::Vector3 h = w + ray_dir * t - v;
+            if (h.dot_prod(h) <= radius * radius) {
+                *best_t = t;
+                found = true;
+            }
+        }
+    }
+
+    return found;
+}
+
+// Compute the hybrid hitbox volume (lower capsule + tilted torso cylinder + head sphere) from an
+// already crouch-adjusted multiplayer bounding box. Shared by the collision test and debug renderer
+// so the drawn volume always matches the volume that is hit-tested.
+HitboxGeometry compute_hitbox_geometry(rf::Entity* entity,
+                                       const rf::Vector3& bbox_min, const rf::Vector3& bbox_max)
+{
+    HitboxGeometry geo;
+
+    float cx = (bbox_min.x + bbox_max.x) * 0.5f;
+    float cz = (bbox_min.z + bbox_max.z) * 0.5f;
+    geo.radius = (bbox_max.x - bbox_min.x) * 0.5f;
+
+    // When crouching the engine lowers bbox_max.y, but some character models (e.g. miner1 with
+    // non-pistol weapons) don't crouch that low — extend the effective top back up.
+    bool crouching = entity && rf::entity_is_crouching(entity);
+    float effective_max_y = bbox_max.y;
+    if (crouching)
+        effective_max_y += (bbox_max.y - bbox_min.y) * k_hitbox_crouch_top_extension;
+
+    float split_ratio = crouching ? k_hitbox_split_ratio_crouch : k_hitbox_split_ratio_standing;
+    float bbox_height = effective_max_y - bbox_min.y;
+    float split_y = bbox_min.y + bbox_height * split_ratio;
+    float upper_height = effective_max_y - split_y;
+
+    // Fallback: entity unavailable or bbox too short to split — a single bbox-tall vertical capsule.
+    if (!(entity && upper_height > geo.radius)) {
+        geo.split = false;
+        geo.lower_bot = {cx, bbox_min.y, cz};
+        geo.lower_top = {cx, bbox_max.y, cz};
+        return geo;
+    }
+
+    geo.split = true;
+
+    // Lower capsule (vertical): inset bottom by radius so the hemisphere doesn't extend below bbox.
+    geo.lower_bot = {cx, bbox_min.y + geo.radius, cz};
+    geo.lower_top = {cx, split_y, cz};
+
+    // Torso cylinder (tilted): starts at the split point, shortened at the top for the head sphere.
+    geo.upper_a = {cx, split_y, cz};
+    float head_dist;
+    float head_radius;
+    rf::Vector3 head_world_pos;
+    rf::Vector3 tilt_axis = compute_tilt_axis(entity, geo.upper_a, &head_dist, &head_radius, &head_world_pos);
+
+    float upper_len = upper_height;
+    if (head_dist > 0.0f)
+        upper_len = std::min(upper_len, head_dist);
+    // Shorten so the flat top stops just before the head sphere.
+    if (head_radius > 0.0f && head_dist > 0.0f)
+        upper_len = std::min(upper_len, head_dist - head_radius);
+    upper_len = std::max(upper_len, 0.0f);
+    upper_len *= k_hitbox_torso_len_scale;
+    geo.upper_b = geo.upper_a + tilt_axis * upper_len;
+
+    if (head_radius > 0.0f && head_dist > 0.0f) {
+        geo.has_head = true;
+        geo.head_pos = head_world_pos;
+        geo.head_radius = head_radius;
+    }
+
+    return geo;
+}
+
+// Multi entity collision path
+// Replaces AABB intersection with split capsule (lower vertical + upper tilted toward head)
+static CallHook<bool(const rf::Vector3&, const rf::Vector3&, const rf::Vector3&, const rf::Vector3&, rf::Vector3*)>
+ix_linesegment_capsule_hook{
+    0x0049C862,
+    [](const rf::Vector3& bbox_min, const rf::Vector3& bbox_max,
+       const rf::Vector3& p0, const rf::Vector3& p1, rf::Vector3* hit_point) {
+
+        if (g_alpine_server_config.legacy_hitboxes)
+            return ix_linesegment_capsule_hook.call_target(bbox_min, bbox_max, p0, p1, hit_point);
+
+        // Consume the entity captured by capture_entity_injection immediately before this call and
+        // clear it, so a stale entity from a previous iteration can never be reused if the engine
+        // ever reaches this call site without the injection having run first (falls back to the
+        // entity-less single-capsule path instead).
+        rf::Entity* entity = s_current_collide_entity;
+        s_current_collide_entity = nullptr;
+
+        HitboxGeometry geo = compute_hitbox_geometry(entity, bbox_min, bbox_max);
+
+        rf::Vector3 dir = p1 - p0;
+        float best_t = 2.0f;
+
+        ix_ray_capsule_vertical(geo.lower_bot, geo.lower_top, geo.radius, p0, dir, &best_t);
+
+        if (geo.split) {
+            ix_ray_cylinder_general(geo.upper_a, geo.upper_b, geo.radius, p0, dir, &best_t);
+
+            if (geo.has_head) {
+                float head_t;
+                if (ix_ray_sphere(p0, dir, geo.head_pos, geo.head_radius, 0.0f, 1.0f, &head_t) && head_t < best_t) {
+                    best_t = head_t;
+                }
+            }
+        }
+
+        if (best_t > 1.0f)
+            return false;
+
+        if (hit_point) {
+            hit_point->x = p0.x + dir.x * best_t;
+            hit_point->y = p0.y + dir.y * best_t;
+            hit_point->z = p0.z + dir.z * best_t;
+        }
+        return true;
+    },
+};
 
 // Note: this must be called from DLL init function
 // Note: we can't use global variable because that would lead to crash when launcher loads this DLL to check dependencies
@@ -1223,6 +2009,9 @@ void multi_do_patch()
 
     level_download_init();
     multi_ban_apply_patch();
+    // Improved hitboxes: split capsule with head tracking
+    capture_entity_injection.install();
+    ix_linesegment_capsule_hook.install();
 
     // Fix lava damage sometimes being attributed to a player
     obj_apply_damage_lava_hook.install();

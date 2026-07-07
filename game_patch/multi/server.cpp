@@ -2248,10 +2248,21 @@ FunHook<int(rf::LevelCollisionOut*, rf::Weapon*)> multi_lag_comp_handle_hit_hook
     },
 };
 
+// RAII: keep the hitbox lag-comp flag set only for the duration of the rewound collision query,
+// clearing it on any exit path (early return / exception in a future refactor) so it can never
+// leak into unrelated collision tests.
+struct LagCompRaycastScope {
+    LagCompRaycastScope() { set_lag_comp_flag(true); }
+    ~LagCompRaycastScope() { set_lag_comp_flag(false); }
+};
+
 FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     0x0046F7E0,
     [](rf::Entity *ep, rf::Weapon *wp) {
-        multi_lag_comp_weapon_fire_hook.call_target(ep, wp);
+        {
+            LagCompRaycastScope lag_comp_scope;
+            multi_lag_comp_weapon_fire_hook.call_target(ep, wp);
+        }
         rf::Player* pp = rf::player_from_entity_handle(ep->handle);
         if (pp && pp->stats) {
             auto* stats = static_cast<PlayerStatsNew*>(pp->stats);
@@ -3816,6 +3827,11 @@ bool server_clear_stale_movement_input()
 bool server_allow_footsteps()
 {
     return g_alpine_server_config.allow_footsteps;
+}
+
+bool server_legacy_hitboxes()
+{
+    return g_alpine_server_config.legacy_hitboxes;
 }
 
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client()

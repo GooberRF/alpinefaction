@@ -151,6 +151,8 @@ private:
     StringBuffer<2048> value_buffer_;
 };
 
+extern bool g_dbg_hitboxes;
+extern bool g_dbg_cspheres;
 void debug_cmd_init();
 void debug_cmd_render();
 void debug_cmd_render_ui();

@@ -1668,6 +1668,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_clear_stale_movement_input()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input;
         }
+        if (!server_legacy_hitboxes()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::hybrid_hitboxes;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1803,6 +1806,9 @@ CodeInjection process_join_accept_injection{
             server_info.allow_outlines = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines);
             server_info.allow_outlines_xray = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray);
             server_info.clear_stale_movement_input = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input);
+            // hybrid_hitboxes present => capsule system; absent (old servers / default legacy mode) => legacy AABB
+            bool server_uses_hybrid_hitboxes = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::hybrid_hitboxes);
+            server_info.legacy_hitboxes = !server_uses_hybrid_hitboxes;
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {

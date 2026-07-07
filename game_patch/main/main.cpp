@@ -308,6 +308,7 @@ FunHook<void(bool)> level_init_post_hook{
         populate_world_hud_sprite_events();
         populate_fullscreen_overlay_events();
         reset_achievement_state_info();
+        hitbox_reset_head_csphere_cache(); // drop per-model head-csphere cache (mesh pointers change per level)
         multi_level_init_post_gametypes();
         apply_geoable_flags();
         apply_breakable_materials();

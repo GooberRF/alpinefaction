@@ -57,6 +57,9 @@ Version 1.4.0 (Lupin): Not yet released
   - Add detection of manually loaded levels
   - Highlight an active level in a server's rotation via background color instead of text color
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add hybrid (sphere, capsule, cylinder) hitbox system with bone tracking for torso and head
+
 [@AL2009man](https://github.com/AL2009man)
 - Add support for binding controls to additional mouse buttons and `Alt` keys
 
