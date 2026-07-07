@@ -7,6 +7,8 @@
 #include <thread>
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <string_view>
 #include <format>
 #include "../rf/os/console.h"
 #include "../rf/multi.h"
