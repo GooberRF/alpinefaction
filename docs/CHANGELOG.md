@@ -32,9 +32,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
 - Add `camera4` console command for static camera in single player
 - Add `camera5` console command for tripod (follow player) camera in single player
-
-[@AL2009man](https://github.com/AL2009man)
-- Add support for additional mouse buttons and Left/Right Alt in the controls binding UI
+- Require a fresh `Alt` press to kill an unresponsive process
 
 [@is-this-c](https://github.com/is-this-c)
 - Allow players to join between levels
@@ -48,6 +46,9 @@ Version 1.4.0 (Lupin): Not yet released
   - Add `Net FPS` and `Target FPS`
   - Add detection of manually loaded levels
   - Highlight an active level in a server's rotation via background color instead of text color
+
+[@AL2009man](https://github.com/AL2009man)
+- Add support for binding controls to additional mouse buttons and `Alt` keys
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -65,14 +66,14 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix unbounded read when a request to play a sound above `g_num_sounds` is made
 - Fix camera angle snapping when switching between free look and third person camera modes
 
-[@AL2009man](https://github.com/AL2009man)
-- Fix brief game freeze every time the Alt key is pressed.
-
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
 - For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
 - Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
+
+[@AL2009man](https://github.com/AL2009man)
+- Fix brief game freeze whenever an `Alt` key is pressed
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------

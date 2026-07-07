@@ -121,7 +121,7 @@ int get_key_name(int key, char* buf, size_t buf_len)
         int n = snprintf(buf, buf_len, "Mouse %d", (key - CTRL_EXTRA_MOUSE_SCAN_BASE) + 4);
         return n > 0 ? n : 0;
     }
-     LONG lparam = (key & 0x7F) << 16;
+    LONG lparam = (key & 0x7F) << 16;
     if (key & 0x80) {
         lparam |= 1 << 24;
     }
@@ -495,16 +495,6 @@ CodeInjection item_touch_weapon_autoswitch_patch{
     }
 };
 
-// Pending extra key rebind scan code (-1 = none).
-static int g_pending_extra_key_rebind = -1;
-
-int key_take_pending_extra_rebind()
-{
-    int sc = g_pending_extra_key_rebind;
-    g_pending_extra_key_rebind = -1;
-    return sc;
-}
-
 FunHook<void(int, int, int)> key_msg_handler_hook{
     0x0051EBA0,
     [] (const int msg, const int w_param, int l_param) {
@@ -520,22 +510,29 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
                     || w_param == VK_HOME) {
                     l_param |= KF_EXTENDED << 16;
                 }
-                // Alt keys arrive via WM_SYSKEYDOWN but RF's handler doesn't feed them into its
-                // key system — inject the sentinel so the rebind UI records the press, then swap on fall edge.
-                if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
-                    && rf::ui::options_controls_waiting_for_key
-                    && g_pending_extra_key_rebind < 0) {
-                    int win32_scan = (l_param >> 16) & 0x1FF;
-                    int rf_scan = (win32_scan & 0x7F) | ((win32_scan & 0x100) ? 0x80 : 0);
-                    if (rf_scan == rf::KEY_LALT || rf_scan == rf::KEY_RALT) {
-                        g_pending_extra_key_rebind = rf_scan;
-                        rf::key_process_event(CTRL_REBIND_SENTINEL, 1, 0);
-                        return;
-                    }
-                }
             }
         }
         key_msg_handler_hook.call_target(msg, w_param, l_param);
+    },
+};
+
+// Records the pressed key into the selected binding row when the controls panel is
+// waiting for input (scan code from the key queue, or -1 to check mouse buttons).
+// Stock RF rejects Left/Right Alt and any scan code its internal key name table has
+// no name for, which blocks Alpine's extra mouse button scan codes — accept both
+// directly; everything else keeps stock behavior (including the Esc/PrtScn/Pause
+// blacklist and mouse button handling).
+FunHook<void(int)> options_controls_record_binding_hook{
+    0x0044FE60,
+    [](int key) {
+        bool is_extra_mouse_scan = key >= CTRL_EXTRA_MOUSE_SCAN_BASE
+            && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT;
+        if (is_extra_mouse_scan || key == rf::KEY_LALT || key == rf::KEY_RALT) {
+            rf::ui::options_controls_assign_binding(key, -1);
+            rf::ui::options_controls_stop_waiting_for_key();
+            return;
+        }
+        options_controls_record_binding_hook.call_target(key);
     },
 };
 
@@ -569,4 +566,7 @@ void key_apply_patch()
 
     // Num pads need a patch to support `PgUp`, `PgDown`, `End`, and `Home`.
     key_msg_handler_hook.install();
+
+    // Allow binding Alt keys and extra mouse buttons in the controls options panel
+    options_controls_record_binding_hook.install();
 }
