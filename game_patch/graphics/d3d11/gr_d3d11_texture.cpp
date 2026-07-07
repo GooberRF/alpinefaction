@@ -221,8 +221,7 @@ namespace gr::d3d11
             1, // mipLevels
         };
 
-        const bool use_msaa = g_antialiasing
-            && g_alpine_game_config.sample_count >= 2
+        const bool use_msaa = g_alpine_game_config.sample_count >= 2
             && g_alpine_game_config.sample_count <= 8;
         if (use_msaa) {
             DF_GR_D3D11_CHECK_HR(

@@ -180,8 +180,7 @@ D3DFORMAT determine_depth_buffer_format(D3DFORMAT adapter_format)
 
 bool gr_d3d_is_antialiasing_err() {
     return g_alpine_game_config.sample_count != 1
-        && g_alpine_game_config.sample_count != std::to_underlying(rf::gr::d3d::pp.MultiSampleType)
-        && g_antialiasing;
+        && g_alpine_game_config.sample_count != std::to_underlying(rf::gr::d3d::pp.MultiSampleType);
 }
 
 bool gr_d3d_supports_sample_count(const uint32_t sample_count) {
@@ -231,7 +230,7 @@ CodeInjection update_pp_hook{
 
         // TODO.  `sample_count` is always 1 here, until we load settings earlier.
         if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
-            if (!g_antialiasing || g_alpine_game_config.sample_count == 1) {
+            if (g_alpine_game_config.sample_count == 1) {
                 rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
             } else {
                 rf::gr::d3d::pp.MultiSampleType =
@@ -376,7 +375,7 @@ void gr_d3d_update_window_mode()
 }
 
 void gr_d3d_flush_frame_buffers() {
-    if (!g_antialiasing || g_alpine_game_config.sample_count == 1) {
+    if (g_alpine_game_config.sample_count == 1) {
         rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
     } else if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
         rf::gr::d3d::pp.MultiSampleType =
@@ -391,9 +390,11 @@ void gr_d3d_flush_frame_buffers() {
 ConsoleCommand2 r_antialiasing_mode_cmd{
     "r_antialiasing_mode",
     [] (const std::optional<std::string_view> mode) {
-        if (!g_antialiasing) {
-            rf::console::print("Anti-aliasing is not enabled");
-        } else if (!mode) {
+        if (!rf::gr::d3d::device) {
+            rf::console::print("Anti-aliasing is not available");
+            return;
+        }
+        if (!mode) {
             if (g_alpine_game_config.sample_count == 1) {
                 rf::console::print("Anti-aliasing mode is none");
             } else {
@@ -413,14 +414,19 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
                 } else {
                     rf::console::print("Anti-aliasing mode is already none");
                 }
-            } else if (string_istarts_with(*mode, MSAA_PREFIX)) {
+            } else {
+                // Accept either "MSAAxN" or a bare "N" (N = 2, 4, or 8)
+                std::string_view digits = *mode;
+                if (string_istarts_with(digits, MSAA_PREFIX)) {
+                    digits.remove_prefix(MSAA_PREFIX.size());
+                }
                 int value = 0;
                 const auto [ptr, err] = std::from_chars(
-                    mode->data() + MSAA_PREFIX.size(),
-                    mode->data() + mode->size(),
+                    digits.data(),
+                    digits.data() + digits.size(),
                     value
                 );
-                if (err != std::errc{} || ptr != mode->data() + mode->size()) {
+                if (err != std::errc{} || ptr != digits.data() + digits.size()) {
                     rf::console::print("Invalid value!");
                 } else if (value != 2 && value != 4 && value != 8) {
                     rf::console::print("MSAA level must be 2, 4, or 8");
@@ -440,35 +446,44 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
                         value
                     );
                 }
-            } else {
-                rf::console::print("Invalid value!");
             }
         }
     },
     "Sets anti-aliasing mode",
-    "r_antialiasing_mode [none|msaax{2,4,8}]",
+    "r_antialiasing_mode [none|2|4|8|msaax{2,4,8}]",
 };
+
+// Level to restore when r_antialiasing toggles AA back on. Session-only: the
+// persisted state is sample_count itself (none == off).
+static uint32_t g_aa_restore_sample_count = 0;
 
 ConsoleCommand2 r_antialiasing_cmd{
     "r_antialiasing",
     [] {
-        if (g_alpine_game_config.sample_count == 1) {
-            rf::console::print("Anti-aliasing is not set or supported");
-        } else {
-            g_antialiasing = !g_antialiasing;
-            if (!g_antialiasing) {
-                rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
-            } else {
-                if (gr_d3d_supports_sample_count(g_alpine_game_config.sample_count)) {
-                    rf::gr::d3d::pp.MultiSampleType =
-                        static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
-                }
-            }
+        if (!rf::gr::d3d::device) {
+            rf::console::print("Anti-aliasing is not available");
+            return;
+        }
+        if (g_alpine_game_config.sample_count != 1) {
+            // Currently on -> remember the level and switch to none
+            g_aa_restore_sample_count = g_alpine_game_config.sample_count;
+            g_alpine_game_config.sample_count = 1;
+            rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
+            g_reset_device_req = true;
+            rf::console::print("Anti-aliasing is disabled");
+        } else if (g_aa_restore_sample_count >= 2
+                   && gr_d3d_supports_sample_count(g_aa_restore_sample_count)) {
+            // Currently off -> restore the level we last turned off from
+            g_alpine_game_config.sample_count = g_aa_restore_sample_count;
+            rf::gr::d3d::pp.MultiSampleType =
+                static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
             g_reset_device_req = true;
             rf::console::print(
-                "Anti-aliasing is {} until exit",
-                g_antialiasing ? "enabled" : "disabled"
+                "Anti-aliasing is enabled (MSAAx{})",
+                g_alpine_game_config.sample_count
             );
+        } else {
+            rf::console::print("No anti-aliasing mode is set; use r_antialiasing_mode to select a level first");
         }
     },
     "Toggles anti-aliasing",

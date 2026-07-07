@@ -184,8 +184,7 @@ FunHook<int(rf::bm::Format, int, int, int, IDirect3DTexture8**)> gr_d3d_create_v
             usage = D3DUSAGE_RENDERTARGET;
 
             g_d3d_msaa_surfaces.erase(g_currently_creating_texture_for_bitmap);
-            if (g_antialiasing
-                && g_alpine_game_config.sample_count >= 2
+            if (g_alpine_game_config.sample_count >= 2
                 && g_alpine_game_config.sample_count <= 8) {
                 ComPtr<IDirect3DSurface8> msaa_render_target{};
                 const HRESULT hr = rf::gr::d3d::device->CreateRenderTarget(

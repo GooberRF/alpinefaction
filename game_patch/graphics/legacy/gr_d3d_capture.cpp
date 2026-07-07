@@ -30,8 +30,7 @@ IDirect3DSurface8* get_cached_depth_stencil_surface() {
             rf::gr::d3d::pp.BackBufferWidth,
             rf::gr::d3d::pp.BackBufferHeight,
             rf::gr::d3d::pp.AutoDepthStencilFormat,
-            g_antialiasing
-                && g_alpine_game_config.sample_count >= 2
+            g_alpine_game_config.sample_count >= 2
                 && g_alpine_game_config.sample_count <= 8
                     ? static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count)
                     : D3DMULTISAMPLE_NONE,
@@ -59,7 +58,10 @@ bool gr_d3d_set_render_target(int bmh)
         IDirect3DTexture8* const texture =
             rf::gr::d3d::get_texture(g_render_to_texture_bm_h);
         ComPtr<IDirect3DSurface8> surface{};
-        if (SUCCEEDED(texture->GetSurfaceLevel(0, &surface))) {
+        // get_texture() may return null (e.g. the render-target bitmap was freed
+        // or evicted while still the active target); match the null check used
+        // for the current target below before dereferencing.
+        if (texture && SUCCEEDED(texture->GetSurfaceLevel(0, &surface))) {
              const HRESULT hr = rf::gr::d3d::device->CopyRects(
                 msaa_render_target,
                 nullptr,

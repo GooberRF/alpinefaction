@@ -370,7 +370,7 @@ namespace gr::d3d11
         init_scene_texture();
 
         // Create a render-target view for the main rendering pass
-        if (g_antialiasing && sample_count >= 2 && sample_count <= 8) {
+        if (sample_count >= 2 && sample_count <= 8) {
             D3D11_TEXTURE2D_DESC desc;
             back_buffer_->GetDesc(&desc);
             desc.SampleDesc.Count = sample_count;
@@ -426,7 +426,7 @@ namespace gr::d3d11
         depth_stencil_desc.MipLevels = 1;
         depth_stencil_desc.ArraySize = 1;
         depth_stencil_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
-        const bool use_msaa = g_antialiasing && sample_count >= 2 && sample_count <= 8;
+        const bool use_msaa = sample_count >= 2 && sample_count <= 8;
         if (use_msaa) {
              depth_stencil_desc.SampleDesc.Count = sample_count;
         } else {
