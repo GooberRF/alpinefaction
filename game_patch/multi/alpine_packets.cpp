@@ -13,6 +13,7 @@
 #include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
+#include "../rf/os/frametime.h"
 #include "multi.h"
 #include "network.h"
 #include "server_internal.h"
@@ -380,57 +381,76 @@ void af_send_obj_update_packet(rf::Player* player)
         return;
     }
 
-    std::vector<af_obj_update> obj_updates;
-    auto player_list = SinglyLinkedList{rf::player_list};
+    // This is called once per recipient from the obj_update send loop, and the gathered state is
+    // identical for every recipient within a frame apart from excluding the recipient's own entry,
+    // so gather it only once per frame.
+    struct GatheredObjUpdate
+    {
+        rf::Player* owner;
+        af_obj_update update;
+    };
+    static std::vector<GatheredObjUpdate> gathered_updates;
+    static std::vector<af_obj_update> obj_updates;
+    static int gathered_frame = -1;
 
-    // loop through players to gather info
-    for (auto& other_player : player_list) {
-        //xlog::info("starting payer list loop");
-        if (!&other_player) {
-            continue; // player not valid
+    if (gathered_frame != rf::frame_count) {
+        gathered_frame = rf::frame_count;
+        gathered_updates.clear();
+        auto player_list = SinglyLinkedList{rf::player_list};
+
+        // loop through players to gather info
+        for (auto& other_player : player_list) {
+            //xlog::info("starting payer list loop");
+            if (!&other_player) {
+                continue; // player not valid
+            }
+
+            if (rf::player_is_dead(&other_player)) {
+                continue; // player is dead
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(other_player.entity_handle);
+            if (!entity) {
+                continue; // player entity is invalid or not spawned
+            }
+
+            if (rf::entity_is_dying(entity)) {
+                continue; // player entity is dying (dying entities have invalid info in ai)
+            }
+
+            af_obj_update obj_update{};
+            obj_update.obj_handle = entity->handle;
+
+            uint8_t current_primary_weapon = static_cast<uint8_t>(entity->ai.current_primary_weapon);
+            if (current_primary_weapon > 63) {
+                xlog::debug("obj_update packet tried to process an invalid weapon type: {}", current_primary_weapon);
+                continue; // reported weapon type is out of valid range
+            }
+            obj_update.current_primary_weapon = current_primary_weapon;
+
+            uint8_t ammo_type = static_cast<uint8_t>(rf::weapon_types[current_primary_weapon].ammo_type);
+            if (ammo_type > 31) {
+                xlog::debug("obj_update packet tried to process an invalid ammo type: {}", ammo_type); // todo: figure out why this happens sometimes on specific maps???
+                continue; // reported ammo type is out of valid range
+            }
+            obj_update.ammo_type = ammo_type;
+
+            obj_update.clip_ammo = static_cast<uint16_t>(entity->ai.clip_ammo[current_primary_weapon]);
+            obj_update.reserve_ammo = static_cast<uint16_t>(entity->ai.ammo[ammo_type]);
+
+            /*xlog::warn("Adding player {}, weap {}, ammo {}, clip {}, reserve {}",
+                       entity->name, obj_update.current_primary_weapon, obj_update.ammo_type,
+                       obj_update.clip_ammo, obj_update.reserve_ammo);*/
+            gathered_updates.push_back({&other_player, obj_update});
         }
+    }
 
-        if (&other_player == player) {
-            continue; // player is myself
+    // exclude the recipient's own entry
+    obj_updates.clear();
+    for (const GatheredObjUpdate& gathered_update : gathered_updates) {
+        if (gathered_update.owner != player) {
+            obj_updates.push_back(gathered_update.update);
         }
-
-        if (rf::player_is_dead(&other_player)) {
-            continue; // player is dead
-        }
-
-        rf::Entity* entity = rf::entity_from_handle(other_player.entity_handle);
-        if (!entity) {
-            continue; // player entity is invalid or not spawned
-        }
-
-        if (rf::entity_is_dying(entity)) {
-            continue; // player entity is dying (dying entities have invalid info in ai)
-        }
-
-        af_obj_update obj_update{};
-        obj_update.obj_handle = entity->handle;
-
-        uint8_t current_primary_weapon = static_cast<uint8_t>(entity->ai.current_primary_weapon);
-        if (current_primary_weapon > 63) {
-            xlog::debug("obj_update packet tried to process an invalid weapon type: {}", current_primary_weapon);
-            continue; // reported weapon type is out of valid range
-        }
-        obj_update.current_primary_weapon = current_primary_weapon;
-
-        uint8_t ammo_type = static_cast<uint8_t>(rf::weapon_types[current_primary_weapon].ammo_type);
-        if (ammo_type > 31) {
-            xlog::debug("obj_update packet tried to process an invalid ammo type: {}", ammo_type); // todo: figure out why this happens sometimes on specific maps???
-            continue; // reported ammo type is out of valid range
-        }
-        obj_update.ammo_type = ammo_type;
-
-        obj_update.clip_ammo = static_cast<uint16_t>(entity->ai.clip_ammo[current_primary_weapon]);
-        obj_update.reserve_ammo = static_cast<uint16_t>(entity->ai.ammo[ammo_type]);
-
-        /*xlog::warn("Adding player {}, weap {}, ammo {}, clip {}, reserve {}", 
-                   entity->name, obj_update.current_primary_weapon, obj_update.ammo_type, 
-                   obj_update.clip_ammo, obj_update.reserve_ammo);*/
-        obj_updates.push_back(obj_update);
     }
 
     if (obj_updates.empty()) {
@@ -446,11 +466,7 @@ void af_send_obj_update_packet(rf::Player* player)
         return;
     }
 
-    // Allocate memory dynamically for the packet
-    auto packet_buf = std::make_unique<std::byte[]>(total_packet_size);
-    if (!packet_buf) {
-        return; // could not allocate memory
-    }
+    static std::byte packet_buf[rf::max_packet_size];
 
     // Fill packet header
     RF_GamePacketHeader header{};
@@ -458,16 +474,14 @@ void af_send_obj_update_packet(rf::Player* player)
     header.size = static_cast<uint16_t>(object_data_size);
 
     // Copy data to packet buffer
-    std::memcpy(packet_buf.get(), &header, sizeof(header));
-    if (!obj_updates.empty()) {
-        std::memcpy(packet_buf.get() + sizeof(header), obj_updates.data(), object_data_size);
-    }
+    std::memcpy(packet_buf, &header, sizeof(header));
+    std::memcpy(packet_buf + sizeof(header), obj_updates.data(), object_data_size);
 
     if (!player) {
         xlog::error("af_obj_update: Attempted to send to an invalid player");
         return;
     }
-    af_send_packet(player, packet_buf.get(), total_packet_size, false);
+    af_send_packet(player, packet_buf, total_packet_size, false);
 }
 
 static void af_process_obj_update_packet(const void* data, size_t len, const rf::NetAddr& addr)

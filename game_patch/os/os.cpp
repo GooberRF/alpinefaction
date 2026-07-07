@@ -4,6 +4,7 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <common/utils/os-utils.h>
 #include "../rf/os/os.h"
 #include "../rf/multi.h"
 #include "../rf/input.h"
@@ -111,7 +112,10 @@ static FunHook<void(const char *, const char *, bool, bool)> os_init_window_serv
     0x00524B70,
     [](const char *wclass, const char *title, bool hooks, bool server_console) {
         const bool bot_headless = is_headless_mode();
-        win32_console_set_forced(bot_headless);
+        // Force the win32 console for dedicated servers under Wine: the stock GUI console window
+        // receives WM_PAINT continuously and exercises the GDI/X11 paths every frame there
+        static const bool force_console_under_wine = get_wine_version().has_value();
+        win32_console_set_forced(bot_headless || (server_console && force_console_under_wine));
         if (server_console || bot_headless) {
             win32_console_init();
         }
@@ -294,7 +298,11 @@ void wait_for(const float ms, const WaitableTimer& timer) {
         return;
     }
 
-    if (!timer.handle) {
+    // Under Wine a waitable timer costs 2+ wineserver RPCs per frame and CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+    // is a silent no-op, whereas plain non-alertable Sleep is fully in-process there with fine granularity.
+    static const bool is_wine = get_wine_version().has_value();
+
+    if (!timer.handle || is_wine) {
     SLEEP:
         static const MMRESULT res = timeBeginPeriod(1);
         if (res != TIMERR_NOERROR) {

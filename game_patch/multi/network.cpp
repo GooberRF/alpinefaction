@@ -2906,6 +2906,75 @@ void clear_server_browser_extra()
     g_server_browser_extra.clear();
 }
 
+// Kill the zero-timeout select() that stock net_send runs before every sendto.
+// No-op for valid traffic. Helps mitigate performance issues on dedicated servers running via
+// Wine. Under Wine >= 6.12 each select() is a full wineserver round trip, so returning 1
+// (writable) unconditionally removes one RPC per outbound packet with no behavior change.
+FunHook<int()> net_select_for_write_hook{
+    0x00528780,
+    [] { return 1; },
+};
+
+// Reimplementation of the stock recv pump that drops the per-packet select(), fixes performance
+// issues on dedicated servers running via Wine.
+FunHook<void()> net_receive_packets_hook{
+    0x00529A80,
+    [] {
+        rf::net_stats_update();
+
+        uint8_t buf[0x2A8];
+        while (true) {
+            sockaddr_in from;
+            int from_len = sizeof(sockaddr_in);
+            const int len = recvfrom(static_cast<SOCKET>(rf::net_udp_socket), reinterpret_cast<char*>(buf),
+                sizeof(buf), 0, reinterpret_cast<sockaddr*>(&from), &from_len);
+            if (len == -1) {
+                // WSAEWOULDBLOCK once drained (or a genuine error); stock also ended the drain
+                // on any recvfrom == -1.
+                return;
+            }
+            if (len == 0) {
+                // A zero-length UDP datagram is never a valid RF packet (every packet carries a
+                // type byte). Stock passed len - 1 == -1 to the queue push, underflowing its copy
+                // length into an unbounded REP MOVSD (crash/DoS vector); skip it and keep draining.
+                continue;
+            }
+
+            rf::NetAddr addr{};
+            addr.ip_addr.inner = ntohl(from.sin_addr.s_addr);
+            addr.port = ntohs(from.sin_port);
+
+            const unsigned type = buf[0];
+            if (type < 3) {
+                rf::net_stats_add(len, 0, 0, type == 1);
+                rf::net_stats_add(0x1E, 1, 0, type == 1);
+                rf::net_packet_queue_push(rf::net_packet_queues[type], buf + 1, len - 1, &addr);
+            }
+        }
+    },
+};
+
+// Stock socket setup caps SO_RCVBUF at 32 KB, which overflows within a few hundred ms
+// at 30-player packet rates and triggers reliable-retransmit cascades. Raise it to 256 KB after
+// init (deliberately bounded so a post-stall backlog of stale packets stays small). Linux clamps
+// the request to net.core.rmem_max, so log what the socket actually accepted.
+FunHook<void(unsigned short)> net_init_socket_hook{
+    0x00528F10,
+    [](unsigned short port) {
+        net_init_socket_hook.call_target(port);
+        if (rf::net_udp_socket != -1) {
+            int rcvbuf = 0x40000; // 256 KB
+            setsockopt(static_cast<SOCKET>(rf::net_udp_socket), SOL_SOCKET, SO_RCVBUF,
+                reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
+            int actual = 0;
+            int actual_len = sizeof(actual);
+            getsockopt(static_cast<SOCKET>(rf::net_udp_socket), SOL_SOCKET, SO_RCVBUF,
+                reinterpret_cast<char*>(&actual), &actual_len);
+            xlog::info("UDP socket receive buffer set to {} bytes", actual);
+        }
+    },
+};
+
 void network_init()
 {
     // Support af_obj_update packet
@@ -3093,4 +3162,10 @@ void network_init()
     // Drain queues of reliable packets.
     multi_io_do_frame_hook.install();
     psnet_rel_close_socket_hook.install();
+
+    // Reduce wineserver RPC load for dedicated servers under Wine: drop the redundant per-packet
+    // select() on both the send and receive paths, and raise the receive buffer above 32 KB.
+    net_select_for_write_hook.install();
+    net_receive_packets_hook.install();
+    net_init_socket_hook.install();
 }
