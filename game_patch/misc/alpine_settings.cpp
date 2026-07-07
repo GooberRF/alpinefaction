@@ -1827,8 +1827,7 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
 
         // Re-apply gyro calibration system
         gyro_update_calibration_mode();
-        }
-  
+
         // HACKFIX.  We need to load our settings earlier.
         if (g_alpine_game_config.sample_count != 1) {
            gr_flush_frame_buffers();
