@@ -32,12 +32,11 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `Sort` options (by name or by UID, with an optional `Group by type` toggle) to the editor's Select Objects and Show/Hide Objects windows
 - Add `camera4` console command for static camera in single player
 - Add `camera5` console command for tripod (follow player) camera in single player
-- Reduce dedicated server CPU load under Wine/Linux
-  - Remove the redundant per-packet `select()` before each `net_send` and in the packet receive pump
-  - Raise the UDP socket `SO_RCVBUF` from 32 KB to 256 KB to reduce reliable-packet retransmit cascades
-  - Use `Sleep` instead of a waitable timer in `wait_for` when running under Wine
-  - Batch win32 console writes and throttle console input line reprints to reduce console API calls
-  - Automatically enable the win32 console for dedicated servers running under Wine
+- Remove the redundant per-packet `select()` before each `net_send` and in the packet receive pump, reducing dedicated server network syscall overhead (and wineserver round trips on Linux)
+- Raise the UDP socket `SO_RCVBUF` from 32 KB to 256 KB to reduce reliable-packet retransmit cascades on busy dedicated servers
+- Batch win32 console writes and throttle console input line reprints to reduce dedicated server console API overhead
+- Use `Sleep` instead of a waitable timer in `wait_for` when running under Wine to reduce dedicated server CPU load
+- Automatically enable the win32 console for dedicated servers running under Wine
 - Gather `af_obj_update` packet data once per frame instead of once per recipient and reuse packet buffers
 - Add full_admin profile rcon access to `maxfps` and `sv_netfps` commands
 - Require a fresh `Alt` press to kill an unresponsive process
