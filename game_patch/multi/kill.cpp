@@ -17,6 +17,7 @@
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../misc/alpine_settings.h"
+#include "../sound/sound.h"
 #include "server_internal.h"
 #include "multi_private.h"
 #include "alpine_packets.h"
@@ -299,7 +300,7 @@ void handle_gungame_weapon_switch(rf::Player* player, rf::Entity* entity,
                     }
                     level_completed_while_alive[player] = false; // reset rewards after granting one
                     af_send_automated_chat_msg(msg, player);
-                    send_sound_packet_throwaway(player, 35); // Jolt_05.wav
+                    send_sound_packet_throwaway(player, stock_sound_id::jolt_01);
                 }
             }
 
@@ -536,7 +537,7 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     if (killer_player) {
         auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
-        const bool score_from_kills = !gt_is_bagman_any();
+        const bool score_from_kills = !gt_uses_custom_scoring();
         if (killer_player != killed_player) {
             if (score_from_kills) {
                 rf::player_add_score(killer_player, 1);

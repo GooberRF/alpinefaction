@@ -446,6 +446,7 @@ namespace rf
     static auto& entity_create =
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,
         const Matrix3& orient, int create_flags, int mp_character)>(0x00422360);
+    static auto& entity_maybe_die = addr_as_ref<void(Entity* ep)>(0x0041FDC0);
     static auto& entity_get_first_leech = addr_as_ref<int(Entity* ep)>(0x00427DA0);
     static auto& entity_is_dying = addr_as_ref<bool(Entity *ep)>(0x00427020);
     static auto& entity_is_on_turret = addr_as_ref<bool(Entity* ep)>(0x00429F90);

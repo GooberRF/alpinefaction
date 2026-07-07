@@ -26,6 +26,7 @@
 #include "alpine_packets.h"
 #include "network.h"
 #include "multi.h"
+#include "gametype.h"
 #include "../fflink/fflink_session.h"
 #include "../os/console.h"
 #include "../misc/player.h"
@@ -121,6 +122,21 @@ void handle_log_param()
 void handle_nodl_param()
 {
     g_ads_skip_map_download = get_nodl_cmd_line_param().found();
+}
+
+static RoundConfig parse_rounds_config(const toml::table& t, RoundConfig c)
+{
+    // Whether rounds are active is fixed by gametype.
+    // Rounds config values are ignored in gametypes that don't use rounds.
+    if (auto v = t["max_rounds"].value<int>())
+        c.set_max_rounds(*v);
+    if (auto v = t["round_time"].value<int>())
+        c.set_round_time(*v);
+    if (auto v = t["post_round_time"].value<int>())
+        c.set_post_round_time(*v);
+    if (auto v = t["intermission_time"].value<int>())
+        c.set_intermission_time(*v);
+    return c;
 }
 
 static OvertimeConfig parse_overtime_config(const toml::table& t)
@@ -458,6 +474,18 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_LMS: {
+            rules.spawn_delay.enabled = false;
+            rules.force_respawn = false;
+            rules.location_pinging = true;
+            rules.drop_weapons = true;
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("12mm handgun");
+            rules.spawn_loadout.loadouts_active = false;
+            break;
+        }
+
         default: {
             rules.spawn_delay.enabled = false;
 
@@ -500,6 +528,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.set_time_limit(*v);
     if (auto v = t["overtime"].as_table())
         o.overtime = parse_overtime_config(*v);
+    if (auto v = t["rounds"].as_table())
+        o.rounds = parse_rounds_config(*v, o.rounds);
 
     if (auto v = t["individual_kill_limit"].value<int>())
         o.set_individual_kill_limit(*v);
@@ -1664,6 +1694,23 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
             std::format_to(iter, "    CTF tie when flag stolen:            {}\n", rules.overtime.consider_tie_if_flag_stolen);
             std::format_to(iter, "    KOTH tie when hill contested:        {}\n", rules.overtime.consider_tie_if_hill_contested);
         }
+    }
+
+    const bool rules_uses_rounds = gt_type_uses_rounds(rules.game_type);
+    const bool base_uses_rounds = gt_type_uses_rounds(b.game_type);
+    const bool rounds_changed =
+        rules_uses_rounds != base_uses_rounds ||
+        (rules_uses_rounds && (rules.rounds.max_rounds != b.rounds.max_rounds ||
+          rules.rounds.round_time != b.rounds.round_time ||
+          rules.rounds.post_round_time != b.rounds.post_round_time ||
+          rules.rounds.intermission_time != b.rounds.intermission_time));
+
+    if (rules_uses_rounds && (base || rounds_changed)) {
+        std::format_to(iter, "  Rounds:\n");
+        std::format_to(iter, "    Max rounds per map:                  {}\n", rules.rounds.max_rounds);
+        std::format_to(iter, "    Round time:                          {} sec\n", rules.rounds.round_time);
+        std::format_to(iter, "    Post-round celebration:              {} sec\n", rules.rounds.post_round_time);
+        std::format_to(iter, "    Intermission between rounds:         {} sec\n", rules.rounds.intermission_time);
     }
 
     // score limits

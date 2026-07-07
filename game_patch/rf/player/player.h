@@ -91,6 +91,11 @@ struct PlayerAdditionalData {
     // Server side rail gun reload cooldown, used for force_rail_reload
     // needed because entity_is_reloading is unreliable on server
     rf::Timestamp rail_gun_reload_timer{};
+
+    // Round-based gametypes.
+    bool round_is_out = false;
+    bool round_participated = false; // the player has participated this round
+    float lms_round_damage_dealt = 0.0f; // damage dealt during current round (tiebreak)
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif

@@ -8,6 +8,8 @@
 #include <common/version/version.h>
 #include "gametype.h"
 #include "bagman.h"
+#include "rounds.h"
+#include "lms.h"
 #include "multi.h"
 #include "alpine_packets.h"
 #include "../hud/hud_internal.h"
@@ -34,6 +36,8 @@ static char bag_name[] = "BAG";
 static char* bag_slot = bag_name;
 static char tbag_name[] = "TBAG";
 static char* tbag_slot = tbag_name;
+static char lms_name[] = "LMS";
+static char* lms_slot = lms_name;
 // UNK is the sentinel; new game types must be added above
 static char unk_name[] = "UNK";
 static char* unk_slot = unk_name;
@@ -75,6 +79,7 @@ void populate_gametype_table() {
     g_af_gametype_names[rf::NG_TYPE_ESC]    = &esc_slot;
     g_af_gametype_names[rf::NG_TYPE_BAG]     = &bag_slot;
     g_af_gametype_names[rf::NG_TYPE_TBAG]    = &tbag_slot;
+    g_af_gametype_names[rf::NG_TYPE_LMS]    = &lms_slot;
     g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
@@ -229,6 +234,26 @@ bool gt_is_tbag()
 bool gt_is_bagman_any()
 {
     return gt_is_bag() || gt_is_tbag();
+}
+
+bool gt_is_lms()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_LMS;
+}
+
+bool gt_uses_custom_scoring()
+{
+    return gt_is_bagman_any() || gt_is_lms();
+}
+
+bool gt_type_uses_rounds(rf::NetGameType game_type)
+{
+    return game_type == rf::NetGameType::NG_TYPE_LMS;
+}
+
+bool gt_uses_rounds()
+{
+    return gt_type_uses_rounds(rf::multi_get_game_type());
 }
 
 static HillInfo* esc_find_hill_by_role(HillRole role)
@@ -1931,12 +1956,17 @@ void multi_level_init_post_gametypes()
 {
     hill_mode_level_init_post();
     bagman_level_init_post();
+    lms_level_init_post();
+    // Rounds must initialise AFTER per-gametype level-init so the gametype
+    // has registered its callbacks before round 1 begins.
+    rounds_level_init_post();
 }
 
 // pre level being loaded
 CodeInjection multi_level_init_gametypes_injection{
     0x0046E466,
     [](auto& regs) {
+        rounds_level_init();
         hill_mode_level_init();
         bagman_level_init();
     },
@@ -2141,4 +2171,7 @@ void gametype_do_patch()
 
     // bagman specific
     bagman_do_patch();
+
+    // rounds
+    rounds_do_patch();
 }

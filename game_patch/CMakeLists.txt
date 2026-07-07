@@ -146,6 +146,10 @@ set(SRCS
     multi/gametype.cpp
     multi/bagman.h
     multi/bagman.cpp
+    multi/rounds.h
+    multi/rounds.cpp
+    multi/lms.h
+    multi/lms.cpp
     multi/kill.cpp
     multi/network.cpp
     multi/network.h

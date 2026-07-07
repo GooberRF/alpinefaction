@@ -174,6 +174,7 @@ enum RF_GameType
     RF_GT_ESC = 0x07,
     RF_GT_BM = 0x08,
     RF_GT_TBM = 0x09,
+    RF_GT_LMS = 0x0A,
     // Sentinel: must always be the last entry.
     RF_GT_UNK
 };
