@@ -68,13 +68,20 @@ static void print_cmd_input_line()
     if (win32_console_is_output_redirected) {
         return;
     }
+    // Guard against GetConsoleScreenBufferInfo failing (leaving dwSize uninitialized) or reporting a
+    // degenerate width: a width < 3 would push offset past cmd_line_len and underflow the unsigned
+    // length passed to append.
     CONSOLE_SCREEN_BUFFER_INFO scr_buf_info;
-    GetConsoleScreenBufferInfo(win32_console_output_handle, &scr_buf_info);
-    unsigned offset = std::max(0, rf::console::cmd_line_len - scr_buf_info.dwSize.X + 3);
+    int console_width = 80;
+    if (GetConsoleScreenBufferInfo(win32_console_output_handle, &scr_buf_info) && scr_buf_info.dwSize.X > 0) {
+        console_width = scr_buf_info.dwSize.X;
+    }
+    int offset = std::clamp(rf::console::cmd_line_len - console_width + 3, 0, rf::console::cmd_line_len);
+    int visible_len = rf::console::cmd_line_len - offset;
     std::string line;
-    line.reserve(2 + rf::console::cmd_line_len - offset);
+    line.reserve(2 + visible_len);
     line += "] ";
-    line.append(rf::console::cmd_line + offset, rf::console::cmd_line_len - offset);
+    line.append(rf::console::cmd_line + offset, visible_len);
     WriteConsoleA(win32_console_output_handle, line.data(), line.size(), nullptr, nullptr);
     win32_console_input_line_printed = true;
     win32_console_printed_input_len = static_cast<int>(line.size());

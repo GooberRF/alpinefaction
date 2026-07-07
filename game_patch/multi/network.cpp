@@ -2964,13 +2964,16 @@ FunHook<void(unsigned short)> net_init_socket_hook{
         net_init_socket_hook.call_target(port);
         if (rf::net_udp_socket != -1) {
             int rcvbuf = 0x40000; // 256 KB
-            setsockopt(static_cast<SOCKET>(rf::net_udp_socket), SOL_SOCKET, SO_RCVBUF,
-                reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf));
+            if (setsockopt(static_cast<SOCKET>(rf::net_udp_socket), SOL_SOCKET, SO_RCVBUF,
+                    reinterpret_cast<const char*>(&rcvbuf), sizeof(rcvbuf)) != 0) {
+                xlog::warn("Failed to raise UDP socket receive buffer ({})", WSAGetLastError());
+            }
             int actual = 0;
             int actual_len = sizeof(actual);
-            getsockopt(static_cast<SOCKET>(rf::net_udp_socket), SOL_SOCKET, SO_RCVBUF,
-                reinterpret_cast<char*>(&actual), &actual_len);
-            xlog::info("UDP socket receive buffer set to {} bytes", actual);
+            if (getsockopt(static_cast<SOCKET>(rf::net_udp_socket), SOL_SOCKET, SO_RCVBUF,
+                    reinterpret_cast<char*>(&actual), &actual_len) == 0) {
+                xlog::info("UDP socket receive buffer set to {} bytes", actual);
+            }
         }
     },
 };
