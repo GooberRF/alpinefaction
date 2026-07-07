@@ -3,6 +3,7 @@
 #include <cwctype>
 #include <patch_common/FunHook.h>
 #include <patch_common/AsmWriter.h>
+#include <timeapi.h>
 #include <xlog/xlog.h>
 #include <common/utils/os-utils.h>
 #include "../rf/os/os.h"
@@ -13,7 +14,7 @@
 #include "../multi/multi.h"
 #include "os.h"
 #include "win32_console.h"
-#include <timeapi.h>
+#include "../input/mouse.h"
 
 FunHook<void()> os_poll_hook{
     0x00524B60,
@@ -89,6 +90,19 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
             return 0;
         }
         return DefWindowProcA(wnd_handle, msg, w_param, l_param);
+
+    case WM_SYSCOMMAND:
+        if ((w_param & 0xFFF0) == SC_KEYMENU)
+            return 0;
+        return DefWindowProcA(wnd_handle, msg, w_param, l_param);
+
+    case WM_XBUTTONDOWN:
+        mouse_handle_xbutton_wm(2 + HIWORD(w_param), true);
+        return TRUE;
+
+    case WM_XBUTTONUP:
+        mouse_handle_xbutton_wm(2 + HIWORD(w_param), false);
+        return TRUE;
 
     case WM_QUIT:
     case WM_CLOSE:

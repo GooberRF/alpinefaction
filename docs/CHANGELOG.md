@@ -40,6 +40,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Automatically enable the win32 console for dedicated servers running under Wine
 - Gather `af_obj_update` packet data once per frame instead of once per recipient and reuse packet buffers
 - Add full_admin profile rcon access to `maxfps` and `sv_netfps` commands
+- Require a fresh `Alt` press to kill an unresponsive process
 
 [@is-this-c](https://github.com/is-this-c)
 - Allow players to join between levels
@@ -53,6 +54,9 @@ Version 1.4.0 (Lupin): Not yet released
   - Add `Net FPS` and `Target FPS`
   - Add detection of manually loaded levels
   - Highlight an active level in a server's rotation via background color instead of text color
+
+[@AL2009man](https://github.com/AL2009man)
+- Add support for binding controls to additional mouse buttons and `Alt` keys
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -76,6 +80,9 @@ Version 1.4.0 (Lupin): Not yet released
 - For `Refresh Selected`, re-enable `Get Servers` etc. immediately upon response instead of waiting for timeout
 - Disable weapon cycle selection, if `Mouse 3` is pressed
 - For `Run` games, rename `Score` column to `Deaths`, and compare `Loads` in `std::ranges::sort`
+
+[@AL2009man](https://github.com/AL2009man)
+- Fix brief game freeze whenever an `Alt` key is pressed
 
 Version 1.3.0 (Bakeapple): Released Apr-22-2026
 --------------------------------
