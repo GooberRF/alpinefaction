@@ -25,6 +25,7 @@
 #include "../rf/os/os.h"
 #include "../rf/ui.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/sprays.h"
 #include "../os/console.h"
 #include "gamepad.h"
 #include "input.h"
@@ -345,6 +346,8 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK);
         alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
+        alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
         alpine_control_config_add_item(ccp, "Center View", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
         alpine_control_config_add_item(ccp, "Gyro Modifier", false, -1, -1, -1,
@@ -358,50 +361,78 @@ CodeInjection control_config_init_patch{
     },
 };
 
-// alpine controls that activate only when local player is alive (multi or single)
+// Handles alpine controls that activate only when the local player is alive (multi or single).
+static void execute_alive_alpine_control(int action_index)
+{
+    // only intercept alpine controls
+    if (action_index < starting_alpine_control_index) {
+        return;
+    }
+
+    if (action_index == static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_FLASHLIGHT))
+        && !rf::is_multi) {
+        if (g_headlamp_toggle_enabled) {
+            (rf::entity_headlamp_is_on(rf::local_player_entity))
+                ? rf::entity_headlamp_turn_off(rf::local_player_entity)
+                : rf::entity_headlamp_turn_on(rf::local_player_entity);
+            grant_achievement_sp(AchievementName::UseFlashlight);
+        }
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SELF_KILL) &&
+        rf::is_multi) {
+        rf::player_kill_self(rf::local_player);
+        if (gt_is_run()) {
+            multi_hud_reset_run_gt_timer(true);
+        }
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_DROP_FLAG) &&
+        rf::is_multi && !rf::is_server) {
+        send_chat_line_packet("/dropflag", nullptr);
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_PING_LOCATION)) {
+        ping_looked_at_location();
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPRAY)) {
+        sprays_handle_spray_action();
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON)) {
+        fpgun_play_random_idle_anim();
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW)) {
+        camera_start_reset_to_horizon();
+    }
+}
+
 CodeInjection player_execute_action_patch{
     0x004A6283,
     [](auto& regs) {
-        rf::ControlConfigAction action = regs.ebp;
-        int action_index = static_cast<int>(action);
-        //xlog::warn("executing action {}", action_index);
+        int action_index = static_cast<int>(regs.ebp);
+        if (starting_alpine_control_index != -1 &&
+            action_index >= starting_alpine_control_index) {
+            execute_alive_alpine_control(action_index);
+            regs.eip = 0x004A681B;
+        }
+    },
+};
 
-        // only intercept alpine controls
-        if (action_index >= starting_alpine_control_index) {
-            if (action_index == static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_FLASHLIGHT))
-                && !rf::is_multi) {
-                if (g_headlamp_toggle_enabled) {
-                    (rf::entity_headlamp_is_on(rf::local_player_entity))
-                        ? rf::entity_headlamp_turn_off(rf::local_player_entity)
-                        : rf::entity_headlamp_turn_on(rf::local_player_entity);
-                    grant_achievement_sp(AchievementName::UseFlashlight);
-                }
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SELF_KILL) &&
-                rf::is_multi) {
-                rf::player_kill_self(rf::local_player);
-                if (gt_is_run()) {
-                    multi_hud_reset_run_gt_timer(true);
-                }
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_DROP_FLAG) &&
-                rf::is_multi && !rf::is_server) {
-                send_chat_line_packet("/dropflag", nullptr);
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_PING_LOCATION)) {
-                ping_looked_at_location();
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON)) {
-                fpgun_play_random_idle_anim();
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW)) {
-                camera_start_reset_to_horizon();
-            }
+// Stock player_execute_action rejects action indices above 0x3c (60).
+// Alpine controls at or past index 0x3d (61) never reach that dispatch,
+// so handle them here and return before the stock guard runs.
+CodeInjection player_execute_action_high_index_patch{
+    0x004A6272,
+    [](auto& regs) {
+        int action_index = static_cast<int>(regs.ebp);
+        if (starting_alpine_control_index != -1 &&
+            action_index > 0x3c &&
+            action_index >= starting_alpine_control_index) {
+            execute_alive_alpine_control(action_index);
+            regs.eip = 0x004A681B;
         }
     },
 };
@@ -504,8 +535,10 @@ CodeInjection controls_process_patch{
     0x00430E4C,
     [](auto& regs) {
         int index = regs.edi;
-        if (index >= starting_alpine_control_index &&
-            index <= starting_alpine_control_index + static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
+        if (starting_alpine_control_index != -1 &&
+            index >= starting_alpine_control_index &&
+            index <= starting_alpine_control_index +
+                static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
             //xlog::warn("passing control {}", index);
             regs.eip = 0x00430E24;
         }
@@ -632,6 +665,7 @@ void key_apply_patch()
     // Handle Alpine controls
     control_config_init_patch.install();
     player_execute_action_patch.install();
+    player_execute_action_high_index_patch.install();
     player_execute_action_patch2.install();
     player_execute_action_patch3.install();
     controls_process_patch.install();

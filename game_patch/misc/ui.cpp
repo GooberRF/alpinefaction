@@ -8,6 +8,8 @@
 #include <algorithm>
 #include "alpine_settings.h"
 #include "misc.h"
+#include "spray_picker.h"
+#include "../multi/sprays.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
 #include "../os/os.h"
@@ -254,6 +256,10 @@ static rf::ui::Checkbox ao_exposuredamage_cbox;
 static rf::ui::Label ao_exposuredamage_label;
 static rf::ui::Checkbox ao_painsounds_cbox;
 static rf::ui::Label ao_painsounds_label;
+static rf::ui::Checkbox ao_spray_btn;
+static rf::ui::Label ao_spray_label;
+static rf::ui::Label ao_spray_but_label;
+static char ao_spray_butlabel_text[8];
 
 // gamepad settings
 static rf::ui::Checkbox ao_gyro_enabled_cbox;
@@ -1593,7 +1599,19 @@ static int ao_compute_max_scroll(rf::ui::Panel* subpanel)
     return (raw_max / AO_SCROLL_STEP) * AO_SCROLL_STEP;
 }
 
+void ao_spray_btn_on_click(int x, int y) {
+    spray_picker_open();
+    rf::snd_play(stock_sound_id::menu_select, 0, 0.0f, 1.0f);
+}
+
 void alpine_options_panel_handle_key(rf::Key* key){
+    // spray picker modal captures all input while open
+    if (spray_picker_is_open()) {
+        spray_picker_handle_key(key);
+        return;
+    }
+    // todo: more key support (tab, etc.)
+    // close panel on escape
     if (*key == rf::Key::KEY_ESC) {
         rf::ui::options_close_current_panel();
         rf::snd_play(stock_sound_id::panel_button_click, 0, 0.0f, 1.0f);
@@ -1602,6 +1620,12 @@ void alpine_options_panel_handle_key(rf::Key* key){
 }
 
 void alpine_options_panel_handle_mouse(int x, int y) {
+    // spray picker modal captures all input while open
+    if (spray_picker_is_open()) {
+        spray_picker_handle_mouse(x, y);
+        return;
+    }
+
     for (auto* gadget : alpine_options_panel_settings)
         if (gadget) gadget->highlighted = false;
 
@@ -1803,8 +1827,8 @@ void alpine_options_panel_init() {
         &ao_simdist_cbox, &ao_simdist_label, &ao_simdist_butlabel, &alpine_options_panel0, ao_simdist_cbox_on_click, 112, 262, "Simulation dist");
     alpine_options_panel_checkbox_init(
         &ao_unclamplights_cbox, &ao_unclamplights_label, &alpine_options_panel0, ao_unclamplights_cbox_on_click, g_alpine_game_config.full_range_lighting, 112, 292, "Full light range");
-    alpine_options_panel_checkbox_init(
-        &ao_nearest_cbox, &ao_nearest_label, &alpine_options_panel0, ao_nearest_cbox_on_click, g_alpine_game_config.nearest_texture_filtering, 112, 322, "Nearest filtering");
+    alpine_options_panel_inputbox_init(
+        &ao_spray_btn, &ao_spray_label, &ao_spray_but_label, &alpine_options_panel0, ao_spray_btn_on_click, 112, 322, "Select spray");
 
     alpine_options_panel_checkbox_init(
         &ao_camshake_cbox, &ao_camshake_label, &alpine_options_panel0, ao_camshake_cbox_on_click, !g_alpine_game_config.screen_shake_force_off, 280, 54, "View shake (SP)");
@@ -1827,6 +1851,8 @@ void alpine_options_panel_init() {
         &ao_firelights_cbox, &ao_firelights_label, &alpine_options_panel0, ao_firelights_cbox_on_click, !g_alpine_game_config.try_disable_muzzle_flash_lights, 280, 262, "Muzzle lights");
     alpine_options_panel_checkbox_init(
         &ao_mpcharlod_cbox, &ao_mpcharlod_label, &alpine_options_panel0, ao_mpcharlod_cbox_on_click, !g_alpine_game_config.multi_no_character_lod, 280, 292, "Entity LOD (MP)");
+    alpine_options_panel_checkbox_init(
+        &ao_nearest_cbox, &ao_nearest_label, &alpine_options_panel0, ao_nearest_cbox_on_click, g_alpine_game_config.nearest_texture_filtering, 280, 322, "Nearest filtering");
 
 
     // panel 1
@@ -2136,6 +2162,10 @@ void alpine_options_panel_do_frame(int x)
     // simulation dist
     snprintf(ao_simdist_butlabel_text, sizeof(ao_simdist_butlabel_text), "%6.2f", g_alpine_game_config.entity_sim_distance);
     ao_simdist_butlabel.text = ao_simdist_butlabel_text;
+
+    // selected spray index (refreshes automatically when the picker changes the selection)
+    snprintf(ao_spray_butlabel_text, sizeof(ao_spray_butlabel_text), "%d", g_alpine_game_config.selected_spray_index);
+    ao_spray_but_label.text = ao_spray_butlabel_text;
 
     // mesh lighting
     snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
@@ -2871,6 +2901,19 @@ CodeInjection options_handle_mouse_patch{
     },
 };
 
+FunHook<void()> options_mouse_handler_hook{
+    0x0044F530,
+    []() {
+        if (spray_picker_is_open()) {
+            int x = 0, y = 0, z = 0;
+            rf::mouse_get_pos(x, y, z);
+            spray_picker_handle_mouse(x, y);
+            return; // do not run stock options mouse handling
+        }
+        options_mouse_handler_hook.call_target();
+    },
+};
+
 // unhighlight buttons when not active
 CodeInjection options_do_frame_unhighlight_buttons_patch{
     0x0044F1E1,
@@ -3092,6 +3135,7 @@ void ui_apply_patch()
     options_do_frame_unhighlight_buttons_patch.install();
     options_handle_key_patch.install();
     options_handle_mouse_patch.install();
+    options_mouse_handler_hook.install();
     AsmWriter{0x0044F550}.push(6); // num buttons in options menu
     AsmWriter{0x0044F552}.push(&new_gadgets); // support mouseover for alpine options button
     AsmWriter{0x0044F285}.push(5); // back button index, used when hitting esc in options menu

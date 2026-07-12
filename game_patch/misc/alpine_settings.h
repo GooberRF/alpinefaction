@@ -9,6 +9,9 @@
 
 extern bool g_loaded_alpine_settings_file;
 
+// forward declaration (in sprays.cpp)
+int spray_count();
+
 struct AlpineGameSettings
 {
     // fov
@@ -121,6 +124,14 @@ struct AlpineGameSettings
     bool show_location_pings = true;
     bool play_hit_sounds = true;
 
+    bool spray_display = true;
+    int selected_spray_index = 0;
+    void set_selected_spray_index(int index)
+    {
+        const int count = spray_count();
+        selected_spray_index = (count > 0) ? std::clamp(index, 0, count - 1) : 0;
+    }
+
     static constexpr int min_hit_sound_interval_ms = 0;
     static constexpr int max_hit_sound_interval_ms = 1000;
     int hit_sound_min_interval_ms = 20;
@@ -136,6 +147,7 @@ struct AlpineGameSettings
     bool gaussian_spread = false;
     bool geo_chunk_physics = true;
     bool show_run_timer = true;
+    bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;
     bool spectate_damage_screen_flash = true;

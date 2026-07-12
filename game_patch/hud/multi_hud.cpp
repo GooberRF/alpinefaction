@@ -1065,9 +1065,9 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     0x00476DEB,
     [](auto& regs) {
         const auto game_type = rf::multi_get_game_type();
-        const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
-            || game_type == rf::NG_TYPE_BAG
-            || game_type == rf::NG_TYPE_LMS;
+        const bool is_ffa_with_list = game_type == rf::NG_TYPE_BAG
+            || game_type == rf::NG_TYPE_LMS
+            || (game_type == rf::NG_TYPE_DM && g_alpine_game_config.show_mini_scoreboard_dm);
         if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbag() || is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
@@ -1852,6 +1852,17 @@ ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
 };
 
+ConsoleCommand2 ui_miniscoreboard_cmd{
+    "ui_minisb_dm",
+    [] {
+        g_alpine_game_config.show_mini_scoreboard_dm = !g_alpine_game_config.show_mini_scoreboard_dm;
+        rf::console::print("Mini scoreboard HUD element in DM is {}",
+            g_alpine_game_config.show_mini_scoreboard_dm ? "enabled" : "disabled");
+    },
+    "Toggle whether the mini scoreboard HUD element is displayed in DM",
+    "ui_minisb_dm",
+};
+
 ConsoleCommand2 ui_always_show_specators_cmd{
     "ui_always_show_specators",
     [] {
@@ -1920,6 +1931,7 @@ void multi_hud_apply_patches()
     ui_playernames_cmd.register_cmd();
     ui_verbosetimer_cmd.register_cmd();
     ui_runtimer_cmd.register_cmd();
+    ui_miniscoreboard_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();
     ui_gamefeed_cmd.register_cmd();
