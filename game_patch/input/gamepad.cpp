@@ -1945,6 +1945,11 @@ const char* gamepad_get_scan_code_name(int scan_code)
     return "<none>";
 }
 
+const char* gamepad_get_menu_cancel_button_name()
+{
+    return gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + static_cast<int>(get_menu_cancel_button()));
+}
+
 void gamepad_clear_all_bindings()
 {
     memset(g_button_map,     -1, sizeof(g_button_map));

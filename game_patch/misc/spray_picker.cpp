@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <string>
 #include "spray_picker.h"
 #include "alpine_settings.h"
@@ -12,6 +14,7 @@
 #include "../rf/gameseq.h"
 #include "../hud/hud.h"
 #include "../hud/hud_internal.h"
+#include "../input/gamepad.h"
 
 namespace
 {
@@ -19,6 +22,7 @@ namespace
     float g_scroll = 0.0f;
     int g_cursor_x = 0;
     int g_cursor_y = 0;
+    int g_focused_cell = -1; // D-pad focused cell index; -1 = cursor mode
 
     constexpr float REF_WIDTH = 1280.0f;
     constexpr float REF_HEIGHT = 800.0f;
@@ -109,12 +113,14 @@ void spray_picker_open()
 {
     g_open = true;
     g_scroll = 0.0f;
+    g_focused_cell = g_alpine_game_config.selected_spray_index;
 }
 
 void spray_picker_close()
 {
     g_open = false;
     g_scroll = 0.0f;
+    g_focused_cell = -1;
 }
 
 bool spray_picker_is_open()
@@ -211,9 +217,14 @@ void spray_picker_render()
             }
         }
 
-        // Selected: bright green border. Hovered: subtle white border.
+        // Selected: bright green border. D-pad focused: yellow border. Hovered: subtle white border.
         if (i == g_alpine_game_config.selected_spray_index) {
             rf::gr::set_color(120, 230, 120, 255);
+            hud_rect_border(dx - 2, dy - 2, lo.thumb + 4, lo.thumb + 4,
+                std::max(2, static_cast<int>(3 * lo.scale)));
+        }
+        else if (i == g_focused_cell && gamepad_is_last_input_gamepad()) {
+            rf::gr::set_color(255, 220, 60, 255);
             hud_rect_border(dx - 2, dy - 2, lo.thumb + 4, lo.thumb + 4,
                 std::max(2, static_cast<int>(3 * lo.scale)));
         }
@@ -263,8 +274,13 @@ void spray_picker_render()
     rf::gr::set_color(150, 150, 150, 255);
     hud_rect_border(lo.cancel_x, lo.cancel_y, lo.cancel_w, lo.cancel_h, 1);
     rf::gr::set_color(255, 255, 255, 255);
+    char cancel_label[64];
+    if (gamepad_is_last_input_gamepad())
+        std::snprintf(cancel_label, sizeof(cancel_label), "Cancel (%s)", gamepad_get_menu_cancel_button_name());
+    else
+        std::strncpy(cancel_label, "Cancel (Esc)", sizeof(cancel_label) - 1);
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, lo.cancel_x + lo.cancel_w / 2,
-        lo.cancel_y + (lo.cancel_h - rf::gr::get_font_height(font)) / 2, "Cancel (Esc)", font);
+        lo.cancel_y + (lo.cancel_h - rf::gr::get_font_height(font)) / 2, cancel_label, font);
 }
 
 void spray_picker_handle_mouse(int x, int y)
@@ -278,10 +294,13 @@ void spray_picker_handle_mouse(int x, int y)
 
     const Layout lo = compute_layout();
 
-    // Mouse wheel scrolls the grid (one row per notch).
-    if (rf::mouse_dz != 0) {
+    // Mouse wheel and gamepad right-stick scroll the grid (one row per notch).
+    int dz = rf::mouse_dz;
+    if (dz == 0)
+        dz = gamepad_consume_menu_scroll();
+    if (dz != 0) {
         const float step = static_cast<float>(lo.thumb + lo.gap);
-        g_scroll += (rf::mouse_dz > 0 ? -step : step);
+        g_scroll += (dz > 0 ? -step : step);
         g_scroll = std::clamp(g_scroll, 0.0f, max_scroll(lo));
     }
 
@@ -313,7 +332,60 @@ void spray_picker_handle_key(rf::Key* key)
     }
     if (*key == rf::Key::KEY_ESC) {
         g_open = false;
+        *key = rf::Key::KEY_NONE;
+        return;
     }
+
+    // D-pad / arrow-key navigation
+    const Layout lo = compute_layout();
+    const int count = lo.count;
+    if (count > 0) {
+        int focused = (g_focused_cell >= 0 && g_focused_cell < count)
+            ? g_focused_cell
+            : g_alpine_game_config.selected_spray_index;
+        focused = std::clamp(focused, 0, count - 1);
+
+        bool moved = false;
+        if (*key == rf::Key::KEY_LEFT) {
+            focused = std::max(0, focused - 1);
+            moved = true;
+        } else if (*key == rf::Key::KEY_RIGHT) {
+            focused = std::min(count - 1, focused + 1);
+            moved = true;
+        } else if (*key == rf::Key::KEY_UP) {
+            focused = std::max(0, focused - lo.cols);
+            moved = true;
+        } else if (*key == rf::Key::KEY_DOWN) {
+            focused = std::min(count - 1, focused + lo.cols);
+            moved = true;
+        } else if (*key == rf::Key::KEY_ENTER) {
+            if (g_focused_cell >= 0 && g_focused_cell < count) {
+                g_alpine_game_config.set_selected_spray_index(g_focused_cell);
+            }
+            g_open = false;
+            *key = rf::Key::KEY_NONE;
+            return;
+        }
+
+        if (moved) {
+            g_focused_cell = focused;
+            // Scroll to keep the focused cell visible.
+            int cx = 0, cy = 0;
+            cell_rect(lo, g_focused_cell, cx, cy);
+            const float cell_top    = static_cast<float>(cy);
+            const float cell_bottom = static_cast<float>(cy + lo.thumb);
+            const float vis_top     = static_cast<float>(lo.content_y);
+            const float vis_bottom  = static_cast<float>(lo.content_y + lo.content_h);
+            if (cell_top < vis_top)
+                g_scroll -= (vis_top - cell_top);
+            else if (cell_bottom > vis_bottom)
+                g_scroll += (cell_bottom - vis_bottom);
+            g_scroll = std::clamp(g_scroll, 0.0f, max_scroll(lo));
+            *key = rf::Key::KEY_NONE;
+            return;
+        }
+    }
+
     // Swallow every key while the modal is open so nothing leaks to the options menu.
     *key = rf::Key::KEY_NONE;
 }

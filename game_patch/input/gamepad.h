@@ -33,6 +33,7 @@ int         gamepad_get_button_for_action(int action_idx);  // -1 if unbound (pr
 void        gamepad_get_buttons_for_action(int action_idx, int* btn_primary, int* btn_secondary); // both primary and secondary
 int         gamepad_get_trigger_for_action(int action_idx); // 0=LT, 1=RT, -1 if unbound
 const char* gamepad_get_scan_code_name(int scan_code);
+const char* gamepad_get_menu_cancel_button_name();
 int         gamepad_get_button_count();
 void        gamepad_reset_to_defaults();
 void        gamepad_sync_bindings_from_scan_codes();
