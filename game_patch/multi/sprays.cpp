@@ -267,7 +267,7 @@ namespace
         "spray",
         [](std::optional<int> spray_id) {
             if (spray_id) {
-                if (*spray_id < 0 || !is_valid_spray_id(static_cast<uint16_t>(*spray_id))) {
+                if (*spray_id < 0 || *spray_id >= spray_count()) {
                     rf::console::print("Invalid spray id {}. Valid range is 0-{}.", *spray_id, spray_count() - 1);
                     return;
                 }
@@ -518,10 +518,6 @@ void sprays_handle_spray_action()
                 return;
             }
         }
-    }
-
-    if (!g_alpine_game_config.spray_display) {
-        return;
     }
 
     const uint16_t spray_id = static_cast<uint16_t>(g_alpine_game_config.selected_spray_index);
