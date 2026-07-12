@@ -89,6 +89,7 @@ add_packfile(alpinefaction.vpp
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
     sounds/af_hitsound1.wav
+    sounds/af_spray1.ogg
     sounds/af_killsound1.wav
     sounds/af_radmsg_000.ogg
     sounds/af_radmsg_001.ogg
