@@ -47,6 +47,7 @@
 #include "../misc/level.h"
 #include "../object/alpine_corona.h"
 #include "../input/input.h"
+#include "../input/gamepad.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
 #include "../rf/level.h"
@@ -75,13 +76,14 @@ void initialize_random_generator() {
 
 CallHook<void()> rf_init_hook{
     0x004B27CD,
-    [] {
-        const uint64_t start_ticks = GetTickCount64();
+    []() {
+        auto start_ticks = GetTickCount64();
         xlog::info("Initializing game...");
         initialize_alpine_core_config();
         rf_init_hook.call_target();
         vpackfile_disable_overriding();
         xlog::info("Game initialized ({} ms).", GetTickCount64() - start_ticks);
+        gamepad_sdl_init();
     },
 };
 
@@ -157,6 +159,7 @@ FunHook<int()> rf_do_frame_hook{
         server_do_frame();
         client_bot_do_frame();
         koth_do_frame();
+        gamepad_do_frame();
         bagman_do_frame();
         alpine_mesh_do_frame();
         atx_do_frame();
@@ -294,6 +297,7 @@ FunHook<void(bool)> level_init_post_hook{
             }
         }
 
+        gamepad_stop_rumble(); // ensure no rumble bleeds in from the previous level
         waypoints_level_init();
 
         // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download
@@ -584,6 +588,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     dedi_cfg_init();
     mouse_apply_patch();
     key_apply_patch();
+    gamepad_apply_patch();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
     experimental_init();
 #endif

@@ -4,6 +4,28 @@
 Version 1.4.0 (Lupin): Not yet released
 --------------------------------
 ### Major features
+[@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Controller Support
+> [!WARNING]
+> When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2015): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
+  - Full controller support via SDL3 Gamepad API
+  - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, and Steam Controller 2026)
+  - Dual-Analog support for movement and camera controls
+  - Initial Rumble support
+    - only covers all Weapon Fire and select Environmental effects
+    - Trigger Rumble/Impulse Triggers are also supported (requires enabling `GamepadRawInput` in `alpine_settings.ini`)
+  - Gyro Aiming support
+    - Natural Sensitivity Scale / Real World Sensitivity support 
+    - Gyro Space orientation support for Yaw, Roll, Local Space, Player Space and World Space
+    - Gyro Autocalibration system 
+    - Gyro Modifier / Gyro Ratcheting support (via Game Action remapping)
+  - Flick Stick support
+    - Best paired with Gyro Aiming or Mixed Input
+  - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
+    - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.5000`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
+  - Partial controller menu navigation support (Mouse controls are handled via Left Stick, Scrollbar are handled by Right Stick)
+- Additional Controller settings are available in `alpine_settings.ini` and/or console commands
+
 [@GooberRF](https://github.com/GooberRF)
 - Support Alpine Texture (ATX) declarative texture format in game and level editor
   - Fine tuned texture animation without being subject to VBM format limitations
@@ -18,6 +40,10 @@ Version 1.4.0 (Lupin): Not yet released
   - `spray` console command to select spray, and in-game spray picker in advanced options
 
 ### Minor features, changes, and enhancements
+[@AL2009man](https://github.com/AL2009man)
+- Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
+- Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
+
 [@GooberRF](https://github.com/GooberRF)
 - Support DDS texture format in level editor
 - Bump RFL version to 305

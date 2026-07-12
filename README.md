@@ -43,6 +43,7 @@ Most important:
 * Player headlamp (flashlight)
 * Support for any resolution and aspect ratio
 * Fullscreen, windowed, borderless window modes
+* Controller Support
 * Enhanced mouse input with selectable sensitivity scaling
 * Ability to skip cutscenes
 * Restored water/lava rising functionality in Geothermal Plant
