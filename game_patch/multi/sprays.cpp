@@ -433,7 +433,13 @@ void sprays_apply_client_state(uint8_t player_id, uint16_t texture_id, const rf:
     }
     if (!is_valid_spray_id(texture_id)) {
         xlog::debug("sprays: ignoring spray with unknown id {} for player_id {}", texture_id, player_id);
-        return; // ignore unknown ids (forward compatibility)
+        // The player switched to a spray we can't render. Remove their existing spray.
+        auto it = g_client_sprays.find(player_id);
+        if (it != g_client_sprays.end()) {
+            spray_destroy_decal(it->second.decal); // hook nulls the pointer; no-op during teardown
+            g_client_sprays.erase(it);
+        }
+        return;
     }
 
     // Replace this player's previous spray everywhere.
