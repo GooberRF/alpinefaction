@@ -432,7 +432,7 @@ void sprays_apply_client_state(uint8_t player_id, uint16_t texture_id, const rf:
         return; // dedicated servers do not render
     }
     if (!is_valid_spray_id(texture_id)) {
-        xlog::info("sprays: ignoring spray with unknown id {} for player_id {}", texture_id, player_id);
+        xlog::debug("sprays: ignoring spray with unknown id {} for player_id {}", texture_id, player_id);
         return; // ignore unknown ids (forward compatibility)
     }
 
@@ -495,7 +495,7 @@ static void spray_chat_feedback(const char* text)
 
 void sprays_handle_spray_action()
 {
-    xlog::info("sprays: spray action fired");
+    xlog::debug("sprays: spray action fired");
 
     // Sprays are usable in single player as well as multiplayer.
     const bool single_player = !rf::is_multi;
@@ -550,13 +550,13 @@ void sprays_handle_spray_action()
     rf::GCollisionOutput out;
     const bool hit = rf::collide_linesegment_level_solid(p0, p1, 0, &out);
     if (!hit || out.num_hits == 0) {
-        xlog::info("sprays: raycast hit no level geometry within 50m");
+        xlog::debug("sprays: raycast hit no level geometry within 50m");
         rf::console::print("No surface in view to spray");
         return;
     }
 
     last_request_ms = now_ms;
-    xlog::info("sprays: sending spray request (id={}, hit=({:.2f}, {:.2f}, {:.2f}), normal=({:.2f}, {:.2f}, {:.2f}), dist={:.2f})",
+    xlog::debug("sprays: sending spray request (id={}, hit=({:.2f}, {:.2f}, {:.2f}), normal=({:.2f}, {:.2f}, {:.2f}), dist={:.2f})",
         spray_id, out.hit_point.x, out.hit_point.y, out.hit_point.z,
         out.normal.x, out.normal.y, out.normal.z, eye.distance_to(out.hit_point));
 
