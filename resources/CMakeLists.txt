@@ -250,6 +250,16 @@ add_packfile(alpinefaction.vpp
     images/af_powerup-bag.vbm
     images/af_wh_bag_hold.tga
     images/af_wh_bag_take.tga
+    images/dec_af_csp01.png
+    images/dec_af_csp02.png
+    images/dec_af_csp03.png
+    images/dec_af_csp04.png
+    images/dec_af_csp05.png
+    images/dec_af_csp06.tga
+    images/dec_af_csp07.png
+    images/dec_af_csp08.png
+    images/dec_af_csp09.tga
+    images/dec_af_csp10.tga
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
