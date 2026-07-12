@@ -332,7 +332,8 @@ CodeInjection player_execute_action_patch{
     0x004A6283,
     [](auto& regs) {
         int action_index = static_cast<int>(regs.ebp);
-        if (starting_alpine_control_index != -1 && action_index >= starting_alpine_control_index) {
+        if (starting_alpine_control_index != -1 &&
+            action_index >= starting_alpine_control_index) {
             execute_alive_alpine_control(action_index);
             regs.eip = 0x004A681B;
         }
@@ -346,7 +347,9 @@ CodeInjection player_execute_action_high_index_patch{
     0x004A6272,
     [](auto& regs) {
         int action_index = static_cast<int>(regs.ebp);
-        if (action_index > 0x3c && action_index >= starting_alpine_control_index) {
+        if (starting_alpine_control_index != -1 &&
+            action_index > 0x3c &&
+            action_index >= starting_alpine_control_index) {
             execute_alive_alpine_control(action_index);
             regs.eip = 0x004A681B;
         }
