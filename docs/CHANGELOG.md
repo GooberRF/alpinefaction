@@ -13,6 +13,9 @@ Version 1.4.0 (Lupin): Not yet released
   - Bagman (`BAG`)
   - Team Bagman (`TBAG`)
   - Last Miner Standing (`LMS`)
+- Add sprays with bindable `Spray` control
+  - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
+  - `spray` console command to select spray, and in-game spray picker in advanced options
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -76,6 +79,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix unbounded read when a request to play a sound above `g_num_sounds` is made
 - Fix camera angle snapping when switching between free look and third person camera modes
 - Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
+- Fix overlapping decals rendering with the oldest on top instead of the newest
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

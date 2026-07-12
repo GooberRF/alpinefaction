@@ -620,6 +620,7 @@ namespace rf
     // Geomod effect functions
     static auto& geomod_push_nearby_entities = addr_as_ref<bool(Vector3* pos)>(0x004C0160);
     static auto& g_decal_add = addr_as_ref<GDecal*(GDecalCreateInfo* dci)>(0x004D52E0);
+    static auto& g_decal_destroy = addr_as_ref<void(GDecal*)>(0x004D6C50);
     static auto& geomod_create_rock_debris = addr_as_ref<int(Vector3* orientation, float scaled_radius,
         Vector3* source_dir, int texture, int room_ptr)>(0x0048FE30);
 

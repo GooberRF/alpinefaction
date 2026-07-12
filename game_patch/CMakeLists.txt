@@ -150,6 +150,8 @@ set(SRCS
     multi/rounds.cpp
     multi/lms.h
     multi/lms.cpp
+    multi/sprays.h
+    multi/sprays.cpp
     multi/kill.cpp
     multi/network.cpp
     multi/network.h
@@ -275,6 +277,8 @@ set(SRCS
     misc/destruction.h
     misc/camera.cpp
     misc/ui.cpp
+    misc/spray_picker.cpp
+    misc/spray_picker.h
     misc/game.cpp
     misc/level.cpp
     misc/waypoints.cpp

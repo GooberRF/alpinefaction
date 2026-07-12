@@ -21,6 +21,7 @@ static int g_cutscene_bg_sound_sig = -1;
 static int g_custom_sound_entry_start = -1;
 static int g_taunt_sound_start = -1;
 static int g_radmsg_sound_start = -1;
+static int g_spray_sound_id = -1;
 #ifdef DEBUG
 int g_sound_test = 0;
 #endif
@@ -491,6 +492,11 @@ int get_custom_chat_message_sound_id(int custom_id, bool is_taunt)
     return is_taunt ? g_taunt_sound_start + custom_id : g_radmsg_sound_start + custom_id;
 }
 
+int get_spray_sound_id()
+{
+    return g_spray_sound_id;
+}
+
 void gamesound_parse_custom_sounds() 
 {
     // Record first custom sound ID
@@ -614,6 +620,7 @@ void gamesound_parse_custom_sounds()
         {"MP_TAUNT_72.wav", 10.0f, 1.0f, 1.0f},
         {"MP_TAUNT_73.wav", 10.0f, 1.0f, 1.0f},
         {"MP_TAUNT_74.wav", 10.0f, 1.0f, 1.0f},
+        {"af_spray1.wav", 10.0f, 1.0f, 1.0f},
     };
 
     for (const auto& sound : custom_sounds) 
@@ -628,6 +635,7 @@ void gamesound_parse_custom_sounds()
 
     g_taunt_sound_start = rf::snd_pc_find_by_name("MP_TAUNT_16.wav");
     g_radmsg_sound_start = rf::snd_pc_find_by_name("af_radmsg_000.ogg");
+    g_spray_sound_id = rf::snd_pc_find_by_name("af_spray1.wav");
 
     //xlog::warn("Custom sounds added, starting at ID {}. Taunts start at ID {}", g_custom_sound_entry_start, g_taunt_sound_start);
 }

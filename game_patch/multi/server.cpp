@@ -21,6 +21,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "sprays.h"
 #include "multi.h"
 #include "gametype.h"
 #include "bagman.h"
@@ -2120,6 +2121,9 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
         if (player->is_browser) {
             return;
         }
+        if (player->is_spectator) {
+            return;
+        }
         if (!check_can_player_spawn(player)) {
             return;
         }
@@ -3816,6 +3820,16 @@ bool server_clear_stale_movement_input()
 bool server_allow_footsteps()
 {
     return g_alpine_server_config.allow_footsteps;
+}
+
+bool server_sprays_enabled()
+{
+    return g_alpine_server_config.spray_config.enabled;
+}
+
+int server_spray_cooldown_ms()
+{
+    return g_alpine_server_config.spray_config.cooldown_ms;
 }
 
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client()

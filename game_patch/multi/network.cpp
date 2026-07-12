@@ -30,6 +30,7 @@
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
+#include "sprays.h"
 #include "bots/bot_chat_manager.h"
 #include "../main/main.h"
 #include "../os/os.h"
@@ -1668,6 +1669,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_clear_stale_movement_input()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input;
         }
+        if (server_sprays_enabled()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1803,6 +1807,7 @@ CodeInjection process_join_accept_injection{
             server_info.allow_outlines = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines);
             server_info.allow_outlines_xray = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray);
             server_info.clear_stale_movement_input = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input);
+            server_info.allow_sprays = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays);
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
@@ -2621,6 +2626,7 @@ CodeInjection send_state_info_injection{
         rf::Player* player = regs.edi;
         trigger_send_state_info(player);
         pf_player_level_load(player);
+        sprays_force_state_sync_to(player);
     },
 };
 

@@ -80,6 +80,7 @@ enum class af_client_req_type : uint8_t
 {
     af_req_handicap = 0x0,
     af_req_server_cfg = 0x1,
+    af_req_spray = 0x2,
 };
 
 struct HandicapPayload
@@ -87,7 +88,15 @@ struct HandicapPayload
     uint8_t amount = 0;
 };
 
-using af_client_payload = std::variant<HandicapPayload, std::monostate>;
+struct SprayReqPayload
+{
+    uint16_t texture_id = 0;
+    RF_Vector pos = {};
+    RF_Vector normal = {};
+};
+static_assert(sizeof(SprayReqPayload) == 26);
+
+using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -100,6 +109,7 @@ enum class af_server_req_type : uint8_t
 {
     af_sreq_should_gib = 0x0,
     af_sreq_teleport_entity = 0x1,  // Alpine 1.4
+    af_sreq_spray = 0x2,            // Alpine 1.4
 };
 
 struct ShouldGibPayload
@@ -115,7 +125,22 @@ struct TeleportEntityPayload
     RF_Vector vel = {};
 };
 
-using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload>;
+enum af_spray_flags : uint8_t
+{
+    AF_SPRAY_FLAG_SILENT = 1 << 0,
+};
+
+struct SprayPayload
+{
+    uint8_t player_id = 0;
+    uint16_t texture_id = 0;
+    RF_Vector pos = {};
+    RF_Vector normal = {};
+    uint8_t flags = 0; // af_spray_flags
+};
+static_assert(sizeof(SprayPayload) == 28);
+
+using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload>;
 
 struct af_server_req_packet
 {
@@ -254,6 +279,7 @@ enum af_server_info_flags : uint32_t {
     SIF_ALLOW_OUTLINES_XRAY = 1u << 16,
     SIF_CLEAR_STALE_MOVEMENT_INPUT = 1u << 17,
     SIF_MANUAL_LEVEL_LOAD = 1u << 18,
+    SIF_ALLOW_SPRAYS = 1u << 19,
 };
 
 // Subset of `rf::NetGameFlags`.
@@ -430,6 +456,8 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
 void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player);
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
+void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
+void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
 static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_just_spawned_loadout(rf::Player* to_player, std::vector<WeaponLoadoutEntry> loadout);
 static void af_process_just_spawned_info_packet(const void* data, size_t len, const rf::NetAddr& addr);
@@ -469,6 +497,7 @@ void af_send_server_console_msg(std::string_view msg, rf::Player* player, bool t
 // client requests
 void af_send_handicap_request(uint8_t amount);
 void af_send_server_cfg_request();
+void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
 
 // server bot control
 void af_send_bot_control_simple(rf::Player* player, af_bot_control_type subtype);
