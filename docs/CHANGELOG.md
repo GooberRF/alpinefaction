@@ -13,6 +13,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Bagman (`BAG`)
   - Team Bagman (`TBAG`)
   - Last Miner Standing (`LMS`)
+  - Wipeout (`WO`)
 - Add sprays with bindable `Spray` control
   - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
   - `spray` console command to select spray, and in-game spray picker in advanced options
