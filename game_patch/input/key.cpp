@@ -19,8 +19,11 @@
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
 #include "../rf/os/os.h"
+#include "../rf/ui.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/sprays.h"
 #include "../os/console.h"
+#include "input.h"
 
 static int starting_alpine_control_index = -1;
 
@@ -47,44 +50,43 @@ rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_cont
 
 FunHook<int(int16_t)> key_to_ascii_hook{
     0x0051EFC0,
-    [](int16_t key) {
-        using namespace rf;
+    [] (int16_t key) {
         constexpr int empty_result = 0xFF;
         if (!key) {
             return empty_result;
         }
         // special handling for Num Lock (because ToAscii API does not support it)
-        switch (key & KEY_MASK) {
+        switch (key & rf::KEY_MASK) {
             // Numpad keys that always work
-            case KEY_PADMULTIPLY: return static_cast<int>('*');
-            case KEY_PADMINUS: return static_cast<int>('-');
-            case KEY_PADPLUS: return static_cast<int>('+');
+            case rf::KEY_PADMULTIPLY: return static_cast<int>('*');
+            case rf::KEY_PADMINUS: return static_cast<int>('-');
+            case rf::KEY_PADPLUS: return static_cast<int>('+');
             // Disable Numpad Enter key because game is not prepared for getting new line character from this function
-            case KEY_PADENTER: return empty_result;
+            case rf::KEY_PADENTER: return empty_result;
         }
         if (GetKeyState(VK_NUMLOCK) & 1) {
-            switch (key & KEY_MASK) {
-                case KEY_PAD7: return static_cast<int>('7');
-                case KEY_PAD8: return static_cast<int>('8');
-                case KEY_PAD9: return static_cast<int>('9');
-                case KEY_PAD4: return static_cast<int>('4');
-                case KEY_PAD5: return static_cast<int>('5');
-                case KEY_PAD6: return static_cast<int>('6');
-                case KEY_PAD1: return static_cast<int>('1');
-                case KEY_PAD2: return static_cast<int>('2');
-                case KEY_PAD3: return static_cast<int>('3');
-                case KEY_PAD0: return static_cast<int>('0');
-                case KEY_PADPERIOD: return static_cast<int>('.');
+            switch (key & rf::KEY_MASK) {
+                case rf::KEY_PAD7: return static_cast<int>('7');
+                case rf::KEY_PAD8: return static_cast<int>('8');
+                case rf::KEY_PAD9: return static_cast<int>('9');
+                case rf::KEY_PAD4: return static_cast<int>('4');
+                case rf::KEY_PAD5: return static_cast<int>('5');
+                case rf::KEY_PAD6: return static_cast<int>('6');
+                case rf::KEY_PAD1: return static_cast<int>('1');
+                case rf::KEY_PAD2: return static_cast<int>('2');
+                case rf::KEY_PAD3: return static_cast<int>('3');
+                case rf::KEY_PAD0: return static_cast<int>('0');
+                case rf::KEY_PADPERIOD: return static_cast<int>('.');
             }
         }
         BYTE key_state[256] = {0};
-        if (key & KEY_SHIFTED) {
+        if (key & rf::KEY_SHIFTED) {
             key_state[VK_SHIFT] = 0x80;
         }
-        if (key & KEY_ALTED) {
+        if (key & rf::KEY_ALTED) {
             key_state[VK_MENU] = 0x80;
         }
-        if (key & KEY_CTRLED) {
+        if (key & rf::KEY_CTRLED) {
             key_state[VK_CONTROL] = 0x80;
         }
         int scan_code = key & 0x7F;
@@ -114,7 +116,12 @@ FunHook<int(int16_t)> key_to_ascii_hook{
 
 int get_key_name(int key, char* buf, size_t buf_len)
 {
-     LONG lparam = (key & 0x7F) << 16;
+    // Extra mouse buttons (Mouse 4+): stored as custom scan codes
+    if (key >= CTRL_EXTRA_MOUSE_SCAN_BASE && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT) {
+        int n = snprintf(buf, buf_len, "Mouse %d", (key - CTRL_EXTRA_MOUSE_SCAN_BASE) + 4);
+        return n > 0 ? n : 0;
+    }
+    LONG lparam = (key & 0x7F) << 16;
     if (key & 0x80) {
         lparam |= 1 << 24;
     }
@@ -272,49 +279,79 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK);
         alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
+        alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
     },
 };
 
-// alpine controls that activate only when local player is alive (multi or single)
+// Handles alpine controls that activate only when the local player is alive (multi or single).
+static void execute_alive_alpine_control(int action_index)
+{
+    // only intercept alpine controls
+    if (action_index < starting_alpine_control_index) {
+        return;
+    }
+
+    if (action_index == static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_FLASHLIGHT))
+        && !rf::is_multi) {
+        if (g_headlamp_toggle_enabled) {
+            (rf::entity_headlamp_is_on(rf::local_player_entity))
+                ? rf::entity_headlamp_turn_off(rf::local_player_entity)
+                : rf::entity_headlamp_turn_on(rf::local_player_entity);
+            grant_achievement_sp(AchievementName::UseFlashlight);
+        }
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SELF_KILL) &&
+        rf::is_multi) {
+        rf::player_kill_self(rf::local_player);
+        if (gt_is_run()) {
+            multi_hud_reset_run_gt_timer(true);
+        }
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_DROP_FLAG) &&
+        rf::is_multi && !rf::is_server) {
+        send_chat_line_packet("/dropflag", nullptr);
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_PING_LOCATION)) {
+        ping_looked_at_location();
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPRAY)) {
+        sprays_handle_spray_action();
+    }
+    else if (action_index == starting_alpine_control_index +
+        static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON)) {
+        fpgun_play_random_idle_anim();
+    }
+}
+
 CodeInjection player_execute_action_patch{
     0x004A6283,
     [](auto& regs) {
-        rf::ControlConfigAction action = regs.ebp;
-        int action_index = static_cast<int>(action);
-        //xlog::warn("executing action {}", action_index);
+        int action_index = static_cast<int>(regs.ebp);
+        if (starting_alpine_control_index != -1 &&
+            action_index >= starting_alpine_control_index) {
+            execute_alive_alpine_control(action_index);
+            regs.eip = 0x004A681B;
+        }
+    },
+};
 
-        // only intercept alpine controls
-        if (action_index >= starting_alpine_control_index) {
-            if (action_index == static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_FLASHLIGHT))
-                && !rf::is_multi) {
-                if (g_headlamp_toggle_enabled) {
-                    (rf::entity_headlamp_is_on(rf::local_player_entity))
-                        ? rf::entity_headlamp_turn_off(rf::local_player_entity)
-                        : rf::entity_headlamp_turn_on(rf::local_player_entity);
-                    grant_achievement_sp(AchievementName::UseFlashlight);
-                }
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SELF_KILL) &&
-                rf::is_multi) {
-                rf::player_kill_self(rf::local_player);
-                if (gt_is_run()) {
-                    multi_hud_reset_run_gt_timer(true);
-                }
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_DROP_FLAG) &&
-                rf::is_multi && !rf::is_server) {
-                send_chat_line_packet("/dropflag", nullptr);
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_PING_LOCATION)) {
-                ping_looked_at_location();
-            }
-            else if (action_index == starting_alpine_control_index +
-                static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON)) {
-                fpgun_play_random_idle_anim();
-            }
+// Stock player_execute_action rejects action indices above 0x3c (60).
+// Alpine controls at or past index 0x3d (61) never reach that dispatch,
+// so handle them here and return before the stock guard runs.
+CodeInjection player_execute_action_high_index_patch{
+    0x004A6272,
+    [](auto& regs) {
+        int action_index = static_cast<int>(regs.ebp);
+        if (starting_alpine_control_index != -1 &&
+            action_index > 0x3c &&
+            action_index >= starting_alpine_control_index) {
+            execute_alive_alpine_control(action_index);
+            regs.eip = 0x004A681B;
         }
     },
 };
@@ -417,8 +454,10 @@ CodeInjection controls_process_patch{
     0x00430E4C,
     [](auto& regs) {
         int index = regs.edi;
-        if (index >= starting_alpine_control_index &&
-            index <= static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
+        if (starting_alpine_control_index != -1 &&
+            index >= starting_alpine_control_index &&
+            index <= starting_alpine_control_index +
+                static_cast<int>(rf::AlpineControlConfigAction::_AF_ACTION_LAST_VARIANT)) {
             //xlog::warn("passing control {}", index);
             regs.eip = 0x00430E24;
         }
@@ -509,6 +548,26 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
     },
 };
 
+// Records the pressed key into the selected binding row when the controls panel is
+// waiting for input (scan code from the key queue, or -1 to check mouse buttons).
+// Stock RF rejects Left/Right Alt and any scan code its internal key name table has
+// no name for, which blocks Alpine's extra mouse button scan codes — accept both
+// directly; everything else keeps stock behavior (including the Esc/PrtScn/Pause
+// blacklist and mouse button handling).
+FunHook<void(int)> options_controls_record_binding_hook{
+    0x0044FE60,
+    [](int key) {
+        bool is_extra_mouse_scan = key >= CTRL_EXTRA_MOUSE_SCAN_BASE
+            && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT;
+        if (is_extra_mouse_scan || key == rf::KEY_LALT || key == rf::KEY_RALT) {
+            rf::ui::options_controls_assign_binding(key, -1);
+            rf::ui::options_controls_stop_waiting_for_key();
+            return;
+        }
+        options_controls_record_binding_hook.call_target(key);
+    },
+};
+
 void key_apply_patch()
 {
     // Handle Alpine chat menus
@@ -517,6 +576,7 @@ void key_apply_patch()
     // Handle Alpine controls
     control_config_init_patch.install();
     player_execute_action_patch.install();
+    player_execute_action_high_index_patch.install();
     player_execute_action_patch2.install();
     player_execute_action_patch3.install();
     controls_process_patch.install();
@@ -539,4 +599,7 @@ void key_apply_patch()
 
     // Num pads need a patch to support `PgUp`, `PgDown`, `End`, and `Home`.
     key_msg_handler_hook.install();
+
+    // Allow binding Alt keys and extra mouse buttons in the controls options panel
+    options_controls_record_binding_hook.install();
 }

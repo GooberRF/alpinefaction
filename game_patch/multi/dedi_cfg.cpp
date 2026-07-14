@@ -883,6 +883,19 @@ static DamageNotificationConfig parse_damage_notification_config(const toml::tab
     return o;
 }
 
+static SprayConfig parse_spray_config(const toml::table& t)
+{
+    SprayConfig o;
+    if (auto v = t["enabled"].value<bool>())
+        o.enabled = *v;
+
+    if (o.enabled) {
+        if (auto v = t["cooldown_ms"].value<int64_t>())
+            o.cooldown_ms = std::clamp(static_cast<int>(*v), 0, 600000);
+    }
+    return o;
+}
+
 static AlpineRestrictConfig parse_alpine_restrict_config(const toml::table &t)
 {
     AlpineRestrictConfig o;
@@ -1320,6 +1333,8 @@ static void apply_known_table_in_order(
         cfg.inactivity_config = parse_inactivity_config(tbl);
     else if (key == "damage_notifications")
         cfg.damage_notification_config = parse_damage_notification_config(tbl);
+    else if (key == "sprays")
+        cfg.spray_config = parse_spray_config(tbl);
     else if (key == "alpine_restrict")
         cfg.alpine_restricted_config = parse_alpine_restrict_config(tbl);
     else if (key == "click_limiter")
@@ -2224,6 +2239,12 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Damage notifications:                  {}\n", cfg.damage_notification_config.enabled);
     if (cfg.damage_notification_config.enabled) {
         std::format_to(iter, "    Legacy client compatibility:         {}\n", cfg.damage_notification_config.support_legacy_clients);
+    }
+
+    // sprays
+    std::format_to(iter, "  Sprays:                                {}\n", cfg.spray_config.enabled);
+    if (cfg.spray_config.enabled) {
+        std::format_to(iter, "    Cooldown:                            {} ms\n", cfg.spray_config.cooldown_ms);
     }
 
     // alpine restrict

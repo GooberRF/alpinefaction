@@ -8,6 +8,8 @@
 #include <algorithm>
 #include "alpine_settings.h"
 #include "misc.h"
+#include "spray_picker.h"
+#include "../multi/sprays.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
 #include "../os/os.h"
@@ -172,6 +174,10 @@ static rf::ui::Checkbox ao_meshlight_cbox;
 static rf::ui::Label ao_meshlight_label;
 static rf::ui::Label ao_meshlight_butlabel;
 static char ao_meshlight_butlabel_text[9];
+static rf::ui::Checkbox ao_aa_cbox;
+static rf::ui::Label ao_aa_label;
+static rf::ui::Label ao_aa_btn_label;
+static char ao_aa_btn_label_text[8];
 static rf::ui::Checkbox ao_enemybullets_cbox;
 static rf::ui::Label ao_enemybullets_label;
 static rf::ui::Checkbox ao_togglecrouch_cbox;
@@ -188,6 +194,10 @@ static rf::ui::Checkbox ao_exposuredamage_cbox;
 static rf::ui::Label ao_exposuredamage_label;
 static rf::ui::Checkbox ao_painsounds_cbox;
 static rf::ui::Label ao_painsounds_label;
+static rf::ui::Checkbox ao_spray_btn;
+static rf::ui::Label ao_spray_label;
+static rf::ui::Label ao_spray_but_label;
+static char ao_spray_butlabel_text[8];
 
 // levelsounds audio options slider
 std::vector<rf::ui::Gadget*> alpine_audio_panel_settings;
@@ -992,11 +1002,34 @@ void ao_meshlight_cbox_on_click(int x, int y) {
     g_alpine_game_config.mesh_lighting_mode = (g_alpine_game_config.mesh_lighting_mode + 1) % 3;
     recalc_mesh_static_lighting();
     if (is_d3d11()) {
-        df::gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+        gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
     }
     snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
         meshlight_mode_names[g_alpine_game_config.mesh_lighting_mode]);
     ao_play_button_snd(g_alpine_game_config.mesh_lighting_mode > 0);
+}
+
+void ao_aa_cbox_on_click(const int x, const int y) {
+TRY_NEXT_SAMPLE_COUNT:
+    switch (g_alpine_game_config.sample_count) {
+        case 1:
+            g_alpine_game_config.sample_count = 2;
+            break;
+        case 2:
+            g_alpine_game_config.sample_count = 4;
+            break;
+        case 4:
+            g_alpine_game_config.sample_count = 8;
+            break;
+        default:
+            g_alpine_game_config.sample_count = 1;
+            break;
+    }
+    if (!gr_supports_sample_count(g_alpine_game_config.sample_count)) {
+        goto TRY_NEXT_SAMPLE_COUNT;
+    }
+    gr_flush_frame_buffers();
+    ao_play_button_snd(g_alpine_game_config.sample_count != 1);
 }
 
 void ao_enemybullets_cbox_on_click(int x, int y) {
@@ -1006,7 +1039,17 @@ void ao_enemybullets_cbox_on_click(int x, int y) {
     ao_play_button_snd(g_alpine_game_config.show_enemy_bullets);
 }
 
+void ao_spray_btn_on_click(int x, int y) {
+    spray_picker_open();
+    rf::snd_play(stock_sound_id::menu_select, 0, 0.0f, 1.0f);
+}
+
 void alpine_options_panel_handle_key(rf::Key* key){
+    // spray picker modal captures all input while open
+    if (spray_picker_is_open()) {
+        spray_picker_handle_key(key);
+        return;
+    }
     // todo: more key support (tab, etc.)
     // close panel on escape
     if (*key == rf::Key::KEY_ESC) {
@@ -1017,6 +1060,12 @@ void alpine_options_panel_handle_key(rf::Key* key){
 }
 
 void alpine_options_panel_handle_mouse(int x, int y) {
+    // spray picker modal captures all input while open
+    if (spray_picker_is_open()) {
+        spray_picker_handle_mouse(x, y);
+        return;
+    }
+
     int hovered_index = -1;
     //xlog::warn("handling mouse {}, {}", x, y);
 
@@ -1084,9 +1133,27 @@ void alpine_options_panel_checkbox_init(rf::ui::Checkbox* checkbox, rf::ui::Labe
     alpine_options_panel_labels.push_back(label);
 }
 
-void alpine_options_panel_inputbox_init(rf::ui::Checkbox* checkbox, rf::ui::Label* label, rf::ui::Label* but_label,
-    rf::ui::Panel* parent_panel, void (*on_click)(int, int), int x, int y, std::string label_text) {
-    checkbox->create("ao_smbut1.tga", "ao_smbut1_hover.tga", "ao_tab.tga", x, y, 45, "106.26", 0);
+void alpine_options_panel_inputbox_init(
+    rf::ui::Checkbox* const checkbox,
+    rf::ui::Label* const label,
+    rf::ui::Label* const but_label,
+    rf::ui::Panel* const parent_panel,
+    void (*const on_click)(int, int),
+    const int x,
+    const int y,
+    const std::string& label_text,
+    const int btn_font_id = rf::ui::medium_font_0
+) {
+    checkbox->create(
+        "ao_smbut1.tga",
+        "ao_smbut1_hover.tga",
+        "ao_tab.tga",
+        x,
+        y,
+        45,
+        "106.26",
+        0
+    );
     checkbox->parent = parent_panel;
     checkbox->checked = false;
     checkbox->on_click = on_click;
@@ -1097,7 +1164,12 @@ void alpine_options_panel_inputbox_init(rf::ui::Checkbox* checkbox, rf::ui::Labe
     label->enabled = true;
     alpine_options_panel_labels.push_back(label);
 
-    but_label->create(parent_panel, x + 32, y + 6, "", rf::ui::medium_font_0);
+    const int default_font_h = rf::gr::get_font_height(rf::ui::medium_font_0);
+    const int btn_font_h = rf::gr::get_font_height(btn_font_id);
+    const int btn_font_delta_h = btn_font_h - default_font_h;
+    const int btn_text_y =
+        y + 6 - static_cast<int>(btn_font_delta_h / rf::ui::scale_y * .5f);
+    but_label->create(parent_panel, x + 32, btn_text_y, "", btn_font_id);
     but_label->clr = {255, 255, 255, 255};
     but_label->enabled = true;
     alpine_options_panel_labels.push_back(but_label);
@@ -1146,18 +1218,20 @@ void alpine_options_panel_init() {
         &ao_notex_cbox, &ao_notex_label, &alpine_options_panel0, ao_notex_cbox_on_click, g_alpine_game_config.try_disable_textures, 112, 84, "Lightmaps only");
     alpine_options_panel_checkbox_init(
         &ao_weapshake_cbox, &ao_weapshake_label, &alpine_options_panel0, ao_weapshake_cbox_on_click, !g_alpine_game_config.try_disable_weapon_shake, 112, 114, "Weapon shake");
+    alpine_options_panel_checkbox_init(
+        &ao_vsync_cbox, &ao_vsync_label, &alpine_options_panel0, ao_vsync_cbox_on_click, g_alpine_system_config.vsync, 112, 144, "Vertical sync");
     alpine_options_panel_inputbox_init(
-        &ao_fov_cbox, &ao_fov_label, &ao_fov_butlabel, &alpine_options_panel0, ao_fov_cbox_on_click, 112, 144, "Horizontal FOV");
+        &ao_maxfps_cbox, &ao_maxfps_label, &ao_maxfps_butlabel, &alpine_options_panel0, ao_maxfps_cbox_on_click, 112, 174, "Max FPS");
     alpine_options_panel_inputbox_init(
-        &ao_fpfov_cbox, &ao_fpfov_label, &ao_fpfov_butlabel, &alpine_options_panel0, ao_fpfov_cbox_on_click, 112, 174, "Gun FOV mod");
+        &ao_loddist_cbox, &ao_loddist_label, &ao_loddist_butlabel, &alpine_options_panel0, ao_loddist_cbox_on_click, 112, 204, "LOD scale");
     alpine_options_panel_inputbox_init(
-        &ao_maxfps_cbox, &ao_maxfps_label, &ao_maxfps_butlabel, &alpine_options_panel0, ao_maxfps_cbox_on_click, 112, 204, "Max FPS");
+        &ao_fpfov_cbox, &ao_fpfov_label, &ao_fpfov_butlabel, &alpine_options_panel0, ao_fpfov_cbox_on_click, 112, 234, "Gun FOV mod");
     alpine_options_panel_inputbox_init(
-        &ao_simdist_cbox, &ao_simdist_label, &ao_simdist_butlabel, &alpine_options_panel0, ao_simdist_cbox_on_click, 112, 234, "Simulation dist");
-    alpine_options_panel_inputbox_init(
-        &ao_loddist_cbox, &ao_loddist_label, &ao_loddist_butlabel, &alpine_options_panel0, ao_loddist_cbox_on_click, 112, 262, "LOD scale");
+        &ao_simdist_cbox, &ao_simdist_label, &ao_simdist_butlabel, &alpine_options_panel0, ao_simdist_cbox_on_click, 112, 262, "Simulation dist");
     alpine_options_panel_checkbox_init(
         &ao_unclamplights_cbox, &ao_unclamplights_label, &alpine_options_panel0, ao_unclamplights_cbox_on_click, g_alpine_game_config.full_range_lighting, 112, 292, "Full light range");
+    alpine_options_panel_inputbox_init(
+        &ao_spray_btn, &ao_spray_label, &ao_spray_but_label, &alpine_options_panel0, ao_spray_btn_on_click, 112, 322, "Select spray");
 
     alpine_options_panel_checkbox_init(
         &ao_camshake_cbox, &ao_camshake_label, &alpine_options_panel0, ao_camshake_cbox_on_click, !g_alpine_game_config.screen_shake_force_off, 280, 54, "View shake (SP)");
@@ -1167,16 +1241,22 @@ void alpine_options_panel_init() {
         &ao_fullbrightchar_cbox, &ao_fullbrightchar_label, &alpine_options_panel0, ao_fullbrightchar_cbox_on_click, g_alpine_game_config.try_fullbright_characters, 280, 114, "Fullbright models");
     alpine_options_panel_inputbox_init(
         &ao_meshlight_cbox, &ao_meshlight_label, &ao_meshlight_butlabel, &alpine_options_panel0, ao_meshlight_cbox_on_click, 280, 144, "Mesh lighting");
+    // HACKFIX.  We need to decrease our font size to fit our text.
+    const int aa_font_size = std::lround(rf::ui::scale_y * 8.f);
+    alpine_options_panel_inputbox_init(
+        &ao_aa_cbox, &ao_aa_label, &ao_aa_btn_label, &alpine_options_panel0, ao_aa_cbox_on_click, 280, 174, "Anti-aliasing", rf::gr::load_font(std::format("regularfont.ttf:{}", aa_font_size).c_str()));
+    ao_aa_btn_label.text = ao_aa_btn_label_text;
+    alpine_options_panel_inputbox_init(
+        &ao_fov_cbox, &ao_fov_label, &ao_fov_butlabel, &alpine_options_panel0, ao_fov_cbox_on_click, 280, 204, "Horizontal FOV");
     alpine_options_panel_checkbox_init(
-        &ao_nearest_cbox, &ao_nearest_label, &alpine_options_panel0, ao_nearest_cbox_on_click, g_alpine_game_config.nearest_texture_filtering, 280, 174, "Nearest filtering");
+        &ao_glares_cbox, &ao_glares_label, &alpine_options_panel0, ao_glares_cbox_on_click, g_alpine_game_config.show_glares, 280, 234, "Light glares");
     alpine_options_panel_checkbox_init(
-        &ao_glares_cbox, &ao_glares_label, &alpine_options_panel0, ao_glares_cbox_on_click, g_alpine_game_config.show_glares, 280, 204, "Light glares");
+        &ao_firelights_cbox, &ao_firelights_label, &alpine_options_panel0, ao_firelights_cbox_on_click, !g_alpine_game_config.try_disable_muzzle_flash_lights, 280, 262, "Muzzle lights");
     alpine_options_panel_checkbox_init(
-        &ao_firelights_cbox, &ao_firelights_label, &alpine_options_panel0, ao_firelights_cbox_on_click, !g_alpine_game_config.try_disable_muzzle_flash_lights, 280, 234, "Muzzle lights");
+        &ao_mpcharlod_cbox, &ao_mpcharlod_label, &alpine_options_panel0, ao_mpcharlod_cbox_on_click, !g_alpine_game_config.multi_no_character_lod, 280, 292, "Entity LOD (MP)");
     alpine_options_panel_checkbox_init(
-        &ao_mpcharlod_cbox, &ao_mpcharlod_label, &alpine_options_panel0, ao_mpcharlod_cbox_on_click, !g_alpine_game_config.multi_no_character_lod, 280, 262, "Entity LOD (MP)");
-    alpine_options_panel_checkbox_init(
-        &ao_vsync_cbox, &ao_vsync_label, &alpine_options_panel0, ao_vsync_cbox_on_click, g_alpine_system_config.vsync, 280, 292, "Vertical sync");
+        &ao_nearest_cbox, &ao_nearest_label, &alpine_options_panel0, ao_nearest_cbox_on_click, g_alpine_game_config.nearest_texture_filtering, 280, 322, "Nearest filtering");
+
 
     // panel 1
     alpine_options_panel_checkbox_init(
@@ -1347,7 +1427,7 @@ void alpine_options_panel_do_frame(int x)
     // set dynamic strings for button labels
     // fov
     if (g_alpine_game_config.horz_fov == 0.0f) {
-        snprintf(ao_fov_butlabel_text, sizeof(ao_fov_butlabel_text), " auto ");
+        snprintf(ao_fov_butlabel_text, sizeof(ao_fov_butlabel_text), "Auto ");
     }
     else {
         snprintf(ao_fov_butlabel_text, sizeof(ao_fov_butlabel_text), "%6.2f", g_alpine_game_config.horz_fov);
@@ -1386,10 +1466,30 @@ void alpine_options_panel_do_frame(int x)
     snprintf(ao_simdist_butlabel_text, sizeof(ao_simdist_butlabel_text), "%6.2f", g_alpine_game_config.entity_sim_distance);
     ao_simdist_butlabel.text = ao_simdist_butlabel_text;
 
+    // selected spray index (refreshes automatically when the picker changes the selection)
+    snprintf(ao_spray_butlabel_text, sizeof(ao_spray_butlabel_text), "%d", g_alpine_game_config.selected_spray_index);
+    ao_spray_but_label.text = ao_spray_butlabel_text;
+
     // mesh lighting
     snprintf(ao_meshlight_butlabel_text, sizeof(ao_meshlight_butlabel_text), "%s",
         meshlight_mode_names[std::clamp(g_alpine_game_config.mesh_lighting_mode, 0, 2)]);
     ao_meshlight_butlabel.text = ao_meshlight_butlabel_text;
+
+    if (gr_is_antialiasing_err()) {
+        ao_aa_btn_label.clr = rf::Color{255, 0, 0, 255};
+        strcpy(ao_aa_btn_label_text, "Error");
+    } else {
+        ao_aa_btn_label.clr = rf::Color{255, 255, 255, 255};
+        if (g_alpine_game_config.sample_count == 1) {
+            strcpy(ao_aa_btn_label_text, "None");
+        } else {
+            snprintf(ao_aa_btn_label_text,
+                sizeof(ao_aa_btn_label_text),
+                "MSAAx%u",
+                g_alpine_game_config.sample_count
+            );
+        }
+    }
 
     // render button labels
     for (auto* ui_label : alpine_options_panel_labels) {
@@ -1576,6 +1676,19 @@ CodeInjection options_handle_mouse_patch{
         if (index == 3) {
             handle_ctrl_camscale_btns(x, y);
         }
+    },
+};
+
+FunHook<void()> options_mouse_handler_hook{
+    0x0044F530,
+    []() {
+        if (spray_picker_is_open()) {
+            int x = 0, y = 0, z = 0;
+            rf::mouse_get_pos(x, y, z);
+            spray_picker_handle_mouse(x, y);
+            return; // do not run stock options mouse handling
+        }
+        options_mouse_handler_hook.call_target();
     },
 };
 
@@ -1800,6 +1913,7 @@ void ui_apply_patch()
     options_do_frame_unhighlight_buttons_patch.install();
     options_handle_key_patch.install();
     options_handle_mouse_patch.install();
+    options_mouse_handler_hook.install();
     AsmWriter{0x0044F550}.push(6); // num buttons in options menu
     AsmWriter{0x0044F552}.push(&new_gadgets); // support mouseover for alpine options button
     AsmWriter{0x0044F285}.push(5); // back button index, used when hitting esc in options menu

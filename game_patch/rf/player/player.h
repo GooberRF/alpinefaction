@@ -64,6 +64,7 @@ struct PlayerAdditionalData {
 
     std::optional<int64_t> last_hit_sound_ms{};
     std::optional<int64_t> last_critical_sound_ms{};
+    std::optional<int64_t> last_spray_ms{};
 
     struct {
         std::map<std::string, PlayerNetGameSaveData> saves{};

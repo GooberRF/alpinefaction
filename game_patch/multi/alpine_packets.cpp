@@ -13,12 +13,14 @@
 #include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
+#include "../rf/os/frametime.h"
 #include "multi.h"
 #include "network.h"
 #include "server_internal.h"
 #include "server.h"
 #include "../hud/hud_world.h"
 #include "alpine_packets.h"
+#include "sprays.h"
 #include "bagman.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
@@ -380,57 +382,76 @@ void af_send_obj_update_packet(rf::Player* player)
         return;
     }
 
-    std::vector<af_obj_update> obj_updates;
-    auto player_list = SinglyLinkedList{rf::player_list};
+    // This is called once per recipient from the obj_update send loop, and the gathered state is
+    // identical for every recipient within a frame apart from excluding the recipient's own entry,
+    // so gather it only once per frame.
+    struct GatheredObjUpdate
+    {
+        rf::Player* owner;
+        af_obj_update update;
+    };
+    static std::vector<GatheredObjUpdate> gathered_updates;
+    static std::vector<af_obj_update> obj_updates;
+    static int gathered_frame = -1;
 
-    // loop through players to gather info
-    for (auto& other_player : player_list) {
-        //xlog::info("starting payer list loop");
-        if (!&other_player) {
-            continue; // player not valid
+    if (gathered_frame != rf::frame_count) {
+        gathered_frame = rf::frame_count;
+        gathered_updates.clear();
+        auto player_list = SinglyLinkedList{rf::player_list};
+
+        // loop through players to gather info
+        for (auto& other_player : player_list) {
+            //xlog::info("starting payer list loop");
+            if (!&other_player) {
+                continue; // player not valid
+            }
+
+            if (rf::player_is_dead(&other_player)) {
+                continue; // player is dead
+            }
+
+            rf::Entity* entity = rf::entity_from_handle(other_player.entity_handle);
+            if (!entity) {
+                continue; // player entity is invalid or not spawned
+            }
+
+            if (rf::entity_is_dying(entity)) {
+                continue; // player entity is dying (dying entities have invalid info in ai)
+            }
+
+            af_obj_update obj_update{};
+            obj_update.obj_handle = entity->handle;
+
+            uint8_t current_primary_weapon = static_cast<uint8_t>(entity->ai.current_primary_weapon);
+            if (current_primary_weapon > 63) {
+                xlog::debug("obj_update packet tried to process an invalid weapon type: {}", current_primary_weapon);
+                continue; // reported weapon type is out of valid range
+            }
+            obj_update.current_primary_weapon = current_primary_weapon;
+
+            uint8_t ammo_type = static_cast<uint8_t>(rf::weapon_types[current_primary_weapon].ammo_type);
+            if (ammo_type > 31) {
+                xlog::debug("obj_update packet tried to process an invalid ammo type: {}", ammo_type); // todo: figure out why this happens sometimes on specific maps???
+                continue; // reported ammo type is out of valid range
+            }
+            obj_update.ammo_type = ammo_type;
+
+            obj_update.clip_ammo = static_cast<uint16_t>(entity->ai.clip_ammo[current_primary_weapon]);
+            obj_update.reserve_ammo = static_cast<uint16_t>(entity->ai.ammo[ammo_type]);
+
+            /*xlog::warn("Adding player {}, weap {}, ammo {}, clip {}, reserve {}",
+                       entity->name, obj_update.current_primary_weapon, obj_update.ammo_type,
+                       obj_update.clip_ammo, obj_update.reserve_ammo);*/
+            gathered_updates.push_back({&other_player, obj_update});
         }
+    }
 
-        if (&other_player == player) {
-            continue; // player is myself
+    // exclude the recipient's own entry
+    obj_updates.clear();
+    for (const GatheredObjUpdate& gathered_update : gathered_updates) {
+        if (gathered_update.owner != player) {
+            obj_updates.push_back(gathered_update.update);
         }
-
-        if (rf::player_is_dead(&other_player)) {
-            continue; // player is dead
-        }
-
-        rf::Entity* entity = rf::entity_from_handle(other_player.entity_handle);
-        if (!entity) {
-            continue; // player entity is invalid or not spawned
-        }
-
-        if (rf::entity_is_dying(entity)) {
-            continue; // player entity is dying (dying entities have invalid info in ai)
-        }
-
-        af_obj_update obj_update{};
-        obj_update.obj_handle = entity->handle;
-
-        uint8_t current_primary_weapon = static_cast<uint8_t>(entity->ai.current_primary_weapon);
-        if (current_primary_weapon > 63) {
-            xlog::debug("obj_update packet tried to process an invalid weapon type: {}", current_primary_weapon);
-            continue; // reported weapon type is out of valid range
-        }
-        obj_update.current_primary_weapon = current_primary_weapon;
-
-        uint8_t ammo_type = static_cast<uint8_t>(rf::weapon_types[current_primary_weapon].ammo_type);
-        if (ammo_type > 31) {
-            xlog::debug("obj_update packet tried to process an invalid ammo type: {}", ammo_type); // todo: figure out why this happens sometimes on specific maps???
-            continue; // reported ammo type is out of valid range
-        }
-        obj_update.ammo_type = ammo_type;
-
-        obj_update.clip_ammo = static_cast<uint16_t>(entity->ai.clip_ammo[current_primary_weapon]);
-        obj_update.reserve_ammo = static_cast<uint16_t>(entity->ai.ammo[ammo_type]);
-
-        /*xlog::warn("Adding player {}, weap {}, ammo {}, clip {}, reserve {}", 
-                   entity->name, obj_update.current_primary_weapon, obj_update.ammo_type, 
-                   obj_update.clip_ammo, obj_update.reserve_ammo);*/
-        obj_updates.push_back(obj_update);
     }
 
     if (obj_updates.empty()) {
@@ -446,11 +467,7 @@ void af_send_obj_update_packet(rf::Player* player)
         return;
     }
 
-    // Allocate memory dynamically for the packet
-    auto packet_buf = std::make_unique<std::byte[]>(total_packet_size);
-    if (!packet_buf) {
-        return; // could not allocate memory
-    }
+    static std::byte packet_buf[rf::max_packet_size];
 
     // Fill packet header
     RF_GamePacketHeader header{};
@@ -458,16 +475,14 @@ void af_send_obj_update_packet(rf::Player* player)
     header.size = static_cast<uint16_t>(object_data_size);
 
     // Copy data to packet buffer
-    std::memcpy(packet_buf.get(), &header, sizeof(header));
-    if (!obj_updates.empty()) {
-        std::memcpy(packet_buf.get() + sizeof(header), obj_updates.data(), object_data_size);
-    }
+    std::memcpy(packet_buf, &header, sizeof(header));
+    std::memcpy(packet_buf + sizeof(header), obj_updates.data(), object_data_size);
 
     if (!player) {
         xlog::error("af_obj_update: Attempted to send to an invalid player");
         return;
     }
-    af_send_packet(player, packet_buf.get(), total_packet_size, false);
+    af_send_packet(player, packet_buf, total_packet_size, false);
 }
 
 static void af_process_obj_update_packet(const void* data, size_t len, const rf::NetAddr& addr)
@@ -564,6 +579,17 @@ void serialize_payload(const HandicapPayload& payload, std::byte* buf, size_t& o
     buf[offset++] = static_cast<std::byte>(payload.amount);
 }
 
+// af_req_spray
+void serialize_payload(const SprayReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.texture_id, sizeof(payload.texture_id));
+    offset += sizeof(payload.texture_id);
+    std::memcpy(buf + offset, &payload.pos, sizeof(payload.pos));
+    offset += sizeof(payload.pos);
+    std::memcpy(buf + offset, &payload.normal, sizeof(payload.normal));
+    offset += sizeof(payload.normal);
+}
+
 // af_req_server_cfg
 void serialize_payload(const std::monostate& payload, const std::byte* const buf, const size_t& offset)
 {
@@ -590,6 +616,21 @@ void serialize_payload(const TeleportEntityPayload& payload, std::byte* buf, siz
     offset += sizeof(payload.vel);
 }
 
+// af_sreq_spray
+void serialize_payload(const SprayPayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.player_id, sizeof(payload.player_id));
+    offset += sizeof(payload.player_id);
+    std::memcpy(buf + offset, &payload.texture_id, sizeof(payload.texture_id));
+    offset += sizeof(payload.texture_id);
+    std::memcpy(buf + offset, &payload.pos, sizeof(payload.pos));
+    offset += sizeof(payload.pos);
+    std::memcpy(buf + offset, &payload.normal, sizeof(payload.normal));
+    offset += sizeof(payload.normal);
+    std::memcpy(buf + offset, &payload.flags, sizeof(payload.flags));
+    offset += sizeof(payload.flags);
+}
+
 void af_send_server_cfg_request() {
     if (!rf::is_multi || rf::is_server) {
         return;
@@ -602,6 +643,29 @@ void af_send_server_cfg_request() {
     client_req_packet.payload = std::monostate{};
 
     af_send_client_req_packet(client_req_packet);
+}
+
+void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal)
+{
+    // Send: client -> server
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    SprayReqPayload payload{};
+    payload.texture_id = texture_id;
+    static_assert(sizeof(payload.pos) == sizeof(rf::Vector3), "RF_Vector / rf::Vector3 layout mismatch");
+    std::memcpy(&payload.pos, &pos, sizeof(payload.pos));
+    std::memcpy(&payload.normal, &normal, sizeof(payload.normal));
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(payload.texture_id) + sizeof(payload.pos) + sizeof(payload.normal);
+    packet.req_type = af_client_req_type::af_req_spray;
+    packet.payload = payload;
+
+    //xlog::info("sprays: sending af_req_spray to server (id={})", texture_id);
+    af_send_client_req_packet(packet);
 }
 
 // send client request packet
@@ -697,6 +761,31 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             }
             break;
         }
+        case af_client_req_type::af_req_spray: {
+            constexpr size_t expected = sizeof(uint16_t) + sizeof(RF_Vector) + sizeof(RF_Vector);
+            if (remaining < expected) {
+                xlog::warn("af_process_client_req_packet: Spray payload too short ({} < {})", remaining, expected);
+                return;
+            }
+
+            uint16_t texture_id = 0;
+            RF_Vector pos{};
+            RF_Vector normal{};
+            std::memcpy(&texture_id, bytes + offset, sizeof(texture_id));
+            offset += sizeof(texture_id);
+            std::memcpy(&pos, bytes + offset, sizeof(pos));
+            offset += sizeof(pos);
+            std::memcpy(&normal, bytes + offset, sizeof(normal));
+            offset += sizeof(normal);
+
+            rf::Vector3 spray_pos;
+            rf::Vector3 spray_normal;
+            std::memcpy(&spray_pos, &pos, sizeof(spray_pos));
+            std::memcpy(&spray_normal, &normal, sizeof(spray_normal));
+
+            sprays_handle_spray_request(player, texture_id, spray_pos, spray_normal);
+            break;
+        }
         default: {
             xlog::debug("af_process_client_req_packet: unknown req_type {}", static_cast<int>(req_type));
             return;
@@ -773,6 +862,58 @@ void af_send_teleport_entity_req(
             af_send_server_req_packet(packet, &player);
         }
     }
+}
+
+void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos,
+    const rf::Vector3& normal, uint8_t flags, rf::Player* player)
+{
+    if (!rf::is_server || !player || !player->net_data) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        return;
+    }
+
+    SprayPayload payload{};
+    payload.player_id = player_id;
+    payload.texture_id = texture_id;
+    static_assert(sizeof(payload.pos) == sizeof(rf::Vector3), "RF_Vector / rf::Vector3 layout mismatch");
+    std::memcpy(&payload.pos, &pos, sizeof(payload.pos));
+    std::memcpy(&payload.normal, &normal, sizeof(payload.normal));
+    payload.flags = flags;
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(payload.player_id) + sizeof(payload.texture_id)
+        + sizeof(payload.pos) + sizeof(payload.normal) + sizeof(payload.flags);
+    packet.req_type = af_server_req_type::af_sreq_spray;
+    packet.payload = payload;
+
+    af_send_server_req_packet(packet, player);
+}
+
+void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    int sent = 0;
+    int skipped = 0;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player) {
+            continue; // listen-server host renders locally instead
+        }
+        // Recipients (including the requesting player) are gated on AF 1.4 inside the sender.
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_spray_to_player(player_id, texture_id, pos, normal, 0, &player);
+            ++sent;
+        }
+        else {
+            ++skipped;
+        }
+    }
+    //xlog::info("sprays: broadcast spray for player_id {} to {} clients ({} pre-1.4 skipped)", player_id, sent, skipped);
 }
 
 static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr&)
@@ -891,6 +1032,42 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             if (entity->obj_interp) {
                 entity->obj_interp->Clear();
             }
+            break;
+        }
+        case af_server_req_type::af_sreq_spray: {
+            constexpr size_t expected =
+                sizeof(uint8_t) + sizeof(uint16_t) + sizeof(RF_Vector) + sizeof(RF_Vector) + sizeof(uint8_t);
+            if (remaining < expected) {
+                xlog::warn("af_process_server_req_packet: Spray payload too short ({} < {})", remaining, expected);
+                return;
+            }
+
+            uint8_t player_id = 0;
+            uint16_t texture_id = 0;
+            RF_Vector pos{};
+            RF_Vector normal{};
+            uint8_t flags = 0;
+            std::memcpy(&player_id, bytes + offset, sizeof(player_id));
+            offset += sizeof(player_id);
+            std::memcpy(&texture_id, bytes + offset, sizeof(texture_id));
+            offset += sizeof(texture_id);
+            std::memcpy(&pos, bytes + offset, sizeof(pos));
+            offset += sizeof(pos);
+            std::memcpy(&normal, bytes + offset, sizeof(normal));
+            offset += sizeof(normal);
+            std::memcpy(&flags, bytes + offset, sizeof(flags));
+            offset += sizeof(flags);
+
+            rf::Vector3 spray_pos;
+            rf::Vector3 spray_normal;
+            std::memcpy(&spray_pos, &pos, sizeof(spray_pos));
+            std::memcpy(&spray_normal, &normal, sizeof(spray_normal));
+
+            //xlog::info("sprays: received af_sreq_spray (player_id={}, id={}, flags={:#x})", player_id, texture_id, flags);
+
+            // Unknown/reserved flag bits are ignored.
+            const bool play_sound = (flags & AF_SPRAY_FLAG_SILENT) == 0;
+            sprays_apply_client_state(player_id, texture_id, spray_pos, spray_normal, play_sound);
             break;
         }
         default:
@@ -1518,6 +1695,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_CLEAR_STALE_MOVEMENT_INPUT;
     if (was_level_loaded_manually())
         af |= af_server_info_flags::SIF_MANUAL_LEVEL_LOAD;
+    if (server_sprays_enabled())
+        af |= af_server_info_flags::SIF_ALLOW_SPRAYS;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -1601,6 +1780,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.allow_outlines_xray = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_OUTLINES_XRAY) != 0;
     server_info.clear_stale_movement_input = (pkt.af_flags & af_server_info_flags::SIF_CLEAR_STALE_MOVEMENT_INPUT) != 0;
     server_info.was_manual_level_load = (pkt.af_flags & af_server_info_flags::SIF_MANUAL_LEVEL_LOAD) != 0;
+    server_info.allow_sprays = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_SPRAYS) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)

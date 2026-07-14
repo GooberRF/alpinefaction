@@ -23,9 +23,7 @@
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
 
-using namespace rf;
-
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     // ViewProjTransform buffer data layout (must match b1 layout used by shadow VS)
     struct alignas(16) ShadowViewProjData
@@ -409,7 +407,7 @@ namespace df::gr::d3d11
                 if (entity.handle == local_entity_handle) continue;
                 if (entity.handle == spectate_entity_handle) continue;
                 if (entity.entity_flags2 & rf::EF2_NO_SHADOW) continue;
-                if (entity.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+                if (entity.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN)) continue;
                 if (!entity.vmesh) continue;
                 float dx = entity.pos.x - camera_pos.x;
                 float dy = entity.pos.y - camera_pos.y;
@@ -419,7 +417,7 @@ namespace df::gr::d3d11
 
             if (!found_caster && g_alpine_game_config.shadow_corpses) {
                 for (auto& corpse : DoublyLinkedList{rf::corpse_list}) {
-                    if (corpse.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+                    if (corpse.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN)) continue;
                     if (!corpse.vmesh) continue;
                     float dx = corpse.pos.x - camera_pos.x;
                     float dy = corpse.pos.y - camera_pos.y;
@@ -430,7 +428,7 @@ namespace df::gr::d3d11
 
             if (!found_caster && g_alpine_game_config.shadow_items) {
                 for (auto& item : DoublyLinkedList{rf::item_list}) {
-                    if (item.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+                    if (item.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN)) continue;
                     if (!item.vmesh) continue;
                     float dx = item.pos.x - camera_pos.x;
                     float dy = item.pos.y - camera_pos.y;
@@ -525,7 +523,7 @@ namespace df::gr::d3d11
             if (entity.handle == local_entity_handle) continue;
             if (entity.handle == spectate_entity_handle) continue;
             if (entity.entity_flags2 & rf::EF2_NO_SHADOW) continue;
-            if (entity.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+            if (entity.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN)) continue;
             if (!entity.vmesh) continue;
 
             float dx = entity.pos.x - current_camera_pos_.x;
@@ -534,25 +532,25 @@ namespace df::gr::d3d11
             float dist_sq = dx * dx + dy * dy + dz * dz;
             if (dist_sq > fade_end_sq) continue;
 
-            VMesh* vmesh = entity.vmesh;
-            if (vmesh->type == MESH_TYPE_CHARACTER) {
-                auto* ci = static_cast<CharacterInstance*>(vmesh->instance);
+            rf::VMesh* vmesh = entity.vmesh;
+            if (vmesh->type == rf::MESH_TYPE_CHARACTER) {
+                auto* ci = static_cast<rf::CharacterInstance*>(vmesh->instance);
                 if (!ci || !ci->base_character) continue;
                 if (ci->base_character->num_character_meshes < 1) continue;
 
-                V3dMesh* v3d_mesh = ci->base_character->character_meshes[0].mesh;
+                rf::V3dMesh* v3d_mesh = ci->base_character->character_meshes[0].mesh;
                 if (!v3d_mesh || !v3d_mesh->vu) continue;
 
                 mesh_renderer_.draw_shadow_character_mesh(v3d_mesh->vu, entity.pos, entity.orient, ci, shadow_character_vs, context);
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
-            else if (vmesh->type == MESH_TYPE_STATIC) {
-                auto* v3d = static_cast<V3d*>(vmesh->instance);
+            else if (vmesh->type == rf::MESH_TYPE_STATIC) {
+                auto* v3d = static_cast<rf::V3d*>(vmesh->instance);
                 if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) continue;
 
                 for (int m = 0; m < v3d->num_meshes; ++m) {
-                    VifLodMesh* lod_mesh = v3d->meshes[m].vu;
+                    rf::VifLodMesh* lod_mesh = v3d->meshes[m].vu;
                     if (!lod_mesh) continue;
                     mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, entity.pos, entity.orient, shadow_standard_vs, context);
                 }
@@ -572,7 +570,7 @@ namespace df::gr::d3d11
         float fade_end_sq = fade_end * fade_end;
 
         for (auto& corpse : DoublyLinkedList{rf::corpse_list}) {
-            if (corpse.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+            if (corpse.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN)) continue;
             if (!corpse.vmesh) continue;
 
             float dx = corpse.pos.x - current_camera_pos_.x;
@@ -581,25 +579,25 @@ namespace df::gr::d3d11
             float dist_sq = dx * dx + dy * dy + dz * dz;
             if (dist_sq > fade_end_sq) continue;
 
-            VMesh* vmesh = corpse.vmesh;
-            if (vmesh->type == MESH_TYPE_CHARACTER) {
-                auto* ci = static_cast<CharacterInstance*>(vmesh->instance);
+            rf::VMesh* vmesh = corpse.vmesh;
+            if (vmesh->type == rf::MESH_TYPE_CHARACTER) {
+                auto* ci = static_cast<rf::CharacterInstance*>(vmesh->instance);
                 if (!ci || !ci->base_character) continue;
                 if (ci->base_character->num_character_meshes < 1) continue;
 
-                V3dMesh* v3d_mesh = ci->base_character->character_meshes[0].mesh;
+                rf::V3dMesh* v3d_mesh = ci->base_character->character_meshes[0].mesh;
                 if (!v3d_mesh || !v3d_mesh->vu) continue;
 
                 mesh_renderer_.draw_shadow_character_mesh(v3d_mesh->vu, corpse.pos, corpse.orient, ci, shadow_character_vs, context);
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
-            else if (vmesh->type == MESH_TYPE_STATIC) {
-                auto* v3d = static_cast<V3d*>(vmesh->instance);
+            else if (vmesh->type == rf::MESH_TYPE_STATIC) {
+                auto* v3d = static_cast<rf::V3d*>(vmesh->instance);
                 if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) continue;
 
                 for (int m = 0; m < v3d->num_meshes; ++m) {
-                    VifLodMesh* lod_mesh = v3d->meshes[m].vu;
+                    rf::VifLodMesh* lod_mesh = v3d->meshes[m].vu;
                     if (!lod_mesh) continue;
                     mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, corpse.pos, corpse.orient, shadow_standard_vs, context);
                 }
@@ -627,7 +625,7 @@ namespace df::gr::d3d11
         }
 
         for (auto& item : DoublyLinkedList{rf::item_list}) {
-            if (item.obj_flags & (OF_DELAYED_DELETE | OF_HIDDEN)) continue;
+            if (item.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN)) continue;
             if (!item.vmesh) continue;
 
             // Skip item classes that shouldn't cast shadows (banners, uniforms, effects, etc.)
@@ -656,42 +654,42 @@ namespace df::gr::d3d11
             if (dist_sq > fade_end_sq) continue;
 
             // Spinning items use a fresh orientation from spin_angle (matching stock renderer)
-            Matrix3 orient;
-            if (item.info && (item.info->flags & IIF_SPINS_IN_MULTI)) {
+            rf::Matrix3 orient;
+            if (item.info && (item.info->flags & rf::IIF_SPINS_IN_MULTI)) {
                 orient.set_from_angles(0.0f, 0.0f, -item.spin_angle);
             } else {
                 orient = item.orient;
             }
 
-            VMesh* vmesh = item.vmesh;
-            if (vmesh->type == MESH_TYPE_STATIC) {
-                auto* v3d = static_cast<V3d*>(vmesh->instance);
+            rf::VMesh* vmesh = item.vmesh;
+            if (vmesh->type == rf::MESH_TYPE_STATIC) {
+                auto* v3d = static_cast<rf::V3d*>(vmesh->instance);
                 if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) continue;
 
                 for (int m = 0; m < v3d->num_meshes; ++m) {
-                    VifLodMesh* lod_mesh = v3d->meshes[m].vu;
+                    rf::VifLodMesh* lod_mesh = v3d->meshes[m].vu;
                     if (!lod_mesh) continue;
                     mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, item.pos, orient, shadow_standard_vs, context);
                 }
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
-            else if (vmesh->type == MESH_TYPE_ANIM_FX) {
-                auto* vfx_inst = static_cast<VfxInstance*>(vmesh->instance);
+            else if (vmesh->type == rf::MESH_TYPE_ANIM_FX) {
+                auto* vfx_inst = static_cast<rf::VfxInstance*>(vmesh->instance);
                 if (!vfx_inst) continue;
                 // Match FUN_0054d0a0 flag check: skip if bit 2 set and bit 3 not set
                 if ((vfx_inst->flags & 4) != 0 && (vfx_inst->flags & 8) == 0) continue;
 
-                auto* vfx_geo = static_cast<VfxGeo*>(vmesh->mesh);
+                auto* vfx_geo = static_cast<rf::VfxGeo*>(vmesh->mesh);
                 if (!vfx_geo || vfx_geo->num_sfxo_chunks < 1 || !vfx_geo->sfxo_chunks) continue;
 
-                VfxSfxoRenderObj* sfxo_instances = vfx_inst->sfxo_instances;
+                rf::VfxSfxoRenderObj* sfxo_instances = vfx_inst->sfxo_instances;
                 if (!sfxo_instances) continue;
 
                 // Count total vertices across all active SFXO chunks
                 int total_verts = 0;
                 for (int c = 0; c < vfx_geo->num_sfxo_chunks; ++c) {
-                    VfxSfxoRenderObj& render_obj = sfxo_instances[c];
+                    rf::VfxSfxoRenderObj& render_obj = sfxo_instances[c];
                     if (!render_obj.active || !render_obj.vertex_positions) continue;
                     total_verts += vfx_geo->sfxo_chunks[c].num_faces * 3;
                 }
@@ -716,12 +714,12 @@ namespace df::gr::d3d11
 
                 int vert_idx = 0;
                 for (int c = 0; c < vfx_geo->num_sfxo_chunks; ++c) {
-                    VfxSfxoRenderObj& render_obj = sfxo_instances[c];
+                    rf::VfxSfxoRenderObj& render_obj = sfxo_instances[c];
                     if (!render_obj.active || !render_obj.vertex_positions) continue;
 
-                    const VfxSfxoChunk& chunk = vfx_geo->sfxo_chunks[c];
-                    const Vector3* positions = render_obj.vertex_positions;
-                    const VfxSubObject* faces = chunk.faces;
+                    const rf::VfxSfxoChunk& chunk = vfx_geo->sfxo_chunks[c];
+                    const rf::Vector3* positions = render_obj.vertex_positions;
+                    const rf::VfxSubObject* faces = chunk.faces;
                     int num_verts = chunk.num_vertices;
 
                     for (int i = 0; i < chunk.num_faces; ++i) {

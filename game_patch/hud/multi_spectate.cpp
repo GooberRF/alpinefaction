@@ -929,6 +929,52 @@ static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar
     }
 }
 
+// Returns the screen-y of the top edge of the bottom-left HUD cluster for the current game type.
+static int spectate_bottom_left_hud_top()
+{
+    const int clip_h = rf::gr::clip_height();
+    const bool big = g_alpine_game_config.big_hud;
+
+    switch (rf::multi_get_game_type()) {
+    case rf::NG_TYPE_KOTH:
+    case rf::NG_TYPE_DC:
+    case rf::NG_TYPE_ESC:
+    case rf::NG_TYPE_REV:
+        // The control-point strip stacks above the scores box; its top is tracked while the
+        // team-scores HUD renders. Fall back to the bottom margin if it hasn't been set yet.
+        return g_multi_hud_cp_strip_y > 0 ? g_multi_hud_cp_strip_y : clip_h - 10;
+    case rf::NG_TYPE_RUN:
+        if (!g_alpine_game_config.show_run_timer) {
+            return clip_h; // timer widget hidden
+        }
+        return clip_h - (big ? 60 : 40) - 10;
+    case rf::NG_TYPE_DM:
+        if (!g_alpine_game_config.show_mini_scoreboard_dm) {
+            return clip_h; // mini scoreboard hidden in DM
+        }
+        return clip_h - (big ? 90 : 65) - 10;
+    case rf::NG_TYPE_BAG:
+    case rf::NG_TYPE_LMS:
+        return clip_h - (big ? 90 : 65) - 10;
+    case rf::NG_TYPE_CTF:
+    case rf::NG_TYPE_TEAMDM:
+    case rf::NG_TYPE_TBAG:
+        return clip_h - (big ? 80 : 55) - 10;
+    default:
+        return clip_h; // no bottom-left cluster
+    }
+}
+
+static int spectate_raise_hints_above_hud(int hints_y, int line_count, int line_h)
+{
+    const int block_bottom = hints_y + line_count * line_h;
+    const int max_bottom = spectate_bottom_left_hud_top() - line_h; // keep a one-line gap
+    if (block_bottom > max_bottom) {
+        return max_bottom - line_count * line_h;
+    }
+    return hints_y;
+}
+
 void multi_spectate_render() {
     if (is_hud_effectively_hidden()
         || rf::gameseq_get_state() != rf::GS_GAMEPLAY)
@@ -956,7 +1002,6 @@ void multi_spectate_render() {
                 }
             );
 
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
             int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
             int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
 
@@ -975,6 +1020,9 @@ void multi_spectate_render() {
                 {spec_menu_text.c_str(), "Open Spectate Options Menu"},
                 {exit_spec_text.c_str(), "Exit Spectate Mode"},
             };
+            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
+            hints_y = spectate_raise_hints_above_hud(
+                hints_y, static_cast<int>(sizeof(hints) / sizeof(hints[0])), medium_font_h);
             for (auto& hint : hints) {
                 rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
                 rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, hints_left_x, hints_y, hint[0], medium_font);
@@ -1076,7 +1124,6 @@ void multi_spectate_render() {
         );
 
         if (!g_remote_server_cfg_popup.is_active()) {
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
             int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
             int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
             std::string toggle_freelook_text = get_action_bind_name(
@@ -1093,6 +1140,9 @@ void multi_spectate_render() {
                 {spec_menu_text.c_str(), "Open Spectate Options Menu"},
                 {exit_spec_text.c_str(), "Exit Spectate Mode"},
             };
+            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
+            hints_y = spectate_raise_hints_above_hud(
+                hints_y, static_cast<int>(sizeof(hints) / sizeof(hints[0])), medium_font_h);
             for (auto& hint : hints) {
                 rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
                 rf::gr::string_aligned(

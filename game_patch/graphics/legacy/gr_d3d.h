@@ -11,3 +11,6 @@ void gr_d3d_texture_apply_patch();
 void gr_d3d_capture_apply_patch();
 void gr_d3d_gamma_apply_patch();
 void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
+bool gr_d3d_is_antialiasing_err();
+bool gr_d3d_supports_sample_count(uint32_t sample_count);
+void gr_d3d_flush_frame_buffers();

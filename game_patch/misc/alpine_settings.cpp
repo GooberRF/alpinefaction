@@ -32,6 +32,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <xlog/xlog.h>
+#include "../graphics/gr.h"
 
 bool g_loaded_alpine_settings_file = false;
 bool g_loaded_alpine_core_config_file = false;
@@ -664,6 +665,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.ignore_tbl_lightmap_clamping = std::stoi(settings["IgnoreTblLightmapClamping"]);
         processed_keys.insert("IgnoreTblLightmapClamping");
     }
+    if (settings.contains("SampleCount")) {
+        g_alpine_game_config.sample_count = std::stoi(settings["SampleCount"]);
+        processed_keys.insert("SampleCount");
+    }
 
     // Load UI settings
     if (settings.count("BigHUD")) {
@@ -944,6 +949,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.play_hit_sounds = std::stoi(settings["PlayHitsounds"]);
         processed_keys.insert("PlayHitsounds");
     }
+    if (settings.count("SprayDisplay")) {
+        g_alpine_game_config.spray_display = std::stoi(settings["SprayDisplay"]);
+        processed_keys.insert("SprayDisplay");
+    }
+    if (settings.count("SpraySelection")) {
+        g_alpine_game_config.set_selected_spray_index(std::stoi(settings["SpraySelection"]));
+        processed_keys.insert("SpraySelection");
+    }
     if (settings.count("KillfeedEnabled")) {
         g_alpine_game_config.killfeed_enabled = std::stoi(settings["KillfeedEnabled"]);
         processed_keys.insert("KillfeedEnabled");
@@ -959,6 +972,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("ShowRunTimer")) {
         g_alpine_game_config.show_run_timer = std::stoi(settings["ShowRunTimer"]);
         processed_keys.insert("ShowRunTimer");
+    }
+    if (settings.count("ShowMiniScoreboardDM")) {
+        g_alpine_game_config.show_mini_scoreboard_dm = std::stoi(settings["ShowMiniScoreboardDM"]);
+        processed_keys.insert("ShowMiniScoreboardDM");
     }
     if (settings.count("VisualRicochet")) {
         g_alpine_game_config.multi_ricochet = std::stoi(settings["VisualRicochet"]);
@@ -1381,6 +1398,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "IgnoreTblVertexLighting=" << g_alpine_game_config.ignore_tbl_vertex_lighting << "\n";
     file << "IgnoreTblPixelLightOverbright=" << g_alpine_game_config.ignore_tbl_pixel_light_overbright << "\n";
     file << "IgnoreTblLightmapClamping=" << g_alpine_game_config.ignore_tbl_lightmap_clamping << "\n";
+    file << "SampleCount=" << g_alpine_game_config.sample_count << "\n";
 
     // UI
     file << "\n[UISettings]\n";
@@ -1468,10 +1486,13 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";
+    file << "SprayDisplay=" << g_alpine_game_config.spray_display << "\n";
+    file << "SpraySelection=" << g_alpine_game_config.selected_spray_index << "\n";
     file << "KillfeedEnabled=" << g_alpine_game_config.killfeed_enabled << "\n";
     file << "HitSoundIntervalMs=" << g_alpine_game_config.hit_sound_min_interval_ms << "\n";
     file << "PlayTaunts=" << g_alpine_game_config.play_taunt_sounds << "\n";
     file << "ShowRunTimer=" << g_alpine_game_config.show_run_timer << "\n";
+    file << "ShowMiniScoreboardDM=" << g_alpine_game_config.show_mini_scoreboard_dm << "\n";
     file << "VisualRicochet=" << g_alpine_game_config.multi_ricochet << "\n";
     file << "DeathBars=" << g_alpine_game_config.death_bars << "\n";
     file << "ShowEnemyBullets=" << g_alpine_game_config.show_enemy_bullets << "\n";
@@ -1596,6 +1617,11 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
             }
         }
 
+        // HACKFIX.  We need to load our settings earlier.
+        if (g_alpine_game_config.sample_count != 1) {
+           gr_flush_frame_buffers();
+        }
+
         // display popup recommending ff link (skip for bots)
         if (ff_link_prompt && !g_game_config.suppress_ff_link_prompt && !client_bot_launch_enabled()) {
             g_game_config.suppress_ff_link_prompt = true; // only display popup once
@@ -1712,7 +1738,7 @@ ConsoleCommand2 shadow_items_cmd{
 ConsoleCommand2 dbg_shadows_cmd{
     "dbg_shadows",
     []() {
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         if (rf::is_multi && !rf::is_server) {
             rf::console::print("This command is only available in single-player or as host");
             return;
@@ -1729,7 +1755,7 @@ ConsoleCommand2 shadow_distance_cmd{
         if (value_opt) {
             g_alpine_game_config.set_shadow_distance(value_opt.value());
         }
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         int d = g_alpine_game_config.shadow_distance;
         rf::console::print("Shadow distance: {} ({}) [0-5]",
             d, ESR::preset_names[d]);
@@ -1744,7 +1770,7 @@ ConsoleCommand2 shadow_quality_cmd{
         if (value_opt) {
             g_alpine_game_config.set_shadow_quality(value_opt.value());
         }
-        using ESR = df::gr::d3d11::EntityShadowRenderer;
+        using ESR = gr::d3d11::EntityShadowRenderer;
         int q = g_alpine_game_config.shadow_quality;
         const auto& preset = ESR::shadow_quality_presets[q];
         if (preset.resolution == 0) {

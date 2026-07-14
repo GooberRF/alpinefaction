@@ -139,7 +139,7 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
 
                 auto* v3d = static_cast<rf::V3d*>(obj->vmesh->instance);
                 if (v3d && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
-                    df::gr::d3d11::on_static_vertex_color_state_changed(v3d->meshes[0].vu);
+                    gr::d3d11::on_static_vertex_color_state_changed(v3d->meshes[0].vu);
                 }
             }
         }

@@ -228,6 +228,12 @@ struct DamageNotificationConfig
     bool support_legacy_clients = true;
 };
 
+struct SprayConfig
+{
+    bool enabled = true;
+    int cooldown_ms = 10000;
+};
+
 struct CriticalHitsConfig
 {
     bool enabled = false;
@@ -792,6 +798,7 @@ struct AlpineServerConfig
     AlpineRestrictConfig alpine_restricted_config;
     InactivityConfig inactivity_config;
     DamageNotificationConfig damage_notification_config;
+    SprayConfig spray_config;
     ClickLimiterConfig click_limiter_config;
     VoteConfig vote_match;
     VoteConfig vote_kick;

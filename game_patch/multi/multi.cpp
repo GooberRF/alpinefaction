@@ -14,6 +14,7 @@
 #include "endgame_votes.h"
 #include "multi_private.h"
 #include "alpine_packets.h"
+#include "sprays.h"
 #include "server_internal.h"
 #include "gametype.h"
 #include "rounds.h"
@@ -1224,6 +1225,7 @@ void multi_do_patch()
     multi_customize_listen_server_settings_patch.install();
 
     multi_kill_do_patch();
+    sprays_do_patch();
     faction_files_do_patch();
     level_download_do_patch();
     network_init();

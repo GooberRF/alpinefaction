@@ -326,7 +326,7 @@ bool lms_can_round_start()
     // us start while players are still mid-load, racing the spawn pipeline.
     int loaded = 0;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
+        if (p.is_browser || p.is_spectator) continue;
         if (!player_is_loaded(&p)) continue;
         if (++loaded >= 2) return true;
     }

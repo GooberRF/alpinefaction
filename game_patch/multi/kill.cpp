@@ -21,6 +21,7 @@
 #include "server_internal.h"
 #include "multi_private.h"
 #include "alpine_packets.h"
+#include "sprays.h"
 #include "../misc/player.h"
 #include "../misc/misc.h"
 #include "kill.h"
@@ -350,6 +351,9 @@ FunHook<void()> multi_level_init_hook{
         }
 
         multi_level_init_hook.call_target();
+
+        // Clear all sprays on both client and server when a new level loads.
+        sprays_level_init();
 
         // Stop allowing endgame votes after the next level starts
         multi_player_set_can_endgame_vote(false);

@@ -17,6 +17,10 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
 void explosion_flash_lights_level_init();
 
+bool gr_is_antialiasing_err();
+bool gr_supports_sample_count(uint32_t sample_count);
+void gr_flush_frame_buffers();
+
 inline constexpr rf::gr::Mode overdraw_colorized_3d_bitmap{
         rf::gr::TEXTURE_SOURCE_WRAP,
         rf::gr::COLOR_SOURCE_VERTEX_PLUS_TEXTURE,
