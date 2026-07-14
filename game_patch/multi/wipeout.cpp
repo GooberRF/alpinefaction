@@ -55,6 +55,7 @@ bool player_has_alive_entity(rf::Player* p)
 {
     if (!p) return false;
     if (p->is_browser) return false;
+    if (p->is_spectator) return false; // spectators never count toward wipe detection
     rf::Entity* ep = rf::entity_from_handle(p->entity_handle);
     if (!ep) return false;
     if (rf::entity_is_dying(ep)) return false;
@@ -82,13 +83,15 @@ int count_team_alive(int team)
     return n;
 }
 
-// Connected, non-browser players on a team without a live entity: dead and
-// awaiting respawn, or a late joiner not yet in the round.
+// Connected, non-browser, non-spectator players on a team without a live entity:
+// dead and awaiting respawn, or a late joiner not yet in the round. Spectators
+// are excluded so they don't inflate the alive/waiting HUD labels.
 int count_team_waiting(int team)
 {
     int n = 0;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_browser) continue;
+        if (p.is_spectator) continue;
         if (p.team != team) continue;
         if (!player_has_alive_entity(&p)) ++n;
     }
@@ -135,10 +138,13 @@ void hide_all_items()
 bool wipeout_can_round_start()
 {
     // Need at least one loaded player on EACH team for a real team round.
+    // Spectators carry a team value but never spawn, so a round gated only on
+    // their presence would start unwinnable and hang; exclude them here.
     int red_loaded = 0;
     int blue_loaded = 0;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_browser) continue;
+        if (p.is_spectator) continue;
         if (!player_is_loaded(&p)) continue;
         if (p.team == rf::TEAM_RED) ++red_loaded;
         else ++blue_loaded;

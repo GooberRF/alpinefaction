@@ -149,11 +149,12 @@ void start_round()
     // HUD countdown rendered as (max_time - level.time). Setting it to the
     // round's deadline makes the existing HUD show the correct remaining time
     // every round, with no new packet. When round_time is 0 the round is
-    // untimed (e.g. Wipeout, which ends only on a team wipe): park the limit
-    // far in the future so no countdown ever appears and tick_active never
-    // time-ends the round.
+    // untimed (e.g. Wipeout, which ends only on a team wipe): use the no-limit
+    // sentinel (<= 0) so no countdown appears on the HUD and the server browser
+    // advertises "no time limit" rather than a huge finite value. tick_active
+    // already skips time-up for untimed rounds.
     if (cfg().round_time == 0) {
-        rf::multi_time_limit = rf::level.time + 1.0e9f;
+        rf::multi_time_limit = 0.0f;
     }
     else {
         rf::multi_time_limit = g_rounds_runtime.round_deadline_level_time;
