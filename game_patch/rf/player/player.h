@@ -79,6 +79,9 @@ struct PlayerAdditionalData {
 
     std::optional<int> last_spawn_point_index{};
 
+    // Client's locally-selected multiplayer character
+    int reported_multi_character = -1;
+
     // Requires `spawn_delay` to be enabled.
     rf::Timestamp respawn_timer{};
 

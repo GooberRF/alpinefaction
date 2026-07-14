@@ -590,6 +590,12 @@ void serialize_payload(const SprayReqPayload& payload, std::byte* buf, size_t& o
     offset += sizeof(payload.normal);
 }
 
+// af_req_character
+void serialize_payload(const CharacterPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.character_index);
+}
+
 // af_req_server_cfg
 void serialize_payload(const std::monostate& payload, const std::byte* const buf, const size_t& offset)
 {
@@ -669,7 +675,7 @@ void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf
 }
 
 // send client request packet
-void af_send_client_req_packet(const af_client_req_packet& packet)
+void af_send_client_req_packet(const af_client_req_packet& packet, bool is_reliable)
 {
     // Send: client -> server
     if (!rf::is_multi || rf::is_server) {
@@ -690,7 +696,26 @@ void af_send_client_req_packet(const af_client_req_packet& packet)
     std::visit([&](const auto& payload) { serialize_payload(payload, buf, offset); }, packet.payload);
 
     int total_len = static_cast<int>(offset);
-    af_send_packet(rf::local_player, buf, total_len, false);
+    af_send_packet(rf::local_player, buf, total_len, is_reliable);
+}
+
+// Reliably report the locally-selected mp character to the server.
+void af_send_character_request(int character_index)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+    if (character_index < 0 || character_index >= rf::num_multi_characters) {
+        return; // never report a selection outside the valid range
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + character index
+    packet.req_type = af_client_req_type::af_req_character;
+    packet.payload = CharacterPayload{static_cast<uint8_t>(character_index)};
+
+    af_send_client_req_packet(packet, true); // reliable
 }
 
 // process client request packet
@@ -758,6 +783,24 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             if (!player->remote_server_cfg_sent) {
                 af_send_server_cfg(player);
                 player->remote_server_cfg_sent = true;
+            }
+            break;
+        }
+        case af_client_req_type::af_req_character: {
+            if (remaining < sizeof(uint8_t)) {
+                xlog::warn("af_process_client_req_packet: Character payload too short");
+                return;
+            }
+            const uint8_t idx = bytes[offset];
+            if (idx < rf::num_multi_characters) {
+                // Store the client's real selection separately from
+                // settings.multi_character, which force_character overwrites at
+                // spawn time. The spawn hook picks force vs. this reported value.
+                player->reported_multi_character = static_cast<int>(idx);
+            }
+            else {
+                xlog::warn("af_process_client_req_packet: character index {} out of range (max {})",
+                    idx, rf::num_multi_characters - 1);
             }
             break;
         }

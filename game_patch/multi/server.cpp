@@ -2122,6 +2122,10 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             player->settings.multi_character =
                 g_alpine_server_config_active_rules.force_character.character_index;
         }
+        else if (player->reported_multi_character >= 0) {
+            // No forced character: honour the character the client reported.
+            player->settings.multi_character = player->reported_multi_character;
+        }
         if (player->is_browser) {
             return;
         }
@@ -2998,16 +3002,14 @@ FunHook<void()> multi_respawn_level_init_hook {
     }
 };
 
-// more flexible replacement for get_nearest_other_player_dist_sq in stock game
-float get_nearest_other_player(const rf::Player* player, const rf::Vector3* spawn_pos, bool only_enemies = false)
+float get_nearest_other_player(const std::vector<rf::Player*>& clients,
+    const rf::Player* player, const rf::Vector3* spawn_pos, bool only_enemies)
 {
     float min_dist_sq = std::numeric_limits<float>::max();
     const bool is_team_game = multi_is_team_game_type();
     const int player_team = player->team;
 
-    auto player_list = get_clients(false, true);
-
-    for (const auto* other_player : player_list) {
+    for (const auto* other_player : clients) {
         if (other_player == player) {
             continue;
         }
@@ -3032,15 +3034,21 @@ float get_nearest_other_player(const rf::Player* player, const rf::Vector3* spaw
     return min_dist_sq;
 }
 
+float get_nearest_other_player(const rf::Player* player, const rf::Vector3* spawn_pos, bool only_enemies = false)
+{
+    return get_nearest_other_player(get_clients(false, true), player, spawn_pos, only_enemies);
+}
+
 // Squared distance from a candidate spawn to the nearest LIVING teammate (used
 // by Wipeout mid-round respawns to cluster on teammates). Returns float max if
-// no teammate has a live entity.
-float get_nearest_teammate(const rf::Player* player, const rf::Vector3* spawn_pos)
+// no teammate has a live entity. Core overload takes a pre-fetched client list.
+float get_nearest_teammate(const std::vector<rf::Player*>& clients,
+    const rf::Player* player, const rf::Vector3* spawn_pos)
 {
     float min_dist_sq = std::numeric_limits<float>::max();
     const int player_team = player->team;
 
-    for (const auto* other_player : get_clients(false, true)) {
+    for (const auto* other_player : clients) {
         if (other_player == player) {
             continue;
         }
@@ -3058,6 +3066,11 @@ float get_nearest_teammate(const rf::Player* player, const rf::Vector3* spawn_po
     }
 
     return min_dist_sq;
+}
+
+float get_nearest_teammate(const rf::Player* player, const rf::Vector3* spawn_pos)
+{
+    return get_nearest_teammate(get_clients(false, true), player, spawn_pos);
 }
 
 FunHook<void(rf::Vector3*, rf::Matrix3*, rf::Player*)> multi_respawn_get_next_point_hook{
@@ -3098,13 +3111,16 @@ FunHook<void(rf::Vector3*, rf::Matrix3*, rf::Player*)> multi_respawn_get_next_po
             // than this are deprioritized. Tuning knob; degrades gracefully.
             constexpr float k_enemy_avoid_dist_sq = 20.0f * 20.0f;
 
+            // Build the client list once and reuse it for every respawn point
+            const auto wo_clients = get_clients(false, true);
+
             std::vector<rf::AlpineRespawnPoint*> wo_eligible;
             wo_eligible.reserve(g_alpine_respawn_points.size());
             for (auto& point : g_alpine_respawn_points) {
                 if (!point.enabled) {
                     continue; // team flags intentionally ignored
                 }
-                point.dist_other_player = get_nearest_teammate(player, &point.position);
+                point.dist_other_player = get_nearest_teammate(wo_clients, player, &point.position);
                 wo_eligible.push_back(&point);
             }
 
@@ -3114,7 +3130,7 @@ FunHook<void(rf::Vector3*, rf::Matrix3*, rf::Player*)> multi_respawn_get_next_po
                 std::vector<rf::AlpineRespawnPoint*> safe;
                 safe.reserve(wo_eligible.size());
                 for (auto* p : wo_eligible) {
-                    if (get_nearest_other_player(player, &p->position, true) >= k_enemy_avoid_dist_sq) {
+                    if (get_nearest_other_player(wo_clients, player, &p->position, true) >= k_enemy_avoid_dist_sq) {
                         safe.push_back(p);
                     }
                 }
@@ -3441,13 +3457,14 @@ CodeInjection entity_maybe_die_patch{
 
         rf::Player* player = rf::player_from_entity_handle(ep->handle);
 
-        if (player && g_alpine_server_config_active_rules.spawn_delay.enabled) {
+        const bool is_wipeout = gt_is_wipeout();
+        if (player && (g_alpine_server_config_active_rules.spawn_delay.enabled || is_wipeout)) {
             int spawn_delay_ms = g_alpine_server_config_active_rules.spawn_delay.base_value;
 
             // Wipeout: the respawn delay escalates by the base value on each
             // death this round (5s, 10s, 15s...), resetting at round start. The
             // growing delay is what eventually lets a whole team be wiped.
-            if (gt_is_wipeout()) {
+            if (is_wipeout) {
                 ++player->wipeout_round_deaths;
                 spawn_delay_ms *= player->wipeout_round_deaths;
             }
