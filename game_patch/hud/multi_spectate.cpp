@@ -6,7 +6,6 @@
 #include "../os/console.h"
 #include "../rf/entity.h"
 #include "../rf/level.h"
-#include "../rf/file/file.h"
 #include "../rf/player/player.h"
 #include "../rf/multi.h"
 #include "../rf/os/console.h"
@@ -36,8 +35,6 @@
 #include <limits>
 #include <vector>
 #include <common/utils/list-utils.h>
-#include <common/utils/string-utils.h>
-#include <common/version/version.h>
 #include <toml++/toml.hpp>
 #include "../rf/input.h"
 #include <patch_common/CallHook.h>
@@ -92,10 +89,10 @@ static bool g_spectate_camera_mesh_load_attempted = false;
 // Numpad Enter opens/closes a bind dialog; while it's open, a numpad number binds the current
 // player/camera to that key.
 static bool g_spectate_bind_dialog_open = false;
-static constexpr int kSpectateNumpadCount = 10; // number of numpad quick-bind slots (0-9)
-static rf::Player* g_spectate_player_binds[kSpectateNumpadCount] = {}; // numpad key -> spectated player
-static int g_spectate_static_binds[kSpectateNumpadCount] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1}; // -> static index
-static const rf::Key g_spectate_numpad_keys[kSpectateNumpadCount] = {
+static constexpr int k_spectate_numpad_count = 10; // number of numpad quick-bind slots (0-9)
+static rf::Player* g_spectate_player_binds[k_spectate_numpad_count] = {}; // numpad key -> spectated player
+static int g_spectate_static_binds[k_spectate_numpad_count] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1}; // -> static index
+static const rf::Key g_spectate_numpad_keys[k_spectate_numpad_count] = {
     rf::KEY_PAD0, rf::KEY_PAD1, rf::KEY_PAD2, rf::KEY_PAD3, rf::KEY_PAD4,
     rf::KEY_PAD5, rf::KEY_PAD6, rf::KEY_PAD7, rf::KEY_PAD8, rf::KEY_PAD9,
 };
@@ -283,8 +280,11 @@ void multi_spectate_set_target_player(rf::Player* player)
     g_spectate_mode_enabled = entering_player_spectate;
     if (entering_player_spectate && !spectate_is_player_view(g_spectate_view_mode)) {
         // Entering attached spectate from a free view (e.g. the `spectate <name>` console command
-        // in free look) - default to first person so the view-mode state stays consistent.
+        // in free look) - default to first person so the view-mode state stays consistent. Keep the
+        // remembered attached submode in sync too, so a later detach/reattach doesn't snap to a
+        // stale submode.
         g_spectate_view_mode = SpectateViewMode::first_person;
+        g_spectate_attached_submode = SpectateViewMode::first_person;
     }
     if (entering_player_spectate) {
         spectate_populate_default_binds(); // seed numpad binds with the top players (if none set yet)
@@ -435,6 +435,8 @@ static void spectate_apply_player_view_mode()
     }
 
     rf::Camera* camera = rf::local_player->cam;
+    if (!camera->camera_entity)
+        return; // no camera entity to position/orient yet; a later frame re-applies the view
     rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
 
     if (g_spectate_view_mode == SpectateViewMode::first_person) {
@@ -500,7 +502,7 @@ static void spectate_save_afl()
     }
 
     toml::array binds;
-    for (int i = 0; i < kSpectateNumpadCount; ++i) {
+    for (int i = 0; i < k_spectate_numpad_count; ++i) {
         const int idx = g_spectate_static_binds[i];
         if (idx < 0)
             continue;
@@ -781,7 +783,7 @@ static void spectate_delete_current_dropped_camera()
 
     // Fix up numpad->camera binds. Dropped-camera absolute indices above del_idx shift down by 1;
     // level-camera binds (< fixed_camera_count < del_idx) are unaffected.
-    for (int k = 0; k < kSpectateNumpadCount; ++k) {
+    for (int k = 0; k < k_spectate_numpad_count; ++k) {
         if (g_spectate_static_binds[k] == del_idx)
             g_spectate_static_binds[k] = -1;
         else if (g_spectate_static_binds[k] > del_idx)
@@ -1004,7 +1006,7 @@ void multi_spectate_on_destroy_player(rf::Player* player)
 {
     if (player != rf::local_player) {
         // Drop any numpad binds pointing at the leaving player so they can't dangle.
-        for (int i = 0; i < kSpectateNumpadCount; ++i) {
+        for (int i = 0; i < k_spectate_numpad_count; ++i) {
             if (g_spectate_player_binds[i] == player)
                 g_spectate_player_binds[i] = nullptr;
         }
@@ -1240,7 +1242,7 @@ static void spectate_populate_default_binds()
 {
     // Re-seed whenever no numpad player binds are set - covers the first spectate of a session and a
     // later server whose binds were cleared on join. Never clobbers binds the user has set.
-    for (int i = 0; i < kSpectateNumpadCount; ++i) {
+    for (int i = 0; i < k_spectate_numpad_count; ++i) {
         if (g_spectate_player_binds[i])
             return;
     }
@@ -1256,7 +1258,7 @@ static void spectate_populate_default_binds()
     std::sort(players.begin(), players.end(), [](const rf::Player* a, const rf::Player* b) {
         return a->stats->score > b->stats->score;
     });
-    const int n = std::min<int>(kSpectateNumpadCount, static_cast<int>(players.size()));
+    const int n = std::min<int>(k_spectate_numpad_count, static_cast<int>(players.size()));
     for (int i = 0; i < n; ++i) {
         g_spectate_player_binds[i] = players[i];
     }
@@ -1280,7 +1282,7 @@ static bool spectate_project_to_screen(const rf::Vector3& world_pos, float& sx, 
 static std::string spectate_player_bind_suffix(const rf::Player* player)
 {
     std::string keys;
-    for (int k = 0; k < kSpectateNumpadCount; ++k) {
+    for (int k = 0; k < k_spectate_numpad_count; ++k) {
         if (g_spectate_player_binds[k] == player) {
             if (!keys.empty()) {
                 keys += ", ";
@@ -1295,7 +1297,7 @@ static std::string spectate_player_bind_suffix(const rf::Player* player)
 static std::string spectate_static_bind_label(int static_index)
 {
     std::string label;
-    for (int k = 0; k < kSpectateNumpadCount; ++k) {
+    for (int k = 0; k < k_spectate_numpad_count; ++k) {
         if (g_spectate_static_binds[k] == static_index) {
             if (!label.empty()) {
                 label += ",";
@@ -1403,8 +1405,9 @@ void multi_spectate_process_bind_input()
         g_spectate_bind_dialog_open = false;
     }
 
-    // Middle mouse toggles third-person orbit (attached third person only). Read the edge every
-    // frame so the latch is consumed regardless of the active view.
+    // Middle mouse toggles third-person orbit (attached third person only). mouse_was_button_pressed
+    // is a pure read (the engine refreshes the per-frame button snapshot itself), so this is one
+    // toggle per physical click.
     const bool mmb_pressed = rf::mouse_was_button_pressed(2) > 0;
     if (mmb_pressed && !typing && g_spectate_mode_enabled
         && g_spectate_view_mode == SpectateViewMode::third_person) {
@@ -1421,7 +1424,7 @@ void multi_spectate_process_bind_input()
         return;
     }
 
-    for (int i = 0; i < kSpectateNumpadCount; ++i) {
+    for (int i = 0; i < k_spectate_numpad_count; ++i) {
         if (rf::key_get_and_reset_down_counter(g_spectate_numpad_keys[i]) <= 0 || typing) {
             continue;
         }
@@ -1470,9 +1473,9 @@ static void spectate_render_bind_dialog()
     const std::string subtitle = "Press NUMPAD ENTER to cancel";
 
     // Build the value strings up front so the box can be sized to fit the widest content.
-    std::string values[kSpectateNumpadCount];
-    bool bound[kSpectateNumpadCount];
-    for (int i = 0; i < kSpectateNumpadCount; ++i) {
+    std::string values[k_spectate_numpad_count];
+    bool bound[k_spectate_numpad_count];
+    for (int i = 0; i < k_spectate_numpad_count; ++i) {
         if (player_mode) {
             rf::Player* p = g_spectate_player_binds[i];
             bound[i] = (p != nullptr);
@@ -1522,7 +1525,7 @@ static void spectate_render_bind_dialog()
     // Center the fixed-width rows block within the box.
     const int label_x = box_x + (box_w - row_w) / 2;
     const int value_x = label_x + label_w + col_gap;
-    for (int i = 0; i < kSpectateNumpadCount; ++i) {
+    for (int i = 0; i < k_spectate_numpad_count; ++i) {
         rf::gr::set_color(0xFF, 0xFF, 0xFF, bound[i] ? 0xFF : 0x60);
         const std::string key_label = "NUM " + std::to_string(i);
         rf::gr::string(label_x, y, key_label.c_str(), font);
@@ -1781,7 +1784,7 @@ void multi_spectate_after_full_game_init()
     player_fpgun_set_player(rf::local_player);
     // New game/server session: drop any numpad player binds from a previous server so they can't
     // dangle, and allow the defaults to re-seed for this server (see spectate_populate_default_binds).
-    for (int i = 0; i < kSpectateNumpadCount; ++i)
+    for (int i = 0; i < k_spectate_numpad_count; ++i)
         g_spectate_player_binds[i] = nullptr;
 }
 
@@ -1815,7 +1818,7 @@ void multi_spectate_level_init()
     // Static camera binds are level-specific and reset here; player binds intentionally persist
     // across map changes (players stay connected - disconnects are handled in on_destroy_player).
     g_spectate_bind_dialog_open = false;
-    for (int i = 0; i < kSpectateNumpadCount; ++i) {
+    for (int i = 0; i < k_spectate_numpad_count; ++i) {
         g_spectate_static_binds[i] = -1;
     }
     // Restore this level's persisted dropped cameras and numpad binds (if a save file exists).

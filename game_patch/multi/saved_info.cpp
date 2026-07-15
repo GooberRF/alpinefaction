@@ -72,6 +72,8 @@ bool saved_info_write(const toml::table& sections)
         }},
     };
     for (auto&& [key, value] : sections) {
+        if (key.str() == "header")
+            continue; // reserved: saved_info owns the version/level header
         root.insert_or_assign(key, value);
     }
 
