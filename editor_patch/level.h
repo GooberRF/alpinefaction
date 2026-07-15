@@ -24,11 +24,11 @@ constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rf
 // Glacier saves new RFL chunks for its own purposes (metadata). Alpine Faction can
 // neither read nor parse these, but AlpineEditor retains them verbatim on load and
 // re-emits them on save so the originating editor can still read the file properly.
-constexpr uint32_t foreign_chunk_id_mask = 0xFFF00000u;
-constexpr uint32_t foreign_chunk_id_prefix = 0x6ED00000u;
-inline bool is_foreign_retained_chunk_id(uint32_t id)
+constexpr uint32_t glacier_chunk_id_mask = 0xFFF00000u;
+constexpr uint32_t glacier_chunk_id_prefix = 0x6ED00000u;
+inline bool is_glacier_chunk_id(uint32_t id)
 {
-    return (id & foreign_chunk_id_mask) == foreign_chunk_id_prefix;
+    return (id & glacier_chunk_id_mask) == glacier_chunk_id_prefix;
 }
 
 // A retained RFL section captured verbatim from Glacier.

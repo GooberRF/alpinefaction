@@ -114,9 +114,9 @@ static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_
     int file_size = file.get_size();
     if (file_size < 0 || chunk_len > static_cast<std::size_t>(file_size)) {
         xlog::warn("[RetainedChunk] skipping chunk id=0x{:08X} with implausible len={} (file size={})", chunk_id, chunk_len, file_size);
-        // Leave the position at the chunk-data start and let the loader advance
-        // through it to EOF.
+        // Advance to EOF so the section loop terminates cleanly.
         remaining = 0;
+        file.seek(0, rf::File::seek_end);
         return;
     }
 
@@ -126,16 +126,13 @@ static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_
     if (chunk_len > 0) {
         chunk.data.resize(chunk_len);
         int got = file.read(chunk.data.data(), chunk_len);
-        if (got <= 0 || file.error()) {
-            // Nothing usable read (truncated/corrupt source) — don't retain it.
+        // A short read means the source is truncated mid-chunk.
+        if (got <= 0 || file.error() || static_cast<std::size_t>(got) < chunk_len) {
             if (got > 0) remaining -= got;
-            xlog::warn("[RetainedChunk] failed to read chunk id=0x{:08X} len={}", chunk_id, chunk_len);
+            xlog::warn("[RetainedChunk] failed to fully read chunk id=0x{:08X} (len={}, got={})", chunk_id, chunk_len, got);
             return;
         }
         remaining -= got;
-        if (static_cast<std::size_t>(got) < chunk_len) {
-            chunk.data.resize(got);
-        }
     }
 
     xlog::debug("[RetainedChunk] retained Glacier chunk id=0x{:08X} len={}", chunk_id, chunk.data.size());
@@ -163,7 +160,7 @@ CodeInjection CDedLevel_LoadLevel_patch2{
 
         // Preserve unknown chunks from Glacier (0x6ED-prefixed IDs).
         uint32_t raw_chunk_id = static_cast<uint32_t>(regs.edi);
-        if (is_foreign_retained_chunk_id(raw_chunk_id)) {
+        if (is_glacier_chunk_id(raw_chunk_id)) {
             auto& level = *static_cast<CDedLevel*>(regs.ebp);
             std::size_t chunk_size = regs.ebx;
             retained_chunk_deserialize(level, file, raw_chunk_id, chunk_size);
