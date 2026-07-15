@@ -520,6 +520,10 @@ FunHook<void(rf::Camera*)> camera_do_frame_hook{
             // Disengage and fall back to stock behaviour.
             g_static_camera_mode = AlpineStaticCameraMode::None;
         }
+        // Third-person orbit spectate positions the camera itself each frame.
+        if (multi_spectate_camera_do_frame(camera)) {
+            return;
+        }
         camera_do_frame_hook.call_target(camera);
     },
 };

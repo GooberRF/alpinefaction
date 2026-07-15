@@ -222,6 +222,7 @@ namespace rf
 
     enum PlayerFlags
     {
+        PF_HIDE_FROM_CAMERA = 0x10,
         PF_KILL_AFTER_BLACKOUT = 0x200,
         PF_END_LEVEL_AFTER_BLACKOUT = 0x1000,
     };
