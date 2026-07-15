@@ -81,6 +81,7 @@ enum class af_client_req_type : uint8_t
     af_req_handicap = 0x0,
     af_req_server_cfg = 0x1,
     af_req_spray = 0x2,
+    af_req_character = 0x3,
 };
 
 struct HandicapPayload
@@ -96,7 +97,12 @@ struct SprayReqPayload
 };
 static_assert(sizeof(SprayReqPayload) == 26);
 
-using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, std::monostate>;
+struct CharacterPayload
+{
+    uint8_t character_index = 0;
+};
+
+using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -451,8 +457,9 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, rf
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_obj_update_packet(rf::Player* player);
 static void af_process_obj_update_packet(const void* data, size_t len, const rf::NetAddr& addr);
-void af_send_client_req_packet(const af_client_req_packet& packet);
+void af_send_client_req_packet(const af_client_req_packet& packet, bool is_reliable = false);
 static void af_process_client_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
+void af_send_character_request(int character_index);
 void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player);
 void af_send_should_gib_req(uint32_t obj_handle);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);

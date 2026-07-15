@@ -486,6 +486,47 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_WO: {
+            // Round-based team wipe mode.
+            rules.location_pinging = true;
+
+            // 200 / 200 spawn health and armor.
+            rules.spawn_life.enabled = true;
+            rules.spawn_life.set_value(200.0f);
+            rules.spawn_armour.enabled = true;
+            rules.spawn_armour.set_value(200.0f);
+
+            // Base respawn delay of 5s; the death hook multiplies it by the
+            // player's death count this round (escalating 5s/10s/15s...).
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(5.0f);
+            rules.force_respawn = false; // wipeout_do_frame auto-respawns once the delay elapses
+
+            // Fixed loadout: Pistol / AR / SR / RL / SG, with infinite reloads
+            // and large reserves (effectively infinite ammo).
+            constexpr int wo_reserve = 999;
+            rules.spawn_loadout.loadouts_active = true;
+            rules.spawn_loadout.add("12mm handgun", wo_reserve, false, true);
+            rules.spawn_loadout.add("Assault Rifle", wo_reserve, false, true);
+            rules.spawn_loadout.add("Sniper Rifle", wo_reserve, false, true);
+            rules.spawn_loadout.add("Rocket Launcher", wo_reserve, false, true);
+            rules.spawn_loadout.add("Shotgun", wo_reserve, false, true);
+            rules.weapon_infinite_magazines = true;
+            rules.default_player_weapon.set_weapon("Assault Rifle");
+
+            // No item spawns, no weapon/amp drops (wipeout also hides all level
+            // items each round; see wipeout.cpp).
+            rules.drop_weapons = false;
+            rules.drop_amps = false;
+
+            // Best-of-7, untimed rounds (a round ends only on a team wipe).
+            rules.rounds.set_max_rounds(7);
+            rules.rounds.round_time = 0; // unlimited
+            rules.rounds.set_post_round_time(3);
+            rules.rounds.set_intermission_time(5);
+            break;
+        }
+
         default: {
             rules.spawn_delay.enabled = false;
 

@@ -13,6 +13,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Bagman (`BAG`)
   - Team Bagman (`TBAG`)
   - Last Miner Standing (`LMS`)
+  - Wipeout (`WO`)
 - Add sprays with bindable `Spray` control
   - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
   - `spray` console command to select spray, and in-game spray picker in advanced options
@@ -45,6 +46,13 @@ Version 1.4.0 (Lupin): Not yet released
 - Add mini scoreboard HUD element to FFA game types
 - Add `ui_minisb_dm` console command to toggle whether mini scoreboard is displayed in DM mode
 - Retain Glacier-specific chunks when RFLs loaded and re-saved in level editor
+- Add `Attach Spectate Camera` control to toggle spectate between following a player and a detached free camera
+- Add `Change Spectate View` control to switch first/third person while following a player, or free look/static camera while detached
+- Add a middle mouse toggled orbit camera to third person spectate
+- Add stepped zoom to free look spectate
+- Add the ability to drop reusable static cameras in free look spectate, then cycle level-placed and player-dropped cameras in static camera view
+- Add numpad quick-binds to jump directly to bound players or cameras while spectating, with dropped cameras and binds persisted per level
+- Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Anti-aliasing` option to `ADVANCED` options panel

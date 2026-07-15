@@ -157,6 +157,7 @@ struct AlpineGameSettings
     bool speed_display = false;
     bool ping_display = true;
     bool spectate_mode_minimal_ui = false;
+    bool spectate_show_camera_meshes = true; // draw camera meshes in free look
     bool save_console_history = false; // checked before config loaded, must be false here
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;

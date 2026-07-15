@@ -60,6 +60,14 @@ struct RoundCallbacks
     // Used to gate on minimum player count, warmup, etc.
     bool (*can_round_start)() = nullptr;
 
+    // Optional match-end arbiter for gametypes whose match length isn't a fixed
+    // round count (e.g. best-of-N with sudden death). Consulted after a round
+    // ends, once the winner has been credited. If set, it FULLY governs level
+    // rotation: return true to rotate now (match decided), false to continue to
+    // the next round regardless of cfg().max_rounds. If null, the rounds system
+    // falls back to the stock "current >= max_rounds" rotation (e.g. LMS).
+    bool (*is_match_over)() = nullptr;
+
     // Fired when a player joins while a round is already Active. The
     // gametype's job is to mark the player as "out for this round" — the
     // canonical marker is rf::Player::round_is_out, which the spawn gate

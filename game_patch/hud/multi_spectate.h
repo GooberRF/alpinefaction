@@ -6,6 +6,7 @@ namespace rf
 {
     struct Player;
     struct Entity;
+    struct Camera;
 }
 
 void multi_spectate_set_target_player(rf::Player* player);
@@ -19,10 +20,17 @@ void multi_spectate_on_destroy_player(rf::Player* player);
 void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* entity);
 bool multi_spectate_is_spectating();
 bool multi_spectate_is_first_person();
+bool multi_spectate_is_following_player();
 void multi_spectate_enter_freelook();
-void multi_spectate_toggle_freelook();
+void multi_spectate_toggle_attach();
+void multi_spectate_change_view();
 void multi_spectate_toggle();
 bool multi_spectate_is_freelook();
+bool multi_spectate_is_static();
+bool multi_spectate_is_third_person_orbit();
+float multi_spectate_get_view_fov_scale();
+bool multi_spectate_camera_do_frame(rf::Camera* camera);
 bool multi_spectate_execute_action(rf::ControlConfigAction action, bool was_pressed);
+void multi_spectate_process_bind_input();
 void multi_spectate_sync_crouch_anim();
 void multi_spectate_on_obj_update_fire(rf::Entity* entity, bool alt_fire);

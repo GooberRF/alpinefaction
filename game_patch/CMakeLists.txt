@@ -150,11 +150,15 @@ set(SRCS
     multi/rounds.cpp
     multi/lms.h
     multi/lms.cpp
+    multi/wipeout.h
+    multi/wipeout.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/kill.cpp
     multi/network.cpp
     multi/network.h
+    multi/saved_info.cpp
+    multi/saved_info.h
     multi/level_download.cpp
     multi/server.h
     multi/server.cpp

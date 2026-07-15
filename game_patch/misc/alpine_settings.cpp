@@ -374,6 +374,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.spectate_mode_minimal_ui = std::stoi(settings["SpectateMinimalUI"]);
         processed_keys.insert("SpectateMinimalUI");
     }
+    if (settings.count("SpectateShowCameras")) {
+        g_alpine_game_config.spectate_show_camera_meshes = std::stoi(settings["SpectateShowCameras"]);
+        processed_keys.insert("SpectateShowCameras");
+    }
     if (settings.count("ShowFPS")) {
         g_alpine_game_config.fps_counter = std::stoi(settings["ShowFPS"]);
         processed_keys.insert("ShowFPS");
@@ -1312,6 +1316,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ExplosionFlashLightsEnv=" << g_alpine_game_config.explosion_env_flash_lights << "\n";
     file << "BurningEntityLights=" << g_alpine_game_config.burning_entity_lights << "\n";
     file << "SpectateMinimalUI=" << g_alpine_game_config.spectate_mode_minimal_ui << "\n";
+    file << "SpectateShowCameras=" << g_alpine_game_config.spectate_show_camera_meshes << "\n";
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
     file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
     file << "FPSCounterAverageMs=" << g_alpine_game_config.fps_counter_average_ms << "\n";

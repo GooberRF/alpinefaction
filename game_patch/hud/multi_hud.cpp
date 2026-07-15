@@ -15,6 +15,7 @@
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
+#include "../multi/wipeout.h"
 #include "../input/input.h"
 #include "../rf/input.h"
 #include "../rf/hud.h"
@@ -932,6 +933,21 @@ void multi_hud_render_team_scores()
         }
     }
 
+    // Wipeout: next to each team's flag icon, show how many of that team are
+    // currently alive vs. waiting (dead/awaiting-respawn or a late joiner). The
+    // round-win score itself is drawn on the right by the standard path below.
+    if (game_type == rf::NG_TYPE_WO) {
+        rf::gr::set_color(53, 207, 22, 255);
+        std::string red_label = std::format("({} Alive, {} Waiting)",
+            wipeout_count_team_alive(rf::TEAM_RED), wipeout_count_team_waiting(rf::TEAM_RED));
+        std::string blue_label = std::format("({} Alive, {} Waiting)",
+            wipeout_count_team_alive(rf::TEAM_BLUE), wipeout_count_team_waiting(rf::TEAM_BLUE));
+        std::string red_fit = hud_fit_string(red_label, max_miniflag_label_w, nullptr, font_id);
+        std::string blue_fit = hud_fit_string(blue_label, max_miniflag_label_w, nullptr, font_id);
+        rf::gr::string(miniflag_label_x, red_miniflag_label_y, red_fit.c_str(), font_id);
+        rf::gr::string(miniflag_label_x, blue_miniflag_label_y, blue_fit.c_str(), font_id);
+    }
+
     if (multi_is_team_game_type() && !is_hill_score && !is_run) {
         float miniflag_scale = g_big_team_scores_hud ? 1.5f : 1.0f;
         rf::gr::set_color(255, 255, 255, 255);
@@ -973,6 +989,11 @@ void multi_hud_render_team_scores()
             rf::gr::set_color(53, 207, 22, 255);
             red_score = bagman_get_red_team_score();
             blue_score = bagman_get_blue_team_score();
+        }
+        else if (game_type == rf::NG_TYPE_WO) {
+            rf::gr::set_color(53, 207, 22, 255);
+            red_score = wipeout_get_red_team_score();
+            blue_score = wipeout_get_blue_team_score();
         }
     }
 
@@ -1068,7 +1089,7 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
         const bool is_ffa_with_list = game_type == rf::NG_TYPE_BAG
             || game_type == rf::NG_TYPE_LMS
             || (game_type == rf::NG_TYPE_DM && g_alpine_game_config.show_mini_scoreboard_dm);
-        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbag() || is_ffa_with_list) {
+        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbag() || gt_is_wipeout() || is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
     }
