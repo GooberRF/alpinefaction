@@ -418,7 +418,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
         msg = rf::String::format("{}{}!", mui_msg, killed_player->name);
     }
     else {
-        rf::Player* spectate_target = multi_spectate_is_first_person() ? multi_spectate_get_target_player() : nullptr;
+        rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
         color_id = (killed_player == spectate_target || killer_player == spectate_target)
             ? rf::ChatMsgColor::white_white : rf::ChatMsgColor::default_;
         if (killer_player == killed_player) {
@@ -439,7 +439,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
 
     if (g_alpine_game_config.killfeed_enabled) {
         bool is_team_mode = multi_is_team_game_type();
-        rf::Player* spectate_target = multi_spectate_is_first_person() ? multi_spectate_get_target_player() : nullptr;
+        rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
         bool is_local = (killed_player == rf::local_player || killer_player == rf::local_player
                          || killed_player == spectate_target || killer_player == spectate_target);
 

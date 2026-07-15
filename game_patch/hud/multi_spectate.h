@@ -20,6 +20,7 @@ void multi_spectate_on_destroy_player(rf::Player* player);
 void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* entity);
 bool multi_spectate_is_spectating();
 bool multi_spectate_is_first_person();
+bool multi_spectate_is_following_player();
 void multi_spectate_enter_freelook();
 void multi_spectate_toggle_attach();
 void multi_spectate_change_view();

@@ -392,6 +392,11 @@ bool multi_spectate_is_first_person()
     return spectate_first_person_render_active();
 }
 
+bool multi_spectate_is_following_player()
+{
+    return g_spectate_mode_enabled;
+}
+
 // Restore the spectator's camera/target binding that a player view set up. Safe when no target.
 static void spectate_unbind_target()
 {
@@ -529,7 +534,9 @@ static void spectate_load_afl()
                 continue;
             SpectateStaticCamera cam{};
             const auto id = (*entry)["id"].value<int64_t>();
-            cam.id = id ? static_cast<int>(*id) : spectate_next_dropped_camera_id();
+            cam.id = (id && *id >= 0 && *id <= std::numeric_limits<int>::max())
+                ? static_cast<int>(*id)
+                : spectate_next_dropped_camera_id();
             cam.orient.make_identity();
             if (!saved_info_read_vec3(entry->get_as<toml::array>("pos"), cam.pos))
                 continue;
@@ -566,6 +573,8 @@ static void spectate_load_afl()
                     g_spectate_static_binds[k] = li;
             }
             else if (const auto camera_id = (*entry)["camera_id"].value<int64_t>()) {
+                if (*camera_id < 0 || *camera_id > std::numeric_limits<int>::max())
+                    continue; // out-of-range id can't correspond to a real dropped camera
                 const int cid = static_cast<int>(*camera_id);
                 for (int j = 0; j < static_cast<int>(g_spectate_dropped_cameras.size()); ++j) {
                     if (g_spectate_dropped_cameras[j].id == cid) {
