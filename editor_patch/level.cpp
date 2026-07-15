@@ -100,11 +100,76 @@ CodeInjection CDedLevel_LoadLevel_patch1{
     },
 };
 
+// Capture Glacier-specific RFL chunks (0x6ED-prefixed ID) verbatim so they can be
+// re-emitted unchanged on the next save.
+static void retained_chunk_deserialize(CDedLevel& level, rf::File& file, uint32_t chunk_id, std::size_t chunk_len)
+{
+    auto& chunks = level.GetAlpineLevelProperties().retained_chunks;
+    std::size_t remaining = chunk_len;
+
+    // Ensures the file advances to the chunk end even on a short read.
+    rf::File::ChunkGuard chunk_guard{file, remaining};
+
+    // A legitimate chunk can never be larger than the file itself.
+    int file_size = file.get_size();
+    if (file_size < 0 || chunk_len > static_cast<std::size_t>(file_size)) {
+        xlog::warn("[RetainedChunk] skipping chunk id=0x{:08X} with implausible len={} (file size={})", chunk_id, chunk_len, file_size);
+        // Leave the position at the chunk-data start and let the loader advance
+        // through it to EOF.
+        remaining = 0;
+        return;
+    }
+
+    RetainedRflChunk chunk;
+    chunk.id = chunk_id;
+
+    if (chunk_len > 0) {
+        chunk.data.resize(chunk_len);
+        int got = file.read(chunk.data.data(), chunk_len);
+        if (got <= 0 || file.error()) {
+            // Nothing usable read (truncated/corrupt source) — don't retain it.
+            if (got > 0) remaining -= got;
+            xlog::warn("[RetainedChunk] failed to read chunk id=0x{:08X} len={}", chunk_id, chunk_len);
+            return;
+        }
+        remaining -= got;
+        if (static_cast<std::size_t>(got) < chunk_len) {
+            chunk.data.resize(got);
+        }
+    }
+
+    xlog::debug("[RetainedChunk] retained Glacier chunk id=0x{:08X} len={}", chunk_id, chunk.data.size());
+    chunks.push_back(std::move(chunk));
+}
+
+// Re-write all retained Glacier chunks verbatim, preserving their original IDs.
+static void retained_chunks_serialize(CDedLevel& level, rf::File& file)
+{
+    auto& chunks = level.GetAlpineLevelProperties().retained_chunks;
+    for (const auto& chunk : chunks) {
+        auto start_pos = level.BeginRflSection(file, static_cast<int>(chunk.id));
+        if (!chunk.data.empty()) {
+            file.write(chunk.data.data(), chunk.data.size());
+        }
+        level.EndRflSection(file, start_pos);
+    }
+}
+
 // load AlpineLevelProperties chunk from rfl file
 CodeInjection CDedLevel_LoadLevel_patch2{
     0x0042F2D4,
     [](auto& regs) {
         auto& file = *static_cast<rf::File*>(regs.esi);
+
+        // Preserve unknown chunks from Glacier (0x6ED-prefixed IDs).
+        uint32_t raw_chunk_id = static_cast<uint32_t>(regs.edi);
+        if (is_foreign_retained_chunk_id(raw_chunk_id)) {
+            auto& level = *static_cast<CDedLevel*>(regs.ebp);
+            std::size_t chunk_size = regs.ebx;
+            retained_chunk_deserialize(level, file, raw_chunk_id, chunk_size);
+            regs.eip = 0x0043090C;
+            return;
+        }
 
         // Alpine level properties chunk was introduced in rfl v302, no point looking for it before that
         if (file.check_version(302)) {
@@ -767,6 +832,9 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write bag objects chunk
         bag_serialize_chunk(level, file);
+
+        // Re-write any Glacier chunks
+        retained_chunks_serialize(level, file);
     },
 };
 

@@ -44,6 +44,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Require a fresh `Alt` press to kill an unresponsive process
 - Add mini scoreboard HUD element to FFA game types
 - Add `ui_minisb_dm` console command to toggle whether mini scoreboard is displayed in DM mode
+- Retain Glacier-specific chunks when RFLs loaded and re-saved in level editor
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Anti-aliasing` option to `ADVANCED` options panel
