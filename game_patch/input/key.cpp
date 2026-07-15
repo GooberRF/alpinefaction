@@ -275,10 +275,12 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG);
         alpine_control_config_add_item(ccp, "Inspect Weapon", false, rf::KEY_I, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_INSPECT_WEAPON);
-        alpine_control_config_add_item(ccp, "Cycle Spectate Modes", false, rf::KEY_PERIOD, -1, -1,
-                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK);
+        alpine_control_config_add_item(ccp, "Attach Spectate Camera", false, rf::KEY_PERIOD, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH);
         alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
+        alpine_control_config_add_item(ccp, "Change Spectate View", false, rf::KEY_SEMICOL, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW);
         alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
     },
@@ -436,10 +438,15 @@ CodeInjection player_execute_action_patch3{
                 && is_server_minimum_af_version(1, 2)) {
                 g_remote_server_cfg_popup.toggle();
             } else if (alpine_action_index
-                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK)
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
                 && !rf::is_dedicated_server
                 && multi_spectate_is_spectating()) {
-                multi_spectate_toggle_freelook();
+                multi_spectate_toggle_attach();
+            } else if (alpine_action_index
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW)
+                && !rf::is_dedicated_server
+                && multi_spectate_is_spectating()) {
+                multi_spectate_change_view();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
                 && !rf::is_dedicated_server) {
@@ -467,6 +474,9 @@ CodeInjection controls_process_patch{
 CodeInjection controls_process_chat_menu_patch{
     0x00430E19,
     [](auto& regs) {
+        // Spectate numpad binds.
+        multi_spectate_process_bind_input();
+
         const bool chat_menu_numeric_capture_active =
             get_chat_menu_is_active()
             && !rf::console::console_is_visible()
