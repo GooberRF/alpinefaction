@@ -521,7 +521,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
 
             // Best-of-7, untimed rounds (a round ends only on a team wipe).
             rules.rounds.set_max_rounds(7);
-            rules.rounds.round_time = 0; // 0 == untimed sentinel (see rounds.cpp)
+            rules.rounds.round_time = 0; // unlimited
             rules.rounds.set_post_round_time(3);
             rules.rounds.set_intermission_time(5);
             break;

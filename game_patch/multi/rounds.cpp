@@ -164,8 +164,11 @@ void start_round()
         g_rounds_callbacks.on_round_begin();
     }
 
+    const std::string round_msg = g_rounds_callbacks.is_match_over
+        ? std::format("Round {} - fight!", g_rounds_runtime.current + 1)
+        : std::format("Round {} of {} - fight!", g_rounds_runtime.current + 1, cfg().max_rounds);
     af_broadcast_hud_notification(
-        std::format("Round {} of {} - fight!", g_rounds_runtime.current + 1, cfg().max_rounds),
+        round_msg,
         3,
         static_cast<int>(HudNotificationType::Round),
         true);

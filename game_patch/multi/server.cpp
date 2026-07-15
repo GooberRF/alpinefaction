@@ -3467,6 +3467,7 @@ CodeInjection entity_maybe_die_patch{
             if (is_wipeout) {
                 ++player->wipeout_round_deaths;
                 spawn_delay_ms *= player->wipeout_round_deaths;
+                spawn_delay_ms = std::min(spawn_delay_ms, 60000); // max 1 min
             }
 
             player->respawn_timer.set(spawn_delay_ms);

@@ -23,11 +23,6 @@
 namespace
 {
 
-// Best-of-7: match is decided once a team's lead can't be caught, with sudden
-// death if the seven rounds finish level (possible because double-wipes are
-// no-contest rounds that advance the count without changing either score).
-constexpr int WIPEOUT_MATCH_ROUNDS = 7;
-
 struct WipeoutInfo
 {
     int red_team_score = 0;   // rounds won by red
@@ -98,12 +93,15 @@ int count_team_waiting(int team)
     return n;
 }
 
+int match_win_threshold()
+{
+    return rounds_get_max() / 2 + 1;
+}
+
 bool match_is_decided()
 {
-    const int remaining = std::max(0, WIPEOUT_MATCH_ROUNDS - g_info.rounds_completed);
-    const int r = g_info.red_team_score;
-    const int b = g_info.blue_team_score;
-    return (r > b + remaining) || (b > r + remaining);
+    const int threshold = match_win_threshold();
+    return g_info.red_team_score >= threshold || g_info.blue_team_score >= threshold;
 }
 
 // Hide every level item and destroy any dropped weapons so the arena stays
@@ -132,8 +130,6 @@ void hide_all_items()
         it = next;
     }
 }
-
-// === Round callbacks ============================================
 
 bool wipeout_can_round_start()
 {
@@ -174,6 +170,9 @@ void wipeout_on_round_begin()
         p.wipeout_spawned_this_round = false;
         p.respawn_timer.invalidate();
 
+        // Spectators never spawn; skip before the spawn attempt so we don't pulse
+        // their active status (which would exempt them from inactivity kicking).
+        if (p.is_spectator) continue;
         if (!player_is_loaded(&p)) continue;
 
         if (!player_has_alive_entity(&p)) {
@@ -383,13 +382,14 @@ void wipeout_do_frame()
     g_internal_spawn_in_progress = true;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_browser) continue;
+        if (p.is_spectator) continue;
 
         if (player_has_alive_entity(&p)) {
             p.round_participated = true;
             continue;
         }
 
-        if (p.round_is_out) continue;              // late joiner / between rounds
+        if (p.round_is_out) continue;              // late joiner
         if (!player_is_loaded(&p)) continue;
         if (p.respawn_timer.valid() && !p.respawn_timer.elapsed()) continue; // still waiting out the delay
 
@@ -422,15 +422,7 @@ bool wipeout_can_player_spawn(rf::Player* player)
         return false;
     }
 
-    // Otherwise allowed; the escalating per-death delay is enforced by the
-    // server-side respawn_timer check in multi_spawn_player_server_side_hook.
     return true;
-}
-
-void wipeout_on_player_disconnect(rf::Player* /*player*/)
-{
-    // Nothing to clean up — alive/waiting counts derive from the live list, and
-    // a round-end transition (if a team just emptied) is caught next tick.
 }
 
 bool wipeout_is_subsequent_spawn(rf::Player* player)
@@ -450,7 +442,7 @@ int wipeout_get_blue_team_score()
 
 void wipeout_set_red_team_score(int v)
 {
-    if (rf::is_server) return; // server is authoritative; clients receive via packet
+    if (rf::is_server) return;
     g_info.red_team_score = v;
 }
 
