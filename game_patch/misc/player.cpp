@@ -13,6 +13,7 @@
 #include "../rf/gr/gr_light.h"
 #include "../rf/os/os.h"
 #include "../rf/os/frametime.h"
+#include "../rf/gameseq.h"
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../misc/alpine_options.h"
@@ -523,10 +524,32 @@ CallHook player_is_dying_red_bars_hook{0x00432A5F, player_is_dying_and_not_spect
 CallHook player_is_dying_scoreboard_hook{0x00437C01, player_is_dying_and_not_spectating};
 CallHook player_is_dying_scoreboard2_hook{0x00437C36, player_is_dying_and_not_spectating};
 
+// Report our locally-selected mp character to the server whenever it changes,
+// so server-driven spawns (round modes) and the first post-join spawn use it
+// instead of the default.
+void multi_character_sync_client_do_frame() {
+    static int last_reported = -1;
+
+    if (rf::is_server || !rf::is_multi || !rf::local_player) {
+        last_reported = -1;
+        return;
+    }
+    if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
+        return;
+    }
+
+    const int cur = rf::local_player->settings.multi_character;
+    if (cur != last_reported) {
+        af_send_character_request(cur);
+        last_reported = cur;
+    }
+}
+
 FunHook<void()> players_do_frame_hook{
     0x004A26D0,
     []() {
         players_do_frame_hook.call_target();
+        multi_character_sync_client_do_frame();
         if (multi_spectate_is_spectating()) {
             rf::Player* target = multi_spectate_get_target_player();
             rf::hud_do_frame(target);

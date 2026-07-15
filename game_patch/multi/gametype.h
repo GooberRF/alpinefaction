@@ -177,6 +177,7 @@ bool gt_is_bag();
 bool gt_is_tbag();
 bool gt_is_bagman_any();
 bool gt_is_lms();
+bool gt_is_wipeout();
 
 // Score is driven by gametype-specific logic rather than directly by frags.
 bool gt_uses_custom_scoring();

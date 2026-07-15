@@ -804,6 +804,8 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Team Bagman"};
     } else if (game_type == rf::NG_TYPE_LMS) {
         return std::string_view{"Last Miner Standing"};
+    } else if (game_type == rf::NG_TYPE_WO) {
+        return std::string_view{"Wipeout"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"Unknown"};
     } else {
@@ -835,6 +837,8 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"TEAM BAGMAN"};
     } else if (game_type == rf::NG_TYPE_LMS) {
         return std::string_view{"LAST MINER STANDING"};
+    } else if (game_type == rf::NG_TYPE_WO) {
+        return std::string_view{"WIPEOUT"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNKNOWN"};
     } else {
@@ -866,6 +870,8 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"TBAG"};
     } else if (game_type == rf::NG_TYPE_LMS) {
         return std::string_view{"LMS"};
+    } else if (game_type == rf::NG_TYPE_WO) {
+        return std::string_view{"WO"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNK"};
     } else {
@@ -899,6 +905,8 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"tbag"};
     } else if (game_type == rf::NG_TYPE_LMS) {
         return std::string_view{"lms"};
+    } else if (game_type == rf::NG_TYPE_WO) {
+        return std::string_view{"wo"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         // No real level-name prefix for unknown game types; "dm" is the safest fallback.
         return std::string_view{"dm"};
