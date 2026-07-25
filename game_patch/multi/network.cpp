@@ -1672,6 +1672,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_sprays_enabled()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays;
         }
+        if (server_is_match_mode_enabled()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::match_mode;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1808,6 +1811,7 @@ CodeInjection process_join_accept_injection{
             server_info.allow_outlines_xray = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray);
             server_info.clear_stale_movement_input = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input);
             server_info.allow_sprays = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays);
+            server_info.match_mode = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::match_mode);
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
@@ -2485,6 +2489,7 @@ FunHook<void()> multi_stop_hook{
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving
+        multi_hud_reset_gametype_help(); // show gametype help when joining a server
         reset_local_pending_game_type(); // clear pending game type when leaving
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =

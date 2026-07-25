@@ -18,6 +18,7 @@ void apply_rules_for_current_level();
 void server_do_frame();
 bool check_server_chat_command(const char* msg, rf::Player* sender);
 bool server_is_saving_enabled();
+bool server_is_match_mode_enabled();
 bool server_allow_fullbright_meshes();
 bool server_allow_lightmaps_only();
 bool server_allow_disable_screenshake();
