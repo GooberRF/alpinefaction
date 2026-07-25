@@ -311,6 +311,7 @@ FunHook<void()> multi_limbo_init{
         if (!rf::is_server && !rf::is_dedicated_server) {
             remove_hud_vote_notification();
             set_local_pre_match_active(false);
+            reset_local_pit_queue_state();
         }
 
         if (!rf::player_list) {
@@ -802,8 +803,8 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Bagman"};
     } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"Team Bagman"};
-    } else if (game_type == rf::NG_TYPE_LMS) {
-        return std::string_view{"Last Miner Standing"};
+    } else if (game_type == rf::NG_TYPE_PIT) {
+        return std::string_view{"Pit"};
     } else if (game_type == rf::NG_TYPE_WO) {
         return std::string_view{"Wipeout"};
     } else if (game_type == rf::NG_TYPE_UNK) {
@@ -835,8 +836,8 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"BAGMAN"};
     } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"TEAM BAGMAN"};
-    } else if (game_type == rf::NG_TYPE_LMS) {
-        return std::string_view{"LAST MINER STANDING"};
+    } else if (game_type == rf::NG_TYPE_PIT) {
+        return std::string_view{"PIT"};
     } else if (game_type == rf::NG_TYPE_WO) {
         return std::string_view{"WIPEOUT"};
     } else if (game_type == rf::NG_TYPE_UNK) {
@@ -868,8 +869,8 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"BAG"};
     } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"TBAG"};
-    } else if (game_type == rf::NG_TYPE_LMS) {
-        return std::string_view{"LMS"};
+    } else if (game_type == rf::NG_TYPE_PIT) {
+        return std::string_view{"PIT"};
     } else if (game_type == rf::NG_TYPE_WO) {
         return std::string_view{"WO"};
     } else if (game_type == rf::NG_TYPE_UNK) {
@@ -903,8 +904,8 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"bag"};
     } else if (game_type == rf::NG_TYPE_TBAG) {
         return std::string_view{"tbag"};
-    } else if (game_type == rf::NG_TYPE_LMS) {
-        return std::string_view{"lms"};
+    } else if (game_type == rf::NG_TYPE_PIT) {
+        return std::string_view{"pit"};
     } else if (game_type == rf::NG_TYPE_WO) {
         return std::string_view{"wo"};
     } else if (game_type == rf::NG_TYPE_UNK) {

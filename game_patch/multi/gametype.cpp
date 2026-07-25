@@ -9,7 +9,7 @@
 #include "gametype.h"
 #include "bagman.h"
 #include "rounds.h"
-#include "lms.h"
+#include "pit.h"
 #include "wipeout.h"
 #include "multi.h"
 #include "alpine_packets.h"
@@ -37,8 +37,8 @@ static char bag_name[] = "BAG";
 static char* bag_slot = bag_name;
 static char tbag_name[] = "TBAG";
 static char* tbag_slot = tbag_name;
-static char lms_name[] = "LMS";
-static char* lms_slot = lms_name;
+static char pit_name[] = "PIT";
+static char* pit_slot = pit_name;
 static char wo_name[] = "WO";
 static char* wo_slot = wo_name;
 // UNK is the sentinel; new game types must be added above
@@ -82,7 +82,7 @@ void populate_gametype_table() {
     g_af_gametype_names[rf::NG_TYPE_ESC]    = &esc_slot;
     g_af_gametype_names[rf::NG_TYPE_BAG]     = &bag_slot;
     g_af_gametype_names[rf::NG_TYPE_TBAG]    = &tbag_slot;
-    g_af_gametype_names[rf::NG_TYPE_LMS]    = &lms_slot;
+    g_af_gametype_names[rf::NG_TYPE_PIT]    = &pit_slot;
     g_af_gametype_names[rf::NG_TYPE_WO]     = &wo_slot;
     g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
@@ -134,7 +134,7 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_TBAG:
         case rf::NG_TYPE_WO:
             return true;
-        default: // DM, RUN, BAG, LMS
+        default: // DM, RUN, BAG, PIT
             return false;
     }
 }
@@ -241,9 +241,9 @@ bool gt_is_bagman_any()
     return gt_is_bag() || gt_is_tbag();
 }
 
-bool gt_is_lms()
+bool gt_is_pit()
 {
-    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_LMS;
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_PIT;
 }
 
 bool gt_is_wipeout()
@@ -274,8 +274,8 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
             return "Bagman: Steal and hold the bag to earn points";
         case rf::NG_TYPE_TBAG:
             return "Team Bagman: Steal and hold the bag to earn points for your team";
-        case rf::NG_TYPE_LMS:
-            return "Last Miner Standing: One life per round";
+        case rf::NG_TYPE_PIT:
+            return "Pit: 1v1 duel rounds - winner stays on, loser goes to the back of the queue";
         case rf::NG_TYPE_WO:
             return "Wipeout: Frag all enemy players before they respawn";
         default:
@@ -285,12 +285,12 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
 
 bool gt_uses_custom_scoring()
 {
-    return gt_is_bagman_any() || gt_is_lms() || gt_is_wipeout();
+    return gt_is_bagman_any() || gt_is_pit() || gt_is_wipeout();
 }
 
 bool gt_type_uses_rounds(rf::NetGameType game_type)
 {
-    return game_type == rf::NetGameType::NG_TYPE_LMS
+    return game_type == rf::NetGameType::NG_TYPE_PIT
         || game_type == rf::NetGameType::NG_TYPE_WO;
 }
 
@@ -1999,7 +1999,7 @@ void multi_level_init_post_gametypes()
 {
     hill_mode_level_init_post();
     bagman_level_init_post();
-    lms_level_init_post();
+    pit_level_init_post();
     wipeout_level_init_post();
     // Rounds must initialise AFTER per-gametype level-init so the gametype
     // has registered its callbacks before round 1 begins.
@@ -2013,6 +2013,7 @@ CodeInjection multi_level_init_gametypes_injection{
         rounds_level_init();
         hill_mode_level_init();
         bagman_level_init();
+        pit_level_init();
         wipeout_level_init();
     },
 };

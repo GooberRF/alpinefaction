@@ -24,6 +24,7 @@ enum class HudNotificationType : int
     BagCarrier,
     Round,          // round-based gametypes (countdown, round start, milestones)
     GametypeHelp,   // local only, never initiated by server
+    Queue,          // Pit duel-queue overlay (local only, persistent)
 };
 
 void hud_notification_show(std::string text, int duration_seconds, HudNotificationType type, bool fade_on_expire);
@@ -43,6 +44,9 @@ void stop_draw_respawn_timer_notification();
 void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int spawn_delay);
 void draw_hud_ready_notification(bool draw);
 void set_local_pre_match_active(bool set_active);
+bool get_local_pre_match_active();
+void set_local_pit_queue_state(bool queued, bool dueler, int pos, int total, bool spectate);
+void reset_local_pit_queue_state();
 void multi_hud_level_init();
 void multi_hud_on_local_spawn();
 void multi_hud_reset_gametype_help();

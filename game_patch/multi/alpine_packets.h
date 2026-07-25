@@ -82,6 +82,8 @@ enum class af_client_req_type : uint8_t
     af_req_server_cfg = 0x1,
     af_req_spray = 0x2,
     af_req_character = 0x3,
+    af_req_ready = 0x4,      // Alpine 1.4 (1 byte: action 0=unready,1=ready,2=toggle)
+    af_req_pit_queue = 0x5,  // Alpine 1.4 (1 byte: action 0=leave,1=join,2=toggle)
 };
 
 struct HandicapPayload
@@ -102,7 +104,18 @@ struct CharacterPayload
     uint8_t character_index = 0;
 };
 
-using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload, std::monostate>;
+struct ReadyReqPayload
+{
+    uint8_t action = 0; // 0 = unready, 1 = ready, 2 = toggle
+};
+
+struct PitQueueReqPayload
+{
+    uint8_t action = 0; // 0 = leave, 1 = join, 2 = toggle
+};
+
+using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
+                                       ReadyReqPayload, PitQueueReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -116,6 +129,8 @@ enum class af_server_req_type : uint8_t
     af_sreq_should_gib = 0x0,
     af_sreq_teleport_entity = 0x1,  // Alpine 1.4
     af_sreq_spray = 0x2,            // Alpine 1.4
+    af_sreq_ready_prompt = 0x3,     // Alpine 1.4 (1 byte: show bool)
+    af_sreq_pit_queue_state = 0x4,  // Alpine 1.4 (3 bytes: flags, position, total)
 };
 
 struct ShouldGibPayload
@@ -146,7 +161,20 @@ struct SprayPayload
 };
 static_assert(sizeof(SprayPayload) == 28);
 
-using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload>;
+struct ReadyPromptPayload
+{
+    uint8_t show = 0; // bool: show the ready-up prompt
+};
+
+struct PitQueueStatePayload
+{
+    uint8_t flags = 0;    // bit0 = queued, bit1 = is_dueler, bit2 = should spectate
+    uint8_t position = 0; // 1-based position among waiting queue, 0 if n/a
+    uint8_t total = 0;    // waiting-queue size
+};
+
+using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
+                                           ReadyPromptPayload, PitQueueStatePayload>;
 
 struct af_server_req_packet
 {
@@ -505,6 +533,12 @@ void af_send_server_console_msg(std::string_view msg, rf::Player* player, bool t
 void af_send_handicap_request(uint8_t amount);
 void af_send_server_cfg_request();
 void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
+void af_send_ready_request(uint8_t action);      // 0 = unready, 1 = ready, 2 = toggle
+void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = toggle
+
+// server -> client state (Pit + match ready system)
+void af_send_ready_prompt(rf::Player* player, bool show);
+void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uint8_t total);
 
 // server bot control
 void af_send_bot_control_simple(rf::Player* player, af_bot_control_type subtype);

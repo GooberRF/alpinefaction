@@ -99,7 +99,10 @@ struct PlayerAdditionalData {
     // Round-based gametypes.
     bool round_is_out = false;
     bool round_participated = false; // the player has participated this round
-    float lms_round_damage_dealt = 0.0f; // damage dealt during current round (tiebreak)
+
+    // Pit (NG_TYPE_PIT): true once the player has opted out of the duel queue for
+    // this session. Auto-queue eligibility is simply !pit_queue_opt_out.
+    bool pit_queue_opt_out = false;
 
     // Wipeout (NG_TYPE_WO): per-round death counter drives the escalating respawn
     // delay (5s * deaths); spawned_this_round selects first-spawn (TDM) vs
@@ -107,8 +110,9 @@ struct PlayerAdditionalData {
     int wipeout_round_deaths = 0;
     bool wipeout_spawned_this_round = false;
     // Throttles the "you're waiting" spawn-denied chat line so repeated spawn
-    // requests (e.g. holding fire while waiting) don't spam it.
-    rf::Timestamp wipeout_waiting_msg_timer{};
+    // requests (e.g. holding fire while waiting) don't spam it. Shared by
+    // Wipeout and Pit.
+    rf::Timestamp waiting_msg_timer{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif

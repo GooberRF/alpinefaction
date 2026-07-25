@@ -25,7 +25,7 @@
 #include "../multi/server_internal.h"
 #include "../multi/bagman.h"
 #include "../multi/sprays.h"
-#include "../multi/lms.h"
+#include "../multi/pit.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
@@ -252,7 +252,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         multi_spectate_on_destroy_player(player);
         bagman_on_player_disconnect(player);
         sprays_on_player_destroyed(player);
-        lms_on_player_disconnect(player);
+        pit_on_player_disconnect(player);
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);

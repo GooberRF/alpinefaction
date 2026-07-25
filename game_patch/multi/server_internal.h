@@ -621,6 +621,7 @@ struct AlpineServerConfigRules
     int cap_limit = 5;
     int koth_score_limit = 100;
     int dc_score_limit = 300;
+    int pit_score_limit = 10;
     int geo_limit = 64;
     int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
@@ -686,6 +687,10 @@ struct AlpineServerConfigRules
     void set_dc_score_limit(int count)
     {
         dc_score_limit = std::clamp(count, 1, 65535);
+    }
+    void set_pit_score_limit(int count)
+    {
+        pit_score_limit = std::clamp(count, 1, 65535);
     }
     void set_geo_limit(int count)
     {

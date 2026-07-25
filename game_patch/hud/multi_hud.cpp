@@ -74,6 +74,17 @@ static void hud_notification_clear()
     g_hud_notification.fade_start.invalidate();
     g_hud_notification.fade_on_expire = false;
 }
+
+// Latest Pit duel-queue state pushed by the server (af_sreq_pit_queue_state).
+// Drives the persistent queue overlay in the notification render path.
+static struct {
+    bool valid = false;
+    bool queued = false;
+    bool dueler = false;
+    bool spectate = false; // server wants this queued player in spectate mode
+    int pos = 0;
+    int total = 0;
+} g_pit_queue_state;
 static std::string time_left_string_format = "";
 static int time_left_string_x_pos_offset = 135;
 static int time_left_string_y_pos_offset = 21;
@@ -836,7 +847,7 @@ void multi_hud_render_team_scores()
     const bool is_run = game_type == rf::NG_TYPE_RUN;
     const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
         || game_type == rf::NG_TYPE_BAG
-        || game_type == rf::NG_TYPE_LMS;
+        || game_type == rf::NG_TYPE_PIT;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
@@ -1088,7 +1099,7 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     [](auto& regs) {
         const auto game_type = rf::multi_get_game_type();
         const bool is_ffa_with_list = game_type == rf::NG_TYPE_BAG
-            || game_type == rf::NG_TYPE_LMS
+            || game_type == rf::NG_TYPE_PIT
             || (game_type == rf::NG_TYPE_DM && g_alpine_game_config.show_mini_scoreboard_dm);
         if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbag() || gt_is_wipeout() || is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
@@ -1243,6 +1254,76 @@ void draw_hud_ready_notification(bool draw)
 void set_local_pre_match_active(bool set_active) {
     g_pre_match_active = set_active;
     draw_hud_ready_notification(set_active);
+}
+
+bool get_local_pre_match_active() {
+    return g_pre_match_active;
+}
+
+void set_local_pit_queue_state(bool queued, bool dueler, int pos, int total, bool spectate) {
+    g_pit_queue_state.valid = true;
+    g_pit_queue_state.queued = queued;
+    g_pit_queue_state.dueler = dueler;
+    g_pit_queue_state.spectate = spectate;
+    g_pit_queue_state.pos = pos;
+    g_pit_queue_state.total = total;
+}
+
+void reset_local_pit_queue_state() {
+    g_pit_queue_state = {};
+}
+
+// Keep the persistent Pit queue overlay in sync with the latest server state,
+// without clobbering higher-priority timed notifications (round results,
+// gametype help). Called each frame just before hud_render_notification().
+static void hud_pit_queue_ensure() {
+    const bool active = rf::is_multi
+        && rf::multi_get_game_type() == rf::NG_TYPE_PIT
+        && g_pit_queue_state.valid
+        && !g_pre_match_active
+        && !g_pit_queue_state.dueler;
+
+    if (!active) {
+        // A dueler (or invalid state / non-Pit): drop any queue overlay we own.
+        if (g_hud_notification.type == HudNotificationType::Queue) {
+            hud_notification_remove(HudNotificationType::Queue, true);
+        }
+        return;
+    }
+
+    const std::string key = get_action_bind_name(
+        get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
+
+    std::string text = g_pit_queue_state.queued
+        ? std::format("You are {}/{} in the queue and will play soon. Press {} to exit the queue.",
+                      g_pit_queue_state.pos, g_pit_queue_state.total, key)
+        : std::format("You are NOT queued. Press {} to enter the queue to play.", key);
+
+    // Only (re)show when the slot is free or already ours with changed text, so
+    // we don't reset the fade/expiry state every frame.
+    const bool slot_free = g_hud_notification.type == HudNotificationType::None;
+    const bool slot_ours = g_hud_notification.type == HudNotificationType::Queue;
+    if (slot_free || (slot_ours && g_hud_notification.text != text)) {
+        hud_notification_show(std::move(text), -1, HudNotificationType::Queue, false);
+    }
+}
+
+// Drop a queued player into freelook spectate when the server has flagged it
+// (af_sreq_pit_queue_state bit2). Retried per-frame rather than acted on at
+// packet receipt because the packet can arrive before the local entity has
+// finished dying after the round-cleanup kill — the death gate below (the same
+// check multi_spectate_toggle uses) makes the retry a no-op until then. Never
+// runs on a listen-server host.
+static void hud_pit_queue_auto_spectate() {
+    if (rf::is_server) return;
+    if (!rf::is_multi || rf::multi_get_game_type() != rf::NG_TYPE_PIT) return;
+    if (!g_pit_queue_state.valid || !g_pit_queue_state.spectate || g_pit_queue_state.dueler) return;
+    if (multi_spectate_is_spectating()) return;
+    if (!rf::local_player || !rf::player_is_dead(rf::local_player)) return;
+
+    // multi_spectate_enter_freelook checks its own preconditions (local player,
+    // camera, is_multi) and no-ops otherwise, so the retry stays safe.
+    multi_spectate_enter_freelook();
 }
 
 void hud_render_vote_notification() {
@@ -1423,6 +1504,8 @@ CodeInjection multi_hud_render_patch{
         }
         s_was_bag_carrier = is_bag_carrier;
 
+        hud_pit_queue_auto_spectate();
+        hud_pit_queue_ensure();
         hud_render_notification();
 
         if (g_draw_respawn_timer_notification) {
@@ -1448,6 +1531,7 @@ void multi_hud_level_init() {
     g_run_timer_reset_by_respawn_key = false;
     g_run_timer_fade_active = false;
     hud_notification_clear();
+    reset_local_pit_queue_state();
     killfeed_clear();
 
     level_menu = ChatMenuList{

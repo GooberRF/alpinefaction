@@ -474,15 +474,37 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
-        case rf::NetGameType::NG_TYPE_LMS: {
+        case rf::NetGameType::NG_TYPE_PIT: {
+            // Round-based 1v1 duels. Two duelers fight per round; everyone else
+            // waits in a FIFO queue as spectators (see pit.cpp).
             rules.spawn_delay.enabled = false;
             rules.force_respawn = false;
-            rules.location_pinging = true;
-            rules.drop_weapons = true;
+            rules.location_pinging = false;
+            rules.drop_weapons = false;
+            rules.drop_amps = false;
 
-            // primary weapon
-            rules.default_player_weapon.set_weapon("12mm handgun");
-            rules.spawn_loadout.loadouts_active = false;
+            // 200 / 200 spawn health and armor.
+            rules.spawn_life.enabled = true;
+            rules.spawn_life.set_value(200.0f);
+            rules.spawn_armour.enabled = true;
+            rules.spawn_armour.set_value(200.0f);
+
+            // Loadout: Riot Stick (added for all modes above) + Assault Rifle in
+            // hands, with infinite reloads and a large reserve (effectively
+            // infinite ammo). Only Shotgun / Rocket Launcher item pickups remain
+            // in the arena (pit.cpp hides all other level items).
+            constexpr int pit_reserve = 999;
+            rules.spawn_loadout.loadouts_active = true;
+            rules.spawn_loadout.add("Assault Rifle", pit_reserve, false, true);
+            rules.weapon_infinite_magazines = true;
+            rules.default_player_weapon.set_weapon("Assault Rifle");
+
+            // 1 minute duels. Match length is governed by pit_score_limit
+            // (default 10 duel wins; see pit_is_match_over) rather than a
+            // fixed round count.
+            rules.rounds.round_time = 60; // 1 minute duels
+            rules.rounds.set_post_round_time(3);
+            rules.rounds.set_intermission_time(3);
             break;
         }
 
@@ -582,6 +604,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.set_koth_score_limit(*v);
     if (auto v = t["dc_score_limit"].value<int>())
         o.set_dc_score_limit(*v);
+    if (auto v = t["pit_score_limit"].value<int>())
+        o.set_pit_score_limit(*v);
     if (auto v = t["bag_score_limit"].value<int>())
         o.bagman.set_bag_score_limit(*v);
     if (auto v = t["tbag_score_limit"].value<int>())
@@ -1780,6 +1804,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  KOTH team score limit:                 {}\n", rules.koth_score_limit);
     if (base || rules.dc_score_limit != b.dc_score_limit)
         std::format_to(iter, "  DC team score limit:                   {}\n", rules.dc_score_limit);
+    if (base || rules.pit_score_limit != b.pit_score_limit)
+        std::format_to(iter, "  PIT player score limit:                {}\n", rules.pit_score_limit);
     if (base || rules.bagman.bag_score_limit != b.bagman.bag_score_limit)
         std::format_to(iter, "  BAG player score limit:                {}\n", rules.bagman.bag_score_limit);
     if (base || rules.bagman.tbag_score_limit != b.bagman.tbag_score_limit)

@@ -105,7 +105,7 @@ bool match_is_decided()
 }
 
 // Hide every level item and destroy any dropped weapons so the arena stays
-// item-free. Mirrors lms_reset_world_items but hides instead of restoring. The
+// item-free. Mirrors pit_reset_world_items but hides instead of restoring. The
 // engine's periodic visibility broadcast replicates the hidden state to clients.
 void hide_all_items()
 {
@@ -412,12 +412,12 @@ bool wipeout_can_player_spawn(rf::Player* player)
     if (between_rounds || player->round_is_out) {
         // Throttle the notice: the client re-requests a spawn every frame while
         // the fire button is held, which would otherwise spam chat.
-        if (!player->wipeout_waiting_msg_timer.valid() || player->wipeout_waiting_msg_timer.elapsed()) {
+        if (!player->waiting_msg_timer.valid() || player->waiting_msg_timer.elapsed()) {
             af_send_automated_chat_msg(
                 between_rounds ? "Wait - the next round is starting shortly."
                                : "You're waiting for the next round to begin.",
                 player);
-            player->wipeout_waiting_msg_timer.set(3000);
+            player->waiting_msg_timer.set(3000);
         }
         return false;
     }

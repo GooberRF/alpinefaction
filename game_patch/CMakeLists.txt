@@ -148,8 +148,8 @@ set(SRCS
     multi/bagman.cpp
     multi/rounds.h
     multi/rounds.cpp
-    multi/lms.h
-    multi/lms.cpp
+    multi/pit.h
+    multi/pit.cpp
     multi/wipeout.h
     multi/wipeout.cpp
     multi/sprays.h

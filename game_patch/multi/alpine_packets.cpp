@@ -22,8 +22,10 @@
 #include "alpine_packets.h"
 #include "sprays.h"
 #include "bagman.h"
+#include "pit.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
+#include "../hud/multi_spectate.h"
 #include "rounds.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
@@ -596,6 +598,32 @@ void serialize_payload(const CharacterPayload& payload, std::byte* buf, size_t& 
     buf[offset++] = static_cast<std::byte>(payload.character_index);
 }
 
+// af_req_ready
+void serialize_payload(const ReadyReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.action);
+}
+
+// af_req_pit_queue
+void serialize_payload(const PitQueueReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.action);
+}
+
+// af_sreq_ready_prompt
+void serialize_payload(const ReadyPromptPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.show);
+}
+
+// af_sreq_pit_queue_state
+void serialize_payload(const PitQueueStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.flags);
+    buf[offset++] = static_cast<std::byte>(payload.position);
+    buf[offset++] = static_cast<std::byte>(payload.total);
+}
+
 // af_req_server_cfg
 void serialize_payload(const std::monostate& payload, const std::byte* const buf, const size_t& offset)
 {
@@ -718,6 +746,38 @@ void af_send_character_request(int character_index)
     af_send_client_req_packet(packet, true); // reliable
 }
 
+// Report a match ready-up action to the server (replaces the "/ready" chat cmd).
+void af_send_ready_request(uint8_t action)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + action
+    packet.req_type = af_client_req_type::af_req_ready;
+    packet.payload = ReadyReqPayload{action};
+
+    af_send_client_req_packet(packet, true); // reliable — discrete toggle
+}
+
+// Request a Pit duel-queue action (join/leave/toggle) from the server.
+void af_send_pit_queue_request(uint8_t action)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + action
+    packet.req_type = af_client_req_type::af_req_pit_queue;
+    packet.payload = PitQueueReqPayload{action};
+
+    af_send_client_req_packet(packet, true); // reliable — discrete toggle
+}
+
 // process client request packet
 static void af_process_client_req_packet(const void* data, size_t len, const rf::NetAddr& addr)
 {
@@ -827,6 +887,32 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             std::memcpy(&spray_normal, &normal, sizeof(spray_normal));
 
             sprays_handle_spray_request(player, texture_id, spray_pos, spray_normal);
+            break;
+        }
+        case af_client_req_type::af_req_ready: {
+            if (remaining < sizeof(uint8_t)) {
+                xlog::warn("af_process_client_req_packet: Ready payload too short");
+                return;
+            }
+            const uint8_t action = bytes[offset];
+            // toggle_ready_status / set_ready_status both guard pre-match state
+            // and Alpine-client status internally.
+            if (action == 2) {
+                toggle_ready_status(player);
+            } else {
+                set_ready_status(player, action == 1);
+            }
+            break;
+        }
+        case af_client_req_type::af_req_pit_queue: {
+            if (remaining < sizeof(uint8_t)) {
+                xlog::warn("af_process_client_req_packet: Pit queue payload too short");
+                return;
+            }
+            const uint8_t action = bytes[offset];
+            if (gt_is_pit()) {
+                pit_handle_queue_request(player, action);
+            }
             break;
         }
         default: {
@@ -957,6 +1043,69 @@ void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector
         }
     }
     //xlog::info("sprays: broadcast spray for player_id {} to {} clients ({} pre-1.4 skipped)", player_id, sent, skipped);
+}
+
+// Show/hide the match ready-up prompt on a specific client. Listen-server host
+// applies locally; remote recipients gated on AF 1.4.
+void af_send_ready_prompt(rf::Player* player, bool show)
+{
+    if (!rf::is_server || !player) {
+        return;
+    }
+    if (player == rf::local_player) {
+        // Listen-server host: apply locally instead of routing through the net.
+        set_local_pre_match_active(show);
+        return;
+    }
+    if (!player->net_data) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + show
+    packet.req_type = af_server_req_type::af_sreq_ready_prompt;
+    packet.payload = ReadyPromptPayload{static_cast<uint8_t>(show ? 1 : 0)};
+
+    af_send_server_req_packet(packet, player);
+}
+
+// Push a client's Pit queue state (dueler / queued position). Listen-server host
+// applies locally; remote recipients gated on AF 1.4.
+void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uint8_t total)
+{
+    if (!rf::is_server || !player) {
+        return;
+    }
+    const bool is_dueler = (flags & 0x2) != 0;
+    if (player == rf::local_player) {
+        // Listen-server host: apply locally. The spectate flag is stored but
+        // never acted on for the host (the auto-spectate check is client-only).
+        const bool queued = (flags & 0x1) != 0;
+        const bool spectate = (flags & 0x4) != 0;
+        set_local_pit_queue_state(queued, is_dueler, static_cast<int>(pos), static_cast<int>(total), spectate);
+        if (is_dueler && multi_spectate_is_spectating()) {
+            multi_spectate_leave();
+        }
+        return;
+    }
+    if (!player->net_data) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + 3; // req_type + flags + position + total
+    packet.req_type = af_server_req_type::af_sreq_pit_queue_state;
+    packet.payload = PitQueueStatePayload{flags, pos, total};
+
+    af_send_server_req_packet(packet, player);
 }
 
 static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr&)
@@ -1111,6 +1260,38 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             // Unknown/reserved flag bits are ignored.
             const bool play_sound = (flags & AF_SPRAY_FLAG_SILENT) == 0;
             sprays_apply_client_state(player_id, texture_id, spray_pos, spray_normal, play_sound);
+            break;
+        }
+        case af_server_req_type::af_sreq_ready_prompt: {
+            if (remaining < sizeof(uint8_t)) {
+                xlog::warn("af_process_server_req_packet: ReadyPrompt payload too short");
+                return;
+            }
+            const uint8_t show = bytes[offset];
+            set_local_pre_match_active(show != 0);
+            break;
+        }
+        case af_server_req_type::af_sreq_pit_queue_state: {
+            constexpr size_t expected = 3 * sizeof(uint8_t);
+            if (remaining < expected) {
+                xlog::warn("af_process_server_req_packet: PitQueueState payload too short");
+                return;
+            }
+            const uint8_t flags = bytes[offset];
+            const uint8_t position = bytes[offset + 1];
+            const uint8_t total = bytes[offset + 2];
+            const bool queued = (flags & 0x1) != 0;
+            const bool is_dueler = (flags & 0x2) != 0;
+            const bool spectate = (flags & 0x4) != 0;
+            // The spectate flag is acted on per-frame by the HUD ensure step
+            // (the packet can arrive before the local entity finishes dying).
+            set_local_pit_queue_state(queued, is_dueler, static_cast<int>(position), static_cast<int>(total), spectate);
+
+            // A promoted dueler who is still locally spectating must leave spectate
+            // so the server's auto-spawn round-trips (af_spectate_start(self)).
+            if (is_dueler && multi_spectate_is_spectating()) {
+                multi_spectate_leave();
+            }
             break;
         }
         default:
@@ -1762,6 +1943,9 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
             break;
         case rf::NetGameType::NG_TYPE_DC:
             pkt.win_condition = static_cast<uint32_t>(g_alpine_server_config_active_rules.dc_score_limit);
+            break;
+        case rf::NetGameType::NG_TYPE_PIT:
+            pkt.win_condition = static_cast<uint32_t>(g_alpine_server_config_active_rules.pit_score_limit);
             break;
         case rf::NetGameType::NG_TYPE_RUN:
         case rf::NetGameType::NG_TYPE_REV:

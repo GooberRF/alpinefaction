@@ -26,7 +26,7 @@
 #include "gametype.h"
 #include "bagman.h"
 #include "rounds.h"
-#include "lms.h"
+#include "pit.h"
 #include "wipeout.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
@@ -831,8 +831,8 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_iequals(gametype_name, "tbag") || string_iequals(gametype_name, "tbm")) {
         return rf::NetGameType::NG_TYPE_TBAG;
     }
-    if (string_iequals(gametype_name, "lms")) {
-        return rf::NetGameType::NG_TYPE_LMS;
+    if (string_iequals(gametype_name, "pit")) {
+        return rf::NetGameType::NG_TYPE_PIT;
     }
     if (string_iequals(gametype_name, "wo") || string_iequals(gametype_name, "wipeout")) {
         return rf::NetGameType::NG_TYPE_WO;
@@ -919,7 +919,7 @@ ConsoleCommand2 sv_game_type_cmd{
         }
     },
     "Load a specific gametype. Loads level if specificed, otherwise restarts current level. Only available for ADS dedicated servers.",
-    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|lms|wo> [level]",
+    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|pit|wo> [level]",
 };
 
 DcCommandAlias gt_cmd{
@@ -1291,11 +1291,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
         float real_damage = entity_damage_hook.call_target(damaged_ep, damage, killer_handle, damage_type, killer_uid);
 
-        // LMS: track damage dealt by killer for round-timeout tiebreak.
-        if (rf::is_server && is_pvp_damage && real_damage > 0.0f) {
-            lms_on_pvp_damage(killer_player, real_damage);
-        }
-
         // Re-fetch pointer: entity may have been destroyed during damage processing, making the original pointer dangling
         damaged_ep = rf::entity_from_handle(damaged_ep_handle);
 
@@ -1654,6 +1649,10 @@ void start_match()
                                              g_match_info.ready_players_blue.end());
     g_match_info.ready_players_blue.clear();
 
+    for (rf::Player* player : get_clients(false, false)) {
+        af_send_ready_prompt(player, false); // match starting — clear all prompts
+    }
+
     restart_current_level();
 
     // restore time limit when starting match
@@ -1676,6 +1675,7 @@ void cancel_match()
 
     for (rf::Player* player : get_clients(false, false)) {
         update_pre_match_powerups(player);
+        af_send_ready_prompt(player, false); // match canceled — clear all prompts
     }
 }
 
@@ -1700,6 +1700,7 @@ void start_pre_match()
                 g_match_info.team_size, g_match_info.team_size);
 
             af_send_automated_chat_msg(msg, player);
+            af_send_ready_prompt(player, true);
         }
 
 
@@ -1729,6 +1730,7 @@ void add_ready_player(rf::Player* player)
 
     team_ready_list.insert(player);
     update_pre_match_powerups(player);
+    af_send_ready_prompt(player, false); // they're ready — hide their prompt
 
     auto ready_msg = std::format("{} ({}) is ready!", player->name.c_str(), team_name);
     af_broadcast_automated_chat_msg(ready_msg);
@@ -1751,6 +1753,9 @@ void remove_ready_player_silent(rf::Player* player)
 {
     g_match_info.ready_players_red.erase(player);
     g_match_info.ready_players_blue.erase(player);
+    if (g_match_info.pre_match_active) {
+        af_send_ready_prompt(player, true); // re-show their prompt
+    }
 }
 
 void remove_ready_player(rf::Player* player)
@@ -1764,6 +1769,9 @@ void remove_ready_player(rf::Player* player)
     }
 
     update_pre_match_powerups(player);
+    if (g_match_info.pre_match_active) {
+        af_send_ready_prompt(player, true); // no longer ready — re-show their prompt
+    }
 
     auto msg_source = std::format("You are no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
         g_match_info.team_size - g_match_info.ready_players_red.size(),
@@ -1874,13 +1882,14 @@ void match_do_frame()
             const auto ready_blue = g_match_info.ready_players_blue.size();
 
             for (rf::Player* player : get_clients(false, false)) {
-                if (!is_player_ready(player)) {                    
+                if (!is_player_ready(player)) {
                     auto msg = std::format(
                         "You are NOT ready! {}v{} match queued, waiting for players - RED: {}, BLUE: {}.\n"
                         "Ready up or use \"/vote nomatch\" to call a vote to cancel the match.",
                         g_match_info.team_size, g_match_info.team_size,
                         g_match_info.team_size - ready_red, g_match_info.team_size - ready_blue);
                     af_send_automated_chat_msg(msg, player);
+                    af_send_ready_prompt(player, true); // belt-and-braces resync
                 }
             }
         }
@@ -2151,8 +2160,8 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
 
-        // LMS: enforce no-respawn-during-round and late-joiner spectate semantics.
-        if (!lms_can_player_spawn(player)) {
+        // Pit: enforce no-respawn-during-round and queued/late-joiner spectate semantics.
+        if (!pit_can_player_spawn(player)) {
             return;
         }
 
@@ -3503,7 +3512,7 @@ CodeInjection entity_maybe_die_patch{
         }
 
         bagman_on_entity_will_die(ep);
-        lms_on_entity_will_die(ep);
+        pit_on_entity_will_die(ep);
     },
 };
 
@@ -3831,7 +3840,7 @@ void server_do_frame()
     server_vote_do_frame();
     match_do_frame();
     process_delayed_kicks();
-    lms_do_frame();
+    pit_do_frame();
     wipeout_do_frame();
     rounds_do_frame();
 }
