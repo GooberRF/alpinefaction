@@ -45,6 +45,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Require a fresh `Alt` press to kill an unresponsive process
 - Add mini scoreboard HUD element to FFA game types
 - Add `ui_minisb_dm` console command to toggle whether mini scoreboard is displayed in DM mode
+- Retain Glacier-specific chunks when RFLs loaded and re-saved in level editor
 - Add `Attach Spectate Camera` control to toggle spectate between following a player and a detached free camera
 - Add `Change Spectate View` control to switch first/third person while following a player, or free look/static camera while detached
 - Add a middle mouse toggled orbit camera to third person spectate
