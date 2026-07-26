@@ -312,6 +312,7 @@ FunHook<void()> multi_limbo_init{
             remove_hud_vote_notification();
             set_local_pre_match_active(false);
             reset_local_pit_queue_state();
+            reset_local_pit_roster();
         }
 
         if (!rf::player_list) {
@@ -334,7 +335,8 @@ FunHook<void()> multi_limbo_init{
         const auto gt = rf::multi_get_game_type();
         bool we_win = false;
 
-        if (gt == rf::NG_TYPE_DM) {
+        if (gt == rf::NG_TYPE_DM || gt == rf::NG_TYPE_PIT) {
+            // FFA modes ranked by stats->score (Pit: duel wins).
             // need at least 2 players to possibly win
             if (rf::multi_num_players() >= 2) {
                 int my_score = 0;

@@ -657,6 +657,7 @@ struct AlpineServerConfigRules
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
+    std::vector<std::string> pit_allowed_items = {"Shotgun", "rocket launcher"};
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
     GunGameConfig gungame;
@@ -690,7 +691,9 @@ struct AlpineServerConfigRules
     }
     void set_pit_score_limit(int count)
     {
-        pit_score_limit = std::clamp(count, 1, 65535);
+        // PlayerLevelStats::score is int16_t (max 32767); is_match_over fully
+        // governs rotation, so a limit above that would never be reached.
+        pit_score_limit = std::clamp(count, 1, 32767);
     }
     void set_geo_limit(int count)
     {

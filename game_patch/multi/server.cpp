@@ -1122,6 +1122,8 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
     else if (cmd_name == "hasmap" || cmd_name == "haslevel") {
         handle_has_map_command(sender, cmd_arg);
     }
+    // TODO: remove after AF 1.4 ships.
+    // legacy "/ready" chat path for AF 1.3 clients readying on 1.4 servers.
     else if (cmd_name == "ready") {
         toggle_ready_status(sender);
     }
@@ -1650,7 +1652,7 @@ void start_match()
     g_match_info.ready_players_blue.clear();
 
     for (rf::Player* player : get_clients(false, false)) {
-        af_send_ready_prompt(player, false); // match starting — clear all prompts
+        af_send_ready_prompt(player, 0); // match starting — pre-match no longer active
     }
 
     restart_current_level();
@@ -1675,7 +1677,7 @@ void cancel_match()
 
     for (rf::Player* player : get_clients(false, false)) {
         update_pre_match_powerups(player);
-        af_send_ready_prompt(player, false); // match canceled — clear all prompts
+        af_send_ready_prompt(player, 0); // match canceled — pre-match no longer active
     }
 }
 
@@ -1700,7 +1702,7 @@ void start_pre_match()
                 g_match_info.team_size, g_match_info.team_size);
 
             af_send_automated_chat_msg(msg, player);
-            af_send_ready_prompt(player, true);
+            af_send_ready_prompt(player, 1); // pre-match active — show ready prompt
         }
 
 
@@ -1730,7 +1732,7 @@ void add_ready_player(rf::Player* player)
 
     team_ready_list.insert(player);
     update_pre_match_powerups(player);
-    af_send_ready_prompt(player, false); // they're ready — hide their prompt
+    af_send_ready_prompt(player, 2); // readied — hide prompt but keep pre-match flag set
 
     auto ready_msg = std::format("{} ({}) is ready!", player->name.c_str(), team_name);
     af_broadcast_automated_chat_msg(ready_msg);
@@ -1751,11 +1753,12 @@ void add_ready_player(rf::Player* player)
 
 void remove_ready_player_silent(rf::Player* player)
 {
+    // "Silent" — no chat/prompt. Its only caller is player_destroy_hook, so the
+    // player is disconnecting; sending them a ready-prompt would just waste a
+    // reliable packet on a leaving connection. The live "unready" resync is
+    // handled by remove_ready_player instead.
     g_match_info.ready_players_red.erase(player);
     g_match_info.ready_players_blue.erase(player);
-    if (g_match_info.pre_match_active) {
-        af_send_ready_prompt(player, true); // re-show their prompt
-    }
 }
 
 void remove_ready_player(rf::Player* player)
@@ -1770,7 +1773,7 @@ void remove_ready_player(rf::Player* player)
 
     update_pre_match_powerups(player);
     if (g_match_info.pre_match_active) {
-        af_send_ready_prompt(player, true); // no longer ready — re-show their prompt
+        af_send_ready_prompt(player, 1); // no longer ready — re-show their prompt
     }
 
     auto msg_source = std::format("You are no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
@@ -1889,7 +1892,7 @@ void match_do_frame()
                         g_match_info.team_size, g_match_info.team_size,
                         g_match_info.team_size - ready_red, g_match_info.team_size - ready_blue);
                     af_send_automated_chat_msg(msg, player);
-                    af_send_ready_prompt(player, true); // belt-and-braces resync
+                    af_send_ready_prompt(player, 1); // belt-and-braces resync (show prompt)
                 }
             }
         }

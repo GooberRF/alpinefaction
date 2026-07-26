@@ -2259,7 +2259,10 @@ void multi_spectate_render() {
     int bar_w = std::min(content_w + padding_x * 2, max_bar_w);
 
     int bar_x = (scr_w - bar_w) / 2;
-    int bar_y = scr_h - (g_alpine_game_config.big_hud ? 15 : 10) - bar_h;
+    // Shared with the mode-label anchor so the two can't drift apart. Numerically
+    // identical to the old `scr_h - (big?15:10) - bar_h` here, since single-line
+    // get_string_size heights equal the font heights the helper uses.
+    int bar_y = spectate_name_plaque_top_y();
     rf::gr::set_color(0, 0, 0x00, 150);
     rf::gr::rect(bar_x, bar_y, bar_w, bar_h);
 

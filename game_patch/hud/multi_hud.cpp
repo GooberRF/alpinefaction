@@ -45,6 +45,7 @@
 #include "../misc/player.h"
 #include "../multi/alpine_packets.h"
 #include "../multi/network.h"
+#include "../multi/bots/bot_main.h"
 #include "multi_spectate.h"
 
 static bool g_big_team_scores_hud = false;
@@ -85,6 +86,29 @@ static struct {
     int pos = 0;
     int total = 0;
 } g_pit_queue_state;
+
+// Replicated Pit roster (af_pit_roster): role per player_id (0=dueler,
+// 1=queued, 2=not_queued; 0xFF = unknown/none). Drives the Pit scoreboard
+// grouping. Initialized to all-unknown.
+static std::array<uint8_t, 256> g_pit_roster_role = [] {
+    std::array<uint8_t, 256> a{};
+    a.fill(0xFF);
+    return a;
+}();
+
+// Parallel to g_pit_roster_role: 1-based queue position for queued players
+// (front = 1), 0 otherwise. Used to order the IN QUEUE scoreboard section.
+static std::array<uint8_t, 256> g_pit_roster_order{}; // all-zero = unknown
+
+// Cache for the Pit queue overlay text, so hud_pit_queue_ensure doesn't rebuild
+// the bind name + std::format string every render frame in steady state. Rebuilt
+// only when the inputs (queued/pos/total or the READY bind) change.
+static bool g_pit_queue_text_valid = false;
+static bool g_pit_queue_text_queued = false;
+static int g_pit_queue_text_pos = -1;
+static int g_pit_queue_text_total = -1;
+static std::string g_pit_queue_text_key;
+static std::string g_pit_queue_text;
 static std::string time_left_string_format = "";
 static int time_left_string_x_pos_offset = 135;
 static int time_left_string_y_pos_offset = 21;
@@ -1260,6 +1284,29 @@ bool get_local_pre_match_active() {
     return g_pre_match_active;
 }
 
+// Apply a tri-state ready-prompt signal from the server (af_sreq_ready_prompt):
+//   0 = pre-match not active: clear the flag + hide the prompt
+//   1 = pre-match active: set the flag + show the prompt
+//   2 = pre-match active, you readied: set the flag but hide the prompt (keeps
+//       g_pre_match_active true so pre-match spawn-point HUD icons stay drawn)
+void apply_ready_prompt_state(uint8_t state) {
+    switch (state) {
+    case 0:
+        set_local_pre_match_active(false); // clears flag + hides notification
+        break;
+    case 1:
+        g_pre_match_active = true;
+        draw_hud_ready_notification(true);
+        break;
+    case 2:
+        g_pre_match_active = true;
+        draw_hud_ready_notification(false);
+        break;
+    default:
+        break;
+    }
+}
+
 void set_local_pit_queue_state(bool queued, bool dueler, int pos, int total, bool spectate) {
     g_pit_queue_state.valid = true;
     g_pit_queue_state.queued = queued;
@@ -1271,6 +1318,32 @@ void set_local_pit_queue_state(bool queued, bool dueler, int pos, int total, boo
 
 void reset_local_pit_queue_state() {
     g_pit_queue_state = {};
+    g_pit_queue_text_valid = false; // force the overlay text to rebuild next time
+}
+
+void reset_local_pit_roster() {
+    g_pit_roster_role.fill(0xFF);
+    g_pit_roster_order.fill(0);
+}
+
+void set_local_pit_roster_entry(uint8_t player_id, uint8_t role, uint8_t order) {
+    g_pit_roster_role[player_id] = role;
+    g_pit_roster_order[player_id] = order;
+}
+
+// Client getter for the scoreboard: 0=dueler, 1=queued, 2=not_queued, or -1 when
+// unknown / not replicated (treated as not_queued by the scoreboard).
+int pit_scoreboard_role_for(const rf::Player* player) {
+    if (!player || !player->net_data) return -1;
+    const uint8_t role = g_pit_roster_role[player->net_data->player_id];
+    return role == 0xFF ? -1 : static_cast<int>(role);
+}
+
+// Client getter for the scoreboard: 1-based queue position for a queued player,
+// or 0 when unknown / not queued.
+int pit_scoreboard_order_for(const rf::Player* player) {
+    if (!player || !player->net_data) return 0;
+    return static_cast<int>(g_pit_roster_order[player->net_data->player_id]);
 }
 
 // Keep the persistent Pit queue overlay in sync with the latest server state,
@@ -1291,20 +1364,39 @@ static void hud_pit_queue_ensure() {
         return;
     }
 
+    // Skip all work while a higher-priority timed notification (round result,
+    // gametype help) owns the slot — the overlay returns when it expires.
+    const bool slot_free = g_hud_notification.type == HudNotificationType::None;
+    const bool slot_ours = g_hud_notification.type == HudNotificationType::Queue;
+    if (!slot_free && !slot_ours) {
+        return;
+    }
+
+    // Rebuild the overlay text only when an input changed (queue state or the
+    // READY bind); the format + bind-name lookup allocate, so we avoid doing it
+    // every frame in steady state.
     const std::string key = get_action_bind_name(
         get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
-
-    std::string text = g_pit_queue_state.queued
-        ? std::format("You are {}/{} in the queue and will play soon. Press {} to exit the queue.",
-                      g_pit_queue_state.pos, g_pit_queue_state.total, key)
-        : std::format("You are NOT queued. Press {} to enter the queue to play.", key);
+    if (!g_pit_queue_text_valid
+        || g_pit_queue_text_queued != g_pit_queue_state.queued
+        || g_pit_queue_text_pos != g_pit_queue_state.pos
+        || g_pit_queue_text_total != g_pit_queue_state.total
+        || g_pit_queue_text_key != key) {
+        g_pit_queue_text = g_pit_queue_state.queued
+            ? std::format("You are {}/{} in the queue and will play soon. Press {} to exit the queue.",
+                          g_pit_queue_state.pos, g_pit_queue_state.total, key)
+            : std::format("You are NOT queued. Press {} to enter the queue to play.", key);
+        g_pit_queue_text_valid = true;
+        g_pit_queue_text_queued = g_pit_queue_state.queued;
+        g_pit_queue_text_pos = g_pit_queue_state.pos;
+        g_pit_queue_text_total = g_pit_queue_state.total;
+        g_pit_queue_text_key = key;
+    }
 
     // Only (re)show when the slot is free or already ours with changed text, so
     // we don't reset the fade/expiry state every frame.
-    const bool slot_free = g_hud_notification.type == HudNotificationType::None;
-    const bool slot_ours = g_hud_notification.type == HudNotificationType::Queue;
-    if (slot_free || (slot_ours && g_hud_notification.text != text)) {
-        hud_notification_show(std::move(text), -1, HudNotificationType::Queue, false);
+    if (slot_free || (slot_ours && g_hud_notification.text != g_pit_queue_text)) {
+        hud_notification_show(g_pit_queue_text, -1, HudNotificationType::Queue, false);
     }
 }
 
@@ -1313,10 +1405,16 @@ static void hud_pit_queue_ensure() {
 // packet receipt because the packet can arrive before the local entity has
 // finished dying after the round-cleanup kill — the death gate below (the same
 // check multi_spectate_toggle uses) makes the retry a no-op until then. Never
-// runs on a listen-server host.
-static void hud_pit_queue_auto_spectate() {
+// runs on a listen-server host. Driven from rf_do_frame_hook (NOT the HUD
+// render path) so it still fires with cl_hud off / the HUD hidden.
+void hud_pit_queue_auto_spectate() {
     if (rf::is_server) return;
+    // Defense in depth: a headless/client bot must never auto-enter free-look
+    // (its synthetic input would spam camera drops). The server also never sends
+    // bots the spectate hint, so this only matters for a stray/legacy signal.
+    if (is_client_bot_active()) return;
     if (!rf::is_multi || rf::multi_get_game_type() != rf::NG_TYPE_PIT) return;
+    if (rf::gameseq_get_state() != rf::GS_GAMEPLAY) return;
     if (!g_pit_queue_state.valid || !g_pit_queue_state.spectate || g_pit_queue_state.dueler) return;
     if (multi_spectate_is_spectating()) return;
     if (!rf::local_player || !rf::player_is_dead(rf::local_player)) return;
@@ -1504,7 +1602,6 @@ CodeInjection multi_hud_render_patch{
         }
         s_was_bag_carrier = is_bag_carrier;
 
-        hud_pit_queue_auto_spectate();
         hud_pit_queue_ensure();
         hud_render_notification();
 
@@ -1532,6 +1629,7 @@ void multi_hud_level_init() {
     g_run_timer_fade_active = false;
     hud_notification_clear();
     reset_local_pit_queue_state();
+    reset_local_pit_roster();
     killfeed_clear();
 
     level_menu = ChatMenuList{

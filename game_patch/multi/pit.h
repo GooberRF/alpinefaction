@@ -8,6 +8,14 @@ namespace rf
     struct Entity;
 }
 
+// Replicated Pit role for the scoreboard grouping. Wire values are stable.
+enum PitRole : uint8_t
+{
+    PIT_ROLE_DUELER = 0,
+    PIT_ROLE_QUEUED = 1,
+    PIT_ROLE_NOT_QUEUED = 2,
+};
+
 // Reset all Pit state on a real level boundary. Called from the pre-level-init
 // dispatch alongside the other gametypes' level_init hooks.
 void pit_level_init();
@@ -43,6 +51,14 @@ void pit_handle_queue_request(rf::Player* player, uint8_t action);
 // any dropped weapons, so the arena only offers those two pickups.
 void pit_reset_world_items();
 
+// Recompute and send queue state (dueler / queued position) to a single
+// player. Used by the broadcast and for late-joiner initial state sync.
+void pit_send_queue_state(rf::Player* player);
+
 // Recompute and broadcast queue state (dueler / queued position) to every
-// connected non-browser player. Call on every queue/pairing mutation.
+// connected non-browser player. Call on every queue/pairing mutation. Also
+// broadcasts the full Pit roster so all clients can group the scoreboard.
 void pit_broadcast_queue_states();
+
+// Send the full Pit roster to a single player (late-joiner initial sync).
+void pit_send_roster_to(rf::Player* player);

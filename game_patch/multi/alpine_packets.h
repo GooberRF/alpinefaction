@@ -38,6 +38,7 @@ enum class af_packet_type : uint8_t
     af_server_req = 0x5E,               // Alpine 1.2.1
     af_server_bot_control = 0x5F,       // Alpine 1.3
     af_bagman_state = 0x60,             // Alpine 1.4
+    af_pit_roster = 0x61,              // Alpine 1.4
 };
 
 struct af_ping_location_req_packet
@@ -129,7 +130,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_should_gib = 0x0,
     af_sreq_teleport_entity = 0x1,  // Alpine 1.4
     af_sreq_spray = 0x2,            // Alpine 1.4
-    af_sreq_ready_prompt = 0x3,     // Alpine 1.4 (1 byte: show bool)
+    af_sreq_ready_prompt = 0x3,     // Alpine 1.4 (1 byte: state 0/1/2)
     af_sreq_pit_queue_state = 0x4,  // Alpine 1.4 (3 bytes: flags, position, total)
 };
 
@@ -163,7 +164,11 @@ static_assert(sizeof(SprayPayload) == 28);
 
 struct ReadyPromptPayload
 {
-    uint8_t show = 0; // bool: show the ready-up prompt
+    // Tri-state (1 byte on the wire):
+    //   0 = pre-match NOT active (clear flag + hide prompt)
+    //   1 = pre-match active, show the ready-up prompt
+    //   2 = pre-match active, you are ready (hide prompt, keep flag set)
+    uint8_t state = 0;
 };
 
 struct PitQueueStatePayload
@@ -277,6 +282,25 @@ struct af_koth_hill_captured_packet
     uint8_t ownership;
     uint8_t num_new_owner_players;
     //uint8_t new_owner_player_ids[]; // appended on the wire
+};
+
+// Pit roster: replicates each non-browser player's Pit role to all clients so
+// the scoreboard can group them (queued-vs-not-queued is otherwise server-only).
+// role: 0 = dueler, 1 = queued, 2 = not queued.
+// order: 1-based queue position for queued players (front = 1); 0 otherwise.
+struct af_pit_roster_entry
+{
+    uint8_t player_id;
+    uint8_t role;
+    uint8_t order;
+};
+static_assert(sizeof(af_pit_roster_entry) == 3);
+
+struct af_pit_roster_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t count;
+    //af_pit_roster_entry entries[]; // appended on the wire
 };
 
 enum af_just_died_info_flags
@@ -502,6 +526,9 @@ static void af_process_koth_hill_state_packet(const void* data, size_t len, cons
 void af_send_bagman_state_packet(rf::Player* player);
 void af_send_bagman_state_packet_to_all();
 void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_pit_roster(rf::Player* player, const std::vector<af_pit_roster_entry>& roster);
+void af_broadcast_pit_roster(const std::vector<af_pit_roster_entry>& roster);
+void af_process_pit_roster_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_koth_hill_captured_packet_to_all(uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids);
 static void af_process_koth_hill_captured_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, bool force_respawn, uint16_t spawn_delay);
@@ -537,7 +564,7 @@ void af_send_ready_request(uint8_t action);      // 0 = unready, 1 = ready, 2 = 
 void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = toggle
 
 // server -> client state (Pit + match ready system)
-void af_send_ready_prompt(rf::Player* player, bool show);
+void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)
 void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uint8_t total);
 
 // server bot control

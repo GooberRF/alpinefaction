@@ -290,16 +290,11 @@ void wipeout_on_round_cleanup()
     if (!gt_is_wipeout()) return;
 
     // Kill any survivors through the full death pipeline so the next round
-    // starts everyone fresh. Clear killer info first so no stale obituary fires.
+    // starts everyone fresh (killer info cleared so no stale obituary fires).
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_browser) continue;
         p.round_is_out = true;
-        rf::Entity* ep = rf::entity_from_handle(p.entity_handle);
-        if (ep && !rf::entity_is_dying(ep)) {
-            ep->killer_handle = 0;
-            ep->killer_netid = -1;
-            rf::entity_maybe_die(ep);
-        }
+        rounds_kill_entity_silent(rf::entity_from_handle(p.entity_handle));
     }
 
     hide_all_items();

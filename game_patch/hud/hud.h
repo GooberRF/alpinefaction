@@ -8,6 +8,11 @@
 #include <string>
 #include <string_view>
 
+namespace rf
+{
+    struct Player;
+}
+
 enum class ChatMenuType : int
 {
     None,
@@ -45,8 +50,18 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
 void draw_hud_ready_notification(bool draw);
 void set_local_pre_match_active(bool set_active);
 bool get_local_pre_match_active();
+void apply_ready_prompt_state(uint8_t state); // 0/1/2 tri-state ready-prompt signal
 void set_local_pit_queue_state(bool queued, bool dueler, int pos, int total, bool spectate);
 void reset_local_pit_queue_state();
+// Replicated Pit roster (af_pit_roster) — client-side storage + scoreboard getters.
+void reset_local_pit_roster();
+void set_local_pit_roster_entry(uint8_t player_id, uint8_t role, uint8_t order);
+int pit_scoreboard_role_for(const rf::Player* player); // 0=dueler,1=queued,2=not_queued,-1=unknown
+int pit_scoreboard_order_for(const rf::Player* player); // 1-based queue position, 0 if unknown/not-queued
+// Client per-frame: auto-enter freelook spectate for a queued Pit player when
+// the server flags it. Call from the per-frame tick (not the HUD render path)
+// so it runs even with the HUD hidden.
+void hud_pit_queue_auto_spectate();
 void multi_hud_level_init();
 void multi_hud_on_local_spawn();
 void multi_hud_reset_gametype_help();

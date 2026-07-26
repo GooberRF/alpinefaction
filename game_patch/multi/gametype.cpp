@@ -275,7 +275,7 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
         case rf::NG_TYPE_TBAG:
             return "Team Bagman: Steal and hold the bag to earn points for your team";
         case rf::NG_TYPE_PIT:
-            return "Pit: 1v1 duel rounds - winner stays on, loser goes to the back of the queue";
+            return "Pit: 1v1 duels - winner stays, loser to the back of the queue";
         case rf::NG_TYPE_WO:
             return "Wipeout: Frag all enemy players before they respawn";
         default:
@@ -2052,6 +2052,15 @@ CodeInjection send_team_score_state_info_patch{
         if (gt_is_bagman_any()) {
             if (rf::Player* pp = regs.edi) {
                 bagman_force_state_sync_to(pp);
+            }
+        }
+
+        // send Pit queue state + roster on join (delivers initial state after
+        // the client's level-init reset of the Pit client state)
+        if (gt_is_pit()) {
+            if (rf::Player* pp = regs.edi) {
+                pit_send_queue_state(pp);
+                pit_send_roster_to(pp);
             }
         }
 

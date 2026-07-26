@@ -2123,14 +2123,6 @@ bool pick_waypoint_route_to_goal_long_detour(
     );
 }
 
-bool is_client_bot_active()
-{
-    return client_bot_launch_enabled()
-        && rf::is_multi
-        && !rf::is_dedicated_server
-        && rf::gameseq_get_state() == rf::GS_GAMEPLAY;
-}
-
 const char* waypoint_type_to_string(const WaypointType type)
 {
     switch (type) {
@@ -2719,6 +2711,17 @@ bool bot_internal_is_deathmatch_mode()
 bool bot_internal_is_control_point_mode()
 {
     return bot_personality_manager_is_control_point_mode();
+}
+
+// External (declared in bot_main.h) so other modules — e.g. multi_hud.cpp's Pit
+// auto-spectate guard — can gate on it. Defined at global scope on purpose:
+// keeping it in the anonymous namespace would clash with the header declaration.
+bool is_client_bot_active()
+{
+    return client_bot_launch_enabled()
+        && rf::is_multi
+        && !rf::is_dedicated_server
+        && rf::gameseq_get_state() == rf::GS_GAMEPLAY;
 }
 
 void client_bot_render_debug()

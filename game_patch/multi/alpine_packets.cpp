@@ -151,6 +151,10 @@ bool af_process_packet(
             af_process_bagman_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
+        case af_packet_type::af_pit_roster: {
+            af_process_pit_roster_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
         default:
             return false; // ignore if unrecognized
     }
@@ -613,7 +617,7 @@ void serialize_payload(const PitQueueReqPayload& payload, std::byte* buf, size_t
 // af_sreq_ready_prompt
 void serialize_payload(const ReadyPromptPayload& payload, std::byte* buf, size_t& offset)
 {
-    buf[offset++] = static_cast<std::byte>(payload.show);
+    buf[offset++] = static_cast<std::byte>(payload.state);
 }
 
 // af_sreq_pit_queue_state
@@ -1047,14 +1051,15 @@ void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector
 
 // Show/hide the match ready-up prompt on a specific client. Listen-server host
 // applies locally; remote recipients gated on AF 1.4.
-void af_send_ready_prompt(rf::Player* player, bool show)
+void af_send_ready_prompt(rf::Player* player, uint8_t state)
 {
     if (!rf::is_server || !player) {
         return;
     }
     if (player == rf::local_player) {
-        // Listen-server host: apply locally instead of routing through the net.
-        set_local_pre_match_active(show);
+        // Listen-server host: apply locally instead of routing through the net
+        // (same 0/1/2 mapping as the remote client handler).
+        apply_ready_prompt_state(state);
         return;
     }
     if (!player->net_data) {
@@ -1066,11 +1071,29 @@ void af_send_ready_prompt(rf::Player* player, bool show)
 
     af_server_req_packet packet{};
     packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
-    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + show
+    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + state
     packet.req_type = af_server_req_type::af_sreq_ready_prompt;
-    packet.payload = ReadyPromptPayload{static_cast<uint8_t>(show ? 1 : 0)};
+    packet.payload = ReadyPromptPayload{state};
 
     af_send_server_req_packet(packet, player);
+}
+
+// Apply a Pit queue-state update on the local client. Shared by the client
+// receive path and the listen-server host local-apply. The spectate flag (bit2)
+// is stored but acted on per-frame elsewhere (hud_pit_queue_auto_spectate); it's
+// never acted on for the listen host (that check is client-only).
+static void apply_local_pit_queue_state(uint8_t flags, uint8_t pos, uint8_t total)
+{
+    const bool queued = (flags & 0x1) != 0;
+    const bool is_dueler = (flags & 0x2) != 0;
+    const bool spectate = (flags & 0x4) != 0;
+    set_local_pit_queue_state(queued, is_dueler, static_cast<int>(pos), static_cast<int>(total), spectate);
+
+    // A promoted dueler still locally spectating must leave spectate so the
+    // server's auto-spawn round-trips (af_spectate_start(self)).
+    if (is_dueler && multi_spectate_is_spectating()) {
+        multi_spectate_leave();
+    }
 }
 
 // Push a client's Pit queue state (dueler / queued position). Listen-server host
@@ -1080,16 +1103,9 @@ void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uin
     if (!rf::is_server || !player) {
         return;
     }
-    const bool is_dueler = (flags & 0x2) != 0;
     if (player == rf::local_player) {
-        // Listen-server host: apply locally. The spectate flag is stored but
-        // never acted on for the host (the auto-spectate check is client-only).
-        const bool queued = (flags & 0x1) != 0;
-        const bool spectate = (flags & 0x4) != 0;
-        set_local_pit_queue_state(queued, is_dueler, static_cast<int>(pos), static_cast<int>(total), spectate);
-        if (is_dueler && multi_spectate_is_spectating()) {
-            multi_spectate_leave();
-        }
+        // Listen-server host: apply locally instead of routing through the net.
+        apply_local_pit_queue_state(flags, pos, total);
         return;
     }
     if (!player->net_data) {
@@ -1106,6 +1122,109 @@ void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uin
     packet.payload = PitQueueStatePayload{flags, pos, total};
 
     af_send_server_req_packet(packet, player);
+}
+
+// Apply a Pit roster on the local client: clear the stored roles, then set each
+// (player_id -> role) entry. Shared by the client receive path and the
+// listen-server host local-apply.
+static void apply_local_pit_roster(const af_pit_roster_entry* entries, uint8_t count)
+{
+    reset_local_pit_roster();
+    for (uint8_t i = 0; i < count; ++i) {
+        set_local_pit_roster_entry(entries[i].player_id, entries[i].role, entries[i].order);
+    }
+}
+
+// Send the full Pit roster to one player. Listen-server host applies locally;
+// remote recipients gated on AF 1.4 (mirrors af_send_pit_queue_state).
+void af_send_pit_roster(rf::Player* player, const std::vector<af_pit_roster_entry>& roster)
+{
+    if (!rf::is_server || !player) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    const size_t max_entries =
+        (sizeof(buf) - sizeof(RF_GamePacketHeader) - sizeof(uint8_t)) / sizeof(af_pit_roster_entry);
+    const uint8_t count =
+        static_cast<uint8_t>(std::min<size_t>({roster.size(), max_entries, size_t{255}}));
+
+    if (player == rf::local_player) {
+        apply_local_pit_roster(roster.data(), count); // listen host applies locally
+        return;
+    }
+    if (!player->net_data) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        return;
+    }
+
+    size_t off = 0;
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_pit_roster);
+    header.size = static_cast<uint16_t>(sizeof(uint8_t) + count * sizeof(af_pit_roster_entry));
+    std::memcpy(buf + off, &header, sizeof(header));
+    off += sizeof(header);
+    buf[off++] = static_cast<std::byte>(count);
+    for (uint8_t i = 0; i < count; ++i) {
+        std::memcpy(buf + off, &roster[i], sizeof(af_pit_roster_entry));
+        off += sizeof(af_pit_roster_entry);
+    }
+
+    af_send_packet(player, buf, static_cast<int>(off), true); // reliable
+}
+
+void af_broadcast_pit_roster(const std::vector<af_pit_roster_entry>& roster)
+{
+    if (!rf::is_server) {
+        return;
+    }
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_browser) continue;
+        af_send_pit_roster(&player, roster);
+    }
+}
+
+void af_process_pit_roster_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+    if (len < sizeof(RF_GamePacketHeader)) {
+        return;
+    }
+
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (sizeof(RF_GamePacketHeader) + static_cast<size_t>(hdr.size) > len) {
+        xlog::warn("pit_roster: truncated (declared={}, len={})", hdr.size, len);
+        return;
+    }
+    if (hdr.size < sizeof(uint8_t)) {
+        xlog::warn("pit_roster: missing count byte");
+        return;
+    }
+
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+    size_t off = sizeof(RF_GamePacketHeader);
+    const uint8_t count = bytes[off];
+    off += sizeof(uint8_t);
+
+    // Validate the entry count against BOTH the declared payload and actual len
+    // before indexing.
+    const size_t entries_bytes = static_cast<size_t>(count) * sizeof(af_pit_roster_entry);
+    if (static_cast<size_t>(hdr.size) < sizeof(uint8_t) + entries_bytes) {
+        xlog::warn("pit_roster: count {} exceeds declared payload", count);
+        return;
+    }
+    if (off + entries_bytes > len) {
+        xlog::warn("pit_roster: truncated entries (need {}, have {})", off + entries_bytes, len);
+        return;
+    }
+
+    apply_local_pit_roster(reinterpret_cast<const af_pit_roster_entry*>(bytes + off), count);
 }
 
 static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr&)
@@ -1267,8 +1386,8 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                 xlog::warn("af_process_server_req_packet: ReadyPrompt payload too short");
                 return;
             }
-            const uint8_t show = bytes[offset];
-            set_local_pre_match_active(show != 0);
+            const uint8_t state = bytes[offset];
+            apply_ready_prompt_state(state);
             break;
         }
         case af_server_req_type::af_sreq_pit_queue_state: {
@@ -1280,18 +1399,10 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             const uint8_t flags = bytes[offset];
             const uint8_t position = bytes[offset + 1];
             const uint8_t total = bytes[offset + 2];
-            const bool queued = (flags & 0x1) != 0;
-            const bool is_dueler = (flags & 0x2) != 0;
-            const bool spectate = (flags & 0x4) != 0;
-            // The spectate flag is acted on per-frame by the HUD ensure step
-            // (the packet can arrive before the local entity finishes dying).
-            set_local_pit_queue_state(queued, is_dueler, static_cast<int>(position), static_cast<int>(total), spectate);
-
-            // A promoted dueler who is still locally spectating must leave spectate
-            // so the server's auto-spawn round-trips (af_spectate_start(self)).
-            if (is_dueler && multi_spectate_is_spectating()) {
-                multi_spectate_leave();
-            }
+            // The spectate flag (bit2) is acted on per-frame by
+            // hud_pit_queue_auto_spectate (the packet can arrive before the
+            // local entity finishes dying).
+            apply_local_pit_queue_state(flags, position, total);
             break;
         }
         default:
@@ -2181,7 +2292,11 @@ void af_process_spectate_start_packet(
     }
 
     rf::Player* const spectator = rf::multi_find_player_by_addr(addr);
-    if (!spectator) {
+    if (!spectator || spectator->is_bot) {
+        // A bot can never enter spectate: the mutually-exclusive pf_pure_status
+        // would collapse bot+spectator to just af_spectator, so clients would
+        // drop is_bot and lose the "BOT" tag. This is the sole server-side
+        // writer of is_spectator=true, so blocking here fully prevents it.
         return;
     }
 

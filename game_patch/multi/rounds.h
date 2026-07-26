@@ -5,6 +5,7 @@
 namespace rf
 {
     struct Player;
+    struct Entity;
 }
 
 enum class RoundState : uint8_t
@@ -65,7 +66,8 @@ struct RoundCallbacks
     // ends, once the winner has been credited. If set, it FULLY governs level
     // rotation: return true to rotate now (match decided), false to continue to
     // the next round regardless of cfg().max_rounds. If null, the rounds system
-    // falls back to the stock "current >= max_rounds" rotation (e.g. Pit).
+    // falls back to the stock "current >= max_rounds" rotation. (Pit and Wipeout
+    // both install this to run until a score/round-win limit instead.)
     bool (*is_match_over)() = nullptr;
 
     // Fired when a player joins while a round is already Active. The
@@ -120,6 +122,12 @@ bool rounds_is_between_rounds(); // true during post-round OR intermission
 // Force end the current round. Safe to call from anywhere; defers to next
 // frame. winner may be null. No-op outside Active state.
 void rounds_request_end(rf::Player* winner, RoundEndReason reason);
+
+// Kill an entity through the full death pipeline with killer info cleared, so
+// no stale obituary/credit fires. No-op if the entity is null or already dying.
+// Shared teardown used by round-based gametypes (between-round cleanup,
+// forfeits). Server-side.
+void rounds_kill_entity_silent(rf::Entity* ep);
 
 // Install engine hooks.
 void rounds_do_patch();

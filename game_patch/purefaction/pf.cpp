@@ -50,12 +50,15 @@ void send_pf_player_stats_packet(rf::Player* player)
         pf_player_stats_packet::player_stats out_stats{};
         out_stats.player_id = current_player.net_data->player_id;
         const pf_pure_status pure_status = std::invoke([&] {
-            if (current_player.is_spectator) {
-                return pf_pure_status::af_spectator;
-            } else if (current_player.is_bot) {
+            // Check is_bot FIRST: the pure_status values are mutually exclusive,
+            // so a bot must always report as a bot (keeping its "BOT" tag) even
+            // if is_spectator were somehow set — bots can't legitimately spectate.
+            if (current_player.is_bot) {
                 return current_player.is_spawn_disabled
                     ? pf_pure_status::af_spawn_disabled_bot
                     : pf_pure_status::af_bot;
+            } else if (current_player.is_spectator) {
+                return pf_pure_status::af_spectator;
             } else if (current_player.is_browser) {
                 return pf_pure_status::rfsb;
             } else if (player_is_idle(&current_player)) {

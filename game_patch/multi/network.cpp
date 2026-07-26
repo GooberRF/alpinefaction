@@ -254,7 +254,8 @@ enum packet_type : uint8_t {
     af_server_msg          = 0x5D,
     af_server_req          = 0x5E,
     af_server_bot_control  = 0x5F,
-    af_bagman_state        = 0x60
+    af_bagman_state        = 0x60,
+    af_pit_roster          = 0x61
 };
 
 // client -> server
@@ -340,7 +341,8 @@ std::array g_client_side_packet_whitelist{
     af_server_msg,
     af_server_req,
     af_server_bot_control,
-    af_bagman_state
+    af_bagman_state,
+    af_pit_roster
 };
 // clang-format on
 
@@ -850,6 +852,9 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
             return;
         }
     }
+    
+    // TODO: remove after AF 1.4 ships — the two ready-up blocks below drive the
+    // ready prompt from server chat text for AF 1.3 clients on 1.4 servers.
 
     // For initial match queue
     if (string_istarts_with(msg, "\n>>>>>>>>>>>>>>>>> ")) {
@@ -872,6 +877,7 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
             return;
         }
     }
+    // --- ready-up compat end ---
 }
 
 void handle_sound_msg(const std::string_view msg) {

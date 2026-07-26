@@ -4,9 +4,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <xlog/xlog.h>
 #include <common/utils/list-utils.h>
-#include <common/utils/string-utils.h>
+#include <common/utils/iterable-utils.h>
 #include "pit.h"
 #include "rounds.h"
 #include "gametype.h"
@@ -32,6 +33,7 @@ struct PitInfo
     std::deque<rf::Player*> queue; // waiting players, front = next up (duelers are NOT in here)
     rf::Player* dueler[2] = {};    // current pairing; slot 0 == champion seat
     bool duel_started = false;     // latched once BOTH duelers have alive entities this round
+    bool match_decided = false;    // latched once a winner reaches the score limit (survives a winner DC)
 };
 
 PitInfo g_pit;
@@ -65,9 +67,14 @@ bool player_is_loaded(rf::Player* p)
 // Eligible to be queued/dueled: a real (non-browser) player who hasn't opted
 // out. Note we intentionally do NOT exclude engine spectators — queued players
 // may be spectating, and we clear their spectator fields when promoting them.
+// Spawn-disabled bots are excluded: the spawn hook denies their spawn before
+// Pit's internal-spawn bypass, so seating one would stall the round. Once a bot
+// is re-enabled, the auto-enqueue pass picks it up again.
 bool is_eligible(rf::Player* p)
 {
-    return p && !p->is_browser && !p->pit_queue_opt_out;
+    if (!p || p->is_browser || p->pit_queue_opt_out) return false;
+    if (p->is_bot && p->is_spawn_disabled) return false;
+    return true;
 }
 
 bool is_dueler(rf::Player* p)
@@ -77,7 +84,7 @@ bool is_dueler(rf::Player* p)
 
 bool in_queue(rf::Player* p)
 {
-    return std::find(g_pit.queue.begin(), g_pit.queue.end(), p) != g_pit.queue.end();
+    return iterable_contains(g_pit.queue, p);
 }
 
 bool player_still_connected(rf::Player* p)
@@ -91,10 +98,7 @@ bool player_still_connected(rf::Player* p)
 
 void erase_from_queue(rf::Player* p)
 {
-    auto it = std::remove(g_pit.queue.begin(), g_pit.queue.end(), p);
-    if (it != g_pit.queue.end()) {
-        g_pit.queue.erase(it, g_pit.queue.end());
-    }
+    std::erase(g_pit.queue, p);
 }
 
 // 1-based position of p among the waiting queue (0 if not queued) and the
@@ -113,17 +117,25 @@ void queue_position(rf::Player* p, int& pos, int& total)
     }
 }
 
-// Drop invalid entries from the front of the queue, then pop and return the
-// first still-connected, still-eligible player (nullptr if none remain).
+// Scan the queue front-to-back: discard disconnected/ineligible entries, but
+// leave eligible-but-still-loading players in place (they keep their queue
+// position and get seated once loaded), and erase + return the first LOADED
+// eligible player. Returns nullptr if none are loaded yet — the slot is left
+// empty and pit_can_round_start (which requires 2 loaded) gates the round.
 rf::Player* pop_queue_front()
 {
-    while (!g_pit.queue.empty()) {
-        rf::Player* p = g_pit.queue.front();
+    size_t i = 0;
+    while (i < g_pit.queue.size()) {
+        rf::Player* p = g_pit.queue[i];
         if (!player_still_connected(p) || !is_eligible(p)) {
-            g_pit.queue.pop_front();
+            g_pit.queue.erase(g_pit.queue.begin() + i); // remove; don't advance
             continue;
         }
-        g_pit.queue.pop_front();
+        if (!player_is_loaded(p)) {
+            ++i; // still loading — keep their place, skip past for now
+            continue;
+        }
+        g_pit.queue.erase(g_pit.queue.begin() + i);
         return p;
     }
     return nullptr;
@@ -144,23 +156,20 @@ void clear_spectator_fields(rf::Player* p)
     p->spectate_start_time = std::nullopt;
 }
 
-// Validate/fill both dueler slots. Slot 0 keeps its current champion when they
-// are still connected + eligible, otherwise it's refilled from the queue front;
-// slot 1 is filled from the queue front. Only assigns slots — never spawns.
+// Validate/fill both dueler slots. Slot 0 is the "champion seat" by convention
+// (on_round_end parks the winner there), but the fill logic is identical for
+// both slots: keep the current occupant if still connected + eligible,
+// otherwise pop the next queued player. Only assigns slots — never spawns.
 void select_pairing()
 {
-    if (g_pit.dueler[0] && (!player_still_connected(g_pit.dueler[0]) || !is_eligible(g_pit.dueler[0]))) {
-        g_pit.dueler[0] = nullptr;
-    }
-    if (!g_pit.dueler[0]) {
-        g_pit.dueler[0] = pop_queue_front();
-    }
-
-    if (g_pit.dueler[1] && (!player_still_connected(g_pit.dueler[1]) || !is_eligible(g_pit.dueler[1]))) {
-        g_pit.dueler[1] = nullptr;
-    }
-    if (!g_pit.dueler[1]) {
-        g_pit.dueler[1] = pop_queue_front();
+    for (int i = 0; i < 2; ++i) {
+        rf::Player*& slot = g_pit.dueler[i];
+        if (slot && (!player_still_connected(slot) || !is_eligible(slot))) {
+            slot = nullptr;
+        }
+        if (!slot) {
+            slot = pop_queue_front();
+        }
     }
 }
 
@@ -207,12 +216,16 @@ void pit_on_round_begin()
 
     // Match point: if either dueler is one duel win away from the score limit,
     // play the "one kill remaining" announcer cue for everyone in the server.
+    // Guarded on limit >= 2 so a score_limit of 1 (where score-1 == 0) doesn't
+    // fire the cue every round.
     const int score_limit = g_alpine_server_config_active_rules.pit_score_limit;
-    for (int i = 0; i < 2; ++i) {
-        rf::Player* p = g_pit.dueler[i];
-        if (p && p->stats && p->stats->score == score_limit - 1) {
-            af_broadcast_play_custom_sound(custom_sound_id::ann_one_kill_left);
-            break;
+    if (score_limit >= 2) {
+        for (int i = 0; i < 2; ++i) {
+            rf::Player* p = g_pit.dueler[i];
+            if (p && p->stats && p->stats->score == score_limit - 1) {
+                af_broadcast_play_custom_sound(custom_sound_id::ann_one_kill_left);
+                break;
+            }
         }
     }
 
@@ -245,10 +258,10 @@ bool pit_should_end_round(rf::Player** out_winner)
                 continue;
             }
 
+            // Duelers are never in the queue (pop removes them, auto-enqueue
+            // skips them), so the popped replacement can't collide with the
+            // other slot — no dupe-check needed.
             rf::Player* repl = pop_queue_front();
-            while (repl && repl == g_pit.dueler[1 - i]) {
-                repl = pop_queue_front();
-            }
             if (!repl) {
                 return true; // *out_winner stays null: round abandoned
             }
@@ -300,15 +313,19 @@ void pit_on_round_end(rf::Player* winner, RoundEndReason reason)
     if (winner) {
         // Kill-driven scoring is suppressed for Pit (gt_uses_custom_scoring), so
         // this is the only place the scoreboard field changes.
-        rf::player_add_score(winner, 1);
+        if (winner->stats) {
+            rf::player_add_score(winner, 1);
+        }
         af_broadcast_hud_notification(
             std::format("{} wins the duel (round {}).", winner->name.c_str(), rounds_get_current()),
             3, static_cast<int>(HudNotificationType::Round), true);
 
         // Announce the match result up front if this duel decided it; the
         // rounds system rotates the level once the celebration window closes
-        // (governed by our is_match_over arbiter).
+        // (governed by our is_match_over arbiter). Latch it so rotation still
+        // happens if the winner disconnects during the post-round window.
         if (winner->stats && winner->stats->score >= g_alpine_server_config_active_rules.pit_score_limit) {
+            g_pit.match_decided = true;
             af_broadcast_hud_notification(
                 std::format("{} wins the match!", winner->name.c_str()),
                 4, static_cast<int>(HudNotificationType::Round), true);
@@ -382,16 +399,11 @@ void pit_on_round_cleanup()
     if (!gt_is_pit()) return;
 
     // Kill any survivors through the full death pipeline so the next round
-    // starts everyone fresh. Clear killer info first so no stale obituary fires.
+    // starts everyone fresh (killer info cleared so no stale obituary fires).
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_browser) continue;
         p.round_is_out = true;
-        rf::Entity* ep = rf::entity_from_handle(p.entity_handle);
-        if (ep && !rf::entity_is_dying(ep)) {
-            ep->killer_handle = 0;
-            ep->killer_netid = -1;
-            rf::entity_maybe_die(ep);
-        }
+        rounds_kill_entity_silent(rf::entity_from_handle(p.entity_handle));
     }
 
     pit_reset_world_items();
@@ -440,6 +452,9 @@ bool pit_is_match_over()
     // The match ends (and the level rotates) once any player has reached the
     // duel-win score limit. As the registered is_match_over arbiter this fully
     // governs rotation — the stock max_rounds fallback is not used for Pit.
+    // The latch covers the case where the deciding winner disconnects during
+    // the post-round window (they'd no longer be in the live scan below).
+    if (g_pit.match_decided) return true;
     const int limit = g_alpine_server_config_active_rules.pit_score_limit;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_browser) continue;
@@ -496,30 +511,23 @@ void pit_do_frame()
 
     bool queue_changed = false;
 
-    // (a) Auto-enqueue: any connected non-browser player who hasn't opted out,
-    //     isn't a dueler, and isn't already queued joins the back of the queue.
+    // (a) Auto-enqueue: any eligible player (non-browser, not opted out, not a
+    //     spawn-disabled bot) who isn't a dueler and isn't already queued joins
+    //     the back of the queue. A bot re-enabled later is picked up here.
+    //     Queue integrity on disconnect is owned by pit_on_player_disconnect
+    //     (fires on every player destroy; also nulls dueler slots), so no
+    //     per-frame prune is needed here.
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_browser) continue;
-        if (p.pit_queue_opt_out) continue;
+        if (!is_eligible(&p)) continue;
         if (is_dueler(&p)) continue;
         if (in_queue(&p)) continue;
         g_pit.queue.push_back(&p);
         queue_changed = true;
     }
 
-    // (b) Defensively prune any disconnected pointers from the queue.
-    {
-        auto it = std::remove_if(g_pit.queue.begin(), g_pit.queue.end(),
-                                 [](rf::Player* p) { return !player_still_connected(p); });
-        if (it != g_pit.queue.end()) {
-            g_pit.queue.erase(it, g_pit.queue.end());
-            queue_changed = true;
-        }
-    }
-
     if (queue_changed) pit_broadcast_queue_states();
 
-    // (c) During an active round, auto-spawn any dueler who is loaded, not out,
+    // (b) During an active round, auto-spawn any dueler who is loaded, not out,
     //     and lacks a live entity (handles the round-start / backfill spawns).
     if (rounds_is_active()) {
         g_internal_spawn_in_progress = true;
@@ -554,26 +562,39 @@ bool pit_can_player_spawn(rf::Player* player)
     // pre-round warmup can seed entities.
     if (rounds_get_state() == RoundState::Inactive) return true;
 
-    auto throttle = [&](std::string_view msg) {
-        if (!player->waiting_msg_timer.valid() || player->waiting_msg_timer.elapsed()) {
-            af_send_automated_chat_msg(msg, player);
-            player->waiting_msg_timer.set(3000);
-        }
+    // The client re-requests a spawn every frame while fire is held, so throttle
+    // the denial notice. Check the gate BEFORE building any message so a denied
+    // spawn costs only a timer read in steady state.
+    const bool throttle_open =
+        !player->waiting_msg_timer.valid() || player->waiting_msg_timer.elapsed();
+    auto send_throttled = [&](std::string_view msg) {
+        af_send_automated_chat_msg(msg, player);
+        player->waiting_msg_timer.set(3000);
     };
 
     if (rounds_is_between_rounds()) {
-        throttle("Wait - the next duel is starting shortly.");
+        if (throttle_open) send_throttled("Wait - the next duel is starting shortly.");
         return false;
     }
 
     if (player->round_is_out) {
-        if (player->pit_queue_opt_out) {
-            throttle("You are not queued. Press your Ready key to join the queue.");
-        }
-        else {
-            int pos = 0, total = 0;
-            queue_position(player, pos, total);
-            throttle(std::format("You're in the queue ({}/{}). You'll play when it's your turn.", pos, total));
+        if (throttle_open) {
+            if (player->pit_queue_opt_out) {
+                send_throttled("You are not queued. Press your Ready key to join the queue.");
+            }
+            else {
+                int pos = 0, total = 0;
+                queue_position(player, pos, total);
+                if (pos > 0) {
+                    send_throttled(std::format(
+                        "You're in the queue ({}/{}). You'll play when it's your turn.", pos, total));
+                }
+                else {
+                    // Not enqueued yet (e.g. just went round_is_out this frame) —
+                    // avoid the misleading "(0/N)" with a neutral line.
+                    send_throttled("Waiting for your turn in the queue.");
+                }
+            }
         }
         return false;
     }
@@ -594,6 +615,9 @@ void pit_on_entity_will_die(rf::Entity* ep)
 
 void pit_on_player_disconnect(rf::Player* player)
 {
+    // Gate to Pit so we don't broadcast Pit packets in other gametypes (g_pit is
+    // empty outside Pit anyway). Matches bagman_on_player_disconnect convention.
+    if (!rf::is_server || !gt_is_pit()) return;
     if (!player) return;
 
     erase_from_queue(player);
@@ -618,50 +642,77 @@ void pit_handle_queue_request(rf::Player* player, uint8_t action)
         want_join = (action != 0);
     }
 
+    // Only broadcast when the request actually mutates state — no-ops (join
+    // while already queued, leave while already opted out) must not fan out a
+    // reliable broadcast to every client.
+    bool changed = false;
+
     if (!want_join) {
         // Opting out.
-        player->pit_queue_opt_out = true;
-        erase_from_queue(player);
+        if (!player->pit_queue_opt_out) {
+            player->pit_queue_opt_out = true;
+            changed = true;
+        }
+        if (in_queue(player)) {
+            erase_from_queue(player);
+            changed = true;
+        }
 
         if (is_dueler(player) && rounds_is_active()) {
             // Active dueler forfeits: kill their entity (killer cleared) so
             // should_end_round awards the other dueler on the next tick.
             player->round_is_out = true;
-            rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
-            if (ep && !rf::entity_is_dying(ep)) {
-                ep->killer_handle = 0;
-                ep->killer_netid = -1;
-                rf::entity_maybe_die(ep);
-            }
+            rounds_kill_entity_silent(rf::entity_from_handle(player->entity_handle));
             af_send_automated_chat_msg("You forfeited the duel.", player);
+            changed = true;
         }
         else if (is_dueler(player)) {
             // Pre-selected dueler between rounds: just clear the slot; the next
             // on_round_begin backfills from the queue.
             for (int i = 0; i < 2; ++i) {
-                if (g_pit.dueler[i] == player) g_pit.dueler[i] = nullptr;
+                if (g_pit.dueler[i] == player) {
+                    g_pit.dueler[i] = nullptr;
+                    changed = true;
+                }
             }
         }
     }
     else {
         // Opting in.
-        player->pit_queue_opt_out = false;
+        if (player->pit_queue_opt_out) {
+            player->pit_queue_opt_out = false;
+            changed = true;
+        }
         if (!is_dueler(player) && !in_queue(player)) {
             g_pit.queue.push_back(player);
+            changed = true;
         }
     }
 
-    pit_broadcast_queue_states();
+    if (changed) pit_broadcast_queue_states();
 }
 
 void pit_reset_world_items()
 {
     if (!rf::is_server) return;
 
-    // Keep only Shotgun / Rocket Launcher level pickups; hide everything else.
-    // Dropped weapons (IF_DROPPED) are removed from clients via the apply-packet
-    // + obj_flag_dead pair. CTF flags are skipped. The engine's periodic
-    // visibility broadcast replicates hide/unhide of level items to clients.
+    // Resolve the configured allowed-item cls_names to item type indices ONCE
+    // per reset (the established item_lookup_type pattern). Comparing
+    // it->info_index against these resolved indices — rather than matching
+    // cls_name strings — respects the item_replacements config (a replaced
+    // Shotgun still resolves to the same type) and lets ops run all-items /
+    // sniper Pit via pit_allowed_items.
+    std::vector<int> allowed_indices;
+    allowed_indices.reserve(g_alpine_server_config_active_rules.pit_allowed_items.size());
+    for (const std::string& name : g_alpine_server_config_active_rules.pit_allowed_items) {
+        const int idx = rf::item_lookup_type(name.c_str());
+        if (idx >= 0) allowed_indices.push_back(idx);
+    }
+
+    // Keep only the allowed level pickups; hide everything else. Dropped weapons
+    // (IF_DROPPED) are removed from clients via the apply-packet + obj_flag_dead
+    // pair. CTF flags are skipped. The engine's periodic visibility broadcast
+    // replicates hide/unhide of level items to clients.
     rf::Item* it = rf::item_list.next;
     while (it && it != &rf::item_list) {
         rf::Item* next = it->next;
@@ -674,13 +725,9 @@ void pit_reset_world_items()
             rf::obj_flag_dead(it);
         }
         else if (!is_ctf_flag) {
-            // Item class names per items.tbl: "Shotgun" and "rocket launcher"
-            // (case-insensitive match).
-            bool allowed = false;
-            if (it->info) {
-                allowed = string_iequals(it->info->cls_name, "Shotgun")
-                       || string_iequals(it->info->cls_name, "rocket launcher");
-            }
+            const bool allowed =
+                std::find(allowed_indices.begin(), allowed_indices.end(), it->info_index)
+                != allowed_indices.end();
             it->respawn_next.invalidate();
             if (allowed) {
                 rf::obj_unhide(it);
@@ -693,35 +740,79 @@ void pit_reset_world_items()
     }
 }
 
+void pit_send_queue_state(rf::Player* p)
+{
+    if (!rf::is_server || !p || p->is_browser) return;
+
+    const uint8_t total = static_cast<uint8_t>(std::min<size_t>(g_pit.queue.size(), 255));
+
+    uint8_t flags = 0;
+    uint8_t position = 0;
+    if (is_dueler(p)) {
+        flags |= 0x2; // bit1 = is_dueler
+    }
+    else {
+        int pos = 0, tot = 0;
+        queue_position(p, pos, tot);
+        if (pos > 0) {
+            flags |= 0x1; // bit0 = queued
+            position = static_cast<uint8_t>(std::min(pos, 255));
+            // Queued players auto-spectate once rounds are running. Never during
+            // Inactive — the pre-round warmup keeps everyone alive and playing,
+            // and the client-side spectate entry would kill their entity. Bots
+            // are real clients but must NEVER be told to spectate: in free-look
+            // their synthetic secondary-attack input spams camera drops. bit0
+            // (queued) still applies so bots show correctly on the scoreboard.
+            if (!p->is_bot && rounds_get_state() != RoundState::Inactive) {
+                flags |= 0x4; // bit2 = should spectate
+            }
+        }
+    }
+    af_send_pit_queue_state(p, flags, position, total);
+}
+
+// Server-authoritative roster: role for every non-browser player with a valid
+// net_data id. is_dueler/in_queue are TU-visible (anonymous-namespace helpers).
+static std::vector<af_pit_roster_entry> build_pit_roster()
+{
+    std::vector<af_pit_roster_entry> roster;
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (p.is_browser) continue;
+        if (!p.net_data) continue;
+        uint8_t role = PIT_ROLE_NOT_QUEUED;
+        uint8_t order = 0; // 1-based queue position for queued players; 0 otherwise
+        if (is_dueler(&p)) {
+            role = PIT_ROLE_DUELER;
+        }
+        else {
+            int pos = 0, tot = 0;
+            queue_position(&p, pos, tot); // pos = 1-based deque index, 0 if not queued
+            if (pos > 0) {
+                role = PIT_ROLE_QUEUED;
+                order = static_cast<uint8_t>(std::min(pos, 255));
+            }
+        }
+        roster.push_back(af_pit_roster_entry{p.net_data->player_id, role, order});
+    }
+    return roster;
+}
+
 void pit_broadcast_queue_states()
 {
     if (!rf::is_server) return;
 
-    const uint8_t total = static_cast<uint8_t>(std::min<size_t>(g_pit.queue.size(), 255));
-
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_browser) continue;
-
-        uint8_t flags = 0;
-        uint8_t position = 0;
-        if (is_dueler(&p)) {
-            flags |= 0x2; // bit1 = is_dueler
-        }
-        else {
-            int pos = 0, tot = 0;
-            queue_position(&p, pos, tot);
-            if (pos > 0) {
-                flags |= 0x1; // bit0 = queued
-                position = static_cast<uint8_t>(std::min(pos, 255));
-                // Queued players auto-spectate once rounds are running. Never
-                // during Inactive — the pre-round warmup keeps everyone alive
-                // and playing, and the client-side spectate entry would kill
-                // their entity.
-                if (rounds_get_state() != RoundState::Inactive) {
-                    flags |= 0x4; // bit2 = should spectate
-                }
-            }
-        }
-        af_send_pit_queue_state(&p, flags, position, total);
+        pit_send_queue_state(&p);
     }
+
+    // Keep the roster (scoreboard grouping) in lockstep with per-player queue
+    // state — broadcast it here on every mutation.
+    af_broadcast_pit_roster(build_pit_roster());
+}
+
+void pit_send_roster_to(rf::Player* player)
+{
+    if (!rf::is_server || !player) return;
+    af_send_pit_roster(player, build_pit_roster());
 }

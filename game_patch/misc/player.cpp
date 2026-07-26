@@ -263,6 +263,17 @@ FunHook<void(rf::Player*)> player_destroy_hook{
                 g_select_weapon_done_timestamp[player->net_data->player_id].invalidate();
             }
         }
+        // Before the engine frees this player, drop any dangling spectatee
+        // back-reference other players hold to it. The engine frees net_data
+        // without nulling these, so a stale spectatee pointer would be a
+        // use-after-free (e.g. Pit's clear_spectator_fields notify, or
+        // af_process_spectate_start_packet's old_target notify).
+        for (rf::Player& other : SinglyLinkedList{rf::player_list}) {
+            if (&other == player) continue;
+            if (other.spectatee.value_or(nullptr) == player) {
+                other.spectatee = std::nullopt;
+            }
+        }
         player_destroy_hook.call_target(player);
     },
 };

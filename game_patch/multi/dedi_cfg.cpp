@@ -499,10 +499,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.weapon_infinite_magazines = true;
             rules.default_player_weapon.set_weapon("Assault Rifle");
 
-            // 1 minute duels. Match length is governed by pit_score_limit
-            // (default 10 duel wins; see pit_is_match_over) rather than a
-            // fixed round count.
-            rules.rounds.round_time = 60; // 1 minute duels
+            rules.rounds.round_time = 90;
             rules.rounds.set_post_round_time(3);
             rules.rounds.set_intermission_time(3);
             break;
@@ -740,6 +737,18 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
                 }
             }
         }
+    }
+
+    // Pit allowed level items (array of item cls_name strings). Replaces the
+    // default {Shotgun, rocket launcher} when present.
+    if (auto arr = t["pit_allowed_items"].as_array()) {
+        std::vector<std::string> allowed;
+        for (auto& node : *arr) {
+            if (auto value = node.value<std::string>()) {
+                allowed.emplace_back(std::move(*value));
+            }
+        }
+        o.pit_allowed_items = std::move(allowed);
     }
 
     if (auto sub = t["force_character"].as_table())
@@ -1806,6 +1815,14 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  DC team score limit:                   {}\n", rules.dc_score_limit);
     if (base || rules.pit_score_limit != b.pit_score_limit)
         std::format_to(iter, "  PIT player score limit:                {}\n", rules.pit_score_limit);
+    if (base || rules.pit_allowed_items != b.pit_allowed_items) {
+        std::string joined;
+        for (size_t i = 0; i < rules.pit_allowed_items.size(); ++i) {
+            if (i) joined += ", ";
+            joined += rules.pit_allowed_items[i];
+        }
+        std::format_to(iter, "  PIT allowed items:                     {}\n", joined);
+    }
     if (base || rules.bagman.bag_score_limit != b.bagman.bag_score_limit)
         std::format_to(iter, "  BAG player score limit:                {}\n", rules.bagman.bag_score_limit);
     if (base || rules.bagman.tbag_score_limit != b.bagman.tbag_score_limit)
