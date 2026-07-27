@@ -161,10 +161,12 @@ namespace rf
             return data + num;
         }
 
-        ~VArray_String()
-        {
-            delete[] data;
-        }
+        // No destructor on purpose: `data` is owned by the RF engine (allocated and
+        // grown by the stock VArray::add at 0x00447060), so it must never be freed
+        // here. C++ delete[] on an engine-allocated buffer is an allocator/heap
+        // mismatch — tolerated under MSVC (AF shares RF's MSVCRT heap) but corrupts
+        // on MinGW builds (libstdc++ delete[] expects a C++ array cookie / different
+        // heap), which crashed dedicated servers via rf::netgame.levels.
     };
     static_assert(sizeof(VArray_String<>) == 0xC);
 

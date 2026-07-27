@@ -1,12 +1,7 @@
 #include <ctime>
 #include <vector>
 #include <cstdint>
-#include <cstdlib>
 #include <format>
-#include <typeinfo>
-#ifdef __GNUC__
-#include <cxxabi.h> // abi::__cxa_demangle for the __cxa_throw hook (MinGW/GCC only)
-#endif
 #include <windows.h>
 #include <shellapi.h>
 #include <common/config/GameConfig.h>
@@ -195,48 +190,6 @@ LONG WINAPI af_diag_veh(EXCEPTION_POINTERS* info)
 
 } // namespace
 
-#ifdef __GNUC__
-// MinGW/GCC C++ throws go through __cxa_throw and, with DWARF-2 EH, raise no OS
-// exception — so the vectored handler above never sees them. Hook __cxa_throw in
-// our own module to log every throw (type name + AF stack) at its origin, before
-// any unwinding. This is where the MinGW dedicated-server crash may originate.
-//
-// libstdc++ is statically linked in this build (the DLL imports MSVCRT, not
-// libstdc++-6.dll), so __cxa_throw lives inside this module and can't be found
-// via GetProcAddress. Declaring `__cxa_throw` directly conflicts with GCC's
-// internal builtin prototype regardless of the signature used, so we instead
-// reference the symbol under a private C++ name via an asm label: there is no
-// declaration of the identifier `__cxa_throw`, hence nothing to conflict, and it
-// resolves to the in-module symbol. The type-info arg is taken as void* (GCC's
-// builtin types it that way) and cast back inside the hook.
-extern "C" void af_diag_cxa_throw(void* thrown_object, void* tinfo, void (*dest)(void*)) asm("__cxa_throw");
-
-static volatile long g_af_diag_in_throw = 0;
-
-static FunHook<void(void*, void*, void (*)(void*))> cxa_throw_hook{
-    reinterpret_cast<uintptr_t>(&af_diag_cxa_throw),
-    [](void* thrown_object, void* tinfo, void (*dest)(void*)) {
-        // Guard against re-entry if our own logging path throws.
-        if (!InterlockedExchange(&g_af_diag_in_throw, 1)) {
-            const long seq = InterlockedIncrement(&g_af_diag_seq);
-            const auto* ti = static_cast<const std::type_info*>(tinfo);
-            const char* mangled = ti ? ti->name() : "(no type_info)";
-            int status = -1;
-            char* demangled = ti ? abi::__cxa_demangle(mangled, nullptr, nullptr, &status) : nullptr;
-            xlog::warn("[AF-DIAG #{}] C++ throw of type '{}'", seq,
-                       (demangled && status == 0) ? demangled : mangled);
-            std::free(demangled); // free(nullptr) is a no-op
-            volatile int stack_anchor = 0;
-            af_diag_scan_af_frames(seq, reinterpret_cast<uintptr_t>(&stack_anchor));
-            xlog::LoggerConfig::get().flush_appenders();
-            InterlockedExchange(&g_af_diag_in_throw, 0);
-        }
-        cxa_throw_hook.call_target(thrown_object, tinfo, dest); // unwinds; never returns
-        __builtin_unreachable();
-    },
-};
-#endif // __GNUC__
-
 static void install_crash_diagnostics()
 {
     // Record this DLL's address range so the stack scan can pick out AF frames.
@@ -250,10 +203,6 @@ static void install_crash_diagnostics()
         g_af_diag_end = g_af_diag_base + nt->OptionalHeader.SizeOfImage;
     }
     AddVectoredExceptionHandler(1 /* call first */, &af_diag_veh);
-#ifdef __GNUC__
-    cxa_throw_hook.install(); // log MinGW C++ throws at their source
-    xlog::warn("[AF-DIAG] __cxa_throw hook armed (C++ throw logging)");
-#endif
     xlog::warn("[AF-DIAG] first-chance exception logging armed (AlpineFaction.dll base 0x{:08X}, size 0x{:X})",
                g_af_diag_base, static_cast<uint32_t>(g_af_diag_end - g_af_diag_base));
 }
