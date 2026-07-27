@@ -7,6 +7,8 @@
 
 namespace rf
 {
+    class String;
+
     template<typename T = char>
     class VArray
     {
@@ -152,9 +154,16 @@ namespace rf
             // a pointer where the engine expects the raw struct — storing garbage in the
             // array and making the engine free() a garbage pointer (this poisoned RF's
             // CRT heap and crashed MinGW dedicated servers at launch). Pass the raw
-            // 8 bytes explicitly — identical layout under both compilers — then zero
-            // `element` so no destructor re-frees the buffer the engine now owns.
-            static_assert(std::is_same_v<T, String>, "engine add() at 0x00447060 is String-specific");
+            // 8 bytes explicitly — identical layout under both compilers. The engine
+            // copy-assigns those bytes into its own slot buffer and frees the buffer
+            // the passed String pointed at, taking ownership; the memset then zeroes
+            // `element` so the ABI-designated destruction of the by-value parameter —
+            // MSVC runs it in this function's epilogue, GCC/MinGW in the caller — is a
+            // harmless no-op instead of a double free.
+            static_assert(std::is_same_v<T, String>,
+                "VArray_String::add requires T = rf::String: engine routine 0x00447060 copy-assigns the pushed "
+                "8 bytes via String::operator= and destroys them via ~String (freeing bytes 4-7 as a char* "
+                "buffer), so any other 8-byte T compiles but corrupts the heap at runtime");
             static_assert(sizeof(T) == 8);
             uint32_t raw[2];
             std::memcpy(raw, &element, sizeof(raw));
@@ -176,13 +185,6 @@ namespace rf
         {
             return data + num;
         }
-
-        // No destructor on purpose: `data` is owned by the RF engine (allocated and
-        // grown by the stock VArray::add at 0x00447060), so it must never be freed
-        // here. C++ delete[] on an engine-allocated buffer is an allocator/heap
-        // mismatch — tolerated under MSVC (AF shares RF's MSVCRT heap) but corrupts
-        // on MinGW builds (libstdc++ delete[] expects a C++ array cookie / different
-        // heap), which crashed dedicated servers via rf::netgame.levels.
     };
     static_assert(sizeof(VArray_String<>) == 0xC);
 
