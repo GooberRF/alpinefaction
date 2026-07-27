@@ -52,6 +52,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add the ability to drop reusable static cameras in free look spectate, then cycle level-placed and player-dropped cameras in static camera view
 - Add numpad quick-binds to jump directly to bound players or cameras while spectating, with dropped cameras and binds persisted per level
 - Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
+- Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Anti-aliasing` option to `ADVANCED` options panel
