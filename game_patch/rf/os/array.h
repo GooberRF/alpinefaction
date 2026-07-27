@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <cstring>
 //#include "string.h"
 
 namespace rf
@@ -143,7 +145,19 @@ namespace rf
 
         void add(T element)
         {
-            AddrCaller{0x00447060}.this_call(this, element);
+            // 0x00447060 takes the 8-byte String BY VALUE on the stack and destroys it
+            // (MSVC x86 callee-destroys ABI). GCC/MinGW passes non-trivial classes by
+            // hidden reference instead, so forwarding `element` through this_call pushed
+            // a pointer where the engine expects the raw struct — storing garbage in the
+            // array and making the engine free() a garbage pointer (this poisoned RF's
+            // CRT heap and crashed MinGW dedicated servers at launch). Pass the raw
+            // 8 bytes explicitly — identical layout under both compilers — then zero
+            // `element` so no destructor re-frees the buffer the engine now owns.
+            static_assert(sizeof(T) == 8);
+            uint32_t raw[2];
+            std::memcpy(raw, &element, sizeof(raw));
+            AddrCaller{0x00447060}.this_call(this, raw[0], raw[1]);
+            std::memset(&element, 0, sizeof(raw));
         }
 
         T& operator[](int index)
