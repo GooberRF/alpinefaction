@@ -1,9 +1,14 @@
 #pragma once
 
+#include <cstdint>
+#include <cstring>
+#include <type_traits>
 //#include "string.h"
 
 namespace rf
 {
+    class String;
+
     template<typename T = char>
     class VArray
     {
@@ -143,7 +148,27 @@ namespace rf
 
         void add(T element)
         {
-            AddrCaller{0x00447060}.this_call(this, element);
+            // 0x00447060 takes the 8-byte String BY VALUE on the stack and destroys it
+            // (MSVC x86 callee-destroys ABI). GCC/MinGW passes non-trivial classes by
+            // hidden reference instead, so forwarding `element` through this_call pushed
+            // a pointer where the engine expects the raw struct — storing garbage in the
+            // array and making the engine free() a garbage pointer (this poisoned RF's
+            // CRT heap and crashed MinGW dedicated servers at launch). Pass the raw
+            // 8 bytes explicitly — identical layout under both compilers. The engine
+            // copy-assigns those bytes into its own slot buffer and frees the buffer
+            // the passed String pointed at, taking ownership; the memset then zeroes
+            // `element` so the ABI-designated destruction of the by-value parameter —
+            // MSVC runs it in this function's epilogue, GCC/MinGW in the caller — is a
+            // harmless no-op instead of a double free.
+            static_assert(std::is_same_v<T, String>,
+                "VArray_String::add requires T = rf::String: engine routine 0x00447060 copy-assigns the pushed "
+                "8 bytes via String::operator= and destroys them via ~String (freeing bytes 4-7 as a char* "
+                "buffer), so any other 8-byte T compiles but corrupts the heap at runtime");
+            static_assert(sizeof(T) == 8);
+            uint32_t raw[2];
+            std::memcpy(raw, &element, sizeof(raw));
+            AddrCaller{0x00447060}.this_call(this, raw[0], raw[1]);
+            std::memset(&element, 0, sizeof(raw));
         }
 
         T& operator[](int index)
@@ -159,11 +184,6 @@ namespace rf
         T* end()
         {
             return data + num;
-        }
-
-        ~VArray_String()
-        {
-            delete[] data;
         }
     };
     static_assert(sizeof(VArray_String<>) == 0xC);
