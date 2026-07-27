@@ -1,7 +1,12 @@
 #include <ctime>
 #include <vector>
 #include <cstdint>
+#include <cstdlib>
 #include <format>
+#include <typeinfo>
+#ifdef __GNUC__
+#include <cxxabi.h> // abi::__cxa_demangle for the __cxa_throw hook (MinGW/GCC only)
+#endif
 #include <windows.h>
 #include <shellapi.h>
 #include <common/config/GameConfig.h>
@@ -107,6 +112,28 @@ std::string af_diag_addr_to_str(uintptr_t addr)
     return std::format("0x{:08X}", addr);
 }
 
+// Scan the stack upward from `sp` for return addresses into AlpineFaction.dll and
+// log them as `AlpineFaction.dll+offset`. RF's boot loop omits the frame pointer,
+// so a plain EBP walk can't reach AF code; this recovers it regardless.
+void af_diag_scan_af_frames(long seq, uintptr_t sp)
+{
+    if (!g_af_diag_base || !g_af_diag_end) {
+        return;
+    }
+    int found = 0;
+    for (uintptr_t p = sp; p < sp + 0x3000 && found < 48; p += sizeof(uintptr_t)) {
+        if (IsBadReadPtr(reinterpret_cast<void*>(p), sizeof(uintptr_t))) {
+            break;
+        }
+        const uintptr_t v = *reinterpret_cast<uintptr_t*>(p);
+        if (v >= g_af_diag_base && v < g_af_diag_end) {
+            xlog::warn("[AF-DIAG #{}]   stack+0x{:04X} -> AlpineFaction.dll+0x{:X}",
+                       seq, static_cast<uint32_t>(p - sp), v - g_af_diag_base);
+            ++found;
+        }
+    }
+}
+
 LONG WINAPI af_diag_veh(EXCEPTION_POINTERS* info)
 {
     const EXCEPTION_RECORD* rec = info->ExceptionRecord;
@@ -158,23 +185,8 @@ LONG WINAPI af_diag_veh(EXCEPTION_POINTERS* info)
     }
 
     // Raw stack scan for return addresses into AlpineFaction.dll. RF's boot loop
-    // has no EBP frame, so the chain above breaks before reaching AF code; this
-    // recovers AF return addresses regardless of frame-pointer omission.
-    if (g_af_diag_base && g_af_diag_end) {
-        const uintptr_t sp = ctx->Esp;
-        int found = 0;
-        for (uintptr_t p = sp; p < sp + 0x3000 && found < 48; p += sizeof(uintptr_t)) {
-            if (IsBadReadPtr(reinterpret_cast<void*>(p), sizeof(uintptr_t))) {
-                break;
-            }
-            const uintptr_t v = *reinterpret_cast<uintptr_t*>(p);
-            if (v >= g_af_diag_base && v < g_af_diag_end) {
-                xlog::warn("[AF-DIAG #{}]   stack+0x{:04X} -> AlpineFaction.dll+0x{:X}",
-                           seq, static_cast<uint32_t>(p - sp), v - g_af_diag_base);
-                ++found;
-            }
-        }
-    }
+    // has no EBP frame, so the EBP chain above breaks before reaching AF code.
+    af_diag_scan_af_frames(seq, ctx->Esp);
 
     xlog::LoggerConfig::get().flush_appenders();
     InterlockedExchange(&g_af_diag_in_handler, 0);
@@ -182,6 +194,32 @@ LONG WINAPI af_diag_veh(EXCEPTION_POINTERS* info)
 }
 
 } // namespace
+
+#ifdef __GNUC__
+// MinGW/GCC C++ throws go through __cxa_throw and, with DWARF-2 EH, raise no OS
+// exception — so the vectored handler above never sees them. Hook __cxa_throw in
+// our own module to log every throw (type name + AF stack) at its origin, before
+// any unwinding. This is where the MinGW dedicated-server crash may originate.
+extern "C" void __cxa_throw(void* thrown_object, std::type_info* tinfo, void (*dest)(void*));
+
+static FunHook<void(void*, std::type_info*, void (*)(void*))> cxa_throw_hook{
+    reinterpret_cast<uintptr_t>(&__cxa_throw),
+    [](void* thrown_object, std::type_info* tinfo, void (*dest)(void*)) {
+        const long seq = InterlockedIncrement(&g_af_diag_seq);
+        const char* mangled = tinfo ? tinfo->name() : "(no type_info)";
+        int status = -1;
+        char* demangled = tinfo ? abi::__cxa_demangle(mangled, nullptr, nullptr, &status) : nullptr;
+        xlog::warn("[AF-DIAG #{}] C++ throw of type '{}'", seq,
+                   (demangled && status == 0) ? demangled : mangled);
+        std::free(demangled); // free(nullptr) is a no-op
+        volatile int stack_anchor = 0;
+        af_diag_scan_af_frames(seq, reinterpret_cast<uintptr_t>(&stack_anchor));
+        xlog::LoggerConfig::get().flush_appenders();
+        cxa_throw_hook.call_target(thrown_object, tinfo, dest); // unwinds; never returns
+        __builtin_unreachable();
+    },
+};
+#endif // __GNUC__
 
 static void install_crash_diagnostics()
 {
@@ -196,6 +234,10 @@ static void install_crash_diagnostics()
         g_af_diag_end = g_af_diag_base + nt->OptionalHeader.SizeOfImage;
     }
     AddVectoredExceptionHandler(1 /* call first */, &af_diag_veh);
+#ifdef __GNUC__
+    cxa_throw_hook.install(); // log MinGW C++ throws at their source
+    xlog::warn("[AF-DIAG] __cxa_throw hook armed (C++ throw logging)");
+#endif
     xlog::warn("[AF-DIAG] first-chance exception logging armed (AlpineFaction.dll base 0x{:08X}, size 0x{:X})",
                g_af_diag_base, static_cast<uint32_t>(g_af_diag_end - g_af_diag_base));
 }
