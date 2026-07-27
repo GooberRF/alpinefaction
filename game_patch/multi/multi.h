@@ -110,6 +110,7 @@ struct AlpineFactionServerInfo
     bool clear_stale_movement_input = false;
     bool was_manual_level_load = false;
     bool allow_sprays = false;
+    bool match_mode = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

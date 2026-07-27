@@ -251,6 +251,38 @@ bool gt_is_wipeout()
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_WO;
 }
 
+const char* multi_gametype_help_text(rf::NetGameType game_type)
+{
+    switch (game_type) {
+        case rf::NG_TYPE_DM:
+            return "Deathmatch: Frag everyone, free for all";
+        case rf::NG_TYPE_CTF:
+            return "Capture the Flag: Steal the the enemy flag and take it to your base";
+        case rf::NG_TYPE_TEAMDM:
+            return "Team Deathmatch: Frag everyone on the enemy team";
+        case rf::NG_TYPE_KOTH:
+            return "King of the Hill: Capture and hold the hill to earn points for your team";
+        case rf::NG_TYPE_DC:
+            return "Damage Control: Capture and hold control points to earn points for your team";
+        case rf::NG_TYPE_REV:
+            return "Revolt: Red attacks and captures control points in order, Blue defends";
+        case rf::NG_TYPE_RUN:
+            return "Run: Finish the course as fast as you can";
+        case rf::NG_TYPE_ESC:
+            return "Escalation: Capture control points in the path toward the enemy base";
+        case rf::NG_TYPE_BAG:
+            return "Bagman: Steal and hold the bag to earn points";
+        case rf::NG_TYPE_TBAG:
+            return "Team Bagman: Steal and hold the bag to earn points for your team";
+        case rf::NG_TYPE_LMS:
+            return "Last Miner Standing: One life per round";
+        case rf::NG_TYPE_WO:
+            return "Wipeout: Frag all enemy players before they respawn";
+        default:
+            return nullptr;
+    }
+}
+
 bool gt_uses_custom_scoring()
 {
     return gt_is_bagman_any() || gt_is_lms() || gt_is_wipeout();

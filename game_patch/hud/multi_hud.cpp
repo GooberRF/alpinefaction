@@ -81,6 +81,7 @@ static rf::Color time_left_string_color = {0, 255, 0, 255};
 static rf::TimestampRealtime g_run_life_start_timestamp;
 static bool g_run_timer_reset_by_respawn_key = false;
 static bool g_run_timer_fade_active = false;
+static int g_gt_help_last_shown_type = -1;
 int g_multi_hud_cp_strip_y = 0;
 
 void multi_hud_update_timer_color()
@@ -1873,6 +1874,16 @@ ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
 };
 
+ConsoleCommand2 ui_gametype_help_cmd{
+    "ui_gametype_help",
+    [] {
+        g_alpine_game_config.show_gametype_help = !g_alpine_game_config.show_gametype_help;
+        rf::console::print("Gametype help notification is {}", g_alpine_game_config.show_gametype_help ? "enabled" : "disabled");
+    },
+    "Toggle the gametype help notification shown when spawning on a server",
+    "ui_gametype_help",
+};
+
 ConsoleCommand2 ui_miniscoreboard_cmd{
     "ui_minisb_dm",
     [] {
@@ -1952,6 +1963,7 @@ void multi_hud_apply_patches()
     ui_playernames_cmd.register_cmd();
     ui_verbosetimer_cmd.register_cmd();
     ui_runtimer_cmd.register_cmd();
+    ui_gametype_help_cmd.register_cmd();
     ui_miniscoreboard_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();
@@ -1971,6 +1983,25 @@ void multi_hud_on_local_spawn()
         }
         g_run_timer_reset_by_respawn_key = false;
     }
+
+    if (rf::is_multi && !rf::is_dedicated_server) {
+        if (static_cast<int>(rf::netgame.type) != g_gt_help_last_shown_type) {
+            // Consume the one-shot, never fire again until the type changes.
+            g_gt_help_last_shown_type = static_cast<int>(rf::netgame.type);
+            const auto& af_info = get_af_server_info();
+            const bool match_mode = af_info.has_value() && af_info->match_mode;
+            if (g_alpine_game_config.show_gametype_help && !g_pre_match_active && !match_mode) {
+                if (const char* text = multi_gametype_help_text(rf::netgame.type)) {
+                    hud_notification_show(text, 10, HudNotificationType::GametypeHelp, true);
+                }
+            }
+        }
+    }
+}
+
+void multi_hud_reset_gametype_help()
+{
+    g_gt_help_last_shown_type = -1;
 }
 
 void multi_hud_reset_run_gt_timer(bool triggered_by_respawn_key)

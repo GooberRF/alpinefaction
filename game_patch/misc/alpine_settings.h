@@ -122,6 +122,7 @@ struct AlpineGameSettings
     bool gaussian_spread = false;
     bool geo_chunk_physics = true;
     bool show_run_timer = true;
+    bool show_gametype_help = true;
     bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
     bool damage_screen_flash = true;

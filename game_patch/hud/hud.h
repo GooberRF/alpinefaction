@@ -22,7 +22,8 @@ enum class HudNotificationType : int
     None = 0,
     ReadyUp,
     BagCarrier,
-    Round,  // round-based gametypes (LMS countdown, round start, milestones)
+    Round,          // round-based gametypes (countdown, round start, milestones)
+    GametypeHelp,   // local only, never initiated by server
 };
 
 void hud_notification_show(std::string text, int duration_seconds, HudNotificationType type, bool fade_on_expire);
@@ -44,6 +45,7 @@ void draw_hud_ready_notification(bool draw);
 void set_local_pre_match_active(bool set_active);
 void multi_hud_level_init();
 void multi_hud_on_local_spawn();
+void multi_hud_reset_gametype_help();
 void multi_hud_reset_run_gt_timer(bool triggered_by_respawn_key);
 void multi_hud_update_timer_color();
 void toggle_chat_menu(ChatMenuType state);
