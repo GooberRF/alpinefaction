@@ -200,15 +200,22 @@ LONG WINAPI af_diag_veh(EXCEPTION_POINTERS* info)
 // exception — so the vectored handler above never sees them. Hook __cxa_throw in
 // our own module to log every throw (type name + AF stack) at its origin, before
 // any unwinding. This is where the MinGW dedicated-server crash may originate.
-extern "C" void __cxa_throw(void* thrown_object, std::type_info* tinfo, void (*dest)(void*));
+//
+// The second parameter is declared void* (not std::type_info*) on purpose: GCC's
+// front-end builtin prototype for __cxa_throw uses ptr_type_node (void*) for it,
+// so declaring std::type_info* here triggers "conflicting declaration of
+// __cxa_throw". We cast it back to std::type_info* inside the hook. Same C symbol
+// either way, so it still links to the real libstdc++ __cxa_throw.
+extern "C" void __cxa_throw(void* thrown_object, void* tinfo, void (*dest)(void*));
 
-static FunHook<void(void*, std::type_info*, void (*)(void*))> cxa_throw_hook{
+static FunHook<void(void*, void*, void (*)(void*))> cxa_throw_hook{
     reinterpret_cast<uintptr_t>(&__cxa_throw),
-    [](void* thrown_object, std::type_info* tinfo, void (*dest)(void*)) {
+    [](void* thrown_object, void* tinfo, void (*dest)(void*)) {
         const long seq = InterlockedIncrement(&g_af_diag_seq);
-        const char* mangled = tinfo ? tinfo->name() : "(no type_info)";
+        const auto* ti = static_cast<const std::type_info*>(tinfo);
+        const char* mangled = ti ? ti->name() : "(no type_info)";
         int status = -1;
-        char* demangled = tinfo ? abi::__cxa_demangle(mangled, nullptr, nullptr, &status) : nullptr;
+        char* demangled = ti ? abi::__cxa_demangle(mangled, nullptr, nullptr, &status) : nullptr;
         xlog::warn("[AF-DIAG #{}] C++ throw of type '{}'", seq,
                    (demangled && status == 0) ? demangled : mangled);
         std::free(demangled); // free(nullptr) is a no-op
