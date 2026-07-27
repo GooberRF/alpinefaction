@@ -126,6 +126,13 @@ void af_diag_scan_af_frames(long seq, uintptr_t sp)
                        seq, static_cast<uint32_t>(p - sp), v - g_af_diag_base);
             ++found;
         }
+        // TEMP diagnostics: also surface return addresses into RF.exe .text so the
+        // bogus-free call site can be resolved in the RF.exe image.
+        else if (v >= 0x00401000 && v < 0x00589000) {
+            xlog::warn("[AF-DIAG #{}]   stack+0x{:04X} -> RF.exe+0x{:X}",
+                       seq, static_cast<uint32_t>(p - sp), v - 0x00400000);
+            ++found;
+        }
     }
 }
 
@@ -190,6 +197,40 @@ LONG WINAPI af_diag_veh(EXCEPTION_POINTERS* info)
 
 } // namespace
 
+// TEMP diagnostics: guard hook on RF.exe's CRT free (0x00573C71, cdecl void
+// free(void*)). MinGW dedicated-server builds poison RF's CRT heap by passing a
+// bogus pointer to free(); the crash then fires later inside RtlFreeHeap writing
+// into RF .text (0x00575EB0). Trap the ORIGINAL bogus free at its call site:
+// validate the pointer's page before letting RF free it, and skip (do NOT free)
+// anything that isn't a committed, writable, non-image page — that prevents the
+// heap poisoning and logs the offending call stack.
+static FunHook<void(void*)> rf_crt_free_guard_hook{
+    0x00573C71,
+    [](void* ptr) {
+        if (!ptr) {
+            rf_crt_free_guard_hook.call_target(ptr);
+            return;
+        }
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT ||
+            mbi.Type == MEM_IMAGE ||
+            (mbi.Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) == 0) {
+            static int bogus_count = 0;
+            if (bogus_count < 50) {
+                ++bogus_count;
+                long seq = InterlockedIncrement(&g_af_diag_seq);
+                xlog::warn("[AF-DIAG #{}] BOGUS free(0x{:08X}) State=0x{:X} Type=0x{:X} Protect=0x{:X} - SKIPPED",
+                           seq, reinterpret_cast<uintptr_t>(ptr), (uint32_t)mbi.State, (uint32_t)mbi.Type,
+                           (uint32_t)mbi.Protect);
+                af_diag_scan_af_frames(seq, reinterpret_cast<uintptr_t>(&ptr));
+                xlog::LoggerConfig::get().flush_appenders();
+            }
+            return; // skip the free — that's the point: prevent the poisoning
+        }
+        rf_crt_free_guard_hook.call_target(ptr);
+    },
+};
+
 static void install_crash_diagnostics()
 {
     // Record this DLL's address range so the stack scan can pick out AF frames.
@@ -205,6 +246,8 @@ static void install_crash_diagnostics()
     AddVectoredExceptionHandler(1 /* call first */, &af_diag_veh);
     xlog::warn("[AF-DIAG] first-chance exception logging armed (AlpineFaction.dll base 0x{:08X}, size 0x{:X})",
                g_af_diag_base, static_cast<uint32_t>(g_af_diag_end - g_af_diag_base));
+    rf_crt_free_guard_hook.install();
+    xlog::warn("[AF-DIAG] RF CRT free guard armed (0x00573C71)");
 }
 
 CallHook<void()> rf_init_hook{
