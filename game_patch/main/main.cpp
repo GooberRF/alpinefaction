@@ -1,5 +1,7 @@
 #include <ctime>
 #include <vector>
+#include <cstdint>
+#include <format>
 #include <windows.h>
 #include <shellapi.h>
 #include <common/config/GameConfig.h>
@@ -73,6 +75,131 @@ void initialize_random_generator() {
     g_rng.seed(static_cast<unsigned long>(seed));
 }
 
+// ============================================================================
+// TEMPORARY crash diagnostics (remove once the MinGW dedicated-server launch
+// crash is pinned). A first-chance vectored exception handler logs the ORIGINAL
+// faulting instruction + a stack walk at xlog::warn BEFORE the process's SEH
+// unwinder runs. In MinGW builds that unwinder corrupts memory and hides the
+// real fault behind a secondary "write to RF .text" crash, so catching it
+// first-chance is the only way to see the true site. Everything is rendered as
+// `module+offset` so AlpineFaction.dll frames can be resolved in Ghidra.
+// ============================================================================
+namespace {
+
+uintptr_t g_af_diag_base = 0;
+uintptr_t g_af_diag_end = 0;
+volatile long g_af_diag_seq = 0;
+volatile long g_af_diag_in_handler = 0;
+
+std::string af_diag_addr_to_str(uintptr_t addr)
+{
+    HMODULE mod = nullptr;
+    if (addr && GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(addr), &mod) && mod) {
+        char path[MAX_PATH] = {};
+        GetModuleFileNameA(mod, path, sizeof(path));
+        const char* base = std::strrchr(path, '\\');
+        base = base ? base + 1 : path;
+        const uintptr_t off = addr - reinterpret_cast<uintptr_t>(mod);
+        return std::format("{}+0x{:X}", base, off);
+    }
+    return std::format("0x{:08X}", addr);
+}
+
+LONG WINAPI af_diag_veh(EXCEPTION_POINTERS* info)
+{
+    const EXCEPTION_RECORD* rec = info->ExceptionRecord;
+    const DWORD code = rec->ExceptionCode;
+    // Only error-severity exceptions (access violations 0xC0000005, MSVC C++
+    // throws 0xE06D7363, etc.). Skip breakpoints/status codes to avoid noise.
+    if ((code & 0xC0000000u) != 0xC0000000u) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+    // Re-entrancy guard: if logging itself faults, don't recurse.
+    if (InterlockedExchange(&g_af_diag_in_handler, 1)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const long seq = InterlockedIncrement(&g_af_diag_seq);
+    const CONTEXT* ctx = info->ContextRecord;
+    const uintptr_t fault_ip = reinterpret_cast<uintptr_t>(rec->ExceptionAddress);
+
+    xlog::warn("[AF-DIAG #{}] first-chance exception 0x{:08X} at {}",
+               seq, code, af_diag_addr_to_str(fault_ip));
+    if (code == EXCEPTION_ACCESS_VIOLATION && rec->NumberParameters >= 2) {
+        const auto kind = rec->ExceptionInformation[0];
+        const char* op = kind == 1 ? "write" : (kind == 8 ? "execute" : "read");
+        xlog::warn("[AF-DIAG #{}]   {} to 0x{:08X}", seq, op,
+                   static_cast<uint32_t>(rec->ExceptionInformation[1]));
+    }
+    xlog::warn("[AF-DIAG #{}]   EAX={:08X} EBX={:08X} ECX={:08X} EDX={:08X} ESI={:08X} EDI={:08X}",
+               seq, ctx->Eax, ctx->Ebx, ctx->Ecx, ctx->Edx, ctx->Esi, ctx->Edi);
+    xlog::warn("[AF-DIAG #{}]   EIP={:08X} ESP={:08X} EBP={:08X}",
+               seq, ctx->Eip, ctx->Esp, ctx->Ebp);
+    // Flush the essential fault info now, in case the stack walk below faults.
+    xlog::LoggerConfig::get().flush_appenders();
+
+    // Walk the EBP frame chain (valid for functions with a normal frame).
+    uintptr_t ebp = ctx->Ebp;
+    for (int i = 0; i < 24 && ebp; ++i) {
+        if (IsBadReadPtr(reinterpret_cast<void*>(ebp), sizeof(uintptr_t) * 2)) {
+            break;
+        }
+        const uintptr_t ret = *reinterpret_cast<uintptr_t*>(ebp + sizeof(uintptr_t));
+        const uintptr_t next = *reinterpret_cast<uintptr_t*>(ebp);
+        if (ret) {
+            xlog::warn("[AF-DIAG #{}]   ebp-frame[{}] {}", seq, i, af_diag_addr_to_str(ret));
+        }
+        if (next <= ebp) {
+            break; // stack grows down; a valid saved EBP must increase
+        }
+        ebp = next;
+    }
+
+    // Raw stack scan for return addresses into AlpineFaction.dll. RF's boot loop
+    // has no EBP frame, so the chain above breaks before reaching AF code; this
+    // recovers AF return addresses regardless of frame-pointer omission.
+    if (g_af_diag_base && g_af_diag_end) {
+        const uintptr_t sp = ctx->Esp;
+        int found = 0;
+        for (uintptr_t p = sp; p < sp + 0x3000 && found < 48; p += sizeof(uintptr_t)) {
+            if (IsBadReadPtr(reinterpret_cast<void*>(p), sizeof(uintptr_t))) {
+                break;
+            }
+            const uintptr_t v = *reinterpret_cast<uintptr_t*>(p);
+            if (v >= g_af_diag_base && v < g_af_diag_end) {
+                xlog::warn("[AF-DIAG #{}]   stack+0x{:04X} -> AlpineFaction.dll+0x{:X}",
+                           seq, static_cast<uint32_t>(p - sp), v - g_af_diag_base);
+                ++found;
+            }
+        }
+    }
+
+    xlog::LoggerConfig::get().flush_appenders();
+    InterlockedExchange(&g_af_diag_in_handler, 0);
+    return EXCEPTION_CONTINUE_SEARCH; // observe only; let normal handling proceed
+}
+
+} // namespace
+
+static void install_crash_diagnostics()
+{
+    // Record this DLL's address range so the stack scan can pick out AF frames.
+    HMODULE self = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&install_crash_diagnostics), &self) && self) {
+        g_af_diag_base = reinterpret_cast<uintptr_t>(self);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(self);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(g_af_diag_base + dos->e_lfanew);
+        g_af_diag_end = g_af_diag_base + nt->OptionalHeader.SizeOfImage;
+    }
+    AddVectoredExceptionHandler(1 /* call first */, &af_diag_veh);
+    xlog::warn("[AF-DIAG] first-chance exception logging armed (AlpineFaction.dll base 0x{:08X}, size 0x{:X})",
+               g_af_diag_base, static_cast<uint32_t>(g_af_diag_end - g_af_diag_base));
+}
+
 CallHook<void()> rf_init_hook{
     0x004B27CD,
     [] {
@@ -104,17 +231,25 @@ void execute_startup_scripts() {
 CodeInjection after_full_game_init_hook{
     0x004B26C6,
     []() {
+        xlog::warn("[AF-DIAG] after_full_game_init: begin"); // TEMP breadcrumb
         multi_spectate_after_full_game_init();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
         experimental_init_after_game();
 #endif
+        xlog::warn("[AF-DIAG] after_full_game_init: pre console_init"); // TEMP breadcrumb
         console_init();
+        xlog::warn("[AF-DIAG] after_full_game_init: pre multi_after_full_game_init"); // TEMP breadcrumb
         multi_after_full_game_init();
+        xlog::warn("[AF-DIAG] after_full_game_init: pre debug_init"); // TEMP breadcrumb
         debug_init();
+        xlog::warn("[AF-DIAG] after_full_game_init: pre load_world_hud_assets"); // TEMP breadcrumb
         if (!is_headless_mode()) {
             load_world_hud_assets();
         }
+        xlog::warn("[AF-DIAG] after_full_game_init: pre execute_startup_scripts"); // TEMP breadcrumb
         execute_startup_scripts();
+        xlog::warn("[AF-DIAG] after_full_game_init: end"); // TEMP breadcrumb
+        xlog::LoggerConfig::get().flush_appenders(); // TEMP: flush breadcrumbs
 
         xlog::info("Game fully initialized");
         xlog::LoggerConfig::get().flush_appenders();
@@ -544,6 +679,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     // Init logging and crash dump support first
     init_logging();
     init_crash_handler();
+    install_crash_diagnostics(); // TEMP: first-chance fault logging for the MinGW dedi crash
 
     // Init random number generator
     initialize_random_generator();
