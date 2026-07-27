@@ -1,6 +1,5 @@
 #include <ctime>
 #include <vector>
-#include <cstdint>
 #include <windows.h>
 #include <shellapi.h>
 #include <common/config/GameConfig.h>
