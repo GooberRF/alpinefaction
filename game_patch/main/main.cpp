@@ -201,27 +201,36 @@ LONG WINAPI af_diag_veh(EXCEPTION_POINTERS* info)
 // our own module to log every throw (type name + AF stack) at its origin, before
 // any unwinding. This is where the MinGW dedicated-server crash may originate.
 //
-// The second parameter is declared void* (not std::type_info*) on purpose: GCC's
-// front-end builtin prototype for __cxa_throw uses ptr_type_node (void*) for it,
-// so declaring std::type_info* here triggers "conflicting declaration of
-// __cxa_throw". We cast it back to std::type_info* inside the hook. Same C symbol
-// either way, so it still links to the real libstdc++ __cxa_throw.
-extern "C" void __cxa_throw(void* thrown_object, void* tinfo, void (*dest)(void*));
+// libstdc++ is statically linked in this build (the DLL imports MSVCRT, not
+// libstdc++-6.dll), so __cxa_throw lives inside this module and can't be found
+// via GetProcAddress. Declaring `__cxa_throw` directly conflicts with GCC's
+// internal builtin prototype regardless of the signature used, so we instead
+// reference the symbol under a private C++ name via an asm label: there is no
+// declaration of the identifier `__cxa_throw`, hence nothing to conflict, and it
+// resolves to the in-module symbol. The type-info arg is taken as void* (GCC's
+// builtin types it that way) and cast back inside the hook.
+extern "C" void af_diag_cxa_throw(void* thrown_object, void* tinfo, void (*dest)(void*)) asm("__cxa_throw");
+
+static volatile long g_af_diag_in_throw = 0;
 
 static FunHook<void(void*, void*, void (*)(void*))> cxa_throw_hook{
-    reinterpret_cast<uintptr_t>(&__cxa_throw),
+    reinterpret_cast<uintptr_t>(&af_diag_cxa_throw),
     [](void* thrown_object, void* tinfo, void (*dest)(void*)) {
-        const long seq = InterlockedIncrement(&g_af_diag_seq);
-        const auto* ti = static_cast<const std::type_info*>(tinfo);
-        const char* mangled = ti ? ti->name() : "(no type_info)";
-        int status = -1;
-        char* demangled = ti ? abi::__cxa_demangle(mangled, nullptr, nullptr, &status) : nullptr;
-        xlog::warn("[AF-DIAG #{}] C++ throw of type '{}'", seq,
-                   (demangled && status == 0) ? demangled : mangled);
-        std::free(demangled); // free(nullptr) is a no-op
-        volatile int stack_anchor = 0;
-        af_diag_scan_af_frames(seq, reinterpret_cast<uintptr_t>(&stack_anchor));
-        xlog::LoggerConfig::get().flush_appenders();
+        // Guard against re-entry if our own logging path throws.
+        if (!InterlockedExchange(&g_af_diag_in_throw, 1)) {
+            const long seq = InterlockedIncrement(&g_af_diag_seq);
+            const auto* ti = static_cast<const std::type_info*>(tinfo);
+            const char* mangled = ti ? ti->name() : "(no type_info)";
+            int status = -1;
+            char* demangled = ti ? abi::__cxa_demangle(mangled, nullptr, nullptr, &status) : nullptr;
+            xlog::warn("[AF-DIAG #{}] C++ throw of type '{}'", seq,
+                       (demangled && status == 0) ? demangled : mangled);
+            std::free(demangled); // free(nullptr) is a no-op
+            volatile int stack_anchor = 0;
+            af_diag_scan_af_frames(seq, reinterpret_cast<uintptr_t>(&stack_anchor));
+            xlog::LoggerConfig::get().flush_appenders();
+            InterlockedExchange(&g_af_diag_in_throw, 0);
+        }
         cxa_throw_hook.call_target(thrown_object, tinfo, dest); // unwinds; never returns
         __builtin_unreachable();
     },
