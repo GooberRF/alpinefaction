@@ -241,8 +241,8 @@ namespace rf
         int last_packet_received;
         int last_packet_sent;
         NetReliableSocketStatus status;
-        uint16_t oursequence;
-        uint16_t theirsequence;
+        uint16_t theirsequence; // 0x67e: tracks the remote's sequence (window-checked on receive)
+        uint16_t oursequence;   // 0x680: our outgoing counter, stamped into ssequence and bumped per send
         rf::NetAddr net_addr;
         int pings[10];
         uint8_t ping_pos;

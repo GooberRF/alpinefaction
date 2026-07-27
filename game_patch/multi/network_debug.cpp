@@ -7,7 +7,6 @@
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
-#include "../rf/os/timer.h"
 #include "../os/os.h"
 
 // -----------------------------------------------------------------------------
@@ -57,12 +56,16 @@ static const char* reliable_socket_status_name(int status)
 }
 
 // Throttle: at most one log per socket per second (each site passes its own array).
-static bool reliable_drop_should_log(int socket_id, int* last_warn_ms)
+// Uses AF's 64-bit monotonic timer (timer::get_i64) rather than the engine's 32-bit
+// timer::get: the 32-bit value deliberately truncates get_i64 and rolls over ~every
+// 24.8 days of uptime, whereas the 64-bit ms count effectively never wraps, so the
+// elapsed subtraction below is always correct without any wrap-handling.
+static bool reliable_drop_should_log(int socket_id, int64_t* last_warn_ms)
 {
     if (socket_id < 0 || socket_id >= rf::NET_MAX_REL_SOCKETS) {
         return true;
     }
-    int now = rf::timer::get(1000);
+    int64_t now = timer::get_i64(1000);
     if (last_warn_ms[socket_id] == 0 || now - last_warn_ms[socket_id] >= 1000) {
         last_warn_ms[socket_id] = now;
         return true;
@@ -109,7 +112,7 @@ static const char* reliable_packet_type_name(int type)
 static CodeInjection net_rel_send_window_saturated_injection{
     0x0052A3A7,
     [](auto& regs) {
-        static int last_warn_ms[rf::NET_MAX_REL_SOCKETS] = {};
+        static int64_t last_warn_ms[rf::NET_MAX_REL_SOCKETS] = {};
         rf::NetReliableSocket* sock = regs.ebx;
         int id = static_cast<int>(sock - rf::net_rel_sockets);
         if (!reliable_drop_should_log(id, last_warn_ms)) {
@@ -133,8 +136,8 @@ static CodeInjection net_rel_send_window_saturated_injection{
 static CodeInjection net_rel_send_not_connected_injection{
     0x0052A373,
     [](auto& regs) {
-        static int last_debug_ms[rf::NET_MAX_REL_SOCKETS] = {};
-        static int last_warn_ms[rf::NET_MAX_REL_SOCKETS] = {};
+        static int64_t last_debug_ms[rf::NET_MAX_REL_SOCKETS] = {};
+        static int64_t last_warn_ms[rf::NET_MAX_REL_SOCKETS] = {};
         int id = static_cast<int>(regs.eax);
         int status = static_cast<int>(regs.ecx);
         bool expected = (status == 5 /*CONNECTING*/ || status == 0 /*EMPTY*/);
@@ -163,7 +166,7 @@ static CodeInjection net_rel_send_not_connected_injection{
 static CodeInjection net_rel_send_window_high_water_injection{
     0x0052A3BC,
     [](auto& regs) {
-        static int last_warn_ms[rf::NET_MAX_REL_SOCKETS] = {};
+        static int64_t last_warn_ms[rf::NET_MAX_REL_SOCKETS] = {};
         constexpr int high_water = 60; // of 75 in-flight
         rf::NetReliableSocket* sock = regs.ebx;
         int in_flight = 1; // counting the packet about to be queued
