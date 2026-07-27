@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 //#include "string.h"
 
 namespace rf
@@ -153,6 +154,7 @@ namespace rf
             // CRT heap and crashed MinGW dedicated servers at launch). Pass the raw
             // 8 bytes explicitly — identical layout under both compilers — then zero
             // `element` so no destructor re-frees the buffer the engine now owns.
+            static_assert(std::is_same_v<T, String>, "engine add() at 0x00447060 is String-specific");
             static_assert(sizeof(T) == 8);
             uint32_t raw[2];
             std::memcpy(raw, &element, sizeof(raw));
