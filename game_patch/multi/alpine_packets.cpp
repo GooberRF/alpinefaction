@@ -754,7 +754,7 @@ void af_send_character_request(int character_index)
     af_send_client_req_packet(packet, true); // reliable
 }
 
-// Report a match ready-up action to the server (replaces the "/ready" chat cmd).
+// Report a match ready-up action to the server.
 void af_send_ready_request(uint8_t action)
 {
     if (!rf::is_multi || rf::is_server) {
@@ -767,7 +767,7 @@ void af_send_ready_request(uint8_t action)
     packet.req_type = af_client_req_type::af_req_ready;
     packet.payload = ReadyReqPayload{action};
 
-    af_send_client_req_packet(packet, true); // reliable — discrete toggle
+    af_send_client_req_packet(packet, true); // reliable
 }
 
 // Request a Pit duel-queue action (join/leave/toggle) from the server.
@@ -783,7 +783,7 @@ void af_send_pit_queue_request(uint8_t action)
     packet.req_type = af_client_req_type::af_req_pit_queue;
     packet.payload = PitQueueReqPayload{action};
 
-    af_send_client_req_packet(packet, true); // reliable — discrete toggle
+    af_send_client_req_packet(packet, true); // reliable
 }
 
 // process client request packet
@@ -1053,8 +1053,7 @@ void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector
     //xlog::info("sprays: broadcast spray for player_id {} to {} clients ({} pre-1.4 skipped)", player_id, sent, skipped);
 }
 
-// Show/hide the match ready-up prompt on a specific client. Listen-server host
-// applies locally; remote recipients gated on AF 1.4.
+// Show/hide the match ready-up prompt on a specific client.
 void af_send_ready_prompt(rf::Player* player, uint8_t state)
 {
     if (!rf::is_server || !player) {
@@ -1082,10 +1081,7 @@ void af_send_ready_prompt(rf::Player* player, uint8_t state)
     af_send_server_req_packet(packet, player);
 }
 
-// Apply a Pit queue-state update on the local client. Shared by the client
-// receive path and the listen-server host local-apply. The spectate flag (bit2)
-// is stored but acted on per-frame elsewhere (hud_pit_queue_auto_spectate); it's
-// never acted on for the listen host (that check is client-only).
+// Apply a Pit queue-state update on the local client.
 static void apply_local_pit_queue_state(uint8_t flags, uint8_t pos, uint8_t total)
 {
     const bool queued = (flags & 0x1) != 0;
@@ -1100,15 +1096,15 @@ static void apply_local_pit_queue_state(uint8_t flags, uint8_t pos, uint8_t tota
     }
 }
 
-// Push a client's Pit queue state (dueler / queued position). Listen-server host
-// applies locally; remote recipients gated on AF 1.4.
+// Push a client's Pit queue state (dueler / queued position).
+// Listen-server host applies locally.
 void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uint8_t total)
 {
     if (!rf::is_server || !player) {
         return;
     }
     if (player == rf::local_player) {
-        // Listen-server host: apply locally instead of routing through the net.
+        // Listen-server host: apply locally instead of sending on the wire.
         apply_local_pit_queue_state(flags, pos, total);
         return;
     }
@@ -1129,8 +1125,7 @@ void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uin
 }
 
 // Apply a Pit roster on the local client: clear the stored roles, then set each
-// (player_id -> role) entry. Shared by the client receive path and the
-// listen-server host local-apply.
+// (player_id -> role) entry.
 static void apply_local_pit_roster(const af_pit_roster_entry* entries, uint8_t count)
 {
     reset_local_pit_roster();
@@ -1139,8 +1134,7 @@ static void apply_local_pit_roster(const af_pit_roster_entry* entries, uint8_t c
     }
 }
 
-// Send the full Pit roster to one player. Listen-server host applies locally;
-// remote recipients gated on AF 1.4 (mirrors af_send_pit_queue_state).
+// Send the full Pit roster to one player. Listen-server host applies locally..
 void af_send_pit_roster(rf::Player* player, const std::vector<af_pit_roster_entry>& roster)
 {
     if (!rf::is_server || !player) {
@@ -2380,10 +2374,7 @@ void af_process_spectate_start_packet(
 
     rf::Player* const spectator = rf::multi_find_player_by_addr(addr);
     if (!spectator || spectator->is_bot) {
-        // A bot can never enter spectate: the mutually-exclusive pf_pure_status
-        // would collapse bot+spectator to just af_spectator, so clients would
-        // drop is_bot and lose the "BOT" tag. This is the sole server-side
-        // writer of is_spectator=true, so blocking here fully prevents it.
+        // A bot can never enter spectate.
         return;
     }
 
@@ -2896,8 +2887,7 @@ void af_process_server_msg_packet(
         af_hud_notification_prefix prefix{};
         std::memcpy(&prefix, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(prefix));
         // notification_type is wire data cast to an enum; only accept the types
-        // the server legitimately sends through this path (incl. the reserved
-        // forever-plain Generic/GenericBig channel).
+        // the server legitimately sends through this path.
         const auto notification_type = static_cast<HudNotificationType>(prefix.notification_type);
         if (notification_type != HudNotificationType::Round
             && notification_type != HudNotificationType::GunGame
