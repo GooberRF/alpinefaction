@@ -2717,7 +2717,7 @@ CodeInjection multi_io_process_packets_injection{
 
         if (!packet_check_whitelist(packet_type)) {
             xlog::warn("Ignoring packet 0x{:x}", packet_type);
-        IGNORE_PACKET:
+        SKIP_DEFAULT_HANDLER:
             regs.eip = 0x00479194;
             return;
         }
@@ -2734,7 +2734,7 @@ CodeInjection multi_io_process_packets_injection{
             const rf::NetAddr& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
             rf::Player* const player = addr_as_ref<rf::Player*>(stack_frame + 0x10);
             process_custom_packet(data + offset, len, addr, player);
-            goto IGNORE_PACKET;
+            goto SKIP_DEFAULT_HANDLER;
         }
 
         if (rf::is_server) {
@@ -2746,7 +2746,7 @@ CodeInjection multi_io_process_packets_injection{
                 const int stack_frame = regs.esp + 0x1C;
                 const rf::NetAddr& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
 
-                // Remaining datagram length.
+                // Bytes remaining in their datagram.
                 size_t rx_len = 0;
                 if (g_rx_base
                     && g_rx_len
