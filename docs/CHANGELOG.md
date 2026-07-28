@@ -91,6 +91,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix camera angle snapping when switching between free look and third person camera modes
 - Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
 - Fix overlapping decals rendering with the oldest on top instead of the newest
+- Fix crash on MinGW builds when launching a dedicated server
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
