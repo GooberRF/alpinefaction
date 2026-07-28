@@ -24,6 +24,7 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
+#include "../rf/weapon.h"
 #include "../rf/os/frametime.h"
 #include "../rf/os/timer.h"
 #include "../rf/os/timestamp.h"
@@ -65,15 +66,26 @@ struct ActiveHudNotification
     bool fade_on_expire = false;
 };
 static ActiveHudNotification g_hud_notification;
+static ActiveHudNotification g_hud_big_notification;
 constexpr int kHudNotificationFadeMs = 500;
+
+static void hud_notification_clear_slot(ActiveHudNotification& slot)
+{
+    slot.type = HudNotificationType::None;
+    slot.text.clear();
+    slot.expiry.invalidate();
+    slot.fade_start.invalidate();
+    slot.fade_on_expire = false;
+}
 
 static void hud_notification_clear()
 {
-    g_hud_notification.type = HudNotificationType::None;
-    g_hud_notification.text.clear();
-    g_hud_notification.expiry.invalidate();
-    g_hud_notification.fade_start.invalidate();
-    g_hud_notification.fade_on_expire = false;
+    hud_notification_clear_slot(g_hud_notification);
+}
+
+static void hud_big_notification_clear()
+{
+    hud_notification_clear_slot(g_hud_big_notification);
 }
 
 // Latest Pit duel-queue state pushed by the server (af_sreq_pit_queue_state).
@@ -96,13 +108,11 @@ static std::array<uint8_t, 256> g_pit_roster_role = [] {
     return a;
 }();
 
-// Parallel to g_pit_roster_role: 1-based queue position for queued players
-// (front = 1), 0 otherwise. Used to order the IN QUEUE scoreboard section.
 static std::array<uint8_t, 256> g_pit_roster_order{}; // all-zero = unknown
-
-// Cache for the Pit queue overlay text, so hud_pit_queue_ensure doesn't rebuild
-// the bind name + std::format string every render frame in steady state. Rebuilt
-// only when the inputs (queued/pos/total or the READY bind) change.
+static std::vector<std::pair<int, int>> g_gungame_order;
+static int g_gungame_last_score = 0;
+static bool g_gungame_score_synced = false;
+static bool g_gungame_spawn_notification_pending = false;
 static bool g_pit_queue_text_valid = false;
 static bool g_pit_queue_text_queued = false;
 static int g_pit_queue_text_pos = -1;
@@ -871,7 +881,8 @@ void multi_hud_render_team_scores()
     const bool is_run = game_type == rf::NG_TYPE_RUN;
     const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
         || game_type == rf::NG_TYPE_BAG
-        || game_type == rf::NG_TYPE_PIT;
+        || game_type == rf::NG_TYPE_PIT
+        || game_type == rf::NG_TYPE_GG;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
@@ -1124,6 +1135,7 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
         const auto game_type = rf::multi_get_game_type();
         const bool is_ffa_with_list = game_type == rf::NG_TYPE_BAG
             || game_type == rf::NG_TYPE_PIT
+            || game_type == rf::NG_TYPE_GG
             || (game_type == rf::NG_TYPE_DM && g_alpine_game_config.show_mini_scoreboard_dm);
         if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc() || gt_is_tbag() || gt_is_wipeout() || is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
@@ -1195,19 +1207,33 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
 void hud_notification_show(std::string text, int duration_seconds,
     HudNotificationType type, bool fade_on_expire)
 {
-    g_hud_notification.type = type;
-    g_hud_notification.text = std::move(text);
+    const bool big_slot = type == HudNotificationType::Rampage || type == HudNotificationType::GenericBig;
+    ActiveHudNotification& slot = big_slot ? g_hud_big_notification : g_hud_notification;
+    slot.type = type;
+    slot.text = std::move(text);
     if (duration_seconds >= 0) {
-        g_hud_notification.expiry.set(duration_seconds * 1000);
+        slot.expiry.set(duration_seconds * 1000);
     } else {
-        g_hud_notification.expiry.invalidate();
+        slot.expiry.invalidate();
     }
-    g_hud_notification.fade_start.invalidate();
-    g_hud_notification.fade_on_expire = fade_on_expire;
+    slot.fade_start.invalidate();
+    slot.fade_on_expire = fade_on_expire;
 }
 
 void hud_notification_remove(HudNotificationType type, bool instant)
 {
+    const bool big_slot_type = type == HudNotificationType::Rampage || type == HudNotificationType::GenericBig;
+    if ((big_slot_type || type == HudNotificationType::None)
+        && g_hud_big_notification.type != HudNotificationType::None
+        && (!big_slot_type || g_hud_big_notification.type == type)) {
+        if (instant) {
+            hud_big_notification_clear();
+        } else if (!g_hud_big_notification.fade_start.valid()) {
+            g_hud_big_notification.fade_start.set(0);
+        }
+    }
+    if (big_slot_type) return;
+
     if (g_hud_notification.type == HudNotificationType::None) return;
     // Type::None matches any currently displayed notification.
     if (type != HudNotificationType::None && g_hud_notification.type != type) return;
@@ -1261,6 +1287,75 @@ static void hud_render_notification()
         notification_y += 2;
     }
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, notification_y, g_hud_notification.text.c_str(), font);
+}
+
+// Y of the standard notification line under the chat box (same math as
+// hud_render_notification), used to anchor the big slot below it.
+static int hud_standard_notification_y()
+{
+    const int font_h = rf::gr::get_font_height(hud_get_default_font());
+    const int border = g_alpine_game_config.big_hud ? 3 : 2;
+    const int hist_box_h = 8 * font_h + 2 * border + 6;
+    const int input_box_h = (font_h + 3) + 2 * border;
+    int y = 10 + hist_box_h + input_box_h;
+    if (!g_alpine_game_config.big_hud) {
+        y += 2;
+    }
+    return y;
+}
+
+// Big center-screen slot
+static void hud_render_big_notification()
+{
+    if (g_hud_big_notification.type == HudNotificationType::None) return;
+
+    // Handle expiry: either start a fade or clear immediately.
+    if (!g_hud_big_notification.fade_start.valid()
+        && g_hud_big_notification.expiry.valid()
+        && g_hud_big_notification.expiry.elapsed()) {
+        if (g_hud_big_notification.fade_on_expire) {
+            g_hud_big_notification.fade_start.set(0);
+        } else {
+            hud_big_notification_clear();
+            return;
+        }
+    }
+
+    // Compute alpha (same fade math as the standard slot).
+    int alpha = 225;
+    if (g_hud_big_notification.fade_start.valid()) {
+        const int elapsed = g_hud_big_notification.fade_start.time_since();
+        if (elapsed >= kHudNotificationFadeMs) {
+            hud_big_notification_clear();
+            return;
+        }
+        const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
+        alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+
+    const int big_font = hud_get_large_font(); // bold variant under big_hud
+    const int big_font_h = rf::gr::get_font_height(big_font);
+    const int std_y = hud_standard_notification_y();
+    const int std_font_h = rf::gr::get_font_height(hud_get_default_font());
+    const int center_y = rf::gr::screen_height() / 2;
+
+    // Midpoint between the standard notification line and the reticle, clamped
+    // so the text never overlaps either (fully below the standard line, fully
+    // above screen center) at any resolution / big_hud setting.
+    const int min_y = std_y + std_font_h + 4;
+    const int max_y = center_y - big_font_h - 4;
+    int y = (std_y + center_y) / 2 - big_font_h / 2;
+    y = std::clamp(y, min_y, std::max(min_y, max_y));
+
+    // Shadow pass then main pass for visual weight (multi_spectate's
+    // draw_with_shadow technique), both following the fade alpha.
+    const int center_x = rf::gr::screen_width() / 2;
+    rf::gr::set_color(0, 0, 0, alpha / 2);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x + 2, y + 2,
+                           g_hud_big_notification.text.c_str(), big_font);
+    rf::gr::set_color(255, 255, 255, alpha);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y,
+                           g_hud_big_notification.text.c_str(), big_font);
 }
 
 void draw_hud_ready_notification(bool draw)
@@ -1346,9 +1441,96 @@ int pit_scoreboard_order_for(const rf::Player* player) {
     return static_cast<int>(g_pit_roster_order[player->net_data->player_id]);
 }
 
-// Keep the persistent Pit queue overlay in sync with the latest server state,
-// without clobbering higher-priority timed notifications (round results,
-// gametype help). Called each frame just before hud_render_notification().
+// Gun Game client weapon-progression notifications
+void reset_local_gungame_order() {
+    g_gungame_order.clear();
+    g_gungame_last_score = 0;
+    g_gungame_score_synced = false;
+    g_gungame_spawn_notification_pending = false;
+}
+
+static std::string gungame_weapon_name(int weapon_index) {
+    if (weapon_index < 0 || weapon_index >= 64) return "?";
+    const char* name = rf::weapon_types[weapon_index].display_name;
+    return name ? std::string{name} : std::string{"?"};
+}
+
+// Build the weapon-progression notification text for the given score from the
+// replicated threshold map. Returns false if no order is available.
+static bool gungame_build_notification_text(int score, std::string& out) {
+    if (g_gungame_order.empty()) return false;
+
+    // A post-suicide negative score still means "on the first weapon" — clamp
+    // so the text doesn't advertise advancing to the weapon already held.
+    score = std::max(score, 0);
+
+    // next = first threshold > score (the weapon to advance to).
+    const auto next_it = std::ranges::find_if(g_gungame_order,
+        [score](const std::pair<int, int>& e) { return e.first > score; });
+
+    if (next_it == g_gungame_order.end()) {
+        out = std::format("Final weapon: {} - get a frag to win!",
+                          gungame_weapon_name(g_gungame_order.back().second));
+    }
+    else {
+        const int frags_to_next = next_it->first - score;
+        out = std::format("Get {} more kill{} to advance to {}!",
+                          frags_to_next, frags_to_next == 1 ? "" : "s",
+                          gungame_weapon_name(next_it->second));
+    }
+    return true;
+}
+
+static void gungame_show_notification(int score) {
+    std::string text;
+    if (gungame_build_notification_text(score, text)) {
+        hud_notification_show(std::move(text), 5, HudNotificationType::GunGame, true);
+    }
+}
+
+void set_local_gungame_order(const af_gungame_order_entry* entries, uint8_t count) {
+    g_gungame_order.clear();
+    g_gungame_order.reserve(count);
+    for (uint8_t i = 0; i < count; ++i) {
+        g_gungame_order.emplace_back(static_cast<int>(entries[i].threshold),
+                                     static_cast<int>(entries[i].weapon_index));
+    }
+    // Built sorted server-side, but keep it robust.
+    std::ranges::sort(g_gungame_order, {}, &std::pair<int, int>::first);
+
+    // If a spawn happened before the order arrived, show the deferred spawn notification.
+    if (g_gungame_spawn_notification_pending) {
+        g_gungame_spawn_notification_pending = false;
+        if (rf::is_multi && gt_is_gungame()
+            && rf::local_player && !rf::player_is_dead(rf::local_player)) {
+            const int score = rf::local_player->stats ? rf::local_player->stats->score : 0;
+            gungame_show_notification(score);
+        }
+    }
+}
+
+// Per-frame: watch the local player's score and show a level-up notification when it increases.
+void gungame_client_do_frame() {
+    if (rf::is_dedicated_server) return;
+    if (!rf::is_multi || rf::multi_get_game_type() != rf::NG_TYPE_GG) return;
+    if (is_client_bot_active()) return;
+    if (!rf::local_player || !rf::local_player->stats) return;
+
+    const int score = rf::local_player->stats->score;
+    if (!g_gungame_score_synced) {
+        // First observation this life/level — sync without notifying. (A
+        // separate flag: score == -1 is legitimate after a suicide at 0.)
+        g_gungame_score_synced = true;
+        g_gungame_last_score = score;
+        return;
+    }
+    if (score > g_gungame_last_score) {
+        gungame_show_notification(score);
+    }
+    g_gungame_last_score = score;
+}
+
+// Keep the persistent Pit queue overlay in sync with the latest server state.
 static void hud_pit_queue_ensure() {
     const bool active = rf::is_multi
         && rf::multi_get_game_type() == rf::NG_TYPE_PIT
@@ -1400,18 +1582,11 @@ static void hud_pit_queue_ensure() {
     }
 }
 
-// Drop a queued player into freelook spectate when the server has flagged it
-// (af_sreq_pit_queue_state bit2). Retried per-frame rather than acted on at
-// packet receipt because the packet can arrive before the local entity has
-// finished dying after the round-cleanup kill — the death gate below (the same
-// check multi_spectate_toggle uses) makes the retry a no-op until then. Never
-// runs on a listen-server host. Driven from rf_do_frame_hook (NOT the HUD
-// render path) so it still fires with cl_hud off / the HUD hidden.
+// Drop a queued player into freelook spectate when the server has flagged it.
 void hud_pit_queue_auto_spectate() {
     if (rf::is_server) return;
-    // Defense in depth: a headless/client bot must never auto-enter free-look
-    // (its synthetic input would spam camera drops). The server also never sends
-    // bots the spectate hint, so this only matters for a stray/legacy signal.
+    // A headless/client bot must never auto-enter free-look.
+    // The server also never sends bots the spectate hint, so this should never be hit.
     if (is_client_bot_active()) return;
     if (!rf::is_multi || rf::multi_get_game_type() != rf::NG_TYPE_PIT) return;
     if (rf::gameseq_get_state() != rf::GS_GAMEPLAY) return;
@@ -1419,8 +1594,6 @@ void hud_pit_queue_auto_spectate() {
     if (multi_spectate_is_spectating()) return;
     if (!rf::local_player || !rf::player_is_dead(rf::local_player)) return;
 
-    // multi_spectate_enter_freelook checks its own preconditions (local player,
-    // camera, is_multi) and no-ops otherwise, so the retry stays safe.
     multi_spectate_enter_freelook();
 }
 
@@ -1604,6 +1777,7 @@ CodeInjection multi_hud_render_patch{
 
         hud_pit_queue_ensure();
         hud_render_notification();
+        hud_render_big_notification();
 
         if (g_draw_respawn_timer_notification) {
             hud_render_respawn_timer_notification();
@@ -1628,8 +1802,10 @@ void multi_hud_level_init() {
     g_run_timer_reset_by_respawn_key = false;
     g_run_timer_fade_active = false;
     hud_notification_clear();
+    hud_big_notification_clear();
     reset_local_pit_queue_state();
     reset_local_pit_roster();
+    reset_local_gungame_order();
     killfeed_clear();
 
     level_menu = ChatMenuList{
@@ -2166,6 +2342,11 @@ void multi_hud_on_local_spawn()
         g_run_timer_reset_by_respawn_key = false;
     }
 
+    // Capture first-spawn BEFORE the help block consumes the one-shot; the
+    // Gun Game spawn notification below depends on it.
+    const bool first_spawn =
+        static_cast<int>(rf::netgame.type) != g_gt_help_last_shown_type;
+
     if (rf::is_multi && !rf::is_dedicated_server) {
         if (static_cast<int>(rf::netgame.type) != g_gt_help_last_shown_type) {
             // Consume the one-shot, never fire again until the type changes.
@@ -2178,6 +2359,29 @@ void multi_hud_on_local_spawn()
                 }
             }
         }
+    }
+
+    // Gun Game spawn notification
+    if (rf::is_multi && !rf::is_dedicated_server && gt_is_gungame() && !is_client_bot_active()) {
+        const auto& af_info = get_af_server_info();
+        const bool match_mode = af_info.has_value() && af_info->match_mode;
+        const bool help_shown = first_spawn
+            && g_alpine_game_config.show_gametype_help
+            && !g_pre_match_active
+            && !match_mode
+            && multi_gametype_help_text(rf::netgame.type) != nullptr;
+
+        const int score = (rf::local_player && rf::local_player->stats) ? rf::local_player->stats->score : 0;
+        // Skip first spawn notifications if displaying a gametype hint.
+        if (!help_shown) {
+            if (g_gungame_order.empty()) {
+                g_gungame_spawn_notification_pending = true;
+            } else {
+                gungame_show_notification(score);
+            }
+        }
+        g_gungame_last_score = score;
+        g_gungame_score_synced = true;
     }
 }
 

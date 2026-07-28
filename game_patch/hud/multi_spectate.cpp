@@ -1912,6 +1912,7 @@ static int spectate_bottom_left_hud_top()
         return clip_h - (big ? 90 : 65) - 10;
     case rf::NG_TYPE_BAG:
     case rf::NG_TYPE_PIT:
+    case rf::NG_TYPE_GG:
         return clip_h - (big ? 90 : 65) - 10;
     case rf::NG_TYPE_CTF:
     case rf::NG_TYPE_TEAMDM:

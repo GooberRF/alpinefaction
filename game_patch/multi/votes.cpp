@@ -367,6 +367,12 @@ static bool does_level_match_gametype_prefix(const std::string& level_name)
         return true;
     }
 
+    // Accept any standard MP level.
+    if (multi_game_type_uses_any_level(game_type)
+        && multi_level_name_matches_any_mp_prefix(map_name.c_str())) {
+        return true;
+    }
+
     const auto base_prefix = multi_game_type_prefix(game_type);
 
     auto matches_prefix = [&](std::string_view prefix) {

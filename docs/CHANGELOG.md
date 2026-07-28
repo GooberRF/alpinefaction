@@ -14,6 +14,7 @@ Version 1.4.0 (Lupin): Not yet released
   - Team Bagman (`TBAG`)
   - Pit (`PIT`)
   - Wipeout (`WO`)
+  - Gun Game (`GG`)
 - Add sprays with bindable `Spray` control
   - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
   - `spray` console command to select spray, and in-game spray picker in advanced options
@@ -53,6 +54,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Add the ability to drop reusable static cameras in free look spectate, then cycle level-placed and player-dropped cameras in static camera view
 - Add numpad quick-binds to jump directly to bound players or cameras while spectating, with dropped cameras and binds persisted per level
 - Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
+- Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype.
+- Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Anti-aliasing` option to `ADVANCED` options panel

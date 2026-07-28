@@ -801,7 +801,7 @@ CodeInjection bagman_render_carrier_attachment_patch{
         // The hooked entity must be the carrier for the transform to be
         // valid (bagman_query_carrier_bag_outline derives from the carrier
         // entity). Gate on that before doing the shared query.
-        if (!gt_is_bagman_any() || !g_bagman_info.carrier) return;
+        if (!rf::is_multi || !gt_is_bagman_any() || !g_bagman_info.carrier) return;
         auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
         if (!ep || ep->handle != g_bagman_info.carrier->entity_handle) return;
 
@@ -857,7 +857,7 @@ void bagman_update_dynamic_light()
 CodeInjection bagman_carrier_no_amp_damage_patch1{
     0x004C60CE,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             regs.eip = 0x004C60DC;
         }
     },
@@ -866,7 +866,7 @@ CodeInjection bagman_carrier_no_amp_damage_patch1{
 CodeInjection bagman_carrier_no_amp_damage_patch2{
     0x00489246,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             regs.eip = 0x00489283;
         }
     },
@@ -875,7 +875,7 @@ CodeInjection bagman_carrier_no_amp_damage_patch2{
 CodeInjection bagman_carrier_no_amp_damage_patch3{
     0x0046F485,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             regs.eip = 0x0046F493;
         }
     },
@@ -884,7 +884,7 @@ CodeInjection bagman_carrier_no_amp_damage_patch3{
 CodeInjection bagman_carrier_no_amp_fire_sound_patch1{
     0x0042612B,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             regs.eip = 0x00426154;
         }
     },
@@ -893,7 +893,7 @@ CodeInjection bagman_carrier_no_amp_fire_sound_patch1{
 CodeInjection bagman_carrier_no_amp_fire_sound_patch2{
     0x00426236,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             regs.eip = 0x0042625F;
         }
     },
@@ -902,7 +902,7 @@ CodeInjection bagman_carrier_no_amp_fire_sound_patch2{
 CodeInjection bagman_carrier_no_amp_fire_sound_patch3{
     0x00426AA3,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             regs.eip = 0x00426AC3;
         }
     },
@@ -911,7 +911,7 @@ CodeInjection bagman_carrier_no_amp_fire_sound_patch3{
 CodeInjection bagman_carrier_no_amp_fire_sound_patch4{
     0x0041AAA7,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             regs.eip = 0x0041AAD3;
         }
     },
@@ -920,7 +920,7 @@ CodeInjection bagman_carrier_no_amp_fire_sound_patch4{
 CodeInjection bagman_carrier_no_amp_fire_sound_patch5{
     0x0041ABAF,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             regs.eip = 0x0041ABD8;
         }
     },
@@ -929,7 +929,7 @@ CodeInjection bagman_carrier_no_amp_fire_sound_patch5{
 CodeInjection bagman_carrier_amp_pickup_sound_swap_patch{
     0x0042D1E4,
     [](auto& regs) {
-        if (gt_is_bagman_any()) {
+        if (rf::is_multi && gt_is_bagman_any()) {
             *reinterpret_cast<int*>(static_cast<uintptr_t>(regs.esp)) = 0x40;
         }
     },
@@ -939,7 +939,7 @@ CodeInjection bagman_carrier_amp_pickup_sound_swap_patch{
 CodeInjection bagman_block_dying_bag_pickup_patch{
     0x0045959D,
     [](auto& regs) {
-        if (!gt_is_bagman_any()) return;
+        if (!rf::is_multi || !gt_is_bagman_any()) return;
         if (g_bagman_info.bag_item_handle < 0) return;
         auto* item = reinterpret_cast<rf::Item*>(regs.esi.value);
         if (!item || item->handle != g_bagman_info.bag_item_handle) return;
@@ -954,7 +954,7 @@ CodeInjection bagman_block_dying_bag_pickup_patch{
 CodeInjection bagman_suppress_amp_pickup_msg_patch{
     0x0045A100,
     [](auto& regs) {
-        if (!gt_is_bagman_any()) return;
+        if (!rf::is_multi || !gt_is_bagman_any()) return;
         if (g_bagman_info.bag_item_type < 0) return;
         auto* item_info = *reinterpret_cast<rf::ItemInfo**>(static_cast<uintptr_t>(regs.esp) + 8);
         if (item_info == &rf::item_info[g_bagman_info.bag_item_type]) {
@@ -973,7 +973,7 @@ FunHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*, 
             type, name, count, parent_handle, pos, orient,
             respawn_time, permanent, from_packet);
 
-        if (item && g_bag_mesh_exists && gt_is_bagman_any()
+        if (item && rf::is_multi && g_bag_mesh_exists && gt_is_bagman_any()
             && type == g_bagman_info.bag_item_type) {
             rf::item_restore_mesh(item, kBagMeshFilename);
         }
@@ -985,7 +985,7 @@ CodeInjection bagman_carrier_amp_light_color_patch{
     0x0041EC7C,
     [](auto& regs) {
         // Only change the color in bagman.
-        if (!gt_is_bagman_any()) return;
+        if (!rf::is_multi || !gt_is_bagman_any()) return;
 
         // Suppress dynamic light for dying players since amp (bag) item already emits a glow.
         // Without this, the glow would double up until the player fully dies.

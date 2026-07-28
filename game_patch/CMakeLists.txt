@@ -152,6 +152,8 @@ set(SRCS
     multi/pit.cpp
     multi/wipeout.h
     multi/wipeout.cpp
+    multi/gungame.h
+    multi/gungame.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/kill.cpp

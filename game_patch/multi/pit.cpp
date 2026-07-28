@@ -709,35 +709,8 @@ void pit_reset_world_items()
         if (idx >= 0) allowed_indices.push_back(idx);
     }
 
-    // Keep only the allowed level pickups; hide everything else. Dropped weapons
-    // (IF_DROPPED) are removed from clients via the apply-packet + obj_flag_dead
-    // pair. CTF flags are skipped. The engine's periodic visibility broadcast
-    // replicates hide/unhide of level items to clients.
-    rf::Item* it = rf::item_list.next;
-    while (it && it != &rf::item_list) {
-        rf::Item* next = it->next;
-        const uint32_t flags = it->item_flags;
-        const bool is_dropped = (flags & rf::IF_DROPPED) != 0;
-        const bool is_ctf_flag = (flags & rf::IF_CTF_FLAG) != 0;
-
-        if (is_dropped) {
-            rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
-            rf::obj_flag_dead(it);
-        }
-        else if (!is_ctf_flag) {
-            const bool allowed =
-                std::find(allowed_indices.begin(), allowed_indices.end(), it->info_index)
-                != allowed_indices.end();
-            it->respawn_next.invalidate();
-            if (allowed) {
-                rf::obj_unhide(it);
-            } else {
-                rf::obj_hide(it);
-            }
-        }
-
-        it = next;
-    }
+    // Keep only the allowed level pickups; hide everything else.
+    multi_hide_level_items(allowed_indices);
 }
 
 void pit_send_queue_state(rf::Player* p)

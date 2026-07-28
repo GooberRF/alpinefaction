@@ -11,6 +11,7 @@
 #include "rounds.h"
 #include "pit.h"
 #include "wipeout.h"
+#include "gungame.h"
 #include "multi.h"
 #include "alpine_packets.h"
 #include "../hud/hud_internal.h"
@@ -41,6 +42,8 @@ static char pit_name[] = "PIT";
 static char* pit_slot = pit_name;
 static char wo_name[] = "WO";
 static char* wo_slot = wo_name;
+static char gg_name[] = "GG";
+static char* gg_slot = gg_name;
 // UNK is the sentinel; new game types must be added above
 static char unk_name[] = "UNK";
 static char* unk_slot = unk_name;
@@ -80,10 +83,11 @@ void populate_gametype_table() {
     g_af_gametype_names[rf::NG_TYPE_REV]    = &rev_slot;
     g_af_gametype_names[rf::NG_TYPE_RUN]    = &run_slot;
     g_af_gametype_names[rf::NG_TYPE_ESC]    = &esc_slot;
-    g_af_gametype_names[rf::NG_TYPE_BAG]     = &bag_slot;
-    g_af_gametype_names[rf::NG_TYPE_TBAG]    = &tbag_slot;
+    g_af_gametype_names[rf::NG_TYPE_BAG]    = &bag_slot;
+    g_af_gametype_names[rf::NG_TYPE_TBAG]   = &tbag_slot;
     g_af_gametype_names[rf::NG_TYPE_PIT]    = &pit_slot;
     g_af_gametype_names[rf::NG_TYPE_WO]     = &wo_slot;
+    g_af_gametype_names[rf::NG_TYPE_GG]     = &gg_slot;
     g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
@@ -251,6 +255,11 @@ bool gt_is_wipeout()
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_WO;
 }
 
+bool gt_is_gungame()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_GG;
+}
+
 const char* multi_gametype_help_text(rf::NetGameType game_type)
 {
     switch (game_type) {
@@ -275,9 +284,11 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
         case rf::NG_TYPE_TBAG:
             return "Team Bagman: Steal and hold the bag to earn points for your team";
         case rf::NG_TYPE_PIT:
-            return "Pit: 1v1 duels - winner stays, loser to the back of the queue";
+            return "Pit: Duels, winner plays the next player in the queue";
         case rf::NG_TYPE_WO:
             return "Wipeout: Frag all enemy players before they respawn";
+        case rf::NG_TYPE_GG:
+            return "Gun Game: Get frags to advance to a new weapon";
         default:
             return nullptr;
     }
@@ -2001,6 +2012,7 @@ void multi_level_init_post_gametypes()
     bagman_level_init_post();
     pit_level_init_post();
     wipeout_level_init_post();
+    gungame_level_init_post();
     // Rounds must initialise AFTER per-gametype level-init so the gametype
     // has registered its callbacks before round 1 begins.
     rounds_level_init_post();
@@ -2015,6 +2027,7 @@ CodeInjection multi_level_init_gametypes_injection{
         bagman_level_init();
         pit_level_init();
         wipeout_level_init();
+        gungame_level_init();
     },
 };
 
@@ -2055,8 +2068,7 @@ CodeInjection send_team_score_state_info_patch{
             }
         }
 
-        // send Pit queue state + roster on join (delivers initial state after
-        // the client's level-init reset of the Pit client state)
+        // send Pit queue state and roster on join.
         if (gt_is_pit()) {
             if (rf::Player* pp = regs.edi) {
                 pit_send_queue_state(pp);

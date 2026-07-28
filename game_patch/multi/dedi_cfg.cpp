@@ -244,63 +244,6 @@ static CriticalHitsConfig parse_critical_hits_config(const toml::table& t, Criti
     return c;
 }
 
-static GunGameConfig parse_gungame_config(const toml::table& t, GunGameConfig gg)
-{
-    if (auto v = t["enabled"].value<bool>())
-        gg.enabled = *v;
-    if (auto v = t["dynamic_progression"].value<bool>())
-        gg.dynamic_progression = *v;
-    if (auto v = t["rampage_rewards"].value<bool>())
-        gg.rampage_rewards = *v;
-
-    if (auto ft = t["final"].as_table()) {
-        int kills = (*ft)["kills"].value_or<int>(-1);
-        auto w = (*ft)["weapon"].value_or<std::string>("");
-        if (kills >= 0 && !w.empty())
-            gg.set_final_level(kills, w);
-        else
-            xlog::warn("GunGame: [final] requires kills>=0 and weapon");
-    }
-
-    if (auto arr = t["levels"].as_array()) {
-        gg.levels.clear(); // levels array specified for this map. Otherwise, inherit base
-
-        int prev_kills = 0;
-        for (auto& node : *arr) {
-            auto tbl = node.as_table();
-            if (!tbl) {
-                xlog::warn("GunGame: level is not a table; skipping");
-                continue;
-            }
-
-            auto w = (*tbl)["weapon"].value_or<std::string>("");
-            if (w.empty()) {
-                xlog::warn("GunGame: level missing 'weapon'");
-                continue;
-            }
-
-            if (gg.dynamic_progression) {
-                int tier = (*tbl)["tier"].value_or<int>(-1);
-                if (tier < 1) {
-                    xlog::warn("GunGame: dynamic requires 'tier' >= 1");
-                    continue;
-                }
-                gg.add_level_by_tier(tier, w);
-            }
-            else {
-                int kills = (*tbl)["kills"].value_or<int>(prev_kills + 1);
-                gg.add_level_by_kills(kills, w);
-                prev_kills = kills;
-            }
-        }
-
-        if (!gg.dynamic_progression)
-            gg.normalize_manual(); // dedupe kill levels
-    }
-
-    return gg;
-}
-
 static WelcomeMessageConfig parse_welcome_message_config(const toml::table& t, WelcomeMessageConfig c)
 {
     if (auto x = t["enabled"].value<bool>())
@@ -489,10 +432,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_armour.enabled = true;
             rules.spawn_armour.set_value(200.0f);
 
-            // Loadout: Riot Stick (added for all modes above) + Assault Rifle in
-            // hands, with infinite reloads and a large reserve (effectively
-            // infinite ammo). Only Shotgun / Rocket Launcher item pickups remain
-            // in the arena (pit.cpp hides all other level items).
+            // Loadout: Baton, AR
             constexpr int pit_reserve = 999;
             rules.spawn_loadout.loadouts_active = true;
             rules.spawn_loadout.add("Assault Rifle", pit_reserve, false, true);
@@ -502,6 +442,23 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.rounds.round_time = 90;
             rules.rounds.set_post_round_time(3);
             rules.rounds.set_intermission_time(3);
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_GG: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(1.0f);
+            rules.force_respawn = false;
+            rules.location_pinging = false;
+            rules.drop_weapons = false;
+            rules.drop_amps = false;
+            rules.gungame_rampage_rewards = true;
+            rules.spawn_loadout.loadouts_active = false;
+
+            // 100 / 100 spawn health and armor, +50 effective health kill reward.
+            rules.spawn_armour.enabled = true;
+            rules.spawn_armour.set_value(100.0f);
+            rules.kill_rewards.kill_reward_effective_health = 50.0f;
             break;
         }
 
@@ -603,6 +560,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.set_dc_score_limit(*v);
     if (auto v = t["pit_score_limit"].value<int>())
         o.set_pit_score_limit(*v);
+    if (auto v = t["gg_score_limit"].value<int>())
+        o.set_gungame_score_limit(*v);
     if (auto v = t["bag_score_limit"].value<int>())
         o.bagman.set_bag_score_limit(*v);
     if (auto v = t["tbag_score_limit"].value<int>())
@@ -757,8 +716,28 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
     if (auto sub = t["critical_hits"].as_table())
         o.critical_hits = parse_critical_hits_config(*sub, o.critical_hits);
 
-    if (auto sub = t["gungame"].as_table())
-        o.gungame = parse_gungame_config(*sub, o.gungame);
+    if (auto v = t["gg_rampage_rewards"].value<bool>())
+        o.gungame_rampage_rewards = *v;
+
+    if (auto arr = t["gg_tiers"].as_array()) {
+        std::vector<std::vector<std::string>> tiers;
+        for (auto& tier_node : *arr) {
+            if (auto tier_arr = tier_node.as_array()) {
+                std::vector<std::string> tier;
+                for (auto& weapon_node : *tier_arr) {
+                    if (auto name = weapon_node.value<std::string>()) {
+                        tier.emplace_back(std::move(*name));
+                    }
+                }
+                if (!tier.empty()) {
+                    tiers.push_back(std::move(tier));
+                }
+            }
+        }
+        o.gungame_tiers = std::move(tiers);
+    }
+    if (auto v = t["gg_final_weapon"].value<std::string>())
+        o.gungame_final_weapon = *v;
 
     return o;
 }
@@ -1666,97 +1645,6 @@ static void download_missing_server_levels()
     }
 }
 
-void print_gungame(std::string& output, const GunGameConfig& cur, const GunGameConfig& base_cfg, bool base = true)
-{
-    const auto iter = std::back_inserter(output);
-
-    // helper functions
-    auto gg_level_equal = [](const GunGameLevelEntry& a, const GunGameLevelEntry& b) {
-        return a.kills == b.kills && a.tier == b.tier && a.weapon_index == b.weapon_index;
-    };
-
-    auto gg_level_key = [](const GunGameLevelEntry& e) {
-        return std::tuple<int, int, int>{e.kills, e.tier, e.weapon_index};
-    };
-
-    auto gg_canon = [&](std::vector<GunGameLevelEntry> v, bool dynamic) {
-        if (dynamic) {
-            v.erase(std::remove_if(v.begin(), v.end(), [](auto& e) { return e.tier < 0 || e.weapon_index < 0; }),
-                    v.end());
-        }
-        else {
-            v.erase(std::remove_if(v.begin(), v.end(), [](auto& e) { return e.kills < 0 || e.weapon_index < 0; }),
-                    v.end());
-        }
-        std::sort(v.begin(), v.end(), [&](auto const& a, auto const& b) { return gg_level_key(a) < gg_level_key(b); });
-
-        std::vector<GunGameLevelEntry> out;
-        for (auto const& e : v) {
-            if (!out.empty() && gg_level_key(out.back()) == gg_level_key(e))
-                out.back() = e;
-            else
-                out.push_back(e);
-        }
-        return out;
-    };
-
-    auto gg_final_equal = [&](const std::optional<GunGameLevelEntry>& a, const std::optional<GunGameLevelEntry>& b) {
-        if (a.has_value() != b.has_value())
-            return false;
-        return !a || gg_level_equal(*a, *b);
-    };
-    // end helpers
-
-    if (base || cur.enabled != base_cfg.enabled)
-        std::format_to(iter, "  GunGame:                               {}\n", cur.enabled);
-
-    if (!cur.enabled)
-        return;
-
-    if (base || cur.dynamic_progression != base_cfg.dynamic_progression)
-        std::format_to(iter, "    Dynamic progression:                 {}\n", cur.dynamic_progression);
-    if (base || cur.rampage_rewards != base_cfg.rampage_rewards)
-        std::format_to(iter, "    Rampage rewards:                     {}\n", cur.rampage_rewards);
-
-    bool cur_final = cur.final_level.has_value();
-    bool base_final = base_cfg.final_level.has_value();
-    if (base || cur_final != base_final)
-        std::format_to(iter, "    Final level:                         {}\n", cur_final);
-
-    if (cur.final_level) {
-        bool print_details = base;
-        if (!print_details && base_cfg.final_level)
-            print_details = !gg_level_equal(*cur.final_level, *base_cfg.final_level);
-        else if (!base_cfg.final_level)
-            print_details = true;
-
-        if (print_details) {
-            std::format_to(iter, "      Kills:                             {}\n", cur.final_level->kills);
-            std::format_to(iter, "      Weapon:                            {}\n", cur.final_level->weapon_name);
-        }
-    }
-
-    const bool dyn = cur.dynamic_progression;
-    auto cur_levels = gg_canon(cur.levels, dyn);
-    auto base_levels = gg_canon(base_cfg.levels, dyn);
-
-    bool levels_changed = base || cur_levels.size() != base_levels.size() ||
-                          !std::equal(cur_levels.begin(), cur_levels.end(), base_levels.begin(), base_levels.end(),
-                                      [&](auto const& a, auto const& b) { return gg_level_equal(a, b); });
-
-    if (!levels_changed)
-        return;
-
-    if (dyn) {
-        std::format_to(iter, "    Dynamic tiers:\n");
-        for (auto const& e : cur_levels) std::format_to(iter, "      Tier {:<3} -> {}\n", e.tier, e.weapon_name);
-    }
-    else {
-        std::format_to(iter, "    Levels (kills -> weapon):\n");
-        for (auto const& e : cur_levels) std::format_to(iter, "      {:>4} -> {}\n", e.kills, e.weapon_name);
-    }
-}
-
 void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool base = true)
 {
     const auto iter = std::back_inserter(output);
@@ -1815,6 +1703,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  DC team score limit:                   {}\n", rules.dc_score_limit);
     if (base || rules.pit_score_limit != b.pit_score_limit)
         std::format_to(iter, "  PIT player score limit:                {}\n", rules.pit_score_limit);
+    if (base || rules.gungame_score_limit != b.gungame_score_limit)
+        std::format_to(iter, "  GunGame player score limit:            {}\n", rules.gungame_score_limit);
     if (base || rules.pit_allowed_items != b.pit_allowed_items) {
         std::string joined;
         for (size_t i = 0; i < rules.pit_allowed_items.size(); ++i) {
@@ -2165,7 +2055,26 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     }
 
     // gungame
-    print_gungame(output, rules.gungame, b.gungame, base);
+    if (base || rules.gungame_rampage_rewards != b.gungame_rampage_rewards)
+        std::format_to(iter, "  GunGame rampage rewards:               {}\n", rules.gungame_rampage_rewards);
+    if (base || rules.gungame_tiers != b.gungame_tiers) {
+        if (rules.gungame_tiers.empty()) {
+            std::format_to(iter, "  GunGame tiers:                         (built-in default)\n");
+        }
+        else {
+            std::format_to(iter, "  GunGame tiers:\n");
+            for (size_t i = 0; i < rules.gungame_tiers.size(); ++i) {
+                std::string joined;
+                for (size_t j = 0; j < rules.gungame_tiers[i].size(); ++j) {
+                    if (j) joined += ", ";
+                    joined += rules.gungame_tiers[i][j];
+                }
+                std::format_to(iter, "    Tier {}: {}\n", i + 1, joined);
+            }
+        }
+    }
+    if (base || rules.gungame_final_weapon != b.gungame_final_weapon)
+        std::format_to(iter, "  GunGame final weapon:                  {}\n", rules.gungame_final_weapon);
 }
 
 void print_rules_with_presets(std::string& output, const AlpineServerConfigRules& rules, const std::vector<std::pair<std::filesystem::path, std::optional<std::string>>>& preset_paths, bool base, const bool remote = false)
@@ -2389,6 +2298,9 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
         case rf::NetGameType::NG_TYPE_CTF:
             netgame.max_captures = r.cap_limit;
             break;
+        case rf::NetGameType::NG_TYPE_GG:
+            netgame.max_kills = r.gungame_score_limit;
+            break;
         default:
             netgame.max_kills = r.individual_kill_limit;
             break;
@@ -2515,6 +2427,16 @@ bool apply_game_type_for_current_level() {
     return changed_this_call;
 }
 
+// Bumped once each time the active rules are (re)applied below. Consumers (e.g.
+// gungame_do_frame) watch this to detect mid-map config reloads — sv_loadconfig
+// changing tiers/final weapon/score limit — and rebuild derived state.
+static int g_active_rules_generation = 0;
+
+int get_active_rules_generation()
+{
+    return g_active_rules_generation;
+}
+
 void apply_rules_for_current_level()
 {
     auto &netgame = rf::netgame;
@@ -2566,6 +2488,9 @@ void apply_rules_for_current_level()
 
     // apply the rules
     apply_alpine_dedicated_server_rules(netgame, g_alpine_server_config_active_rules);
+
+    // Signal consumers that the active rules were (re)applied this call.
+    ++g_active_rules_generation;
 }
 
 void init_alpine_dedicated_server() {

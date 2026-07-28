@@ -313,6 +313,7 @@ FunHook<void()> multi_limbo_init{
             set_local_pre_match_active(false);
             reset_local_pit_queue_state();
             reset_local_pit_roster();
+            reset_local_gungame_order();
         }
 
         if (!rf::player_list) {
@@ -335,7 +336,7 @@ FunHook<void()> multi_limbo_init{
         const auto gt = rf::multi_get_game_type();
         bool we_win = false;
 
-        if (gt == rf::NG_TYPE_DM || gt == rf::NG_TYPE_PIT) {
+        if (gt == rf::NG_TYPE_DM || gt == rf::NG_TYPE_PIT || gt == rf::NG_TYPE_GG) {
             // FFA modes ranked by stats->score (Pit: duel wins).
             // need at least 2 players to possibly win
             if (rf::multi_num_players() >= 2) {
@@ -499,6 +500,47 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
     g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
 }
 
+bool is_remote_charge_pair(int weapon_a, int weapon_b)
+{
+    const auto is_rc = [](int w) {
+        return w == rf::remote_charge_weapon_type || w == rf::remote_charge_det_weapon_type;
+    };
+    return is_rc(weapon_a) && is_rc(weapon_b);
+}
+
+void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices)
+{
+    if (!rf::is_server) return;
+
+    rf::Item* it = rf::item_list.next;
+    while (it && it != &rf::item_list) {
+        rf::Item* next = it->next;
+        const uint32_t flags = it->item_flags;
+        const bool is_dropped = (flags & rf::IF_DROPPED) != 0;
+        const bool is_ctf_flag = (flags & rf::IF_CTF_FLAG) != 0;
+
+        if (is_dropped) {
+            rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
+            rf::obj_flag_dead(it);
+        }
+        else if (!is_ctf_flag) {
+            const bool allowed =
+                std::find(allowed_item_type_indices.begin(), allowed_item_type_indices.end(), it->info_index)
+                != allowed_item_type_indices.end();
+            // Invalidating respawn_next keeps hidden items from respawning.
+            it->respawn_next.invalidate();
+            if (allowed) {
+                rf::obj_unhide(it);
+            }
+            else {
+                rf::obj_hide(it);
+            }
+        }
+
+        it = next;
+    }
+}
+
 static bool multi_is_rail_gun_on_cooldown(rf::Player* pp, rf::Entity* ep)
 {
     if (ep->ai.current_primary_weapon != rf::rail_gun_weapon_type) {
@@ -516,9 +558,8 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             // Nothing to do
             return;
         }
-        if (g_alpine_server_config_active_rules.gungame.enabled &&
-            !((ep->ai.current_primary_weapon == 1 && weapon_type == 0) || (ep->ai.current_primary_weapon == 0 && weapon_type == 1))) {
-            // af_send_automated_chat_msg("Weapon switch denied. In GunGame, you get new weapons by getting frags.", pp);
+        if (gt_is_gungame() && !is_remote_charge_pair(ep->ai.current_primary_weapon, weapon_type)) {
+            // Deny switching in GG except Remote Charge <-> Detonator.
             return;
         }
         bool has_weapon;
@@ -809,6 +850,8 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Pit"};
     } else if (game_type == rf::NG_TYPE_WO) {
         return std::string_view{"Wipeout"};
+    } else if (game_type == rf::NG_TYPE_GG) {
+        return std::string_view{"Gun Game"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"Unknown"};
     } else {
@@ -842,6 +885,8 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"PIT"};
     } else if (game_type == rf::NG_TYPE_WO) {
         return std::string_view{"WIPEOUT"};
+    } else if (game_type == rf::NG_TYPE_GG) {
+        return std::string_view{"GUN GAME"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNKNOWN"};
     } else {
@@ -875,6 +920,8 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"PIT"};
     } else if (game_type == rf::NG_TYPE_WO) {
         return std::string_view{"WO"};
+    } else if (game_type == rf::NG_TYPE_GG) {
+        return std::string_view{"GG"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNK"};
     } else {
@@ -910,6 +957,8 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"pit"};
     } else if (game_type == rf::NG_TYPE_WO) {
         return std::string_view{"wo"};
+    } else if (game_type == rf::NG_TYPE_GG) {
+        return std::string_view{"gg"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         // No real level-name prefix for unknown game types; "dm" is the safest fallback.
         return std::string_view{"dm"};
@@ -919,6 +968,31 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         }
         return std::string_view{"dm"};
     }
+}
+
+// Game types that have no dedicated level-name prefix of their own and are
+// played on any standard MP level.
+bool multi_game_type_uses_any_level(rf::NetGameType game_type)
+{
+    return game_type == rf::NetGameType::NG_TYPE_GG
+        || game_type == rf::NetGameType::NG_TYPE_BAG
+        || game_type == rf::NetGameType::NG_TYPE_TBAG
+        || game_type == rf::NetGameType::NG_TYPE_WO
+        || game_type == rf::NetGameType::NG_TYPE_PIT;
+}
+
+// True if the level filename starts with any standard MP gametype prefix. Used
+// by the any-level gametypes above to treat every normal MP level as playable.
+bool multi_level_name_matches_any_mp_prefix(const char* filename)
+{
+    return string_istarts_with(filename, "ctf")
+        || string_istarts_with(filename, "pctf")
+        || string_istarts_with(filename, "dm")
+        || string_istarts_with(filename, "pdm")
+        || string_istarts_with(filename, "koth")
+        || string_istarts_with(filename, "dc")
+        || string_istarts_with(filename, "rev")
+        || string_istarts_with(filename, "esc");
 }
 
 int multi_num_spawned_players() {

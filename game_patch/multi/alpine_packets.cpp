@@ -155,6 +155,10 @@ bool af_process_packet(
             af_process_pit_roster_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
+        case af_packet_type::af_gungame_order: {
+            af_process_gungame_order_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
         default:
             return false; // ignore if unrecognized
     }
@@ -1227,6 +1231,86 @@ void af_process_pit_roster_packet(const void* data, size_t len, const rf::NetAdd
     apply_local_pit_roster(reinterpret_cast<const af_pit_roster_entry*>(bytes + off), count);
 }
 
+// Send a player their own Gun Game weapon order.
+void af_send_gungame_order(rf::Player* player, const std::vector<af_gungame_order_entry>& order)
+{
+    if (!rf::is_server || !player) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    const size_t max_entries =
+        (sizeof(buf) - sizeof(RF_GamePacketHeader) - sizeof(uint8_t)) / sizeof(af_gungame_order_entry);
+    const uint8_t count =
+        static_cast<uint8_t>(std::min<size_t>({order.size(), max_entries, size_t{255}}));
+
+    if (player == rf::local_player) {
+        set_local_gungame_order(order.data(), count); // listen host applies locally
+        return;
+    }
+    if (!player->net_data) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 4, 0)) {
+        return;
+    }
+
+    size_t off = 0;
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_gungame_order);
+    header.size = static_cast<uint16_t>(sizeof(uint8_t) + count * sizeof(af_gungame_order_entry));
+    std::memcpy(buf + off, &header, sizeof(header));
+    off += sizeof(header);
+    buf[off++] = static_cast<std::byte>(count);
+    if (count > 0) {
+        // entries are packed (3 bytes) and the vector is contiguous.
+        std::memcpy(buf + off, order.data(), count * sizeof(af_gungame_order_entry));
+        off += count * sizeof(af_gungame_order_entry);
+    }
+
+    af_send_packet(player, buf, static_cast<int>(off), true); // reliable
+}
+
+void af_process_gungame_order_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+    if (len < sizeof(RF_GamePacketHeader)) {
+        return;
+    }
+
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (sizeof(RF_GamePacketHeader) + static_cast<size_t>(hdr.size) > len) {
+        //xlog::warn("gungame_order: truncated (declared={}, len={})", hdr.size, len);
+        return;
+    }
+    if (hdr.size < sizeof(uint8_t)) {
+        //xlog::warn("gungame_order: missing count byte");
+        return;
+    }
+
+    const uint8_t* bytes = reinterpret_cast<const uint8_t*>(data);
+    size_t off = sizeof(RF_GamePacketHeader);
+    const uint8_t count = bytes[off];
+    off += sizeof(uint8_t);
+
+    // Validate the entry count against BOTH the declared payload and actual len.
+    const size_t entries_bytes = static_cast<size_t>(count) * sizeof(af_gungame_order_entry);
+    if (static_cast<size_t>(hdr.size) < sizeof(uint8_t) + entries_bytes) {
+        //xlog::warn("gungame_order: count {} exceeds declared payload", count);
+        return;
+    }
+    if (off + entries_bytes > len) {
+        //xlog::warn("gungame_order: truncated entries (need {}, have {})", off + entries_bytes, len);
+        return;
+    }
+
+    set_local_gungame_order(reinterpret_cast<const af_gungame_order_entry*>(bytes + off), count);
+}
+
 static void af_process_server_req_packet(const void* data, size_t len, const rf::NetAddr&)
 {
     // Receive: client <- server
@@ -2058,6 +2142,9 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         case rf::NetGameType::NG_TYPE_PIT:
             pkt.win_condition = static_cast<uint32_t>(g_alpine_server_config_active_rules.pit_score_limit);
             break;
+        case rf::NetGameType::NG_TYPE_GG:
+            pkt.win_condition = static_cast<uint32_t>(g_alpine_server_config_active_rules.gungame_score_limit);
+            break;
         case rf::NetGameType::NG_TYPE_RUN:
         case rf::NetGameType::NG_TYPE_REV:
         case rf::NetGameType::NG_TYPE_ESC:
@@ -2808,8 +2895,15 @@ void af_process_server_msg_packet(
         }
         af_hud_notification_prefix prefix{};
         std::memcpy(&prefix, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(prefix));
-        // notification_type is wire data cast to an enum; reject out-of-range values.
-        if (prefix.notification_type > static_cast<uint8_t>(HudNotificationType::Round)) {
+        // notification_type is wire data cast to an enum; only accept the types
+        // the server legitimately sends through this path (incl. the reserved
+        // forever-plain Generic/GenericBig channel).
+        const auto notification_type = static_cast<HudNotificationType>(prefix.notification_type);
+        if (notification_type != HudNotificationType::Round
+            && notification_type != HudNotificationType::GunGame
+            && notification_type != HudNotificationType::Rampage
+            && notification_type != HudNotificationType::Generic
+            && notification_type != HudNotificationType::GenericBig) {
             return;
         }
         const char* text_ptr = static_cast<const char*>(data) + header_len;

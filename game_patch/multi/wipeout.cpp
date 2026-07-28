@@ -105,30 +105,10 @@ bool match_is_decided()
 }
 
 // Hide every level item and destroy any dropped weapons so the arena stays
-// item-free. Mirrors pit_reset_world_items but hides instead of restoring. The
-// engine's periodic visibility broadcast replicates the hidden state to clients.
+// item-free (empty allowlist = nothing survives).
 void hide_all_items()
 {
-    if (!rf::is_server) return;
-
-    rf::Item* it = rf::item_list.next;
-    while (it && it != &rf::item_list) {
-        rf::Item* next = it->next;
-        const uint32_t flags = it->item_flags;
-        const bool is_dropped = (flags & rf::IF_DROPPED) != 0;
-        const bool is_ctf_flag = (flags & rf::IF_CTF_FLAG) != 0;
-
-        if (is_dropped) {
-            rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
-            rf::obj_flag_dead(it);
-        }
-        else if (!is_ctf_flag) {
-            it->respawn_next.invalidate();
-            rf::obj_hide(it);
-        }
-
-        it = next;
-    }
+    multi_hide_level_items({});
 }
 
 bool wipeout_can_round_start()

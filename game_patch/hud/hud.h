@@ -13,6 +13,8 @@ namespace rf
     struct Player;
 }
 
+struct af_gungame_order_entry;
+
 enum class ChatMenuType : int
 {
     None,
@@ -22,14 +24,21 @@ enum class ChatMenuType : int
     Spectate
 };
 
+// The af_server_msg HUD-notification path casts a wire byte to this enum, so
+// new values must be appended at the END (keep in sync with the allowlist in
+// af_process_server_msg_packet).
 enum class HudNotificationType : int
 {
     None = 0,
-    ReadyUp,
-    BagCarrier,
+    ReadyUp,        // local only
+    BagCarrier,     // local only
     Round,          // round-based gametypes (countdown, round start, milestones)
-    GametypeHelp,   // local only, never initiated by server
-    Queue,          // Pit duel-queue overlay (local only, persistent)
+    GametypeHelp,   // local only
+    Queue,          // local only, persistent (Pit duel queue overlay)
+    GunGame,        // Gun Game weapon-progression notifications
+    Rampage,        // big center-screen callout (renders in its own slot)
+    Generic,        // standard slot (under the chat box)
+    GenericBig,     // big center-screen slot
 };
 
 void hud_notification_show(std::string text, int duration_seconds, HudNotificationType type, bool fade_on_expire);
@@ -62,6 +71,10 @@ int pit_scoreboard_order_for(const rf::Player* player); // 1-based queue positio
 // the server flags it. Call from the per-frame tick (not the HUD render path)
 // so it runs even with the HUD hidden.
 void hud_pit_queue_auto_spectate();
+
+void set_local_gungame_order(const af_gungame_order_entry* entries, uint8_t count);
+void reset_local_gungame_order();
+void gungame_client_do_frame(); // per-frame level-up watcher (client only)
 void multi_hud_level_init();
 void multi_hud_on_local_spawn();
 void multi_hud_reset_gametype_help();

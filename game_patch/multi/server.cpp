@@ -28,6 +28,7 @@
 #include "rounds.h"
 #include "pit.h"
 #include "wipeout.h"
+#include "gungame.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
@@ -281,7 +282,7 @@ void on_dedicated_server_launch_post() {
 CodeInjection entity_drop_weapon_patch{
     0x0042B0D3,
     [](auto& regs) {
-        if (g_alpine_server_config_active_rules.gungame.enabled ||
+        if ((rf::is_multi && gt_is_gungame()) ||
             !g_alpine_server_config_active_rules.drop_weapons) {
             regs.eip = 0x0042B2BC;
         }
@@ -292,7 +293,7 @@ CodeInjection entity_drop_weapon_patch{
 CodeInjection entity_reload_current_primary_patch{
     0x00425506,
     [](auto& regs) {
-        if (g_alpine_server_config_active_rules.gungame.enabled ||
+        if ((rf::is_multi && gt_is_gungame()) ||
             g_alpine_server_config_active_rules.weapon_infinite_magazines) {
             int current_reserve = regs.ecx;
             int used_ammo = regs.eax;
@@ -804,7 +805,8 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_iequals(gametype_name, "dm")) {
         return rf::NetGameType::NG_TYPE_DM;
     }
-    if (string_iequals(gametype_name, "tdm") || string_iequals(gametype_name, "teamdm")) {
+    if (string_iequals(gametype_name, "tdm") ||
+        string_iequals(gametype_name, "teamdm")) {
         return rf::NetGameType::NG_TYPE_TEAMDM;
     }
     if (string_iequals(gametype_name, "ctf")) {
@@ -825,17 +827,25 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_iequals(gametype_name, "esc")) {
         return rf::NetGameType::NG_TYPE_ESC;
     }
-    if (string_iequals(gametype_name, "bag") || string_iequals(gametype_name, "bm")) {
+    if (string_iequals(gametype_name, "bag") ||
+        string_iequals(gametype_name, "bm") ||
+        string_iequals(gametype_name, "bagman")) {
         return rf::NetGameType::NG_TYPE_BAG;
     }
-    if (string_iequals(gametype_name, "tbag") || string_iequals(gametype_name, "tbm")) {
+    if (string_iequals(gametype_name, "tbag") ||
+        string_iequals(gametype_name, "tbm")) {
         return rf::NetGameType::NG_TYPE_TBAG;
     }
     if (string_iequals(gametype_name, "pit")) {
         return rf::NetGameType::NG_TYPE_PIT;
     }
-    if (string_iequals(gametype_name, "wo") || string_iequals(gametype_name, "wipeout")) {
+    if (string_iequals(gametype_name, "wo") ||
+        string_iequals(gametype_name, "wipeout")) {
         return rf::NetGameType::NG_TYPE_WO;
+    }
+    if (string_iequals(gametype_name, "gg") ||
+        string_iequals(gametype_name, "gungame")) {
+        return rf::NetGameType::NG_TYPE_GG;
     }
 
     return std::nullopt;
@@ -919,7 +929,7 @@ ConsoleCommand2 sv_game_type_cmd{
         }
     },
     "Load a specific gametype. Loads level if specificed, otherwise restarts current level. Only available for ADS dedicated servers.",
-    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|pit|wo> [level]",
+    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|pit|wo|gg> [level]",
 };
 
 DcCommandAlias gt_cmd{
@@ -1408,13 +1418,29 @@ CallHook<int(const char*)> item_lookup_type_hook{
 };
 
 // legacy client compatible
-CallHook<int(const char*)> find_default_weapon_for_entity_hook{
+CodeInjection player_create_entity_find_default_weapon_injection{
     0x004A43DA,
-    [](const char* weapon_name) {
-        if (rf::is_dedicated_server && !g_alpine_server_config_active_rules.gungame.enabled) {
-            weapon_name = g_alpine_server_config_active_rules.default_player_weapon.weapon_name.data();
+    [](auto& regs) {
+        rf::Player* player = regs.ebp;
+        if (rf::is_server && gt_is_gungame() && player) {
+            // GunGame: return the spawning player's current level weapon so the
+            // engine spawns them natively holding it.
+            const int level_weapon = gungame_spawn_weapon_for(player);
+            if (level_weapon >= 0) {
+                // Thrown (non-clip) level weapons spawn holding the Riot Stick
+                // instead and are granted + switched by gungame_on_player_spawn.
+                regs.eax = rf::weapon_uses_clip(level_weapon)
+                    ? level_weapon
+                    : rf::riot_stick_weapon_type;
+                regs.eip = 0x004A43DF;
+            }
         }
-        return find_default_weapon_for_entity_hook.call_target(weapon_name);
+        else if (rf::is_dedicated_server && !gt_is_gungame()) {
+            regs.eax = rf::weapon_lookup_type(
+                g_alpine_server_config_active_rules.default_player_weapon.weapon_name.data());
+            regs.eip = 0x004A43DF;
+        }
+        // else: fall through, the original lookup runs on the pushed name.
     },
 };
 
@@ -1422,8 +1448,12 @@ CallHook<int(const char*)> find_default_weapon_for_entity_hook{
 CallHook<void(rf::Player*, int, int)> give_default_weapon_ammo_hook{
     0x004A4414,
     [](rf::Player* player, int weapon_type, int ammo) {
+        if (rf::is_server && gt_is_gungame()) {
+            ammo = rf::weapon_types[weapon_type].max_ammo;
+        }
         // if not using loadouts, this adjusts spawn weapon reserve ammo to match our clip config
-        if (rf::is_server && !g_alpine_server_config_active_rules.spawn_loadout.loadouts_active) {
+        else if (rf::is_server && !g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
+                 && g_alpine_server_config_active_rules.default_player_weapon.index >= 0) {
             ammo = rf::weapon_types[g_alpine_server_config_active_rules.default_player_weapon.index].clip_size_multi *
                    g_alpine_server_config_active_rules.default_player_weapon.num_clips;
         }
@@ -1432,6 +1462,7 @@ CallHook<void(rf::Player*, int, int)> give_default_weapon_ammo_hook{
     },
 };
 
+// Decide which levels to show for each game type in the listen server "Create Game" panel.
 FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
     0x00445050,
     [](const char *filename, int ng_type) {
@@ -1453,6 +1484,10 @@ FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
         else if (ng_type == rf::NetGameType::NG_TYPE_ESC) {
             return string_istarts_with(filename, "esc");
         }
+        // Gametypes that can reasonably be played on essentially any MP level.
+        else if (multi_game_type_uses_any_level(static_cast<rf::NetGameType>(ng_type))) {
+            return multi_level_name_matches_any_mp_prefix(filename);
+        }
         return string_istarts_with(filename, "dm") || string_istarts_with(filename, "pdm");
     },
 };
@@ -1463,7 +1498,7 @@ CodeInjection player_create_entity_default_weapon_injection {
     [](auto& regs) {
         if (rf::is_server &&
             g_alpine_server_config_active_rules.spawn_loadout.loadouts_active &&
-            !g_alpine_server_config_active_rules.gungame.enabled // no loadouts when gungame is on
+            !gt_is_gungame() // no loadouts when gungame is on
             ) {
             rf::Player* player = regs.ebp;
 
@@ -2198,7 +2233,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                 if (g_alpine_server_config_active_rules.spawn_armour.enabled) {
                     ep->armor = g_alpine_server_config_active_rules.spawn_armour.value;
                 }
-                if (g_alpine_server_config_active_rules.gungame.enabled) {
+                if (gt_is_gungame()) {
                     gungame_on_player_spawn(player);
                 }
             }
@@ -2207,7 +2242,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             if (rf::is_server
                 && (g_alpine_server_config_active_rules.spawn_loadout.loadouts_active
                     // no loadouts when gungame is on
-                    && !g_alpine_server_config_active_rules.gungame.enabled)
+                    && !gt_is_gungame())
             ) {
                 // Add each weapon in the loadout to the player on the server
                 for (auto const& e : g_alpine_server_config_active_rules.spawn_loadout.red_weapons) {
@@ -2708,6 +2743,10 @@ bool round_is_tied(rf::NetGameType game_type)
     }
 
     switch (game_type) {
+    case rf::NG_TYPE_GG: {
+        // GG doesn't recognize ties.
+        return false;
+    }
     case rf::NG_TYPE_DM:
     case rf::NG_TYPE_BAG: {
         // DM and BAG have the same tie condition: two or more players share the highest score.
@@ -2867,7 +2906,8 @@ FunHook<void()> multi_check_for_round_end_hook{
         }
         else {
             switch (game_type) {
-            case rf::NG_TYPE_DM: {
+            case rf::NG_TYPE_DM:
+            case rf::NG_TYPE_GG: {
                 auto current_players = get_clients(false, true);
 
                 if (current_players.empty())
@@ -3402,31 +3442,35 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
     }
 };
 
+// Resync a non-clip (thrown) weapon's ammo to its owning client via a
+// one-shot RF_GPT_RELOAD, built from the entity's current clip_ammo/ammo.
+void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_type)
+{
+    if (!player || !entity) {
+        return;
+    }
+    const rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
+    RF_ReloadPacket packet;
+    packet.header.type = RF_GPT_RELOAD;
+    packet.header.size = sizeof(packet) - sizeof(packet.header);
+    packet.entity_handle = entity->handle;
+    packet.weapon = weapon_type;
+    packet.ammo = entity->ai.clip_ammo[weapon_type];
+    packet.clip_ammo = (winfo.ammo_type >= 0) ? entity->ai.ammo[winfo.ammo_type] : 0;
+    rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
+}
+
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo)
 {
     rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
     int ammo_count = winfo.clip_size;
     if (full_ammo) {
-        if (g_alpine_server_config_active_rules.gungame.enabled && !rf::weapon_uses_clip(weapon_type)) {
-            // hackfix: in gungame, set max ammo to 999 for non-clip weapons
-            winfo.max_ammo = 9999;
-        }
         ammo_count = winfo.max_ammo + winfo.clip_size;
     }
     rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
     rf::ai_add_weapon(&ep->ai, weapon_type, ammo_count);
-     if (!rf::weapon_uses_clip(weapon_type)) {
-        if (!rf::player_is_dead(player)) {
-            rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
-            RF_ReloadPacket packet;
-            packet.header.type = RF_GPT_RELOAD;
-            packet.header.size = sizeof(packet) - sizeof(packet.header);
-            packet.entity_handle = entity->handle;
-            packet.weapon = weapon_type;
-            packet.ammo = entity->ai.clip_ammo[weapon_type]; // could be zeroed
-            packet.clip_ammo = entity->ai.ammo[winfo.ammo_type];
-            rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
-        }
+    if (!rf::weapon_uses_clip(weapon_type) && !rf::player_is_dead(player)) {
+        send_nonclip_ammo_sync(player, ep, weapon_type);
     }
 }
 
@@ -3628,7 +3672,7 @@ void server_init()
     multi_limbo_leave_pre_patch.install();
 
     // Default player weapon class and ammo override
-    find_default_weapon_for_entity_hook.install();
+    player_create_entity_find_default_weapon_injection.install();
     give_default_weapon_ammo_hook.install();
 
     init_server_commands();
@@ -3845,6 +3889,7 @@ void server_do_frame()
     process_delayed_kicks();
     pit_do_frame();
     wipeout_do_frame();
+    gungame_do_frame();
     rounds_do_frame();
 }
 

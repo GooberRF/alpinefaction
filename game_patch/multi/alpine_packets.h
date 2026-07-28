@@ -38,7 +38,8 @@ enum class af_packet_type : uint8_t
     af_server_req = 0x5E,               // Alpine 1.2.1
     af_server_bot_control = 0x5F,       // Alpine 1.3
     af_bagman_state = 0x60,             // Alpine 1.4
-    af_pit_roster = 0x61,              // Alpine 1.4
+    af_pit_roster = 0x61,               // Alpine 1.4
+    af_gungame_order = 0x62,            // Alpine 1.4
 };
 
 struct af_ping_location_req_packet
@@ -303,6 +304,22 @@ struct af_pit_roster_packet
     //af_pit_roster_entry entries[]; // appended on the wire
 };
 
+// Gun Game per-player weapon order sent by server to client;
+// client uses for local HUD display.
+struct af_gungame_order_entry
+{
+    uint16_t threshold;
+    uint8_t weapon_index;
+};
+static_assert(sizeof(af_gungame_order_entry) == 3);
+
+struct af_gungame_order_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t count;
+    //af_gungame_order_entry entries[]; // appended on the wire
+};
+
 enum af_just_died_info_flags
 {
     JDI_RESPAWN_ALLOWED = 0x1,
@@ -529,6 +546,8 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
 void af_send_pit_roster(rf::Player* player, const std::vector<af_pit_roster_entry>& roster);
 void af_broadcast_pit_roster(const std::vector<af_pit_roster_entry>& roster);
 void af_process_pit_roster_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_gungame_order(rf::Player* player, const std::vector<af_gungame_order_entry>& order);
+void af_process_gungame_order_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_koth_hill_captured_packet_to_all(uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids);
 static void af_process_koth_hill_captured_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_just_died_info_packet(rf::Player* to_player, bool respawn_allowed, bool force_respawn, uint16_t spawn_delay);

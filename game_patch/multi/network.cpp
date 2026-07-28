@@ -255,7 +255,8 @@ enum packet_type : uint8_t {
     af_server_req          = 0x5E,
     af_server_bot_control  = 0x5F,
     af_bagman_state        = 0x60,
-    af_pit_roster          = 0x61
+    af_pit_roster          = 0x61,
+    af_gungame_order       = 0x62
 };
 
 // client -> server
@@ -342,7 +343,8 @@ std::array g_client_side_packet_whitelist{
     af_server_req,
     af_server_bot_control,
     af_bagman_state,
-    af_pit_roster
+    af_pit_roster,
+    af_gungame_order
 };
 // clang-format on
 

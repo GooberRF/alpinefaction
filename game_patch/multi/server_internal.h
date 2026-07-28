@@ -72,8 +72,8 @@ struct SpawnProtectionConfig
 
 struct InactivityConfig
 {
-    bool enabled = false;
-    bool kick_after_warning = true;
+    bool enabled = true;
+    bool kick_after_warning = false;
     uint32_t new_player_grace_ms = 120000;
     uint32_t allowed_inactive_ms = 30000;
     uint32_t warning_duration_ms = 10000;
@@ -109,87 +109,6 @@ struct VoteConfig
     void set_time_limit_seconds(float in_time)
     {
         time_limit_seconds = static_cast<int>(std::max(in_time, 1.0f));
-    }
-};
-
-struct GunGameLevelEntry
-{
-    int kills = -1;             // manual mode
-    int tier = -1;              // dynamic mode
-    std::string weapon_name;    // only used for config print on launch
-    int weapon_index = -1;
-
-    auto operator<=>(const GunGameLevelEntry&) const = default;
-};
-
-struct GunGameConfig
-{
-    bool enabled = false;
-    bool dynamic_progression = false;
-    bool rampage_rewards = false;
-
-    std::optional<GunGameLevelEntry> final_level;
-    std::vector<GunGameLevelEntry> levels;
-
-    // =============================================
-
-    static int resolve_weapon(std::string_view name)
-    {
-        int idx = rf::weapon_lookup_type(name.data());
-        return idx;
-    }
-
-    bool set_final_level(int kills, std::string_view weapon)
-    {
-        int idx = resolve_weapon(weapon);
-        if (idx < 0)
-            return false;
-        final_level = GunGameLevelEntry{kills, -1, std::string{weapon}, idx};
-        return true;
-    }
-
-    // Manual mode entry
-    bool add_level_by_kills(int kills, std::string_view weapon)
-    {
-        int idx = resolve_weapon(weapon);
-        if (idx < 0)
-            return false;
-        // replace if same kills already present
-        auto it = std::find_if(levels.begin(), levels.end(), [&](auto const& e) { return e.kills == kills; });
-        if (it != levels.end()) {
-            it->weapon_name = weapon;
-            it->weapon_index = idx;
-            it->tier = -1;
-            return false;
-        }
-        levels.push_back(GunGameLevelEntry{kills, -1, std::string{weapon}, idx});
-        return true;
-    }
-
-    // Dynamic mode entry
-    bool add_level_by_tier(int tier, std::string_view weapon)
-    {
-        int idx = resolve_weapon(weapon);
-        if (idx < 0)
-            return false;
-        levels.push_back(GunGameLevelEntry{-1, tier, std::string{weapon}, idx});
-        return true;
-    }
-
-    void normalize_manual()
-    {
-        std::sort(levels.begin(), levels.end(), [](auto const& a, auto const& b) { return a.kills < b.kills; });
-        // dedupe by kills (keep last)
-        std::vector<GunGameLevelEntry> out;
-        for (auto const& e : levels) {
-            if (e.kills < 0)
-                continue; // ignore tier entries in manual
-            if (!out.empty() && out.back().kills == e.kills)
-                out.back() = e;
-            else
-                out.push_back(e);
-        }
-        levels.swap(out);
     }
 };
 
@@ -622,6 +541,7 @@ struct AlpineServerConfigRules
     int koth_score_limit = 100;
     int dc_score_limit = 300;
     int pit_score_limit = 10;
+    int gungame_score_limit = 30;
     int geo_limit = 64;
     int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
@@ -660,7 +580,9 @@ struct AlpineServerConfigRules
     std::vector<std::string> pit_allowed_items = {"Shotgun", "rocket launcher"};
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
-    GunGameConfig gungame;
+    bool gungame_rampage_rewards = true;
+    std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
+    std::string gungame_final_weapon = "Riot Stick";
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
 
@@ -691,9 +613,11 @@ struct AlpineServerConfigRules
     }
     void set_pit_score_limit(int count)
     {
-        // PlayerLevelStats::score is int16_t (max 32767); is_match_over fully
-        // governs rotation, so a limit above that would never be reached.
         pit_score_limit = std::clamp(count, 1, 32767);
+    }
+    void set_gungame_score_limit(int count)
+    {
+        gungame_score_limit = std::clamp(count, 1, 32767);
     }
     void set_geo_limit(int count)
     {
@@ -915,6 +839,7 @@ UpcomingGameTypeSelection get_upcoming_game_type_selection();
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
+int get_active_rules_generation();
 void cleanup_win32_server_console();
 void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, rf::Player* sender);
 void handle_player_set_handicap(rf::Player* player, uint8_t amount);
