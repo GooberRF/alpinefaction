@@ -2736,6 +2736,220 @@ CodeInjection multi_balance_teams_injection{
     },
 };
 
+// ---- Auto team balance -----------------------------------------------------
+// Periodically checks team sizes; if the teams stay unbalanced for enough
+// consecutive checks, it announces the pending rebalance in chat and then swaps
+// the next player who dies on the larger team over to the smaller one.
+
+static constexpr int AUTO_BALANCE_CHECK_INTERVAL_MS = 15000; // check cadence
+static constexpr int AUTO_BALANCE_REQUIRED_CHECKS = 3;       // consecutive unbalanced checks before queueing
+static constexpr int AUTO_BALANCE_THRESHOLD = 2;             // player-count difference considered "unbalanced"
+
+struct AutoTeamBalanceState {
+    rf::TimestampRealtime check_timer;
+    int consecutive_unbalanced_checks = 0;
+    bool queued = false;
+};
+static AutoTeamBalanceState g_auto_balance;
+
+// Count the players that matter for team balancing.
+// Browsers, spectators, idle players are excluded.
+// exclude is specified when evaluating a player who is manually requesting a team swap.
+static void count_active_team_players(int& red, int& blue, const rf::Player* exclude = nullptr)
+{
+    red = 0;
+    blue = 0;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == exclude || player.is_browser || player.is_spectator || player_is_idle(&player)) {
+            continue;
+        }
+        if (player.team == rf::TEAM_RED) {
+            ++red;
+        }
+        else if (player.team == rf::TEAM_BLUE) {
+            ++blue;
+        }
+    }
+}
+
+static int team_count_difference(int red, int blue)
+{
+    return (red > blue) ? (red - blue) : (blue - red);
+}
+
+static const char* team_name(rf::ubyte team)
+{
+    return (team == rf::TEAM_RED) ? rf::strings::red_caps : rf::strings::blue_caps;
+}
+
+static void auto_team_balance_announce_pending()
+{
+    af_broadcast_automated_chat_msg("Teams are unbalanced and will be automatically rebalanced.");
+}
+
+// Cancel any queued balance and reset the unbalanced-check streak. Nothing to
+// un-send since the pending notice is a chat message.
+static void auto_team_balance_reset()
+{
+    g_auto_balance.queued = false;
+    g_auto_balance.consecutive_unbalanced_checks = 0;
+}
+
+static void auto_team_balance_do_frame()
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    // Bail (and clear any queued balance) when the feature is off, we're not in
+    // a team game, we're not in gameplay, or a match/pre-match is running. Teams
+    // are fixed during matches, so we don't touch them.
+    if (!g_alpine_server_config_active_rules.auto_team_balance
+        || !multi_is_team_game_type()
+        || rf::gameseq_get_state() != rf::GS_GAMEPLAY
+        || g_match_info.match_active
+        || g_match_info.pre_match_active) {
+        auto_team_balance_reset();
+        return;
+    }
+
+    // While a balance is queued, watch every frame for the teams becoming
+    // balanced again (a player joined, left, or manually switched) so the
+    // queue and its notification can be cancelled promptly.
+    if (g_auto_balance.queued) {
+        int red = 0, blue = 0;
+        count_active_team_players(red, blue);
+        if (team_count_difference(red, blue) < AUTO_BALANCE_THRESHOLD) {
+            auto_team_balance_reset();
+        }
+        return;
+    }
+
+    // Not queued yet: escalate toward queueing on the fixed 15s cadence.
+    if (g_auto_balance.check_timer.valid() && !g_auto_balance.check_timer.elapsed()) {
+        return;
+    }
+    g_auto_balance.check_timer.set(AUTO_BALANCE_CHECK_INTERVAL_MS);
+
+    int red = 0, blue = 0;
+    count_active_team_players(red, blue);
+
+    if (team_count_difference(red, blue) < AUTO_BALANCE_THRESHOLD) {
+        // Balanced this check — reset the streak.
+        g_auto_balance.consecutive_unbalanced_checks = 0;
+        return;
+    }
+
+    // Unbalanced this check. Once the teams have been unbalanced for enough
+    // consecutive checks, queue the balance and announce it in chat.
+    if (++g_auto_balance.consecutive_unbalanced_checks >= AUTO_BALANCE_REQUIRED_CHECKS) {
+        g_auto_balance.queued = true;
+        auto_team_balance_announce_pending();
+    }
+}
+
+void auto_team_balance_on_player_death(rf::Player* killed_player)
+{
+    if (!rf::is_server || !killed_player) {
+        return;
+    }
+    if (!g_alpine_server_config_active_rules.auto_team_balance || !g_auto_balance.queued) {
+        return;
+    }
+    if (!multi_is_team_game_type()) {
+        return;
+    }
+    // Teams are fixed during a match/pre-match — never move players then.
+    if (g_match_info.match_active || g_match_info.pre_match_active) {
+        return;
+    }
+    // The dead player has to be eligible to be moved.
+    if (killed_player->is_browser || killed_player->is_spectator || player_is_idle(killed_player)) {
+        return;
+    }
+    if (is_player_ready(killed_player) || is_player_in_match(killed_player)) {
+        return;
+    }
+
+    int red = 0, blue = 0;
+    count_active_team_players(red, blue);
+
+    if (team_count_difference(red, blue) < AUTO_BALANCE_THRESHOLD) {
+        // Already balanced by the time this player died — end the sequence.
+        auto_team_balance_reset();
+        return;
+    }
+
+    const rf::ubyte larger_team = (red > blue) ? rf::TEAM_RED : rf::TEAM_BLUE;
+
+    // Only swap a player who died on the team that has more players.
+    if (killed_player->team != larger_team) {
+        return;
+    }
+
+    const rf::ubyte target_team = (larger_team == rf::TEAM_RED) ? rf::TEAM_BLUE : rf::TEAM_RED;
+    assign_player_to_team(killed_player, target_team);
+
+    // Announce the move to everyone in chat.
+    af_broadcast_automated_chat_msg(std::format(
+        "{} was moved to {} to balance the teams.", killed_player->name.c_str(), team_name(target_team)));
+
+    // Give the moved player a personal HUD notification so it's obvious.
+    af_send_hud_notification(
+        std::format("You have been moved to {} to balance the teams.", team_name(target_team)),
+        6, // seconds
+        static_cast<int>(HudNotificationType::GenericBig),
+        true, // fade out on expiry
+        killed_player);
+
+    // Re-evaluate after the swap; if the teams are now balanced, end the
+    // sequence (further deaths won't trigger swaps until it re-queues).
+    count_active_team_players(red, blue);
+    if (team_count_difference(red, blue) < AUTO_BALANCE_THRESHOLD) {
+        auto_team_balance_reset();
+    }
+}
+
+// Returns true if a manual team-change request should be blocked because auto
+// team balance is on and honoring it would unbalance the teams. The other
+// players are counted with the same exclusions as the periodic check (browsers,
+// spectators, and idle players don't count). Browser/spectator requesters are
+// exempt, but the requester's own idle state is intentionally ignored — they are
+// actively requesting to play, and the client "team" command kills them before
+// this runs (see the note at the count below).
+bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team)
+{
+    if (!rf::is_server || !player) {
+        return false;
+    }
+    if (!g_alpine_server_config_active_rules.auto_team_balance || !multi_is_team_game_type()) {
+        return false;
+    }
+    // Requesting the team they're already on is a no-op.
+    if (player->team == requested_team) {
+        return false;
+    }
+    // Browsers and spectators aren't active on a team, so their own team
+    // selection can't unbalance the active roster.
+    if (player->is_browser || player->is_spectator) {
+        return false;
+    }
+
+    // Count the active players on each team excluding the requester, then model
+    // the requester joining the team they asked for. The requester is always
+    // counted as an active +1 on the target.
+    int red = 0, blue = 0;
+    count_active_team_players(red, blue, player);
+
+    const int new_red = red + (requested_team == rf::TEAM_RED ? 1 : 0);
+    const int new_blue = blue + (requested_team == rf::TEAM_RED ? 0 : 1);
+
+    // Block if the team they want to join would end up ahead of the other by the
+    // imbalance threshold. Moves that keep or improve balance are allowed.
+    const int join_diff = (requested_team == rf::TEAM_RED) ? (new_red - new_blue) : (new_blue - new_red);
+    return join_diff >= AUTO_BALANCE_THRESHOLD;
+}
+
 bool round_is_tied(rf::NetGameType game_type)
 {
     if (rf::multi_num_players() <= 1) {
@@ -3891,6 +4105,7 @@ void server_do_frame()
     wipeout_do_frame();
     gungame_do_frame();
     rounds_do_frame();
+    auto_team_balance_do_frame();
 }
 
 void server_on_limbo_state_enter()
