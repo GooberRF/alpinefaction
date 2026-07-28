@@ -517,13 +517,12 @@ void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices)
         rf::Item* next = it->next;
         const uint32_t flags = it->item_flags;
         const bool is_dropped = (flags & rf::IF_DROPPED) != 0;
-        const bool is_ctf_flag = (flags & rf::IF_CTF_FLAG) != 0;
 
         if (is_dropped) {
             rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
             rf::obj_flag_dead(it);
         }
-        else if (!is_ctf_flag) {
+        else {
             const bool allowed =
                 std::find(allowed_item_type_indices.begin(), allowed_item_type_indices.end(), it->info_index)
                 != allowed_item_type_indices.end();

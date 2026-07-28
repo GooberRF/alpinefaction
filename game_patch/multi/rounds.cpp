@@ -524,6 +524,7 @@ void rounds_request_end(rf::Player* winner, RoundEndReason reason)
 
 void rounds_kill_entity_silent(rf::Entity* ep)
 {
+    if (!rf::is_server) return;
     if (!ep || rf::entity_is_dying(ep)) return;
     ep->killer_handle = 0;
     ep->killer_netid = -1;
