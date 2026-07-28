@@ -393,8 +393,8 @@ CodeInjection player_execute_action_patch2{
                         af_send_pit_queue_request(2);
                     }
                 } else if (!rf::is_server) {
-                    af_send_ready_request(2);            // replaces send_chat_line_packet("/ready")
-                    draw_hud_ready_notification(false);  // keep the optimistic hide
+                    af_send_ready_request(2);
+                    draw_hud_ready_notification(false);  // optimistic hide
                 }
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_CHAT_MENU)

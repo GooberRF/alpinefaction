@@ -67,9 +67,6 @@ void reset_local_pit_roster();
 void set_local_pit_roster_entry(uint8_t player_id, uint8_t role, uint8_t order);
 int pit_scoreboard_role_for(const rf::Player* player); // 0=dueler,1=queued,2=not_queued,-1=unknown
 int pit_scoreboard_order_for(const rf::Player* player); // 1-based queue position, 0 if unknown/not-queued
-// Client per-frame: auto-enter freelook spectate for a queued Pit player when
-// the server flags it. Call from the per-frame tick (not the HUD render path)
-// so it runs even with the HUD hidden.
 void hud_pit_queue_auto_spectate();
 
 void set_local_gungame_order(const af_gungame_order_entry* entries, uint8_t count);

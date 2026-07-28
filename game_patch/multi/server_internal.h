@@ -577,7 +577,6 @@ struct AlpineServerConfigRules
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
-    std::vector<std::string> pit_allowed_items = {"Shotgun", "rocket launcher"};
     ForceCharacterConfig force_character;
     CriticalHitsConfig critical_hits;
     bool gungame_rampage_rewards = true;

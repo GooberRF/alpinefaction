@@ -2713,9 +2713,6 @@ bool bot_internal_is_control_point_mode()
     return bot_personality_manager_is_control_point_mode();
 }
 
-// External (declared in bot_main.h) so other modules — e.g. multi_hud.cpp's Pit
-// auto-spectate guard — can gate on it. Defined at global scope on purpose:
-// keeping it in the anonymous namespace would clash with the header declaration.
 bool is_client_bot_active()
 {
     return client_bot_launch_enabled()

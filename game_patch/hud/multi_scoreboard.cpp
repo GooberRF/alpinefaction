@@ -552,7 +552,7 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
             }
 
             // Pit IN QUEUE section: order by queue position (front of queue on
-            // top). Duelers / NOT QUEUED keep the standard sort below. Ties or
+            // top). DUELING / NOT QUEUED keep the standard sort below. Ties or
             // unknown order (0) fall through to the standard comparison.
             if (category_1 == ScoreboardCategory::PitQueued) {
                 const int order_1 = pit_scoreboard_order_for(player_1);

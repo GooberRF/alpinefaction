@@ -696,17 +696,13 @@ void pit_reset_world_items()
 {
     if (!rf::is_server) return;
 
-    // Resolve the configured allowed-item cls_names to item type indices ONCE
-    // per reset (the established item_lookup_type pattern). Comparing
-    // it->info_index against these resolved indices — rather than matching
-    // cls_name strings — respects the item_replacements config (a replaced
-    // Shotgun still resolves to the same type) and lets ops run all-items /
-    // sniper Pit via pit_allowed_items.
+    // Pit keeps only weapon pickups; all other pickups (ammo, health, armor,
+    // powerups) are hidden each round.
     std::vector<int> allowed_indices;
-    allowed_indices.reserve(g_alpine_server_config_active_rules.pit_allowed_items.size());
-    for (const std::string& name : g_alpine_server_config_active_rules.pit_allowed_items) {
-        const int idx = rf::item_lookup_type(name.c_str());
-        if (idx >= 0) allowed_indices.push_back(idx);
+    for (int i = 0; i < rf::num_item_types; ++i) {
+        if (rf::item_info[i].gives_weapon_id >= 0) {
+            allowed_indices.push_back(i);
+        }
     }
 
     // Keep only the allowed level pickups; hide everything else.

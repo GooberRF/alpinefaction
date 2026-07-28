@@ -418,8 +418,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
         }
 
         case rf::NetGameType::NG_TYPE_PIT: {
-            // Round-based 1v1 duels. Two duelers fight per round; everyone else
-            // waits in a FIFO queue as spectators (see pit.cpp).
             rules.spawn_delay.enabled = false;
             rules.force_respawn = false;
             rules.location_pinging = false;
@@ -696,18 +694,6 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
                 }
             }
         }
-    }
-
-    // Pit allowed level items (array of item cls_name strings). Replaces the
-    // default {Shotgun, rocket launcher} when present.
-    if (auto arr = t["pit_allowed_items"].as_array()) {
-        std::vector<std::string> allowed;
-        for (auto& node : *arr) {
-            if (auto value = node.value<std::string>()) {
-                allowed.emplace_back(std::move(*value));
-            }
-        }
-        o.pit_allowed_items = std::move(allowed);
     }
 
     if (auto sub = t["force_character"].as_table())
@@ -1705,14 +1691,6 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  PIT player score limit:                {}\n", rules.pit_score_limit);
     if (base || rules.gungame_score_limit != b.gungame_score_limit)
         std::format_to(iter, "  GunGame player score limit:            {}\n", rules.gungame_score_limit);
-    if (base || rules.pit_allowed_items != b.pit_allowed_items) {
-        std::string joined;
-        for (size_t i = 0; i < rules.pit_allowed_items.size(); ++i) {
-            if (i) joined += ", ";
-            joined += rules.pit_allowed_items[i];
-        }
-        std::format_to(iter, "  PIT allowed items:                     {}\n", joined);
-    }
     if (base || rules.bagman.bag_score_limit != b.bagman.bag_score_limit)
         std::format_to(iter, "  BAG player score limit:                {}\n", rules.bagman.bag_score_limit);
     if (base || rules.bagman.tbag_score_limit != b.bagman.tbag_score_limit)

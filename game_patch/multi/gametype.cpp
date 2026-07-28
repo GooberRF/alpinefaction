@@ -138,7 +138,7 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_TBAG:
         case rf::NG_TYPE_WO:
             return true;
-        default: // DM, RUN, BAG, PIT
+        default:
             return false;
     }
 }
@@ -151,7 +151,7 @@ bool multi_game_type_has_hills(rf::NetGameType game_type)
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
             return true;
-        default: // DM, CTF, TDM, RUN
+        default:
             return false;
     }
 }
