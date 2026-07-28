@@ -2731,7 +2731,8 @@ CodeInjection multi_io_process_packets_injection{
             const int offset = regs.ebp;
             const int len = regs.edi;
             const int stack_frame = regs.esp + 0x1C;
-            const rf::NetAddr& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
+            const rf::NetAddr& addr =
+                *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
             rf::Player* const player = addr_as_ref<rf::Player*>(stack_frame + 0x10);
             process_custom_packet(data + offset, len, addr, player);
             goto SKIP_DEFAULT_HANDLER;
@@ -2744,7 +2745,8 @@ CodeInjection multi_io_process_packets_injection{
                 const int off = regs.ebp;
                 const int len = regs.edi;
                 const int stack_frame = regs.esp + 0x1C;
-                const rf::NetAddr& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
+                const rf::NetAddr& addr =
+                    *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
 
                 // Bytes remaining in their datagram.
                 size_t rx_len = 0;
@@ -2769,7 +2771,8 @@ CodeInjection multi_io_process_packets_injection{
                 const int off = regs.ebp;
                 const size_t len = regs.edi;
                 const int stack_frame = regs.esp + 0x1C;
-                const rf::NetAddr& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
+                const rf::NetAddr& addr =
+                    *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
 
                 uint8_t ver = 0;
                 if (parse_af_gi_req_tail(base + off, len, ver)) {
