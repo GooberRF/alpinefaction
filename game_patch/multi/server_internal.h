@@ -641,7 +641,6 @@ struct AlpineServerConfigRules
     bool add_item_replacement(std::string_view original, std::string_view replacement)
     {
         int orig_idx = rf::item_lookup_type(original.data());
-        int repl_idx = rf::item_lookup_type(replacement.data());
         if (orig_idx < 0) {
             // check if original name is invalid
             // replacement name being blank is fine, removes item
