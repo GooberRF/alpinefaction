@@ -2,46 +2,50 @@
 
 #include <cstring>
 #include <functional>
+#include <stdexcept>
+#include <utility>
 #include "../crt.h"
 
 namespace rf
 {
     template <typename T>
-    class VArray
-    {
+    class VArray {
     private:
         int size_ = 0;
         int capacity_ = 0;
         // Allocated storage contains default-constructed T objects.
         T* elements_ = nullptr;
 
-        static constexpr bool NEEDS_COOKIE =
-            !std::is_trivially_destructible_v<T>;
+        static constexpr bool NEEDS_COOKIE = !std::is_trivially_destructible_v<T>;
 
-        static constexpr size_t COOKIE_OFFSET = 
+        static constexpr size_t COOKIE_OFFSET =
             (sizeof(int) + alignof(T) - 1) & ~(alignof(T) - 1);
 
-        static size_t alloc_size(const int capacity) {
-            const int element_size = sizeof(T) * capacity;
-            return NEEDS_COOKIE ? element_size + COOKIE_OFFSET : element_size;
+        static size_t get_storage_size(const int capacity) {
+            const int size = sizeof(T) * capacity;
+            return NEEDS_COOKIE ? size + COOKIE_OFFSET : size;
         }
 
         static T* alloc_storage(const int capacity) {
-            void* const raw = rf::operator_new(alloc_size(capacity));
+            void* const raw = rf::operator_new(get_storage_size(capacity));
             if constexpr (NEEDS_COOKIE) {
                 std::memcpy(raw, &capacity, sizeof(int));
-                return reinterpret_cast<T*>(static_cast<uint8_t*>(raw) + COOKIE_OFFSET);
+                std::byte* const ptr = reinterpret_cast<std::byte*>(raw)
+                    + COOKIE_OFFSET;
+                return reinterpret_cast<T*>(ptr);
             } else {
                 return static_cast<T*>(raw);
             }
         }
 
         static void free_storage(T* const ptr) {
-            if (!ptr) {
+            if (ptr) {
                 return;
             }
             if constexpr (NEEDS_COOKIE) {
-                rf::operator_delete(reinterpret_cast<uint8_t*>(ptr) - COOKIE_OFFSET);
+                std::byte* const raw = reinterpret_cast<std::byte*>(ptr)
+                    - COOKIE_OFFSET;
+                rf::operator_delete(raw);
             } else {
                 rf::operator_delete(ptr);
             }
@@ -82,10 +86,10 @@ namespace rf
 
         VArray& operator=(VArray&& other) noexcept {
             if (this != &other) {
-                VArray temp{std::move(other)};
-                std::swap(size_, temp.size_);
-                std::swap(capacity_, temp.capacity_);
-                std::swap(elements_, temp.elements_);
+                VArray tmp{std::move(other)};
+                std::swap(size_, tmp.size_);
+                std::swap(capacity_, tmp.capacity_);
+                std::swap(elements_, tmp.elements_);
             }
             return *this;
         }
@@ -94,43 +98,84 @@ namespace rf
             reset();
         }
 
-        [[nodiscard]] int size() const noexcept {
+        [[nodiscard]]
+        int size() const noexcept {
             return size_;
         }
 
-        [[nodiscard]] bool empty() const noexcept {
+        [[nodiscard]]
+        int capacity() const noexcept {
+            return capacity_;
+        }
+
+        [[nodiscard]]
+        bool empty() const noexcept {
             return size_ == 0;
         }
 
-        [[nodiscard]] const T& operator[](const size_t index) const noexcept {
+        [[nodiscard]]
+        T& operator[](const size_t index) {
+            return at(index);
+        }
+
+        [[nodiscard]]
+        const T& operator[](const size_t index) const {
+            return at(index);
+        }
+
+        [[nodiscard]]
+        T& at(const size_t index) {
+            if (std::cmp_greater_equal(index, size_)) {
+                throw std::out_of_range{"index is out of range"};
+            }
             return elements_[index];
         }
 
-        [[nodiscard]] T& operator[](const size_t index) noexcept {
+        [[nodiscard]]
+        const T& at(const size_t index) const {
+            if (std::cmp_greater_equal(index, size_)) {
+                throw std::out_of_range{"index is out of range"};
+            }
             return elements_[index];
         }
 
-        [[nodiscard]] const T& get(const size_t index) const noexcept {
+        [[nodiscard]]
+        T& at_unchecked(const size_t index) noexcept {
             return elements_[index];
         }
 
-        [[nodiscard]] T& get(const size_t index) noexcept {
+        [[nodiscard]]
+        const T& at_unchecked(const size_t index) const noexcept {
             return elements_[index];
         }
 
-        [[nodiscard]] const T* begin() const noexcept {
+        [[nodiscard]]
+        T* begin() noexcept {
             return elements_;
         }
 
-        [[nodiscard]] T* begin() noexcept {
+        [[nodiscard]]
+        const T* begin() const noexcept {
+            return cbegin();
+        }
+        
+        [[nodiscard]]
+        const T* cbegin() const noexcept {
             return elements_;
         }
 
-        [[nodiscard]] const T* end() const noexcept {
+        [[nodiscard]]
+        T* end() noexcept {
             return elements_ + size_;
         }
 
-        [[nodiscard]] T* end() noexcept {
+        [[nodiscard]]
+        const T* end() const noexcept {
+            return cend();
+        }
+
+        [[nodiscard]]
+        const T* cend() const noexcept {
             return elements_ + size_;
         }
 
@@ -162,8 +207,13 @@ namespace rf
             if (size_ == capacity_) {
                 realloc(capacity_ ? capacity_ * 2 : 16);
             }
-
             elements_[size_++] = std::move(element);
+        }
+
+        void add_unique(T element) {
+            if (!contains(element)) {
+                return add(std::move(element));
+            }
         }
 
         void clear() noexcept {
@@ -178,15 +228,14 @@ namespace rf
             size_ = 0;
             capacity_ = 0;
 
-            if (elements_)
-            {
+            if (elements_) {
                 free_storage(elements_);
                 elements_ = nullptr;
             }
         }
 
         void erase(const int index) {
-            if (index < 0 || index >= size_) {
+            if (index < 0 || std::cmp_greater_equal(index, size_)) {
                 return;
             }
 
@@ -198,13 +247,12 @@ namespace rf
             --size_;
         }
 
-        template <typename Predicate>
-        requires std::is_invocable_r_v<bool, Predicate, T>
+        template <std::predicate<const T&> Predicate>
         void erase_if(Predicate&& pred) {
             int new_size = 0;
 
             for (int i = 0; i < size_; ++i) {
-                if (!std::invoke(pred, elements_[i])) {
+                if (!std::invoke(std::forward<Predicate>(pred), elements_[i])) {
                     if (new_size != i) {
                         elements_[new_size] = std::move(elements_[i]);
                     }
@@ -215,20 +263,21 @@ namespace rf
             size_ = new_size;
         }
 
-        template <typename Predicate>
-        requires std::is_invocable_r_v<bool, Predicate, T>
-        [[nodiscard]] bool contains(Predicate&& pred) const {
+        [[nodiscard]]
+        bool contains(const T& value) const {
             for (int i = 0; i < size_; ++i) {
-                if (std::invoke(pred, elements_[i])) {
+                if (elements_[i] == value) {
                     return true;
                 }
             }
             return false;
         }
 
-        [[nodiscard]] bool contains(const T& value) const {
+        template <std::predicate<const T&> Predicate>
+        [[nodiscard]]
+        bool contains(Predicate&& pred) const {
             for (int i = 0; i < size_; ++i) {
-                if (elements_[i] == value) {
+                if (std::invoke(std::forward<Predicate>(pred), elements_[i])) {
                     return true;
                 }
             }
@@ -238,8 +287,7 @@ namespace rf
     static_assert(sizeof(VArray<char>) == 0xC);
 
     #pragma pack(push, 1)
-    struct BitSet
-    {
+    struct BitSet {
         void* buf_;
         int size_in_bytes_;
         bool is_buffer_allocated_;
@@ -252,47 +300,82 @@ namespace rf
     static_assert(sizeof(BitSet) == 0x9);
 
     template <typename T, int N>
-    class FArray
-    {
+    class FArray {
         int size_ = 0;
         T elements_[N] = {};
 
     public:
-        [[nodiscard]] int size() const noexcept {
+        [[nodiscard]]
+        int size() const noexcept {
             return size_;
         }
 
-        [[nodiscard]] const T& operator[](const size_t index) const noexcept {
+        [[nodiscard]]
+        T& operator[](const size_t index) {
+            return at(index);
+        }
+
+        [[nodiscard]]
+        const T& operator[](const size_t index) const {
+            return at(index);
+        }
+
+        [[nodiscard]]
+        T& at(const size_t index) {
+            if (std::cmp_greater_equal(index, size_)) {
+                throw std::out_of_range{"index is out of range"};
+            }
             return elements_[index];
         }
 
-        [[nodiscard]] T& operator[](const size_t index) noexcept {
+        [[nodiscard]]
+        const T& at(const size_t index) const {
+            if (std::cmp_greater_equal(index, size_)) {
+                throw std::out_of_range{"index is out of range"};
+            }
             return elements_[index];
         }
 
-        [[nodiscard]] const T& get(const size_t index) const noexcept {
+        [[nodiscard]]
+        T& at_unchecked(const size_t index) noexcept {
             return elements_[index];
         }
 
-        [[nodiscard]] T& get(const size_t index)noexcept {
+        [[nodiscard]]
+        const T& at_unchecked(const size_t index) const noexcept {
             return elements_[index];
         }
  
-        [[nodiscard]] const T* begin() const noexcept {
+        [[nodiscard]]
+        T* begin() noexcept {
             return elements_;
         }
 
-        [[nodiscard]] T* begin() noexcept {
+        [[nodiscard]]
+        const T* begin() const noexcept {
+            return cbegin();
+        }
+
+        [[nodiscard]]
+        const T* cbegin() const noexcept {
             return elements_;
         }
 
-        [[nodiscard]] const T* end() const noexcept {
+        [[nodiscard]]
+        T* end() noexcept {
             return elements_ + size_;
         }
 
-        [[nodiscard]] T* end() noexcept {
+        [[nodiscard]]
+        const T* end() const noexcept {
+            return cend();
+        }
+ 
+        [[nodiscard]]
+        const T* cend() const noexcept {
             return elements_ + size_;
         }
+
     };
     static_assert(sizeof(FArray<char, 8>) == 0xC);
 }
