@@ -2911,9 +2911,12 @@ void auto_team_balance_on_player_death(rf::Player* killed_player)
 }
 
 // Returns true if a manual team-change request should be blocked because auto
-// team balance is on and honoring it would unbalance the teams. Uses the same
-// eligibility rules (ignore browsers, spectators, and idle players) as the
-// periodic balance check.
+// team balance is on and honoring it would unbalance the teams. The other
+// players are counted with the same exclusions as the periodic check (browsers,
+// spectators, and idle players don't count). Browser/spectator requesters are
+// exempt, but the requester's own idle state is intentionally ignored — they are
+// actively requesting to play, and the client "team" command kills them before
+// this runs (see the note at the count below).
 bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team)
 {
     if (!rf::is_server || !player) {
