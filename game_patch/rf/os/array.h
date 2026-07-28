@@ -1,253 +1,298 @@
 #pragma once
 
-#include <cstdint>
 #include <cstring>
-#include <type_traits>
-//#include "string.h"
+#include <functional>
+#include "../crt.h"
 
 namespace rf
 {
-    class String;
-
-    template<typename T = char>
+    template <typename T>
     class VArray
     {
     private:
-        int num = 0;
-        int capacity = 0;
-        T *elements = nullptr;
+        int size_ = 0;
+        int capacity_ = 0;
+        // Allocated storage contains default-constructed T objects.
+        T* elements_ = nullptr;
+
+        static constexpr bool NEEDS_COOKIE =
+            !std::is_trivially_destructible_v<T>;
+
+        static constexpr size_t COOKIE_OFFSET = 
+            (sizeof(int) + alignof(T) - 1) & ~(alignof(T) - 1);
+
+        static size_t alloc_size(const int capacity) {
+            const int element_size = sizeof(T) * capacity;
+            return NEEDS_COOKIE ? element_size + COOKIE_OFFSET : element_size;
+        }
+
+        static T* alloc_storage(const int capacity) {
+            void* const raw = rf::operator_new(alloc_size(capacity));
+            if constexpr (NEEDS_COOKIE) {
+                std::memcpy(raw, &capacity, sizeof(int));
+                return reinterpret_cast<T*>(static_cast<uint8_t*>(raw) + COOKIE_OFFSET);
+            } else {
+                return static_cast<T*>(raw);
+            }
+        }
+
+        static void free_storage(T* const ptr) {
+            if (!ptr) {
+                return;
+            }
+            if constexpr (NEEDS_COOKIE) {
+                rf::operator_delete(reinterpret_cast<uint8_t*>(ptr) - COOKIE_OFFSET);
+            } else {
+                rf::operator_delete(ptr);
+            }
+        }
 
     public:
-        [[nodiscard]] int size() const
-        {
-            return num;
-        }
+        VArray() = default;
 
-        [[nodiscard]] bool empty() const
-        {
-            return num == 0;
-        }
-
-        [[nodiscard]] T& operator[](int index)
-        {
-            return elements[index];
-        }
-
-        [[nodiscard]] const T& operator[](int index) const
-        {
-            return elements[index];
-        }
-
-        [[nodiscard]] T& get(int index) const
-        {
-            return elements[index];
-        }
-
-        [[nodiscard]] T* begin()
-        {
-            return &elements[0];
-        }
-
-        [[nodiscard]] const T* begin() const
-        {
-            return &elements[0];
-        }
-
-        [[nodiscard]] T* end()
-        {
-            return &elements[num];
-        }
-
-        [[nodiscard]] const T* end() const
-        {
-            return &elements[num];
-        }
-
-        void add(T element)
-        {
-            AddrCaller{0x0045EC40}.this_call(this, element);
-        }
-
-        void clear()
-        {
-            num = 0;
-        }
-
-        void erase(int index)
-        {
-            if (index < 0 || index >= num) {
-                return; // Invalid index, do nothing
-            }
-
-            // Shift elements to the left to overwrite the erased element
-            for (int i = index; i < num - 1; ++i) {
-                elements[i] = elements[i + 1];
-            }
-
-            --num; // Reduce the size
-        }
-
-        template<typename Predicate>
-        void erase_if(Predicate pred)
-        {
-            int new_size = 0;
-            for (int i = 0; i < num; ++i) {
-                if (!pred(elements[i])) {
-                    elements[new_size++] = elements[i];
+        VArray(const VArray& other)
+            : size_(other.size_)
+            , capacity_(other.capacity_) {
+            if (capacity_ > 0) {
+                elements_ = alloc_storage(capacity_);
+                for (int i = 0; i < capacity_; ++i) {
+                    std::construct_at(&elements_[i], other.elements_[i]);
                 }
             }
-            num = new_size;
         }
 
-        template<typename Predicate>
+        VArray(VArray&& other) noexcept
+            : size_(other.size_)
+            , capacity_(other.capacity_)
+            , elements_(other.elements_) {
+            other.size_ = 0;
+            other.capacity_ = 0;
+            other.elements_ = nullptr;
+        }
+
+        VArray& operator=(const VArray& other) {
+            if (this != &other) {
+                VArray copy{other};
+                std::swap(size_, copy.size_);
+                std::swap(capacity_, copy.capacity_);
+                std::swap(elements_, copy.elements_);
+            }
+            return *this;
+        }
+
+        VArray& operator=(VArray&& other) noexcept {
+            if (this != &other) {
+                VArray temp{std::move(other)};
+                std::swap(size_, temp.size_);
+                std::swap(capacity_, temp.capacity_);
+                std::swap(elements_, temp.elements_);
+            }
+            return *this;
+        }
+
+        ~VArray() {
+            reset();
+        }
+
+        [[nodiscard]] int size() const noexcept {
+            return size_;
+        }
+
+        [[nodiscard]] bool empty() const noexcept {
+            return size_ == 0;
+        }
+
+        [[nodiscard]] const T& operator[](const size_t index) const noexcept {
+            return elements_[index];
+        }
+
+        [[nodiscard]] T& operator[](const size_t index) noexcept {
+            return elements_[index];
+        }
+
+        [[nodiscard]] const T& get(const size_t index) const noexcept {
+            return elements_[index];
+        }
+
+        [[nodiscard]] T& get(const size_t index) noexcept {
+            return elements_[index];
+        }
+
+        [[nodiscard]] const T* begin() const noexcept {
+            return elements_;
+        }
+
+        [[nodiscard]] T* begin() noexcept {
+            return elements_;
+        }
+
+        [[nodiscard]] const T* end() const noexcept {
+            return elements_ + size_;
+        }
+
+        [[nodiscard]] T* end() noexcept {
+            return elements_ + size_;
+        }
+
+        void realloc(const int new_capacity) {
+            T* const old_elements = elements_;
+            T* const new_elements = alloc_storage(new_capacity);
+
+            for (int i = 0; i < size_; ++i) {
+                std::construct_at(&new_elements[i], std::move(old_elements[i]));
+            }
+
+            for (int i = size_; i < new_capacity; ++i) {
+                std::construct_at(&new_elements[i]);
+            }
+
+            const int old_capacity = capacity_;
+
+            elements_ = new_elements;
+            capacity_ = new_capacity;
+
+            for (int i = 0; i < old_capacity; ++i) {
+                std::destroy_at(&old_elements[i]);
+            }
+
+            free_storage(old_elements);
+        }
+
+        void add(T element) {
+            if (size_ == capacity_) {
+                realloc(capacity_ ? capacity_ * 2 : 16);
+            }
+
+            elements_[size_++] = std::move(element);
+        }
+
+        void clear() noexcept {
+            size_ = 0;
+        }
+
+        void reset() {
+            for (int i = 0; i < capacity_; ++i) {
+                std::destroy_at(&elements_[i]);
+            }
+
+            size_ = 0;
+            capacity_ = 0;
+
+            if (elements_)
+            {
+                free_storage(elements_);
+                elements_ = nullptr;
+            }
+        }
+
+        void erase(const int index) {
+            if (index < 0 || index >= size_) {
+                return;
+            }
+
+            // Shift elements to the left, in order to overwrite.
+            for (int i = index; i < size_ - 1; ++i) {
+                elements_[i] = std::move(elements_[i + 1]);
+            }
+
+            --size_;
+        }
+
+        template <typename Predicate>
         requires std::is_invocable_r_v<bool, Predicate, T>
-        [[nodiscard]] bool contains(Predicate pred) const
-        {
-            for (int i = 0; i < num; ++i) {
-                if (pred(elements[i])) {
+        void erase_if(Predicate&& pred) {
+            int new_size = 0;
+
+            for (int i = 0; i < size_; ++i) {
+                if (!std::invoke(pred, elements_[i])) {
+                    if (new_size != i) {
+                        elements_[new_size] = std::move(elements_[i]);
+                    }
+                    ++new_size;
+                }
+            }
+
+            size_ = new_size;
+        }
+
+        template <typename Predicate>
+        requires std::is_invocable_r_v<bool, Predicate, T>
+        [[nodiscard]] bool contains(Predicate&& pred) const {
+            for (int i = 0; i < size_; ++i) {
+                if (std::invoke(pred, elements_[i])) {
                     return true;
                 }
             }
             return false;
         }
 
-        [[nodiscard]] bool contains(const T& value) const
-        {
-            for (int i = 0; i < num; ++i) {
-                if (elements[i] == value) {
+        [[nodiscard]] bool contains(const T& value) const {
+            for (int i = 0; i < size_; ++i) {
+                if (elements_[i] == value) {
                     return true;
                 }
             }
             return false;
         }
     };
-    static_assert(sizeof(VArray<>) == 0xC);
+    static_assert(sizeof(VArray<char>) == 0xC);
 
-    template<typename T = char>
-    struct VArray_String
-    {
-        int num = 0;
-        int capacity = 0;
-        T* data = nullptr;
-
-    public:
-        [[nodiscard]] int size() const
-        {
-            return num;
-        }
-
-        [[nodiscard]] bool empty() const
-        {
-            return num == 0;
-        }
-
-        void clear()
-        {
-            num = 0;
-        }
-
-        void add(T element)
-        {
-            // 0x00447060 takes the 8-byte String BY VALUE on the stack and destroys it
-            // (MSVC x86 callee-destroys ABI). GCC/MinGW passes non-trivial classes by
-            // hidden reference instead, so forwarding `element` through this_call pushed
-            // a pointer where the engine expects the raw struct — storing garbage in the
-            // array and making the engine free() a garbage pointer (this poisoned RF's
-            // CRT heap and crashed MinGW dedicated servers at launch). Pass the raw
-            // 8 bytes explicitly — identical layout under both compilers. The engine
-            // copy-assigns those bytes into its own slot buffer and frees the buffer
-            // the passed String pointed at, taking ownership; the memset then zeroes
-            // `element` so the ABI-designated destruction of the by-value parameter —
-            // MSVC runs it in this function's epilogue, GCC/MinGW in the caller — is a
-            // harmless no-op instead of a double free.
-            static_assert(std::is_same_v<T, String>,
-                "VArray_String::add requires T = rf::String: engine routine 0x00447060 copy-assigns the pushed "
-                "8 bytes via String::operator= and destroys them via ~String (freeing bytes 4-7 as a char* "
-                "buffer), so any other 8-byte T compiles but corrupts the heap at runtime");
-            static_assert(sizeof(T) == 8);
-            uint32_t raw[2];
-            std::memcpy(raw, &element, sizeof(raw));
-            AddrCaller{0x00447060}.this_call(this, raw[0], raw[1]);
-            std::memset(&element, 0, sizeof(raw));
-        }
-
-        T& operator[](int index)
-        {
-            return data[index];
-        }
-
-        T* begin()
-        {
-            return data;
-        }
-
-        T* end()
-        {
-            return data + num;
-        }
-    };
-    static_assert(sizeof(VArray_String<>) == 0xC);
-
-#pragma pack(push, 1)
+    #pragma pack(push, 1)
     struct BitSet
     {
-        void* buf;
-        int size_in_bytes;
-        bool is_buffer_allocated;
+        void* buf_;
+        int size_in_bytes_;
+        bool is_buffer_allocated_;
 
-        void set(int index, int value)
-        {
+        void set(const int index, const int value) {
             AddrCaller{0x0050EA00}.this_call(this, index, value);
         }
     };
-#pragma pack(pop)
+    #pragma pack(pop)
     static_assert(sizeof(BitSet) == 0x9);
 
-    template<typename T, int N>
+    template <typename T, int N>
     class FArray
     {
-        int num;
-        T elements[N];
+        int size_ = 0;
+        T elements_[N] = {};
 
     public:
-        [[nodiscard]] int size() const
-        {
-            return num;
+        [[nodiscard]] int size() const noexcept {
+            return size_;
         }
 
-        [[nodiscard]] T& operator[](int index)
-        {
-            return elements[index];
+        [[nodiscard]] const T& operator[](const size_t index) const noexcept {
+            return elements_[index];
         }
 
-        [[nodiscard]] const T& operator[](int index) const
-        {
-            return elements[index];
+        [[nodiscard]] T& operator[](const size_t index) noexcept {
+            return elements_[index];
         }
 
-        [[nodiscard]] T& get(int index) const
-        {
-            return elements[index];
+        [[nodiscard]] const T& get(const size_t index) const noexcept {
+            return elements_[index];
         }
 
-        [[nodiscard]] T* begin()
-        {
-            return &elements[0];
+        [[nodiscard]] T& get(const size_t index)noexcept {
+            return elements_[index];
+        }
+ 
+        [[nodiscard]] const T* begin() const noexcept {
+            return elements_;
         }
 
-        [[nodiscard]] const T* begin() const
-        {
-            return &elements[0];
+        [[nodiscard]] T* begin() noexcept {
+            return elements_;
         }
 
-        [[nodiscard]] T* end()
-        {
-            return &elements[num];
+        [[nodiscard]] const T* end() const noexcept {
+            return elements_ + size_;
         }
 
-        [[nodiscard]] const T* end() const
-        {
-            return &elements[num];
+        [[nodiscard]] T* end() noexcept {
+            return elements_ + size_;
         }
     };
+    static_assert(sizeof(FArray<char, 8>) == 0xC);
 }

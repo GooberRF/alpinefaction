@@ -15,8 +15,8 @@ namespace rf
         // a non-trivial destructor. Therefore when passing a String by value the Pod struct should be used.
         struct Pod
         {
-            int max_len;
-            char* buf;
+            int max_len = 0;
+            char* buf = nullptr;
         };
 
     private:
@@ -28,21 +28,27 @@ namespace rf
             AddrCaller{0x004FF3B0}.this_call(this);
         }
 
-        String(const char* c_str)
-        {
-            AddrCaller{0x004FF3D0}.this_call(this, c_str);
-        }
-
         String(const String& str)
         {
             AddrCaller{0x004FF410}.this_call(this, &str);
         }
 
+        String(String&& str) noexcept
+            : m_pod{str.m_pod}
+        {
+            str.m_pod = {};
+        }
+
+        String(const char* const c_str)
+        {
+            AddrCaller{0x004FF3D0}.this_call(this, c_str);
+        }
+
         String(Pod pod) : m_pod(pod)
         {}
 
-        String(const std::string_view str) :
-            m_pod{
+        String(const std::string_view str)
+            : m_pod{
                 .max_len = static_cast<int>(str.size() + 1uz),
                 .buf = string_alloc(m_pod.max_len),
             }
@@ -61,26 +67,19 @@ namespace rf
             return c_str();
         }
 
+        operator std::string_view() const
+        {
+            return std::string_view{c_str()};
+        }
+
         operator std::string() const
         {
-            return {c_str()};
+            return std::string{c_str()};
         }
 
         operator Pod() const
         {
-            // Make a copy
-            auto copy = *this;
-            // Copy POD from copied string
-            Pod pod = copy.m_pod;
-            // Clear POD in copied string so memory pointed by copied POD is not freed
-            copy.m_pod.buf = nullptr;
-            copy.m_pod.max_len = 0;
-            return pod;
-        }
-
-        operator std::string_view() const
-        {
-            return {c_str()};
+            return m_pod;
         }
 
         String& operator=(const String& other)
@@ -88,22 +87,30 @@ namespace rf
             return AddrCaller{0x004FFA20}.this_call<String&>(this, &other);
         }
 
-        String& operator=(const char* other)
+        String& operator=(String&& other)
+        {
+            if (this != &other) {
+                std::swap(m_pod, other.m_pod);
+            }
+            return *this;
+        }
+
+        String& operator=(const char* const other)
         {
             return AddrCaller{0x004FFA80}.this_call<String&>(this, other);
         }
 
         [[nodiscard]] bool operator==(const String& other) const
         {
-            return std::strcmp(
+            return !std::strcmp(
                 m_pod.buf ? m_pod.buf : "",
                 other.m_pod.buf ? other.m_pod.buf : ""
-            ) == 0;
+            );
         }
 
-        [[nodiscard]] bool operator==(const char* other) const
+        [[nodiscard]] bool operator==(const char* const other) const
         {
-            return std::strcmp(m_pod.buf ? m_pod.buf : "", other) == 0;
+            return !std::strcmp(m_pod.buf ? m_pod.buf : "", other);
         }
 
         [[nodiscard]] const char *c_str() const
@@ -121,31 +128,34 @@ namespace rf
             return size() == 0;
         }
 
-        [[nodiscard]] String substr(int begin, int end) const
+        [[nodiscard]] String substr(const int begin, const int end) const
         {
-            Pod result;
+            Pod result{};
             AddrCaller{0x004FF590}.this_call<String*>(this, &result, begin, end);
-            return {result};
+            return String{result};
         }
 
         [[nodiscard]] static String concat(const String& first, const String& second)
         {
-            Pod result;
-            AddrCaller{0x004FFB50}.c_call<String*>(&result, &first, &second);
-            return {result};
+            Pod result{};
+            AddrCaller{0x004FFB50}.c_call<String&>(&result, &first, &second);
+            return String{result};
         }
 
-        template<typename... Args>
-        static inline String format(std::format_string<Args...> fmt, Args&&... args)
-        {
-            int len = std::formatted_size(fmt, std::forward<Args>(args)...);
-            int buf_size = len + 1;
-            Pod result;
-            result.max_len = len;
-            result.buf = string_alloc(buf_size);
+        template <typename... Args>
+        static inline String format(
+            const std::format_string<Args...> fmt,
+            Args&&... args
+        ) {
+            const int len = std::formatted_size(fmt, std::forward<Args>(args)...);
+            const int buf_size = len + 1;
+            Pod result{
+                .max_len = len,
+                .buf = string_alloc(buf_size),
+            };
             std::format_to_n(result.buf, len, fmt, std::forward<Args>(args)...);
-            result.buf[len] = 0;
-            return {result};
+            result.buf[len] = '\0';
+            return String{result};
         }
     };
     static_assert(sizeof(String) == 8);

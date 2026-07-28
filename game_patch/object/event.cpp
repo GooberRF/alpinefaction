@@ -33,7 +33,7 @@ namespace rf
 {
     std::vector<Event*> find_all_events_by_type(EventType event_type)
     {
-        VArray<Event*> full_event_list = event_list;
+        const VArray<Event*>& full_event_list = event_list;
         std::vector<Event*> matching_event_list;
 
         for (int i = 0; i < full_event_list.size(); ++i) {

@@ -59,6 +59,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
 
 [@is-this-c](https://github.com/is-this-c)
+- Rewrite `VArray` and fix crashes due to MinGW
 - Add `Anti-aliasing` option to `ADVANCED` options panel
 - Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
 - Rename `antialiasing` console command to `r_antialiasing`
@@ -94,7 +95,6 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix camera angle snapping when switching between free look and third person camera modes
 - Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
 - Fix overlapping decals rendering with the oldest on top instead of the newest
-- Fix crash on MinGW builds when launching a dedicated server
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation
