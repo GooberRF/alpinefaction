@@ -58,7 +58,7 @@ CodeInjection level_read_moving_group_travel_time_patch{
             // if "Use Travel Time As Velocity" is used, allow accel/decel values to exceed travel time
             if (!mci->time_is_velocity) {
                 for (int i = 0; i < mci->keyframes.size(); ++i) {
-                    if (auto kf = mci->keyframes.get(i)) {
+                    if (auto kf = mci->keyframes.at(i)) {
                         const float sum_ramp_times = kf->ramp_up_time_seconds + kf->ramp_down_time_seconds;
                         kf->forward_time_seconds = std::max(kf->forward_time_seconds, sum_ramp_times);
                         kf->reverse_time_seconds = std::max(kf->reverse_time_seconds, sum_ramp_times);
