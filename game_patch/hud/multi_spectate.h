@@ -25,6 +25,7 @@ void multi_spectate_enter_freelook();
 void multi_spectate_toggle_attach();
 void multi_spectate_change_view();
 void multi_spectate_toggle();
+void multi_spectate_leave();
 bool multi_spectate_is_freelook();
 bool multi_spectate_is_static();
 bool multi_spectate_is_third_person_orbit();

@@ -167,11 +167,24 @@ void start_round()
     const std::string round_msg = g_rounds_callbacks.is_match_over
         ? std::format("Round {} - fight!", g_rounds_runtime.current + 1)
         : std::format("Round {} of {} - fight!", g_rounds_runtime.current + 1, cfg().max_rounds);
-    af_broadcast_hud_notification(
-        round_msg,
-        3,
-        static_cast<int>(HudNotificationType::Round),
-        true);
+    // Single per-player delivery site: with no filter installed everyone gets
+    // the "Round X - fight!" line (equivalent to a broadcast); a gametype filter
+    // (e.g. Pit: duelers only, so waiting players keep their queue overlay)
+    // narrows the recipients. af_send_hud_notification handles the listen-server
+    // local-player case and the AF 1.4 recipient gating per player.
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (p.is_browser) continue;
+        if (g_rounds_callbacks.wants_round_start_notification
+            && !g_rounds_callbacks.wants_round_start_notification(&p)) {
+            continue;
+        }
+        af_send_hud_notification(
+            round_msg,
+            3,
+            static_cast<int>(HudNotificationType::Round),
+            true,
+            &p);
+    }
 }
 
 void enter_post_round()
@@ -324,7 +337,7 @@ void process_pending_end()
 
 void tick_active()
 {
-    // 1. Gametype-driven early end (e.g. LMS one-alive condition)
+    // 1. Gametype-driven early end (e.g. Pit: a dueler died)
     if (g_rounds_callbacks.should_end_round) {
         rf::Player* w = nullptr;
         if (g_rounds_callbacks.should_end_round(&w)) {
@@ -442,7 +455,7 @@ void rounds_level_init()
 {
     // Real level boundary: reset counter, state, AND drop any callbacks
     // registered by the previous gametype. The new gametype's level_init
-    // hook re-registers them (e.g. lms_level_init_post for LMS).
+    // hook re-registers them (e.g. pit_level_init_post for Pit).
     g_rounds_runtime.reset();
     g_rounds_callbacks = RoundCallbacks{};
 
@@ -507,6 +520,15 @@ void rounds_request_end(rf::Player* winner, RoundEndReason reason)
             ? static_cast<int>(winner->net_data->player_id)
             : -1;
     g_rounds_runtime.pending_reason = reason;
+}
+
+void rounds_kill_entity_silent(rf::Entity* ep)
+{
+    if (!rf::is_server) return;
+    if (!ep || rf::entity_is_dying(ep)) return;
+    ep->killer_handle = 0;
+    ep->killer_netid = -1;
+    rf::entity_maybe_die(ep);
 }
 
 void rounds_client_set_countdown(int duration_seconds)

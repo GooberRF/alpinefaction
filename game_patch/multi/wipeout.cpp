@@ -105,30 +105,10 @@ bool match_is_decided()
 }
 
 // Hide every level item and destroy any dropped weapons so the arena stays
-// item-free. Mirrors lms_reset_world_items but hides instead of restoring. The
-// engine's periodic visibility broadcast replicates the hidden state to clients.
+// item-free (empty allowlist = nothing survives).
 void hide_all_items()
 {
-    if (!rf::is_server) return;
-
-    rf::Item* it = rf::item_list.next;
-    while (it && it != &rf::item_list) {
-        rf::Item* next = it->next;
-        const uint32_t flags = it->item_flags;
-        const bool is_dropped = (flags & rf::IF_DROPPED) != 0;
-        const bool is_ctf_flag = (flags & rf::IF_CTF_FLAG) != 0;
-
-        if (is_dropped) {
-            rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
-            rf::obj_flag_dead(it);
-        }
-        else if (!is_ctf_flag) {
-            it->respawn_next.invalidate();
-            rf::obj_hide(it);
-        }
-
-        it = next;
-    }
+    multi_hide_level_items({});
 }
 
 bool wipeout_can_round_start()
@@ -290,16 +270,11 @@ void wipeout_on_round_cleanup()
     if (!gt_is_wipeout()) return;
 
     // Kill any survivors through the full death pipeline so the next round
-    // starts everyone fresh. Clear killer info first so no stale obituary fires.
+    // starts everyone fresh (killer info cleared so no stale obituary fires).
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_browser) continue;
         p.round_is_out = true;
-        rf::Entity* ep = rf::entity_from_handle(p.entity_handle);
-        if (ep && !rf::entity_is_dying(ep)) {
-            ep->killer_handle = 0;
-            ep->killer_netid = -1;
-            rf::entity_maybe_die(ep);
-        }
+        rounds_kill_entity_silent(rf::entity_from_handle(p.entity_handle));
     }
 
     hide_all_items();
@@ -412,12 +387,12 @@ bool wipeout_can_player_spawn(rf::Player* player)
     if (between_rounds || player->round_is_out) {
         // Throttle the notice: the client re-requests a spawn every frame while
         // the fire button is held, which would otherwise spam chat.
-        if (!player->wipeout_waiting_msg_timer.valid() || player->wipeout_waiting_msg_timer.elapsed()) {
+        if (!player->waiting_msg_timer.valid() || player->waiting_msg_timer.elapsed()) {
             af_send_automated_chat_msg(
                 between_rounds ? "Wait - the next round is starting shortly."
                                : "You're waiting for the next round to begin.",
                 player);
-            player->wipeout_waiting_msg_timer.set(3000);
+            player->waiting_msg_timer.set(3000);
         }
         return false;
     }

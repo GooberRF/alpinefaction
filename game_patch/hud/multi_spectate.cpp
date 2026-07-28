@@ -1911,7 +1911,8 @@ static int spectate_bottom_left_hud_top()
         }
         return clip_h - (big ? 90 : 65) - 10;
     case rf::NG_TYPE_BAG:
-    case rf::NG_TYPE_LMS:
+    case rf::NG_TYPE_PIT:
+    case rf::NG_TYPE_GG:
         return clip_h - (big ? 90 : 65) - 10;
     case rf::NG_TYPE_CTF:
     case rf::NG_TYPE_TEAMDM:
@@ -1945,6 +1946,21 @@ static void draw_spectate_hints(const std::pair<const char*, const char*>* hints
     }
 }
 
+// Top y of the "Spectating: <name>" plaque at the bottom of the screen (same
+// math as the plaque draw below, using font heights for the two text lines).
+// The mode-label block anchors here: at this position in non-follow modes
+// (where the plaque isn't drawn), just above it in follow modes — keeping the
+// label away from the HUD notification slot under the chat box.
+static int spectate_name_plaque_top_y()
+{
+    const int small_font_h = rf::gr::get_font_height(hud_get_small_font());
+    const int large_font_h = rf::gr::get_font_height(hud_get_large_font());
+    const int padding_y = g_alpine_game_config.big_hud ? 4 : 2;
+    const int line_gap = g_alpine_game_config.big_hud ? 2 : 1;
+    const int bar_h = small_font_h + large_font_h + padding_y * 2 + line_gap;
+    return rf::gr::screen_height() - (g_alpine_game_config.big_hud ? 15 : 10) - bar_h;
+}
+
 void multi_spectate_render() {
     if (is_hud_effectively_hidden()
         || rf::gameseq_get_state() != rf::GS_GAMEPLAY)
@@ -1967,8 +1983,10 @@ void multi_spectate_render() {
             rf::Color white_clr{255, 255, 255, 255};
             rf::Color shadow_clr{0, 0, 0, 128};
 
+            // No name plaque in static-camera view — the mode label block takes
+            // the plaque's spot at the bottom of the screen.
             int title_x = scr_w / 2;
-            int title_y = g_alpine_game_config.big_hud ? 250 : 150;
+            int title_y = spectate_name_plaque_top_y();
             draw_with_shadow(
                 title_x, title_y, 2, 2, white_clr, shadow_clr,
                 [=](int x, int y) {
@@ -2032,8 +2050,10 @@ void multi_spectate_render() {
             rf::Color white_clr{255, 255, 255, 255};
             rf::Color shadow_clr{0, 0, 0, 128};
 
+            // No name plaque in free look — the mode label takes the plaque's
+            // spot at the bottom of the screen.
             int title_x = scr_w / 2;
-            int title_y = g_alpine_game_config.big_hud ? 250 : 150;
+            int title_y = spectate_name_plaque_top_y();
             draw_with_shadow(
                 title_x, title_y, 2, 2, white_clr, shadow_clr,
                 [=](int x, int y) {
@@ -2146,8 +2166,12 @@ void multi_spectate_render() {
     rf::Color shadow_clr{0, 0, 0, 128};
 
     if (!g_alpine_game_config.spectate_mode_minimal_ui) {
+        // Title + view subtitle sit as a block just above the name plaque at
+        // the bottom of the screen (out of the HUD notification's way).
         int title_x = scr_w / 2;
-        int title_y = g_alpine_game_config.big_hud ? 250 : 150;
+        int title_y = spectate_name_plaque_top_y()
+            - (large_font_h + medium_font_h)
+            - (g_alpine_game_config.big_hud ? 10 : 6);
         draw_with_shadow(
             title_x,
             title_y,
@@ -2236,7 +2260,10 @@ void multi_spectate_render() {
     int bar_w = std::min(content_w + padding_x * 2, max_bar_w);
 
     int bar_x = (scr_w - bar_w) / 2;
-    int bar_y = scr_h - (g_alpine_game_config.big_hud ? 15 : 10) - bar_h;
+    // Shared with the mode-label anchor so the two can't drift apart. Numerically
+    // identical to the old `scr_h - (big?15:10) - bar_h` here, since single-line
+    // get_string_size heights equal the font heights the helper uses.
+    int bar_y = spectate_name_plaque_top_y();
     rf::gr::set_color(0, 0, 0x00, 150);
     rf::gr::rect(bar_x, bar_y, bar_w, bar_h);
 

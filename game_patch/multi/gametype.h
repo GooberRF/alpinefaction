@@ -176,8 +176,9 @@ bool gt_is_run();
 bool gt_is_bag();
 bool gt_is_tbag();
 bool gt_is_bagman_any();
-bool gt_is_lms();
+bool gt_is_pit();
 bool gt_is_wipeout();
+bool gt_is_gungame();
 const char* multi_gametype_help_text(rf::NetGameType game_type);
 
 // Score is driven by gametype-specific logic rather than directly by frags.

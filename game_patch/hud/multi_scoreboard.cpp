@@ -61,10 +61,37 @@ enum class ScoreboardCategory
     Spectator,
     Idle,
     Browser,
+    // Pit-only sections, appended in top-to-bottom display order (the sort
+    // comparator orders by category ordinal). In Pit every player maps to one
+    // of these, bypassing the config-driven categories above.
+    PitDueler,
+    PitQueued,
+    PitNotQueued,
 };
+
+// Section header label for a Pit category (nullptr for non-Pit categories).
+static const char* pit_section_label(ScoreboardCategory cat)
+{
+    switch (cat) {
+        case ScoreboardCategory::PitDueler:    return "DUELING";
+        case ScoreboardCategory::PitQueued:    return "IN QUEUE";
+        case ScoreboardCategory::PitNotQueued: return "NOT QUEUED";
+        default:                               return nullptr;
+    }
+}
 
 static ScoreboardCategory get_scoreboard_category(const rf::Player* player)
 {
+    // Pit: role comes from the replicated roster and fully overrides the local
+    // scoreboard_split_* settings. Unknown/none (e.g. browsers) folds into NOT
+    // QUEUED.
+    if (gt_is_pit()) {
+        const int role = pit_scoreboard_role_for(player);
+        if (role == 0) return ScoreboardCategory::PitDueler;
+        if (role == 1) return ScoreboardCategory::PitQueued;
+        return ScoreboardCategory::PitNotQueued;
+    }
+
     if (g_alpine_game_config.scoreboard_split_bots && player->is_bot) {
         return ScoreboardCategory::Bot;
     }
@@ -91,8 +118,10 @@ static std::vector<size_t> calculate_divider_indices(const std::vector<rf::Playe
         return divider_indices;
     }
 
-    // split once for all categories other than active
-    if (g_alpine_game_config.scoreboard_split_simple) {
+    // split once for all categories other than active. Pit always splits at
+    // every category (its three sections are independent of the client's
+    // scoreboard_split_* settings), so skip the simple path there.
+    if (!gt_is_pit() && g_alpine_game_config.scoreboard_split_simple) {
         bool has_active = false;
         std::optional<size_t> first_non_active{};
 
@@ -282,6 +311,11 @@ int draw_scoreboard_players(
     const int divider_spacing = row_spacing / 4;
     const int divider_height = std::max(1, static_cast<int>(scale));
 
+    // Pit replaces the plain divider line with a small section header per group.
+    const bool is_pit = gt_is_pit();
+    const int section_font = hud_get_small_font();
+    const int section_font_h = rf::gr::get_font_height(section_font);
+
     int status_w = static_cast<int>(12 * scale);
     int score_w = static_cast<int>((game_type == rf::NG_TYPE_RUN ? 63 : 50) * scale);
     bool show_kd = game_type != rf::NG_TYPE_RUN;
@@ -333,8 +367,30 @@ int draw_scoreboard_players(
     for (size_t i = 0; i < player_list.players.size(); ++i) {
         rf::Player* player = player_list.players[i];
 
-        if (next_divider < player_list.divider_indices.size()
-            && i == player_list.divider_indices[next_divider]) {
+        const bool at_divider = next_divider < player_list.divider_indices.size()
+            && i == player_list.divider_indices[next_divider];
+
+        if (is_pit) {
+            // Pit: draw a section header before the very first row and at each
+            // category boundary (every divider, since Pit splits at every
+            // category). Empty sections produce no divider, hence no header.
+            // Heights are added identically in dry_run and real draw so the
+            // measurement pass stays in sync with the actual layout.
+            if (i == 0 || at_divider) {
+                if (at_divider) {
+                    y += divider_spacing; // gap above the header
+                    ++next_divider;
+                }
+                if (const char* label = pit_section_label(get_scoreboard_category(player))) {
+                    if (!dry_run) {
+                        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
+                        rf::gr::string(x, y, label, section_font);
+                    }
+                    y += section_font_h + divider_spacing;
+                }
+            }
+        }
+        else if (at_divider) {
             y += divider_spacing - divider_height;
             if (!dry_run) {
                 rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
@@ -493,6 +549,17 @@ ScoreboardPlayerList filter_and_sort_players(const std::optional<int> team_id)
 
             if (category_1 != category_2) {
                 return category_1 < category_2;
+            }
+
+            // Pit IN QUEUE section: order by queue position (front of queue on
+            // top). DUELING / NOT QUEUED keep the standard sort below. Ties or
+            // unknown order (0) fall through to the standard comparison.
+            if (category_1 == ScoreboardCategory::PitQueued) {
+                const int order_1 = pit_scoreboard_order_for(player_1);
+                const int order_2 = pit_scoreboard_order_for(player_2);
+                if (order_1 != order_2 && order_1 != 0 && order_2 != 0) {
+                    return order_1 < order_2;
+                }
             }
 
             const rf::NetGameType game_type = rf::multi_get_game_type();

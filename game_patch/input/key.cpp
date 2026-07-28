@@ -21,6 +21,7 @@
 #include "../rf/os/os.h"
 #include "../rf/ui.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/pit.h"
 #include "../multi/sprays.h"
 #include "../os/console.h"
 #include "input.h"
@@ -383,10 +384,18 @@ CodeInjection player_execute_action_patch2{
                 remove_hud_vote_notification();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_READY)
-                && rf::is_multi
-                && !rf::is_server) {
-                send_chat_line_packet("/ready", nullptr);
-                draw_hud_ready_notification(false);
+                && rf::is_multi) {
+                if (rf::multi_get_game_type() == rf::NG_TYPE_PIT && !get_local_pre_match_active()) {
+                    // Pit: the Ready key toggles duel-queue membership.
+                    if (rf::is_server) {
+                        pit_handle_queue_request(rf::local_player, 2); // listen host applies directly
+                    } else {
+                        af_send_pit_queue_request(2);
+                    }
+                } else if (!rf::is_server) {
+                    af_send_ready_request(2);
+                    draw_hud_ready_notification(false);  // optimistic hide
+                }
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_CHAT_MENU)
                 && rf::is_multi

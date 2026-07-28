@@ -25,7 +25,8 @@
 #include "../multi/server_internal.h"
 #include "../multi/bagman.h"
 #include "../multi/sprays.h"
-#include "../multi/lms.h"
+#include "../multi/pit.h"
+#include "../multi/gungame.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud_internal.h"
 #include "../hud/hud.h"
@@ -252,7 +253,8 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         multi_spectate_on_destroy_player(player);
         bagman_on_player_disconnect(player);
         sprays_on_player_destroyed(player);
-        lms_on_player_disconnect(player);
+        pit_on_player_disconnect(player);
+        gungame_on_player_disconnect(player);
         if (rf::is_server) {
             remove_ready_player_silent(player);
             server_vote_on_player_leave(player);
@@ -261,6 +263,17 @@ FunHook<void(rf::Player*)> player_destroy_hook{
             }
             if (player->net_data) {
                 g_select_weapon_done_timestamp[player->net_data->player_id].invalidate();
+            }
+        }
+        // Before the engine frees this player, drop any dangling spectatee
+        // back-reference other players hold to it. The engine frees net_data
+        // without nulling these, so a stale spectatee pointer would be a
+        // use-after-free (e.g. Pit's clear_spectator_fields notify, or
+        // af_process_spectate_start_packet's old_target notify).
+        for (rf::Player& other : SinglyLinkedList{rf::player_list}) {
+            if (&other == player) continue;
+            if (other.spectatee.value_or(nullptr) == player) {
+                other.spectatee = std::nullopt;
             }
         }
         player_destroy_hook.call_target(player);
