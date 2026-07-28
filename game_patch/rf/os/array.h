@@ -56,7 +56,8 @@ namespace rf
 
         VArray(const VArray& other)
             : size_(other.size_)
-            , capacity_(other.capacity_) {
+            , capacity_(other.capacity_)
+        {
             if (capacity_ > 0) {
                 elements_ = alloc_storage(capacity_);
                 for (int i = 0; i < capacity_; ++i) {
@@ -68,7 +69,8 @@ namespace rf
         VArray(VArray&& other) noexcept
             : size_(other.size_)
             , capacity_(other.capacity_)
-            , elements_(other.elements_) {
+            , elements_(other.elements_)
+        {
             other.size_ = 0;
             other.capacity_ = 0;
             other.elements_ = nullptr;
