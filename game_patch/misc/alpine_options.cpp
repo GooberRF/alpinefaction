@@ -588,7 +588,7 @@ FunHook<void(int, int)> extras_summoner_trailer_click_hook{
                 break;
             case 4: { // Load level
                 auto level_filename = get_option_value<std::string>(AlpineOptionID::SumTrailerButtonLevelFile);
-                rf::level_set_level_to_load(level_filename.c_str(), "");
+                rf::level_set_level_to_load(rf::String{level_filename.c_str()}, rf::String{""});
                 rf::game_new_game();
                 break;
             }

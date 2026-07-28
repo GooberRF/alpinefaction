@@ -3092,6 +3092,9 @@ void network_init()
     // Fix room_index out of bounds vulnerability in pregame_boolean packet
     process_pregame_boolean_packet_validate_room_uid_patch.install();
 
+    // Reliable socket drop diagnostics (when launched with -debug).
+    network_debug_apply_patches();
+
     // Fix crash if room does not exist in glass_kill packet
     process_glass_kill_packet_check_room_exists_patch.install();
 
