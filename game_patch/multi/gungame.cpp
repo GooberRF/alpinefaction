@@ -160,6 +160,12 @@ std::map<int, int> build_order_for_player()
     }
 
     const int limit = effective_limit();
+
+    if (limit <= 1) {
+        map[0] = g_final_weapon_index;
+        return map;
+    }
+
     const int top = std::max(1, limit - 1);
 
     int total_weapons = 0;

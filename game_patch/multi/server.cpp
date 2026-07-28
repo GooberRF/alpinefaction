@@ -3456,7 +3456,7 @@ void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_t
     packet.entity_handle = entity->handle;
     packet.weapon = weapon_type;
     packet.ammo = entity->ai.clip_ammo[weapon_type];
-    packet.clip_ammo = (winfo.ammo_type >= 0) ? entity->ai.ammo[winfo.ammo_type] : 0;
+    packet.clip_ammo = (winfo.ammo_type >= 0 && winfo.ammo_type < 32) ? entity->ai.ammo[winfo.ammo_type] : 0;
     rf::multi_io_send_reliable(player, reinterpret_cast<uint8_t*>(&packet), sizeof(packet), 0);
 }
 
