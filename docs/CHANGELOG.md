@@ -56,6 +56,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `spectate_cameras` console command to toggle showing camera meshes at static camera locations while free look spectating
 - Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype.
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
+- Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Anti-aliasing` option to `ADVANCED` options panel
@@ -93,6 +94,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix camera angle snapping when switching between free look and third person camera modes
 - Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
 - Fix overlapping decals rendering with the oldest on top instead of the newest
+- Fix crash on MinGW builds when launching a dedicated server
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

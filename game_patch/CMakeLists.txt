@@ -159,6 +159,7 @@ set(SRCS
     multi/kill.cpp
     multi/network.cpp
     multi/network.h
+    multi/network_debug.cpp
     multi/saved_info.cpp
     multi/saved_info.h
     multi/level_download.cpp
