@@ -2649,7 +2649,7 @@ void __fastcall multi_io_stats_add_new(void *this_, int edx, int size, bool is_s
 
 FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook{0x0047CAC0, multi_io_stats_add_new};
 
-static void process_custom_packet([[maybe_unused]] void* data, [[maybe_unused]] int len,
+static void process_custom_packet([[maybe_unused]] const void* data, [[maybe_unused]] int len,
                                   [[maybe_unused]] const rf::NetAddr& addr, [[maybe_unused]] rf::Player* player)
 {
     pf_process_packet(data, len, addr, player);
@@ -2717,6 +2717,7 @@ CodeInjection multi_io_process_packets_injection{
 
         if (!packet_check_whitelist(packet_type)) {
             xlog::warn("Ignoring packet 0x{:x}", packet_type);
+        IGNORE_PACKET:
             regs.eip = 0x00479194;
             return;
         }
@@ -2726,44 +2727,52 @@ CodeInjection multi_io_process_packets_injection{
         if (packet_type > 0x37
             || packet_type == static_cast<int>(pf_packet_type::player_stats))
         {
-            auto stack_frame = regs.esp + 0x1C;
-            std::byte* data = regs.ecx;
-            int offset = regs.ebp;
-            int len = regs.edi;
-            auto& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
-            auto player = addr_as_ref<rf::Player*>(stack_frame + 0x10);
+            const std::byte* const data = regs.ecx;
+            const int offset = regs.ebp;
+            const int len = regs.edi;
+            const int stack_frame = regs.esp + 0x1C;
+            const rf::NetAddr& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
+            rf::Player* const player = addr_as_ref<rf::Player*>(stack_frame + 0x10);
             process_custom_packet(data + offset, len, addr, player);
-            regs.eip = 0x00479194;
-            return;
+            goto IGNORE_PACKET;
         }
 
-        if (rf::is_dedicated_server || (rf::is_server && !rf::is_dedicated_server)) {
-            // stash the join req packet so we can analyze it if the player successfully joins
-            if (packet_type == static_cast<int>(RF_GamePacketType::RF_GPT_JOIN_REQUEST)) {
-                const uint8_t* base = static_cast<const uint8_t*>(regs.ecx);
-                auto stack_frame = regs.esp + 0x1C;
-                auto& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
+        if (rf::is_server) {
+            if (packet_type == static_cast<int>(packet_type::join_request)) {
+                // Stash their packet for later analysis, if they join successfully.
+                const uint8_t* const base = regs.ecx;
                 const int off = regs.ebp;
                 const int len = regs.edi;
+                const int stack_frame = regs.esp + 0x1C;
+                const rf::NetAddr& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
 
-                // UDP datagram
+                // Remaining datagram length.
                 size_t rx_len = 0;
-                if (g_rx_base && g_rx_len && base + off >= g_rx_base && base + off <= g_rx_base + g_rx_len) {
+                if (g_rx_base
+                    && g_rx_len
+                    && base + off >= g_rx_base
+                    && base + off <= g_rx_base + g_rx_len)
+                {
                     rx_len = (g_rx_base + g_rx_len) - (base + off);
                 }
 
-                // join req stash for later analysis
-                g_join_request_stashed = {addr, base + off, size_t(len), rx_len, uint8_t(packet_type)};
-            } else if (packet_type == static_cast<int>(RF_GamePacketType::RF_GPT_GAME_INFO_REQUEST)) {
-                // analyze the game_info_req packet so we can adjust the response if needed
-                const uint8_t* base = static_cast<const uint8_t*>(regs.ecx);
-                auto stack_frame = regs.esp + 0x1C;
-                const auto& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
+                g_join_request_stashed = StashedPacket{
+                    addr,
+                    base + off,
+                    static_cast<size_t>(len),
+                    rx_len,
+                    static_cast<uint8_t>(packet_type),
+                };
+            } else if (packet_type == static_cast<int>(packet_type::game_info_request)) {
+                // Analyze their packet, so we can adjust our response, if needed.
+                const uint8_t* const base = regs.ecx;
                 const int off = regs.ebp;
-                const int len = regs.edi;
+                const size_t len = regs.edi;
+                const int stack_frame = regs.esp + 0x1C;
+                const rf::NetAddr& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
 
                 uint8_t ver = 0;
-                if (parse_af_gi_req_tail(base + off, size_t(len), ver)) {
+                if (parse_af_gi_req_tail(base + off, len, ver)) {
                     const int64_t now = timer::get_i64(1000);
                     g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{ver, now};
                     xlog::debug("AF GI-REQ detected from {} (ver={})", addr, ver);
