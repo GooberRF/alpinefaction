@@ -2724,7 +2724,8 @@ CodeInjection multi_io_process_packets_injection{
         xlog::trace("Processing packet 0x{:x}", packet_type);
 
         if (packet_type > 0x37
-            || packet_type == static_cast<int>(pf_packet_type::player_stats)) {
+            || packet_type == static_cast<int>(pf_packet_type::player_stats))
+        {
             auto stack_frame = regs.esp + 0x1C;
             std::byte* data = regs.ecx;
             int offset = regs.ebp;
