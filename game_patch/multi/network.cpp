@@ -2754,9 +2754,8 @@ CodeInjection multi_io_process_packets_injection{
 
                 // join req stash for later analysis
                 g_join_request_stashed = {addr, base + off, size_t(len), rx_len, uint8_t(packet_type)};
-            }
-            // analyze the game_info_req packet so we can adjust the response if needed
-            else if (packet_type == static_cast<int>(RF_GamePacketType::RF_GPT_GAME_INFO_REQUEST)) {
+            } else if (packet_type == static_cast<int>(RF_GamePacketType::RF_GPT_GAME_INFO_REQUEST)) {
+                // analyze the game_info_req packet so we can adjust the response if needed
                 const uint8_t* base = static_cast<const uint8_t*>(regs.ecx);
                 auto stack_frame = regs.esp + 0x1C;
                 const auto& addr = *addr_as_ref<rf::NetAddr*>(stack_frame + 0xC);
