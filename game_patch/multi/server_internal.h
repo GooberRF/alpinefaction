@@ -528,6 +528,56 @@ struct GibConfig
     }
 };
 
+// Controls which level pickups survive under a mutator. Enforced server-side in
+// mutators_level_init_post() via multi_hide_level_items().
+enum class PickupPolicy : uint8_t
+{
+    Normal = 0,           // no suppression (default)
+    WeaponsAndAmmoOnly,   // keep weapon + ammo pickups, hide everything else
+    WeaponsOnly,          // keep weapon pickups, hide everything else
+    HideAll               // hide every pickup
+};
+
+// Runtime behaviors enabled by mutators.
+struct MutatorDeclaration
+{
+    std::string name; // canonical mutator name (matches find_mutator_by_name)
+    std::optional<std::string> featured_weapon;
+    std::optional<bool> exclude_thrown;
+};
+
+struct MutatorConfig
+{
+    PickupPolicy pickup_policy = PickupPolicy::Normal;
+
+    // The weapon a mode is built around.
+    int featured_weapon_index = -1;
+
+    // Instagib: deny switching away from the featured weapon (server-side gate).
+    bool lock_to_featured_weapon = false;
+
+    // Instagib: refill the featured weapon's clip after every shot so it never
+    // reloads. Featured weapon must use a clip.
+    bool no_featured_reload = false;
+
+    // Rails: redirect level weapon/ammo pickups to the featured weapon's pickup.
+    bool redirect_pickups_to_featured = false;
+    bool redirect_exclude_thrown = false; // leave Remote Charges / Grenade alone
+    int featured_weapon_item_index = -1;  // resolved item type that gives the featured weapon
+    int featured_ammo_item_index = -1;    // resolved item type that gives featured ammo
+
+    // Arena: instantly refill the killer's current weapon clip after each frag.
+    bool reload_weapon_on_kill = false;
+
+    // Display only: human-readable names of the mutators applied to these rules.
+    std::vector<std::string> active_labels;
+
+    // Raw declarations (name + options) that produced this config, in apply
+    // order. Used to re-apply the scope's mutators after a runtime game_type
+    // change rebuilds the loadout and clears the rest of this struct.
+    std::vector<MutatorDeclaration> declarations;
+};
+
 struct AlpineServerConfigRules
 {
     // stock game rules
@@ -585,6 +635,7 @@ struct AlpineServerConfigRules
     std::string gungame_final_weapon = "Riot Stick";
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
+    MutatorConfig mutators;
 
     // =============================================
     void set_time_limit(float count)
@@ -743,6 +794,10 @@ struct AlpineServerConfig
     VoteConfig vote_previous;
 
     AlpineServerConfigRules base_rules;
+    // Base rules re-parsed with all mutators stripped. Used as the starting point
+    // for a mutator applied via a level/match vote, so the voted mutator replaces
+    // (rather than stacks on) any mutator the base rules declared.
+    AlpineServerConfigRules base_rules_no_mutators;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
     std::map<std::string, std::filesystem::path> rules_preset_aliases;
     std::vector<AlpineServerConfigLevelEntry> levels;
@@ -846,6 +901,7 @@ void handle_player_set_handicap(rf::Player* player, uint8_t amount);
 std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots);
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input);
 std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view preset_name);
+std::optional<ManualRulesOverride> load_mutator_rules_override(std::string_view mutator_name);
 void set_manual_rules_override(ManualRulesOverride override_rules);
 void clear_manual_rules_override();
 bool is_player_in_match(rf::Player* player);

@@ -13,6 +13,7 @@
 #include "wipeout.h"
 #include "gungame.h"
 #include "multi.h"
+#include "mutators.h"
 #include "alpine_packets.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
@@ -2016,6 +2017,9 @@ void multi_level_init_post_gametypes()
     // Rounds must initialise AFTER per-gametype level-init so the gametype
     // has registered its callbacks before round 1 begins.
     rounds_level_init_post();
+    // Mutator pickup suppression runs last so its policy applies on top of any
+    // gametype-specific item handling.
+    mutators_level_init_post();
 }
 
 // pre level being loaded

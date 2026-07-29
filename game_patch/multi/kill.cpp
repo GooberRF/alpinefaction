@@ -20,6 +20,7 @@
 #include "../sound/sound.h"
 #include "server_internal.h"
 #include "multi_private.h"
+#include "mutators.h"
 #include "alpine_packets.h"
 #include "sprays.h"
 #include "gungame.h"
@@ -255,6 +256,11 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
         }
 
         multi_apply_kill_reward(killer_player);
+
+        // Arena mutator: instantly top up the killer's current weapon after a frag.
+        if (killer_player != killed_player) {
+            mutators_on_player_frag(killer_player);
+        }
 
         multi_spectate_on_player_kill(killed_player, killer_player);
 

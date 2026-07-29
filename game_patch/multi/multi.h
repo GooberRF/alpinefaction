@@ -111,6 +111,7 @@ struct AlpineFactionServerInfo
     bool was_manual_level_load = false;
     bool allow_sprays = false;
     bool match_mode = false;
+    bool reload_on_kill = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t
@@ -159,7 +160,7 @@ std::expected<uint32_t, std::errc> get_level_file_version(const std::string& fil
 void print_player_info(rf::Player* player, bool new_join);
 void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
 bool is_remote_charge_pair(int weapon_a, int weapon_b);
-void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices);
+void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects = false);
 void start_level_in_multi(std::string filename);
 std::optional<std::string> multi_ban_unban_last();
 std::string_view multi_game_type_name(rf::NetGameType game_type);

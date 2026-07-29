@@ -27,6 +27,7 @@
 #include <patch_common/ShortTypes.h>
 #include "network.h"
 #include "multi.h"
+#include "mutators.h"
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
@@ -1688,6 +1689,17 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_is_match_mode_enabled()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::match_mode;
         }
+        // Instagib makes the rail a no-clip weapon; deliver it on join so the
+        // client's fire/reload prediction matches (only the rail is supported).
+        if (g_alpine_server_config_active_rules.mutators.no_featured_reload &&
+            g_alpine_server_config_active_rules.mutators.featured_weapon_index == rf::rail_gun_weapon_type) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::featured_no_clip;
+        }
+        // Arena: refill the killer's current clip on a frag; the client does this
+        // itself without a reload packet.
+        if (g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1825,6 +1837,8 @@ CodeInjection process_join_accept_injection{
             server_info.clear_stale_movement_input = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input);
             server_info.allow_sprays = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays);
             server_info.match_mode = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::match_mode);
+            server_info.reload_on_kill = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill);
+            // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
@@ -1835,11 +1849,19 @@ CodeInjection process_join_accept_injection{
             }
             g_af_server_info = std::optional{server_info};
 
+            // Mirror the server's no-clip featured weapon (Instagib rail) on join
+            // so client-side fire/reload prediction matches.
+            mutators_set_no_clip_weapon(
+                !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::featured_no_clip)
+                    ? rf::rail_gun_weapon_type
+                    : -1);
+
             // Update footstep activation based on server permissions
             evaluate_footsteps();
         }
         else {
             g_af_server_info.reset();
+            mutators_set_no_clip_weapon(-1); // non-AF server: ensure no stale override
             evaluate_footsteps();
         }
     },
@@ -2499,6 +2521,7 @@ FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
         g_af_server_info.reset(); // Clear server info when leaving
+        mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving
@@ -2660,14 +2683,12 @@ FunHook<void(rf::Player*)> send_players_packet_hook{
 };
 
 FunHook<void(rf::Entity*, int, int, int)> send_reload_packet_hook{
-    0x00485B50, [](rf::Entity* ep, int weapon_type, int clip_ammo, int ammo) {
-        // Log the clip_ammo and ammo values
-        //xlog::warn("Sending a reload packet for {} with weapon {}, clip_ammo: {}, ammo: {}", ep->name, weapon_type, clip_ammo, ammo);
+    0x00485B50, [](rf::Entity* ep, int weapon_type, int ammo, int clip_ammo) {
+        //xlog::warn("Sending a reload packet for {} with weapon {}, ammo: {}, clip_ammo: {}", ep->name, weapon_type, ammo, clip_ammo);
 
-        // Call the original function
-        send_reload_packet_hook.call_target(ep, weapon_type, clip_ammo, ammo);
-    }};
-
+        send_reload_packet_hook.call_target(ep, weapon_type, ammo, clip_ammo);
+    }
+};
 
 extern FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook;
 

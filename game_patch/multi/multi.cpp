@@ -18,6 +18,7 @@
 #include "server_internal.h"
 #include "gametype.h"
 #include "rounds.h"
+#include "mutators.h"
 #include "bots/bot_chat_manager.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -508,15 +509,34 @@ bool is_remote_charge_pair(int weapon_a, int weapon_b)
     return is_rc(weapon_a) && is_rc(weapon_b);
 }
 
-void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices)
+void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects)
 {
     if (!rf::is_server) return;
+
+    // CTF flags and bases are gametype objects and should not be hidden by mutators.
+    constexpr uint32_t ctf_object_mask =
+        rf::IF_RED_FLAG | rf::IF_BLUE_FLAG | rf::IF_RED_BASE | rf::IF_BLUE_BASE | rf::IF_CTF_FLAG;
 
     rf::Item* it = rf::item_list.next;
     while (it && it != &rf::item_list) {
         rf::Item* next = it->next;
         const uint32_t flags = it->item_flags;
         const bool is_dropped = (flags & rf::IF_DROPPED) != 0;
+
+        // CTF banners are decorative objects and should not be removed.
+        bool preserve = false;
+        if (it->info) {
+            const rf::String& cls = it->info->cls_name;
+            preserve = cls == "CTF Banner Red" || cls == "CTF Banner Blue";
+        }
+        if (!preserve && preserve_ctf_objects) {
+            preserve = (flags & ctf_object_mask) != 0;
+        }
+        if (preserve) {
+            // Leave the item alone.
+            it = next;
+            continue;
+        }
 
         if (is_dropped) {
             rf::send_item_apply_packet(nullptr, it->handle, 0, -1, -1, -1);
@@ -559,6 +579,11 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
         }
         if (gt_is_gungame() && !is_remote_charge_pair(ep->ai.current_primary_weapon, weapon_type)) {
             // Deny switching in GG except Remote Charge <-> Detonator.
+            return;
+        }
+        if (mutators_should_deny_weapon_switch(ep->ai.current_primary_weapon, weapon_type)) {
+            // Instagib locks the player to the rail.
+            xlog::debug("Player {} denied weapon switch to {} by active mutator", pp->name, weapon_type);
             return;
         }
         bool has_weapon;

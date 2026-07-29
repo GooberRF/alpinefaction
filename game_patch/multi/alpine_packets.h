@@ -355,6 +355,8 @@ enum af_server_info_flags : uint32_t {
     SIF_CLEAR_STALE_MOVEMENT_INPUT = 1u << 17,
     SIF_MANUAL_LEVEL_LOAD = 1u << 18,
     SIF_ALLOW_SPRAYS = 1u << 19,
+    SIF_FEATURED_NO_CLIP = 1u << 20,
+    SIF_RELOAD_ON_KILL = 1u << 21,
 };
 
 // Subset of `rf::NetGameFlags`.

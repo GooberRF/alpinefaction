@@ -24,6 +24,7 @@
 #include "sprays.h"
 #include "multi.h"
 #include "gametype.h"
+#include "mutators.h"
 #include "bagman.h"
 #include "rounds.h"
 #include "pit.h"
@@ -1413,7 +1414,12 @@ CallHook<int(const char*)> item_lookup_type_hook{
             if (it != g_alpine_server_config_active_rules.item_replacements.end())
                 cls_name = it->second.c_str();
         }
-        return item_lookup_type_hook.call_target(cls_name);
+        int type_index = item_lookup_type_hook.call_target(cls_name);
+        if (rf::is_dedicated_server) {
+            // Mutator pickup redirection.
+            type_index = mutators_redirect_item_index(type_index);
+        }
+        return type_index;
     },
 };
 

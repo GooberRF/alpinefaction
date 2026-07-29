@@ -30,6 +30,7 @@
 #include "../object/object.h"
 #include "../multi/multi.h"
 #include "../multi/gametype.h"
+#include "../multi/mutators.h"
 #include "../multi/bagman.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
@@ -577,6 +578,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     fflink::do_patch();
     multi_scoreboard_apply_patch();
     gametype_do_patch();
+    mutators_do_patch();
     vpackfile_apply_patches();
     multi_spectate_appy_patch();
     high_fps_init();
