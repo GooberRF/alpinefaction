@@ -436,6 +436,7 @@ struct VoteMatch : public Vote
 {
     std::optional<ManualRulesOverride> m_manual_rules_override;
     std::optional<std::string> m_manual_rules_alias;
+    bool m_override_is_mutator = false;
 
     VoteType get_type() const override
     {
@@ -469,24 +470,33 @@ struct VoteMatch : public Vote
 
         m_manual_rules_override.reset();
         m_manual_rules_alias.reset();
+        m_override_is_mutator = false;
 
         if (preset_alias) {
-            auto alias_it = g_alpine_server_config.rules_preset_aliases.find(*preset_alias);
-            if (alias_it == g_alpine_server_config.rules_preset_aliases.end()) {
-                auto msg = std::format("Cannot start vote: rules preset '{}' is not defined!", *preset_alias);
-                af_send_automated_chat_msg(msg, source);
-                return false;
+            // Mutators are checked first: a mutator name wins over a same-named preset.
+            if (auto mutator_override = load_mutator_rules_override(*preset_alias)) {
+                m_manual_rules_alias = mutator_override->preset_alias; // canonical mutator label
+                m_manual_rules_override = std::move(*mutator_override);
+                m_override_is_mutator = true;
             }
+            else {
+                auto alias_it = g_alpine_server_config.rules_preset_aliases.find(*preset_alias);
+                if (alias_it == g_alpine_server_config.rules_preset_aliases.end()) {
+                    auto msg = std::format("Cannot start vote: '{}' is not a known mutator or rules preset!", *preset_alias);
+                    af_send_automated_chat_msg(msg, source);
+                    return false;
+                }
 
-            auto preset_result = load_rules_preset_alias(*preset_alias);
-            if (!preset_result) {
-                auto msg = std::format("Cannot start vote: failed to load rules preset '{}'", *preset_alias);
-                af_send_automated_chat_msg(msg, source);
-                return false;
+                auto preset_result = load_rules_preset_alias(*preset_alias);
+                if (!preset_result) {
+                    auto msg = std::format("Cannot start vote: failed to load rules preset '{}'", *preset_alias);
+                    af_send_automated_chat_msg(msg, source);
+                    return false;
+                }
+
+                m_manual_rules_alias = std::move(*preset_alias);
+                m_manual_rules_override = std::move(*preset_result);
             }
-
-            m_manual_rules_alias = std::move(*preset_alias);
-            m_manual_rules_override = std::move(*preset_result);
         }
 
         if (!multi_game_type_is_team_type(g_alpine_server_config.base_rules.game_type)) {
@@ -513,9 +523,10 @@ struct VoteMatch : public Vote
     [[nodiscard]] std::string get_title() const override
     {
         if (m_manual_rules_alias)
-            return std::format("START {}v{} MATCH on {} (PRESET '{}')",
+            return std::format("START {}v{} MATCH on {} ({} '{}')",
                                g_match_info.team_size, g_match_info.team_size,
-                               g_match_info.match_level_name, *m_manual_rules_alias);
+                               g_match_info.match_level_name,
+                               m_override_is_mutator ? "MUTATOR" : "PRESET", *m_manual_rules_alias);
         return std::format("START {}v{} MATCH on {}",
             g_match_info.team_size, g_match_info.team_size, g_match_info.match_level_name);
     }
@@ -543,7 +554,8 @@ struct VoteMatch : public Vote
 
         std::string msg;
         if (m_manual_rules_alias)
-            msg = std::format("Vote passed. {} (rules preset '{}').", detail, *m_manual_rules_alias);
+            msg = std::format("Vote passed. {} ({} '{}').", detail,
+                              m_override_is_mutator ? "mutator" : "rules preset", *m_manual_rules_alias);
         else
             msg = std::format("Vote passed. {}.", detail);
         af_broadcast_automated_chat_msg(msg);
@@ -692,6 +704,7 @@ struct VoteLevel : public Vote
 {
     std::string m_level_name;
     std::optional<ManualRulesOverride> m_manual_rules_override;
+    bool m_override_is_mutator = false;
 
     VoteType get_type() const override
     {
@@ -716,24 +729,32 @@ struct VoteLevel : public Vote
         }
 
         m_manual_rules_override.reset();
+        m_override_is_mutator = false;
 
         if (!preset_part.empty()) {
             std::string preset_name{preset_part};
-            auto alias_it = g_alpine_server_config.rules_preset_aliases.find(preset_name);
-            if (alias_it == g_alpine_server_config.rules_preset_aliases.end()) {
-                auto msg = std::format("Cannot start vote: rules preset '{}' is not defined!", preset_name);
-                af_send_automated_chat_msg(msg, source);
-                return false;
+            // Mutators are checked first: a mutator name wins over a same-named preset.
+            if (auto mutator_override = load_mutator_rules_override(preset_name)) {
+                m_manual_rules_override = std::move(*mutator_override);
+                m_override_is_mutator = true;
             }
+            else {
+                auto alias_it = g_alpine_server_config.rules_preset_aliases.find(preset_name);
+                if (alias_it == g_alpine_server_config.rules_preset_aliases.end()) {
+                    auto msg = std::format("Cannot start vote: '{}' is not a known mutator or rules preset!", preset_name);
+                    af_send_automated_chat_msg(msg, source);
+                    return false;
+                }
 
-            auto preset_result = load_rules_preset_alias(preset_name);
-            if (!preset_result) {
-                auto msg = std::format("Cannot start vote: failed to load rules preset '{}'", preset_name);
-                af_send_automated_chat_msg(msg, source);
-                return false;
+                auto preset_result = load_rules_preset_alias(preset_name);
+                if (!preset_result) {
+                    auto msg = std::format("Cannot start vote: failed to load rules preset '{}'", preset_name);
+                    af_send_automated_chat_msg(msg, source);
+                    return false;
+                }
+
+                m_manual_rules_override = std::move(*preset_result);
             }
-
-            m_manual_rules_override = std::move(*preset_result);
         }
 
         m_level_name = std::move(level_name);
@@ -743,7 +764,8 @@ struct VoteLevel : public Vote
     [[nodiscard]] std::string get_title() const override
     {
         if (m_manual_rules_override && m_manual_rules_override->preset_alias)
-            return std::format("LOAD LEVEL '{}' (PRESET '{}')", m_level_name, *m_manual_rules_override->preset_alias);
+            return std::format("LOAD LEVEL '{}' ({} '{}')", m_level_name,
+                               m_override_is_mutator ? "MUTATOR" : "PRESET", *m_manual_rules_override->preset_alias);
         return std::format("LOAD LEVEL '{}'", m_level_name);
     }
 
@@ -753,8 +775,9 @@ struct VoteLevel : public Vote
 
         std::string msg;
         if (m_manual_rules_override && m_manual_rules_override->preset_alias)
-            msg = std::format("Vote passed: changing level to {} with preset {}",
-                              m_level_name, *m_manual_rules_override->preset_alias);
+            msg = std::format("Vote passed: changing level to {} with {} {}",
+                              m_level_name, m_override_is_mutator ? "mutator" : "preset",
+                              *m_manual_rules_override->preset_alias);
         else
             msg = std::format("Vote passed: changing level to {}", m_level_name);
         af_broadcast_automated_chat_msg(msg);

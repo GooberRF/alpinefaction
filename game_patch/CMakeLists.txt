@@ -156,6 +156,8 @@ set(SRCS
     multi/gungame.cpp
     multi/sprays.h
     multi/sprays.cpp
+    multi/mutators.h
+    multi/mutators.cpp
     multi/kill.cpp
     multi/network.cpp
     multi/network.h

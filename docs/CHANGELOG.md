@@ -18,6 +18,10 @@ Version 1.4.0 (Lupin): Not yet released
 - Add sprays with bindable `Spray` control
   - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
   - `spray` console command to select spray, and in-game spray picker in advanced options
+- Add server-configured mutators:
+  - Instagib
+  - Rails
+  - Arena
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)

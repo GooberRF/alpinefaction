@@ -54,6 +54,9 @@ constexpr bool g_debug_team_scores_hud = false;
 static bool g_draw_vote_notification = false;
 static std::string g_active_vote_type = "";
 bool g_pre_match_active = false;
+
+// Desired visibility of the ready-up prompt
+static bool g_ready_prompt_wanted = false;
 static bool g_draw_respawn_timer_notification = false;
 static bool g_draw_respawn_timer_can_respawn = false;
 
@@ -1360,6 +1363,9 @@ static void hud_render_big_notification()
 
 void draw_hud_ready_notification(bool draw)
 {
+    // Record the desired state so hud_ready_prompt_ensure() can keep the prompt
+    // alive in the shared slot for the whole pre-match, not just this one call.
+    g_ready_prompt_wanted = draw;
     if (draw) {
         const std::string key = get_action_bind_name(
             get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
@@ -1528,6 +1534,16 @@ void gungame_client_do_frame() {
         gungame_show_notification(score);
     }
     g_gungame_last_score = score;
+}
+
+// Re-assert the ready-up prompt if its notification slot was cleared.
+static void hud_ready_prompt_ensure() {
+    if (rf::is_dedicated_server) return;
+    if (!g_ready_prompt_wanted || !g_pre_match_active) return;
+    // Yield to any timed notification currently owning the slot;
+    // reclaim once it clears.
+    if (g_hud_notification.type != HudNotificationType::None) return;
+    draw_hud_ready_notification(true);
 }
 
 // Keep the persistent Pit queue overlay in sync with the latest server state.
@@ -1775,6 +1791,7 @@ CodeInjection multi_hud_render_patch{
         }
         s_was_bag_carrier = is_bag_carrier;
 
+        hud_ready_prompt_ensure();
         hud_pit_queue_ensure();
         hud_render_notification();
         hud_render_big_notification();

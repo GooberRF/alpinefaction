@@ -15,6 +15,7 @@
 #include "../rf/weapon.h"
 #include "../rf/os/frametime.h"
 #include "multi.h"
+#include "mutators.h"
 #include "network.h"
 #include "server_internal.h"
 #include "server.h"
@@ -2110,6 +2111,11 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_MANUAL_LEVEL_LOAD;
     if (server_sprays_enabled())
         af |= af_server_info_flags::SIF_ALLOW_SPRAYS;
+    if (g_alpine_server_config_active_rules.mutators.no_featured_reload &&
+        g_alpine_server_config_active_rules.mutators.featured_weapon_index == rf::rail_gun_weapon_type)
+        af |= af_server_info_flags::SIF_FEATURED_NO_CLIP;
+    if (g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill)
+        af |= af_server_info_flags::SIF_RELOAD_ON_KILL;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -2200,6 +2206,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.clear_stale_movement_input = (pkt.af_flags & af_server_info_flags::SIF_CLEAR_STALE_MOVEMENT_INPUT) != 0;
     server_info.was_manual_level_load = (pkt.af_flags & af_server_info_flags::SIF_MANUAL_LEVEL_LOAD) != 0;
     server_info.allow_sprays = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_SPRAYS) != 0;
+    server_info.reload_on_kill = (pkt.af_flags & af_server_info_flags::SIF_RELOAD_ON_KILL) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
@@ -2322,6 +2329,12 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
 
     // af_flags
     decode_af_server_info_flags(pkt, server_info);
+
+    // Mirror the server's no-clip featured weapon (Instagib rail) locally so the
+    // client's fire/reload prediction matches. Cleared (restored) when unset.
+    mutators_set_no_clip_weapon((pkt.af_flags & af_server_info_flags::SIF_FEATURED_NO_CLIP)
+                                    ? rf::rail_gun_weapon_type
+                                    : -1);
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();
