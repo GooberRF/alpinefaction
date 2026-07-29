@@ -59,7 +59,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
 
 [@is-this-c](https://github.com/is-this-c)
-- Rewrite `VArray` and fix crashes due to MinGW
+- Rewrite `VArray` to fix crashes due to MinGW
 - Add `Anti-aliasing` option to `ADVANCED` options panel
 - Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
 - Rename `antialiasing` console command to `r_antialiasing`

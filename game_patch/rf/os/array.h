@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cstring>
+#include <concepts>
 #include <functional>
+#include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include "../crt.h"
 
@@ -39,7 +42,7 @@ namespace rf
         }
 
         static void free_storage(T* const ptr) {
-            if (ptr) {
+            if (!ptr) {
                 return;
             }
             if constexpr (NEEDS_COOKIE) {

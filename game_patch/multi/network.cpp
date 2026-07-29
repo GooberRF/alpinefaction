@@ -2724,30 +2724,22 @@ CodeInjection multi_io_process_packets_injection{
 
         xlog::trace("Processing packet 0x{:x}", packet_type);
 
+        const int off = regs.ebp;
+        const size_t len = regs.edi;
+        const uint8_t* const base = regs.ecx;
+        const uint32_t stack_frame = static_cast<uint32_t>(regs.esp) + 0x1C;
+        const rf::NetAddr& addr = *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
+
         if (packet_type > 0x37
             || packet_type == static_cast<int>(pf_packet_type::player_stats))
         {
-            const std::byte* const data = regs.ecx;
-            const int offset = regs.ebp;
-            const int len = regs.edi;
-            const int stack_frame = regs.esp + 0x1C;
-            const rf::NetAddr& addr =
-                *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
             rf::Player* const player = addr_as_ref<rf::Player*>(stack_frame + 0x10);
-            process_custom_packet(data + offset, len, addr, player);
+            process_custom_packet(base + off, len, addr, player);
             goto SKIP_DEFAULT_HANDLER;
         }
 
         if (rf::is_server) {
             if (packet_type == static_cast<int>(packet_type::join_request)) {
-                // Stash their packet for later analysis, if they join successfully.
-                const uint8_t* const base = regs.ecx;
-                const int off = regs.ebp;
-                const int len = regs.edi;
-                const int stack_frame = regs.esp + 0x1C;
-                const rf::NetAddr& addr =
-                    *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
-
                 // Bytes remaining in their datagram.
                 size_t rx_len = 0;
                 if (g_rx_base
@@ -2758,6 +2750,8 @@ CodeInjection multi_io_process_packets_injection{
                     rx_len = (g_rx_base + g_rx_len) - (base + off);
                 }
 
+                // Stash their datagram for later analysis, if this player joins
+                // successfully.
                 g_join_request_stashed = StashedPacket{
                     addr,
                     base + off,
@@ -2767,18 +2761,11 @@ CodeInjection multi_io_process_packets_injection{
                 };
             } else if (packet_type == static_cast<int>(packet_type::game_info_request)) {
                 // Analyze their packet, so we can adjust our response, if needed.
-                const uint8_t* const base = regs.ecx;
-                const int off = regs.ebp;
-                const size_t len = regs.edi;
-                const int stack_frame = regs.esp + 0x1C;
-                const rf::NetAddr& addr =
-                    *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
-
-                uint8_t ver = 0;
-                if (parse_af_gi_req_tail(base + off, len, ver)) {
+                uint8_t version = 0;
+                if (parse_af_gi_req_tail(base + off, len, version)) {
                     const int64_t now = timer::get_i64(1000);
-                    g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{ver, now};
-                    xlog::debug("AF GI-REQ detected from {} (ver={})", addr, ver);
+                    g_af_gi_req_seen[addr_key(addr)] = AfGiReqSeen{version, now};
+                    xlog::debug("AF GI-REQ detected from {} (ver={})", addr, version);
                 }
             }
         }

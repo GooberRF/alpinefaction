@@ -77,9 +77,19 @@ namespace rf
             return std::string{c_str()};
         }
 
-        operator Pod() const
+        operator Pod() const &
         {
-            return m_pod;
+            String copy{*this};
+            const Pod out = copy.m_pod;
+            copy.m_pod = {};
+            return out;
+        }
+
+        operator Pod() && noexcept
+        {
+            const Pod out = m_pod;
+            m_pod = {};
+            return out;
         }
 
         String& operator=(const String& other)
