@@ -61,6 +61,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype.
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
 - Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
+- Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Anti-aliasing` option to `ADVANCED` options panel

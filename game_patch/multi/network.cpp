@@ -960,7 +960,12 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                 af_send_automated_chat_msg(msg, player);
                 return;
             }
-        }        
+            if (auto_team_balance_blocks_team_change(player, data[1])) {
+                af_send_automated_chat_msg(
+                    "You can't change teams right now because it would unbalance the teams.", player);
+                return;
+            }
+        }
         process_team_change_packet_hook.call_target(data, addr);
     },
 };

@@ -268,6 +268,11 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
             gungame_on_player_kill(killer_player, killed_player);
         }
     }
+
+    // If an auto team balance is queued, swap this player over when they die on
+    // the larger team. Runs after update_player_active_status above so the dead
+    // player still counts toward their team's size.
+    auto_team_balance_on_player_death(killed_player);
 }
 
 FunHook<void(rf::Entity*)> entity_on_death_hook{
