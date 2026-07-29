@@ -413,7 +413,7 @@ void mutators_on_player_frag(rf::Player* killer)
         return;
 
     const int wt = ep->ai.current_primary_weapon;
-    if (wt < 0 || wt >= 64 || !rf::weapon_uses_clip(wt))
+    if (wt < 0 || wt >= rf::num_weapon_types || !rf::weapon_uses_clip(wt))
         return;
 
     // Reset the clip to full directly, on both the server (authoritative) and the
