@@ -247,7 +247,7 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
         // Flag stray keys — almost always a base-rule key (e.g. game_type) that
         // ended up inside this mutator because it was written after the
         // [[rules.mutators]] header in the TOML.
-        for (const auto& [k, v] : *tbl) {
+        for ([[maybe_unused]] const auto& [k, v] : *tbl) {
             const std::string_view key = k.str();
             if (!is_known_mutator_option(key))
                 rf::console::print("  [WARN] mutator '{}': unexpected key '{}'. In TOML, keys after [[rules.mutators]] belong to the mutator, not [rules] — move base-rule keys above the mutators array.\n",
