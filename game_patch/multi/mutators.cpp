@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <format>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -21,6 +23,16 @@
 // but we suppress the per-shot decrement, so this is purely the (constant) number
 // the HUD shows and it never counts down.
 static constexpr int NO_CLIP_RESERVE = 1;
+
+// Config-supplied strings are clamped before being interpolated into a console
+// line: the engine's console output (0x00509EC0) copies a line into its ring
+// buffer without bounding it to the slot size, so an over-long line corrupts
+// adjacent entries.
+static std::string_view clamp_for_console(std::string_view value)
+{
+    constexpr size_t max_len = 32;
+    return value.substr(0, std::min(value.size(), max_len));
+}
 
 // The weapon table class name for a given weapon type (accepted by
 // weapon_lookup_type and the loadout/default-weapon setters).
@@ -100,7 +112,8 @@ static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
         if (idx >= 0)
             featured = idx;
         else
-            rf::console::print("  [WARN] Rails mutator: unknown featured_weapon '{}', using rail gun\n", *v);
+            rf::console::print("  [WARN] Rails mutator: unknown featured_weapon '{}', using rail gun\n",
+                               clamp_for_console(*v));
     }
     const bool exclude_thrown = opts["exclude_thrown"].value_or(true);
 
@@ -170,11 +183,20 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 // Registry + application order
 // ============================================================================
 
-enum class MutatorId
+// Static half of the option schema. Option ids are frozen per mutator (they are
+// wire values in the vote-options schema); choice lists and defaults that depend
+// on the loaded weapon table are filled in by mutators_get_registry().
+struct MutatorOptionDef
 {
-    Arena,
-    Rails,
-    Instagib,
+    uint8_t id;
+    const char* name;  // toml key
+    const char* label; // shown in the client UI
+    MutatorOptionType type;
+};
+
+static const MutatorOptionDef RAILS_OPTIONS[] = {
+    {0, "featured_weapon", "Weapon", MutatorOptionType::Choice},
+    {1, "exclude_thrown", "Keep thrown explosives", MutatorOptionType::Bool},
 };
 
 struct MutatorDef
@@ -183,12 +205,14 @@ struct MutatorDef
     const char* name;  // matched against the toml name
     const char* label; // shown in the printed rules
     void (*apply)(AlpineServerConfigRules&, const toml::table&);
+    const MutatorOptionDef* options;
+    size_t num_options;
 };
 
 static const MutatorDef MUTATORS[] = {
-    {MutatorId::Instagib, "instagib", "Instagib", &apply_instagib},
-    {MutatorId::Rails, "rails", "Rails", &apply_rails},
-    {MutatorId::Arena, "arena", "Arena", &apply_arena},
+    {MutatorId::Instagib, "instagib", "Instagib", &apply_instagib, nullptr, 0},
+    {MutatorId::Rails, "rails", "Rails", &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
+    {MutatorId::Arena, "arena", "Arena", &apply_arena, nullptr, 0},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
@@ -218,9 +242,161 @@ static const MutatorDef* find_mutator_by_id(MutatorId id)
 // Keys allowed inside a [[rules.mutators]] entry. Anything else is usually a
 // base-rule key accidentally placed after the mutators array in the TOML (where
 // it silently becomes a key of the mutator instead of the rules section).
-static bool is_known_mutator_option(std::string_view key)
+static bool is_known_mutator_option(const MutatorDef& def, std::string_view key)
 {
-    return key == "name" || key == "featured_weapon" || key == "exclude_thrown";
+    if (key == "name")
+        return true;
+    for (size_t i = 0; i < def.num_options; ++i) {
+        if (key == def.options[i].name)
+            return true;
+    }
+    return false;
+}
+
+// Short labels for the featured-weapon selector in the client's vote panel. The
+// stock display names ("Fusion Rocket Launcher") are far wider than the option
+// cycler. Matched case-insensitively against both the weapon's display name and
+// its weapons.tbl class name, so a table without a $Display Name still resolves.
+// Only the label changes; the choice VALUE stays the class name that round-trips
+// through rf::weapon_lookup_type. A weapon matching nothing (TC mods) keeps its
+// original label.
+struct WeaponShortLabel
+{
+    const char* match; // stock display name or weapons.tbl class name
+    const char* label;
+};
+
+static const WeaponShortLabel WEAPON_SHORT_LABELS[] = {
+    {"Remote Charge", "Charges"},           // class + display
+    {"Control Baton", "Baton"},             // display
+    {"Riot Stick", "Baton"},                // class
+    {"12mm pistol", "Pistol"},              // display
+    {"12mm handgun", "Pistol"},             // class
+    {"Automatic Shotgun", "Shotgun"},       // display
+    {"Shotgun", "Shotgun"},                 // class
+    {"Sniper Rifle", "Sniper"},             // class + display
+    {"Rocket Launcher", "Rocket"},          // class + display
+    {"Assault Rifle", "AR"},                // class + display
+    {"Submachine Gun", "SMG"},              // display
+    {"Machine Pistol", "SMG"},              // class
+    {"Grenade", "Grenades"},                // class + display
+    {"Grenades", "Grenades"},               // a table that already pluralises
+    {"Flamethrower", "Flame"},              // class + display
+    {"Riot Shield", "Shield"},              // class + display
+    {"Rail Driver", "Rail"},                // display
+    {"rail_gun", "Rail"},                   // class
+    {"Heavy Machine Gun", "HMG"},           // display
+    {"heavy_machine_gun", "HMG"},           // class
+    {"Precision Rifle", "PR"},              // display
+    {"scope_assault_rifle", "PR"},          // class
+    {"Fusion Rocket Launcher", "Fusion"},   // display
+    {"shoulder_cannon", "Fusion"},          // class
+};
+
+static const char* weapon_short_label(std::string_view display_name, std::string_view class_name)
+{
+    for (const auto& entry : WEAPON_SHORT_LABELS) {
+        if (string_iequals(display_name, entry.match) || string_iequals(class_name, entry.match))
+            return entry.label;
+    }
+    return nullptr;
+}
+
+// Weapons the Rails mutator can feature: anything a level pickup can grant.
+// Rails redirects every weapon/ammo pickup onto the featured weapon's own
+// pickup, so a weapon without one would leave players stuck with the baton.
+static std::vector<MutatorOptionChoice> build_featured_weapon_choices()
+{
+    std::vector<MutatorOptionChoice> choices;
+    for (int wt = 0; wt < rf::num_weapon_types; ++wt) {
+        if (rf::weapon_is_detonator(wt))
+            continue;
+
+        bool has_pickup = false;
+        for (int i = 0; i < rf::num_item_types && !has_pickup; ++i)
+            has_pickup = rf::item_info[i].gives_weapon_id == wt;
+        if (!has_pickup)
+            continue;
+
+        std::string value = rf::weapon_types[wt].name.c_str();
+        if (value.empty())
+            continue;
+        std::string label = rf::weapon_types[wt].display_name.c_str();
+        if (label.empty())
+            label = value;
+        if (const char* short_label = weapon_short_label(label, value))
+            label = short_label;
+        choices.push_back(MutatorOptionChoice{std::move(label), std::move(value)});
+    }
+    return choices;
+}
+
+static std::vector<MutatorInfo> g_mutator_registry;
+
+const std::vector<MutatorInfo>& mutators_get_registry()
+{
+    // Built once the weapon/item tables are loaded. An early call (before they
+    // are) leaves the choice lists empty, so don't cache that result.
+    const bool tables_ready = rf::num_weapon_types > 0 && rf::num_item_types > 0;
+    if (!g_mutator_registry.empty() && tables_ready)
+        return g_mutator_registry;
+
+    std::vector<MutatorInfo> registry;
+    for (const auto& def : MUTATORS) {
+        MutatorInfo info;
+        info.id = def.id;
+        info.name = def.name;
+        info.label = def.label;
+
+        for (size_t i = 0; i < def.num_options; ++i) {
+            const MutatorOptionDef& opt_def = def.options[i];
+            MutatorOptionInfo opt;
+            opt.id = opt_def.id;
+            opt.name = opt_def.name;
+            opt.label = opt_def.label;
+            opt.type = opt_def.type;
+
+            if (def.id == MutatorId::Rails && opt.name == "featured_weapon") {
+                opt.choices = build_featured_weapon_choices();
+                const std::string rail_name =
+                    (rf::rail_gun_weapon_type >= 0 && rf::rail_gun_weapon_type < rf::num_weapon_types)
+                        ? rf::weapon_types[rf::rail_gun_weapon_type].name.c_str()
+                        : "";
+                for (size_t c = 0; c < opt.choices.size(); ++c) {
+                    if (string_iequals(opt.choices[c].value, rail_name)) {
+                        opt.default_choice = static_cast<uint8_t>(c);
+                        break;
+                    }
+                }
+            }
+            else if (def.id == MutatorId::Rails && opt.name == "exclude_thrown") {
+                opt.default_bool = true; // matches apply_rails
+            }
+
+            info.options.push_back(std::move(opt));
+        }
+
+        registry.push_back(std::move(info));
+    }
+
+    g_mutator_registry = std::move(registry);
+    return g_mutator_registry;
+}
+
+const MutatorInfo* mutators_find_by_id(MutatorId id)
+{
+    for (const auto& info : mutators_get_registry())
+        if (info.id == id)
+            return &info;
+    return nullptr;
+}
+
+const MutatorInfo* mutators_find_by_name(std::string_view name)
+{
+    for (const auto& info : mutators_get_registry())
+        if (string_iequals(name, info.name))
+            return &info;
+    return nullptr;
 }
 
 void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfigRules& rules)
@@ -238,9 +414,14 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
             rf::console::print("  [WARN] a mutators entry is missing its 'name'\n");
             continue;
         }
+        // Config-supplied names are clamped before being interpolated: the engine
+        // console ring buffer copies a line without bounding it to its slot, so a
+        // long line corrupts adjacent entries.
+        const std::string_view name_for_msg = clamp_for_console(*name);
+
         const MutatorDef* def = find_mutator_by_name(*name);
         if (!def) {
-            rf::console::print("  [WARN] unknown mutator '{}'\n", *name);
+            rf::console::print("  [WARN] unknown mutator '{}'\n", name_for_msg);
             continue;
         }
 
@@ -249,9 +430,9 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
         // [[rules.mutators]] header in the TOML.
         for ([[maybe_unused]] const auto& [k, v] : *tbl) {
             const std::string_view key = k.str();
-            if (!is_known_mutator_option(key))
+            if (!is_known_mutator_option(*def, key))
                 rf::console::print("  [WARN] mutator '{}': unexpected key '{}'. In TOML, keys after [[rules.mutators]] belong to the mutator, not [rules] — move base-rule keys above the mutators array.\n",
-                    *name, key);
+                    name_for_msg, clamp_for_console(key));
         }
 
         declared[def->id] = *tbl; // a later declaration of the same mutator wins
@@ -277,10 +458,29 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
         // same mutator, matching the label dedup above.
         MutatorDeclaration decl;
         decl.name = def->name;
-        if (auto fw = it->second["featured_weapon"].value<std::string>())
-            decl.featured_weapon = *fw;
-        if (auto et = it->second["exclude_thrown"].value<bool>())
-            decl.exclude_thrown = *et;
+        for (size_t i = 0; i < def->num_options; ++i) {
+            const MutatorOptionDef& opt = def->options[i];
+            const auto node = it->second[opt.name];
+            switch (opt.type) {
+                case MutatorOptionType::Bool:
+                    if (auto v = node.value<bool>())
+                        decl.options[opt.name] = *v;
+                    break;
+                case MutatorOptionType::Int:
+                    if (auto v = node.value<int64_t>())
+                        decl.options[opt.name] = static_cast<int32_t>(*v);
+                    break;
+                case MutatorOptionType::Float:
+                    if (auto v = node.value<double>())
+                        decl.options[opt.name] = static_cast<float>(*v);
+                    break;
+                case MutatorOptionType::Choice:
+                case MutatorOptionType::String:
+                    if (auto v = node.value<std::string>())
+                        decl.options[opt.name] = *v;
+                    break;
+            }
+        }
         auto& decls = rules.mutators.declarations;
         decls.erase(std::remove_if(decls.begin(), decls.end(),
             [&](const MutatorDeclaration& d) { return string_iequals(d.name, def->name); }), decls.end());
@@ -288,26 +488,148 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
     }
 }
 
-std::optional<ManualRulesOverride> load_mutator_rules_override(std::string_view mutator_name)
+toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclaration>& declarations)
 {
-    const MutatorDef* def = find_mutator_by_name(mutator_name);
-    if (!def)
+    toml::array arr;
+    for (const auto& decl : declarations) {
+        toml::table tbl;
+        tbl.insert_or_assign("name", decl.name);
+        for (const auto& [key, value] : decl.options) {
+            if (const auto* v = std::get_if<bool>(&value))
+                tbl.insert_or_assign(key, *v);
+            else if (const auto* v = std::get_if<int32_t>(&value))
+                tbl.insert_or_assign(key, static_cast<int64_t>(*v));
+            else if (const auto* v = std::get_if<float>(&value))
+                tbl.insert_or_assign(key, static_cast<double>(*v));
+            else if (const auto* v = std::get_if<std::string>(&value))
+                tbl.insert_or_assign(key, *v);
+        }
+        arr.push_back(std::move(tbl));
+    }
+    return arr;
+}
+
+std::optional<std::string> mutators_build_declarations_from_vote(
+    const std::vector<VoteMutatorInput>& input, std::vector<MutatorDeclaration>& out)
+{
+    out.clear();
+
+    std::set<uint8_t> seen_ids;
+    for (const auto& entry : input) {
+        const MutatorInfo* info = mutators_find_by_id(static_cast<MutatorId>(entry.mutator_id));
+        if (!info) {
+            return std::format("this server does not know mutator id {}", entry.mutator_id);
+        }
+        if (!seen_ids.insert(entry.mutator_id).second) {
+            return std::format("mutator '{}' was selected more than once", info->label);
+        }
+
+        MutatorDeclaration decl;
+        decl.name = info->name;
+
+        for (const auto& opt_in : entry.options) {
+            const MutatorOptionInfo* opt = nullptr;
+            for (const auto& candidate : info->options) {
+                if (candidate.id == opt_in.option_id) {
+                    opt = &candidate;
+                    break;
+                }
+            }
+            if (!opt) {
+                return std::format("mutator '{}' has no option id {}", info->label, opt_in.option_id);
+            }
+            if (opt->type != opt_in.type) {
+                return std::format("option '{}' of mutator '{}' was sent with the wrong value type",
+                                   opt->name, info->label);
+            }
+
+            switch (opt->type) {
+                case MutatorOptionType::Bool:
+                    decl.options[opt->name] = opt_in.bool_value;
+                    break;
+                case MutatorOptionType::Choice:
+                    if (opt_in.choice_index >= opt->choices.size()) {
+                        return std::format("option '{}' of mutator '{}' has an out of range selection",
+                                           opt->name, info->label);
+                    }
+                    decl.options[opt->name] = opt->choices[opt_in.choice_index].value;
+                    break;
+                case MutatorOptionType::Int:
+                    decl.options[opt->name] = opt_in.int_value;
+                    break;
+                case MutatorOptionType::Float:
+                    decl.options[opt->name] = opt_in.float_value;
+                    break;
+                case MutatorOptionType::String:
+                    decl.options[opt->name] = opt_in.string_value;
+                    break;
+            }
+        }
+
+        out.push_back(std::move(decl));
+    }
+
+    return std::nullopt;
+}
+
+std::string mutators_join_labels(const std::vector<MutatorDeclaration>& declarations)
+{
+    std::string joined;
+    for (const auto& decl : declarations) {
+        const MutatorInfo* info = mutators_find_by_name(decl.name);
+        if (!joined.empty())
+            joined += ", ";
+        joined += info ? info->label : decl.name;
+    }
+    return joined;
+}
+
+const AlpineServerConfigRules& vote_natural_rules_for_level(std::string_view level_filename)
+{
+    for (const auto& entry : g_alpine_server_config.levels) {
+        if (string_iequals(entry.level_filename, level_filename))
+            return entry.rule_overrides_no_mutators;
+    }
+    // Not in the rotation: a manually named level runs on the base rules.
+    return g_alpine_server_config.base_rules_no_mutators;
+}
+
+std::optional<ManualRulesOverride> load_vote_rules_override(
+    std::string_view level_filename, const std::vector<MutatorDeclaration>& mutators,
+    std::optional<rf::NetGameType> gametype)
+{
+    if (mutators.empty() && !gametype)
         return std::nullopt;
 
-    // Apply the single mutator on top of the base rules with base mutators
-    // stripped, so the voted mutator fully replaces (rather than stacks on) any
-    // mutator the base rules declared.
-    AlpineServerConfigRules rules = g_alpine_server_config.base_rules_no_mutators;
+    // Inheritance rule for a vote override, in layering order:
+    //   1. the rules the voted level would run with on its own — its rotation
+    //      entry's rules if it is in the rotation, otherwise the base rules —
+    //      with config-declared mutators stripped (voted mutators REPLACE
+    //      configured ones rather than stacking on them),
+    //   2. the voted game type and its gametype defaults, if one was voted,
+    //   3. the voted mutator declarations.
+    // Starting from the base rules instead (as this used to) silently dragged the
+    // base game type onto a level whose rotation entry overrides it, so adding a
+    // single mutator to a level vote could flip the whole game type.
+    AlpineServerConfigRules rules = vote_natural_rules_for_level(level_filename);
 
-    toml::table entry;
-    entry.insert_or_assign("name", std::string{mutator_name});
-    toml::array arr;
-    arr.push_back(std::move(entry));
-    apply_mutators_from_toml(arr, rules);
+    if (gametype) {
+        // apply_defaults_for_game_type() rebuilds the loadout and clears
+        // MutatorConfig, so the mutators must be applied after it.
+        rules.game_type = *gametype;
+        apply_defaults_for_game_type(*gametype, rules);
+    }
+
+    if (!mutators.empty()) {
+        const toml::array arr = mutator_declarations_to_toml_array(mutators);
+        apply_mutators_from_toml(arr, rules);
+    }
 
     ManualRulesOverride result;
     result.rules = std::move(rules);
-    result.preset_alias = std::string{def->label};
+    std::string labels = mutators_join_labels(mutators);
+    if (!labels.empty())
+        result.preset_alias = std::move(labels);
     return result;
 }
 

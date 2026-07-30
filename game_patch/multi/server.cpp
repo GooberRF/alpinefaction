@@ -1587,16 +1587,34 @@ CodeInjection multi_on_new_player_injection{
     },
 };
 
+// A dead client re-sends a spawn request every frame while fire is held, so every
+// "you can't spawn because..." notice in the spawn path shares one per-player
+// throttle (the same timer Pit and Wipeout already use for their own spawn-denied
+// lines, so two reasons can never alternate and double the rate). Only the
+// notification is throttled — the spawn is still declined every time.
+static constexpr int spawn_decline_msg_cooldown_ms = 10000;
+
+static void send_spawn_decline_msg(rf::Player* player, std::string_view msg)
+{
+    if (!player) {
+        return;
+    }
+    if (player->waiting_msg_timer.valid() && !player->waiting_msg_timer.elapsed()) {
+        return;
+    }
+    player->waiting_msg_timer.set(spawn_decline_msg_cooldown_ms);
+    af_send_automated_chat_msg(msg, player);
+}
+
 static bool check_player_ac_status([[maybe_unused]] rf::Player* player)
 {
 #ifdef HAS_PF
     if (g_additional_server_config.anticheat_level > 0) {
         bool verified = pf_is_player_verified(player);
         if (!verified) {
-            af_send_automated_chat_msg(
+            send_spawn_decline_msg(player,
                 "Sorry! Your spawn request was rejected because verification of your client software failed. "
-                "Please use the latest officially released version of Alpine Faction.",
-                player);
+                "Please use the latest officially released version of Alpine Faction.");
             return false;
         }
 
@@ -1607,7 +1625,7 @@ static bool check_player_ac_status([[maybe_unused]] rf::Player* player)
                 "Please make sure you do not have any mods installed and that your client software is up to date.",
                 ac_level, g_additional_server_config.anticheat_level
             );
-            af_send_automated_chat_msg(msg, player);
+            send_spawn_decline_msg(player, msg);
             return false;
         }
     }
@@ -1739,7 +1757,7 @@ void start_pre_match()
 
             std::string msg = std::format(
                 "\n>>>>>>>>>>>>>>>>> {}v{} MATCH QUEUED <<<<<<<<<<<<<<<<<\n"
-                "Waiting for players. Ready up or use \"/vote nomatch\" to call a vote to cancel the match.",
+                "Waiting for players. Ready up, or call a vote to cancel the match.",
                 g_match_info.team_size, g_match_info.team_size);
 
             af_send_automated_chat_msg(msg, player);
@@ -1841,7 +1859,7 @@ void remove_ready_player(rf::Player* player)
 void toggle_ready_status(rf::Player* player)
 {
     if (!g_match_info.pre_match_active) {
-        af_send_automated_chat_msg("No match is queued. Use \"/vote match\" to queue a match.", player);
+        af_send_automated_chat_msg("No match is queued. Call a match vote to queue one.", player);
         return;
     }
 
@@ -1875,7 +1893,7 @@ void set_ready_status(rf::Player* player, bool is_ready)
         }
     }
     else {
-        af_send_automated_chat_msg("No match is queued. Use \"/vote match\" to queue a match.", player);
+        af_send_automated_chat_msg("No match is queued. Call a match vote to queue one.", player);
     }
 }
 
@@ -1913,7 +1931,7 @@ void match_do_frame()
             g_match_info.last_match_reminder_time = current_time;
 
             af_broadcast_automated_chat_msg(
-                "No active match. Use \"/vote match <type> <map filename> [preset]\" to call a match vote.");
+                "No active match. Call a match vote to start one.");
         }
     }
     else if (g_match_info.pre_match_active) {
@@ -1929,7 +1947,7 @@ void match_do_frame()
                 if (!is_player_ready(player)) {
                     auto msg = std::format(
                         "You are NOT ready! {}v{} match queued, waiting for players - RED: {}, BLUE: {}.\n"
-                        "Ready up or use \"/vote nomatch\" to call a vote to cancel the match.",
+                        "Ready up, or call a vote to cancel the match.",
                         g_match_info.team_size, g_match_info.team_size,
                         g_match_info.team_size - ready_red, g_match_info.team_size - ready_blue);
                     af_send_automated_chat_msg(msg, player);
@@ -2151,16 +2169,16 @@ bool check_can_player_spawn(rf::Player* player)
     case AlpineRestrictVerdict::ok:
         return true;
     case AlpineRestrictVerdict::need_alpine:
-        af_send_automated_chat_msg("You must upgrade to Alpine Faction to play here. Learn more at alpinefaction.com", player);
+        send_spawn_decline_msg(player, "You must upgrade to Alpine Faction to play here. Learn more at alpinefaction.com");
         return false;
     case AlpineRestrictVerdict::need_release:
-        af_send_automated_chat_msg("This server requires an official Alpine Faction build. Get it at alpinefaction.com", player);
+        send_spawn_decline_msg(player, "This server requires an official Alpine Faction build. Get it at alpinefaction.com");
         return false;
     case AlpineRestrictVerdict::need_update:
-        af_send_automated_chat_msg("This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com", player);
+        send_spawn_decline_msg(player, "This server requires a newer version of Alpine Faction. Download the update at alpinefaction.com");
         return false;
     case AlpineRestrictVerdict::need_d3d11:
-        af_send_automated_chat_msg("This server requires the Direct3D 11 renderer. Enable it in the Alpine Faction launcher settings panel.", player);
+        send_spawn_decline_msg(player, "This server requires the Direct3D 11 renderer. Enable it in the Alpine Faction launcher settings panel.");
         return false;
     }
     return false;
@@ -2192,15 +2210,12 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
         if (g_match_info.match_active && !is_player_in_match(player)) {
-            af_send_automated_chat_msg(
-                "You cannot spawn because a match is in progress. Please feel free to spectate.",
-                player
-            );
+            send_spawn_decline_msg(player,
+                "You cannot spawn because a match is in progress. Please feel free to spectate.");
             return;
         }
         if (player->is_bot && player->is_spawn_disabled) {
-            std::string msg = std::format("You're a bot and you can't spawn right now.");
-            af_send_automated_chat_msg(msg, player);
+            send_spawn_decline_msg(player, "You're a bot and you can't spawn right now.");
             return;
         }
 
@@ -2534,8 +2549,11 @@ void server_reliable_socket_ready(rf::Player* player)
         }
     }
 
+    // bring a player who joined during a vote up to date (AF 1.4+ only)
+    server_vote_send_state_to_new_player(player);
+
     // alert alpine clients to the queued match on join
-    if (g_match_info.pre_match_active && player->version_info.software == ClientSoftware::AlpineFaction) {    
+    if (g_match_info.pre_match_active && player->version_info.software == ClientSoftware::AlpineFaction) {
         auto msg = std::format("Match is queued and waiting for players: {}v{}! Use \"/ready\" to ready up.",
             g_match_info.team_size, g_match_info.team_size);
 
@@ -2570,6 +2588,7 @@ CodeInjection multi_level_init_injection{
                 shuffle_level_array();
                 g_alpine_server_config.printed_cfg.clear();
                 g_alpine_server_config.signal_cfg_changed = true;
+                server_vote_invalidate_options_blob(); // rotation order feeds the votable level list
             }
             initialize_game_info_server_flags();
             af_send_server_info_packet_to_all();

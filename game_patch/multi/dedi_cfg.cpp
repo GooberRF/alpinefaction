@@ -1109,6 +1109,11 @@ static void add_level_entry_from_table(
     std::string context = "level '" + (tmp_filename.empty() ? std::string("<unknown>") : tmp_filename) + "'";
     entry.rule_overrides = apply_rules_presets_and_overrides(
         lvl_tbl, base_dir, cfg.base_rules, context, &cfg.rules_preset_aliases, nullptr, &entry.applied_rules_preset_paths);
+    // Mutator-free variant, used as the starting point for level/match votes
+    // that carry mutators (see load_vote_rules_override).
+    entry.rule_overrides_no_mutators = apply_rules_presets_and_overrides(
+        lvl_tbl, base_dir, cfg.base_rules_no_mutators, context + " (no mutators)",
+        &cfg.rules_preset_aliases, nullptr, nullptr, /*apply_mutators*/ false);
 
     cfg.levels.push_back(std::move(entry));
 }
@@ -1367,8 +1372,15 @@ static void apply_known_table_in_order(
             cfg.vote_level.allowed_maps = parse_allowed_maps(tbl);
         }
     }
-    else if (key == "vote_gametype")
-        cfg.vote_gametype = parse_vote_config(tbl);
+    else if (key == "vote_gametype") {
+        // Removed in AF 1.4 — game type selection is now part of vote level.
+        static bool warned_vote_gametype_deprecated = false;
+        if (!warned_vote_gametype_deprecated) {
+            warned_vote_gametype_deprecated = true;
+            rf::console::print(
+                "  [WARN] vote_gametype is deprecated and ignored; gametype is now part of vote level\n");
+        }
+    }
     else if (key == "vote_extend")
         cfg.vote_extend = parse_vote_config(tbl);
     else if (key == "vote_restart")
@@ -2243,7 +2255,6 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     };
 
     print_vote("Vote kick:    ", cfg.vote_kick);
-    print_vote("Vote gametype:", cfg.vote_gametype);
     print_vote("Vote extend:  ", cfg.vote_extend);
     print_vote("Vote restart: ", cfg.vote_restart);
     print_vote("Vote next:    ", cfg.vote_next);
@@ -2364,6 +2375,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
         load_ads_server_config(ads_config_name, false);
         g_alpine_server_config.printed_cfg.clear();
         cfg.signal_cfg_changed = true;
+        server_vote_invalidate_options_blob();
     }
 
     initialize_core_alpine_dedicated_server_settings(netgame, cfg, on_launch);
@@ -2490,15 +2502,20 @@ void apply_rules_for_current_level()
         }
     }
     else { // level is in rotation
+        // The rotation can shrink under a running level (sv_loadconfig), so the
+        // index must be validated for the log line too, not just the lookup.
+        const bool idx_valid = (idx >= 0 && idx < static_cast<int>(cfg.levels.size()));
+
         AlpineServerConfigRules const &override_rules =
-            (idx >= 0 && idx < (int)cfg.levels.size())
-              ? cfg.levels[idx].rule_overrides
-              : cfg.base_rules;
+            idx_valid ? cfg.levels[idx].rule_overrides : cfg.base_rules;
 
         g_alpine_server_config_active_rules = override_rules;
 
-        if (!g_ads_minimal_server_info)
-            rf::console::print("Applying level-specific rules for server rotation index {} ({})...\n", idx, cfg.levels[idx].level_filename);
+        if (!g_ads_minimal_server_info) {
+            std::string_view level_name =
+                idx_valid ? std::string_view(cfg.levels[idx].level_filename) : std::string_view("UNKNOWN");
+            rf::console::print("Applying level-specific rules for server rotation index {} ({})...\n", idx, level_name);
+        }
     }
 
     // respect game type specific base rules (eg. koth spawn loadout) for voted or manually loaded maps
@@ -2514,16 +2531,7 @@ void apply_rules_for_current_level()
         apply_defaults_for_game_type(active_game_type, g_alpine_server_config_active_rules);
 
         if (!saved_mutators.empty()) {
-            toml::array mut_arr;
-            for (const auto& decl : saved_mutators) {
-                toml::table tbl;
-                tbl.insert_or_assign("name", decl.name);
-                if (decl.featured_weapon)
-                    tbl.insert_or_assign("featured_weapon", *decl.featured_weapon);
-                if (decl.exclude_thrown)
-                    tbl.insert_or_assign("exclude_thrown", *decl.exclude_thrown);
-                mut_arr.push_back(std::move(tbl));
-            }
+            const toml::array mut_arr = mutator_declarations_to_toml_array(saved_mutators);
             apply_mutators_from_toml(mut_arr, g_alpine_server_config_active_rules);
         }
     }

@@ -39,6 +39,7 @@
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/spray_picker.h"
+#include "../misc/vote_panel.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/vpackfile.h"
@@ -205,6 +206,7 @@ CodeInjection after_frame_render_hook{
             fullscreen_overlay_do_frame();
             gas_region_transition_do_frame();
             spray_picker_render();
+            vote_panel_gameplay_render();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
             experimental_render();
 #endif

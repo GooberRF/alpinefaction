@@ -106,7 +106,17 @@ bool is_server_minimum_af_version(int version_major, int version_minor) {
         return false;
     }
 
-    return server_info->version_major >= version_major && server_info->version_minor >= version_minor;
+    // Lexicographic, matching is_player_minimum_af_client_version. A per-field
+    // >= comparison would wrongly reject e.g. 2.0 against a (1, 4) requirement.
+    if (server_info->version_major > version_major) {
+        return true;
+    }
+
+    if (server_info->version_major < version_major) {
+        return false;
+    }
+
+    return server_info->version_minor >= version_minor;
 }
 
 std::string build_local_spawn_string(bool can_respawn) {

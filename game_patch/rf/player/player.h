@@ -92,6 +92,10 @@ struct PlayerAdditionalData {
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 
+    // Rate limit for af_req_vote_options: the blob is chunked over the deferred
+    // reliable queue, so a client must not be able to spam it.
+    rf::TimestampRealtime vote_options_req_timer{};
+
     // Server side rail gun reload cooldown, used for force_rail_reload
     // needed because entity_is_reloading is unreliable on server
     rf::Timestamp rail_gun_reload_timer{};
@@ -109,9 +113,11 @@ struct PlayerAdditionalData {
     // subsequent-spawn (cluster near teammates) logic. Both reset each round.
     int wipeout_round_deaths = 0;
     bool wipeout_spawned_this_round = false;
-    // Throttles the "you're waiting" spawn-denied chat line so repeated spawn
-    // requests (e.g. holding fire while waiting) don't spam it. Shared by
-    // Wipeout and Pit.
+    // Throttles every spawn-denied chat line so repeated spawn requests (e.g.
+    // holding fire while dead) don't spam them. Shared by Wipeout, Pit and the
+    // spawn gates in multi_spawn_player_server_side (see
+    // send_spawn_decline_msg) so two different decline reasons can't alternate
+    // and double the rate.
     rf::Timestamp waiting_msg_timer{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);

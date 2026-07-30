@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 #include <variant>
 #include <vector>
 #include <common/rfproto.h>
@@ -84,8 +86,69 @@ enum class af_client_req_type : uint8_t
     af_req_server_cfg = 0x1,
     af_req_spray = 0x2,
     af_req_character = 0x3,
-    af_req_ready = 0x4,      // Alpine 1.4 (1 byte: action 0=unready,1=ready,2=toggle)
-    af_req_pit_queue = 0x5,  // Alpine 1.4 (1 byte: action 0=leave,1=join,2=toggle)
+    af_req_ready = 0x4,        // Alpine 1.4 (1 byte: action 0=unready,1=ready,2=toggle)
+    af_req_pit_queue = 0x5,    // Alpine 1.4 (1 byte: action 0=leave,1=join,2=toggle)
+    af_req_vote_call = 0x6,    // Alpine 1.4 (variable, see af_build_vote_call_payload)
+    af_req_vote_cast = 0x7,    // Alpine 1.4 (1 byte: 0 = no, 1 = yes)
+    af_req_vote_cancel = 0x8,  // Alpine 1.4 (empty; only the vote owner may cancel)
+    af_req_vote_options = 0x9, // Alpine 1.4 (empty; requests the vote-options blob)
+};
+
+// FROZEN wire constants: the vote type byte of af_req_vote_call and
+// af_sreq_vote_state. Never reorder or reuse values.
+enum class AfVoteType : uint8_t
+{
+    Kick = 0,
+    Level = 1,
+    Match = 2,
+    Extend = 3,
+    Restart = 4,
+    Next = 5,
+    Random = 6,
+    Previous = 7,
+    CancelMatch = 8,
+};
+constexpr uint8_t af_vote_type_count = 9;
+
+// "no gametype override" sentinel in vote-call payloads.
+constexpr uint8_t af_vote_gametype_none = 0xFF;
+
+// af_sreq_vote_state `event` byte. FROZEN wire constants.
+enum class AfVoteStateEvent : uint8_t
+{
+    Start = 0,
+    Update = 1,
+    End = 2,
+};
+
+// af_sreq_vote_state end-event `result` byte. FROZEN wire constants.
+enum class AfVoteResult : uint8_t
+{
+    Passed = 0,
+    Failed = 1,
+    Canceled = 2,
+    TimedOut = 3,
+};
+
+enum af_vote_state_flags : uint8_t
+{
+    AF_VOTE_STATE_FLAG_OWNER = 1 << 0, // the recipient started this vote
+};
+
+// Version byte of the reassembled vote-options blob (see af_build_vote_options_blob).
+constexpr uint8_t af_vote_options_blob_version = 1;
+
+enum af_vote_gametype_flags : uint8_t
+{
+    AF_VOTE_GAMETYPE_FLAG_TEAM = 1 << 0,
+};
+
+// Server-wide vote flags, the `server_flags` byte of the vote-options blob.
+enum af_vote_server_flags : uint8_t
+{
+    // vote_level.only_allow_gametype_prefix is on, so each level's
+    // valid_gametype_mask actually restricts something and the UI may say so.
+    AF_VOTE_SERVER_FLAG_GAMETYPE_PREFIX = 1 << 0,
 };
 
 struct HandicapPayload
@@ -116,8 +179,14 @@ struct PitQueueReqPayload
     uint8_t action = 0; // 0 = leave, 1 = join, 2 = toggle
 };
 
+struct VoteCastReqPayload
+{
+    uint8_t is_yes = 0; // 0 = no, 1 = yes
+};
+
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
-                                       ReadyReqPayload, PitQueueReqPayload, std::monostate>;
+                                       ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
+                                       std::monostate>;
 
 struct af_client_req_packet
 {
@@ -129,10 +198,12 @@ struct af_client_req_packet
 enum class af_server_req_type : uint8_t
 {
     af_sreq_should_gib = 0x0,
-    af_sreq_teleport_entity = 0x1,  // Alpine 1.4
-    af_sreq_spray = 0x2,            // Alpine 1.4
-    af_sreq_ready_prompt = 0x3,     // Alpine 1.4 (1 byte: state 0/1/2)
-    af_sreq_pit_queue_state = 0x4,  // Alpine 1.4 (3 bytes: flags, position, total)
+    af_sreq_teleport_entity = 0x1,     // Alpine 1.4
+    af_sreq_spray = 0x2,               // Alpine 1.4
+    af_sreq_ready_prompt = 0x3,        // Alpine 1.4 (1 byte: state 0/1/2)
+    af_sreq_pit_queue_state = 0x4,     // Alpine 1.4 (3 bytes: flags, position, total)
+    af_sreq_vote_state = 0x5,          // Alpine 1.4 (variable, see AfVoteStateEvent)
+    af_sreq_vote_options_data = 0x6,   // Alpine 1.4 (chunked vote-options blob)
 };
 
 struct ShouldGibPayload
@@ -516,6 +587,18 @@ enum class af_skill_field : uint8_t
 inline constexpr uint8_t kBotControlPacketVersion = 1;
 inline constexpr uint8_t kMaxPresetNameLen = 31;
 
+// Decoded af_req_vote_call payload. Not a wire struct — it holds owning types,
+// so it must stay outside the packed region above.
+struct AfVoteCallParams
+{
+    AfVoteType type = AfVoteType::Kick;
+    uint8_t target_player_id = 0xFF;      // Kick
+    uint8_t team_size = 0;                // Match
+    std::string level;                    // Level (required) / Match (empty = current)
+    uint8_t gametype = af_vote_gametype_none;
+    std::vector<VoteMutatorInput> mutators;
+};
+
 bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player);
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable);
 
@@ -583,6 +666,21 @@ void af_send_server_cfg_request();
 void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
 void af_send_ready_request(uint8_t action);      // 0 = unready, 1 = ready, 2 = toggle
 void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = toggle
+
+// vote system (client -> server)
+void af_send_vote_call(const AfVoteCallParams& params);
+void af_send_vote_cast(bool is_yes_vote);
+void af_send_vote_cancel();
+void af_send_vote_options_request();
+
+// vote system (server -> client)
+// `initiator_name` may be empty when the vote owner is no longer connected.
+void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time_remaining_sec,
+                              uint8_t yes, uint8_t no, uint8_t remaining, bool is_owner,
+                              std::string_view initiator_name, std::string_view title);
+void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint8_t remaining);
+void af_send_vote_state_end(rf::Player* player, AfVoteResult result);
+void af_send_vote_options_data(rf::Player* player);
 
 // server -> client state (Pit + match ready system)
 void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)
