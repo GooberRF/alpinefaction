@@ -638,9 +638,9 @@ struct AlpineServerConfigRules
     {
         pvp_damage_modifier = std::clamp(modifier, 0.0f, 100.0f);
     }
-    bool add_item_replacement(std::string_view original, std::string_view replacement)
+    bool add_item_replacement(const std::string& original, const std::string& replacement)
     {
-        int orig_idx = rf::item_lookup_type(original.data());
+        int orig_idx = rf::item_lookup_type(original.c_str());
         if (orig_idx < 0) {
             // check if original name is invalid
             // replacement name being blank is fine, removes item

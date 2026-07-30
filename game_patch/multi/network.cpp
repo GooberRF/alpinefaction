@@ -2713,33 +2713,33 @@ bool packet_check_whitelist(const int packet_type) {
 CodeInjection multi_io_process_packets_injection{
     0x0047918D,
     [] (auto& regs) {
-        const int packet_type = regs.esi;
+        const int packet_ty = regs.esi;
 
-        if (!packet_check_whitelist(packet_type)) {
-            xlog::warn("Ignoring packet 0x{:x}", packet_type);
+        if (!packet_check_whitelist(packet_ty)) {
+            xlog::warn("Ignoring packet 0x{:x}", packet_ty);
         SKIP_DEFAULT_HANDLER:
             regs.eip = 0x00479194;
             return;
         }
 
-        xlog::trace("Processing packet 0x{:x}", packet_type);
+        xlog::trace("Processing packet 0x{:x}", packet_ty);
 
-        const int off = regs.ebp;
+        const size_t off = regs.ebp;
         const size_t len = regs.edi;
         const uint8_t* const base = regs.ecx;
         const uint32_t stack_frame = static_cast<uint32_t>(regs.esp) + 0x1C;
         const rf::NetAddr& addr = *addr_as_ref<const rf::NetAddr*>(stack_frame + 0xC);
 
-        if (packet_type > 0x37
-            || packet_type == static_cast<int>(pf_packet_type::player_stats))
+        if (packet_ty > 0x37
+            || packet_ty == static_cast<int>(pf_packet_type::player_stats))
         {
             rf::Player* const player = addr_as_ref<rf::Player*>(stack_frame + 0x10);
-            process_custom_packet(base + off, len, addr, player);
+            process_custom_packet(base + off, static_cast<int>(len), addr, player);
             goto SKIP_DEFAULT_HANDLER;
         }
 
         if (rf::is_server) {
-            if (packet_type == static_cast<int>(packet_type::join_request)) {
+            if (packet_ty == static_cast<int>(packet_type::join_request)) {
                 // Bytes remaining in their datagram.
                 size_t rx_len = 0;
                 if (g_rx_base
@@ -2755,11 +2755,11 @@ CodeInjection multi_io_process_packets_injection{
                 g_join_request_stashed = StashedPacket{
                     addr,
                     base + off,
-                    static_cast<size_t>(len),
+                    len,
                     rx_len,
-                    static_cast<uint8_t>(packet_type),
+                    static_cast<uint8_t>(packet_ty),
                 };
-            } else if (packet_type == static_cast<int>(packet_type::game_info_request)) {
+            } else if (packet_ty == static_cast<int>(packet_type::game_info_request)) {
                 // Analyze their packet, so we can adjust our response, if needed.
                 uint8_t version = 0;
                 if (parse_af_gi_req_tail(base + off, len, version)) {

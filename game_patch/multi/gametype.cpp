@@ -415,7 +415,7 @@ bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid)
 
         if (rf::Event* event = rf::event_lookup_from_uid(handler_uid);
             event
-            && event->event_type == rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+            && event->event_type == std::to_underlying(rf::EventType::Capture_Point_Handler)) {
             auto* handler = static_cast<EventCapturePointHandler*>(event);
             return handler->sphere_to_cylinder;
         }
@@ -1679,7 +1679,7 @@ static void update_hill_client_predict_rev(HillInfo& h, int dt_ms)
 static void koth_client_predict_tick(int dt_ms)
 {
     // client-only; server is authoritative
-    if (!rf::is_multi || rf::is_server || rf::is_dedicated_server)
+    if (!rf::is_multi || rf::is_server)
         return;
 
     // score prediction in KOTH/DC

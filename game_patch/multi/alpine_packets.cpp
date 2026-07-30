@@ -85,15 +85,7 @@ bool af_process_packet(
     }
 
     std::memcpy(&header, data, sizeof(header));
-    auto packet_type = static_cast<af_packet_type>(header.type);
-
-    if (!packet_check_whitelist(static_cast<int>(packet_type))) {
-        xlog::warn("Ignoring packet 0x{:x}", static_cast<int>(packet_type));
-        return false;
-    }
-    else {
-        xlog::trace("Processing packet 0x{:x}", static_cast<int>(packet_type));
-    }
+    const af_packet_type packet_type = static_cast<af_packet_type>(header.type);
 
     switch (packet_type)
     {

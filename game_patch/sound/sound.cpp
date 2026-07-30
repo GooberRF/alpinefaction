@@ -154,7 +154,7 @@ ConsoleCommand2 level_sounds_cmd{
 
 ConsoleCommand2 sound_enabled_cmd{
     "dbg_togglesound",
-    [](std::optional<bool> enabled) {
+    [] {
         g_alpine_game_config.sound_enabled = !g_alpine_game_config.sound_enabled;
         set_sound_enabled(g_alpine_game_config.sound_enabled);
         rf::console::print("Game sound is now {}.", g_alpine_game_config.sound_enabled ? "enabled" : "disabled");

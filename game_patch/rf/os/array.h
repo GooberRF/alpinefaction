@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cassert>
+#include <cstddef>
 #include <cstring>
 #include <concepts>
 #include <functional>
@@ -25,7 +27,7 @@ namespace rf
             (sizeof(int) + alignof(T) - 1) & ~(alignof(T) - 1);
 
         static size_t get_storage_size(const int capacity) {
-            const int size = sizeof(T) * capacity;
+            const size_t size = sizeof(T) * capacity;
             return NEEDS_COOKIE ? size + COOKIE_OFFSET : size;
         }
 
@@ -52,6 +54,32 @@ namespace rf
             } else {
                 rf::operator_delete(ptr);
             }
+        }
+
+        void realloc(const int new_capacity) {
+            assert(new_capacity > capacity_);
+
+            T* const old_elements = elements_;
+            T* const new_elements = alloc_storage(new_capacity);
+
+            for (int i = 0; i < size_; ++i) {
+                std::construct_at(&new_elements[i], std::move(old_elements[i]));
+            }
+
+            for (int i = size_; i < new_capacity; ++i) {
+                std::construct_at(&new_elements[i]);
+            }
+
+            const int old_capacity = capacity_;
+
+            elements_ = new_elements;
+            capacity_ = new_capacity;
+
+            for (int i = 0; i < old_capacity; ++i) {
+                std::destroy_at(&old_elements[i]);
+            }
+
+            free_storage(old_elements);
         }
 
     public:
@@ -184,30 +212,6 @@ namespace rf
             return elements_ + size_;
         }
 
-        void realloc(const int new_capacity) {
-            T* const old_elements = elements_;
-            T* const new_elements = alloc_storage(new_capacity);
-
-            for (int i = 0; i < size_; ++i) {
-                std::construct_at(&new_elements[i], std::move(old_elements[i]));
-            }
-
-            for (int i = size_; i < new_capacity; ++i) {
-                std::construct_at(&new_elements[i]);
-            }
-
-            const int old_capacity = capacity_;
-
-            elements_ = new_elements;
-            capacity_ = new_capacity;
-
-            for (int i = 0; i < old_capacity; ++i) {
-                std::destroy_at(&old_elements[i]);
-            }
-
-            free_storage(old_elements);
-        }
-
         void add(T element) {
             if (size_ == capacity_) {
                 realloc(capacity_ ? capacity_ * 2 : 16);
@@ -257,7 +261,7 @@ namespace rf
             int new_size = 0;
 
             for (int i = 0; i < size_; ++i) {
-                if (!std::invoke(std::forward<Predicate>(pred), elements_[i])) {
+                if (!std::invoke(pred, elements_[i])) {
                     if (new_size != i) {
                         elements_[new_size] = std::move(elements_[i]);
                     }
@@ -282,7 +286,7 @@ namespace rf
         [[nodiscard]]
         bool contains(Predicate&& pred) const {
             for (int i = 0; i < size_; ++i) {
-                if (std::invoke(std::forward<Predicate>(pred), elements_[i])) {
+                if (std::invoke(pred, elements_[i])) {
                     return true;
                 }
             }

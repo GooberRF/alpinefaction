@@ -141,7 +141,7 @@ namespace rf
         [[nodiscard]] String substr(const int begin, const int end) const
         {
             Pod result{};
-            AddrCaller{0x004FF590}.this_call<String*>(this, &result, begin, end);
+            AddrCaller{0x004FF590}.this_call<String&>(this, &result, begin, end);
             return String{result};
         }
 
@@ -160,7 +160,7 @@ namespace rf
             const int len = std::formatted_size(fmt, std::forward<Args>(args)...);
             const int buf_size = len + 1;
             Pod result{
-                .max_len = len,
+                .max_len = buf_size,
                 .buf = string_alloc(buf_size),
             };
             std::format_to_n(result.buf, len, fmt, std::forward<Args>(args)...);
