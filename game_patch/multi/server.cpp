@@ -3434,7 +3434,8 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         if (item
             && item->respawn_time_ms > 0
             && rf::is_server
-            && g_alpine_server_config_active_rules.delayed_items.contains(name)) {
+            && g_alpine_server_config_active_rules.delayed_items.contains(name))
+        {
             rf::obj_hide(item);
             item->respawn_next.set(item->respawn_time_ms);
         }
