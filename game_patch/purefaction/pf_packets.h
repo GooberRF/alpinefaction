@@ -4,10 +4,16 @@
 
 #pragma pack(push, 1)
 
+// Commented packet types are unused by AF
 enum class pf_packet_type : uint8_t
 {
     players_request = 0x3A, // no data, without game join
+    // server_hash = 0x3B,
+    // client_hash = 0x3C,
+    // request_cheat_check = 0x3D,
+    // client_cheat_check = 0x3E,
     player_stats = 0x2A,
+    // announce_player = 0x40,
     players = 0xA1,
 };
 
