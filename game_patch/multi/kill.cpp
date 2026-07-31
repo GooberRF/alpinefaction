@@ -20,6 +20,7 @@
 #include "../sound/sound.h"
 #include "server_internal.h"
 #include "multi_private.h"
+#include "mutators.h"
 #include "alpine_packets.h"
 #include "sprays.h"
 #include "gungame.h"
@@ -256,12 +257,22 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
         multi_apply_kill_reward(killer_player);
 
+        // Arena mutator: instantly top up the killer's current weapon after a frag.
+        if (killer_player != killed_player) {
+            mutators_on_player_frag(killer_player);
+        }
+
         multi_spectate_on_player_kill(killed_player, killer_player);
 
         if (gt_is_gungame() && killer_player != killed_player) {
             gungame_on_player_kill(killer_player, killed_player);
         }
     }
+
+    // If an auto team balance is queued, swap this player over when they die on
+    // the larger team. Runs after update_player_active_status above so the dead
+    // player still counts toward their team's size.
+    auto_team_balance_on_player_death(killed_player);
 }
 
 FunHook<void(rf::Entity*)> entity_on_death_hook{

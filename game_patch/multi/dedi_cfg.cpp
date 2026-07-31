@@ -27,6 +27,7 @@
 #include "network.h"
 #include "multi.h"
 #include "gametype.h"
+#include "mutators.h"
 #include "../fflink/fflink_session.h"
 #include "../os/console.h"
 #include "../misc/player.h"
@@ -50,7 +51,6 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
-#include "../purefaction/pf.h"
 #include "bots/bot_personality.h"
 #include <common/utils/os-utils.h>
 
@@ -325,6 +325,12 @@ static KillRewardConfig parse_kill_reward_config(const toml::table& t, KillRewar
 
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules)
 {
+    // A game_type change rebuilds the loadout/defaults, so clear any mutator
+    // state too — a half-applied mutator would be broken.
+    // Mutators declared in the same scope re-apply immediately after this returns;
+    // a scope that changes game_type must re-declare its mutators.
+    rules.mutators = MutatorConfig{};
+
     // all modes get baton
     int baton_ammo = rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi;
     rules.spawn_loadout.add("Riot Stick", baton_ammo, false, true);
@@ -519,10 +525,26 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
     }
 }
 
+// Set while a scope is re-parsed to DERIVE a second rules variant (the
+// mutator-free baseline vote overrides start from). That pass walks the same TOML
+// and re-reads the same preset files, so without this every preset warning and
+// error was printed twice per scope — the repeat tagged "(no mutators)", which an
+// admin has no way to interpret. The first pass is the one that reports problems.
+static bool g_rules_parse_quiet = false;
+
+struct RulesParseQuietGuard
+{
+    bool previous;
+    RulesParseQuietGuard() : previous(g_rules_parse_quiet) { g_rules_parse_quiet = true; }
+    ~RulesParseQuietGuard() { g_rules_parse_quiet = previous; }
+    RulesParseQuietGuard(const RulesParseQuietGuard&) = delete;
+    RulesParseQuietGuard& operator=(const RulesParseQuietGuard&) = delete;
+};
+
 // parse toml rules
 // for base rules, load all speciifed. For not specified, defaults are in struct
 // for level-specific rules, start with base rules and load anything specified beyond that
-AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules)
+AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules, bool apply_mutators = true)
 {
     AlpineServerConfigRules o = base_rules;
 
@@ -538,6 +560,16 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
 
     if (game_type_changed)
         apply_defaults_for_game_type(o.game_type, o);
+
+    // Mutators are applied after the gametype defaults but before any explicitly
+    // set rule keys in this scope, so manual keys still override mutator presets.
+    // parse_server_rules runs once per scope (base, then each level), which yields
+    // the requested layering: gametype defaults -> base mutators -> manual base ->
+    // per-level mutators -> manual per-level.
+    if (apply_mutators) {
+        if (auto mut_arr = t["mutators"].as_array())
+            apply_mutators_from_toml(*mut_arr, o);
+    }
 
     if (auto v = t["time_limit"].value<float>())
         o.set_time_limit(*v);
@@ -583,6 +615,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.force_respawn = *v;
     if (auto v = t["balance_teams"].value<bool>())
         o.balance_teams = *v;
+    if (auto v = t["auto_team_balance"].value<bool>())
+        o.auto_team_balance = *v;
     if (auto v = t["ideal_player_count"].value<int>())
         o.set_ideal_player_count(*v);
     if (auto v = t["saving_enabled"].value<bool>())
@@ -667,7 +701,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
             if (auto tbl = node.as_table()) {
                 auto from = (*tbl)["original"].value_or<std::string>("");
                 auto to = (*tbl)["replacement"].value_or<std::string>("");
-                if (!o.add_item_replacement(from, to))
+                if (!o.add_item_replacement(from, to) && !g_rules_parse_quiet)
                     xlog::warn("Invalid replacement {} -> {}", from, to);
             }
         }
@@ -678,7 +712,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
             if (auto tbl = node.as_table()) {
                 auto name = (*tbl)["item_name"].value_or<std::string>("");
                 auto ms = (*tbl)["respawn_ms"].value_or<int>(0);
-                if (!o.set_item_respawn_time(name, ms))
+                if (!o.set_item_respawn_time(name, ms) && !g_rules_parse_quiet)
                     xlog::warn("Invalid respawn override for '{}'", name);
             }
         }
@@ -689,7 +723,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
             if (auto tbl = node.as_table()) {
                 if (auto nameOpt = (*tbl)["item_name"].value<std::string>()) {
                     bool added = o.delayed_items.add(*nameOpt);
-                    if (!added && !o.delayed_items.contains(*nameOpt))
+                    if (!added && !o.delayed_items.contains(*nameOpt) && !g_rules_parse_quiet)
                         xlog::warn("Invalid delayed item '{}'", *nameOpt);
                 }
             }
@@ -920,7 +954,8 @@ namespace fs = std::filesystem;
 static AlpineServerConfigRules apply_rules_presets_and_overrides(
     const toml::table& scope_tbl, const fs::path& base_dir, const AlpineServerConfigRules& starting_rules,
     std::string_view context, const std::map<std::string, std::filesystem::path>* preset_aliases = nullptr,
-    std::vector<fs::path>* preset_stack = nullptr, std::vector<std::pair<std::filesystem::path, std::optional<std::string>>>* applied_presets = nullptr)
+    std::vector<fs::path>* preset_stack = nullptr, std::vector<std::pair<std::filesystem::path, std::optional<std::string>>>* applied_presets = nullptr,
+    bool apply_mutators = true)
 {
     std::vector<fs::path> local_stack;
     const bool is_root_call = !preset_stack;
@@ -951,11 +986,14 @@ static AlpineServerConfigRules apply_rules_presets_and_overrides(
             resolved_path = fs::weakly_canonical(resolved_path);
         }
         catch (const fs::filesystem_error& err) {
-            rf::console::print("  [WARN] failed to canonicalize rules preset '{}' in {}: {}\n", resolved_path.generic_string(), context, err.what()); resolved_path = fs::absolute(resolved_path);
+            if (!g_rules_parse_quiet)
+                rf::console::print("  [WARN] failed to canonicalize rules preset '{}' in {}: {}\n", resolved_path.generic_string(), context, err.what());
+            resolved_path = fs::absolute(resolved_path);
         }
 
         if (std::find(preset_stack->begin(), preset_stack->end(), resolved_path) != preset_stack->end()) {
-            rf::console::print("  [ERROR] rules preset cycle detected at '{}' in {}\n", resolved_path.generic_string(), context);
+            if (!g_rules_parse_quiet)
+                rf::console::print("  [ERROR] rules preset cycle detected at '{}' in {}\n", resolved_path.generic_string(), context);
             return;
         }
 
@@ -970,7 +1008,7 @@ static AlpineServerConfigRules apply_rules_presets_and_overrides(
                 preset_rules = &preset_root;
 
             std::string next_context = std::format("rules preset '{}'", resolved_path.generic_string());
-            rules = apply_rules_presets_and_overrides(*preset_rules, resolved_path.parent_path(), rules, next_context, preset_aliases, preset_stack, applied_presets);
+            rules = apply_rules_presets_and_overrides(*preset_rules, resolved_path.parent_path(), rules, next_context, preset_aliases, preset_stack, applied_presets, apply_mutators);
             if (applied_presets) {
                 if (used_alias)
                     applied_presets->emplace_back(resolved_path, preset_path);
@@ -979,7 +1017,8 @@ static AlpineServerConfigRules apply_rules_presets_and_overrides(
             }
         }
         catch (const toml::parse_error& err) {
-            rf::console::print("  [ERROR] failed to parse rules preset '{}' in {}: {}\n", resolved_path.generic_string(), context, err.description());
+            if (!g_rules_parse_quiet)
+                rf::console::print("  [ERROR] failed to parse rules preset '{}' in {}: {}\n", resolved_path.generic_string(), context, err.description());
         }
         preset_stack->pop_back();
     };
@@ -989,23 +1028,23 @@ static AlpineServerConfigRules apply_rules_presets_and_overrides(
             for (auto& node : *arr) {
                 if (auto preset = node.value<std::string>())
                     apply_preset(*preset);
-                else
+                else if (!g_rules_parse_quiet)
                     rf::console::print("  [WARN] rules_presets entries in {} must be strings.\n", context);
             }
         }
         else if (auto preset = presets.value<std::string>()) {
             apply_preset(*preset);
         }
-        else {
+        else if (!g_rules_parse_quiet) {
             rf::console::print("  [WARN] 'rules_presets' in {} must be a string or array of strings.\n", context);
         }
     }
 
     // Allow presets to specify rule keys directly at the current scope.
-    rules = parse_server_rules(scope_tbl, rules);
+    rules = parse_server_rules(scope_tbl, rules, apply_mutators);
 
     if (auto rules_tbl = scope_tbl["rules"].as_table())
-        rules = parse_server_rules(*rules_tbl, rules);
+        rules = parse_server_rules(*rules_tbl, rules, apply_mutators);
 
     return rules;
 }
@@ -1089,6 +1128,14 @@ static void add_level_entry_from_table(
     std::string context = "level '" + (tmp_filename.empty() ? std::string("<unknown>") : tmp_filename) + "'";
     entry.rule_overrides = apply_rules_presets_and_overrides(
         lvl_tbl, base_dir, cfg.base_rules, context, &cfg.rules_preset_aliases, nullptr, &entry.applied_rules_preset_paths);
+    // Mutator-free variant, used as the starting point for level/match votes
+    // that carry mutators.
+    {
+        const RulesParseQuietGuard quiet;
+        entry.rule_overrides_no_mutators = apply_rules_presets_and_overrides(
+            lvl_tbl, base_dir, cfg.base_rules_no_mutators, context,
+            &cfg.rules_preset_aliases, nullptr, nullptr, /*apply_mutators*/ false);
+    }
 
     cfg.levels.push_back(std::move(entry));
 }
@@ -1347,8 +1394,6 @@ static void apply_known_table_in_order(
             cfg.vote_level.allowed_maps = parse_allowed_maps(tbl);
         }
     }
-    else if (key == "vote_gametype")
-        cfg.vote_gametype = parse_vote_config(tbl);
     else if (key == "vote_extend")
         cfg.vote_extend = parse_vote_config(tbl);
     else if (key == "vote_restart")
@@ -1364,6 +1409,15 @@ static void apply_known_table_in_order(
     else if (key == "base") {
         cfg.base_rules = apply_rules_presets_and_overrides(
             tbl, base_dir, cfg.base_rules, "base configuration", &cfg.rules_preset_aliases, nullptr, &cfg.base_rules_preset_paths);
+        // Also compute the base rules with all mutators stripped, so a mutator applied
+        // later via a level/match vote fully replaces (rather than stacks on top of)
+        // whatever mutator the base rules declared.
+        {
+            const RulesParseQuietGuard quiet;
+            cfg.base_rules_no_mutators = apply_rules_presets_and_overrides(
+                tbl, base_dir, cfg.base_rules_no_mutators, "base configuration",
+                &cfg.rules_preset_aliases, nullptr, nullptr, /*apply_mutators*/ false);
+        }
     }
     else if (key == "levels") {
         if (auto arr = tbl.as_array()) {
@@ -1640,6 +1694,26 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     if (base || rules.game_type != b.game_type)
         std::format_to(iter, "  Game type:                             {}\n", multi_game_type_name_short(rules.game_type));
 
+    // mutators
+    const bool mutators_changed =
+        rules.mutators.active_labels != b.mutators.active_labels ||
+        rules.mutators.vampire_enabled != b.mutators.vampire_enabled ||
+        rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups;
+
+    if (base || mutators_changed) {
+        std::string joined;
+        for (size_t i = 0; i < rules.mutators.active_labels.size(); ++i) {
+            if (i)
+                joined += ", ";
+            joined += rules.mutators.active_labels[i];
+        }
+        std::format_to(iter, "  Mutators:                              {}\n", joined.empty() ? "<none>" : joined);
+        if (rules.mutators.vampire_enabled) {
+            std::format_to(iter, "    Hide health/armor pickups:           {}\n",
+                           rules.mutators.hide_health_armor_pickups);
+        }
+    }
+
     // time limit
     if (base || rules.time_limit != b.time_limit)
         std::format_to(iter, "  Time limit:                            {} min\n", rules.time_limit / 60.0f);
@@ -1712,6 +1786,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Force respawn:                         {}\n", rules.force_respawn);
     if (base || rules.balance_teams != b.balance_teams)
         std::format_to(iter, "  Balance teams:                         {}\n", rules.balance_teams);
+    if (base || rules.auto_team_balance != b.auto_team_balance)
+        std::format_to(iter, "  Auto team balance:                     {}\n", rules.auto_team_balance);
     if (base || rules.ideal_player_count != b.ideal_player_count)
         std::format_to(iter, "  Ideal player count:                    {}\n", rules.ideal_player_count);
     if (base || rules.saving_enabled != b.saving_enabled)
@@ -2204,7 +2280,6 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     };
 
     print_vote("Vote kick:    ", cfg.vote_kick);
-    print_vote("Vote gametype:", cfg.vote_gametype);
     print_vote("Vote extend:  ", cfg.vote_extend);
     print_vote("Vote restart: ", cfg.vote_restart);
     print_vote("Vote next:    ", cfg.vote_next);
@@ -2298,6 +2373,11 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
     if (r.weapons_stay)  netgame.flags |= rf::NG_FLAG_WEAPON_STAY;
     if (r.force_respawn) netgame.flags |= rf::NG_FLAG_FORCE_RESPAWN;
     if (r.balance_teams) netgame.flags |= rf::NG_FLAG_BALANCE_TEAMS;
+
+    // Mutator weapon-table override:
+    // Instagib makes the featured weapon behave as a no-clip weapon. Restores originals when
+    // not active. Clients mirror this via the af_server_info SIF_FEATURED_NO_CLIP flag.
+    mutators_set_no_clip_weapon(r.mutators.no_featured_reload ? r.mutators.featured_weapon_index : -1);
 }
 
 // keep the netgame levels array synced with level+rules array
@@ -2320,6 +2400,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
         load_ads_server_config(ads_config_name, false);
         g_alpine_server_config.printed_cfg.clear();
         cfg.signal_cfg_changed = true;
+        server_vote_invalidate_options_blob();
     }
 
     initialize_core_alpine_dedicated_server_settings(netgame, cfg, on_launch);
@@ -2446,22 +2527,38 @@ void apply_rules_for_current_level()
         }
     }
     else { // level is in rotation
+        // The rotation can shrink under a running level (sv_loadconfig), so the
+        // index must be validated for the log line too, not just the lookup.
+        const bool idx_valid = (idx >= 0 && idx < static_cast<int>(cfg.levels.size()));
+
         AlpineServerConfigRules const &override_rules =
-            (idx >= 0 && idx < (int)cfg.levels.size())
-              ? cfg.levels[idx].rule_overrides
-              : cfg.base_rules;
+            idx_valid ? cfg.levels[idx].rule_overrides : cfg.base_rules;
 
         g_alpine_server_config_active_rules = override_rules;
 
-        if (!g_ads_minimal_server_info)
-            rf::console::print("Applying level-specific rules for server rotation index {} ({})...\n", idx, cfg.levels[idx].level_filename);
+        if (!g_ads_minimal_server_info) {
+            std::string_view level_name =
+                idx_valid ? std::string_view(cfg.levels[idx].level_filename) : std::string_view("UNKNOWN");
+            rf::console::print("Applying level-specific rules for server rotation index {} ({})...\n", idx, level_name);
+        }
     }
 
     // respect game type specific base rules (eg. koth spawn loadout) for voted or manually loaded maps
     const rf::NetGameType active_game_type = rf::netgame.type;
     if (g_alpine_server_config_active_rules.game_type != active_game_type) {
+        // apply_defaults_for_game_type() rebuilds the loadout and clears MutatorConfig,
+        // so capture this scope's mutator declarations first and re-apply them on top
+        // of the new game-type defaults.
+        const std::vector<MutatorDeclaration> saved_mutators =
+            g_alpine_server_config_active_rules.mutators.declarations;
+
         g_alpine_server_config_active_rules.game_type = active_game_type;
         apply_defaults_for_game_type(active_game_type, g_alpine_server_config_active_rules);
+
+        if (!saved_mutators.empty()) {
+            const toml::array mut_arr = mutator_declarations_to_toml_array(saved_mutators);
+            apply_mutators_from_toml(mut_arr, g_alpine_server_config_active_rules);
+        }
     }
 
     // apply the rules

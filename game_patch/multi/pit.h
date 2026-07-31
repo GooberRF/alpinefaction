@@ -20,7 +20,7 @@ void pit_level_init();
 void pit_level_init_post();
 void pit_do_frame();
 void pit_on_entity_will_die(rf::Entity* ep);
-bool pit_can_player_spawn(rf::Player* player);
+bool pit_can_player_spawn(rf::Player* player, bool notify = true);
 void pit_on_player_disconnect(rf::Player* player);
 void pit_handle_queue_request(rf::Player* player, uint8_t action);
 void pit_reset_world_items();

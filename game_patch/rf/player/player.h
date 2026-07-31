@@ -92,6 +92,18 @@ struct PlayerAdditionalData {
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 
+    // Floor rate limit for af_req_vote_options: the blob is streamed over the
+    // deferred reliable queue, so a client must not be able to spam it.
+    rf::TimestampRealtime vote_options_req_timer{};
+
+    // Generation of the vote-options blob last streamed to this player, so an
+    // identical one is never sent twice.
+    // 0 = nothing sent yet; generations start at 1.
+    uint32_t vote_options_sent_generation = 0;
+
+    // Rate limit for vote rejection replies.
+    rf::TimestampRealtime vote_reject_msg_timer{};
+
     // Server side rail gun reload cooldown, used for force_rail_reload
     // needed because entity_is_reloading is unreliable on server
     rf::Timestamp rail_gun_reload_timer{};
@@ -109,10 +121,13 @@ struct PlayerAdditionalData {
     // subsequent-spawn (cluster near teammates) logic. Both reset each round.
     int wipeout_round_deaths = 0;
     bool wipeout_spawned_this_round = false;
-    // Throttles the "you're waiting" spawn-denied chat line so repeated spawn
-    // requests (e.g. holding fire while waiting) don't spam it. Shared by
-    // Wipeout and Pit.
+    // Throttles the Wipeout / Pit "you can't spawn yet" lines, which have their own
+    // ~3s cadence. Deliberately NOT shared with send_spawn_decline_msg, which uses
+    // a different timer (5s).
     rf::Timestamp waiting_msg_timer{};
+    // Throttles the spawn-decline notices in multi_spawn_player_server_side
+    // (Alpine restriction, anti-cheat, match in progress, bot, respawn delay).
+    rf::Timestamp spawn_decline_msg_timer{};
 };
 static_assert(alignof(PlayerAdditionalData) == 0x8);
 #endif

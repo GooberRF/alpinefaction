@@ -5,6 +5,7 @@
 #include <set>
 #include <map>
 #include <optional>
+#include <variant>
 #include <vector>
 #include <filesystem>
 #include <unordered_map>
@@ -22,6 +23,8 @@ namespace rf
 {
     struct Player;
 }
+
+struct AfVoteCallParams; // alpine_packets.h
 
 // used for game_info packets
 struct AFGameInfoFlags
@@ -75,7 +78,7 @@ struct InactivityConfig
     bool enabled = true;
     bool kick_after_warning = false;
     uint32_t new_player_grace_ms = 120000;
-    uint32_t allowed_inactive_ms = 30000;
+    uint32_t allowed_inactive_ms = 60000;
     uint32_t warning_duration_ms = 10000;
     std::string kick_message = "You have been marked as idle due to inactivity! You will be kicked from the game unless you respawn in the next 10 seconds.";
 
@@ -108,7 +111,7 @@ struct VoteConfig
     
     void set_time_limit_seconds(float in_time)
     {
-        time_limit_seconds = static_cast<int>(std::max(in_time, 1.0f));
+        time_limit_seconds = static_cast<int>(std::clamp(in_time, 1.0f, 65535.0f));
     }
 };
 
@@ -528,6 +531,93 @@ struct GibConfig
     }
 };
 
+// Controls which level pickups survive under a mutator. Enforced server-side in
+// mutators_level_init_post() via multi_hide_level_items().
+enum class PickupPolicy : uint8_t
+{
+    Normal = 0,           // no suppression (default)
+    WeaponsAndAmmoOnly,   // keep weapon + ammo pickups, hide everything else
+    WeaponsOnly,          // keep weapon pickups, hide everything else
+    HideAll               // hide every pickup
+};
+
+// Type tag for a mutator option value.
+// FROZEN wire constants: these values are sent in the vote-options schema and
+// echoed back in vote-call packets. Never reorder or reuse.
+enum class MutatorOptionType : uint8_t
+{
+    Bool = 0,
+    Choice = 1,
+    Int = 2,
+    Float = 3,
+    String = 4,
+};
+
+using MutatorOptionValue = std::variant<bool, int32_t, float, std::string>;
+
+// One declared mutator plus its option values, keyed by TOML key. Kept generic
+// so new mutator options need no struct changes here or in the TOML round-trip.
+struct MutatorDeclaration
+{
+    std::string name; // canonical mutator name (matches mutators_find_by_name)
+    std::map<std::string, MutatorOptionValue> options;
+};
+
+// A single mutator option as received from a vote-call packet, before it is
+// validated against the server's schema.
+struct VoteMutatorOptionInput
+{
+    uint8_t option_id = 0;
+    MutatorOptionType type = MutatorOptionType::Bool;
+    bool bool_value = false;
+    uint8_t choice_index = 0;
+    int32_t int_value = 0;
+    float float_value = 0.0f;
+    std::string string_value;
+};
+
+struct VoteMutatorInput
+{
+    uint8_t mutator_id = 0;
+    std::vector<VoteMutatorOptionInput> options;
+};
+
+struct MutatorConfig
+{
+    PickupPolicy pickup_policy = PickupPolicy::Normal;
+
+    // The weapon a mode is built around.
+    int featured_weapon_index = -1;
+
+    // Instagib: deny switching away from the featured weapon (server-side gate).
+    bool lock_to_featured_weapon = false;
+
+    // Instagib: refill the featured weapon's clip after every shot so it never
+    // reloads. Featured weapon must use a clip.
+    bool no_featured_reload = false;
+
+    // Rails: redirect level weapon/ammo pickups to the featured weapon's pickup.
+    bool redirect_pickups_to_featured = false;
+    bool redirect_exclude_thrown = false; // leave Remote Charges / Grenade alone
+    int featured_weapon_item_index = -1;  // resolved item type that gives the featured weapon
+    int featured_ammo_item_index = -1;    // resolved item type that gives featured ammo
+
+    // Arena: instantly refill the killer's current weapon clip after each frag.
+    bool reload_weapon_on_kill = false;
+
+    // Vampire: gain effective health when dealing PvP damage.
+    bool vampire_enabled = false;
+    bool hide_health_armor_pickups = false;
+
+    // Display only: human-readable names of the mutators applied to these rules.
+    std::vector<std::string> active_labels;
+
+    // Raw declarations (name + options) that produced this config, in apply
+    // order. Used to re-apply the scope's mutators after a runtime game_type
+    // change rebuilds the loadout and clears the rest of this struct.
+    std::vector<MutatorDeclaration> declarations;
+};
+
 struct AlpineServerConfigRules
 {
     // stock game rules
@@ -549,6 +639,7 @@ struct AlpineServerConfigRules
     bool weapons_stay = false;
     bool force_respawn = false;
     bool balance_teams = false;
+    bool auto_team_balance = false;
     int ideal_player_count = 32;
     bool saving_enabled = false;
     bool flag_dropping = true;
@@ -584,6 +675,7 @@ struct AlpineServerConfigRules
     std::string gungame_final_weapon = "Riot Stick";
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
+    MutatorConfig mutators;
 
     // =============================================
     void set_time_limit(float count)
@@ -664,6 +756,11 @@ struct AlpineServerConfigLevelEntry
 {
     std::string level_filename;
     AlpineServerConfigRules rule_overrides;
+    // The same rules re-resolved with every config-declared mutator stripped.
+    // Starting point for a level/match vote that carries mutators, so the voted
+    // mutators replace (rather than stack on) whatever the config declared while
+    // the rest of this level's rules — notably its game type — are preserved.
+    AlpineServerConfigRules rule_overrides_no_mutators;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_rules_preset_paths;
 };
 
@@ -733,7 +830,6 @@ struct AlpineServerConfig
     VoteConfig vote_match;
     VoteConfig vote_kick;
     VoteConfig vote_level;
-    VoteConfig vote_gametype;
     VoteConfig vote_extend;
     VoteConfig vote_restart;
     VoteConfig vote_next;
@@ -741,6 +837,10 @@ struct AlpineServerConfig
     VoteConfig vote_previous;
 
     AlpineServerConfigRules base_rules;
+    // Base rules re-parsed with all mutators stripped. Used as the starting point
+    // for a mutator applied via a level/match vote, so the voted mutator replaces
+    // (rather than stacks on) any mutator the base rules declared.
+    AlpineServerConfigRules base_rules_no_mutators;
     std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> base_rules_preset_paths;
     std::map<std::string, std::filesystem::path> rules_preset_aliases;
     std::vector<AlpineServerConfigLevelEntry> levels;
@@ -839,7 +939,24 @@ bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection select
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
 int get_active_rules_generation();
 void cleanup_win32_server_console();
-void handle_vote_command(std::string_view vote_name, std::string_view vote_arg, rf::Player* sender);
+// Legacy chat vote CASTING, kept for clients older than 1.4 (which have no
+// af_req_vote_cast). Only yes/no (and the y/n aliases) are handled; returns false
+// for anything else so the chat dispatcher reports it as an unrecognized command.
+bool handle_vote_command(std::string_view vote_name, rf::Player* sender);
+// Packet-driven vote entry points (see alpine_packets.h for the wire formats).
+void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params);
+void handle_vote_cast_packet(rf::Player* sender, bool is_yes_vote);
+void handle_vote_cancel_packet(rf::Player* sender);
+// af_req_vote_options: streams the blob unless this player already has the
+// current generation. `known_generation` is only meaningful with has_cache.
+void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint32_t known_generation);
+// Serialized vote-options blob (server side). `generation` is bumped whenever the
+// blob is rebuilt, so a client can tell a refresh from a redundant re-send and
+// discard a stream that was superseded mid-flight.
+const std::vector<uint8_t>& server_vote_get_options_blob(uint32_t& generation);
+void server_vote_invalidate_options_blob();
+// Push the current vote state to a player who joined while a vote is running.
+void server_vote_send_state_to_new_player(rf::Player* player);
 void handle_player_set_handicap(rf::Player* player, uint8_t amount);
 std::vector<rf::Player*> get_clients(bool include_browsers, bool include_bots);
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input);
@@ -848,6 +965,9 @@ void set_manual_rules_override(ManualRulesOverride override_rules);
 void clear_manual_rules_override();
 bool is_player_in_match(rf::Player* player);
 bool is_player_ready(rf::Player* player);
+// True when the game itself is currently refusing to spawn this player (respawn
+// delay, gametype spawn gate, match in progress they are not part of).
+bool player_spawn_blocked_by_game(const rf::Player* player);
 void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();

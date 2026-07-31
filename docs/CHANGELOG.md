@@ -18,6 +18,16 @@ Version 1.4.0 (Lupin): Not yet released
 - Add sprays with bindable `Spray` control
   - `cl_sprays` console command to toggle local display and dedicated server `[sprays]` config section
   - `spray` console command to select spray, and in-game spray picker in advanced options
+- Add server-configured mutators:
+  - Instagib
+  - Rails
+  - Arena
+  - Vampire
+- Rework multiplayer voting to use a GUI-based system instead of chat commands
+  - Servers describe their votable levels, game types, and mutator options to clients
+  - `vote level` and `vote match` can now select a game type and any number of mutators (with their options) for the voted level
+  - Add a vote panel for calling any vote the server allows, opened during gameplay with the bindable `Call Vote Menu` control (`F4` by default)
+  - Vote HUD notification now shows live tally, time remaining, and whether you have already voted
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -57,6 +67,14 @@ Version 1.4.0 (Lupin): Not yet released
 - Deprecated and removed legacy GunGame dedicated server config items now that `GG` is an actual gametype.
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
 - Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
+- Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
+- Rate limit spawn-denied notifications (Alpine restriction, anti-cheat, match in progress, respawn delay) to one message per 5 seconds per player so repeated spawn attempts no longer flood chat
+- Truncate over-long names from dedicated server config files when they are quoted in console warnings
+- Remove `vote gametype`, game type selection is now part of `vote level`
+- No longer allow a player to call a vote to kick themselves
+- Change default inactive time before a player is set as idle to 60 seconds (from 30 seconds)
+- Stop labeling players as inactive if they are unable to spawn due to a server or gameplay rule
+- `vote extend` can now select how long to extend the round by, from 1 to 60 minutes (defaults to 5)
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW
@@ -95,6 +113,10 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix camera angle snapping when switching between free look and third person camera modes
 - Fix a server crash that could be triggered by a zero-length UDP packet in the packet receive pump
 - Fix overlapping decals rendering with the oldest on top instead of the newest
+- Fix crash on MinGW builds when launching a dedicated server
+- Fix server version checks comparing each version field independently, which would have rejected a future major version
+- Fix out of bounds read when applying level rules if the rotation shrank while a level was running
+- Fix the remote server config display sometimes being treated as complete before all of its content had arrived
 
 [@is-this-c](https://github.com/is-this-c)
 - Clear cached server config output after a shuffle of a server's rotation

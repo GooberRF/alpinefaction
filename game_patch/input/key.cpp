@@ -23,6 +23,8 @@
 #include "../multi/alpine_packets.h"
 #include "../multi/pit.h"
 #include "../multi/sprays.h"
+#include "../multi/vote_client.h"
+#include "../misc/vote_panel.h"
 #include "../os/console.h"
 #include "input.h"
 
@@ -284,6 +286,8 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW);
         alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
+        alpine_control_config_add_item(ccp, "Call Vote Menu", false, rf::KEY_F4, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
     },
 };
 
@@ -331,6 +335,20 @@ static void execute_alive_alpine_control(int action_index)
     }
 }
 
+// AF 1.4+ servers take votes as packets and keep the HUD notification alive
+// until they send the end event; older servers only understand the chat command.
+static void cast_local_vote(bool is_yes_vote)
+{
+    if (is_server_minimum_af_version(1, 4)) {
+        af_send_vote_cast(is_yes_vote);
+        vote_state_mark_local_voted();
+        return;
+    }
+
+    send_chat_line_packet(is_yes_vote ? "/vote yes" : "/vote no", nullptr);
+    remove_hud_vote_notification(); // optimistic; legacy servers send no tally
+}
+
 CodeInjection player_execute_action_patch{
     0x004A6283,
     [](auto& regs) {
@@ -370,18 +388,21 @@ CodeInjection player_execute_action_patch2{
         // only intercept alpine controls
         if (action_index >= starting_alpine_control_index) {
             const int alpine_action_index = action_index - starting_alpine_control_index;
+            // Limbo is handled by the endgame (map rating) path in the other
+            // patch; without the state check both run and F1 in limbo would also
+            // send a real vote packet.
             if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES)
                 && rf::is_multi
-                && !rf::is_server) {
-                send_chat_line_packet("/vote yes", nullptr);
-                remove_hud_vote_notification();
+                && !rf::is_server
+                && rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
+                cast_local_vote(true);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO)
                 && rf::is_multi
-                && !rf::is_server) {
-                send_chat_line_packet("/vote no", nullptr);
-                remove_hud_vote_notification();
+                && !rf::is_server
+                && rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
+                cast_local_vote(false);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_READY)
                 && rf::is_multi) {
@@ -445,7 +466,16 @@ CodeInjection player_execute_action_patch3{
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
                 && is_server_minimum_af_version(1, 2)) {
+                if (vote_panel_is_gameplay_overlay_active()) {
+                    vote_panel_close();
+                }
                 g_remote_server_cfg_popup.toggle();
+            } else if (alpine_action_index
+                == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU)
+                && rf::is_multi
+                && !rf::is_server
+                && rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
+                vote_panel_toggle_gameplay();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
                 && !rf::is_dedicated_server

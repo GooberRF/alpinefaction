@@ -47,6 +47,7 @@ void g_solid_do_patch();
 void destruction_do_patch();
 void camera_do_patch();
 void ui_apply_patch();
+void vote_panel_apply_patch();
 void game_apply_patch();
 void character_apply_patch();
 void level_apply_patch();
@@ -731,6 +732,7 @@ void misc_init()
     register_sound_commands();
     camera_do_patch();
     ui_apply_patch();
+    vote_panel_apply_patch();
     game_apply_patch();
     character_apply_patch();
     level_apply_patch();

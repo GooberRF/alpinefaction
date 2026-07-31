@@ -1,4 +1,5 @@
 #include "multi_spectate.h"
+#include "../misc/vote_panel.h"
 #include "hud.h"
 #include "hud_internal.h"
 #include "multi_scoreboard.h"
@@ -1973,7 +1974,7 @@ void multi_spectate_render() {
     spectate_render_bind_dialog();
 
     if (multi_spectate_is_static()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             int medium_font = hud_get_default_font();
             int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
@@ -2040,7 +2041,7 @@ void multi_spectate_render() {
     }
 
     if (multi_spectate_is_freelook()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             int medium_font = hud_get_default_font();
             int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
@@ -2107,7 +2108,7 @@ void multi_spectate_render() {
 
     if (!g_spectate_mode_enabled) {
         if (rf::player_is_dead(rf::local_player)
-            && !g_remote_server_cfg_popup.is_active()) {
+            && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             const std::string spectate_bind_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
             );
@@ -2198,7 +2199,7 @@ void multi_spectate_render() {
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
             view_subtitle, medium_font);
 
-        if (!g_remote_server_cfg_popup.is_active()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
             int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
             std::string attach_text = get_action_bind_name(
@@ -2310,7 +2311,7 @@ void multi_spectate_render() {
     render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
 
     // Draw next/prev player hints flanking the nameplate bar
-    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active()) {
+    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
         std::string prev_player_text =
             get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
         std::string next_player_text =

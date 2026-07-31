@@ -321,7 +321,7 @@ namespace rf
     static auto& multi_powerup_add = addr_as_ref<void(Player* pp, int powerup_type, int time_ms)>(0x00480050);
     static auto& multi_powerup_remove = addr_as_ref<void(Player* pp, int powerup_type)>(0x004801F0);
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
-    static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int clip_ammo, int ammo)>(0x00485B50);
+    static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int ammo, int clip_ammo)>(0x00485B50);
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
     static auto& send_item_create_packet = addr_as_ref<void(Item* item, int16_t* recipient_index, int16_t level_item_index)>(0x00479A20);
     static auto& send_item_apply_packet = addr_as_ref<void(Player* to, int item_handle, int entity_handle, int weapon, int ammo, int clip_ammo)>(0x00479810);

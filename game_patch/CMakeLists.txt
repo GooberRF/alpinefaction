@@ -1,16 +1,5 @@
 file(GLOB EXPERIMENTAL_SRCS experimental/*.cpp experimental/*.h)
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/purefaction/pf_secret.cpp")
-    set(PF_AC_SRCS
-        purefaction/pf_secret_packets.h
-        purefaction/pf_secret.cpp
-    )
-else()
-    set(PF_AC_SRCS
-        purefaction/pf_ac_stubs.cpp
-    )
-endif()
-
 set(SRCS
     main/main.cpp
     main/main.h
@@ -108,6 +97,8 @@ set(SRCS
     input/mouse.h
     input/mouse.cpp
     input/key.cpp
+    input/control_input_filter.h
+    input/control_input_filter.cpp
     hud/hud_colors.cpp
     hud/hud_scale.cpp
     hud/hud_personas.cpp
@@ -156,6 +147,8 @@ set(SRCS
     multi/gungame.cpp
     multi/sprays.h
     multi/sprays.cpp
+    multi/mutators.h
+    multi/mutators.cpp
     multi/kill.cpp
     multi/network.cpp
     multi/network.h
@@ -166,6 +159,8 @@ set(SRCS
     multi/server.h
     multi/server.cpp
     multi/votes.cpp
+    multi/vote_client.h
+    multi/vote_client.cpp
     multi/commands.cpp
     multi/multi_tdm.cpp
     multi/endgame_votes.cpp
@@ -286,6 +281,8 @@ set(SRCS
     misc/ui.cpp
     misc/spray_picker.cpp
     misc/spray_picker.h
+    misc/vote_panel.cpp
+    misc/vote_panel.h
     misc/game.cpp
     misc/level.cpp
     misc/waypoints.cpp
@@ -305,9 +302,7 @@ set(SRCS
     res/resources.rc
     purefaction/pf.cpp
     purefaction/pf.h
-    purefaction/pf_ac.h
     purefaction/pf_packets.h
-    ${PF_AC_SRCS}
     ${EXPERIMENTAL_SRCS}
 )
 

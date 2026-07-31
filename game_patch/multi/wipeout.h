@@ -9,7 +9,9 @@ namespace rf
 void wipeout_level_init();
 void wipeout_level_init_post();
 void wipeout_do_frame();
-bool wipeout_can_player_spawn(rf::Player* player);
+// `notify` = false queries the gate without sending the player the throttled
+// "wait for the next round" notice.
+bool wipeout_can_player_spawn(rf::Player* player, bool notify = true);
 bool wipeout_is_subsequent_spawn(rf::Player* player);
 int wipeout_get_red_team_score();
 int wipeout_get_blue_team_score();

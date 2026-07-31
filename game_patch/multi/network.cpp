@@ -27,10 +27,12 @@
 #include <patch_common/ShortTypes.h>
 #include "network.h"
 #include "multi.h"
+#include "mutators.h"
 #include "alpine_packets.h"
 #include "server.h"
 #include "server_internal.h"
 #include "sprays.h"
+#include "vote_client.h"
 #include "bots/bot_chat_manager.h"
 #include "../main/main.h"
 #include "../os/os.h"
@@ -787,10 +789,14 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
 };
 
 void handle_vote_or_ready_up_msg(const std::string_view msg) {
+    // AF 1.4+ servers drive the vote HUD through af_sreq_vote_state and never
+    // send us this text, so the sniffing below only serves older servers.
+    const bool server_uses_vote_packets = is_server_minimum_af_version(1, 4);
+
     constexpr std::string_view vote_start_prefix =
         "\n=============== VOTE STARTING ===============\n";
 
-    if (string_istarts_with(msg, vote_start_prefix)) {
+    if (!server_uses_vote_packets && string_istarts_with(msg, vote_start_prefix)) {
         // Move past the prefix to start parsing the actual vote title
         const std::string_view title = msg.substr(vote_start_prefix.size());
         // Find the position of " vote started by"
@@ -806,7 +812,9 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     // remove ready up prompt if match is cancelled prematurely
     constexpr std::string_view match_canceled_msg = "\xA6 Vote passed: The match has been canceled";
     if (string_istarts_with(msg, match_canceled_msg) || string_istarts_with(msg, match_canceled_msg.substr(2))) {
-        remove_hud_vote_notification();
+        if (!server_uses_vote_packets) {
+            remove_hud_vote_notification();
+        }
         set_local_pre_match_active(false);
         return;
     }
@@ -820,14 +828,16 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     };
 
     // remove the vote notification if the vote has ended
-    for (const std::string_view& end_msg : vote_end_messages) {
-        if (string_istarts_with(msg, end_msg)
-            || string_istarts_with(msg, end_msg.substr(2))) {
-            remove_hud_vote_notification();
-            return;
+    if (!server_uses_vote_packets) {
+        for (const std::string_view& end_msg : vote_end_messages) {
+            if (string_istarts_with(msg, end_msg)
+                || string_istarts_with(msg, end_msg.substr(2))) {
+                remove_hud_vote_notification();
+                return;
+            }
         }
     }
-    
+
     // TODO: remove after AF 1.4 ships — the two ready-up blocks below drive the
     // ready prompt from server chat text for AF 1.3 clients on 1.4 servers.
 
@@ -932,7 +942,12 @@ FunHook<MultiIoPacketHandler> process_team_change_packet_hook{
                 af_send_automated_chat_msg(msg, player);
                 return;
             }
-        }        
+            if (auto_team_balance_blocks_team_change(player, data[1])) {
+                af_send_automated_chat_msg(
+                    "You can't change teams right now because it would unbalance the teams.", player);
+                return;
+            }
+        }
         process_team_change_packet_hook.call_target(data, addr);
     },
 };
@@ -1656,6 +1671,17 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_is_match_mode_enabled()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::match_mode;
         }
+        // Instagib makes the rail a no-clip weapon; deliver it on join so the
+        // client's fire/reload prediction matches (only the rail is supported).
+        if (g_alpine_server_config_active_rules.mutators.no_featured_reload &&
+            g_alpine_server_config_active_rules.mutators.featured_weapon_index == rf::rail_gun_weapon_type) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::featured_no_clip;
+        }
+        // Arena: refill the killer's current clip on a frag; the client does this
+        // itself without a reload packet.
+        if (g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1793,6 +1819,8 @@ CodeInjection process_join_accept_injection{
             server_info.clear_stale_movement_input = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input);
             server_info.allow_sprays = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays);
             server_info.match_mode = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::match_mode);
+            server_info.reload_on_kill = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill);
+            // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;
             if (!!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::max_fov) && ext_data.max_fov >= default_fov) {
@@ -1803,11 +1831,19 @@ CodeInjection process_join_accept_injection{
             }
             g_af_server_info = std::optional{server_info};
 
+            // Mirror the server's no-clip featured weapon (Instagib rail) on join
+            // so client-side fire/reload prediction matches.
+            mutators_set_no_clip_weapon(
+                !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::featured_no_clip)
+                    ? rf::rail_gun_weapon_type
+                    : -1);
+
             // Update footstep activation based on server permissions
             evaluate_footsteps();
         }
         else {
             g_af_server_info.reset();
+            mutators_set_no_clip_weapon(-1); // non-AF server: ensure no stale override
             evaluate_footsteps();
         }
     },
@@ -2467,6 +2503,8 @@ FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
         g_af_server_info.reset(); // Clear server info when leaving
+        mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
+        vote_client_reset(); // drop the cached vote options and active vote state
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving
@@ -2611,7 +2649,6 @@ CodeInjection send_state_info_injection{
     [](auto& regs) {
         rf::Player* player = regs.edi;
         trigger_send_state_info(player);
-        pf_player_level_load(player);
         sprays_force_state_sync_to(player);
     },
 };
@@ -2620,7 +2657,6 @@ FunHook<void(rf::Player*)> send_players_packet_hook{
     0x00481C70,
     [](rf::Player *player) {
         send_players_packet_hook.call_target(player);
-        pf_player_init(player);
         if (rf::is_server) {
             server_reliable_socket_ready(player);
         }
@@ -2628,14 +2664,12 @@ FunHook<void(rf::Player*)> send_players_packet_hook{
 };
 
 FunHook<void(rf::Entity*, int, int, int)> send_reload_packet_hook{
-    0x00485B50, [](rf::Entity* ep, int weapon_type, int clip_ammo, int ammo) {
-        // Log the clip_ammo and ammo values
-        //xlog::warn("Sending a reload packet for {} with weapon {}, clip_ammo: {}, ammo: {}", ep->name, weapon_type, clip_ammo, ammo);
+    0x00485B50, [](rf::Entity* ep, int weapon_type, int ammo, int clip_ammo) {
+        //xlog::warn("Sending a reload packet for {} with weapon {}, ammo: {}, clip_ammo: {}", ep->name, weapon_type, ammo, clip_ammo);
 
-        // Call the original function
-        send_reload_packet_hook.call_target(ep, weapon_type, clip_ammo, ammo);
-    }};
-
+        send_reload_packet_hook.call_target(ep, weapon_type, ammo, clip_ammo);
+    }
+};
 
 extern FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook;
 
@@ -2652,7 +2686,7 @@ FunHook<void __fastcall(void*, int, int, bool, int)> multi_io_stats_add_hook{0x0
 static void process_custom_packet([[maybe_unused]] const void* data, [[maybe_unused]] int len,
                                   [[maybe_unused]] const rf::NetAddr& addr, [[maybe_unused]] rf::Player* player)
 {
-    pf_process_packet(data, len, addr, player);
+    pf_process_packet(data, len, addr);
     af_process_packet(data, len, addr, player);
 }
 

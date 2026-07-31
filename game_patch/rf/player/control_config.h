@@ -57,7 +57,8 @@ namespace rf
         AF_ACTION_SPECTATE_TOGGLE = 0x10,
         AF_ACTION_SPECTATE_CHANGE_VIEW = 0x11,
         AF_ACTION_SPRAY = 0x12,
-        _AF_ACTION_LAST_VARIANT = AF_ACTION_SPRAY
+        AF_ACTION_VOTE_MENU = 0x13,
+        _AF_ACTION_LAST_VARIANT = AF_ACTION_VOTE_MENU
     };
 
     struct ControlConfigItem

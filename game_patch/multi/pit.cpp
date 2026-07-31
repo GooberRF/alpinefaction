@@ -552,7 +552,7 @@ void pit_do_frame()
     }
 }
 
-bool pit_can_player_spawn(rf::Player* player)
+bool pit_can_player_spawn(rf::Player* player, bool notify)
 {
     if (!gt_is_pit()) return true; // not our problem
     if (!player) return true;
@@ -565,8 +565,10 @@ bool pit_can_player_spawn(rf::Player* player)
     // The client re-requests a spawn every frame while fire is held, so throttle
     // the denial notice. Check the gate BEFORE building any message so a denied
     // spawn costs only a timer read in steady state.
-    const bool throttle_open =
-        !player->waiting_msg_timer.valid() || player->waiting_msg_timer.elapsed();
+    // With notify = false the caller only wants the verdict, so the throttle is
+    // held shut: no message is built and waiting_msg_timer is left untouched.
+    const bool throttle_open = notify
+        && (!player->waiting_msg_timer.valid() || player->waiting_msg_timer.elapsed());
     auto send_throttled = [&](std::string_view msg) {
         af_send_automated_chat_msg(msg, player);
         player->waiting_msg_timer.set(3000);

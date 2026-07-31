@@ -5,6 +5,7 @@
 #include <xlog/xlog.h>
 #include "hud.h"
 #include "hud_internal.h"
+#include "../misc/vote_panel.h"
 #include "multi_scoreboard.h"
 #include "multi_spectate.h"
 #include "remote_server_cfg_ui.h"
@@ -422,7 +423,8 @@ void hud_render_00437BC0()
     bool limbo = rf::gameseq_get_state() == rf::GS_MULTI_LIMBO;
     bool show_scoreboard = scoreboard_control_pressed || (!multi_spectate_is_spectating() && is_player_dead) || limbo;
 
-    scoreboard_maybe_render(show_scoreboard && !g_remote_server_cfg_popup.is_active());
+    scoreboard_maybe_render(show_scoreboard && !g_remote_server_cfg_popup.is_active()
+        && !vote_panel_is_gameplay_overlay_active());
 }
 
 void hud_apply_patches()
