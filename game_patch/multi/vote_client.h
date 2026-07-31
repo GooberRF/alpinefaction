@@ -48,23 +48,15 @@ struct VoteLevelInfo
     // Game type this level runs with when the vote picks "Server default".
     uint8_t natural_gametype = 0; // rf::NetGameType
     // bit N (matching NetGameType N) = this level matches that game type's level
-    // prefix rules (computed server-side; prefix rules are server-only
-    // knowledge). Always populated, even when the server does not enforce them —
-    // see VoteOptionsData::gametype_prefix_restricted for whether it does.
+    // prefix rules.
     uint32_t valid_gametype_mask = 0;
-    // The server's vote_level allow-list accepts this level. Derived server-side
-    // from the same predicate that validates an incoming vote, so false means a
-    // vote naming this level is rejected outright whatever game type is picked.
-    // The blob still lists the level because it is in the rotation (rotation
-    // levels are NOT votable unless vote_level.add_rotation_to_allowed_levels is
-    // set or allowed_maps is empty), so a UI must filter on this.
+    // The server's vote_level allow-list accepts this level.
     bool allowed_for_vote = true;
 };
 
 struct VoteOptionsData
 {
-    // bit N = AfVoteType N is enabled. u32 so the wire enum has room to grow past
-    // the 9 types of 1.4 (same reasoning as VoteLevelInfo::valid_gametype_mask).
+    // bit N = AfVoteType N is enabled.
     // Bits for types this build does not know are simply never queried.
     uint32_t enabled_vote_mask = 0;
     // vote_level.only_allow_gametype_prefix is on: the server will REJECT a vote
@@ -86,11 +78,7 @@ bool vote_level_allows_default_gametype(const VoteLevelInfo& level);
 struct ActiveVoteState
 {
     // The RAW wire byte, deliberately NOT an AfVoteType: a newer server may run a
-    // vote type added after this build, and an old client must still show the
-    // vote, let the player cast, and be counted — being dropped from the tally is
-    // far worse than not knowing what the vote is called. The type is display
-    // metadata for the running vote; the authoritative text is `title`, which the
-    // server composes and always sends.
+    // vote type added after this build, and an old client must still show it.
     uint8_t type_raw = static_cast<uint8_t>(AfVoteType::Kick);
     std::string title;          // server-composed, display only
     std::string initiator_name; // empty if the server couldn't name the owner

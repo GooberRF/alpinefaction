@@ -20,8 +20,7 @@ namespace
 //
 // `loaded` data stays usable while `stale` is set: a stale cache means "the server
 // told us its config changed", and the refresh request it triggers is answered
-// with silence when the server's generation is in fact unchanged. Blanking the
-// cache on stale would therefore strand the UI on "Loading..." forever.
+// with silence when the server's generation is in fact unchanged.
 struct VoteOptionsCache
 {
     VoteOptionsData data;
@@ -606,8 +605,8 @@ void vote_state_on_start(uint8_t type_raw, uint16_t time_remaining_sec, uint8_t 
 
     draw_hud_vote_notification(g_active_vote->title);
 
-    // Mirrors the legacy "<title> vote started by <name>." line. The name is
-    // absent when the server couldn't resolve the owner (late joiner sync).
+    // "<title> vote started by <name>." The name is absent when the
+    // server couldn't resolve the owner (late joiner sync).
     std::string by_clause;
     if (g_active_vote->is_owner) {
         by_clause = " by you";

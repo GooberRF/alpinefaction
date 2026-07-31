@@ -5,20 +5,17 @@
 #include <string>
 #include <string_view>
 #include <vector>
-#include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
-#include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
-#include <patch_common/MemUtils.h>
 #include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include "vote_panel.h"
 #include "player.h"
 #include "../hud/hud_internal.h"
 #include "../hud/remote_server_cfg_ui.h"
+#include "../input/control_input_filter.h"
 #include "../multi/alpine_packets.h"
 #include "../multi/vote_client.h"
-#include "../os/os.h"
 #include "../rf/gameseq.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
@@ -33,148 +30,9 @@
 namespace
 {
 
-// ---------------------------------------------------------------------------
-// Frozen RF.exe addresses (multiplayer menu internals, verified in 1.20na).
-// The multi menu does not use rf::ui::Container: it keeps its gadgets in two
-// counted arrays, one for mouse hit-testing and one for everything else.
-// ---------------------------------------------------------------------------
-
-constexpr uintptr_t multi_menu_init_addr = 0x00448C20;
-constexpr uintptr_t multi_menu_back_on_click_addr = 0x00448BF0;
-constexpr uintptr_t multi_menu_key_handler_addr = 0x00448F80;
-constexpr uintptr_t multi_menu_key_handler_push_imm = 0x00448F39;
-constexpr uintptr_t multi_menu_mouse_handler_addr = 0x00449180;
-constexpr uintptr_t multi_menu_hit_test_count_push = 0x004491A0;
-constexpr uintptr_t multi_menu_hit_test_array = 0x0063E1F0;
-constexpr uintptr_t multi_menu_hit_test_array_add = 0x00449500;
-constexpr uintptr_t multi_menu_nav_next_addr = 0x004490F0;
-constexpr uintptr_t multi_menu_nav_prev_addr = 0x00449140;
-constexpr uintptr_t multi_menu_render_button_loop = 0x00449476;
-constexpr uintptr_t multi_menu_render_button_loop_end = 0x004494A0;
-constexpr uintptr_t multi_menu_first_button = 0x0063E0E0;
-constexpr int multi_menu_button_stride = 0x44;
-constexpr uintptr_t mainmenu_do_frame_addr = 0x00443780;
-constexpr uintptr_t mainmenu_do_return_addr = 0x00443C90;
-
-// Every executable read of the (already full) stock dispatch array
-// `MOV ECX, 0x0063E090`. The imm32 lives at site+1. The four init-time add calls
-// are left alone, which leaves the stock array populated but unreferenced.
-//
-// 0x00448A90 / 0x00448AB0 also load that address but are deliberately NOT here:
-// they are the MSVC static ctor/dtor thunks for the stock VArray, reached only
-// from the CRT initializer table entry at 0x005932FC (0x00448A80 -> CALL ctor,
-// JMP dtor-registration). The ctor already ran during CRT init, long before
-// misc_init() patches anything, and the dtor target (0x0054D9E0) is a bare RET,
-// so retargeting either one is a no-op.
-constexpr uintptr_t dispatch_array_sites[] = {
-    0x00448EF1, 0x00448F02, 0x00448F15, 0x00448F58, // do_frame
-    0x004491F4, 0x0044920C,                         // mouse handler
-    0x00448FD8, 0x00448FF4, 0x0044908A, 0x004490A4, // key handler
-};
-
-// Set by mainmenu_init from the gameseq state underneath the menu: non-zero
-// means the menu was opened from inside a running game (it is what disables the
-// stock JOIN GAME / CREATE GAME buttons).
-auto& g_menu_opened_in_game = addr_as_ref<uint8_t>(0x0063C11C);
-auto& g_multi_menu_focus_index = addr_as_ref<int>(0x0063E0A4);
-
-// Layout-compatible with the stock counted gadget arrays: {count, items[]}.
-struct MultiMenuGadgetArray
-{
-    int32_t count;
-    rf::ui::Gadget* items[8];
-};
-
-MultiMenuGadgetArray g_multi_menu_gadgets{};
-rf::ui::Button g_call_vote_button{};
-bool g_call_vote_button_created = false;
-
-// Index in both the AF dispatch array and the stock hit-test array.
-constexpr int call_vote_gadget_index = 4;
-
-// --- gameseq state stack internals (RF.exe 1.20na) -------------------------
-// gameseq_process applies at most ONE deferred change per frame, and the pop
-// branch of gameseq_process_deferred_change (0x00434310) does a bare `idx--`
-// with no lower bound. A pop issued against a stale view of the stack therefore
-// underflows to idx = -1, where the tail returns states[-1] (BSS, reads 0) and
-// the engine sits in state 0 forever -- state 0 has no case in
-// gameseq_init_state (0x004B1AC0) or gameseq_close_state (0x004B1BF0).
-// Worse, gameseq_set_state (0x00434190) with force = 0 is silently DROPPED
-// while a pop is pending, so a pending pop of ours can also swallow the
-// server-driven level change outright.
-constexpr uintptr_t gameseq_state_stack_addr = 0x00630064;
-constexpr uintptr_t gameseq_state_index_addr = 0x005967A4;
-constexpr uintptr_t gameseq_pop_pending_addr = 0x006300EA;
-constexpr uintptr_t gameseq_push_pending_addr = 0x006300EB;
-
-int gameseq_stack_top()
-{
-    return addr_as_ref<int32_t>(gameseq_state_index_addr);
-}
-
-rf::GameState gameseq_state_at(int index)
-{
-    return static_cast<rf::GameState>(
-        addr_as_ref<int32_t>(gameseq_state_stack_addr + index * 4));
-}
-
-// True while any deferred change is queued: the stack we can observe now is not
-// the stack that will be current once it lands, so no pop may be issued.
-bool gameseq_change_pending()
-{
-    return addr_as_ref<uint8_t>(gameseq_pop_pending_addr) != 0
-        || addr_as_ref<uint8_t>(gameseq_push_pending_addr) != 0
-        || static_cast<int>(rf::gameseq_get_pending_state()) != 0;
-}
-
-// What the stock RETURN TO GAME button unwinds into. Limbo counts: the menu can
-// be opened during the between-levels wait and stock returns there too.
-bool is_returnable_bottom_state(rf::GameState state)
-{
-    return state == rf::GS_GAMEPLAY || state == rf::GS_MULTI_LIMBO;
-}
-
-// One-shot, consumed by the next main menu frame. It also expires on its own:
-// if the engine takes over (instantly passed vote -> level change -> limbo) the
-// main menu may never run again, and a flag left set would otherwise fire
-// minutes later and close the ESC menu out from under the player.
-constexpr int64_t auto_return_lifetime_ms = 1000;
-bool g_auto_return_to_game = false;
-int64_t g_auto_return_deadline_ms = 0;
-
-void clear_auto_return()
-{
-    g_auto_return_to_game = false;
-    g_auto_return_deadline_ms = 0;
-}
-
-// --- deferred vote send ----------------------------------------------------
-// The vote call is stashed on click and only sent once the menu unwind has
-// reached a terminal state. gameseq_set_state (0x00434190) silently drops a
-// non-forced transition while a deferred change is queued, so sending on click
-// let the server's reply race our pops: a vote that passes instantly (sole
-// eligible voter) had its enter-limbo transition discarded, leaving the client
-// in GS_GAMEPLAY with no traffic -- the connection-interrupted overlay -- for
-// the whole limbo. Sending only once the slot is free makes that impossible.
-bool g_pending_vote_valid = false;
-AfVoteCallParams g_pending_vote;
-
-void drop_pending_vote()
-{
-    g_pending_vote_valid = false;
-    g_pending_vote = AfVoteCallParams{};
-}
-
-// --- open context -----------------------------------------------------------
-// Which site owns rendering. Exactly one render call happens per frame.
-enum class VotePanelContext
-{
-    None,
-    MultiMenu,
-    Gameplay,
-};
-
-VotePanelContext g_context = VotePanelContext::None;
+// True while the overlay is up. The overlay is the only way the panel is ever
+// shown, so this doubles as "the panel owns input and rendering this frame".
+bool g_open = false;
 
 // Player's local "filter the map list by gametype" choice. Session only, not
 // persisted; ignored (forced on) while the server enforces the prefix.
@@ -248,14 +106,6 @@ bool g_gameplay_prev_mouse_look = false;
 // frame alike. Counts frames rather than latching a bool so it cannot stick.
 int g_swallow_attack_frames = 0;
 
-// A stock popup (manual level name, int/float option) takes over input while it
-// is up. gameseq_process passes no_input=1 to the state's own frame, but our
-// gameplay pump runs outside that, so it has to check explicitly.
-bool stock_popup_is_active()
-{
-    return addr_as_ref<bool()>(0x00456680)();
-}
-
 // Only attacks are affected; movement is never blocked.
 void vote_panel_decay_attack_swallow()
 {
@@ -287,7 +137,7 @@ void gameplay_overlay_apply_mouse(bool active)
         return;
     }
 
-    // mouse_look is a PERSISTED player setting: only drop the override once the
+    // mouse_look is a persisted player setting: only drop the override once the
     // saved value is actually back. If the player object is gone (disconnect,
     // kick, level change) keep it pending so the next apply can still restore it
     // rather than losing the user's setting permanently.
@@ -304,11 +154,6 @@ void gameplay_overlay_apply_mouse(bool active)
         rf::mouse_keep_centered_enable();
         rf::mouse_set_visible(false);
     }
-}
-
-rf::ui::Button& stock_multi_menu_button(int index)
-{
-    return addr_as_ref<rf::ui::Button>(multi_menu_first_button + index * multi_menu_button_stride);
 }
 
 // ---------------------------------------------------------------------------
@@ -371,7 +216,7 @@ const VoteTypeInfo vote_type_infos[] = {
 };
 
 // Short tag for the game type selector. The blob carries full display names
-// ("Damage Control") which overflow the selector at menu-native resolutions.
+// ("Damage Control") which overflow the selector at low resolutions.
 // Deliberately not multi_game_type_name_short(): that maps every unrecognised id
 // to "TDM" and logs a warning, whereas a game type this build predates has to
 // fall back to the server-sent name.
@@ -458,7 +303,6 @@ struct KickCandidate
 std::vector<KickCandidate> g_kick_cache;
 std::vector<std::string> g_kick_names;
 
-bool g_open = false;
 FormState g_form;
 
 // Popup input targets. The stock popup callback takes no arguments, so the
@@ -1095,7 +939,8 @@ std::vector<VoteMutatorInput> build_mutator_inputs(const VoteOptionsData& option
 
 // ---------------------------------------------------------------------------
 // Popup text input (stock RF popup; gameseq_process drives it globally, so it
-// works from the multi menu and suppresses our input handlers while it is up)
+// works over the gameplay overlay -- see rf::ui::popup_is_active, which is what
+// suppresses our own input handling while it is up)
 // ---------------------------------------------------------------------------
 
 void manual_level_popup_callback()
@@ -1171,36 +1016,7 @@ void play_click_sound()
 
 void play_toggle_sound(bool on)
 {
-    // Intentional, do not "fix": this matches the established AF convention in
-    // misc/ui.cpp's ao_play_button_snd, which plays checkbox_off when turning a
-    // setting ON. The .wav names read backwards but the panels must agree.
     rf::snd_play(on ? stock_sound_id::checkbox_off : stock_sound_id::checkbox_on, 0, 0.0f, 1.0f);
-}
-
-void close_panel_and_return_to_game()
-{
-    vote_panel_close();
-
-    // Only start the unwind when the stack is exactly what we intend to unwind,
-    // right now, with nothing already queued. A vote that passes instantly (sole
-    // eligible voter) can have the server's level change in flight before we get
-    // here, and the engine's transition must win -- if we popped anyway our pop
-    // would either swallow its gameseq_set_state or, once it collapsed the stack,
-    // underflow the index.
-    if (gameseq_change_pending() || gameseq_stack_top() != 2
-        || gameseq_state_at(2) != rf::GS_MULTI_MENU
-        || gameseq_state_at(1) != rf::GS_MAIN_MENU
-        || !is_returnable_bottom_state(gameseq_state_at(0))) {
-        clear_auto_return();
-        return; // panel is closed; the engine takes it from here
-    }
-
-    // The stock BACK handler pops GS_MULTI_MENU (deferred). The second pop, out
-    // of GS_MAIN_MENU, has to wait for the next frame because gameseq_pop_state
-    // only sets pending flags and is idempotent within one frame.
-    AddrCaller{multi_menu_back_on_click_addr}.c_call<void>(0, 0);
-    g_auto_return_to_game = true;
-    g_auto_return_deadline_ms = timer::get_i64(1000) + auto_return_lifetime_ms;
 }
 
 // Mirrors send_vote_from_form's validation so the button can be greyed out
@@ -1264,13 +1080,11 @@ void send_vote_from_form(const VoteOptionsData& options)
             break; // parameterless
     }
 
-    // Stashed rather than sent: the packet goes out from vote_send_tick() once
-    // the unwind is done and the deferred-change slot is free again.
-    g_pending_vote = std::move(params);
-    g_pending_vote_valid = true;
+    // Sent the vote call.
+    af_send_vote_call(params);
 
     play_click_sound();
-    close_panel_and_return_to_game();
+    vote_panel_close();
 }
 
 void do_message_block(PanelUi& ui, const Layout& lo, const std::vector<std::string>& lines)
@@ -1527,7 +1341,7 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     const bool filter_active = options.gametype_prefix_restricted || g_filter_gametype_local;
 
     // Rebuild the display rows only when an input changed. allowed_for_vote is an
-    // INDEPENDENT axis from the gametype mask: it is applied ALWAYS, because a
+    // independent axis from the gametype mask: it is applied ALWAYS, because a
     // level the server vote_level allow-list refuses is rejected whatever game
     // type is picked. Hence it is not gated on filter_active.
     const uint32_t levels_fp = level_list_fingerprint(options);
@@ -1951,484 +1765,12 @@ void vote_panel_do(PanelUi& ui)
 }
 
 // ---------------------------------------------------------------------------
-// Multi menu integration
+// Gameplay overlay driving
 // ---------------------------------------------------------------------------
-
-void call_vote_button_on_click(int, int)
-{
-    vote_panel_open();
-    rf::snd_play(stock_sound_id::menu_select, 0, 0.0f, 1.0f);
-}
-
-void update_call_vote_button_enabled()
-{
-    g_call_vote_button.enabled = rf::is_multi && !rf::is_server && g_menu_opened_in_game != 0;
-}
-
-FunHook<void()> multi_menu_init_hook{
-    multi_menu_init_addr,
-    []() {
-        multi_menu_init_hook.call_target();
-
-        if (!g_call_vote_button_created) {
-            g_call_vote_button.init();
-            g_call_vote_button.create("button_more.tga", "button_selected.tga", 0, 0, rf::KEY_V,
-                "CALL VOTE", rf::ui::medium_font_0);
-            g_call_vote_button.key = rf::KEY_V;
-            g_call_vote_button.on_click = call_vote_button_on_click;
-            // Park it off-screen: the mouse handler runs before the render that
-            // assigns real coords, so at (0,0) the screen corner would hit-test
-            // as CALL VOTE on the first menu frame.
-            g_call_vote_button.x = -10000;
-            g_call_vote_button.y = -10000;
-
-            // Append to the stock hit-test array so the button becomes hit-test
-            // index 4; the AF dispatch array must use that same index order.
-            const int hit_test_index = AddrCaller{multi_menu_hit_test_array_add}.this_call<int>(
-                reinterpret_cast<void*>(multi_menu_hit_test_array), &g_call_vote_button);
-            if (hit_test_index != call_vote_gadget_index) {
-                // -1 means the capacity-20 array was full; anything else means the
-                // stock button count changed. Either way our index assumption and
-                // the PUSH 5 below would be wrong.
-                xlog::error("vote panel: CALL VOTE hit-test index {} != {}", hit_test_index,
-                    call_vote_gadget_index);
-            }
-
-            for (int i = 0; i < 4; ++i) {
-                g_multi_menu_gadgets.items[i] = &stock_multi_menu_button(i);
-            }
-            g_multi_menu_gadgets.items[call_vote_gadget_index] = &g_call_vote_button;
-            g_multi_menu_gadgets.count = 5;
-            g_call_vote_button_created = true;
-
-            // Only now is items[4] real: the hardcoded PUSH 4 that feeds
-            // get_gadget_from_pos must not count a slot that is still null.
-            AsmWriter{multi_menu_hit_test_count_push}.push(5);
-        }
-
-        update_call_vote_button_enabled();
-        vote_panel_close();
-        // Re-entering the multi menu means no unwind of ours is in flight.
-        clear_auto_return();
-        drop_pending_vote();
-    },
-};
-
-// The stock helpers walk the button block by raw address, so they cannot see a
-// fifth button living outside it; they are replaced rather than patched.
-// Dispatch index -> on-screen row order. CALL VOTE sits above BACK on screen but
-// after it in the arrays (hit-test order is fixed by the append at index 4, and
-// the mouse handler feeds that index straight into the dispatch array), so the
-// arrays must not be reordered -- the keyboard walk is mapped instead.
-constexpr int visual_order_of_gadget[] = {0, 1, 2, 4, 3};
-
-void multi_menu_nav(int dir)
-{
-    const int count = g_multi_menu_gadgets.count;
-    if (count <= 0) {
-        return;
-    }
-    const int order_count = static_cast<int>(std::size(visual_order_of_gadget));
-
-    // Walk in visual order so DOWN always moves down the screen.
-    int visual = 0;
-    if (g_multi_menu_focus_index >= 0 && g_multi_menu_focus_index < order_count) {
-        visual = visual_order_of_gadget[g_multi_menu_focus_index];
-    }
-
-    for (int i = 0; i < count; ++i) {
-        visual += dir;
-        if (visual >= count) {
-            visual = 0;
-        }
-        else if (visual < 0) {
-            visual = count - 1;
-        }
-        // Map the visual row back to its dispatch slot.
-        int dispatch = visual;
-        for (int slot = 0; slot < order_count && slot < count; ++slot) {
-            if (visual_order_of_gadget[slot] == visual) {
-                dispatch = slot;
-                break;
-            }
-        }
-        const rf::ui::Gadget* gadget = g_multi_menu_gadgets.items[dispatch];
-        if (gadget && gadget->enabled) {
-            g_multi_menu_focus_index = dispatch;
-            break;
-        }
-    }
-}
-
-FunHook<void()> multi_menu_nav_next_hook{multi_menu_nav_next_addr, []() { multi_menu_nav(1); }};
-FunHook<void()> multi_menu_nav_prev_hook{multi_menu_nav_prev_addr, []() { multi_menu_nav(-1); }};
-
-FunHook<void()> multi_menu_mouse_hook{
-    multi_menu_mouse_handler_addr,
-    []() {
-        if (vote_panel_is_open()) {
-            vote_panel_handle_mouse();
-            return;
-        }
-        multi_menu_mouse_hook.call_target();
-    },
-};
-
-// Replaces the stock button render loop so the buttons come from the AF array
-// (in visual order) and the vote panel can be drawn before the mouse cursor.
-CodeInjection multi_menu_render_injection{
-    multi_menu_render_button_loop,
-    [](auto& regs) {
-        // Same order the keyboard walk uses (see visual_order_of_gadget).
-        static const int visual_order[] = {0, 1, 2, call_vote_gadget_index, 3};
-
-        update_call_vote_button_enabled();
-
-        const int x = regs.ebx;
-        int y = regs.edi;
-        for (int index : visual_order) {
-            if (index >= g_multi_menu_gadgets.count) {
-                continue;
-            }
-            auto* button = static_cast<rf::ui::Button*>(g_multi_menu_gadgets.items[index]);
-            if (!button || !button->enabled) {
-                continue; // disabled buttons consume no row, same as stock
-            }
-            button->x = x;
-            button->y = y;
-            button->render();
-            y += rf::ui::menu_button_offset_y;
-        }
-
-        vote_panel_render();
-
-        regs.eip = multi_menu_render_button_loop_end;
-    },
-};
-
-// Registered every frame by the multi menu do_frame via PUSH <handler>.
-void multi_menu_key_handler(int key)
-{
-    if (vote_panel_is_open()) {
-        vote_panel_handle_key(key);
-        return;
-    }
-    // The stock handler forwards every key to the character setup sub-panel
-    // while it is open; don't steal the hotkey from it.
-    const bool sub_panel_open = addr_as_ref<uint8_t>(0x0063E088) != 0;
-    if (!sub_panel_open && key == rf::KEY_V && g_call_vote_button.enabled) {
-        g_multi_menu_focus_index = call_vote_gadget_index;
-        if (g_call_vote_button.on_click) {
-            g_call_vote_button.on_click(0, 0);
-        }
-        return;
-    }
-    AddrCaller{multi_menu_key_handler_addr}.c_call<void>(key);
-}
-
-// True only when popping GS_MAIN_MENU back to gameplay is provably safe this
-// frame. Every other observation abandons the auto-return rather than guessing.
-bool consume_auto_return()
-{
-    if (!g_auto_return_to_game) {
-        return false;
-    }
-
-    // Left the server, or the engine never gave the main menu another frame.
-    if (!rf::is_multi || timer::get_i64(1000) > g_auto_return_deadline_ms) {
-        clear_auto_return();
-        return false;
-    }
-
-    // GS_MULTI_MENU is transparent, so this hook also runs underneath it. The
-    // one legitimate in-flight observation is the frame before our own
-    // GS_MULTI_MENU pop is applied; anything else means the engine took over.
-    const rf::GameState state = rf::gameseq_get_state();
-    if (state != rf::GS_MAIN_MENU) {
-        const bool our_pop_in_flight = state == rf::GS_MULTI_MENU
-            && addr_as_ref<uint8_t>(gameseq_pop_pending_addr) != 0
-            && static_cast<int>(rf::gameseq_get_pending_state()) == 0;
-        if (!our_pop_in_flight) {
-            clear_auto_return();
-        }
-        return false;
-    }
-
-    // Main menu is on top. Require exactly [gameplay, GS_MAIN_MENU] and no
-    // queued change, so the pop cannot underflow and cannot race a transition.
-    if (gameseq_change_pending() || gameseq_stack_top() != 1
-        || gameseq_state_at(1) != rf::GS_MAIN_MENU
-        || !is_returnable_bottom_state(gameseq_state_at(0))) {
-        clear_auto_return();
-        return false;
-    }
-
-    clear_auto_return();
-    return true;
-}
-
-FunHook<void(int)> mainmenu_do_frame_hook{
-    mainmenu_do_frame_addr,
-    [](int no_input) {
-        if (consume_auto_return()) {
-            AddrCaller{mainmenu_do_return_addr}.c_call<void>();
-            return; // skip the main menu frame entirely so it never flashes
-        }
-        mainmenu_do_frame_hook.call_target(no_input);
-    },
-};
-
-// Terminal states of the unwind: no auto-return still owed and nothing queued in
-// the deferred-change slot. That covers "unwind completed" (back in gameplay),
-// "unwind abandoned, still connected" (the server adjudicates and replies), and
-// guarantees our reply can no longer collide with a pop of ours.
-void vote_send_tick()
-{
-    if (!g_pending_vote_valid) {
-        return;
-    }
-    if (!rf::is_multi || rf::is_server) {
-        drop_pending_vote(); // disconnected before we got to send it
-        return;
-    }
-    if (g_auto_return_to_game || gameseq_change_pending()) {
-        return; // unwind still in flight
-    }
-
-    const AfVoteCallParams params = g_pending_vote; // one-shot
-    drop_pending_vote();
-    af_send_vote_call(params);
-}
-
-// Runs every frame regardless of game state, right after the state machine has
-// applied this frame's deferred change.
-CallHook<rf::GameState()> gameseq_process_hook{
-    0x004B2DB1,
-    []() -> rf::GameState {
-        // Before the state runs its frame, so the overlay sees keys/clicks first.
-        vote_panel_decay_attack_swallow();
-        vote_panel_gameplay_input();
-        const rf::GameState state = gameseq_process_hook.call_target();
-        vote_send_tick();
-        return state;
-    },
-};
-
-// ESC during gameplay pushes GS_MAIN_MENU. While the overlay is up, treat that
-// as "close the modal" and swallow the push, so ESC behaves like it does in the
-// menu context and the ESC menu can never open on top of the overlay.
-FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
-    0x00434410,
-    [](rf::GameState state, bool transparent, bool pause_beneath) {
-        if (state == rf::GS_MAIN_MENU && g_open && g_context == VotePanelContext::Gameplay) {
-            vote_panel_close();
-            play_click_sound();
-            return;
-        }
-        gameseq_push_state_hook.call_target(state, transparent, pause_beneath);
-    },
-};
-
-// Clicking in the panel must not also fire the weapon. Movement is left alone
-// (the panel does not pause a multiplayer game), matching the waypoint editor.
-bool gameplay_overlay_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAction action)
-{
-    const bool overlay_up = g_open && g_context == VotePanelContext::Gameplay;
-    if (!overlay_up && g_swallow_attack_frames <= 0) {
-        return false;
-    }
-    if (!rf::local_player || ccp != &rf::local_player->settings.controls) {
-        return false;
-    }
-    return action == rf::CC_ACTION_PRIMARY_ATTACK || action == rf::CC_ACTION_SECONDARY_ATTACK;
-}
-
-FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> vote_panel_check_pressed_hook{
-    0x0043D4F0,
-    [](rf::ControlConfig* ccp, rf::ControlConfigAction action, bool* just_pressed) {
-        if (gameplay_overlay_blocks_action(ccp, action)) {
-            if (just_pressed) {
-                *just_pressed = false;
-            }
-            return false;
-        }
-        return vote_panel_check_pressed_hook.call_target(ccp, action, just_pressed);
-    },
-};
-
-FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> vote_panel_is_control_down_hook{
-    0x00430F40,
-    [](rf::ControlConfig* ccp, rf::ControlConfigAction action) {
-        if (gameplay_overlay_blocks_action(ccp, action)) {
-            return false;
-        }
-        return vote_panel_is_control_down_hook.call_target(ccp, action);
-    },
-};
-
-// The two hooks above are shared with waypoints_utils and bot_main, which both
-// install lazily; match that so single-player and dedicated servers never carry
-// the chain. Installed on the first gameplay overlay open.
-bool g_control_hooks_installed = false;
-
-void ensure_control_hooks_installed()
-{
-    if (g_control_hooks_installed) {
-        return;
-    }
-    vote_panel_check_pressed_hook.install();
-    vote_panel_is_control_down_hook.install();
-    g_control_hooks_installed = true;
-}
-
-// gameseq_process renders an active popup itself, at 0x004342CD, i.e. INSIDE the
-// call this hook wraps -- so anything drawn from the after-frame hook
-// (0x004B2DC2) lands on top of the popup and hides it. Rendering the overlay
-// here instead puts it before the popup render, so a popup is drawn over the
-// panel and stays usable. The dispatcher recurses for transparent states, hence
-// the outermost-level check.
-FunHook<void(int, int)> gameseq_state_do_frame_hook{
-    0x004343C0,
-    [](int state_index, int no_input) {
-        gameseq_state_do_frame_hook.call_target(state_index, no_input);
-        if (state_index == gameseq_stack_top()) {
-            vote_panel_gameplay_render();
-        }
-    },
-};
-
-} // namespace
-
-bool vote_panel_is_open()
-{
-    return g_open;
-}
-
-void vote_panel_open()
-{
-    // Opening from the menu supersedes a gameplay overlay (no double-open).
-    if (g_context == VotePanelContext::Gameplay) {
-        gameplay_overlay_apply_mouse(false);
-    }
-    g_open = true;
-    g_context = VotePanelContext::MultiMenu;
-    g_form.description_mutator = -1;
-    g_form.mutator_scroll = 0.0f;
-    drop_pending_vote(); // a stash from a previous open can never outlive it
-    clear_popup_target();
-    g_level_cache.valid = false; // never show another blob's rows
-}
-
-void vote_panel_close()
-{
-    if (g_context == VotePanelContext::Gameplay) {
-        gameplay_overlay_apply_mouse(false);
-        // Rest of this frame plus at least one whole frame, extended while held.
-        g_swallow_attack_frames = 2;
-    }
-    g_open = false;
-    g_context = VotePanelContext::None;
-    clear_popup_target();
-}
-
-void vote_panel_render()
-{
-    if (!g_open || g_context != VotePanelContext::MultiMenu) {
-        return;
-    }
-    if (!rf::is_multi) {
-        vote_panel_close();
-        clear_auto_return(); // left the server mid-unwind
-        drop_pending_vote();
-        return;
-    }
-
-    int x = 0, y = 0, z = 0;
-    rf::mouse_get_pos(x, y, z);
-
-    PanelUi ui;
-    ui.draw = true;
-    ui.mx = x;
-    ui.my = y;
-    vote_panel_do(ui);
-
-    // The menu frame + mouse cursor are drawn right after us; never leave a
-    // narrowed clip window behind.
-    rf::gr::reset_clip();
-}
-
-void vote_panel_handle_mouse()
-{
-    if (!g_open) {
-        return;
-    }
-
-    // Read the wheel accumulator before touching the mouse API.
-    const int wheel = rf::mouse_dz;
-
-    int x = 0, y = 0, z = 0;
-    rf::mouse_get_pos(x, y, z);
-
-    PanelUi ui;
-    ui.draw = false;
-    ui.mx = x;
-    ui.my = y;
-    ui.click = rf::mouse_was_button_pressed(0) != 0;
-    ui.rclick = rf::mouse_was_button_pressed(1) != 0;
-    ui.wheel = wheel;
-    vote_panel_do(ui);
-}
-
-void vote_panel_handle_key(int key)
-{
-    if (!g_open) {
-        return;
-    }
-    if (key == rf::KEY_ESC) {
-        vote_panel_close();
-        play_click_sound();
-    }
-    // Everything else is swallowed while the modal is up.
-}
-
-bool vote_panel_is_gameplay_overlay_active()
-{
-    return g_open && g_context == VotePanelContext::Gameplay;
-}
-
-void vote_panel_toggle_gameplay()
-{
-    if (g_open) {
-        // Also covers "menu instance somehow still open": close whatever is up.
-        vote_panel_close();
-        play_click_sound();
-        return;
-    }
-    if (!rf::is_multi || rf::is_server || rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
-        return;
-    }
-
-    // Mutually exclusive with the remote server config overlay: both are
-    // full-screen and both read the same non-consuming mouse state.
-    if (g_remote_server_cfg_popup.is_active()) {
-        g_remote_server_cfg_popup.toggle();
-    }
-
-    ensure_control_hooks_installed();
-    g_open = true;
-    g_context = VotePanelContext::Gameplay;
-    g_form.description_mutator = -1;
-    g_form.mutator_scroll = 0.0f;
-    drop_pending_vote();
-    clear_popup_target();
-    g_level_cache.valid = false; // never show another blob's rows
-    gameplay_overlay_apply_mouse(true);
-    rf::snd_play(stock_sound_id::menu_select, 0, 0.0f, 1.0f);
-}
 
 void vote_panel_gameplay_input()
 {
-    if (g_context != VotePanelContext::Gameplay) {
+    if (!g_open) {
         return;
     }
 
@@ -2442,7 +1784,10 @@ void vote_panel_gameplay_input()
     // Re-assert every frame; respawns and camera changes reset mouse mode.
     gameplay_overlay_apply_mouse(true);
 
-    if (stock_popup_is_active()) {
+    // A stock popup (manual level name, int/float option) takes over input while
+    // it is up. gameseq_process passes no_input=1 to the state's own frame, but
+    // this gameplay pump runs outside that, so it has to check explicitly.
+    if (rf::ui::popup_is_active()) {
         return; // the popup owns input; panel keeps rendering underneath
     }
 
@@ -2464,7 +1809,7 @@ void vote_panel_gameplay_input()
 
 void vote_panel_gameplay_render()
 {
-    if (!g_open || g_context != VotePanelContext::Gameplay) {
+    if (!g_open) {
         return;
     }
     // The input pump runs before gameseq_process, so on the frame a level change
@@ -2495,31 +1840,141 @@ void vote_panel_gameplay_render()
     rf::mouse_set_visible(true);
 }
 
+// Runs every frame regardless of game state, right before the state machine
+// applies this frame's deferred change and runs the current state's frame.
+CallHook<rf::GameState()> gameseq_process_hook{
+    0x004B2DB1,
+    []() -> rf::GameState {
+        // Before the state runs its frame, so the overlay sees keys/clicks first.
+        vote_panel_decay_attack_swallow();
+        vote_panel_gameplay_input();
+        return gameseq_process_hook.call_target();
+    },
+};
+
+// ESC during gameplay pushes GS_MAIN_MENU. While the overlay is up, treat that
+// as "close the modal" and swallow the push, so ESC dismisses the panel and the
+// ESC menu can never open on top of the overlay.
+FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
+    0x00434410,
+    [](rf::GameState state, bool transparent, bool pause_beneath) {
+        if (state == rf::GS_MAIN_MENU && g_open) {
+            vote_panel_close();
+            play_click_sound();
+            return;
+        }
+        gameseq_push_state_hook.call_target(state, transparent, pause_beneath);
+    },
+};
+
+// Clicking in the panel must not also fire the weapon. Movement is left alone
+// (the panel does not pause a multiplayer game), matching the waypoint editor.
+bool gameplay_overlay_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+{
+    if (!g_open && g_swallow_attack_frames <= 0) {
+        return false;
+    }
+    if (!rf::local_player || ccp != &rf::local_player->settings.controls) {
+        return false;
+    }
+    return action == rf::CC_ACTION_PRIMARY_ATTACK || action == rf::CC_ACTION_SECONDARY_ATTACK;
+}
+
+// control_input_filter owns the hooks and installs them at startup; the panel
+// only contributes its veto, and until it does the filter has nothing to do.
+// Registration must happen once, hence the flag: the overlay can be opened any
+// number of times.
+bool g_control_veto_registered = false;
+
+void ensure_control_veto_registered()
+{
+    if (g_control_veto_registered) {
+        return;
+    }
+    control_input_filter_add_veto(&gameplay_overlay_blocks_action);
+    g_control_veto_registered = true;
+}
+
+// The dispatcher recurses into itself (the self-call at 0x004343E4) to draw the
+// states stacked under a transparent one, so the hook below re-enters once per
+// state in that chain. Counting entries and exits picks out the outermost
+// dispatch, which is the one that must render the panel -- exactly once a frame.
+int g_gameseq_dispatch_depth = 0;
+
+struct GameseqDispatchDepth
+{
+    GameseqDispatchDepth() { ++g_gameseq_dispatch_depth; }
+    ~GameseqDispatchDepth() { --g_gameseq_dispatch_depth; }
+    GameseqDispatchDepth(const GameseqDispatchDepth&) = delete;
+    GameseqDispatchDepth& operator=(const GameseqDispatchDepth&) = delete;
+
+    [[nodiscard]] bool is_outermost() const { return g_gameseq_dispatch_depth == 1; }
+};
+
+// gameseq_process renders an active popup itself, at 0x004342CD, i.e. INSIDE the
+// call this hook wraps -- so anything drawn from the after-frame hook
+// (0x004B2DC2) lands on top of the popup and hides it. Rendering the overlay
+// here instead puts it before the popup render, so a popup is drawn over the
+// panel and stays usable.
+FunHook<void(int, int)> gameseq_state_do_frame_hook{
+    0x004343C0,
+    [](int state_index, int no_input) {
+        GameseqDispatchDepth depth;
+        gameseq_state_do_frame_hook.call_target(state_index, no_input);
+        if (depth.is_outermost()) {
+            vote_panel_gameplay_render();
+        }
+    },
+};
+
+} // namespace
+
+void vote_panel_close()
+{
+    if (g_open) {
+        gameplay_overlay_apply_mouse(false);
+        // Rest of this frame plus at least one whole frame, extended while held.
+        g_swallow_attack_frames = 2;
+    }
+    g_open = false;
+    clear_popup_target();
+}
+
+bool vote_panel_is_gameplay_overlay_active()
+{
+    return g_open;
+}
+
+void vote_panel_toggle_gameplay()
+{
+    if (g_open) {
+        vote_panel_close();
+        play_click_sound();
+        return;
+    }
+    if (!rf::is_multi || rf::is_server || rf::gameseq_get_state() != rf::GS_GAMEPLAY) {
+        return;
+    }
+
+    // Mutually exclusive with the remote server config overlay: both are
+    // full-screen and both read the same non-consuming mouse state.
+    if (g_remote_server_cfg_popup.is_active()) {
+        g_remote_server_cfg_popup.toggle();
+    }
+
+    ensure_control_veto_registered();
+    g_open = true;
+    g_form.description_mutator = -1;
+    g_form.mutator_scroll = 0.0f;
+    clear_popup_target();
+    g_level_cache.valid = false; // never show another blob's rows
+    gameplay_overlay_apply_mouse(true);
+    rf::snd_play(stock_sound_id::menu_select, 0, 0.0f, 1.0f);
+}
+
 void vote_panel_apply_patch()
 {
-    multi_menu_init_hook.install();
-    multi_menu_nav_next_hook.install();
-    multi_menu_nav_prev_hook.install();
-    multi_menu_mouse_hook.install();
-    multi_menu_render_injection.install();
-    mainmenu_do_frame_hook.install();
     gameseq_process_hook.install();
     gameseq_push_state_hook.install();
     gameseq_state_do_frame_hook.install();
-
-    // Seed the stock entries so the patched array is never empty, even if
-    // something touches the menu before multi_menu_init has run.
-    for (int i = 0; i < 4; ++i) {
-        g_multi_menu_gadgets.items[i] = &stock_multi_menu_button(i);
-    }
-    g_multi_menu_gadgets.count = 4;
-
-
-    // Point every read of the (full) stock dispatch array at the AF array.
-    for (uintptr_t site : dispatch_array_sites) {
-        write_mem<void*>(site + 1, &g_multi_menu_gadgets);
-    }
-
-    // Retarget the per-frame key handler registration to the AF wrapper.
-    write_mem<void*>(multi_menu_key_handler_push_imm, reinterpret_cast<void*>(&multi_menu_key_handler));
 }

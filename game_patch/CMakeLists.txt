@@ -108,6 +108,8 @@ set(SRCS
     input/mouse.h
     input/mouse.cpp
     input/key.cpp
+    input/control_input_filter.h
+    input/control_input_filter.cpp
     hud/hud_colors.cpp
     hud/hud_scale.cpp
     hud/hud_personas.cpp

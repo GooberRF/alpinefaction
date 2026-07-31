@@ -235,6 +235,7 @@ namespace rf::ui
     static auto& popup_abort = addr_as_ref<void()>(0x004559C0);
     static auto& popup_set_text = addr_as_ref<void(const char *text)>(0x00455A50);
     static auto& popup_get_input = addr_as_ref<void(char* string, int max_len)>(0x004566A0);
+    static auto& popup_is_active = addr_as_ref<bool()>(0x00456680);
 
     static auto& mainmenu_quit_game_confirmed = addr_as_ref<void()>(0x00443CB0);
 
