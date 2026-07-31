@@ -9,7 +9,6 @@
 #include "../multi/multi.h"
 #include "pf.h"
 #include "pf_packets.h"
-#include "pf_ac.h"
 #include "../misc/player.h"
 #include "../multi/server.h"
 #include "../multi/alpine_packets.h"
@@ -64,7 +63,7 @@ void send_pf_player_stats_packet(rf::Player* player)
             } else if (player_is_idle(&current_player)) {
                 return pf_pure_status::af_idle;
             } else {
-                return pf_ac_get_pure_status(&current_player);
+                return pf_pure_status::none;
             }
         });
         out_stats.is_pure = static_cast<uint8_t>(pure_status);
@@ -158,12 +157,8 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
     }
 }
 
-bool pf_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player)
+bool pf_process_packet(const void* data, int len, const rf::NetAddr& addr)
 {
-    if (pf_ac_process_packet(data, len, addr, player)) {
-        return true;
-    }
-
     rf_packet_header header{};
     if (len < static_cast<int>(sizeof(header))) {
         return false;
@@ -201,39 +196,4 @@ bool pf_process_raw_unreliable_packet(const void* data, int len, const rf::NetAd
         return true;
     }
     return false;
-}
-
-void pf_player_init([[ maybe_unused ]] rf::Player* const player) {
-    if (rf::is_server) {
-        pf_ac_init_player(player);
-    }
-}
-
-void pf_player_level_load(rf::Player* const player) {
-    if (rf::is_server) {
-        pf_ac_verify_player(player);
-    }
-}
-
-void pf_player_verified(
-    [[ maybe_unused ]] rf::Player* const player,
-    [[ maybe_unused ]] const pf_pure_status pure_status
-) {
-}
-
-bool pf_is_player_verified(rf::Player* player)
-{
-    pf_pure_status status = pf_ac_get_pure_status(player);
-    return status != pf_pure_status::none;
-}
-
-int pf_get_player_ac_level(rf::Player* player)
-{
-    pf_pure_status status = pf_ac_get_pure_status(player);
-    switch (status) {
-        case pf_pure_status::blue: return 2;
-        case pf_pure_status::gold: return 3;
-        case pf_pure_status::fail: return 1;
-        default: return 0;
-    }
 }
