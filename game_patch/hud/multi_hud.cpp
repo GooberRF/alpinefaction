@@ -45,6 +45,8 @@
 #include "remote_server_cfg_ui.h"
 #include "../misc/player.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/vote_client.h"
+#include "../misc/vote_panel.h"
 #include "../multi/network.h"
 #include "../multi/bots/bot_main.h"
 #include "multi_spectate.h"
@@ -430,6 +432,15 @@ static const ChatMenuList random_funny_menu{
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Get a load of this!", "Get a load of this!"}
     }
 };
+
+static std::optional<AfVoteType> chat_menu_simple_vote_type(std::string_view command)
+{
+    if (command == "/vote next") return AfVoteType::Next;
+    if (command == "/vote previous") return AfVoteType::Previous;
+    if (command == "/vote restart") return AfVoteType::Restart;
+    if (command == "/vote extend") return AfVoteType::Extend;
+    return std::nullopt;
+}
 
 // Command
 static const ChatMenuList command_menu{
@@ -1613,17 +1624,33 @@ void hud_pit_queue_auto_spectate() {
     multi_spectate_enter_freelook();
 }
 
+// Cache for the structured (AF 1.4+) notification.
+struct VoteHudCache
+{
+    bool valid = false;
+    int font = -1;
+    int title_max_w = -1;
+    std::string title_src;
+    std::string title_fit;
+    std::string prompt_yes;
+    std::string prompt_no;
+
+    bool tally_valid = false;
+    int tally_yes = -1;
+    int tally_no = -1;
+    int tally_secs = -1;
+    std::string tally;
+};
+
+static VoteHudCache g_vote_hud_cache;
+
+static void vote_notification_invalidate_cache()
+{
+    g_vote_hud_cache.valid = false;
+    g_vote_hud_cache.tally_valid = false;
+}
+
 void hud_render_vote_notification() {
-    const std::string vote_yes_key_text =
-        get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES));
-
-    const std::string vote_no_key_text =
-        get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO));
-
-    const std::string vote_notification_text =
-        "ACTIVE QUESTION: \n" + g_active_vote_type + "\n\nPress " + vote_yes_key_text + " to vote yes\nPress " + vote_no_key_text + " to vote no";
-
-    rf::gr::set_color(255, 255, 255, 225);
     const int font = hud_get_default_font();
     const int font_h = rf::gr::get_font_height(font);
     const int border = g_alpine_game_config.big_hud ? 3 : 2;
@@ -1633,21 +1660,98 @@ void hud_render_vote_notification() {
     if (!g_alpine_game_config.big_hud) {
         notification_y += 9;
     }
-    rf::gr::string_aligned(rf::gr::ALIGN_LEFT, 10, notification_y, vote_notification_text.c_str(), font);
+
+    // Pre 1.4 servers send no tally, so the title is all we can show.
+    const auto& state = vote_state_get();
+    if (!state) {
+        const std::string vote_yes_key_text =
+            get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES));
+        const std::string vote_no_key_text =
+            get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO));
+        const std::string vote_notification_text = "ACTIVE QUESTION: \n" + g_active_vote_type
+            + "\n\nPress " + vote_yes_key_text + " to vote yes\nPress " + vote_no_key_text
+            + " to vote no";
+        rf::gr::set_color(255, 255, 255, 225);
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, 10, notification_y, vote_notification_text.c_str(), font);
+        return;
+    }
+
+    // Server-composed titles can be long, so keep them inside the left half of the screen.
+    const int title_max_w = std::max(120, rf::gr::clip_width() / 2 - 20);
+
+    VoteHudCache& cache = g_vote_hud_cache;
+    if (!cache.valid || cache.font != font || cache.title_max_w != title_max_w
+        || cache.title_src != state->title) {
+        cache.font = font;
+        cache.title_max_w = title_max_w;
+        cache.title_src = state->title;
+        // A server that sends no title still gets a usable notification.
+        cache.title_fit = hud_fit_string(
+            state->title.empty() ? std::string_view{"Vote in progress"}
+                                 : std::string_view{state->title},
+            title_max_w, nullptr, font);
+        const std::string yes_key = get_action_bind_name(
+            get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES));
+        const std::string no_key = get_action_bind_name(
+            get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO));
+        cache.prompt_yes = "Press " + yes_key + " to vote yes";
+        cache.prompt_no = "Press " + no_key + " to vote no";
+        cache.valid = true;
+    }
+
+    const int secs = vote_state_seconds_remaining();
+    if (!cache.tally_valid || cache.tally_yes != state->yes || cache.tally_no != state->no
+        || cache.tally_secs != secs) {
+        cache.tally_yes = state->yes;
+        cache.tally_no = state->no;
+        cache.tally_secs = secs;
+        cache.tally = std::format("Yes: {}  No: {}     {}s left", static_cast<int>(state->yes),
+            static_cast<int>(state->no), secs);
+        cache.tally_valid = true;
+    }
+
+    // Half-height spacers instead of blank lines, and a single-line title, keep
+    // the block to ~5 line heights -- what notification_y above was tuned for.
+    // Lines are drawn one at a time so the bind prompt can be dimmed separately
+    // once this client has cast its vote.
+    int y = notification_y;
+    const auto draw_line = [&](const char* text) {
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, 10, y, text, font);
+        y += font_h;
+    };
+
+    rf::gr::set_color(255, 255, 255, 225);
+    draw_line("ACTIVE QUESTION: ");
+    draw_line(cache.title_fit.c_str());
+    y += font_h / 2;
+    draw_line(cache.tally.c_str());
+    y += font_h / 2;
+
+    if (state->has_voted) {
+        rf::gr::set_color(150, 150, 150, 190);
+        draw_line("You have voted");
+    }
+    else {
+        draw_line(cache.prompt_yes.c_str());
+        draw_line(cache.prompt_no.c_str());
+    }
 }
 
 void draw_hud_vote_notification(std::string vote_type)
 {
-    if (!vote_type.empty()) {
-        g_draw_vote_notification = true;
-        g_active_vote_type = vote_type;
-    }
+    // Use a generic label for vote types we can't resolve.
+    // Typically this would mean we are an older client in a newer server that has a
+    // vote type we don't know about.
+    g_draw_vote_notification = true;
+    g_active_vote_type = vote_type.empty() ? std::string{"Vote in progress"} : std::move(vote_type);
+    vote_notification_invalidate_cache();
 }
 
 void remove_hud_vote_notification()
 {
     g_draw_vote_notification = false;
     g_active_vote_type = "";
+    vote_notification_invalidate_cache();
 }
 
 void build_local_player_spectators_strings() {
@@ -1749,8 +1853,19 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
             }
         }
 
+        // The vote panel overlay owns aiming while it is up.
+        if (vote_panel_is_gameplay_overlay_active()) {
+            if (dx) {
+                *dx = 0;
+            }
+            if (dy) {
+                *dy = 0;
+            }
+        }
+
         // If active, do not use mouse wheel scroll delta.
-        if (g_remote_server_cfg_popup.is_active() && dz) {
+        if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active())
+            && dz) {
             *dz = 0;
         }
     }
@@ -1759,7 +1874,7 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
 FunHook<void()> hud_msg_render_hook{
     0x004382D0,
     [] {
-        if (!g_remote_server_cfg_popup.is_active()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             hud_msg_render_hook.call_target();
         }
     },
@@ -2063,7 +2178,19 @@ void chat_menu_action_handler(rf::Key key) {
             // Commands do not play a chat sound or display for user
             const std::string msg = selected_element.long_string;
             if (!msg.empty()) {
-                send_chat_line_packet(msg, nullptr);
+                // AF 1.4+ servers no longer accept vote calls over chat.
+                const std::optional<AfVoteType> vote_type = chat_menu_simple_vote_type(msg);
+                if (vote_type && is_server_minimum_af_version(1, 4)) {
+                    AfVoteCallParams params{};
+                    params.type = *vote_type;
+                    if (params.type == AfVoteType::Extend) {
+                        params.extend_minutes = af_vote_extend_default_minutes;
+                    }
+                    af_send_vote_call(params);
+                }
+                else {
+                    send_chat_line_packet(msg, nullptr);
+                }
             }
         }
         else if (g_chat_menu_active == ChatMenuType::Spectate) {

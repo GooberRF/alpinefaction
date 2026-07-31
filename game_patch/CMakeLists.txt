@@ -108,6 +108,8 @@ set(SRCS
     input/mouse.h
     input/mouse.cpp
     input/key.cpp
+    input/control_input_filter.h
+    input/control_input_filter.cpp
     hud/hud_colors.cpp
     hud/hud_scale.cpp
     hud/hud_personas.cpp
@@ -168,6 +170,8 @@ set(SRCS
     multi/server.h
     multi/server.cpp
     multi/votes.cpp
+    multi/vote_client.h
+    multi/vote_client.cpp
     multi/commands.cpp
     multi/multi_tdm.cpp
     multi/endgame_votes.cpp
@@ -288,6 +292,8 @@ set(SRCS
     misc/ui.cpp
     misc/spray_picker.cpp
     misc/spray_picker.h
+    misc/vote_panel.cpp
+    misc/vote_panel.h
     misc/game.cpp
     misc/level.cpp
     misc/waypoints.cpp

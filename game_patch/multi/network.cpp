@@ -32,6 +32,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "sprays.h"
+#include "vote_client.h"
 #include "bots/bot_chat_manager.h"
 #include "../main/main.h"
 #include "../os/os.h"
@@ -815,10 +816,14 @@ FunHook<MultiIoPacketHandler> process_left_game_packet_hook{
 };
 
 void handle_vote_or_ready_up_msg(const std::string_view msg) {
+    // AF 1.4+ servers drive the vote HUD through af_sreq_vote_state and never
+    // send us this text, so the sniffing below only serves older servers.
+    const bool server_uses_vote_packets = is_server_minimum_af_version(1, 4);
+
     constexpr std::string_view vote_start_prefix =
         "\n=============== VOTE STARTING ===============\n";
 
-    if (string_istarts_with(msg, vote_start_prefix)) {
+    if (!server_uses_vote_packets && string_istarts_with(msg, vote_start_prefix)) {
         // Move past the prefix to start parsing the actual vote title
         const std::string_view title = msg.substr(vote_start_prefix.size());
         // Find the position of " vote started by"
@@ -834,7 +839,9 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     // remove ready up prompt if match is cancelled prematurely
     constexpr std::string_view match_canceled_msg = "\xA6 Vote passed: The match has been canceled";
     if (string_istarts_with(msg, match_canceled_msg) || string_istarts_with(msg, match_canceled_msg.substr(2))) {
-        remove_hud_vote_notification();
+        if (!server_uses_vote_packets) {
+            remove_hud_vote_notification();
+        }
         set_local_pre_match_active(false);
         return;
     }
@@ -848,14 +855,16 @@ void handle_vote_or_ready_up_msg(const std::string_view msg) {
     };
 
     // remove the vote notification if the vote has ended
-    for (const std::string_view& end_msg : vote_end_messages) {
-        if (string_istarts_with(msg, end_msg)
-            || string_istarts_with(msg, end_msg.substr(2))) {
-            remove_hud_vote_notification();
-            return;
+    if (!server_uses_vote_packets) {
+        for (const std::string_view& end_msg : vote_end_messages) {
+            if (string_istarts_with(msg, end_msg)
+                || string_istarts_with(msg, end_msg.substr(2))) {
+                remove_hud_vote_notification();
+                return;
+            }
         }
     }
-    
+
     // TODO: remove after AF 1.4 ships — the two ready-up blocks below drive the
     // ready prompt from server chat text for AF 1.3 clients on 1.4 servers.
 
@@ -2522,6 +2531,7 @@ FunHook<void()> multi_stop_hook{
     [] {
         g_af_server_info.reset(); // Clear server info when leaving
         mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
+        vote_client_reset(); // drop the cached vote options and active vote state
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving

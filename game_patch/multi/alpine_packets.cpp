@@ -3,6 +3,8 @@
 #include <cassert>
 #include <algorithm>
 #include <array>
+#include <limits>
+#include <optional>
 #include <ranges>
 #include <unordered_map>
 #include <common/utils/bool-utils.h>
@@ -24,6 +26,7 @@
 #include "sprays.h"
 #include "bagman.h"
 #include "pit.h"
+#include "vote_client.h"
 #include "../misc/player.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -619,6 +622,20 @@ void serialize_payload(const PitQueueReqPayload& payload, std::byte* buf, size_t
     buf[offset++] = static_cast<std::byte>(payload.action);
 }
 
+// af_req_vote_cast
+void serialize_payload(const VoteCastReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.is_yes);
+}
+
+// af_req_vote_options
+void serialize_payload(const VoteOptionsReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.flags);
+    std::memcpy(buf + offset, &payload.known_generation, sizeof(payload.known_generation));
+    offset += sizeof(payload.known_generation);
+}
+
 // af_sreq_ready_prompt
 void serialize_payload(const ReadyPromptPayload& payload, std::byte* buf, size_t& offset)
 {
@@ -787,6 +804,588 @@ void af_send_pit_queue_request(uint8_t action)
     af_send_client_req_packet(packet, true); // reliable
 }
 
+// ============================================================================
+// Vote system packets
+// ============================================================================
+
+namespace
+{
+
+// Bounds-checked little-endian writers/readers for the variable-length vote
+// payloads. Everything is written into a fixed packet buffer, so a payload that
+// would overflow simply marks the writer failed and the caller drops the packet.
+struct VoteWriter
+{
+    std::byte* buf;
+    size_t cap;
+    size_t off;
+    bool ok = true;
+
+    void u8(uint8_t v)
+    {
+        if (!ok || 1 > cap - off) {
+            ok = false;
+            return;
+        }
+        buf[off++] = static_cast<std::byte>(v);
+    }
+
+    void u16(uint16_t v)
+    {
+        if (!ok || sizeof(v) > cap - off) {
+            ok = false;
+            return;
+        }
+        std::memcpy(buf + off, &v, sizeof(v));
+        off += sizeof(v);
+    }
+
+    void u32(uint32_t v)
+    {
+        if (!ok || sizeof(v) > cap - off) {
+            ok = false;
+            return;
+        }
+        std::memcpy(buf + off, &v, sizeof(v));
+        off += sizeof(v);
+    }
+
+    void i32(int32_t v)
+    {
+        if (!ok || sizeof(v) > cap - off) {
+            ok = false;
+            return;
+        }
+        std::memcpy(buf + off, &v, sizeof(v));
+        off += sizeof(v);
+    }
+
+    void f32(float v)
+    {
+        if (!ok || sizeof(v) > cap - off) {
+            ok = false;
+            return;
+        }
+        std::memcpy(buf + off, &v, sizeof(v));
+        off += sizeof(v);
+    }
+
+    void str(std::string_view s)
+    {
+        const size_t n = std::min<size_t>(s.size(), 255);
+        u8(static_cast<uint8_t>(n));
+        if (!ok || n > cap - off) {
+            ok = false;
+            return;
+        }
+        if (n) {
+            std::memcpy(buf + off, s.data(), n); // an empty string_view's data() may be null
+        }
+        off += n;
+    }
+
+    void bytes(const void* src, size_t n)
+    {
+        if (!ok || n > cap - off) {
+            ok = false;
+            return;
+        }
+        std::memcpy(buf + off, src, n);
+        off += n;
+    }
+};
+
+struct VoteReader
+{
+    const uint8_t* data;
+    size_t len;
+    size_t pos = 0;
+    bool ok = true;
+
+    uint8_t u8()
+    {
+        if (!ok || 1 > len - pos) {
+            ok = false;
+            return 0;
+        }
+        return data[pos++];
+    }
+
+    uint16_t u16()
+    {
+        uint16_t v = 0;
+        if (!ok || sizeof(v) > len - pos) {
+            ok = false;
+            return 0;
+        }
+        std::memcpy(&v, data + pos, sizeof(v));
+        pos += sizeof(v);
+        return v;
+    }
+
+    uint32_t u32()
+    {
+        uint32_t v = 0;
+        if (!ok || sizeof(v) > len - pos) {
+            ok = false;
+            return 0;
+        }
+        std::memcpy(&v, data + pos, sizeof(v));
+        pos += sizeof(v);
+        return v;
+    }
+
+    int32_t i32()
+    {
+        int32_t v = 0;
+        if (!ok || sizeof(v) > len - pos) {
+            ok = false;
+            return 0;
+        }
+        std::memcpy(&v, data + pos, sizeof(v));
+        pos += sizeof(v);
+        return v;
+    }
+
+    float f32()
+    {
+        float v = 0.0f;
+        if (!ok || sizeof(v) > len - pos) {
+            ok = false;
+            return 0.0f;
+        }
+        std::memcpy(&v, data + pos, sizeof(v));
+        pos += sizeof(v);
+        return v;
+    }
+
+    std::string str()
+    {
+        const uint8_t n = u8();
+        if (!ok || n > len - pos) {
+            ok = false;
+            return {};
+        }
+        std::string v(reinterpret_cast<const char*>(data + pos), n);
+        pos += n;
+        return v;
+    }
+};
+
+// The protocol's only limits on a vote call are the u8 count encoding and
+// rf::max_packet_size (enforced by VoteWriter) — there is no separate policy cap.
+//
+// Returns false if the selection cannot be encoded. Never truncates or wraps:
+// silently dropping part of a player's mutator selection would start a vote that
+// isn't the one they asked for.
+bool write_vote_mutators(VoteWriter& w, const std::vector<VoteMutatorInput>& mutators)
+{
+    constexpr size_t u8_max = std::numeric_limits<uint8_t>::max();
+
+    const size_t count = mutators.size();
+    if (count > u8_max) {
+        xlog::warn("af_send_vote_call: {} mutators does not fit the u8 count encoding", count);
+        return false;
+    }
+
+    w.u8(static_cast<uint8_t>(count));
+    for (size_t i = 0; i < count; ++i) {
+        const VoteMutatorInput& mutator = mutators[i];
+        w.u8(mutator.mutator_id);
+        const size_t option_count = mutator.options.size();
+        if (option_count > u8_max) {
+            xlog::warn("af_send_vote_call: mutator {} has {} options, which does not fit the u8 count encoding",
+                       mutator.mutator_id, option_count);
+            return false;
+        }
+        w.u8(static_cast<uint8_t>(option_count));
+        for (size_t o = 0; o < option_count; ++o) {
+            const VoteMutatorOptionInput& opt = mutator.options[o];
+            w.u8(opt.option_id);
+            w.u8(static_cast<uint8_t>(opt.type));
+            switch (opt.type) {
+                case MutatorOptionType::Bool:
+                    w.u8(opt.bool_value ? 1 : 0);
+                    break;
+                case MutatorOptionType::Choice:
+                    w.u8(opt.choice_index);
+                    break;
+                case MutatorOptionType::Int:
+                    w.i32(opt.int_value);
+                    break;
+                case MutatorOptionType::Float:
+                    w.f32(opt.float_value);
+                    break;
+                case MutatorOptionType::String:
+                    w.str(opt.string_value);
+                    break;
+                default:
+                    xlog::warn("af_send_vote_call: mutator {} option {} has unknown type {}",
+                               mutator.mutator_id, opt.option_id, static_cast<int>(opt.type));
+                    w.ok = false;
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool read_vote_mutators(VoteReader& r, std::vector<VoteMutatorInput>& out)
+{
+    // Both counts are u8 reads, so they are inherently <= 255 and every reserve()
+    // below is bounded by the encoding itself. The real bound on a hostile
+    // payload is the reader's length check against the declared packet size.
+    const uint8_t count = r.u8();
+    if (!r.ok) {
+        return false;
+    }
+    out.reserve(count);
+    for (uint8_t i = 0; i < count; ++i) {
+        VoteMutatorInput mutator;
+        mutator.mutator_id = r.u8();
+        const uint8_t option_count = r.u8();
+        if (!r.ok) {
+            return false;
+        }
+        mutator.options.reserve(option_count);
+        for (uint8_t o = 0; o < option_count; ++o) {
+            VoteMutatorOptionInput opt;
+            opt.option_id = r.u8();
+            const uint8_t type_raw = r.u8();
+            if (!r.ok) {
+                return false;
+            }
+            opt.type = static_cast<MutatorOptionType>(type_raw);
+            switch (opt.type) {
+                case MutatorOptionType::Bool:
+                    opt.bool_value = r.u8() != 0;
+                    break;
+                case MutatorOptionType::Choice:
+                    opt.choice_index = r.u8();
+                    break;
+                case MutatorOptionType::Int:
+                    opt.int_value = r.i32();
+                    break;
+                case MutatorOptionType::Float:
+                    opt.float_value = r.f32();
+                    break;
+                case MutatorOptionType::String:
+                    opt.string_value = r.str();
+                    break;
+                default:
+                    // A real client/server schema mismatch lands here, so make it
+                    // diagnosable rather than a silent rejection.
+                    xlog::warn("read_vote_mutators: mutator {} option {} has unknown type {}",
+                               mutator.mutator_id, opt.option_id, type_raw);
+                    return false;
+            }
+            if (!r.ok) {
+                return false;
+            }
+            mutator.options.push_back(std::move(opt));
+        }
+        out.push_back(std::move(mutator));
+    }
+    return r.ok;
+}
+
+} // namespace
+
+// Call a vote through the structured path (AF 1.4+ servers only).
+void af_send_vote_call(const AfVoteCallParams& params)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+
+    VoteWriter w{buf, sizeof(buf), 0};
+    w.bytes(&header, sizeof(header));
+    w.u8(static_cast<uint8_t>(af_client_req_type::af_req_vote_call));
+    w.u8(static_cast<uint8_t>(params.type));
+
+    bool encoded = true;
+    switch (params.type) {
+        case AfVoteType::Kick:
+            w.u8(params.target_player_id);
+            break;
+        case AfVoteType::Level:
+            w.str(params.level);
+            w.u8(params.gametype);
+            encoded = write_vote_mutators(w, params.mutators);
+            break;
+        case AfVoteType::Match:
+            w.u8(params.team_size);
+            w.str(params.level);
+            w.u8(params.gametype);
+            encoded = write_vote_mutators(w, params.mutators);
+            break;
+        case AfVoteType::Extend:
+            w.u8(params.extend_minutes);
+            break;
+        default:
+            break; // parameterless vote types
+    }
+
+    if (!encoded) {
+        return; // write_vote_mutators already logged why
+    }
+
+    if (!w.ok) {
+        // Would have overflowed the packet buffer. Dropping the send is the only
+        // safe option, but never do it silently.
+        xlog::warn("af_send_vote_call: vote type {} payload exceeds the {} byte packet buffer; not sent",
+                   static_cast<int>(params.type), rf::max_packet_size);
+        return;
+    }
+
+    header.size = static_cast<uint16_t>(w.off - sizeof(header));
+    std::memcpy(buf, &header, sizeof(header));
+    af_send_packet(rf::local_player, buf, static_cast<int>(w.off), true);
+}
+
+void af_send_vote_cast(bool is_yes_vote)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + yes/no
+    packet.req_type = af_client_req_type::af_req_vote_cast;
+    packet.payload = VoteCastReqPayload{static_cast<uint8_t>(is_yes_vote ? 1 : 0)};
+
+    af_send_client_req_packet(packet, true); // reliable
+}
+
+void af_send_vote_cancel()
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t); // req_type only
+    packet.req_type = af_client_req_type::af_req_vote_cancel;
+    packet.payload = std::monostate{};
+
+    af_send_client_req_packet(packet, true); // reliable
+}
+
+void af_send_vote_options_request(bool has_cache, uint32_t known_generation)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    VoteOptionsReqPayload payload{};
+    payload.flags = has_cache ? AF_VOTE_OPTIONS_REQ_HAS_CACHE : uint8_t{0};
+    payload.known_generation = has_cache ? known_generation : 0;
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(payload.flags) + sizeof(payload.known_generation);
+    packet.req_type = af_client_req_type::af_req_vote_options;
+    packet.payload = payload;
+
+    af_send_client_req_packet(packet, true); // reliable
+}
+
+// Shared tail for the three af_sreq_vote_state events: `w` already holds the
+// header, req_type and event byte plus the event-specific fields.
+static void af_finish_vote_state_packet(rf::Player* player, std::byte* buf, VoteWriter& w)
+{
+    if (!w.ok) {
+        xlog::warn("af_send_vote_state: payload too large");
+        return;
+    }
+
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    header.size = static_cast<uint16_t>(w.off - sizeof(header));
+    std::memcpy(buf, &header, sizeof(header));
+    af_send_packet(player, buf, static_cast<int>(w.off), true);
+}
+
+// Can this recipient receive the structured vote events at all?
+static bool af_vote_recipient_is_structured(rf::Player* player)
+{
+    return player && player != rf::local_player && player->net_data
+        && is_player_minimum_af_client_version(player, 1, 4, 0);
+}
+
+void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time_remaining_sec,
+                              uint8_t yes, uint8_t no, uint8_t remaining, bool is_owner, bool is_sync,
+                              std::string_view initiator_name, std::string_view title)
+{
+    if (!rf::is_server || !af_vote_recipient_is_structured(player)) {
+        return;
+    }
+
+    // Fixed part: header + req_type + event + vote_type + u16 time + yes/no/
+    // remaining + flags + the two string length bytes.
+    constexpr size_t fixed_len = sizeof(RF_GamePacketHeader) + 9 + 2;
+    // Guards str_budget against underflowing if fields are ever added here.
+    static_assert(fixed_len < rf::max_packet_size,
+                  "af_sreq_vote_state start fixed fields no longer fit a packet");
+    constexpr size_t str_budget = rf::max_packet_size - fixed_len;
+
+    // A long title (many mutators) must never cost the client its START event,
+    // so both strings are truncated to fit rather than overflowing the packet.
+    const size_t name_len = std::min<size_t>({initiator_name.size(), 255, str_budget});
+    const size_t title_len = std::min<size_t>({title.size(), 255, str_budget - name_len});
+
+    uint8_t flags = 0;
+    if (is_owner) {
+        flags |= AF_VOTE_STATE_FLAG_OWNER;
+    }
+    if (is_sync) {
+        flags |= AF_VOTE_STATE_FLAG_SYNC;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
+    w.u8(static_cast<uint8_t>(AfVoteStateEvent::Start));
+    w.u8(static_cast<uint8_t>(type));
+    w.u16(time_remaining_sec);
+    w.u8(yes);
+    w.u8(no);
+    w.u8(remaining);
+    w.u8(flags);
+    w.str(initiator_name.substr(0, name_len));
+    w.str(title.substr(0, title_len));
+    af_finish_vote_state_packet(player, buf, w);
+}
+
+void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint8_t remaining)
+{
+    if (!rf::is_server || !af_vote_recipient_is_structured(player)) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
+    w.u8(static_cast<uint8_t>(AfVoteStateEvent::Update));
+    w.u8(yes);
+    w.u8(no);
+    w.u8(remaining);
+    af_finish_vote_state_packet(player, buf, w);
+}
+
+void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
+                            std::string_view detail)
+{
+    if (!rf::is_server || !af_vote_recipient_is_structured(player)) {
+        return;
+    }
+
+    // header + req_type + event + result + flags + the detail length byte.
+    constexpr size_t fixed_len = sizeof(RF_GamePacketHeader) + 4 + 1;
+    static_assert(fixed_len < rf::max_packet_size,
+                  "af_sreq_vote_state end fixed fields no longer fit a packet");
+    // The detail line is truncated rather than dropped: losing the end event
+    // entirely would strand the client's HUD notification.
+    const size_t detail_len = std::min<size_t>({detail.size(), 255, rf::max_packet_size - fixed_len});
+
+    std::byte buf[rf::max_packet_size];
+    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
+    w.u8(static_cast<uint8_t>(AfVoteStateEvent::End));
+    w.u8(static_cast<uint8_t>(result));
+    w.u8(passed ? AF_VOTE_END_FLAG_PASSED : uint8_t{0});
+    w.str(detail.substr(0, detail_len));
+    af_finish_vote_state_packet(player, buf, w);
+}
+
+// Stream the vote-options blob as Begin -> Data* -> End on the deferred reliable
+// queue. Everything on that queue is drained FIFO into rf::net_rel_send, which is
+// an ordered reliable channel, so the client sees the three event kinds in the
+// order they were queued and no chunk index or chunk count is needed. No size
+// ceiling, and the per-packet payload length comes from the packet header rather
+// than a u8, so a chunk carries ~500 bytes instead of 255.
+//
+// Note the End sentinel is QUEUED, not sent with rf::multi_io_send_reliable:
+// mixing an immediate send with queued packets would let the sentinel overtake
+// the data it terminates.
+void af_send_vote_options_data(rf::Player* player)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    // Gate on the recipient BEFORE touching the blob: building it bumps the
+    // generation, so an ineligible client must not be able to force a rebuild.
+    if (!af_vote_recipient_is_structured(player)) {
+        return;
+    }
+
+    uint32_t generation = 0;
+    const std::vector<uint8_t>& blob = server_vote_get_options_blob(generation);
+
+    const int socket = player->net_data->reliable_socket;
+
+    // req_type + stream event + generation
+    constexpr size_t frame_prefix = sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint32_t);
+    constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(RF_GamePacketHeader) - frame_prefix;
+    static_assert(max_chunk_len > 0, "vote options chunk payload no longer fits a packet");
+
+    const auto queue_frame = [&](AfVoteOptionsStream event, const uint8_t* data, size_t len,
+                                 std::optional<uint32_t> extra) {
+        std::byte buf[rf::max_packet_size];
+        VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+        w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_options_data));
+        w.u8(static_cast<uint8_t>(event));
+        w.u32(generation);
+        if (extra) {
+            w.u32(*extra);
+        }
+        if (len) {
+            w.bytes(data, len);
+        }
+        if (!w.ok) {
+            xlog::error("af_send_vote_options_data: frame overflow (event {})", static_cast<int>(event));
+            return false;
+        }
+
+        RF_GamePacketHeader header{};
+        header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+        header.size = static_cast<uint16_t>(w.off - sizeof(header));
+        std::memcpy(buf, &header, sizeof(header));
+
+        send_queues_rel_add_packet(socket, reinterpret_cast<const uint8_t*>(buf), w.off);
+        return true;
+    };
+
+    if (blob.size() > af_vote_options_max_blob_size) {
+        // Would be rejected by the client's accumulation cap anyway, so don't
+        // spend the bandwidth. This is unreachable in practice.
+        xlog::error("af_send_vote_options_data: blob of {} bytes exceeds the {} byte transport cap",
+                    blob.size(), af_vote_options_max_blob_size);
+        return;
+    }
+
+    if (!queue_frame(AfVoteOptionsStream::Begin, nullptr, 0, static_cast<uint32_t>(blob.size()))) {
+        return;
+    }
+    for (size_t sent = 0; sent < blob.size(); sent += max_chunk_len) {
+        const size_t chunk_len = std::min(max_chunk_len, blob.size() - sent);
+        if (!queue_frame(AfVoteOptionsStream::Data, blob.data() + sent, chunk_len, std::nullopt)) {
+            return; // the client discards the unterminated stream
+        }
+    }
+    queue_frame(AfVoteOptionsStream::End, nullptr, 0, std::nullopt);
+
+    xlog::debug("vote options: streamed {} bytes (generation {}) to {}", blob.size(), generation,
+                player->name);
+}
+
 // process client request packet
 static void af_process_client_req_packet(const void* data, size_t len, const rf::NetAddr& addr)
 {
@@ -922,6 +1521,83 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             if (gt_is_pit()) {
                 pit_handle_queue_request(player, action);
             }
+            break;
+        }
+        case af_client_req_type::af_req_vote_call: {
+            VoteReader r{bytes + offset, remaining};
+
+            AfVoteCallParams params{};
+            const uint8_t type_raw = r.u8();
+            if (!r.ok || type_raw >= af_vote_type_count) {
+                xlog::warn("af_process_client_req_packet: bad vote type {}", type_raw);
+                return;
+            }
+            params.type = static_cast<AfVoteType>(type_raw);
+
+            switch (params.type) {
+                case AfVoteType::Kick:
+                    params.target_player_id = r.u8();
+                    break;
+                case AfVoteType::Level:
+                    params.level = r.str();
+                    params.gametype = r.u8();
+                    if (!read_vote_mutators(r, params.mutators)) {
+                        xlog::warn("af_process_client_req_packet: bad vote level mutators");
+                        return;
+                    }
+                    break;
+                case AfVoteType::Match:
+                    params.team_size = r.u8();
+                    params.level = r.str();
+                    params.gametype = r.u8();
+                    if (!read_vote_mutators(r, params.mutators)) {
+                        xlog::warn("af_process_client_req_packet: bad vote match mutators");
+                        return;
+                    }
+                    break;
+                case AfVoteType::Extend:
+                    params.extend_minutes = r.u8();
+                    break;
+                default:
+                    break; // parameterless vote types
+            }
+
+            if (!r.ok) {
+                xlog::warn("af_process_client_req_packet: truncated vote call payload");
+                return;
+            }
+
+            handle_vote_call_packet(player, std::move(params));
+            break;
+        }
+        case af_client_req_type::af_req_vote_cast: {
+            if (remaining < sizeof(uint8_t)) {
+                xlog::warn("af_process_client_req_packet: vote cast payload too short");
+                return;
+            }
+            handle_vote_cast_packet(player, bytes[offset] != 0);
+            break;
+        }
+        case af_client_req_type::af_req_vote_cancel: {
+            handle_vote_cancel_packet(player);
+            break;
+        }
+        case af_client_req_type::af_req_vote_options: {
+            // The payload is optional: a request without it is treated as "I have
+            // no cached blob", so the server always has something to send.
+            bool has_cache = false;
+            uint32_t known_generation = 0;
+            if (remaining >= sizeof(uint8_t)) {
+                has_cache = (bytes[offset] & AF_VOTE_OPTIONS_REQ_HAS_CACHE) != 0;
+                if (has_cache && remaining >= sizeof(uint8_t) + sizeof(uint32_t)) {
+                    std::memcpy(&known_generation, bytes + offset + sizeof(uint8_t),
+                                sizeof(known_generation));
+                }
+                else {
+                    has_cache = false;
+                }
+            }
+            server_vote_handle_options_request(player, has_cache, known_generation);
             break;
         }
         default: {
@@ -1482,6 +2158,101 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             // hud_pit_queue_auto_spectate (the packet can arrive before the
             // local entity finishes dying).
             apply_local_pit_queue_state(flags, position, total);
+            break;
+        }
+        case af_server_req_type::af_sreq_vote_state: {
+            VoteReader r{bytes + offset, remaining};
+            const uint8_t event = r.u8();
+            if (!r.ok) {
+                xlog::warn("af_process_server_req_packet: VoteState payload too short");
+                return;
+            }
+
+            switch (static_cast<AfVoteStateEvent>(event)) {
+                case AfVoteStateEvent::Start: {
+                    const uint8_t type_raw = r.u8();
+                    const uint16_t time_remaining = r.u16();
+                    const uint8_t yes = r.u8();
+                    const uint8_t no = r.u8();
+                    const uint8_t voters_left = r.u8();
+                    const uint8_t flags = r.u8();
+                    std::string initiator_name = r.str();
+                    std::string title = r.str();
+                    // `type_raw` is deliberately NOT bounds-checked: a newer
+                    // server may run a vote type this build predates, and
+                    // dropping the event would leave this client with no HUD, no
+                    // tally and no idea a vote is running while the server still
+                    // counts it as an eligible voter. Only a malformed packet is
+                    // rejected.
+                    if (!r.ok) {
+                        xlog::warn("af_process_server_req_packet: bad VoteState start");
+                        return;
+                    }
+                    vote_state_on_start(type_raw, time_remaining, yes, no,
+                                        voters_left, (flags & AF_VOTE_STATE_FLAG_OWNER) != 0,
+                                        (flags & AF_VOTE_STATE_FLAG_SYNC) != 0,
+                                        std::move(initiator_name), std::move(title));
+                    break;
+                }
+                case AfVoteStateEvent::Update: {
+                    const uint8_t yes = r.u8();
+                    const uint8_t no = r.u8();
+                    const uint8_t voters_left = r.u8();
+                    if (!r.ok) {
+                        xlog::warn("af_process_server_req_packet: bad VoteState update");
+                        return;
+                    }
+                    vote_state_on_update(yes, no, voters_left);
+                    break;
+                }
+                case AfVoteStateEvent::End: {
+                    const uint8_t result = r.u8();
+                    const uint8_t flags = r.u8();
+                    std::string detail = r.str();
+                    if (!r.ok) {
+                        xlog::warn("af_process_server_req_packet: bad VoteState end");
+                        return;
+                    }
+                    vote_state_on_end(static_cast<AfVoteResult>(result),
+                                      (flags & AF_VOTE_END_FLAG_PASSED) != 0, std::move(detail));
+                    break;
+                }
+                default:
+                    xlog::debug("af_process_server_req_packet: unknown VoteState event {}", event);
+                    break;
+            }
+            break;
+        }
+        case af_server_req_type::af_sreq_vote_options_data: {
+            VoteReader r{bytes + offset, remaining};
+            const uint8_t event = r.u8();
+            const uint32_t generation = r.u32();
+            if (!r.ok) {
+                xlog::warn("af_process_server_req_packet: truncated VoteOptionsData frame");
+                return;
+            }
+            switch (static_cast<AfVoteOptionsStream>(event)) {
+                case AfVoteOptionsStream::Begin: {
+                    const uint32_t total_bytes = r.u32();
+                    if (!r.ok) {
+                        xlog::warn("af_process_server_req_packet: truncated VoteOptionsData begin");
+                        return;
+                    }
+                    vote_options_stream_begin(generation, total_bytes);
+                    break;
+                }
+                case AfVoteOptionsStream::Data:
+                    // The chunk is whatever is left in the packet: its length comes
+                    // from the packet header, not from a length byte.
+                    vote_options_stream_data(generation, r.data + r.pos, r.len - r.pos);
+                    break;
+                case AfVoteOptionsStream::End:
+                    vote_options_stream_end(generation);
+                    break;
+                default:
+                    xlog::debug("af_process_server_req_packet: unknown VoteOptionsData event {}", event);
+                    break;
+            }
             break;
         }
         default:
@@ -2338,6 +3109,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
 
     if ((pkt.af_flags & af_server_info_flags::SIF_SERVER_CFG_CHANGED) != 0) {
         g_remote_server_cfg_popup.set_cfg_changed();
+        vote_options_mark_stale(); // votable levels / vote toggles may have changed
     }
 
     // Update footstep activation based on new server permissions
@@ -2529,6 +3301,14 @@ void af_send_server_cfg(rf::Player* player) {
     };
 
     // We cannot send multiple server configs at once.
+    //
+    // Hazard: this clear is not scoped to config packets, so it discards
+    // everything queued for this player, including an unrelated stream that
+    // happens to be in flight (today that means an af_sreq_vote_options_data
+    // blob, which the client recovers from by re-requesting the generation it
+    // never finished receiving). Too rare to be worth solving here.
+    // A future streamed feature should tag its queued packets and clear by
+    // tag rather than widening this clear.
     send_queues_rel_clear_packets(player->net_data->reliable_socket);
 
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
@@ -2544,11 +3324,17 @@ void af_send_server_cfg(rf::Player* player) {
     );
     server_msg_packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG_EOF);
 
-    rf::multi_io_send_reliable(
-        player,
-        &server_msg_packet,
-        server_msg_packet.header.size + sizeof(server_msg_packet.header),
-        0
+    // The EOF sentinel is QUEUED, not sent with rf::multi_io_send_reliable: the
+    // chunks above sit in the deferred reliable queue and are drained a few per
+    // frame, so an immediate send would overtake the content it terminates and
+    // the client would finalize a config that has barely started arriving. The
+    // queue is FIFO per socket, so queuing puts the sentinel behind the chunks.
+    // No payload follows the sentinel, so the packet struct is the whole wire
+    // buffer and the chunk lambda's separate buffer is unnecessary here.
+    send_queues_rel_add_packet(
+        player->net_data->reliable_socket,
+        reinterpret_cast<const uint8_t*>(&server_msg_packet),
+        server_msg_packet.header.size + sizeof(server_msg_packet.header)
     );
 }
 
@@ -2647,6 +3433,43 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
             );
         } else {
             send_chat_line_packet(std::format("\xA6 {}", msg), &player);
+        }
+    }
+}
+
+void af_broadcast_vote_legacy_chat_msg(const std::string_view msg) {
+    if (!rf::is_server) {
+        return;
+    }
+
+    // Matches af_broadcast_automated_chat_msg's console line, so dedicated server
+    // output is identical to what the old per-recipient loop produced.
+    rf::console::print("Server: {}", msg);
+
+    // Built once for the whole broadcast rather than per recipient.
+    const af_server_msg_packet_buf buf = build_automated_chat_msg_packet(msg);
+    std::optional<std::string> pre_1_2_msg;
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player) {
+            continue; // the listen-server host is not part of the vote system
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            continue; // receives the structured af_sreq_vote_state events instead
+        }
+
+        if (is_player_minimum_af_client_version(&player, 1, 2, 0)) {
+            rf::multi_io_send_reliable(
+                &player,
+                &buf.packet,
+                buf.packet.header.size + sizeof(buf.packet.header),
+                0
+            );
+        } else {
+            if (!pre_1_2_msg) {
+                pre_1_2_msg = std::string("\xA6 ") + std::string(msg);
+            }
+            send_chat_line_packet(*pre_1_2_msg, &player);
         }
     }
 }

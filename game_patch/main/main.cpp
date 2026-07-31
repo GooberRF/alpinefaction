@@ -588,6 +588,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     dedi_cfg_init();
     mouse_apply_patch();
     key_apply_patch();
+    control_input_filter_apply_patch();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
     experimental_init();
 #endif

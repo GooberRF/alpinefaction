@@ -28,6 +28,7 @@
 #include <patch_common/FunHook.h>
 #include "../../main/main.h"
 #include "../../graphics/gr.h"
+#include "../../input/control_input_filter.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/ai.h"
@@ -2523,51 +2524,31 @@ FunHook<void(rf::Player*, rf::ControlConfig*, rf::ControlInfo*, int, int)> contr
     },
 };
 
-FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction, bool*)> control_config_check_pressed_hook{
-    0x0043D4F0,
-    [](rf::ControlConfig* ccp, rf::ControlConfigAction action, bool* just_pressed_out) {
-        bool base_just_pressed = false;
-        bool* base_just_pressed_out = just_pressed_out ? &base_just_pressed : nullptr;
-        const bool base_pressed = control_config_check_pressed_hook.call_target(
-            ccp,
-            action,
-            base_just_pressed_out
-        );
-        if (just_pressed_out) {
-            *just_pressed_out = base_just_pressed;
-        }
+// The bot's fire policy, laid over the engine's reading of the attack binds by
+// control_input_filter.
+ControlInputInjection bot_synthetic_fire_injection(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+{
+    if (!is_client_bot_active()
+        || !rf::gameseq_in_gameplay()
+        || !rf::local_player
+        || ccp != &rf::local_player->settings.controls) {
+        return {};
+    }
 
-        if (!is_client_bot_active()
-            || !rf::gameseq_in_gameplay()
-            || !rf::local_player
-            || ccp != &rf::local_player->settings.controls) {
-            return base_pressed;
-        }
-
-        bool synthetic_pressed = false;
-        bool synthetic_just_pressed = false;
-        if (action == rf::CC_ACTION_PRIMARY_ATTACK) {
-            synthetic_pressed = g_client_bot_state.firing.synthetic_primary_fire_down;
-            synthetic_just_pressed = g_client_bot_state.firing.synthetic_primary_fire_just_pressed;
-        }
-        else if (action == rf::CC_ACTION_SECONDARY_ATTACK) {
-            synthetic_pressed = g_client_bot_state.firing.synthetic_secondary_fire_down;
-            synthetic_just_pressed = g_client_bot_state.firing.synthetic_secondary_fire_just_pressed;
-        }
-        else {
-            return base_pressed;
-        }
-
-        if (!synthetic_pressed) {
-            return base_pressed;
-        }
-
-        if (just_pressed_out) {
-            *just_pressed_out = *just_pressed_out || synthetic_just_pressed;
-        }
-        return true;
-    },
-};
+    if (action == rf::CC_ACTION_PRIMARY_ATTACK) {
+        return {
+            g_client_bot_state.firing.synthetic_primary_fire_down,
+            g_client_bot_state.firing.synthetic_primary_fire_just_pressed,
+        };
+    }
+    if (action == rf::CC_ACTION_SECONDARY_ATTACK) {
+        return {
+            g_client_bot_state.firing.synthetic_secondary_fire_down,
+            g_client_bot_state.firing.synthetic_secondary_fire_just_pressed,
+        };
+    }
+    return {};
+}
 
 void ensure_bot_input_hook_installed()
 {
@@ -2577,7 +2558,7 @@ void ensure_bot_input_hook_installed()
 
     if (!g_bot_input_hook_installed) {
         controls_read_internal2_hook.install();
-        control_config_check_pressed_hook.install();
+        control_input_filter_add_press_injection(&bot_synthetic_fire_injection);
         g_bot_input_hook_installed = true;
     }
 }
