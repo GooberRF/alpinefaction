@@ -74,6 +74,7 @@ Version 1.4.0 (Lupin): Not yet released
 - No longer allow a player to call a vote to kick themselves
 - Change default inactive time before a player is set as idle to 60 seconds (from 30 seconds)
 - Stop labeling players as inactive if they are unable to spawn due to a server or gameplay rule
+- `vote extend` can now select how long to extend the round by, from 1 to 60 minutes (defaults to 5)
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Anti-aliasing` option to `ADVANCED` options panel
