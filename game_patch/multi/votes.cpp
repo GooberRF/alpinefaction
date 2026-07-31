@@ -1007,6 +1007,11 @@ struct VoteKick : public Vote
 
 struct VoteExtend : public Vote
 {
+    // Minutes to add.
+    int m_minutes;
+
+    explicit VoteExtend(int minutes) : m_minutes(minutes) {}
+
     VoteType get_type() const override
     {
         return VoteType::Extend;
@@ -1014,17 +1019,22 @@ struct VoteExtend : public Vote
 
     [[nodiscard]] std::string get_title() const override
     {
-        return "EXTEND ROUND BY 5 MINUTES";
+        return std::format("EXTEND ROUND BY {} {}", m_minutes, m_minutes == 1 ? "MINUTE" : "MINUTES");
     }
 
     [[nodiscard]] std::string get_outcome_text(bool accepted) const override
     {
-        return accepted ? "Vote passed: extending round" : Vote::get_outcome_text(false);
+        if (!accepted) {
+            return Vote::get_outcome_text(false);
+        }
+        return std::format("Vote passed: extending round by {} {}", m_minutes,
+                           m_minutes == 1 ? "minute" : "minutes");
     }
 
     void on_accepted() override
     {
-        extend_round_time(5);
+        // extend_round_time takes MINUTES.
+        extend_round_time(m_minutes);
     }
 
     [[nodiscard]] const VoteConfig& get_config() const override
@@ -1799,7 +1809,16 @@ void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params)
             break;
         }
         case AfVoteType::Extend:
-            g_vote_mgr.StartVote<VoteExtend>(sender);
+            if (params.extend_minutes < af_vote_extend_min_minutes
+                || params.extend_minutes > af_vote_extend_max_minutes) {
+                send_vote_reject_msg(
+                    std::format("Cannot start vote: the round can only be extended by {} to {} minutes.",
+                                static_cast<int>(af_vote_extend_min_minutes),
+                                static_cast<int>(af_vote_extend_max_minutes)),
+                    sender);
+                return;
+            }
+            g_vote_mgr.StartVote<VoteExtend>(sender, static_cast<int>(params.extend_minutes));
             break;
         case AfVoteType::Restart:
             g_vote_mgr.StartVote<VoteRestart>(sender);

@@ -117,6 +117,13 @@ static_assert(af_vote_type_count <= 32, "enabled_vote_mask is a u32");
 // "no gametype override" sentinel in vote-call payloads.
 constexpr uint8_t af_vote_gametype_none = 0xFF;
 
+// Extend vote duration, in minutes. Shared by the panel's numeric entry, the
+// chat menu's quick entry and the server's validation of the incoming payload,
+// so all three agree on what a legal request looks like.
+constexpr uint8_t af_vote_extend_min_minutes = 1;
+constexpr uint8_t af_vote_extend_max_minutes = 60;
+constexpr uint8_t af_vote_extend_default_minutes = 5;
+
 // af_sreq_vote_state `event` byte. FROZEN wire constants.
 enum class AfVoteStateEvent : uint8_t
 {
@@ -651,6 +658,7 @@ struct AfVoteCallParams
     uint8_t team_size = 0;                // Match
     std::string level;                    // Level (required) / Match (empty = current)
     uint8_t gametype = af_vote_gametype_none;
+    uint8_t extend_minutes = af_vote_extend_default_minutes;
     std::vector<VoteMutatorInput> mutators;
 };
 

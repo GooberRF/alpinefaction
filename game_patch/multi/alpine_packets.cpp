@@ -1123,6 +1123,9 @@ void af_send_vote_call(const AfVoteCallParams& params)
             w.u8(params.gametype);
             encoded = write_vote_mutators(w, params.mutators);
             break;
+        case AfVoteType::Extend:
+            w.u8(params.extend_minutes);
+            break;
         default:
             break; // parameterless vote types
     }
@@ -1551,6 +1554,9 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                         xlog::warn("af_process_client_req_packet: bad vote match mutators");
                         return;
                     }
+                    break;
+                case AfVoteType::Extend:
+                    params.extend_minutes = r.u8();
                     break;
                 default:
                     break; // parameterless vote types

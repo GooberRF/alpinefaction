@@ -433,8 +433,6 @@ static const ChatMenuList random_funny_menu{
     }
 };
 
-// The parameterless vote entries of the COMMANDS menu, which AF 1.4+ servers
-// take as packets instead of chat.
 static std::optional<AfVoteType> chat_menu_simple_vote_type(std::string_view command)
 {
     if (command == "/vote next") return AfVoteType::Next;
@@ -2185,6 +2183,9 @@ void chat_menu_action_handler(rf::Key key) {
                 if (vote_type && is_server_minimum_af_version(1, 4)) {
                     AfVoteCallParams params{};
                     params.type = *vote_type;
+                    if (params.type == AfVoteType::Extend) {
+                        params.extend_minutes = af_vote_extend_default_minutes;
+                    }
                     af_send_vote_call(params);
                 }
                 else {

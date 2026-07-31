@@ -284,6 +284,7 @@ struct FormState
     std::string manual_level_name;
     int gametype_index = 0; // 0 = server default
     int team_size = 4;
+    int extend_minutes = af_vote_extend_default_minutes;
     std::vector<PanelMutatorSelection> mutators;
     int description_mutator = -1;
 
@@ -846,6 +847,7 @@ void build_form(const VoteOptionsData& options)
     g_form.manual_level_name.clear();
     g_form.gametype_index = 0;
     g_form.team_size = 4;
+    g_form.extend_minutes = af_vote_extend_default_minutes;
     g_form.description_mutator = -1;
     g_form.level_scroll = 0.0f;
     g_form.kick_scroll = 0.0f;
@@ -950,6 +952,22 @@ void manual_level_popup_callback()
     g_form.manual_level_name = buffer;
 }
 
+// Extend's duration entry.
+void extend_minutes_popup_callback()
+{
+    char buffer[32] = "";
+    rf::ui::popup_get_input(buffer, sizeof(buffer));
+    try {
+        g_form.extend_minutes = std::clamp(std::stoi(buffer),
+            static_cast<int>(af_vote_extend_min_minutes),
+            static_cast<int>(af_vote_extend_max_minutes));
+    }
+    catch (const std::exception& e) {
+        // Non-numeric or out of int range: keep whatever was already selected.
+        xlog::info("vote panel: invalid extend duration '{}', reason: {}", buffer, e.what());
+    }
+}
+
 void mutator_option_popup_callback()
 {
     char buffer[32] = "";
@@ -1035,6 +1053,8 @@ bool vote_form_is_sendable(const VoteOptionsData& options)
         }
         case AfVoteType::Level:
             return !selected_level().empty();
+        case AfVoteType::Extend:
+            return true;
         default:
             return true; // Match falls back to the current level; rest are parameterless
     }
@@ -1076,6 +1096,11 @@ void send_vote_from_form(const VoteOptionsData& options)
             params.mutators = build_mutator_inputs(options);
             break;
         }
+        case AfVoteType::Extend:
+            params.extend_minutes = static_cast<uint8_t>(std::clamp(g_form.extend_minutes,
+                static_cast<int>(af_vote_extend_min_minutes),
+                static_cast<int>(af_vote_extend_max_minutes)));
+            break;
         default:
             break; // parameterless
     }
@@ -1577,6 +1602,39 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options)
         if (clicked >= 0) {
             g_form.kick_index = clicked;
             play_click_sound();
+        }
+        return;
+    }
+
+    if (type == AfVoteType::Extend) {
+        const int font_h = rf::gr::get_font_height(lo.font);
+        const int line_h = font_h + 1;
+
+        if (ui.draw) {
+            set_header_color();
+            rf::gr::string(lo.cx, y, "Duration", lo.font);
+        }
+        y += font_h + lo.gap;
+
+        // Numeric entry.
+        static constexpr const char* minutes_label = "Minutes (1-60)";
+        const int label_w = rf::gr::get_string_size(minutes_label, lo.font).first + lo.gap * 2;
+        const int value_w =
+            std::min(std::max(scaled(96.0f), lo.row_h * 3), std::max(lo.row_h, lo.cw - label_w));
+        if (ui.draw) {
+            draw_label(ui, {lo.cx, y + (lo.row_h - font_h) / 2, label_w, lo.row_h}, minutes_label,
+                lo.font);
+        }
+        const Rect value_rect{lo.cx + label_w, y, value_w, lo.row_h};
+        const std::string value_text = std::format("{}", g_form.extend_minutes);
+        if (ui_button(ui, value_rect, value_text.c_str(), lo.font)) {
+            rf::ui::popup_message("Minutes to extend (1-60):", "", extend_minutes_popup_callback, 1);
+        }
+        y += lo.row_h + lo.gap * 2;
+
+        if (ui.draw) {
+            draw_wrapped({lo.cx, y, lo.cw, std::max(line_h, body_bottom - y)},
+                types[g_form.type_index]->description, lo.font, line_h);
         }
         return;
     }
