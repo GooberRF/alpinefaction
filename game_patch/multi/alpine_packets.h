@@ -168,7 +168,7 @@ enum class AfVoteOptionsStream : uint8_t
 };
 
 // Hard ceiling on a reassembled vote-options blob.
-// Should never be legitimately reached.
+// Defense in depth, should never be legitimately reached.
 constexpr uint32_t af_vote_options_max_blob_size = 1024 * 1024;
 
 enum af_vote_options_req_flags : uint8_t

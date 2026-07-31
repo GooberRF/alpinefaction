@@ -304,10 +304,7 @@ public:
         }
     }
 
-    // Tell every structured client the vote is over. Idempotent: a vote that
-    // disappears for any other reason (kick target left, limbo, ...) still gets
-    // exactly one end event.
-    //
+    // Tell every structured client the vote is over.
     // `passed` is carried separately from `result` because they are independent: a
     // vote that TIMES OUT can still pass. `detail` is the same line legacy clients
     // are sent as chat, so a 1.4 client can print text equivalent to theirs.
@@ -695,7 +692,7 @@ static bool is_level_allowed_for_vote(const std::string& level_name, rf::Player*
     return true;
 }
 
-// "(CTF)" / "[Instagib, Rails]" suffixes appended to level and match vote titles.
+// "(GAMETYPE)" / "[MUTATOR]" suffixes appended to level and match vote titles.
 static std::string build_rules_title_suffix(std::optional<rf::NetGameType> gametype,
                                             const std::string& mutator_labels)
 {
@@ -1682,23 +1679,20 @@ static bool check_voter_eligibility(rf::Player* sender)
     return true;
 }
 
-void handle_vote_command(std::string_view vote_name, rf::Player* sender)
+// Chat is a legacy path: 1.4+ clients call, cast and cancel with packets. All that
+// survives here is casting, for clients too old to have af_req_vote_cast.
+bool handle_vote_command(std::string_view vote_name, rf::Player* sender)
 {
-    if (!check_voter_eligibility(sender)) {
-        return;
+    const bool is_yes = vote_name == "yes" || vote_name == "y";
+    if (!is_yes && vote_name != "no" && vote_name != "n") {
+        return false;
     }
 
-    if (vote_name == "yes" || vote_name == "y")
-        g_vote_mgr.add_player_vote(true, sender);
-    else if (vote_name == "no" || vote_name == "n")
-        g_vote_mgr.add_player_vote(false, sender);
-    else if (vote_name == "cancel")
-        g_vote_mgr.try_cancel_vote(sender);
-    else
-        send_vote_reject_msg(
-            "Calling votes via chat is no longer supported. Vote calling requires Alpine Faction 1.4+ - "
-            "upgrade at alpinefaction.com. You can still vote with /vote yes or /vote no.",
-            sender, true);
+    // Recognized either way: an ineligible voter has already been told why.
+    if (check_voter_eligibility(sender)) {
+        g_vote_mgr.add_player_vote(is_yes, sender);
+    }
+    return true;
 }
 
 // A packet-supplied level name reaches both c_str() paths (is_level_name_valid,
@@ -1844,9 +1838,9 @@ void handle_vote_cancel_packet(rf::Player* sender)
     if (!rf::is_server || !sender) {
         return;
     }
-    // Same gate as the chat `/vote cancel` path. try_cancel_vote already rejects
-    // anyone who isn't the owner, so this only matters for an owner who has since
-    // become ineligible, but the two paths must not diverge.
+    // Same eligibility gate as the call and cast packets. try_cancel_vote already
+    // rejects anyone who isn't the owner, so this only matters for an owner who has
+    // since become ineligible, but the entry points must not diverge.
     if (!check_voter_eligibility(sender)) {
         return;
     }

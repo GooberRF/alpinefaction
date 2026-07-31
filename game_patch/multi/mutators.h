@@ -57,11 +57,21 @@ struct MutatorOptionInfo
     std::vector<MutatorOptionChoice> choices; // Choice only
 };
 
+// A mutator that needs no client-side support at all: it imposes no version
+// floor and does not even require an Alpine client.
+inline constexpr int MUTATOR_NO_CLIENT_REQUIREMENT = 0;
+
 struct MutatorInfo
 {
     MutatorId id = MutatorId::Instagib;
     std::string name;  // canonical, matches the TOML `name` key
     std::string label; // shown in the printed rules and the client UI
+
+    // Minimum Alpine Faction MINOR version a client needs in order to play on a
+    // server with this mutator active, or MUTATOR_NO_CLIENT_REQUIREMENT for
+    // none.
+    int min_client_minor_version = MUTATOR_NO_CLIENT_REQUIREMENT;
+
     std::vector<MutatorOptionInfo> options;
 };
 
@@ -79,6 +89,11 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
 const std::vector<MutatorInfo>& mutators_get_registry();
 const MutatorInfo* mutators_find_by_id(MutatorId id);
 const MutatorInfo* mutators_find_by_name(std::string_view name);
+
+// Highest min_client_minor_version among the mutators these declarations put in
+// force, or MUTATOR_NO_CLIENT_REQUIREMENT when none of them needs client-side
+// support (including the empty list).
+int mutators_min_client_minor_version(const std::vector<MutatorDeclaration>& declarations);
 
 // Declarations -> TOML, the shape apply_mutators_from_toml consumes.
 toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclaration>& declarations);

@@ -68,12 +68,10 @@ Version 1.4.0 (Lupin): Not yet released
 - Default inactivity tracking for players in dedicated servers to `true`, but kicking inactive players to `false`
 - Add `-debug` command line switch to enable additional debug logging, intended to help identify long-standing netcode issues that are difficult to nail down.
 - Add automatic team balance option which handles unbalanced teams mid-game and stops players from switching teams if it would unbalance them
-- Send live vote tallies and the remaining vote time to Alpine Faction 1.4+ clients, and send the current vote state to players who join while a vote is running
-- Cancel any active vote when the level changes, and no longer allow votes to be called between levels
 - Rate limit spawn-denied notifications (Alpine restriction, anti-cheat, match in progress, respawn delay) to one message per 5 seconds per player so repeated spawn attempts no longer flood chat
 - Truncate over-long names from dedicated server config files when they are quoted in console warnings
 - Remove `vote gametype`, game type selection is now part of `vote level`
-- Tell clients which levels a server actually allows votes for, so the vote panel no longer offers levels the server would refuse
+- No longer allow a player to call a vote to kick themselves
 - Change default inactive time before a player is set as idle to 60 seconds (from 30 seconds)
 - Stop labeling players as inactive if they are unable to spawn due to a server or gameplay rule
 
@@ -116,7 +114,6 @@ Version 1.4.0 (Lupin): Not yet released
 - Fix crash on MinGW builds when launching a dedicated server
 - Fix server version checks comparing each version field independently, which would have rejected a future major version
 - Fix out of bounds read when applying level rules if the rotation shrank while a level was running
-- No longer allow a player to call a vote to kick themselves
 - Fix the remote server config display sometimes being treated as complete before all of its content had arrived
 
 [@is-this-c](https://github.com/is-this-c)

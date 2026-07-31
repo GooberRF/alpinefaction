@@ -1114,8 +1114,9 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
         );
     }
     else if (cmd_name == "vote") {
-        // Only used for old clients participating in a vote.
-        handle_vote_command(strip_by_space(cmd_arg).first, sender);
+        // Only used by old clients casting a vote. Anything else under `vote` moved
+        // to packets in 1.4, so it falls through as unrecognized like any other.
+        return handle_vote_command(strip_by_space(cmd_arg).first, sender);
     }
     else if (cmd_name == "nextmap" || cmd_name == "nextlevel") {
         handle_next_map_command(sender);
@@ -4478,6 +4479,14 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 4);
+    }
+
+    // Mutators declare their own client requirement in the registry.
+    const int mutator_minor_version =
+        mutators_min_client_minor_version(g_alpine_server_config_active_rules.mutators.declarations);
+    if (mutator_minor_version > MUTATOR_NO_CLIENT_REQUIREMENT) {
+        requires_alpine = true;
+        min_minor_version = std::max(min_minor_version, mutator_minor_version);
     }
 
     return {requires_alpine, min_minor_version, hard_reject, require_release_version};

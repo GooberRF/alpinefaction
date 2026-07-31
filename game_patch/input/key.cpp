@@ -286,7 +286,6 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW);
         alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
-        // F1/F2/F3/F5 are the existing AF multiplayer cluster; F4 is the free slot.
         alpine_control_config_add_item(ccp, "Call Vote Menu", false, rf::KEY_F4, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
     },

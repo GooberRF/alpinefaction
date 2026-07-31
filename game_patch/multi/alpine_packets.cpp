@@ -1209,10 +1209,7 @@ static void af_finish_vote_state_packet(rf::Player* player, std::byte* buf, Vote
     af_send_packet(player, buf, static_cast<int>(w.off), true);
 }
 
-// Can this recipient receive the structured vote events at all? The
-// listen-server host cannot: it is excluded from the vote system entirely (it can
-// neither call nor cast, see the F1/F2 and vote-panel gates on !rf::is_server),
-// so there is deliberately no local-delivery path here.
+// Can this recipient receive the structured vote events at all?
 static bool af_vote_recipient_is_structured(rf::Player* player)
 {
     return player && player != rf::local_player && player->net_data
@@ -1307,14 +1304,13 @@ void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed
 // Stream the vote-options blob as Begin -> Data* -> End on the deferred reliable
 // queue. Everything on that queue is drained FIFO into rf::net_rel_send, which is
 // an ordered reliable channel, so the client sees the three event kinds in the
-// order they were queued and no chunk index or chunk count is needed. Unlike the
-// old u8 seq/total framing there is no size ceiling, and the per-packet payload
-// length comes from the packet header rather than a u8, so a chunk carries ~500
-// bytes instead of 255.
+// order they were queued and no chunk index or chunk count is needed. No size
+// ceiling, and the per-packet payload length comes from the packet header rather
+// than a u8, so a chunk carries ~500 bytes instead of 255.
 //
 // Note the End sentinel is QUEUED, not sent with rf::multi_io_send_reliable:
 // mixing an immediate send with queued packets would let the sentinel overtake
-// the data it terminates (af_send_server_cfg used to have exactly that bug).
+// the data it terminates.
 void af_send_vote_options_data(rf::Player* player)
 {
     if (!rf::is_server) {
@@ -2181,7 +2177,7 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                     // dropping the event would leave this client with no HUD, no
                     // tally and no idea a vote is running while the server still
                     // counts it as an eligible voter. Only a malformed packet is
-                    // rejected. See ActiveVoteState in vote_client.h.
+                    // rejected.
                     if (!r.ok) {
                         xlog::warn("af_process_server_req_packet: bad VoteState start");
                         return;
@@ -3304,9 +3300,9 @@ void af_send_server_cfg(rf::Player* player) {
     // everything queued for this player, including an unrelated stream that
     // happens to be in flight (today that means an af_sreq_vote_options_data
     // blob, which the client recovers from by re-requesting the generation it
-    // never finished receiving). Judged too rare to be worth solving here. A
-    // future streamed feature should tag its queued packets and clear by tag
-    // rather than widening this clear.
+    // never finished receiving). Too rare to be worth solving here.
+    // A future streamed feature should tag its queued packets and clear by
+    // tag rather than widening this clear.
     send_queues_rel_clear_packets(player->net_data->reliable_socket);
 
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);

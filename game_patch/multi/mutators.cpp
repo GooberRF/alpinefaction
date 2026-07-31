@@ -228,16 +228,21 @@ struct MutatorDef
     MutatorId id;
     const char* name;  // matched against the toml name
     const char* label; // shown in the printed rules
+    // Minimum AF client MINOR version (major implicitly 1) needed to play with
+    // this mutator active, or MUTATOR_NO_CLIENT_REQUIREMENT.
+    int min_client_minor_version;
     void (*apply)(AlpineServerConfigRules&, const toml::table&);
     const MutatorOptionDef* options;
     size_t num_options;
 };
 
+// Per-mutator client requirement — what the mutator actually depends on, not
+// necessarily what release it shipped in.
 static const MutatorDef MUTATORS[] = {
-    {MutatorId::Instagib, "instagib", "Instagib", &apply_instagib, nullptr, 0},
-    {MutatorId::Rails, "rails", "Rails", &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
-    {MutatorId::Arena, "arena", "Arena", &apply_arena, nullptr, 0},
-    {MutatorId::Vampire, "vampire", "Vampire", &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
+    {MutatorId::Instagib, "instagib", "Instagib", 4, &apply_instagib, nullptr, 0},
+    {MutatorId::Rails, "rails", "Rails", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
+    {MutatorId::Arena, "arena", "Arena", 4, &apply_arena, nullptr, 0},
+    {MutatorId::Vampire, "vampire", "Vampire", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
@@ -370,6 +375,7 @@ const std::vector<MutatorInfo>& mutators_get_registry()
         info.id = def.id;
         info.name = def.name;
         info.label = def.label;
+        info.min_client_minor_version = def.min_client_minor_version;
 
         for (size_t i = 0; i < def.num_options; ++i) {
             const MutatorOptionDef& opt_def = def.options[i];
@@ -424,6 +430,19 @@ const MutatorInfo* mutators_find_by_name(std::string_view name)
         if (string_iequals(name, info.name))
             return &info;
     return nullptr;
+}
+
+int mutators_min_client_minor_version(const std::vector<MutatorDeclaration>& declarations)
+{
+    int required = MUTATOR_NO_CLIENT_REQUIREMENT;
+    for (const auto& decl : declarations) {
+        // A name with no registry entry cannot be in force — apply_mutators_from_toml
+        // rejects unknown names before a declaration is ever recorded — so a miss
+        // here means "no requirement", not a defaulted one.
+        if (const MutatorInfo* info = mutators_find_by_name(decl.name))
+            required = std::max(required, info->min_client_minor_version);
+    }
+    return required;
 }
 
 void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfigRules& rules)
