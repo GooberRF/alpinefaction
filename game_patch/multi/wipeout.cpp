@@ -373,7 +373,7 @@ void wipeout_do_frame()
     g_internal_spawn_in_progress = false;
 }
 
-bool wipeout_can_player_spawn(rf::Player* player)
+bool wipeout_can_player_spawn(rf::Player* player, bool notify)
 {
     if (!gt_is_wipeout()) return true; // not our problem
     if (!player) return true;
@@ -386,8 +386,11 @@ bool wipeout_can_player_spawn(rf::Player* player)
     const bool between_rounds = rounds_is_between_rounds();
     if (between_rounds || player->round_is_out) {
         // Throttle the notice: the client re-requests a spawn every frame while
-        // the fire button is held, which would otherwise spam chat.
-        if (!player->waiting_msg_timer.valid() || player->waiting_msg_timer.elapsed()) {
+        // the fire button is held, which would otherwise spam chat. With
+        // notify = false the caller only wants the verdict, so nothing is sent
+        // and waiting_msg_timer is left untouched.
+        if (notify
+            && (!player->waiting_msg_timer.valid() || player->waiting_msg_timer.elapsed())) {
             af_send_automated_chat_msg(
                 between_rounds ? "Wait - the next round is starting shortly."
                                : "You're waiting for the next round to begin.",

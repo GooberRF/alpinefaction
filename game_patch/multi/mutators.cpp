@@ -11,6 +11,8 @@
 #include "mutators.h"
 #include "server_internal.h"
 #include "multi.h"
+#include "gametype.h"
+#include "kill.h"
 #include "../rf/weapon.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
@@ -104,6 +106,8 @@ static void apply_instagib(AlpineServerConfigRules& r, const toml::table& /*opts
 // Rails: spawn with baton, no pickups except weapons/ammo, and every
 // weapon/ammo pickup becomes the featured weapon's pickup (rail by default). The
 // featured weapon otherwise behaves normally (reloads, finite ammo, free switch).
+static constexpr bool RAILS_DEFAULT_EXCLUDE_THROWN = true;
+
 static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
 {
     int featured = rf::rail_gun_weapon_type;
@@ -115,7 +119,7 @@ static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
             rf::console::print("  [WARN] Rails mutator: unknown featured_weapon '{}', using rail gun\n",
                                clamp_for_console(*v));
     }
-    const bool exclude_thrown = opts["exclude_thrown"].value_or(true);
+    const bool exclude_thrown = opts["exclude_thrown"].value_or(RAILS_DEFAULT_EXCLUDE_THROWN);
 
     // spawn delay
     r.spawn_delay.enabled = true;
@@ -179,6 +183,21 @@ static void apply_arena(AlpineServerConfigRules& r, const toml::table& /*opts*/)
     r.mutators.pickup_policy = PickupPolicy::WeaponsOnly;
 }
 
+// Vampire: landing damage on another player heals the attacker for a fixed
+// share of the damage that was actually applied — 1:2, i.e. 100 damage dealt
+// gives 50 effective health back.
+static constexpr float VAMPIRE_HEAL_RATIO = 0.5f;
+static constexpr bool VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR = true;
+
+static void apply_vampire(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    r.mutators.vampire_enabled = true;
+
+    // Composed with (not replacing) whatever pickup policy is in force.
+    r.mutators.hide_health_armor_pickups =
+        opts["hide_health_armor_pickups"].value_or(VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR);
+}
+
 // ============================================================================
 // Registry + application order
 // ============================================================================
@@ -199,6 +218,11 @@ static const MutatorOptionDef RAILS_OPTIONS[] = {
     {1, "exclude_thrown", "Keep thrown explosives", MutatorOptionType::Bool},
 };
 
+// Label kept short enough to clear the option row's checkbox label space at 640x480.
+static const MutatorOptionDef VAMPIRE_OPTIONS[] = {
+    {0, "hide_health_armor_pickups", "No health/armor pickups", MutatorOptionType::Bool},
+};
+
 struct MutatorDef
 {
     MutatorId id;
@@ -213,11 +237,13 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::Instagib, "instagib", "Instagib", &apply_instagib, nullptr, 0},
     {MutatorId::Rails, "rails", "Rails", &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
     {MutatorId::Arena, "arena", "Arena", &apply_arena, nullptr, 0},
+    {MutatorId::Vampire, "vampire", "Vampire", &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::Vampire,
     MutatorId::Arena,
     MutatorId::Rails,
     MutatorId::Instagib,
@@ -253,19 +279,15 @@ static bool is_known_mutator_option(const MutatorDef& def, std::string_view key)
     return false;
 }
 
-// Short labels for the featured-weapon selector in the client's vote panel. The
-// stock display names ("Fusion Rocket Launcher") are far wider than the option
-// cycler. Matched case-insensitively against both the weapon's display name and
-// its weapons.tbl class name, so a table without a $Display Name still resolves.
-// Only the label changes; the choice VALUE stays the class name that round-trips
-// through rf::weapon_lookup_type. A weapon matching nothing (TC mods) keeps its
-// original label.
+// Short labels for the featured-weapon selector in the client's vote panel.
 struct WeaponShortLabel
 {
     const char* match; // stock display name or weapons.tbl class name
     const char* label;
 };
 
+// Only display names are needed for Vampire, but map includes class names too
+// so it can be used in the future for other short name translations.
 static const WeaponShortLabel WEAPON_SHORT_LABELS[] = {
     {"Remote Charge", "Charges"},           // class + display
     {"Control Baton", "Baton"},             // display
@@ -305,6 +327,7 @@ static const char* weapon_short_label(std::string_view display_name, std::string
 // Weapons the Rails mutator can feature: anything a level pickup can grant.
 // Rails redirects every weapon/ammo pickup onto the featured weapon's own
 // pickup, so a weapon without one would leave players stuck with the baton.
+// Not relevant in the stock game but could be in TC mods.
 static std::vector<MutatorOptionChoice> build_featured_weapon_choices()
 {
     std::vector<MutatorOptionChoice> choices;
@@ -332,13 +355,13 @@ static std::vector<MutatorOptionChoice> build_featured_weapon_choices()
 }
 
 static std::vector<MutatorInfo> g_mutator_registry;
+// Whether the cached build saw the weapon/item tables.
+static bool g_mutator_registry_built_with_tables = false;
 
 const std::vector<MutatorInfo>& mutators_get_registry()
 {
-    // Built once the weapon/item tables are loaded. An early call (before they
-    // are) leaves the choice lists empty, so don't cache that result.
     const bool tables_ready = rf::num_weapon_types > 0 && rf::num_item_types > 0;
-    if (!g_mutator_registry.empty() && tables_ready)
+    if (!g_mutator_registry.empty() && (g_mutator_registry_built_with_tables || !tables_ready))
         return g_mutator_registry;
 
     std::vector<MutatorInfo> registry;
@@ -370,7 +393,10 @@ const std::vector<MutatorInfo>& mutators_get_registry()
                 }
             }
             else if (def.id == MutatorId::Rails && opt.name == "exclude_thrown") {
-                opt.default_bool = true; // matches apply_rails
+                opt.default_bool = RAILS_DEFAULT_EXCLUDE_THROWN;
+            }
+            else if (def.id == MutatorId::Vampire && opt.name == "hide_health_armor_pickups") {
+                opt.default_bool = VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR;
             }
 
             info.options.push_back(std::move(opt));
@@ -380,6 +406,7 @@ const std::vector<MutatorInfo>& mutators_get_registry()
     }
 
     g_mutator_registry = std::move(registry);
+    g_mutator_registry_built_with_tables = tables_ready;
     return g_mutator_registry;
 }
 
@@ -613,9 +640,13 @@ std::optional<ManualRulesOverride> load_vote_rules_override(
     // single mutator to a level vote could flip the whole game type.
     AlpineServerConfigRules rules = vote_natural_rules_for_level(level_filename);
 
-    if (gametype) {
-        // apply_defaults_for_game_type() rebuilds the loadout and clears
-        // MutatorConfig, so the mutators must be applied after it.
+    if (gametype && rules.game_type != *gametype) {
+        // Only re-derive the gametype defaults when the type actually CHANGES.
+        // apply_defaults_for_game_type() overwrites operator-configured rules
+        // (spawn loadout, pvp_damage_modifier, spawn_delay, ...), so explicitly
+        // voting the type a level already runs must behave the same as voting
+        // "Server default" rather than silently wiping the config. It also
+        // rebuilds the loadout and clears MutatorConfig, so mutators come after.
         rules.game_type = *gametype;
         apply_defaults_for_game_type(*gametype, rules);
     }
@@ -637,19 +668,47 @@ std::optional<ManualRulesOverride> load_vote_rules_override(
 // Runtime logic
 // ============================================================================
 
+// Touch callbacks the engine binds by class name. Stock bindings:
+//   0x0045A2E0  medical kit      -> "Medical Kit", "First Aid Kit"
+//   0x0045A1F0  suit repair      -> "Suit Repair"
+//   0x0045A050  miner envirosuit -> "Miner Envirosuit"
+static constexpr uintptr_t ITEM_TOUCH_MEDICAL_KIT = 0x0045A2E0;
+static constexpr uintptr_t ITEM_TOUCH_SUIT_REPAIR = 0x0045A1F0;
+static constexpr uintptr_t ITEM_TOUCH_MINER_ENVIROSUIT = 0x0045A050;
+
+static bool is_standard_health_or_armor_item(const rf::ItemInfo& info)
+{
+    const auto callback = reinterpret_cast<uintptr_t>(info.touch_callback);
+    return callback == ITEM_TOUCH_MEDICAL_KIT
+        || callback == ITEM_TOUCH_SUIT_REPAIR
+        || callback == ITEM_TOUCH_MINER_ENVIROSUIT;
+}
+
 void mutators_level_init_post()
 {
     if (!rf::is_server)
         return;
 
     const auto& m = g_alpine_server_config_active_rules.mutators;
-    if (m.pickup_policy == PickupPolicy::Normal)
+    if (m.pickup_policy == PickupPolicy::Normal && !m.hide_health_armor_pickups)
         return;
 
     std::vector<int> allowed;
     if (m.pickup_policy != PickupPolicy::HideAll) {
         for (int i = 0; i < rf::num_item_types; ++i) {
             const rf::ItemInfo& info = rf::item_info[i];
+
+            // Composed on top of the policy, not instead of it: Vampire removes
+            // the standard health/armour pickups from whatever set the policy
+            // would otherwise keep.
+            if (m.hide_health_armor_pickups && is_standard_health_or_armor_item(info))
+                continue;
+
+            if (m.pickup_policy == PickupPolicy::Normal) {
+                allowed.push_back(i);
+                continue;
+            }
+
             const bool is_weapon = info.gives_weapon_id >= 0;
             const bool is_ammo = info.ammo_for_weapon_id >= 0;
             if (is_weapon || (is_ammo && m.pickup_policy == PickupPolicy::WeaponsAndAmmoOnly))
@@ -742,6 +801,37 @@ void mutators_on_player_frag(rf::Player* killer)
     // killer's own client. No reload packet is sent, so there's no reload animation
     // or pause, you just keep firing.
     ep->ai.clip_ammo[wt] = rf::weapon_types[wt].clip_size;
+}
+
+void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage)
+{
+    if (!rf::is_server || !rf::is_multi)
+        return;
+
+    const auto& m = g_alpine_server_config_active_rules.mutators;
+    if (!m.vampire_enabled)
+        return;
+
+    // Prevent Vampire healing from self damage.
+    if (!attacker || !victim || attacker == victim)
+        return;
+
+    // Prevent Vampire healing from team damage.
+    if (multi_game_type_is_team_type(rf::multi_get_game_type()) && attacker->team == victim->team)
+        return;
+
+    if (!(effective_damage > 0.0f))
+        return;
+
+    rf::Entity* ep = rf::entity_from_handle(attacker->entity_handle);
+    if (!ep || !ep->info || rf::entity_is_dying(ep))
+        return;
+
+    const float max_life_limit = std::max(ep->life, ep->info->max_life);
+    const float max_armor_limit = std::max(ep->armor, ep->info->max_armor);
+
+    // Same logic effective health kill reward uses.
+    distribute_effective_health(ep, effective_damage * VAMPIRE_HEAL_RATIO, max_life_limit, max_armor_limit);
 }
 
 // The weapon currently forced to no-clip.

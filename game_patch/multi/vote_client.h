@@ -52,11 +52,21 @@ struct VoteLevelInfo
     // knowledge). Always populated, even when the server does not enforce them —
     // see VoteOptionsData::gametype_prefix_restricted for whether it does.
     uint32_t valid_gametype_mask = 0;
+    // The server's vote_level allow-list accepts this level. Derived server-side
+    // from the same predicate that validates an incoming vote, so false means a
+    // vote naming this level is rejected outright whatever game type is picked.
+    // The blob still lists the level because it is in the rotation (rotation
+    // levels are NOT votable unless vote_level.add_rotation_to_allowed_levels is
+    // set or allowed_maps is empty), so a UI must filter on this.
+    bool allowed_for_vote = true;
 };
 
 struct VoteOptionsData
 {
-    uint16_t enabled_vote_mask = 0; // bit N = AfVoteType N is enabled
+    // bit N = AfVoteType N is enabled. u32 so the wire enum has room to grow past
+    // the 9 types of 1.4 (same reasoning as VoteLevelInfo::valid_gametype_mask).
+    // Bits for types this build does not know are simply never queried.
+    uint32_t enabled_vote_mask = 0;
     // vote_level.only_allow_gametype_prefix is on: the server will REJECT a vote
     // whose level fails valid_gametype_mask, so the filter must be applied. When
     // false the mask is still populated and a client may offer it as an opt-in
@@ -75,7 +85,13 @@ bool vote_level_allows_default_gametype(const VoteLevelInfo& level);
 
 struct ActiveVoteState
 {
-    AfVoteType type = AfVoteType::Kick;
+    // The RAW wire byte, deliberately NOT an AfVoteType: a newer server may run a
+    // vote type added after this build, and an old client must still show the
+    // vote, let the player cast, and be counted — being dropped from the tally is
+    // far worse than not knowing what the vote is called. The type is display
+    // metadata for the running vote; the authoritative text is `title`, which the
+    // server composes and always sends.
+    uint8_t type_raw = static_cast<uint8_t>(AfVoteType::Kick);
     std::string title;          // server-composed, display only
     std::string initiator_name; // empty if the server couldn't name the owner
     uint8_t yes = 0;
@@ -84,27 +100,51 @@ struct ActiveVoteState
     int64_t end_timestamp_ms = 0; // timer::get_i64(1000) based
     bool is_owner = false;
     bool has_voted = false; // set locally when this client casts
+
+    // The vote type when this build recognises it. `nullopt` means the server is
+    // running a type added after this build: everything else about the vote still
+    // works, so any type-keyed presentation must degrade to a neutral fallback
+    // (normally just `title`) rather than refusing to display the vote. Going
+    // through this accessor is what keeps a `switch` on the type honest.
+    [[nodiscard]] std::optional<AfVoteType> known_type() const
+    {
+        if (type_raw >= af_vote_type_count) {
+            return std::nullopt;
+        }
+        return static_cast<AfVoteType>(type_raw);
+    }
 };
 
 // --- vote options cache ---
+// True once a blob has been parsed. A cache marked stale still answers true: the
+// data stays usable while a refresh is in flight, because the server answers a
+// refresh request with nothing at all when its generation hasn't changed.
 bool vote_options_are_loaded();
 const VoteOptionsData* vote_options_get();
 bool vote_options_is_type_enabled(AfVoteType type);
 // Ask the server for the blob if it isn't loaded (or went stale). Rate limited.
 void vote_options_request_if_needed();
 void vote_options_mark_stale();
-void vote_options_handle_chunk(uint8_t generation, uint8_t seq, uint8_t total,
-                               const uint8_t* data, size_t len);
+
+// Blob stream (af_sreq_vote_options_data). Ordered reliable delivery, so Begin ->
+// Data* -> End arrive in that order; anything out of order is a protocol error and
+// discards the stream.
+void vote_options_stream_begin(uint32_t generation, uint32_t total_bytes);
+void vote_options_stream_data(uint32_t generation, const uint8_t* data, size_t len);
+void vote_options_stream_end(uint32_t generation);
 
 // --- active vote state ---
 const std::optional<ActiveVoteState>& vote_state_get();
 int vote_state_seconds_remaining();
 void vote_state_mark_local_voted();
-void vote_state_on_start(AfVoteType type, uint16_t time_remaining_sec, uint8_t yes, uint8_t no,
-                         uint8_t remaining, bool is_owner, std::string initiator_name,
+// `type_raw` is the unvalidated wire byte on purpose; see ActiveVoteState.
+void vote_state_on_start(uint8_t type_raw, uint16_t time_remaining_sec, uint8_t yes, uint8_t no,
+                         uint8_t remaining, bool is_owner, bool is_sync, std::string initiator_name,
                          std::string title);
 void vote_state_on_update(uint8_t yes, uint8_t no, uint8_t remaining);
-void vote_state_on_end(AfVoteResult result);
+// `passed` is independent of `result`: a timed-out vote can still pass. `detail`
+// is the server-composed outcome line (empty falls back to generic wording).
+void vote_state_on_end(AfVoteResult result, bool passed, std::string detail);
 
 // Drop every cached vote thing (leaving a server).
 void vote_client_reset();

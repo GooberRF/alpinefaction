@@ -30,6 +30,7 @@ enum class MutatorId : uint8_t
     Instagib = 0,
     Rails = 1,
     Arena = 2,
+    Vampire = 3,
 };
 
 struct MutatorOptionChoice
@@ -71,6 +72,7 @@ int mutators_redirect_item_index(int item_type_index);
 bool mutators_should_deny_weapon_switch(int from_weapon, int to_weapon);
 void mutators_on_player_frag(rf::Player* killer);
 void mutators_set_no_clip_weapon(int weapon_type);
+void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage);
 
 // Registry view. Built lazily because choice lists (e.g. the Rails featured
 // weapon) are derived from the loaded weapon/item tables.

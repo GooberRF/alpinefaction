@@ -389,15 +389,20 @@ CodeInjection player_execute_action_patch2{
         // only intercept alpine controls
         if (action_index >= starting_alpine_control_index) {
             const int alpine_action_index = action_index - starting_alpine_control_index;
+            // Limbo is handled by the endgame (map rating) path in the other
+            // patch; without the state check both run and F1 in limbo would also
+            // send a real vote packet.
             if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES)
                 && rf::is_multi
-                && !rf::is_server) {
+                && !rf::is_server
+                && rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
                 cast_local_vote(true);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO)
                 && rf::is_multi
-                && !rf::is_server) {
+                && !rf::is_server
+                && rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
                 cast_local_vote(false);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_READY)
@@ -462,6 +467,9 @@ CodeInjection player_execute_action_patch3{
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
                 && is_server_minimum_af_version(1, 2)) {
+                if (vote_panel_is_gameplay_overlay_active()) {
+                    vote_panel_close();
+                }
                 g_remote_server_cfg_popup.toggle();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU)

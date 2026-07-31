@@ -920,7 +920,13 @@ bool player_is_idle(const rf::Player* const player) {
         const bool is_idle = player->idle.check_timer.valid()
             && player->idle.check_timer.elapsed();
         // Player is idle if timer has elapsed and they're not spawned
-        return is_idle && rf::player_is_dead(player) && !player->is_spectator;
+        if (!is_idle || !rf::player_is_dead(player) || player->is_spectator) {
+            return false;
+        }
+        // ...but never when the game itself is what is keeping them unspawned.
+        // Waiting players are not idle and can vote. Players who fail client
+        // requirements (like not having a sufficient AF version) are not exempt.
+        return !player_spawn_blocked_by_game(player);
     } else {
         return player->received_pf_status
             == std::optional{pf_pure_status::af_idle};

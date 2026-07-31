@@ -90,12 +90,11 @@ enum class af_client_req_type : uint8_t
     af_req_pit_queue = 0x5,    // Alpine 1.4 (1 byte: action 0=leave,1=join,2=toggle)
     af_req_vote_call = 0x6,    // Alpine 1.4 (variable, see af_build_vote_call_payload)
     af_req_vote_cast = 0x7,    // Alpine 1.4 (1 byte: 0 = no, 1 = yes)
-    af_req_vote_cancel = 0x8,  // Alpine 1.4 (empty; only the vote owner may cancel)
-    af_req_vote_options = 0x9, // Alpine 1.4 (empty; requests the vote-options blob)
+    af_req_vote_cancel = 0x8,  // Alpine 1.4 (no additional data)
+    af_req_vote_options = 0x9, // Alpine 1.4 (5 bytes: flags + known_generation)
 };
 
-// FROZEN wire constants: the vote type byte of af_req_vote_call and
-// af_sreq_vote_state. Never reorder or reuse values.
+// Frozen wire constants, values can NEVER be reordered or changed.
 enum class AfVoteType : uint8_t
 {
     Kick = 0,
@@ -108,7 +107,12 @@ enum class AfVoteType : uint8_t
     Previous = 7,
     CancelMatch = 8,
 };
+// Number of vote types this build knows about.
+// NOT a wire limit: a newer server may run a type with a higher value,
+// and a client tolerates that. Only the server uses it as a rejection bound,
+// on incoming vote calls.
 constexpr uint8_t af_vote_type_count = 9;
+static_assert(af_vote_type_count <= 32, "enabled_vote_mask is a u32");
 
 // "no gametype override" sentinel in vote-call payloads.
 constexpr uint8_t af_vote_gametype_none = 0xFF;
@@ -132,15 +136,60 @@ enum class AfVoteResult : uint8_t
 
 enum af_vote_state_flags : uint8_t
 {
-    AF_VOTE_STATE_FLAG_OWNER = 1 << 0, // the recipient started this vote
+    // the recipient started this vote
+    AF_VOTE_STATE_FLAG_OWNER = 1 << 0,
+    // the recipient joined while the vote was in progress
+    AF_VOTE_STATE_FLAG_SYNC = 1 << 1,
 };
 
-// Version byte of the reassembled vote-options blob (see af_build_vote_options_blob).
+enum af_vote_end_flags : uint8_t
+{
+    // The vote PASSED and its outcome is being applied.
+    // Independent of result, which is how the vote ended.
+    AF_VOTE_END_FLAG_PASSED = 1 << 0,
+};
+
+// Version of the reassembled vote-options blob. A client accepts any blob
+// whose version is <= the version it was built for and rejects anything greater.
+//
+// Repeated records in the blob are length-prefixed, so additions to the blob
+// are not compatibility breaking. This version should be incremented only if
+// the core format changes - like redefining a field or reordering/removing them.
 constexpr uint8_t af_vote_options_blob_version = 1;
+
+// af_sreq_vote_options_data stream framing. The blob is pushed as
+// Begin -> Data* -> End over the ordered reliable channel, so no chunk index or
+// chunk count is needed and there is no size ceiling.
+enum class AfVoteOptionsStream : uint8_t
+{
+    Begin = 0, // u32 generation, u32 total_bytes
+    Data = 1,  // u32 generation, bytes[]  (length comes from the packet header)
+    End = 2,   // u32 generation
+};
+
+// Hard ceiling on a reassembled vote-options blob.
+// Should never be legitimately reached.
+constexpr uint32_t af_vote_options_max_blob_size = 1024 * 1024;
+
+enum af_vote_options_req_flags : uint8_t
+{
+    // The request carries the generation of a blob the client already parsed, so
+    // the server can skip re-sending an identical one.
+    AF_VOTE_OPTIONS_REQ_HAS_CACHE = 1 << 0,
+};
 
 enum af_vote_gametype_flags : uint8_t
 {
     AF_VOTE_GAMETYPE_FLAG_TEAM = 1 << 0,
+};
+
+// Per-level flags in the vote-options blob's level section.
+enum af_vote_level_flags : uint8_t
+{
+    // The server's vote_level allow-list accepts this level. When clear, a vote
+    // naming this level is rejected outright whatever game type is selected —
+    // the blob still lists it (it is in the rotation) but it is not votable.
+    AF_VOTE_LEVEL_FLAG_ALLOWED = 1 << 0,
 };
 
 // Server-wide vote flags, the `server_flags` byte of the vote-options blob.
@@ -184,9 +233,15 @@ struct VoteCastReqPayload
     uint8_t is_yes = 0; // 0 = no, 1 = yes
 };
 
+struct VoteOptionsReqPayload
+{
+    uint8_t flags = 0;              // af_vote_options_req_flags
+    uint32_t known_generation = 0;  // meaningful only with AF_VOTE_OPTIONS_REQ_HAS_CACHE
+};
+
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
-                                       std::monostate>;
+                                       VoteOptionsReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -648,6 +703,7 @@ void af_send_server_cfg(rf::Player* player);
 void af_process_server_msg_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_broadcast_automated_chat_msg(std::string_view msg);
 void af_send_automated_chat_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
+void af_broadcast_vote_legacy_chat_msg(std::string_view msg);
 void af_broadcast_hud_notification(
     std::string_view text, int duration_seconds, int notification_type, bool fade_on_expire = true);
 void af_send_hud_notification(
@@ -671,15 +727,19 @@ void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = tog
 void af_send_vote_call(const AfVoteCallParams& params);
 void af_send_vote_cast(bool is_yes_vote);
 void af_send_vote_cancel();
-void af_send_vote_options_request();
+void af_send_vote_options_request(bool has_cache, uint32_t known_generation);
 
 // vote system (server -> client)
 // `initiator_name` may be empty when the vote owner is no longer connected.
+// `is_sync` marks a mid-vote resync for a player who just joined.
 void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time_remaining_sec,
-                              uint8_t yes, uint8_t no, uint8_t remaining, bool is_owner,
+                              uint8_t yes, uint8_t no, uint8_t remaining, bool is_owner, bool is_sync,
                               std::string_view initiator_name, std::string_view title);
 void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint8_t remaining);
-void af_send_vote_state_end(rf::Player* player, AfVoteResult result);
+// `passed` is independent of `result` (a timed-out vote can pass); `detail` is
+// the outcome line legacy clients receive as chat, so both see the same wording.
+void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
+                            std::string_view detail);
 void af_send_vote_options_data(rf::Player* player);
 
 // server -> client state (Pit + match ready system)
