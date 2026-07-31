@@ -55,7 +55,6 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
-#include "../purefaction/pf.h"
 
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
@@ -1605,33 +1604,6 @@ static void send_spawn_decline_msg(rf::Player* player, std::string_view msg)
     af_send_automated_chat_msg(msg, player);
 }
 
-static bool check_player_ac_status([[maybe_unused]] rf::Player* player)
-{
-#ifdef HAS_PF
-    if (g_additional_server_config.anticheat_level > 0) {
-        bool verified = pf_is_player_verified(player);
-        if (!verified) {
-            send_spawn_decline_msg(player,
-                "Sorry! Your spawn request was rejected because verification of your client software failed. "
-                "Please use the latest officially released version of Alpine Faction.");
-            return false;
-        }
-
-        int ac_level = pf_get_player_ac_level(player);
-        if (ac_level < g_additional_server_config.anticheat_level) {
-            auto msg = std::format(
-                "Sorry! Your spawn request was rejected because your client did not pass anti-cheat verification (your level {}, required {}). "
-                "Please make sure you do not have any mods installed and that your client software is up to date.",
-                ac_level, g_additional_server_config.anticheat_level
-            );
-            send_spawn_decline_msg(player, msg);
-            return false;
-        }
-    }
-#endif // HAS_PF
-    return true;
-}
-
 std::vector<rf::Player*> get_clients(
     const bool include_browsers,
     const bool include_bots
@@ -2279,9 +2251,6 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
         if (!check_can_player_spawn(player)) {
-            return;
-        }
-        if (!check_player_ac_status(player)) {
             return;
         }
         if (g_match_info.match_active && !is_player_in_match(player)) {
