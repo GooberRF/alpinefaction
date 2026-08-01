@@ -526,7 +526,7 @@ protected:
 
 static bool does_level_match_gametype_prefix(const std::string& level_name, rf::NetGameType game_type)
 {
-    const std::string map_name = level_filename_with_rfl(level_name);
+    const std::string map_name = normalize_level_filename(level_name);
 
     if (game_type == rf::NG_TYPE_RUN && is_known_run_level(level_name)) {
         return true;
@@ -844,6 +844,8 @@ struct VoteMatch : public Vote
             if (m_manual_rules_override) {
                 set_manual_rules_override(std::move(*m_manual_rules_override));
                 apply_rules_for_current_level();
+                // Clients need the new mutator flags now, not at the match-start restart.
+                af_send_server_info_packet_to_all();
                 m_manual_rules_override.reset();
             }
             start_pre_match();

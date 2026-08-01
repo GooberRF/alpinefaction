@@ -15,6 +15,7 @@
 #include "multi_private.h"
 #include "alpine_packets.h"
 #include "sprays.h"
+#include "kill_attribution.h"
 #include "server_internal.h"
 #include "gametype.h"
 #include "rounds.h"
@@ -258,7 +259,7 @@ bool handle_awpgen_param()
         return true;
     }
 
-    const std::string level_filename = level_filename_with_rfl(arg);
+    const std::string level_filename = normalize_level_filename(arg);
 
     // Validate level file is installed
     if (rf::get_file_checksum(level_filename.c_str()) == 0) {
@@ -1015,7 +1016,7 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename)
 }
 
 // A level name with ".rfl" appended when it is missing.
-std::string level_filename_with_rfl(std::string_view name)
+std::string normalize_level_filename(std::string_view name)
 {
     std::string out{name};
     if (!out.empty() && !string_iends_with(out, ".rfl")) {
@@ -1331,6 +1332,7 @@ void multi_do_patch()
     multi_customize_listen_server_settings_patch.install();
 
     multi_kill_do_patch();
+    kill_attribution_do_patch();
     sprays_do_patch();
     faction_files_do_patch();
     level_download_do_patch();

@@ -6,6 +6,7 @@
 #include <limits>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <unordered_map>
 #include <common/utils/bool-utils.h>
 #include <common/utils/list-utils.h>
@@ -24,6 +25,8 @@
 #include "../hud/hud_world.h"
 #include "alpine_packets.h"
 #include "sprays.h"
+#include "kill.h"
+#include "kill_attribution.h"
 #include "bagman.h"
 #include "pit.h"
 #include "vote_client.h"
@@ -1633,8 +1636,73 @@ void af_send_should_gib_req(uint32_t obj_handle)
     packet.payload = ShouldGibPayload{obj_handle};
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (is_player_minimum_af_client_version(&player, 1, 2, 1)) {
+        // 1.2.1 through 1.3 only. Alpine 1.4+ receives the same decision as
+        // AF_KILL_FLAG_GIBBED inside the kill-info packet it is already being sent.
+        if (is_player_minimum_af_client_version(&player, 1, 2, 1)
+            && !is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+// Tell capable clients what actually landed the killing blow.
+void af_send_kill_info(rf::Player* killed_player)
+{
+    if (!rf::is_server || !killed_player || !killed_player->net_data) {
+        return;
+    }
+
+    KillInfoPayload payload{};
+    payload.killed_player_id = killed_player->net_data->player_id;
+    std::vector<uint8_t> assists;
+    if (auto attr = kill_attribution_lookup_for_send(payload.killed_player_id)) {
+        payload.killer_player_id = attr->killer_player_id;
+        payload.weapon_type = attr->weapon_type;
+        payload.flags = attr->flags;
+        payload.damage_type = attr->damage_type;
+        assists = attr->assist_player_ids;
+    }
+    const uint8_t assist_count =
+        static_cast<uint8_t>(std::min<size_t>(assists.size(), af_kill_info_max_assists));
+
+    // Nothing here the client can act on - no weapon, no flags, no assists - so sending it
+    // would cost a reliable packet per client for nothing.
+    if (payload.weapon_type == 0xFF && payload.flags == 0 && assist_count == 0) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    size_t off = 0;
+
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    header.size = static_cast<uint16_t>(sizeof(uint8_t) + sizeof(KillInfoPayload)
+                                        + sizeof(uint8_t) + assist_count);
+    std::memcpy(buf + off, &header, sizeof(header));
+    off += sizeof(header);
+
+    buf[off++] = static_cast<std::byte>(af_server_req_type::af_sreq_kill_info);
+    std::memcpy(buf + off, &payload, sizeof(payload));
+    off += sizeof(payload);
+    buf[off++] = static_cast<std::byte>(assist_count);
+    for (uint8_t i = 0; i < assist_count; ++i) {
+        buf[off++] = static_cast<std::byte>(assists[i]);
+    }
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        // Bots and browsers have no purpose for presentation metadata,
+        // save the packets.
+        if (!player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        // state 2 is "in game"; stock send_obj_kill_packet gates on it too (0x0047ED9B).
+        // Recipients must stay a subset of obj_kill's, or a still-joining client is left
+        // holding a pending attribution whose obj_kill never comes.
+        if (player.net_data->state != 2) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_packet(&player, buf, static_cast<int>(off), true); // reliable
         }
     }
 }
@@ -2150,6 +2218,37 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             // hud_pit_queue_auto_spectate (the packet can arrive before the
             // local entity finishes dying).
             apply_local_pit_queue_state(flags, position, total);
+            break;
+        }
+        case af_server_req_type::af_sreq_kill_info: {
+            constexpr size_t fixed_size = sizeof(KillInfoPayload) + sizeof(uint8_t); // + assist_count
+            if (remaining < fixed_size) {
+                xlog::warn("af_process_server_req_packet: KillInfo payload too short");
+                return;
+            }
+            KillInfoPayload payload{};
+            std::memcpy(&payload, bytes + offset, sizeof(payload));
+            const uint8_t assist_count = bytes[offset + sizeof(payload)];
+            if (remaining < fixed_size + assist_count) {
+                xlog::warn("af_process_server_req_packet: KillInfo assist list truncated ({} ids)",
+                    assist_count);
+                return;
+            }
+            multi_kill_set_pending_attribution(payload,
+                std::span{bytes + offset + fixed_size, assist_count});
+
+            if (payload.flags & AF_KILL_FLAG_GIBBED) {
+                rf::Player* gibbed_player = rf::multi_find_player_by_id(payload.killed_player_id);
+                rf::Entity* gibbed_entity = gibbed_player
+                    ? rf::entity_from_handle(gibbed_player->entity_handle) : nullptr;
+                if (gibbed_entity) {
+                    entity_set_gib_flag(gibbed_entity);
+                }
+                else {
+                    xlog::debug("af_process_server_req_packet: KillInfo gib target {} unresolved",
+                        payload.killed_player_id);
+                }
+            }
             break;
         }
         case af_server_req_type::af_sreq_vote_state: {
@@ -2879,6 +2978,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_FEATURED_NO_CLIP;
     if (g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill)
         af |= af_server_info_flags::SIF_RELOAD_ON_KILL;
+    if (g_alpine_server_config_active_rules.mutators.super_drain_enabled)
+        af |= af_server_info_flags::SIF_SUPER_DRAIN;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -2970,6 +3071,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.was_manual_level_load = (pkt.af_flags & af_server_info_flags::SIF_MANUAL_LEVEL_LOAD) != 0;
     server_info.allow_sprays = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_SPRAYS) != 0;
     server_info.reload_on_kill = (pkt.af_flags & af_server_info_flags::SIF_RELOAD_ON_KILL) != 0;
+    server_info.super_drain = (pkt.af_flags & af_server_info_flags::SIF_SUPER_DRAIN) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)

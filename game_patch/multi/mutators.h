@@ -31,6 +31,7 @@ enum class MutatorId : uint8_t
     Rails = 1,
     Arena = 2,
     Vampire = 3,
+    SuperDrain = 4,
 };
 
 struct MutatorOptionChoice
@@ -78,6 +79,7 @@ struct MutatorInfo
 void mutators_do_patch();
 void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfigRules& rules);
 void mutators_level_init_post();
+void mutators_do_frame();
 int mutators_redirect_item_index(int item_type_index);
 bool mutators_should_deny_weapon_switch(int from_weapon, int to_weapon);
 void mutators_on_player_frag(rf::Player* killer);

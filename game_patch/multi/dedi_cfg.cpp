@@ -459,9 +459,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.gungame_rampage_rewards = true;
             rules.spawn_loadout.loadouts_active = false;
 
-            // 100 / 100 spawn health and armor, +50 effective health kill reward.
-            rules.spawn_armour.enabled = true;
-            rules.spawn_armour.set_value(100.0f);
+            // +50 effective health kill reward.
             rules.kill_rewards.kill_reward_effective_health = 50.0f;
             break;
         }
@@ -769,7 +767,7 @@ static std::vector<std::string> parse_allowed_maps(const toml::table& t)
     if (auto arr = t["allowed_levels"].as_array()) {
         for (auto& node : *arr) {
             if (auto value = node.value<std::string>()) {
-                allowed_maps.push_back(level_filename_with_rfl(*value));
+                allowed_maps.push_back(normalize_level_filename(*value));
             }
         }
     }
@@ -1102,7 +1100,7 @@ static void add_level_entry_from_table(
         }
     }
 
-    const auto tmp_filename = level_filename_with_rfl(lvl_tbl["filename"].value_or<std::string>(""));
+    const auto tmp_filename = normalize_level_filename(lvl_tbl["filename"].value_or<std::string>(""));
 
     rf::File f;
     if (!f.find(tmp_filename.c_str())) {
