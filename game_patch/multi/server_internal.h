@@ -613,6 +613,9 @@ struct MutatorConfig
     bool vampire_enabled = false;
     bool hide_health_armor_pickups = false;
 
+    // Super Drain: rot health/armor above the entity's max back down to it.
+    bool super_drain_enabled = false;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 

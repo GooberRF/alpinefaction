@@ -1127,17 +1127,37 @@ CodeInjection process_obj_update_check_flags_injection{
         },
     };
 
-// Trigger spectator damage screen flash when the spectated player's health or armor decreases.
+// Largest per-packet decrease still treated as a Super Drain rot tick rather than real damage.
+static constexpr float SUPER_DRAIN_MAX_STEP = 1.5f;
+
 // Injected at the point in process_obj_update_packet where a health/armor decrease has been
 // confirmed (OUF_HEALTH_ARMOR set, new value < entity value) but before the local-player check.
-// edi = entity pointer at this address.
-CodeInjection process_obj_update_health_armor_spectate_injection{
+CodeInjection process_obj_update_health_armor_injection{
     0x0047E4DA,
     [](auto& regs) {
-        if (!g_alpine_game_config.spectate_damage_screen_flash || rf::is_server)
+        if (rf::is_server)
             return;
         rf::Entity* entity = regs.edi;
         if (!entity)
+            return;
+        const auto& server_info = get_af_server_info();
+        if (server_info.has_value() && server_info->super_drain) {
+            const float new_life = *reinterpret_cast<float*>(regs.esp + 0x18);
+            const float new_armor = *reinterpret_cast<float*>(regs.esp + 0x10);
+            const float max_life = entity->info ? entity->info->max_life : 100.0f;
+            const float max_armor = entity->info ? entity->info->max_armor : 100.0f;
+            // A drain tick is a small decrease that leaves the stat at or above its normal max.
+            const bool life_is_drain = new_life >= entity->life
+                || (entity->life - new_life <= SUPER_DRAIN_MAX_STEP && new_life >= max_life);
+            const bool armor_is_drain = new_armor >= entity->armor
+                || (entity->armor - new_armor <= SUPER_DRAIN_MAX_STEP && new_armor >= max_armor);
+            if (life_is_drain && armor_is_drain) {
+                // Reload the new values from the stack and store them.
+                regs.eip = 0x0047E533;
+                return;
+            }
+        }
+        if (!g_alpine_game_config.spectate_damage_screen_flash)
             return;
         rf::Player* spectated = multi_spectate_get_target_player();
         if (!spectated || spectated == rf::local_player || multi_spectate_is_freelook())
@@ -1683,6 +1703,11 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill;
         }
+        // Super Drain: the client suppresses the stock damage feedback for the
+        // server's drain ticks, so it has to know the mutator is active.
+        if (g_alpine_server_config_active_rules.mutators.super_drain_enabled) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::super_drain;
+        }
         // AF 1.3+ clients: use footer-based format for forward compatibility
         // Older clients: use legacy raw struct (they don't know about the footer)
         bool use_footer = g_joining_client_version == ClientSoftware::AlpineFaction
@@ -1821,6 +1846,7 @@ CodeInjection process_join_accept_injection{
             server_info.allow_sprays = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_sprays);
             server_info.match_mode = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::match_mode);
             server_info.reload_on_kill = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::reload_on_kill);
+            server_info.super_drain = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::super_drain);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             constexpr float default_fov = 90.0f;
@@ -3090,7 +3116,7 @@ void network_init()
     process_obj_update_check_flags_injection.install();
 
     // Spectator damage screen flash via obj_update health/armor
-    process_obj_update_health_armor_spectate_injection.install();
+    process_obj_update_health_armor_injection.install();
 
     // Verify on/off weapons handling
     process_obj_update_weapon_fire_injection.install();

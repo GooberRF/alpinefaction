@@ -62,7 +62,7 @@ bool is_stock_alpha_test_level(const std::string& filename)
 
 bool is_known_run_level(const std::string& filename)
 {
-    return g_known_run_levels.contains(string_to_lower(level_filename_with_rfl(filename)));
+    return g_known_run_levels.contains(string_to_lower(normalize_level_filename(filename)));
 }
 
 // trim leading and trailing whitespace

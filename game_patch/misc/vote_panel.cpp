@@ -181,6 +181,8 @@ const MutatorDescription mutator_descriptions[] = {
      "Spawn with AR and 100/100. Auto reload and reset to 100/100 on a frag. Weapon pickups only."},
     {"vampire",
      "Damage enemies to regenerate health and armor."},
+    {"superdrain",
+     "Super health and armor drain down to 100 over time."},
 };
 
 const char* mutator_description_for(std::string_view name)
@@ -649,11 +651,18 @@ int ui_cycler(PanelUi& ui, const Rect& r, const char* value, int font)
     return 0;
 }
 
+// Row pitch of ui_listbox, shared so a caller can turn a row index into the
+// scroll offset that brings that row to the top of the window.
+int ui_listbox_row_height(int font)
+{
+    return rf::gr::get_font_height(font) + 2;
+}
+
 // Scrolling list. Returns the clicked index in the hit-test pass, else -1.
 int ui_listbox(PanelUi& ui, const Rect& r, const std::vector<std::string>& items, int sel,
                float& scroll, int font)
 {
-    const int row_h = rf::gr::get_font_height(font) + 2;
+    const int row_h = ui_listbox_row_height(font);
     const int total_h = static_cast<int>(items.size()) * row_h;
     const float max_scroll = static_cast<float>(std::max(0, total_h - r.h));
     const bool inside = point_in(ui.mx, ui.my, r);
@@ -853,7 +862,7 @@ const std::vector<VoteMutatorDecl>& resolve_baseline(const VoteOptionsData& opti
     // which resolves against whatever is running locally. Normalized the same way
     // the server normalizes a voted level name, so both resolve the same file; a
     // no-op for anything picked out of the level list, which already carries it.
-    const std::string wanted = level_filename_with_rfl(level_string.empty()
+    const std::string wanted = normalize_level_filename(level_string.empty()
         ? std::string_view{rf::level.filename.c_str()}
         : std::string_view{level_string});
 
@@ -1160,6 +1169,8 @@ bool vote_form_is_sendable(const VoteOptionsData& options)
                 && g_form.kick_index < static_cast<int>(candidates.size());
         }
         case AfVoteType::Level:
+            // Empty means the list had nothing to offer for this game type, or
+            // manual entry is on with nothing typed into it yet.
             return !selected_level().empty();
         case AfVoteType::Extend:
             return true;
@@ -1549,9 +1560,25 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
         g_form.level_selection.clear();
         cache.sel_valid = false;
     }
-    // A Level vote has no pinned row, so keep the top entry active by default.
+    // A Level vote has no pinned row, so keep an entry active by default: the
+    // running level when the list offers it (normalized the way the server
+    // normalizes a voted name, so both resolve the same file), else the top
+    // entry. The list is scrolled to whichever that lands on, since a default
+    // sitting off-screen reads as no selection at all.
     if (!allow_current && g_form.level_selection.empty() && level_row_count > 0) {
-        g_form.level_selection = cache.items[cache.first_level_row];
+        const std::string current =
+            normalize_level_filename(std::string_view{rf::level.filename.c_str()});
+        size_t row = static_cast<size_t>(cache.first_level_row);
+        for (size_t i = row; i < cache.items.size(); ++i) {
+            if (string_iequals(cache.items[i], current)) {
+                row = i;
+                break;
+            }
+        }
+        g_form.level_selection = cache.items[row];
+        // Puts the row at the top of the window; ui_listbox clamps it to the
+        // list's real scroll range, so the last rows still land on screen.
+        g_form.level_scroll = static_cast<float>(row) * static_cast<float>(ui_listbox_row_height(lo.font));
         cache.sel_valid = false;
     }
 

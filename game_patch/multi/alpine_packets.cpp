@@ -2978,6 +2978,8 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         af |= af_server_info_flags::SIF_FEATURED_NO_CLIP;
     if (g_alpine_server_config_active_rules.mutators.reload_weapon_on_kill)
         af |= af_server_info_flags::SIF_RELOAD_ON_KILL;
+    if (g_alpine_server_config_active_rules.mutators.super_drain_enabled)
+        af |= af_server_info_flags::SIF_SUPER_DRAIN;
     if (g_alpine_server_config.signal_cfg_changed) {
         af |= af_server_info_flags::SIF_SERVER_CFG_CHANGED;
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
@@ -3069,6 +3071,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.was_manual_level_load = (pkt.af_flags & af_server_info_flags::SIF_MANUAL_LEVEL_LOAD) != 0;
     server_info.allow_sprays = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_SPRAYS) != 0;
     server_info.reload_on_kill = (pkt.af_flags & af_server_info_flags::SIF_RELOAD_ON_KILL) != 0;
+    server_info.super_drain = (pkt.af_flags & af_server_info_flags::SIF_SUPER_DRAIN) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
