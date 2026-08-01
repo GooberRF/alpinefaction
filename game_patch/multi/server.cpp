@@ -427,7 +427,7 @@ std::string build_info_command_output() {
     }
 
     std::string framerate_line;
-    bool is_server = rf::is_multi && (rf::is_server || rf::is_dedicated_server);
+    bool is_server = rf::is_multi && rf::is_server;
     if (is_server) {
         framerate_line = std::format("Framerate: {:.3f} | FPS: {:.0f} ({} max) | NetFPS: {}\n",
             rf::frametime,
@@ -3798,9 +3798,11 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         rf::Item* item = item_create_hook.call_target(
             type, name, count, parent_handle, pos, orient, respawn_time, permanent, from_packet);
 
-        if (item && item->respawn_time_ms > 0 &&
-            (rf::is_server || rf::is_dedicated_server) &&
-            g_alpine_server_config_active_rules.delayed_items.contains(name)) {
+        if (item
+            && item->respawn_time_ms > 0
+            && rf::is_server
+            && g_alpine_server_config_active_rules.delayed_items.contains(name))
+        {
             rf::obj_hide(item);
             item->respawn_next.set(item->respawn_time_ms);
         }
@@ -3873,10 +3875,14 @@ void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count)
 CodeInjection entity_maybe_die_patch{
     0x00420600,
     [](auto& regs) {
-        if (!(rf::is_multi && (rf::is_server || rf::is_dedicated_server))) return;
+        if (!(rf::is_multi && rf::is_server)) {
+            return;
+        }
 
         rf::Entity* ep = regs.esi;
-        if (!ep) return;
+        if (!ep) {
+            return;
+        }
 
         rf::Player* player = rf::player_from_entity_handle(ep->handle);
 

@@ -1087,7 +1087,7 @@ void start_level_in_multi(std::string filename) {
 
 CodeInjection multi_customize_listen_server_settings_patch {
     0x0044E485,
-    [](auto& regs) {
+    [] {
         configure_custom_gametype_listen_server_settings();
     },
 };

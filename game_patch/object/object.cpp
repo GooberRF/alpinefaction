@@ -311,7 +311,7 @@ CodeInjection mover_process_post_patch{
         if (object && object->type == rf::OT_EVENT) {
             rf::Event* event = static_cast<rf::Event*>(object);
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Anchor_Marker)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker)) {
                 for (const auto& linked_uid : event->links) {
                     
                     // check for an object - Note objects store handles in link int rather than UID
@@ -345,7 +345,7 @@ CodeInjection mover_process_post_patch{
                 }
             }
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Anchor_Marker_Orient)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker_Orient)) {
                 for (const auto& linked_uid : event->links) {
                     
                     // check for an object - Note objects store handles in link int rather than UID

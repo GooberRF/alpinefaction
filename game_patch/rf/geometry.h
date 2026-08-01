@@ -368,7 +368,7 @@ namespace rf
         int ystart;
         int width;
         int height;
-        VArray<> border_info; // unknown
+        VArray<char> border_info; // Unknown
         float x_pixels_per_meter;
         float y_pixels_per_meter;
         Vector3 bbox_mn;
