@@ -563,7 +563,7 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
             // Match's empty level is the "current level" row: always valid.
         }
         else {
-            const std::string wanted = level_filename_with_rfl(vote.level);
+            const std::string wanted = normalize_level_filename(vote.level);
             const VoteLevelInfo* found = nullptr;
             for (const auto& level : options->levels) {
                 if (string_iequals(level.filename, wanted)) {

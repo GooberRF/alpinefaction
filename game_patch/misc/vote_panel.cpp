@@ -1393,7 +1393,7 @@ void load_saved_vote_into_form(const SavedVote& vote, const VoteOptionsData& opt
         g_form.level_selection.clear();
         g_level_scroll_to_selection = false;
         if (!vote.level.empty()) {
-            const std::string wanted = level_filename_with_rfl(vote.level);
+            const std::string wanted = normalize_level_filename(vote.level);
             const VoteLevelInfo* match = nullptr;
             for (const auto& level : options.levels) {
                 if (string_iequals(level.filename, wanted)) {
