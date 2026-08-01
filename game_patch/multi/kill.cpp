@@ -266,12 +266,15 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
 
     // Trailing detail shared by the chat line and the killfeed segment.
     const bool is_third_party_kill = killer_player && killer_player != killed_player;
+    // Assist credit goes on every non-suicide kill message, first person included. The weapon
+    // clause is observer-only: the first-person lines already name the weapon themselves.
+    const std::string assists_text = is_third_party_kill ? assist_suffix(attr) : std::string{};
     std::string kill_detail_suffix;
     if (is_third_party_kill) {
         if (!attr_weapon_name.empty()) {
             kill_detail_suffix = "'s " + attr_weapon_name;
         }
-        kill_detail_suffix += assist_suffix(attr);
+        kill_detail_suffix += assists_text;
     }
 
     if (!killer_player) {
@@ -287,32 +290,34 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
         }
         else if (is_melee_kill) {
             mui_msg = null_to_empty(rf::strings::you_just_got_beat_down_by);
-            msg = rf::String::format("{}{}!", mui_msg, killer_player->name);
+            msg = rf::String::format("{}{}{}!", mui_msg, killer_player->name, assists_text);
         }
         else {
             mui_msg = null_to_empty(rf::strings::you_were_killed_by);
 
             auto& killer_name = killer_player->name;
             if (!attr_weapon_name.empty()) {
-                msg = rf::String::format("{}{}'s {}!", mui_msg, killer_name, attr_weapon_name);
+                msg = rf::String::format("{}{}'s {}{}!", mui_msg, killer_name, attr_weapon_name,
+                                         assists_text);
             }
             else if (attr) {
                 // Server spoke and could not name a weapon: no weapon clause.
-                msg = rf::String::format("{}{}!", mui_msg, killer_name);
+                msg = rf::String::format("{}{}{}!", mui_msg, killer_name, assists_text);
             }
             else if (kill_attribution_server_is_authoritative()) {
                 // Silence from a 1.4+ server means it had nothing to say.
-                msg = rf::String::format("{}{}!", mui_msg, killer_name);
+                msg = rf::String::format("{}{}{}!", mui_msg, killer_name, assists_text);
             }
             else {
                 int killer_weapon_cls_id = killer_entity ? killer_entity->ai.current_primary_weapon : -1;
                 if (killer_weapon_cls_id >= 0 && killer_weapon_cls_id < 64) {
                     auto& weapon_cls = rf::weapon_types[killer_weapon_cls_id];
                     auto& weapon_name = weapon_cls.display_name;
-                    msg = rf::String::format("{}{}'s {}!", mui_msg, killer_name, string_to_lower(weapon_name));
+                    msg = rf::String::format("{}{}'s {}{}!", mui_msg, killer_name,
+                                             string_to_lower(weapon_name), assists_text);
                 }
                 else {
-                    msg = rf::String::format("{}{}!", mui_msg, killer_name);
+                    msg = rf::String::format("{}{}{}!", mui_msg, killer_name, assists_text);
                 }
             }
         }
@@ -320,7 +325,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     else if (killer_player == rf::local_player) {
         color_id = rf::ChatMsgColor::white_white;
         mui_msg = null_to_empty(rf::strings::you_killed);
-        msg = rf::String::format("{}{}!", mui_msg, killed_player->name);
+        msg = rf::String::format("{}{}{}!", mui_msg, killed_player->name, assists_text);
     }
     else {
         rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
