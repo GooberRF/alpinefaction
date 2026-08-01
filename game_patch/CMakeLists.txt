@@ -283,6 +283,8 @@ set(SRCS
     misc/spray_picker.h
     misc/vote_panel.cpp
     misc/vote_panel.h
+    misc/saved_votes.cpp
+    misc/saved_votes.h
     misc/game.cpp
     misc/level.cpp
     misc/waypoints.cpp
