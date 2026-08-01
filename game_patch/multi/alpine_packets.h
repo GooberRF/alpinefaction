@@ -278,6 +278,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_pit_queue_state = 0x4,     // Alpine 1.4 (3 bytes: flags, position, total)
     af_sreq_vote_state = 0x5,          // Alpine 1.4 (variable, see AfVoteStateEvent)
     af_sreq_vote_options_data = 0x6,   // Alpine 1.4 (chunked vote-options blob)
+    af_sreq_kill_info = 0x7,           // Alpine 1.4 (5 bytes: victim, killer, weapon, flags, damage_type)
 };
 
 struct ShouldGibPayload
@@ -323,6 +324,30 @@ struct PitQueueStatePayload
     uint8_t position = 0; // 1-based position among waiting queue, 0 if n/a
     uint8_t total = 0;    // waiting-queue size
 };
+
+enum af_kill_info_flags : uint8_t
+{
+    // Non-headshot, non-legshot, non-splash = torso shot
+    AF_KILL_FLAG_HEADSHOT = 1 << 0, // meaningful only for direct hits
+    AF_KILL_FLAG_SPLASH   = 1 << 1, // lethal damage came from splash
+    AF_KILL_FLAG_MELEE    = 1 << 2,
+    AF_KILL_FLAG_SUICIDE  = 1 << 3,
+    AF_KILL_FLAG_LEGSHOT  = 1 << 4, // meaningful only for direct hits
+    AF_KILL_FLAG_GIBBED   = 1 << 5,
+};
+
+// Decorates the stock obj_kill packet, which carries no weapon.
+struct KillInfoPayload
+{
+    uint8_t killed_player_id = 0xFF;
+    uint8_t killer_player_id = 0xFF; // 0xFF = no killer player (world death)
+    uint8_t weapon_type = 0xFF;
+    uint8_t flags = 0;  // af_kill_info_flags
+    uint8_t damage_type = 0xFF;
+};
+static_assert(sizeof(KillInfoPayload) == 5);
+
+constexpr uint8_t af_kill_info_max_assists = 8;
 
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload>;
@@ -692,6 +717,7 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
 void af_send_character_request(int character_index);
 void af_send_server_req_packet(const af_server_req_packet& packet, rf::Player* player);
 void af_send_should_gib_req(uint32_t obj_handle);
+void af_send_kill_info(rf::Player* killed_player);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
 void af_broadcast_spray(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
