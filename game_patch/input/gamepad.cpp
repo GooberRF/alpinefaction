@@ -828,8 +828,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
             if (is_capsense_gripsense_rebind_blocked(SDL_GetGamepadFromID(ev.which), ev.button))
                 return;
             g_rebind_pending_sc = CTRL_GAMEPAD_SCAN_BASE + ev.button;
-            rf::ui::options_controls_assign_binding(static_cast<int>(CTRL_REBIND_SENTINEL), -1);
-            rf::ui::options_controls_stop_waiting_for_key();
+            rf::key_process_event(static_cast<int>(CTRL_REBIND_SENTINEL), 1, 0);
         }
         return;
     }
