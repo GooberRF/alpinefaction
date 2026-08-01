@@ -1218,7 +1218,7 @@ bool alpine_player_settings_load(rf::Player* player)
             if (saved_votes_is_full()) {
                 // Stop parsing entirely once the store is full: the remaining lines
                 // are carried forward verbatim instead of being dropped.
-                xlog::warn("Saved vote store full; preserving {} unread", *key);
+                xlog::warn("Saved vote store full; preserving unread entry {}", *key);
                 saved_votes_add_unparsed(value);
             }
             else if (saved_vote_parse(value, vote)) {
