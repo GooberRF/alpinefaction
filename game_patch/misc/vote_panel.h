@@ -8,5 +8,7 @@ void vote_panel_close();
 void vote_panel_toggle_gameplay();
 // True while the overlay is up; drives HUD/chat/input suppression.
 bool vote_panel_is_gameplay_overlay_active();
+// Drop the whole form (leaving a server).
+void vote_panel_reset();
 
 void vote_panel_apply_patch();

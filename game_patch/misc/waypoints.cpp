@@ -2528,7 +2528,7 @@ void seed_waypoint_zones_from_trigger_damage_events()
                 continue;
             }
             auto* event = static_cast<rf::Event*>(linked_obj);
-            if (event->event_type != rf::event_type_to_int(rf::EventType::Continuous_Damage)) {
+            if (event->event_type != std::to_underlying(rf::EventType::Continuous_Damage)) {
                 continue;
             }
             auto* continuous_damage_event = static_cast<rf::ContinuousDamageEvent*>(event);
@@ -2588,7 +2588,7 @@ void seed_waypoint_zones_from_control_points()
         int handler_uid = -1;
         if (hill.handler) {
             auto* handler_event = reinterpret_cast<rf::Event*>(hill.handler);
-            if (handler_event->event_type == rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+            if (handler_event->event_type == std::to_underlying(rf::EventType::Capture_Point_Handler)) {
                 handler_uid = handler_event->uid;
             }
         }
@@ -2596,7 +2596,7 @@ void seed_waypoint_zones_from_control_points()
         if (handler_uid >= 0) {
             rf::Event* handler_event = rf::event_lookup_from_uid(handler_uid);
             if (!handler_event
-                || handler_event->event_type != rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+                || handler_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
                 continue;
             }
         }
@@ -2682,14 +2682,14 @@ void seed_waypoints_from_teleport_events(
             if (rf::Object* linked_obj = rf::obj_from_handle(linked_id);
                 linked_obj && linked_obj->type == rf::OT_EVENT) {
                 auto* linked_event = static_cast<rf::Event*>(linked_obj);
-                if (linked_event->event_type == rf::event_type_to_int(rf::EventType::AF_Teleport_Player)) {
+                if (linked_event->event_type == std::to_underlying(rf::EventType::AF_Teleport_Player)) {
                     linked_teleport_uid = linked_event->uid;
                 }
             }
 
             if (linked_teleport_uid < 0) {
                 if (rf::Event* linked_event = rf::event_lookup_from_uid(linked_id); linked_event) {
-                    if (linked_event->event_type == rf::event_type_to_int(rf::EventType::AF_Teleport_Player)) {
+                    if (linked_event->event_type == std::to_underlying(rf::EventType::AF_Teleport_Player)) {
                         linked_teleport_uid = linked_event->uid;
                     }
                 }
@@ -2785,7 +2785,7 @@ void seed_waypoints_from_legacy_teleporters(
 
         if (first_kf) {
             rf::Event* first_event = rf::event_lookup_from_uid(first_kf->event_uid);
-            if (first_event && first_event->event_type == rf::event_type_to_int(rf::EventType::Teleport_Player)) {
+            if (first_event && first_event->event_type == std::to_underlying(rf::EventType::Teleport_Player)) {
                 // Case A: first keyframe directly triggers Teleport_Player
                 teleport_event_uid = first_event->uid;
             }
@@ -2805,7 +2805,7 @@ void seed_waypoints_from_legacy_teleporters(
                     const rf::MoverKeyframe* last_kf = mover->keyframes[keyframe_count - 1];
                     if (last_kf) {
                         rf::Event* last_event = rf::event_lookup_from_uid(last_kf->event_uid);
-                        if (last_event && last_event->event_type == rf::event_type_to_int(rf::EventType::Teleport_Player)) {
+                        if (last_event && last_event->event_type == std::to_underlying(rf::EventType::Teleport_Player)) {
                             teleport_event_uid = last_event->uid;
                         }
                     }

@@ -512,7 +512,7 @@ CodeInjection controls_process_patch{
 
 CodeInjection controls_process_chat_menu_patch{
     0x00430E19,
-    [](auto& regs) {
+    [] {
         // Spectate numpad binds.
         multi_spectate_process_bind_input();
 

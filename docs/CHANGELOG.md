@@ -79,6 +79,7 @@ Version 1.4.0 (Lupin): Not yet released
 - Kill messages, the game feed, and dedicated server console kill lines now credit assists
 
 [@is-this-c](https://github.com/is-this-c)
+- Rewrite `VArray` to fix crashes due to MinGW
 - Add `Anti-aliasing` option to `ADVANCED` options panel
 - Add `r_antialiasing_mode` console command to set anti-aliasing mode at run-time
 - Rename `antialiasing` console command to `r_antialiasing`

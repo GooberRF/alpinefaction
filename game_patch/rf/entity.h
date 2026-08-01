@@ -81,6 +81,7 @@ namespace rf
         int num_textures;
         String textures[12];
     };
+    static_assert(alignof(ObjSkinInfo) == 0x4);
 
     enum EntitySpeed
     {

@@ -561,6 +561,10 @@ struct MutatorDeclaration
 {
     std::string name; // canonical mutator name (matches mutators_find_by_name)
     std::map<std::string, MutatorOptionValue> options;
+
+    // Order-sensitive deep equality, which is what the vote-options blob uses to
+    // decide whether a level's mutator set differs from the base set.
+    bool operator==(const MutatorDeclaration&) const = default;
 };
 
 // A single mutator option as received from a vote-call packet, before it is
@@ -730,10 +734,9 @@ struct AlpineServerConfigRules
     {
         pvp_damage_modifier = std::clamp(modifier, 0.0f, 100.0f);
     }
-    bool add_item_replacement(std::string_view original, std::string_view replacement)
+    bool add_item_replacement(const std::string& original, const std::string& replacement)
     {
-        int orig_idx = rf::item_lookup_type(original.data());
-        int repl_idx = rf::item_lookup_type(replacement.data());
+        int orig_idx = rf::item_lookup_type(original.c_str());
         if (orig_idx < 0) {
             // check if original name is invalid
             // replacement name being blank is fine, removes item

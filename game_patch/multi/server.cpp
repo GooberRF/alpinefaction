@@ -56,7 +56,6 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
-#include "../purefaction/pf.h"
 
 // all commands that can be used by any rcon profiles
 // full_admin gives access to this entire list
@@ -429,7 +428,7 @@ std::string build_info_command_output() {
     }
 
     std::string framerate_line;
-    bool is_server = rf::is_multi && (rf::is_server || rf::is_dedicated_server);
+    bool is_server = rf::is_multi && rf::is_server;
     if (is_server) {
         framerate_line = std::format("Framerate: {:.3f} | FPS: {:.0f} ({} max) | NetFPS: {}\n",
             rf::frametime,
@@ -751,28 +750,12 @@ void shuffle_level_array()
     xlog::info("Shuffled level rotation");
 }
 
-static std::string normalize_level_name(std::string_view in)
-{
-    std::string s(in);
-    // add .rfl if missing
-    auto ends_with_ci = [](const std::string& str, const char* suf) {
-        if (str.size() < 4)
-            return false;
-        auto a = str.substr(str.size() - 4);
-        for (auto& c : a) c = (char)std::tolower((unsigned char)c);
-        return a == suf;
-    };
-    if (!ends_with_ci(s, ".rfl"))
-        s += ".rfl";
-    return s;
-}
-
 static std::pair<bool, int> find_rotation_index_for_level(std::string_view level_name)
 {
     if (!g_dedicated_launched_from_ads)
         return {false, -1};
 
-    const auto wanted = normalize_level_name(level_name);
+    const auto wanted = level_filename_with_rfl(level_name);
     const auto& cfg = g_alpine_server_config;
 
     for (int i = 0; i < (int)cfg.levels.size(); ++i) {
@@ -793,7 +776,7 @@ static void queue_level_switch_preferring_rotation(std::string_view level_name)
     }
     else {
         // Not in rotation
-        rf::level_filename_to_load = normalize_level_name(level_name).c_str();
+        rf::level_filename_to_load = level_filename_with_rfl(level_name).c_str();
         set_manually_loaded_level(true);
     }
 }
@@ -1677,33 +1660,6 @@ static void send_spawn_decline_msg(rf::Player* player, std::string_view msg)
     af_send_automated_chat_msg(msg, player);
 }
 
-static bool check_player_ac_status([[maybe_unused]] rf::Player* player)
-{
-#ifdef HAS_PF
-    if (g_additional_server_config.anticheat_level > 0) {
-        bool verified = pf_is_player_verified(player);
-        if (!verified) {
-            send_spawn_decline_msg(player,
-                "Sorry! Your spawn request was rejected because verification of your client software failed. "
-                "Please use the latest officially released version of Alpine Faction.");
-            return false;
-        }
-
-        int ac_level = pf_get_player_ac_level(player);
-        if (ac_level < g_additional_server_config.anticheat_level) {
-            auto msg = std::format(
-                "Sorry! Your spawn request was rejected because your client did not pass anti-cheat verification (your level {}, required {}). "
-                "Please make sure you do not have any mods installed and that your client software is up to date.",
-                ac_level, g_additional_server_config.anticheat_level
-            );
-            send_spawn_decline_msg(player, msg);
-            return false;
-        }
-    }
-#endif // HAS_PF
-    return true;
-}
-
 std::vector<rf::Player*> get_clients(
     const bool include_browsers,
     const bool include_bots
@@ -2065,12 +2021,7 @@ void match_do_frame()
 
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input)
 {
-    std::string level_name{level_name_input};
-
-    // add ".rfl" if it's missing
-    if (!string_iends_with(level_name, ".rfl")) {
-        level_name += ".rfl";
-    }
+    const std::string level_name = level_filename_with_rfl(level_name_input);
 
     bool is_valid = rf::get_file_checksum(level_name.c_str()) != 0;
 
@@ -2351,9 +2302,6 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
             return;
         }
         if (!check_can_player_spawn(player)) {
-            return;
-        }
-        if (!check_player_ac_status(player)) {
             return;
         }
         if (g_match_info.match_active && !is_player_in_match(player)) {
@@ -3901,9 +3849,11 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         rf::Item* item = item_create_hook.call_target(
             type, name, count, parent_handle, pos, orient, respawn_time, permanent, from_packet);
 
-        if (item && item->respawn_time_ms > 0 &&
-            (rf::is_server || rf::is_dedicated_server) &&
-            g_alpine_server_config_active_rules.delayed_items.contains(name)) {
+        if (item
+            && item->respawn_time_ms > 0
+            && rf::is_server
+            && g_alpine_server_config_active_rules.delayed_items.contains(name))
+        {
             rf::obj_hide(item);
             item->respawn_next.set(item->respawn_time_ms);
         }
@@ -3976,10 +3926,14 @@ void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count)
 CodeInjection entity_maybe_die_patch{
     0x00420600,
     [](auto& regs) {
-        if (!(rf::is_multi && (rf::is_server || rf::is_dedicated_server))) return;
+        if (!(rf::is_multi && rf::is_server)) {
+            return;
+        }
 
         rf::Entity* ep = regs.esi;
-        if (!ep) return;
+        if (!ep) {
+            return;
+        }
 
         rf::Player* player = rf::player_from_entity_handle(ep->handle);
 

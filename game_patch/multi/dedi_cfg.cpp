@@ -51,7 +51,6 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
-#include "../purefaction/pf.h"
 #include "bots/bot_personality.h"
 #include <common/utils/os-utils.h>
 
@@ -770,11 +769,7 @@ static std::vector<std::string> parse_allowed_maps(const toml::table& t)
     if (auto arr = t["allowed_levels"].as_array()) {
         for (auto& node : *arr) {
             if (auto value = node.value<std::string>()) {
-                std::string map_name = *value;
-                if (!string_iends_with(map_name, ".rfl")) {
-                    map_name += ".rfl";
-                }
-                allowed_maps.emplace_back(std::move(map_name));
+                allowed_maps.push_back(level_filename_with_rfl(*value));
             }
         }
     }
@@ -1107,12 +1102,7 @@ static void add_level_entry_from_table(
         }
     }
 
-    auto tmp_filename = lvl_tbl["filename"].value_or<std::string>("");
-
-    // add .rfl extension if it's missing
-    if (!string_iends_with(tmp_filename, ".rfl")) {
-        tmp_filename += ".rfl";
-    }
+    const auto tmp_filename = level_filename_with_rfl(lvl_tbl["filename"].value_or<std::string>(""));
 
     rf::File f;
     if (!f.find(tmp_filename.c_str())) {

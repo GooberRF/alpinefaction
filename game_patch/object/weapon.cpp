@@ -55,7 +55,7 @@ CodeInjection weapons_tbl_buffer_overflow_fix_2{
 
 CodeInjection weapon_init_track_reticle_bitmap_injection{
     0x004C6756,
-    [](auto& regs) {
+    [] {
         weapon_reticle_custom_mask.fill(0);
         rocket_locked_custom_reticle = {false, false};
 

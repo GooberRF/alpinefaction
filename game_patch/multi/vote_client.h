@@ -42,6 +42,30 @@ struct VoteMutatorSchema
     std::vector<VoteMutatorOptionSchema> options;
 };
 
+// One option value of a mutator the server has declared in its config, as
+// opposed to the schema's factory defaults above. Same value-field shape as
+// VoteMutatorOptionSchema: only the member matching `type` is meaningful.
+struct VoteMutatorDeclValue
+{
+    uint8_t option_id = 0;
+    MutatorOptionType type = MutatorOptionType::Bool;
+
+    bool bool_value = false;
+    uint8_t choice_index = 0;
+    int32_t int_value = 0;
+    float float_value = 0.0f;
+    std::string string_value;
+};
+
+// One config-declared mutator. The panel pre-selects these so that submitting an
+// untouched vote reproduces what the level would run anyway (votes replace the
+// configured mutator set rather than stacking on it).
+struct VoteMutatorDecl
+{
+    uint8_t mutator_id = 0;
+    std::vector<VoteMutatorDeclValue> values;
+};
+
 struct VoteLevelInfo
 {
     std::string filename;
@@ -52,6 +76,10 @@ struct VoteLevelInfo
     uint32_t valid_gametype_mask = 0;
     // The server's vote_level allow-list accepts this level.
     bool allowed_for_vote = true;
+    // Mutators this level is configured to run. `nullopt` means it inherits
+    // VoteOptionsData::base_mutator_decls; an empty vector means it explicitly
+    // runs none. Also nullopt for a server built before the blob carried this.
+    std::optional<std::vector<VoteMutatorDecl>> mutator_decls;
 };
 
 struct VoteOptionsData
@@ -67,6 +95,9 @@ struct VoteOptionsData
     std::vector<VoteGametypeInfo> gametypes;
     std::vector<VoteMutatorSchema> mutators;
     std::vector<VoteLevelInfo> levels; // rotation order, then vote-allowed extras
+    // Mutators the server's base rules declare; the baseline for every level that
+    // does not carry its own. Empty for a server built before the blob carried it.
+    std::vector<VoteMutatorDecl> base_mutator_decls;
 };
 
 // Does this level match the given game type's level prefix rules? Whether that
@@ -109,6 +140,10 @@ struct ActiveVoteState
 // refresh request with nothing at all when its generation hasn't changed.
 bool vote_options_are_loaded();
 const VoteOptionsData* vote_options_get();
+// Generation of the loaded data, 0 until a blob has been parsed. A consumer that
+// derives state from the options watches this so a background refresh can be
+// picked up without re-deriving every frame.
+uint32_t vote_options_loaded_generation();
 bool vote_options_is_type_enabled(AfVoteType type);
 // Ask the server for the blob if it isn't loaded (or went stale). Rate limited.
 void vote_options_request_if_needed();

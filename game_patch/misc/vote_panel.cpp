@@ -8,6 +8,7 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "vote_panel.h"
 #include "player.h"
@@ -15,11 +16,13 @@
 #include "../hud/remote_server_cfg_ui.h"
 #include "../input/control_input_filter.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/multi.h"
 #include "../multi/vote_client.h"
 #include "../rf/gameseq.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
+#include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/player/control_config.h"
 #include "../rf/player/player.h"
@@ -287,6 +290,13 @@ struct FormState
     int extend_minutes = af_vote_extend_default_minutes;
     std::vector<PanelMutatorSelection> mutators;
     int description_mutator = -1;
+
+    // The mutator section starts pre-selected with what the level in context runs
+    // anyway, and is re-derived when that context changes, but only until the
+    // player touches it, after which the form is theirs and is never stomped.
+    bool mutators_touched = false;
+    std::string mutators_baseline_key;      // level string the pre-selection came from
+    uint32_t mutators_baseline_generation = 0; // options generation it came from
 
     float level_scroll = 0.0f;
     float kick_scroll = 0.0f;
@@ -835,6 +845,96 @@ uint32_t schema_fingerprint(const VoteOptionsData& options)
     return h;
 }
 
+std::string selected_level();
+
+const std::vector<VoteMutatorDecl>& resolve_baseline(const VoteOptionsData& options, const std::string& level_string)
+{
+    // Empty is Match's "Current level" row (and the state right after a rebuild),
+    // which resolves against whatever is running locally. Normalized the same way
+    // the server normalizes a voted level name, so both resolve the same file; a
+    // no-op for anything picked out of the level list, which already carries it.
+    const std::string wanted = level_filename_with_rfl(level_string.empty()
+        ? std::string_view{rf::level.filename.c_str()}
+        : std::string_view{level_string});
+
+    for (const auto& level : options.levels) {
+        if (string_iequals(level.filename, wanted)) {
+            return level.mutator_decls ? *level.mutator_decls : options.base_mutator_decls;
+        }
+    }
+    // A manually named level outside the server's list runs on the base rules.
+    return options.base_mutator_decls;
+}
+
+// Reset every mutator to the schema (factory) defaults, then switch on the ones
+// the baseline declares and overlay their configured values.
+void apply_baseline(const VoteOptionsData& options, const std::vector<VoteMutatorDecl>& baseline)
+{
+    for (size_t i = 0; i < options.mutators.size() && i < g_form.mutators.size(); ++i) {
+        const VoteMutatorSchema& schema = options.mutators[i];
+        PanelMutatorSelection& selection = g_form.mutators[i];
+
+        const size_t option_count = std::min(schema.options.size(), selection.options.size());
+        for (size_t o = 0; o < option_count; ++o) {
+            const VoteMutatorOptionSchema& option = schema.options[o];
+            PanelOptionValue& value = selection.options[o];
+            value.bool_value = option.default_bool;
+            value.choice_index = option.default_choice;
+            value.int_value = option.default_int;
+            value.float_value = option.default_float;
+        }
+
+        const VoteMutatorDecl* decl = nullptr;
+        for (const auto& candidate : baseline) {
+            if (candidate.mutator_id == schema.id) {
+                decl = &candidate;
+                break;
+            }
+        }
+        // Baseline entries for a mutator this schema doesn't list are ignored:
+        // there is no row to select.
+        selection.enabled = decl != nullptr;
+        if (!decl) {
+            continue;
+        }
+
+        for (size_t o = 0; o < option_count; ++o) {
+            const VoteMutatorOptionSchema& option = schema.options[o];
+            PanelOptionValue& value = selection.options[o];
+            for (const auto& declared : decl->values) {
+                // A value whose type disagrees with the schema keeps the default:
+                // writing it into the wrong slot would send nonsense back.
+                if (declared.option_id != option.id || declared.type != option.type) {
+                    continue;
+                }
+                switch (option.type) {
+                    case MutatorOptionType::Bool:
+                        value.bool_value = declared.bool_value;
+                        break;
+                    case MutatorOptionType::Choice:
+                        // A choice list that shrank since the config was written
+                        // would otherwise leave an index with nothing to display.
+                        if (declared.choice_index < option.choices.size()) {
+                            value.choice_index = declared.choice_index;
+                        }
+                        break;
+                    case MutatorOptionType::Int:
+                        value.int_value = declared.int_value;
+                        break;
+                    case MutatorOptionType::Float:
+                        value.float_value = declared.float_value;
+                        break;
+                    default:
+                        // String has no widget and no slot in PanelOptionValue, so
+                        // the server's default applies to whatever the vote sends.
+                        break;
+                }
+                break;
+            }
+        }
+    }
+}
+
 void build_form(const VoteOptionsData& options)
 {
     g_form.built = true;
@@ -868,6 +968,14 @@ void build_form(const VoteOptionsData& options)
         }
         g_form.mutators.push_back(std::move(selection));
     }
+
+    // Pre-select what the level in context runs anyway. Every selection field was
+    // just reset, so selected_level() is empty here and this resolves against the
+    // current level; do_form re-derives it as soon as that changes.
+    apply_baseline(options, resolve_baseline(options, selected_level()));
+    g_form.mutators_touched = false;
+    g_form.mutators_baseline_key = selected_level();
+    g_form.mutators_baseline_generation = vote_options_loaded_generation();
 }
 
 void ensure_form(const VoteOptionsData& options)
@@ -1173,6 +1281,7 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
             }
             if (ui_checkbox(ui, row, selection.enabled, schema.label.c_str(), lo.font)) {
                 selection.enabled = !selection.enabled;
+                g_form.mutators_touched = true; // the form is the player's from here on
                 g_form.description_mutator = static_cast<int>(i);
                 g_description_pinned = true;
                 play_toggle_sound(selection.enabled);
@@ -1200,6 +1309,7 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                 case MutatorOptionType::Bool: {
                     if (ui_checkbox(ui, opt_row, value.bool_value, option.label.c_str(), lo.font)) {
                         value.bool_value = !value.bool_value;
+                        g_form.mutators_touched = true;
                         play_toggle_sound(value.bool_value);
                     }
                     break;
@@ -1230,6 +1340,7 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                             index = 0;
                         }
                         value.choice_index = static_cast<uint8_t>(index);
+                        g_form.mutators_touched = true;
                         play_click_sound();
                     }
                     break;
@@ -1253,6 +1364,9 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                         g_popup_option = static_cast<int>(o);
                         g_popup_mutator_id = schema.id;
                         g_popup_option_id = option.id;
+                        // Marked on OPEN rather than on commit: the popup owns the
+                        // value from here, and it must not be re-derived underneath.
+                        g_form.mutators_touched = true;
                         rf::ui::popup_message(option.label.c_str(), "", mutator_option_popup_callback, 1);
                     }
                     break;
@@ -1532,6 +1646,19 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
 void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options)
 {
     ensure_form(options);
+
+    // Re-derive the mutator pre-selection whenever its context moves.
+    {
+        std::string baseline_key = selected_level();
+        const uint32_t generation = vote_options_loaded_generation();
+        if (!g_form.mutators_touched
+            && (baseline_key != g_form.mutators_baseline_key
+                || generation != g_form.mutators_baseline_generation)) {
+            apply_baseline(options, resolve_baseline(options, baseline_key));
+            g_form.mutators_baseline_key = std::move(baseline_key);
+            g_form.mutators_baseline_generation = generation;
+        }
+    }
 
     const auto types = enabled_vote_types();
     if (types.empty()) {
@@ -2001,6 +2128,17 @@ void vote_panel_close()
 bool vote_panel_is_gameplay_overlay_active()
 {
     return g_open;
+}
+
+void vote_panel_reset()
+{
+    // Every field of the form describes the server being left.
+    g_form = FormState{};
+
+    // A popup somehow left open across the disconnect must not write into the rebuilt form.
+    clear_popup_target();
+    g_popup_mutator_id = 0;
+    g_popup_option_id = 0;
 }
 
 void vote_panel_toggle_gameplay()

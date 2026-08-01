@@ -176,6 +176,7 @@ std::string_view multi_game_type_name_short(rf::NetGameType game_type);
 std::string_view multi_game_type_prefix(rf::NetGameType game_type);
 bool multi_game_type_uses_any_level(rf::NetGameType game_type);
 bool multi_level_name_matches_any_mp_prefix(const char* filename);
+std::string level_filename_with_rfl(std::string_view name);
 [[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool force);

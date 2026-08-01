@@ -1061,13 +1061,13 @@ struct EventScopeGate : rf::Event
             pass = !rf::is_multi;
             break;
         case ScopeGateTests::server:
-            pass = (rf::is_server || rf::is_dedicated_server);
+            pass = rf::is_server;
             break;
         case ScopeGateTests::dedicated:
             pass = rf::is_dedicated_server;
             break;
         case ScopeGateTests::client:
-            pass = !(rf::is_server || rf::is_dedicated_server);
+            pass = !rf::is_server;
             break;
         case ScopeGateTests::triggered_by:
             pass = (rf::local_player && (rf::local_player->entity_handle == this->triggered_by_handle));
@@ -2345,7 +2345,7 @@ private:
                     continue;
 
                 auto* linked_event = static_cast<rf::Event*>(obj);
-                if (linked_event->event_type != rf::event_type_to_int(rf::EventType::Capture_Point_Handler))
+                if (linked_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler))
                     continue;
 
                 auto* handler = static_cast<EventCapturePointHandler*>(linked_event);
@@ -2414,7 +2414,7 @@ private:
         }
 
         auto* linked_event = static_cast<Event*>(obj);
-        if (linked_event->event_type != rf::event_type_to_int(rf::EventType::Capture_Point_Handler)) {
+        if (linked_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
             return false;
         }
 

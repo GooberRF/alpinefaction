@@ -259,12 +259,7 @@ bool handle_awpgen_param()
         return true;
     }
 
-    std::string level_filename = arg;
-
-    // Normalize .rfl extension
-    if (!string_iends_with(level_filename, ".rfl")) {
-        level_filename += ".rfl";
-    }
+    const std::string level_filename = level_filename_with_rfl(arg);
 
     // Validate level file is installed
     if (rf::get_file_checksum(level_filename.c_str()) == 0) {
@@ -1020,6 +1015,16 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename)
         || string_istarts_with(filename, "esc");
 }
 
+// A level name with ".rfl" appended when it is missing.
+std::string level_filename_with_rfl(std::string_view name)
+{
+    std::string out{name};
+    if (!out.empty() && !string_iends_with(out, ".rfl")) {
+        out += ".rfl";
+    }
+    return out;
+}
+
 int multi_num_spawned_players() {
     return std::ranges::count_if(SinglyLinkedList{rf::player_list}, [] (const auto& p) {
         return !rf::player_is_dead(&p) && !rf::player_is_dying(&p);
@@ -1088,7 +1093,7 @@ void start_level_in_multi(std::string filename) {
 
 CodeInjection multi_customize_listen_server_settings_patch {
     0x0044E485,
-    [](auto& regs) {
+    [] {
         configure_custom_gametype_listen_server_settings();
     },
 };
