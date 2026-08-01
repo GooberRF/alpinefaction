@@ -258,12 +258,7 @@ bool handle_awpgen_param()
         return true;
     }
 
-    std::string level_filename = arg;
-
-    // Normalize .rfl extension
-    if (!string_iends_with(level_filename, ".rfl")) {
-        level_filename += ".rfl";
-    }
+    const std::string level_filename = level_filename_with_rfl(arg);
 
     // Validate level file is installed
     if (rf::get_file_checksum(level_filename.c_str()) == 0) {
@@ -1017,6 +1012,16 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename)
         || string_istarts_with(filename, "dc")
         || string_istarts_with(filename, "rev")
         || string_istarts_with(filename, "esc");
+}
+
+// A level name with ".rfl" appended when it is missing.
+std::string level_filename_with_rfl(std::string_view name)
+{
+    std::string out{name};
+    if (!out.empty() && !string_iends_with(out, ".rfl")) {
+        out += ".rfl";
+    }
+    return out;
 }
 
 int multi_num_spawned_players() {

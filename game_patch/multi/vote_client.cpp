@@ -239,6 +239,97 @@ bool parse_mutator_descriptor(BlobReader& r, VoteMutatorSchema& out)
     return true;
 }
 
+// One option value inside a declaration body. Values are packed back to back, so
+// an unknown TYPE makes everything after it unreadable and the caller drops the
+// whole declaration rather than just this value.
+bool parse_declaration_value(BlobReader& r, VoteMutatorDeclValue& out)
+{
+    out.option_id = r.u8();
+    const uint8_t type_raw = r.u8();
+    if (!r.ok()) {
+        return false;
+    }
+    out.type = static_cast<MutatorOptionType>(type_raw);
+
+    switch (out.type) {
+        case MutatorOptionType::Bool:
+            out.bool_value = r.u8() != 0;
+            break;
+        case MutatorOptionType::Choice:
+            out.choice_index = r.u8();
+            break;
+        case MutatorOptionType::Int:
+            out.int_value = r.i32();
+            break;
+        case MutatorOptionType::Float:
+            out.float_value = r.f32();
+            break;
+        case MutatorOptionType::String:
+            out.string_value = r.str();
+            break;
+        default:
+            xlog::debug("vote options: declared option {} has unknown type {}; dropping its declaration",
+                        out.option_id, type_raw);
+            return false;
+    }
+
+    return r.ok();
+}
+
+// One declaration body. Returns false when it cannot be decoded, in which case
+// the caller drops that mutator alone - the rest of the set is still intact
+// because every declaration is length-prefixed.
+bool parse_declaration(BlobReader& r, VoteMutatorDecl& out)
+{
+    out.mutator_id = r.u8();
+    const uint8_t value_count = r.u8();
+    if (!r.ok()) {
+        return false;
+    }
+
+    out.values.reserve(value_count);
+    for (uint8_t v = 0; v < value_count; ++v) {
+        VoteMutatorDeclValue value;
+        if (!parse_declaration_value(r, value)) {
+            return false;
+        }
+        out.values.push_back(std::move(value));
+    }
+
+    // Trailing bytes inside the body are fields a newer server added; ignored.
+    return true;
+}
+
+// A whole declaration set (the config-declared mutators of one rules scope).
+// Returns false only when the set itself is unreadable - a truncated count or a
+// declaration length that overruns what is left.
+bool parse_declaration_set(BlobReader& r, std::vector<VoteMutatorDecl>& out)
+{
+    const uint8_t decl_count = r.u8();
+    if (!r.ok()) {
+        return false;
+    }
+
+    out.reserve(decl_count);
+    for (uint8_t d = 0; d < decl_count; ++d) {
+        const uint16_t body_len = r.u16();
+        if (!r.ok() || body_len > r.remaining()) {
+            return false;
+        }
+        BlobReader body{r.cur(), body_len};
+        VoteMutatorDecl decl;
+        if (parse_declaration(body, decl)) {
+            out.push_back(std::move(decl));
+        }
+        else {
+            xlog::debug("vote options: unparseable mutator declaration ({} bytes); skipping it", body_len);
+        }
+        r.skip(body_len); // unconditional: the next declaration starts here either way
+    }
+
+    return true;
+}
+
 bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& out)
 {
     BlobReader r{data, len};
@@ -335,13 +426,42 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
         level.natural_gametype = body.u8();
         level.valid_gametype_mask = body.u32();
         level.allowed_for_vote = (body.u8() & AF_VOTE_LEVEL_FLAG_ALLOWED) != 0;
-        if (body.ok()) {
+        // Read the entry's own success BEFORE the appended baseline set below, so
+        // trouble in the addition can only cost the pre-selection, never the level.
+        const bool entry_ok = body.ok();
+
+        // Baseline mutator set, appended after the flags byte. Absent from a blob
+        // built before it existed, which reads as "inherit the base set" - the
+        // same thing an old server implied by having no per-level sets at all.
+        if (entry_ok && body.remaining() > 0
+            && body.u8() == static_cast<uint8_t>(AfVoteLevelBaseline::Explicit)) {
+            std::vector<VoteMutatorDecl> decls;
+            if (parse_declaration_set(body, decls)) {
+                // An explicit EMPTY set is meaningful ("runs no mutators") and is
+                // deliberately not the same as leaving this nullopt.
+                level.mutator_decls = std::move(decls);
+            }
+            else {
+                xlog::debug("vote options: unparseable baseline mutator set for level '{}'; "
+                            "falling back to the base set", level.filename);
+            }
+        }
+
+        if (entry_ok) {
             parsed.levels.push_back(std::move(level));
         }
         else {
             xlog::warn("vote options: unparseable level entry ({} bytes); skipping it", body_len);
         }
         r.skip(body_len); // unconditional: the next entry starts here either way
+    }
+
+    // The base mutator set, appended after the level section. Failing to read it
+    // costs the vote panel's pre-selection and nothing else, so it never fails the
+    // blob: a blob from a server built before it existed simply ends here.
+    if (r.remaining() > 0 && !parse_declaration_set(r, parsed.base_mutator_decls)) {
+        xlog::debug("vote options: unparseable base mutator set; the vote panel will pre-select nothing");
+        parsed.base_mutator_decls.clear();
     }
 
     // Anything left over is a section a newer server appended; ignored on purpose.
@@ -387,6 +507,11 @@ bool vote_options_are_loaded()
 const VoteOptionsData* vote_options_get()
 {
     return g_vote_options.loaded ? &g_vote_options.data : nullptr;
+}
+
+uint32_t vote_options_loaded_generation()
+{
+    return g_vote_options.loaded_generation;
 }
 
 bool vote_level_allows_gametype(const VoteLevelInfo& level, uint8_t game_type)

@@ -53,6 +53,7 @@
 #include "../misc/misc.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/vote_panel.h"
 #include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "../os/console.h"
@@ -2505,6 +2506,7 @@ FunHook<void()> multi_stop_hook{
         g_af_server_info.reset(); // Clear server info when leaving
         mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
         vote_client_reset(); // drop the cached vote options and active vote state
+        vote_panel_reset(); // drop the vote form, which describes the server being left
         g_local_player_spectators.clear();
         g_remote_server_cfg_popup.reset();
         set_local_pre_match_active(false); // clear pre-match state when leaving

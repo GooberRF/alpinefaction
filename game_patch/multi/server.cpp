@@ -749,28 +749,12 @@ void shuffle_level_array()
     xlog::info("Shuffled level rotation");
 }
 
-static std::string normalize_level_name(std::string_view in)
-{
-    std::string s(in);
-    // add .rfl if missing
-    auto ends_with_ci = [](const std::string& str, const char* suf) {
-        if (str.size() < 4)
-            return false;
-        auto a = str.substr(str.size() - 4);
-        for (auto& c : a) c = (char)std::tolower((unsigned char)c);
-        return a == suf;
-    };
-    if (!ends_with_ci(s, ".rfl"))
-        s += ".rfl";
-    return s;
-}
-
 static std::pair<bool, int> find_rotation_index_for_level(std::string_view level_name)
 {
     if (!g_dedicated_launched_from_ads)
         return {false, -1};
 
-    const auto wanted = normalize_level_name(level_name);
+    const auto wanted = level_filename_with_rfl(level_name);
     const auto& cfg = g_alpine_server_config;
 
     for (int i = 0; i < (int)cfg.levels.size(); ++i) {
@@ -791,7 +775,7 @@ static void queue_level_switch_preferring_rotation(std::string_view level_name)
     }
     else {
         // Not in rotation
-        rf::level_filename_to_load = normalize_level_name(level_name).c_str();
+        rf::level_filename_to_load = level_filename_with_rfl(level_name).c_str();
         set_manually_loaded_level(true);
     }
 }
@@ -1965,12 +1949,7 @@ void match_do_frame()
 
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input)
 {
-    std::string level_name{level_name_input};
-
-    // add ".rfl" if it's missing
-    if (!string_iends_with(level_name, ".rfl")) {
-        level_name += ".rfl";
-    }
+    const std::string level_name = level_filename_with_rfl(level_name_input);
 
     bool is_valid = rf::get_file_checksum(level_name.c_str()) != 0;
 

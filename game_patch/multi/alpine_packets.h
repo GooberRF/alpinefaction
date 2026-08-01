@@ -199,6 +199,18 @@ enum af_vote_level_flags : uint8_t
     AF_VOTE_LEVEL_FLAG_ALLOWED = 1 << 0,
 };
 
+// The `baseline_kind` byte appended after a level entry's flags: which mutator
+// set the vote panel pre-selects when that level is picked.
+enum class AfVoteLevelBaseline : uint8_t
+{
+    // Use the blob's trailing base mutator set.
+    InheritBase = 0,
+    // A declaration set follows.
+    // An empty one is meaningful: it says this level runs no mutators
+    // at all, which is NOT the same as inheriting.
+    Explicit = 1,
+};
+
 // Server-wide vote flags, the `server_flags` byte of the vote-options blob.
 enum af_vote_server_flags : uint8_t
 {
