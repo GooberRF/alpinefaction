@@ -651,11 +651,18 @@ int ui_cycler(PanelUi& ui, const Rect& r, const char* value, int font)
     return 0;
 }
 
+// Row pitch of ui_listbox, shared so a caller can turn a row index into the
+// scroll offset that brings that row to the top of the window.
+int ui_listbox_row_height(int font)
+{
+    return rf::gr::get_font_height(font) + 2;
+}
+
 // Scrolling list. Returns the clicked index in the hit-test pass, else -1.
 int ui_listbox(PanelUi& ui, const Rect& r, const std::vector<std::string>& items, int sel,
                float& scroll, int font)
 {
-    const int row_h = rf::gr::get_font_height(font) + 2;
+    const int row_h = ui_listbox_row_height(font);
     const int total_h = static_cast<int>(items.size()) * row_h;
     const float max_scroll = static_cast<float>(std::max(0, total_h - r.h));
     const bool inside = point_in(ui.mx, ui.my, r);
@@ -851,12 +858,11 @@ std::string selected_level();
 
 const std::vector<VoteMutatorDecl>& resolve_baseline(const VoteOptionsData& options, const std::string& level_string)
 {
-    // Empty is the pinned "Current level" row (and the state right after a
-    // rebuild), which resolves against whatever is running locally. Normalized
-    // the same way the server normalizes a voted level name, so both resolve the
-    // same file; a no-op for anything picked out of the level list, which
-    // already carries it.
-    const std::string wanted = level_filename_with_rfl(level_string.empty()
+    // Empty is Match's "Current level" row (and the state right after a rebuild),
+    // which resolves against whatever is running locally. Normalized the same way
+    // the server normalizes a voted level name, so both resolve the same file; a
+    // no-op for anything picked out of the level list, which already carries it.
+    const std::string wanted = normalize_level_filename(level_string.empty()
         ? std::string_view{rf::level.filename.c_str()}
         : std::string_view{level_string});
 
@@ -991,10 +997,8 @@ void ensure_form(const VoteOptionsData& options)
     }
 }
 
-// The level string sent on the wire. `allow_current` maps the leading "Current
-// level" row to the empty string, which Match sends as-is (the server reads it
-// as "keep the level") and Level swaps for the running level's file name at
-// send time (the server takes a Level vote's name literally).
+// The level string sent on the wire. `allow_current` (Match) maps the leading
+// "Current level" row to the empty string the server reads as "keep the level".
 // Case-insensitive ordering for the level list.
 bool level_name_less(const std::string& a, const std::string& b)
 {
@@ -1164,10 +1168,14 @@ bool vote_form_is_sendable(const VoteOptionsData& options)
             return g_form.kick_index >= 0
                 && g_form.kick_index < static_cast<int>(candidates.size());
         }
+        case AfVoteType::Level:
+            // Empty means the list had nothing to offer for this game type, or
+            // manual entry is on with nothing typed into it yet.
+            return !selected_level().empty();
         case AfVoteType::Extend:
             return true;
         default:
-            return true; // Level/Match fall back to the current level; rest are parameterless
+            return true; // Match falls back to the current level; rest are parameterless
     }
     (void)options;
 }
@@ -1193,11 +1201,8 @@ void send_vote_from_form(const VoteOptionsData& options)
         }
         case AfVoteType::Level: {
             params.level = selected_level();
-            // Empty is the pinned "Current level" row. The server reads a Level
-            // vote's name literally, so name the running level explicitly --
-            // normalized exactly as resolve_baseline does.
             if (params.level.empty()) {
-                params.level = level_filename_with_rfl(std::string_view{rf::level.filename.c_str()});
+                return;
             }
             params.gametype = selected_gametype(options, false);
             params.mutators = build_mutator_inputs(options);
@@ -1546,8 +1551,8 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     const int level_row_count = static_cast<int>(cache.items.size()) - cache.first_level_row;
 
     // A game type change (or a refreshed allow-list) can hide the selected map;
-    // drop the selection so it can never be sent; the pinned "Current level"
-    // row then takes over.
+    // drop the selection so it can never be sent. Match then falls back to the
+    // pinned "Current level" row.
     if (!g_form.level_selection.empty()
         && std::find(cache.items.begin() + cache.first_level_row, cache.items.end(),
                g_form.level_selection)
@@ -1555,10 +1560,25 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
         g_form.level_selection.clear();
         cache.sel_valid = false;
     }
-    // Without a pinned row there is nothing for an empty selection to resolve
-    // to, so keep the top entry active by default.
+    // A Level vote has no pinned row, so keep an entry active by default: the
+    // running level when the list offers it (normalized the way the server
+    // normalizes a voted name, so both resolve the same file), else the top
+    // entry. The list is scrolled to whichever that lands on, since a default
+    // sitting off-screen reads as no selection at all.
     if (!allow_current && g_form.level_selection.empty() && level_row_count > 0) {
-        g_form.level_selection = cache.items[cache.first_level_row];
+        const std::string current =
+            normalize_level_filename(std::string_view{rf::level.filename.c_str()});
+        size_t row = static_cast<size_t>(cache.first_level_row);
+        for (size_t i = row; i < cache.items.size(); ++i) {
+            if (string_iequals(cache.items[i], current)) {
+                row = i;
+                break;
+            }
+        }
+        g_form.level_selection = cache.items[row];
+        // Puts the row at the top of the window; ui_listbox clamps it to the
+        // list's real scroll range, so the last rows still land on screen.
+        g_form.level_scroll = static_cast<float>(row) * static_cast<float>(ui_listbox_row_height(lo.font));
         cache.sel_valid = false;
     }
 
@@ -1786,9 +1806,7 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options)
 
     // Filtered live against the game type currently selected in the form; for
     // Match that cycler already offers only team types, so the two compose.
-    // Both flows pin the "Current level" row; Level resolves it to the running
-    // level's name when the vote is sent (see send_vote_from_form).
-    do_level_column(ui, lo, options, left_col, true, selected_gametype(options, is_match));
+    do_level_column(ui, lo, options, left_col, is_match, selected_gametype(options, is_match));
 
     int ry = right_col.y;
     if (is_match) {

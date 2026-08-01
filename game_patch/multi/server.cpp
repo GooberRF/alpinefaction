@@ -754,7 +754,7 @@ static std::pair<bool, int> find_rotation_index_for_level(std::string_view level
     if (!g_dedicated_launched_from_ads)
         return {false, -1};
 
-    const auto wanted = level_filename_with_rfl(level_name);
+    const auto wanted = normalize_level_filename(level_name);
     const auto& cfg = g_alpine_server_config;
 
     for (int i = 0; i < (int)cfg.levels.size(); ++i) {
@@ -775,7 +775,7 @@ static void queue_level_switch_preferring_rotation(std::string_view level_name)
     }
     else {
         // Not in rotation
-        rf::level_filename_to_load = level_filename_with_rfl(level_name).c_str();
+        rf::level_filename_to_load = normalize_level_filename(level_name).c_str();
         set_manually_loaded_level(true);
     }
 }
@@ -1949,7 +1949,7 @@ void match_do_frame()
 
 std::pair<bool, std::string> is_level_name_valid(std::string_view level_name_input)
 {
-    const std::string level_name = level_filename_with_rfl(level_name_input);
+    const std::string level_name = normalize_level_filename(level_name_input);
 
     bool is_valid = rf::get_file_checksum(level_name.c_str()) != 0;
 

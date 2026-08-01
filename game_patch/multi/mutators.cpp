@@ -878,13 +878,15 @@ void mutators_do_frame()
     if (!rf::is_server)
         return;
 
-    if (!g_alpine_server_config_active_rules.mutators.super_drain_enabled) {
-        g_super_drain_tick.invalidate();
+    // Dropped rather than left running while the mutator is off or the server is
+    // between levels: a deadline that expired during a level change would make
+    // the first gameplay frame tick immediately instead of a second in.
+    if (!g_alpine_server_config_active_rules.mutators.super_drain_enabled
+        || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
+        if (g_super_drain_tick.valid())
+            g_super_drain_tick.invalidate();
         return;
     }
-
-    if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY)
-        return;
 
     if (!g_super_drain_tick.valid()) {
         g_super_drain_tick.set(SUPER_DRAIN_TICK_MS);

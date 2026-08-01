@@ -526,7 +526,7 @@ protected:
 
 static bool does_level_match_gametype_prefix(const std::string& level_name, rf::NetGameType game_type)
 {
-    const std::string map_name = level_filename_with_rfl(level_name);
+    const std::string map_name = normalize_level_filename(level_name);
 
     if (game_type == rf::NG_TYPE_RUN && is_known_run_level(level_name)) {
         return true;
