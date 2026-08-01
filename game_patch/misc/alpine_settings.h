@@ -223,6 +223,8 @@ struct AlpineGameSettings
     bool apply_exposure_damage = true;
     bool climb_fix = true;
     bool killfeed_enabled = false;
+    bool show_assist_names = true;
+    bool highlight_assisted_kills = true;
     bool autodl_blur_background = true;
     bool autodl_download_awps = false;
     bool hide_chat = false;

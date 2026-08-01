@@ -54,13 +54,16 @@ struct pf_player_stats_packet
         uint16_t streak_current;
         uint16_t kills;
         uint16_t deaths;
-        uint16_t team_kills;
+        // team_kills in the PF spec, safe for AF to reuse.
+        // AF only ever sent a hardcoded 0 here and no AF client ever read it.
+        uint16_t assists; 
     };
 #ifdef PSEUDOCODE
     player_stats players[];
     uint8_t reserved[3]; // PF bug workaround (PF expects size field to include header size)
 #endif
 };
+static_assert(sizeof(pf_player_stats_packet::player_stats) == 13);
 
 constexpr uint8_t pf_player_stats_packet_version = 2;
 
