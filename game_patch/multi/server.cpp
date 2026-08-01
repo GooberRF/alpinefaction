@@ -22,6 +22,7 @@
 #include "server_internal.h"
 #include "alpine_packets.h"
 #include "sprays.h"
+#include "kill_attribution.h"
 #include "multi.h"
 #include "gametype.h"
 #include "mutators.h"
@@ -1308,6 +1309,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         damaged_ep = rf::entity_from_handle(damaged_ep_handle);
 
         // should entity gib?
+        bool did_gib = false;
         if (damaged_ep) {
             if (!rf::is_multi) { // SP gibbing
                 if (damaged_ep->life < -100.0f &&               // very dead
@@ -1331,11 +1333,81 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 {
                     entity_set_gib_flag(damaged_ep);
                     af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
+                    did_gib = true;
                 }
             }
         }
 
         bool is_dead = damaged_ep ? damaged_ep->life <= 0.0f : true;
+
+        // Feed the combat chain that assists are computed from. Must run before the record
+        // step below so the killing hit itself keeps the chain alive. Friendly fire in team
+        // games never earns an assist.
+        if (rf::is_multi && rf::is_server && is_pvp_damage && real_damage > 0.0f
+            && damaged_player->net_data && killer_player->net_data
+            && !(multi_is_team_game_type() && damaged_player->team == killer_player->team)) {
+            kill_attribution_note_pvp_damage(damaged_player->net_data->player_id,
+                                             killer_player->net_data->player_id);
+        }
+
+        // Record what landed the killing blow so the kill message can name the real weapon
+        // instead of whatever the killer happens to be holding when it renders. Only on the
+        // lethal transition: post-death corpse damage must not overwrite it.
+        if (rf::is_multi && rf::is_server && damaged_player && damaged_player->net_data
+            && is_dead && life_before > 0.0f) {
+            const DamageWeaponContext damage_ctx = kill_attribution_get_damage_context();
+            // A weapon type on the obj_damage call itself means a direct hit; splash damage
+            // only ever gets its weapon from the enclosing detonation context.
+            const bool direct_weapon_hit = damage_ctx.weapon_type >= 0 && !damage_ctx.splash;
+            int weapon = damage_ctx.weapon_type;
+            uint8_t kill_flags = damage_ctx.splash ? AF_KILL_FLAG_SPLASH : 0;
+            if (weapon < 0 && killer_player && killer_player != damaged_player) {
+                // No weapon context (fire damage over time, odd paths): the killer's held weapon
+                // at damage time is still better than the client's at-render-time guess.
+                rf::Entity* killer_ep = rf::entity_from_handle(killer_handle);
+                if (killer_ep) {
+                    weapon = killer_ep->ai.current_primary_weapon;
+                }
+            }
+            if (kill_attribution_is_melee_weapon(weapon)) {
+                kill_flags |= AF_KILL_FLAG_MELEE;
+            }
+            if (killer_player == damaged_player) {
+                kill_flags |= AF_KILL_FLAG_SUICIDE;
+            }
+            // Same damage event, same scope: the gib decision was made a few lines above, so
+            // it rides along in the kill info instead of costing 1.4+ clients their own packet.
+            if (did_gib) {
+                kill_flags |= AF_KILL_FLAG_GIBBED;
+            }
+
+            // Hit location is only meaningful for a direct weapon hit, and only when the
+            // region was measured against this victim.
+            if (direct_weapon_hit && !(kill_flags & AF_KILL_FLAG_MELEE)) {
+                const int hit_region = kill_attribution_get_hit_region(damaged_ep_handle);
+                if (hit_region == kill_attribution_hit_region_head) {
+                    kill_flags |= AF_KILL_FLAG_HEADSHOT;
+                }
+                else if (hit_region == kill_attribution_hit_region_legs) {
+                    kill_flags |= AF_KILL_FLAG_LEGSHOT;
+                }
+            }
+
+            const uint8_t killed_id = damaged_player->net_data->player_id;
+            const uint8_t killer_id = (killer_player && killer_player->net_data)
+                ? killer_player->net_data->player_id : 0xFF;
+            std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id);
+
+            for (uint8_t assist_id : assists) {
+                rf::Player* assister = rf::multi_find_player_by_id(assist_id);
+                if (assister && assister->stats) {
+                    static_cast<PlayerStatsNew*>(assister->stats)->inc_assists();
+                }
+            }
+
+            kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
+                                    std::move(assists));
+        }
 
         // Cap damage to what was actually removed from the victim's health+armor (prevents overkill inflation)
         float effective_damage = real_damage;

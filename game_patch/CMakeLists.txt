@@ -161,6 +161,9 @@ set(SRCS
     multi/mutators.h
     multi/mutators.cpp
     multi/kill.cpp
+    multi/kill.h
+    multi/kill_attribution.cpp
+    multi/kill_attribution.h
     multi/network.cpp
     multi/network.h
     multi/network_debug.cpp

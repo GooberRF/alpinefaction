@@ -75,6 +75,8 @@ Version 1.4.0 (Lupin): Not yet released
 - Change default inactive time before a player is set as idle to 60 seconds (from 30 seconds)
 - Stop labeling players as inactive if they are unable to spawn due to a server or gameplay rule
 - `vote extend` can now select how long to extend the round by, from 1 to 60 minutes (defaults to 5)
+- Kill messages, the game feed, and dedicated server console kill lines now name the weapon that actually dealt the killing blow
+- Kill messages, the game feed, and dedicated server console kill lines now credit assists
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `Anti-aliasing` option to `ADVANCED` options panel

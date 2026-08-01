@@ -17,6 +17,7 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     unsigned short num_deaths;
     unsigned short current_streak;
     unsigned short max_streak;
+    unsigned short num_assists;
     float num_shots_hit;
     float num_shots_fired;
     float damage_received;
@@ -35,6 +36,11 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         ++num_deaths;
         current_streak = 0;
         damage_given_current_life = 0;
+    }
+
+    void inc_assists()
+    {
+        ++num_assists;
     }
 
     void add_shots_hit(float add)
@@ -72,6 +78,7 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     {
         num_kills = 0;
         num_deaths = 0;
+        num_assists = 0;
         num_shots_hit = 0.0f;
         num_shots_fired = 0.0f;
         current_streak = 0;
