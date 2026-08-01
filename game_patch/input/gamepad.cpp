@@ -213,7 +213,8 @@ static bool is_menu_only_action(int action_idx)
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_PING_LOCATION))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG))
-        || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK))
+        || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH))
+        || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW))
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE));
 }
 
@@ -2175,7 +2176,7 @@ void gamepad_reset_to_defaults()
     g_menu_button_map[SDL_GAMEPAD_BUTTON_BACK]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SKIP_CUTSCENE));
 
     // Spectator / multiplayer-only actions
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_EAST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE_FREELOOK));
+    g_menu_button_map[SDL_GAMEPAD_BUTTON_EAST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_WEST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE));
     g_menu_button_map[SDL_GAMEPAD_BUTTON_NORTH]     = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU));
 
