@@ -1690,7 +1690,7 @@ void af_send_kill_info(rf::Player* killed_player)
     }
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        // Bots and browsers have no use use for presentation metadata,
+        // Bots and browsers have no purpose for presentation metadata,
         // save the packets.
         if (!player.net_data || player.is_bot || player.is_browser) {
             continue;
