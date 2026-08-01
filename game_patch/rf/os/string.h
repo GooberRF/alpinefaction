@@ -49,8 +49,8 @@ namespace rf
 
         String(const std::string_view str)
             : m_pod{
-                .max_len = static_cast<int>(str.size() + 1uz),
-                .buf = string_alloc(m_pod.max_len),
+                .max_len = static_cast<int>(str.size()),
+                .buf = string_alloc(m_pod.max_len + 1),
             }
         {
             std::memcpy(m_pod.buf, str.data(), str.size());
@@ -160,7 +160,7 @@ namespace rf
             const int len = std::formatted_size(fmt, std::forward<Args>(args)...);
             const int buf_size = len + 1;
             Pod result{
-                .max_len = buf_size,
+                .max_len = len,
                 .buf = string_alloc(buf_size),
             };
             std::format_to_n(result.buf, len, fmt, std::forward<Args>(args)...);
