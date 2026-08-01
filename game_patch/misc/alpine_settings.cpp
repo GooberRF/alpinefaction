@@ -965,6 +965,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.killfeed_enabled = std::stoi(settings["KillfeedEnabled"]);
         processed_keys.insert("KillfeedEnabled");
     }
+    if (settings.count("ShowAssistNames")) {
+        g_alpine_game_config.show_assist_names = std::stoi(settings["ShowAssistNames"]);
+        processed_keys.insert("ShowAssistNames");
+    }
+    if (settings.count("HighlightAssistedKills")) {
+        g_alpine_game_config.highlight_assisted_kills = std::stoi(settings["HighlightAssistedKills"]);
+        processed_keys.insert("HighlightAssistedKills");
+    }
     if (settings.count("HitSoundIntervalMs")) {
         g_alpine_game_config.set_hit_sound_min_interval_ms(std::stoi(settings["HitSoundIntervalMs"]));
         processed_keys.insert("HitSoundIntervalMs");
@@ -1498,6 +1506,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "SprayDisplay=" << g_alpine_game_config.spray_display << "\n";
     file << "SpraySelection=" << g_alpine_game_config.selected_spray_index << "\n";
     file << "KillfeedEnabled=" << g_alpine_game_config.killfeed_enabled << "\n";
+    file << "ShowAssistNames=" << g_alpine_game_config.show_assist_names << "\n";
+    file << "HighlightAssistedKills=" << g_alpine_game_config.highlight_assisted_kills << "\n";
     file << "HitSoundIntervalMs=" << g_alpine_game_config.hit_sound_min_interval_ms << "\n";
     file << "PlayTaunts=" << g_alpine_game_config.play_taunt_sounds << "\n";
     file << "ShowRunTimer=" << g_alpine_game_config.show_run_timer << "\n";

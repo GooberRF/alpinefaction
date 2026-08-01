@@ -208,9 +208,10 @@ static bool kill_was_melee(const std::optional<KillAttribution>& attr, rf::Entit
 }
 
 // " (+ Name1, Name2)" for the assisting players still in the game, empty when none resolve.
+// Sole source of assist names in every kill message, so the display setting is honored here.
 static std::string assist_suffix(const std::optional<KillAttribution>& attr)
 {
-    if (!attr || attr->assist_player_ids.empty()) {
+    if (!g_alpine_game_config.show_assist_names || !attr || attr->assist_player_ids.empty()) {
         return {};
     }
 
@@ -247,6 +248,9 @@ static bool attribution_credits_player(const std::optional<KillAttribution>& att
 static bool attribution_highlights_local(const std::optional<KillAttribution>& attr,
                                          bool is_third_party_kill, rf::Player* spectate_target)
 {
+    if (!g_alpine_game_config.highlight_assisted_kills) {
+        return false;
+    }
     return is_third_party_kill
         && (attribution_credits_player(attr, rf::local_player)
             || attribution_credits_player(attr, spectate_target));
@@ -514,6 +518,28 @@ ConsoleCommand2 kill_messages_cmd{
     "Toggles printing of kill messages in the chatbox and the game console",
 };
 
+ConsoleCommand2 ui_assist_names_cmd{
+    "ui_assist_names",
+    [] {
+        g_alpine_game_config.show_assist_names = !g_alpine_game_config.show_assist_names;
+        rf::console::print("Assists in kill messages are {}",
+                           g_alpine_game_config.show_assist_names ? "enabled" : "disabled");
+    },
+    "Toggle including assists in kill messages",
+    "ui_assist_names",
+};
+
+ConsoleCommand2 ui_assist_highlight_cmd{
+    "ui_assist_highlight",
+    [] {
+        g_alpine_game_config.highlight_assisted_kills = !g_alpine_game_config.highlight_assisted_kills;
+        rf::console::print("Highlighting of kills you assisted is {}",
+                           g_alpine_game_config.highlight_assisted_kills ? "enabled" : "disabled");
+    },
+    "Toggle highlighting of kill messages for kills you assisted",
+    "ui_assist_highlight",
+};
+
 void multi_kill_do_patch()
 {
     // Player kill handling
@@ -534,4 +560,8 @@ void multi_kill_do_patch()
 
     // Allow disabling kill messages
     kill_messages_cmd.register_cmd();
+
+    // Assist display settings
+    ui_assist_names_cmd.register_cmd();
+    ui_assist_highlight_cmd.register_cmd();
 }

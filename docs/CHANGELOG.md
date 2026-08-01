@@ -77,6 +77,9 @@ Version 1.4.0 (Lupin): Not yet released
 - `vote extend` can now select how long to extend the round by, from 1 to 60 minutes (defaults to 5)
 - Kill messages, the game feed, and dedicated server console kill lines now name the weapon that actually dealt the killing blow
 - Kill messages, the game feed, and dedicated server console kill lines now credit assists
+- Add an `Asst` column to the scoreboard showing each player's assist count
+- Add `ui_assist_names` console command to toggle listing the players who assisted in kill messages
+- Add `ui_assist_highlight` console command to toggle highlighting of kill messages for kills you assisted
 
 [@is-this-c](https://github.com/is-this-c)
 - Rewrite `VArray` to fix crashes due to MinGW

@@ -72,7 +72,7 @@ void send_pf_player_stats_packet(rf::Player* player)
         out_stats.streak_current = player_stats.current_streak;
         out_stats.kills = player_stats.num_kills;
         out_stats.deaths = player_stats.num_deaths;
-        out_stats.team_kills = 0;
+        out_stats.assists = player_stats.num_assists;
         ++stats_packet.player_count;
         if (packet_len + sizeof(out_stats) > sizeof(packet_buf)) {
             // One packet should be enough for 32 players (13 bytes * 32 players = 416 bytes)
@@ -150,6 +150,9 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
             stats.current_streak = in_stats.streak_current;
             stats.num_kills = in_stats.kills;
             stats.num_deaths = in_stats.deaths;
+            // A pre-1.4 server sends the hardcoded 0 this slot used to carry, which is the
+            // correct assist count for a server that never tracked any.
+            stats.num_assists = in_stats.assists;
         }
         else {
             xlog::warn("PF player_stats packet: player {} not found", in_stats.player_id);
