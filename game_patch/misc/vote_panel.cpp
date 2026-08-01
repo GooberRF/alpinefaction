@@ -181,6 +181,8 @@ const MutatorDescription mutator_descriptions[] = {
      "Spawn with AR and 100/100. Auto reload and reset to 100/100 on a frag. Weapon pickups only."},
     {"vampire",
      "Damage enemies to regenerate health and armor."},
+    {"superdrain",
+     "Super health and armor drain down to 100 over time."},
 };
 
 const char* mutator_description_for(std::string_view name)
@@ -849,10 +851,11 @@ std::string selected_level();
 
 const std::vector<VoteMutatorDecl>& resolve_baseline(const VoteOptionsData& options, const std::string& level_string)
 {
-    // Empty is Match's "Current level" row (and the state right after a rebuild),
-    // which resolves against whatever is running locally. Normalized the same way
-    // the server normalizes a voted level name, so both resolve the same file; a
-    // no-op for anything picked out of the level list, which already carries it.
+    // Empty is the pinned "Current level" row (and the state right after a
+    // rebuild), which resolves against whatever is running locally. Normalized
+    // the same way the server normalizes a voted level name, so both resolve the
+    // same file; a no-op for anything picked out of the level list, which
+    // already carries it.
     const std::string wanted = level_filename_with_rfl(level_string.empty()
         ? std::string_view{rf::level.filename.c_str()}
         : std::string_view{level_string});
@@ -988,8 +991,10 @@ void ensure_form(const VoteOptionsData& options)
     }
 }
 
-// The level string sent on the wire. `allow_current` (Match) maps the leading
-// "Current level" row to the empty string the server reads as "keep the level".
+// The level string sent on the wire. `allow_current` maps the leading "Current
+// level" row to the empty string, which Match sends as-is (the server reads it
+// as "keep the level") and Level swaps for the running level's file name at
+// send time (the server takes a Level vote's name literally).
 // Case-insensitive ordering for the level list.
 bool level_name_less(const std::string& a, const std::string& b)
 {
@@ -1159,12 +1164,10 @@ bool vote_form_is_sendable(const VoteOptionsData& options)
             return g_form.kick_index >= 0
                 && g_form.kick_index < static_cast<int>(candidates.size());
         }
-        case AfVoteType::Level:
-            return !selected_level().empty();
         case AfVoteType::Extend:
             return true;
         default:
-            return true; // Match falls back to the current level; rest are parameterless
+            return true; // Level/Match fall back to the current level; rest are parameterless
     }
     (void)options;
 }
@@ -1190,8 +1193,11 @@ void send_vote_from_form(const VoteOptionsData& options)
         }
         case AfVoteType::Level: {
             params.level = selected_level();
+            // Empty is the pinned "Current level" row. The server reads a Level
+            // vote's name literally, so name the running level explicitly --
+            // normalized exactly as resolve_baseline does.
             if (params.level.empty()) {
-                return;
+                params.level = level_filename_with_rfl(std::string_view{rf::level.filename.c_str()});
             }
             params.gametype = selected_gametype(options, false);
             params.mutators = build_mutator_inputs(options);
@@ -1540,8 +1546,8 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     const int level_row_count = static_cast<int>(cache.items.size()) - cache.first_level_row;
 
     // A game type change (or a refreshed allow-list) can hide the selected map;
-    // drop the selection so it can never be sent. Match then falls back to the
-    // pinned "Current level" row.
+    // drop the selection so it can never be sent; the pinned "Current level"
+    // row then takes over.
     if (!g_form.level_selection.empty()
         && std::find(cache.items.begin() + cache.first_level_row, cache.items.end(),
                g_form.level_selection)
@@ -1549,7 +1555,8 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
         g_form.level_selection.clear();
         cache.sel_valid = false;
     }
-    // A Level vote has no pinned row, so keep the top entry active by default.
+    // Without a pinned row there is nothing for an empty selection to resolve
+    // to, so keep the top entry active by default.
     if (!allow_current && g_form.level_selection.empty() && level_row_count > 0) {
         g_form.level_selection = cache.items[cache.first_level_row];
         cache.sel_valid = false;
@@ -1779,7 +1786,9 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options)
 
     // Filtered live against the game type currently selected in the form; for
     // Match that cycler already offers only team types, so the two compose.
-    do_level_column(ui, lo, options, left_col, is_match, selected_gametype(options, is_match));
+    // Both flows pin the "Current level" row; Level resolves it to the running
+    // level's name when the vote is sent (see send_vote_from_form).
+    do_level_column(ui, lo, options, left_col, true, selected_gametype(options, is_match));
 
     int ry = right_col.y;
     if (is_match) {

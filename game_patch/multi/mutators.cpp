@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 #include <patch_common/FunHook.h>
+#include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
 #include "mutators.h"
 #include "server_internal.h"
@@ -18,8 +19,10 @@
 #include "../rf/entity.h"
 #include "../rf/ai.h"
 #include "../rf/multi.h"
+#include "../rf/gameseq.h"
 #include "../rf/player/player.h"
 #include "../rf/os/console.h"
+#include "../rf/os/timestamp.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -198,6 +201,12 @@ static void apply_vampire(AlpineServerConfigRules& r, const toml::table& opts)
         opts["hide_health_armor_pickups"].value_or(VAMPIRE_DEFAULT_HIDE_HEALTH_ARMOR);
 }
 
+// Super Drain: health and armor above the entity's normal max rot back down.
+static void apply_super_drain(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+{
+    r.mutators.super_drain_enabled = true;
+}
+
 // ============================================================================
 // Registry + application order
 // ============================================================================
@@ -243,11 +252,13 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::Rails, "rails", "Rails", 4, &apply_rails, RAILS_OPTIONS, std::size(RAILS_OPTIONS)},
     {MutatorId::Arena, "arena", "Arena", 4, &apply_arena, nullptr, 0},
     {MutatorId::Vampire, "vampire", "Vampire", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_vampire, VAMPIRE_OPTIONS, std::size(VAMPIRE_OPTIONS)},
+    {MutatorId::SuperDrain, "superdrain", "Super Drain", 4, &apply_super_drain, nullptr, 0},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::SuperDrain,
     MutatorId::Vampire,
     MutatorId::Arena,
     MutatorId::Rails,
@@ -851,6 +862,54 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
 
     // Same logic effective health kill reward uses.
     distribute_effective_health(ep, effective_damage * VAMPIRE_HEAL_RATIO, max_life_limit, max_armor_limit);
+}
+
+// Super Drain tick: one global timer drains every alive player's health and
+// armor by one point per second while either sits above the entity's normal max.
+// The fields are written directly, so no damage is dealt and no kill can result;
+// clients suppress the stock damage feedback for these decreases.
+static constexpr int SUPER_DRAIN_TICK_MS = 1000;
+static constexpr float SUPER_DRAIN_PER_TICK = 1.0f;
+
+static rf::Timestamp g_super_drain_tick;
+
+void mutators_do_frame()
+{
+    if (!rf::is_server)
+        return;
+
+    if (!g_alpine_server_config_active_rules.mutators.super_drain_enabled) {
+        g_super_drain_tick.invalidate();
+        return;
+    }
+
+    if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY)
+        return;
+
+    if (!g_super_drain_tick.valid()) {
+        g_super_drain_tick.set(SUPER_DRAIN_TICK_MS);
+        return;
+    }
+    if (!g_super_drain_tick.elapsed())
+        return;
+    g_super_drain_tick.set(SUPER_DRAIN_TICK_MS);
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (rf::player_is_dead(&player) || rf::player_is_dying(&player))
+            continue;
+        rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
+        if (!ep || ep->life <= 0.0f)
+            continue;
+
+        const float max_life = ep->info ? ep->info->max_life : 100.0f;
+        const float max_armor = ep->info ? ep->info->max_armor : 100.0f;
+
+        // The final tick clamps exactly to the max.
+        if (ep->life > max_life)
+            ep->life = std::max(ep->life - SUPER_DRAIN_PER_TICK, max_life);
+        if (ep->armor > max_armor)
+            ep->armor = std::max(ep->armor - SUPER_DRAIN_PER_TICK, max_armor);
+    }
 }
 
 // The weapon currently forced to no-clip.

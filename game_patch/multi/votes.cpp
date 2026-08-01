@@ -844,6 +844,8 @@ struct VoteMatch : public Vote
             if (m_manual_rules_override) {
                 set_manual_rules_override(std::move(*m_manual_rules_override));
                 apply_rules_for_current_level();
+                // Clients need the new mutator flags now, not at the match-start restart.
+                af_send_server_info_packet_to_all();
                 m_manual_rules_override.reset();
             }
             start_pre_match();

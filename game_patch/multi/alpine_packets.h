@@ -502,6 +502,7 @@ enum af_server_info_flags : uint32_t {
     SIF_ALLOW_SPRAYS = 1u << 19,
     SIF_FEATURED_NO_CLIP = 1u << 20,
     SIF_RELOAD_ON_KILL = 1u << 21,
+    SIF_SUPER_DRAIN = 1u << 22,
 };
 
 // Subset of `rf::NetGameFlags`.

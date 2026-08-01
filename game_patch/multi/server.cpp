@@ -4244,6 +4244,7 @@ void server_do_frame()
     gungame_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
+    mutators_do_frame();
 }
 
 void server_on_limbo_state_enter()
